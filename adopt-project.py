@@ -24,7 +24,12 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `execute` will not extract into a leg as it is named, carry
            `leg: null`, `review_required: true` and the QUESTION to ask.
            A leg path over a path it keeps in the root itself is a NOTE,
-           not a refusal: the answer is the person's to change.
+           not a refusal: the answer is the person's to change. A
+           `--pin <product>@<40 hex>` is read as `scaffold-project.py
+           --pin` reads it, its digest included, and recorded in the plan,
+           and `execute` writes its `contracts/<product>-pin.yaml`; `check`
+           finds, and `execute` refuses, a pin the plan does not record
+           whole (#273).
   check    validates a plan against the source: each entry path bound for
            a leg one `execute` will extract, no symlink in the source with
            an empty target (Linux cannot make one, so a clone there checks
@@ -178,29 +183,268 @@ from shape_materialize import unwritable_reason  # noqa: E402
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
 
-#: A declared pin here is a NAME, `[owner/]openProduct` — never `@<commit>`.
-#: Adopting a project records no commit for a neutral-product pin at plan
-#: time (there is no `contracts/<product>-pin.yaml` for one, unlike
-#: `scaffold-project.py --pin`), so a value carrying `@` is almost always
-#: that OTHER tool's syntax pasted in by habit, and is refused rather than
-#: silently written into `neutral_product_pins:` as a name nothing matches.
-PIN_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?$")
+#: A DECLARED PIN IS `[owner/]openProduct@<40 hex commit>`, as
+#: `scaffold-project.py --pin` takes it, and `execute` writes
+#: `contracts/<product lowercased>-pin.yaml` for it, as the scaffold does
+#: (#273; Brett Heap, 2026-10-12). This reverses the NAME-only `--pin` of #6
+#: (2026-09-03), which recorded no commit and wrote no file, so the adopted
+#: root's own `validate-pins.py` refused the declaration as
+#: `neutral-pin-missing` on its first run after `execute` said `adoption
+#: verified`. `plan` reads each pin with the scaffold's own functions, which
+#: live beside the materializer that writes the file: the argument, `--pin-owner`
+#: and `--pin-source` mean what they mean there, the digest is read at `plan`
+#: time (from `--pin-source`, or `gh api`), and a name with no `@<commit>`, a
+#: product named `spec`, `code` or `shape`, or one product twice is refused in
+#: the scaffold's words. The plan RECORDS product, repository, commit, digest
+#: and how the digest was read, so `check` and `execute` read no network for a
+#: pin; `check` finds, and `execute` refuses before any leg exists, a pin the
+#: plan does not record whole, a name alone among them (an old plan, or an
+#: edit). The manifest lists each product with its owner stripped, as the
+#: file is named.
+from shape_materialize import (  # noqa: E402
+    PIN_ARG_RE, declared_pin_products, declared_pin_values, neutral_pin_path,
+    one_printable_line, pin_collisions, pin_variable_collisions,
+    refuse_colliding_pins,
+)
+from repo_shape import SHA256_RE, repo_basename  # noqa: E402
+
+#: The keys `plan` records for each pin, in the order it writes them, and the
+#: value of `contracts/neutral-product-pin.yaml` each one fills.
+PIN_FIELDS = (("product", "PIN_PRODUCT"), ("repository", "PIN_REPOSITORY"),
+              ("commit", "PIN_COMMIT"), ("tree_sha256", "PIN_TREE_SHA256"),
+              ("digest_source", "PIN_DIGEST_SOURCE"))
+#: The two a pin is a fact by. A pin without either is a name.
+PIN_RECORDED = ("commit", "tree_sha256")
+
+#: `check`'s findings about the plan's `pins:`.
+PIN_UNRECORDED = "plan-pin-unrecorded"
+PIN_MALFORMED = "plan-pin-malformed"
+PIN_COLLIDES = "plan-pin-collides"
+ROOT_HOLDS_PIN = "plan-root-holds-pin"
+
+#: The comment `plan` writes above `pins:`.
+PINS_COMMENT = (
+    "# Neutral products this project declares a pin on. A",
+    "# `<Domainx><Product>` assembly root is a DESCENDANT only when",
+    "# its `open<Product>` is listed here (2026-09-02). Each pin was",
+    "# read by `plan --pin <product>@<40 hex commit>`: the commit, and",
+    "# the `sorted-ls-tree-r-v1` digest of the product's tree there.",
+    "# `execute` writes `contracts/<product lowercased>-pin.yaml` from",
+    "# them, as `scaffold-project.py --pin` does, and reads no network",
+    "# for them. To change a pin, re-run `plan`: a commit or a digest",
+    "# edited here is one nobody read (#273).",
+)
 
 
-def _checked_pin_name(raw: str) -> str:
-    name = raw.strip()
-    if not PIN_NAME_RE.match(name):
-        raise Refusal(
-            "adopt-pin-malformed",
-            f"--pin {raw!r} is not `[owner/]openProduct`",
-            "Remediation: pass --pin openGlass, or name the owner explicitly "
-            f"with --pin {NEUTRAL_PRODUCT_OWNER}/openGlass — every neutral "
-            f"open<Product> lives under {NEUTRAL_PRODUCT_OWNER} by the "
-            "family's rule. Adopting a project declares no commit for a "
-            "neutral-product pin at plan time, so drop `@<commit>` if you "
-            "copied it from `scaffold-project.py --pin`.",
-        )
-    return name
+def _pin_lines(pins: dict) -> list[str]:
+    """`pins:` as `plan` writes it, from `declared_pin_values`: one mapping
+    per product, its commit and digest quoted so that no reader takes forty
+    digits for a number."""
+    if not pins:
+        return ["pins: []"]
+    lines = ["pins:"]
+    for values in pins.values():
+        for index, (key, placeholder) in enumerate(PIN_FIELDS):
+            value = values[placeholder]
+            lines.append(("  - " if index == 0 else "    ") + f"{key}: "
+                         + (double_quoted(value) if key in PIN_RECORDED
+                            else y(value)))
+    return lines
+
+
+def _pin_products(rows) -> list[str]:
+    """The products a plan's `pins:` declares, in its order: each mapping's
+    `product:`, or the name an old plan's entry was. The naming policy
+    classifies the root by them; whether each entry is a pin `execute` can
+    write is `_read_pins`'s question, asked by `check` and `execute`."""
+    if not isinstance(rows, list):
+        return []
+    products = []
+    for row in rows:
+        if isinstance(row, dict):
+            row = row.get("product")
+        if isinstance(row, str) and row:
+            products.append(row)
+    return products
+
+
+def _pin_row_problem(row: dict) -> tuple[str, str] | None:
+    """`(code, why)` for a `pins:` mapping `execute` cannot write a pin file
+    from, or None. `why` finishes a sentence about the entry.
+
+    Each value is held to what `plan` writes there: the commit to
+    `COMMIT_RE`, the repository and the commit together to the scaffold's own
+    `PIN_ARG_RE`, owner-qualified, with the product its name, the digest to
+    `SHA256_RE`, and the digest's source to one printable line."""
+    missing = [key for key, _ in PIN_FIELDS if row.get(key) in (None, "")]
+    unrecorded = [key for key in PIN_RECORDED if key in missing]
+    if unrecorded or missing:
+        return ((PIN_UNRECORDED if unrecorded else PIN_MALFORMED),
+                "records no " + " and no ".join(
+                    f"`{key}:`" for key in (unrecorded or missing)))
+    not_text = [key for key, _ in PIN_FIELDS
+                if not isinstance(row.get(key), str)]
+    if not_text:
+        return PIN_MALFORMED, "records " + ", ".join(
+            f"`{key}: {row[key]!r}`" for key in not_text) + ", which " + (
+            "is" if len(not_text) == 1 else "are") + " not text"
+    product, repository, commit, digest, how = (
+        row[key] for key, _ in PIN_FIELDS)
+    if not COMMIT_RE.match(commit):
+        return PIN_MALFORMED, (
+            f"records `commit: {commit!r}`, which is not 40 hex: a tag, a "
+            "branch or an abbreviated oid can be moved, and a commit cannot")
+    if not (PIN_ARG_RE.match(f"{repository}@{commit}") and "/" in repository
+            and repo_basename(repository) == product):
+        return PIN_MALFORMED, (
+            f"records `product: {product!r}` and `repository: "
+            f"{repository!r}`, and `plan` records the repository as "
+            "`<owner>/<openProduct>`, its name the product's")
+    if not SHA256_RE.match(digest):
+        return PIN_MALFORMED, (f"records `tree_sha256: {digest!r}`, which is "
+                               "not 64 hex")
+    if not one_printable_line(how):
+        return PIN_MALFORMED, (f"records `digest_source: {how!r}`, which is "
+                               "not one printable line")
+    return None
+
+
+def _pin_fix(name=None) -> str:
+    """How every pin finding ends: the `plan` that records the pin whole,
+    naming the product where the entry names one `--pin` would take."""
+    if not (isinstance(name, str) and PIN_ARG_RE.match(f"{name}@{'0' * 40}")):
+        name = "<openProduct>"
+    return (f"re-run `plan` with `--pin {name}@<40 hex commit>`, which reads "
+            "the digest there (from `--pin-source <clone>` with no network, "
+            "or `gh api`) and records both, as `scaffold-project.py --pin` "
+            "takes it")
+
+
+def _read_pins(plan: "Plan") -> tuple[list, list[str]]:
+    """`(pins, findings)` for the plan's `pins:`.
+
+    `pins` is `(said, product, values)` for each entry `execute` can write a
+    pin file from, in the plan's order and with a repeat kept, `said` naming
+    the entry and `values` the `PIN_*` values its file is rendered from.
+    `findings` is one FINDING for each entry it cannot: a name alone (an old
+    plan's, or an edit's) or a mapping missing its commit or digest is
+    `plan-pin-unrecorded`, and anything else `plan` never writes there is
+    `plan-pin-malformed`."""
+    rows = plan.get("pins")
+    if rows is None:
+        return [], []
+    if not isinstance(rows, list):
+        return [], [f"FINDING {PIN_MALFORMED}: `pins:` is {rows!r}, not a "
+                    f"list of pins: {_pin_fix()}."]
+    pins, findings = [], []
+    for number, row in enumerate(rows, 1):
+        if isinstance(row, str):
+            # The file is named only for a name `--pin` would take, so that
+            # a line break or an escape in an edited entry is never printed
+            # raw; `repr` spells the entry itself.
+            path = (f"`{neutral_pin_path(repo_basename(row))}` for this one"
+                    if PIN_ARG_RE.match(f"{row}@{'0' * 40}") else "one")
+            findings.append(
+                f"FINDING {PIN_UNRECORDED}: `pins:` entry {number}, "
+                f"{row!r}, is a name with no commit and no digest. `execute` "
+                f"writes each declared pin's file, {path}, from the commit "
+                "and the digest `plan` records, and without it the root's "
+                "own `validate-pins.py` refuses the declaration "
+                f"(`neutral-pin-missing`): {_pin_fix(row)}.")
+            continue
+        if not isinstance(row, dict):
+            findings.append(
+                f"FINDING {PIN_MALFORMED}: `pins:` entry {number} is "
+                f"{row!r}, not a pin: {_pin_fix()}.")
+            continue
+        product = row.get("product")
+        said = f"`pins:` entry {number}" + (
+            f" ({product!r})" if isinstance(product, str) and product else "")
+        problem = _pin_row_problem(row)
+        if problem:
+            code, why = problem
+            findings.append(
+                f"FINDING {code}: {said} {why}. `execute` writes the pin file "
+                "from the commit and the digest `plan` records, and nothing "
+                f"else: {_pin_fix(row.get('repository') or product)}.")
+            continue
+        pins.append((said, product, {
+            placeholder: (row[key].lower() if key in PIN_RECORDED
+                          else row[key])
+            for key, placeholder in PIN_FIELDS}))
+    typed = [(said, product) for said, product, _ in pins]
+    findings += [f"FINDING {PIN_COLLIDES}: {collision} `plan` refuses such "
+                 "`--pin`s as `adopt-pin-collides`: re-run `plan` with each "
+                 "product once, by the name of the repository it pins."
+                 for collision in pin_collisions(typed)]
+    # Two products one `SHAPE_PIN_SOURCE_<PRODUCT>` names (#275): the question
+    # `validate-pins.py` asks, through the same function `plan` refuses with.
+    findings += [f"FINDING {PIN_COLLIDES}: {shared} `plan` refuses such "
+                 "`--pin`s as `adopt-pin-collides`, and the root's own "
+                 "`validate-pins.py` reports them as "
+                 "`neutral-pin-source-collides`: re-run `plan` with one "
+                 "product of each such group."
+                 for shared in pin_variable_collisions(typed)]
+    return pins, findings
+
+
+def _declared_pins(plan: "Plan") -> list[str]:
+    """The products of the pins `execute` would write, repeats kept: the
+    files a leg mount and a path the root keeps are asked about."""
+    return [product for _, product, _ in _read_pins(plan)[0]]
+
+
+def _recorded_pins(plan: "Plan") -> dict[str, dict[str, str]]:
+    """`{product: PIN_* values}` for the materializer, as
+    `declared_pin_values` hands it the scaffold's. Read only after `execute`
+    has refused every finding `_read_pins` makes."""
+    return {product: values for _, product, values in _read_pins(plan)[0]}
+
+
+def _kept_pin_findings(plan: "Plan", tree: list) -> list[str]:
+    """A FINDING for each declared pin whose file a path the plan keeps in
+    the root already holds. The materializer writes the shape's pin beside
+    such a path, under `COLLISION_DIR`, as it writes any shape file the root
+    holds; for a pin that is no copy to merge but the wrong file, because the
+    root's own `validate-pins.py` reads `contracts/<product>-pin.yaml` and
+    would read the source's. Asked of a disk that keeps case and, where that
+    finds nothing, of one that ignores it."""
+    products = list(dict.fromkeys(_declared_pins(plan)))
+    kept = _kept_in_root(plan.entries, tree) if products else []
+    if not kept:
+        return []
+    disks = ((_KeptTree(kept, fold=False), ""),
+             (_KeptTree(kept, fold=True), _CASE_ASIDE))
+    out = []
+    for product in products:
+        rel = neutral_pin_path(product)
+        for disk, aside in disks:
+            at = disk.at(rel)
+            rows = [row for row in ([at] if at else disk.under(rel))
+                    if row[1] != GITLINK_MODE]
+            if not rows:
+                continue
+            path, mode, entry = rows[0]
+            under = "" if entry == path else f" under the entry {_spelled(entry)}"
+            where = "at" if at else "inside"
+            out.append(
+                f"FINDING {ROOT_HOLDS_PIN}: the plan keeps {_kind_of(mode)} "
+                f"{_spelled(path)} in the assembly root{under}, {where} "
+                f"`{rel}`{aside}, where `execute` writes the pin the plan "
+                f"declares on `{product}`. The shape's pin would be written "
+                f"beside it, under `{COLLISION_DIR}/`, and the root's own "
+                "`validate-pins.py` would read the source's file as that "
+                f"pin: {_fix_the_kept_path(entry)}.")
+            break
+    return out
+
+
+def _pin_findings(plan: "Plan", tree: list) -> list[str]:
+    """Every FINDING about the plan's pins: each entry `execute` cannot
+    write a pin file from, two pins at one file or one at a file the shape
+    writes, two whose products one `SHAPE_PIN_SOURCE_<PRODUCT>` names
+    (#275), and a path the root keeps where a pin is written."""
+    return _read_pins(plan)[1] + _kept_pin_findings(plan, tree)
 
 
 PLAN_KIND = "adoption-plan"
@@ -1438,7 +1682,7 @@ def assigned_paths(entries) -> dict[str, list[str]]:
 
 
 def render_plan(args, source: Source, entries: list[Entry], names: dict,
-                pins: list[str], follow_ups: list[str],
+                pins: dict, follow_ups: list[str],
                 seeded: list[str]) -> str:
     lines = [
         "schema_version: 1",
@@ -1483,11 +1727,7 @@ def render_plan(args, source: Source, entries: list[Entry], names: dict,
     emit(lines, "code", names["code"], 2)
     emit(lines, "spec_path", args.spec_path, 2)
     emit(lines, "code_path", args.code_path, 2)
-    lines += ["",
-              "# Neutral products this project declares a pin on. A",
-              "# `<Domainx><Product>` assembly root is a DESCENDANT only when",
-              "# its `open<Product>` is listed here (2026-09-02).",
-              "pins: [" + ", ".join(pins) + "]", ""]
+    lines += ["", *PINS_COMMENT, *_pin_lines(pins), ""]
 
     lines += [
         "# A leg that NO entry below assigns a path to is SEEDED from the",
@@ -1623,24 +1863,30 @@ def _plan_leg_paths(plan: Plan) -> tuple[tuple, tuple]:
 SHAPE_DIR_RESERVED = (f"`{COLLISION_DIR}/` is reserved for the shape's own "
                       "copies of files the root already holds")
 
-LEG_COLLISION_REMEDIATION = (
-    "Remediation: nothing here picks a path for you, so pass another one "
-    "yourself. A leg path neither is, holds nor lies inside, whatever the "
-    "case, a path the shape writes into the assembly root ("
-    + ", ".join(f"`{path}`" for path in assembly_root_paths())
-    + f") or `{COLLISION_DIR}`. {SHAPE_DIR_RESERVED}, so a leg path there is "
-    "refused even where this source needs no copy. The defaults `spec` and "
-    "`code` pass. `check` then asks the same of every source path the plan "
-    "keeps in the root."
-)
+def _leg_collision_remediation(neutral_pins=()) -> str:
+    """What `plan` tells a person whose leg path collides. The paths are
+    `assembly_root_paths(neutral_pins)`, the materializer's own list, each
+    declared pin's file among them (#273), as the scaffold lists its own."""
+    return (
+        "Remediation: nothing here picks a path for you, so pass another one "
+        "yourself. A leg path neither is, holds nor lies inside, whatever the "
+        "case, a path the shape writes into the assembly root ("
+        + ", ".join(f"`{path}`" for path in assembly_root_paths(neutral_pins))
+        + f") or `{COLLISION_DIR}`. {SHAPE_DIR_RESERVED}, so a leg path there "
+        "is refused even where this source needs no copy. The defaults `spec` "
+        "and `code` pass. `check` then asks the same of every source path the "
+        "plan keeps in the root."
+    )
 
 
-def _shape_collisions(what: str, value: str) -> list[str]:
+def _shape_collisions(what: str, value: str, neutral_pins=()) -> list[str]:
     """Where the mount path `value` overlaps what the shape writes: the
-    paths of `assembly_root_paths`, asked through the definition this tool
-    shares with `scaffold-project.py` (#197), then this tool's own
-    `COLLISION_DIR`, which only an adoption writes into."""
-    out = shape_path_collisions(what, value, COLLISION_DIR)
+    paths of `assembly_root_paths`, each declared pin's file among them
+    (#273), asked through the definition this tool shares with
+    `scaffold-project.py` (#197), then this tool's own `COLLISION_DIR`,
+    which only an adoption writes into."""
+    out = shape_path_collisions(what, value, COLLISION_DIR,
+                                neutral_pins=neutral_pins)
     beside = _overlap(value, COLLISION_DIR)
     if beside:
         relation, aside = beside
@@ -1690,7 +1936,7 @@ def _kept_collisions(what: str, value: str, kept: list) -> list[str]:
     return out
 
 
-def leg_path_collisions(legs: tuple, kept=()) -> list[str]:
+def leg_path_collisions(legs: tuple, kept=(), neutral_pins=()) -> list[str]:
     """Everything each leg's mount path overlaps in the assembly root, as
     sentences; `[]` when nothing.
 
@@ -1698,11 +1944,12 @@ def leg_path_collisions(legs: tuple, kept=()) -> list[str]:
     already a canonical path: an overlap is a statement about two paths. `kept`
     is `(path, mode, entry)` for each source path the plan keeps in the root
     (`_kept_in_root`); with none, only the shape's own paths are asked about,
-    which is all `plan` knows.
+    which is all `plan` knows. `neutral_pins` are the products whose pin
+    files `execute` writes (#273), asked about with the shape's own paths.
     """
     out: list[str] = []
     for what, value in legs:
-        out += _shape_collisions(what, value)
+        out += _shape_collisions(what, value, neutral_pins)
         out += _kept_collisions(what, value, kept)
     return out
 
@@ -1729,7 +1976,8 @@ def _leg_collision_findings(plan: Plan, tree) -> list[str]:
     prints them. Asked only of a plan whose mount paths are canonical."""
     return [f"FINDING {LEG_COLLIDES}: {collision}"
             for collision in leg_path_collisions(
-                _plan_leg_paths(plan), _kept_in_root(plan.entries, tree))]
+                _plan_leg_paths(plan), _kept_in_root(plan.entries, tree),
+                _declared_pins(plan))]
 
 
 def _flag_leg_paths(args) -> tuple[tuple, tuple]:
@@ -1770,7 +2018,8 @@ def _kept_collision_notes(args, entries: list, tree: list) -> list[str]:
 def _checked_plan_inputs(args, source: Source,
                          naming: NamingPolicy) -> tuple[dict, list]:
     """Every value the plan will RECORD, defaulted and checked before one of
-    them is written. Returns `(names, pins)`.
+    them is written. Returns `(names, pins)`, `pins` being
+    `declared_pin_values`'s `{product: PIN_* values}`, each digest read.
 
     Split out of `cmd_plan` for #138, and the order inside it is the order the
     refusals came in: a run that got as far as naming the three legs before it
@@ -1787,14 +2036,23 @@ def _checked_plan_inputs(args, source: Source,
     # is the gate that hands back the text.
     spec, code = legs = _flag_leg_paths(args)
     _refuse_bad_leg_paths("adopt-bad-leg-path", *legs)
+    # EACH `--pin`'S FILE AGAINST THE SHAPE'S OWN AND AGAINST EACH OTHER, from
+    # the arguments as typed, in the scaffold's words (#241, #273), and
+    # before the leg paths, which are asked about every pin's file and would
+    # miscount one written over the shape's or listed twice. A name with no
+    # `@<commit>` is `parse_pin`'s `pin-malformed`. No digest is read yet.
+    args.pin_owner = checked_value("--pin-owner", args.pin_owner)
+    refuse_colliding_pins(args.pin, args.pin_owner, "adopt-pin-collides")
+    products = list(declared_pin_products(args))
     # Then the paths the shape writes, which are known before any plan is
-    # (#172). A path the plan keeps in the root is `check`'s to find: the
-    # plan's answers are edited after this writes them. `plan` only notes
-    # the ones it wrote itself (`_kept_collision_notes`).
-    collisions = leg_path_collisions(legs)
+    # (#172), each pin's file among them (#273). A path the plan keeps in the
+    # root is `check`'s to find: the plan's answers are edited after this
+    # writes them. `plan` only notes the ones it wrote itself
+    # (`_kept_collision_notes`).
+    collisions = leg_path_collisions(legs, neutral_pins=products)
     if collisions:
         raise Refusal("adopt-leg-path-collides", " ".join(collisions),
-                      LEG_COLLISION_REMEDIATION)
+                      _leg_collision_remediation(products))
     args.spec_path = checked_value(*spec)
     args.code_path = checked_value(*code)
     args.id = args.id or args.project.lower()
@@ -1841,10 +2099,49 @@ def _checked_plan_inputs(args, source: Source,
                       "named again, retyped; when `--elected-by` is not "
                       "given, `plan` reads `git config user.name`, so pass "
                       "the flag or correct that. " + WRITTEN_AS_TEXT)
+    if args.pin and args.pin_source is not None:
+        _refuse_an_unrecordable_pin_source(args.pin_source, products)
     names = _names(args.project)
-    pins = [_checked_pin_name(p) for p in (args.pin or []) if p.strip()]
+    pins = declared_pin_values(args)
     _check_names(naming, names, set(pins))
     return names, pins
+
+
+def _refuse_an_unrecordable_pin_source(source: Path, products) -> None:
+    """`--pin-source` is a path `plan` can record, or this refuses it as
+    `adopt-unwritable-value`, before any digest is read and before a plan
+    is written.
+
+    `plan` records the path in each pin's `digest_source:`, `execute`
+    writes that into the pin file as it stands, and `check` holds it to
+    `one_printable_line` (`_pin_row_problem`). A path holding a line break,
+    an ESC or a byte that is not UTF-8 was planned, exit 0, and printed raw
+    in `plan`'s report -- the line break split it -- and `check` then found
+    `plan-pin-malformed` and said to re-run the `plan` that wrote it. So
+    `plan` asks `check`'s question of the value it would record, and says
+    why in #270's words (`unwritable_reason`) where they name it; the one
+    thing `check` refuses that they do not is an invisible formatting
+    character, a zero-width joiner among them. The `local-clone (` and `)`
+    that `declared_pin_values` puts around the path are printable, so the
+    path alone decides.
+    """
+    text = str(source)
+    if one_printable_line(text):
+        return
+    reason = (unwritable_reason(text)
+              or "it holds an invisible formatting character")
+    files = ", ".join(f"`{neutral_pin_path(product)}`"
+                      for product in products)
+    raise Refusal(
+        "adopt-unwritable-value",
+        f"--pin-source is {text!r}, which `plan` records in each pin's "
+        f"`digest_source:` and `execute` writes into {files}, and {reason}.",
+        "Remediation: no plan was written. Point --pin-source at a clone "
+        "whose path is one line of printable UTF-8 text, or drop "
+        "--pin-source and let `gh api` read the forge. `check` refuses a "
+        "`digest_source:` that is not one printable line as "
+        "`plan-pin-malformed`, because `execute` writes it into the pin file "
+        "as it stands.")
 
 
 # ---------------------------------------------------------------------------
@@ -1894,9 +2191,11 @@ MANIFEST_PLAN_KEYS = {
 }
 
 
-def _flag_plan(args, names: dict, pins: list) -> "Plan":
+def _flag_plan(args, names: dict, pins: dict) -> "Plan":
     """The plan `plan` is about to write, as `Plan` reads one: the values it
-    records, under the keys `render_plan` writes them to.
+    records, under the keys `render_plan` writes them to. `pins` is
+    `declared_pin_values`' `{product: PIN_* values}`, recorded as `plan`
+    writes each pin since #273: one mapping of `PIN_FIELDS`.
 
     Built from the values and not read back from the file, which lists every
     path of the source: `plan` asks what `check` will ask of the same keys,
@@ -1911,7 +2210,8 @@ def _flag_plan(args, names: dict, pins: list) -> "Plan":
         "reference": args.reference,
         "legs": {**names, "spec_path": args.spec_path,
                  "code_path": args.code_path},
-        "pins": list(pins)})
+        "pins": [{key: values[placeholder] for key, placeholder in PIN_FIELDS}
+                 for values in pins.values()]})
 
 
 #: The commit and the tree digest the manifest rendered FOR VALIDATION holds
@@ -2027,7 +2327,7 @@ def _manifest_findings(plan: Plan, misreads_elsewhere: bool = False
              "a value the validator accepts."])
 
 
-def _refuse_unholdable_values(args, names: dict, pins: list,
+def _refuse_unholdable_values(args, names: dict, pins: dict,
                               naming: NamingPolicy) -> None:
     """`plan` refuses, before it writes a file, what `check` would find in the
     plan it is about to write (#261): the three repository names it derives,
@@ -2091,7 +2391,8 @@ def _print_triad_advisory(path: Path, commit: str | None = None) -> None:
 
 
 def _print_plan_report(args, source: Source, tree: list, entries: list,
-                       follow_ups: list, seeded: list, out: Path) -> None:
+                       follow_ups: list, seeded: list, out: Path,
+                       pins: dict | None = None) -> None:
     """What `plan` says to the terminal once the file is on disk.
 
     Split out of `cmd_plan` for #138. THE UNRESOLVED PATHS ARE LAST on
@@ -2103,6 +2404,15 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
           f"{source.commit[:12]} ({source.branch}), "
           f"{len(tree)} files, {source.commit_count()} commits")
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
+    # Each pin as the scaffold's plan prints it: what is pinned, at which
+    # commit and digest, the file `execute` writes, and how the digest was
+    # read (#273), that last `_shown`, as every path this report prints is.
+    for product, values in (pins or {}).items():
+        print(f"pin        {values['PIN_REPOSITORY']} @ "
+              f"{values['PIN_COMMIT'][:12]} tree "
+              f"{values['PIN_TREE_SHA256'][:12]}… -> "
+              f"{neutral_pin_path(product)} "
+              f"({_shown(values['PIN_DIGEST_SOURCE'])})")
     _print_triad_advisory(source.path, source.commit)
     _print_entries(entries)
     _print_summary(entries)
@@ -2163,7 +2473,8 @@ def cmd_plan(args) -> int:
     write_lf(out, render_plan(args, source, entries, names, pins, follow_ups,
                               seeded))
 
-    _print_plan_report(args, source, tree, entries, follow_ups, seeded, out)
+    _print_plan_report(args, source, tree, entries, follow_ups, seeded, out,
+                       pins)
     return 0
 
 
@@ -2281,7 +2592,9 @@ class Plan:
         self.entries = [e for e in (data.get("paths") or [])
                         if isinstance(e, dict)]
         self.legs = data.get("legs") or {}
-        self.pins = [str(p) for p in (data.get("pins") or []) if p]
+        # The products only: what the naming policy classifies by. Whether
+        # each entry is a pin `execute` can write is `_read_pins`'s (#273).
+        self.pins = _pin_products(data.get("pins"))
 
     @classmethod
     def load(cls, path: Path) -> "Plan":
@@ -2477,6 +2790,12 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
                 f"one of {list(LEG_VALUES)}")
     if isinstance(plan.legs, dict):
         findings += _root_shape_findings(plan, tree)
+        # THE PINS, LAST (#273): each `pins:` entry `execute` cannot write a
+        # pin file from, two pins at one file, and a path the root keeps
+        # where a pin is written. Each finding names the `plan` that records
+        # the pin whole. A leg mounted over a pin's file is
+        # `plan-leg-path-collides`, above, with the shape's own paths.
+        findings += _pin_findings(plan, tree)
     return findings
 
 
@@ -4278,6 +4597,21 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
           f"{_shown(str(_plan_leg_path(plan, 'code')))}/")
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
+    # Each pin `execute` writes, as the plan records it (#273): a pin it
+    # cannot write is a finding, printed after this. NOT READ AGAIN, by
+    # design: `check` and `execute` read no network for a pin, so a commit
+    # or a digest edited into the plan is written as it stands, and the
+    # root's own gate is what recomputes it (#273's review, S3).
+    recorded = _recorded_pins(plan)
+    for product, values in recorded.items():
+        print(f"  write {neutral_pin_path(product)}: "
+              f"{values['PIN_REPOSITORY']} @ {values['PIN_COMMIT'][:12]} tree "
+              f"{values['PIN_TREE_SHA256'][:12]}… "
+              f"({_shown(values['PIN_DIGEST_SOURCE'])})")
+    if recorded:
+        print("  each pin as `plan` read it, not read again here: the root's "
+              "own `validate-pins.py` recomputes its digest wherever it can "
+              "read the product")
     print("  the source is never deleted, never renamed, never force-pushed")
     print(_topics_line(topic, local))
     for item in _plan_follow_ups(plan):
@@ -5822,9 +6156,14 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                                   source.commit)
         if record:
             append["project.yaml"] = record
+        # Each declared pin's file, `contracts/<product>-pin.yaml`, is
+        # written by the materializer as the scaffold's is, from the
+        # values the plan records (#273); `_refuse_what_check_finds` has
+        # refused a pin it does not record whole, and one whose file a
+        # kept path holds.
         materialized = materialize_assembly_root(
             SHAPE_ROOT, assembly, values, collision_dir=COLLISION_DIR,
-            append=append)
+            append=append, neutral_pins=_recorded_pins(plan))
         for intended, actual in materialized.collisions:
             print(f"  beside  {actual} (the source already has {intended}; "
                   "nothing was overwritten)")
@@ -6765,8 +7104,9 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
                 f"({found.reason})",
                 "Remediation: --project takes one CamelCase token. Two forms "
                 "beyond the bare one MAY be the assembly root: a declared "
-                "descendant (declare the pin with `--pin open<Product>` and it "
-                "classifies as one, 2026-09-02), and an `open<Product>` "
+                "descendant (declare the pin with `--pin "
+                "open<Product>@<40 hex commit>` and it classifies as one, "
+                "2026-09-02), and an `open<Product>` "
                 "neutral product, which may elect the shape and be its own "
                 "root (2026-09-05). Neither may be the spec or code leg, and "
                 "an `<X>-Install` may be no leg at all.")
@@ -6883,12 +7223,30 @@ def main(argv: list[str] | None = None) -> int:
     plan.add_argument("--code-path", default="code",
                       help=_leg_path_help("code", "code"))
     plan.add_argument("--pin", action="append", default=[],
-                      help="a neutral product this project declares a pin on "
-                           "— a NAME only, e.g. --pin openGlass or --pin "
-                           f"{NEUTRAL_PRODUCT_OWNER}/openGlass to name the "
-                           "owner explicitly. Adopting a project pins no "
-                           "commit at plan time, so a trailing @<commit> "
-                           "(scaffold-project.py's syntax) is refused.")
+                      metavar="openProduct@COMMIT",
+                      help="declare a neutral-product pin, as "
+                           "scaffold-project.py --pin does, e.g. --pin "
+                           "openGlass@<40 hex>. `plan` reads the digest of "
+                           "the product's tree at that commit (from "
+                           "--pin-source, or `gh api`) and records it in the "
+                           "plan; `execute` writes "
+                           "contracts/<openproduct>-pin.yaml from it and "
+                           "lists the product in the manifest. A name with "
+                           "no @<commit>, a product named spec, code or "
+                           "shape, and one product twice are refused. "
+                           "Repeatable.")
+    plan.add_argument("--pin-owner", default=NEUTRAL_PRODUCT_OWNER,
+                      help="the organisation an UNQUALIFIED --pin name "
+                           "resolves under (default: "
+                           f"{NEUTRAL_PRODUCT_OWNER}, where every neutral "
+                           "open<Product> lives — never the adopted "
+                           "repository's own --org). Name the owner in --pin "
+                           "itself (owner/openProduct@<sha>) to override it "
+                           "for one pin.")
+    plan.add_argument("--pin-source", type=Path, default=None,
+                      help="a local clone to compute --pin digests from, "
+                           "instead of reading the forge with `gh api` (the "
+                           "TEST path; no network)")
     plan.add_argument("--allow-empty-leg", action="append", default=[],
                       choices=EXTRACTED_LEGS,
                       help="record in the plan that this leg having NO path "
