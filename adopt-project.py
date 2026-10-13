@@ -2518,15 +2518,14 @@ def _plan_fields(plan: Plan) -> list[tuple[str, tuple]]:
         if isinstance(value, str) and leg_path_problem(what, value) is None:
             fields.append((placeholder, _field(what, placeholder, value)))
     # Each pin `execute` writes, by the product it lists in the manifest
-    # (`_template_table`), once each, less one no file can hold, which is
-    # #255's finding alone. None at all where the plan's `pins:` has a
-    # finding of its own (`_read_pins`, #273): `execute` refuses such a plan
-    # before any leg exists, and one wrong pin is one finding.
+    # (`_template_table`), less one no file can hold, which is #255's
+    # finding alone. None at all where the plan's `pins:` has a finding of
+    # its own (`_read_pins`, #273): `execute` refuses such a plan before any
+    # leg exists, and one wrong pin is one finding. A product given twice is
+    # one such finding (`plan-pin-collides`), so each is asked about once.
     recorded, pin_findings = _read_pins(plan)
-    products = () if pin_findings else dict.fromkeys(
-        product for _, product, _ in recorded)
     return fields + [(PINS_PLACEHOLDER, _pin_field(PIN_IN_PLAN, product))
-                     for product in products
+                     for _, product, _ in ([] if pin_findings else recorded)
                      if _execute_gets_to_write("pins", product)]
 
 

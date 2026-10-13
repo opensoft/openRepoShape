@@ -1080,16 +1080,49 @@ def test_a_misread_branch_the_source_lacks_is_479s_finding_alone(
     assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
 
 
+def with_origin(tmp_path: Path, branch: str | None) -> Path:
+    """A source whose remote `origin` has been fetched, `origin` holding
+    `branch` beside `main` where one is given, and the source no branch of
+    its own but `main`."""
+    seed = make_source_repo(tmp_path / "seed")
+    if branch:
+        holding(seed, TRACKING_KEY, branch)
+    source = make_source_repo(tmp_path / SOURCE_NAME)
+    git("remote", "add", "origin", str(seed), cwd=source)
+    git("fetch", "-q", "origin", cwd=source)
+    return source
+
+
+def test_a_misread_branch_origin_lacks_is_479s_finding_alone(
+        adopter, tmp_path):
+    """The source has `true` as its own branch, and its fetched `origin`,
+    the repository the split's pull request goes to, does not. `check`
+    reads `origin`'s branches and finds it `plan-tracking-branch-missing`,
+    which `execute` refuses before any leg exists in either mode, so it is
+    #479's finding alone, as at `plan`, though the source itself has it."""
+    source = with_origin(tmp_path, None)
+    holding(source, TRACKING_KEY, "true")
+    plan = tmp_path / PLAN_FILE
+    written = write_plan(source, plan, extra=(TRACKING_FLAG, "true"))
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert BRANCH_NOTED in written.stdout, written.stdout
+    assert MISREAD_CODE not in written.stdout + written.stderr
+    for path, leg in ANSWERS:
+        resolve(plan, path, leg)
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (f"{BRANCH_MISSING}`true`, which is no branch of the source's "
+            "remote `origin` ") in result.stderr, result.stderr
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
+
+
 def origin_only(tmp_path: Path) -> tuple[Path, Path]:
     """`(source, plan)`: a source whose remote `origin` has the branch
     `true`, fetched, and which has no branch of its own by that name,
     planned and answered with `--tracking-branch true`. `plan` notes
     nothing: `origin` has it."""
-    seed = make_source_repo(tmp_path / "seed")
-    holding(seed, TRACKING_KEY, "true")
-    source = make_source_repo(tmp_path / SOURCE_NAME)
-    git("remote", "add", "origin", str(seed), cwd=source)
-    git("fetch", "-q", "origin", cwd=source)
+    source = with_origin(tmp_path, "true")
     assert "true" not in branches_of(source).split()
     plan = tmp_path / PLAN_FILE
     written = write_plan(source, plan, extra=(TRACKING_FLAG, "true"))
