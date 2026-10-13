@@ -397,15 +397,20 @@ def test_following_the_notice_after_a_failed_leg_ends_adoption_verified(
                   if line.startswith(ROLLED_BACK))
     named = NAMED.search(notice)
     assert named, notice
-    assert [named["spec"], named["code"]] == [
-        str(remotes / f"{ASSEMBLY}-{role}.git") for role in UNIT_ROLES]
+    # AS THE NOTICE SPELLS THEM (#212): between backticks, a backslash
+    # escaped, so a Windows path reads `D:\\a\\...` there. Compared with
+    # the raw path, this held on POSIX alone, and the Windows run of #471's
+    # probe 2 failed here on the doubled separators, which are the spelling.
+    legs = [remotes / f"{ASSEMBLY}-{role}.git" for role in UNIT_ROLES]
+    assert [f"`{named['spec']}`", f"`{named['code']}`"] == list(
+        map(spelled, legs))
     assert (f"Use a fresh --work-dir as well, or none: {spelled(work)} holds "
             f"{spelled(f'{ASSEMBLY}-{SPEC}')} from this run") in notice
 
     # What it says: delete the two repositories it names, and a fresh
     # --work-dir. The --local-remote-dir is the same one.
-    for role in UNIT_ROLES:
-        rmtree(Path(named[role]))
+    for leg in legs:
+        rmtree(leg)
     rerun = execute(plan, remotes, tmp_path / "fresh work")
 
     assert rerun.returncode == 0, rerun.stderr + rerun.stdout

@@ -56,6 +56,15 @@ COPIES_BLOCK = (f"{EOL_BLOCK_HEAD}\n"
 SHAPE_PIN = "contracts/shape-pin.yaml"
 TEMPLATE = REPO / "templates" / "assembly-root"
 
+#: A symlink made ON THE DISK, as the other symlink tests of the adoption
+#: suites skip one on Windows: there a runner may make one only in Developer
+#: Mode or elevated, and one whose target is spelled `config/attributes`
+#: leads nowhere, so the materializer took the path for free and wrote
+#: through the link (#471's probe 2).
+needs_disk_symlinks = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a symlink needs a privilege Windows does not grant by default")
+
 
 @pytest.fixture(scope="module")
 def adopter():
@@ -211,6 +220,7 @@ def test_with_no_attributes_of_its_own_nothing_is_appended(tmp_path):
         (TEMPLATE / ATTRIBUTES).read_bytes()
 
 
+@needs_disk_symlinks
 def test_an_attributes_symlink_is_not_written_through(tmp_path):
     """What a link leads to may be another of the source's files, and git
     reads no `.gitattributes` through a link anyway: it is left alone."""
