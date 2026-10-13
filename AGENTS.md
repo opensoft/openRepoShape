@@ -141,15 +141,16 @@ steps, in order, and step 4 is the one you must not skip.
    `execute` does not make them. Do not pass `--yes` on your own initiative;
    it is the human's word, not your convenience.
 7. **Read the verification table back to them.** It accounts for every source
-   path at the source commit, by blob sha, in exactly one of {spec leg, code
-   leg, root tree} or as `drop`. If it exits non-zero, STOP and relay it, and
-   take the way out THAT exit prints. Exit 1, a failed verification: the
-   source is untouched — nothing is deleted, `main` is where it was, the split
-   is on a branch — so fix the plan, delete the split branch, and re-run into
-   fresh legs and a fresh `--work-dir`, or none. Exit 2 saying `IS pushed`
-   (GitHub only: `gh pr create` or the topic refused) comes after both legs
-   and the split are pushed and verified: finish with the command it prints
-   and never re-run into fresh legs, which abandons that pair.
+   path at the source commit, by blob sha (a kept root `.gitattributes` as the
+   source's bytes plus the line-ending block the split appends), in exactly one
+   of {spec leg, code leg, root tree} or as `drop`. If it exits non-zero, STOP
+   and relay it, and take the way out THAT exit prints. Exit 1, a failed
+   verification: the source is untouched — nothing is deleted, `main` is where
+   it was, the split is on a branch — so fix the plan, delete the split branch,
+   and re-run into fresh legs and a fresh `--work-dir`, or none. Exit 2 saying
+   `IS pushed` (GitHub only: `gh pr create` or the topic refused) comes after
+   both legs and the split are pushed and verified: finish with the command it
+   prints and never re-run into fresh legs, which abandons that pair.
 
 `execute` also records the plan's answers about the source's submodules in
 the split's `project.yaml`, under `submodules:` — per submodule a leg keeps,
@@ -177,8 +178,7 @@ passes, because a spec-only repository is a legitimate thing to adopt.
    repository that has no code. Do not pass it because the tool asked for it;
    pass it because the human confirmed the repository genuinely has none.
 2. Everything else is unchanged, step 7 included: the verification table's
-   `code` row reads `0 of N source paths (seeded from template)`, and the table
-   still accounts for every source path by blob sha.
+   `code` row reads `0 of N source paths (seeded from template)`.
 
 ## Scaffolding a project that DECLARES descent
 

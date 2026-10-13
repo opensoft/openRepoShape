@@ -1181,7 +1181,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       <code>pip install git-filter-repo</code>, or the same name from apt or brew. It is
       deliberately not vendored: history extraction has one correct implementation, and a copy is a
       second one that drifts.</p>
-      <p><strong>Ambiguous is an answer, and nothing is overwritten.</strong>
+      <p><strong>Ambiguous is an answer, and no source line is overwritten.</strong>
       <code>contracts/path-classification.yaml</code> maps path globs to
       <code>spec | code | root | ambiguous</code>, first match wins, each with a reason. The fourth
       class is not a failure: those entries get <code>leg: null</code>,
@@ -1189,9 +1189,12 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       any remain, because an unanswered question is never an implicit <code>root</code>. A shape
       file whose name the source already holds &mdash; <code>README.md</code>,
       <code>Makefile</code>, <code>.gitignore</code> &mdash; is written under <code>shape/</code> and
-      the collision becomes a follow-up for a human to merge. Then <code>execute</code> VERIFIES:
+      the collision becomes a follow-up for a human to merge, and a root
+      <code>.gitattributes</code> the source keeps gets a block of
+      <code>/&lt;copy&gt; text eol=lf</code> lines appended. Then <code>execute</code> VERIFIES:
       every source path at the source commit is in exactly one of {spec leg, code leg, root tree
-      after the split} <strong>by blob sha</strong>, or listed as <code>drop</code>.</p>
+      after the split} <strong>by blob sha</strong> (that file as the source&rsquo;s bytes plus the
+      block), or listed as <code>drop</code>.</p>
       <p><strong>A leg with nothing in it is SEEDED, not extracted.</strong>
       <code>git filter-repo</code> over an empty path list rewrites every commit to nothing and
       leaves an empty HISTORY, which is not the same thing as an empty repository &mdash; so a leg
@@ -1385,8 +1388,9 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       bytes ON DISK, and Git for Windows&rsquo; installer default is
       <code>core.autocrlf=true</code> &mdash; so without this file a colleague who did nothing but
       clone the finished project gets CRLF in the worktree, and every pinned row is false for them
-      alone. <code>* text=auto eol=lf</code> puts the answer in the project, where the digests are,
-      so no clone-time setting is needed on any machine.</p>
+      alone. <code>* text=auto eol=lf</code> &mdash; or, in an adopted root that kept its own
+      <code>.gitattributes</code>, the block appended to that file &mdash; puts the answer in the
+      project, where the digests are, so no clone-time setting is needed on any machine.</p>
       <p><strong>Why an agent file is one of the copies.</strong> An agent working in a project
       learns the shape&rsquo;s rules &mdash; advance a leg in ONE commit, never edit a pinned file,
       never <code>--admin</code> &mdash; from a file that travels WITH the shape rather than from
@@ -1870,9 +1874,11 @@ resume InkRouter                # on workstation B, and the estate is back</code
       above drift, added (#424); the assistant&rsquo;s route when its shell has no terminal, added
       (#476); the one-liner asking at the person&rsquo;s own terminal, never reading the answer
       from the pipe, added (#492); the statements the v1.0.0 accuracy pass found false,
-      corrected here as in the README, added (#483) &mdash; a page cannot name the commit
+      corrected here as in the README, added (#483); the line-ending block an adoption appends
+      to a root <code>.gitattributes</code> the source keeps, and its verification as the
+      source&rsquo;s bytes plus that block, added (#471) &mdash; a page cannot name the commit
       that contains it, and the blob below is the fact a test checks.
-      README.md blob 1417b9ec0235675da8f73ca023756411bc3fbe8a. Every command, flag, exit code
+      README.md blob 9a763a96877d8abd0c3d507b63f2442bd3bf9ceb. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
