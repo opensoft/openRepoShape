@@ -54,6 +54,17 @@ RENAME_FIRST = (
     "rename`); then run `plan` again against the renamed repository "
     "(`--source <org>/<new name>`, or a clone whose `origin` names it), with "
     "its new name as `--project`.")
+#: What they say instead where the source's `origin` is a PATH (#513's
+#: review, NIT-3): the repository it names is at that path, not on GitHub,
+#: so `gh repo rename` is not the way to rename it. `{}` is the path.
+RENAME_AT_THE_PATH = (
+    "cannot be adopted in place under that name: an in-place adoption keeps "
+    "the source's own name, and `--project` cannot rename it. Whether to "
+    "rename it is a human's decision, made first where it is kept, and its "
+    "`origin` is the path `{}`, not a repository on GitHub: rename the "
+    "repository at that path, or plan instead from a clone of the repository "
+    "on GitHub, whose `origin` names it there; then run `plan` again against "
+    "the renamed repository, with its new name as `--project`.")
 #: A source small enough that `plan` asks no question.
 TREE = {"README.md": "# here\n", "src/app.py": "print(1)\n",
         "specs/001/spec.md": "# Spec\n"}
@@ -95,13 +106,14 @@ def check(plan_path: Path):
     return run_script(ADOPT, "check", "--plan", str(plan_path))
 
 
-def edited(plan_path: Path, *changes: tuple[str, str]) -> None:
-    """The plan with each whole line `old` replaced by `new`, as a hand edit
-    makes it, LF as `plan` wrote it."""
+def edited(plan_path: Path, *changes: tuple[str, str | None]) -> None:
+    """The plan with each whole line `old` replaced by `new`, or deleted
+    where `new` is None, as a hand edit makes it, LF as `plan` wrote it."""
     text = plan_path.read_text(encoding="utf-8")
     for old, new in changes:
         assert f"\n{old}\n" in text, text
-        text = text.replace(f"\n{old}\n", f"\n{new}\n", 1)
+        text = text.replace(f"\n{old}\n",
+                            "\n" if new is None else f"\n{new}\n", 1)
     with plan_path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
 
@@ -244,6 +256,38 @@ def test_a_name_read_from_a_path_says_so(tmp_path):
     assert written.returncode == 0, written.stdout + written.stderr
 
 
+@pytest.mark.parametrize("flags, code", [
+    # Another name: `adopt-not-the-source`, whose remediation has said the
+    # path names no repository on GitHub before it says to rename.
+    (("--project", "BillingService", "--org", "acme"), NOT_THE_SOURCE),
+    # The source's own name, which the policy refuses: `_check_names`.
+    (("--project", "billing-service"), "naming-unclassified"),
+], ids=["another-name", "its-own-name"])
+def test_a_name_read_from_a_path_is_renamed_at_that_path(tmp_path, flags,
+                                                        code):
+    """#513's review, NIT-3: a source whose `origin` is the path
+    `.../clones/billing-service.git` names `clones/billing-service`, which the
+    naming policy refuses. Its rename-first remediation said the path names
+    no repository on GitHub, then sent the person to `gh repo rename` on
+    GitHub. It says to rename the repository at that path, or to plan from a
+    clone of the one on GitHub, and never `gh repo rename`."""
+    source = source_of(tmp_path, None)
+    origin = (tmp_path / "clones" / "billing-service.git").as_posix()
+    git("remote", "add", "origin", origin, cwd=source)
+
+    refused = plan(tmp_path, source, *flags)
+
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    detail, remediation = refused.stderr.splitlines()[:2]
+    assert detail.startswith(f"REFUSED {code}: "), detail
+    assert remediation.endswith(
+        f"clones/billing-service {RENAME_AT_THE_PATH.format(origin)}"), \
+        remediation
+    assert "gh repo rename" not in refused.stderr
+    assert RETYPE not in refused.stderr
+    assert not (tmp_path / PLAN).exists()
+
+
 def test_an_org_repo_source_is_the_repository_it_names(adopter, tmp_path,
                                                        monkeypatch, capsys):
     """`--source acme/Atlas` names the repository it clones, and is compared
@@ -353,6 +397,47 @@ def test_execute_refuses_a_plan_edited_to_another_repository_first(
         "Atlsa` and `project: Atlsa` names acme/Atlsa, and the source is "
         "acme/Atlas: an in-place adoption keeps the source's own name, and "
         "`execute` acts on the repository `org:` and `legs.assembly:` name")
+    assert refusal.remediation.startswith(
+        "Remediation: no leg repository was created and nothing was pushed. "
+        "Run `plan` again with `--project Atlas --org acme`"), \
+        refusal.remediation
+
+
+@pytest.mark.parametrize("new, held, spelled", [
+    ("org: 2026", "the number 2026", "2026"),
+    ("org: true", "the boolean true", "True"),
+    ("org: ~", "null", "None"),
+    (None, "absent", "None"),
+], ids=["number", "boolean", "null", "deleted"])
+def test_an_org_that_is_not_text_is_read_as_execute_reads_it(
+        adopter, tmp_path, monkeypatch, new, held, spelled):
+    """#513's review, SHOULD-1: `org:` was compared only when it was text,
+    and `execute` reads it with `str()` (`_repository_urls`). A plan edited
+    to `org: 2026`, `org: true` or `org: ~`, or with its `org:` line deleted,
+    checked `plan ok`, and `execute` ran `git ls-remote` on
+    `https://github.com/2026/Atlas.git`, `.../True/...` or `.../None/...`.
+    Each is the repository `execute` would act on, and not the source:
+    `check` finds it and `execute` refuses it, before anything is run."""
+    source = source_of(tmp_path, "acme/Atlas")
+    written = plan(tmp_path, source, "--project", "Atlas")
+    assert written.returncode == 0, written.stdout + written.stderr
+    edited(tmp_path / PLAN, ("org: acme", new))
+    said = (f"the plan's `org:` ({held}, which `execute` spells {spelled}) "
+            "with its `legs.assembly: Atlas` and `project: Atlas` names "
+            f"{spelled}/Atlas, and the source is acme/Atlas: an in-place "
+            "adoption keeps the source's own name, and `execute` acts on the "
+            "repository `org:` and `legs.assembly:` name")
+
+    checked = check(tmp_path / PLAN)
+    refusal = refused_before_any_remote(adopter, monkeypatch,
+                                        tmp_path / PLAN, tmp_path / "work")
+
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert [line for line in findings(checked.stderr)
+            if PLAN_NOT_THE_SOURCE in line] == [
+        f"FINDING {PLAN_NOT_THE_SOURCE}: {said}"], checked.stderr
+    assert refusal.code == PLAN_NOT_THE_SOURCE
+    assert refusal.detail == f"{tmp_path / PLAN}: {said}"
     assert refusal.remediation.startswith(
         "Remediation: no leg repository was created and nothing was pushed. "
         "Run `plan` again with `--project Atlas --org acme`"), \
