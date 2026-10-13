@@ -283,6 +283,10 @@ def test_an_adoption_reads_back_every_value_it_was_given(tmp_path, project_id,
                                                          branch, spec, code,
                                                          by_hand):
     source = make_source_repo(tmp_path / "Thing", tree=SOURCE_TREE, edits=())
+    # Adopt refuses a tracking branch the source lacks, as
+    # `plan-tracking-branch-missing` (#479, main's 56713e21), so the source
+    # carries the branch this row adopts onto: flag rows and by-hand rows.
+    git("branch", branch, cwd=source)
     plan = tmp_path / "adoption-plan.yaml"
     flags = () if by_hand else ("--id", project_id, "--tracking-branch",
                                 branch, "--spec-path", spec,
