@@ -442,6 +442,17 @@ def test_an_org_that_is_not_text_is_read_as_execute_reads_it(
         "Remediation: no leg repository was created and nothing was pushed. "
         "Run `plan` again with `--project Atlas --org acme`"), \
         refusal.remediation
+    # The comparison above is only as good as its read of `org:` being the one
+    # `execute` acts on (#513's review, NIT-B): the URL `_repository_urls`
+    # hands to the pushes spells the owner as `check` compared it. A later
+    # edit that gives it a default of its own (`plan.get("org", ...)`) answers
+    # `null` and `deleted` differently, and reopens SHOULD-1 for a source
+    # whose repository the plan can then reach.
+    loaded = adopter.Plan.load(tmp_path / PLAN)
+    urls = adopter._repository_urls(
+        Namespace(local_remote_dir=None), loaded, loaded.names(),
+        loaded.open_source(None, tmp_path / "work"))[2]
+    assert urls["assembly"] == f"https://github.com/{spelled}/Atlas.git"
 
 
 def test_a_plan_older_than_its_sources_origin_is_caught_by_check_and_execute(
