@@ -32,9 +32,11 @@ from __future__ import annotations
 import argparse
 import codecs
 import datetime as _dt
+import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -51,6 +53,16 @@ from repo_shape import (  # noqa: E402
 # is moved by" below. `_strip_comment` is that module's private name and is
 # imported on purpose: it is the reader's rule for where a comment starts.
 from repo_shape import YamlError, _strip_comment, parse_yaml  # noqa: E402
+
+# What a declared neutral-product pin is read with (#273): the forge's tree
+# listing, the owner an unqualified name resolves under, and the digest; and
+# which products share a `SHAPE_PIN_SOURCE_<PRODUCT>` variable, the one answer
+# the project's own `validate-pins.py` reports on (#275), with two
+# declarations ONE product when they share a pin file (`pin_product_key`).
+from repo_shape import (  # noqa: E402
+    GH_TREE_API, NEUTRAL_PRODUCT_OWNER, PIN_SOURCE_ENV_PREFIX,
+    pin_product_key, pin_source_env_collisions, tree_digest,
+)
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
 
@@ -1910,8 +1922,8 @@ def shape_path_collisions(what: str, value: str,
     `neutral_pins` IS THE SAME KIND OF ARGUMENT: the products whose pins the
     caller hands the materializer, so the paths asked about are
     `assembly_root_paths(neutral_pins)`, each pin's file among them. The
-    scaffold passes its `--pin` products (#197); adopt hands the materializer
-    no pin and passes none, so its list and its sentences are unchanged.
+    scaffold passes its `--pin` products (#197), and adopt the products
+    its plan declares a pin on, whose files `execute` writes since #273.
     """
     out: list[str] = []
     files = [path for path in assembly_root_paths(neutral_pins)
@@ -1934,6 +1946,452 @@ def shape_path_collisions(what: str, value: str,
             f"The shape writes {them} into the assembly root{consequence}: "
             f"{MOVE_THE_LEG}.")
     return out
+
+
+# ---------------------------------------------------------------------------
+# A declared neutral-product pin (#273)
+# ---------------------------------------------------------------------------
+#
+# `scaffold-project.py --pin <product>@<40 hex>` read the argument, the digest
+# and the collisions with functions of its own, and `adopt-project.py plan
+# --pin` took a NAME only and wrote no pin file, so the adopted root's own
+# `validate-pins.py` refused it as `neutral-pin-missing` on its first run.
+# Brett Heap ruled on 2026-10-12 that adopt takes the argument scaffold takes
+# and writes the file scaffold writes, so the reading moved here, beside the
+# materializer that writes the file (`neutral_pin_path`), and both tools
+# import it: one argument, one digest, one set of refusals, in one set of
+# words. `scaffold-project.py` imports each under the name it always called it
+# by, and its messages are these, unchanged.
+
+#: The pin argument: `openGlass@<40 hex>`, optionally organisation-qualified.
+PIN_ARG_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?)@(?P<commit>[0-9a-fA-F]{40})$")
+
+
+def parse_pin(raw: str, owner: str = NEUTRAL_PRODUCT_OWNER) -> tuple[str, str, str]:
+    """`openGlass@<sha>` -> (product, `<owner>/openGlass`, commit).
+
+    THE COMMIT IS 40 HEX OR IT IS NOT A PIN. An abbreviated oid, a branch name
+    or a tag cannot pass here for the same reason `contracts/<leg>-pin.yaml`
+    refuses them: a tag can be moved and a commit cannot.
+
+    AN UNQUALIFIED NAME RESOLVES UNDER `owner` (opensoft, unless `--pin-owner`
+    said otherwise) — NEVER under the pinning project's own `--org`. Domain
+    repositories never author a neutral product; they only pin the opensoft
+    original, so `--org MedxSoft --pin openGlass@<sha>` must not go looking
+    for `MedxSoft/openGlass`, which does not exist and was never the claim.
+
+    A NAME WITH NO `@<commit>` IS REFUSED HERE TOO, by both tools: since #273
+    `adopt-project.py plan --pin` writes the pin file as the scaffold does,
+    and a name alone is a declaration with no referent.
+    """
+    match = PIN_ARG_RE.match(raw.strip())
+    if not match:
+        raise Refusal(
+            "pin-malformed",
+            f"--pin {raw!r} is not `[owner/]<openProduct>@<40 hex commit>`",
+            "Remediation: pass the full 40-character commit, e.g. "
+            "--pin openGlass@0123456789abcdef0123456789abcdef01234567 "
+            f"(resolved under {NEUTRAL_PRODUCT_OWNER}/openGlass by default), "
+            "or name the owner explicitly with --pin MedxSoft/openGlass@<sha> "
+            "or --pin-owner MedxSoft. A tag or an abbreviated oid is refused: "
+            "a tag can be moved.",
+        )
+    name = match.group("name")
+    product = name.rsplit("/", 1)[-1]
+    repository = name if "/" in name else f"{owner}/{product}"
+    return product, repository, match.group("commit").lower()
+
+
+def pin_digest_from_source(source: Path, commit: str, repository: str) -> str:
+    """The `sorted-ls-tree-r-v1` digest, read from a clone on this machine.
+
+    A SOURCE THAT CANNOT ANSWER IS `pin-source-unreadable`, HOWEVER IT FAILS
+    (#339): exit 2, with the remediation below, before anything is created,
+    `--dry-run` or not. `tree_digest` runs `git` IN the source, and a
+    directory that is not a clone is git's own failure, a `Refusal`. A path
+    `subprocess.run` cannot enter at all never reaches git: it is an
+    `OSError` raised out of `cwd=`, `FileNotFoundError` for a source that is
+    not there, `NotADirectoryError` for a file, `PermissionError` for one
+    under a parent this user cannot enter, and nothing caught it, so
+    `--pin-source <missing>` ended both tools in a traceback, exit 1, where
+    a directory that is not a clone was this refusal.
+
+    THE REASON IS `validate-pins.py`'S (#295, #312), and the sentence is the
+    same one that file prints for the same source: "no such directory", "it
+    is a file, not a directory", and for any other `OSError` the system's own
+    reason (`strerror`: "Permission denied", "File name too long"). `stat()`
+    INSIDE THE GUARD judges the path, and not `exists()`/`is_dir()`: before
+    3.14 those swallow only a missing path and raise every other `OSError`,
+    so a source under a parent this user cannot enter was still a traceback,
+    and on 3.14 "no such directory" for a directory that is there. A source
+    `stat()` can read but `cwd=` cannot enter (a directory with no search
+    bit) fails in `tree_digest`, which the same guard answers.
+
+    THE PATH IS NAMED AS TYPED, UNLESS IT IS NOT PRINTABLE (`shown_source`),
+    and then as Python's `repr` spells it, wherever the refusal names it --
+    git's own reason names the directory it ran in. Printed raw, an ESC in
+    it reached the terminal, and a line break or a carriage return began a
+    line of the person's choosing, a forged `REFUSED` among them; the
+    traceback it replaced had shown the path as a `repr`. A printable path
+    is named byte for byte as it always was.
+    """
+    try:
+        return _digest_from_pin_source(source, commit)
+    except (Refusal, OSError) as exc:
+        why = (exc.detail if isinstance(exc, Refusal)
+               else exc.strerror or str(exc))
+        named = shown_source(source)
+        raise Refusal(
+            "pin-source-unreadable",
+            f"{named} could not answer for {repository} @ {commit}: "
+            f"{why.replace(str(source), named)}",
+            "Remediation: point --pin-source at a clone of that repository "
+            "that HAS the pinned commit (`git fetch --all` first), or drop "
+            "--pin-source and let `gh api` read the forge.",
+        ) from exc
+
+
+def shown_source(source) -> str:
+    """A `--pin-source` path as a refusal names it: as it is, unless a
+    character in it is not printable (`str.isprintable`), and then as
+    Python's `repr` spells it -- `\\x1b`, `\\n`, `\\r`, and `\\udcff` for a
+    byte that is not UTF-8, as `sys.argv` keeps one -- which is how every
+    other value a refusal here names is spelled (`--pin {raw!r}`). The
+    question `adopt-project.py`'s `_shown` asks of a path it prints."""
+    text = str(source)
+    return text if text.isprintable() else repr(text)
+
+
+def _digest_from_pin_source(source: Path, commit: str) -> str:
+    """`tree_digest` over `source`, with a path that is no directory said
+    in `validate-pins.py`'s words (#339). Any other `OSError`, from `stat()`
+    or from git's `cwd=`, is left for `pin_digest_from_source` to name."""
+    try:
+        mode = source.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        raise Refusal("pin-source-missing", "no such directory") from None
+    if not stat.S_ISDIR(mode):
+        raise Refusal("pin-source-not-a-directory",
+                      "it is a file, not a directory")
+    return tree_digest(source, commit)
+
+
+def _resolved_pin_source(source: Path) -> Path:
+    """`source` made absolute, or AS TYPED when it cannot be (#339).
+
+    A symlink loop is a `RuntimeError` out of `Path.resolve()` before 3.13
+    and an `OSError` since, and either one ended the run in a traceback
+    before `pin_digest_from_source` could ask. As typed, `stat()` there meets
+    the loop and says "Too many levels of symbolic links". A path that is
+    merely absent or unreadable resolves, so a valid source is read exactly
+    as before.
+    """
+    try:
+        return source.resolve()
+    except (OSError, RuntimeError):
+        return source
+
+
+def pin_digest_from_gh(repository: str, commit: str) -> str:
+    """The same digest, computed from the forge's own recursive tree listing.
+
+    A SHALLOW READ, not a clone: `git/trees/<commit>?recursive=1` returns one
+    row per object with `mode`, `type`, `sha` and `path` — exactly the four
+    columns `git ls-tree -r -z` emits, which is what makes the two readings
+    the same number. Tree rows are dropped because `-r` emits none; a
+    submodule arrives as `type: commit` with mode `160000` and is kept, as
+    `ls-tree` keeps it.
+
+    NO `gh` ON PATH IS `gh-not-found`, as `repo_shape.tree_digest_from_gh`,
+    the validator's twin of this reader, names it: exit 2, before anything
+    is created, with `--pin-source` offered. It was a `FileNotFoundError`
+    traceback, exit 1, out of `subprocess.run`, from the scaffold and, since
+    #273 reads adopt's pins here, from `adopt-project.py plan --pin`, which
+    needed no `gh` before.
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
+            # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
+            # digest, and a replaced byte would be a wrong digest with a
+            # confident tone (#217).
+            capture_output=True, text=True, encoding="utf-8", check=False)
+    except FileNotFoundError as exc:
+        raise Refusal(
+            "gh-not-found",
+            f"the `gh` CLI is not on PATH, so `gh api` cannot read "
+            f"{repository} @ {commit}: {exc}",
+            "Remediation: pass --pin-source <a local clone of that "
+            "repository> to compute the digest with no network at all, or "
+            "put `gh` on PATH and run this again (`openRepoShape "
+            "--preflight` names each missing prerequisite and offers to "
+            "install it, on a typed yes).",
+        ) from exc
+    if proc.returncode != 0:
+        raise Refusal(
+            "pin-unreadable",
+            f"`gh api` could not read {repository} @ {commit}: "
+            f"{proc.stderr.strip()}",
+            "Remediation: check the commit exists in that repository and that "
+            "`gh auth status` can see it. An unqualified --pin resolves under "
+            f"{NEUTRAL_PRODUCT_OWNER} by default (never the project's own "
+            "--org) — if this product actually lives under a different "
+            "owner, name it explicitly with --pin <owner>/<openProduct>@<sha> "
+            "or --pin-owner <owner>. You can also pass --pin-source <local "
+            "clone> to compute the digest with no network at all.",
+        )
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise Refusal("pin-unreadable",
+                      f"{repository} @ {commit}: {exc}") from exc
+    if payload.get("truncated"):
+        raise Refusal(
+            "pin-tree-truncated",
+            f"the forge truncated its tree listing for {repository} @ "
+            f"{commit}, so the digest would be computed over a PARTIAL tree",
+            "Remediation: clone that repository and pass --pin-source <path>. "
+            "A digest over a partial tree is a wrong answer with a confident "
+            "tone.",
+        )
+    import hashlib
+    records = sorted(
+        f"{row['mode']} {row['type']} {row['sha']}\t{row['path']}".encode()
+        for row in payload.get("tree") or [] if row.get("type") != "tree")
+    digest = hashlib.sha256()
+    for record in records:
+        digest.update(record)
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def declared_pin_values(args) -> dict[str, dict[str, str]]:
+    """The template values for every `--pin`, with its digest resolved.
+
+    The digest is the same `sorted-ls-tree-r-v1` number every other pin here
+    carries, read either from a clone on this machine (`--pin-source`, and no
+    network at all) or from the forge's own recursive tree listing.
+
+    `args` is either tool's command line: `pin`, `pin_owner` and `pin_source`
+    are the same three flags in `scaffold-project.py` and in
+    `adopt-project.py plan`, which records these values in the plan so that
+    `check` and `execute` read no network for them (#273).
+    """
+    pins: dict[str, dict[str, str]] = {}
+    for raw in args.pin:
+        product, repository, commit = parse_pin(raw, args.pin_owner)
+        if args.pin_source is not None:
+            digest = pin_digest_from_source(
+                _resolved_pin_source(args.pin_source), commit, repository)
+            digest_source = f"local-clone ({args.pin_source})"
+        else:
+            digest = pin_digest_from_gh(repository, commit)
+            digest_source = "gh-api-tree-recursive"
+        pins[product] = {
+            "PIN_PRODUCT": product,
+            "PIN_REPOSITORY": repository,
+            "PIN_COMMIT": commit,
+            "PIN_TREE_SHA256": digest,
+            "PIN_DIGEST_SOURCE": digest_source,
+        }
+    return pins
+
+
+def declared_pin_products(args) -> dict[str, None]:
+    """The products `declared_pin_values` keys its pins by, in its order and
+    read by the same `parse_pin`, with no digest: so no `git` and no `gh`.
+
+    #197: `_build_assembly_root` hands those pins to the materializer, which
+    writes `neutral_pin_path(product)` for each, and the leg paths are asked
+    about that file before `_identity` and `_declaration` run, which is
+    before any digest is read. A malformed `--pin` is therefore refused
+    here, by `parse_pin`'s own `pin-malformed`, rather than in
+    `_declaration`; it was refused before anything was created either way.
+    `adopt-project.py plan` asks its leg paths about the same files, from
+    the same products, before it reads a digest (#273).
+    """
+    return dict.fromkeys(parse_pin(raw, args.pin_owner)[0] for raw in args.pin)
+
+
+#: What every refused `--pin` is told to do. The file a pin is written at is
+#: `neutral_pin_path`'s, spelled for a placeholder product, never by hand. It
+#: names `spec`, `code` and `shape` outright (#288): for a repository truly
+#: called one of them, "name the product for the repository it pins" is no
+#: remedy at all, because no spelling of that name can be pinned.
+PIN_COLLISION_REMEDIATION = (
+    "Remediation: nothing was created. A neutral product is named for the "
+    "repository it pins, as `--pin openGlass@<40 hex commit>` names "
+    f"{NEUTRAL_PRODUCT_OWNER}/openGlass by default, and its pin is written at "
+    f"`{neutral_pin_path('<openProduct>')}`, the name lowercased, beside the "
+    "pins the shape writes for its two legs and for itself, so `spec`, `code` "
+    "and `shape`, in any case, are names no product can be pinned under. Pass "
+    "each product once, by the name of the repository it pins."
+)
+
+#: What a refused pair of `--pin`s whose products share a source variable is
+#: told to do (#275), after what `PIN_COLLISION_REMEDIATION` says when a file
+#: collides too.
+PIN_VARIABLE_REMEDIATION = (
+    f"`{PIN_SOURCE_ENV_PREFIX}<PRODUCT>` names the local checkout of a "
+    "product, and is its name upper-cased with every character outside `A-Z`, "
+    "`0-9` and `_` turned into `_`, so names that differ only in `-`, `.` or "
+    "`_` share one. The project's own `validate-pins.py` reports such a pair "
+    "as `neutral-pin-source-collides`, and a variable two pins share is read "
+    "for neither. Pass one product of each such group, or products whose "
+    "names differ by more."
+)
+
+
+def pin_collisions(typed) -> list[str]:
+    """One sentence for each file that a pin would be written over: a file
+    the shape writes itself, or a file another pin is written at (#241).
+    `[]` when no pin collides.
+
+    `typed` is `(said, product)` for each pin, in the order the person gave
+    them: `said` names the pin as they gave it (`--pin 'spec@<sha>'` on a
+    command line, or the `pins:` entry of an adoption plan), and `product`
+    is the name its file is spelled from. ONE LIST OF EVERY PIN, NEVER ONE
+    KEYED BY PRODUCT, which collapses a repeat: each pin given is named, and
+    a repeat is a collision whether or not its commits agree.
+
+    THE QUESTION IS ASKED THROUGH THE MATERIALIZER'S OWN TWO DEFINITIONS: a
+    pin's file is `neutral_pin_path(product)`, and the shape's own files are
+    `assembly_root_paths()` with no pins. `neutral_pin_path` lowercases, so
+    `Spec` is `spec` and `openGlass` and `OpenGlass` are one file, with no
+    case rule of this function's own.
+    """
+    # Folded on both sides, as `path_overlap` folds the leg paths: a future
+    # mixed-case shape file under `contracts/` is still one path with a
+    # lowercased pin on the case-insensitive disk of macOS and Windows.
+    shape_files = {shape_file.casefold()
+                   for shape_file in assembly_root_paths()}
+    written: dict[str, list[tuple[str, str]]] = {}
+    for said, product in typed:
+        written.setdefault(neutral_pin_path(product), []).append(
+            (said, product))
+    collisions = []
+    for path, pins in written.items():
+        in_shape = path.casefold() in shape_files
+        if not in_shape and len(pins) == 1:
+            continue
+        products = list(dict.fromkeys(product for _, product in pins))
+        said = (" and ".join(said for said, _ in pins)
+                + (" writes the pin" if len(pins) == 1 else " write the pins")
+                + " of the product" + ("s" if len(products) > 1 else "") + " "
+                + " and ".join(f"`{product}`" for product in products))
+        if in_shape:
+            collisions.append(
+                f"{said} at `{path}`, a file the shape writes into the "
+                "assembly root itself: name the product for the repository it "
+                "pins.")
+        else:
+            collisions.append(
+                f"{said} at one file, `{path}`, which holds one pin: pass "
+                "each product once.")
+    return collisions
+
+
+def pin_variable_collisions(typed) -> list[str]:
+    """One sentence for each `SHAPE_PIN_SOURCE_<PRODUCT>` variable that two or
+    more of the products pinned share, each pin named as `typed` names it,
+    in the order each variable's first pin was (#275). `typed` is
+    `pin_collisions`'s `(said, product)` list.
+
+    `open-glass`, `open_glass` and `open.glass` are three pin files and three
+    legal `--pin` names, and one variable: whichever checkout it names answers
+    for all of them, and the project's own `validate-pins.py` reported the
+    pin it was not a checkout of as `neutral-pin-source-unreadable`. The
+    question is `repo_shape.pin_source_env_collisions`'s, so it is the one
+    `validate-pins.py` answers, and it takes products as their pin files do
+    (`pin_product_key`): the same product typed twice is #241's `one file`,
+    said by `pin_collisions`, and is never a collision here. Each pin is
+    named under its own product by that key too, and not by a casefold,
+    which took `openß` and `openss`, two pin files, for one product and
+    named each of the two pins twice.
+    """
+    said_of = {}
+    for said, product in typed:
+        said_of.setdefault(pin_product_key(product), []).append(said)
+    out = []
+    for variable, products in pin_source_env_collisions(
+            product for _, product in typed).items():
+        named = [said for product in products
+                 for said in said_of[pin_product_key(product)]]
+        out.append(
+            " and ".join(named) + " name the products "
+            + " and ".join(f"`{product}`" for product in products)
+            + f", and one variable, `{variable}`, names the local checkout of "
+            "each: it cannot say which it holds.")
+    return out
+
+
+def pin_collision_remediation(file_collision: bool,
+                              variable_collision: bool) -> str:
+    """The remediation for the collisions a refusal names: #241's alone for a
+    file, the variable's alone, or both said once each (#275)."""
+    if not variable_collision:
+        return PIN_COLLISION_REMEDIATION
+    if not file_collision:
+        return f"Remediation: nothing was created. {PIN_VARIABLE_REMEDIATION}"
+    return f"{PIN_COLLISION_REMEDIATION} {PIN_VARIABLE_REMEDIATION}"
+
+
+def refuse_colliding_pins(pins, owner: str,
+                          refusal: str = "scaffold-pin-collides") -> None:
+    """No `--pin` is written where the shape writes a file of its own, and no
+    two `--pin`s are written at one path, or this refuses (#241).
+
+    `scaffold-project.py`'s `_build_assembly_root` hands the pins to the
+    materializer, which writes each at `neutral_pin_path(product)` after the
+    shape's own files and before the copy pin, and a second file at one path
+    is `materialize-collision`: a pin over a leg's pin, or the copy pin over
+    a pin named `shape`, or a pin over another pin. So each was met only
+    after `_create_remotes` and `_seed_legs`. On main through 39ac59c, `--pin
+    spec@<sha>` (`Spec@`, `code@`, `MedxSoft/code@`, `shape@`) and `--pin
+    openGlass@<sha> --pin OpenGlass@<sha>` planned under `--dry-run`, then
+    created all three repositories, pushed both legs, left the root with no
+    commit and exited 2, and the corrected re-run was refused as
+    `scaffold-remote-exists`. Against GitHub, each left three repositories
+    for a run that made no project. `adopt-project.py plan` asks the same of
+    its `--pin`s before it writes a plan (#273), as `refusal`
+    `adopt-pin-collides`, and `check` asks it of the plan's `pins:` through
+    `pin_collisions`.
+
+    The product is read by `parse_pin` alone, so a malformed `--pin` is still
+    its `pin-malformed`, and no digest is read: no `git` and no `gh`.
+
+    THE RAW `--pin` LIST, NEVER `declared_pin_products`, which collapses a
+    repeated product, as `declared_pin_values` does by keeping the last:
+    `--pin openGlass@<A> --pin openGlass@<B>` planned one pin, wrote `<B>`
+    and dropped `<A>` without a word. A declaration is a claim about what
+    the project descends from, so a repeat is refused whether or not its
+    commits agree: either way it is a typing error, and one of the two
+    would be lost. Every argument is named as it was typed.
+
+    IT RUNS BEFORE THE LEG-PATH COLLISION REFUSAL, which asks about
+    `assembly_root_paths(<the --pin products>)`. With `--pin spec@<sha>`
+    that list held `contracts/spec-pin.yaml` twice, and `--spec-path
+    contracts` was told it contains that file "and 4 more" where there
+    were three (#197's re-review, N1). Refused first, no pin path it lists
+    is the shape's or listed twice.
+
+    TWO PINS THAT SHARE A SOURCE VARIABLE ARE REFUSED HERE TOO (#275), in the
+    same refusal and after the file collisions, by `pin_variable_collisions`:
+    `--pin open-glass@<A> --pin open_glass@<B>` are two files and one
+    `SHAPE_PIN_SOURCE_OPEN_GLASS`. This is refused so that no new project is
+    made, and no plan written, with a variable it cannot use: the project's
+    own `validate-pins.py` only NOTES such a pair in one that already
+    declares it (`neutral-pin-source-collides`), since nothing it could have
+    done then is wrong, but a pair made now is said no to before anything
+    exists.
+    """
+    typed = [(f"--pin {raw!r}", parse_pin(raw, owner)[0]) for raw in pins]
+    collisions = pin_collisions(typed)
+    shared = pin_variable_collisions(typed)
+    if collisions or shared:
+        raise Refusal(refusal, " ".join(collisions + shared),
+                      pin_collision_remediation(bool(collisions),
+                                                bool(shared)))
 
 
 def materialize_family_root(shape_root: Path, target: Path,
