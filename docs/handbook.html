@@ -1110,6 +1110,20 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       project&rsquo;s own <code>project.yaml</code>, so classification stays OFFLINE and never asks
       GitHub whether <code>open&lt;Product&gt;</code> exists. The referent may also be reached
       through a RECORDED chain of pins.</p>
+      <p><code>validate-pins.py</code> rechecks the referent too, not only the declaration. Each
+      <code>neutral_product_pins:</code> entry&rsquo;s
+      <code>contracts/&lt;product lowercased&gt;-pin.yaml</code> has its <code>commit</code>,
+      <code>revision_kind</code> and <code>sorted-ls-tree-r-v1</code> digest recomputed as
+      <code>scaffold-project.py --pin</code> computed them: OFFLINE from a local checkout when one
+      is found &mdash; <code>--pin-source [PRODUCT=]&lt;path&gt;</code>,
+      <code>SHAPE_PIN_SOURCE_&lt;PRODUCT&gt;</code> in the environment, or a checkout beside the
+      assembly root named for the pinned repository &mdash; else by <code>gh api</code>, with the
+      operator&rsquo;s <code>gh</code> credentials, when <code>gh</code> can read it. Finding
+      neither is a named SKIP, exit 0: no checkout and no network does not make a descent a lie. A
+      checkout that cannot answer is the finding <code>neutral-pin-source-unreadable</code>.
+      <code>make bootstrap</code>, <code>bump-leg.py</code> and <code>update-shape.py apply</code>
+      run this validator in the operator&rsquo;s environment, so each makes that call too; none
+      takes <code>--pin-source</code>.</p>
       <p>A NEUTRAL product may elect the shape and be its own assembly root as well:
       <code>openDox</code> mounting <code>openDox-spec</code> and <code>openDox-code</code> is a
       fact about LAYOUT and not a claim about neutrality, because electing confers nothing.
@@ -1365,9 +1379,11 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
     <section id="current">
       <p class="eyebrow">Reference</p>
       <h2>Keeping a project&rsquo;s shape current</h2>
-      <p>The copies are the trade: a project runs its own gate offline, and an upstream FIX to a
-      copied file reaches it never. <code>update-shape.py</code> is the re-sync, as one
-      command.</p>
+      <p>The copies are the trade: a project runs its own gate, which never consults this standard
+      (its validators&rsquo; one possible network read is <code>validate-pins.py</code>&rsquo;s
+      <code>gh api</code> recheck of a neutral product&rsquo;s pin,
+      <a href="#legs">described with the legs</a>), and an upstream FIX to a copied file reaches it
+      never. <code>update-shape.py</code> is the re-sync, as one command.</p>
       <div class="code" data-lang="sh"><pre><code>./update-shape.py check --root ../MedxEHR          # writes nothing
 ./update-shape.py apply --root ../MedxEHR --at &lt;commit&gt; --yes \
     --branch shape/update-&lt;sha&gt;                    # then open a pull request</code></pre></div>
@@ -1402,8 +1418,9 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       bare-clones itself; it defaults to the repository the pin names. <code>make bootstrap</code>
       prints one line when the upstream has moved past the pin AND this machine can already tell
       offline &mdash; <code>SHAPE_UPSTREAM_PATH</code> points at a clone, or a
-      <code>.shape-upstream-tip</code> file carries a commit. It adds no network call: a bootstrap
-      that paused to ask GitHub a question would have made the shape a dependency again.</p>
+      <code>.shape-upstream-tip</code> file carries a commit. That line adds no network call: a
+      bootstrap that paused to ask GitHub a question would have made the shape a dependency again.
+      (Its pins gate may ask <code>gh api</code>; see <a href="#legs">the legs</a>.)</p>
       <a class="src" href="https://github.com/opensoft/openRepoShape#keeping-a-projects-shape-current">Full text &mdash; keeping the shape current</a>
     </section>
 
@@ -1802,9 +1819,12 @@ resume InkRouter                # on workstation B, and the estate is back</code
       or the leg&rsquo;s pin that this user cannot open, by name, added (#383); what
       <code>setup.sh --help</code> does from a download, which clones nothing, and which commands
       list every flag, added (#341); <code>bump-leg.py --dry-run</code> running on the tracking
-      branch and naming the branch the real run needs, added (#477) &mdash; a page cannot name
-      the commit that contains it, and the blob below is the fact a test checks.
-      README.md blob 3a4f26ade02d2086157f1bd30c533444101710f8. Every command, flag, exit code
+      branch and naming the branch the real run needs, added (#477); the one network
+      read a project&rsquo;s own validators can make, the <code>gh api</code> recheck of a neutral
+      product&rsquo;s pin, said where this page and the README had said &ldquo;offline&rdquo;,
+      added (#411) &mdash; a page cannot name the commit that contains it, and the blob below is
+      the fact a test checks.
+      README.md blob 5e311f176503d43a188d9974c7988b396dd0e0e1. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
