@@ -99,7 +99,7 @@ def test_the_scaffold_writes_the_reference_the_election_date_chooses(
     anything is created, and says that the date is what chose it."""
     result, manifest = scaffold(tmp_path, "--elected-on", elected_on)
     assert f'reference: "{expected}"' in manifest
-    assert f"elected_on: {elected_on}" in manifest
+    assert f'elected_on: "{elected_on}"' in manifest
     assert f"reference    {expected}" in result.stdout
     assert "(chosen by the election date)" in result.stdout
 
