@@ -2817,11 +2817,19 @@ def shell_quoted(value: object, platform: str | None = None) -> str:
     flattened. The typographic single quotes are the price: PowerShell reads
     each of them as an apostrophe, so each is doubled too. On a value made
     of ASCII the two functions give the same answer, which
-    `tests/test_family_printed_quoting.py` holds them to.
+    `tests/test_family_printed_quoting.py` holds them to, but one:
+
+    A WORD THAT BEGINS WITH `=` IS QUOTED, in both dialects. zsh, the login
+    shell macOS ships, expands a bare `=word` to the path of the command
+    `word` (its EQUALS option, on by default), so `=ls` reaches the command
+    as `/bin/ls` and `=x` as an error. `=` anywhere else is itself to every
+    shell, and quoting a leading one costs PowerShell nothing. The doctor's
+    `quote_arg` still leaves it bare: a known gap, named where #486 lands.
     """
     text = str(value)
     windows = (os.name if platform is None else platform) == "nt"
-    if (SHELL_BARE_NT if windows else SHELL_BARE_POSIX).fullmatch(text):
+    bare = SHELL_BARE_NT if windows else SHELL_BARE_POSIX
+    if not text.startswith("=") and bare.fullmatch(text):
         return text
     if windows:
         return "'" + "".join(char * 2 if char in POWERSHELL_SINGLE_QUOTES

@@ -101,6 +101,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -119,7 +120,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # arithmetic `resolve_relative` hands git's relative-url rule to.
 from repo_shape import (  # noqa: E402
     PYTHON, Refusal, find_repo_root, join_remote, load_yaml,
-    remote_local_path, repo_basename, same_repository, shell_line,
+    remote_local_path, repo_basename, same_repository,
 )
 # THE CREDENTIAL AND THE MEMBER ROWS ARE READ BY `bootstrap.py` ALREADY, and a
 # second definition of either is how the two start disagreeing about which
@@ -773,11 +774,15 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
                  ["mv", staged, wanted / family]]
     else:
         steps = [["mkdir", "-p", wanted], ["mv", root, wanted / family]]
-    # EVERY PATH QUOTED (#486), by `repo_shape.shell_line`, the quoting
-    # `family.py` prints its commands with: under `my work/` a bare `mv`
-    # moved nothing and pasted as four arguments. For the POSIX shell `mv`
-    # and `mkdir -p` are commands of, as the sentence above says.
-    lines += [f"            {shell_line(step, 'posix')}" for step in steps]
+    # EVERY PATH QUOTED (#486): under `my work/` a bare `mv` moved nothing
+    # and pasted as four arguments. Quoted for the POSIX shell `mv` and
+    # `mkdir -p` are commands of, as the sentence above says, by the standard
+    # library's `shlex.join` and NOT `repo_shape.shell_line`: a holder that
+    # kept an older `repo_shape.py` (`update-shape.py apply --accept-local`)
+    # must still be able to run this file, and an import of a name its copy
+    # lacks would stop `make siblings`, `park` and `resume` dead.
+    lines += [f"            {shlex.join(str(word) for word in step)}"
+              for step in steps]
     lines += ["",
               "        Then re-run `make siblings` from the moved holder; the "
               "members are",

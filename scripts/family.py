@@ -1263,6 +1263,10 @@ def _print_next_steps(args, work: Path, folder: Path | None) -> None:
     Split from `cmd_init` for #136. A BRANCH FIRST (#487): the holder stands
     on its tracking branch, where `add` refuses to commit, so the block
     opens with the `git switch -c` that makes the branch `add` suggests.
+
+    ONE COMMAND A LINE, `cd` apart from `make siblings`: Windows PowerShell
+    5.1, the shell `setup-project.py` documents, rejects `&&` between two
+    statements, and these lines are quoted for the shell of the host (#486).
     """
     switch = shell_line(["git", "-C", work, "switch", "-c"])
     print(f"""
@@ -1270,7 +1274,8 @@ NEXT STEPS
 
     {switch} family/add-<project>
     {_add_command(work, args.org)}
-    cd {shell_quoted(work)} && make siblings
+    cd {shell_quoted(work)}
+    make siblings
 
 `add` mounts the member at {MEMBERS_DIR}/<Project>, records its pin, and
 writes ONE commit on that branch: it refuses {args.tracking_branch}, the
