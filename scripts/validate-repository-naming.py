@@ -63,7 +63,15 @@ EXIT CODES, the same three in every validator this standard ships:
        missing, unparsable, or not a naming policy
 
 A chain link whose tree could not be read prints a WARNING and changes no exit
-code, deliberately: see `--link-source` below.
+code, deliberately: see `--link-source` below. A SOURCE that could not answer
+is a WARNING too, with the system's reason (#338): a `--link-source` given
+here, a `SHAPE_PIN_SOURCE_<PRODUCT>`, or a checkout beside the project that is
+there and still cannot answer. An explicit source stays a warning here, where
+`validate-pins.py` makes its `--pin-source` a finding (#295): the variable
+answers that validator's digest question too, from a checkout that need not
+carry a manifest, and a source that cannot answer is passed over for the next
+one in the order, which may. A `--link-source` no link used is a NOTE saying
+why.
 
 The 1/2 split is deliberate. "This name is wrong" and "I could not read the
 policy" are different facts and a gate that renders them identically invites a
@@ -73,13 +81,15 @@ workflow that treats the second as the first.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    CHAIN_RECORD_FIELD, UNAMBIGUOUS_FORMS, Classification, NamingPolicy,
-    Refusal, link_pins_from_trees, load_yaml, repo_basename,
+    CHAIN_RECORD_FIELD, LINK_SOURCE_ABSENT, LINK_SOURCE_NO_MANIFEST,
+    UNAMBIGUOUS_FORMS, Classification, NamingPolicy, Refusal,
+    link_pins_from_trees, load_yaml, repo_basename,
 )
 
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
@@ -104,13 +114,208 @@ class Target:
         self.root = root
 
 
-def _link_pins(target: Target, keyed_sources: dict,
-               default_source: Path | None) -> dict:
-    """What the chain's links declare, for the links whose trees answer."""
-    if not target.chain:
-        return {}
-    return link_pins_from_trees(target.chain, target.root, keyed_sources,
-                                default_source)
+class LinkSources:
+    """Every `--link-source` value AS TYPED, read against the chain links this
+    run names, and what each lookup made of it (#338).
+
+    THE READING. `PRODUCT=PATH` and a bare `PATH` are told apart by an `=`,
+    and a path may hold one: a link tree cloned under `a=b/` is
+    `--link-source a=b/openXdox`. Splitting every value at its first `=` made
+    that a source keyed to a link `a` that no chain names, which no lookup
+    ever asked for — the link stayed declared-unverified, exit 0, under a
+    WARNING suggesting the very `--link-source` the person had passed. So the
+    text before the first `=` is a LINK only when it casefolds to a link of a
+    referent chain this run reads (`--referent-chain`'s, or a leg's
+    `naming.referent_chain:` under `--project`), the casefold the lookup
+    uses, and any other value is a bare PATH, whole. A link's name wins even
+    where a directory is spelled like the whole value: the reading is decided
+    by the chains and never by the disk, and `./` asks for the directory.
+    That is `validate-pins.py`'s reading of `--pin-source` (#295), with a
+    chain link where that file has a declared pin, so the two copied tools
+    read `[PRODUCT=]PATH` one way.
+
+    WHAT EACH VALUE CAME TO. Every lookup records what it asked
+    (`link_pins_from_trees(..., tried=)`), so once every name is classified a
+    value is USED (a link that holds a pin read it), UNREAD (asked for one,
+    and it could not answer: a WARNING with the system's reason) or NOT USED
+    (never asked for one: a NOTE saying why). A `SHAPE_PIN_SOURCE_<PRODUCT>`,
+    or a checkout beside the project that is there and cannot answer, is
+    named the same way when such a link needed it. None of these is a
+    finding, and none ends the run: a link whose tree could not be read is a
+    warning in this validator, deliberately, and an explicit source is no
+    exception — the module docstring says why.
+    """
+
+    def __init__(self, values: list[str], links) -> None:
+        #: Every link of every chain this run reads, in its first spelling.
+        self.links: list[str] = []
+        names: dict[str, str] = {}
+        for link in links:
+            name = repo_basename(str(link))
+            if name and name.casefold() not in names:
+                names[name.casefold()] = name
+                self.links.append(name)
+        #: `{link casefolded: (typed, path)}`, the last value given wins.
+        self.keyed: dict[str, tuple[str, Path]] = {}
+        #: `(typed, path)` of the last bare value, if any.
+        self.bare: tuple[str, Path] | None = None
+        #: Every distinct value in the order given, and the link it was read
+        #: as keyed to, or None for a bare PATH.
+        self.reading: dict[str, str | None] = {}
+        #: `{typed: the later value that took its place}`.
+        self.replaced: dict[str, str] = {}
+        for typed in values:
+            key, sep, path = typed.partition("=")
+            link = names.get(key.casefold()) if sep else None
+            self.reading[typed] = link
+            if link is not None:
+                earlier = self.keyed.get(link.casefold())
+                self.keyed[link.casefold()] = (typed, Path(path))
+            else:
+                earlier = self.bare
+                self.bare = (typed, Path(typed))
+            self.replaced.pop(typed, None)
+            if earlier is not None and earlier[0] != typed:
+                self.replaced[earlier[0]] = typed
+        #: The links some name's lookup asked about, casefolded.
+        self.asked: set[str] = set()
+        #: The values a link read.
+        self.used: set[str] = set()
+        #: `{typed: (path, how, why, [links])}` for a value asked and never
+        #: answering.
+        self.unread: dict[str, tuple] = {}
+        #: `{(path, how, why): [links]}` for a `SHAPE_PIN_SOURCE_<PRODUCT>`
+        #: or a checkout beside the project that could not answer.
+        self.unanswered: dict[tuple, list[str]] = {}
+
+    def link_pins(self, policy: NamingPolicy, target: Target) -> dict:
+        """What the chain's links declare, for the links whose trees answer,
+        with what each lookup asked recorded against the values given.
+
+        A chain no classification reads asks nothing and says nothing:
+        `policy.classify` consults a link's declaration only for a name that
+        claims a referent, with a chain whose shape holds. A source asked for
+        any other chain (a spec leg's record, a name with no `open<Product>`
+        to reach, a chain that does not begin at a held pin) was reported
+        unreadable, or counted as used, for a question nobody asked."""
+        if not policy.reads_link_declarations(target.name, target.pins,
+                                              target.chain):
+            return {}
+        tried: dict = {}
+        found = link_pins_from_trees(
+            target.chain, target.root,
+            {key: path for key, (_typed, path) in self.keyed.items()},
+            self.bare[1] if self.bare is not None else None, tried=tried)
+        # ONLY A LINK THAT HOLDS A PIN COUNTS. The lookup asks for every link,
+        # the last one too, but only a holder's own declaration is ever read
+        # (`_chain_link_findings`): a source asked only for the chain's end
+        # decided nothing, and saying it answered, or failed to, would be a
+        # report about a question nobody asked.
+        holders = {repo_basename(str(link)).casefold()
+                   for link in target.chain[:-1]}
+        for link, asked in tried.items():
+            if link.casefold() not in holders:
+                continue
+            self.asked.add(link.casefold())
+            for rule, how, path, why in asked:
+                self._record(link, rule, how, path, why)
+        return found
+
+    def _record(self, link: str, rule: str, how: str, path: Path,
+                why: str | None) -> None:
+        """One source a holder's lookup asked. A value typed here is
+        accounted for whatever the answer; a variable whenever it could not
+        answer; a checkout beside the project only where it is there and
+        still could not answer, since one that is absent, or holds no
+        manifest, is the ordinary case."""
+        if rule in ("keyed", "bare"):
+            typed = (self.keyed[link.casefold()] if rule == "keyed"
+                     else self.bare)[0]
+            if why is None:
+                self.used.add(typed)
+                return
+            links = self.unread.setdefault(typed, (path, how, why, []))[3]
+        elif why is None or (rule == "sibling" and why in (
+                LINK_SOURCE_ABSENT, LINK_SOURCE_NO_MANIFEST)):
+            return
+        else:
+            links = self.unanswered.setdefault((path, how, why), [])
+        if link not in links:
+            links.append(link)
+
+    def read_as_path(self, typed: str) -> str:
+        """The sentence saying a value holding `=` was read as a bare PATH,
+        or `""` — the only trace in the run of a mistyped link name. Nothing
+        when no chain names a link: the note has already said so."""
+        if self.reading.get(typed) is not None or "=" not in typed \
+                or not self.links:
+            return ""
+        key = typed.partition("=")[0]
+        what = f"`{key}` is not" if key else "nothing before its `=` is"
+        return (f"It was read as a PATH: {what} a link of a referent chain "
+                f"here (links: {', '.join(self.links)}).")
+
+    def _also_a_directory(self, typed: str) -> str:
+        """The line for a value read as `LINK=PATH` that ALSO names an
+        existing directory whole: the keyed reading won, and this is how to
+        ask for the other one. `os.path.isdir`, which is False for every
+        `OSError` on every Python."""
+        if self.reading.get(typed) is None or not os.path.isdir(typed):
+            return ""
+        return (f"`{typed}` is also a directory; `--link-source ./{typed}` "
+                "reads it as one.")
+
+    def unread_lines(self) -> list[str]:
+        """One `link-source-unreadable` WARNING per source that was asked and
+        could not answer, with the system's reason, in the order given."""
+        lines = []
+        for typed in self.reading:
+            # A value is read as ONE link's keyed source, or is the one bare
+            # PATH, so every lookup that asked it asked the same path and got
+            # the same answer: it is `used` or `unread`, never both.
+            if typed not in self.unread:
+                continue
+            path, how, why, links = self.unread[typed]
+            lines.append(
+                f"link-source-unreadable: {path} ({how}) could not answer "
+                f"for {', '.join(links)}: {why}"
+                + "".join(f"\n  {line}" for line in (
+                    self.read_as_path(typed), self._also_a_directory(typed))
+                    if line))
+        for (path, how, why), links in self.unanswered.items():
+            lines.append(f"link-source-unreadable: {path} ({how}) could not "
+                         f"answer for {', '.join(links)}: {why}")
+        return lines
+
+    def unused_lines(self) -> list[str]:
+        """A NOTE for each value no lookup asked, named as typed, with why:
+        a later value replaced it, no name reads its link's declaration, no
+        name records a chain, none reads a link's declaration, or every link
+        that is read had a more specific source. A value holding `=` that
+        was read as a PATH says so too."""
+        lines = []
+        for typed, link in self.reading.items():
+            if typed in self.used or typed in self.unread:
+                continue
+            later = self.replaced.get(typed)
+            if later is not None:
+                why = f"the later `--link-source {later}` replaced it"
+            elif link is not None:
+                why = f"no name classified here reads {link}'s own declaration"
+            elif not self.links:
+                why = "no name classified here records a referent chain"
+            elif not self.asked:
+                why = ("no name classified here reads a chain link's own "
+                       "declaration")
+            else:
+                why = ("each link whose own declaration is read had a more "
+                       "specific source (a keyed --link-source, "
+                       "SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout beside the "
+                       "project)")
+            lines.append(" ".join(filter(None, (
+                f"--link-source {typed}: not used — {why}.",
+                self.read_as_path(typed)))))
+        return lines
 
 
 def _no_family_lines(policy: NamingPolicy, name: str) -> list[str]:
@@ -319,8 +524,8 @@ def _chain_from_leg(leg: dict) -> tuple:
 
 
 def _leg_target(policy: NamingPolicy, path: Path, leg, root: Path,
-                pins: set, keyed_sources: dict,
-                default_source: Path | None) -> tuple[Target | None, list[str]]:
+                pins: set, sources: LinkSources
+                ) -> tuple[Target | None, list[str]]:
     """One leg's `Target` and what is wrong with it, from its manifest entry.
 
     Split from `_targets_from_project` for #136: what one leg's own entry
@@ -336,7 +541,7 @@ def _leg_target(policy: NamingPolicy, path: Path, leg, root: Path,
     declared = str(declared) if declared else None
     target = Target(name, declared, pins, _chain_from_leg(leg), root)
     found = policy.classify(name, declared, pins, target.chain,
-                            _link_pins(target, keyed_sources, default_source))
+                            sources.link_pins(policy, target))
     findings: list[str] = []
     # `declared_role` only wins where the NAME satisfies it, so a role that
     # disagrees with its own name still lands here rather than being made
@@ -367,20 +572,37 @@ def _topic_finding(policy: NamingPolicy, project_id, topic) -> str | None:
     return None
 
 
-def _targets_from_project(policy: NamingPolicy, path: Path,
-                          keyed_sources: dict,
-                          default_source: Path | None) -> tuple[list, list[str]]:
-    """Return ([Target], findings) for a `project.yaml` manifest."""
+def _project_manifest(path: Path) -> dict:
+    """The `project.yaml` mapping `--project` names, or a `Refusal`."""
     data = load_yaml(path)
     if not isinstance(data, dict):
         raise Refusal("manifest-unreadable", f"{path}: not a mapping")
+    return data
+
+
+def _project_chain_links(data: dict) -> list[str]:
+    """Every link every leg's `naming.referent_chain:` records.
+
+    Read BEFORE any leg is classified, because whether `openXdox=../x` is a
+    source keyed to a link or a bare path depends on the links the chains
+    name (#338), and the first leg is classified with the sources already
+    read. The same legs `_leg_target` makes targets of, and no others.
+    """
+    return [link for leg in data.get("legs") or []
+            if isinstance(leg, dict) and "repository" in leg
+            for link in _chain_from_leg(leg)]
+
+
+def _targets_from_project(policy: NamingPolicy, path: Path, data: dict,
+                          sources: LinkSources) -> tuple[list, list[str]]:
+    """Return ([Target], findings) for a `project.yaml` manifest."""
     pins = _pins_from_project(data)
     root = path.resolve().parent
     targets: list[Target] = []
     findings: list[str] = []
     for leg in data.get("legs") or []:
         target, leg_findings = _leg_target(policy, path, leg, root, pins,
-                                           keyed_sources, default_source)
+                                           sources)
         if target is not None:
             targets.append(target)
         findings.extend(leg_findings)
@@ -388,25 +610,6 @@ def _targets_from_project(policy: NamingPolicy, path: Path,
     if topic_finding is not None:
         findings.append(topic_finding)
     return targets, findings
-
-
-def _link_sources_from_args(raw_sources: list[str]) -> tuple[dict, Path | None]:
-    """`(keyed_sources, default_source)` from every `--link-source` given.
-
-    Split from `main` for #136: parsing what each `--link-source` value
-    means — keyed to one product, or the fallback for any link with no more
-    specific answer — is one question, asked once instead of inline in the
-    argument-handling half of `main`.
-    """
-    keyed_sources: dict[str, Path] = {}
-    default_source: Path | None = None
-    for raw in raw_sources:
-        product, sep, path = raw.partition("=")
-        if sep:
-            keyed_sources[product.casefold()] = Path(path)
-        else:
-            default_source = Path(raw)
-    return keyed_sources, default_source
 
 
 def _targets_from_stdin(role: str | None, pins: set, chain: tuple,
@@ -441,8 +644,7 @@ def _print_classification(name: str, found: Classification | None) -> None:
 
 
 def _classify_targets(policy: NamingPolicy, targets: list, args,
-                      keyed_sources: dict,
-                      default_source: Path | None) -> tuple[list[str], list[str]]:
+                      sources: LinkSources) -> tuple[list[str], list[str]]:
     """Classify every target, printing as `args` asks; return `(unclassified
     names, warnings)`.
 
@@ -454,7 +656,7 @@ def _classify_targets(policy: NamingPolicy, targets: list, args,
     warnings: list[str] = []
     for target in targets:
         name = target.name
-        link_pins = _link_pins(target, keyed_sources, default_source)
+        link_pins = sources.link_pins(policy, target)
         found = policy.classify(name, target.role, target.pins, target.chain,
                                 link_pins)
         if args.explain:
@@ -470,12 +672,18 @@ def _classify_targets(policy: NamingPolicy, targets: list, args,
 
 
 def _emit_reports(args, unclassified: list[str], warnings: list[str],
-                  findings: list[str]) -> int:
-    """Print the WARNING/FINDING lines owed once, and return the exit code.
+                  findings: list[str], sources: LinkSources) -> int:
+    """Print the WARNING/NOTE/FINDING lines owed once, and return the exit
+    code.
 
     Split from `main` for #136: what to print once classification is
     finished, and what code to exit with, is one question asked once at the
     end, not interleaved with the loop that classifies.
+
+    What became of each `--link-source` (#338) is said here too, after every
+    name's own WARNINGs and before the FINDINGs, under `--explain` as well:
+    it is about the run's sources, not one name's, so no name's `--explain`
+    block carries it. `--quiet` drops it with the WARNINGs.
     """
     # A WARNING IS NOT A FINDING. An unread link tree is the ordinary case in
     # a fork-and-run checkout, and an exit code that punished it would make the
@@ -483,6 +691,11 @@ def _emit_reports(args, unclassified: list[str], warnings: list[str],
     for warning in warnings:
         if not args.quiet and not args.explain:
             print(f"WARNING {warning}", file=sys.stderr)
+    if not args.quiet:
+        for line in sources.unread_lines():
+            print(f"WARNING {line}", file=sys.stderr)
+        for line in sources.unused_lines():
+            print(f"NOTE {line}", file=sys.stderr)
     for finding in findings:
         print(f"FINDING {finding}", file=sys.stderr)
     if unclassified:
@@ -531,12 +744,22 @@ def main(argv: list[str] | None = None) -> int:
                         help="where a chain LINK's own tree is, so its "
                              "`neutral_product_pins:` can be read and the "
                              "link VERIFIED — e.g. --link-source "
-                             "openXdox=../openXdox. A bare PATH applies to "
-                             "whichever link has no more specific answer. "
+                             "openXdox=../openXdox. The text before the "
+                             "first `=` is a PRODUCT only when it names a "
+                             "chain link (an entry of --referent-chain, or "
+                             "of a leg's naming.referent_chain: under "
+                             "--project), and then that reading wins even "
+                             "over a directory spelled like the whole value "
+                             "(./PATH reads that directory); any other value "
+                             "is a bare PATH, which applies to whichever link "
+                             "has no more specific answer. Repeatable; a "
+                             "value no link used is noted. "
                              "SHAPE_PIN_SOURCE_<PRODUCT> and a checkout "
                              "beside the project are tried too. A link no "
-                             "source answers for is declared-unverified, "
-                             "which is a warning and not a finding.")
+                             "source answers for is declared-unverified, and "
+                             "a source that cannot be read is named with the "
+                             "system's reason: both are warnings and not "
+                             "findings, an explicit source included.")
     parser.add_argument("--explain", action="store_true",
                         help="print every family each name satisfies, why one "
                              "of them won, and what the others are recorded as")
@@ -549,8 +772,6 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    keyed_sources, default_source = _link_sources_from_args(args.link_source)
-
     cli_pins = {p.strip() for p in args.pins.split(",") if p.strip()}
     cli_chain = tuple(c.strip() for c in args.referent_chain.split(",")
                       if c.strip())
@@ -559,13 +780,21 @@ def main(argv: list[str] | None = None) -> int:
         Target(repo_basename(n), args.role, cli_pins, cli_chain, here)
         for n in args.names]
     findings: list[str] = []
+    data = None
     if args.project is not None:
         try:
-            extra, findings = _targets_from_project(
-                policy, args.project, keyed_sources, default_source)
+            data = _project_manifest(args.project)
         except Refusal as exc:
             print(str(exc), file=sys.stderr)
             return 2
+    # The `--link-source` values are READ here, once every chain this run
+    # reads is known and before any name is classified (#338).
+    sources = LinkSources(args.link_source, [
+        *cli_chain, *(_project_chain_links(data) if data is not None
+                      else ())])
+    if data is not None:
+        extra, findings = _targets_from_project(policy, args.project, data,
+                                                sources)
         targets.extend(extra)
     if not targets and not sys.stdin.isatty():
         targets = _targets_from_stdin(args.role, cli_pins, cli_chain, here)
@@ -574,9 +803,8 @@ def main(argv: list[str] | None = None) -> int:
               "`--project project.yaml`, or names on stdin.", file=sys.stderr)
         return 2
 
-    unclassified, warnings = _classify_targets(
-        policy, targets, args, keyed_sources, default_source)
-    return _emit_reports(args, unclassified, warnings, findings)
+    unclassified, warnings = _classify_targets(policy, targets, args, sources)
+    return _emit_reports(args, unclassified, warnings, findings, sources)
 
 
 if __name__ == "__main__":
