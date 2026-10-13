@@ -15,6 +15,14 @@ undoes it. The doctor names them in the row's reason and in
 gate names the same two, from a checkout of openRepoShape. The row's NEXT is
 still the gate.
 
+ONLY WHERE ONE CAN COMMIT. `bump-leg.py` runs the root's whole gate, and
+`validate-manifest.py`, before it commits, and rolls the bump back when
+either is red. With two legs off their pins, or any finding the bump does
+not clear, every line would be rolled back, so the doctor and the gate name
+none and say what comes first (`detail.gitlink_repairs_held_back`). A
+finding the bump DOES clear, the leg's own digest or a workflow reference
+to it, holds nothing back.
+
 EVERY REPAIR HERE IS RUN, from a directory that is not the root and through
 the argv the reader's own shell makes of the printed line (`pasted`: `shlex`
 on POSIX, PowerShell's reading on Windows), so these run on all three
@@ -61,22 +69,35 @@ WORKING = "take-the-new-spec"
 OTHER_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
-@pytest.fixture(scope="module")
-def advanced(scaffolded_here, tmp_path_factory) -> str:
-    """A new commit on a branch of the spec leg's remote, as a merged pull
-    request leaves one; its sha."""
-    work = tmp_path_factory.mktemp("spec-advance") / f"{PROJECT}-spec"
-    remote = scaffolded_here["base"] / "remotes" / f"{PROJECT}-spec.git"
+def advance(scaffolded_here, tmp_path_factory, role: str,
+            relative: str) -> str:
+    """A new commit on a branch of a leg's remote, as a merged pull request
+    leaves one, adding `relative` (a path the `placement` row puts in that
+    leg); its sha."""
+    work = tmp_path_factory.mktemp(f"{role}-advance") / f"{PROJECT}-{role}"
+    remote = scaffolded_here["base"] / "remotes" / f"{PROJECT}-{role}.git"
     proc = subprocess.run(["git", "clone", "-q", str(remote), str(work)],
                           capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
-    (work / "requirements").mkdir(exist_ok=True)
-    (work / "requirements" / "r478.md").write_text("# R478\n",
-                                                  encoding="utf-8")
-    git("add", "--", "requirements/r478.md", cwd=work)
+    (work / relative).parent.mkdir(parents=True, exist_ok=True)
+    (work / relative).write_text("# R478\n", encoding="utf-8")
+    git("add", "--", relative, cwd=work)
     git("commit", "-qm", "Add R478", cwd=work)
     git("push", "-q", "origin", f"HEAD:refs/heads/{ADVANCE}", cwd=work)
     return git("rev-parse", "HEAD", cwd=work).stdout.strip()
+
+
+@pytest.fixture(scope="module")
+def advanced(scaffolded_here, tmp_path_factory) -> str:
+    """A new commit on a branch of the SPEC leg's remote."""
+    return advance(scaffolded_here, tmp_path_factory, "spec",
+                   "requirements/r478.md")
+
+
+@pytest.fixture(scope="module")
+def code_advanced(scaffolded_here, tmp_path_factory) -> str:
+    """A new commit on a branch of the CODE leg's remote."""
+    return advance(scaffolded_here, tmp_path_factory, "code", "src/r478.py")
 
 
 def pin_of(root: Path, role: str = "spec") -> str:
@@ -96,20 +117,33 @@ def under_an_awkward_name(project: Path, tmp_path: Path) -> Path:
     return root.resolve()
 
 
+def moved_by_hand(project: Path, tmp_path: Path, moves: dict,
+                  also=None) -> dict:
+    """The issue's reproduction: each leg in `moves` fetched and checked out
+    at its new commit, and the gitlinks committed by hand in the root, on a
+    branch, in ONE commit with whatever `also(root)` changed beside them."""
+    root = under_an_awkward_name(project, tmp_path)
+    pins = {role: pin_of(root, role) for role in moves}
+    git("checkout", "-q", "-b", WORKING, cwd=root)
+    for role, commit in moves.items():
+        git(*FILE_PROTOCOL, "fetch", "-q", "origin", ADVANCE, cwd=root / role)
+        git("checkout", "-q", "--detach", commit, cwd=root / role)
+    git("add", "--", *moves, cwd=root)
+    if also is not None:
+        also(root)
+        git("add", "-A", "--", ".", cwd=root)
+    git("commit", "-qm", "take the new legs", cwd=root)
+    return {"root": root, "pins": pins,
+            "base": git("rev-parse", "HEAD", cwd=root).stdout.strip()}
+
+
 @pytest.fixture
 def hand_moved(project, advanced, tmp_path) -> dict:
-    """The issue's reproduction: the leg fetched and checked out at the new
-    commit, and the gitlink committed by hand in the root, on a branch."""
-    root = under_an_awkward_name(project, tmp_path)
-    pinned = pin_of(root)
-    leg = root / "spec"
-    git(*FILE_PROTOCOL, "fetch", "-q", "origin", ADVANCE, cwd=leg)
-    git("checkout", "-q", "--detach", advanced, cwd=leg)
-    git("checkout", "-q", "-b", WORKING, cwd=root)
-    git("add", "--", "spec", cwd=root)
-    git("commit", "-qm", "take the new spec", cwd=root)
-    return {"root": root, "gitlink": advanced, "pin": pinned,
-            "base": git("rev-parse", "HEAD", cwd=root).stdout.strip()}
+    """The issue's own case: the spec leg pulled, and its gitlink committed
+    by hand in the root, on a branch."""
+    moved = moved_by_hand(project, tmp_path, {"spec": advanced})
+    return {"root": moved["root"], "gitlink": advanced,
+            "pin": moved["pins"]["spec"], "base": moved["base"]}
 
 
 def pins_row(standard: Path, root: Path, env: dict | None = None) -> dict:
@@ -133,18 +167,38 @@ def bump_argv(standard: Path, root: Path, commit: str) -> list[str]:
             "--root", str(root), "--leg", "spec", "--to", commit]
 
 
+def run_as_printed(line: str, tmp_path: Path) -> None:
+    """Run a line the row named exactly as printed, through the reader's
+    shell's reading of it, from a directory that is not the root; and
+    require exit 0."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(exist_ok=True)
+    ran = subprocess.run(pasted(line), cwd=str(elsewhere), capture_output=True,
+                         text=True, encoding="utf-8", errors="replace",
+                         check=False, stdin=subprocess.DEVNULL,
+                         env={**os.environ, **GIT_IDENTITY,
+                              "PYTHONDONTWRITEBYTECODE": "1"})
+    assert ran.returncode == 0, line + "\n" + ran.stdout + ran.stderr
+
+
+def assert_compliant(standard: Path, root: Path) -> None:
+    after = doctor(standard, root, "--json")
+    assert after.returncode == 0, after.stdout + after.stderr
+    rows = rows_of(after)
+    assert rows["pins"]["status"] == "ok", rows["pins"]
+    assert rows["legs"]["status"] == "ok", rows["legs"]
+    assert json.loads(after.stdout)["verdict"] == "COMPLIANT", after.stdout
+
+
 # --- the doctor names both, and the gate is still its NEXT ------------------
 
-@pytest.mark.parametrize("own_copy", [True, False])
 def test_a_hand_committed_gitlink_names_both_bump_leg_commands(
-        standard, hand_moved, own_copy):
+        standard, hand_moved):
     """`--to` the gitlink's commit and `--to` the pin's, each a line the
-    reader's shell hands back whole, in the reason and in `detail`; and the
-    NEXT is the gate, byte for byte. The template's copy of the gate, which
-    a root without its own falls back to, names the same two."""
+    reader's shell hands back whole, in the reason and in `detail`, with
+    their `--dry-run` first and what each needs to commit; and the NEXT is
+    the gate, byte for byte."""
     root = hand_moved["root"]
-    if not own_copy:
-        (root / "scripts" / "validate-pins.py").unlink()
     gitlink, pinned = hand_moved["gitlink"], hand_moved["pin"]
     # The gitlink's commit AS GIT READS IT: the index's stage-0 entry, which
     # is what the gate compares and what `bump-leg.py` replaces.
@@ -171,6 +225,10 @@ def test_a_hand_committed_gitlink_names_both_bump_leg_commands(
     assert "the person's call" in row["reason"], row["reason"]
     assert "a branch other than main" in row["reason"], row["reason"]
     assert "no branch of the leg's remote contains" in row["reason"]
+    assert "run either with `--dry-run` first" in row["reason"]
+    assert ("once the root's own validate-pins.py and validate-manifest.py "
+            "pass on its rewrite") in row["reason"], row["reason"]
+    assert "gitlink_repairs_held_back" not in row["detail"], row["detail"]
     # What the gate said is kept whole in front of it, and the NEXT and the
     # rest of `detail` are the gate's own.
     assert row["reason"].startswith(gate["reason"] + ". "), row["reason"]
@@ -246,6 +304,9 @@ def test_the_gate_names_the_same_two_commands(hand_moved):
     assert lines[first + 2].startswith(
         "  Which commit stays is the person's call. From a checkout of "
         "openRepoShape,"), lines
+    assert "run either with `--dry-run` first" in lines[first + 2], lines
+    assert ("once this validator and validate-manifest.py pass on its "
+            "rewrite") in lines[first + 2], lines
     bump = (f"    {PYTHON} scripts/bump-leg.py --root "
             f"{shlex.quote(str(root))} --leg spec --to")
     assert lines[first + 3] == f"{bump} {hand_moved['gitlink']}", lines
@@ -264,14 +325,7 @@ def test_each_repair_run_as_printed_makes_the_doctor_compliant(
     row = pins_row(standard, root)
     line = row["detail"]["gitlink_repairs"][0][which]
     want = hand_moved["gitlink" if which == "keep_gitlink" else "pin"]
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    ran = subprocess.run(pasted(line), cwd=str(elsewhere), capture_output=True,
-                         text=True, encoding="utf-8", errors="replace",
-                         check=False, stdin=subprocess.DEVNULL,
-                         env={**os.environ, **GIT_IDENTITY,
-                              "PYTHONDONTWRITEBYTECODE": "1"})
-    assert ran.returncode == 0, line + "\n" + ran.stdout + ran.stderr
+    run_as_printed(line, tmp_path)
     count = git("rev-list", "--count", f"{hand_moved['base']}..HEAD",
                 cwd=root).stdout.strip()
     assert count == "1", count
@@ -279,12 +333,7 @@ def test_each_repair_run_as_printed_makes_the_doctor_compliant(
     assert pin_of(root) == want
     assert git("symbolic-ref", "--short", "HEAD",
                cwd=root).stdout.strip() == WORKING
-    after = doctor(standard, root, "--json")
-    assert after.returncode == 0, after.stdout + after.stderr
-    rows = rows_of(after)
-    assert rows["pins"]["status"] == "ok", rows["pins"]
-    assert rows["legs"]["status"] == "ok", rows["legs"]
-    assert json.loads(after.stdout)["verdict"] == "COMPLIANT", after.stdout
+    assert_compliant(standard, root)
 
 
 def test_git_submodule_update_is_no_undo(standard, hand_moved):
@@ -371,3 +420,212 @@ def test_every_other_pins_row_is_the_gates_own(standard, project, code):
     assert "bump-leg" not in row["reason"], row["reason"]
     gate = run_script(root / "scripts" / "validate-pins.py", cwd=root)
     assert "bump-leg.py" not in gate.stdout + gate.stderr
+
+
+# --- named only where a line can commit -------------------------------------
+#
+# `bump-leg.py` runs the root's whole `validate-pins.py`, and its
+# `validate-manifest.py`, after its rewrite and before it commits, and rolls
+# the bump back when either is red. A line that cannot commit is not named.
+
+def workflow_at(role: str, commit: str):
+    """A tracked workflow naming the `role` leg's repository at `commit`."""
+    def write(root: Path) -> None:
+        workflows = root / ".github" / "workflows"
+        workflows.mkdir(parents=True, exist_ok=True)
+        (workflows / "legs.yml").write_text(
+            "on: [pull_request]\njobs:\n  leg:\n    uses: "
+            f"testorg/{PROJECT}-{role}/.github/workflows/x.yml@{commit}\n",
+            encoding="utf-8")
+    return write
+
+
+def gate_says(root: Path) -> list[str]:
+    """The root's own gate's report, line by line, which exits 1."""
+    gate = run_script(root / "scripts" / "validate-pins.py", cwd=root)
+    assert gate.returncode == 1, gate.stdout + gate.stderr
+    return gate.stderr.splitlines()
+
+
+def assert_no_line_is_named(standard: Path, root: Path, row: dict) -> None:
+    """No `bump-leg.py` command in the row or its `detail`, and the NEXT is
+    the gate's own, byte for byte."""
+    assert "gitlink_repairs" not in row["detail"], row["detail"]
+    assert "--to " not in row["reason"], row["reason"]
+    assert str(standard.resolve() / "scripts") not in row["reason"]
+    assert row["next"] == gate_row(standard, root)["next"], row["next"]
+
+
+def test_two_legs_off_their_pins_name_no_line_and_say_what_comes_first(
+        standard, project, advanced, code_advanced, tmp_path):
+    """Both legs pulled and committed in one commit: `bump-leg.py` moves ONE
+    leg and runs the whole gate before it commits, so the other leg's
+    mismatch rolls either line back. The row and the gate name none and say
+    what comes first; done, the row names the lines for the leg that is
+    left, and one of them makes the root COMPLIANT."""
+    moved = moved_by_hand(project, tmp_path,
+                          {"spec": advanced, "code": code_advanced})
+    root, pins = moved["root"], moved["pins"]
+    row = pins_row(standard, root)
+    assert_no_line_is_named(standard, root, row)
+    assert row["detail"]["gitlink_repairs_held_back"] == {
+        "legs": [{"role": "spec", "path": "spec", "gitlink": advanced,
+                  "pin": pins["spec"]},
+                 {"role": "code", "path": "code", "gitlink": code_advanced,
+                  "pin": pins["code"]}],
+        "findings": [], "manifest": False}, row["detail"]
+    held = ("No single bump-leg.py line can commit while spec and code are "
+            "both off their pins: bump-leg.py moves one leg and runs the "
+            "root's whole validate-pins.py before it commits, rolling the bump "
+            "back when it is red. First put one leg's gitlink back at its pin "
+            "(check that leg out at the pin's commit and commit its gitlink "
+            "in the root), or undo the commit that moved them; this row then "
+            "names the two bump-leg.py lines for the leg that is left")
+    assert row["reason"].endswith(". " + held), row["reason"]
+    lines = gate_says(root)
+    assert not [line for line in lines if "scripts/bump-leg.py" in line]
+    said = [line for line in lines if line.startswith(
+        "  No single bump-leg.py line can commit while spec and code are "
+        "both off their pins: ")]
+    assert len(said) == 2, lines
+    assert "First put one leg's gitlink back at its pin" in said[0], said
+    # What comes first, done by hand: the spec leg back at its pin.
+    git("checkout", "-q", "--detach", pins["spec"], cwd=root / "spec")
+    git("add", "--", "spec", cwd=root)
+    git("commit", "-qm", "put the spec leg back", cwd=root)
+    repairs = pins_row(standard, root)["detail"]["gitlink_repairs"]
+    assert [leg["role"] for leg in repairs] == ["code"], repairs
+    run_as_printed(repairs[0]["keep_gitlink"], tmp_path)
+    assert_compliant(standard, root)
+
+
+#: A finding the bump does NOT clear, committed with the gitlink: the edit,
+#: and the code the gate reports for it.
+HOLDS_BACK = {
+    "shape-copy-drift": copy_drifted,
+    "the other leg's workflow reference": workflow_at("code", OTHER_SHA),
+}
+
+
+@pytest.mark.parametrize("case", sorted(HOLDS_BACK))
+def test_another_finding_holds_the_lines_back(standard, project, advanced,
+                                              tmp_path, case):
+    """One leg off its pin, and a finding a bump of it does not clear: the
+    gate `bump-leg.py` runs is red after either line's rewrite, so the row
+    and the gate name none and say to clear that finding first."""
+    code = ("pin-workflow-ref-mismatch" if "workflow" in case else case)
+    moved = moved_by_hand(project, tmp_path, {"spec": advanced},
+                          HOLDS_BACK[case])
+    root = moved["root"]
+    row = pins_row(standard, root)
+    assert_no_line_is_named(standard, root, row)
+    assert row["detail"]["gitlink_repairs_held_back"] == {
+        "legs": [{"role": "spec", "path": "spec", "gitlink": advanced,
+                  "pin": moved["pins"]["spec"]}],
+        "findings": [code], "manifest": False}, row["detail"]
+    assert row["reason"].endswith(
+        f". No single bump-leg.py line can commit while the gate also reports "
+        f"{code}: bump-leg.py moves one leg and runs the root's whole "
+        "validate-pins.py before it commits, rolling the bump back when it is "
+        "red. First clear that finding; this row then names the two "
+        "bump-leg.py lines for spec"), row["reason"]
+    lines = gate_says(root)
+    assert not [line for line in lines if "scripts/bump-leg.py" in line]
+    assert (f"  No single bump-leg.py line can commit while this validator "
+            f"also reports {code}: bump-leg.py moves one leg and runs this "
+            "validator before it commits, rolling the bump back when it is "
+            "red. First clear that finding; this validator then names the "
+            "two bump-leg.py lines for that leg.") in lines, lines
+
+
+def test_a_red_manifest_gate_holds_the_lines_back(standard, project, advanced,
+                                                  tmp_path):
+    """`bump-leg.py` runs `validate-manifest.py` too, so a manifest it
+    reports is red rolls either line back: the row names none and sends the
+    reader to the `manifest` row first."""
+    moved = moved_by_hand(
+        project, tmp_path, {"spec": advanced},
+        lambda root: edit(root, "project.yaml", r"(?m)^elected_on: .*$",
+                          'elected_on: "someday"'))
+    root = moved["root"]
+    result = run_script(standard / DOCTOR, "--root", str(root), "--json")
+    rows = rows_of(result)
+    assert rows["manifest"]["status"] == "FINDING", rows["manifest"]
+    row = rows["pins"]
+    assert_no_line_is_named(standard, root, row)
+    assert row["detail"]["gitlink_repairs_held_back"]["manifest"] is True
+    assert row["reason"].endswith(
+        ". No single bump-leg.py line can commit while the root's "
+        "validate-manifest.py is red (the `manifest` row): bump-leg.py runs "
+        "it after validate-pins.py, before it commits, and rolls the bump "
+        "back when either is red. First clear that row's finding; this row "
+        "then names the two bump-leg.py lines for spec"), row["reason"]
+
+
+#: A finding the bump DOES clear, committed with the gitlink, and the line
+#: run to show it: the leg's own workflow reference, still at the pin, and
+#: its pin's digest, written wrong.
+CLEARED = {
+    "its workflow reference": ("keep_gitlink", "pin-workflow-ref-mismatch"),
+    "its pin's digest": ("keep_pin", "pin-digest-mismatch"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(CLEARED))
+def test_a_finding_the_bump_clears_holds_nothing_back(standard, project,
+                                                      advanced, tmp_path,
+                                                      case):
+    """The bump rewrites the leg's pin digest and every workflow reference
+    to its repository, so neither holds a line back: both are named, and
+    the one run makes the root COMPLIANT."""
+    which, code = CLEARED[case]
+    pinned = pin_of(project)
+    also = (workflow_at("spec", pinned) if "workflow" in case
+            else digest_moved)
+    moved = moved_by_hand(project, tmp_path, {"spec": advanced}, also)
+    root = moved["root"]
+    lines = gate_says(root)
+    assert f"FINDING {code}: " in "\n".join(lines), lines
+    assert len([line for line in lines if "scripts/bump-leg.py" in line]) == 2
+    row = pins_row(standard, root)
+    assert "gitlink_repairs_held_back" not in row["detail"], row["detail"]
+    repairs = row["detail"]["gitlink_repairs"]
+    run_as_printed(repairs[0][which], tmp_path)
+    assert_compliant(standard, root)
+
+
+def test_a_root_without_its_own_gate_is_answered_by_the_template_alone(
+        standard, hand_moved):
+    """`bump-leg.py` runs the root's own `validate-pins.py` and skips an
+    absent one, so what the standard's template copy reports does not say
+    what the bump's run will: the row is the template gate's, untouched,
+    and the template, run over that root, ends the finding at THE LOCKSTEP
+    RULE."""
+    root = hand_moved["root"]
+    (root / "scripts" / "validate-pins.py").unlink()
+    row = pins_row(standard, root)
+    assert row["detail"]["own_copy"] is False, row["detail"]
+    assert row == gate_row(standard, root)
+    assert "gitlink_repairs" not in row["detail"], row["detail"]
+    assert "gitlink_repairs_held_back" not in row["detail"], row["detail"]
+    template = run_script(
+        standard / "templates" / "assembly-root" / "scripts" /
+        "validate-pins.py", "--root", str(root), cwd=root,
+        env={"PYTHONPATH": str(standard / "scripts")})
+    assert template.returncode == 1, template.stdout + template.stderr
+    assert "FINDING pin-gitlink-mismatch: " in template.stderr
+    assert "bump-leg.py" not in template.stdout + template.stderr
+
+
+def test_a_gate_that_crashed_names_no_repair(standard, hand_moved):
+    """The root's own gate cannot import its `repo_shape.py`, and exits 1
+    on a traceback: `bump-leg.py` would run that gate and find it red too,
+    so the row is the crash, and names no line and holds none back."""
+    root = hand_moved["root"]
+    (root / "scripts" / "repo_shape.py").unlink()
+    row = pins_row(standard, root)
+    assert row["detail"].get("crashed") is True, row["detail"]
+    assert row["detail"]["exit"] == 1, row["detail"]
+    assert "gitlink_repairs" not in row["detail"], row["detail"]
+    assert "gitlink_repairs_held_back" not in row["detail"], row["detail"]
+    assert "bump-leg" not in row["reason"], row["reason"]
