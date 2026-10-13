@@ -4653,8 +4653,8 @@ def cmd_siblings(args) -> int:
 BRANCH_RULE = ("Its ONE commit lands on the branch the holder stands on: "
                "the real run refuses the holder's tracking branch and a HEAD "
                "on no branch, naming the `git switch -c` that makes one, and "
-               "ends with the `git push` of that branch. --dry-run runs on "
-               "any branch.")
+               "ends by printing the `git push` of that branch. --dry-run "
+               "runs on any branch.")
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -710,8 +710,8 @@ usage: family.py add [-h] --family-root FAMILY_ROOT --member ORG/PROJECT
 
 Mount and pin a member. Its ONE commit lands on the branch the holder stands
 on: the real run refuses the holder's tracking branch and a HEAD on no branch,
-naming the `git switch -c` that makes one, and ends with the `git push` of
-that branch. --dry-run runs on any branch.
+naming the `git switch -c` that makes one, and ends by printing the `git push`
+of that branch. --dry-run runs on any branch.
 
 options:
   -h, --help            show this help message and exit
@@ -744,8 +744,8 @@ usage: family.py bump [-h] --family-root FAMILY_ROOT --member PROJECT
 
 Move a member's gitlink and pin together. Its ONE commit lands on the branch
 the holder stands on: the real run refuses the holder's tracking branch and a
-HEAD on no branch, naming the `git switch -c` that makes one, and ends with
-the `git push` of that branch. --dry-run runs on any branch.
+HEAD on no branch, naming the `git switch -c` that makes one, and ends by
+printing the `git push` of that branch. --dry-run runs on any branch.
 
 options:
   -h, --help            show this help message and exit
@@ -773,8 +773,8 @@ usage: family.py remove [-h] --family-root FAMILY_ROOT --member PROJECT
 
 Unmount a member and drop its row. Its ONE commit lands on the branch the
 holder stands on: the real run refuses the holder's tracking branch and a HEAD
-on no branch, naming the `git switch -c` that makes one, and ends with the
-`git push` of that branch. --dry-run runs on any branch.
+on no branch, naming the `git switch -c` that makes one, and ends by printing
+the `git push` of that branch. --dry-run runs on any branch.
 
 options:
   -h, --help            show this help message and exit

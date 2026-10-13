@@ -38,7 +38,7 @@ import subprocess
 
 import pytest
 
-from conftest import git, run_script
+from conftest import REPO, git, run_script
 #: The family fixture, its names and the work branch it grows the holder on,
 #: imported from the module that owns them.
 from test_family import (  # noqa: F401
@@ -266,3 +266,59 @@ def test_init_next_steps_make_the_branch_before_the_add(tmp_path):
         == TRACKING
     assert "it refuses main, the holder's tracking branch" in " ".join(
         result.stdout.split())
+
+
+def test_the_tracking_branch_is_the_one_family_yaml_declares(family,
+                                                            tmp_path):
+    """NOT `main` BY NAME. A family made with `--tracking-branch trunk`
+    refuses `add` on `trunk`, and a branch that happens to be called `main`
+    is an ordinary work branch there: the dry run says the commit lands on
+    it for a pull request against `trunk`, the real run commits on it, and
+    its NEXT pushes `main` for that pull request."""
+    remotes = tmp_path / "remotes"
+    shutil.copytree(family["remotes"], remotes, symlinks=True)
+    made = run_script(FAMILY, "init", "--org", ORG, "--family", "Orbit",
+                      "--created-by", "Test Human",
+                      "--created-on", "2026-10-13",
+                      "--tracking-branch", "trunk",
+                      "--local-remote-dir", str(remotes),
+                      "--work-dir", str(tmp_path / "fam"))
+    assert made.returncode == 0, made.stdout + made.stderr
+    holder = (tmp_path / "fam" / "Orbit").resolve()
+    assert git("symbolic-ref", "--short", "HEAD",
+               cwd=holder).stdout.strip() == "trunk"
+    add = ["add", "--family-root", str(holder), "--member", f"{ORG}/{SPARE}",
+           "--local-remote-dir", str(remotes)]
+
+    refused = run_script(FAMILY, *add)
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert (f"REFUSED family-on-tracking-branch: {holder} is on 'trunk', "
+            "which family.yaml declares as the holder's tracking branch"
+            in refused.stderr), refused.stderr
+
+    git("switch", "-q", "-c", "main", cwd=holder)
+    dry = run_script(FAMILY, *add, "--dry-run")
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert ("branch       main: the commit lands there, for a pull request "
+            "against trunk") in dry.stdout.splitlines(), dry.stdout
+
+    done = run_script(FAMILY, *add)
+    assert done.returncode == 0, done.stdout + done.stderr
+    push, then = next_push(done.stdout)
+    assert push == ["git", "-C", str(holder), "push", "-u", "origin", "main"]
+    assert then == ("      then open a pull request against trunk; never "
+                    "push to it directly")
+
+
+@pytest.mark.parametrize("doc", [
+    "AGENTS.md", "README.md", "templates/family-root/AGENTS-shape.md",
+    "templates/family-root/README.md"])
+def test_each_doc_makes_the_branch_before_the_add(doc):
+    """The standard's own docs and the two a holder carries show the
+    `git -C <holder> switch -c family/add-...` in the same code block as,
+    and before, the first `add`: followed as written, the first command a
+    person runs is not one that refuses."""
+    text = (REPO / doc).read_text(encoding="utf-8")
+    add = text.index("python3 scripts/family.py add ")
+    block = text[text.rindex("```", 0, add):add]
+    assert " switch -c family/add-" in block, block
