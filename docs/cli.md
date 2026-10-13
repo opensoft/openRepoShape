@@ -386,6 +386,12 @@ options:
                         fragment it was ratified from for one dated earlier —
                         so --elected-on chooses it.
   --tracking-branch TRACKING_BRANCH
+                        the branch the assembly root and both legs track, and
+                        the base of the split's pull request (default: the
+                        source's default branch, which the plan records as
+                        `source.default_branch`). `check` finds, and `execute`
+                        refuses before any leg exists, one that is no branch
+                        of the source (`plan-tracking-branch-missing`).
   --spec-path SPEC_PATH
                         where the spec leg is mounted, as a path in the
                         assembly root (default: spec); the plan records it as
