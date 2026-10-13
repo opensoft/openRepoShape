@@ -1,49 +1,49 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The hint a refused push prints names the run's own tracking branch (#324).
+"""The hint a refused push prints names the run's own tracking branch (#324),
+and offers only the exit that finishes the run (#462).
 
 `RULESET_HINT` is what a person reads when an organisation's ruleset has just
-refused a direct push, and it says to push a seed BRANCH and open a pull
-request. It named `main` twice, as a constant: the local branch in `git -C
-<work> push -u origin main:seed/scaffold`, and `gh pr create --base main`. A
-run made with `--tracking-branch trunk` creates its work clones with `git init
--b trunk` and pushes `trunk`, so the first command died on `error: src refspec
-main does not match any` and the second named a base the repository does not
-have.
+refused a direct push. It named `main` as a constant, so a run made with
+`--tracking-branch trunk` was told about a branch it never had (#324). It also
+offered two exits, and neither could finish (#462): a seed branch and a pull
+request, whose base did not exist because the refused push was the first into
+a repository `gh repo create` had just made without a README; and an
+operator's seed of the default branch followed by a re-run, which the
+scaffold refused as `scaffold-remote-exists` for its own legs, flag or no
+flag. Brett Heap ruled on 2026-10-12: "Offer only exits that work", "Re-run
+reuses empty legs" and "Accept the scaffold's own seed".
 
-TWO FIELDS NAME A BRANCH. `{tracking}` is the remote's branch, the base the pull
-request lands on. `{local}` is the ref in the work clone that the refused push
-CARRIED. The three places that print `RULESET_HINT` (the scaffold's legs, its
-assembly root, the family holder) push the tracking branch by name from a clone
-made on it, so each passes the tracking branch for both.
-
-AN ADOPTION PRINTS ITS OWN HINT, `ADOPT_RULESET_HINT` in `adopt-project.py`
-(#177), from both of its legs. It prints no command, and names the tracking
-branch once: as the branch the new leg has no pull request base on. The rule is
-the same there, the run's own tracking branch and never `main`. Its prose is
-#177's, pinned by #177's own tests; what is pinned here is the branch.
+ONE EXIT EACH, NAMED BY THE TOOL THAT PRINTS IT. The scaffold's
+(`RULESET_HINT`) and `family.py init`'s (`FAMILY_RULESET_HINT`) are the same
+command re-run with `--reuse-empty-repo` by an operator holding the bypass
+right, whose own pushes are the seed. An adoption's (`ADOPT_RULESET_HINT`, in
+`adopt-project.py`, #445's) is a re-run once what its notice names is cleared,
+its two legs first: it has no such flag, and a re-run into them is
+`leg-remote-exists`. Each names the pull
+request only as what cannot finish it, with the run's repository and its
+tracking branch: those are the two fields every hint takes.
 
 WHAT IS PINNED HERE
-  * the text itself: byte for byte what it was for `main` (the literal below is
-    the hint as it stood before this change, with the two branches left as
-    markers), and `trunk` in exactly the two places `main` stood, for `trunk`;
-    and the adoption's hint holds no `main` of its own;
-  * every one of the five places that prints a hint passes every field of it,
-    run through the real tools against local bare remotes that refuse like a
-    ruleset. For the scaffold and the family holder, the ref the hint names as
-    local is AT the commit the refused push carried: the remote's own hook
-    records it. For both adopt legs, the hint printed is the adoption's, for
-    that leg's repository and the run's tracking branch, from a source whose
-    own branch is `master` whatever the tracking branch is;
-  * where the printed push is runnable (the scaffold's legs and root, a family
-    holder), it is RUN, and the seed branch arrives.
+  * each text, byte for byte, as a literal below with the two values as
+    markers, for `main` and for `trunk`;
+  * every call that prints one passes both fields, and each tool prints its
+    own;
+  * run through the real tools against local bare remotes that refuse like a
+    ruleset, each of the six places prints its tool's text after a push to
+    the tracking branch was really refused;
+  * THE EXIT IT OFFERS IS TAKEN, with the ruleset off standing in for the
+    operator's bypass, and it FINISHES: the scaffold re-run pushes all three
+    repositories, a leg the first run had pushed kept at its commit; the
+    holder is pushed; the adoption verifies.
 
 THE RULESET IS A `pre-receive` HOOK in each bare remote the tool makes, put
 there by `GIT_TEMPLATE_DIR`, which every `git init` the tool runs honours. The
 hook refuses a push to anything but `seed/*` for the repositories named in
 `RULESET_REFUSES`: the hook runs in the remote's own directory, so the name
-picks which of the three a run sees refuse. It is a shebang script, which Git
-for Windows runs through its own `sh` (`test_update_shape_add_ignored.py` does
-the same). No `gh`, no network and no real repository is involved.
+picks which of the three a run sees refuse, and an empty `RULESET_REFUSES` is
+the operator. It is a shebang script, which Git for Windows runs through its
+own `sh` (`test_update_shape_add_ignored.py` does the same). No `gh`, no
+network and no real repository is involved.
 """
 
 from __future__ import annotations
@@ -51,7 +51,6 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
-import re
 import shutil
 import string
 import subprocess
@@ -61,19 +60,17 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, ORG, PROJECT, REPO, SCAFFOLD, git, make_source_repo,
-                      resolve, run_script, write_plan)
+                      resolve, rmtree, run_script, write_plan)
 from test_adopt_spec_only import ANSWERS, EDITS, SPEC_ONLY_TREE
 from test_git_output_decoding import shipped_python
 
 sys.path.insert(0, str(REPO / "scripts"))
-from shape_materialize import RULESET_HINT  # noqa: E402
+from shape_materialize import FAMILY_RULESET_HINT, RULESET_HINT  # noqa: E402
 
 FAMILY = REPO / "scripts" / "family.py"
 
 
 def _adopt_module():
-    """`adopt-project.py` as a module, for its hint: its name is not one
-    `import` takes."""
     spec = importlib.util.spec_from_file_location("adopt_ruleset_hint", ADOPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -82,101 +79,115 @@ def _adopt_module():
 
 ADOPT_RULESET_HINT = _adopt_module().ADOPT_RULESET_HINT
 
-#: The hint as it stood on `main` before #324, from its first line to its last,
-#: with the five values it carries as markers (the two branches were one `main`
-#: then). Raw, because the second command ends in a backslash. It is a literal rather than a copy of the module's own
-#: constant so that the test cannot agree with whatever the constant becomes.
-HINT = r"""If the organisation applies a ruleset requiring changes to arrive by pull
+#: Each tool's hint, from its first line to its last, with the two values it
+#: carries as markers. Literals rather than copies of the constants, so that
+#: the test cannot agree with whatever a constant becomes.
+SCAFFOLD_TEXT = """If the organisation applies a ruleset requiring changes to arrive by pull
 request, a direct push to the default branch is refused BY DESIGN and must not
-be worked around. Two legitimate exits:
-
-  (1) have an operator holding the bypass right seed the default branch once,
-      then re-run this scaffold; or
-  (2) push a seed BRANCH and open a pull request:
-          git -C @WORK@ push -u origin @LOCAL@:seed/scaffold
-          gh pr create --repo @REPO@ --base @BRANCH@ --head seed/scaffold \
-              --title 'Seed the @ROLE@ leg' --body 'Scaffolded shape.'
+be worked around. ONE exit finishes this scaffold: an operator holding the
+bypass right re-runs it, the same command with --reuse-empty-repo added (after
+`--` through setup.sh) and a new --work-dir or none. That run's own pushes are
+the seed, so push nothing first: it reuses each repository this run left
+empty, and a leg whose one commit is the seed this scaffold pushes, and it
+refuses a repository that holds anything else. A seed branch and a pull
+request cannot finish it: @REPO@ has no @BRANCH@ for that pull request to
+target.
 
 NOTHING has been rolled back. What already exists is listed above; delete it
 by hand if you want a clean re-run."""
 
+FAMILY_TEXT = """If the organisation applies a ruleset requiring changes to arrive by pull
+request, a direct push to the default branch is refused BY DESIGN and must not
+be worked around. ONE exit finishes this family: an operator holding the
+bypass right re-runs `family.py init`, the same command with
+--reuse-empty-repo added and a new --into or --work-dir. That run's own push
+is the seed, so push nothing first: it reuses the holder while it is empty,
+and refuses it once it has a commit. A seed branch and a pull request cannot
+finish it: @REPO@ has no @BRANCH@ for that pull request to target.
 
-def hint_for(work: str, repo: str, role: str, local: str,
-             tracking: str) -> str:
-    return (HINT.replace("@WORK@", work).replace("@REPO@", repo)
-            .replace("@ROLE@", role).replace("@LOCAL@", local)
+NOTHING has been rolled back. What already exists is listed above; delete it
+by hand if you want a clean re-run."""
+
+ADOPT_TEXT = """If the organisation applies a ruleset requiring changes to arrive by pull
+request, a direct push to the default branch is refused BY DESIGN and must not
+be worked around. An adoption has ONE legitimate exit: have an operator
+holding the bypass right re-run it, once what the notice below names is
+cleared. The scaffold's other exit, a seed branch and a pull request, cannot
+finish an adoption: @REPO@ has no @BRANCH@ for that pull request to target,
+and nothing would run the rest of this adoption after it was merged. Under
+such a ruleset, that bypass is the fix the notice below asks for, never a
+change to the ruleset."""
+
+#: Each constant, the name a tool prints it by, and its literal.
+HINTS = {
+    "RULESET_HINT": (RULESET_HINT, SCAFFOLD_TEXT),
+    "FAMILY_RULESET_HINT": (FAMILY_RULESET_HINT, FAMILY_TEXT),
+    "ADOPT_RULESET_HINT": (ADOPT_RULESET_HINT, ADOPT_TEXT),
+}
+
+#: Which hint each shipped tool prints, and only that one.
+PRINTED_BY = {
+    "scaffold-project.py": "RULESET_HINT",
+    "scripts/family.py": "FAMILY_RULESET_HINT",
+    "adopt-project.py": "ADOPT_RULESET_HINT",
+}
+
+
+def text_for(name: str, repo: str, tracking: str) -> str:
+    return (HINTS[name][1].replace("@REPO@", repo)
             .replace("@BRANCH@", tracking))
 
 
 # --- the text ---------------------------------------------------------------
 
-def test_the_hint_for_main_is_the_text_it_always_was():
-    printed = RULESET_HINT.format(work="W", repo="o/r", role="spec",
-                                  local="main", tracking="main")
-    assert printed == "\n" + hint_for("W", "o/r", "spec", "main", "main") + "\n"
+@pytest.mark.parametrize("name", HINTS)
+def test_each_hint_for_main_is_its_text(name):
+    printed = HINTS[name][0].format(repo="o/r", tracking="main")
+    assert printed == "\n" + text_for(name, "o/r", "main") + "\n"
 
 
-def test_the_hint_for_another_branch_changes_that_branch_and_nothing_else():
-    printed = RULESET_HINT.format(work="W", repo="o/r", role="spec",
-                                  local="trunk", tracking="trunk")
-    assert printed == "\n" + hint_for("W", "o/r", "spec", "trunk", "trunk") + "\n"
+@pytest.mark.parametrize("name", HINTS)
+def test_each_hint_for_another_branch_changes_that_branch_and_nothing_else(
+        name):
+    printed = HINTS[name][0].format(repo="o/r", tracking="trunk")
+    assert printed == "\n" + text_for(name, "o/r", "trunk") + "\n"
     assert "main" not in printed, "no `main` is left in the hint"
-    assert printed.count("trunk") == 2, "the local branch and `--base`"
-    # The exits are the ones AGENTS.md allows, and `--admin` is not one.
-    assert "--admin" not in printed
-    assert "bypass right" in printed
-    assert "pull request" in printed
-
-
-def test_the_local_ref_and_the_base_are_two_fields():
-    """A local ref that is not the tracking branch (`HEAD`, for a push of
-    `HEAD:`) stands in the push alone, and the pull request still lands on
-    the tracking branch."""
-    printed = RULESET_HINT.format(work="W", repo="o/r", role="spec",
-                                  local="HEAD", tracking="trunk")
-    assert printed == "\n" + hint_for("W", "o/r", "spec", "HEAD", "trunk") + "\n"
-    assert "origin HEAD:seed/scaffold" in printed
-    assert "--base trunk --head seed/scaffold" in printed
-    assert "main" not in printed
-    assert printed.count("trunk") == 1
-
-
-def fields_of(hint: str) -> set:
-    return {name for _, name, _, _ in string.Formatter().parse(hint) if name}
-
-
-def test_the_hint_takes_five_fields_two_of_them_a_branch():
-    assert fields_of(RULESET_HINT) == {"work", "repo", "role", "local",
-                                       "tracking"}
-
-
-def test_the_adoption_hint_names_the_tracking_branch_and_no_main():
-    """`ADOPT_RULESET_HINT` is #177's, and #324's rule holds of it: its one
-    branch is the `{tracking}` field, and no `main` is written into it, so
-    the text for another branch is the text for `main` with that branch in
-    the one place `main` stood."""
-    assert "main" not in ADOPT_RULESET_HINT
-    assert "tracking" in fields_of(ADOPT_RULESET_HINT)
-    printed = ADOPT_RULESET_HINT.format(repo="o/r", tracking="trunk")
-    assert "main" not in printed
     assert printed.count("trunk") == 1, "the base the pull request lacks"
-    assert ("o/r has no trunk for that pull request"
-            in " ".join(printed.split()))
-    assert (ADOPT_RULESET_HINT.format(repo="o/r", tracking="main")
-            == printed.replace("trunk", "main"))
+    # ONE exit, the one AGENTS.md allows, and `--admin` is not it.
+    assert "--admin" not in printed
+    assert "ONE" in printed and "bypass right" in printed
+    # The pull request is named only as what cannot finish the run: no
+    # command to push a seed branch or open one is printed (#462).
+    assert "seed/scaffold" not in printed
+    assert "gh pr create" not in printed
+    assert "push -u" not in printed
+    assert "Two legitimate exits" not in printed
+
+
+def test_the_scaffold_and_the_family_re_run_with_the_flag_and_adoption_not():
+    """`--reuse-empty-repo` is the scaffold's and `family.py init`'s; an
+    adoption has no such flag, so its hint must not send anybody to one."""
+    scaffold = RULESET_HINT.format(repo="o/r", tracking="main")
+    family = FAMILY_RULESET_HINT.format(repo="o/r", tracking="main")
+    adoption = ADOPT_RULESET_HINT.format(repo="o/r", tracking="main")
+    assert "--reuse-empty-repo" in scaffold
+    assert "--reuse-empty-repo" in family and "family.py init" in family
+    assert "--reuse-empty-repo" not in adoption
+    assert "re-run this scaffold" not in family + adoption
+
+
+@pytest.mark.parametrize("name", HINTS)
+def test_each_hint_takes_two_fields_the_repository_and_the_branch(name):
+    fields = {field for _, field, _, _ in
+              string.Formatter().parse(HINTS[name][0]) if field}
+    assert fields == {"repo", "tracking"}
 
 
 # --- every caller passes it --------------------------------------------------
 
-#: Each hint a shipped tool prints, by the name it prints it by.
-HINTS = {"RULESET_HINT": RULESET_HINT,
-         "ADOPT_RULESET_HINT": ADOPT_RULESET_HINT}
-
-
 def hint_calls() -> list[tuple[str, int, str, set]]:
-    """Every `RULESET_HINT.format(...)` and `ADOPT_RULESET_HINT.format(...)`
-    in the shipped tools, as `(file, line, the hint, the keywords it
-    names)`."""
+    """Every `<hint>.format(...)` in the shipped tools, as `(file, line, the
+    hint's name, the keywords it names)`."""
     found = []
     for path in shipped_python():
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -192,19 +203,22 @@ def hint_calls() -> list[tuple[str, int, str, set]]:
     return found
 
 
-def test_no_call_that_prints_the_hint_leaves_a_branch_out():
+def test_each_tool_prints_its_own_hint_and_passes_both_fields():
     calls = hint_calls()
-    assert {("scaffold-project.py", "RULESET_HINT"),
-            ("scripts/family.py", "RULESET_HINT"),
-            ("adopt-project.py", "ADOPT_RULESET_HINT")} <= {
-                (path, hint) for path, _, hint, _ in calls}, (
+    assert set(PRINTED_BY) <= {path for path, _, _, _ in calls}, (
         "the scan no longer finds the tools that print the hint, so it is not "
         "reading what it claims to")
-    offenders = [f"{path}:{line} names only {sorted(named)} of {hint}"
-                 for path, line, hint, named in calls
-                 if not fields_of(HINTS[hint]) <= named]
+    wrong = [f"{path}:{line} prints {name}" for path, line, name, _ in calls
+             if PRINTED_BY.get(path, name) != name]
+    assert not wrong, (
+        "each tool names its own exit; another tool's hint sends the person "
+        "to a flag or a command this one does not have (#462):\n  "
+        + "\n  ".join(wrong))
+    offenders = [f"{path}:{line} names only {sorted(named)}"
+                 for path, line, _, named in calls
+                 if named != {"repo", "tracking"}]
     assert not offenders, (
-        "a hint's `.format` without `local=` or `tracking=` raises KeyError "
+        "a hint's `.format` without `repo=` or `tracking=` raises KeyError "
         "inside the failure path that exists to explain a refusal (#324):\n  "
         + "\n  ".join(offenders))
 
@@ -234,7 +248,9 @@ HOOK = (b"#!/bin/sh\n"
 
 def refusing(template, *repositories: str) -> dict:
     """The environment under which every bare repository a tool makes refuses
-    a direct push, for the repositories named (`Atlas-spec.git`)."""
+    a direct push, for the repositories named (`Atlas-spec.git`). Named none,
+    it is the operator holding the bypass right: the hooks are there and
+    refuse nothing."""
     return {"GIT_TEMPLATE_DIR": str(template),
             "RULESET_REFUSES": " ".join(repositories)}
 
@@ -283,76 +299,58 @@ def template(tmp_path_factory):
     return template
 
 
-# --- the five places that print one ------------------------------------------
+# --- the six places that print one ------------------------------------------
 
-#: What each caller refuses, with the role and repository its hint names.
-#: `scaffold-spec` is the first leg's push, `scaffold-root` the assembly
+#: What each caller refuses, with the hint it prints and the repository that
+#: hint names. `scaffold-spec` is the first leg's push, `scaffold-code` the
+#: second's after the first went through, `scaffold-root` the assembly
 #: root's after both legs went through, `family` the holder's.
 CASES = {
-    "scaffold-spec": ("Atlas-spec.git", "spec", f"{ORG}/Atlas-spec"),
-    "scaffold-root": ("Atlas.git", "assembly", f"{ORG}/Atlas"),
-    "family": ("Contoso.git", "family", f"{ORG}/Contoso"),
-    "adopt-extracted": ("Redwood-spec.git", "spec", f"{ORG}/Redwood-spec"),
-    "adopt-seeded": ("Redwood-code.git", "code", f"{ORG}/Redwood-code"),
+    "scaffold-spec": ("Atlas-spec.git", "RULESET_HINT", f"{ORG}/Atlas-spec"),
+    "scaffold-code": ("Atlas-code.git", "RULESET_HINT", f"{ORG}/Atlas-code"),
+    "scaffold-root": ("Atlas.git", "RULESET_HINT", f"{ORG}/Atlas"),
+    "family": ("Contoso.git", "FAMILY_RULESET_HINT", f"{ORG}/Contoso"),
+    "adopt-extracted": ("Redwood-spec.git", "ADOPT_RULESET_HINT",
+                        f"{ORG}/Redwood-spec"),
+    "adopt-seeded": ("Redwood-code.git", "ADOPT_RULESET_HINT",
+                     f"{ORG}/Redwood-code"),
 }
-#: The adoption's two legs: they need `git filter-repo`, and they print
-#: `ADOPT_RULESET_HINT`, which names no command (#177).
-ADOPTION = ("adopt-extracted", "adopt-seeded")
-#: The three that print `RULESET_HINT`, having pushed the tracking branch by
-#: name.
-PUSHED_BY_NAME = tuple(case for case in CASES if case not in ADOPTION)
+NEEDS_FILTER_REPO = ("adopt-extracted", "adopt-seeded")
+SCAFFOLDED = (f"{PROJECT}.git", f"{PROJECT}-spec.git", f"{PROJECT}-code.git")
 
 
-def refused_run(case: str, tracking: str, tmp_path, template):
-    """Run the tool that prints `case`'s hint against remotes that refuse its
-    push, with `--tracking-branch <tracking>`; returns the process, the
-    directory the remotes are in and the work directory. An adoption's source
-    is on `master`, with the tracking branch beside it, since `execute`
-    refuses a tracking branch the source lacks (#479)."""
-    refused = CASES[case][0]
-    env = refusing(template, refused)
-    remotes, work = tmp_path / "remotes", tmp_path / "work"
-    where = ("--local-remote-dir", str(remotes), "--work-dir", str(work))
+def run_the_tool(case: str, tracking: str, tmp_path, env: dict, work: Path,
+                 *extra: str):
+    """Run the tool that prints `case`'s hint into `work`, against the
+    remotes in `tmp_path / "remotes"`, with `--tracking-branch <tracking>`.
+    An adoption's source is on `master`, with the tracking branch beside it,
+    since `execute` refuses a tracking branch the source lacks (#479), and its
+    plan is written once."""
+    where = ("--local-remote-dir", str(tmp_path / "remotes"),
+             "--work-dir", str(work))
     if case.startswith("scaffold"):
-        result = run_script(
+        return run_script(
             SCAFFOLD, "--org", ORG, "--project", PROJECT,
             "--elected-by", "Test Human", "--elected-on", "2026-09-02",
-            "--tracking-branch", tracking, *where, env=env)
-    elif case == "family":
-        result = run_script(
+            "--tracking-branch", tracking, *where, *extra, env=env)
+    if case == "family":
+        return run_script(
             FAMILY, "init", "--org", ORG, "--family", "Contoso",
             "--created-by", "Test Human", "--created-on", "2026-09-04",
-            "--tracking-branch", tracking, *where, env=env)
-    else:
+            "--tracking-branch", tracking, *where, *extra, env=env)
+    plan = tmp_path / "adoption-plan.yaml"
+    if not plan.exists():
         source = make_source_repo(tmp_path / "IRRS", SPEC_ONLY_TREE,
                                   branch="master", edits=EDITS)
         git("branch", tracking, cwd=source)
-        plan = tmp_path / "adoption-plan.yaml"
         written = write_plan(source, plan, project="Redwood",
                              extra=("--tracking-branch", tracking,
                                     "--allow-empty-leg", "code"))
         assert written.returncode == 0, written.stderr + written.stdout
         for path, leg in ANSWERS:
             resolve(plan, path, leg)
-        result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
-                            "--allow-empty-leg", "code", *where, env=env)
-    return result, remotes, work
-
-
-def printed_hint(result, case: str, tracking: str) -> tuple[str, str]:
-    """`(the hint block, the work clone it names)`, after checking the block
-    is the whole hint, with this case's role and repository, and the tracking
-    branch as both the local ref and the base."""
-    assert result.returncode == 2, result.stderr + result.stdout
-    start = result.stderr.index("If the organisation applies a ruleset")
-    block = result.stderr[start:]
-    named = re.search(r"^ +git -C (.+) push -u origin \S+:seed/scaffold$",
-                      block, re.M)
-    assert named, block
-    _, role, repository = CASES[case]
-    assert block.startswith(hint_for(named[1], repository, role, tracking,
-                                     tracking) + "\n"), block
-    return block, named[1]
+    return run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                      "--allow-empty-leg", "code", *where, *extra, env=env)
 
 
 def refused_commit(bare: Path, tracking: str) -> str:
@@ -365,74 +363,73 @@ def refused_commit(bare: Path, tracking: str) -> str:
     return commit
 
 
-def commit_of(ref: str, work: str) -> str:
-    return git("rev-parse", "--verify", "-q", f"{ref}^{{commit}}",
-               cwd=Path(work), check=False).stdout.strip()
-
-
-def nothing_reached(bare: Path, tracking: str) -> str:
-    """The refusal was real: nothing reached the tracking branch, and the one
-    push the remote refused went to it. Returns the commit it carried."""
-    assert git("rev-parse", "--verify", "-q", f"refs/heads/{tracking}",
-               cwd=bare, check=False).returncode != 0
-    return refused_commit(bare, tracking)
+def tip(bare: Path, tracking: str) -> str:
+    return git("rev-parse", "--verify", "-q", f"refs/heads/{tracking}",
+               cwd=bare, check=False).stdout.strip()
 
 
 @pytest.mark.parametrize("tracking", ["trunk", "main"])
-@pytest.mark.parametrize("case", PUSHED_BY_NAME)
-def test_the_hint_names_the_tracking_branch_the_run_was_made_with(
+@pytest.mark.parametrize("case", CASES)
+def test_the_hint_names_one_exit_and_taking_it_finishes_the_run(
         case, tracking, tmp_path, template):
-    result, remotes, _ = refused_run(case, tracking, tmp_path, template)
-    block, work = printed_hint(result, case, tracking)
-    assert f"origin {tracking}:seed/scaffold" in block
-    assert f"--base {tracking} --head seed/scaffold" in block
-    if tracking != "main":
-        # Not the work path: a directory may be called anything.
-        assert "main" not in block.replace(work, "<work>"), (
-            "the default branch is not this run's")
-
-    bare = remotes / (CASES[case][0])
-    pushed = nothing_reached(bare, tracking)
-
-    # THE LOCAL REF THE HINT NAMES IS AT THE COMMIT THE REFUSED PUSH CARRIED,
-    # which is what advising it to be pushed to `seed/scaffold` means.
-    assert commit_of(tracking, work) == pushed, (
-        f"`{tracking}` in the work clone is not what was pushed: "
-        + git("branch", "-a", "-v", cwd=Path(work)).stdout)
-
-    # The printed command can run here, so run it: the seed branch arrives,
-    # at the commit the work clone holds.
-    ran = subprocess.run(["git", "-C", work, "push", "-u", "origin",
-                          f"{tracking}:seed/scaffold"],
-                         capture_output=True, text=True, check=False,
-                         env={**os.environ, **refusing(template,
-                                                       CASES[case][0])})
-    assert ran.returncode == 0, ran.stderr
-    assert git("rev-parse", "refs/heads/seed/scaffold",
-               cwd=bare).stdout.strip() == pushed
-
-
-@pytest.mark.parametrize("tracking", ["trunk", "main"])
-@pytest.mark.parametrize("case", ADOPTION)
-def test_an_adoption_hint_names_the_tracking_branch_the_run_was_made_with(
-        case, tracking, tmp_path, template):
-    """Both adopt legs print the adoption's own hint (#177), for the leg's
-    repository and the run's tracking branch: never `main` for another
-    branch, and never the source's own branch, which is `master` here."""
-    if shutil.which("git-filter-repo") is None:
+    if case in NEEDS_FILTER_REPO and shutil.which("git-filter-repo") is None:
         pytest.skip("git filter-repo is not installed: "
                     "`pip install git-filter-repo`")
-    result, remotes, _ = refused_run(case, tracking, tmp_path, template)
+    refused, name, repository = CASES[case]
+    remotes = tmp_path / "remotes"
+    result = run_the_tool(case, tracking, tmp_path,
+                          refusing(template, refused), tmp_path / "work")
+
+    # The tool's own hint, for this repository and this tracking branch.
     assert result.returncode == 2, result.stderr + result.stdout
-    refused, _, repository = CASES[case]
-    hint = ADOPT_RULESET_HINT.format(repo=repository,
-                                     tracking=tracking).lstrip("\n")
     start = result.stderr.index("If the organisation applies a ruleset")
-    printed = result.stderr[start:start + len(hint)]
-    assert printed == hint, result.stderr
-    assert (f"{repository} has no {tracking} for that pull request"
-            in " ".join(printed.split()))
-    assert "master" not in printed, "the source's branch is not the leg's"
+    block = result.stderr[start:]
+    assert block.startswith(text_for(name, repository, tracking) + "\n"), block
     if tracking != "main":
-        assert "main" not in printed, "the default branch is not this run's"
-    nothing_reached(remotes / refused, tracking)
+        assert "main" not in block, "the default branch is not this run's"
+
+    # The refusal was real: the one push the remote refused went to the
+    # tracking branch, and nothing reached it.
+    bare = remotes / refused
+    refused_commit(bare, tracking)
+    assert tip(bare, tracking) == ""
+    if case.startswith("scaffold"):
+        before = {repo: tip(remotes / repo, tracking) for repo in SCAFFOLDED}
+
+    # THE EXIT, TAKEN: the ruleset off is the operator holding the bypass
+    # right, and the run is made again as the hint says.
+    operator = refusing(template)
+    if case.startswith("scaffold") or case == "family":
+        again = run_the_tool(case, tracking, tmp_path, operator,
+                             tmp_path / "again", "--reuse-empty-repo")
+    else:
+        unfinished = run_the_tool(case, tracking, tmp_path, operator,
+                                  tmp_path / "unfinished")
+        assert unfinished.returncode == 2, unfinished.stdout
+        assert "already exists" in unfinished.stderr, (
+            "the hint says a re-run is refused while the legs exist")
+        for leg in ("Redwood-spec.git", "Redwood-code.git"):
+            rmtree(remotes / leg)
+        again = run_the_tool(case, tracking, tmp_path, operator,
+                             tmp_path / "again")
+    assert again.returncode == 0, again.stderr + again.stdout
+
+    if case == "family":
+        assert tip(bare, tracking)
+        return
+    if case in NEEDS_FILTER_REPO:
+        assert "adoption verified" in again.stdout
+        return
+    # Every repository is pushed, each holds ONE commit, and a leg the first
+    # run had pushed is where that run left it: reused, never rewritten.
+    for repo in SCAFFOLDED:
+        assert tip(remotes / repo, tracking), repo
+        assert git("rev-list", "--count", "--all",
+                   cwd=remotes / repo).stdout.strip() == "1", repo
+        if before[repo]:
+            assert tip(remotes / repo, tracking) == before[repo], repo
+    root = remotes / f"{PROJECT}.git"
+    for leg in ("spec", "code"):
+        mounted = git("rev-parse", f"refs/heads/{tracking}:{leg}",
+                      cwd=root).stdout.strip()
+        assert mounted == tip(remotes / f"{PROJECT}-{leg}.git", tracking), leg
