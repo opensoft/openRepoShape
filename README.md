@@ -696,17 +696,17 @@ link that broke. `LedgerxWallet` -> `openXwallet` -> `openWallet` is the same
 shape, and `openWallet` need not exist anywhere for that to be the answer.
 
 **`validate-pins.py` rechecks the referent too, not only the declaration.**
-Every `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
-has its `commit`, `revision_kind` and `sorted-ls-tree-r-v1` digest recomputed
-exactly the way `scaffold-project.py --pin` computed them: OFFLINE from a
-local checkout when one can be found — `--pin-source [PRODUCT=]<path>`,
-`SHAPE_PIN_SOURCE_<PRODUCT>` in the environment, or a checkout sitting beside
-the assembly root and named for the pinned repository — else from `gh api`
-when `gh` can read it. Neither answering is a named SKIP, never a finding and
-never a failure: a project with no local checkout of its referent and no
-network is not thereby lying about its descent. A digest that recomputes
-differently, or a pin file the declaration names but that is not there, is
-reported as drift like every other pin in this file.
+Each `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
+has its `commit`, `revision_kind` and `sorted-ls-tree-r-v1` digest recomputed as
+`scaffold-project.py --pin` computed them: OFFLINE from a local checkout when
+one is found — `--pin-source [PRODUCT=]<path>`, `SHAPE_PIN_SOURCE_<PRODUCT>` in
+the environment, or a checkout beside the assembly root named for the pinned
+repository — else by `gh api`, with the operator's `gh` credentials, when `gh`
+can read it. Finding neither is a named SKIP, exit 0: no checkout and no network
+does not make a descent a lie. A checkout that cannot answer is the finding
+`neutral-pin-source-unreadable`. `make bootstrap`, `bump-leg.py` and
+`update-shape.py apply` run this validator in the operator's environment, so
+each makes that call too; none takes `--pin-source`.
 
 ### A neutral product may elect the shape and be its own assembly root
 
@@ -1025,12 +1025,12 @@ the rest is the project's own, which an upstream fix must never overwrite.
 
 ## Keeping a project's shape current
 
-The copies are the trade: a project runs its own gate offline, and an upstream
-FIX to a copied file reaches it never. On 2026-09-03 that bill came due — one
-change to the assembly-root `validate.yml`, and both projects carrying the
-shape were updated BY HAND: re-copy, recompute the file's `sha256` row, move
-`commit` and `digests.tree_sha256`, mirror both into `project.yaml`, re-run the
-validators. `update-shape.py` is that, as one command:
+The copies are the trade: a project runs its own gate, which never consults this
+standard (its validators' one possible network read is `validate-pins.py`'s `gh
+api` recheck of a neutral product's pin, above), and an upstream FIX to a copied
+file reaches it never. On 2026-09-03 that bill came due — one change to the
+assembly-root `validate.yml`, and both projects with the shape were updated BY
+HAND: re-copy, re-pin, re-validate. `update-shape.py` is that, as one command:
 
 ```sh
 ./update-shape.py check --root ../MedxEHR          # writes nothing
@@ -1092,9 +1092,9 @@ by every `check` until it is taken or a file arrives at that path.
 `owner/repo` it bare-clones itself; it defaults to the repository the pin
 names. `make bootstrap` prints one line when the upstream has moved past the
 pin AND this machine can already tell offline — `SHAPE_UPSTREAM_PATH` points at
-a clone, or a `.shape-upstream-tip` file carries a commit. It adds no network
-call: a bootstrap that paused to ask GitHub a question would have made the
-shape a dependency again.
+a clone, or a `.shape-upstream-tip` file carries a commit. That line adds no
+network call: a bootstrap that paused to ask GitHub a question would have
+made the shape a dependency again. (Its pins gate may ask `gh api`; see above.)
 
 ### Is this repository compliant? `openRepoShape --doctor`
 
@@ -1117,22 +1117,22 @@ directory first — which is what makes the verdict offline.
 For an assembly root the rows are **naming** (this standard's own
 `contracts/repository-naming.yaml`), **manifest** and **pins** (the project's
 OWN `scripts/validate-manifest.py` and `scripts/validate-pins.py` when it
-carries them — they are the pinned copies, which is the point — else the
-template copies, and the row says which answered), **manifest kinds** (every
-`kind:`-bearing manifest in the root against a registry, so a `contracts/*.yaml`
-nothing validates is a finding by name rather than a silence, and so is a
-`family.yaml` beside `project.yaml`), **shape currency** (`update-shape.py
-check`'s per-file verdicts, summarised), **legs** (each one mounted, and its
-checked-out commit against the pin, with no fetch), **leg shape files** (each
-leg's `AGENTS.md`, `CLAUDE.md` and `.gitignore` against `templates/<role>-root/`
-— a comparison and not a gate: no leg file is pinned anywhere), **placement**
-(every tracked path of every leg, against the path policy), **agent files**, and
-**machine**. A FAMILY holder gets **family**, **manifest kinds**, **shape
-currency**, **placement** (`n/a` — a holder has no legs of its own), **members**
-and **machine**; a directory that is neither gets what it is CALLED under the
-naming policy, what IS in it, and the way in — and a repository the advisory is
-not silent about gets the **Triad** row, status `advisory`: the preference said
-once and stepped over by the verdict (a leg gets its assembly root).
+carries them — the pinned copies — else the template copies, and the row says
+which answered), **manifest kinds** (every `kind:`-bearing manifest in the
+root against a registry, so a `contracts/*.yaml` nothing validates, or a
+`family.yaml` beside `project.yaml`, is a finding by name), **shape currency**
+(`update-shape.py check`'s per-file verdicts, summarised), **legs** (each one
+mounted, and its checked-out commit against the pin, with no fetch), **leg
+shape files** (each leg's `AGENTS.md`, `CLAUDE.md` and `.gitignore` against
+`templates/<role>-root/`, a comparison: no leg file is pinned), **placement**
+(every tracked path of every leg, against the path policy), **agent files**,
+and **machine**. A FAMILY holder gets **family**, **manifest kinds**, **shape
+currency**, **placement** (`n/a`: no legs of its own), **agent files**, **members**
+and **machine**. Either, mid-merge, gets **merge** first: a `FINDING` naming the
+unmerged paths, or a `note` if none is left. A directory that is neither gets what
+it is CALLED under the naming policy, what IS in it, the way in and **machine** —
+and a repository the advisory is not silent about gets the **Triad** row, status
+`advisory`: said once and stepped over by the verdict (a leg gets its root).
 
 Every row is `ok`, `note`, `FINDING` or `n/a` — or `advisory`, the Triad row
 alone — and every one that is not `ok` names the exact command that fixes it,
@@ -1151,22 +1151,22 @@ verdict, and its exit code:
 | `COMPLIANT` | 0 | every row ok, and the pin names this standard's commit |
 | `COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)` | 1 | valid, and the standard has moved on |
 | `DRIFTED (…)` | 1 | a copy was edited here, or a leg is off its pin |
-| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere |
-| `INVALID (<rows>)` | 1 | a validator went red |
+| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere, or a submodule in a leg other than the one its `submodules:` record names |
+| `INVALID (<rows>)` | 1 | a validator went red, or (`merge`) the index holds an unmerged path |
 | `NOT A SHAPE ROOT` | 2 | neither manifest is there — adopt, or scaffold |
 
 Exit 3 is usage or environment — nothing about it is a statement about the
 tree you pointed at: no such path, a `shape-doctor.py` not sitting in a
 checkout of the standard, or a pin naming a commit **this** checkout does not
-carry (`CANNOT ANSWER`). **Drift outranks a red validator**
-on the verdict line, deliberately — an edited shape copy is exactly what makes
-`validate-pins.py` red, so answering `INVALID (pins)` would send the reader at
-the symptom while the fix is `update-shape.py`. The pins row is printed either
-way, with its own next command. `MISPLACED` sits between the two: a path in
-the wrong leg is a fact about the shape that no validator, pin or manifest
-here can see, while a red validator names itself in the table whether or not
-it also names the verdict line. `--json` is the same report as one object,
-each row carrying its `id`.
+carry (`CANNOT ANSWER`). **Drift outranks a red validator** on the verdict
+line, deliberately — an edited shape copy is exactly what makes
+`validate-pins.py` red, so `INVALID (pins)` would send the reader at the
+symptom while the fix is `update-shape.py`; the pins row still prints its own
+next command. `MISPLACED` sits between the two: a path in the wrong leg is a
+fact about the shape no validator, pin or manifest here can see. **An
+unfinished merge outranks all three**, as `INVALID (merge)`: the conflict is
+what turns the other rows red, and no fix commits until it is finished.
+`--json` is the same report as one object, each row carrying its `id`.
 
 **`placement` is the row that reads what is *inside* the legs.** Brett Heap,
 2026-09-10: *"we have to look for code in spec and spec in code"*. It runs the
