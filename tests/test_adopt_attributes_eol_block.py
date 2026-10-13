@@ -254,10 +254,10 @@ def index_only_link(repo: Path, link: str, target: str) -> None:
     its blob, as a tree records it: no symlink on the disk, so no privilege
     is needed on any platform."""
     blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
-                          cwd=str(repo), input=target, capture_output=True,
-                          text=True, check=True)
+                          cwd=str(repo), input=target.encode(UTF8),
+                          capture_output=True, check=True)
     git("update-index", "--add", "--cacheinfo",
-        f"120000,{blob.stdout.strip()},{link}", cwd=repo)
+        f"120000,{blob.stdout.decode(UTF8).strip()},{link}", cwd=repo)
 
 
 def test_a_link_checked_out_as_a_plain_file_is_not_written_through(tmp_path):

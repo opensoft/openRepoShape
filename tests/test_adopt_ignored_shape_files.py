@@ -874,9 +874,9 @@ def test_a_linked_attributes_file_checked_out_as_a_plain_file_adopts(
     appended and lists the lines a regular file needs (SHOULD-2)."""
     source = make_source_repo(tmp_path / "Thing", tree=LINKED_ATTRIBUTES_TREE)
     blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
-                          cwd=str(source), input="config/attributes",
-                          capture_output=True, text=True, check=True)
-    link = blob.stdout.strip()
+                          cwd=str(source), input=b"config/attributes",
+                          capture_output=True, check=True)
+    link = blob.stdout.decode("utf-8").strip()
     git("update-index", "--add", "--cacheinfo",
         f"{SYMLINK},{link},{ATTRIBUTES}", cwd=source)
     commit_index(source, "Link our attributes")
