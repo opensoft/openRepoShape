@@ -39,6 +39,9 @@ PYTHON ?= python3
 # One message, three targets, so the three refusals cannot drift apart. It
 # names the file, why it can be missing, and the two commands that take it:
 # `check` to read the verdict, then `apply --add` once the human has said so.
+# A holder that took the file and then DELETED it is the one case `check` does
+# not call upstream-added (`copy-missing`: the pin has a row, and `--add`
+# refuses a pinned path), so the message ends with that exit.
 SIBLINGS_SCRIPT := scripts/siblings.py
 SIBLINGS_MISSING = $(SIBLINGS_SCRIPT), which this holder does not have. \
     update-shape.py copies a changed Makefile but adds a new file only on the \
@@ -46,7 +49,9 @@ SIBLINGS_MISSING = $(SIBLINGS_SCRIPT), which this holder does not have. \
     here. From a checkout of openRepoShape run `python3 update-shape.py check \
     --root "$(CURDIR)"`, which reports $(SIBLINGS_SCRIPT) as upstream-added. \
     When the human says to take it, run the apply command it prints with \
-    --add $(SIBLINGS_SCRIPT) added
+    --add $(SIBLINGS_SCRIPT) added. If it reports copy-missing instead, a \
+    pinned copy was deleted: restore it from this holder's history rather \
+    than with --add
 SIBLINGS_GUARD = $(if $(wildcard $(SIBLINGS_SCRIPT)),,$(error make $(1) \
     needs $(SIBLINGS_MISSING)))
 .DEFAULT_GOAL := help

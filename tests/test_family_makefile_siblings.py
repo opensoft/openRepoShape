@@ -25,15 +25,17 @@ of history: a clone of this repository whose family-root template has no
 Makefile of v0.4 (d0df8d32), the one a holder cut on 2026-09-09 at 0170edd3
 holds. That is C1, and `family.py init` run from it cuts the holder. C2 puts
 the real files back, byte for byte out of the checkout under test, so the
-update goes from the old standard to this one. A fixture that took the real
-commit instead would pass on a checkout with no history, which `git clone`
-of a shallow checkout is.
+update goes from the old standard to this one. A fixture that checked out the
+real commit could not run on a checkout with no history, which is what `git
+clone` of a shallow checkout gives.
 
 `tests/test_update_shape_add.py` keeps the NEWER Makefile in its holder at C1,
 so its `scripts/siblings.py` row never meets a Makefile that has to change,
 which is why it did not cover this.
 
-Skipped only where `make` is absent, like the other tests that run it. No
+Skipped only where `make` is absent. Unlike `tests/test_park_resume_targets.py`
+it carries no `WINDOWS_SKIP`: the refusal needs no shell, and `windows-latest`
+ships a GNU make (`C:\\mingw64\\bin\\make.exe`), so these run there too. No
 network and no GitHub: bare repositories in a temporary directory, and a `gh`
 guard first on PATH (`tests/conftest.py`).
 """
@@ -165,6 +167,9 @@ def test_each_target_refuses_by_name_when_the_script_is_not_there(
         "the check command names THIS holder, ready to paste")
     assert "upstream-added" in err
     assert f"--add {SIBLINGS}" in err
+    assert "copy-missing" in err, (
+        "a holder that took the file and deleted it hears `copy-missing` from "
+        "`check`, and `--add` refuses a pinned path: the exit has to be named")
     assert "can't open file" not in both and "No such file" not in both, (
         "the point of the guard: not python's own failure")
     assert SIBLINGS not in out, (
@@ -282,12 +287,25 @@ def test_a_changed_makefile_without_the_script_is_said_to_leave_dead_targets(
                       "until it is added")
 
 
-@pytest.mark.parametrize("state", ["UNCHANGED", "LOCALLY_MODIFIED", "BOTH"])
-def test_only_a_makefile_apply_will_copy_is_said_to_leave_anything(
+def test_a_makefile_already_at_the_target_is_said_to_leave_them_too(
+        update_shape):
+    """THE SECOND `check`: after the first `apply` without `--add` the holder
+    is pinned at the target, so its Makefile reads `unchanged` and the script
+    `upstream-added` for as long as nobody takes it. The sentence is as true
+    then as before the copy, and a person reading the second `check` is the
+    one who needs it."""
+    clause = update_shape.left_dead_by(
+        SIBLINGS, [row(update_shape, "Makefile", update_shape.UNCHANGED)])
+    assert clause == ("this root's Makefile already calls it, so `make "
+                      "siblings`, `make park` and `make resume` cannot run "
+                      "until it is added")
+
+
+@pytest.mark.parametrize("state", ["LOCALLY_MODIFIED", "BOTH"])
+def test_a_makefile_that_is_kept_or_refused_is_said_to_leave_nothing(
         update_shape, state):
-    """`unchanged` is already the standard's; `locally-modified` is kept and
-    `both` is refused. None is a Makefile this run puts in front of a file it
-    does not add, and a note about one would be about something else."""
+    """`locally-modified` is kept and `both` is refused: the root's bytes are
+    its own, and nobody knows what they call."""
     rows = [row(update_shape, "Makefile", getattr(update_shape, state))]
     assert update_shape.left_dead_by(SIBLINGS, rows) == ""
 
@@ -441,6 +459,34 @@ def test_apply_without_add_still_copies_and_does_not_refuse(
             "`make park` and `make resume` cannot run until it is added)"
             ) in note[0]
     assert "family ok:" in result.stdout, "validate-family stays green"
+
+
+def test_the_second_check_and_apply_say_it_too(without_add, standard):
+    """The holder is now pinned at the target: its Makefile is `unchanged` and
+    the script is still `upstream-added`. `check` and a second `apply` both
+    still carry the sentence, in the words for a Makefile that is already
+    there."""
+    root, _ = without_add
+    clause = ("this root's Makefile already calls it, so `make siblings`, "
+              "`make park` and `make resume` cannot run until it is added")
+    checked = run_script(UPDATE, "check", "--root", str(root),
+                         "--upstream", str(standard["upstream"]),
+                         "--at", standard["c2"])
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    states = {}
+    for line in checked.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and line.startswith("  "):
+            states[parts[1]] = parts[0]
+    assert states["Makefile"] == "unchanged", checked.stdout
+    assert states[SIBLINGS] == "upstream-added", checked.stdout
+    assert checked.stdout.count(clause) == 1, checked.stdout
+    again = apply(standard, root)
+    assert again.returncode == 0, again.stdout + again.stderr
+    note = [line for line in again.stdout.splitlines()
+            if line.startswith("  note") and SIBLINGS in line]
+    assert len(note) == 1 and f"({clause})" in note[0], again.stdout
+    assert not (root / SIBLINGS).exists()
 
 
 @pytest.mark.parametrize("verb", VERBS)

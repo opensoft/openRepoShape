@@ -414,8 +414,8 @@ python3 scripts/family.py siblings --family-root <path>
 6. `update-shape.py` updates a family root exactly as it updates a project,
    with the same four refusals, and mirrors into `family.yaml`. An existing
    holder receives `scripts/siblings.py` that way: `check` reports it as
-   `upstream-added` and `apply --add scripts/siblings.py` takes it, on the
-   human's word; without it `make siblings`, `park` and `resume` refuse.
+   `upstream-added`, `apply --add scripts/siblings.py` takes it on the human's
+   word, per file, and without it `make siblings`, `park` and `resume` refuse.
 
 ## Parking and resuming
 

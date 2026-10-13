@@ -857,24 +857,30 @@ CALLED_BY_A_COPY = {
 
 
 def left_dead_by(path: str, rows: list[Row]) -> str:
-    """What copying a changed file leaves that cannot run when `path` is not
+    """What a copy that calls `path` leaves that cannot run while `path` is not
     added, or "" (#489).
 
-    Only a caller `apply` is about to re-copy counts: `upstream-changed` is
-    the one verdict whose bytes it writes on its own. An `unchanged` copy
-    already is the standard's, and a `locally-modified` or `both` one is kept
-    or refused, so none of those is a copy this run puts in front of a file
-    it does not add.
+    TWO CALLERS COUNT, and they are the two the root can hold the standard's
+    own bytes in. `upstream-changed` is the one verdict whose bytes `apply`
+    writes on its own, so the copy it is about to put in front of a file it
+    does not add. `unchanged` is the root AFTER that `apply`: pinned at the
+    target, holding the target's copy, and every later `check` finds the
+    script `upstream-added` still, so the sentence has to be there on the
+    second `check` as much as on the first. A `locally-modified` or `both`
+    copy is kept or refused, and says nothing about what it calls.
     """
     called = CALLED_BY_A_COPY.get(path)
     if called is None:
         return ""
     caller, what = called
-    if not any(row.path == caller and row.state == UPSTREAM_CHANGED
-               for row in rows):
-        return ""
-    return (f"the {caller} that `apply` copies calls it, so {what} cannot "
-            "run until it is added")
+    states = {row.state for row in rows if row.path == caller}
+    if UPSTREAM_CHANGED in states:
+        return (f"the {caller} that `apply` copies calls it, so {what} "
+                "cannot run until it is added")
+    if UNCHANGED in states:
+        return (f"this root's {caller} already calls it, so {what} cannot "
+                "run until it is added")
+    return ""
 
 
 #: An NTFS junction's reparse tag. `stat` names IO_REPARSE_TAG_MOUNT_POINT on
