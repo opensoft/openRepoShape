@@ -1041,9 +1041,9 @@ HAND: re-copy, re-pin, re-validate. `update-shape.py` is that, as one command:
 product: **`unchanged`**, **`upstream-changed`** (the bytes differ between the
 pinned commit and the target), **`locally-modified`** (the project's bytes
 differ from the pinned digest — drift it introduced) or **`both`**; also
-`already-at-target` (the root has the target's bytes) and `upstream-removed`,
-`unmapped` and `copy-missing`; `apply` refuses the last three. It exits 1 when
-there is anything to do, so it can be a scheduled job.
+`already-at-target` (the root has the target's bytes), `merged-away` (below),
+`upstream-removed`, `unmapped` and `copy-missing`; `apply` refuses the last
+three. It exits 1 when there is anything to do, so it can be a scheduled job.
 
 `apply` copies the `upstream-changed` files, rewrites `contracts/shape-pin.yaml`
 (`commit`, `digests.tree_sha256` recomputed over the upstream tree under the
@@ -1066,9 +1066,9 @@ copying the upstream bytes over that would delete it without saying so.
 **Only the pin's own rows are RE-SYNCED.** The file list is read from
 `contracts/shape-pin.yaml` and never re-derived from this repository's copy
 lists. An in-place adoption collides on `Makefile`, `README.md` and
-`.gitignore`; the shape's copies land under `shape/`, a human merges them and
-usually drops the rows. A file with no row is not a shape copy, and re-deriving
-the list would resurrect one the project deliberately merged away.
+`.gitignore`; the shape's copies land under `shape/`. Once a human merges one
+and removes it, `check` calls its row `merged-away` and `apply` drops the row.
+A file with no row is no shape copy; re-deriving the list would resurrect it.
 
 **A file the standard ADDS later is the other half, and it is named, never
 assumed.** A pin can only record what existed the day it was written, so

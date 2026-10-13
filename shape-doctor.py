@@ -1715,7 +1715,9 @@ def check_pins(ctx: Context) -> Row:
     output: list[str] = []
     row = validator_row(ctx, "pins", "pins", *PINS_GATE,
                         ["--root", str(ctx.root)], output=output)
-    return with_gitlink_repairs(ctx, row, "".join(output))
+    whole = "".join(output)
+    return with_merged_away_rows(ctx, with_gitlink_repairs(ctx, row, whole),
+                                 whole)
 
 
 def bump_leg_command(shape: Path, root: Path, role: str, commit: str,
@@ -1922,6 +1924,90 @@ def with_gitlink_repairs(ctx: Context, row: Row, output: str) -> Row:
         "remote contains, so a commit made in the leg is pushed first")
     row.detail["gitlink_repairs"] = off
     return row
+
+
+#: How every `validate-pins.py` since v0 spells a pinned copy that is not
+#: there: the code, and the words after `<pin>: <path>` (#502).
+COPY_MISSING_CODE = "shape-copy-missing"
+COPY_MISSING_TAIL = " is pinned but absent"
+
+
+def merged_away_findings(ctx: Context, output: str) -> dict | None:
+    """`{pinned path: the file it was merged into}` when EVERY finding in
+    the gate's `output` is `shape-copy-missing` for a `shape/` collision
+    copy `update-shape.py` calls merged-away (#502); None when there is
+    none, or when any finding is anything else.
+
+    THE PATH IS READ OUT OF THE GATE'S OWN LINE, `FINDING
+    shape-copy-missing: contracts/shape-pin.yaml: <path> is pinned but
+    absent`, and judged by `update-shape.py`'s `merged_into`, the function
+    `check` classifies the row with, so this row and the `shape currency`
+    row cannot disagree about which rows `apply` drops. A line this cannot
+    read that way is a finding it cannot vouch for, and the answer is None.
+    """
+    us = ctx.update_shape()
+    lead = f"{SHAPE_PIN}: "
+    merged: dict[str, str] = {}
+    for line in output.splitlines():
+        found = FINDING_LINE.match(line)
+        if found is None:
+            continue
+        code, rest = found.group("code", "rest")
+        if code != COPY_MISSING_CODE or not rest.startswith(lead) \
+                or not rest.endswith(COPY_MISSING_TAIL):
+            return None
+        path = rest[len(lead):-len(COPY_MISSING_TAIL)]
+        original = us.merged_into(ctx.root, path)
+        if original is None:
+            return None
+        merged[path] = original
+    return merged or None
+
+
+def with_merged_away_rows(ctx: Context, row: Row, output: str) -> Row:
+    """The `pins` row, naming `update-shape.py check` as its NEXT where every
+    finding the gate reports is a merged-away collision copy's row (#502).
+
+    THE DEFECT. An adopted root that did its follow-up, "merge shape/X into
+    X", and removed the merged copy kept the copy's pin row, so its own
+    `validate-pins.py` said `shape-copy-missing`, and this row's NEXT was
+    that gate, which names no repair. No tool removed the row, and the hand
+    edit of the pin that would is the one AGENTS.md forbids. Brett Heap
+    ruled that the row goes, with `check` naming it and `apply` dropping it,
+    so this row names the same step the `shape currency` row does: `check`,
+    which reports the row `merged-away` and prints the `apply` that drops
+    it behind the human's yes. The reason says so, and the command is the
+    whole NEXT.
+
+    ONLY WHERE THE STEP CLEARS EVERY FINDING, as `with_gitlink_repairs`
+    names `bump-leg.py` only where a bump clears them: any other finding, a
+    gate that refused or crashed, and the row is returned untouched, its
+    NEXT the gate. A NEW ROW rather than this one changed in place, so
+    nothing said about the gate's command stays beside a NEXT that is not
+    the gate.
+    """
+    if row.status != FINDING or row.detail.get("exit") != 1 \
+            or row.detail.get("crashed"):
+        return row
+    merged = merged_away_findings(ctx, output)
+    if merged is None:
+        return row
+    one = len(merged) == 1
+    copies = ", ".join(f"{path} (merged into {original})"
+                       for path, original in merged.items())
+    reason = (f"{row.reason}. {copies} "
+              + ("is a collision copy" if one else "are collision copies")
+              + " the root merged away, so `update-shape.py check` reports "
+              + ("it" if one else "them") + " `merged-away`, and the "
+              "`apply` it prints drops "
+              + ("its pin row" if one else "their pin rows")
+              + " in the re-pin commit: the step the `shape currency` row "
+              "names too")
+    return Row(row.id, row.label, row.status, reason,
+               f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} check "
+               f"--root {quote_arg(ctx.root)} --upstream "
+               f"{quote_arg(ctx.shape)}",
+               {**row.detail, "merged_away": merged})
 
 
 def check_family(ctx: Context) -> Row:
@@ -3009,8 +3095,12 @@ def check_shape_currency(ctx: Context) -> Row:
                   "paths": by_state, "conflicts": conflicts,
                   "behind": bool(counts.get(us.UPSTREAM_CHANGED)
                                  or counts.get(us.UPSTREAM_ADDED)),
+                  # A MERGED-AWAY ROW IS DRIFT TOO (#502): the pin names a
+                  # copy the tree does not hold, and `apply` drops the row.
                   "drifted": bool(counts.get(us.LOCALLY_MODIFIED)
-                                  or counts.get(us.BOTH) or conflicts)}
+                                  or counts.get(us.BOTH)
+                                  or counts.get(us.MERGED_AWAY)
+                                  or conflicts)}
         where = f"pinned {pinned[:12]}, this standard {target[:12]}"
         note = readme_shape_note(ctx, us, upstream.repository, pinned, detail)
         moved = [row for row in reported if row.state != us.UNCHANGED]
@@ -6207,11 +6297,19 @@ def drifted_file_reasons(counts: dict) -> list:
     A state is named only when its count is non-zero: a verdict line reading
     `0 unmapped` would be a parenthetical contradicting the words above it.
 
+    `merged-away` IS NAMED LAST (#502): a `shape/` collision copy merged into
+    the file it collided with and removed, whose row `update-shape.py apply`
+    drops. Until it does, the pin names a copy the tree does not hold, which
+    is what makes the project's own `validate-pins.py` red, so the verdict
+    names the cause and not the `pins` row.
+
     Split out of `verdict_for` for #134.
     """
+    merged = ("merged-away",)
     edited = ("locally-modified", "both")
     unmapped = ("upstream-removed", "unmapped", "copy-missing")
     return [f"{counts[state]} {state}" for state in edited + unmapped
+            + merged
             if counts.get(state)]
 
 
