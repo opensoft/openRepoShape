@@ -5623,8 +5623,60 @@ def assert_the_pin_alone_is_taken(currency: dict, kinds: dict,
     note = currency["next"].split("   #", 1)[1]
     assert f"{copy} is a copy conflicted too" in note, note
     assert "merges it by hand, keeping the hunks git merged" in note, note
-    assert "apply --accept-local" in note, note
+    assert "Take one side of the pin whole and never a hand-merged pin" \
+        in note, note
+    assert "every path named" not in note, note
+    for words in ("update-shape.py apply --accept-local on that copy "
+                  "re-pins it from the merge",
+                  "check calls the copy locally-modified",
+                  "where check calls it both, the apply the row names is "
+                  "refused as update-conflict and asks for --accept-local "
+                  "on that path"):
+        assert words in note, (words, note)
     assert_a_plain_note(currency["next"])
+
+
+def re_pinned_from_the_merge(moved: Path, root: Path, currency: dict,
+                             copy: str, ours: str) -> None:
+    """The note's last sentences, followed from the `shape currency` row
+    both ways round (review of PR #496, F1), to COMPLIANT.
+
+    With the update side's pin taken, the copy as merged is
+    `locally-modified`, and the row's own `apply` names `--accept-local
+    <copy>`. With the person's side's pin taken, behind the standard the
+    copy was merged from, it is `both`, and the row names no
+    `--accept-local`, as AGENTS.md's rule 3 wants: its `apply`, run as
+    spelled, is refused `update-conflict`, moves nothing, and asks for
+    `--accept-local` on that path. Either way that `apply --accept-local
+    <copy>` re-pins the copy from the merge and the root is COMPLIANT.
+    """
+    then = currency["next"].split("   #", 1)[1].split()
+    assert then[:2] == ["then", "apply"], currency["next"]
+    args = then[2:]
+    apply = (moved / "update-shape.py", "apply", "--root", str(root),
+             "--upstream", str(moved))
+    if ours == "upgrade":
+        assert args[args.index("--accept-local") + 1] == copy, then
+    else:
+        assert "--accept-local" not in args, then
+
+        def held() -> tuple:
+            return (git("rev-parse", "HEAD", cwd=root).stdout,
+                    git("branch", "--list", cwd=root).stdout,
+                    git("status", "--porcelain=v1", cwd=root).stdout,
+                    (root / copy).read_bytes())
+
+        before = held()
+        refused = run_script(*apply, *args)
+        said = refused.stdout + refused.stderr
+        assert refused.returncode == 2, said
+        assert "update-conflict" in said and f"    {copy}: " in said, said
+        assert "--accept-local on that path" in said, said
+        assert held() == before, "the refused apply moved something"
+        args = [*args, "--accept-local", copy]
+    applied = run_script(*apply, *args)
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    compliant_again(moved, root)
 
 
 @pytest.mark.parametrize("ours", [
@@ -5646,8 +5698,10 @@ def test_a_copy_conflicted_with_the_shape_pin_is_left_to_a_person(
     it is in, where it said `project` while its NEXT overwrote the file.
     The next run names the copy's read-only `diff`, and the doctor is not
     COMPLIANT until a person has merged it and, where the merge differs
-    from the pin, re-pinned it with the `--accept-local` the `shape
-    currency` row names. HEAD then holds every line of both sides.
+    from the pin, re-pinned it with `apply --accept-local`: the `shape
+    currency` row names it for a `locally-modified` copy, and the row's
+    refused `apply` asks for it on a `both` one. HEAD then holds every
+    line of both sides, either way round.
 
     Until the merge is committed the verdict is #424's `INVALID (merge)`,
     the index holding the copy and the pin unmerged before the NEXT and
@@ -5687,41 +5741,38 @@ def test_a_copy_conflicted_with_the_shape_pin_is_left_to_a_person(
     verdict, rows = verdict_of(moved, project)
     assert_the_merge_is_finished(
         verdict, rows, "locally-modified" if ours == "upgrade" else "both")
-    if ours == "upgrade":
-        currency = rows["shape-currency"]
-        then = currency["next"].split("   #", 1)[1].split()
-        assert then[:2] == ["then", "apply"], currency["next"]
-        assert then[then.index("--accept-local") + 1] == NAMING_COPY, then
-        applied = run_script(moved / "update-shape.py", "apply", "--root",
-                             str(project), "--upstream", str(moved),
-                             *then[2:])
-        assert applied.returncode == 0, applied.stdout + applied.stderr
-        compliant_again(moved, project)
+    re_pinned_from_the_merge(moved, project, rows["shape-currency"],
+                             NAMING_COPY, ours)
     kept = git("show", f"HEAD:{NAMING_COPY}", cwd=project).stdout
     for line in (PROJECT_LINE, PROJECT_TAIL, SHAPE_TAIL):
         assert line.decode() in kept, line
 
 
+@pytest.mark.parametrize("ours", [
+    pytest.param("upgrade", id="the-update-side-ours"),
+    pytest.param("local", id="the-persons-side-ours"),
+])
 def test_a_makefile_conflicted_with_the_shape_pin_keeps_the_projects_target(
-        standard, project, tmp_path):
+        standard, project, tmp_path, ours):
     """Probe OD2 (#485), the copy a project most often edits. The project
     appends its own target to the Makefile and keeps it with
     `--accept-local`, and the standard's newer Makefile appends another.
-    The update branch merges the project's.
+    Either branch merges the other (review of PR #496, N2).
 
     The NEXT named `Makefile` with the pin, and once the merge was finished
-    HEAD's Makefile had lost the project's target and the doctor said
-    COMPLIANT. Now the Makefile keeps both sides through the NEXT, the
-    doctor is not COMPLIANT until a person has merged it and accepted the
-    merge, and HEAD's Makefile then holds both targets. Until the merge is
-    committed the verdict is #424's `INVALID (merge)`, and after it the
-    Makefile's drift.
+    HEAD's Makefile had lost the other side's target and, with the update
+    side as ours, the doctor said COMPLIANT. Now the Makefile keeps both
+    sides through the NEXT, the doctor is not COMPLIANT until a person has
+    merged it and accepted the merge, and HEAD's Makefile then holds both
+    targets. Until the merge is committed the verdict is #424's `INVALID
+    (merge)`, and after it the Makefile's drift: `locally-modified` with
+    the update side's pin taken, `both` with the person's.
     """
     moved, s1, s2 = standard_appended(standard, tmp_path, UPSTREAM_TARGET,
                                       NEWER_TARGET)
     held = two_shape_updates_merged(
         moved, s1, s2, project, "Makefile",
-        lambda r: append_to(r / "Makefile", OWN_TARGET), "upgrade")
+        lambda r: append_to(r / "Makefile", OWN_TARGET), ours)
     assert b"ship:" in held and b"doctor:" in held, held[-400:]
     verdict, rows = verdict_of(moved, project)
     assert_the_merge_is_unfinished(verdict, rows, ["Makefile", SHAPE_PIN])
@@ -5737,13 +5788,10 @@ def test_a_makefile_conflicted_with_the_shape_pin_keeps_the_projects_target(
     git("add", "--", "Makefile", SHAPE_PIN, cwd=project)
     commit_in(project, "the Makefile merged by hand")
     verdict, rows = verdict_of(moved, project)
-    assert_the_merge_is_finished(verdict, rows, "locally-modified")
-    then = rows["shape-currency"]["next"].split("   #", 1)[1].split()
-    assert then[then.index("--accept-local") + 1] == "Makefile", then
-    applied = run_script(moved / "update-shape.py", "apply", "--root",
-                         str(project), "--upstream", str(moved), *then[2:])
-    assert applied.returncode == 0, applied.stdout + applied.stderr
-    compliant_again(moved, project)
+    assert_the_merge_is_finished(
+        verdict, rows, "locally-modified" if ours == "upgrade" else "both")
+    re_pinned_from_the_merge(moved, project, rows["shape-currency"],
+                             "Makefile", ours)
     kept = git("show", "HEAD:Makefile", cwd=project).stdout
     assert "ship:" in kept and "doctor:" in kept, kept[-400:]
 

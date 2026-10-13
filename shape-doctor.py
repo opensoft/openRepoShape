@@ -2560,9 +2560,18 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    name its path (review of PR #358). Where one of them is
                    conflicted the note says a person merges it by hand,
                    keeping the hunks git merged, as a copy conflicted on its
-                   own is merged, and that the `shape currency` row then
-                   names the `apply --accept-local` that re-pins a copy
-                   merged unlike the pin.
+                   own is merged, and that `update-shape.py apply
+                   --accept-local` on a copy merged unlike the pin re-pins
+                   it from the merge. The `shape currency` row names it
+                   where `check` calls the copy `locally-modified`, as it
+                   does with the update side's pin taken. With the
+                   person's side's pin taken, behind the standard the copy
+                   was merged from, `check` calls it `both`, and the row's
+                   `apply` is refused `update-conflict` and asks for it
+                   (review of PR #496). The row never names it for `both`:
+                   AGENTS.md's rule 3 is never to pass it to make a refusal
+                   go away, and nothing here tells a copy merged by hand
+                   from one nobody merged.
                    The manifest and README.md are never named either, though
                    `apply` writes lines of them: every other line is the
                    project's own, and one side taken whole drops the other
@@ -2664,8 +2673,8 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                        ("--theirs", b"3") if b"3" in pin_stages else
                        (None, None))
         if side:
-            note = ("--theirs takes the other side. Take one side whole"
-                    if b"3" in pin_stages and side == "--ours"
+            note = (f"--theirs takes the other side. Take one side of the "
+                    f"{what} whole" if b"3" in pin_stages and side == "--ours"
                     else f"only that side of the merge holds a {what}. Take "
                     "it whole")
             lines, copies = [], []
@@ -2699,14 +2708,18 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                         + ("each" if len(copies) > 1 else "it")
                         + " by hand, keeping the hunks git merged")
                     after = (". Where a copy as merged differs from the pin, "
-                             "the shape currency row then names the "
-                             "update-shape.py apply --accept-local that "
-                             "re-pins it from the merge")
+                             "update-shape.py apply --accept-local on that "
+                             "copy re-pins it from the merge. The shape "
+                             "currency row names it where update-shape.py "
+                             "check calls the copy locally-modified, and "
+                             "where check calls it both, the apply the row "
+                             "names is refused as update-conflict and asks "
+                             "for --accept-local on that path")
                 then = ". " + ". ".join(said) + ". Then finish"
             return "unmerged", (
-                f"{git_c} checkout {side} -- {quote_arg(pin)}   # {note} for "
-                f"every path named and never a hand-merged {what}{then} the "
-                f"merge as git says and run this doctor again{after}")
+                f"{git_c} checkout {side} -- {quote_arg(pin)}   # {note} and "
+                f"never a hand-merged {what}{then} the merge as git says and "
+                f"run this doctor again{after}")
     elif pin_reads_at(ctx, "HEAD", pin):
         if xy and shown:
             return "uncommitted", (
