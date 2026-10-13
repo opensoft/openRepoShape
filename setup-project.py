@@ -1663,6 +1663,143 @@ def resolve_family(opts: Options, shape_root: Path) -> Landing:
 
 
 # ---------------------------------------------------------------------------
+# 3c. the clone path, while nothing exists
+# ---------------------------------------------------------------------------
+
+#: THE WAYS OUT OF A TAKEN CLONE PATH. This tool deletes and moves nothing
+#: itself, and it offers deleting only as strongly as it KNOWS that nothing
+#: is lost. An empty directory holds nothing: move or delete it. What looks
+#: like a rehearsal's clone is a GUESS - a real working clone of a local, NAS
+#: or UNC repository named `<Project>.git` looks the same, unpushed commits
+#: and all - so deleting is offered on the person's own condition (#498,
+#: review round 1). Anything else is somebody's: move it, or put the project
+#: somewhere else.
+DISCARD_IT = "Move or delete it, then run this again."
+DISCARD_IT_IF_UNUSED = ("Move it, or delete it if nothing in it is yours, then "
+                        "run this again.")
+KEEP_IT = "Move it, or choose another --into, then run this again."
+
+
+def origin_recorded_in(clone: str) -> str:
+    """The `origin` URL `<clone>/.git/config` records, or "" when it records
+    none this can read.
+
+    THE FILE, NEVER A DISCOVERY. `git -C <clone>` would look for a
+    repository and, finding none in `<clone>` itself - an empty `.git`, a
+    broken one - would walk up and answer for whatever repository holds
+    `<into>`, naming somebody else's `origin` as this directory's. `git
+    config --file` reads that one file, with no includes and no URL
+    rewriting. A `.git` FILE (a worktree, a submodule) keeps its config
+    elsewhere, so there is nothing here to read and the caller says less.
+    And no git runs INSIDE a directory this tool did not make: its config
+    can name a command (`core.fsmonitor`) that `git status` executes.
+
+    A value carrying a control character is not echoed: it would print a
+    line this tool did not write (`CONTROL_RE`).
+    """
+    config = os.path.join(clone, ".git", "config")
+    if not os.path.isfile(config):
+        return ""
+    proc = run(["git", "config", "--file", config, "--get",
+                "remote.origin.url"], capture=True)
+    url = (proc.stdout or "").strip() if proc.returncode == 0 else ""
+    return "" if CONTROL_RE.search(url) else url
+
+
+def is_on_this_disk(url: str) -> bool:
+    """An `origin` that is a path rather than a host: what `git clone` of a
+    local repository records (it makes the path absolute), which is what a
+    `--local-remote-dir` rehearsal's clone has."""
+    return url.startswith("file:") or os.path.isabs(url)
+
+
+def without_credentials(url: str) -> str:
+    """`url` with any `user:token@` after its scheme dropped: an `origin` is
+    echoed into a refusal an assistant may relay, and a token is not part of
+    what is there. Up to the LAST `@` before the path, because a password
+    holding a bare `@` would otherwise leave its tail on the screen."""
+    return re.sub(r"(?<=://)[^/]*@", "", url, count=1)
+
+
+def what_stands_at(clone: str, project: str) -> tuple:
+    """`(one sentence saying what is at clone, the way out)`; the sentence
+    is "" when this cannot tell.
+
+    A REHEARSAL'S CLONE IS THE CASE THIS EXISTS FOR (#498). README's
+    "Rehearse first" leaves `./<Project>` behind, cloned from the bare
+    `<dir>/<Project>.git` that `--local-remote-dir` made, and the real run
+    that follows it in the same folder lands on exactly that path. It LOOKS
+    like one when all three hold: an `origin` on this disk, named
+    `<Project>.git`, and a `project.yaml` at its root. That is said as a
+    look, never as a fact, and deleting it is offered only "if nothing in
+    it is yours": a working clone of a local or network repository meets
+    all three, and this tool cannot see its unpushed work without running
+    git inside it (`origin_recorded_in` says why it does not).
+
+    A SYMBOLIC LINK IS SAID TO BE ONE, first, and never offered for
+    deletion: `os.path.isdir` follows it, and `rm -r <path>/` on the
+    advice "delete it" would act on its target.
+    """
+    try:
+        if os.path.islink(clone):
+            target = os.readlink(clone)
+            if not target or CONTROL_RE.search(target):
+                return "It is a symbolic link.", KEEP_IT
+            return "It is a symbolic link to %s." % target, KEEP_IT
+        if not os.path.isdir(clone):
+            return "", KEEP_IT
+        if not os.path.lexists(os.path.join(clone, ".git")):
+            if os.listdir(clone):
+                return "It is a directory that is not a git clone.", KEEP_IT
+            return "It is an empty directory.", DISCARD_IT
+    except OSError:
+        return "", KEEP_IT
+    origin = origin_recorded_in(clone)
+    if not origin:
+        return "It is a directory holding a `.git`.", KEEP_IT
+    shown = without_credentials(origin)
+    if (is_on_this_disk(origin)
+            and os.path.basename(origin.rstrip("/\\")) == project + ".git"
+            and os.path.isfile(os.path.join(clone, "project.yaml"))):
+        return ("It looks like the clone a rehearsal left behind: its `origin` "
+                "is %s, a repository on this disk, as `--local-remote-dir` "
+                "makes one." % shown), DISCARD_IT_IF_UNUSED
+    return "It is a clone of %s." % shown, KEEP_IT
+
+
+def refuse_a_taken_clone_path(clone: str, project: str) -> None:
+    """Refuse, HERE, a clone path that anything at all already stands at.
+
+    THE QUESTION IS ASKED WHERE THE ANSWER IS DECIDED (#498). `resolve_family`
+    has just fixed `<into>/<Project>` (or `<into>/<Family>/<Project>`), and
+    nothing exists yet. Asked only in step (7), as it used to be, the same
+    question came after step (6) had created all three repositories and
+    pushed them: a person who rehearsed and then ran for real in the same
+    folder - README's own order - got three new repositories on GitHub, no
+    project, a hand clone that failed on the same directory, and a re-run
+    refused `scaffold-remote-exists`.
+
+    ANY ENTRY AT THAT NAME, `lexists`: a directory, a file, and a symbolic
+    link to nothing, which `exists` reads as absent and `git clone` still
+    refuses. An EMPTY directory is refused too, although `git clone` would
+    take one (#498's option 1, put to Brett Heap on 2026-10-13, who did not
+    object): the rule is "nothing there", said once, rather than one more
+    case to explain.
+
+    The refusal says nothing was created, names the path, and says what is
+    there where `what_stands_at` can tell. Step (7) keeps its own check, for
+    a path that appears while the run is going.
+    """
+    if not os.path.lexists(clone):
+        return
+    what, way_out = what_stands_at(clone, project)
+    die(" ".join(part for part in (
+        "%s already exists, and that is where this project would be cloned, "
+        "so the run stops here and nothing was created." % clone,
+        what, way_out) if part))
+
+
+# ---------------------------------------------------------------------------
 # 4. the names, before anything exists
 # ---------------------------------------------------------------------------
 
@@ -1741,7 +1878,7 @@ def scaffold_args(opts: Options, org: str) -> list:
 
 
 def plan_and_confirm(opts: Options, shape_root: Path, org: str,
-                     args: list) -> None:
+                     args: list, clone: str) -> None:
     say("")
     say("(5) the plan")
     planned = run([PYTHON, str(shape_root / SCAFFOLD), *args,
@@ -1749,6 +1886,18 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
     if planned.returncode != 0:
         raise Refusal("the plan could not be produced (see above).",
                       shell_status(planned.returncode))
+
+    # THE ONE THING THE RUN WRITES ON THIS DISK IS IN THE PLAN TOO (#498).
+    # The scaffold's plan names the three repositories; the clone path - set
+    # by `--into`, by the developer path's `..`, by a family folder - was
+    # said before the `yes` only by `--family`'s `lands at`, far above, so a
+    # person learned where the project went from `DONE`. Step (3) has
+    # already refused a path that is taken, so this line is where to look
+    # afterwards, not a warning; it is printed on every run, `--yes` and no
+    # terminal included, since the plan is what an assistant relays to the
+    # person deciding.
+    say("")
+    say("clone into   %s" % clone)
 
     if opts.assume_yes:
         return
@@ -1863,12 +2012,20 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
     # The three repositories now EXIST. Everything from here is recoverable by
     # hand, so a failure names the command that finishes the job rather than
     # leaving the person wondering what was created.
-    if os.path.exists(clone):
-        die("%s already exists, so there is nowhere to clone into. The three "
-            "repositories WERE created. Finish by hand:\n"
+    #
+    # THE BACKSTOP (#498). `refuse_a_taken_clone_path` asked this in step (3),
+    # before anything existed, so a path taken HERE appeared while the run
+    # was going. `lexists` for the same reason it is there. The way out moves
+    # the thing aside FIRST and runs the clone from the clone's parent: as it
+    # used to read, the hand clone met the same directory and failed, and
+    # `cd <Project>` from anywhere else entered whatever was there.
+    if os.path.lexists(clone):
+        die("%s already exists - it was not there when step (3) looked - so "
+            "there is nowhere to clone into. The three repositories WERE "
+            "created. Move it aside, then finish by hand in %s:\n"
             "    git clone --recurse-submodules %s\n"
             "    cd %s && %s %s"
-            % (clone, urls["assembly"], opts.project, PYTHON_CMD,
+            % (clone, parent, urls["assembly"], opts.project, PYTHON_CMD,
                BOOTSTRAP))
 
     say("")
@@ -2081,9 +2238,11 @@ def _main(argv, invocation_dir: str) -> int:
     org = resolve_org(opts, invocation_dir)
     resolve_project_and_elector(opts, shape_root)
     landing = resolve_family(opts, shape_root)
+    clone = landing.clone_path(opts.project)
+    refuse_a_taken_clone_path(clone, opts.project)
     check_names(shape_root, opts.project, opts.family)
     args = scaffold_args(opts, org)
-    plan_and_confirm(opts, shape_root, org, args)
+    plan_and_confirm(opts, shape_root, org, args, clone)
     scaffold(shape_root, args)
     created = clone_and_bootstrap(opts, org, landing)
     hand_over(opts.project, created["clone"], created["urls"], org, landing)
