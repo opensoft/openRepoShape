@@ -57,6 +57,9 @@ holder only, so a `contracts/family.yaml` in an assembly root -- or a
 
 THE ROWS, for an assembly root, in this order:
 
+    merge             only in the middle of a merge: a FINDING naming the
+                      index's unmerged paths, or a `note` once nothing is
+                      left unmerged; no row at all otherwise (#424)
     naming            the three leg names against the STANDARD's own
                       `contracts/repository-naming.yaml`
     manifest          the project's own `scripts/validate-manifest.py` when it
@@ -85,9 +88,10 @@ THE ROWS, for an assembly root, in this order:
     machine           whether this workstation can RUN the fixes named above
                       (`setup-project.py --preflight`, plus `git-filter-repo`)
 
-and for a FAMILY holder: `family` (its own `scripts/validate-family.py`),
-`manifest kinds`, `shape currency`, `placement` (`n/a`: a holder has no legs
-of its own), `members` and `machine`. A directory that
+and for a FAMILY holder: `merge` likewise, `family` (its own
+`scripts/validate-family.py`), `manifest kinds`, `shape currency`,
+`placement` (`n/a`: a holder has no legs of its own), `agent files`,
+`members` and `machine`. A directory that
 is NEITHER gets `naming` (what it is called, under the policy), `what is
 here`, `the way in` -- `adopt-project.py plan` for a repository that already
 exists, `setup.sh` for a new one -- and `machine`.
@@ -104,6 +108,18 @@ the manifest declares says `n/a` and waits on that row, and the verdict is
 `INVALID (manifest)` -- `(family)` in a holder -- exit 1. A file that loads
 and declares its kind still decides first, so no root that declared one
 reads differently.
+
+A ROOT IN THE MIDDLE OF A MERGE IS NOT COMPLIANT (#424). The other rows read
+the working tree, and a leg's commit from the index -- or from HEAD, for a
+gitlink a conflicted merge holds only at stages 1, 2 and 3. That is right
+for a validator and wrong for a verdict: a root whose index holds an
+unmerged path is one `git commit` refuses, and it read COMPLIANT, exit 0,
+once the conflict markers were out of the files those rows read. So the
+`merge` row, FIRST on both kinds of root, asks git for the unmerged paths
+and is a FINDING naming them, with `git -C <root> status` as its NEXT, and
+the verdict is `INVALID (merge)`, exit 1, on a rung above every other but
+CANNOT ANSWER (`merge_verdict` says why). A merge with nothing left unmerged
+is a `note`: git commits it as it stands. With neither, there is no row.
 
 AND ONE MORE ROW, `Triad`, WHERE THE RULE SAYS SO. Brett Heap, 2026-10-06:
 "ratify 1249 as recommended" (openxFactory `prefer-triad-project-shape`):
@@ -238,7 +254,9 @@ MISPLACED sits between the two, under DRIFTED and over INVALID: a path in the
 wrong leg is a fact about the SHAPE -- the subject of this whole standard --
 that no validator, pin or manifest here can see, whereas a red validator names
 itself in the table either way and loses nothing by not being on the verdict
-line.
+line. An unfinished merge outranks all three, for the reason drift outranks a
+red validator: the conflict it leaves is what turns the other rows red, and
+none of their fixes can be committed until it is finished.
 
 STANDARD LIBRARY ONLY, like everything else shipped here. Printed text is
 ASCII: a verdict a cp1252 console cannot render is a verdict nobody reads, and
@@ -723,11 +741,12 @@ class Check:
     takes, for the same reason: putting a repository back into shape rewrites
     somebody's tree.
 
-    `run` RETURNS ONE ROW, OR NONE FOR A CHECK THAT IS SILENT BY RULE. One
-    check is: the Triad advisory, which the ratified rule makes SILENT in an
+    `run` RETURNS ONE ROW, OR NONE FOR A CHECK THAT IS SILENT BY RULE. Two
+    checks are: the Triad advisory, which the ratified rule makes SILENT in an
     elected Triad, a family holder, a `<user>-wip` workspace and a project
     that recorded staying single -- and silent means no row at all, not a row
-    saying so. `run_checks` skips a None.
+    saying so -- and `merge`, which speaks only while a merge is unfinished
+    (#424). `run_checks` skips a None.
     """
 
     def __init__(self, check_id: str, label: str, applies_to: tuple,
@@ -1253,10 +1272,17 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     # `tests/test_shape_doctor.py::test_the_doctor_writes_nothing` is what
     # holds the promise, and it found this.
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # AND NOTHING IT STARTS MAY ASK (#492). Stdin closed is not enough:
+    # `setup-project.py` asks at the CONTROLLING terminal when stdin is not
+    # one, so the machine row's preflight run from a person's terminal would
+    # offer `gh auth login` there and wait. A session of its own has no
+    # controlling terminal, so the child has none to ask on (POSIX; Windows
+    # has no `/dev/tty` and ignores the flag).
     proc = subprocess.run([sys.executable, str(script), *args],
                           cwd=str(ctx.root), capture_output=True, text=True,
                           encoding="utf-8", errors="replace", check=False,
-                          stdin=subprocess.DEVNULL, env=env)
+                          stdin=subprocess.DEVNULL, env=env,
+                          start_new_session=True)
     whole = (proc.stdout or "") + (proc.stderr or "")
     quoted = ""
     for line in whole.splitlines():
@@ -1367,7 +1393,8 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
 
 
 def validator_row(ctx: Context, check_id: str, label: str, own: str,
-                  template: str, args: list[str]) -> Row:
+                  template: str, args: list[str], *,
+                  output: list[str] | None = None) -> Row:
     """One row for a validator that the ROOT may carry its own copy of.
 
     THE PROJECT'S OWN COPY FIRST, ALWAYS, AND THE ROW SAYS SO. That copy is
@@ -1419,6 +1446,10 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
                     "exit": None, "environment": True})
     code, quoted, whole = run_validator(ctx, used, args,
                                         validator_scripts(ctx.shape, own_copy))
+    if output is not None:
+        # What the validator printed, whole, for a caller that reads more of
+        # it than the one line the row quotes: `check_pins` (#478).
+        output.append(whole)
     detail = {"validator": used.as_posix(), "own_copy": own_copy,
               "exit": code}
     if code == 0:
@@ -1681,8 +1712,216 @@ def check_pins(ctx: Context) -> Row:
                           "a single pin, has nothing to check yet")
     if waiting is not None:
         return waiting
-    return validator_row(ctx, "pins", "pins", *PINS_GATE,
-                         ["--root", str(ctx.root)])
+    output: list[str] = []
+    row = validator_row(ctx, "pins", "pins", *PINS_GATE,
+                        ["--root", str(ctx.root)], output=output)
+    return with_gitlink_repairs(ctx, row, "".join(output))
+
+
+def bump_leg_command(shape: Path, root: Path, role: str, commit: str,
+                     platform: str | None = None) -> str:
+    """The `scripts/bump-leg.py` line that puts a leg's gitlink, its pin and
+    every workflow reference at `commit` in one commit, spelled for the
+    READER'S shell (#478).
+
+    From any directory: the standard's own copy of the script by its
+    absolute path, `--root` the root's, and every value through `quote_arg`
+    for the platform asked for, as `copy_command` and `validator_command`
+    spell theirs. It carries the lane's `--trailer` where `LANES_LANE` names
+    one, as the `shape currency` row's `apply` does, because it writes a
+    commit too (#111).
+    """
+    target = os.name if platform is None else platform
+    return " ".join([
+        python_command(platform),
+        quote_arg(shape / "scripts" / "bump-leg.py", target),
+        "--root", quote_arg(root, target), "--leg", quote_arg(role, target),
+        "--to", quote_arg(commit, target)]) + lane_trailer_command(platform)
+
+
+def gitlinks_off_their_pins(ctx: Context) -> list[dict]:
+    """Each declared leg whose gitlink and pin name two different commits,
+    as `{"role", "path", "gitlink", "pin"}`, in the manifest's order (#478).
+
+    The `legs` row's two reads, `recorded_gitlink` (the index first, as the
+    gate reads it and as `bump-leg.py` reads the commit it replaces) and
+    `pin_commit`. A leg where either is not a 40-hex commit is left out:
+    `bump-leg.py --to` takes nothing else, and `validate-pins.py` refuses
+    such a pin before it compares it.
+    """
+    off = []
+    for leg in ctx.legs():
+        role = str(leg.get("role") or "")
+        path = str(leg.get("path") or "")
+        if not role or not path:
+            continue
+        pinned = pin_commit(ctx.root, f"contracts/{role}-pin.yaml")
+        gitlink = recorded_gitlink(ctx.root, path)
+        if pinned and gitlink and COMMIT_RE.match(gitlink) \
+                and gitlink != pinned:
+            off.append({"role": role, "path": path, "gitlink": gitlink,
+                        "pin": pinned})
+    return off
+
+
+#: A finding as every `validate-pins.py` since v0 prints one, at the start of
+#: a line: its code, and the rest of that line (#478).
+FINDING_LINE = re.compile(r"FINDING (?P<code>[^\s:]+): (?P<rest>.*)")
+
+
+def bump_clears(code: str, rest: str, leg: dict) -> bool:
+    """Whether the `bump-leg.py` line for `leg` clears the gate's finding
+    `code`, whose line goes on with `rest` (#478).
+
+    THE THREE FACTS IT REWRITES, read as the gate has spelled each finding
+    since v0: the leg's gitlink against its pin (`<path>: gitlink ...`), its
+    pin's digest (`contracts/<role>-pin.yaml: ...`, recomputed), and a
+    workflow reference to its repository (`` `<repository>@<sha>` ``, every
+    one moved). Any other finding still stands after the rewrite, so the
+    gate the bump runs is red and the bump is rolled back.
+    """
+    if code == "pin-gitlink-mismatch":
+        return rest.startswith(f"{leg['path']}: gitlink ")
+    if code == "pin-digest-mismatch":
+        return rest.startswith(f"contracts/{leg['role']}-pin.yaml: ")
+    if code == "pin-workflow-ref-mismatch":
+        return bool(leg["repository"]) and f"`{leg['repository']}@" in rest
+    return False
+
+
+def findings_no_bump_clears(output: str, off: list[dict]) -> list[str]:
+    """The codes of the findings in the gate's `output` that no
+    `bump-leg.py` line for a leg in `off` clears, each once, in the gate's
+    order (#478)."""
+    left: list[str] = []
+    for line in output.splitlines():
+        found = FINDING_LINE.match(line)
+        if found is None:
+            continue
+        code, rest = found.group("code", "rest")
+        if not any(bump_clears(code, rest, leg) for leg in off) \
+                and code not in left:
+            left.append(code)
+    return left
+
+
+def gitlink_repairs_held_back(off: list[dict], others: list[str],
+                              manifest: bool) -> str:
+    """Why the `pins` row names no `bump-leg.py` line for a gitlink off its
+    pin, and what comes first (#478)."""
+    paths = [leg["path"] for leg in off]
+    if manifest:
+        return ("No single bump-leg.py line can commit while the root's "
+                "validate-manifest.py is red (the `manifest` row): bump-leg.py "
+                "runs it after validate-pins.py, before it commits, and rolls "
+                "the bump back when either is red. First clear that row's "
+                "finding; this row then names the two bump-leg.py lines for "
+                f"{paths[0]}")
+    what, first = [], []
+    if len(off) > 1:
+        what.append(" and ".join(paths) + (" are both" if len(off) == 2
+                                           else " are all") + " off their pins")
+    if others:
+        what.append("the gate also reports " + ", ".join(others))
+        first.append("clear " + ("that finding" if len(others) == 1
+                                 else "those findings"))
+    if len(off) > 1:
+        first.append("put one leg's gitlink back at its pin (check that leg "
+                     "out at the pin's commit and commit its gitlink in the "
+                     "root), or undo the commit that moved them")
+    return ("No single bump-leg.py line can commit while "
+            + " and ".join(what) + ": bump-leg.py moves one leg and runs the "
+            "root's whole validate-pins.py before it commits, rolling the bump "
+            "back when it is red. First " + ", and ".join(first) + "; this row "
+            "then names the two bump-leg.py lines for "
+            + ("the leg that is left" if len(off) > 1 else paths[0]))
+
+
+def with_gitlink_repairs(ctx: Context, row: Row, output: str) -> Row:
+    """The `pins` row, naming both repairs for a gitlink that is not its pin
+    where one can commit, and what comes first where none can (#478).
+
+    THE DEFECT. A leg moved by hand and committed (`git -C spec pull`, then
+    `git add spec && git commit` in the root) made this row a FINDING whose
+    NEXT is the gate, and the gate printed THE LOCKSTEP RULE and no command,
+    so a person told that "a finding names its fix" was named none.
+
+    WHICH COMMIT STAYS IS THE PERSON'S CALL, so the reason names two
+    `bump-leg.py` lines and chooses neither: `--to` the gitlink's commit
+    keeps the move, and `--to` the pin's undoes it. `bump-leg.py` either
+    way, because it moves the gitlink, the pin and every workflow reference
+    in one commit, and its `--dry-run` comes first, as AGENTS.md says.
+    `git submodule update` is no undo: it checks the leg out at the gitlink,
+    which is the commit being undone. The two lines are in the reason and
+    in `detail.gitlink_repairs`, never in the NEXT: a NEXT is run as
+    printed, and which commit stays is not the doctor's to choose. The NEXT
+    stays the gate, which names the same two.
+
+    ONLY WHERE A LINE CAN COMMIT. `bump-leg.py` runs the root's own
+    `validate-pins.py` and `validate-manifest.py` after its rewrite and
+    before it commits, and rolls every byte back when either is red. So the
+    lines are named only where exactly ONE leg's gitlink is off its pin,
+    every other finding in the gate's `output` is one a bump of that leg
+    clears (`bump_clears`), and the manifest's gate passes. Two legs off, or
+    any other finding, and either line is rolled back: the reason names no
+    line, says why, and says what comes first, and
+    `detail.gitlink_repairs_held_back` says the same for `--json`.
+
+    THE COMMIT MUST BE ON A BRANCH OF THE LEG'S REMOTE, and offline that
+    cannot be known: `bump-leg.py` fetches before it asks, and a
+    remote-tracking ref here says what the remote held at the last fetch,
+    not what it holds. So the reason says what the command needs, and the
+    doctor still fetches nothing.
+
+    ONLY THE ROOT'S OWN GATE, THAT REPORTED FINDINGS, exit 1, and did not
+    crash. A refusal stops `validate-pins.py` before it reports any finding,
+    and that is the thing to fix first, and a gate that crashed is one
+    `bump-leg.py` would run and find red too. A root with no gate of its
+    own was answered by the standard's template copy, and `bump-leg.py`
+    runs the root's copy and skips an absent one, so what the template
+    reports does not say what the bump's run will. Any other row is
+    returned untouched. The row is changed IN PLACE, reason and detail, so
+    whatever else a `Row` carries is kept.
+    """
+    if row.status != FINDING or row.detail.get("exit") != 1 \
+            or row.detail.get("crashed") or not row.detail.get("own_copy"):
+        return row
+    off = gitlinks_off_their_pins(ctx)
+    if not off:
+        return row
+    repository = {str(leg.get("role") or ""): str(leg.get("repository") or "")
+                  for leg in ctx.legs()}
+    others = findings_no_bump_clears(output, [
+        {**leg, "repository": repository.get(leg["role"], "")}
+        for leg in off])
+    manifest = (len(off) == 1 and not others
+                and check_manifest(ctx).status == FINDING)
+    if len(off) > 1 or others or manifest:
+        row.reason = ascii_text(
+            f"{row.reason}. "
+            + gitlink_repairs_held_back(off, others, manifest))
+        row.detail["gitlink_repairs_held_back"] = {
+            "legs": off, "findings": others, "manifest": manifest}
+        return row
+    leg = off[0]
+    leg["keep_gitlink"] = bump_leg_command(ctx.shape, ctx.root, leg["role"],
+                                           leg["gitlink"])
+    leg["keep_pin"] = bump_leg_command(ctx.shape, ctx.root, leg["role"],
+                                       leg["pin"])
+    tracking = str((ctx.manifest or {}).get("tracking_branch") or "main")
+    row.reason = ascii_text(
+        f"{row.reason}. The gitlink and the pin name two commits, and which "
+        "stays is the person's call; bump-leg.py puts the gitlink, the pin "
+        f"and every workflow reference at it in one commit: for {leg['path']}"
+        f", `{leg['keep_gitlink']}` keeps the gitlink's {leg['gitlink'][:12]} "
+        f"and `{leg['keep_pin']}` keeps the pin's {leg['pin'][:12]}; run "
+        "either with `--dry-run` first. Either commits on a branch other than "
+        f"{tracking}, once the root's own validate-pins.py and "
+        "validate-manifest.py pass on its rewrite (it rolls the bump back "
+        "when either is red), and refuses a commit no branch of the leg's "
+        "remote contains, so a commit made in the leg is pushed first")
+    row.detail["gitlink_repairs"] = off
+    return row
 
 
 def check_family(ctx: Context) -> Row:
@@ -2021,10 +2260,27 @@ def check_manifest_kinds(ctx: Context) -> Row:
     next command -- register a kind, or remove the file from the root --
     that is the wrong remedy for a merge conflict in a project's own
     manifest. So it is skipped, and the row says where it went.
+
+    A FILE THAT DOES NOT LOAD IS NOT AN UNREGISTERED KIND (#291). It used to
+    share that case's next command -- register the kind, or remove the file
+    from the root -- which no file without a readable `kind:` can follow, and
+    which told a reader with a conflicted `contracts/shape-pin.yaml` to
+    delete the pin. The row now quotes what the loader said about each one,
+    and `unreadable_next` picks the command. That sentence stays the
+    unregistered kind's alone, and where a row has more than one fault -- an
+    unregistered kind, a kind registered to a gate this root never runs, a
+    `family.yaml` beside `project.yaml` -- it names the restore alone, first,
+    because the row cannot say what kind a file declares until it loads, and
+    because a command and a sentence joined by `;` would be a second command
+    in a pasted line (#277). The reason still names every fault, and the
+    next run names the rest. `restore` and `refusals` join `detail` only
+    when a file does not load, so every other root reports the row it
+    always did.
     """
     known: list[str] = []
     unknown: list[str] = []
     unreadable: list[str] = []
+    refusals: dict[str, dict] = {}
     #: `(path, kind, entry)` for each manifest whose registered gate never
     #: runs on this kind of root (#327).
     ungated: list[tuple] = []
@@ -2034,14 +2290,26 @@ def check_manifest_kinds(ctx: Context) -> Row:
     for path in manifest_candidates(ctx.root):
         if path == elsewhere:
             continue
-        data = Context._read(path)
+        rel = path.relative_to(ctx.root).as_posix()
+        # `load_yaml` and not `Context._read`, which says None for both a
+        # refusal and an empty file: the row quotes the refusal, less the
+        # path it opens with, which the row has just named.
+        try:
+            data = load_yaml(path)
+        except Refusal as exc:
+            unreadable.append(rel)
+            refusals[rel] = {"code": exc.code,
+                             "detail": exc.detail.removeprefix(f"{path}: ")}
+            continue
         if not isinstance(data, dict):
-            unreadable.append(path.relative_to(ctx.root).as_posix())
+            unreadable.append(rel)
+            refusals[rel] = {"code": None, "detail": (
+                "it holds no YAML document" if data is None else
+                f"it loads as a {type(data).__name__}, not a mapping")}
             continue
         kind = data.get("kind")
         if not isinstance(kind, str) or not kind:
             continue
-        rel = path.relative_to(ctx.root).as_posix()
         if (ctx.kind == PROJECT and rel == FAMILY_MANIFEST
                 and kind == "family-manifest"):
             beside = family_beside_project(ctx, data)
@@ -2079,20 +2347,26 @@ def check_manifest_kinds(ctx: Context) -> Row:
         if unknown:
             parts.append("no validator registered for kind "
                          + ", ".join(unknown))
-        if unreadable:
-            parts.append("unreadable as YAML: " + ", ".join(unreadable))
-        if unknown or unreadable:
             fixes.append("register the kind in shape-doctor.py's "
                          "MANIFEST_VALIDATORS, beside the check that "
                          "validates it, or remove the file from the root")
+        if unreadable:
+            said = {rel: ": ".join(filter(None, (why["code"], why["detail"])))
+                    for rel, why in refusals.items()}
+            parts.append("unreadable as YAML: " + ", ".join(
+                f"{rel} ({said[rel]})" for rel in unreadable))
         if ungated_said is not None:
             parts.append(ungated_said[0])
             fixes.append(ungated_said[1])
         if beside is not None:
             parts.append(beside[0])
             fixes.append(FAMILY_BESIDE_FIX)
+        command = "; ".join(fixes)
+        if unreadable:
+            restore, command = unreadable_next(ctx, unreadable)
+            detail.update({"restore": restore, "refusals": refusals})
         return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
-                   "; ".join(parts) + aside, "; ".join(fixes), detail)
+                   "; ".join(parts) + aside, command, detail)
     return Row("manifest-kinds", LABEL_MANIFEST_KINDS, OK,
                f"{len(known)} manifest(s), every declared kind has a "
                f"registered validator{aside}", None, detail)
@@ -2204,9 +2478,15 @@ def git_answer(args: list, cwd: Path, binary: bool = False):
 PIN_HISTORY_DEPTH = 50
 
 
-def pin_reads_at(ctx: Context, rev: str) -> bool:
-    """Whether the pin `rev` holds reads as one, by `read_pin`'s own checks
-    (#237).
+def pin_reads_at(ctx: Context, rev: str, pin: str = SHAPE_PIN) -> bool:
+    """Whether the pin `rev` holds reads as one: `pin_at` names something."""
+    return pin_at(ctx, rev, pin) is not None
+
+
+def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN):
+    """What the pin `rev` holds reads as, by `read_pin`'s own checks (#237),
+    or None where it does not read: for the shape pin the paths its
+    `files:` rows name, never empty, and for any other file the mapping.
 
     READ BEFORE IT IS NAMED: a NEXT that puts back a pin out of history
     must name one that reads. Rolling back to a pin that is broken too
@@ -2226,22 +2506,35 @@ def pin_reads_at(ctx: Context, rev: str) -> bool:
     pin's bytes raises one now, so one means a caller out of step with
     `check_pin`, and the doctor fails loudly rather than answer that no
     commit holds a pin to put back.
+
+    ANY OTHER FILE `tool_written` ADMITS READS WHERE IT LOADS AS A MAPPING
+    (#291). That is the question the `manifest kinds` row asks of it, and
+    the one reader this file holds for a leg pin or a copy, so what the row
+    puts back is what the row then reads.
+
+    THE ROWS, NOT A YES, for the shape pin (review of PR #358): `rev` may
+    be an index stage, `:2` or `:3`, and the rows of the side of a merge
+    `pin_restore` takes whole are the copies that side's tool wrote, so
+    they are what it names with the pin.
     """
-    blob = git_answer(["cat-file", "blob", f"{rev}:./{SHAPE_PIN}"],
+    blob = git_answer(["cat-file", "blob", f"{rev}:./{pin}"],
                       ctx.root, binary=True)
     if blob is None:
-        return False
+        return None
     us = ctx.update_shape()
     try:
         text = blob.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-        us.check_pin(us.parse_yaml(text), f"{rev}:{SHAPE_PIN}", ctx.root)
+        data = us.parse_yaml(text)
+        if pin != SHAPE_PIN:
+            return data if isinstance(data, dict) else None
+        _pin, rows = us.check_pin(data, f"{rev}:{SHAPE_PIN}", ctx.root)
     except (Refusal, us.YamlError, ValueError):
-        return False
-    return True
+        return None
+    return [row.path for row in rows]
 
 
-def pin_restore(ctx: Context,
-                detail: dict | None = None) -> tuple[str, str | None]:
+def pin_restore(ctx: Context, detail: dict | None = None,
+                pin: str = SHAPE_PIN) -> tuple[str, str | None]:
     """`(restore, command)`: the git command that puts back a pin a tool
     wrote, chosen from the pin's own git state, read-only (#237).
 
@@ -2252,10 +2545,14 @@ def pin_restore(ctx: Context,
 
       unmerged     a merge left the pin conflicted. `checkout --ours`, or
                    `--theirs` where only that side holds a pin, of every
-                   conflicted path the shape writes WHOLE -- the pin, the
-                   copies and their collision copies -- because a merge of
-                   two `update-shape.py apply` runs conflicts in them
-                   together, and one side taken whole is one tool's output.
+                   conflicted path the shape writes WHOLE -- the pin, and
+                   the copies that side's pin has `files:` rows for, their
+                   collision copies included -- because a merge of two
+                   `update-shape.py apply` runs conflicts in them together,
+                   and one side taken whole is one tool's output. Those rows
+                   and not this standard's copy lists: a file the pin has no
+                   row for is not a shape copy, though the lists name its
+                   path (review of PR #358).
                    The manifest and README.md are never named, though `apply`
                    writes lines of them: every other line is the project's
                    own, and one side taken whole drops the other side's
@@ -2293,18 +2590,57 @@ def pin_restore(ctx: Context,
     path is read relative to the root (`ls-files` and pathspecs are, and
     `<rev>:./<path>` is), so each one names the root's own file even where
     git answers from a checkout the root sits inside.
+
+    ANY FILE UNDER `contracts/` A TOOL WROTE, NOT THE SHAPE PIN ALONE (#291).
+    `pin` is the root's own `contracts/shape-pin.yaml` unless the caller
+    names another file `tool_written` admits -- a pin `project.yaml`
+    declares, for a leg or a neutral product, or a copy the shape pin has a
+    row for -- which is how the `manifest kinds` row answers each one that
+    does not load. The note says `copy` where the file is not a pin, and
+    `pin_reads_at` says what reads. Only the shape pin takes more paths with
+    it in a merge -- the copies `apply` writes in the same commit -- and
+    only its note names a conflicted manifest or README.md for a person.
+    Any other file is named alone. A leg pin moves with its gitlink, but
+    `checkout --ours` on a conflicted gitlink exits 0 and leaves all three
+    stages where they were, so naming it would be a command that changes
+    nothing. Finishing the merge takes the gitlink, and the `pins` row then
+    says whether the two agree.
+
+    A FILE A PERSON MAY HAVE EDITED IS SHOWN, NEVER PUT BACK, in every
+    state (review of PR #358). That is a copy, which can hold an edit of
+    the project's -- the merge by hand `update-shape.py` asks for where a
+    copy changed on both sides above all -- and a neutral product pin,
+    which no tool writes after the scaffold, so every change to one is a
+    person's. `edited_by_hand` says which. Each of the three commands above
+    drops that edit: the other side of their merge and the hunks git merged
+    cleanly, their uncommitted work, their commit. So the state picks a
+    read-only command instead: `diff` for `unmerged`, which shows the hunks
+    git could not merge, `diff HEAD` for `uncommitted`, and `diff
+    <that commit>~1` for `committed`, every change since the newest one
+    that reads. Mending the file, or merging it, is the person's, as the
+    `both` exit of `update-shape.py` says of a copy changed on both sides:
+    a merge by hand, then `--accept-local` on it, which is what the `shape
+    currency` row names for the same file.
     """
     root = ctx.root
     git_c = f"git -C {quote_arg(root)}"
+    what = "pin" if pin.endswith("-pin.yaml") else "copy"
+    shown = edited_by_hand(ctx, pin)
+    why = BY_HAND_WHY[what]
     raw = git_answer(["--no-optional-locks", "status", "--porcelain=v1",
-                      "--", SHAPE_PIN], root, binary=True)
+                      "--", pin], root, binary=True)
     xy = raw.decode("utf-8", "replace")[:2] if raw else ""
+    if xy in UNMERGED_STATUS and shown:
+        return "unmerged", (
+            f"{git_c} diff -- {quote_arg(pin)}   # a merge left the {what} "
+            "conflicted, and this shows the hunks git could not merge. "
+            f"{why}, so neither side is taken whole: merge it by hand, "
+            "keeping the hunks git merged, then finish the merge as git says "
+            "and run this doctor again")
     if xy in UNMERGED_STATUS:
         us = ctx.update_shape()
         kind = us.root_kind(root)
-        whole = {SHAPE_PIN}
-        for rel in kind.copy_source:
-            whole.update((rel, f"{us.COLLISION_DIR}/{rel}"))
+        whole = {pin}
         # `<mode> SP <object> SP <stage> TAB <path>`, one record per stage.
         stages: dict[str, set] = {}
         listing = git_answer(["ls-files", "-u", "-z"], root, binary=True)
@@ -2313,19 +2649,21 @@ def pin_restore(ctx: Context,
             if path:
                 stages.setdefault(path.decode("utf-8", "replace"),
                                   set()).add(meta.rsplit(b" ", 1)[-1])
-        pin_stages = stages.get(SHAPE_PIN, set())
+        pin_stages = stages.get(pin, set())
         side, stage = (("--ours", b"2") if b"2" in pin_stages else
                        ("--theirs", b"3") if b"3" in pin_stages else
                        (None, None))
         if side:
+            if pin == SHAPE_PIN:
+                whole.update(pin_at(ctx, f":{stage.decode()}") or ())
             note = ("--theirs takes the other side. Take one side whole"
                     if b"3" in pin_stages and side == "--ours"
-                    else "only that side of the merge holds a pin. Take it "
-                    "whole")
+                    else f"only that side of the merge holds a {what}. Take "
+                    "it whole")
             named = sorted(name for name, held in stages.items()
                            if name in whole and stage in held)
-            left = sorted(name for name in (kind.manifest, us.README)
-                          if name in stages)
+            left = (sorted(name for name in (kind.manifest, us.README)
+                           if name in stages) if pin == SHAPE_PIN else [])
             then = ", then finish"
             if left:
                 if detail is not None:
@@ -2341,38 +2679,218 @@ def pin_restore(ctx: Context,
                 f"{git_c} checkout {side} -- "
                 + " ".join(quote_arg(name) for name in named)
                 + f"   # {note} for every path named and never a "
-                f"hand-merged pin{then} the merge as git says and run "
+                f"hand-merged {what}{then} the merge as git says and run "
                 "this doctor again")
-    elif pin_reads_at(ctx, "HEAD"):
+    elif pin_reads_at(ctx, "HEAD", pin):
+        if xy and shown:
+            return "uncommitted", (
+                f"{git_c} diff HEAD -- {quote_arg(pin)}   # HEAD holds a "
+                f"{what} that reads, and this shows the uncommitted change "
+                f"that breaks the {what} here. {why}. Git keeps no other copy "
+                "of the change until it is committed, so nothing is put back. "
+                f"Mend the change, or take the {what} as last committed once "
+                "nothing in it is worth keeping, then run this doctor again")
         if xy:
             return "uncommitted", (
-                f"{git_c} checkout HEAD -- {quote_arg(SHAPE_PIN)}   # puts "
-                "back the pin as last committed and discards the uncommitted "
+                f"{git_c} checkout HEAD -- {quote_arg(pin)}   # puts back "
+                f"the {what} as last committed and discards the uncommitted "
                 "change that broke it, which no tool of this standard writes")
         return "hidden", (
-            f"{git_c} ls-files -v -- {quote_arg(SHAPE_PIN)}   # HEAD holds a "
-            "pin that reads and git status shows no change to the copy here, "
-            "so no commit broke it and nothing in history is put back. S in "
-            "the first column is skip-worktree, as a sparse checkout sets "
-            "it, and a lowercase h is assume-unchanged: either hides the "
+            f"{git_c} ls-files -v -- {quote_arg(pin)}   # HEAD holds a "
+            f"{what} that reads and git status shows no change to the copy "
+            "here, so no commit broke it and nothing in history is put back. "
+            "S in the first column is skip-worktree, as a sparse checkout "
+            "sets it, and a lowercase h is assume-unchanged: either hides the "
             "copy here from git. Any other letter means the file itself "
             "cannot be read, as the refusal says. Clearing that is for a "
             "person, then run this doctor again")
     history = git_answer(["rev-list", "-n", str(PIN_HISTORY_DEPTH), "HEAD",
-                          "--", SHAPE_PIN], root)
+                          "--", pin], root)
     for breaking in (history or "").split():
         before = f"{breaking}~1"
-        if git_answer(["cat-file", "-e", f"{before}:./{SHAPE_PIN}"],
+        if git_answer(["cat-file", "-e", f"{before}:./{pin}"],
                       root) is None:
             break
-        if pin_reads_at(ctx, before):
+        if not pin_reads_at(ctx, before, pin):
+            continue
+        if shown:
             return "committed", (
-                f"{git_c} checkout {quote_arg(before)} -- "
-                f"{quote_arg(SHAPE_PIN)}   # the pin as it was before "
-                f"{breaking[:12]}, the commit that broke it, and the newest "
-                "pin in its history that reads. Commit that rather than "
-                "editing the pin")
+                f"{git_c} diff {quote_arg(before)} -- {quote_arg(pin)}   # "
+                f"the newest {what} in its history that reads is the one "
+                f"before {breaking[:12]}, the commit that broke it, and this "
+                f"shows every change since. {why}, so nothing is rolled "
+                f"back: mend the {what}, commit that and run this doctor "
+                "again")
+        return "committed", (
+            f"{git_c} checkout {quote_arg(before)} -- "
+            f"{quote_arg(pin)}   # the {what} as it was before "
+            f"{breaking[:12]}, the commit that broke it, and the newest "
+            f"{what} in its history that reads. Commit that rather than "
+            f"editing the {what}")
     return "none", None
+
+
+def declared_pins(ctx: Context) -> set:
+    """Every pin this root DECLARES, at the path the tool that writes it
+    writes it to (#291).
+
+    The shape pin, which every root carries. `contracts/<role>-pin.yaml`
+    for each leg `project.yaml` declares, the spelling `check_legs` reads,
+    `validate-pins.py` checks and `bump-leg.py` writes. And
+    `contracts/<product lowercased>-pin.yaml` for each name its
+    `neutral_product_pins:` lists, which is `shape_materialize`'s
+    `neutral_pin_path` and the spelling `validate-pins.py` checks, spelled
+    here as `check_legs` spells a leg's. A role or a product that is not
+    text names no pin.
+    """
+    pins = {SHAPE_PIN}
+    pins.update(f"contracts/{leg['role']}-pin.yaml" for leg in ctx.legs()
+                if isinstance(leg.get("role"), str) and leg["role"])
+    return pins | neutral_pins(ctx)
+
+
+def neutral_pins(ctx: Context) -> set:
+    """`contracts/<product lowercased>-pin.yaml` for each name the root's
+    `neutral_product_pins:` lists, as `declared_pins` spells them (#291)."""
+    products = (ctx.manifest or {}).get("neutral_product_pins")
+    if not isinstance(products, list):
+        return set()
+    return {f"contracts/{product.lower()}-pin.yaml" for product in products
+            if isinstance(product, str) and product}
+
+
+def pinned_copies(ctx: Context) -> set:
+    """The root paths the root's own shape pin has `files:` rows for: its
+    shape copies, read as `update-shape.py` reads them (review of PR #358).
+
+    THE ROWS, NOT THIS STANDARD'S COPY LISTS. A file with no row is not a
+    shape copy (`update-shape.py`'s own rule, and AGENTS.md's): an adopted
+    project that merged a copy away drops its row, and the file left at its
+    path is the project's own, as is the source's own file at a path an
+    adoption collided on, whose copy went under `shape/` with a row naming
+    that path. The lists name both paths all the same. Where the pin does
+    not read, no row says anything, so nothing is a copy for that run: the
+    safe side, as for a `project.yaml` that does not load.
+    """
+    us = ctx.update_shape()
+    try:
+        _pin, rows = us.read_pin(ctx.root)
+    except (Refusal, us.YamlError, OSError, ValueError):
+        return set()
+    return {row.path for row in rows}
+
+
+def edited_by_hand(ctx: Context, rel: str) -> bool:
+    """Whether `rel` is a file a tool wrote that a person may have edited
+    since, so that `pin_restore` shows it and puts nothing back (review of
+    PR #358): a copy the shape pin has a row for, or a neutral product pin.
+
+    A copy can hold the project's own edit: `update-shape.py` calls one
+    `locally-modified` and leaves it, and where a copy changed on both
+    sides it asks for a merge by hand. A neutral product pin is written by
+    `scaffold-project.py --pin` and by no tool after it, and the manifest
+    template says to add one by hand, so every change to one is a
+    person's. The shape pin and a leg pin are a tool's alone: a person
+    re-pins a leg with `bump-leg.py`, and the shape with `update-shape.py`.
+    """
+    return rel != SHAPE_PIN and (rel in pinned_copies(ctx)
+                                 or rel in neutral_pins(ctx))
+
+
+#: Why `pin_restore` puts nothing back for a file `edited_by_hand`, by what
+#: its note calls the file. No `;`, apostrophe or backtick (#277).
+BY_HAND_WHY = {
+    "copy": ("A copy can hold an edit of the project, such as the merge by "
+             "hand update-shape.py asks for where a copy changed on both "
+             "sides"),
+    "pin": ("No tool of this standard writes a neutral product pin after the "
+            "scaffold, and every change to one since was made by a person"),
+}
+
+
+def tool_written(ctx: Context, rel: str) -> bool:
+    """Whether `rel`, a root path under `contracts/`, is a file a tool of
+    this standard writes, so that git holds the last good bytes (#291).
+
+    WHAT THE ROOT DECLARES DECIDES, NOT THE NAME. A file is a tool's where
+    it is one of `declared_pins` or one of `pinned_copies`, the rows of the
+    root's own shape pin, which under `contracts/` is the naming policy
+    where the root keeps it. The shape pin is written by
+    `scaffold-project.py`, `adopt-project.py` and `update-shape.py apply`, a
+    leg pin by those and by `bump-leg.py`, and a neutral product pin by
+    `scaffold-project.py --pin`. A copy or a neutral product pin can hold a
+    person's edit, which is why `pin_restore` shows one and puts nothing
+    back (`edited_by_hand`). Anything else under `contracts/`, and
+    `project.yaml` or `family.yaml`, is the project's own. A
+    `contracts/release-pin.yaml` that no leg and no product names is a file
+    the project wrote, whatever it is called, and putting it back from git
+    would discard the edit, the merged hunk or the commit somebody made
+    (codex, review of PR #358). So is a `contracts/repository-naming.yaml`
+    the shape pin has no row for, though this standard copies a file there.
+
+    WHERE `project.yaml` DOES NOT LOAD, IT DECLARES NOTHING. A leg pin or a
+    neutral product pin that does not load either is then the project's for
+    that run, and is left alone. That is the safe side. Reading the roles
+    from HEAD's `project.yaml` instead would decide what git puts back from
+    a declaration the tree may disagree with, as the other side of a merge
+    that adds or renames a leg does. A file wrongly called a tool's loses a
+    person's edit, and one wrongly called the project's costs a run: once
+    `project.yaml` loads, the next run names the pin's restore. The shape
+    pin and its copies hang on no manifest: the shape pin stays a tool's,
+    and the copies are what its rows say, whatever `project.yaml` holds.
+    """
+    return rel in declared_pins(ctx) or rel in pinned_copies(ctx)
+
+
+#: The note on the `manifest kinds` row's next command where no file that
+#: does not load has a copy git can put back (#291). No `;`, apostrophe or
+#: backtick, so a pasted line is one command in any shell (#277).
+UNREADABLE_BY_HAND = (
+    "the reason names each file that does not load and why, and none is a "
+    "file this root declares a tool writes with a copy that reads in its "
+    "history, so what each should say -- a merge conflict resolved, a hand "
+    "edit put right -- is for a person to decide. This row reads them again "
+    "once they load")
+
+
+def unreadable_next(ctx: Context, unreadable: list) -> tuple[dict, str]:
+    """`(restore, command)` for the `manifest kinds` row's files that do not
+    load (#291): each file's case, and the one command the row prints.
+
+    A FILE A TOOL WROTE IS PUT BACK FROM GIT by `pin_restore`. That is the
+    helper the `shape currency` row uses for the shape pin, so both rows
+    print the same command for the same file. The shape pin goes first
+    where it has a command, then each other file in the row's order. A row
+    prints one command, and the next run names the next file. A copy or a
+    neutral product pin, which a person may have edited, gets the
+    read-only command `pin_restore` picks for it instead, a `git diff`
+    that shows what breaks it, and nothing is put back.
+
+    A FILE OF THE PROJECT'S OWN IS NOT, whatever it is called, and its case
+    is `project`, with git not asked. `tool_written` reads what the root
+    declares, not the name. The git-state choice does not fit it: each of
+    the three commands discards somebody's edit -- the other side of their
+    merge, their uncommitted work, their last commit -- and nothing in this
+    standard says which bytes are right. Where no file has a command to
+    name, the command is this doctor again, to run once a person has mended
+    the file, and its note says that what the file should say is theirs to
+    decide. #205's `manifest` row answers a `project.yaml` that does not
+    load the same way: the gate that refuses it, and that note.
+    """
+    restore: dict[str, str] = {}
+    commands: dict[str, str] = {}
+    for rel in unreadable:
+        if tool_written(ctx, rel):
+            restore[rel], found = pin_restore(ctx, pin=rel)
+            if found:
+                commands[rel] = found
+        else:
+            restore[rel] = "project"
+    command = commands.get(SHAPE_PIN) or next(iter(commands.values()), None)
+    if command is None:
+        command = (f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} "
+                   f"--root {quote_arg(ctx.root)}   # {UNREADABLE_BY_HAND}")
+    return restore, command
 
 
 def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
@@ -5077,10 +5595,11 @@ def check_machine(ctx: Context) -> Row:
     else -- git, a Python 3.9+, the bootstrap interpreter, `gh` and its login,
     the credential helper, and the autocrlf warning -- and re-listing those
     here would be two lists to keep in step, which is the duplication #50
-    removed. It is run with stdin CLOSED, so the "no terminal, no offer" rule
-    fires and nothing is offered, prompted for or installed: the doctor
-    diagnoses, and installing something is a different act with a different
-    consent.
+    removed. It is run with stdin CLOSED and in a session of its own, with no
+    controlling terminal (`run_validator`, #492), so the "no terminal, no
+    offer" rule fires and nothing is offered, prompted for or installed: the
+    doctor diagnoses, and installing something is a different act with a
+    different consent.
 
     THIS IS THE ONE ROW THAT CAN REACH A NETWORK, and it is `n/a` by status
     for a separate reason. The preflight asks `gh` its version, whether it is
@@ -5418,11 +5937,186 @@ def _triad_advisory_row(ctx: Context) -> Row | None:
 
 
 # ---------------------------------------------------------------------------
+# A root in the middle of a merge
+# ---------------------------------------------------------------------------
+
+
+#: Named once: `check_merge`'s two rows and the `CHECKS` entry below must
+#: print the same row name.
+LABEL_MERGE = "merge"
+
+#: How many unmerged paths the `merge` row's sentence names before it counts
+#: the rest. `--json` lists every one.
+UNMERGED_NAMED = 5
+
+
+def unmerged_paths(root: Path) -> list[str] | None:
+    """Each path the root's index holds UNMERGED, once, in git's order, or
+    None where git gives no answer (#424).
+
+    `git ls-files -u` lists one record per STAGE, `<mode> <object> <stage>
+    TAB <path>`, so a path both sides changed is listed three times and is
+    kept once. `-z`, read as bytes, so a name is never C-quoted and a byte
+    that is not UTF-8 survives as itself. Relative to the root, as every
+    other row reads a path. `--no-optional-locks`, git's word for a reader
+    that must not write into the repository it reads.
+    """
+    raw = git_answer(["--no-optional-locks", "ls-files", "-u", "-z"], root,
+                     binary=True)
+    if raw is None:
+        return None
+    paths: dict[str, None] = {}
+    for record in raw.split(b"\0"):
+        _meta, tab, path = record.partition(b"\t")
+        if tab:
+            paths.setdefault(path.decode("utf-8", "surrogateescape"), None)
+    return list(paths)
+
+
+def git_dir_holds(root: Path, name: str) -> bool:
+    """Whether the root's git directory holds `name` (#424). `--git-path`
+    names it in a linked worktree too, where git keeps it per worktree, and
+    a relative answer is relative to the root, where git was asked."""
+    where = (git_answer(["rev-parse", "--git-path", name], root,
+                        binary=True) or b"").rstrip(b"\r\n")
+    if not where:
+        return False
+    path = Path(os.fsdecode(where))
+    return (path if path.is_absolute() else root / path).exists()
+
+
+#: What a rebase in progress keeps in the git directory: the merge backend's
+#: directory and the apply backend's, which `git am` shares.
+REBASE_STATE = ("rebase-merge", "rebase-apply")
+
+
+def merge_in_progress(root: Path) -> bool:
+    """Whether git records a MERGE in progress, and no rebase: a
+    `MERGE_HEAD` file, and neither of `REBASE_STATE` (#424).
+
+    THE FILE, NOT `rev-parse --verify MERGE_HEAD`, which also resolves a
+    branch or a tag of that name. AND NOT A REBASE: `git rebase -r` stopped
+    on a merge it replays writes `MERGE_HEAD` too, and `git merge --abort`
+    there strands the rebase, so the row sends a rebase to `git status`,
+    which names its own `--continue` and `--abort`.
+    """
+    return git_dir_holds(root, "MERGE_HEAD") and not any(
+        git_dir_holds(root, name) for name in REBASE_STATE)
+
+
+def own_repository(root: Path) -> bool:
+    """Whether git answers about the root's OWN repository (#424).
+
+    `git -C` DISCOVERS, so a plain directory inside a checkout in the middle
+    of a merge would be told about that checkout's merge -- the reason
+    `not_its_own_repository` declines for a leg. Asked here as bytes and
+    compared with `samefile`, so neither a toplevel that is not UTF-8 nor a
+    root spelled in another case or through a symlink reads as a stranger.
+    """
+    top = (git_answer(["rev-parse", "--show-toplevel"], root, binary=True)
+           or b"").rstrip(b"\r\n")
+    if not top:
+        return False
+    try:
+        return os.path.samefile(os.fsdecode(top), root)
+    except OSError:
+        return False
+
+
+def check_merge(ctx: Context) -> Row | None:
+    """Whether the root is in the middle of a merge git will not commit.
+
+    THE DEFECT (#424). Nothing here asked git whether the index held an
+    unmerged path. The validators read the working tree, and
+    `recorded_gitlink` answers a gitlink a conflicted merge holds only at
+    stages 1, 2 and 3 from HEAD, which its own docstring argues is right for
+    a validator. So a root two `bump-leg.py` branches had been merged into
+    read `DRIFTED` while the conflict markers sat in its pin, and COMPLIANT,
+    exit 0, once `git checkout --ours` had taken them out -- with `UU` still
+    on the pin and the gitlink, `MERGE_HEAD` still there, and `git commit`
+    refusing. A conflicted file no row reads was COMPLIANT from the start.
+
+    A FINDING, AND WHAT ASSERTS IT IS GIT. A `FINDING` is what something
+    ELSE asserts, and git refuses to commit an index that holds an unmerged
+    path. The row names the paths -- `UNMERGED_NAMED` of them, then a count
+    -- and its NEXT is `git -C <root> status`, which lists every one and,
+    for a merge, a rebase or a cherry-pick alike, names the operation and
+    how to finish or abandon it. Which side each path takes is the merge's
+    owner's call, so no command here takes one. The words about finishing
+    are in the reason, not after the command: a NEXT is pasted whole (#277).
+
+    NOT CANNOT ANSWER, AND NO ROW IS MADE TO WAIT ON IT. Exit 3 is THIS
+    CHECKOUT failing to ask, and an unfinished merge is a fact about their
+    repository. The other rows still answer about the tree in front of them,
+    and some of them say what to do with a file the merge left behind -- the
+    `shape currency` row's side to take of a conflicted shape pin (#237),
+    the project's own validator refusing a pin with conflict markers in it
+    -- which the person finishing the merge wants to read.
+
+    A MERGE WITH NOTHING UNMERGED IS A `note`. `git merge --no-commit`, or a
+    conflict resolved and added: git commits it as it stands, and the other
+    rows read the files that commit is made from, so nothing asserts a
+    fault. The row says so, and the verdict steps over it.
+
+    NO ROW AT ALL OTHERWISE, as the Triad row is silent where its rule says
+    so. A row saying "no merge" on every run would be a row about a state a
+    root is almost never in, and every report and every `--json` caller's
+    row set would change for it. Where git gives no answer -- no repository,
+    no `git` -- there is no row either: no commit is being refused, and the
+    rows that read git say so themselves. Nor where the root is not a
+    repository of its own (`own_repository`): the merge `git -C` would find
+    is the enclosing checkout's.
+
+    ONLY THE ROOT'S OWN INDEX. A leg is a repository of its own, and a merge
+    left unfinished in one is work in progress there, like an uncommitted
+    edit, which no row reports: the root records the leg's commit, never its
+    index.
+    """
+    root = ctx.root
+    if not own_repository(root):
+        return None
+    unmerged = unmerged_paths(root)
+    merging = merge_in_progress(root)
+    if not unmerged and not merging:
+        return None
+    if not unmerged:
+        return Row("merge", LABEL_MERGE, NOTE,
+                   "a merge is in progress and nothing in it is unmerged: "
+                   "`git commit` concludes it and `git merge --abort` "
+                   "abandons it. A note, because git commits it as it "
+                   "stands and the other rows read the files it is made "
+                   "from", None,
+                   {"unmerged": [], "count": 0, "merging": True})
+    spelled = [repr(path) if UNWRITABLE_IN_A_PLAN.search(path) else path
+               for path in unmerged]
+    named = ", ".join(spelled[:UNMERGED_NAMED])
+    if len(spelled) > UNMERGED_NAMED:
+        named += f" and {len(spelled) - UNMERGED_NAMED} more"
+    how = ("A merge is in progress: resolve each path (which side it takes "
+           "is the merge owner's call), `git add` it, then `git commit`, or "
+           "abandon the merge (`git merge --abort`)" if merging
+           else "`git status` says how to resolve each, and how to finish "
+           "or abandon what left them")
+    return Row("merge", LABEL_MERGE, FINDING,
+               f"{len(spelled)} path(s) unmerged in the index, so git "
+               f"commits nothing here until each is resolved: {named}. "
+               f"{how}. Until then every other row reads a tree no commit "
+               "holds",
+               f"git -C {quote_arg(root)} status",
+               {"unmerged": spelled, "count": len(spelled),
+                "merging": merging})
+
+
+# ---------------------------------------------------------------------------
 # The registry
 # ---------------------------------------------------------------------------
 
 
 CHECKS = (
+    # FIRST, ON BOTH KINDS OF ROOT, and a row only while a merge is
+    # unfinished: every row after it then reads a tree no commit holds, and
+    # the verdict names it above them all -- see `check_merge` (#424).
+    Check("merge", LABEL_MERGE, (PROJECT, FAMILY), check_merge),
     Check("naming", "naming", (PROJECT,), check_naming),
     Check("manifest", "manifest", (PROJECT,), check_manifest),
     Check("pins", "pins", (PROJECT,), check_pins),
@@ -5543,6 +6237,38 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
     return reasons
 
 
+def merge_verdict(by_id: dict) -> tuple | None:
+    """`INVALID (merge)` and its exit code while the root's index holds an
+    unmerged path, or None (#424).
+
+    ABOVE DRIFTED, MISPLACED AND EVERY OTHER RUNG, for the reason drift
+    outranks a red validator: the verdict names the cause, not what it
+    causes. In the issue's merge of two leg bumps the conflict markers in
+    the pin turned `pins` and `manifest kinds` red and read as a leg not at
+    its pin, so the verdict said `DRIFTED (1 leg(s) not at the pin)` about a
+    leg that had not moved. And no row's fix can be committed while git
+    refuses to commit at all.
+
+    BELOW CANNOT ANSWER, which is THIS CHECKOUT failing to ask: exit 3 says
+    nothing here is a statement about the tree, and the table still carries
+    this row.
+
+    `INVALID` AND NOT A NEW VERDICT. AGENTS.md documents the verdicts and
+    their exits, and this is a gate somebody else owns gone red -- git's,
+    which commits nothing until the index is merged -- which is what
+    `INVALID` names everywhere else.
+
+    THE LIST HAS TO BE NON-EMPTY, as `misplaced_verdict` requires of its
+    own: `run_checks` turns an exception out of a check into a FINDING with
+    an empty `detail`, which falls through to the catch-all instead.
+    """
+    merge = by_id.get("merge")
+    if merge is not None and merge.status == FINDING \
+            and merge.detail.get("unmerged"):
+        return f"{V_INVALID} (merge)", 1
+    return None
+
+
 def misplaced_verdict(by_id: dict) -> tuple | None:
     """MISPLACED and its exit code, or None when nothing is in the wrong leg.
 
@@ -5640,6 +6366,9 @@ def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     currency = by_id.get("shape-currency")
     detail = currency.detail if currency else {}
 
+    unfinished = merge_verdict(by_id)
+    if unfinished is not None:
+        return unfinished
     reasons = drifted_reasons(by_id, detail)
     if reasons:
         return f"{V_DRIFTED} ({', '.join(reasons)})", 1

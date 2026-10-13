@@ -47,7 +47,8 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     git's spelling, never refused as untracked.
   * the root standing on its own tracking branch. The next step this prints
     would then be a push to the default branch, and these organisations are
-    pull-request only.
+    pull-request only. `--dry-run` commits nothing, so it runs there, and ends
+    by naming the `git switch -c` the real run needs (#477).
   * a workflow file under `.github/workflows/`, or the leg's
     `contracts/<role>-pin.yaml`, that is not UTF-8 (a Latin-1 comment, a
     UTF-16 file with a byte-order mark): `bump-leg-workflow-unreadable` and
@@ -96,6 +97,7 @@ import argparse
 import errno
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -118,8 +120,14 @@ from shape_materialize import (  # noqa: E402
 MANIFEST = "project.yaml"
 
 #: The root's OWN validators, run after the rewrite and before the commit.
-#: Copies, not this checkout's: a project runs its own gate offline, and the
-#: only opinion that matters here is the one its pull request will report.
+#: Copies, not this checkout's: a project runs its own gate, and the only
+#: opinion that matters here is the one its pull request will report.
+#: NOT NETWORK-FREE, and the child gets this process's environment (#411): for
+#: a project declaring `neutral_product_pins:` whose product has no local
+#: checkout (a sibling of the root or `SHAPE_PIN_SOURCE_<PRODUCT>`; this tool
+#: takes no `--pin-source`), `validate-pins.py` asks `gh api` for the pinned
+#: tree with the operator's `gh` credentials. Without `gh`, a login or a
+#: network that is its `skip` line, exit 0, and the bump goes on.
 VALIDATORS = ("scripts/validate-pins.py", "scripts/validate-manifest.py")
 
 #: A local-path remote is a `file://` fetch, which git has refused for
@@ -923,8 +931,10 @@ def commit_once(root: Path, message: str, paths: list[str],
     message and `git commit` argv byte-identical to every one before it. See
     `shape_materialize.commit_trailers` for the two ways git is asked.
     """
-    run(["git", "add", "--", *paths], cwd=root)
+    # BEFORE THE STAGE: a trailer that cannot be carried exactly is refused
+    # while nothing has been staged (#322).
     message, trailer_args = commit_trailers(message, trailers)
+    run(["git", "add", "--", *paths], cwd=root)
     args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--", *paths]
     check_program(args)
     env = dict(os.environ)
@@ -1000,13 +1010,16 @@ def _ensure_root_clean(root: Path) -> None:
 
 
 def _branch_to_bump_from(root: Path, project: "Project", role: str,
-                         commit: str) -> str:
+                         commit: str, *, dry_run: bool = False) -> str:
     """The branch on which the bump commits, refused if there is none or
     it is the project's own tracking branch.
 
     Split from `cmd_bump` for #136: these organisations are pull-request
     only, so a bump is refused before it ever makes a commit whose only
-    next step would be a push to the default branch.
+    next step would be a push to the default branch. A `--dry-run` makes no
+    commit, so on the tracking branch it is let through and ends by naming
+    the branch the real run needs (#477); a root on no branch at all is
+    refused either way.
     """
     branch = current_branch(root)
     if branch is None:
@@ -1016,7 +1029,7 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
             "open a pull request from",
             "Remediation: `git -C " + str(root) + " switch -c bump/"
             + f"{role}-{commit[:12]}` and re-run.")
-    if branch == project.tracking:
+    if branch == project.tracking and not dry_run:
         raise Refusal(
             "bump-leg-on-tracking-branch",
             f"{root} is on {branch!r}, which {MANIFEST} declares as this "
@@ -1432,7 +1445,8 @@ def cmd_bump(args) -> int:
     commit = _checked_target_commit(args.to)
 
     _ensure_root_clean(root)
-    branch = _branch_to_bump_from(root, project, role, commit)
+    branch = _branch_to_bump_from(root, project, role, commit,
+                                  dry_run=args.dry_run)
     submodule = _initialized_submodule(root, path)
     was = _recorded_leg_commit(root, path)
 
@@ -1463,6 +1477,14 @@ def cmd_bump(args) -> int:
               "fetched into, which is how the digest above was computed; the "
               "working tree, the pin, the workflows and the index are "
               "untouched.")
+        if branch == project.tracking:
+            # LAST, after everything a dry run on a branch prints, so that
+            # line is the whole of the difference between the two (#477).
+            # The command is quoted, so a root under `My Projects/` pastes.
+            print(f"\nthe real run needs a branch: {root} is on {branch!r}, "
+                  "the tracking branch. Create one first with: "
+                  + shlex.join(["git", "-C", str(root), "switch", "-c",
+                                f"bump/{role}-{commit[:12]}"]))
         return 0
 
     # ---- the rewrite and the commit, remembered byte for byte so a failure
@@ -1517,8 +1539,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "order given")
     parser.add_argument("--local-remote-dir", type=Path, default=None,
                         help="resolve the leg's remote to a bare repository "
-                             "here instead of its origin (the TEST path; no "
-                             "network)")
+                             "here instead of its origin (the TEST path; the "
+                             "leg needs no network, but the project's own "
+                             "validate-pins.py may still ask `gh api`)")
     parser.add_argument("--dry-run", action="store_true",
                         help="print what would move and change nothing")
     return parser

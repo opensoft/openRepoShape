@@ -925,6 +925,10 @@ sudo dnf install gh</code></pre></div>
           <li><code>--yes</code> skips the scaffold question only. It does not answer an install
           offer, <code>gh auth login</code> or <code>gh auth setup-git</code>.</li>
           <li>With no terminal attached there is no offer at all.</li>
+          <li>Every question is asked at your terminal, even when the script arrived down a pipe
+          (<code>curl &hellip; | bash -s --</code>): the answer is read from the terminal, never
+          from the pipe. Windows has no such terminal to open, which is why its way in downloads
+          the file first.</li>
           <li>Homebrew is never run for you: on a Mac without <code>brew</code> the preflight names
           <a href="https://brew.sh">brew.sh</a> and stops there.</li>
         </ul>
@@ -1110,6 +1114,20 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       project&rsquo;s own <code>project.yaml</code>, so classification stays OFFLINE and never asks
       GitHub whether <code>open&lt;Product&gt;</code> exists. The referent may also be reached
       through a RECORDED chain of pins.</p>
+      <p><code>validate-pins.py</code> rechecks the referent too, not only the declaration. Each
+      <code>neutral_product_pins:</code> entry&rsquo;s
+      <code>contracts/&lt;product lowercased&gt;-pin.yaml</code> has its <code>commit</code>,
+      <code>revision_kind</code> and <code>sorted-ls-tree-r-v1</code> digest recomputed as
+      <code>scaffold-project.py --pin</code> computed them: OFFLINE from a local checkout when one
+      is found &mdash; <code>--pin-source [PRODUCT=]&lt;path&gt;</code>,
+      <code>SHAPE_PIN_SOURCE_&lt;PRODUCT&gt;</code> in the environment, or a checkout beside the
+      assembly root named for the pinned repository &mdash; else by <code>gh api</code>, with the
+      operator&rsquo;s <code>gh</code> credentials, when <code>gh</code> can read it. Finding
+      neither is a named SKIP, exit 0: no checkout and no network does not make a descent a lie. A
+      checkout that cannot answer is the finding <code>neutral-pin-source-unreadable</code>.
+      <code>make bootstrap</code>, <code>bump-leg.py</code> and <code>update-shape.py apply</code>
+      run this validator in the operator&rsquo;s environment, so each makes that call too; none
+      takes <code>--pin-source</code>.</p>
       <p>A NEUTRAL product may elect the shape and be its own assembly root as well:
       <code>openDox</code> mounting <code>openDox-spec</code> and <code>openDox-code</code> is a
       fact about LAYOUT and not a claim about neutrality, because electing confers nothing.
@@ -1321,7 +1339,9 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       that this user cannot open, naming the path and the system&rsquo;s reason, with the same ids
       and the remedy of making it readable and running the command again; a root standing on its
       own tracking branch (the next step is a pull request, never a
-      push to the default branch); and a validator that goes red &mdash; rolling the pin, the
+      push to the default branch: <code>git switch -c &lt;branch&gt;</code> first;
+      <code>--dry-run</code> writes nothing, so it runs there and prints that command); and a
+      validator that goes red &mdash; rolling the pin, the
       workflow files, the leg&rsquo;s checkout and the index back first, so a refusal leaves the
       tree exactly as it was found.</p>
       <p>The leg is left DETACHED at the new commit; <code>make bootstrap</code> re-places it on its
@@ -1363,9 +1383,11 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
     <section id="current">
       <p class="eyebrow">Reference</p>
       <h2>Keeping a project&rsquo;s shape current</h2>
-      <p>The copies are the trade: a project runs its own gate offline, and an upstream FIX to a
-      copied file reaches it never. <code>update-shape.py</code> is the re-sync, as one
-      command.</p>
+      <p>The copies are the trade: a project runs its own gate, which never consults this standard
+      (its validators&rsquo; one possible network read is <code>validate-pins.py</code>&rsquo;s
+      <code>gh api</code> recheck of a neutral product&rsquo;s pin,
+      <a href="#legs">described with the legs</a>), and an upstream FIX to a copied file reaches it
+      never. <code>update-shape.py</code> is the re-sync, as one command.</p>
       <div class="code" data-lang="sh"><pre><code>./update-shape.py check --root ../MedxEHR          # writes nothing
 ./update-shape.py apply --root ../MedxEHR --at &lt;commit&gt; --yes \
     --branch shape/update-&lt;sha&gt;                    # then open a pull request</code></pre></div>
@@ -1400,8 +1422,9 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       bare-clones itself; it defaults to the repository the pin names. <code>make bootstrap</code>
       prints one line when the upstream has moved past the pin AND this machine can already tell
       offline &mdash; <code>SHAPE_UPSTREAM_PATH</code> points at a clone, or a
-      <code>.shape-upstream-tip</code> file carries a commit. It adds no network call: a bootstrap
-      that paused to ask GitHub a question would have made the shape a dependency again.</p>
+      <code>.shape-upstream-tip</code> file carries a commit. That line adds no network call: a
+      bootstrap that paused to ask GitHub a question would have made the shape a dependency again.
+      (Its pins gate may ask <code>gh api</code>; see <a href="#legs">the legs</a>.)</p>
       <a class="src" href="https://github.com/opensoft/openRepoShape#keeping-a-projects-shape-current">Full text &mdash; keeping the shape current</a>
     </section>
 
@@ -1433,10 +1456,13 @@ openRepoShape --doctor                 # the repository you are standing in
       policy), <strong>agent files</strong> and <strong>machine</strong>. A
       <a href="#families">family holder</a> gets <strong>family</strong>, <strong>manifest
       kinds</strong>, <strong>shape currency</strong>, <strong>placement</strong>
-      (<code>n/a</code> &mdash; a holder has no legs of its own), <strong>members</strong> and
-      <strong>machine</strong>; a directory that is neither gets what it is CALLED under the naming
-      policy, what IS in it, and the way in &mdash; and a repository the advisory is not silent
-      about gets the <strong>Triad</strong> row, status <code>advisory</code>: the
+      (<code>n/a</code> &mdash; a holder has no legs of its own), <strong>agent files</strong>,
+      <strong>members</strong> and <strong>machine</strong>. Either one in the middle of a merge
+      gets <strong>merge</strong> first: a <code>FINDING</code> naming the unmerged paths, or a
+      <code>note</code> if nothing is left unmerged. A directory that is neither gets what it is
+      CALLED under the naming policy, what IS in it, the way in and <strong>machine</strong>
+      &mdash; and a repository the advisory is not silent about gets the
+      <strong>Triad</strong> row, status <code>advisory</code>: the
       <a href="#confers">preference</a> said once and stepped over by the verdict (a leg gets its
       assembly root).</p>
       <p>Every row is <code>ok</code>, <code>note</code>, <code>FINDING</code> or
@@ -1455,8 +1481,8 @@ openRepoShape --doctor                 # the repository you are standing in
           <tr><td><code>COMPLIANT</code></td><td>0</td><td>every row ok, and the pin names this standard&rsquo;s commit</td></tr>
           <tr><td><code>COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)</code></td><td>1</td><td>valid, and the standard has moved on</td></tr>
           <tr><td><code>DRIFTED (&hellip;)</code></td><td>1</td><td>a copy was edited here, or a leg is off its pin</td></tr>
-          <tr><td><code>MISPLACED (n paths)</code></td><td>1</td><td>a tracked path sits in a leg the path policy puts elsewhere</td></tr>
-          <tr><td><code>INVALID (&lt;rows&gt;)</code></td><td>1</td><td>a validator went red</td></tr>
+          <tr><td><code>MISPLACED (n paths)</code></td><td>1</td><td>a tracked path sits in a leg the path policy puts elsewhere, or a submodule in a leg other than the one its <code>submodules:</code> record names</td></tr>
+          <tr><td><code>INVALID (&lt;rows&gt;)</code></td><td>1</td><td>a validator went red, or (<code>merge</code>) the index holds an unmerged path</td></tr>
           <tr><td><code>NOT A SHAPE ROOT</code></td><td>2</td><td>neither manifest is there &mdash; adopt, or scaffold</td></tr>
         </tbody>
       </table>
@@ -1470,6 +1496,8 @@ openRepoShape --doctor                 # the repository you are standing in
       either way, with its own next command. <code>MISPLACED</code> sits between the two: a path in
       the wrong leg is a fact about the shape that no validator, pin or manifest here can see, while
       a red validator names itself in the table whether or not it also names the verdict line.
+      <strong>An unfinished merge outranks all three</strong>, as <code>INVALID (merge)</code>: the
+      conflict is what turns the other rows red, and no fix commits until it is finished.
       <code>--json</code> is the same report as one object,
       each row carrying its <code>id</code>.</p>
 
@@ -1731,7 +1759,8 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <ul class="plain">
         <li><strong>Never create a repository without the human&rsquo;s explicit confirmation.</strong>
         Run <code>./setup.sh</code> (or the one-liner) WITHOUT <code>--yes</code> and let it ask. The
-        human types <code>yes</code> at its prompt; you never answer it for them.</li>
+        human types <code>yes</code> at its prompt; you never answer it for them. With no terminal,
+        see the paragraph after this list.</li>
         <li><strong>Never answer an install prompt.</strong> The preflight asks
         <code>Type yes to continue:</code> for each thing it offers to run &mdash; an install,
         <code>gh auth login</code>, <code>gh auth setup-git</code>. The human types it; you never
@@ -1751,8 +1780,13 @@ resume InkRouter                # on workstation B, and the estate is back</code
       </ul>
       <p>Beyond those: show the human the tool&rsquo;s output verbatim &mdash; the plan especially
       &mdash; and let them answer its prompt; &ldquo;go ahead&rdquo; about something else is not a
-      yes about this. Read a refusal rather than retrying: each one names what to run instead,
-      or, for some, the VALUE to change &mdash; among them a <code>--spec-path</code> or
+      yes about this. An assistant&rsquo;s shell almost never has a terminal, so setup stops after
+      the plan &mdash; exit 2, <code>no terminal to confirm on</code> &mdash; and that is the rule
+      working, not a fault: give the human the same command to run in their OWN terminal, where
+      it asks them, the one-liner too &mdash; setup reads the answer from that terminal and never
+      from the pipe &mdash; and never pass <code>--yes</code> yourself. Read a refusal rather than
+      retrying: each one names what to run instead, or, for some, the VALUE to change &mdash;
+      among them a <code>--spec-path</code> or
       <code>--code-path</code> that is, holds or lies inside a file the shape writes, and a
       <code>--pin</code> the shape cannot write, both before anything is created &mdash; and there
       is no <code>--force</code>, deliberately. Relay the finished block &mdash; the clone
@@ -1799,9 +1833,16 @@ resume InkRouter                # on workstation B, and the estate is back</code
       name, added (#289); <code>bump-leg.py</code> refusing a workflow file, the workflows directory
       or the leg&rsquo;s pin that this user cannot open, by name, added (#383); what
       <code>setup.sh --help</code> does from a download, which clones nothing, and which commands
-      list every flag, added (#341) &mdash; a page cannot name the commit that contains it, and
+      list every flag, added (#341); <code>bump-leg.py --dry-run</code> running on the tracking
+      branch and naming the branch the real run needs, added (#477); the one network
+      read a project&rsquo;s own validators can make, the <code>gh api</code> recheck of a neutral
+      product&rsquo;s pin, said where this page and the README had said &ldquo;offline&rdquo;,
+      added (#411); the doctor&rsquo;s <strong>merge</strong> row, and <code>INVALID (merge)</code>
+      above drift, added (#424); the assistant&rsquo;s route when its shell has no terminal, added
+      (#476); the one-liner asking at the person&rsquo;s own terminal, never reading the answer
+      from the pipe, added (#492) &mdash; a page cannot name the commit that contains it, and
       the blob below is the fact a test checks.
-      README.md blob 5465d135ca7263010ee354424041f90c4553d2e7. Every command, flag, exit code
+      README.md blob ec812f8e9b4b3292f60932e7e9b86aea2e0a708b. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
