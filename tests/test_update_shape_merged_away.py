@@ -36,10 +36,11 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, clone_just_pushed, git, make_source_repo, \
-    run_script
+from conftest import REPO, WINDOWS_SKIP, clone_just_pushed, git, \
+    make_source_repo, run_script
 from test_shape_doctor import (  # noqa: F401
-    doctor, rows_of, standard, verdict_line,
+    commit_all, doctor, keep_as_committed_link, rows_of, standard,
+    verdict_line,
 )
 from test_update_shape import STATES, next_line_of
 
@@ -285,6 +286,45 @@ def test_a_pinned_copy_deleted_elsewhere_stays_copy_missing(standard, root):
     pins_row = rows_of(result)["pins"]
     assert "merged_away" not in pins_row["detail"], pins_row
     assert "update-shape.py" not in pins_row["next"], pins_row
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("linked", [
+    pytest.param("contracts/shape-pin.yaml", id="pin-at-a-link"),
+    pytest.param("contracts", id="contracts-directory-link"),
+    pytest.param("project.yaml", id="manifest-at-a-link"),
+])
+def test_the_pins_row_keeps_the_gate_while_check_refuses_a_linked_record(
+        standard, root, tmp_path, linked):
+    """Both copies merged away in a root that keeps its pin, the
+    `contracts` directory above it, or its manifest as a committed symlink
+    (#286). `check` refuses such a root, `update-rewrite-symlink`, before it
+    classifies a row, so the `pins` row named a `check` that exits 2 and
+    said it was the step the `shape currency` row names, while that row
+    named replacing the link. The `pins` row keeps the gate; with the link
+    replaced and committed, the doctor run again names `check`."""
+    merge_away(root, *MERGED.values())
+    end = keep_as_committed_link(root, linked, tmp_path)
+
+    checked = update_shape(standard, root, "check")
+    assert checked.returncode == 2, checked.stdout + checked.stderr
+    assert "REFUSED update-rewrite-symlink" in checked.stderr, checked.stderr
+
+    rows = rows_of(doctor(standard, root, "--json"))
+    pins_row, currency = rows["pins"], rows["shape-currency"]
+    assert pins_row["status"] == "FINDING", pins_row
+    assert "merged_away" not in pins_row["detail"], pins_row
+    assert "update-shape.py" not in pins_row["next"], pins_row["next"]
+    assert "merged-away" not in pins_row["reason"], pins_row["reason"]
+    assert currency["detail"]["error"] == "update-rewrite-symlink", currency
+    assert currency["next"].startswith(f"replace {linked} "), currency["next"]
+
+    (root / linked).unlink()
+    shutil.move(str(end), str(root / linked))
+    commit_all(root, f"keep {linked} where it stands, not as a link")
+    pins_row = rows_of(doctor(standard, root, "--json"))["pins"]
+    assert pins_row["detail"]["merged_away"] == MERGED, pins_row
+    assert "update-shape.py" in pins_row["next"], pins_row["next"]
 
 
 def test_a_deletion_not_yet_committed_comes_back_from_head(standard, root):

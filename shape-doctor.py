@@ -2023,12 +2023,24 @@ def with_merged_away_rows(ctx: Context, row: Row, output: str) -> Row:
     NEXT the gate. A NEW ROW rather than this one changed in place, so
     nothing said about the gate's command stays beside a NEXT that is not
     the gate.
+
+    AND ONLY WHERE `check` CAN READ THE ROOT (#286). A root that keeps its
+    pin or its manifest as a symlink, or under one, is refused by `check`
+    itself, `update-rewrite-symlink`, before it classifies a row: named
+    here, `check` exited 2 and reported nothing `merged-away`, and the
+    `shape currency` row named replacing the link, not `check`
+    (`linked_record_row`), so both of this row's sentences were false. The
+    same `linked_record` question that row asks keeps this one the gate
+    until the link is replaced; the doctor run again then names `check`.
     """
     if row.status != FINDING or row.detail.get("exit") != 1 \
             or row.detail.get("crashed"):
         return row
     merged = merged_away_findings(ctx, output)
     if merged is None:
+        return row
+    us = ctx.update_shape()
+    if us.linked_record(ctx.root, us.root_kind(ctx.root)) is not None:
         return row
     one = len(merged) == 1
     copies = ", ".join(f"{path} (merged into {original})"
