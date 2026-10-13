@@ -90,8 +90,8 @@ THE ROWS, for an assembly root, in this order:
 
 and for a FAMILY holder: `merge` likewise, `family` (its own
 `scripts/validate-family.py`), `manifest kinds`, `shape currency`,
-`placement` (`n/a`: a holder has no legs of its own), `members` and
-`machine`. A directory that
+`placement` (`n/a`: a holder has no legs of its own), `agent files`,
+`members` and `machine`. A directory that
 is NEITHER gets `naming` (what it is called, under the policy), `what is
 here`, `the way in` -- `adopt-project.py plan` for a repository that already
 exists, `setup.sh` for a new one -- and `machine`.
