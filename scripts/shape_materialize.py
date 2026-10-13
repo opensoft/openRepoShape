@@ -775,30 +775,60 @@ class CommandFailed(Exception):
         )
 
 
-#: Two fields name a branch, and they are NOT the same thing (#324):
-#:   `{tracking}` is the run's tracking branch (`--tracking-branch`): the
-#:   branch of the REMOTE the refused push targeted, and so the base a
-#:   seeding pull request lands on.
-#:   `{local}` is the ref in `{work}` that the refused push carried. Each
-#:   caller -- the scaffold's legs and assembly root, the family holder --
-#:   pushed the tracking branch BY NAME from a clone made on it, so each
-#:   passes the tracking branch for both; a push of `HEAD:` would name `HEAD`.
-#:   An adoption prints its own `ADOPT_RULESET_HINT` (`adopt-project.py`,
-#:   #177), which names the tracking branch the same way and no command.
-#: Every caller passes both, after `checked_value` has admitted the tracking
-#: branch, so each is a safe argument and neither is quoted here. A call that
-#: leaves one out fails `tests/test_ruleset_hint_tracking_branch.py`.
+#: What a scaffold whose push was refused prints, and `FAMILY_RULESET_HINT`
+#: what `family.py init` prints (#462). ONE EXIT, AND IT WORKS: an operator
+#: holding the bypass right re-runs the same command with `--reuse-empty-repo`,
+#: whose own pushes are the seed. Brett Heap ruled it on 2026-10-12, "Offer
+#: only exits that work": the pull request these offered as a second exit had
+#: no base, because the refused push was the first into a repository `gh repo
+#: create` had just made without a README, and the seed branch it pushed made
+#: that repository non-empty, so the re-run refused it. The re-run was
+#: refused for the scaffold's own legs too, until "Re-run reuses empty legs"
+#: and "Accept the scaffold's own seed": `--reuse-empty-repo` reuses each of
+#: the three repositories while it has zero commits, and a leg whose one
+#: commit is the seed this scaffold pushes, which is a leg pushed before a
+#: later push was refused (`scaffold-project.py`'s `_reusable_remotes`).
+#: Pushing a seed first is what the hint must not invite: it makes a
+#: repository the re-run refuses.
+#: The PR route is still NAMED, as one that cannot finish, so nobody reaches
+#: for it again. `{tracking}` is the run's tracking branch, the branch the
+#: refused push targeted (#324), and `{repo}` the repository it was refused
+#: at; every caller passes both, after `checked_value` has admitted the
+#: tracking branch, so neither is quoted here. `adopt-project.py` prints its
+#: own, `ADOPT_RULESET_HINT`: a re-run into its legs is `leg-remote-exists`.
+#: A call that leaves a field out fails
+#: `tests/test_ruleset_hint_tracking_branch.py`.
 RULESET_HINT = """
 If the organisation applies a ruleset requiring changes to arrive by pull
 request, a direct push to the default branch is refused BY DESIGN and must not
-be worked around. Two legitimate exits:
+be worked around. ONE exit finishes this scaffold: an operator holding the
+bypass right re-runs it, the same command with --reuse-empty-repo added (after
+`--` through setup.sh) and a new --work-dir or none. That run's own pushes are
+the seed, so push nothing first: it reuses each repository this run left
+empty, and a leg whose one commit is the seed this scaffold pushes, and it
+refuses a repository that holds anything else. A seed branch and a pull
+request cannot finish it: {repo} has no {tracking} for that pull request to
+target.
 
-  (1) have an operator holding the bypass right seed the default branch once,
-      then re-run this scaffold; or
-  (2) push a seed BRANCH and open a pull request:
-          git -C {work} push -u origin {local}:seed/scaffold
-          gh pr create --repo {repo} --base {tracking} --head seed/scaffold \\
-              --title 'Seed the {role} leg' --body 'Scaffolded shape.'
+NOTHING has been rolled back. What already exists is listed above; delete it
+by hand if you want a clean re-run.
+"""
+
+#: `family.py init`'s, for the same reason and with the same two fields
+#: (#462). The holder is the one repository `init` makes, so its refused push
+#: leaves it empty, and `family.py init --reuse-empty-repo` reuses an empty
+#: holder and refuses one with commits. The re-run lands elsewhere: the first
+#: run's holder clone is still where it landed, and `init` refuses a holder
+#: directory that is not empty (`family-target-exists`).
+FAMILY_RULESET_HINT = """
+If the organisation applies a ruleset requiring changes to arrive by pull
+request, a direct push to the default branch is refused BY DESIGN and must not
+be worked around. ONE exit finishes this family: an operator holding the
+bypass right re-runs `family.py init`, the same command with
+--reuse-empty-repo added and a new --into or --work-dir. That run's own push
+is the seed, so push nothing first: it reuses the holder while it is empty,
+and refuses it once it has a commit. A seed branch and a pull request cannot
+finish it: {repo} has no {tracking} for that pull request to target.
 
 NOTHING has been rolled back. What already exists is listed above; delete it
 by hand if you want a clean re-run.
