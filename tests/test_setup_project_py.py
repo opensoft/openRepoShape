@@ -40,6 +40,10 @@ from conftest import assert_refuses_for_want_of_a_terminal
 
 from conftest import PTY_SKIP, run_in_a_terminal
 
+from conftest import (KEEP_IT, TAKEN_CLONE_PATHS,
+                      assert_a_rehearsals_clone_stops_the_real_run,
+                      assert_a_taken_clone_path_is_refused)
+
 SETUP_PROJECT = REPO / "setup-project.py"
 SETUP_SH = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
@@ -462,6 +466,19 @@ def test_passthrough_reaches_the_scaffold(tmp_path):
     assert 'reference: "a-staged-fragment.md"' in manifest
 
 
+def test_a_rehearsals_clone_stops_the_real_run_before_anything(tmp_path):
+    """#498, on an interpreter alone: `conftest.assert_a_rehearsals_clone_
+    stops_the_real_run`."""
+    assert_a_rehearsals_clone_stops_the_real_run(run_entry, tmp_path)
+
+
+@pytest.mark.parametrize("kind", TAKEN_CLONE_PATHS)
+def test_a_taken_clone_path_is_refused_before_anything(tmp_path, kind):
+    """#498, on an interpreter alone: `conftest.assert_a_taken_clone_path_
+    is_refused`."""
+    assert_a_taken_clone_path_is_refused(run_entry, tmp_path, kind)
+
+
 def test_anything_but_yes_refuses_and_creates_nothing(monkeypatch, tmp_path):
     """The one `yes` is EXACT: `no`, `y`, `Yes` and an empty line all refuse.
 
@@ -483,14 +500,15 @@ def test_anything_but_yes_refuses_and_creates_nothing(monkeypatch, tmp_path):
         args=[], returncode=0, stdout="", stderr=""))
     opts = module.parse_args(["--project", "Sample", "--org", "demoorg"],
                              str(tmp_path))
+    clone = str(tmp_path / "Sample")
     for answer in ("no", "y", "Yes", ""):
         monkeypatch.setattr(module, "ask", lambda prompt, a=answer: a)
         with pytest.raises(module.Refusal) as refused:
-            module.plan_and_confirm(opts, REPO, "demoorg", [])
+            module.plan_and_confirm(opts, REPO, "demoorg", [], clone)
         assert refused.value.code == 1, answer
         assert "not confirmed; nothing was created." in str(refused.value)
     monkeypatch.setattr(module, "ask", lambda prompt: "yes")
-    module.plan_and_confirm(opts, REPO, "demoorg", [])
+    module.plan_and_confirm(opts, REPO, "demoorg", [], clone)
 
 
 def test_no_test_here_depends_on_gh_being_authenticated():
@@ -1657,8 +1675,137 @@ def test_a_rehearsal_that_stops_at_the_plan_makes_no_family_folder(tmp_path):
     assert "no terminal to confirm on" in result.stderr
     assert "lands at     %s" % (work / FAMILY / "Sample") in result.stdout
     assert "--dry-run: nothing was created." in result.stdout
+    # The plan an assistant relays names the clone path too, family level
+    # included (#498), though the confirm refuses.
+    assert "clone into   %s" % (work / FAMILY / "Sample") in result.stdout
     assert not work.exists(), f"{work} was created by a run that created nothing"
     assert not (tmp_path / "remotes").exists()
+
+
+# --- what stands at a taken clone path (#498) --------------------------------
+#
+# The runs through both entry points are `conftest`'s, wrapped above. These
+# ask the pieces in-process: what the refusal can tell about a clone, a link
+# to nothing, and the step (7) backstop, which a run reaches only when the
+# path appears while it is going.
+
+#: An `origin` carrying a token, as an HTTPS clone can record one.
+WITH_A_TOKEN = "https://dana:ghp_notreal@github.com/Northwind/Sample.git"
+
+REHEARSALS = ("It is the clone a rehearsal left behind: its `origin` is %s, a "
+              "repository on this disk, as `--local-remote-dir` makes one.")
+
+
+def _a_clone(taken: Path, origin=None, shape_root: bool = False) -> None:
+    """`taken` as `git init` leaves it, with `origin` and a `project.yaml`
+    if asked; no commit, so no identity is needed."""
+    taken.mkdir(parents=True)
+    git("init", "-q", cwd=taken)
+    if origin is not None:
+        git("remote", "add", "origin", str(origin), cwd=taken)
+    if shape_root:
+        (taken / "project.yaml").write_bytes(b"schema_version: 1\n")
+
+
+@pytest.mark.parametrize("case", [
+    "github", "the-rehearsals", "the-rehearsals-as-a-file-url",
+    "a-mirror-under-another-name", "rehearsal-shaped-with-no-project-yaml",
+    "no-origin", "a-git-file", "an-empty-git-inside-another-repository"])
+def test_what_stands_at_a_taken_clone_path(tmp_path, case):
+    """`what_stands_at`: a sentence and whether deleting is offered.
+
+    Deleting is offered for a rehearsal's clone alone, told by all three of
+    an `origin` on this disk, its name `<Project>.git`, and a `project.yaml`:
+    a mirror under another name and a clone with no manifest are somebody's.
+    A token in an `origin` is not echoed. And the `origin` is read from the
+    directory's OWN `.git/config`: an empty `.git` inside a repository that
+    has one must not be reported as a clone of THAT repository, which is
+    what `git -C` finds by walking up."""
+    module = entry_point_module()
+    taken = tmp_path / "here" / "Sample"
+    rehearsal = tmp_path / "here" / "rehearsal" / "Sample.git"
+    mirror = tmp_path / "mirrors" / "Mirror.git"
+    if case == "github":
+        _a_clone(taken, WITH_A_TOKEN, shape_root=True)
+        expected = ("It is a clone of "
+                    "https://github.com/Northwind/Sample.git.", False)
+    elif case == "the-rehearsals":
+        _a_clone(taken, rehearsal, shape_root=True)
+        expected = (REHEARSALS % rehearsal, True)
+    elif case == "the-rehearsals-as-a-file-url":
+        _a_clone(taken, rehearsal.as_uri(), shape_root=True)
+        expected = (REHEARSALS % rehearsal.as_uri(), True)
+    elif case == "a-mirror-under-another-name":
+        _a_clone(taken, mirror, shape_root=True)
+        expected = ("It is a clone of %s." % mirror, False)
+    elif case == "rehearsal-shaped-with-no-project-yaml":
+        _a_clone(taken, rehearsal)
+        expected = ("It is a clone of %s." % rehearsal, False)
+    elif case == "no-origin":
+        _a_clone(taken)
+        expected = ("It is a git repository.", False)
+    elif case == "a-git-file":
+        taken.mkdir(parents=True)
+        (taken / ".git").write_bytes(b"gitdir: ../elsewhere/.git\n")
+        expected = ("It is a git repository.", False)
+    else:
+        _a_clone(taken.parent, "https://example.invalid/Outer.git")
+        (taken / ".git").mkdir(parents=True)
+        expected = ("It is a git repository.", False)
+    assert module.what_stands_at(str(taken), "Sample") == expected
+    assert "ghp_notreal" not in expected[0]
+
+
+def test_a_link_to_nothing_takes_the_clone_path(tmp_path):
+    """`os.path.exists` reads a symbolic link to nothing as absent, and
+    `git clone` still refuses it (`could not create work tree dir`), so
+    step (3) asks `lexists`. A free path is the control: it is not refused."""
+    module = entry_point_module()
+    link = tmp_path / "Sample"
+    try:
+        os.symlink(tmp_path / "nowhere", link)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"this platform cannot create a symlink here: {exc}")
+    assert module.refuse_a_taken_clone_path(str(tmp_path / "Free"),
+                                            "Free") is None
+    with pytest.raises(module.Refusal) as refused:
+        module.refuse_a_taken_clone_path(str(link), "Sample")
+    assert refused.value.code == 2
+    assert str(refused.value) == (
+        "%s already exists, and that is where this project would be cloned, "
+        "so the run stops here and nothing was created. %s" % (link, KEEP_IT))
+
+
+def test_a_path_taken_after_step_three_is_the_backstops(monkeypatch,
+                                                        tmp_path):
+    """Step (7) still asks, for a path that appeared while the run was going,
+    after all three repositories exist. Its way out moves the thing aside
+    and clones from the clone's PARENT: as it used to read, the printed
+    `git clone` met the same directory, and `cd <Project>` from anywhere
+    else entered whatever stood there. Nothing is cloned."""
+    module = entry_point_module()
+    runs = _Runs()
+    monkeypatch.setattr(module, "run", runs)
+    opts = module.parse_args(["--project", "Sample", "--org", "demoorg",
+                              "--local-remote-dir", str(tmp_path / "remotes"),
+                              "--into", str(tmp_path / "work")],
+                             str(tmp_path))
+    parent = Path(opts.into)
+    (parent / "Sample").mkdir(parents=True)
+    with pytest.raises(module.Refusal) as refused:
+        module.clone_and_bootstrap(opts, "demoorg",
+                                   module.Landing(parent, "", None))
+    assert refused.value.code == 2
+    assert str(refused.value) == (
+        "%s already exists - it was not there when step (3) looked - so "
+        "there is nowhere to clone into. The three repositories WERE "
+        "created. Move it aside, then finish by hand in %s:\n"
+        "    git clone --recurse-submodules %s\n"
+        "    cd Sample && %s scripts/bootstrap.py"
+        % (parent / "Sample", parent,
+           os.path.join(opts.local_remote_dir, "Sample.git"),
+           module.PYTHON_CMD))
+    assert runs.calls == [], f"something was run: {runs.calls}"
 
 
 # --- setup.sh is a shim, not a second flag list -----------------------------
@@ -1867,7 +2014,8 @@ def test_a_controlling_terminal_that_is_a_file_never_answers(monkeypatch,
     opts = module.parse_args(["--project", "Sample", "--org", "demoorg"],
                              str(tmp_path))
     with pytest.raises(module.Refusal) as refused:
-        module.plan_and_confirm(opts, REPO, "demoorg", [])
+        module.plan_and_confirm(opts, REPO, "demoorg", [],
+                                str(tmp_path / "Sample"))
     assert refused.value.code == 2
     assert_refuses_for_want_of_a_terminal(str(refused.value))
 

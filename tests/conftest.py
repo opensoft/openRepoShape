@@ -841,6 +841,101 @@ def assert_refuses_for_want_of_a_terminal(stderr: str) -> None:
         f"the exit that keeps the human in charge comes first: {stderr!r}")
 
 
+# --- a clone path that is already taken (#498) -------------------------------
+#
+# ONE READING, TWO ENTRY POINTS. `tests/test_setup_sh.py` and
+# `tests/test_setup_project_py.py` each hand their own runner (`run_setup`,
+# `run_entry`) to the two helpers below, so the same runs are asserted once
+# whichever name a person typed. Every run here passes `--local-remote-dir`,
+# which is what those files' `test_no_test_here_depends_on_gh_being_
+# authenticated` looks for in each call it can see; it cannot see these, so
+# they keep it themselves.
+
+#: What can stand where the project would be cloned, as
+#: `assert_a_taken_clone_path_is_refused` makes each one.
+TAKEN_CLONE_PATHS = ("empty directory", "file", "directory")
+
+#: The refusal's two ways out: deleting is offered only for what holds
+#: nothing of anybody's.
+DISCARD_IT = "Move or delete it, then run this again."
+KEEP_IT = "Move it, or choose another --into, then run this again."
+
+
+def refused_in_step_three(result, clone: str) -> str:
+    """`result` refused in step (3), before the naming check, the plan or
+    the scaffold, naming `clone` and saying nothing was created; returns the
+    refusal's text after that first sentence."""
+    head = (f"REFUSED: {clone} already exists, and that is where this project "
+            "would be cloned, so the run stops here and nothing was created.")
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert head in result.stderr, result.stderr
+    assert "(3) project" in result.stdout, result.stdout
+    for later in ("(4) naming policy", "(5) the plan", "(6) scaffold"):
+        assert later not in result.stdout, f"the run reached {later}"
+    return result.stderr.split(head, 1)[1].strip()
+
+
+def assert_a_rehearsals_clone_stops_the_real_run(run, tmp_path: Path) -> None:
+    """README's own order, in one folder: rehearse with `--local-remote-dir
+    ./rehearsal`, then run for real (a second `--local-remote-dir` stands in
+    for GitHub). The rehearsal names its clone path in the plan and leaves
+    `./Sample` behind; the real run refuses in step (3), names that clone
+    as the rehearsal's and offers to delete it, and creates nothing. On main
+    it created all three repositories and only then refused, in step (7)."""
+    here = tmp_path / "here"
+    clone = os.path.abspath(str(here / "Sample"))
+    rehearsal = run("--project", "Sample", "--yes", "--org", "demoorg",
+                    "--local-remote-dir", str(here / "rehearsal"),
+                    "--into", str(here))
+    assert rehearsal.returncode == 0, rehearsal.stderr + rehearsal.stdout
+    out = rehearsal.stdout
+    assert (out.index("--dry-run: nothing was created.")
+            < out.index(f"\nclone into   {clone}\n")
+            < out.index("(6) scaffold")), out
+    real = run("--project", "Sample", "--yes", "--org", "demoorg",
+               "--local-remote-dir", str(here / "real"), "--into", str(here))
+    rest = refused_in_step_three(real, clone)
+    assert rest.startswith("It is the clone a rehearsal left behind: its "
+                           "`origin` is "), rest
+    assert ("a repository on this disk, as `--local-remote-dir` makes one. "
+            + DISCARD_IT) in rest, rest
+    assert not (here / "real").exists(), "the real run created repositories"
+    assert (here / "Sample" / "project.yaml").is_file()
+
+
+def assert_a_taken_clone_path_is_refused(run, tmp_path: Path,
+                                         kind: str) -> None:
+    """Anything at `<into>/<Project>` - one of `TAKEN_CLONE_PATHS` - is
+    refused in step (3) of a run told `--yes`, with what is there said where
+    the tool can tell, and left exactly as it was. An EMPTY directory too,
+    though `git clone` would take one: #498's option 1. On main each of
+    these created all three repositories first."""
+    work = tmp_path / "work"
+    taken = work / "Sample"
+    if kind == "file":
+        work.mkdir()
+        taken.write_bytes(b"not a project\n")
+        said, way_out = "", KEEP_IT
+    elif kind == "directory":
+        taken.mkdir(parents=True)
+        (taken / "notes.txt").write_bytes(b"somebody's\n")
+        said, way_out = "It is a directory that is not a git clone. ", KEEP_IT
+    else:
+        taken.mkdir(parents=True)
+        said, way_out = "It is an empty directory. ", DISCARD_IT
+    before = sorted(p.name for p in taken.iterdir()) if taken.is_dir() else (
+        taken.read_bytes())
+    result = run("--project", "Sample", "--yes", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(work))
+    rest = refused_in_step_three(result, os.path.abspath(str(taken)))
+    assert rest == said + way_out, rest
+    assert not (tmp_path / "remotes").exists()
+    after = sorted(p.name for p in taken.iterdir()) if taken.is_dir() else (
+        taken.read_bytes())
+    assert after == before, f"{taken} was changed by a run that refused"
+
+
 #: THE PERSON'S OWN TERMINAL, IN A TEST (#492). The one-liner reads its yes
 #: from the CONTROLLING terminal when its stdin is the pipe the script came
 #: down, so a test that says it asks has to give the run one: a
