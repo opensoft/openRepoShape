@@ -1248,7 +1248,11 @@ def test_the_next_line_check_prints_carries_the_lane_when_one_is_set(
                       str(upstream_and_project["upstream"]),
                       env={"LANES_LANE": LANE})
     assert lane.returncode == 1, lane.stdout + lane.stderr
-    assert next_line_of(lane.stdout) == plain + f' --trailer "Lane: {LANE}"'
+    # SINGLE-QUOTED, which is what `shlex.quote` makes of a value with a
+    # space in it: the trailer goes through the same quoter as every other
+    # argument on the line now (#325), where it used to be wrapped in double
+    # quotes by hand. The doctor's row has always printed this form.
+    assert next_line_of(lane.stdout) == plain + f" --trailer 'Lane: {LANE}'"
     # And it is a line that survives being pasted: one argument, whole.
     assert shlex.split(next_line_of(lane.stdout))[-2:] == \
         ["--trailer", f"Lane: {LANE}"]

@@ -20,7 +20,7 @@ hand-edited; `tests/test_cli_reference.py` fails when the two disagree.
 
 **Never create a repository without the human's explicit confirmation.** Run
 `./setup.sh` (or the one-liner) WITHOUT `--yes` and let it ask. The human
-types `yes` at its prompt; you never answer it for them.
+types `yes` at its prompt; you never answer it for them. No terminal: section 2.
 
 **Never answer an install prompt.** The preflight asks `Type yes to continue:`
 for each thing it offers to run — an install, `gh auth login`, `gh auth
@@ -61,39 +61,39 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.s
 ```
 
 `openRepoShape <Project> --org <org> --visibility <…> --elected-by '<Name>'`
-is the same run through the installed command, still without `--yes`. The
-command with NO arguments prints its usage and exits 1 — install, check the
-machine (`--preflight`), diagnose a repository (`--doctor`), scaffold — and
-`--install` ends with a read-only `machine:` block naming anything missing.
-Neither installs anything; relay the block, and let the human run
-`--preflight` if they want the offers.
+is the same run through the installed command, still without `--yes`. With no
+arguments it prints its usage and exits 1, and `--install` ends with a
+read-only `machine:` block naming anything missing; neither installs anything.
+Relay the block; the human runs `--preflight` if they want the offers.
 
 On Windows without WSL2, `Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py`
 then `py setup-project.py <Project> --org <org> --visibility <…> --elected-by '<Name>'`
 is the same run again — two commands because a piped script cannot ask — still without `--yes`.
 
-Already standing in a checkout of openRepoShape? Run `./setup.sh` the same
-way, still with the explicit `--org` — there is no fork to detect one from.
-Either form runs the preflight, checks the three names against the naming
-policy, prints the scaffold plan, and then asks. Show the human its output
-verbatim — the plan especially — and let them answer its prompt. "Go ahead"
-about something else is not a yes about this. Standing in a family FOLDER —
-`<Family>/`, with the holder cloned at `<Family>/<Family>` — is DETECTED and
-said in the plan with no flag at all: the project lands beside the holder
-exactly as it would have, and the last next-command names the `family.py add`
-that records the membership in the holder and nowhere else.
+In a checkout of openRepoShape, run `./setup.sh` the same way, still with the explicit
+`--org`: only a fork's `origin` names an organisation to detect, and a clone of
+opensoft's own is refused without one. Either form runs the preflight, checks the
+three names against the naming policy, prints the scaffold plan, and then asks. Show
+the human its output verbatim — the plan especially — and let them answer its prompt.
+"Go ahead" about something else is not a yes about this. Standing in a family FOLDER —
+`<Family>/`, holder cloned at `<Family>/<Family>` — is DETECTED and said in the plan
+with no flag: the project lands beside the holder, and the last next-command names the
+`family.py add` that records the membership in the holder and nowhere else.
+
+No terminal in your shell, so setup stops after the plan: exit 2, `no terminal
+to confirm on`. Give the human the same command for THEIR OWN terminal, where
+it asks them, the one-liner too: setup reads the answer from that terminal and
+never from the pipe. Never pass `--yes` yourself.
 
 If it refuses, read the refusal: each one names what to run instead, or, for
-some, the VALUE to change. Among those are two you can foresee from the flags
-you were given, both before anything is created: `scaffold-leg-path-collides`
-(a `--spec-path` or `--code-path` that is, holds or lies inside a FILE the
-shape writes into the assembly root: `project.yaml` is one, and `contracts`
-holds `contracts/spec-pin.yaml`; the defaults `spec` and `code` pass) and
-`scaffold-pin-collides` (a `--pin` the shape cannot write, below). `setup.sh`
-takes those flags after `--`, which it passes straight through to
-`scaffold-project.py`. Relay the refusal and ask the human for the value;
-never choose another yourself. Do not retry with `--force`; there is none,
-deliberately.
+some, the VALUE to change. Two you can foresee from your flags, both before
+anything is created: `scaffold-leg-path-collides` (a `--spec-path` or
+`--code-path` that is, holds or lies inside a FILE the shape writes into the
+assembly root: `project.yaml` is one, and `contracts` holds
+`contracts/spec-pin.yaml`; the defaults `spec` and `code` pass) and
+`scaffold-pin-collides` (a `--pin` the shape cannot write, below). Both go
+after `--`. Relay the refusal and ask the human for the value; never choose
+another yourself. Do not retry with `--force`; there is none, deliberately.
 
 ## 3. It finishes the job
 

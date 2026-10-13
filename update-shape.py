@@ -1656,6 +1656,44 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
     return root, pin, rows, additions, upstream, pinned, target, kind
 
 
+def apply_command(root: Path, label: str, target: str,
+                  accept: list[str] = ()) -> str:
+    """The `apply` that `check`'s NEXT line hands a person to paste: this
+    tool run again from the checkout of the standard, pointed at `root`.
+
+    EVERY ARGUMENT IS QUOTED FOR A POSIX SHELL (#325), the root and the
+    upstream first: both are paths on somebody's disk, and a root under
+    `my projects/` or `it's here/` or `$HOME` printed bare was two
+    arguments, an unterminated quotation or an expansion in front of whoever
+    pasted the line, which `landing_failed`'s and the rollback's lines were
+    already quoted against (#202, #204). So is each `--accept-local` path,
+    which comes out of the project's own pin, and the branch. `shlex.join`
+    leaves a value it has nothing to say about exactly as it was, so a plain
+    root prints what it always printed. On POSIX: `_by_hand` says what a
+    Windows root, which always holds a backslash, prints instead.
+
+    THE LANE, WHEN THE ENVIRONMENT NAMES ONE (2026-09-11, #111). A run that
+    pastes this line then lands a commit carrying the `Lane:` trailer the
+    protocol asks for, instead of one that has to be amended afterwards —
+    which is how four InkRouter re-pins landed without it. `Co-Authored-By:`
+    is NOT added here: it names a person or a model, which no environment
+    variable knows. With no lane set this adds nothing at all.
+
+    THE TRAILER IS SPELLED BY `shlex.quote` LIKE THE REST (#325), where it
+    used to be wrapped in double quotes by hand: `LANE_NAME_RE` keeps those
+    safe today, and a line whose every other argument goes through one quoter
+    should not keep a second rule for the last one. The value has a space in
+    it, so it prints in single quotes now — the form the doctor's `shape
+    currency` row has always printed it in.
+    """
+    words = [PYTHON, Path(__file__).name, "apply", "--root", str(root),
+             "--upstream", label, "--at", target, "--yes"]
+    for path in accept:
+        words += ["--accept-local", path]
+    words += ["--branch", f"shape/update-{target[:12]}"]
+    return shlex.join(words) + lane_trailer_argument(shlex.quote)
+
+
 def cmd_check(args) -> int:
     # `pin` and `kind` are `prepare`'s own return shape, unpacked the same way
     # every caller does; this command's report never needs either -- `pinned`
@@ -1722,18 +1760,9 @@ def cmd_check(args) -> int:
                   "pin, and `apply` writes none of them unless it is told to, "
                   "one path at a time — "
                   + " ".join(f"--add {add.path}" for add in offered))
-        accept = "".join(f" --accept-local {row.path}" for row in local)
-        # THE LANE, WHEN THE ENVIRONMENT NAMES ONE (2026-09-11, #111). A run
-        # that pastes this line then lands a commit carrying the `Lane:`
-        # trailer the protocol asks for, instead of one that has to be
-        # amended afterwards — which is how four InkRouter re-pins landed
-        # without it. `Co-Authored-By:` is NOT added here: it names a person
-        # or a model, which no environment variable knows. With no lane set
-        # this adds nothing at all and the line is the one it always was.
-        print(f"NEXT  {PYTHON} {Path(__file__).name} apply --root {root} "
-              f"--upstream {upstream.label} --at {target} --yes{accept} "
-              f"--branch shape/update-{target[:12]}"
-              f"{lane_trailer_argument()}")
+        # QUOTED WHOLE, THE LANE'S TRAILER INCLUDED: see `apply_command`.
+        print("NEXT  " + apply_command(
+            root, upstream.label, target, [row.path for row in local]))
         return 1
     finally:
         upstream.close()
@@ -3426,12 +3455,22 @@ def next_line(root: Path, args, paths: list[str], target: str,
             where = f" --repo {shlex.quote(repository)}"
         else:
             where = " --repo <org>/<Project>" if args.push else ""
-        create = f"gh pr create{where} --base {base} --head {args.branch}"
+        # THE BRANCH TOO (#325). `checked_branch`'s alphabet is already one
+        # `shlex.quote` leaves alone, so this prints the bytes it always
+        # printed; it is quoted so that widening that alphabet one day cannot
+        # reopen a line that has a whole argument to itself.
+        create = (f"gh pr create{where} --base {base} --head "
+                  f"{shlex.quote(args.branch)}")
         if args.push:
             print(f"NEXT  {create}")
         else:
-            print(f"NEXT  git -C {root} push -u origin {args.branch} && "
-                  f"{create}")
+            # THE ROOT, QUOTED (#325): `git -C <root>` is the one place a
+            # path with a space, a quote or a `$` was printed bare in front of
+            # `&&`, so the push the line starts with went to the wrong place
+            # or not at all and the `gh pr create` after it never ran.
+            push = shlex.join(["git", "-C", str(root), "push", "-u", "origin",
+                               args.branch])
+            print(f"NEXT  {push} && {create}")
         return
     # NO COMMIT LINE OVER CHANGES THIS RUN DID NOT WRITE (#436). The line
     # below commits HEAD plus only this run's paths, which is the commit
@@ -3464,10 +3503,15 @@ def next_line(root: Path, args, paths: list[str], target: str,
     # quoted for the shell the same way, so the whole line pastes whole. No
     # copy-list entry holds a glob character today; an ordinary name prints
     # exactly as it did.
+    #
+    # AND THE ROOT (#325): `git -C <root>` opens each of the line's commands
+    # and was the one word in it printed bare, so a root with a space in it
+    # made the branch in the wrong repository, or none.
+    where = shlex.quote(str(root))
     stage = (f"--literal-pathspecs add -f -- {shlex.join(added)} && git -C "
-             f"{root} " if added else "")
-    print(f"NEXT  git -C {root} checkout -b shape/update-{target[:12]} && git "
-          f"-C {root} {stage}commit -m 'Re-sync the shape @ {target[:12]}' -- "
+             f"{where} " if added else "")
+    print(f"NEXT  git -C {where} checkout -b shape/update-{target[:12]} && git "
+          f"-C {where} {stage}commit -m 'Re-sync the shape @ {target[:12]}' -- "
           + shlex.join(paths))
 
 
