@@ -57,6 +57,9 @@ holder only, so a `contracts/family.yaml` in an assembly root -- or a
 
 THE ROWS, for an assembly root, in this order:
 
+    merge             only in the middle of a merge: a FINDING naming the
+                      index's unmerged paths, or a `note` once nothing is
+                      left unmerged; no row at all otherwise (#424)
     naming            the three leg names against the STANDARD's own
                       `contracts/repository-naming.yaml`
     manifest          the project's own `scripts/validate-manifest.py` when it
@@ -85,9 +88,10 @@ THE ROWS, for an assembly root, in this order:
     machine           whether this workstation can RUN the fixes named above
                       (`setup-project.py --preflight`, plus `git-filter-repo`)
 
-and for a FAMILY holder: `family` (its own `scripts/validate-family.py`),
-`manifest kinds`, `shape currency`, `placement` (`n/a`: a holder has no legs
-of its own), `members` and `machine`. A directory that
+and for a FAMILY holder: `merge` likewise, `family` (its own
+`scripts/validate-family.py`), `manifest kinds`, `shape currency`,
+`placement` (`n/a`: a holder has no legs of its own), `agent files`,
+`members` and `machine`. A directory that
 is NEITHER gets `naming` (what it is called, under the policy), `what is
 here`, `the way in` -- `adopt-project.py plan` for a repository that already
 exists, `setup.sh` for a new one -- and `machine`.
@@ -104,6 +108,18 @@ the manifest declares says `n/a` and waits on that row, and the verdict is
 `INVALID (manifest)` -- `(family)` in a holder -- exit 1. A file that loads
 and declares its kind still decides first, so no root that declared one
 reads differently.
+
+A ROOT IN THE MIDDLE OF A MERGE IS NOT COMPLIANT (#424). The other rows read
+the working tree, and a leg's commit from the index -- or from HEAD, for a
+gitlink a conflicted merge holds only at stages 1, 2 and 3. That is right
+for a validator and wrong for a verdict: a root whose index holds an
+unmerged path is one `git commit` refuses, and it read COMPLIANT, exit 0,
+once the conflict markers were out of the files those rows read. So the
+`merge` row, FIRST on both kinds of root, asks git for the unmerged paths
+and is a FINDING naming them, with `git -C <root> status` as its NEXT, and
+the verdict is `INVALID (merge)`, exit 1, on a rung above every other but
+CANNOT ANSWER (`merge_verdict` says why). A merge with nothing left unmerged
+is a `note`: git commits it as it stands. With neither, there is no row.
 
 AND ONE MORE ROW, `Triad`, WHERE THE RULE SAYS SO. Brett Heap, 2026-10-06:
 "ratify 1249 as recommended" (openxFactory `prefer-triad-project-shape`):
@@ -238,7 +254,9 @@ MISPLACED sits between the two, under DRIFTED and over INVALID: a path in the
 wrong leg is a fact about the SHAPE -- the subject of this whole standard --
 that no validator, pin or manifest here can see, whereas a red validator names
 itself in the table either way and loses nothing by not being on the verdict
-line.
+line. An unfinished merge outranks all three, for the reason drift outranks a
+red validator: the conflict it leaves is what turns the other rows red, and
+none of their fixes can be committed until it is finished.
 
 STANDARD LIBRARY ONLY, like everything else shipped here. Printed text is
 ASCII: a verdict a cp1252 console cannot render is a verdict nobody reads, and
@@ -723,11 +741,12 @@ class Check:
     takes, for the same reason: putting a repository back into shape rewrites
     somebody's tree.
 
-    `run` RETURNS ONE ROW, OR NONE FOR A CHECK THAT IS SILENT BY RULE. One
-    check is: the Triad advisory, which the ratified rule makes SILENT in an
+    `run` RETURNS ONE ROW, OR NONE FOR A CHECK THAT IS SILENT BY RULE. Two
+    checks are: the Triad advisory, which the ratified rule makes SILENT in an
     elected Triad, a family holder, a `<user>-wip` workspace and a project
     that recorded staying single -- and silent means no row at all, not a row
-    saying so. `run_checks` skips a None.
+    saying so -- and `merge`, which speaks only while a merge is unfinished
+    (#424). `run_checks` skips a None.
     """
 
     def __init__(self, check_id: str, label: str, applies_to: tuple,
@@ -5705,11 +5724,186 @@ def _triad_advisory_row(ctx: Context) -> Row | None:
 
 
 # ---------------------------------------------------------------------------
+# A root in the middle of a merge
+# ---------------------------------------------------------------------------
+
+
+#: Named once: `check_merge`'s two rows and the `CHECKS` entry below must
+#: print the same row name.
+LABEL_MERGE = "merge"
+
+#: How many unmerged paths the `merge` row's sentence names before it counts
+#: the rest. `--json` lists every one.
+UNMERGED_NAMED = 5
+
+
+def unmerged_paths(root: Path) -> list[str] | None:
+    """Each path the root's index holds UNMERGED, once, in git's order, or
+    None where git gives no answer (#424).
+
+    `git ls-files -u` lists one record per STAGE, `<mode> <object> <stage>
+    TAB <path>`, so a path both sides changed is listed three times and is
+    kept once. `-z`, read as bytes, so a name is never C-quoted and a byte
+    that is not UTF-8 survives as itself. Relative to the root, as every
+    other row reads a path. `--no-optional-locks`, git's word for a reader
+    that must not write into the repository it reads.
+    """
+    raw = git_answer(["--no-optional-locks", "ls-files", "-u", "-z"], root,
+                     binary=True)
+    if raw is None:
+        return None
+    paths: dict[str, None] = {}
+    for record in raw.split(b"\0"):
+        _meta, tab, path = record.partition(b"\t")
+        if tab:
+            paths.setdefault(path.decode("utf-8", "surrogateescape"), None)
+    return list(paths)
+
+
+def git_dir_holds(root: Path, name: str) -> bool:
+    """Whether the root's git directory holds `name` (#424). `--git-path`
+    names it in a linked worktree too, where git keeps it per worktree, and
+    a relative answer is relative to the root, where git was asked."""
+    where = (git_answer(["rev-parse", "--git-path", name], root,
+                        binary=True) or b"").rstrip(b"\r\n")
+    if not where:
+        return False
+    path = Path(os.fsdecode(where))
+    return (path if path.is_absolute() else root / path).exists()
+
+
+#: What a rebase in progress keeps in the git directory: the merge backend's
+#: directory and the apply backend's, which `git am` shares.
+REBASE_STATE = ("rebase-merge", "rebase-apply")
+
+
+def merge_in_progress(root: Path) -> bool:
+    """Whether git records a MERGE in progress, and no rebase: a
+    `MERGE_HEAD` file, and neither of `REBASE_STATE` (#424).
+
+    THE FILE, NOT `rev-parse --verify MERGE_HEAD`, which also resolves a
+    branch or a tag of that name. AND NOT A REBASE: `git rebase -r` stopped
+    on a merge it replays writes `MERGE_HEAD` too, and `git merge --abort`
+    there strands the rebase, so the row sends a rebase to `git status`,
+    which names its own `--continue` and `--abort`.
+    """
+    return git_dir_holds(root, "MERGE_HEAD") and not any(
+        git_dir_holds(root, name) for name in REBASE_STATE)
+
+
+def own_repository(root: Path) -> bool:
+    """Whether git answers about the root's OWN repository (#424).
+
+    `git -C` DISCOVERS, so a plain directory inside a checkout in the middle
+    of a merge would be told about that checkout's merge -- the reason
+    `not_its_own_repository` declines for a leg. Asked here as bytes and
+    compared with `samefile`, so neither a toplevel that is not UTF-8 nor a
+    root spelled in another case or through a symlink reads as a stranger.
+    """
+    top = (git_answer(["rev-parse", "--show-toplevel"], root, binary=True)
+           or b"").rstrip(b"\r\n")
+    if not top:
+        return False
+    try:
+        return os.path.samefile(os.fsdecode(top), root)
+    except OSError:
+        return False
+
+
+def check_merge(ctx: Context) -> Row | None:
+    """Whether the root is in the middle of a merge git will not commit.
+
+    THE DEFECT (#424). Nothing here asked git whether the index held an
+    unmerged path. The validators read the working tree, and
+    `recorded_gitlink` answers a gitlink a conflicted merge holds only at
+    stages 1, 2 and 3 from HEAD, which its own docstring argues is right for
+    a validator. So a root two `bump-leg.py` branches had been merged into
+    read `DRIFTED` while the conflict markers sat in its pin, and COMPLIANT,
+    exit 0, once `git checkout --ours` had taken them out -- with `UU` still
+    on the pin and the gitlink, `MERGE_HEAD` still there, and `git commit`
+    refusing. A conflicted file no row reads was COMPLIANT from the start.
+
+    A FINDING, AND WHAT ASSERTS IT IS GIT. A `FINDING` is what something
+    ELSE asserts, and git refuses to commit an index that holds an unmerged
+    path. The row names the paths -- `UNMERGED_NAMED` of them, then a count
+    -- and its NEXT is `git -C <root> status`, which lists every one and,
+    for a merge, a rebase or a cherry-pick alike, names the operation and
+    how to finish or abandon it. Which side each path takes is the merge's
+    owner's call, so no command here takes one. The words about finishing
+    are in the reason, not after the command: a NEXT is pasted whole (#277).
+
+    NOT CANNOT ANSWER, AND NO ROW IS MADE TO WAIT ON IT. Exit 3 is THIS
+    CHECKOUT failing to ask, and an unfinished merge is a fact about their
+    repository. The other rows still answer about the tree in front of them,
+    and some of them say what to do with a file the merge left behind -- the
+    `shape currency` row's side to take of a conflicted shape pin (#237),
+    the project's own validator refusing a pin with conflict markers in it
+    -- which the person finishing the merge wants to read.
+
+    A MERGE WITH NOTHING UNMERGED IS A `note`. `git merge --no-commit`, or a
+    conflict resolved and added: git commits it as it stands, and the other
+    rows read the files that commit is made from, so nothing asserts a
+    fault. The row says so, and the verdict steps over it.
+
+    NO ROW AT ALL OTHERWISE, as the Triad row is silent where its rule says
+    so. A row saying "no merge" on every run would be a row about a state a
+    root is almost never in, and every report and every `--json` caller's
+    row set would change for it. Where git gives no answer -- no repository,
+    no `git` -- there is no row either: no commit is being refused, and the
+    rows that read git say so themselves. Nor where the root is not a
+    repository of its own (`own_repository`): the merge `git -C` would find
+    is the enclosing checkout's.
+
+    ONLY THE ROOT'S OWN INDEX. A leg is a repository of its own, and a merge
+    left unfinished in one is work in progress there, like an uncommitted
+    edit, which no row reports: the root records the leg's commit, never its
+    index.
+    """
+    root = ctx.root
+    if not own_repository(root):
+        return None
+    unmerged = unmerged_paths(root)
+    merging = merge_in_progress(root)
+    if not unmerged and not merging:
+        return None
+    if not unmerged:
+        return Row("merge", LABEL_MERGE, NOTE,
+                   "a merge is in progress and nothing in it is unmerged: "
+                   "`git commit` concludes it and `git merge --abort` "
+                   "abandons it. A note, because git commits it as it "
+                   "stands and the other rows read the files it is made "
+                   "from", None,
+                   {"unmerged": [], "count": 0, "merging": True})
+    spelled = [repr(path) if UNWRITABLE_IN_A_PLAN.search(path) else path
+               for path in unmerged]
+    named = ", ".join(spelled[:UNMERGED_NAMED])
+    if len(spelled) > UNMERGED_NAMED:
+        named += f" and {len(spelled) - UNMERGED_NAMED} more"
+    how = ("A merge is in progress: resolve each path (which side it takes "
+           "is the merge owner's call), `git add` it, then `git commit`, or "
+           "abandon the merge (`git merge --abort`)" if merging
+           else "`git status` says how to resolve each, and how to finish "
+           "or abandon what left them")
+    return Row("merge", LABEL_MERGE, FINDING,
+               f"{len(spelled)} path(s) unmerged in the index, so git "
+               f"commits nothing here until each is resolved: {named}. "
+               f"{how}. Until then every other row reads a tree no commit "
+               "holds",
+               f"git -C {quote_arg(root)} status",
+               {"unmerged": spelled, "count": len(spelled),
+                "merging": merging})
+
+
+# ---------------------------------------------------------------------------
 # The registry
 # ---------------------------------------------------------------------------
 
 
 CHECKS = (
+    # FIRST, ON BOTH KINDS OF ROOT, and a row only while a merge is
+    # unfinished: every row after it then reads a tree no commit holds, and
+    # the verdict names it above them all -- see `check_merge` (#424).
+    Check("merge", LABEL_MERGE, (PROJECT, FAMILY), check_merge),
     Check("naming", "naming", (PROJECT,), check_naming),
     Check("manifest", "manifest", (PROJECT,), check_manifest),
     Check("pins", "pins", (PROJECT,), check_pins),
@@ -5830,6 +6024,38 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
     return reasons
 
 
+def merge_verdict(by_id: dict) -> tuple | None:
+    """`INVALID (merge)` and its exit code while the root's index holds an
+    unmerged path, or None (#424).
+
+    ABOVE DRIFTED, MISPLACED AND EVERY OTHER RUNG, for the reason drift
+    outranks a red validator: the verdict names the cause, not what it
+    causes. In the issue's merge of two leg bumps the conflict markers in
+    the pin turned `pins` and `manifest kinds` red and read as a leg not at
+    its pin, so the verdict said `DRIFTED (1 leg(s) not at the pin)` about a
+    leg that had not moved. And no row's fix can be committed while git
+    refuses to commit at all.
+
+    BELOW CANNOT ANSWER, which is THIS CHECKOUT failing to ask: exit 3 says
+    nothing here is a statement about the tree, and the table still carries
+    this row.
+
+    `INVALID` AND NOT A NEW VERDICT. AGENTS.md documents the verdicts and
+    their exits, and this is a gate somebody else owns gone red -- git's,
+    which commits nothing until the index is merged -- which is what
+    `INVALID` names everywhere else.
+
+    THE LIST HAS TO BE NON-EMPTY, as `misplaced_verdict` requires of its
+    own: `run_checks` turns an exception out of a check into a FINDING with
+    an empty `detail`, which falls through to the catch-all instead.
+    """
+    merge = by_id.get("merge")
+    if merge is not None and merge.status == FINDING \
+            and merge.detail.get("unmerged"):
+        return f"{V_INVALID} (merge)", 1
+    return None
+
+
 def misplaced_verdict(by_id: dict) -> tuple | None:
     """MISPLACED and its exit code, or None when nothing is in the wrong leg.
 
@@ -5927,6 +6153,9 @@ def verdict_for(ctx: Context, rows: list[Row]) -> tuple[str, int]:
     currency = by_id.get("shape-currency")
     detail = currency.detail if currency else {}
 
+    unfinished = merge_verdict(by_id)
+    if unfinished is not None:
+        return unfinished
     reasons = drifted_reasons(by_id, detail)
     if reasons:
         return f"{V_DRIFTED} ({', '.join(reasons)})", 1
