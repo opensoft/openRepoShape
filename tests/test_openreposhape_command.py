@@ -117,11 +117,15 @@ def run_cmd(*args: str, home: Path | None = None, env: dict | None = None,
     """The command, run from its file, with that environment.
 
     `input=""` means stdin is a pipe rather than a terminal, which is what the
-    no-tty refusals are about.
+    no-tty refusals are about, and a session of its own means there is no
+    controlling terminal either (#492): setup asks at that terminal when
+    stdin is not one, and the terminal pytest was started from is nobody's
+    answer.
     """
     return subprocess.run(["bash", str(COMMAND), *args], capture_output=True,
                           text=True, check=False, input="",
-                          env=command_env(home, env, setup_sh))
+                          env=command_env(home, env, setup_sh),
+                          start_new_session=True)
 
 
 # --- what it says about itself ---------------------------------------------

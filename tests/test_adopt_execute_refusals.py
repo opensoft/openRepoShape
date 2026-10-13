@@ -811,9 +811,12 @@ def test_both_findings_are_listed_and_the_code_is_the_first(adopter, world):
 # --- the keys a plan is opened by (#386) -------------------------------------
 
 #: The finding codes, one per key, as #293's is `plan-bad-follow-ups`.
-BAD_SOURCE, BAD_LEGS, BAD_PINS = ("plan-bad-source", "plan-bad-legs",
-                                  "plan-bad-pins")
+BAD_SOURCE, BAD_LEGS = "plan-bad-source", "plan-bad-legs"
 BAD_ALLOW, BAD_PATHS = "plan-bad-allow-empty-legs", "plan-bad-paths"
+#: `pins:` is #273's: a `pins:` that is no list is `_read_pins`' own
+#: `plan-pin-malformed`, asked here first, and each entry of a list is
+#: `plan-pin-unrecorded` or `plan-pin-malformed` beside the entries.
+PIN_MALFORMED, PIN_UNRECORDED = "plan-pin-malformed", "plan-pin-unrecorded"
 
 #: What a hand edit can leave a key `Plan` reads holding, by test id: the key,
 #: the block written in place of its own, the code, and what the finding must
@@ -821,25 +824,19 @@ BAD_ALLOW, BAD_PATHS = "plan-bad-allow-empty-legs", "plan-bad-paths"
 #: `execute` in `TypeError: ... is not iterable` (`pins:`, `paths:`,
 #: `allow_empty_legs:`) or `AttributeError: ... has no attribute 'get'`
 #: (`legs:`, `source:`), exit 1; `pins: openGlass` passed `check` and adopted
-#: with eight one-letter pins; an item `true` of `pins:` was written as the
-#: pin `True`, and `allow_empty_legs: code` consented for four legs, `c`, `o`,
-#: `d` and `e`.
+#: with eight one-letter pins, and `allow_empty_legs: code` consented for four
+#: legs, `c`, `o`, `d` and `e`. Since #273 a pin is a mapping, so one pin
+#: written as the mapping itself, with no list around it, is a row too.
 BAD_KEYS = {
-    "pins-int": ("pins", "pins: 5\n", BAD_PINS,
-                 "`pins:` is the number 5, not a list"),
-    "pins-true": ("pins", "pins: true\n", BAD_PINS,
-                  "`pins:` is the boolean true, not a list"),
-    "pins-text": ("pins", "pins: openGlass\n", BAD_PINS,
-                  "`pins:` is the text 'openGlass', not a list"),
-    "pins-item-true": ("pins", "pins: [openGlass, true]\n", BAD_PINS,
-                       "item 2 of `pins:` is the boolean true, not text"),
-    "pins-item-int": ("pins", "pins:\n  - 2026\n", BAD_PINS,
-                      "item 1 of `pins:` is the number 2026, not text"),
-    "pins-item-null": ("pins", "pins: [null]\n", BAD_PINS,
-                       "item 1 of `pins:` is null, not text"),
-    "pins-item-mapping": ("pins", "pins: [{a: 1}]\n", BAD_PINS,
-                          "item 1 of `pins:` is a mapping of 1 key(s), not "
-                          "text"),
+    "pins-int": ("pins", "pins: 5\n", PIN_MALFORMED,
+                 "`pins:` is 5, not a list of pins"),
+    "pins-true": ("pins", "pins: true\n", PIN_MALFORMED,
+                  "`pins:` is True, not a list of pins"),
+    "pins-text": ("pins", "pins: openGlass\n", PIN_MALFORMED,
+                  "`pins:` is 'openGlass', not a list of pins"),
+    "pins-mapping": ("pins", "pins: {product: openGlass}\n", PIN_MALFORMED,
+                     "`pins:` is {'product': 'openGlass'}, not a list of "
+                     "pins"),
     "allow-int": ("allow_empty_legs", "allow_empty_legs: 5\n", BAD_ALLOW,
                   "`allow_empty_legs:` is the number 5, not a list"),
     "allow-true": ("allow_empty_legs", "allow_empty_legs: true\n", BAD_ALLOW,
@@ -871,14 +868,16 @@ ONE_PER_BAD_KEY = pytest.mark.parametrize("edit", sorted(BAD_KEYS))
 
 #: The line each key's remediation begins with, said once after its findings.
 KEY_REMEDIATION = {key: f"Remediation: write `{key}:` in the plan file"
-                   for key in ("source", "legs", "pins", "allow_empty_legs")}
+                   for key in ("source", "legs", "allow_empty_legs")}
 KEY_REMEDIATION["paths"] = ("Remediation: `paths:` is the list of entries "
                             "`plan` wrote")
+KEY_REMEDIATION["pins"] = ("Remediation: `pins:` is the list of pins `plan` "
+                           "wrote, one mapping per pin")
 
-#: What `execute`'s refusal of them says first.
-NOTHING_MADE = ("nothing was created and nothing was pushed: the plan was "
-                "refused before the work directory was made, the source was "
-                "opened or a leg repository was created")
+#: What `execute`'s refusal of them says first: #445's words for a refusal
+#: before any leg exists (`NO_LEG_MADE`), and that it came earlier still.
+NOTHING_MADE = (f"{NO_LEG_MADE}: the plan was refused before the work "
+                "directory was made or the source was opened")
 
 
 def with_key(text: str, key: str, block: str) -> str:
@@ -919,8 +918,8 @@ def test_execute_refuses_a_key_plan_reads_before_anything_is_made(
         adopter, world, edit):
     """#386 (c): the same finding, refused under its own code before the
     work directory, the source's reading or a leg; on 5a5011d each ended in
-    the traceback `check` printed, or, for the text and item rows of `pins:`
-    and `allow_empty_legs:`, adopted."""
+    the traceback `check` printed, or, for the text rows of `pins:` and the
+    text and item rows of `allow_empty_legs:`, adopted."""
     key, _, code, said = BAD_KEYS[edit]
     world.plan.write_text(bad_key_text(world, edit), encoding=UTF8)
     refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
@@ -946,8 +945,8 @@ def test_every_key_that_is_wrong_is_named_in_one_run(adopter, world):
     text = with_follow_ups(text, "follow_ups: 5\n")
     printed = check_findings(write_edited(world, text))
     assert [line.split(":", 1)[0] for line in printed] == [
-        f"FINDING {BAD_LEGS}", f"FINDING {BAD_PINS}", f"FINDING {BAD_PATHS}",
-        f"FINDING {BAD_FOLLOW_UPS_CODE}"], printed
+        f"FINDING {BAD_LEGS}", f"FINDING {PIN_MALFORMED}",
+        f"FINDING {BAD_PATHS}", f"FINDING {BAD_FOLLOW_UPS_CODE}"], printed
     world.plan.write_text(text, encoding=UTF8)
     refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
     assert refusal.code == BAD_LEGS
@@ -1001,16 +1000,30 @@ def test_a_spec_only_plan_that_consents_in_text_is_not_four_legs(adopter,
     no_leg_was_created(tmp_path)
 
 
+def a_whole_pin(product: str) -> str:
+    """One `pins:` entry as `plan --pin <product>@<commit>` writes it since
+    #273: a mapping of the five values `execute` writes the pin file from.
+    `check` and `execute` read no network for a pin, so the commit and the
+    digest need only be of the form `plan` records them in."""
+    return (f"  - product: {product}\n"
+            f"    repository: opensoft/{product}\n"
+            f'    commit: "{"a" * 40}"\n'
+            f'    tree_sha256: "{"b" * 64}"\n'
+            f'    digest_source: "local-clone ({product})"\n')
+
+
 #: What `check` and `execute` still take, by test id: the key, the block
 #: written in place of its own ("" deletes the key), and whether `check`
 #: then passes. A `paths:` with no entries is valid as a TYPE and leaves every
-#: source path uncovered, which is `plan-uncovered`'s to say, as it was.
+#: source path uncovered, which is `plan-uncovered`'s to say, as it was. A
+#: `pins:` is a list of mappings, as `plan` writes it since #273.
 GOOD_KEYS = {
     "pins-empty": ("pins", "pins: []\n", True),
     "pins-bare": ("pins", "pins:\n", True),
     "pins-absent": ("pins", "", True),
-    "pins-flow": ("pins", "pins: [openGlass]\n", True),
-    "pins-block": ("pins", "pins:\n  - openGlass\n", True),
+    "pins-one": ("pins", "pins:\n" + a_whole_pin("openGlass"), True),
+    "pins-two": ("pins", "pins:\n" + a_whole_pin("openGlass")
+                 + a_whole_pin("openPane"), True),
     "allow-empty": ("allow_empty_legs", "allow_empty_legs: []\n", True),
     "allow-bare": ("allow_empty_legs", "allow_empty_legs:\n", True),
     "allow-absent": ("allow_empty_legs", "", True),
@@ -1043,13 +1056,61 @@ def test_a_list_an_empty_list_a_bare_key_and_no_key_are_not_findings(
             f"FINDING {UNCOVERED}"}
 
 
+#: #386's rows for an ENTRY of `pins:`, by test id: the block, and each
+#: finding `check` prints, `(code, what it begins with)`. On 5a5011d each
+#: was adopted as written: the pins `openGlass` and `True`, `2026`, none, and
+#: `{'a': 1}`. Since #273 every entry of a list is `_read_pins`' to judge,
+#: beside the entries, in its own words: a name alone is `plan-pin-
+#: unrecorded`, anything else `plan` never writes there `plan-pin-malformed`.
+PIN_ENTRIES = {
+    "name-and-true": ("pins: [openGlass, true]\n", [
+        (PIN_UNRECORDED, "`pins:` entry 1, 'openGlass', is a name with no "
+                         "commit and no digest"),
+        (PIN_MALFORMED, "`pins:` entry 2 is True, not a pin")]),
+    "number": ("pins:\n  - 2026\n", [
+        (PIN_MALFORMED, "`pins:` entry 1 is 2026, not a pin")]),
+    "null": ("pins: [null]\n", [
+        (PIN_MALFORMED, "`pins:` entry 1 is None, not a pin")]),
+    "mapping": ("pins: [{a: 1}]\n", [
+        (PIN_UNRECORDED, "`pins:` entry 1 records no `commit:` and no "
+                         "`tree_sha256:`")]),
+}
+
+
+@pytest.mark.parametrize("edit", sorted(PIN_ENTRIES))
+def test_an_entry_of_pins_is_judged_by_the_pin_reader_not_first(adopter,
+                                                                world, edit):
+    """A `pins:` that IS a list is not this gate's: `_plan_key_findings`
+    says nothing of it, and each entry `plan` would not write is named by
+    `_read_pins` beside the entries, with no traceback and none of this
+    gate's remediation; `execute` refuses it under the first one's code
+    before any leg exists."""
+    block, expected = PIN_ENTRIES[edit]
+    text = with_key(world.answered, "pins", block)
+    checked = run_check(write_edited(world, text))
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert_no_traceback(checked)
+    found = findings_of(checked)
+    assert len(found) == len(expected), found
+    for line, (code, said) in zip(found, expected):
+        assert line.startswith(f"FINDING {code}: {said}"), line
+    assert KEY_REMEDIATION["pins"] not in checked.stderr, checked.stderr
+    assert adopter._plan_key_findings(
+        adopter.Plan.load(world.tmp / EDITED)) == ([], [])
+    world.plan.write_text(text, encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
+    assert refusal.code == expected[0][0]
+    no_leg_was_created(world.tmp)
+
+
 def test_the_readers_ask_the_type_of_what_they_read(adopter, world):
     """#386 (3): no `TypeError` or `AttributeError` from the reads themselves,
-    whoever constructs the plan: each takes only what `plan` writes. On
-    5a5011d the constructor raised on `pins: 5` and `paths: 5`,
-    `allowed_empty_legs` on `allow_empty_legs: 5`, `names` on `legs: 5`, and
-    `source_commit` and `open_source` on `source: 5`; text was read one
-    character at a time."""
+    whoever constructs the plan: each takes only what `plan` writes, and of
+    `pins:` the products, out of the mappings `plan` writes since #273 or an
+    old plan's names. On 5a5011d the constructor raised on `pins: 5` and
+    `paths: 5`, `allowed_empty_legs` on `allow_empty_legs: 5`, `names` on
+    `legs: 5`, and `source_commit` and `open_source` on `source: 5`; text was
+    read one character at a time."""
     base = {"kind": adopter.PLAN_KIND, "mode": "in-place"}
     for value in (5, True, 1.5, "openGlass", {"a": 1}):
         plan = adopter.Plan(Path("p.yaml"), {
@@ -1064,9 +1125,10 @@ def test_the_readers_ask_the_type_of_what_they_read(adopter, world):
         assert plan.open_source(str(world.source),
                                 world.tmp / "read").commit
     plan = adopter.Plan(Path("p.yaml"), {
-        **base, "pins": ["openGlass", True, None, "", 5],
+        **base, "pins": ["openGlass", True, None, "", 5,
+                         {"product": "openPane"}, {"product": 5}, {"a": 1}],
         "allow_empty_legs": ["code", None, 5, "Spec"]})
-    assert plan.pins == ["openGlass"]
+    assert plan.pins == ["openGlass", "openPane"]
     assert plan.allowed_empty_legs() == {"code", "Spec"}
     no_legs = adopter.Plan(Path("p.yaml"), dict(base)).names()
     for legs in (5, "Northwind", [{"role": "spec"}]):
@@ -1097,37 +1159,64 @@ def test_the_refusal_comes_before_anyone_is_asked_to_say_yes_for_a_key(
     world.plan.write_text(bad_key_text(world, "pins-text"), encoding=UTF8)
     refusal = refused_by(adopter,
                          execute_args(world.tmp, world.plan, yes=False))
-    assert refusal.code == BAD_PINS
+    assert refusal.code == PIN_MALFORMED
     no_leg_was_created(world.tmp)
 
 
-#: Names `plan --pin` takes (`PIN_NAME_RE`) that the plan's reader takes for
-#: a number when they are written bare: `pins: [2026]` is the number 2026,
-#: `[007]` the number 7 and `[1.5]` a float. `openGlass` is the control.
+#: Products `plan --pin <product>@<commit>` takes (`PIN_ARG_RE`) that the
+#: plan's reader would take for a number written bare, `2026`, `7` and
+#: `1.5`, and `openGlass`, the control.
 PIN_NAMES_PLAN_WRITES = ("2026", "007", "1.5", "openGlass")
 
 
+def stand_in_product(path: Path) -> str:
+    """A clone of a neutral product on this machine, with one commit, which
+    `plan --pin <product>@<commit> --pin-source <path>` reads the digest
+    from with no network (#273); its commit. The file is written as bytes,
+    so the tree is the same on every platform."""
+    path.mkdir(parents=True)
+    git("init", "-q", "-b", "main", cwd=path)
+    (path / "README.md").write_bytes(b"# a neutral product\n")
+    git("add", "-A", cwd=path)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "README.md", cwd=path)
+    return git("rev-parse", "HEAD", cwd=path).stdout.strip()
+
+
+def write_pinned_plan(source: Path, plan: Path, product: str, base: Path):
+    """`plan` for `source` with `--pin <product>@<commit>`, read from a
+    stand-in under `base`, as `plan` writes such a plan since #273."""
+    clone = base / "pin-source"
+    commit = stand_in_product(clone)
+    return write_plan(source, plan, project=PROJECT,
+                      extra=("--pin", f"{product}@{commit}",
+                             "--pin-source", str(clone)))
+
+
 @pytest.mark.parametrize("name", PIN_NAMES_PLAN_WRITES)
-def test_a_pin_plan_writes_reads_back_as_the_name_it_was_given(adopter,
-                                                               tmp_path,
-                                                               name):
-    """`check` passes the plan `plan` wrote, and reads back the pin it was
-    given. On #356's head `pins: [007]` was read as the pin `7`; with #386's
-    item check and the line still written bare, `plan --pin 2026` wrote a
-    plan its own `check` refused as `plan-bad-pins`. `plan` now writes each
-    name as it writes every other value, quoted where the reader would take
-    it for something else."""
+def test_the_pins_plan_writes_are_what_the_gate_takes(adopter, tmp_path,
+                                                      name):
+    """`plan --pin` writes `pins:` as a list of MAPPINGS since #273, and
+    this gate takes exactly that: no finding of this kind and none of
+    `_read_pins`', `check` passes the plan `plan` wrote, and the reader
+    reads back the product it was given. With #386's item check as it was,
+    which took only text, every plan `plan --pin` wrote was `plan-bad-pins`
+    in its own `check`."""
     source = make_source_repo(tmp_path / "Thing")
     plan = tmp_path / "adoption-plan.yaml"
-    written = write_plan(source, plan, project=PROJECT,
-                         extra=("--pin", name))
+    written = write_pinned_plan(source, plan, name, tmp_path)
     assert written.returncode == 0, written.stderr + written.stdout
     for path, leg in ANSWERS:
         resolve(plan, path, leg)
+    [pin] = adopter.load_yaml(plan)["pins"]
+    assert isinstance(pin, dict) and pin["product"] == name, pin
+    loaded = adopter.Plan.load(plan)
+    assert adopter._plan_key_findings(loaded) == ([], [])
+    assert adopter._read_pins(loaded)[1] == []
     checked = run_check(plan)
     assert checked.returncode == 0, checked.stderr + checked.stdout
     assert "plan ok" in checked.stdout
-    assert adopter.Plan.load(plan).pins == [name]
+    assert loaded.pins == [name]
 
 
 # --- a plan that is not UTF-8 (#192) ----------------------------------------
@@ -1303,28 +1392,37 @@ def test_an_elected_on_it_cannot_read_creates_no_leg_and_the_corrected_plan_runs
 def test_pins_written_as_text_creates_no_leg_and_the_corrected_plan_runs(
         adopter, world):
     """#386 (e) as a person met it, through `main`: `pins: openGlass` is exit 2
-    and a REFUSED line, with no work directory, no leg and no split branch.
-    On 5a5011d it adopted, said `adoption verified`, and wrote eight pins,
-    `G`, `a`, `e`, `l`, `n`, `o`, `p` and `s`. The corrected plan, the list
-    `plan` writes, adopts with the one pin it names."""
+    and a REFUSED line, with no work directory, no leg and no split branch,
+    and no notice of what the run left, which #445 prints only once a leg
+    exists. On 5a5011d it adopted, said `adoption verified`, and wrote eight
+    pins, `G`, `a`, `e`, `l`, `n`, `o`, `p` and `s`. The corrected plan, with
+    the `pins:` block `plan --pin openGlass@<commit>` writes, adopts with the
+    one pin and writes its file (#273)."""
     remotes, work = world.tmp / REMOTES, world.tmp / WORK
     flags = ("--plan", str(world.plan), "--yes", "--local-remote-dir",
              str(remotes), "--work-dir", str(work))
     world.plan.write_text(bad_key_text(world, "pins-text"), encoding=UTF8)
     refused = run_script(ADOPT, "execute", *flags)
     assert refused.returncode == 2, refused.stderr + refused.stdout
-    assert f"REFUSED {BAD_PINS}: " in refused.stderr
-    assert "`pins:` is the text 'openGlass', not a list" in refused.stderr
+    assert f"REFUSED {PIN_MALFORMED}: " in refused.stderr
+    assert "`pins:` is 'openGlass', not a list of pins" in refused.stderr
     assert_no_traceback(refused)
+    assert_refused_before_any_leg(refused)
     assert "adoption verified" not in refused.stdout
     assert not remotes.exists(), "not even the directory the legs go in"
     assert not work.exists(), "and no work directory"
     assert source_branches(world.source) == ["main"]
 
-    world.plan.write_text(with_key(world.answered, "pins",
-                                   "pins: [openGlass]\n"), encoding=UTF8)
+    pinned = world.tmp / "pinned-plan.yaml"
+    written = write_pinned_plan(world.source, pinned, "openGlass", world.tmp)
+    assert written.returncode == 0, written.stderr + written.stdout
+    block = re.search(r"^pins:.*\n(?:[ \t]+.*\n)*",
+                      pinned.read_text(encoding=UTF8), re.M).group(0)
+    world.plan.write_text(with_key(world.answered, "pins", block),
+                          encoding=UTF8)
     corrected = run_script(ADOPT, "execute", *flags)
     assert corrected.returncode == 0, corrected.stderr + corrected.stdout
     assert "adoption verified" in corrected.stdout
     manifest = adopter.load_yaml(work / PROJECT / "project.yaml")
     assert manifest["neutral_product_pins"] == ["openGlass"]
+    assert (work / PROJECT / "contracts" / "openglass-pin.yaml").is_file()

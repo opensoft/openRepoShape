@@ -19,6 +19,9 @@ makes them in a repository `git init` creates in a temporary directory.
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
+import shutil
 import subprocess
 import sys
 
@@ -27,6 +30,7 @@ import pytest
 from conftest import REPO, git
 
 sys.path.insert(0, str(REPO / "scripts"))
+from repo_shape import Refusal  # noqa: E402
 from shape_materialize import (  # noqa: E402
     LANE_NAME_RE, TRAILER_OPTION_SINCE, commit_trailers,
     git_takes_trailer_option, is_trailer, lane_trailer, lane_trailer_argument,
@@ -56,6 +60,25 @@ NOT_TEXT = ["\udcff", "\ud800"]
 LANE = "openreposhape-2 (openRepoShape-2)"
 TRAILERS = (f"Lane: {LANE}",
             "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>")
+
+#: A trailer a person types who is not writing ASCII (#322): a two-byte, a
+#: three-byte and a three-byte-pair character, spelled with escapes so this
+#: file means the same thing in any editor. The bytes are what a commit must
+#: carry, whatever locale the tool that writes it was started in.
+NON_ASCII_TRAILER = ("Co-Authored-By: Jos\u00e9 N\u00fa\u00f1ez "
+                     "\u65e5\u672c <jose@example.invalid>")
+NON_ASCII_BYTES = NON_ASCII_TRAILER.encode("utf-8")
+
+#: The two interpreters a tool under test can be started as. `LC_ALL=C` with
+#: UTF-8 mode off decodes `sys.argv` as ASCII with `surrogateescape`, so the
+#: two bytes of `\u00e9` arrive as two lone surrogates; UTF-8 mode reads them
+#: as the character. `PYTHONIOENCODING` keeps what the tool prints ASCII in both,
+#: so the harness can read it whatever ITS OWN locale is; it changes nothing
+#: about how the tool reads its arguments or writes a commit.
+C_LOCALE = {"LC_ALL": "C", "PYTHONUTF8": "0",
+            "PYTHONIOENCODING": "ascii:backslashreplace"}
+UTF8_MODE = {"LC_ALL": "C", "PYTHONUTF8": "1",
+             "PYTHONIOENCODING": "ascii:backslashreplace"}
 
 #: One base message shaped like the two the tools compose: a subject, a blank
 #: line, two prose paragraphs, and a trailing newline. The last paragraph is
@@ -92,6 +115,117 @@ def trailers_of(root) -> list[str]:
     """
     out = git("log", "-1", "--format=%(trailers:only=true)", cwd=root).stdout
     return out.strip("\n").splitlines() if out.strip() else []
+
+
+def argv_of(raw: bytes) -> str:
+    """The bytes a terminal sent, as the ONE string `subprocess` turns back
+    into exactly those bytes: the way to hand a child a command-line argument
+    this process's own locale might not be able to spell.
+
+    On POSIX that is `os.fsdecode`, which under a UTF-8 locale is the text and
+    under a `C` locale is the same bytes as lone surrogates, and
+    `subprocess` runs `os.fsencode` over either. It is what
+    `tests/test_git_output_decoding.py` does for a file name. Windows has no
+    byte command line (`CreateProcessW` takes UTF-16), and a byte that is not
+    UTF-8 has no spelling there at all, which is why those tests skip.
+    """
+    return os.fsdecode(raw)
+
+
+def message_bytes_of(root) -> bytes:
+    """`message_of`, as the BYTES git stored: a test about what a commit
+    carries cannot read it back through a codec, least of all the locale's."""
+    out = subprocess.run(["git", "log", "-1", "--format=%B"], cwd=str(root),
+                         capture_output=True, check=True).stdout
+    return out[:-1] if out.endswith(b"\n") else out
+
+
+def trailer_bytes_of(root) -> list[bytes]:
+    """`trailers_of`, as bytes: the trailer block AS GIT READS IT."""
+    out = subprocess.run(
+        ["git", "log", "-1", "--format=%(trailers:only=true)"],
+        cwd=str(root), capture_output=True, check=True).stdout
+    return out.strip(b"\n").splitlines() if out.strip() else []
+
+
+#: The git every one of these tests can be asked to be: this host's, or one
+#: that predates `commit --trailer`.
+OLD_GIT_VERSION = "git version 2.31.1"
+
+POSIX_ONLY = pytest.mark.skipif(
+    os.name == "nt",
+    reason="needs a POSIX shell script on PATH and a byte command line; "
+           "Windows has neither (a command line there is UTF-16 text)")
+
+#: A byte the locale could not read is a lone surrogate in `sys.argv` only
+#: where argv is bytes: Windows hands over UTF-16, so there is no such value
+#: to recover and `escaped` below describes nothing.
+ESCAPED_ARGV = pytest.mark.skipif(
+    os.name == "nt",
+    reason="a command line is UTF-16 text on Windows, so no byte of it is "
+           "ever kept as a lone surrogate for `os.fsencode` to give back")
+
+
+def old_git(tmp_path) -> dict:
+    """The environment of a host whose git is 2.31: the PATH that finds this
+    stand-in first.
+
+    NOT A MOCK OF THE CODE UNDER TEST: a real git behind a shell script that
+    does what 2.31 did. `git --version` says 2.31.1, which is all
+    `git_takes_trailer_option` reads, and `--trailer` is an unknown option
+    (exit 129, the usage git prints), so a tool that passed the option to a
+    git that does not take it would FAIL here, where a probe that only
+    printed a number would let it through. Everything else goes to the real
+    git untouched. Emulated, not run: the real one is whatever this machine
+    has, and CI's is newer than 2.32 on all three systems.
+    """
+    shim = tmp_path / "old-git-bin"
+    shim.mkdir()
+    real = shutil.which("git")
+    assert real, "no git on PATH"
+    script = shim / "git"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$1" = "--version" ]; then echo "{OLD_GIT_VERSION}"; '
+        "exit 0; fi\n"
+        'for arg in "$@"; do\n'
+        '    if [ "$arg" = "--trailer" ]; then\n'
+        "        echo \"error: unknown option \\`trailer'\" >&2\n"
+        "        exit 129\n"
+        "    fi\n"
+        "done\n"
+        f'exec {shlex.quote(real)} "$@"\n', encoding="utf-8")
+    script.chmod(0o755)
+    return {"PATH": str(shim) + os.pathsep + os.environ["PATH"]}
+
+
+#: Every way a tool is run that decides what a non-ASCII trailer becomes: the
+#: interpreter's locale (what `sys.argv` and the commit helpers' stdin see)
+#: crossed with the git (which takes the trailer as an argument, or has it
+#: appended to the message text). The `C` locale with the old git is the case
+#: #322 is about; the other three are the ones that already worked and must
+#: go on working.
+ENVIRONMENTS = pytest.mark.parametrize("git_kind, locale", [
+    pytest.param("old", "c", id="old-git-c-locale"),
+    pytest.param("old", "utf8", id="old-git-utf8-mode"),
+    pytest.param("host", "c", id="host-git-c-locale"),
+    pytest.param("host", "utf8", id="host-git-utf8-mode"),
+])
+
+
+def environment(tmp_path, git_kind: str, locale: str) -> dict:
+    """The `env=` for `run_script` of one `ENVIRONMENTS` row."""
+    if locale == "c" and os.name == "nt":
+        pytest.skip("a C locale is a POSIX idea: Windows decodes with the "
+                    "ANSI code page, and its job sets PYTHONUTF8=1 "
+                    "(.github/workflows/tests.yml)")
+    env = dict(C_LOCALE if locale == "c" else UTF8_MODE)
+    if git_kind == "old":
+        if os.name == "nt":
+            pytest.skip("the stand-in for a git without `--trailer` is a "
+                        "POSIX shell script")
+        env.update(old_git(tmp_path))
+    return env
 
 
 # --- the grammar ------------------------------------------------------------
@@ -271,6 +405,202 @@ def test_both_paths_write_the_same_commit_message(tmp_path, monkeypatch):
     assert by_hand.endswith(f"\n{TRAILERS[0]}\n{TRAILERS[1]}\n")
     assert trailers_of(root) == list(TRAILERS), (
         "and git reads them back as the trailer block, in order")
+
+
+# --- a trailer that is not ASCII (#322) --------------------------------------
+#
+# `Co-Authored-By: José` typed where `sys.argv` is decoded as ASCII (a POSIX
+# `C` locale with UTF-8 mode off) is `Jos\udcc3\udca9` to Python: the two
+# bytes, kept as lone surrogates so `os.fsencode` can give them back. The
+# commit helpers write the message on stdin as UTF-8 with `errors="replace"`
+# (#230), which writes a lone surrogate as `?`; on a git without `commit
+# --trailer` the trailer travels in that message, so the commit said
+# `Jos??`. The rules below are the ones that make it the bytes typed or a
+# refusal that names the trailer, for every caller at once.
+
+def escaped(text: str) -> str:
+    """`text` as a `C` locale's `sys.argv` holds it: each byte of its UTF-8 a
+    lone surrogate for every byte ASCII cannot read."""
+    return text.encode("utf-8").decode("ascii", "surrogateescape")
+
+
+#: Characters of one, two, three and four UTF-8 bytes, so a recovery that read
+#: only the two-byte case would not pass.
+TEXTS = ["Jos\u00e9", "\u65e5\u672c", "na\u00efve \u2603", "\U0001f642"]
+
+
+@ESCAPED_ARGV
+@pytest.mark.parametrize("text", TEXTS)
+def test_bytes_the_locale_could_not_read_are_the_text_they_were_typed_as(text):
+    """`os.fsencode` gives the bytes back and they are UTF-8, so the value is
+    the SAME STRING a UTF-8 locale would have handed over: one trailer,
+    whatever the locale, rather than one for each codec."""
+    line = f"Co-Authored-By: {text} <a@example.invalid>"
+    assert escaped(line) != line, ("the fixture is only interesting while "
+                                   "the locale's reading is not the text")
+    assert trailer_line(escaped(line)) == line, (
+        "a trailer the grammar refused as `Cs` is the one typed now")
+    assert trailer_line(line) == line, "text the locale read is left alone"
+    assert trailer_line("Lane: x") == "Lane: x"
+
+
+@ESCAPED_ARGV
+@pytest.mark.parametrize("raw", [
+    b"Co-Authored-By: Jos\xe9",          # Latin-1 and cp1252's é
+    b"Co-Authored-By: Jos\xc3",          # a UTF-8 lead byte, cut short
+    b"Co-Authored-By: a\xffb",           # a byte UTF-8 never uses
+    b"Co-Authored-By: \xe6\x97 x",       # a three-byte character, cut short
+])
+def test_a_byte_that_is_not_utf8_stays_a_refusal_and_names_the_trailer(raw):
+    """NOT RECOVERED AND NOT GUESSED: which code page wrote the byte is a fact
+    about somebody's terminal, and `?` is what the commit helpers would have
+    made of it. The refusal says which bytes, in a spelling every stdout can
+    print."""
+    value = raw.decode("ascii", "surrogateescape")
+    with pytest.raises(argparse.ArgumentTypeError) as caught:
+        trailer_line(value)
+    said = str(caught.value)
+    assert "not UTF-8 text" in said
+    assert repr(raw) in said, "the trailer is named by the bytes typed"
+    assert said.isascii()
+
+
+@ESCAPED_ARGV
+@pytest.mark.parametrize("char", LINE_BOUNDARIES + INVISIBLES)
+def test_bytes_that_spell_a_forbidden_character_are_judged_as_that_character(
+        char):
+    """Recovered BEFORE the grammar is asked, so the `Cs` check that used to
+    stand in front of them cannot be the only thing between a line separator
+    typed in UTF-8 and a commit message."""
+    value = f"Lane: a{char}b"
+    with pytest.raises(argparse.ArgumentTypeError):
+        trailer_line(escaped(value))
+
+
+@pytest.mark.parametrize("spelling", [
+    pytest.param("as-a-c-locale-holds-it", marks=ESCAPED_ARGV),
+    "as-text"])
+def test_the_text_fallback_carries_a_non_ascii_trailer_exactly(
+        monkeypatch, spelling):
+    """THE MEASURED CASE: a git without `--trailer`, the trailer's bytes as a
+    `C` locale holds them, and `?` where each of them was."""
+    monkeypatch.setattr("shape_materialize.git_takes_trailer_option",
+                        lambda: False)
+    typed = (escaped(NON_ASCII_TRAILER) if spelling == "as-a-c-locale-holds-it"
+             else NON_ASCII_TRAILER)
+    message, args = commit_trailers(BASE, [typed])
+    assert args == []
+    assert message == BASE + "\n" + NON_ASCII_TRAILER + "\n"
+    assert message.encode("utf-8").endswith(b"\n\n" + NON_ASCII_BYTES + b"\n")
+    assert "?" not in message and "\ufffd" not in message
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("spelling", ["as-a-c-locale-holds-it", "as-text"])
+def test_the_commit_option_is_given_the_bytes_typed_under_any_codec(
+        monkeypatch, spelling):
+    """The other path, where the value is an ARGUMENT: what git is handed is
+    what `subprocess` encodes, and under a `C` locale the text of an accented
+    letter has no ASCII spelling, so it is the surrogate form that turns back
+    into the UTF-8 bytes. Asserted as the BYTES the child gets, which is the
+    claim, in whichever codec this process runs."""
+    monkeypatch.setattr("shape_materialize.git_takes_trailer_option",
+                        lambda: True)
+    typed = (escaped(NON_ASCII_TRAILER) if spelling == "as-a-c-locale-holds-it"
+             else NON_ASCII_TRAILER)
+    message, args = commit_trailers(BASE, [typed, TRAILERS[0]])
+    assert message == BASE, "git appends them; the message is untouched"
+    assert args[0] == "--trailer" and args[2] == "--trailer"
+    assert os.fsencode(args[1]) == NON_ASCII_BYTES
+    assert args[3] == TRAILERS[0], "ASCII is spelled as it always was"
+
+
+@ESCAPED_ARGV
+@pytest.mark.parametrize("available", [True, False])
+@pytest.mark.parametrize("raw", [b"Co-Authored-By: Jos\xe9", b"Lane: a\xffb"])
+def test_a_trailer_that_is_no_text_is_refused_before_a_commit_is_made(
+        monkeypatch, available, raw):
+    """BOTH PATHS, because the option path would have handed git the stray
+    byte and written a commit message that is not UTF-8, and the text path
+    would have written `?`. Either is the trailer altered without a word, so
+    a caller that reaches here without the command line's own check (a
+    direct call) gets a `Refusal` naming it instead."""
+    monkeypatch.setattr("shape_materialize.git_takes_trailer_option",
+                        lambda: available)
+    value = raw.decode("ascii", "surrogateescape")
+    with pytest.raises(Refusal) as caught:
+        commit_trailers(BASE, [TRAILERS[0], value])
+    assert caught.value.code == "trailer-not-utf8"
+    assert repr(raw) in str(caught.value)
+    assert "nothing was committed" in str(caught.value)
+
+
+@POSIX_ONLY
+def test_the_old_git_stand_in_refuses_the_option_and_reads_as_2_31(tmp_path):
+    """The stand-in the tool-level tests rely on is what it says it is: if it
+    let `--trailer` through, every one of them would be passing on a git that
+    takes the option."""
+    env = {**os.environ, **old_git(tmp_path)}
+    version = subprocess.run(["git", "--version"], env=env,
+                             capture_output=True, text=True, check=False)
+    assert version.stdout.strip() == OLD_GIT_VERSION
+    assert git_takes_trailer_option(version.stdout) is False
+    refused = subprocess.run(["git", "commit", "--trailer", "Lane: x"],
+                             env=env, cwd=str(tmp_path), capture_output=True,
+                             text=True, check=False)
+    assert refused.returncode == 129 and "unknown option" in refused.stderr
+    assert subprocess.run(["git", "init", "-q", str(tmp_path / "r")], env=env,
+                          capture_output=True, check=False).returncode == 0, (
+        "and everything else is the real git")
+
+
+@pytest.mark.skipif(not git_takes_trailer_option(),
+                    reason="this host's git predates `commit --trailer` "
+                           "(2.32), so only the fallback path can run here")
+@pytest.mark.parametrize("spelling", [
+    pytest.param("as-a-c-locale-holds-it", marks=ESCAPED_ARGV),
+    "as-text"])
+def test_both_paths_write_the_same_commit_for_a_non_ascii_trailer(
+        tmp_path, monkeypatch, spelling):
+    """`test_both_paths_write_the_same_commit_message`, for the bytes this one
+    is about: the fallback is only a stand-in for `--trailer` if the commit
+    that comes out is the same, and the same is the UTF-8 the person typed.
+
+    The message is written the way the commit helpers write it: text mode,
+    UTF-8, `errors="replace"`, so a character that did not survive would show
+    as a `?` and fail here."""
+    root = tmp_path / "either-way"
+    root.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=root)
+    identity = ["-c", "user.name=t", "-c", "user.email=t@t.invalid"]
+
+    def commit(name: str, message: str, extra: list[str]) -> bytes:
+        (root / name).write_text("x\n", encoding="utf-8")
+        git("add", "--", name, cwd=root)
+        proc = subprocess.run(
+            ["git", *identity, "commit", "-q", "-F", "-", *extra, "--", name],
+            cwd=str(root), input=message, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=False)
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        return message_bytes_of(root)
+
+    typed = (escaped(NON_ASCII_TRAILER) if spelling == "as-a-c-locale-holds-it"
+             else NON_ASCII_TRAILER)
+    monkeypatch.setattr("shape_materialize.git_takes_trailer_option",
+                        lambda: True)
+    option_message, option_args = commit_trailers(BASE, [typed, TRAILERS[0]])
+    through_git = commit("a", option_message, option_args)
+    assert trailer_bytes_of(root) == [NON_ASCII_BYTES, TRAILERS[0].encode()]
+
+    monkeypatch.setattr("shape_materialize.git_takes_trailer_option",
+                        lambda: False)
+    text_message, text_args = commit_trailers(BASE, [typed, TRAILERS[0]])
+    by_hand = commit("b", text_message, text_args)
+
+    assert through_git == by_hand
+    assert by_hand.endswith(b"\n\n" + NON_ASCII_BYTES + b"\n"
+                            + TRAILERS[0].encode() + b"\n")
+    assert trailer_bytes_of(root) == [NON_ASCII_BYTES, TRAILERS[0].encode()]
 
 
 # --- the lane a printed next command offers --------------------------------
