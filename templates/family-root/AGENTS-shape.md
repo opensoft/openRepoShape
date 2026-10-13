@@ -24,6 +24,7 @@ Run openRepoShape's `scripts/family.py` FROM a checkout of the standard,
 against this holder:
 
 ```sh
+git -C <path> switch -c family/add-<project>   # a branch first: see below
 python3 scripts/family.py add    --family-root <path> --member <org>/<Project>
 python3 scripts/family.py bump   --family-root <path> --member <Project> --to <40 hex> \
     --trailer "Lane: <name>" --trailer "Co-Authored-By: <who>"
@@ -35,8 +36,11 @@ row's **`members[].pin`** in `family.yaml` together. `make pins`
 (`scripts/validate-family.py`) refuses when the two disagree, and it is right
 to: a gitlink moved alone is a pin that names a commit the tree is not at. Do
 not hand-edit the `members:` block — the tool rewrites it wholesale. Land the
-commit as a pull request; the member must already be scaffolded or adopted,
-because a family cannot make a project out of a repository.
+commit as a pull request: each refuses this holder's tracking branch
+(`family-on-tracking-branch`) and names the `git switch -c` that makes a
+branch, as the block's first line does, and ends by printing that branch's
+`git push`. The member must already be scaffolded or adopted, because a family
+cannot make a project out of a repository.
 
 `bump` takes a repeatable `--trailer "<Key>: <value>"`, appended to the commit
 it writes in the order given. It composes that message itself, so whatever

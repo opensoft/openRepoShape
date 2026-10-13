@@ -63,7 +63,7 @@ OPENREPOTOOLS_INSTALL = (
 USAGE_LINES = (
     "openRepoShape --install            install (or update) this command into ~/.local/bin",
     "openRepoShape --preflight          check this MACHINE and stop; creates nothing",
-    "openRepoShape --doctor [<path>]    diagnose a REPOSITORY against this standard",
+    "openRepoShape --doctor [<path>] [--json] [--placement-plan <file>]",
     "openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]",
     "openRepoShape --help | --version",
 )
@@ -624,7 +624,14 @@ def test_a_ref_the_doctor_would_check_out_is_validated(ref, tmp_path):
 def test_a_checkout_without_the_doctor_refuses_by_name(tmp_path):
     """A ref older than `shape-doctor.py` produced `can't open file` from
     python3 and a stack of nothing useful. The ref is the thing to change,
-    so the refusal says so."""
+    so the refusal says so.
+
+    AND THE CLONE IT REFUSED IS GONE. `--doctor` keeps its clone once the
+    doctor has run, because the NEXT lines name files in it (#500); a
+    refusal before that printed none, so nothing is left in `$TMPDIR`.
+    """
+    temporary = tmp_path / "tmp"
+    temporary.mkdir()
     bare = tmp_path / "old.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)],
                    capture_output=True, check=True)
@@ -644,10 +651,13 @@ def test_a_checkout_without_the_doctor_refuses_by_name(tmp_path):
         capture_output=True, text=True, check=False,
         input=COMMAND.read_text(encoding="utf-8"), cwd=str(tmp_path),
         env=command_env(home=tmp_path, setup_sh=None,
-                        env={"OPENREPOSHAPE_REPO": str(bare)}))
+                        env={"OPENREPOSHAPE_REPO": str(bare),
+                             "TMPDIR": str(temporary)}))
     assert result.returncode == 2, result.stdout + result.stderr
     assert "has no shape-doctor.py" in result.stderr
     assert "OPENREPOSHAPE_REF" in result.stderr
+    assert list(temporary.iterdir()) == [], (
+        "a refused clone outlived the run; only a doctor that RAN keeps one")
 
 
 # --- --preflight ------------------------------------------------------------

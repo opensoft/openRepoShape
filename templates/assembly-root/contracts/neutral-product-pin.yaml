@@ -27,7 +27,7 @@ kind: pinned_contract_manifest
 # ===========================================================================
 
 pin_role: neutral-product
-product: {{PIN_PRODUCT}}
+product: "{{PIN_PRODUCT}}"
 source_repository: {{PIN_REPOSITORY}}
 materialization: referenced
 

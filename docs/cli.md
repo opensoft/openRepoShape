@@ -122,7 +122,7 @@ Anything after `--` is passed straight through to scaffold-project.py.
 ```
 openRepoShape --install            install (or update) this command into ~/.local/bin
 openRepoShape --preflight          check this MACHINE and stop; creates nothing
-openRepoShape --doctor [<path>]    diagnose a REPOSITORY against this standard
+openRepoShape --doctor [<path>] [--json] [--placement-plan <file>]
 openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]
 openRepoShape --help | --version
 
@@ -155,12 +155,23 @@ opensoft/openRepoTools', and its own installer places them:
   $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
 
-`--doctor [<path>]` runs `shape-doctor.py` over <path> (default `.`) and prints
-one row per check and ONE verdict: COMPLIANT, COMPLIANT SHAPE BEHIND, DRIFTED,
-INVALID or NOT A SHAPE ROOT. It writes nothing, and every finding names the
-command that fixes it. Exit 0 compliant, 1 findings, 2 not a shape root, 3
-usage. Run beside a checkout of the standard it uses that one; run from
-anywhere else it clones the standard into a temporary directory first.
+`--doctor [<path>] [--json] [--placement-plan <file>]` runs `shape-doctor.py`
+over <path> (default `.`) and prints one row per check and ONE verdict:
+`COMPLIANT`, `COMPLIANT, SHAPE BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`,
+`NOT A SHAPE ROOT` or `CANNOT ANSWER`. Every finding names the command that
+fixes it. Exit 0 compliant, 1 findings, 2 not a shape root, 3 when it cannot
+answer (`CANNOT ANSWER`, no such <path>, a `--placement-plan` it cannot
+write); this command's own refusals exit 2. `--json` is the same report as
+one JSON object. The doctor writes no file but the `--placement-plan <file>`
+you name, at the path you give (a relative <file> lands in the directory you
+ran this from, even inside the repository), and moves nothing.
+
+Run beside a checkout of the standard, it uses that one. Run from anywhere
+else, it clones the standard into a temporary directory first and KEEPS it,
+because its NEXT lines name files in it. The report's last line names
+that directory, which is safe to delete once you are done with those
+commands; under `--json` that line goes to stderr, so stdout stays one JSON
+object.
 
 `--preflight` is the MACHINE check -- it was spelled `--doctor` until
 2026-09-10, and the name moved to the repository diagnosis above, which is
@@ -711,9 +722,11 @@ options:
                         create a bare repository here instead of calling `gh
                         repo create` (the TEST path; no network)
   --into DIR            the PARENT directory the family folder is made in
-                        (default: the directory you are standing in). The
-                        holder lands at <into>/<Family>/<Family>, beside where
-                        `make siblings` clones the members.
+                        (default: the directory you are standing in, which is
+                        refused inside a checkout of openRepoShape: from its
+                        root, pass `--into ..`). The holder lands at
+                        <into>/<Family>/<Family>, beside where `make siblings`
+                        clones the members.
   --work-dir WORK_DIR   THE OVERRIDE: land the holder at <work-dir>/<Family>
                         and make no family folder at all. Mutually exclusive
                         with --into.
@@ -729,6 +742,11 @@ options:
 usage: family.py add [-h] --family-root FAMILY_ROOT --member ORG/PROJECT
                      [--at COMMIT] [--local-remote-dir LOCAL_REMOTE_DIR]
                      [--trailer "KEY: VALUE"] [--dry-run]
+
+Mount and pin a member. Its ONE commit lands on the branch the holder stands
+on: the real run refuses the holder's tracking branch and a HEAD on no branch,
+naming the `git switch -c` that makes one, and ends by printing the `git push`
+of that branch. --dry-run runs on any branch.
 
 options:
   -h, --help            show this help message and exit
@@ -759,6 +777,11 @@ options:
 usage: family.py bump [-h] --family-root FAMILY_ROOT --member PROJECT
                       --to COMMIT [--trailer "KEY: VALUE"] [--dry-run]
 
+Move a member's gitlink and pin together. Its ONE commit lands on the branch
+the holder stands on: the real run refuses the holder's tracking branch and a
+HEAD on no branch, naming the `git switch -c` that makes one, and ends by
+printing the `git push` of that branch. --dry-run runs on any branch.
+
 options:
   -h, --help            show this help message and exit
   --family-root FAMILY_ROOT
@@ -782,6 +805,11 @@ options:
 ```
 usage: family.py remove [-h] --family-root FAMILY_ROOT --member PROJECT
                         [--dry-run]
+
+Unmount a member and drop its row. Its ONE commit lands on the branch the
+holder stands on: the real run refuses the holder's tracking branch and a HEAD
+on no branch, naming the `git switch -c` that makes one, and ends by printing
+the `git push` of that branch. --dry-run runs on any branch.
 
 options:
   -h, --help            show this help message and exit

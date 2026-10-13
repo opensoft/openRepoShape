@@ -9,13 +9,20 @@ network or a real repository.
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import subprocess
 import sys
 
-from conftest import ORG, REPO, SCAFFOLD, WINDOWS_SKIP, git, run_script
+import pytest
+
+from conftest import (ORG, REPO, SCAFFOLD, WINDOWS_SKIP, clone_just_pushed,
+                      git, run_script)
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import load_yaml, tree_digest  # noqa: E402
+from repo_shape import (double_quoted, load_yaml, parse_yaml,  # noqa: E402
+                        pin_source_env_name, tree_digest)
+from shape_materialize import neutral_pin_path, render  # noqa: E402
 
 PROJECT = "Northwind"
 
@@ -581,3 +588,237 @@ def test_the_dry_run_plans_a_pinned_neutral_product_root(tmp_path):
     assert "contracts/opendox-pin.yaml" in result.stdout
     assert "openXdox classifies as neutral-product / assembly" in result.stdout
     assert "--dry-run: nothing was created." in result.stdout
+
+
+# --- a product the project's reader would take for a number (#516) ---------
+#
+# On main fc48854 `--pin 007@<commit>` scaffolded and exited 0, and the root
+# listed the product in `neutral_product_pins:` bare, `  - 007`, which the
+# project's own reader reads back as the number 7 (and `2026` and `1.5` as
+# numbers). The root's own `validate-pins.py` then refused the entry as
+# `neutral-pin-entry-malformed`, and its `validate.yml` runs that, so the new
+# project's first CI run was red. The pin file said `product: 007`, read back
+# as 7 too. Each now reads back as the text given. `openGlass` is the
+# control: its manifest line does not move by a byte.
+
+#: `(the product, how its `neutral_product_pins:` entry is spelled)`.
+AS_TEXT = [
+    pytest.param(("007", '"007"'), id="007"),
+    pytest.param(("2026", '"2026"'), id="2026"),
+    pytest.param(("1.5", '"1.5"'), id="1.5"),
+    pytest.param(("openGlass", "openGlass"), id="openGlass"),
+]
+
+
+@pytest.fixture(scope="module", params=AS_TEXT)
+def pinned_as_text(request, tmp_path_factory):
+    """One real scaffold with `--pin <product>@<commit> --pin-source <a local
+    clone>` into local bare remotes, and a recursive clone of the root, which
+    is the root a person gets."""
+    product, spelled = request.param
+    base = tmp_path_factory.mktemp("scaffold-pin-text")
+    source, commit = product_repo(base, product)
+    remotes = base / "remotes"
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", PROJECT,
+                        "--elected-by", "Test Human",
+                        "--elected-on", "2026-09-02",
+                        "--pin", f"{product}@{commit}",
+                        "--pin-source", str(source),
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(base / "work"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    clone = base / "clone" / PROJECT
+    proc = clone_just_pushed(remotes / f"{PROJECT}.git", clone)
+    assert proc.returncode == 0, proc.stderr
+    return {"product": product, "spelled": spelled, "commit": commit,
+            "source": source, "clone": clone}
+
+
+def committed(clone, rel: str) -> bytes:
+    """`rel` as the clone's checked-out commit holds it, read from git in
+    bytes, whatever a checkout on this platform wrote to the working tree."""
+    return subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=str(clone),
+                          capture_output=True, check=True).stdout
+
+
+#: The reader the scaffolded root ships, its own `scripts/repo_shape.py`,
+#: asked what the text it is handed on stdin holds.
+ROOTS_READER = ("import json, sys; sys.path.insert(0, sys.argv[1]); "
+                "from repo_shape import parse_yaml; "
+                "print(json.dumps(parse_yaml(sys.stdin.buffer.read()"
+                ".decode('utf-8')), default=repr))")
+
+
+def read_by_the_root(clone, rel: str) -> dict:
+    """`rel`, as the clone's commit holds it, read by the reader the root
+    ships, which is what its validators read with, and not by the one this
+    test imported."""
+    proc = subprocess.run([sys.executable, "-I", "-c", ROOTS_READER,
+                           str(clone / "scripts")],
+                          input=committed(clone, rel), capture_output=True,
+                          check=False)
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    return json.loads(proc.stdout)
+
+
+def test_a_pinned_product_is_listed_as_the_text_given(pinned_as_text):
+    """The manifest lists the product so that the root's own reader reads it
+    back as the text given: `"007"`, and `openGlass` as it always was. That
+    reader is a copy of this standard's `scripts/repo_shape.py`, byte for
+    byte, which is the reader the scaffold asks and the tables below ask."""
+    pinned = pinned_as_text
+    blob = committed(pinned["clone"], "project.yaml")
+    line = f"\nneutral_product_pins: \n  - {pinned['spelled']}\n\n".encode()
+    at = blob.find(b"\nneutral_product_pins:")
+    assert line in blob, blob[at:at + len(line) + 16]
+    manifest = read_by_the_root(pinned["clone"], "project.yaml")
+    assert manifest["neutral_product_pins"] == [pinned["product"]]
+    shipped = committed(pinned["clone"], "scripts/repo_shape.py")
+    own = (REPO / "scripts" / "repo_shape.py").read_bytes()
+    assert shipped == own.replace(b"\r\n", b"\n"), (
+        "the root's reader is not this standard's")
+
+
+def test_a_pinned_products_pin_file_names_it_as_the_text_given(
+        pinned_as_text):
+    """`contracts/<product lowercased>-pin.yaml` names the product as the
+    text given, where it said `product: 007` and was read back as 7."""
+    pinned = pinned_as_text
+    product = pinned["product"]
+    pin = read_by_the_root(pinned["clone"], neutral_pin_path(product))
+    assert pin["product"] == product
+    assert pin["source_repository"] == f"opensoft/{product}"
+    assert pin["commit"] == pinned["commit"]
+
+
+def test_a_pinned_product_passes_the_scaffolded_roots_own_gate(
+        pinned_as_text):
+    """The point of #516: the scaffold exited 0, so the root's own
+    `validate-manifest.py --root .` and `validate-pins.py --root .` pass in a
+    recursive clone, the second with the pin's digest recomputed from the
+    stand-in (#272)."""
+    pinned = pinned_as_text
+    product, clone = pinned["product"], pinned["clone"]
+    env = {pin_source_env_name(product): str(pinned["source"])}
+    for validator in ("validate-manifest.py", "validate-pins.py"):
+        check = run_script(clone / "scripts" / validator, "--root", ".",
+                           cwd=clone, env=env)
+        said = check.stdout + check.stderr
+        assert check.returncode == 0, f"{validator}: {said}"
+        assert "neutral-pin-entry-malformed" not in said, said
+    assert_pin_digest_recomputed(check, product, pinned["commit"])
+
+
+def test_pins_are_listed_in_the_order_they_were_given(tmp_path):
+    """Two `--pin`s given out of sorted order are listed as given, one line
+    each: the scaffold has always kept the `--pin` order (`adopt-project.py`
+    sorts its plan's), and the root's own gate passes both."""
+    source, commit = product_repo(tmp_path, "openGlass")
+    given = ("openGlass", "2026")
+    remotes = tmp_path / "remotes"
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", PROJECT,
+                        "--elected-by", "Test Human",
+                        "--elected-on", "2026-09-02",
+                        *(arg for product in given
+                          for arg in ("--pin", f"{product}@{commit}")),
+                        "--pin-source", str(source),
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    clone = tmp_path / "clone" / PROJECT
+    proc = clone_just_pushed(remotes / f"{PROJECT}.git", clone)
+    assert proc.returncode == 0, proc.stderr
+    blob = committed(clone, "project.yaml")
+    assert b'\nneutral_product_pins: \n  - openGlass\n  - "2026"\n\n' \
+        in blob, blob[blob.find(b"\nneutral_product_pins:"):][:80]
+    manifest = read_by_the_root(clone, "project.yaml")
+    assert manifest["neutral_product_pins"] == list(given)
+    env = {pin_source_env_name(product): str(source) for product in given}
+    check = run_script(clone / "scripts" / "validate-pins.py", "--root", ".",
+                       cwd=clone, env=env)
+    assert check.returncode == 0, check.stdout + check.stderr
+    for product in given:
+        assert_pin_digest_recomputed(check, product, commit)
+
+
+@pytest.fixture(scope="module")
+def scaffolder():
+    """`scaffold-project.py` as a module, to ask how it spells an entry."""
+    spec = importlib.util.spec_from_file_location("scaffold_for_pin_text",
+                                                  SCAFFOLD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: Product names `PIN_ARG_RE` admits that the project's reader, given them
+#: bare as a list entry, reads as something else: a number, a bool or None,
+#: and `-`, which it reads as a list of its own. Each is double-quoted.
+MISREAD_BARE = {
+    "number": ("007", "2026", "1.5", "-1", "-0.5", "20261011"),
+    "keyword": ("true", "True", "TRUE", "false", "False", "FALSE", "null",
+                "Null", "NULL"),
+    "list": ("-",),
+}
+#: Names it reads back bare as the same text, so each is written bare, as
+#: main wrote it: the plain names, and those that only look like a number
+#: or a word to a reader other than the project's.
+READ_BARE = ("openGlass", "Openglass", "open-glass", "open_glass",
+             "openGlass2", "_x", "x.y", ".5", "3dGlass", "-x", "--", "0x1F",
+             "1e3", "1_000", ".inf", "yes", "off")
+#: Text the reader refuses outright bare. `--pin` admits none of it, and
+#: each is double-quoted all the same, which the reader reads back.
+REFUSED_BARE = ("[", "{", "&a", "*a", "!t", "'a", '"a')
+
+
+def listed(entries: str) -> object:
+    """`entries`, a `NEUTRAL_PRODUCT_PINS` value, in the manifest template's
+    own `neutral_product_pins:` line, rendered by `render` as the scaffold
+    renders it, and read as the project reads its manifest."""
+    template = REPO / "templates" / "assembly-root" / "project.yaml"
+    line, = (line for line in template.read_text(encoding="utf-8")
+             .splitlines() if "{{NEUTRAL_PRODUCT_PINS}}" in line)
+    text = render(f"{line}\n", {"NEUTRAL_PRODUCT_PINS": entries},
+                  "project.yaml")
+    return parse_yaml(text)["neutral_product_pins"]
+
+
+@pytest.mark.parametrize("product", [
+    *(pytest.param(name, id=f"{kind}-{name}")
+      for kind, names in MISREAD_BARE.items() for name in names),
+    *(pytest.param(name, id=f"bare-{name}") for name in READ_BARE),
+])
+def test_each_entry_reads_back_as_the_product(scaffolder, product):
+    """Every product reads back as its text. A name the reader reads back
+    bare is written bare, so a root's `openGlass` line does not move by a
+    byte; every other is double-quoted, which the reader always reads back."""
+    entries = scaffolder._neutral_product_pins([product])
+    assert listed(entries) == [product]
+    spelled = product if product in READ_BARE else double_quoted(product)
+    assert entries == f"\n  - {spelled}"
+
+
+def test_every_entry_together_reads_back_in_the_order_given(scaffolder):
+    """All of them in one list, as many `--pin`s write it: one line each, in
+    the order the pins were given, as the scaffold has always listed them."""
+    every = [*(name for names in MISREAD_BARE.values() for name in names),
+             *READ_BARE]
+    entries = scaffolder._neutral_product_pins(every)
+    assert entries.count("\n") == len(every)
+    assert listed(entries) == every
+
+
+@pytest.mark.parametrize("text", REFUSED_BARE)
+def test_an_entry_the_reader_refuses_bare_is_double_quoted(scaffolder,
+                                                           text):
+    """A spelling the reader raises on is read back as nothing, so it is
+    double-quoted, not passed through to fail the manifest."""
+    entry = scaffolder._neutral_pin_entry(text)
+    assert entry == double_quoted(text)
+    assert listed(f"\n  - {entry}") == [text]
+
+
+def test_no_pin_is_an_empty_list(scaffolder):
+    """With no `--pin` the manifest lists none, as it always has."""
+    assert scaffolder._neutral_product_pins({}) == "[]"
+    assert listed("[]") == []
