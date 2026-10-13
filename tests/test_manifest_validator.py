@@ -54,7 +54,8 @@ def test_a_topic_that_is_not_derived_from_the_id_is_a_finding(project):
 
 def test_a_missing_role_is_a_finding(project):
     edit(project,
-         '  - role: code\n    repository: testorg/Atlas-code\n    path: code\n',
+         '  - role: code\n    repository: testorg/Atlas-code\n'
+         '    path: "code"\n',
          "")
     result = validate(project)
     assert result.returncode == 1
@@ -116,7 +117,7 @@ def test_an_election_with_no_elector_is_a_finding(project):
 
 
 def test_a_bad_id_is_a_finding(project):
-    edit(project, "id: atlas", "id: Atlas")
+    edit(project, 'id: "atlas"', 'id: "Atlas"')
     result = validate(project)
     assert result.returncode == 1
     assert "manifest-id" in result.stderr
@@ -234,8 +235,8 @@ def test_a_declared_descendant_may_be_the_assembly_root(project):
 def test_the_pin_file_makes_the_referent_real(project):
     edit(project, "neutral_product_pins: []",
          "neutral_product_pins:\n  - openChart")
-    edit(project, "repository: testorg/Atlas-code\n    path: code",
-         "repository: testorg/MedxChart\n    path: code")
+    edit(project, 'repository: testorg/Atlas-code\n    path: "code"',
+         'repository: testorg/MedxChart\n    path: "code"')
     edit(project, "      form: project-leg\n      role: code\n"
                   "      also_matches: []",
          "      form: domain-descendant\n      role: ~\n"
@@ -270,8 +271,8 @@ def test_the_x_stem_spelling_of_a_referent_is_accepted_in_a_manifest(project):
     the CANONICAL `openFactory` spelling for the same referent set."""
     edit(project, "neutral_product_pins: []",
          "neutral_product_pins:\n  - openxFactory")
-    edit(project, "repository: testorg/Atlas-code\n    path: code",
-         "repository: testorg/codexFactory\n    path: code")
+    edit(project, 'repository: testorg/Atlas-code\n    path: "code"',
+         'repository: testorg/codexFactory\n    path: "code"')
     edit(project, "      form: project-leg\n      role: code\n"
                   "      also_matches: []",
          "      form: domain-descendant\n      role: ~\n"
@@ -573,8 +574,8 @@ def test_a_neutral_product_root_that_drops_the_overlap_is_a_finding(project):
 def test_a_neutral_product_is_still_not_a_spec_or_code_leg(project):
     """The edge of the relaxation, checked where a manifest can actually
     express it: the admission is `assembly` alone."""
-    edit(project, "repository: testorg/Atlas-code\n    path: code",
-         "repository: testorg/openDox\n    path: code")
+    edit(project, 'repository: testorg/Atlas-code\n    path: "code"',
+         'repository: testorg/openDox\n    path: "code"')
     result = validate(project)
     assert result.returncode == 1
     assert "naming-not-a-leg" in result.stderr
