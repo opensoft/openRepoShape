@@ -21,12 +21,17 @@ WHAT THIS MODULE OWNS
   - `file_sha256` — the per-file digest used by the shape pin's `files:` block,
     mirroring `neutral-product-pin`'s per-file `sha256` rows.
   - `NamingPolicy` — the classifier over `contracts/repository-naming.yaml`.
+  - `path_spelling_fault` — whether a path is spelled the one way Git
+    records it, asked of a leg's mount path and of a recorded submodule's.
   - `same_repository` and the remote-url arithmetic under it — the ONE
     definition of whether two remote spellings name one repository, which
     `shape-doctor.py` reports by and `scripts/siblings.py` refuses by.
   - `Refusal` — the fail-closed exception every validator raises, carrying a
     remediation string, because a refusal that names what is wrong without
     naming what to run puts the exit in tribal memory instead of the message.
+  - `spelled` and `escape_unencodable_stdout` — how both roots'
+    `bootstrap.py` print a person's text: what a terminal must not be handed
+    raw is escaped, and a stdout that cannot encode it never raises (#391).
 
 This file is COPIED into a scaffolded assembly root by `scaffold-project.py`
 and its sha256 is recorded in that project's `contracts/shape-pin.yaml`, so an
@@ -41,6 +46,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -344,10 +350,13 @@ def double_quoted(text: str) -> str:
     """`text` as a double-quoted scalar `_scalar` reads back as `text`.
 
     The subset's one writer quotes with this: `adopt-project.py`'s `y`, for
-    the adoption plan and for `shape-doctor.py`'s placement plan. It escapes
-    a backslash and a double quote, which would bend or end the quoting;
-    `\\n`, `\\r` and `\\t` by name; and every other character `str.isprintable`
-    refuses by its code point. PART OF THAT CLASS THE READER CANNOT TAKE
+    the adoption plan and for `shape-doctor.py`'s placement plan, and its
+    `submodule_record`, for the `submodules:` record `execute` appends to
+    `project.yaml`, which the doctor holds a submodule to only where a row
+    reads back as its path (#189). It escapes a backslash and a double
+    quote, which would bend or end the quoting; `\\n`, `\\r` and `\\t` by
+    name; and every other character `str.isprintable` refuses by its code
+    point. PART OF THAT CLASS THE READER CANNOT TAKE
     RAW. It reads a file line by line with `str.splitlines`, which ends a
     line at `\\n` and `\\r` -- the macOS folder icon is a file named
     `Icon\\r` -- and also at `\\x0b`, `\\x0c`, `\\x1c`-`\\x1e`, `\\x85`,
@@ -1931,6 +1940,55 @@ def checked_value(what: str, value, pattern: re.Pattern = SAFE_ARG_RE) -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# A path spelled the one way Git records it (#179, #189)
+# ---------------------------------------------------------------------------
+#
+# Git records a path in exactly one spelling: relative to the top of its
+# repository, `/` between segments, and no segment empty, `.` or `..`.
+# `git update-index` refuses `./x`, `x/`, `a//b`, `a/./b`, `a/../b`, `/x` and
+# `.` alike as `Invalid path`, so a record that names a path in any other
+# spelling names one no tree holds, and nothing is ever found at it.
+#
+# TWO RULES ASK IT. The leg-path rule in `shape_materialize.py` asks it of a
+# leg's mount path (#179), and a project's own `validate-manifest.py` asks it
+# of each path `project.yaml`'s `submodules:` records (#189) -- which is why
+# it lives HERE: a project carries this file and not `shape_materialize.py`.
+# Each says the answer in its own sentence, about a leg or about a submodule.
+#
+# A BACKSLASH AND A DRIVE LETTER ARE NOT ASKED. On POSIX each is an ordinary
+# character of a name -- Git records `vendor/a\b` and `C:/x` there, refusing
+# them only on Windows -- and an adoption records a source submodule at
+# either. They are faults only in a path a PERSON types for commands that
+# Windows also runs, which is the leg-path rule's own question.
+
+#: The ways a path can fail to be spelled as Git records it, in the order
+#: `path_spelling_fault` asks: empty, absolute, climbing out with `..`,
+#: naming the top itself, and any other empty or `.` segment.
+PATH_EMPTY = "empty"
+PATH_ABSOLUTE = "absolute"
+PATH_CLIMBS = "climbs"
+PATH_ITSELF = "itself"
+PATH_NOT_CANONICAL = "not-canonical"
+
+
+def path_spelling_fault(text: str) -> str | None:
+    """Why `text` is not one path spelled as Git records it, as one of the
+    `PATH_*` codes above, or None when it is."""
+    if not text:
+        return PATH_EMPTY
+    if text.startswith("/"):
+        return PATH_ABSOLUTE
+    segments = text.split("/")
+    if ".." in segments:
+        return PATH_CLIMBS
+    if all(segment in ("", ".") for segment in segments):
+        return PATH_ITSELF
+    if "" in segments or "." in segments:
+        return PATH_NOT_CANONICAL
+    return None
+
+
 def accepts_role(found, role: str) -> bool:
     """Is `found` an acceptable classification for a leg DECLARED as `role`?
 
@@ -2514,3 +2572,99 @@ def find_repo_root(start: Path) -> Path:
 def die(exc: Refusal, stream=sys.stderr) -> int:
     print(str(exc), file=stream)
     return 2
+
+
+# ---------------------------------------------------------------------------
+# Printing a person's text (#391)
+# ---------------------------------------------------------------------------
+#
+# BOTH ROOTS' `bootstrap.py` print what a manifest, a register row or the
+# disk says, before any validator has had its say about it. Each imports
+# these two from here, as it imports the YAML reader: this file is the one
+# library a project and a family holder carry beside it.
+
+#: The characters `spelled` writes as an escape, besides the bidirectional
+#: controls below: the controls (Cc), the surrogates (Cs), and the line and
+#: paragraph separators (Zl, Zp). Nothing else is escaped, `spelled` says why.
+ESCAPED_CATEGORIES = frozenset(("Cc", "Cs", "Zl", "Zp"))
+#: The bidirectional controls: U+061C, U+200E and U+200F, the embeddings and
+#: overrides U+202A to U+202E, and the isolates U+2066 to U+2069.
+ESCAPED_BIDI_CONTROLS = frozenset(
+    "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+
+
+def escape_unencodable_stdout() -> None:
+    """A character stdout cannot encode is printed escaped, never raised on (#391).
+
+    WHAT WAS WRONG. Each root's `bootstrap.py` `main` printed the manifest's
+    `name` with a plain `print` before any step ran, so `name: "a\\ud83db"` (a
+    lone surrogate, which no UTF-8 stdout can write) or `name: "日本"` on a
+    stdout that is not UTF-8 (`PYTHONIOENCODING=ascii`, or the ANSI code page
+    Windows gives a stdout that is not the console) ended `make bootstrap` in a
+    `UnicodeEncodeError` traceback one step before `validate-manifest.py`, the
+    validator that names the problem, was reached. Their own wording raised on
+    such a stdout too, wherever it carries a dash or a middle dot.
+
+    A `strict` or `surrogateescape` stdout, the two handlers that raise, is
+    reconfigured ONCE, at the start of each root's `main`, to
+    `backslashreplace`, the handler stderr already has: what the stdout holds
+    is written as it was, and what it cannot hold as `\\u65e5`. Any other
+    handler, one somebody chose, is left alone, and the ENCODING is never
+    changed. `scripts/validate-pins.py` does the same for its report (#295).
+    The tools run from a checkout of the standard use
+    `shape_materialize.escape_what_stdout_cannot_encode` (#214), which no
+    project carries. This module is what every project and every family holder
+    carries beside its `bootstrap.py`, so both roots import this function and
+    `spelled` from here, where each is written once.
+
+    GUARDED, because failing to set a handler is no reason to refuse the run: a
+    stream a caller replaced may have no `reconfigure`, a closed one raises
+    `ValueError`, and `pythonw` has no stdout at all.
+    """
+    if getattr(sys.stdout, "errors", None) in ("strict", "surrogateescape"):
+        try:
+            sys.stdout.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+def spelled(value: object) -> str:
+    """`value` as ONE line of text, with what a terminal must not be handed
+    written as escapes (#391).
+
+    What `escape_unencodable_stdout` cannot do. A raw ESC or CR is encodable on
+    every stdout, so it reaches the terminal as the control it is, and a
+    manifest's `name` or a register row is a person's text. EXACTLY these
+    characters are written as the escape Python spells it (`\\x1b`, `\\r`,
+    `\\u2028`, `\\ud83d`, `\\u202e`), and no others:
+
+    - the controls (Unicode category Cc: C0, DEL and C1), which move a cursor,
+      clear a screen or end a line;
+    - the surrogates (Cs), which no UTF-8 text holds, so a lone one is named
+      whatever handler the stdout has;
+    - the line and paragraph separators (Zl and Zp, U+2028 and U+2029), which
+      end a line in some viewers, so the value would not stay on its line;
+    - the bidirectional controls (U+061C, U+200E, U+200F, U+202A to U+202E and
+      U+2066 to U+2069), which reorder the text around them so that a name
+      reads as another name.
+
+    EVERY OTHER CHARACTER PRINTS AS IT IS, as it did before this function
+    existed: the zero-width non-joiner a Persian or Indic name needs, the
+    zero-width joiner that makes an emoji sequence, the ideographic space of a
+    Japanese full name, the no-break space, the soft hyphen, and any other
+    format, space or unassigned character. `str.isprintable` is not the test:
+    it refuses all of those, which `validate-manifest.py` accepts and a UTF-8
+    terminal shows correctly, and what it counts as unassigned moves with the
+    interpreter's Unicode database. A backslash prints as it is too, so a name
+    holding the four characters `\\x1b` prints as one holding ESC does.
+
+    Each root's `bootstrap.py` applies it to every value it prints that it
+    read from the manifest, a register row or the disk, and to none of its
+    own wording.
+    """
+    return "".join(
+        char.encode("unicode_escape").decode("ascii")
+        if (char in ESCAPED_BIDI_CONTROLS
+            or unicodedata.category(char) in ESCAPED_CATEGORIES)
+        else char
+        for char in str(value))
