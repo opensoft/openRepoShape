@@ -47,7 +47,8 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     git's spelling, never refused as untracked.
   * the root standing on its own tracking branch. The next step this prints
     would then be a push to the default branch, and these organisations are
-    pull-request only.
+    pull-request only. `--dry-run` commits nothing, so it runs there, and ends
+    by naming the `git switch -c` the real run needs (#477).
   * a workflow file under `.github/workflows/`, or the leg's
     `contracts/<role>-pin.yaml`, that is not UTF-8 (a Latin-1 comment, a
     UTF-16 file with a byte-order mark): `bump-leg-workflow-unreadable` and
@@ -96,6 +97,7 @@ import argparse
 import errno
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -1000,13 +1002,16 @@ def _ensure_root_clean(root: Path) -> None:
 
 
 def _branch_to_bump_from(root: Path, project: "Project", role: str,
-                         commit: str) -> str:
+                         commit: str, *, dry_run: bool = False) -> str:
     """The branch on which the bump commits, refused if there is none or
     it is the project's own tracking branch.
 
     Split from `cmd_bump` for #136: these organisations are pull-request
     only, so a bump is refused before it ever makes a commit whose only
-    next step would be a push to the default branch.
+    next step would be a push to the default branch. A `--dry-run` makes no
+    commit, so on the tracking branch it is let through and ends by naming
+    the branch the real run needs (#477); a root on no branch at all is
+    refused either way.
     """
     branch = current_branch(root)
     if branch is None:
@@ -1016,7 +1021,7 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
             "open a pull request from",
             "Remediation: `git -C " + str(root) + " switch -c bump/"
             + f"{role}-{commit[:12]}` and re-run.")
-    if branch == project.tracking:
+    if branch == project.tracking and not dry_run:
         raise Refusal(
             "bump-leg-on-tracking-branch",
             f"{root} is on {branch!r}, which {MANIFEST} declares as this "
@@ -1432,7 +1437,8 @@ def cmd_bump(args) -> int:
     commit = _checked_target_commit(args.to)
 
     _ensure_root_clean(root)
-    branch = _branch_to_bump_from(root, project, role, commit)
+    branch = _branch_to_bump_from(root, project, role, commit,
+                                  dry_run=args.dry_run)
     submodule = _initialized_submodule(root, path)
     was = _recorded_leg_commit(root, path)
 
@@ -1463,6 +1469,14 @@ def cmd_bump(args) -> int:
               "fetched into, which is how the digest above was computed; the "
               "working tree, the pin, the workflows and the index are "
               "untouched.")
+        if branch == project.tracking:
+            # LAST, after everything a dry run on a branch prints, so that
+            # line is the whole of the difference between the two (#477).
+            # The command is quoted, so a root under `My Projects/` pastes.
+            print(f"\nthe real run needs a branch: {root} is on {branch!r}, "
+                  "the tracking branch. Create one first with: "
+                  + shlex.join(["git", "-C", str(root), "switch", "-c",
+                                f"bump/{role}-{commit[:12]}"]))
         return 0
 
     # ---- the rewrite and the commit, remembered byte for byte so a failure
