@@ -21,6 +21,8 @@ WHAT THIS MODULE OWNS
   - `file_sha256` — the per-file digest used by the shape pin's `files:` block,
     mirroring `neutral-product-pin`'s per-file `sha256` rows.
   - `NamingPolicy` — the classifier over `contracts/repository-naming.yaml`.
+  - `path_spelling_fault` — whether a path is spelled the one way Git
+    records it, asked of a leg's mount path and of a recorded submodule's.
   - `same_repository` and the remote-url arithmetic under it — the ONE
     definition of whether two remote spellings name one repository, which
     `shape-doctor.py` reports by and `scripts/siblings.py` refuses by.
@@ -348,10 +350,13 @@ def double_quoted(text: str) -> str:
     """`text` as a double-quoted scalar `_scalar` reads back as `text`.
 
     The subset's one writer quotes with this: `adopt-project.py`'s `y`, for
-    the adoption plan and for `shape-doctor.py`'s placement plan. It escapes
-    a backslash and a double quote, which would bend or end the quoting;
-    `\\n`, `\\r` and `\\t` by name; and every other character `str.isprintable`
-    refuses by its code point. PART OF THAT CLASS THE READER CANNOT TAKE
+    the adoption plan and for `shape-doctor.py`'s placement plan, and its
+    `submodule_record`, for the `submodules:` record `execute` appends to
+    `project.yaml`, which the doctor holds a submodule to only where a row
+    reads back as its path (#189). It escapes a backslash and a double
+    quote, which would bend or end the quoting; `\\n`, `\\r` and `\\t` by
+    name; and every other character `str.isprintable` refuses by its code
+    point. PART OF THAT CLASS THE READER CANNOT TAKE
     RAW. It reads a file line by line with `str.splitlines`, which ends a
     line at `\\n` and `\\r` -- the macOS folder icon is a file named
     `Icon\\r` -- and also at `\\x0b`, `\\x0c`, `\\x1c`-`\\x1e`, `\\x85`,
@@ -1170,11 +1175,83 @@ CHAIN_UNVERIFIED = "declared-unverified"
 #: ONE variable answers both questions asked of such a checkout: the digest
 #: `validate-pins.py` recomputes from it, and the chain-link declaration
 #: `resolve_referent` verifies against it.
+#:
+#: THE NAME IS NOT INJECTIVE (#275). `.`, `-` and `_` are all legal in a
+#: product's name and all become `_`, so `open-glass`, `open_glass` and
+#: `open.glass` share `SHAPE_PIN_SOURCE_OPEN_GLASS` while naming three pin
+#: files. Every existing name is kept, because an operator may have set it and
+#: the docs name it. What is done instead (`pin_source_env_collisions`): a
+#: variable two declared products share answers for NEITHER, wherever it is
+#: read; `scaffold-project.py --pin` refuses to create such a pair; and
+#: `validate-pins.py` NOTES a pair a project already declares, and never fails
+#: it, because the project did nothing wrong that an update could undo.
 PIN_SOURCE_ENV_PREFIX = "SHAPE_PIN_SOURCE_"
 
 
 def pin_source_env_name(product: str) -> str:
     return PIN_SOURCE_ENV_PREFIX + re.sub(r"[^A-Z0-9_]", "_", product.upper())
+
+
+def pin_product_key(product: str) -> str:
+    """What makes two declarations ONE product: the name its pin file carries,
+    `contracts/<product lowercased>-pin.yaml` (`neutral_pin_path` in
+    `shape_materialize.py` writes it; `validate-pins.py` reads it, and spells
+    it again because it ships into projects).
+
+    `lower()`, and not `casefold()`. The two agree over ASCII and part
+    company outside it: `casefold()` folds `ß` to `ss`, `ſ` to `s`, `ﬁ` to
+    `fi` and `ς` to `σ`, which `lower()` leaves alone, so `openß` and `openss`
+    are two pin files that a casefold took for one product (#275's re-review,
+    N2). Whether two names are the same pin is whether they are the same
+    file, so that is what is asked here, and
+    `tests/test_pin_source_env_collisions.py` holds it to `neutral_pin_path`.
+    """
+    return product.lower()
+
+
+def pin_source_env_collisions(products) -> dict[str, list[str]]:
+    """The variables two or more DISTINCT products share, each with them:
+    `{variable: [product, ...]}` (#275).
+
+    PURE, and the one place the question is answered, so `scaffold-project.py`,
+    `validate-pins.py` and the chain readers below cannot disagree about it.
+    `products` is any iterable of product NAMES (`openGlass`, never
+    `opensoft/openGlass@<sha>`): an entry that is not a non-empty string is
+    not a name and is left out, as `validate-pins.py` reports it as
+    malformed on its own.
+
+    DISTINCT MEANS DISTINCT PIN FILES (`pin_product_key`): `openGlass` and
+    `OpenGlass` are one product and name one variable rightly, and whether the
+    same product is declared twice is a different question, which
+    `scaffold-project.py` answers as `scaffold-pin-collides` (#241). A product
+    listed twice is therefore never a collision here, and two that differ in
+    more than the case `lower()` folds are, when `pin_source_env_name` maps
+    them to one name. That includes names no ASCII `--pin` can spell, such as
+    `openß` and `openss`, which share `SHAPE_PIN_SOURCE_OPENSS` and have two
+    pin files.
+
+    Variables are in the order their first product was given, and each
+    group's products are in that order too, each in the spelling it was first
+    given in. A variable only one product names is not in the result.
+    """
+    by_variable: dict[str, dict[str, str]] = {}
+    for product in products or ():
+        if not isinstance(product, str) or not product:
+            continue
+        group = by_variable.setdefault(pin_source_env_name(product), {})
+        group.setdefault(pin_product_key(product), product)
+    return {variable: list(group.values())
+            for variable, group in by_variable.items() if len(group) > 1}
+
+
+def pin_source_env_shared(products) -> set[str]:
+    """The `pin_product_key` of each of `products` whose variable another of
+    them shares (#275): the products a variable must not answer for, because
+    it does not say which. A caller asks `pin_product_key(name) in` the
+    result."""
+    return {pin_product_key(product)
+            for group in pin_source_env_collisions(products).values()
+            for product in group}
 
 
 def form_id(family_id: str, role_id: str | None) -> str:
@@ -1330,15 +1407,20 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     available = _link_declarations(link_pins)
     warnings: list[str] = []
     unverified: list[str] = []
+    # A link whose variable another link of the chain shares is never offered
+    # that variable: it would be read for both (#275).
+    shared = pin_source_env_shared(chain)
     for holder, held in zip(chain, chain[1:]):
         declared = available.get(holder.casefold())
         if declared is None:
             unverified.append(holder)
+            alone = pin_product_key(holder) not in shared
+            offered = (f"a sibling checkout, {pin_source_env_name(holder)}, or"
+                       if alone else "a sibling checkout or")
             warnings.append(
                 f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
                 f"is a fact in {holder}'s own tree, which is not "
-                f"reachable here (a sibling checkout, "
-                f"{pin_source_env_name(holder)}, or --link-source "
+                f"reachable here ({offered} --link-source "
                 f"{holder}=<path> would let it be read). The recorded "
                 "chain still classifies.")
             continue
@@ -1935,6 +2017,55 @@ def checked_value(what: str, value, pattern: re.Pattern = SAFE_ARG_RE) -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# A path spelled the one way Git records it (#179, #189)
+# ---------------------------------------------------------------------------
+#
+# Git records a path in exactly one spelling: relative to the top of its
+# repository, `/` between segments, and no segment empty, `.` or `..`.
+# `git update-index` refuses `./x`, `x/`, `a//b`, `a/./b`, `a/../b`, `/x` and
+# `.` alike as `Invalid path`, so a record that names a path in any other
+# spelling names one no tree holds, and nothing is ever found at it.
+#
+# TWO RULES ASK IT. The leg-path rule in `shape_materialize.py` asks it of a
+# leg's mount path (#179), and a project's own `validate-manifest.py` asks it
+# of each path `project.yaml`'s `submodules:` records (#189) -- which is why
+# it lives HERE: a project carries this file and not `shape_materialize.py`.
+# Each says the answer in its own sentence, about a leg or about a submodule.
+#
+# A BACKSLASH AND A DRIVE LETTER ARE NOT ASKED. On POSIX each is an ordinary
+# character of a name -- Git records `vendor/a\b` and `C:/x` there, refusing
+# them only on Windows -- and an adoption records a source submodule at
+# either. They are faults only in a path a PERSON types for commands that
+# Windows also runs, which is the leg-path rule's own question.
+
+#: The ways a path can fail to be spelled as Git records it, in the order
+#: `path_spelling_fault` asks: empty, absolute, climbing out with `..`,
+#: naming the top itself, and any other empty or `.` segment.
+PATH_EMPTY = "empty"
+PATH_ABSOLUTE = "absolute"
+PATH_CLIMBS = "climbs"
+PATH_ITSELF = "itself"
+PATH_NOT_CANONICAL = "not-canonical"
+
+
+def path_spelling_fault(text: str) -> str | None:
+    """Why `text` is not one path spelled as Git records it, as one of the
+    `PATH_*` codes above, or None when it is."""
+    if not text:
+        return PATH_EMPTY
+    if text.startswith("/"):
+        return PATH_ABSOLUTE
+    segments = text.split("/")
+    if ".." in segments:
+        return PATH_CLIMBS
+    if all(segment in ("", ".") for segment in segments):
+        return PATH_ITSELF
+    if "" in segments or "." in segments:
+        return PATH_NOT_CANONICAL
+    return None
+
+
 def accepts_role(found, role: str) -> bool:
     """Is `found` an acceptable classification for a leg DECLARED as `role`?
 
@@ -2457,20 +2588,26 @@ def declared_neutral_pins(manifest_path,
 
 def resolve_link_source(product: str, root: Path | None = None,
                         keyed_sources: dict | None = None,
-                        default_source=None) -> tuple[Path | None, str | None]:
+                        default_source=None,
+                        env_shared: bool = False
+                        ) -> tuple[Path | None, str | None]:
     """Where `product`'s own manifest can be read, if anywhere at all.
 
       1. `--link-source <product>=<path>` (case-insensitive on the name)
       2. `SHAPE_PIN_SOURCE_<PRODUCT>` in the environment
       3. a checkout sitting BESIDE this project (`../openXdox`)
       4. a bare `--link-source <path>` with no `product=` prefix
+
+    `env_shared` says another product asked about alongside this one names
+    the same variable, so rule 2 is skipped: a variable that does not say
+    which product it holds is not read for either (#275).
     """
     candidates: list[tuple[Path, str]] = []
     keyed = (keyed_sources or {}).get(product.casefold())
     if keyed is not None:
         candidates.append((Path(keyed), f"--link-source {product}=..."))
     env_name = pin_source_env_name(product)
-    env_value = os.environ.get(env_name)
+    env_value = None if env_shared else os.environ.get(env_name)
     if env_value:
         candidates.append((Path(env_value), f"${env_name}"))
     if root is not None:
@@ -2492,12 +2629,22 @@ def link_pins_from_trees(links, root: Path | None = None,
 
     A link whose tree is not on the disk is simply ABSENT from the mapping,
     which is what `NamingPolicy.resolve_referent` reads as declared-unverified.
+
+    A link whose `SHAPE_PIN_SOURCE_<PRODUCT>` another of `links` names too is
+    not read through it (#275): one tree would answer for two links, and a
+    chain verified against the wrong tree is worse than one left
+    declared-unverified. Only a hand-written chain can hold two such links:
+    `scaffold-project.py` takes every link but the first from the naming
+    policy's `open<Product>` form, which has no `-`, `.` or `_` to fold.
     """
     found: dict[str, set] = {}
+    links = list(links)
+    shared = pin_source_env_shared(repo_basename(str(link)) for link in links)
     for link in links:
         name = repo_basename(str(link))
         path, _how = resolve_link_source(name, root, keyed_sources,
-                                         default_source)
+                                         default_source,
+                                         pin_product_key(name) in shared)
         if path is None:
             continue
         pins = declared_neutral_pins(path, key)

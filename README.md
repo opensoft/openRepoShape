@@ -500,12 +500,12 @@ there does not advance the project. Advancing it is one lockstep commit in
 the root, written by the tool from a checkout of this standard:
 
 ```sh
+git -C ../Atlas switch -c <branch>           # the tool will not commit on main
 python3 scripts/bump-leg.py --root ../Atlas --leg code --to <40-hex commit>
 git -C ../Atlas push -u origin <branch>      # then open a pull request
 ```
 
-Editing the pin file by hand to make the validator agree is what the
-validator exists to refuse.
+Editing the pin by hand to make the validator agree is what it exists to refuse.
 
 **Variants.** An existing repository becomes the root in place with
 `adopt-project.py plan`, then `check`, then `execute`, the human answering
@@ -696,17 +696,17 @@ link that broke. `LedgerxWallet` -> `openXwallet` -> `openWallet` is the same
 shape, and `openWallet` need not exist anywhere for that to be the answer.
 
 **`validate-pins.py` rechecks the referent too, not only the declaration.**
-Every `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
-has its `commit`, `revision_kind` and `sorted-ls-tree-r-v1` digest recomputed
-exactly the way `scaffold-project.py --pin` computed them: OFFLINE from a
-local checkout when one can be found — `--pin-source [PRODUCT=]<path>`,
-`SHAPE_PIN_SOURCE_<PRODUCT>` in the environment, or a checkout sitting beside
-the assembly root and named for the pinned repository — else from `gh api`
-when `gh` can read it. Neither answering is a named SKIP, never a finding and
-never a failure: a project with no local checkout of its referent and no
-network is not thereby lying about its descent. A digest that recomputes
-differently, or a pin file the declaration names but that is not there, is
-reported as drift like every other pin in this file.
+Each `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
+has its `commit`, `revision_kind` and `sorted-ls-tree-r-v1` digest recomputed as
+`scaffold-project.py --pin` computed them: OFFLINE from a local checkout when
+one is found — `--pin-source [PRODUCT=]<path>`, `SHAPE_PIN_SOURCE_<PRODUCT>` in
+the environment, or a checkout beside the assembly root named for the pinned
+repository — else by `gh api`, with the operator's `gh` credentials, when `gh`
+can read it. Finding neither is a named SKIP, exit 0: no checkout and no network
+does not make a descent a lie. A checkout that cannot answer is the finding
+`neutral-pin-source-unreadable`. `make bootstrap`, `bump-leg.py` and
+`update-shape.py apply` run this validator in the operator's environment, so
+each makes that call too; none takes `--pin-source`.
 
 ### A neutral product may elect the shape and be its own assembly root
 
@@ -972,8 +972,7 @@ Moving those three facts by hand is how they come apart, so one command moves
 them together, run from a checkout of this standard:
 
 ```sh
-python3 scripts/bump-leg.py --root <path-to-the-project> --leg spec \
-    --to <40 hex commit>       # --dry-run prints the move and writes nothing
+python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex>   # --dry-run prints the move and writes nothing
 ```
 
 It fetches the commit into the leg, checks the leg out AT it, recomputes the
@@ -985,14 +984,15 @@ included — then runs the project's own `validate-pins.py` and
 `validate-manifest.py` and commits ONCE with explicit pathspecs.
 
 It REFUSES a `--to` that is not exactly 40 hex, a commit no branch of the leg's
-remote contains (including one committed inside the mount and never pushed — a
-pin the rest of the world cannot fetch is a root it cannot bootstrap), a dirty
-root, an untracked or ignored workflow file it would rewrite, a root standing on
-its own tracking branch (the next step is a pull request, never a push to the
-default branch), and a validator that goes red — rolling the pin, the workflow
-files, the leg's checkout and the index back first, so a refusal leaves the tree
-exactly as it was found. The leg is left DETACHED at the new commit; `make
-bootstrap` re-places it on its tracking branch AT the new pin.
+remote contains (including one committed in the mount and never pushed — a pin
+the rest of the world cannot fetch is a root it cannot bootstrap), a dirty root,
+an untracked or ignored workflow file it would rewrite, a root standing on its
+own tracking branch (the next step is a pull request, never a push to the
+default branch: `git switch -c <branch>` first; `--dry-run` writes nothing, so
+it runs there and prints that command), and a validator that goes red — rolling
+the pin, the workflow files, the leg's checkout and the index back first, so a
+refusal leaves the tree as it was found. The leg is left DETACHED at the new
+commit; `make bootstrap` re-places it on its tracking branch AT the new pin.
 
 ## Bootstrap is COPIED into the project, not fetched
 
@@ -1025,12 +1025,12 @@ the rest is the project's own, which an upstream fix must never overwrite.
 
 ## Keeping a project's shape current
 
-The copies are the trade: a project runs its own gate offline, and an upstream
-FIX to a copied file reaches it never. On 2026-09-03 that bill came due — one
-change to the assembly-root `validate.yml`, and both projects carrying the
-shape were updated BY HAND: re-copy, recompute the file's `sha256` row, move
-`commit` and `digests.tree_sha256`, mirror both into `project.yaml`, re-run the
-validators. `update-shape.py` is that, as one command:
+The copies are the trade: a project runs its own gate, which never consults this
+standard (its validators' one possible network read is `validate-pins.py`'s `gh
+api` recheck of a neutral product's pin, above), and an upstream FIX to a copied
+file reaches it never. On 2026-09-03 that bill came due — one change to the
+assembly-root `validate.yml`, and both projects with the shape were updated BY
+HAND: re-copy, re-pin, re-validate. `update-shape.py` is that, as one command:
 
 ```sh
 ./update-shape.py check --root ../MedxEHR          # writes nothing
@@ -1092,9 +1092,9 @@ by every `check` until it is taken or a file arrives at that path.
 `owner/repo` it bare-clones itself; it defaults to the repository the pin
 names. `make bootstrap` prints one line when the upstream has moved past the
 pin AND this machine can already tell offline — `SHAPE_UPSTREAM_PATH` points at
-a clone, or a `.shape-upstream-tip` file carries a commit. It adds no network
-call: a bootstrap that paused to ask GitHub a question would have made the
-shape a dependency again.
+a clone, or a `.shape-upstream-tip` file carries a commit. That line adds no
+network call: a bootstrap that paused to ask GitHub a question would have
+made the shape a dependency again. (Its pins gate may ask `gh api`; see above.)
 
 ### Is this repository compliant? `openRepoShape --doctor`
 
