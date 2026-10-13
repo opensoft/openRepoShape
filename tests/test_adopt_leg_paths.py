@@ -261,10 +261,11 @@ NOT_TEXT = [
 @pytest.mark.parametrize("value, kind", NOT_TEXT)
 def test_a_value_that_is_not_text_is_a_problem_that_does_not_echo_it(
         adopter, value, kind):
-    """And it does not say "quote it" (#181): quoted, every one of these
-    spellings is text `execute` writes bare into `project.yaml`, where the
-    loader reads the same kind again and `plan-manifest-misread` refuses
-    it."""
+    """And it does not say "quote it" (#181): quoted, each of these
+    spellings is text, and since #259 `execute` mounts the leg at a
+    directory of that very name, which is the path meant only if it was
+    meant. So the sentence asks for the path meant, or for no key at
+    all."""
     problem = adopter.leg_path_problem("legs.spec_path", value)
     assert problem.startswith("legs.spec_path is not text: ")
     assert problem.endswith(

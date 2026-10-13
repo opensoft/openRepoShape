@@ -2900,9 +2900,9 @@ def _listed(names: list[str]) -> str:
 
 
 def _read_as(value) -> str:
-    """What the YAML reader made of a value, in words: `the number 1.5`."""
-    if value is None:
-        return "no value at all"
+    """What the YAML reader made of a value, in words: `the number 1.5`.
+    None is `NOT_TEXT_KINDS`' "no value at all", as for a leg path read out
+    of a plan as no value (#181)."""
     if isinstance(value, bool):
         return f"the boolean {str(value).lower()}"
     if isinstance(value, (int, float)):
@@ -2995,11 +2995,12 @@ def leg_path_problem(what: str, value) -> str | None:
     """
     if not isinstance(value, str):
         # NOT "SO QUOTE IT" (#181). Quoted, the plan reads the same spelling
-        # back as text, and `adopt-project.py execute` writes that text into
-        # `project.yaml` and the leg's pin as it stands, where its
-        # `manifest_misreads` refuses every spelling the loader reads as one
-        # of these kinds. Only a value read out of a plan file gets here:
-        # `plan`'s flags and the scaffold's are always text.
+        # back as text, and since #259 `adopt-project.py execute` mounts the
+        # leg at a directory of that very name (`2026/`, `true/`, `null/`),
+        # which is the path meant only if it was meant. So the sentence asks
+        # for the path meant, or for no key at all, and says nothing of
+        # quotes. Only a value read out of a plan file gets here: `plan`'s
+        # flags and the scaffold's are always text.
         kind = NOT_TEXT_KINDS.get(type(value), "something that is not text")
         return (f"{what} is not text: its value was read as {kind}, and a "
                 "leg path is text: write the path you mean, or remove the key "

@@ -41,10 +41,20 @@ read back as something else, by the same question `y` asks
 (`loader_reading`), put into each template line that carries the value; and
 the end-to-end test clones and bootstraps what is still accepted.
 
+SINCE #259 THE TEMPLATES QUOTE THOSE LINES (main's 47b1e06): the id, the
+branch, the leg paths, the election date and the visibility are written
+between double quotes, which read back as typed, so each value of theirs
+the gate refused is planned, checked and written as given (`READ_BACK`).
+What `execute` still writes bare is each pin's product, in the manifest's
+`neutral_product_pins:` list, and the gate refuses that (`REFUSED`) until
+lane 2's #514 quotes it. The gate is asked of a line written bare once more
+where a test means its own answer (`bare_template`): how it names a value,
+and which values it asks about at all.
+
 THE PROJECT'S OWN VALIDATOR IS ASKED FIRST (#261, rv181f's G1). A value it
-refuses as the loader reads it -- `id: true`, `elected_on: 20260902`, and at
-`plan` a leg path read as no value -- is refused in its words alone, as on
-main. The misread finding is for what the validator accepts and `execute`
+refuses as the loader reads it -- `visibility: secret`, and `visibility:
+true`, a boolean main does not ask it about -- is refused in its words
+alone. The misread finding is for what the validator accepts and `execute`
 writes in every mode, which is what its remediation says.
 """
 
@@ -403,6 +413,19 @@ PIN_DIGEST_SOURCE = "gh-api-tree-recursive"
 PIN_OWNER = "opensoft"
 #: The flag that names the stand-in clone a `--pin`'s digest is read from.
 PIN_SOURCE_FLAG = "--pin-source"
+#: The organisation every plan here is written for.
+TEST_ORG = "testorg"
+#: How every finding `check` prints begins.
+ANY_FINDING = "FINDING"
+#: The other flags the tools here are given, spelled once.
+PLAN_OPTION = "--plan"
+WORK_DIR_FLAG = "--work-dir"
+#: What `check` says of a plan it passes.
+PLAN_OK = "plan ok"
+#: The key a leg's pin records its mount path under.
+SUBMODULE_PATH = "submodule_path"
+#: The parameters of the tests that carry a value spelled by hand.
+KEY_SPELLED = "key, spelled"
 #: The first line of the pin `plan` records for `openGlass`.
 GLASS_ITEM = "  - product: openGlass"
 #: The `_template_values` placeholders the tests below fill.
@@ -424,74 +447,55 @@ DOMAIN_USER_READ = "the text `CORP`, then a tab, then `om`"
 #: carries it: `'"CORP\tom"'`.
 QUOTED_DOMAIN_USER = f"'\"{DOMAIN_USER}\"'"
 
-#: `(flag, value, plan key, what the project's loader reads)`. At 76a6153
-#: each went through `execute` to `adoption verified` and then to a
-#: bootstrap that failed, or that put the legs on another branch than the
-#: one they were pushed on (lane 2's review, and this fix's own repro of
-#: it). `007` is a branch bootstrap would read as `7`. The project's own
-#: validator makes no finding about what the loader reads of any of them,
-#: so each is #181's, at `plan` and in a plan. No value `project.yaml`
-#: writes between its quotes is here: `render` spells those with
-#: `double_quoted` since #284, and `BETWEEN_THE_QUOTES` below holds the ones
-#: that misread before it. Since main's #479 each branch is asked of a
-#: source that has it (`holding`), and since #273 a `--pin` is
+#: `(flag, value, plan key, what the project's loader reads)`: a pin's
+#: product, which `execute` writes bare, as an item of the manifest's
+#: `neutral_product_pins:` list. At 76a6153 `--pin null` went through
+#: `execute` to `adoption verified` with the pin gone, and on main `--pin
+#: 007@<commit>` still ends `adoption verified` over a root whose own
+#: `validate-pins.py` refuses `entry 7` (lane 2's #514). The project's own
+#: validator makes no finding about what the loader reads of any of them, so
+#: each is #181's, at `plan` and in a plan. Since #273 a `--pin` is
 #: `<product>@<40 hex>` and a plan's pin a whole one (`flag_args`,
-#: `whole_pin`): the value is the pin's product.
+#: `whole_pin`): the value is the pin's product. Once #514 quotes the list's
+#: items, each reads back as typed, and these rows are `READ_BACK`'s kind.
 REFUSED = [
-    (TRACKING_FLAG, "true", TRACKING_KEY, TRUE_READ),
-    (TRACKING_FLAG, "null", TRACKING_KEY, NO_VALUE),
     (PIN_FLAG, "null", PINS_KEY, NO_VALUE),
     (PIN_FLAG, "True", PINS_KEY, TRUE_READ),
-    (TRACKING_FLAG, "007", TRACKING_KEY, SEVEN_READ),
-]
-#: How the validator's finding about a leg's mount path begins.
-LEG_PATH_SAID = "manifest-leg-path: leg 'spec': path is "
-#: `(flag, value, plan key, what the loader reads, the validator's words for
-#: what it reads)`: leg paths that went the same way at 76a6153, and `2026`,
-#: `1.5` and `~` on `main` too (#187's review). `plan` asks the validator
-#: first, which refuses each (`manifest-leg-path`), so `plan` refuses it in
-#: the validator's words alone, as main does (rv181f's G1). A PLAN carrying
-#: one is #181's: `check` leaves the validator's leg-path codes to
-#: `_leg_findings` (`LEG_PATH_CODES`), which passes the text, and `execute`
-#: writes it and ends `adoption verified`, as on main.
-LEG_PATHS = [
-    (SPEC_FLAG, "null", SPEC_PATH_KEY, NO_VALUE, f"{LEG_PATH_SAID}None"),
-    (SPEC_FLAG, "Null", SPEC_PATH_KEY, NO_VALUE, f"{LEG_PATH_SAID}None"),
-    (SPEC_FLAG, "NULL", SPEC_PATH_KEY, NO_VALUE, f"{LEG_PATH_SAID}None"),
-    (SPEC_FLAG, "~", SPEC_PATH_KEY, NO_VALUE, f"{LEG_PATH_SAID}None"),
-    (SPEC_FLAG, "true", SPEC_PATH_KEY, TRUE_READ, f"{LEG_PATH_SAID}True"),
-    (SPEC_FLAG, FALSE_TITLE, SPEC_PATH_KEY, "the boolean false",
-     f"{LEG_PATH_SAID}False"),
-    (SPEC_FLAG, "2026", SPEC_PATH_KEY, "the number 2026",
-     f"{LEG_PATH_SAID}2026"),
-    (SPEC_FLAG, "1.5", SPEC_PATH_KEY, "the number 1.5", f"{LEG_PATH_SAID}1.5"),
-    ("--code-path", "null", "legs.code_path", NO_VALUE,
-     "manifest-leg-path: leg 'code': path is None"),
-]
-#: How the validator's finding about an id begins.
-ID_SAID = "manifest-id: id is "
-#: `(flag, value, plan key, the validator's words for what the loader
-#: reads)`: an id the loader reads as a boolean or as no value. The
-#: validator refuses it (`manifest-id`), and is asked first, so it is the
-#: validator's finding alone, at `plan` and in a plan, as on main (rv181f's
-#: G1): a misread finding there said `execute` writes it and the run ends
-#: `adoption verified`, and `execute` refuses it before anything exists.
-VALIDATORS = [
-    ("--id", "true", "id", f"{ID_SAID}True; it must match "),
-    ("--id", "null", "id", f"{ID_SAID}None; it must match "),
+    (PIN_FLAG, "007", PINS_KEY, SEVEN_READ),
 ]
 #: #181's, as `plan` is given it, and as a plan carries it.
 PLANNED = [(flag, value, reading) for flag, value, _, reading in REFUSED]
-CARRIED = [(key, value, reading) for _, value, key, reading in REFUSED] \
-    + [(key, value, reading) for _, value, key, reading, _ in LEG_PATHS]
-#: The validator's alone, as `plan` is given it, and as a plan carries it.
-PLANNED_INVALID = [
-    (flag, value, said) for flag, value, _, _, said in LEG_PATHS] + [
-    (flag, value, said) for flag, value, _, said in VALIDATORS]
-#: No date is here: an `elected_on:` `election_date` refuses is #294's
-#: finding alone (`LATE_DATES`). No visibility is either: `plan` takes one
-#: from a fixed choice, and none other is #181's (`NEVER_WRITTEN`).
-CARRIED_INVALID = [(key, value, said) for _, value, key, said in VALIDATORS]
+CARRIED = [(key, value, reading) for _, value, key, reading in REFUSED]
+
+#: How a `READ_BACK` row names the value `plan` takes from the source when
+#: no `--tracking-branch` is given: its default branch (#479).
+DEFAULT_BRANCH = "default-branch"
+#: The flags of the leg paths, and of the project an id is derived from.
+CODE_FLAG = "--code-path"
+PROJECT_FLAG = "--project"
+#: `(flag, value)`: values the project's loader read as something else
+#: while the templates wrote them bare. `plan` refused the branches as a
+#: misread, and the leg paths and the ids, given or derived from
+#: `--project`, as the project's own validator's (`manifest-leg-path`,
+#: `manifest-id`); at 76a6153 each went through `execute` to `adoption
+#: verified` and a bootstrap that failed or put the legs on another branch.
+#: Since #259 (main's 47b1e06) each line is between double quotes and reads
+#: back as typed, so each is planned, checked and written as given, with no
+#: finding of #181's or the validator's. A branch is asked of a source that
+#: has it (#479), and one row takes it from the source's default branch.
+READ_BACK = [
+    *[(TRACKING_FLAG, value) for value in ("true", "null", "007")],
+    *[(SPEC_FLAG, value) for value in ("null", "Null", "NULL", "~", "true",
+                                       FALSE_TITLE, "2026", "1.5")],
+    (CODE_FLAG, "null"),
+    ("--id", "true"), ("--id", "null"),
+    (PROJECT_FLAG, "True"), (PROJECT_FLAG, "Null"),
+    (DEFAULT_BRANCH, "true"),
+]
+#: The placeholders #259 put between double quotes in the assembly root's
+#: templated YAML files, which `bare_template` writes bare again.
+QUOTED_BY_259 = ("PROJECT_ID", "ELECTED_ON", "VISIBILITY", "TRACKING_BRANCH",
+                 "SPEC_PATH", "CODE_PATH")
 
 
 def ids_of(rows, key: int, value: int) -> list[str]:
@@ -499,7 +503,7 @@ def ids_of(rows, key: int, value: int) -> list[str]:
 
 
 def checked(plan: Path):
-    return run_script(ADOPT, "check", "--plan", str(plan))
+    return run_script(ADOPT, "check", PLAN_OPTION, str(plan))
 
 
 #: The directory `executed` names for the local remotes, which a run that is
@@ -508,9 +512,9 @@ REMOTES = "remotes"
 
 
 def executed(plan: Path, tmp_path: Path):
-    return run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+    return run_script(ADOPT, "execute", PLAN_OPTION, str(plan), "--yes",
                       "--local-remote-dir", str(tmp_path / REMOTES),
-                      "--work-dir", str(tmp_path / "work"))
+                      WORK_DIR_FLAG, str(tmp_path / "work"))
 
 
 def branches_of(source: Path) -> str:
@@ -524,6 +528,16 @@ def planned(tmp_path: Path, *extra: str, tree: dict | None = None) -> Path:
     written = write_plan(source, plan, extra=extra)
     assert written.returncode == 0, written.stderr + written.stdout
     return plan
+
+
+def plan_argv(source: Path, out: Path, tmp_path: Path, *extra: str) -> list:
+    """`plan`'s arguments for a run in this process (`adopter.main`): as
+    `conftest.write_plan` gives them, with a work directory of the test's
+    own."""
+    return ["plan", "--source", str(source), PROJECT_FLAG, PROJECT_NAME,
+            "--org", TEST_ORG, ELECTED_BY_FLAG, "Test Human", "--elected-on",
+            ELECTION_DATE, WORK_DIR_FLAG, str(tmp_path / "work"), "--out",
+            str(out), *extra]
 
 
 def answer(plan: Path, path: str, leg: str) -> None:
@@ -685,59 +699,147 @@ def test_plan_refuses_a_value_the_projects_loader_would_misread(
 VALIDATOR_REFUSES = "which the project's own validate-manifest.py refuses: "
 
 
-@pytest.mark.parametrize("flag, value, said", PLANNED_INVALID,
-                         ids=ids_of(PLANNED_INVALID, 0, 1))
-def test_plan_refuses_a_value_the_validator_refuses_in_its_words_alone(
-        adopter, answered, tmp_path, flag, value, said):
-    """The project's own validator is asked first. A value it refuses as
-    the loader reads it was refused as a misread, whose remediation says
-    `execute` writes it and the run would still end `adoption verified`:
-    neither is true of a value the validator refuses (rv181f's G1). It is
-    refused in the validator's words alone, as on main."""
-    source, _ = answered
+@pytest.fixture
+def bare_template(adopter, tmp_path, monkeypatch) -> Path:
+    """The templates #181's gate reads (`ASSEMBLY_TEMPLATE`), each line #259
+    quoted written bare again, as it was before #259.
+
+    The gate asks the line `execute` writes, and since #259 every line it
+    asks about but the pins' list is quoted, where no value is misread. What
+    it says of a line written bare -- how it names a value, and which values
+    it asks about at all -- is still the rule's own answer, and a test of
+    that is asked here, of the gate directly or of `plan` in this process.
+    No `check` run as a process of its own sees this copy, nor the leg-path
+    rule (`leg_path_problem`, #266) unless a test points it here too, nor
+    the validator, and `execute` never does. The copy is a templates
+    directory's `assembly-root`, as the shape's own is."""
+    copy = tmp_path / "bare-templates" / "assembly-root"
+    shipped = ""
+    for rel in adopter.TEMPLATED_YAML:
+        text = (adopter.ASSEMBLY_TEMPLATE / rel).read_text(encoding=UTF8)
+        shipped += text
+        for placeholder in QUOTED_BY_259:
+            text = text.replace(f'"{{{{{placeholder}}}}}"',
+                                f"{{{{{placeholder}}}}}")
+        target = copy / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding=UTF8)
+    assert all(f'"{{{{{placeholder}}}}}"' in shipped
+               for placeholder in QUOTED_BY_259), "#259's quotes moved"
+    monkeypatch.setattr(adopter, "ASSEMBLY_TEMPLATE", copy)
+    return copy
+
+
+def planned_as_given(tmp_path: Path, flag: str, value: str) -> tuple[Path,
+                                                                     Path]:
+    """`(source, plan)` for a `READ_BACK` row: `plan` given the flag, or the
+    project an id is derived from, or a source whose default branch is the
+    value, then answered. A branch is one the source has (#479)."""
+    default = value if flag == DEFAULT_BRANCH else "main"
+    source = make_source_repo(tmp_path / SOURCE_NAME, branch=default)
+    holding(source, flag, value)
     plan = tmp_path / PLAN_FILE
-    result = write_plan(source, plan, extra=(flag, value))
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert result.stderr.startswith("REFUSED adopt-manifest-invalid: "), (
-        result.stderr)
-    assert said in result.stderr, result.stderr
-    assert MISREAD_CODE not in result.stderr, result.stderr
-    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
-    assert "No plan was written." in result.stderr
-    assert not plan.exists()
+    written = write_plan(
+        source, plan, project=value if flag == PROJECT_FLAG else PROJECT_NAME,
+        extra=() if flag in (DEFAULT_BRANCH, PROJECT_FLAG) else (flag, value))
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert "REFUSED" not in written.stderr, written.stderr
+    for path, leg in ANSWERS:
+        resolve(plan, path, leg)
+    return source, plan
 
 
-@pytest.mark.parametrize("project, value, said", [
-    ("True", "true", f"{ID_SAID}True; "), ("Null", "null", f"{ID_SAID}None; ")],
-    ids=["True", "Null"])
-def test_plan_leaves_an_id_it_derived_from_the_project_to_the_validator(
-        answered, tmp_path, project, value, said):
-    """`--project True` passes no `--id`, and `plan` lowercases the project
-    into one, which the loader reads as a boolean and the validator then
-    refuses: the validator's refusal, as on main, and no misread."""
-    source, _ = answered
-    result = write_plan(source, tmp_path / PLAN_FILE, project=project)
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert result.stderr.startswith(
-        f"REFUSED adopt-manifest-invalid: --id is {value!r}, "
-        f"{VALIDATOR_REFUSES}{said}"), result.stderr
-    assert MISREAD_CODE not in result.stderr, result.stderr
+def as_given(flag: str, value: str) -> str:
+    """What the row's value must read back as: an id `plan` derives from
+    `--project` is the project lowercased, and everything else as typed."""
+    return value.lower() if flag == PROJECT_FLAG else value
+
+
+def where_it_lands(flag: str) -> tuple[tuple, tuple]:
+    """`(in the plan, in project.yaml)`: where the row's value lands in
+    each, as the steps into what its loader reads. A leg is the second or
+    third of the manifest's `legs:`; the assembly is the first."""
+    if flag in (TRACKING_FLAG, DEFAULT_BRANCH):
+        return (TRACKING_KEY,), (TRACKING_KEY,)
+    if flag in (SPEC_FLAG, CODE_FLAG):
+        role = flag[2:6]
+        return (("legs", f"{role}_path"),
+                ("legs", 1 if role == "spec" else 2, "path"))
+    return ("id",), ("id",)
+
+
+def read_at(loaded, steps: tuple):
+    """What a loader read at `steps` into what it loaded."""
+    for step in steps:
+        loaded = loaded[step]
+    return loaded
+
+
+@pytest.mark.parametrize("flag, value", READ_BACK,
+                         ids=ids_of(READ_BACK, 0, 1))
+def test_a_value_the_template_quotes_is_planned_and_checked_as_given(
+        tmp_path, flag, value):
+    """`plan` refused each of these, as #181's misread or in the project's
+    own validator's words (`manifest-leg-path`, `manifest-id`), while the
+    template wrote its line bare. Since #259 the line is quoted and reads
+    back as typed: `plan` writes the plan, which reads the value back as
+    given, and `check` passes it with no finding at all."""
+    _, plan = planned_as_given(tmp_path, flag, value)
+    in_plan, _ = where_it_lands(flag)
+    assert read_at(load_yaml(plan), in_plan) == as_given(flag, value)
+    result = checked(plan)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert PLAN_OK in result.stdout, result.stdout
+    assert ANY_FINDING not in result.stderr, result.stderr
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("flag, value", READ_BACK,
+                         ids=ids_of(READ_BACK, 0, 1))
+def test_execute_writes_a_value_the_template_quotes_as_given(
+        tmp_path, flag, value):
+    """`execute` refused each of these before any leg existed, as #181's
+    misread or as the validator's. Since #259 it writes each between double
+    quotes, ends `adoption verified`, and the split's `project.yaml` reads
+    the value back as given; a leg path reads back from its pin's
+    `submodule_path:` too, and the legs are pushed on the branch."""
+    source, plan = planned_as_given(tmp_path, flag, value)
+    result = executed(plan, tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "adoption verified" in result.stdout, result.stdout
+    assert MISREAD_CODE not in result.stdout + result.stderr
+
+    def shown(rel: str) -> dict:
+        return parse_yaml(git("show", f"{SPLIT_BRANCH}:{rel}",
+                              cwd=source).stdout)
+
+    _, in_manifest = where_it_lands(flag)
+    assert read_at(shown(MANIFEST), in_manifest) == as_given(flag, value)
+    if flag in (SPEC_FLAG, CODE_FLAG):
+        pin = shown(f"contracts/{flag[2:6]}-pin.yaml")
+        assert pin[SUBMODULE_PATH] == value
+    if flag in (TRACKING_FLAG, DEFAULT_BRANCH):
+        for leg in ("spec", "code"):
+            heads = git("for-each-ref", "--format=%(refname:short)",
+                        "refs/heads",
+                        cwd=tmp_path / REMOTES / f"{PROJECT_NAME}-{leg}.git")
+            assert heads.stdout.split() == [value], leg
 
 
 def test_the_misread_rule_names_an_id_plan_derived_by_where_it_came_from(
-        adopter, monkeypatch):
-    """Should #181 be the rule that refuses an id `plan` derived, its
-    sentence says where the value came from, so the person knows the flag
-    that chooses another. The validator refuses every id the loader
-    misreads today, and is asked first, so `plan` is asked here with the
-    validator's refusal taken out: what is left is the rule's own answer."""
-    monkeypatch.setattr(adopter, "_refuse_unholdable_values",
-                        lambda *_args: None)
+        adopter, bare_template, tmp_path):
+    """Where #181 refuses an id `plan` derived, its sentence says where the
+    value came from, so the person knows the flag that chooses another.
+    Since #259 the template quotes `id:`, and `true` reads back there
+    (`READ_BACK`), so `plan` is asked here of a bare line
+    (`bare_template`), in this process: what is left is the rule's own
+    answer. The validator, which reads the shipped template, accepts the
+    id `true`, as it does on main."""
     args = argparse.Namespace(
-        project="True", org="testorg", id=None, visibility="private",
+        project="True", org=TEST_ORG, id=None, visibility="private",
         elected_by="Test Human", elected_on=ELECTION_DATE, reference=None,
         tracking_branch="main", spec_path="spec", code_path="code", pin=[],
-        pin_owner=PIN_OWNER, pin_source=None)
+        pin_owner=PIN_OWNER, pin_source=None, out=str(tmp_path / PLAN_FILE))
     naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
     with pytest.raises(adopter.Refusal) as refused:
         adopter._checked_plan_inputs(
@@ -759,8 +861,8 @@ def test_plan_takes_an_elector_from_git_the_manifests_quotes_read_back(
     source, _ = answered
     plan = tmp_path / PLAN_FILE
     result = run_script(
-        ADOPT, "plan", "--source", str(source), "--project", PROJECT_NAME,
-        "--org", "testorg", "--elected-on", ELECTION_DATE, "--out", str(plan),
+        ADOPT, "plan", "--source", str(source), PROJECT_FLAG, PROJECT_NAME,
+        "--org", TEST_ORG, "--elected-on", ELECTION_DATE, "--out", str(plan),
         env={"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name",
              "GIT_CONFIG_VALUE_0": DOMAIN_USER})
     assert result.returncode == 0, result.stdout + result.stderr
@@ -779,9 +881,8 @@ def test_check_reports_a_plan_carrying_one(adopter, answered_copy, tmp_path,
     """A plan carrying the value -- spelled by the plan writer, so the plan
     itself reads it back -- is a FINDING, with the remediation once after.
     It is #181's alone: the project's own validator, asked first, makes no
-    finding about what the loader reads of it (a leg path's are
-    `_leg_findings`' to judge, which passes the text), and `execute` writes
-    it in every mode."""
+    finding about what the loader reads of it, and `execute` writes it in
+    every mode."""
     source, text = answered_copy
     holding(source, key, value)
     plan = tmp_path / PLAN_FILE
@@ -793,33 +894,13 @@ def test_check_reports_a_plan_carrying_one(adopter, answered_copy, tmp_path,
     assert what in result.stderr, result.stderr
     assert result.stderr.count(adopter.MANIFEST_MISREAD_REMEDIATION) == 1
     assert INVALID_FINDING not in result.stderr, result.stderr
-    assert "plan ok" not in result.stdout
+    assert PLAN_OK not in result.stdout
 
 
 def judged_lines(stderr: str) -> list[str]:
     """The lines of #181's rule and the validator's, in the order printed."""
     return [line for line in stderr.splitlines()
             if line.startswith((MISREAD_FINDING, INVALID_FINDING))]
-
-
-@pytest.mark.parametrize("key, value, said", CARRIED_INVALID,
-                         ids=ids_of(CARRIED_INVALID, 0, 1))
-def test_check_leaves_a_value_the_validator_refuses_to_it(
-        adopter, answered, tmp_path, key, value, said):
-    """`id: "true"` was #181's finding, with a remediation saying `execute`
-    writes it and the run would still end `adoption verified`; `execute`
-    refuses it before anything exists, as the validator's (rv181f's G1).
-    It is the validator's finding alone, as on main, and no misread."""
-    _, text = answered
-    plan = tmp_path / PLAN_FILE
-    carrying(plan, text, key, adopter.y(value))
-    result = checked(plan)
-    assert result.returncode == 1, result.stdout + result.stderr
-    (line,) = judged_lines(result.stderr)
-    assert line.startswith(
-        f"{INVALID_FINDING}{key} is {value!r}, {VALIDATOR_REFUSES}{said}"), (
-        result.stderr)
-    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
 
 
 #: How a plan sets no id, each beside how it spells the assembly the id is
@@ -843,32 +924,33 @@ def without_an_id(text: str, id_line: str) -> str:
 
 
 @pytest.mark.parametrize("id_line, assembly", NO_ID)
-def test_check_leaves_an_id_it_derived_from_the_assembly_to_the_validator(
+def test_check_passes_an_id_it_derived_from_the_assembly_as_the_text_it_is(
         answered, tmp_path, id_line, assembly):
     """A plan that sets no id gets one from `execute`, which lowercases
-    `legs.assembly`: `true`, which the loader reads as a boolean and the
-    validator refuses. The validator's finding alone, as on main."""
+    `legs.assembly`: `true`. While the template wrote `id:` bare the loader
+    read that as a boolean, and the validator refused it as that (`id is
+    True`). Since #259 the line is quoted, `true` reads back as the id it
+    is, which the validator accepts, and `check` passes the plan with no
+    finding."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
     carrying(plan, without_an_id(text, id_line), ASSEMBLY_KEY, assembly)
     result = checked(plan)
-    assert result.returncode == 1, result.stdout + result.stderr
-    (line,) = judged_lines(result.stderr)
-    assert line.startswith(
-        f"{INVALID_FINDING}id is 'true', {VALIDATOR_REFUSES}{ID_SAID}True; "
-    ), result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert PLAN_OK in result.stdout, result.stdout
+    assert ANY_FINDING not in result.stderr, result.stderr
 
 
 @pytest.mark.parametrize("id_line, assembly", NO_ID)
 def test_the_misread_rule_names_an_id_it_derived_from_the_assembly(
-        adopter, answered, tmp_path, id_line, assembly):
-    """Should #181 be the rule that reports an id `execute` derives from
-    `legs.assembly`, its sentence says so, because the line to change is not
-    the one with the value. It says "not set in the plan" and not "not in
-    the plan": an `id: null` is in the plan and sets nothing (review181's
-    N3), and `Plan.get` reads it exactly as a missing key. The validator
-    refuses this id today, and is asked first, so this is the rule's own
-    answer, asked of it directly."""
+        adopter, answered, bare_template, tmp_path, id_line, assembly):
+    """Where #181 reports an id `execute` derives from `legs.assembly`, its
+    sentence says so, because the line to change is not the one with the
+    value. It says "not set in the plan" and not "not in the plan": an `id:
+    null` is in the plan and sets nothing (review181's N3), and `Plan.get`
+    reads it exactly as a missing key. Since #259 the template quotes `id:`,
+    where `true` reads back, so this is the rule's own answer for a bare
+    line (`bare_template`), asked of it directly."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
     carrying(plan, without_an_id(text, id_line), ASSEMBLY_KEY, assembly)
@@ -882,14 +964,17 @@ def test_the_misread_rule_names_an_id_it_derived_from_the_assembly(
 
 
 #: `(plan key, as a hand-edited plan spells it, what the plan's loader reads
-#: it as, the text `execute` writes for it)`. The loader reads each one as
-#: something that is not text, so the plan does not say what `str` of it
-#: says: `007` is read as 7, and `TRUE` as true. The sentence names what was
-#: READ, with its kind, and then the text `execute` writes (review181's N2).
-#: The project's loader reads that text back as the same kind again, and the
-#: project's own validator makes no finding about it: it does not judge a
-#: branch. An id, a date or a visibility read as not text is the
-#: validator's (`NOT_TEXT_INVALID`), and a pin's product #273's
+#: it as, the text `execute` writes for it)`. The plan's loader reads each
+#: one as something that is not text, so the plan does not say what `str`
+#: of it says: `007` is read as 7, and `TRUE` as true, and `execute` writes
+#: `str` of what was read. While the template wrote these lines bare, the
+#: project's loader read that text back as the same kind again, and #181
+#: named the branch by what was READ, with its kind, and then the text
+#: `execute` writes (review181's N2); the validator refused the id as `id is
+#: 7`. Since #259 the line is quoted and `7` reads back as the text `7`, so
+#: nothing names any of them, as on main: `execute` writes `7` for a plan
+#: that says `007`. A date or a visibility read as not text is still
+#: refused (`LATE_DATES`, `NOT_TEXT_INVALID`), and a pin's product is #273's
 #: (`test_a_pin_whose_product_is_not_text_is_273s_finding_alone`). The
 #: source has the branch as `execute` takes it, `str` of what was read
 #: (#479).
@@ -897,70 +982,83 @@ READ_AS_NOT_TEXT = [
     (TRACKING_KEY, "007", SEVEN_READ, "7"),
     (TRACKING_KEY, "TRUE", TRUE_READ, "True"),
     (TRACKING_KEY, "1.50", "the number 1.5", "1.5"),
+    ("id", "007", SEVEN_READ, "7"),
 ]
 
 
 @pytest.mark.parametrize("key, spelled, read_as, written", READ_AS_NOT_TEXT,
                          ids=ids_of(READ_AS_NOT_TEXT, 0, 1))
-def test_check_names_a_plan_value_that_is_not_text_by_what_was_read(
+def test_check_passes_a_plan_value_read_as_not_text_as_main_does(
         answered_copy, tmp_path, key, spelled, read_as, written):
-    """The finding said `tracking_branch is '7'` for a plan that says `007`,
-    and `'True'` for `TRUE`: `str` of what was read, which the plan never
-    said. It says what the plan's loader read, and the text `execute`
-    writes for it, which is `str` of that and is named as such."""
+    """`check` named each of these, the branch as #181's misread and the id
+    in the validator's words, while the template wrote its line bare. Since
+    #259 the line is quoted, the text `execute` writes reads back, and
+    neither rule has a finding: `check` passes the plan, as main does, and
+    `execute` writes `str` of what was read, `7` for `007` (a residual this
+    change shares with main, in its description). `read_as` is the
+    misread rule's answer for a bare line, asked in the test below."""
     source, text = answered_copy
     holding(source, key, written)
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, spelled)
     result = checked(plan)
-    assert result.returncode == 1, result.stdout + result.stderr
-    named = NAMED.get(key, key)
-    assert (f"{MISREAD_FINDING}{named} was read out of the plan as {read_as}, "
-            "which `execute` writes into ") in result.stderr, result.stderr
-    assert (f"reads it back as {read_as} and not as the text `{written}`: "
-            "choose another value.") in result.stderr, result.stderr
-    assert f"{named} is " not in result.stderr, "`str` of it was echoed"
-    assert INVALID_FINDING not in result.stderr, result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert PLAN_OK in result.stdout, result.stdout
+    assert ANY_FINDING not in result.stderr, result.stderr
 
 
-def test_the_misread_rule_names_a_set_id_by_what_was_read(
-        adopter, answered, tmp_path):
-    """`id: 007` is the number 7 to the plan's reader. Should #181 be the
-    rule that reports it, its sentence names what was READ, as the plan's
-    `id:` holds it, and never `str` of what `Plan.project_id` makes of it
-    (review181's N2). The validator refuses it today, and is asked first
-    (`NOT_TEXT_INVALID`), so this is the rule's own answer, asked of it
-    directly."""
+@pytest.mark.parametrize("key, spelled, read_as, written", READ_AS_NOT_TEXT,
+                         ids=ids_of(READ_AS_NOT_TEXT, 0, 1))
+def test_the_misread_rule_names_a_plan_value_that_is_not_text_by_what_was_read(
+        adopter, answered, bare_template, tmp_path, key, spelled, read_as,
+        written):
+    """The finding said `tracking_branch is '7'` for a plan that says `007`,
+    and `'True'` for `TRUE`: `str` of what was read, which the plan never
+    said. It says what the plan's loader read, and the text `execute`
+    writes for it, which is `str` of that and is named as such; an id too,
+    never `str` of what `Plan.project_id` makes of it. Since #259 the
+    template quotes these lines, so this is the rule's answer for a bare one
+    (`bare_template`), asked of `_misread_findings` directly."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
-    carrying(plan, text, "id", "007")
-    (said,) = adopter.manifest_misreads([adopter._id_field(
-        adopter.Plan.load(plan))])
-    assert said.startswith(f"id was read out of the plan as {SEVEN_READ}, "
-                           "which `execute` writes into "), said
-    assert said.endswith(f"reads it back as {SEVEN_READ} and not as the "
-                         "text `7`: choose another value"), said
+    carrying(plan, text, key, spelled)
+    (said,) = adopter._misread_findings(adopter.Plan.load(plan))
+    named = NAMED.get(key, key)
+    assert said.startswith(f"{MISREAD_FINDING}{named} was read out of the "
+                           f"plan as {read_as}, which `execute` writes "
+                           "into "), said
+    assert said.endswith(f"reads it back as {read_as} and not as the text "
+                         f"`{written}`: choose another value."), said
+    assert f"{named} is " not in said, "`str` of it was echoed"
 
 
 #: `(plan key, as a plan edited by hand spells it)`: values the project's
-#: loader would misread, which `execute` never writes. It refuses the branch
-#: as `unsafe-value` (`_checked_plan_values`), and `gh repo create` takes no
-#: `--true`, before anything is written. A finding would say the value is
-#: written and the run ends `adoption verified`: for these neither is true
-#: (rv181f's F2, F2b). Since #261 the visibility is the project's own
-#: validator's finding instead (`JUDGED_ONCE`).
+#: loader misread where a template wrote them bare, which `execute` never
+#: writes. It refuses the branch as `unsafe-value` (`_checked_plan_values`),
+#: and `gh repo create` takes no `--true`, before anything is written. A
+#: finding would say the value is written and the run ends `adoption
+#: verified`: for these neither is true (rv181f's F2, F2b). Since #261 the
+#: visibility is the project's own validator's finding instead
+#: (`JUDGED_ONCE`).
 #:
 #: So is every other visibility outside the three choices, in gh mode,
-#: `execute`'s default: `gh repo create` is handed `--null`, `--` or
+#: `execute`'s default: `gh repo create` would be handed `--null`, `--` or
 #: `--'private'` before any leg exists, and `check` is not told the mode.
-#: The texts the loader reads as no value, or as one of the three, are ones
-#: the validator accepts as read, so nothing names them, as on main: with
-#: `--local-remote-dir` the run ends `adoption verified`, the field read as
-#: that (rv181f's G3, a residual this change shares with main).
+#: The texts the loader read as no value, or as one of the three, while the
+#: template wrote `visibility:` bare were ones the validator accepted as
+#: read, and nothing named them (rv181f's G3). Since #259 the line is quoted,
+#: each is the text it is, and the validator refuses it, in either mode,
+#: before anything exists.
 #:
 #: So is a branch the loader misreads that git will not create, `~`, read
-#: as no value: `execute` dies at `git init -b ~` before it writes anything,
-#: as on main (rv181f's H1, a residual this change shares with main too).
+#: as no value where it is bare. No source has it, so it is #479's
+#: `plan-tracking-branch-missing`, and `execute` refuses it before any leg
+#: exists (rv181f's H1).
+#:
+#: On the templates shipped since #259 each of these lines is quoted and
+#: reads back, and `check` names none of them misread whatever the rule
+#: asks; `test_the_misread_rule_asks_nothing_of_a_value_execute_never_writes`
+#: asks the rule of a bare line.
 NEVER_WRITTEN = [
     pytest.param(TRACKING_KEY, QUOTED_DOMAIN_USER, id=TRACKING_KEY),
     pytest.param(TRACKING_KEY, '"~"', id="tracking_branch-tilde"),
@@ -975,7 +1073,7 @@ NEVER_WRITTEN = [
 ]
 
 
-@pytest.mark.parametrize("key, spelled", NEVER_WRITTEN)
+@pytest.mark.parametrize(KEY_SPELLED, NEVER_WRITTEN)
 def test_check_says_nothing_misread_of_a_value_execute_never_writes(
         adopter, answered, tmp_path, key, spelled):
     """`check` asked the loader about every value, and named these as
@@ -991,6 +1089,20 @@ def test_check_says_nothing_misread_of_a_value_execute_never_writes(
     assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
 
 
+@pytest.mark.parametrize(KEY_SPELLED, NEVER_WRITTEN)
+def test_the_misread_rule_asks_nothing_of_a_value_execute_never_writes(
+        adopter, answered, bare_template, tmp_path, key, spelled):
+    """Asked of a bare line (`bare_template`), the rule still names none of
+    these: `_execute_gets_to_write` leaves out the branch `execute` refuses
+    as `unsafe-value`, the one git will not create and every visibility
+    outside the three choices, and the validator, asked first, judges each
+    such visibility as well. Asked of `_misread_findings` directly."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, key, spelled)
+    assert adopter._misread_findings(adopter.Plan.load(plan)) == []
+
+
 #: A tracking branch the loader reads as no value, and git will not create.
 BRANCH_GIT_REFUSES = "~"
 
@@ -999,8 +1111,10 @@ def test_plan_records_a_branch_git_will_not_create_as_on_main(
         answered, tmp_path):
     """`plan` refused `--tracking-branch ~` as misread, with a remediation
     saying `execute` writes it and the run would still end `adoption
-    verified`. `execute` dies at `git init -b ~` before it writes anything,
-    so `plan` says nothing of it, as on main (rv181f's H1)."""
+    verified`. Git will not create `~`, so no source has it: `check` finds
+    it `plan-tracking-branch-missing` and `execute` refuses it before any
+    leg exists (#479). `plan` writes the plan, with #479's note and no
+    misread refusal, as on main (rv181f's H1)."""
     source, _ = answered
     plan = tmp_path / PLAN_FILE
     result = write_plan(source, plan,
@@ -1010,11 +1124,13 @@ def test_plan_records_a_branch_git_will_not_create_as_on_main(
 
 
 def test_git_is_asked_only_about_a_branch_the_loader_misreads(
-        adopter, monkeypatch):
+        adopter, bare_template, monkeypatch):
     """`branch_problem` starts git. It is asked about `~` and `true`, which
-    the loader misreads, and not about `develop`, which it reads back, so a
-    plan whose values all read back starts no process. Git creates `true`,
-    so that one is still the misread rule's (`REFUSED`)."""
+    the loader misreads on a bare line, and not about `develop`, which it
+    reads back, so a plan whose values all read back starts no process. Git
+    creates `true`, so that one is the misread rule's. Since #259 the
+    template quotes the branch, where no branch is misread and git is asked
+    nothing, so this is asked of a bare line (`bare_template`)."""
     asked = []
     real = adopter.branch_problem
 
@@ -1145,7 +1261,7 @@ def test_a_misread_branch_only_origin_has_is_named_by_neither(
     _, plan = origin_only(tmp_path)
     result = checked(plan)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "plan ok" in result.stdout, result.stdout
+    assert PLAN_OK in result.stdout, result.stdout
     assert MISREAD_FINDING not in result.stderr, result.stderr
     assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
 
@@ -1166,29 +1282,35 @@ def test_execute_refuses_a_branch_only_origin_has_under_a_local_remote(
     assert SPLIT_BRANCH not in branches_of(source)
 
 
-def test_plan_names_a_tracking_branch_it_took_from_the_source(tmp_path):
+def test_plan_names_a_tracking_branch_it_took_from_the_source(
+        adopter, bare_template, tmp_path, capsys):
     """Since #479 `plan` records the source's default branch when no
-    `--tracking-branch` is given. A source whose default branch is `true`
-    is refused before the plan exists, naming where the value came from, as
-    `checked_value` names it, and not as a flag nobody passed."""
+    `--tracking-branch` is given. Where the line `execute` writes it into
+    is bare, a source whose default branch is `true` is refused before the
+    plan exists, naming where the value came from, as `checked_value` names
+    it, and not as a flag nobody passed. Since #259 that line is quoted,
+    and such a source is planned and adopted as given (`READ_BACK`), so
+    `plan` is asked of a bare line (`bare_template`), in this process."""
     source = make_source_repo(tmp_path / SOURCE_NAME, branch="true")
     plan = tmp_path / PLAN_FILE
-    result = write_plan(source, plan)
-    assert result.returncode == 2, result.stdout + result.stderr
+    code = adopter.main(plan_argv(source, plan, tmp_path))
+    stderr = capsys.readouterr().err
+    assert code == 2, stderr
     who, what = misread(
         "--tracking-branch (not given, so the source's default branch)",
         "true", TRUE_READ)
-    assert result.stderr.startswith(
-        f"REFUSED adopt-manifest-misread: {who}"), result.stderr
-    assert what in result.stderr, result.stderr
+    assert stderr.startswith(f"REFUSED adopt-manifest-misread: {who}"), (
+        stderr)
+    assert what in stderr, stderr
     assert not plan.exists()
 
 
 def test_the_source_is_asked_only_about_a_branch_the_loader_misreads(
-        adopter, monkeypatch):
+        adopter, bare_template, monkeypatch):
     """`_pushed_in_every_mode` starts git. It is asked about `true`, which
-    the loader misreads, and not about `develop`, which it reads back, as
-    git's own question is asked (`_a_branch_git_creates`)."""
+    the loader misreads on a bare line (`bare_template`), and not about
+    `develop`, which it reads back, as git's own question is asked
+    (`_a_branch_git_creates`)."""
     asked = []
 
     def recorded(_source, branch):
@@ -1256,7 +1378,7 @@ UNWRITABLE = [
 ]
 
 
-@pytest.mark.parametrize("key, spelled", UNWRITABLE)
+@pytest.mark.parametrize(KEY_SPELLED, UNWRITABLE)
 def test_check_names_a_value_no_file_can_hold_once_as_unwritable(
         adopter, answered, tmp_path, key, spelled):
     """At the merge of #255 the gate also called the date and the pin
@@ -1299,17 +1421,14 @@ def test_execute_refuses_a_date_no_file_can_hold_as_unwritable_not_misread(
 #: the loader misreads included (rv181f's G1); so is any value of a manifest
 #: its reader cannot read at all, and that one finding names no value twice
 #: (rv181f's G2). What the loader misreads and the validator accepts is
-#: #181's: a branch, a pin, a leg path (`check` leaves its codes to
-#: `_leg_findings`), and a date read back as other text that is a date.
+#: #181's: since #259 a pin's product alone. `id: "007"`, `tracking_branch:
+#: "007"` and `legs.spec_path: "null"` were a row each here, the first the
+#: validator's and the others #181's; since #259 each reads back and is no
+#: finding (main's `TEXT_THE_TEMPLATE_NOW_HOLDS`, and `READ_BACK`).
 JUDGED_ONCE = [
-    pytest.param("id", QUOTED_007, INVALID_FINDING, id="id-text-misread"),
     pytest.param(PINS_KEY, '"? x"', INVALID_FINDING,
                  id="pin-the-reader-refuses"),
-    pytest.param(TRACKING_KEY, QUOTED_007, MISREAD_FINDING,
-                 id="branch-text-misread"),
     pytest.param(PINS_KEY, QUOTED_NULL, MISREAD_FINDING, id="pin-text-misread"),
-    pytest.param(SPEC_PATH_KEY, QUOTED_NULL, MISREAD_FINDING,
-                 id="leg-path-text-misread"),
     pytest.param(ELECTED_BY_KEY, '" "', INVALID_FINDING, id="elector-blank"),
     pytest.param(VISIBILITY_KEY, "secret", INVALID_FINDING,
                  id="visibility-secret"),
@@ -1348,19 +1467,24 @@ def test_check_judges_each_value_once_by_the_rule_true_of_it(
     assert remediation in result.stderr, result.stderr
 
 
+#: A leg path the validator refuses as text, which its finding about the
+#: leg (`manifest-leg-path`) names by no one value of the plan's.
+OUTSIDE_THE_ROOT = '"../x"'
 #: `(plan key, as a plan edited by hand spells it, whether the leg-path
 #: codes `check` leaves to `_leg_findings` are left out, what
-#: `manifest_judged` answers)`.
+#: `manifest_judged` answers)`. The first and the last two were `id: "007"`
+#: and `legs.spec_path: "null"` while the template wrote those lines bare;
+#: since #259 each reads back, and the validator accepts it.
 JUDGED_BY_THE_VALIDATOR = [
-    pytest.param("id", QUOTED_007, False, frozenset({"PROJECT_ID"}),
+    pytest.param(VISIBILITY_KEY, "secret", False, frozenset({"VISIBILITY"}),
                  id="its-finding-names-the-value"),
     pytest.param(TRACKING_KEY, QUOTED_007, False, frozenset(),
                  id="a-value-it-does-not-judge"),
     pytest.param(PINS_KEY, '"? x"', False, None,
                  id="its-reader-refuses-the-file"),
-    pytest.param(SPEC_PATH_KEY, QUOTED_NULL, False, None,
+    pytest.param(SPEC_PATH_KEY, OUTSIDE_THE_ROOT, False, None,
                  id="a-finding-about-no-one-value"),
-    pytest.param(SPEC_PATH_KEY, QUOTED_NULL, True, frozenset(),
+    pytest.param(SPEC_PATH_KEY, OUTSIDE_THE_ROOT, True, frozenset(),
                  id="a-code-check-leaves-to-its-own-rule"),
 ]
 
@@ -1384,11 +1508,12 @@ def test_the_validator_says_which_values_it_judges(
 
 
 def test_no_value_passes_a_validator_that_is_not_asked(
-        adopter, answered, tmp_path):
+        adopter, answered, bare_template, tmp_path):
     """Names the naming policy does not classify are `check`'s finding in
     their own words, and no manifest is rendered from them, so the
     validator is asked nothing: no value can be said to pass it, and #181
-    names none until it can be asked."""
+    names none until it can be asked. The branch `"007"` is one #181 names
+    on a bare line (`bare_template`); since #259 the template quotes it."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, ASSEMBLY_KEY, "north_wind")
@@ -1439,8 +1564,11 @@ def test_check_leaves_a_date_election_date_refuses_to_that_rule(
 #: sentence names it, the validator's code)`: read as not text, each is
 #: named by what was read, as #181 names such a value, before the text
 #: `execute` would write for it. The validator refuses what the loader
-#: reads of each, so each is its finding alone (rv181f's G1); the id was
-#: #181's at 7ac2358. A date read as not text is #294's (`LATE_DATES`).
+#: reads of each, so each is its finding alone (rv181f's G1). A date read
+#: as not text is #294's (`LATE_DATES`). `id: 007` was a row here, the
+#: validator's `id is 7`, while the template wrote `id:` bare; since #259
+#: `execute` writes it `"7"`, which the validator accepts
+#: (`READ_AS_NOT_TEXT`).
 NOT_TEXT_INVALID = [
     pytest.param(VISIBILITY_KEY, "true", "visibility, read out of the plan "
                  "as the boolean true, is 'True',",
@@ -1448,8 +1576,6 @@ NOT_TEXT_INVALID = [
     pytest.param(VISIBILITY_KEY, "[secret]", "visibility, read out of the "
                  "plan as a list, is \"['secret']\",",
                  "manifest-visibility", id="visibility-list"),
-    pytest.param("id", "007", "id, read out of the plan as the number 7, is "
-                 "'7',", "manifest-id", id="id-number"),
 ]
 
 
@@ -1488,7 +1614,9 @@ def test_execute_refuses_a_visibility_it_never_writes_as_the_validators(
 
 #: `(placeholder, value, the manifest line `execute` writes, what the loader
 #: reads it back as)`: values the loader reads back as OTHER TEXT, each
-#: through a placeholder the template writes bare. The double quotes in the
+#: through a placeholder written bare, as `elected_on:` was before #259
+#: (`bare_template`); since #259 the template quotes it, where `render`
+#: spells each value with `double_quoted`. The double quotes in the
 #: first six are the VALUE's own, as a hand-edited plan's
 #: `elected_on: '"CORP\tom"'` carries them: the loader takes them for YAML's
 #: and resolves the escape between them. The manifest's OWN quotes no longer
@@ -1517,7 +1645,7 @@ UNESCAPED = [
 @pytest.mark.parametrize("placeholder, value, line, reading", UNESCAPED,
                          ids=ids_of(UNESCAPED, 0, 1))
 def test_text_the_loader_reads_as_other_text_is_shown_as_typed_and_read(
-        adopter, placeholder, value, line, reading):
+        adopter, bare_template, placeholder, value, line, reading):
     """`repr` showed `CORP\\tom` with its backslash doubled, and the tab the
     loader makes of it as `\\t`, so each looked like the other (review181's
     N1). The value is shown as it is typed, and a character a terminal shows
@@ -1634,33 +1762,13 @@ def test_execute_refuses_a_plan_carrying_one_before_any_leg_exists(
     assert SPLIT_BRANCH not in branches_of(source)
 
 
-@needs_filter_repo
-@pytest.mark.parametrize("key, value, said", CARRIED_INVALID,
-                         ids=ids_of(CARRIED_INVALID, 0, 1))
-def test_execute_refuses_a_value_the_validator_refuses_as_the_validators(
-        adopter, answered_copy, tmp_path, key, value, said):
-    """`execute` refuses such a plan under the validator's code, before it
-    creates a leg or touches the source, so no sentence it prints says the
-    value is written or that the run gets further (rv181f's G1)."""
-    source, text = answered_copy
-    plan = tmp_path / PLAN_FILE
-    carrying(plan, text, key, adopter.y(value))
-    result = executed(plan, tmp_path)
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert result.stderr.startswith(
-        "REFUSED plan-manifest-invalid: "), result.stderr
-    assert said in result.stderr, result.stderr
-    assert MISREAD_FINDING not in result.stderr, result.stderr
-    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
-    assert not (tmp_path / REMOTES).exists()
-    assert SPLIT_BRANCH not in branches_of(source)
-
-
-#: What the gate still lets through, each spelled like a keyword somewhere:
-#: a leg path with `null` as a segment, a branch the PLAN quotes for its
-#: leading digit and `project.yaml` writes bare, an id that is a YAML 1.1
-#: boolean this loader reads as text, and a person whose name is a null
-#: anywhere `project.yaml` does not quote it (`elected_by:` it does).
+#: What the gate let through while the templates wrote these lines bare,
+#: each spelled like a keyword somewhere: a leg path with `null` as a
+#: segment, a branch the PLAN quotes for its leading digit, an id that is a
+#: YAML 1.1 boolean this loader reads as text, and a person whose name is a
+#: null, which `elected_by:` has always quoted. Since #259 `project.yaml`
+#: quotes the id, the branch and the leg path too, and the run reads each
+#: back as given all the same.
 ACCEPTED = (SPEC_FLAG, LEGS_NULL, TRACKING_FLAG, Q4_BRANCH, "--id", "yes",
             ELECTED_BY_FLAG, "Null")
 
@@ -1704,7 +1812,7 @@ def test_what_is_still_accepted_adopts_clones_and_bootstraps(tmp_path):
             manifest[ELECTED_BY_KEY]) == ("yes", Q4_BRANCH, "Null")
     assert [leg["path"] for leg in manifest["legs"]] == [".", LEGS_NULL,
                                                          "code"]
-    assert load_yaml(clone / "contracts/spec-pin.yaml")["submodule_path"] \
+    assert load_yaml(clone / "contracts/spec-pin.yaml")[SUBMODULE_PATH] \
         == LEGS_NULL
     for mount in (LEGS_NULL, "code"):
         branches = [git("rev-parse", "--abbrev-ref", ref,
@@ -1715,33 +1823,95 @@ def test_what_is_still_accepted_adopts_clones_and_bootstraps(tmp_path):
 
 # --- the gate asks the loader, where the template writes the value ----------
 
+def loaded_plan(adopter, answered, tmp_path: Path):
+    """The answered plan, as `check` loads it."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    with plan.open("w", encoding=UTF8, newline="\n") as handle:
+        handle.write(text)
+    return adopter.Plan.load(plan)
+
+
+def pin_field(adopter, plan, product: str) -> tuple:
+    """`_pin_field` for one pin of `plan`, as `check` asks about it."""
+    naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
+    return adopter._pin_field(PINS_KEY, plan, product, naming)
+
+
+def one_pin_table(adopter, plan, product: str) -> dict | None:
+    """The table `execute` writes the manifest from (`_template_table`, as
+    `_manifest_values` builds it) for `plan` with one pin, `product`."""
+    naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
+    alone = adopter.Plan(plan.path, {**plan.data,
+                                     PINS_KEY: [product]})
+    return adopter._manifest_values(alone, naming)
+
+
 def test_the_gate_follows_the_loader_when_the_loader_learns_a_keyword(
-        adopter, monkeypatch):
+        adopter, answered, tmp_path, monkeypatch):
     """ONE QUESTION, `loader_reading`, for the plan writer and the gate. Teach
     the real reader that `yes` is a boolean and both change with no edit:
-    `y` quotes it, and a branch or an id called `yes` is refused."""
+    `y` quotes it, and a pin called `yes`, which `execute` writes bare in
+    the manifest's list, is refused. A branch or an id called `yes` is
+    not: since #259 `execute` writes each between double quotes, which the
+    reader reads back as the text whatever it has learnt."""
     reads = repo_shape._scalar
     fields = [adopter._field(TRACKING_KEY, TRACKING_PLACEHOLDER, "yes"),
-              adopter._field("id", "PROJECT_ID", "yes")]
+              adopter._field("id", "PROJECT_ID", "yes"),
+              pin_field(adopter, loaded_plan(adopter, answered, tmp_path),
+                        "yes")]
     assert adopter.manifest_misreads(fields) == []
     monkeypatch.setattr(repo_shape, SCALAR_READER,
                         lambda raw: True if raw.strip() == "yes"
                         else reads(raw))
     assert adopter.y("yes") == QUOTED_YES
     assert [problem.split(" is ")[0] for problem
-            in adopter.manifest_misreads(fields)] == [TRACKING_KEY, "id"]
+            in adopter.manifest_misreads(fields)] == [PINS_KEY]
 
 
-def test_the_template_line_says_whether_a_value_is_quoted(adopter):
+def test_the_template_line_says_whether_a_value_is_quoted(
+        adopter, answered, tmp_path):
     """No list in `adopt-project.py` says which placeholders the templates
-    quote: the line is read. `Null` is a person's name between the quotes of
-    `elected_by:`, and no branch at all after `tracking_branch:`."""
+    quote: the line is read. `Null` is a person's name between the quotes
+    of `elected_by:`, and a branch between those of `tracking_branch:`
+    since #259; as an item of the pins' list, which `execute` writes bare,
+    it is no product at all."""
     assert adopter._written(ELECTED_BY_PLACEHOLDER, "Null") == [
         (MANIFEST, 'elected_by: "Null"')]
-    assert adopter.manifest_misreads(
-        [adopter._field(ELECTED_BY_KEY, ELECTED_BY_PLACEHOLDER, "Null")]) == []
-    assert adopter.manifest_misreads(
-        [adopter._field(TRACKING_KEY, TRACKING_PLACEHOLDER, "Null")]) != []
+    assert adopter._written(TRACKING_PLACEHOLDER, "Null") == [
+        (MANIFEST, 'tracking_branch: "Null"')]
+    assert adopter.manifest_misreads([
+        adopter._field(ELECTED_BY_KEY, ELECTED_BY_PLACEHOLDER, "Null"),
+        adopter._field(TRACKING_KEY, TRACKING_PLACEHOLDER, "Null")]) == []
+    field = pin_field(adopter, loaded_plan(adopter, answered, tmp_path),
+                      "Null")
+    assert field[2] == [(f"{MANIFEST}'s neutral_product_pins", "- Null")]
+    assert adopter.manifest_misreads([field]) != []
+
+
+def test_the_gate_asks_the_table_execute_writes_the_pins_from(
+        adopter, answered, tmp_path, monkeypatch):
+    """`_pin_field` asks `_template_table`, the table `execute`'s
+    `_template_values` writes the manifest from, and never a copy of how it
+    spells an item. So the day that table quotes each product, as lane 2's
+    #514 means to, the gate asks the quoted line and passes `null`, with no
+    edit of its own. Here the table is made to quote each item so."""
+    plan = loaded_plan(adopter, answered, tmp_path)
+    assert adopter.manifest_misreads([pin_field(adopter, plan, "null")])
+    bare = adopter._template_table
+
+    def quoting(*args, **kwargs):
+        table = bare(*args, **kwargs)
+        first, *items = table[PINS_PLACEHOLDER].split("\n")
+        table[PINS_PLACEHOLDER] = "\n".join(
+            [first] + [f"  - {repo_shape.double_quoted(item[4:])}"
+                       for item in items])
+        return table
+
+    monkeypatch.setattr(adopter, "_template_table", quoting)
+    field = pin_field(adopter, plan, "null")
+    assert field[2] == [(f"{MANIFEST}'s neutral_product_pins", '- "null"')]
+    assert adopter.manifest_misreads([field]) == []
 
 
 #: Where each placeholder lands in the RENDERED files, as their loader reads
@@ -1752,24 +1922,21 @@ LANDS = {
     ELECTED_BY_PLACEHOLDER: [(MANIFEST, (ELECTED_BY_KEY,))],
     REFERENCE_PLACEHOLDER: [(MANIFEST, (REFERENCE_KEY,))],
     "SPEC_PATH": [(MANIFEST, ("legs", 1, "path")),
-                  ("contracts/spec-pin.yaml", ("submodule_path",))],
+                  ("contracts/spec-pin.yaml", (SUBMODULE_PATH,))],
     PINS_PLACEHOLDER: [(MANIFEST, ("neutral_product_pins", 0))],
 }
 
 
-def rendered_readings(adopter, placeholder: str, value: str) -> list:
+def rendered_readings(placeholder: str, value: str) -> list:
     """What the project's loader reads where `value` lands, in the three
     templated YAML files rendered WHOLE by the materializer's own `render`,
-    every other placeholder filled with plain text."""
+    every other placeholder filled with plain text. For the pins, `value`
+    is the list as `_template_table` makes it."""
     from shape_materialize import PLACEHOLDER_RE, render
     template = REPO / "templates" / "assembly-root"
     # A naming block is lines of its own, and an empty one is no lines.
     values = {PINS_PLACEHOLDER: "[]", "ASSEMBLY_NAMING": "",
-              "SPEC_NAMING": "", "CODE_NAMING": ""}
-    if placeholder == PINS_PLACEHOLDER:
-        values[placeholder] = "\n" + adopter._pin_item(value)
-    else:
-        values[placeholder] = value
+              "SPEC_NAMING": "", "CODE_NAMING": "", placeholder: value}
     readings = []
     for name, path in LANDS[placeholder]:
         text = (template / name).read_text(encoding=UTF8)
@@ -1787,19 +1954,57 @@ def rendered_readings(adopter, placeholder: str, value: str) -> list:
 
 @pytest.mark.parametrize("placeholder", sorted(LANDS))
 def test_the_gate_agrees_with_the_rendered_files_on_every_candidate(
-        adopter, placeholder):
+        adopter, answered, tmp_path, placeholder):
     """The gate asks one template line at a time. Rendered whole, as
     `execute` renders them, the files must agree on every candidate this
     module generates: a value the gate passes comes back out of each place
-    it lands, and one it refuses does not."""
+    it lands, and one it refuses does not. A pin is asked as `check` asks
+    it, of the answered plan with that one pin, and rendered from the same
+    table; the empty candidate is no pin (`Plan` keeps no empty product)."""
+    plan = loaded_plan(adopter, answered, tmp_path)
+    asked = 0
     for value in CANDIDATES:
         if placeholder == PINS_PLACEHOLDER:
-            field = adopter._pin_field(PINS_KEY, value)
+            if not value:
+                continue
+            field = pin_field(adopter, plan, value)
+            written = one_pin_table(adopter, plan, value)[PINS_PLACEHOLDER]
         else:
             field = adopter._field("x", placeholder, value)
+            written = value
         refused = bool(adopter.manifest_misreads([field]))
-        lands = rendered_readings(adopter, placeholder, value)
+        lands = rendered_readings(placeholder, written)
         assert refused == any(got != value for got in lands), (value, lands)
+        asked += 1
+    assert asked >= len(CANDIDATES) - 1
+
+
+# --- a leg path the project's loader misreads is #266's (main's 191105a) ----
+
+def test_a_leg_path_written_bare_is_266s_finding_alone(
+        adopter, answered, bare_template, tmp_path, monkeypatch, capsys):
+    """Where every template line that holds a leg path is bare, as before
+    #259, the leg-path rule both tools ask (`leg_path_problem`, #266)
+    refuses a leg path the project's loader misreads, and #181's gate asks
+    its question of a leg path only where that rule has no answer
+    (`_plan_fields`): one wrong value is one finding, #266's. Since #259
+    those lines are quoted, and neither rule refuses `null` there
+    (`READ_BACK`). Asked of a bare copy of the shape's templates, given to
+    both rules, in this process."""
+    materialize = sys.modules["shape_materialize"]
+    monkeypatch.setattr(materialize, "LEG_PATH_TEMPLATES",
+                        bare_template.parent)
+    said = adopter.leg_path_problem(SPEC_PATH_KEY, "null")
+    assert said.startswith(f"{SPEC_PATH_KEY} is 'null', which the project "
+                           "would not read back as text: "), said
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, SPEC_PATH_KEY, QUOTED_NULL)
+    assert adopter._misread_findings(adopter.Plan.load(plan)) == []
+    assert adopter.main(["check", PLAN_OPTION, str(plan)]) == 1
+    findings = [line for line in capsys.readouterr().err.splitlines()
+                if line.startswith("FINDING ")]
+    assert findings == [f"FINDING plan-bad-leg-path: {said}"], findings
 
 
 # --- an explicit null leg path, the reviewer's question on 76a6153 ----------
@@ -1842,12 +2047,9 @@ def test_the_plan_writer_quotes_a_pin_whatever_refuses_it_later(
     monkeypatch.setattr(adopter, "manifest_misreads", lambda _fields: [])
     for pin in ("null", "Null", "NULL", "true", FALSE_TITLE):
         plan = tmp_path / f"{pin}.yaml"
-        assert adopter.main([
-            "plan", "--source", str(source), "--project", PROJECT_NAME,
-            "--org", "testorg", ELECTED_BY_FLAG, "Test Human",
-            "--elected-on", ELECTION_DATE, PIN_FLAG, f"{pin}@{commit}",
-            PIN_SOURCE_FLAG, str(path),
-            "--work-dir", str(tmp_path / "work"), "--out", str(plan)]) == 0
+        assert adopter.main(plan_argv(
+            source, plan, tmp_path, PIN_FLAG, f"{pin}@{commit}",
+            PIN_SOURCE_FLAG, str(path))) == 0
         assert f'\n  - product: "{pin}"\n' in text_of(plan)
         assert load_yaml(plan)[PINS_KEY][0]["product"] == pin
         assert adopter.Plan.load(plan).pins == [pin]
@@ -1893,7 +2095,7 @@ def test_a_source_file_named_like_a_keyword_is_one_entry_with_that_path(
         answer(plan, path, "root")
     result = checked(plan)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "FINDING" not in result.stdout + result.stderr
+    assert ANY_FINDING not in result.stdout + result.stderr
 
 
 def test_the_doctors_placement_plan_quotes_a_path_the_same_way(adopter):

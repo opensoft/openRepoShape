@@ -674,23 +674,21 @@ def test_a_bad_leg_path_is_one_finding_in_the_words_of_its_own_rule(world,
     ('elected_on: "2026-09-02"', "elected_on: 20260902"),
     ("id: northwind", "id: 007"),
 ])
-def test_a_value_the_reader_reads_as_another_kind_is_named_as_read(
+def test_a_value_the_reader_reads_as_another_kind_is_not_this_questions(
         world, old, new):
     """`id: 007` is the number 7 and `elected_on: 20260902` another number:
     what the template would write is `str` of what was read, which the plan
-    never said. The validator refuses the id as read, so the finding is its
-    alone, and names the value by what was read before the text `execute`
-    would write (tests/test_adopt_plan_yaml_quoting.py, `NOT_TEXT_INVALID`);
-    #181's misread rule leaves to it every value it refuses (rv181f's G1).
-    The date is #294's one finding (`said_of`)."""
+    never said. The date is #294's one finding (`said_of`), and the
+    validator is not asked about it. The id is no finding at all: since
+    #259 the template writes it `id: "7"`, which the validator accepts, and
+    #181's misread rule, which asks that line, has nothing to say of it, so
+    `execute` writes `7` for a plan that says `007`, as on main. A
+    visibility read as a list is the validator's finding, named as read
+    (tests/test_adopt_plan_yaml_quoting.py, `NOT_TEXT_INVALID`)."""
     plan = edited(world, old, new)
     result = run_script(ADOPT, "check", "--plan", str(plan))
-    (finding,) = [line for line in result.stderr.splitlines()
-                  if line.startswith("FINDING ")]
-    assert "1 finding(s)" in result.stderr, result.stderr
-    assert finding.startswith(said_of(new)[0]), finding
-    if said_of(new)[0] == FINDING:
-        assert ", read out of the plan as the number " in finding, finding
+    assert FINDING not in result.stderr, result.stderr
+    assert "plan-manifest-misread" not in result.stderr, result.stderr
 
 
 # --- a text value the template once wrote bare: judged once, not twice ------
