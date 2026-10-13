@@ -307,7 +307,8 @@ def refused_run(case: str, tracking: str, tmp_path, template):
     """Run the tool that prints `case`'s hint against remotes that refuse its
     push, with `--tracking-branch <tracking>`; returns the process, the
     directory the remotes are in and the work directory. An adoption's source
-    is on `master`, whatever the tracking branch is."""
+    is on `master`, with the tracking branch beside it, since `execute`
+    refuses a tracking branch the source lacks (#479)."""
     refused = CASES[case][0]
     env = refusing(template, refused)
     remotes, work = tmp_path / "remotes", tmp_path / "work"
@@ -325,6 +326,7 @@ def refused_run(case: str, tracking: str, tmp_path, template):
     else:
         source = make_source_repo(tmp_path / "IRRS", SPEC_ONLY_TREE,
                                   branch="master", edits=EDITS)
+        git("branch", tracking, cwd=source)
         plan = tmp_path / "adoption-plan.yaml"
         written = write_plan(source, plan, project="Redwood",
                              extra=("--tracking-branch", tracking,
