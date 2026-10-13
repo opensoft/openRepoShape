@@ -215,9 +215,9 @@ no `--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
 in each of them, which is where a repair mode will hang; nothing in it writes
 today. The one exception to "writes nothing" is `--placement-plan <file>`, which
 writes that file and nothing else — see 4. Installed, `openRepoShape --doctor`
-runs from a temporary clone of the standard, deleted on exit, and takes a path
-and nothing else: to ACT on a row (`--json`, `--placement-plan`, its next
-command) run `./shape-doctor.py --root <path>` from a checkout.
+takes `--json` and `--placement-plan <file>` as well, and KEEPS its temporary
+clone of the standard, because the NEXT lines run from it: its last line names
+that directory, which is the human's to delete once those commands have run.
 
 1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
    BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0, 1,
@@ -263,7 +263,7 @@ command) run `./shape-doctor.py --root <path>` from a checkout.
    never changes the verdict: it says whether THIS workstation can run the fixes
    the other rows named. Relay a missing prerequisite; `openRepoShape
    --preflight` offers only the `gh` set-up, and the human types that yes.
-7. `./shape-doctor.py --json` is the same report as one object, each row
+7. `--json` is the same report as one object, alone on stdout, each row
    carrying its `id`, for when you have to act on a row rather than quote it.
 
 ## Updating a project's shape
