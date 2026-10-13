@@ -2153,18 +2153,24 @@ MANIFEST_FIELDS = {TRACKING_KEY: "TRACKING_BRANCH",
                    ELECTED_ON_KEY: "ELECTED_ON", REFERENCE_KEY: "REFERENCE"}
 LEG_PATH_PLACEHOLDERS = {"spec": "SPEC_PATH", "code": "CODE_PATH"}
 #: How `plan` fills a flag nobody passed, where the value it fills in can be
-#: one the loader misreads: a sentence about it names where it came from.
+#: one the loader misreads: a sentence about it names where it came from,
+#: as `checked_value` names the same default (the tracking branch, #479).
 #: Not the elector it takes from `git config user.name`: the manifest writes
 #: that between double quotes, which `render` spells with `double_quoted`
 #: (#284), and no elector is misread there.
-FLAG_DEFAULTS = {"id": "--project lowercased"}
+FLAG_DEFAULTS = {"id": "--project lowercased",
+                 TRACKING_KEY: "the source's default branch"}
 #: How a sentence names the id `execute` derives when the plan sets none:
 #: when it has no `id:`, or an `id:` with no value (`null`, `~` or nothing,
 #: as `main`'s `plan --id null` wrote it), which `Plan.get` reads alike.
 DERIVED_ID = "id (not set in the plan, so legs.assembly lowercased)"
-#: How a sentence names one of a plan's `pins:`: the key holds a list, and a
-#: sentence about what one item was read as is about that item.
-PIN_IN_PLAN = "a pin in pins"
+#: How a sentence names one of a plan's `pins:`: the key holds a list of
+#: pins, each a mapping since #273, and what `execute` writes into the
+#: manifest's list for one is its product.
+PIN_IN_PLAN = "the product of a pin in pins"
+#: And how `plan` names the same value: the product of a `--pin` it read
+#: (`product@<40 hex>`), which is not the whole of what was typed.
+PIN_FLAG_PRODUCT = "the product of a --pin"
 #: What a sentence calls a character a terminal shows as something else, or
 #: not at all, which `_worded` names instead of printing.
 CHARACTER_NAMES = {"\t": "a tab", "\n": "a line break",
@@ -2231,9 +2237,10 @@ def _field(what: str, placeholder: str, value) -> tuple[str, object, list]:
 
 
 def _pin_field(what: str, pin) -> tuple[str, object, list]:
-    # Only the item's indent goes: `execute` writes the pin as it stands,
-    # whitespace after it included, and the sentence names that line. The
-    # loader drops the whitespace, which is the misreading it reports.
+    # Only the item's indent goes: `execute` writes the pin's product as it
+    # stands, and the sentence names that line. Since #273 the product is
+    # `parse_pin`'s, or a `pins:` entry `_read_pins` accepts, which both
+    # hold to `PIN_ARG_RE`'s alphabet, so it holds no whitespace.
     return what, pin, [(f"{MANIFEST_YAML}'s neutral_product_pins",
                         _pin_item(str(pin)).lstrip())]
 
@@ -2329,13 +2336,19 @@ def manifest_misreads(fields) -> list[str]:
     return problems
 
 
-def _flag_fields(args, given: set, pins: list[str]) -> list[tuple]:
+def _flag_fields(args, given: set, pins: dict,
+                 source: Source) -> list[tuple]:
     """`plan`'s values as it is about to record them, each named by its flag,
     and by where `plan` took it from when `given` says it was not passed.
+    `pins` is `declared_pin_values`' `{product: PIN_* values}`: the product
+    is what `execute` writes into the manifest's list (#273).
 
-    Less a tracking branch the loader misreads that git will not create
-    (`_a_branch_git_creates`): `plan` records it, as on main, and `execute`
-    dies at `git init -b`, before it writes anything."""
+    Less a tracking branch the loader misreads that `execute` never writes
+    in some mode (`_a_branch_execute_writes`): git will not create it, and
+    `execute` dies at `git init -b`, as on main; or `execute` does not push
+    the legs to it in every mode, and refuses it before any leg exists
+    (#479). `plan` records either, and notes one that is no branch of the
+    source."""
     def flag(key: str) -> str:
         spelled = "--" + key.replace("_", "-")
         if key in FLAG_DEFAULTS and key not in given:
@@ -2346,11 +2359,13 @@ def _flag_fields(args, given: set, pins: list[str]) -> list[tuple]:
     fields += [_field(flag(key), placeholder, getattr(args, key))
                for key, placeholder in MANIFEST_FIELDS.items()
                if key != TRACKING_KEY
-               or _a_branch_git_creates(flag(key), getattr(args, key))]
+               or _a_branch_execute_writes(source, flag(key),
+                                           getattr(args, key))]
     fields += [_field(f"--{role}-path", placeholder,
                       getattr(args, f"{role}_path"))
                for role, placeholder in LEG_PATH_PLACEHOLDERS.items()]
-    return fields + [_pin_field("--pin", pin) for pin in pins]
+    return fields + [_pin_field(PIN_FLAG_PRODUCT, product)
+                     for product in pins]
 
 
 def _id_field(plan: Plan) -> tuple:
@@ -2430,6 +2445,49 @@ def _a_branch_git_creates(what: str, value) -> bool:
     return not manifest_misreads([field]) or branch_problem(what, value) is None
 
 
+def _a_branch_execute_writes(source: Source, what: str, value) -> bool:
+    """`_a_branch_git_creates`, asked where the source is in hand (`plan`,
+    and `check` and `execute` through `_entry_findings`): False also for a
+    tracking branch the loader misreads that `execute` does not push the
+    legs to in every mode (`_pushed_in_every_mode`, #479), and refuses
+    before any leg exists. As git is, the source is asked ONLY about a
+    branch the loader misreads, so one that reads back starts no process."""
+    field = _field(what, MANIFEST_FIELDS[TRACKING_KEY], value)
+    return not manifest_misreads([field]) or (
+        branch_problem(what, value) is None
+        and _pushed_in_every_mode(source, str(value)))
+
+
+def _pushed_in_every_mode(source: Source, tracking: str) -> bool:
+    """Does `execute` push the legs to `tracking`, and write it into the
+    project, in EVERY mode it runs in, as the source knows its branches?
+    `check` is not told which mode it will be (#479).
+
+    In gh mode, `execute`'s default, the split goes to the repository the
+    source is a clone of. `check` reads that repository's branches from the
+    clone (`_tracking_branch_problem`) and finds a branch it lacks as
+    `plan-tracking-branch-missing`, which `execute` refuses before any leg
+    exists. Under `--local-remote-dir` the split is pushed back into the
+    source itself, and `execute` refuses a branch that is not one of the
+    source's OWN before any leg exists, one only its remote `origin` has
+    among them (`_refuse_a_tracking_branch_the_remote_lacks`). So a sentence
+    saying `execute` writes the branch, and that the run would still end
+    `adoption verified`, is true only of a branch both modes have.
+
+    What GitHub has NOW is `execute`'s to ask (`git ls-remote`, before any
+    leg): `check` asks nothing of the network, as #479 has it, and reads
+    what the clone remembers. The source's own branches are asked as
+    `execute --local-remote-dir` asks them, of the source as a remote
+    (`_branches_at`); one that cannot be listed is no branch `execute`
+    pushes to there."""
+    if _tracking_branch_problem(source, TRACKING_KEY, tracking) is not None:
+        return False
+    try:
+        return tracking in _branches_at(str(source.path), source.path)
+    except (CommandFailed, OSError):
+        return False
+
+
 def _plan_fields(plan: Plan) -> list[tuple[str, tuple]]:
     """A plan's values as its loader read them, each named by its key in the
     plan, with the lines `_template_values` would write them into: `(the
@@ -2459,19 +2517,27 @@ def _plan_fields(plan: Plan) -> list[tuple[str, tuple]]:
                                           LEG_PATH_PLACEHOLDERS.values()):
         if isinstance(value, str) and leg_path_problem(what, value) is None:
             fields.append((placeholder, _field(what, placeholder, value)))
-    # Each pin as the loader read it, which `Plan.pins` has already made text
-    # (`TRUE` would be named as `True`); the same items, in the same order,
-    # less one no file can hold, which is #255's finding alone.
-    return fields + [(PINS_PLACEHOLDER, _pin_field(PIN_IN_PLAN, pin))
-                     for pin in (plan.data.get("pins") or [])
-                     if pin and _execute_gets_to_write("pins", pin)]
+    # Each pin `execute` writes, by the product it lists in the manifest
+    # (`_template_table`), once each, less one no file can hold, which is
+    # #255's finding alone. None at all where the plan's `pins:` has a
+    # finding of its own (`_read_pins`, #273): `execute` refuses such a plan
+    # before any leg exists, and one wrong pin is one finding.
+    recorded, pin_findings = _read_pins(plan)
+    products = () if pin_findings else dict.fromkeys(
+        product for _, product, _ in recorded)
+    return fields + [(PINS_PLACEHOLDER, _pin_field(PIN_IN_PLAN, product))
+                     for product in products
+                     if _execute_gets_to_write("pins", product)]
 
 
-def _misread_findings(plan: Plan) -> list[str]:
+def _misread_findings(plan: Plan, unwritten=()) -> list[str]:
     """`check`'s FINDING for each plan value the project's loader would
     misread (#181) and the project's own validator would NOT refuse as the
     loader reads it, of the values `execute` writes in every mode
-    (`_execute_gets_to_write`).
+    (`_execute_gets_to_write`). `unwritten` names the placeholders of values
+    the caller knows `execute` does not write in every mode, by a question
+    only it can ask, of the source: the tracking branch
+    (`_a_branch_execute_writes`, #479).
 
     THE VALIDATOR IS ASKED FIRST, as `check` asks it (`_manifest_findings`,
     the same `ignore`), and a value it makes a finding about is its alone:
@@ -2490,9 +2556,10 @@ def _misread_findings(plan: Plan) -> list[str]:
     judged = _validator_judged(plan)
     if judged is None:
         return []
+    left = judged | frozenset(unwritten)
     return [f"FINDING plan-manifest-misread: {problem}."
             for placeholder, field in _plan_fields(plan)
-            if placeholder not in judged
+            if placeholder not in left
             for problem in manifest_misreads([field])]
 
 
@@ -2804,12 +2871,23 @@ def _checked_plan_inputs(args, source: Source,
     # every value that refusal names is one `execute` would write and end
     # `adoption verified` with, as its remediation says.
     _refuse_unholdable_values(args, names, pins, naming)
-    misread = manifest_misreads(_flag_fields(args, flags_given, pins))
+    _refuse_misread_values(args, flags_given, pins, source)
+    return names, pins
+
+
+def _refuse_misread_values(args, given: set, pins: dict,
+                           source: Source) -> None:
+    """`plan`'s refusal, before the plan exists, of each value it is about
+    to record that the project's loader would read back as something else
+    (#181), named as `_flag_fields` names it. Asked after the project's own
+    validator (`_refuse_unholdable_values`), whose refusal is the one a
+    value it refuses gets. Apart from `_checked_plan_inputs`, which #479's
+    default made as complex as Sonar allows."""
+    misread = manifest_misreads(_flag_fields(args, given, pins, source))
     if misread:
         raise Refusal("adopt-manifest-misread",
                       " ".join(f"{problem}." for problem in misread),
                       f"{MANIFEST_MISREAD_REMEDIATION} No plan was written.")
-    return names, pins
 
 
 def _refuse_an_unrecordable_pin_source(source: Path, products) -> None:
@@ -4940,6 +5018,11 @@ def _entry_findings(plan: Plan, source: Source,
     as for an `elected_on:` `election_date` refuses, #181 names no value
     either (`_validator_judged`): the date is one finding, `_plan_field_findings`'s
     (#293, #294).
+    In the same way a tracking branch that is no branch of the source is
+    `plan-tracking-branch-missing` alone (#479), and one only the source's
+    remote `origin` has, which `execute --local-remote-dir` refuses, is
+    named by neither (`_a_branch_execute_writes`); and a pin is named only
+    where the plan's `pins:` has no finding of #273's (`_plan_fields`).
     """
     tree = source.tree()
     unsafe, unsafe_remediation = _source_path_findings(plan, tree)
@@ -4955,9 +5038,17 @@ def _entry_findings(plan: Plan, source: Source,
     field_findings, field_remediation = _plan_field_findings(plan)
     tracking_findings, tracking_remediation = _tracking_branch_findings(
         plan, source)
-    # Asked after the validator, whose judgement it follows; listed where
-    # it always was, after the mount paths.
-    misread = _misread_findings(plan)
+    # Asked after the validator, whose judgement it follows, and of the
+    # tracking branch only where `execute` pushes the legs to it in every
+    # mode (`_a_branch_execute_writes`, #479), so that a branch the source
+    # lacks is `plan-tracking-branch-missing` alone; listed where it always
+    # was, after the mount paths. A plan with no `tracking_branch:` gets
+    # `main`, which is never misread.
+    tracking = plan.get(TRACKING_KEY)
+    misread = _misread_findings(
+        plan, () if tracking is None
+        or _a_branch_execute_writes(source, TRACKING_KEY, str(tracking))
+        else (MANIFEST_FIELDS[TRACKING_KEY],))
     return (findings + misread + split + unwritable_findings + value_findings
             + tracking_findings + moved + field_findings,
             unsafe_remediation

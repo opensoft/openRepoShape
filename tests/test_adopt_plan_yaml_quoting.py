@@ -387,8 +387,24 @@ PIN_FLAG = "--pin"
 ELECTED_BY_FLAG = "--elected-by"
 MANIFEST = "project.yaml"
 #: How a sentence names a plan key, where that is not the key itself: one of
-#: `pins:` is an item of a list, and what it was read as is the item's.
-NAMED = {PINS_KEY: "a pin in pins"}
+#: `pins:` is an item of a list, a mapping since #273, and what `execute`
+#: writes into the manifest for it is its product.
+NAMED = {PINS_KEY: "the product of a pin in pins"}
+#: And how `plan` names a flag's value, where that is not the flag itself:
+#: `--pin` is `product@<40 hex>`, and the product is what is written.
+FLAG_NAMED = {PIN_FLAG: "the product of a --pin"}
+#: What `plan` records of a pin besides its product (#273), as a plan edited
+#: by hand would carry it: a commit and a digest `check` reads no network
+#: for, and how the digest was read.
+PIN_COMMIT = "1" * 40
+PIN_DIGEST = "2" * 64
+PIN_DIGEST_SOURCE = "gh-api-tree-recursive"
+#: The owner `plan` qualifies an unqualified `--pin` with.
+PIN_OWNER = "opensoft"
+#: The flag that names the stand-in clone a `--pin`'s digest is read from.
+PIN_SOURCE_FLAG = "--pin-source"
+#: The first line of the pin `plan` records for `openGlass`.
+GLASS_ITEM = "  - product: openGlass"
 #: The `_template_values` placeholders the tests below fill.
 TRACKING_PLACEHOLDER = "TRACKING_BRANCH"
 ELECTED_BY_PLACEHOLDER = "ELECTED_BY"
@@ -417,7 +433,10 @@ QUOTED_DOMAIN_USER = f"'\"{DOMAIN_USER}\"'"
 #: so each is #181's, at `plan` and in a plan. No value `project.yaml`
 #: writes between its quotes is here: `render` spells those with
 #: `double_quoted` since #284, and `BETWEEN_THE_QUOTES` below holds the ones
-#: that misread before it.
+#: that misread before it. Since main's #479 each branch is asked of a
+#: source that has it (`holding`), and since #273 a `--pin` is
+#: `<product>@<40 hex>` and a plan's pin a whole one (`flag_args`,
+#: `whole_pin`): the value is the pin's product.
 REFUSED = [
     (TRACKING_FLAG, "true", TRACKING_KEY, TRUE_READ),
     (TRACKING_FLAG, "null", TRACKING_KEY, NO_VALUE),
@@ -570,12 +589,67 @@ def answered_copy(adopter, answered, tmp_path) -> tuple[Path, str]:
         lambda _match: f"  local_path: {adopter.y(str(copy))}", text, count=1)
 
 
+@pytest.fixture
+def glass(tmp_path) -> tuple[Path, str]:
+    """A stand-in clone of a neutral product, `(path, commit)`, for `plan
+    --pin <product>@<commit> --pin-source <path>` to read a digest from with
+    no network (#273). The product's name is the `--pin`'s, not the clone's."""
+    path = tmp_path / "pin-source" / OPEN_GLASS
+    path.mkdir(parents=True)
+    git("init", "-q", "-b", "main", cwd=path)
+    (path / "glass.txt").write_bytes(b"openGlass\n")
+    git("add", "-A", cwd=path)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one",
+        cwd=path)
+    return path, git("rev-parse", "HEAD", cwd=path).stdout.strip()
+
+
+def holding(source: Path, key: str, branch) -> None:
+    """Since #479 a tracking branch that is no branch of the source is
+    `plan-tracking-branch-missing` alone, so a row about the tracking branch
+    is asked of a source that has it as its own branch: `branch`, as the
+    plan's loader reads it, spelled as `execute` takes it (`str`). One
+    branch per copy of the source, because `true` and `True` are one file
+    on a disk that ignores case."""
+    if key in (TRACKING_KEY, TRACKING_FLAG):
+        git("branch", str(branch), cwd=source)
+
+
+def flag_args(source: Path, glass: tuple[Path, str], flag: str,
+              value: str) -> tuple[str, ...]:
+    """`plan`'s arguments for one row of a flag's: a `--pin` is
+    `<product>@<40 hex>` read from the stand-in clone (#273), and a
+    `--tracking-branch` names a branch the source has (#479)."""
+    holding(source, flag, value)
+    if flag != PIN_FLAG:
+        return flag, value
+    path, commit = glass
+    return PIN_FLAG, f"{value}@{commit}", PIN_SOURCE_FLAG, str(path)
+
+
+def whole_pin(spelled: str) -> str:
+    """`pins:` holding one pin as `plan` records it since #273, its
+    `product:` spelled as given: product, repository, commit, digest and
+    how the digest was read. The repository is named after the product as
+    the plan's loader reads it, as `plan` names it, so that `_read_pins`
+    asks about the product alone."""
+    read = parse_yaml(f"product: {spelled}\n")["product"]
+    return ("pins:\n"
+            f"  - product: {spelled}\n"
+            "    repository: "
+            f"{repo_shape.double_quoted(f'{PIN_OWNER}/{read}')}\n"
+            f'    commit: "{PIN_COMMIT}"\n'
+            f'    tree_sha256: "{PIN_DIGEST}"\n'
+            f"    digest_source: {PIN_DIGEST_SOURCE}\n")
+
+
 def carrying(plan: Path, text: str, key: str, spelled: str) -> None:
     """Write `text`, an answered plan, to `plan` with `key` set to `spelled`
     exactly as given: a plan edited by hand, or written by a `plan` older
-    than this check. LF, as `plan` writes it."""
+    than this check. LF, as `plan` writes it. A pin is a whole one, whose
+    product is `spelled` (`whole_pin`)."""
     if key == PINS_KEY:
-        edited = text.replace("\npins: []\n", f"\npins: [{spelled}]\n", 1)
+        edited = text.replace("\npins: []\n", "\n" + whole_pin(spelled), 1)
     else:
         leaf = key.split(".")[-1]
         indent = "  " if key.startswith("legs.") else ""
@@ -591,15 +665,16 @@ def carrying(plan: Path, text: str, key: str, spelled: str) -> None:
 @pytest.mark.parametrize("flag, value, reading", PLANNED,
                          ids=ids_of(PLANNED, 0, 1))
 def test_plan_refuses_a_value_the_projects_loader_would_misread(
-        answered, tmp_path, flag, value, reading):
+        answered_copy, glass, tmp_path, flag, value, reading):
     """Before the plan is written: the flag, the value, what the project's
     loader would read, and the fix."""
-    source, _ = answered
+    source, _ = answered_copy
     plan = tmp_path / PLAN_FILE
-    result = write_plan(source, plan, extra=(flag, value))
+    result = write_plan(source, plan,
+                        extra=flag_args(source, glass, flag, value))
     assert result.returncode == 2, result.stdout + result.stderr
     assert result.stderr.startswith("REFUSED adopt-manifest-misread: ")
-    who, what = misread(flag, value, reading)
+    who, what = misread(FLAG_NAMED.get(flag, flag), value, reading)
     assert who in result.stderr and what in result.stderr, result.stderr
     assert "No plan was written." in result.stderr
     assert not plan.exists()
@@ -661,7 +736,8 @@ def test_the_misread_rule_names_an_id_plan_derived_by_where_it_came_from(
     args = argparse.Namespace(
         project="True", org="testorg", id=None, visibility="private",
         elected_by="Test Human", elected_on=ELECTION_DATE, reference=None,
-        tracking_branch="main", spec_path="spec", code_path="code", pin=[])
+        tracking_branch="main", spec_path="spec", code_path="code", pin=[],
+        pin_owner=PIN_OWNER, pin_source=None)
     naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
     with pytest.raises(adopter.Refusal) as refused:
         adopter._checked_plan_inputs(
@@ -698,15 +774,16 @@ def test_plan_takes_an_elector_from_git_the_manifests_quotes_read_back(
 
 @pytest.mark.parametrize("key, value, reading", CARRIED,
                          ids=ids_of(CARRIED, 0, 1))
-def test_check_reports_a_plan_carrying_one(adopter, answered, tmp_path, key,
-                                           value, reading):
+def test_check_reports_a_plan_carrying_one(adopter, answered_copy, tmp_path,
+                                           key, value, reading):
     """A plan carrying the value -- spelled by the plan writer, so the plan
     itself reads it back -- is a FINDING, with the remediation once after.
     It is #181's alone: the project's own validator, asked first, makes no
     finding about what the loader reads of it (a leg path's are
     `_leg_findings`' to judge, which passes the text), and `execute` writes
     it in every mode."""
-    _, text = answered
+    source, text = answered_copy
+    holding(source, key, value)
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, adopter.y(value))
     result = checked(plan)
@@ -811,25 +888,28 @@ def test_the_misread_rule_names_an_id_it_derived_from_the_assembly(
 #: READ, with its kind, and then the text `execute` writes (review181's N2).
 #: The project's loader reads that text back as the same kind again, and the
 #: project's own validator makes no finding about it: it does not judge a
-#: branch, and a pin only as a name it classifies. An id, a date or a
-#: visibility read as not text is the validator's (`NOT_TEXT_INVALID`).
+#: branch. An id, a date or a visibility read as not text is the
+#: validator's (`NOT_TEXT_INVALID`), and a pin's product #273's
+#: (`test_a_pin_whose_product_is_not_text_is_273s_finding_alone`). The
+#: source has the branch as `execute` takes it, `str` of what was read
+#: (#479).
 READ_AS_NOT_TEXT = [
     (TRACKING_KEY, "007", SEVEN_READ, "7"),
     (TRACKING_KEY, "TRUE", TRUE_READ, "True"),
     (TRACKING_KEY, "1.50", "the number 1.5", "1.5"),
-    (PINS_KEY, "TRUE", TRUE_READ, "True"),
 ]
 
 
 @pytest.mark.parametrize("key, spelled, read_as, written", READ_AS_NOT_TEXT,
                          ids=ids_of(READ_AS_NOT_TEXT, 0, 1))
 def test_check_names_a_plan_value_that_is_not_text_by_what_was_read(
-        answered, tmp_path, key, spelled, read_as, written):
+        answered_copy, tmp_path, key, spelled, read_as, written):
     """The finding said `tracking_branch is '7'` for a plan that says `007`,
     and `'True'` for `TRUE`: `str` of what was read, which the plan never
     said. It says what the plan's loader read, and the text `execute`
     writes for it, which is `str` of that and is named as such."""
-    _, text = answered
+    source, text = answered_copy
+    holding(source, key, written)
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, spelled)
     result = checked(plan)
@@ -968,6 +1048,162 @@ def test_execute_refuses_that_branch_as_unsafe_before_any_leg_exists(
     assert SPLIT_BRANCH not in branches_of(source)
 
 
+# --- the tracking branch is a branch of the source (main's #479) ------------
+
+#: How #479's finding, and the note `plan` prints for the same branch, begin.
+BRANCH_MISSING = "FINDING plan-tracking-branch-missing: `tracking_branch` is "
+BRANCH_NOTED = "NOTE the tracking branch is `true`, which is no branch of "
+
+
+def test_a_misread_branch_the_source_lacks_is_479s_finding_alone(
+        adopter, answered, tmp_path):
+    """`execute` refuses a tracking branch that is no branch of the source
+    before any leg exists (#479), so it never writes it. At the merge of
+    main cc8f2da `check` named `true` there twice, #479's finding and a
+    misread one saying `execute` writes it and the run ends `adoption
+    verified`, and `plan` refused it under that remediation. `plan` records
+    it with #479's note, as main does, and `check` says #479's finding
+    alone."""
+    source, _ = answered
+    plan = tmp_path / PLAN_FILE
+    written = write_plan(source, plan, extra=(TRACKING_FLAG, "true"))
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert BRANCH_NOTED in written.stdout, written.stdout
+    assert MISREAD_CODE not in written.stdout + written.stderr
+    for path, leg in ANSWERS:
+        resolve(plan, path, leg)
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f"{BRANCH_MISSING}`true`, which is no branch of the source " in (
+        result.stderr), result.stderr
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
+
+
+def origin_only(tmp_path: Path) -> tuple[Path, Path]:
+    """`(source, plan)`: a source whose remote `origin` has the branch
+    `true`, fetched, and which has no branch of its own by that name,
+    planned and answered with `--tracking-branch true`. `plan` notes
+    nothing: `origin` has it."""
+    seed = make_source_repo(tmp_path / "seed")
+    holding(seed, TRACKING_KEY, "true")
+    source = make_source_repo(tmp_path / SOURCE_NAME)
+    git("remote", "add", "origin", str(seed), cwd=source)
+    git("fetch", "-q", "origin", cwd=source)
+    assert "true" not in branches_of(source).split()
+    plan = tmp_path / PLAN_FILE
+    written = write_plan(source, plan, extra=(TRACKING_FLAG, "true"))
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert "NOTE the tracking branch" not in written.stdout, written.stdout
+    assert MISREAD_CODE not in written.stdout + written.stderr
+    for path, leg in ANSWERS:
+        resolve(plan, path, leg)
+    return source, plan
+
+
+def test_a_misread_branch_only_origin_has_is_named_by_neither(
+        adopter, tmp_path):
+    """In gh mode the split goes to `origin`, which has the branch, and
+    `execute` would write it; under `--local-remote-dir` it is pushed back
+    into the source, which does not, and `execute` refuses it before any
+    leg exists. `check` is not told the mode, so a sentence saying
+    `execute` writes it would be false in one of them: `check` passes the
+    plan, as main does (`_pushed_in_every_mode`)."""
+    _, plan = origin_only(tmp_path)
+    result = checked(plan)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "plan ok" in result.stdout, result.stdout
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
+
+
+@needs_filter_repo
+def test_execute_refuses_a_branch_only_origin_has_under_a_local_remote(
+        tmp_path):
+    """What makes the misread sentence false there: main's `execute` asks
+    the source itself, the remote under `--local-remote-dir`, and refuses
+    the branch before any leg exists (#479)."""
+    source, plan = origin_only(tmp_path)
+    result = executed(plan, tmp_path)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith(
+        "REFUSED plan-tracking-branch-missing: `tracking_branch` is `true`, "
+    ), result.stderr
+    assert not (tmp_path / REMOTES).exists()
+    assert SPLIT_BRANCH not in branches_of(source)
+
+
+def test_plan_names_a_tracking_branch_it_took_from_the_source(tmp_path):
+    """Since #479 `plan` records the source's default branch when no
+    `--tracking-branch` is given. A source whose default branch is `true`
+    is refused before the plan exists, naming where the value came from, as
+    `checked_value` names it, and not as a flag nobody passed."""
+    source = make_source_repo(tmp_path / SOURCE_NAME, branch="true")
+    plan = tmp_path / PLAN_FILE
+    result = write_plan(source, plan)
+    assert result.returncode == 2, result.stdout + result.stderr
+    who, what = misread(
+        "--tracking-branch (not given, so the source's default branch)",
+        "true", TRUE_READ)
+    assert result.stderr.startswith(
+        f"REFUSED adopt-manifest-misread: {who}"), result.stderr
+    assert what in result.stderr, result.stderr
+    assert not plan.exists()
+
+
+def test_the_source_is_asked_only_about_a_branch_the_loader_misreads(
+        adopter, monkeypatch):
+    """`_pushed_in_every_mode` starts git. It is asked about `true`, which
+    the loader misreads, and not about `develop`, which it reads back, as
+    git's own question is asked (`_a_branch_git_creates`)."""
+    asked = []
+
+    def recorded(_source, branch):
+        asked.append(branch)
+        return False
+
+    monkeypatch.setattr(adopter, "_pushed_in_every_mode", recorded)
+    assert adopter._a_branch_execute_writes(None, TRACKING_KEY, "develop")
+    assert not adopter._a_branch_execute_writes(None, TRACKING_KEY, "true")
+    assert asked == ["true"]
+
+
+# --- a pin is `product@<40 hex>`, recorded whole (main's #273) --------------
+
+def test_a_pin_beside_a_273_finding_is_not_named_misread(
+        answered, tmp_path):
+    """`execute` refuses a plan whose `pins:` has a finding of #273's
+    before any leg exists, so it writes none of its pins: a misread
+    sentence about the whole pin beside it would say otherwise. One wrong
+    `pins:` is #273's findings alone."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, PINS_KEY, QUOTED_NULL)
+    edited = text_of(plan).replace("\npins:\n", "\npins:\n  - openX\n", 1)
+    with plan.open("w", encoding=UTF8, newline="\n") as handle:
+        handle.write(edited)
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "FINDING plan-pin-unrecorded: `pins:` entry 1, 'openX'" in (
+        result.stderr), result.stderr
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+
+
+def test_a_pin_whose_product_is_not_text_is_273s_finding_alone(
+        answered, tmp_path):
+    """`product: TRUE` is read as a boolean, which `_read_pins` finds
+    `plan-pin-malformed`, and `execute` refuses before any leg exists. Before
+    #273 a pin was a name, and #181 named this one by what was read."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, PINS_KEY, "TRUE")
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "FINDING plan-pin-malformed: `pins:` entry 1 records " in (
+        result.stderr), result.stderr
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+
+
 #: A date with a line break in it, as a plan edited by hand spells it.
 UNWRITABLE_DATE = '"2026-09-02\\nx"'
 #: `(plan key, as a plan edited by hand spells it)`: values no file
@@ -1055,7 +1291,7 @@ JUDGED_ONCE = [
 
 @pytest.mark.parametrize("key, spelled, finding", JUDGED_ONCE)
 def test_check_judges_each_value_once_by_the_rule_true_of_it(
-        answered, tmp_path, key, spelled, finding):
+        answered_copy, tmp_path, key, spelled, finding):
     """At the merge of main dd8d0ea, `id: "007"` and `elected_on:
     "20260902"` were two findings each, #181's and the validator's, and a
     visibility that is not text was none. At 7ac2358 each was one, but
@@ -1063,7 +1299,8 @@ def test_check_judges_each_value_once_by_the_rule_true_of_it(
     ends `adoption verified` where `execute` refuses it as the validator's
     (rv181f's G1), and `elected_on: "!"` was still two (G2). Each is one,
     in the words of the rule true of it."""
-    _, text = answered
+    source, text = answered_copy
+    holding(source, key, parse_yaml(f"{key}: {spelled}\n")[key])
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, spelled)
     result = checked(plan)
@@ -1259,36 +1496,32 @@ def test_text_the_loader_reads_as_other_text_is_shown_as_typed_and_read(
         f"{reading} and not as that text: choose another value"]
 
 
-#: `(a hand-edited plan's pin, the item `execute` writes for it, as a
-#: sentence shows that line)`. `execute` writes a pin into its `  - ` item as
-#: it stands, so the whitespace after it stays in the line, where the loader
-#: drops it. A space shows between the backticks; a no-break space makes the
-#: line one a terminal would not show as it is, so Python spells it. Not a
-#: tab since #255: no file `execute` writes holds a control character, and a
-#: pin holding one is #255's finding alone (`UNWRITABLE`).
+#: Hand-edited pins whose product ends in whitespace, which the loader drops
+#: from the manifest's `  - ` item. Before #273 a pin was a name, and #181
+#: named such a pin in the line `execute` writes, whitespace and all
+#: (rv181f's F1). Since #273 a pin's product is held to `PIN_ARG_RE`'s
+#: alphabet, which has no whitespace (`_pin_row_problem`).
 PIN_WITH_A_TRAIL = [
-    pytest.param('"openGlass "', "`- openGlass `", id="space"),
-    pytest.param('"openGlass\\xa0"', "'- openGlass\\xa0'",
-                 id="no-break-space"),
+    pytest.param('"openGlass "', id="space"),
+    pytest.param('"openGlass\\xa0"', id="no-break-space"),
 ]
 
 
-@pytest.mark.parametrize("spelled, shown", PIN_WITH_A_TRAIL)
-def test_a_pin_is_shown_in_the_line_execute_writes_whitespace_and_all(
-        answered, tmp_path, spelled, shown):
-    """The finding said `execute` writes `- openGlass` for a pin
-    `"openGlass "`: the line was stripped after the pin was put in it, so
-    the space `execute` keeps was gone from the line the sentence named
-    (rv181f's F1). The loader drops that space, which is why the pin is
-    refused, and the line named is the one `execute` writes."""
+@pytest.mark.parametrize("trailed", PIN_WITH_A_TRAIL)
+def test_a_pin_ending_in_whitespace_is_273s_finding_alone(
+        adopter, answered, tmp_path, trailed):
+    """`check` finds the pin `plan-pin-malformed`, and `execute` refuses it
+    before any leg exists, so it is never written: one finding, #273's, and
+    no misread sentence saying `execute` writes it."""
     _, text = answered
     plan = tmp_path / PLAN_FILE
-    carrying(plan, text, PINS_KEY, spelled)
+    carrying(plan, text, PINS_KEY, trailed)
     result = checked(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    assert (f"{MANIFEST}'s neutral_product_pins as {shown}, where the "
-            "project's own YAML loader reads it back as the text `openGlass` "
-            "and not as that text") in result.stderr, result.stderr
+    assert "FINDING plan-pin-malformed: `pins:` entry 1 " in result.stderr, (
+        result.stderr)
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
 
 
 #: Values the manifest's own double quotes misread while `render` pasted
@@ -1353,6 +1586,7 @@ def test_execute_refuses_a_plan_carrying_one_before_any_leg_exists(
     #168's one list of `check`'s findings, before it creates a leg or
     touches the source."""
     source, text = answered_copy
+    holding(source, key, value)
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, adopter.y(value))
     result = executed(plan, tmp_path)
@@ -1405,6 +1639,9 @@ def test_what_is_still_accepted_adopts_clones_and_bootstraps(tmp_path):
     each leg on the branch `execute` pushed it on, with that branch as its
     upstream, and read back every value the plan was given."""
     source = make_source_repo(tmp_path / SOURCE_NAME)
+    # Since #479 the tracking branch is a branch of the source: `execute`
+    # pushes the split back into it under `--local-remote-dir`.
+    holding(source, TRACKING_KEY, Q4_BRANCH)
     plan = tmp_path / PLAN_FILE
     written = write_plan(source, plan, extra=ACCEPTED)
     assert written.returncode == 0, written.stderr + written.stdout
@@ -1561,37 +1798,50 @@ def test_an_explicit_null_leg_path_is_a_finding_not_the_default(
 
 
 def test_the_plan_writer_quotes_a_pin_whatever_refuses_it_later(
-        adopter, answered, tmp_path, monkeypatch):
+        adopter, answered, glass, tmp_path, monkeypatch):
     """`pins: [` was the one list of strings the plan wrote without `y`, so
-    `--pin null` was `pins: [null]`: a null `Plan.load` drops. `plan` now
-    refuses such a pin before writing, so the writer is asked with the
-    gate taken away: the pin is a string like any other in the plan."""
+    `--pin null` was `pins: [null]`: a null `Plan.load` drops. Since #273
+    `plan` writes each pin as a mapping through `y` (`_pin_lines`), and
+    refuses such a product before writing, so the writer is asked with the
+    gate taken away: the product is a string like any other in the plan."""
     source, _ = answered
+    path, commit = glass
     monkeypatch.setattr(adopter, "manifest_misreads", lambda _fields: [])
     for pin in ("null", "Null", "NULL", "true", FALSE_TITLE):
         plan = tmp_path / f"{pin}.yaml"
         assert adopter.main([
             "plan", "--source", str(source), "--project", PROJECT_NAME,
             "--org", "testorg", ELECTED_BY_FLAG, "Test Human",
-            "--elected-on", ELECTION_DATE, PIN_FLAG, pin,
+            "--elected-on", ELECTION_DATE, PIN_FLAG, f"{pin}@{commit}",
+            PIN_SOURCE_FLAG, str(path),
             "--work-dir", str(tmp_path / "work"), "--out", str(plan)]) == 0
-        assert f'\npins: ["{pin}"]\n' in text_of(plan)
-        assert load_yaml(plan)[PINS_KEY] == [pin]
+        assert f'\n  - product: "{pin}"\n' in text_of(plan)
+        assert load_yaml(plan)[PINS_KEY][0]["product"] == pin
         assert adopter.Plan.load(plan).pins == [pin]
 
 
 @pytest.mark.parametrize("pins, written", [
-    ((OPEN_GLASS,), "pins: [openGlass]"),
-    (("opensoft/openGlass",), "pins: [opensoft/openGlass]"),
-    ((OPEN_GLASS, "opensoft/openCode"), "pins: [openGlass, opensoft/openCode]"),
-    ((), "pins: []"),
+    ((OPEN_GLASS,), (GLASS_ITEM, "    repository: opensoft/openGlass")),
+    (("opensoft/openGlass",), (GLASS_ITEM,
+                               "    repository: opensoft/openGlass")),
+    ((OPEN_GLASS, "opensoft/openCode"),
+     (GLASS_ITEM, "  - product: openCode",
+      "    repository: opensoft/openCode")),
+    ((), ("pins: []",)),
 ], ids=["one", "owned", "two", "none"])
-def test_an_ordinary_pin_is_written_as_it_always_was(tmp_path, pins, written):
-    """`openGlass` and `opensoft/openGlass` are the pins that exist; they stay
-    bare, singly and together, and no pin is still `pins: []`."""
-    extra = tuple(part for pin in pins for part in (PIN_FLAG, pin))
+def test_an_ordinary_pin_is_written_as_it_always_was(glass, tmp_path, pins,
+                                                     written):
+    """`openGlass` and `opensoft/openGlass` are the pins that exist; their
+    product and repository stay bare, singly and together, and no pin is
+    still `pins: []`."""
+    path, commit = glass
+    extra = tuple(part for pin in pins
+                  for part in (PIN_FLAG, f"{pin}@{commit}"))
+    if pins:
+        extra += (PIN_SOURCE_FLAG, str(path))
     text = text_of(planned(tmp_path, *extra))
-    assert f"\n{written}\n" in text
+    for line in written:
+        assert f"\n{line}\n" in text, line
 
 
 def test_a_source_file_named_like_a_keyword_is_one_entry_with_that_path(
