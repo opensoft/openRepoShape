@@ -954,12 +954,18 @@ def _declaration(args) -> tuple[dict, set, tuple, dict]:
     verified against its own tree when `--pin-source` (or
     `SHAPE_PIN_SOURCE_<PRODUCT>`) points at one, and is declared-unverified
     otherwise — a warning, never a refusal, because the check is offline.
+
+    A tree `--pin-source` reached whose declaration could not be read (a
+    `neutral_product_pins:` that is not a list of names) is declared-unverified
+    too, and the warning says that tree could not be READ, with why, rather
+    than that it "is not reachable here" (#338): the scaffold prints no other
+    line about a source, so `with_reasons` is asked for here.
     """
     pins = declared_pin_values(args)
     declared_pins: set[str] = set(pins)
     chain = referent_chain_links(args.referent_chain)
-    link_pins = link_pins_from_trees(chain, None, {}, args.pin_source) \
-        if chain else {}
+    link_pins = link_pins_from_trees(chain, None, {}, args.pin_source,
+                                     with_reasons=True) if chain else {}
     return pins, declared_pins, chain, link_pins
 
 

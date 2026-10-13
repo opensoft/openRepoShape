@@ -2144,7 +2144,9 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     would build it from this plan, FOR VALIDATION AND NEVER FOR WRITING; None
     where the plan's names are not ones the naming policy classifies, which
     `check` and `execute` report in their own words (`_check_names`) and the
-    manifest cannot be rendered without.
+    manifest cannot be rendered without, and None where its `elected_on:` is
+    a date `election_date` refuses, which `_elected_on_findings` reports in
+    the plan key's own words (#294).
 
     `_template_table` is asked, not copied, and `execute`'s `_template_values`
     is that same table with the real commit and digest, so the table cannot
@@ -2154,7 +2156,8 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     `git` runs here and a checkout that cannot name its revision is asked the
     same question as any other. A refusal of the plan's own names, id,
     organisation or leg paths is raised here as it is by `check` and `execute`
-    a few lines later.
+    a few lines later. The organisation and the id are asked BEFORE the date
+    is: a bad date does not change which problem either command names first.
     """
     if not isinstance(plan.legs, dict):
         # The doctor's PLACEMENT plan writes `legs:` as a list (see
@@ -2167,7 +2170,21 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
         _check_names(naming, names, pins)
     except Refusal:
         return None
+    # The organisation and the id are asked BEFORE the date's guard below.
+    # `checked_value` refuses an `org:` this tool will not put on a command
+    # line (`unsafe-value`; `execute` meets it first, in `_repository_urls`),
+    # and `Plan.project_id` refuses an `id:` that is not a project id
+    # (`plan-bad-id`; `_template_table` reads it again). After the guard,
+    # neither was asked of a plan whose date is a finding: `check` listed the
+    # date where `execute` refused the organisation, and refused the id where
+    # `execute` refused the date.
     org = checked_value("org", plan.get("org"))
+    _ = plan.project_id
+    if _elected_on_findings(plan):
+        # Reported in the plan key's own words (#294), and the reference the
+        # manifest records is chosen BY that date when the plan names none:
+        # there is no manifest to ask about until it is one.
+        return None
     repositories = {role: f"{org}/{name}" for role, name in names.items()}
     (_, spec_path), (_, code_path) = _plan_leg_paths(plan)
     return _template_table(
@@ -2180,8 +2197,8 @@ def _manifest_findings(plan: Plan, misreads_elsewhere: bool = False
                        ) -> tuple[list[str], list[str]]:
     """What the project's own validator would refuse of this plan's values,
     as `check` prints them (one FINDING each), and what it prints once after
-    them. `[]` and `[]` when it would pass, or when the plan's names are
-    refused in their own words (`_manifest_values`).
+    them. `[]` and `[]` when it would pass, or when the plan's names, or its
+    date, are refused in their own words (`_manifest_values`).
 
     `misreads_elsewhere` is for a caller whose list ALSO holds a misread
     rule's finding for each value the project's reader reads back as another
@@ -3705,6 +3722,163 @@ def _refused_by_policy(path: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Plan values `execute` read late, asked by `check` before any leg exists
+# ---------------------------------------------------------------------------
+#
+# Each value below was read by `execute` after `check` had said `plan ok`, and
+# nothing in between asked what it held. `check` now asks, and `execute`
+# refuses what it finds through `_refuse_what_check_finds`, before any leg
+# exists.
+#
+# `follow_ups:` (#293). `plan` writes it as a block list, and every reader
+# iterated the value with no test that it was one. A hand-edited
+# `follow_ups: 5` (or `true`, `1.5`, `false`) ended `check` in
+# `TypeError: 'int' object is not iterable`, a traceback with no FINDING
+# naming the key, and on main ended `execute` the same way in
+# `_commit_the_split`, after both legs were pushed; `abc` was written into the
+# split commit's message as three follow-ups, `a`, `b` and `c`, and an item
+# `- true` as `True`.
+#
+# `elected_on:` (#294). Nothing asked whether it was a date but
+# `_template_values`, and only for a plan with no `reference:`:
+# `default_reference` asked `election_date` after `_create_leg_remotes` had
+# made both legs, and the refusal named `--elected-on`, a flag neither `check`
+# nor `execute` takes. With `reference:` kept the date was never asked, and
+# `execute` wrote `someday` into the manifest. THE DATE IS ASKED OF
+# `election_date`, the rule `plan` asks of `--elected-on` and
+# `_template_values` of the plan's date, and of nothing else: what that rule
+# admits is #261's to decide, and a tighter rule there is asked here with no
+# edit. Only the words are this caller's, because the date came from the plan
+# file and not from a flag: the refusal `election_date` raises names
+# `--elected-on`, which is right for `plan` and wrong here.
+
+#: `check`'s finding for a `follow_ups:` that is not a list of text, and the
+#: code `execute` refuses it under (#293).
+BAD_FOLLOW_UPS = "plan-bad-follow-ups"
+
+#: Said once after the `follow_ups:` findings.
+FOLLOW_UPS_REMEDIATION = (
+    "Remediation: write `follow_ups:` in the plan file as `plan` writes it, "
+    "a list with one item of text per follow-up, each on its own line as "
+    "`  - \"<what is left to do>\"`, or `follow_ups: []` for none. `execute` "
+    "writes each item as one line of the split commit's message, so it takes "
+    "nothing else: a number or a boolean is not a list, text on the key's own "
+    "line would be written one character per follow-up, and an item that is "
+    "not text would be written as Python spells it (`True`, `None`).")
+
+
+def _read_as(value) -> str:
+    """What the plan's reader handed back for a value, in words, spelled as a
+    YAML plan spells it where that differs from Python (`true`, `null`)."""
+    if isinstance(value, bool):
+        return f"the boolean {str(value).lower()}"
+    if isinstance(value, (int, float)):
+        return f"the number {value!r}"
+    if isinstance(value, str):
+        return f"the text {value!r}"
+    if value is None:
+        return "null"
+    if isinstance(value, dict):
+        return f"a mapping of {len(value)} key(s)"
+    if isinstance(value, list):
+        return f"a list of {len(value)} item(s)"
+    return f"a value of type {type(value).__name__}"
+
+
+def _plan_follow_ups(plan: Plan) -> list[str]:
+    """The plan's follow-ups as `execute` writes them into the split commit's
+    message: each item of a `follow_ups:` LIST that is text, and nothing for a
+    `follow_ups:` that is absent, bare or anything but a list.
+
+    THE ONE READ, for the three readers (`_plan_values`,
+    `_print_what_will_happen`, `_commit_the_split`), so that none of them
+    iterates a number or spells a string out one character at a time. What it
+    leaves out is never silently dropped from a run: `_follow_ups_findings`
+    reports it in `check`, and `execute` has refused it through
+    `_refuse_what_check_finds` before the split commit is written.
+    """
+    value = plan.get("follow_ups", [])
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _follow_ups_findings(plan: Plan) -> list[str]:
+    """A FINDING for a `follow_ups:` that is present and not a list, or for
+    each item of one that is not text; `[]` for a list of text, an empty
+    list and a bare key (#293)."""
+    value = plan.get("follow_ups")
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return [f"FINDING {BAD_FOLLOW_UPS}: `follow_ups:` is "
+                f"{_read_as(value)}, not a list: `execute` writes each item "
+                "of a list into the split commit's message as one follow-up"]
+    return [f"FINDING {BAD_FOLLOW_UPS}: item {number} of `follow_ups:` is "
+            f"{_read_as(item)}, not text: `execute` writes each item into the "
+            "split commit's message as one line of text"
+            for number, item in enumerate(value, 1)
+            if not isinstance(item, str)]
+
+
+#: `check`'s finding for an `elected_on:` that `election_date` does not read,
+#: and the code `execute` refuses it under: the code `plan` refuses a bad
+#: `--elected-on` under, said here of the plan's key (#294).
+ELECTION_DATE_MALFORMED = "election-date-malformed"
+
+#: Said once after the `elected_on:` finding. It names the plan file's key and
+#: no flag: `check` and `execute` take none for the date.
+ELECTED_ON_REMEDIATION = (
+    "Remediation: edit `elected_on:` in the plan file to the day the shape "
+    "was elected, written as a zero-padded ISO date in quotes, e.g. "
+    "`elected_on: \"2026-09-02\"`: not 2026-9-2, and not a word like "
+    "'yesterday'. `execute` writes it into the project's `project.yaml`, and "
+    "a plan with no `reference:` has its reference chosen BY that date, so "
+    "it is read before anything is created.")
+
+
+def _elected_on_findings(plan: Plan) -> list[str]:
+    """A FINDING for an `elected_on:` that `election_date` does not read,
+    whether or not the plan has a `reference:` (#294); `[]` for a date it
+    reads and for no `elected_on:` at all, which `execute` fills with today's.
+
+    The value asked is the one `_template_values` takes, `str` of what the
+    plan holds, so the two cannot answer differently. `election_date`'s own
+    refusal is not passed on, because its words are `plan`'s: they name
+    `--elected-on`, which neither `check` nor `execute` takes. Only THAT
+    refusal is a finding about the date: any other `election_date` raises
+    is about something else (a rule it could not ask), and is raised as it
+    is.
+    """
+    elected_on = plan.get("elected_on")
+    if elected_on is None:
+        return []
+    try:
+        election_date(str(elected_on))
+    except Refusal as refused:
+        if refused.code != ELECTION_DATE_MALFORMED:
+            raise
+        chosen = ("" if plan.get("reference") else
+                  ", and, the plan naming no `reference:`, chooses the "
+                  "reference by it")
+        return [f"FINDING {ELECTION_DATE_MALFORMED}: the plan's `elected_on:` "
+                f"is {_read_as(elected_on)}, which is not a day written "
+                "YYYY-MM-DD, the form `execute` writes into the project's "
+                f"`project.yaml`{chosen}"]
+    return []
+
+
+def _plan_field_findings(plan: Plan) -> tuple[list[str], list[str]]:
+    """`_elected_on_findings` and `_follow_ups_findings`, in the order `plan`
+    writes the two keys (`elected_on:` before `follow_ups:`), and what `check`
+    prints once after them."""
+    dated, followed = _elected_on_findings(plan), _follow_ups_findings(plan)
+    return (dated + followed,
+            ([ELECTED_ON_REMEDIATION] if dated else [])
+            + ([FOLLOW_UPS_REMEDIATION] if followed else []))
+
+
 #: What a plan whose entry `entry_path_problem` refuses is told to do. Said by
 #: `check`, once after its findings, and by `execute`'s refusal.
 UNSAFE_PATH_REMEDIATION = (
@@ -3868,8 +4042,9 @@ def _entry_findings(plan: Plan, source: Source,
     that no file can hold (#255), then what the project's own
     `validate-manifest.py` would refuse of the values `execute` writes into
     its manifest (#261), then a tracking branch that is no branch of the
-    source (#479), and last each relative url of a kept submodule that
-    names another repository from its leg (#190).
+    source (#479), then each relative url of a kept submodule that names
+    another repository from its leg (#190), and last each plan value
+    `execute` reads late and `_plan_field_findings` asks about (#293, #294).
 
     ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
     #168 and #166 each added findings to `check` and a refusal to `execute`
@@ -3905,7 +4080,10 @@ def _entry_findings(plan: Plan, source: Source,
     validator says is said of the manifest the value would be written into,
     which is the value's consequence; the byte, the break or the control is
     what the person retypes. Both are listed, and both refuse before any leg
-    exists. The relative urls of #190 still come after both, last.
+    exists. The relative urls of #190 still come after both, and last the
+    plan values `execute` reads late (#293, #294): an `elected_on:` that
+    `election_date` refuses is said there in the plan key's own words, and
+    `_manifest_values` does not ask the validator about it as well.
     """
     tree = source.tree()
     unsafe, unsafe_remediation = _source_path_findings(plan, tree)
@@ -3918,13 +4096,14 @@ def _entry_findings(plan: Plan, source: Source,
         _submodule_findings(plan, source, tree, local_remote_dir)
     unwritable_findings, unwritable_remediation = _value_findings(plan)
     value_findings, value_remediation = _manifest_findings(plan)
+    field_findings, field_remediation = _plan_field_findings(plan)
     tracking_findings, tracking_remediation = _tracking_branch_findings(
         plan, source)
     return (findings + split + unwritable_findings + value_findings
-            + tracking_findings + moved,
+            + tracking_findings + moved + field_findings,
             unsafe_remediation + split_remediation + unwritable_remediation
-            + value_remediation + tracking_remediation + moved_remediation,
-            notes)
+            + value_remediation + tracking_remediation + moved_remediation
+            + field_remediation, notes)
 
 
 # ---------------------------------------------------------------------------
@@ -4314,8 +4493,8 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
           f"{len(drops)} dropped")
     print("  the source is never deleted, never renamed, never force-pushed")
     print(_topics_line(topic, local))
-    for item in plan.get("follow_ups", []):
-        print(f"  follow-up: {_shown(str(item))}")
+    for item in _plan_follow_ups(plan):
+        print(f"  follow-up: {_shown(item)}")
 
 
 def cmd_check(args) -> int:
@@ -5898,7 +6077,7 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
             print(f"  beside  {actual} (the source already has {intended}; "
                   "nothing was overwritten)")
 
-        follow_ups = [str(f) for f in plan.get("follow_ups", [])]
+        follow_ups = _plan_follow_ups(plan)
         message = _split_message(names, paths_for, leg_commits, spec_path,
                                  code_path, follow_ups,
                                  materialized.collisions, seeded)
@@ -5966,10 +6145,12 @@ def cmd_execute(args) -> int:
     # rendered from `templates/<role>-root/` and needs it. The four leg
     # commit/digest values are the only ones that cannot be known yet; they
     # are filled in below, before the assembly root is materialized. And it
-    # is built before the legs' REPOSITORIES too: it can refuse (an
-    # `elected_on` that is not a date, a checkout of this standard that is
-    # not a git repository), and a refusal here used to leave both of them
-    # behind with nothing saying so (#188). It prints nothing.
+    # is built before the legs' REPOSITORIES too: it can refuse (a
+    # checkout of this standard that is not a git repository), and a
+    # refusal here used to leave both of them behind with nothing saying
+    # so (#188). An `elected_on:` that is not a date no longer reaches it:
+    # `_refuse_what_check_finds` has refused it above, as `check` finds it
+    # (#294). It prints nothing.
     shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
     values = _template_values(plan, names, repositories, urls, spec_path,
                               code_path, tracking, {}, {},
@@ -6122,13 +6303,16 @@ def _plan_values(plan: Plan) -> list[tuple[str, str, str]]:
     """`(what, value, where)` for each value of the plan's that `execute`
     writes into a file, as `str` makes it, which is how `_template_values`
     and `_commit_the_split` take it. A key the plan does not carry is filled
-    by this tool (`private`, today's date) and is left out."""
+    by this tool (`private`, today's date) and is left out. The follow-ups
+    are `_plan_follow_ups`', the items of text `_commit_the_split` writes; a
+    `follow_ups:` that is not a list of text is `plan-bad-follow-ups` (#293),
+    and is never iterated here."""
     fields = [(key, str(plan.get(key)), where)
               for key, where in WRITTEN_PLAN_VALUES.items()
               if plan.get(key) is not None]
     fields += [("a `pins:` item", pin, ROOT_MANIFEST) for pin in plan.pins]
-    return fields + [("a `follow_ups:` item", str(item), SPLIT_MESSAGE)
-                     for item in plan.get("follow_ups", [])]
+    return fields + [("a `follow_ups:` item", item, SPLIT_MESSAGE)
+                     for item in _plan_follow_ups(plan)]
 
 
 def _value_findings(plan: Plan) -> tuple[list[str], list[str]]:

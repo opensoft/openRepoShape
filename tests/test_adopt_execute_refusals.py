@@ -21,8 +21,8 @@ file builds a source with no submodule, so it holds the five classes
 themselves; #168's submodule cases are refused by the same function under the
 same two codes, `plan-uncovered` and `plan-bad-leg`.
 
-NO NETWORK, NO GITHUB, AND NO `git filter-repo` except in the one end-to-end
-test at the bottom. The rest load `adopt-project.py` through importlib and call
+NO NETWORK, NO GITHUB, AND NO `git filter-repo` except in the end-to-end tests
+at the bottom. The rest load `adopt-project.py` through importlib and call
 `cmd_execute` in this process. Its probe for `git filter-repo` is stubbed,
 because every refusal under test is raised BEFORE the tool would be used. A
 `cmd_execute` that stopped refusing would carry on and make the legs, then
@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import re
 import shutil
 import sys
 from argparse import Namespace
@@ -432,6 +433,381 @@ def test_a_path_that_is_a_git_option_is_still_unsafe_not_uncovered(adopter,
     no_leg_was_created(world.tmp)
 
 
+# --- plan values `execute` read late ---------------------------------------
+
+#: `follow_ups:` and every item under it, as `plan` writes the block; the
+#: edits below replace the whole of it.
+FOLLOW_UPS_BLOCK = re.compile(r"^follow_ups:\n(?:  - .*\n)*", re.M)
+BAD_FOLLOW_UPS_CODE = "plan-bad-follow-ups"
+
+#: What a hand edit can leave `follow_ups:` holding that is not a list of
+#: text, by test id: the block it is written as, and what the finding must say
+#: of it (#293). The scalars ended `check` in `TypeError: ... is not iterable`
+#: with no FINDING, and on main ended `execute` the same way after both legs
+#: were pushed; `abc` went into the split commit's message as three
+#: follow-ups, `a`, `b` and `c`, and an item `true` as `True`.
+BAD_FOLLOW_UPS = {
+    "int": ("follow_ups: 5\n", "`follow_ups:` is the number 5, not a list"),
+    "true": ("follow_ups: true\n",
+             "`follow_ups:` is the boolean true, not a list"),
+    "false": ("follow_ups: false\n",
+              "`follow_ups:` is the boolean false, not a list"),
+    "float": ("follow_ups: 1.5\n",
+              "`follow_ups:` is the number 1.5, not a list"),
+    "text": ("follow_ups: abc\n",
+             "`follow_ups:` is the text 'abc', not a list"),
+    "mapping": ("follow_ups: {a: 1}\n",
+                "`follow_ups:` is a mapping of 1 key(s), not a list"),
+    "item-int": ("follow_ups:\n  - 5\n",
+                 "item 1 of `follow_ups:` is the number 5, not text"),
+    "item-true": ('follow_ups:\n  - "keep"\n  - true\n',
+                  "item 2 of `follow_ups:` is the boolean true, not text"),
+    "item-null": ("follow_ups:\n  - null\n",
+                  "item 1 of `follow_ups:` is null, not text"),
+}
+
+#: What `check` and `execute` still take, by test id, and the follow-ups each
+#: reads: an empty list, a bare key, and a list of text as `plan` writes it.
+GOOD_FOLLOW_UPS = {
+    "empty-list": ("follow_ups: []\n", []),
+    "bare-key": ("follow_ups:\n", []),
+    "text-items": ('follow_ups:\n  - "Re-point CI at code/"\n'
+                   '  - "merge shape/README.md"\n',
+                   ["Re-point CI at code/", "merge shape/README.md"]),
+}
+
+
+def with_follow_ups(text: str, block: str) -> str:
+    """`text` with its `follow_ups:` block replaced by `block`."""
+    edited, done = FOLLOW_UPS_BLOCK.subn(lambda _: block, text, count=1)
+    assert done == 1, "the plan has no `follow_ups:` block to edit"
+    return edited
+
+
+def assert_no_traceback(result) -> None:
+    for output in (result.stdout, result.stderr):
+        assert "Traceback" not in output, output
+
+
+#: What `execute`'s refusal says of a plan `check` rejects, made before any
+#: leg exists, and the first words of the notice #445 prints after a failure
+#: once one does.
+NO_LEG_MADE = "no leg repository was created and nothing was pushed"
+LATE_NOTICE = "NOTHING has been rolled back"
+
+
+def assert_refused_before_any_leg(result) -> None:
+    """The refusal is `_refuse_what_check_finds`', made before any leg
+    exists: it says no leg was made, and no notice of what the run left
+    follows it, as one does a failure once a leg exists (#445)."""
+    assert NO_LEG_MADE in result.stderr, result.stderr
+    assert LATE_NOTICE not in result.stderr, result.stderr
+
+
+def findings_of(result) -> list[str]:
+    return [line for line in result.stderr.splitlines()
+            if line.startswith("FINDING ")]
+
+
+@pytest.mark.parametrize("edit", sorted(BAD_FOLLOW_UPS))
+def test_check_finds_a_follow_ups_that_is_not_a_list_of_text(world, edit):
+    """#293: a FINDING that names the key and what it holds, exit 1, and no
+    traceback. At #270's head `check` read the value in `_plan_values` and
+    ended in `TypeError: 'int' object is not iterable`; on main it did so in
+    `_print_what_will_happen`. `abc` printed three follow-ups, `a`, `b` and
+    `c`, which the summary no longer reads."""
+    block, said = BAD_FOLLOW_UPS[edit]
+    result = run_check(write_edited(world,
+                                    with_follow_ups(world.answered, block)))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert_no_traceback(result)
+    found = findings_of(result)
+    assert len(found) == 1, found
+    assert found[0].startswith(f"FINDING {BAD_FOLLOW_UPS_CODE}: {said}: "), \
+        found
+    assert "Remediation: write `follow_ups:` in the plan file" in \
+        result.stderr
+    shown = [line for line in result.stdout.splitlines()
+             if line.startswith("  follow-up: ")]
+    assert shown == (["  follow-up: keep"] if '"keep"' in block else []), \
+        shown
+
+
+@pytest.mark.parametrize("edit", sorted(BAD_FOLLOW_UPS))
+def test_execute_refuses_a_follow_ups_that_is_not_a_list_of_text_and_creates_no_leg(  # noqa: E501
+        adopter, world, edit):
+    """Through `_refuse_what_check_finds`, before any leg exists, under the
+    finding's own code. At #270's head this was the same `TypeError` raised
+    from the same list; on main it was raised in `_commit_the_split`, after
+    both legs were pushed."""
+    block, said = BAD_FOLLOW_UPS[edit]
+    world.plan.write_text(with_follow_ups(world.answered, block),
+                          encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
+    assert refusal.code == BAD_FOLLOW_UPS_CODE
+    assert f"FINDING {BAD_FOLLOW_UPS_CODE}: {said}" in refusal.detail
+    assert "write `follow_ups:` in the plan file" in refusal.remediation
+    no_leg_was_created(world.tmp)
+    assert source_branches(world.source) == ["main"]
+
+
+@pytest.mark.parametrize("edit", sorted(GOOD_FOLLOW_UPS))
+def test_a_list_of_text_an_empty_list_and_a_bare_key_still_pass(adopter,
+                                                                world, edit):
+    """The controls: what `plan` writes, and the two ways of writing none,
+    pass `check` and `execute`'s refusal, and the follow-ups read are the
+    items as written."""
+    block, items = GOOD_FOLLOW_UPS[edit]
+    text = with_follow_ups(world.answered, block)
+    checked = run_check(write_edited(world, text))
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    for item in items:
+        assert f"  follow-up: {item}" in checked.stdout
+    plan, source = open_plan(adopter, world, text)
+    assert adopter._refuse_what_check_finds(plan, source) is None
+
+
+DATE_CODE = "election-date-malformed"
+DATE_FLAG = "--elected-on"
+
+#: An `elected_on:` that `election_date` refuses on every Python, by test id:
+#: as the plan holds it, as the reader reads it, and whether the plan keeps
+#: its `reference:` (#294). Without one, `execute` made both legs and only
+#: then refused, naming `--elected-on`; with one it never read the date and
+#: wrote the word into the manifest. `empty-text` is falsy and not null: only
+#: `elected_on:` ABSENT or null is "no date" (`execute` fills in today's), so
+#: `""` is a date `election_date` cannot read and is refused like any other.
+BAD_DATES = {
+    "word": ("someday", "someday", False),
+    "notadate": ("notadate", "notadate", False),
+    "unpadded": ('"2026-9-2"', "2026-9-2", False),
+    "not-a-day": ('"2026-02-30"', "2026-02-30", False),
+    "empty-text": ('""', "", False),
+    "word-reference-kept": ("someday", "someday", True),
+}
+ONE_PER_BAD_DATE = pytest.mark.parametrize("edit", sorted(BAD_DATES))
+
+
+def with_elected_on(text: str, value: str, reference: bool) -> str:
+    """`text` with `elected_on:` set to `value` by hand, and its `reference:`
+    line deleted unless `reference`."""
+    if not reference:
+        text, done = re.subn(r"^reference:.*\n", "", text, count=1,
+                             flags=re.M)
+        assert done == 1, "the plan has no `reference:` line to delete"
+    edited, done = re.subn(r"^elected_on: .*$",
+                           lambda _: f"elected_on: {value}", text, count=1,
+                           flags=re.M)
+    assert done == 1, "the plan has no `elected_on:` line to edit"
+    return edited
+
+
+@ONE_PER_BAD_DATE
+def test_check_finds_an_elected_on_it_cannot_read_under_the_plans_key(world,
+                                                                      edit):
+    """#294: a FINDING `election-date-malformed` that names the plan's
+    `elected_on:` and no flag, whether or not the plan has a `reference:`.
+    `check` used to say `plan ok`: it never read the date."""
+    value, read, reference = BAD_DATES[edit]
+    result = run_check(write_edited(
+        world, with_elected_on(world.answered, value, reference)))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert_no_traceback(result)
+    found = findings_of(result)
+    assert len(found) == 1, found
+    assert found[0].startswith(
+        f"FINDING {DATE_CODE}: the plan's `elected_on:` is the text "
+        f"{read!r}, which is not a day written YYYY-MM-DD"), found
+    assert ("the plan naming no `reference:`" in found[0]) is not reference
+    # the claim is about what `execute` WRITES, not "the one form it reads":
+    # on Python 3.11+ `election_date` reads `20261011` too, until #314 lands
+    assert ", the form `execute` writes into the project's `project.yaml`" in \
+        found[0], found
+    assert "the one form" not in found[0], found
+    assert "Remediation: edit `elected_on:` in the plan file" in \
+        result.stderr
+    assert DATE_FLAG not in result.stderr + result.stdout
+
+
+@pytest.mark.parametrize("value,read_as", [
+    ("false", "the boolean false"), ("0", "the number 0"),
+    ("[]", "a list of 0 item(s)"), ("{}", "a mapping of 0 key(s)")])
+def test_check_finds_a_falsy_elected_on_that_is_not_null(world, value,
+                                                         read_as):
+    """#294: only an `elected_on:` that is absent or null is "no date". Any
+    other falsy value is a date `election_date` cannot read, so it is a
+    FINDING that says what the plan holds; `if not elected_on:` in place of
+    `is None` would skip it and `check` would say `plan ok`. It is not a
+    `BAD_DATES` row because that test says "the text"."""
+    result = run_check(write_edited(
+        world, with_elected_on(world.answered, value, False)))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert_no_traceback(result)
+    found = findings_of(result)
+    assert len(found) == 1, found
+    assert found[0].startswith(
+        f"FINDING {DATE_CODE}: the plan's `elected_on:` is {read_as}, which "
+        "is not a day written YYYY-MM-DD"), found
+
+
+@ONE_PER_BAD_DATE
+def test_execute_refuses_an_elected_on_it_cannot_read_before_any_leg(
+        adopter, world, edit):
+    """The same finding, refused through `_refuse_what_check_finds` before
+    `_create_leg_remotes`. With no `reference:`, `execute` used to create
+    both legs and then refuse from `default_reference`, in words that named
+    `--elected-on`; with one, it went on and wrote the word into the
+    manifest."""
+    value, read, reference = BAD_DATES[edit]
+    world.plan.write_text(with_elected_on(world.answered, value, reference),
+                          encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
+    assert refusal.code == DATE_CODE
+    no_leg_was_created(world.tmp)
+    assert source_branches(world.source) == ["main"]
+    assert f"the plan's `elected_on:` is the text {read!r}" in refusal.detail
+    assert "edit `elected_on:` in the plan file" in refusal.remediation
+    assert DATE_FLAG not in str(refusal)
+
+
+#: An `org:` or `id:` the plan refuses in its own words, by test id: the line
+#: `plan` writes, the hand edit, and the code `check` and `execute` both
+#: refuse it under. Beside an `elected_on:` that is a finding, the date's
+#: guard in `_manifest_values` used to return before either was asked, so
+#: the two commands named different first problems.
+REFUSED_BESIDE_A_BAD_DATE = {
+    "org-unsafe": ("org: testorg", 'org: "-evil"', "unsafe-value"),
+    "id-bad": ("id: northwind", 'id: "North Wind"', "plan-bad-id"),
+}
+
+
+@pytest.mark.parametrize("reference", [True, False],
+                         ids=["reference-kept", "no-reference"])
+@pytest.mark.parametrize("edit", sorted(REFUSED_BESIDE_A_BAD_DATE))
+def test_a_bad_date_does_not_change_what_check_and_execute_refuse_first(
+        adopter, world, edit, reference):
+    """A plan with `elected_on: someday` AND an `org:` or `id:` it refuses:
+    `check` and `execute` refuse it under the same code, the organisation's
+    or the id's, as they do with no date guard, and no leg is created. With
+    both asked after the guard, `check` listed only the date (exit 1) where
+    `execute` refused `unsafe-value`, and `check` refused `plan-bad-id` where
+    `execute` refused the date."""
+    line, edited, code = REFUSED_BESIDE_A_BAD_DATE[edit]
+    text = with_elected_on(world.answered, "someday", reference)
+    assert line in text, f"`plan` wrote no `{line}` line"
+    plan = write_edited(world, text.replace(line, edited, 1))
+
+    checked = run_check(plan)
+    assert checked.returncode == 2, checked.stderr + checked.stdout
+    assert_no_traceback(checked)
+    first = next((said for said in checked.stderr.splitlines()
+                  if said.startswith("REFUSED ")), "")
+    assert first.startswith(f"REFUSED {code}: "), checked.stderr
+
+    refusal = refused_by(adopter, execute_args(world.tmp, plan))
+    assert refusal.code == code
+    no_leg_was_created(world.tmp)
+    assert source_branches(world.source) == ["main"]
+
+
+@pytest.mark.parametrize("value,reference", [
+    ('"2026-09-02"', False), ('"2026-06-01"', False), ('"2026-09-02"', True),
+    ("null", False)])
+def test_an_elected_on_election_date_reads_still_passes(adopter, world, value,
+                                                        reference):
+    """The controls: a date, with or without the `reference:` it chooses, and
+    no date at all, which `execute` fills with today's."""
+    text = with_elected_on(world.answered, value, reference)
+    checked = run_check(write_edited(world, text))
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    plan, source = open_plan(adopter, world, text)
+    assert adopter._refuse_what_check_finds(plan, source) is None
+
+
+@pytest.mark.parametrize("value", ["2026-W41-6", "20261011", "2026-09-02",
+                                   "someday"])
+def test_check_asks_election_date_itself_of_the_plans_date(adopter, world,
+                                                           value):
+    """ONE QUESTION, `plan`'s. `check` asks the plan's `elected_on:` what
+    `plan` asks `--elected-on`, `election_date` on this interpreter, and
+    nothing of its own: `2026-W41-6` and `20261011` are dates to
+    `date.fromisoformat` from Python 3.11 and not to the project's own
+    validator, which is #261's to rule on. Whatever `election_date` answers,
+    `check` answers the same, so `plan`, `check` and `execute` cannot
+    disagree about one value."""
+    try:
+        adopter.election_date(value)
+        refused = False
+    except adopter.Refusal:
+        refused = True
+    result = run_check(write_edited(
+        world, with_elected_on(world.answered, f'"{value}"', False)))
+    assert result.returncode == (1 if refused else 0), \
+        result.stderr + result.stdout
+    assert (f"FINDING {DATE_CODE}:" in result.stderr) is refused
+
+
+def test_a_tighter_election_date_is_asked_with_no_edit(adopter, world,
+                                                       monkeypatch):
+    """`election_date` held to `YYYY-MM-DD` on every Python, as #261 asks of
+    it, stood in for here: `check`'s list follows it, and `execute` refuses
+    `2026-W41-6` before any leg. The stand-in's own words name
+    `--elected-on`; the refusal says the plan's key and not them."""
+    real = adopter.election_date
+
+    def held_to_the_form(elected_on):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(elected_on)):
+            raise adopter.Refusal(
+                DATE_CODE, f"{DATE_FLAG} {elected_on!r} is not YYYY-MM-DD")
+        return real(elected_on)
+
+    monkeypatch.setattr(adopter, "election_date", held_to_the_form)
+    world.plan.write_text(
+        with_elected_on(world.answered, '"2026-W41-6"', False), encoding=UTF8)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
+    assert refusal.code == DATE_CODE
+    assert "the plan's `elected_on:` is the text '2026-W41-6'" in \
+        refusal.detail
+    assert DATE_FLAG not in str(refusal)
+    no_leg_was_created(world.tmp)
+
+
+def test_another_refusal_from_election_date_is_not_a_date_finding(
+        adopter, world, monkeypatch):
+    """Only `election-date-malformed` is a finding about the date. Anything
+    else `election_date` raises -- a rule it could not ask, as when the
+    validator it may consult is missing -- is raised as it is, and a date it
+    never judged is not reported as malformed."""
+    def cannot_ask(elected_on):
+        raise adopter.Refusal("rule-unusable", "the rule could not be asked")
+
+    monkeypatch.setattr(adopter, "election_date", cannot_ask)
+    plan, source = open_plan(adopter, world, world.answered)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_what_check_finds(plan, source)
+    assert caught.value.code == "rule-unusable"
+
+
+def test_both_findings_are_listed_and_the_code_is_the_first(adopter, world):
+    """Both keys wrong at once: one list, the date first, as `plan` writes the
+    two keys, and each remediation once."""
+    text = with_follow_ups(with_elected_on(world.answered, "someday", False),
+                           "follow_ups: 5\n")
+    printed = check_findings(write_edited(world, text))
+    assert [line.split(":", 1)[0] for line in printed] == [
+        f"FINDING {DATE_CODE}", f"FINDING {BAD_FOLLOW_UPS_CODE}"]
+    plan, source = open_plan(adopter, world, text)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_what_check_finds(plan, source)
+    assert caught.value.code == DATE_CODE
+    for finding in printed:
+        assert finding in caught.value.detail
+    assert caught.value.remediation.count("Remediation: edit `elected_on:`") \
+        == 1
+    assert caught.value.remediation.count(
+        "Remediation: write `follow_ups:`") == 1
+
+
 # --- a plan that is not UTF-8 (#192) ----------------------------------------
 
 #: The byte `0xff` is in no UTF-8 text, so wherever it lands the file cannot be
@@ -541,3 +917,61 @@ def test_an_uncovered_plan_creates_no_leg_and_the_corrected_plan_then_runs(
     assert "adoption verified" in corrected.stdout
     for role in ROLES:
         assert (remotes / f"{PROJECT}-{role}.git").is_dir()
+
+
+@needs_filter_repo
+def test_a_follow_ups_that_is_not_a_list_creates_no_leg_and_the_corrected_plan_runs(  # noqa: E501
+        world):
+    """#293 as a person met it, through `main`: exit 2, a REFUSED line, no
+    traceback and no leg, so the corrected plan does not meet
+    `leg-remote-exists`."""
+    remotes, work = world.tmp / REMOTES, world.tmp / WORK
+    flags = ("--plan", str(world.plan), "--yes", "--local-remote-dir",
+             str(remotes), "--work-dir", str(work))
+    world.plan.write_text(with_follow_ups(world.answered, "follow_ups: 5\n"),
+                          encoding=UTF8)
+    refused = run_script(ADOPT, "execute", *flags)
+    assert refused.returncode == 2, refused.stderr + refused.stdout
+    assert f"REFUSED {BAD_FOLLOW_UPS_CODE}: " in refused.stderr
+    assert_no_traceback(refused)
+    assert_refused_before_any_leg(refused)
+    assert "creating the leg repositories" not in refused.stdout
+    assert not remotes.exists(), "not even the directory the legs go in"
+    assert source_branches(world.source) == ["main"]
+
+    world.plan.write_text(world.answered, encoding=UTF8)
+    corrected = run_script(ADOPT, "execute", *flags)
+    assert corrected.returncode == 0, corrected.stderr + corrected.stdout
+    assert "adoption verified" in corrected.stdout
+
+
+@needs_filter_repo
+def test_an_elected_on_it_cannot_read_creates_no_leg_and_the_corrected_plan_runs(  # noqa: E501
+        adopter, world):
+    """#294 as a person met it, through `main`: exit 2, a REFUSED line that
+    names no flag, no traceback and no leg, so the corrected plan does not
+    meet `leg-remote-exists`. The corrected plan has no `reference:`, and the
+    manifest records the one its date chooses."""
+    remotes, work = world.tmp / REMOTES, world.tmp / WORK
+    flags = ("--plan", str(world.plan), "--yes", "--local-remote-dir",
+             str(remotes), "--work-dir", str(work))
+    world.plan.write_text(with_elected_on(world.answered, "someday", False),
+                          encoding=UTF8)
+    refused = run_script(ADOPT, "execute", *flags)
+    assert refused.returncode == 2, refused.stderr + refused.stdout
+    assert f"REFUSED {DATE_CODE}: " in refused.stderr
+    assert_no_traceback(refused)
+    assert_refused_before_any_leg(refused)
+    assert DATE_FLAG not in refused.stderr
+    assert "creating the leg repositories" not in refused.stdout
+    assert not remotes.exists(), "not even the directory the legs go in"
+    assert source_branches(world.source) == ["main"]
+
+    world.plan.write_text(
+        with_elected_on(world.answered, '"2026-09-02"', False), encoding=UTF8)
+    corrected = run_script(ADOPT, "execute", *flags)
+    assert corrected.returncode == 0, corrected.stderr + corrected.stdout
+    assert "adoption verified" in corrected.stdout
+    manifest = adopter.load_yaml(work / PROJECT / "project.yaml")
+    assert manifest["reference"] == adopter.default_reference("2026-09-02")
+    assert str(manifest["elected_on"]) == "2026-09-02"
