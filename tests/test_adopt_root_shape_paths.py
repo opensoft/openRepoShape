@@ -186,9 +186,13 @@ def test_every_directory_the_shape_writes_into_is_found_as_a_file(adopter):
 def test_a_file_kept_at_a_path_the_shape_writes_is_not_a_finding(adopter):
     """A file where the shape writes a FILE is the collision `place` already
     handles: its copy goes under `shape/`. Only a file where a DIRECTORY is
-    needed stops it."""
+    needed stops it. The manifest is the one exception, which no copy stands
+    in for (#305): `tests/test_adopt_root_manifest.py` holds it."""
     for path in adopter.assembly_root_paths():
-        assert found(adopter, [(path, "root")], [row(path)]) == [], path
+        codes = [said.split(":")[0]
+                 for said in found(adopter, [(path, "root")], [row(path)])]
+        assert codes == (["FINDING plan-root-blocks-manifest"]
+                         if path == adopter.SHAPE_MANIFEST else []), path
 
 
 @pytest.mark.parametrize("kept, tree, said", [
@@ -1059,25 +1063,60 @@ def test_the_materializer_still_writes_a_copy_where_the_way_is_free(tmp_path):
     assert (target / "shape" / "README.md").is_file()
 
 
+def refused_in_the_materializer(adopter, monkeypatch, capsys,
+                                tmp_path: Path, plan: Path):
+    """The `Refusal` the materializer raised in an in-process `execute` of
+    `plan`.
+
+    It does not escape `execute`. Both legs are pushed by the time the
+    materializer runs, so it is reported the way every failure is once a leg
+    repository exists (#188): the refusal's own code, detail and
+    remediation, under the step that raised it, then the notice of what the
+    run left. `execute` then exits 2, as `main` would have for the refusal.
+    So the materializer is asked what it raised, and the report is checked
+    to say exactly that."""
+    raised = []
+    materialize = adopter.materialize_assembly_root
+
+    def recorded(*args, **kwargs):
+        try:
+            return materialize(*args, **kwargs)
+        except adopter.Refusal as exc:
+            raised.append(exc)
+            raise
+
+    monkeypatch.setattr(adopter, "materialize_assembly_root", recorded)
+    assert adopter.cmd_execute(execute_args(tmp_path, plan)) == 2
+    assert len(raised) == 1, "the materializer wrote the copy"
+    refusal = raised[0]
+    err = capsys.readouterr().err
+    assert (f"REFUSED committing the split. {refusal.code}: "
+            f"{refusal.detail}\n{refusal.remediation}\n") in err
+    assert err.rstrip().splitlines()[-1].startswith(
+        "NOTHING has been rolled back: "), err
+    return refusal
+
+
 @needs_filter_repo
 def test_with_check_skipped_execute_stops_at_the_copy_and_overwrites_nothing(
-        adopter, monkeypatch, tmp_path):
+        adopter, monkeypatch, capsys, tmp_path):
     """On main this run pushed a split with the shape's README at the
     source's own `shape/README.md`, said `nothing was overwritten`, and ended
     `adopt-lost`. With the finding switched off for one in-process `execute`,
     so that the run reaches the materializer, it stops there in the
     materializer's words, pushes no split branch, and the source's file is
     what it was. The legs exist by then, which is why `check` finds this
-    first."""
+    first, and why the refusal is reported with the notice of what the run
+    left (`refused_in_the_materializer`)."""
     monkeypatch.setattr(adopter, "_root_shape_findings",
                         lambda plan, tree: [])
     source, plan = kept_source(tmp_path,
                                with_files({"shape/README.md": OWN_NOTES}),
                                "shape")
-    with pytest.raises(adopter.Refusal) as caught:
-        adopter.cmd_execute(execute_args(tmp_path, plan))
-    assert caught.value.code == BLOCKED
-    assert caught.value.detail.startswith(
+    refusal = refused_in_the_materializer(adopter, monkeypatch, capsys,
+                                          tmp_path, plan)
+    assert refusal.code == BLOCKED
+    assert refusal.detail.startswith(
         "the shape's copy of `README.md` cannot be written to "
         "`shape/README.md`: `shape/README.md` is already there")
     assert git("branch", "--list", SPLIT_BRANCH, cwd=source).stdout == ""

@@ -305,9 +305,12 @@ flag goes on the Python entry point —
 which, run from a download, still clones the standard into a temporary
 directory first, and from a checkout clones nothing. What it leaves behind is
 `./Atlas` and three bare repositories in `./rehearsal`, both of which you can
-delete. `openRepoShape --help` and `setup.sh --help` list every flag, this one
-included; [`docs/cli.md`](docs/cli.md) is every tool's help and every
-subcommand's in one file, generated from the tools themselves.
+delete. `python3 setup-project.py --help` and, from a checkout, `setup.sh --help`
+list every flag, this one included. From a download, `setup.sh --help` clones
+nothing and lists none: it names `setup-project.py --help`, which answers
+offline from that one file too, and [`docs/cli.md`](docs/cli.md), every
+tool's help and every subcommand's in one file, generated from the tools
+themselves.
 
 Without installing anything — no fork, no manual clone — one command:
 
@@ -328,17 +331,16 @@ Shorter still, once: install the `openRepoShape` command and this becomes
 `openRepoShape Atlas --org <your-org>` — see the worked example below.
 
 The script clones this standard into a temporary directory (self-bootstrap:
-see below), checks your machine, checks the three names, shows the plan and
-asks once — then creates the three repositories, clones the assembly root and
-bootstraps it, and removes the temporary directory. `--yes` skips the
-question, and it REFUSES `--org opensoft` without `--allow-upstream-org`,
-because that would scaffold three repositories into opensoft's own namespace.
+see below), checks your machine and the three names, shows the plan and asks
+once, at your terminal, never reading the answer from the pipe; then creates
+the three repositories, clones and bootstraps the assembly root, and removes
+the temporary directory. `--yes` skips the question. It REFUSES
+`--org opensoft` without `--allow-upstream-org`: that namespace is opensoft's.
 
 Every scaffolded project pins `opensoft/openRepoShape` directly — the
 **shape pin**, `contracts/shape-pin.yaml` — and `update-shape.py` reads
 straight from upstream, so no per-organisation fork is needed to run this or
-to stay current: a fork is only for contributing changes to the standard
-itself.
+to stay current: a fork is only for contributing changes to the standard.
 
 ### From a checkout (the developer path)
 
@@ -428,19 +430,20 @@ come from `$OPENREPOSHAPE_ORG` or from the command's own prompt instead of the
 flag, and is never defaulted. `--visibility private` is spelled out because the
 human says it rather than lets it default.
 
-**What Dana sees, in order.** (1) The preflight: git, the running interpreter,
-how bootstrap will run, and that `gh` is authenticated — and, for anything
-missing, an offer to install it that Dana answers `yes` to. (2) The three names
-checked against the naming policy — `Atlas`, `Atlas-spec`, `Atlas-code`; a
-hyphenated or lowercase name is refused here with the rule printed. (3) The
-scaffold plan, a dry run of everything about to be created. (4) `This will
-create THREE repositories in 'Northwind'.` and `Type yes to continue:` — Dana
-types `yes`. If an AI agent is driving, the agent runs the command WITHOUT
-`--yes` and Dana types the answer; the agent never does (AGENTS.md's first
-rule). Then it creates the three repositories, writes the pins and the
-manifest, sets the topic `xf-project-atlas` on all three, clones the root into
-the directory you ran the command from, as `./Atlas` (or where `--into <dir>`
-says), and runs `scripts/bootstrap.py` (what `make bootstrap` runs).
+**What Dana sees, in order.** (1) The preflight: git, the running interpreter, how
+bootstrap will run, and that `gh` is installed and authenticated — and, for `gh`, an
+offer to install it, log it in or set up git's credential helper, whichever is
+missing, which Dana answers `yes` to. (2) The three names checked against the naming
+policy — `Atlas`, `Atlas-spec`, `Atlas-code`; a hyphenated or lowercase name is
+refused here with the rule printed. (3) The scaffold plan, a dry run of everything
+about to be created. (4) `This will create THREE repositories in 'Northwind'.` and
+`Type yes to continue:` — Dana types `yes`. If an AI agent is driving, it runs the
+command WITHOUT `--yes`; in a shell with no terminal the run stops after the plan,
+and the agent hands Dana the same command for her own terminal, which asks her even
+piped, reading the yes she types there, never the pipe or the agent (AGENTS.md's
+first rule). Then it creates the three repositories, writes the pins and the
+manifest, sets the topic `xf-project-atlas` on all three, clones the root as
+`./Atlas` where you ran it (or `--into <dir>`), and runs `scripts/bootstrap.py`.
 
 > [!WARNING]
 > **If it fails part-way.** Nothing is created before the typed `yes` in (4):
@@ -497,12 +500,12 @@ there does not advance the project. Advancing it is one lockstep commit in
 the root, written by the tool from a checkout of this standard:
 
 ```sh
+git -C ../Atlas switch -c <branch>           # the tool will not commit on main
 python3 scripts/bump-leg.py --root ../Atlas --leg code --to <40-hex commit>
 git -C ../Atlas push -u origin <branch>      # then open a pull request
 ```
 
-Editing the pin file by hand to make the validator agree is what the
-validator exists to refuse.
+Editing the pin by hand to make the validator agree is what it exists to refuse.
 
 **Variants.** An existing repository becomes the root in place with
 `adopt-project.py plan`, then `check`, then `execute`, the human answering
@@ -516,11 +519,11 @@ confers nothing and stays neutral.
 
 ### What setup.sh does
 
-`setup.sh` is a shim — about seventy lines of code (twice that with its comments)
-that find a Python 3.9 or newer, clone this standard into a temporary directory when
-you are not already in a checkout of it, and hand over to `setup-project.py`, which
-IS the flow. These are the commands that flow runs, in order, with no behaviour of
-its own (the first only in self-bootstrap mode, from the one-liner above):
+`setup.sh` is a shim that finds a Python 3.9 or newer, clones this standard into a
+temporary directory when you are not already in a checkout of it, and hands over to
+`setup-project.py`, which IS the flow. These are the commands that flow runs, in
+order, with no behaviour of its own (the first only in self-bootstrap mode, from the
+one-liner above):
 
 ```sh
 git clone --depth 1 https://github.com/opensoft/openRepoShape.git <tmp-dir>
@@ -693,17 +696,17 @@ link that broke. `LedgerxWallet` -> `openXwallet` -> `openWallet` is the same
 shape, and `openWallet` need not exist anywhere for that to be the answer.
 
 **`validate-pins.py` rechecks the referent too, not only the declaration.**
-Every `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
-has its `commit`, `revision_kind` and `sorted-ls-tree-r-v1` digest recomputed
-exactly the way `scaffold-project.py --pin` computed them: OFFLINE from a
-local checkout when one can be found — `--pin-source [PRODUCT=]<path>`,
-`SHAPE_PIN_SOURCE_<PRODUCT>` in the environment, or a checkout sitting beside
-the assembly root and named for the pinned repository — else from `gh api`
-when `gh` can read it. Neither answering is a named SKIP, never a finding and
-never a failure: a project with no local checkout of its referent and no
-network is not thereby lying about its descent. A digest that recomputes
-differently, or a pin file the declaration names but that is not there, is
-reported as drift like every other pin in this file.
+Each `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
+has its `commit`, `revision_kind` and `sorted-ls-tree-r-v1` digest recomputed as
+`scaffold-project.py --pin` computed them: OFFLINE from a local checkout when
+one is found — `--pin-source [PRODUCT=]<path>`, `SHAPE_PIN_SOURCE_<PRODUCT>` in
+the environment, or a checkout beside the assembly root named for the pinned
+repository — else by `gh api`, with the operator's `gh` credentials, when `gh`
+can read it. Finding neither is a named SKIP, exit 0: no checkout and no network
+does not make a descent a lie. A checkout that cannot answer is the finding
+`neutral-pin-source-unreadable`. `make bootstrap`, `bump-leg.py` and
+`update-shape.py apply` run this validator in the operator's environment, so
+each makes that call too; none takes `--pin-source`.
 
 ### A neutral product may elect the shape and be its own assembly root
 
@@ -969,8 +972,7 @@ Moving those three facts by hand is how they come apart, so one command moves
 them together, run from a checkout of this standard:
 
 ```sh
-python3 scripts/bump-leg.py --root <path-to-the-project> --leg spec \
-    --to <40 hex commit>       # --dry-run prints the move and writes nothing
+python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex>   # --dry-run prints the move and writes nothing
 ```
 
 It fetches the commit into the leg, checks the leg out AT it, recomputes the
@@ -982,14 +984,15 @@ included — then runs the project's own `validate-pins.py` and
 `validate-manifest.py` and commits ONCE with explicit pathspecs.
 
 It REFUSES a `--to` that is not exactly 40 hex, a commit no branch of the leg's
-remote contains (including one committed inside the mount and never pushed — a
-pin the rest of the world cannot fetch is a root it cannot bootstrap), a dirty
-root, an untracked or ignored workflow file it would rewrite, a root standing on
-its own tracking branch (the next step is a pull request, never a push to the
-default branch), and a validator that goes red — rolling the pin, the workflow
-files, the leg's checkout and the index back first, so a refusal leaves the tree
-exactly as it was found. The leg is left DETACHED at the new commit; `make
-bootstrap` re-places it on its tracking branch AT the new pin.
+remote contains (including one committed in the mount and never pushed — a pin
+the rest of the world cannot fetch is a root it cannot bootstrap), a dirty root,
+an untracked or ignored workflow file it would rewrite, a root standing on its
+own tracking branch (the next step is a pull request, never a push to the
+default branch: `git switch -c <branch>` first; `--dry-run` writes nothing, so
+it runs there and prints that command), and a validator that goes red — rolling
+the pin, the workflow files, the leg's checkout and the index back first, so a
+refusal leaves the tree as it was found. The leg is left DETACHED at the new
+commit; `make bootstrap` re-places it on its tracking branch AT the new pin.
 
 ## Bootstrap is COPIED into the project, not fetched
 
@@ -1022,12 +1025,12 @@ the rest is the project's own, which an upstream fix must never overwrite.
 
 ## Keeping a project's shape current
 
-The copies are the trade: a project runs its own gate offline, and an upstream
-FIX to a copied file reaches it never. On 2026-09-03 that bill came due — one
-change to the assembly-root `validate.yml`, and both projects carrying the
-shape were updated BY HAND: re-copy, recompute the file's `sha256` row, move
-`commit` and `digests.tree_sha256`, mirror both into `project.yaml`, re-run the
-validators. `update-shape.py` is that, as one command:
+The copies are the trade: a project runs its own gate, which never consults this
+standard (its validators' one possible network read is `validate-pins.py`'s `gh
+api` recheck of a neutral product's pin, above), and an upstream FIX to a copied
+file reaches it never. On 2026-09-03 that bill came due — one change to the
+assembly-root `validate.yml`, and both projects with the shape were updated BY
+HAND: re-copy, re-pin, re-validate. `update-shape.py` is that, as one command:
 
 ```sh
 ./update-shape.py check --root ../MedxEHR          # writes nothing
@@ -1089,9 +1092,9 @@ by every `check` until it is taken or a file arrives at that path.
 `owner/repo` it bare-clones itself; it defaults to the repository the pin
 names. `make bootstrap` prints one line when the upstream has moved past the
 pin AND this machine can already tell offline — `SHAPE_UPSTREAM_PATH` points at
-a clone, or a `.shape-upstream-tip` file carries a commit. It adds no network
-call: a bootstrap that paused to ask GitHub a question would have made the
-shape a dependency again.
+a clone, or a `.shape-upstream-tip` file carries a commit. That line adds no
+network call: a bootstrap that paused to ask GitHub a question would have
+made the shape a dependency again. (Its pins gate may ask `gh api`; see above.)
 
 ### Is this repository compliant? `openRepoShape --doctor`
 
@@ -1114,22 +1117,22 @@ directory first — which is what makes the verdict offline.
 For an assembly root the rows are **naming** (this standard's own
 `contracts/repository-naming.yaml`), **manifest** and **pins** (the project's
 OWN `scripts/validate-manifest.py` and `scripts/validate-pins.py` when it
-carries them — they are the pinned copies, which is the point — else the
-template copies, and the row says which answered), **manifest kinds** (every
-`kind:`-bearing manifest in the root against a registry, so a `contracts/*.yaml`
-nothing validates is a finding by name rather than a silence, and so is a
-`family.yaml` beside `project.yaml`), **shape currency** (`update-shape.py
-check`'s per-file verdicts, summarised), **legs** (each one mounted, and its
-checked-out commit against the pin, with no fetch), **leg shape files** (each
-leg's `AGENTS.md`, `CLAUDE.md` and `.gitignore` against `templates/<role>-root/`
-— a comparison and not a gate: no leg file is pinned anywhere), **placement**
-(every tracked path of every leg, against the path policy), **agent files**, and
-**machine**. A FAMILY holder gets **family**, **manifest kinds**, **shape
-currency**, **placement** (`n/a` — a holder has no legs of its own), **members**
-and **machine**; a directory that is neither gets what it is CALLED under the
-naming policy, what IS in it, and the way in — and a repository the advisory is
-not silent about gets the **Triad** row, status `advisory`: the preference said
-once and stepped over by the verdict (a leg gets its assembly root).
+carries them — the pinned copies — else the template copies, and the row says
+which answered), **manifest kinds** (every `kind:`-bearing manifest in the
+root against a registry, so a `contracts/*.yaml` nothing validates, or a
+`family.yaml` beside `project.yaml`, is a finding by name), **shape currency**
+(`update-shape.py check`'s per-file verdicts, summarised), **legs** (each one
+mounted, and its checked-out commit against the pin, with no fetch), **leg
+shape files** (each leg's `AGENTS.md`, `CLAUDE.md` and `.gitignore` against
+`templates/<role>-root/`, a comparison: no leg file is pinned), **placement**
+(every tracked path of every leg, against the path policy), **agent files**,
+and **machine**. A FAMILY holder gets **family**, **manifest kinds**, **shape
+currency**, **placement** (`n/a`: no legs of its own), **agent files**, **members**
+and **machine**. Either, mid-merge, gets **merge** first: a `FINDING` naming the
+unmerged paths, or a `note` if none is left. A directory that is neither gets what
+it is CALLED under the naming policy, what IS in it, the way in and **machine** —
+and a repository the advisory is not silent about gets the **Triad** row, status
+`advisory`: said once and stepped over by the verdict (a leg gets its root).
 
 Every row is `ok`, `note`, `FINDING` or `n/a` — or `advisory`, the Triad row
 alone — and every one that is not `ok` names the exact command that fixes it,
@@ -1148,22 +1151,22 @@ verdict, and its exit code:
 | `COMPLIANT` | 0 | every row ok, and the pin names this standard's commit |
 | `COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)` | 1 | valid, and the standard has moved on |
 | `DRIFTED (…)` | 1 | a copy was edited here, or a leg is off its pin |
-| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere |
-| `INVALID (<rows>)` | 1 | a validator went red |
+| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere, or a submodule in a leg other than the one its `submodules:` record names |
+| `INVALID (<rows>)` | 1 | a validator went red, or (`merge`) the index holds an unmerged path |
 | `NOT A SHAPE ROOT` | 2 | neither manifest is there — adopt, or scaffold |
 
 Exit 3 is usage or environment — nothing about it is a statement about the
 tree you pointed at: no such path, a `shape-doctor.py` not sitting in a
 checkout of the standard, or a pin naming a commit **this** checkout does not
-carry (`CANNOT ANSWER`). **Drift outranks a red validator**
-on the verdict line, deliberately — an edited shape copy is exactly what makes
-`validate-pins.py` red, so answering `INVALID (pins)` would send the reader at
-the symptom while the fix is `update-shape.py`. The pins row is printed either
-way, with its own next command. `MISPLACED` sits between the two: a path in
-the wrong leg is a fact about the shape that no validator, pin or manifest
-here can see, while a red validator names itself in the table whether or not
-it also names the verdict line. `--json` is the same report as one object,
-each row carrying its `id`.
+carry (`CANNOT ANSWER`). **Drift outranks a red validator** on the verdict
+line, deliberately — an edited shape copy is exactly what makes
+`validate-pins.py` red, so `INVALID (pins)` would send the reader at the
+symptom while the fix is `update-shape.py`; the pins row still prints its own
+next command. `MISPLACED` sits between the two: a path in the wrong leg is a
+fact about the shape no validator, pin or manifest here can see. **An
+unfinished merge outranks all three**, as `INVALID (merge)`: the conflict is
+what turns the other rows red, and no fix commits until it is finished.
+`--json` is the same report as one object, each row carrying its `id`.
 
 **`placement` is the row that reads what is *inside* the legs.** Brett Heap,
 2026-09-10: *"we have to look for code in spec and spec in code"*. It runs the

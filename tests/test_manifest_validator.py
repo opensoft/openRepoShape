@@ -3,9 +3,22 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 import pytest
 
-from conftest import run_script
+from conftest import REPO, git, run_script
+
+sys.path.insert(0, str(REPO / "scripts"))
+from repo_shape import parse_yaml, path_spelling_fault  # noqa: E402
+
+#: A name that holds a backslash or a drive letter is one Git records on
+#: POSIX and refuses on Windows, where each is a separator or a drive.
+POSIX_NAMES = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Git for Windows records no path with a backslash or a drive")
 
 
 def validate(project):
@@ -326,6 +339,73 @@ def test_a_manifest_that_is_not_utf8_refuses_rather_than_raising(project):
     assert "manifest ok" not in result.stdout
 
 
+# --- a display name no UTF-8 text can hold (#280) ---------------------------
+
+def rename(project, escape: str) -> None:
+    """Put `name: "<escape>"` in place of the scaffolded `name: "Atlas"`, as
+    BYTES: `escape` is the YAML spelling, backslash and all, and the file
+    stays ASCII and keeps whatever line endings it has."""
+    manifest = project / "project.yaml"
+    data = manifest.read_bytes()
+    assert data.count(b'\nname: "Atlas"') == 1, "fixture drift: the name line"
+    manifest.write_bytes(data.replace(b'\nname: "Atlas"',
+                                      f'\nname: "{escape}"'.encode("ascii")))
+
+
+def validate_bytes(project, **env: str):
+    """`(exit code, stdout, stderr)` as BYTES, so no codec of this process
+    reads them, with `env` set over this process's environment."""
+    proc = subprocess.run(
+        [sys.executable, str(project / "scripts" / "validate-manifest.py")],
+        cwd=str(project), capture_output=True, stdin=subprocess.DEVNULL,
+        env={**os.environ, **env}, check=False)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+@pytest.mark.parametrize("escape, code_point", [
+    pytest.param("a\\ud83db", "U+D83D", id="the-issue-row-high-surrogate"),
+    pytest.param("caf\\udce9", "U+DCE9", id="the-byte-surrogateescape-keeps"),
+    pytest.param("a\\ud800b", "U+D800", id="the-first-surrogate"),
+    pytest.param("a\\udfffb", "U+DFFF", id="the-last-surrogate"),
+    pytest.param("\\ud83d\\ude00", "U+D83D", id="a-pair-is-two-surrogates"),
+])
+@pytest.mark.parametrize("ioencoding", [None, "utf-8"])
+def test_a_name_holding_a_lone_surrogate_is_a_finding(project, escape,
+                                                      code_point, ioencoding):
+    """On c7c02fa the reader took the escape, the validator accepted the
+    name, and its `manifest ok` line raised `UnicodeEncodeError`: exit 1 and
+    a traceback, under a pipe and under `PYTHONIOENCODING=utf-8` (the
+    doctor's) alike. It is a finding now, on stderr, with the name escaped
+    by `repr`, before that line is reached."""
+    rename(project, escape)
+    env = {} if ioencoding is None else {"PYTHONIOENCODING": ioencoding}
+    code, stdout, stderr = validate_bytes(project, **env)
+    shown = (stdout + stderr).decode("utf-8", "backslashreplace")
+    assert code == 1, shown
+    assert b"Traceback" not in stderr and b"UnicodeEncodeError" not in stderr, \
+        shown
+    assert b"manifest ok" not in stdout, shown
+    finding = (f"FINDING manifest-name: name is '{escape}', which holds "
+               f"{code_point}, a lone surrogate").encode("ascii")
+    assert finding in stderr, shown
+    assert b"1 finding(s)" in stderr, "the name is the only finding"
+
+
+@pytest.mark.parametrize("escape", [
+    pytest.param("\\U0001F600", id="an-astral-character-as-one-escape"),
+    pytest.param("\\u00e9t\\u00e9", id="a-bmp-character-as-an-escape"),
+    pytest.param("\\ue000", id="private-use-just-past-the-surrogates"),
+    pytest.param("\\ud7ff", id="the-last-character-before-them"),
+])
+def test_a_name_spelled_without_a_surrogate_is_still_ok(project, escape):
+    """What the finding must not take: every other code point, spelled as an
+    escape, including the two either side of U+D800..U+DFFF."""
+    rename(project, escape)
+    code, stdout, stderr = validate_bytes(project, PYTHONIOENCODING="utf-8")
+    assert code == 0, stderr.decode("utf-8", "backslashreplace")
+    assert stdout.startswith(b"manifest ok: "), stdout
+
+
 # --- the ruling: a chain of pins may reach the referent (2026-09-05) --------
 #
 # "elect the shape for both, follow the pin chain, no family yet" — Brett Heap,
@@ -508,3 +588,150 @@ def test_an_install_form_is_a_leg_of_nothing(project):
     result = validate(project)
     assert result.returncode == 1
     assert "naming-not-a-leg" in result.stderr
+
+
+# --- the record of the source's own submodules (#189) ----------------------
+#
+# `adopt-project.py execute` appends a `submodules:` block to the manifest,
+# one row per source submodule it kept in a leg, and `shape-doctor.py` holds
+# each submodule a leg keeps to the row naming its path. A row the doctor
+# could not read would leave that submodule unchecked, so the project's own
+# validator names it.
+
+#: A record as `execute` writes it: two rows, one with the plan's
+#: `resolution:` and one without, and the source commit on each.
+SUBMODULE_RECORD = (
+    "\n# THE SOURCE'S OWN SUBMODULES (#189)\n"
+    "submodules:\n"
+    '  - path: ".cursor"\n'
+    "    leg: code\n"
+    '    resolution: "editor rules the code leg reads"\n'
+    '    source_commit: "0123456789abcdef0123456789abcdef01234567"\n'
+    '  - path: "docs/theme"\n'
+    "    leg: spec\n"
+    '    source_commit: "0123456789abcdef0123456789abcdef01234567"\n'
+)
+
+
+def append_record(project, text: str = SUBMODULE_RECORD) -> None:
+    manifest = project / "project.yaml"
+    manifest.write_bytes((manifest.read_text() + text).encode("utf-8"))
+
+
+def test_a_submodule_record_is_accepted(project):
+    append_record(project)
+    result = validate(project)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "manifest ok" in result.stdout
+
+
+@pytest.mark.parametrize("old, new, code", [
+    ("    leg: code\n", "    leg: root\n", "manifest-submodule-leg"),
+    ("    leg: code\n", "    leg: drop\n", "manifest-submodule-leg"),
+    ('  - path: ".cursor"\n', '  - path: "/etc/.cursor"\n',
+     "manifest-submodule-path"),
+    ('  - path: ".cursor"\n', '  - path: "../.cursor"\n',
+     "manifest-submodule-path"),
+    ('  - path: ".cursor"\n', '  - path: ""\n', "manifest-submodule-path"),
+    ('  - path: "docs/theme"\n', '  - path: ".cursor"\n',
+     "manifest-submodule-path"),
+    ('    resolution: "editor rules the code leg reads"\n',
+     "    resolution: 3\n", "manifest-submodule-resolution"),
+    ('    source_commit: "0123456789abcdef0123456789abcdef01234567"\n',
+     '    source_commit: "main"\n', "manifest-submodule-commit"),
+    ('  - path: ".cursor"\n    leg: code\n'
+     '    resolution: "editor rules the code leg reads"\n'
+     '    source_commit: "0123456789abcdef0123456789abcdef01234567"\n',
+     '  - ".cursor"\n', "manifest-submodules"),
+    # Spellings Git records no path in, so no submodule is ever at one:
+    ('  - path: ".cursor"\n', '  - path: "./.cursor"\n',
+     "manifest-submodule-path"),
+    ('  - path: ".cursor"\n', '  - path: ".cursor/"\n',
+     "manifest-submodule-path"),
+    ('  - path: "docs/theme"\n', '  - path: "docs//theme"\n',
+     "manifest-submodule-path"),
+    ('  - path: "docs/theme"\n', '  - path: "docs/./theme"\n',
+     "manifest-submodule-path"),
+    ('  - path: ".cursor"\n', '  - path: "./"\n', "manifest-submodule-path"),
+], ids=["leg-root", "leg-drop", "absolute-path", "dotdot-path", "empty-path",
+        "path-twice", "resolution-not-text", "commit-not-hex",
+        "row-not-a-mapping", "leading-dot-slash", "trailing-slash",
+        "doubled-slash", "dot-segment", "the-leg-itself"])
+def test_a_submodule_record_row_that_says_nothing_is_a_finding(project, old,
+                                                              new, code):
+    assert old in SUBMODULE_RECORD, f"fixture drift: {old!r}"
+    append_record(project, SUBMODULE_RECORD.replace(old, new, 1))
+    result = validate(project)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert code in result.stderr, result.stderr
+
+
+def test_a_submodule_record_that_is_not_a_list_is_a_finding(project):
+    append_record(project, "\nsubmodules: .cursor\n")
+    result = validate(project)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "manifest-submodules" in result.stderr, result.stderr
+
+
+def test_a_recorded_path_git_never_records_says_why(project):
+    """The finding says what is wrong with the spelling, not only that the
+    path is not one: `.cursor/` is the submodule at `.cursor` written as no
+    index ever writes it, so the doctor would never hold that one to it."""
+    append_record(project, SUBMODULE_RECORD.replace(
+        '  - path: ".cursor"\n', '  - path: ".cursor/"\n', 1))
+    result = validate(project)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert ("submodules[0]: path is '.cursor/'; Git records no path with a "
+            "`.` segment, a trailing `/` or a doubled `/`, so no submodule is "
+            "ever at it") in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("spelled, path", [
+    ('"vendor/a\\\\b"', "vendor/a\\b"),
+    ('"C:/vendor"', "C:/vendor"),
+    ('"vendor/caf\u00e9"', "vendor/caf\u00e9"),
+    ('"vendor/nb\\xa0sp"', "vendor/nb\u00a0sp"),
+    ('"vendor/my lib"', "vendor/my lib"),
+], ids=["backslash", "drive-letter", "non-ascii", "code-point-escape",
+        "space"])
+def test_a_recorded_path_git_records_is_accepted(project, spelled, path):
+    """A NAME GIT RECORDS IS A NAME THE RECORD MAY HOLD (#189).
+
+    On POSIX a backslash and a drive letter are characters of a name, which
+    Git records and an adoption of such a source records too; refusing them
+    would make `execute`'s own manifest INVALID. The leg-path rule refuses
+    both because a person TYPES a leg path, for commands Windows also runs,
+    and this is the other half of that rule only. A no-break space arrives
+    as the code-point escape `adopt-project.py` writes it with.
+    """
+    assert parse_yaml(f"path: {spelled}\n")["path"] == path
+    append_record(project, SUBMODULE_RECORD.replace(
+        '  - path: ".cursor"\n', f"  - path: {spelled}\n", 1))
+    result = validate(project)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "manifest ok" in result.stdout
+
+
+@pytest.mark.parametrize("path", [
+    "./x", "x/", "a//b", "a/./b", "a/../b", "/x", ".", "x", "vendor/x",
+    "my lib", "caf\u00e9",
+    pytest.param("a\\b", marks=POSIX_NAMES),
+    pytest.param("C:/x", marks=POSIX_NAMES),
+])
+def test_the_recorded_path_rule_refuses_what_git_will_not_record(tmp_path,
+                                                                 path):
+    """`repo_shape.path_spelling_fault` IS GIT'S OWN RULE, asked of Git.
+
+    A path the rule refuses is one `git update-index` refuses to record a
+    gitlink at, and a path it accepts is one Git records -- so a row the
+    validator accepts names a place a submodule can be, and a row it refuses
+    names none.
+    """
+    repo = tmp_path / "r"
+    repo.mkdir()
+    git("init", "-q", ".", cwd=repo)
+    commit = "0123456789abcdef0123456789abcdef01234567"
+    recorded = git("update-index", "--add", "--cacheinfo",
+                   f"160000,{commit},{path}", cwd=repo, check=False)
+    assert (path_spelling_fault(path) is None) == (recorded.returncode == 0), (
+        path_spelling_fault(path), recorded.stderr)

@@ -21,7 +21,7 @@ hand-edited; `tests/test_cli_reference.py` fails when the two disagree.
 
 **Never create a repository without the human's explicit confirmation.** Run
 `./setup.sh` (or the one-liner) WITHOUT `--yes` and let it ask. The human
-types `yes` at its prompt; you never answer it for them.
+types `yes` at its prompt; you never answer it for them. No terminal: section 2.
 
 **Never answer an install prompt.** The preflight asks `Type yes to continue:`
 for each thing it offers to run — an install, `gh auth login`, `gh auth
@@ -62,39 +62,39 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.s
 ```
 
 `openRepoShape <Project> --org <org> --visibility <…> --elected-by '<Name>'`
-is the same run through the installed command, still without `--yes`. The
-command with NO arguments prints its usage and exits 1 — install, check the
-machine (`--preflight`), diagnose a repository (`--doctor`), scaffold — and
-`--install` ends with a read-only `machine:` block naming anything missing.
-Neither installs anything; relay the block, and let the human run
-`--preflight` if they want the offers.
+is the same run through the installed command, still without `--yes`. With no
+arguments it prints its usage and exits 1, and `--install` ends with a
+read-only `machine:` block naming anything missing; neither installs anything.
+Relay the block; the human runs `--preflight` if they want the offers.
 
 On Windows without WSL2, `Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py`
 then `py setup-project.py <Project> --org <org> --visibility <…> --elected-by '<Name>'`
 is the same run again — two commands because a piped script cannot ask — still without `--yes`.
 
-Already standing in a checkout of openRepoShape? Run `./setup.sh` the same
-way, still with the explicit `--org` — there is no fork to detect one from.
-Either form runs the preflight, checks the three names against the naming
-policy, prints the scaffold plan, and then asks. Show the human its output
-verbatim — the plan especially — and let them answer its prompt. "Go ahead"
-about something else is not a yes about this. Standing in a family FOLDER —
-`<Family>/`, with the holder cloned at `<Family>/<Family>` — is DETECTED and
-said in the plan with no flag at all: the project lands beside the holder
-exactly as it would have, and the last next-command names the `family.py add`
-that records the membership in the holder and nowhere else.
+In a checkout of openRepoShape, run `./setup.sh` the same way, still with the explicit
+`--org`: only a fork's `origin` names an organisation to detect, and a clone of
+opensoft's own is refused without one. Either form runs the preflight, checks the
+three names against the naming policy, prints the scaffold plan, and then asks. Show
+the human its output verbatim — the plan especially — and let them answer its prompt.
+"Go ahead" about something else is not a yes about this. Standing in a family FOLDER —
+`<Family>/`, holder cloned at `<Family>/<Family>` — is DETECTED and said in the plan
+with no flag: the project lands beside the holder, and the last next-command names the
+`family.py add` that records the membership in the holder and nowhere else.
+
+No terminal in your shell, so setup stops after the plan: exit 2, `no terminal
+to confirm on`. Give the human the same command for THEIR OWN terminal, where
+it asks them, the one-liner too: setup reads the answer from that terminal and
+never from the pipe. Never pass `--yes` yourself.
 
 If it refuses, read the refusal: each one names what to run instead, or, for
-some, the VALUE to change. Among those are two you can foresee from the flags
-you were given, both before anything is created: `scaffold-leg-path-collides`
-(a `--spec-path` or `--code-path` that is, holds or lies inside a FILE the
-shape writes into the assembly root: `project.yaml` is one, and `contracts`
-holds `contracts/spec-pin.yaml`; the defaults `spec` and `code` pass) and
-`scaffold-pin-collides` (a `--pin` the shape cannot write, below). `setup.sh`
-takes those flags after `--`, which it passes straight through to
-`scaffold-project.py`. Relay the refusal and ask the human for the value;
-never choose another yourself. Do not retry with `--force`; there is none,
-deliberately.
+some, the VALUE to change. Two you can foresee from your flags, both before
+anything is created: `scaffold-leg-path-collides` (a `--spec-path` or
+`--code-path` that is, holds or lies inside a FILE the shape writes into the
+assembly root: `project.yaml` is one, and `contracts` holds
+`contracts/spec-pin.yaml`; the defaults `spec` and `code` pass) and
+`scaffold-pin-collides` (a `--pin` the shape cannot write, below). Both go
+after `--`. Relay the refusal and ask the human for the value; never choose
+another yourself. Do not retry with `--force`; there is none, deliberately.
 
 ## 3. It finishes the job
 
@@ -143,9 +143,19 @@ order, and step 4 is the one you must not skip.
    it is the human's word, not your convenience.
 7. **Read the verification table back to them.** It accounts for every source
    path at the source commit, by blob sha, in exactly one of {spec leg, code
-   leg, root tree} or as `drop`. If it exits non-zero, STOP and relay it: the
+   leg, root tree} or as `drop`. If it exits non-zero, STOP and relay it, and
+   take the way out THAT exit prints. Exit 1, a failed verification: the
    source is untouched — nothing is deleted, `main` is where it was, the split
-   is on a branch — so the exit is to fix the plan and re-run into fresh legs.
+   is on a branch — so fix the plan, delete the split branch, and re-run into
+   fresh legs and a fresh `--work-dir`, or none. Exit 2 saying `IS pushed`
+   (GitHub only: `gh pr create` or the topic refused) comes after both legs
+   and the split are pushed and verified: finish with the command it prints
+   and never re-run into fresh legs, which abandons that pair.
+
+`execute` also records the plan's answers about the source's submodules in
+the split's `project.yaml`, under `submodules:` — per submodule a leg keeps,
+its `path`, `leg`, `resolution:` and `source_commit`. It confers nothing,
+nothing rewrites it, and the doctor holds each submodule to it.
 
 `execute` opens a pull request, because these organisations are pull-request
 only. Never suggest a direct push to the default branch, and never `--admin`.
@@ -237,7 +247,10 @@ which writes that file and nothing else — see 4.
    `review_required: true` is a question the policy is ASKING, not a defect
    found: answering it on their behalf puts a fact in their tree that nobody
    decided. The plan is `kind: placement-plan` and is not an adoption plan;
-   never hand one to `adopt-project.py`, which refuses it by name.
+   never hand one to `adopt-project.py`, which refuses it by name. A
+   submodule is judged by the adoption's `submodules:` record, not a rule
+   (`rule: null`, `confidence: recorded`), and is a `note` where no row names
+   it. One moved on purpose stays MISPLACED: its row is the human's to change.
 5. **`NOT A SHAPE ROOT` is a question for the human, not a task.** There is
    no `project.yaml` and no `family.yaml`. The two ways in are
    `adopt-project.py plan` (a repository that already exists, converted in
@@ -318,6 +331,7 @@ checkout of this standard, pointed at the project.
 ```sh
 python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex> --dry-run
 # 1. show the human the printed `old -> new` line
+git -C <path> switch -c <branch>   # 3. never commit on the tracking branch
 python3 scripts/bump-leg.py --root <path> --leg spec --to <40 hex>
 git -C <path> push -u origin <branch>   # then open a pull request
 ```
@@ -329,22 +343,21 @@ git -C <path> push -u origin <branch>   # then open a pull request
    agree.** The digest is RECOMPUTED from the leg's own objects, never
    adjusted to fit; a hand-written one turns the check into a formality and
    hides exactly the drift it exists to find.
-3. **The commit is made on a BRANCH and lands as a pull request.** The tool
-   refuses to commit onto the tracking branch for that reason. Never suggest
-   a direct push to the default branch, and never `--admin`.
+3. **The commit is made on a BRANCH, created BEFORE the real run, and lands
+   as a pull request.** A new project stands on its tracking branch; the dry
+   run runs there and prints the `git switch -c`, but the real run is refused.
+   Never suggest a direct push to the default branch, and never `--admin`.
 4. **A refusal is not something to work around.** A commit no branch of the
    leg's remote contains must be PUSHED, not pinned — a pin the rest of the
    world cannot fetch is a root it cannot bootstrap. A red validator has
    already been rolled back; the finding above it is the thing to fix.
 5. The leg is left DETACHED at the new commit. `make bootstrap` in the root
-   re-places it on its tracking branch AT the new pin; say so when you relay
-   the result.
+   re-places it on its tracking branch AT the new pin; say so in your relay.
 6. **`--trailer "<Key>: <value>"` puts a line on the commit this writes.**
-   Repeatable, kept in the order given — the same flag `update-shape.py
-   apply` and `family.py bump` already take. `--dry-run` prints the
-   trailers it would write, after the `old -> new` line, so the human reads
-   them before they land rather than after. A lane passes its `Lane:` line
-   and this estate's `Co-Authored-By:` there, not by amending afterwards.
+   Repeatable, kept in the order given, as `update-shape.py apply` and
+   `family.py bump` take it. `--dry-run` prints them after the `old -> new`
+   line, so the human reads them before they land. A lane passes its `Lane:`
+   line and this estate's `Co-Authored-By:` there, not by amending.
 
 ## Creating a family, and adding a member
 

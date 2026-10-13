@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import html
 import importlib.util
 import os
 import re
@@ -574,9 +575,48 @@ def test_agents_md_is_short_enough_to_be_read():
     late; the lines are there so that an assistant says so first, relays the
     refusal, asks the human for the value and does not retry with another
     spelling of it. Section 2 is also where the file says that `setup.sh`
-    takes the three flags only after `--`, which nothing else here did."""
+    takes the three flags only after `--`, which nothing else here did.
+
+    2026-10-12: 477 -> 481 — step 7 of "Adopting an existing repository"
+    (#304). Four lines, inside that one numbered point and nowhere else. It
+    said that ANY non-zero exit of `adopt-project.py execute` is to fix the
+    plan and re-run into fresh legs, which holds for a failed verification
+    (exit 1) and for neither of the two exits a GitHub run adds: a refused
+    `gh pr create` and a topic that will not set. Both are exit 2, both come
+    after the legs and the split branch are pushed and verified, and what
+    each prints is a command to finish by hand, so an assistant that followed
+    the sentence abandoned a pushed adoption for a second pair of legs. The
+    lines buy what the point could not say: that the exit decides, which
+    message marks the two (`IS pushed`), and that the second pair is the
+    harm. `tests/test_adopt_github_exits.py` holds the point to both printed
+    exits.
+
+    2026-10-12: 481 -> 482 — step 7 again, for #188's exit 1 (one line).
+    #188 makes `execute` refuse what an earlier run left: the split branch
+    (`adopt-branch-exists`) and a `--work-dir` that holds a leg or the split
+    (`adopt-work-dir-occupied`). So "fix the plan and re-run into fresh
+    legs" alone is a way out the tool now refuses, and an assistant that
+    followed it would meet those refusals one at a time. The line buys the
+    rest of the exit the failed verification prints: delete the split
+    branch, and re-run into a fresh `--work-dir`, or none.
+    `tests/test_adopt_late_failure.py` holds the point to it, and
+    `tests/test_adopt_github_exits.py` still holds the two exits after the
+    push.
+
+    2026-10-12: 482 -> 490 — the adoption's `submodules:` record (#189).
+    Four lines and a blank one under "Adopting an existing repository" say
+    that `execute` now writes one more thing into the split: the plan's
+    answer for each source submodule a leg keeps, under `project.yaml`'s
+    `submodules:`, which nothing rewrites afterwards. Three lines end
+    "Checking"'s point 4, and they are the part an assistant would get
+    wrong: a MISPLACED submodule carries `rule: null` and `confidence:
+    recorded` because the record judged it and no rule did, so a row with
+    no rule id is not a broken row; and a submodule moved on purpose stays
+    MISPLACED against its row, which is the human's to change -- never a
+    manifest edit an assistant makes to turn the row green, the hand-edited
+    pin arriving through a new door."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 477, f"AGENTS.md is {len(lines)} lines; the cap is 477"
+    assert len(lines) <= 490, f"AGENTS.md is {len(lines)} lines; the cap is 490"
 
 
 def test_claude_md_points_at_agents_md():
@@ -1135,8 +1175,61 @@ def test_readme_is_short_enough_to_be_read():
     #   before anything is created. The README's own text had said only what
     #   a `--pin` writes, so a reader met either refusal by running the
     #   scaffold.
-    assert len(lines) <= 1419, (
-        f"README.md is {len(lines)} lines; the cap is 1419")
+    # 2026-10-12: 1419 -> 1422 — `setup.sh --help` from a download (#341).
+    #   The sentence that sent a reader to `setup.sh --help` for every flag
+    #   now says that holds from a checkout, and what the same command does
+    #   from a download: it clones nothing, lists no flag, and names
+    #   `setup-project.py --help` and `docs/cli.md`. Three lines, because the
+    #   shim's answer there changed from a clone of the upstream to a few
+    #   lines of its own, and a README that still promised the flag list
+    #   would send a reader to a command that no longer prints it.
+    assert len(lines) <= 1422, (
+        f"README.md is {len(lines)} lines; the cap is 1422")
+
+
+#: #476: what each document that carries the first rule says an assistant does
+#: when its shell has no terminal, and the sentence that keeps `--yes` the
+#: person's. Phrases, not the lines, because the page words it its own way.
+NO_TERMINAL_ROUTE = {
+    "AGENTS.md": "Never pass `--yes` yourself",
+    "README.md": "it runs the command WITHOUT `--yes`",
+    "docs/handbook.html": "never pass --yes yourself",
+}
+
+
+@pytest.mark.parametrize("name", sorted(NO_TERMINAL_ROUTE))
+def test_the_documents_say_what_an_assistant_does_with_no_terminal(name):
+    """#476: the first rule sends an assistant to run setup WITHOUT `--yes`
+    and let it ask, and an assistant's shell has no terminal, so setup stops
+    after the plan and the refusal was the only thing that said what next.
+    Every document that carries the rule now carries the way on: the plan
+    goes to the human, who runs the same command in their own terminal. The
+    assistant never passes `--yes` for them.
+
+    #492: and that command may be the one-liner itself, because setup reads
+    the answer from the person's terminal and never from the pipe the script
+    arrived down. "From a file and not a pipe", which #476 had to say, is no
+    longer true and is no longer said.
+
+    The page is read as text: tags dropped, entities decoded, whitespace
+    folded, so a re-wrap or a `<code>` around a flag does not fail it. Tags
+    are dropped from the `.html` page ONLY: a Markdown document names its
+    placeholders in angle brackets (`<Project>`, `<org>`) and may hold a bare
+    `<`, and the strip would take everything up to the next `>` out of what
+    it says.
+    """
+    text = (REPO / name).read_text(encoding="utf-8")
+    said = " ".join((html.unescape(re.sub(r"<[^>]+>", "", text))
+                     if name.endswith(".html") else text).split())
+    assert re.search(r"stops after the plan.{0,400}?own terminal.{0,200}?"
+                     r"never (?:from )?the pipe", said, re.IGNORECASE), (
+        f"{name} does not say that setup stops after the plan where there is "
+        "no terminal, and that the human runs the same command in their own "
+        "terminal, which reads the answer there and never from the pipe")
+    assert "from a file and not a pipe" not in said, (
+        f"{name} still sends the human to a file instead of the pipe")
+    assert NO_TERMINAL_ROUTE[name] in said, (
+        f"{name} no longer says {NO_TERMINAL_ROUTE[name]!r}")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

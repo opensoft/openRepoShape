@@ -38,7 +38,12 @@ needs_filter_repo = pytest.mark.skipif(
 
 UNREADABLE = "plan-gitmodules-unreadable"
 REMOTES = "remotes"
-REGISTRATION = '[submodule "b"]\n\tpath = vendor/b\n\turl = ../b\n'
+#: An ABSOLUTE url, which git copies as it stands. A relative one kept in a
+#: leg is resolved from the leg too (#190), and in a source with no remote
+#: `../b` is the directory beside it, which no GitHub leg reaches: a finding
+#: of its own beside every value here, which is not what these tests ask.
+REGISTRATION = ('[submodule "b"]\n\tpath = vendor/b\n'
+                '\turl = https://example.invalid/b\n')
 #: A source whose plan asks about `.gitmodules`, and about `vendor/` where
 #: the tip holds the submodule: `specs/` and `src/` classify themselves and
 #: `README.md` stays in the root.
@@ -254,7 +259,7 @@ def test_the_finding_names_the_key_git_dies_on(adopter, tmp_path, gitmodules,
     (with_line(r'update = "bo\ngus"'),
      f"invalid value for `submodule.b.update`: `bo\\ngus`, {NOT_A_STRATEGY}"),
     (with_line("shallow = caf").encode()[:-1] + b"\xe9\n",
-     "bad boolean config value `caf\\xe9` for `submodule.b.shallow`"),
+     "bad boolean config value `caf\\udce9` for `submodule.b.shallow`"),
     (b'[submodule "b\x1bc"]\n\tpath = vendor/b\n\turl = ../b\n'
      b"\tfetchRecurseSubmodules = `x`\n",
      "bad `submodule.b\\x1bc.fetchrecursesubmodules` argument: `\\`x\\``, "

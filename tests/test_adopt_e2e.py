@@ -10,14 +10,16 @@ pull-request ruleset.
 
 from __future__ import annotations
 
+import importlib.util
+import re
 import shutil
 import subprocess
 import sys
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, resolve, run_script,
-                      write_plan)
+from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
+                      resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml  # noqa: E402
@@ -39,7 +41,6 @@ def adopted(tmp_path_factory) -> dict:
     """One real adoption: plan, answer the questions, check, execute."""
     base = tmp_path_factory.mktemp("adopt")
     source = base / "Thing"
-    from conftest import make_source_repo
     make_source_repo(source)
     plan = base / "adoption-plan.yaml"
     written = write_plan(source, plan, project=PROJECT)
@@ -215,6 +216,177 @@ def test_the_sources_own_agent_files_are_untouched(adopted, adopted_clone):
     assert "AGENTS-shape.md" in rows
 
 
+def next_block(stdout: str) -> list[str]:
+    """The lines `execute` prints from `NEXT:` on, to the end of its run."""
+    return stdout.split("\nNEXT: ", 1)[1].splitlines()
+
+
+def test_next_names_the_bootstrap_a_root_with_its_own_makefile_can_run(
+        adopted, adopted_clone):
+    """The source kept its own Makefile, so the shape's is `shape/Makefile`
+    until a person merges the two, and `make bootstrap` in the root exits 2
+    (`No rule to make target 'bootstrap'`) (#480). The NEXT block names the
+    command `make bootstrap` runs instead, a line says why, and that command,
+    run in a recursive clone of the split, exits 0. (It is run with the
+    interpreter running this test, which is what `python3` names here.)"""
+    said = next_block(adopted["stdout"])
+    assert said[:3] == [f"review the pull request on {PROJECT}, then",
+                        f"    git clone --recurse-submodules <{PROJECT} url>",
+                        "    python3 scripts/bootstrap.py"], said
+    assert said[3].startswith("NOTE the root keeps its own Makefile and the "
+                              "shape's is shape/Makefile, so `make bootstrap`")
+    command = said[2].split()
+    ran = subprocess.run([sys.executable, *command[1:]], cwd=adopted_clone,
+                         capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", check=False)
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    if shutil.which("make"):
+        made = subprocess.run(["make", "bootstrap"], cwd=adopted_clone,
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", check=False)
+        assert made.returncode != 0, made.stdout + made.stderr
+
+
+def test_the_makefile_follow_up_says_the_shapes_targets_arrive_with_it(
+        adopted):
+    """The follow-up the plan carries, and the split commit lists, names
+    each of the shape's make targets as arriving only with the merge, and
+    what runs meanwhile. The targets are read from the template, so a target
+    the shape gains and the follow-up does not name fails here."""
+    template = (REPO / "templates" / "assembly-root" / "Makefile").read_text(
+        encoding="utf-8")
+    targets = [name for name in re.findall(r"(?m)^([a-z][a-z-]*):", template)
+               if name != "help"]
+    assert "bootstrap" in targets, targets
+    message = git("log", "-1", "--format=%B", "adopt/three-repo-shape",
+                  cwd=adopted["source"]).stdout
+    (planned,) = [item for item in load_yaml(adopted["plan"])["follow_ups"]
+                  if item.startswith("merge shape/Makefile into Makefile")]
+    for text in (planned, " ".join(message.split())):
+        assert ("The shape's make targets ("
+                + ", ".join(f"`{target}`" for target in targets)
+                + ") arrive only with that merge; until then `python3 "
+                "scripts/bootstrap.py` is what `make bootstrap` runs") in text
+
+
+@pytest.fixture(scope="module")
+def adopter():
+    """`adopt-project.py` as a module, for what it prints and predicts."""
+    module_spec = importlib.util.spec_from_file_location("adopt_e2e_next",
+                                                         ADOPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
+
+
+def test_next_keeps_make_bootstrap_where_the_shapes_makefile_is_the_roots(
+        adopter, capsys):
+    """Where the shape's Makefile took its own name, NEXT is what it always
+    was, byte for byte."""
+    adopter._next_steps({"assembly": PROJECT}, [])
+
+    assert capsys.readouterr().out == (
+        f"\nNEXT: review the pull request on {PROJECT}, then\n"
+        f"    git clone --recurse-submodules <{PROJECT} url>\n"
+        "    make bootstrap\n")
+
+
+#: A source that keeps its own `scripts/bootstrap.py` in the root beside its
+#: own Makefile. `scripts/` goes to the code leg unless the plan is answered
+#: otherwise, as `kept_scripts` answers it.
+OWN_BOOTSTRAP_TREE = {
+    "README.md": "# Northwind\n", "src/app.py": "print(1)\n",
+    "docs/spec.md": "# Spec\n", "Makefile": "build:\n\t@echo source build\n",
+    "scripts/bootstrap.py": "print('THE SOURCE OWN BOOTSTRAP')\n"}
+#: What NEXT says in that root, in place of a bootstrap command.
+BOTH_ASIDE = (
+    "NOTE the root keeps its own Makefile and scripts/bootstrap.py, and the "
+    "shape's are shape/Makefile and shape/scripts/bootstrap.py, so neither "
+    "`make bootstrap` nor `python3 scripts/bootstrap.py` runs the shape's "
+    "bootstrap yet: merge shape/Makefile into Makefile and "
+    "shape/scripts/bootstrap.py into scripts/bootstrap.py first, and then "
+    "run `make bootstrap`.")
+
+
+def kept_scripts(plan) -> None:
+    """The plan's `scripts/` answered `root`, LF as `plan` wrote it."""
+    text = plan.read_text(encoding="utf-8")
+    sent = "  - path: scripts/\n    leg: code\n"
+    assert sent in text, text
+    with plan.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text.replace(sent, (
+            "  - path: scripts/\n    leg: root\n"
+            "    resolution: \"the source keeps its scripts in the root\"\n"),
+            1))
+
+
+def test_next_names_no_bootstrap_where_the_roots_script_is_the_sources_own(
+        tmp_path):
+    """The source kept its own `scripts/bootstrap.py` in the root as well as
+    its own Makefile, so the shape's script went to
+    `shape/scripts/bootstrap.py`, and NEXT's `python3 scripts/bootstrap.py`
+    ran the SOURCE's script in a recursive clone and exited 0, with no leg
+    placed and nothing validated (#493's review, F2). NEXT names no
+    bootstrap command there, and says which merges come first."""
+    source = make_source_repo(tmp_path / PROJECT, tree=OWN_BOOTSTRAP_TREE,
+                              edits=())
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=PROJECT)
+    assert written.returncode == 0, written.stderr + written.stdout
+    kept_scripts(plan)
+
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "  beside  shape/scripts/bootstrap.py " in result.stdout
+    assert next_block(result.stdout) == [
+        f"review the pull request on {PROJECT}, then",
+        f"    git clone --recurse-submodules <{PROJECT} url>",
+        BOTH_ASIDE], result.stdout
+
+
+def test_next_names_no_bootstrap_where_only_the_script_went_aside(
+        adopter, capsys):
+    """With the shape's Makefile in the root and the source's own
+    `scripts/bootstrap.py`, `make bootstrap` runs the source's script, so
+    NEXT names no command there either."""
+    adopter._next_steps({"assembly": PROJECT}, [
+        ("scripts/bootstrap.py", "shape/scripts/bootstrap.py")])
+
+    assert capsys.readouterr().out == (
+        f"\nNEXT: review the pull request on {PROJECT}, then\n"
+        f"    git clone --recurse-submodules <{PROJECT} url>\n"
+        "NOTE the root keeps its own scripts/bootstrap.py, and the shape's is "
+        "shape/scripts/bootstrap.py, so neither `make bootstrap` nor `python3 "
+        "scripts/bootstrap.py` runs the shape's bootstrap yet: merge "
+        "shape/scripts/bootstrap.py into scripts/bootstrap.py first, and then "
+        "run `make bootstrap`.\n")
+
+
+def test_the_makefile_follow_up_waits_for_a_script_that_went_aside_too(
+        adopter):
+    """`plan` predicts the follow-ups from what the plan keeps in the root,
+    and tells each the whole list: where `scripts/` stays as well, the
+    root's `scripts/bootstrap.py` is the source's own, so the Makefile's
+    follow-up does not name `python3 scripts/bootstrap.py` as what runs
+    meanwhile (#493's review, F2)."""
+    kept = [adopter.Entry(path, adopter.Verdict(
+        "root", "test", "kept by the test", "high"), 1, 1)
+        for path in ("Makefile", "scripts/")]
+
+    (makefile,) = [item for item in adopter._predict_collisions(kept)
+                   if item.startswith("merge shape/Makefile into Makefile")]
+
+    assert makefile.endswith(
+        "arrive only with that merge, and the root's scripts/bootstrap.py is "
+        "the source's own until shape/scripts/bootstrap.py is merged into it "
+        "as well, so neither `make bootstrap` nor `python3 "
+        "scripts/bootstrap.py` runs the shape's bootstrap before both merges "
+        "are made"), makefile
+
+
 def test_the_agent_file_collision_says_add_a_line_not_merge(adopted):
     """A merge is the wrong instruction for an instruction file: it is how a
     project's own agent instructions end up inside the shape's. The follow-up
@@ -266,6 +438,15 @@ def test_the_manifest_and_pins_describe_the_legs_that_were_created(adopted,
         assert pin["commit"] == tip
         gitlink = git("rev-parse", f"HEAD:{role}", cwd=adopted_clone).stdout.strip()
         assert gitlink == tip, "the gitlink and the pin move together or not"
+
+
+def test_a_source_with_no_submodule_gets_no_submodule_record(adopted_clone):
+    """`execute` records the leg of each source submodule it keeps (#189),
+    and this source has none: its manifest gains no `submodules:` and no
+    comment about one, and is the manifest every adoption wrote before."""
+    manifest = adopted_clone / "project.yaml"
+    assert "submodules" not in load_yaml(manifest)
+    assert "#189" not in manifest.read_text(encoding="utf-8")
 
 
 # --- verification ----------------------------------------------------------
