@@ -1464,12 +1464,12 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       <div class="code" data-lang="sh"><pre><code>openRepoShape --doctor ../MedxEHR      # or: ./shape-doctor.py --root ../MedxEHR
 openRepoShape --doctor                 # the repository you are standing in
 ./shape-doctor.py --root ../MedxEHR --json</code></pre></div>
-      <p>It <strong>writes nothing into the repository and fetches nothing</strong>, and it
-      reimplements nothing. One flag writes at all, and it writes one file you named:
-      <code>--placement-plan</code>, below. The
-      standard a project&rsquo;s copies are compared against is the checkout the script is RUN FROM
-      &mdash; beside one it uses that one, installed it clones the standard into a temporary
-      directory first &mdash; which is what makes the verdict offline.</p>
+      <p>It <strong>writes nothing into the repository and fetches nothing from it</strong>, and
+      it reimplements nothing. One flag writes at all, and it writes one file you named:
+      <code>--placement-plan</code>, below. It compares against the checkout it is RUN FROM, so
+      the verdict is offline. Installed, it clones the standard into a temporary directory and
+      KEEPS it, because its NEXT lines run from there: its last line names it, safe to delete
+      after they run.</p>
       <p>For an assembly root the rows are <strong>naming</strong>, <strong>manifest</strong> and
       <strong>pins</strong> (the project&rsquo;s OWN validators when it carries them &mdash; they
       are the pinned copies, which is the point &mdash; else the template copies, and the row says
@@ -1526,7 +1526,7 @@ openRepoShape --doctor                 # the repository you are standing in
       a red validator names itself in the table whether or not it also names the verdict line.
       <strong>An unfinished merge outranks all three</strong>, as <code>INVALID (merge)</code>: the
       conflict is what turns the other rows red, and no fix commits until it is finished.
-      <code>--json</code> is the same report as one object,
+      <code>--json</code> is the same report as one object on stdout,
       each row carrying its <code>id</code>.</p>
 
       <p><strong><code>placement</code> is the row that reads what is <em>inside</em> the
@@ -1567,8 +1567,8 @@ openRepoShape --doctor                 # the repository you are standing in
       tool consumes one. A later <code>--fix --plan &lt;file&gt;</code> will carry a
       <strong>resolved</strong> plan out by paired leg pull requests and a pin bump, printing what
       it will do and asking first; until then the moves are yours.
-      <code>--placement-plan</code> is the only thing this command writes, and it writes only the
-      file you name.</p>
+      <code>--placement-plan</code> is all <code>shape-doctor.py</code> ever writes, and it writes
+      only the file you name.</p>
       <p><strong><code>machine</code> is the one row that is not about the repository</strong>, so
       it is <code>n/a</code> by status and can never move the verdict: a workstation with no
       <code>gh</code> is not this repository being non-compliant. It runs
@@ -1877,9 +1877,10 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <code>--reuse-empty-repo</code> reusing an empty leg and a leg holding the scaffold&rsquo;s
       own seed, and the one ruleset exit that re-run is, added (#462); <code>family.py</code>
       <code>add</code>, <code>bump</code> and <code>remove</code> committing on a branch made first,
-      never the tracking branch, and printing the push of it, added (#487) &mdash; a page cannot
-      name the commit that contains it, and the blob below is the fact a test checks.
-      README.md blob ab6ec9b00c1b7d0d4f1d0be075f2d3afcf8d8a3f. Every command, flag, exit code
+      never the tracking branch, and printing the push of it, added (#487); the installed doctor
+      keeping its clone of the standard, which its NEXT lines run from, added (#500) &mdash; a page
+      cannot name the commit that contains it, and the blob below is the fact a test checks.
+      README.md blob 8527950a3e47a4b6d87dababe6886155432d5c87. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
