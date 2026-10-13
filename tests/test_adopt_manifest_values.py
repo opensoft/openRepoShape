@@ -242,12 +242,22 @@ def test_plan_asks_what_check_asks_of_the_same_keys(adopter, tmp_path,
     monkeypatch.setattr(adopter, "_flag_plan",
                         lambda *a: built.append(real(*a)) or built[-1])
     source = make_source_repo(tmp_path / "Thing")
+    # A pin is `<product>@<40 hex>` with its digest read at `plan` (#273):
+    # a local stand-in for `openGlass` answers it, with no network.
+    glass = tmp_path / "openGlass"
+    glass.mkdir()
+    git("init", "-q", "-b", "main", cwd=glass)
+    (glass / "README.md").write_bytes(b"# openGlass\n")
+    git("add", "-A", cwd=glass)
+    git("commit", "-qm", "seed", cwd=glass)
+    commit = git("rev-parse", "HEAD", cwd=glass).stdout.strip()
     out = tmp_path / "plan.yaml"
     code = adopter.main(["plan", "--source", str(source), "--project",
                          PROJECT, "--org", "testorg", "--elected-by",
                          "Test Human", "--elected-on", "2026-09-02",
                          "--visibility", "internal", "--tracking-branch",
-                         "trunk", "--pin", "openGlass", "--out", str(out)])
+                         "trunk", "--pin", f"openGlass@{commit}",
+                         "--pin-source", str(glass), "--out", str(out)])
     assert code == 0, capsys.readouterr().err
     (flag_plan,) = built
     written = adopter.Plan.load(out)
