@@ -900,27 +900,27 @@ InkRouter/                      the family FOLDER (see the layout above)
 
 ```sh
 python3 scripts/family.py init --org InkRouter --family InkRouter --into .. --reuse-empty-repo
+git -C ../InkRouter/InkRouter switch -c family/add-irrs
 python3 scripts/family.py add  --family-root ../InkRouter/InkRouter --member InkRouter/IRRS
 python3 scripts/family.py bump --family-root ../InkRouter/InkRouter --member IRRS --to <40 hex>
 python3 scripts/family.py remove --family-root ../InkRouter/InkRouter --member IRRS
 python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter
 ```
 
-`add`, `bump` and `remove` each write ONE commit, with explicit pathspecs,
-moving the gitlink and `members[].pin` together — the same lockstep rule an
-assembly root applies to its legs, and `scripts/validate-family.py` refuses
-when they disagree. Each row also records the member's own `project.yaml`
-`id`, so the validator can check the tree mounted at `members/<Project>` is
-the project the row claims rather than merely a repository at the right
-commit. **A family pins assembly roots, never legs**: adding `<Project>-spec`
-is refused, because a leg has no `project.yaml` and belongs to its own root.
+`add`, `bump` and `remove` each write ONE commit, with explicit pathspecs, on a
+branch made first (the tracking branch is refused) and print its push: the
+gitlink and `members[].pin` move together, the lockstep rule an assembly root
+applies to its legs, which `scripts/validate-family.py` enforces. Each row
+records the member's `project.yaml` `id`, so the validator can check
+`members/<Project>` holds the project the row claims, not merely a repository
+at the right commit. **A family pins assembly roots, never legs**:
+`<Project>-spec` is refused; a leg has no `project.yaml`.
 
 `make bootstrap` in the holder fetches every member and its legs — resolving
-the same GitHub App or `SHAPE_LEGS_TOKEN` credential the workflow does,
-because a member is a private assembly root that mounts two private legs of
-its own — and then runs each member's own `make bootstrap`. `make validate`
-runs the family validator and then each member's `make validate`. A member
-that could not be fetched is reported and skipped, never a failure.
+the GitHub App or `SHAPE_LEGS_TOKEN` credential the workflow does, as a member
+is a private assembly root mounting two private legs — then runs each member's
+own `make bootstrap`; `make validate` runs the family validator, then each
+member's. A member it cannot fetch is reported and skipped, never a failure.
 
 The holder carries the same COPY pin an assembly root does, so
 `update-shape.py` re-syncs it the same way; it mirrors into `family.yaml`

@@ -49,7 +49,7 @@ from conftest import git, run_script
 #: rather than rebuilt: a holder made any other way would test a different
 #: holder. Importing the fixture gives this module its own instance of it.
 from test_family import (  # noqa: F401
-    FAMILY, NAME, ORG, SPARE, family, manifest, validate,
+    FAMILY, NAME, ORG, SPARE, WORK_BRANCH, family, manifest, validate,
 )
 
 #: Every refusal that comes after the mount ends with this sentence when the
@@ -65,7 +65,11 @@ LEG_REMEDIATION = (
     "`{root}-spec` or `{root}-code` — is never right: the legs belong to "
     "their own assembly root{named}.")
 
-NEXT = "NEXT  git -C {root} push -u origin <branch> && open a pull request"
+#: What a good `add` ends with (#487): the push of the branch it committed on,
+#: which is the fixture's own, and the pull request it is for.
+NEXT = ("NEXT  git -C {root} push -u origin {branch}",
+        "      then open a pull request against main; never push to it "
+        "directly")
 
 #: What an `--at` naming a tree or a blob, or a tag of one, is told to do.
 AT_NAMES_NO_COMMIT_REMEDIATION = (
@@ -253,9 +257,11 @@ def add_in_process(module, monkeypatch, offline: Offline, root: Path,
 def unborn_holder(tmp_path: Path) -> Path:
     """A holder with NO COMMIT YET: `git init` and a hand-written
     `family.yaml`, not even staged. `family.py init` always commits; a
-    holder made by hand does not."""
+    holder made by hand does not. Its unborn HEAD is on a branch of its own,
+    not the tracking branch `main` that `add` refuses to commit onto
+    (#487), whatever the default branch of the `git init` running here."""
     root = tmp_path / "Unborn"
-    git("init", "-q", str(root), cwd=tmp_path)
+    git("init", "-q", "-b", "family/unborn", str(root), cwd=tmp_path)
     (root / "family.yaml").write_bytes(
         b"schema_version: 1\nkind: family-manifest\nname: Unborn\n"
         b"members: []\n")
@@ -563,8 +569,12 @@ def test_a_cached_store_in_a_linked_worktree_is_refused_where_git_keeps_it(
         f"object store of a previously removed {SPARE}, and `git submodule "
         "add` will not write over it",
         "Remediation: if nothing unpushed lives in it — and nothing does "
-        "unless somebody committed inside the mount — delete it and re-run:",
-        f"    rm -rf {store.as_posix()}",
+        "unless somebody committed inside the mount — delete it and re-run. "
+        "It is this directory:",
+        f"    {store.as_posix()}",
+        "and in a POSIX shell (Git Bash on Windows) this deletes it and "
+        "nothing else:",
+        f"    rm -rf {shlex.quote(store.as_posix())}",
         "It is left behind by `git rm` on purpose, which is why this tool "
         "will not remove it for you.",
     ]
@@ -830,6 +840,8 @@ def test_the_first_member_of_an_empty_family_unwinds_to_no_gitmodules(
     root = tmp_path / "work" / "Contoso"
     assert not (root / ".gitmodules").exists()
     assert not (root / "members").exists()
+    # On a branch, as `add` requires: it refuses the tracking branch (#487).
+    git("switch", "-q", "-c", f"family/add-{SPARE.lower()}", cwd=root)
     monkeypatch.setattr(family_module, "write_lf", full_disk)
     monkeypatch.setattr(tempfile, "tempdir", str(offline.temp))
     monkeypatch.setenv("PATH", offline.env["PATH"])
@@ -1178,8 +1190,8 @@ def test_a_head_that_names_no_readable_commit_is_unwound_like_any_other(
     """HEAD IS READ ONE WAY, BEFORE AND AFTER. `MountRollback` records it with
     `rev-parse -q --verify HEAD^{commit}` and `undo` reads it the same way. A
     bare `rev-parse HEAD` is not the same answer where HEAD is a symbolic ref
-    to an ANNOTATED TAG (the tag's own sha, not the commit's) or where
-    `refs/heads/main` names a MISSING OBJECT (that object's sha, where the
+    to an ANNOTATED TAG (the tag's own sha, not the commit's) or where the
+    branch HEAD is on names a MISSING OBJECT (that object's sha, where the
     other says there is none): `undo` took the difference for the one commit
     having landed, said "nothing was undone" and left the half-added member
     staged, in a holder it had unwound before. The two states are corrupt, so
@@ -1189,8 +1201,15 @@ def test_a_head_that_names_no_readable_commit_is_unwound_like_any_other(
         git("-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "-m",
             "an annotated tag", "v1", cwd=holder)
         git("symbolic-ref", "HEAD", "refs/tags/v1", cwd=holder)
+        # A HEAD that names a tag is on no branch, which the real `add`
+        # refuses before the mount (#487, `family-holder-detached`). What
+        # this test asks is how the rollback READS such a HEAD, so the
+        # branch is answered here as a holder on a branch answers it.
+        monkeypatch.setattr(family_module, "_checked_branch",
+                            lambda *_args: WORK_BRANCH)
     else:
-        ref = holder / ".git" / "refs" / "heads" / "main"
+        # The branch HEAD is on: the fixture's own (#487), not `main`.
+        ref = holder / ".git" / "refs" / "heads" / WORK_BRANCH
         ref.parent.mkdir(parents=True, exist_ok=True)
         ref.write_bytes(b"deadbeef" * 5 + b"\n")
         if git("rev-parse", "HEAD", cwd=holder, check=False).stdout.strip() \
@@ -1244,7 +1263,8 @@ def test_a_good_add_is_one_commit_on_its_branch_as_before(family, holder,
         f"  {SPARE:<16} {tip[:12]} tree {digest[:12]}… (project irqs)",
         f"  committed {head[:12]}: .gitmodules, members/{SPARE}, family.yaml",
         "",
-        NEXT.format(root=holder.resolve()),
+        *[line.format(root=holder.resolve(), branch=WORK_BRANCH)
+          for line in NEXT],
     ]
     assert git("rev-parse", "HEAD~1", cwd=holder).stdout.strip() == was
     assert git("show", "--name-only", "--format=", "HEAD",

@@ -36,6 +36,7 @@ the fixture's own remotes.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -177,6 +178,8 @@ def empty_holder(tmp_path) -> Path:
     assert created.returncode == 0, created.stderr + created.stdout
     root = tmp_path / "work" / "Contoso"
     assert not (root / "members").exists()
+    # On a branch, as `add` requires: it refuses the tracking branch (#487).
+    git("switch", "-q", "-c", "family/add", cwd=root)
     return root
 
 
@@ -299,8 +302,12 @@ def test_a_cached_store_is_refused_before_the_mount_would_reactivate_it(
         f"object store of a previously removed {SPARE}, and `git submodule "
         "add` will not write over it",
         "Remediation: if nothing unpushed lives in it — and nothing does "
-        "unless somebody committed inside the mount — delete it and re-run:",
-        f"    rm -rf {store.as_posix()}",
+        "unless somebody committed inside the mount — delete it and re-run. "
+        "It is this directory:",
+        f"    {store.as_posix()}",
+        "and in a POSIX shell (Git Bash on Windows) this deletes it and "
+        "nothing else:",
+        f"    rm -rf {shlex.quote(store.as_posix())}",
         "It is left behind by `git rm` on purpose, which is why this tool "
         "will not remove it for you.",
     ]
