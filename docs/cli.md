@@ -658,17 +658,27 @@ usage: family.py init [-h] --org ORG --family FAMILY [--id ID] [--name NAME]
                       [--local-remote-dir LOCAL_REMOTE_DIR] [--into DIR]
                       [--work-dir WORK_DIR] [--no-push] [--dry-run]
 
+Create a family holder. Before anything is created, and under --dry-run alike,
+the family.yaml it would write is put through the holder's own YAML reader and
+its own validate-family.py: a value either would not hold is refused and
+named.
+
 options:
   -h, --help            show this help message and exit
   --org ORG
   --family FAMILY       the holder's name, ONE CamelCase token, e.g. InkRouter
-  --id ID               lowercase family id
-  --name NAME           display name
+  --id ID               lowercase family id (default: --family lowercased)
+  --name NAME           display name (default: --family); validate-family.py
+                        holds it to the same rule
   --visibility {private,public,internal}
   --created-by CREATED_BY
+                        the human creating the family (default:
+                        GIT_AUTHOR_NAME, then `git config user.name`); not
+                        blank
   --created-on CREATED_ON
-                        YYYY-MM-DD
+                        YYYY-MM-DD (default: today)
   --tracking-branch TRACKING_BRANCH
+                        the branch the holder is created on (default: main)
   --reuse-empty-repo    if <org>/<Family> already exists and has ZERO commits,
                         use it as the holder instead of refusing. A repository
                         with commits is still refused: that is live, not a
