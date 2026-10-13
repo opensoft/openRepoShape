@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import sys
 from pathlib import Path
@@ -10,13 +11,14 @@ from pathlib import Path
 import pytest
 
 from conftest import (
-    REPO, blank_unnamed_pin_sources, clear_ambient_pin_sources, run_script,
+    REPO, SCAFFOLD, blank_unnamed_pin_sources, clear_ambient_pin_sources, git,
+    run_script,
 )
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
-    UNAMBIGUOUS_FORMS, NamingPolicy, Refusal, accepts_role,
-    link_pins_from_trees, parse_yaml,
+    UNAMBIGUOUS_FORMS, LinkPins, NamingPolicy, Refusal, accepts_role,
+    link_manifest_lookup, link_pins_from_trees, parse_yaml,
 )
 from shape_materialize import naming_block  # noqa: E402
 
@@ -941,6 +943,1101 @@ def test_cli_finds_a_recorded_chain_that_does_not_hold(project, tmp_path):
     result = run_script(VALIDATOR, "--project", str(manifest))
     assert result.returncode == 1
     assert "openInk declares openQuill, not openDox" in result.stderr
+
+
+# --- what a --link-source value MEANS, and a source that cannot answer -----
+#
+# #338. `--link-source` is `[PRODUCT=]PATH`, and a path may hold an `=`.
+# Splitting every value at its first `=` made `a=b/openXdox` a source keyed
+# to a link `a` that no chain names: never asked, so the link stayed
+# declared-unverified, exit 0, under a WARNING offering the `--link-source`
+# the person had just passed. And the lookup asked `is_dir()`/`is_file()`,
+# which before 3.14 raise every `OSError` but four, so a source that could
+# not be entered, keyed, `SHAPE_PIN_SOURCE_<PRODUCT>` or beside the project,
+# ended the naming gate in a traceback. Now the text before the first `=` is
+# a link only when a chain here names it, as `validate-pins.py` reads
+# `--pin-source` (#295); a source that cannot answer is a WARNING with the
+# system's reason, never a traceback and never a finding; and a value no
+# link used is a NOTE. Every run below is made from a directory of its own
+# under `tmp_path`, so the only checkout beside it is one the test made.
+
+CHAIN_ARGS = ("--role", "assembly", "--pins", "openXdox",
+              "--referent-chain", "openXdox,openDox")
+
+#: A mode denies nothing on Windows, where `chmod` has no search or read bit
+#: to clear, and nothing to root. The same reason, and the same skip, as
+#: `tests/test_neutral_pin_validator.py`'s `SEARCH_DENIED`; as a mark, it is
+#: decided before the test body makes any path at all.
+SEARCH_DENIED = pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="needs a POSIX mode that denies access: Windows has no search or "
+           "read bit for chmod to clear, and root is not stopped by one")
+
+UNREADABLE = "WARNING link-source-unreadable: "
+
+
+def naming_from(cwd: Path, *args, env=None):
+    """The validator run from `cwd`, made here if it is not there yet."""
+    cwd.mkdir(parents=True, exist_ok=True)
+    return run_script(VALIDATOR, *args, cwd=cwd, env=env)
+
+
+def test_a_bare_link_source_whose_path_holds_an_equals_sign_is_a_path(
+        tmp_path):
+    """THE DEFECT, its first half. The link tree is under a directory named
+    `a=b`, passed BARE. The text before the `=` names no link of the chain,
+    so the whole value is the path, and the link VERIFIES with nothing
+    warned or noted. It used to be a source keyed to a link `<tmp>/a`, which
+    no lookup asks for. `=` is a legal character in a path on all three
+    platforms, so nothing here is skipped for spelling one."""
+    tree = _tree(tmp_path / "a=b" / "openXdox", "openDox")
+    result = naming_from(tmp_path / "work", *CHAIN_ARGS, "--explain",
+                         "--link-source", str(tree), "codexDox")
+    assert result.returncode == 0, result.stderr
+    assert "CHAIN openXdox → openDox   [verified]" in result.stdout
+    assert "WARNING" not in result.stdout + result.stderr
+    assert "NOTE" not in result.stderr
+
+
+def test_a_link_named_before_the_equals_is_the_key_even_over_a_directory(
+        tmp_path):
+    """`openXdox=x/openXdox` where a directory `openXdox=x` holds the tree
+    and `x/openXdox` does not exist. `openXdox` IS a link of the chain, so
+    the keyed reading wins, decided by the chain and not by the disk, and
+    the missing `x/openXdox` is named, with the other reading and how to ask
+    for it. `./` asks for it, and the link verifies."""
+    work = tmp_path / "work"
+    _tree(work / "openXdox=x" / "openXdox", "openDox")
+    keyed = naming_from(work, *CHAIN_ARGS, "--link-source",
+                        "openXdox=x/openXdox", "codexDox")
+    assert keyed.returncode == 0, keyed.stderr
+    assert "Traceback" not in keyed.stderr
+    assert "WARNING codexDox: declared-unverified" in keyed.stderr
+    assert (f"{UNREADABLE}{Path('x', 'openXdox')} (--link-source "
+            "openXdox=...) could not answer for openXdox: no such file or "
+            "directory\n  `openXdox=x/openXdox` is also a directory; "
+            "`--link-source ./openXdox=x/openXdox` reads it as one.\n"
+            in keyed.stderr), keyed.stderr
+    assert "NOTE" not in keyed.stderr, (
+        "a source that was asked and could not answer is a WARNING, never "
+        "also a NOTE")
+
+    whole = naming_from(work, *CHAIN_ARGS, "--explain", "--link-source",
+                        "./openXdox=x/openXdox", "codexDox")
+    assert whole.returncode == 0, whole.stderr
+    assert "CHAIN openXdox → openDox   [verified]" in whole.stdout
+    assert "WARNING" not in whole.stdout + whole.stderr
+
+
+def test_a_mistyped_link_name_alone_is_named_as_read(tmp_path):
+    """THE ISSUE'S THIRD ROW: `openXdx=<tree>`, the only value. `openXdx`
+    names no link, so the value is a PATH that is not there: the link stays
+    declared-unverified, as it did, and the run now says which value was
+    asked, that it could not answer, and how it was read."""
+    tree = _tree(tmp_path / "trees" / "openXdox", "openDox")
+    typo = f"openXdx={tree}"
+    result = naming_from(tmp_path / "work", *CHAIN_ARGS, "--link-source",
+                         typo, "codexDox")
+    assert result.returncode == 0, result.stderr
+    assert "WARNING codexDox: declared-unverified" in result.stderr
+    assert (f"{UNREADABLE}{Path(typo)} (--link-source) could not answer for "
+            "openXdox: " in result.stderr), result.stderr
+    assert ("\n  It was read as a PATH: `openXdx` is not a link of a "
+            "referent chain here (links: openXdox, openDox).\n"
+            in result.stderr), result.stderr
+    # Those two and nothing else: the checkout beside the project that is
+    # not there is the ordinary case, and is never said.
+    assert result.stderr.count("WARNING ") == 2, result.stderr
+    assert "NOTE" not in result.stderr
+
+
+def test_a_link_source_no_link_used_is_a_note_and_changes_no_exit(tmp_path):
+    """Each value no lookup asked is a NOTE on stderr, named as typed, with
+    why, and the run still exits 0. The keyed value answers `openXdox`; the
+    first bare one is replaced by a later bare one; and that later one is a
+    MISTYPED key, read as a path because no chain names `openXdx`, beside a
+    keyed source that had already answered — which used to say nothing at
+    all."""
+    tree = _tree(tmp_path / "trees" / "openXdox", "openDox")
+    spare = tmp_path / "spare"
+    spare.mkdir()
+    work = tmp_path / "work"
+    typo = f"openXdx={tree}"
+    result = naming_from(work, *CHAIN_ARGS, "--link-source", str(spare),
+                         "--link-source", f"openXdox={tree}",
+                         "--link-source", typo, "codexDox")
+    assert result.returncode == 0, result.stderr
+    assert "WARNING" not in result.stderr
+    assert (f"NOTE --link-source {spare}: not used — the later "
+            f"`--link-source {typo}` replaced it.\n" in result.stderr)
+    assert (f"NOTE --link-source {typo}: not used — each link whose own "
+            "declaration is read had a more specific source (a keyed "
+            "--link-source, SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout beside "
+            "the project). It was read as a PATH: `openXdx` is not a link of "
+            "a referent chain here (links: openXdox, openDox).\n"
+            in result.stderr), result.stderr
+    assert f"--link-source openXdox={tree}" not in result.stderr
+
+    # The issue's own row: the mistyped key BEFORE a good bare source. The
+    # good one is read; the typo is named, replaced, and read as a path.
+    issue = naming_from(work, *CHAIN_ARGS, "--link-source", typo,
+                        "--link-source", str(tree), "codexDox")
+    assert issue.returncode == 0, issue.stderr
+    assert "WARNING" not in issue.stderr
+    assert (f"NOTE --link-source {typo}: not used — the later "
+            f"`--link-source {tree}` replaced it. It was read as a PATH: "
+            "`openXdx` is not a link" in issue.stderr), issue.stderr
+
+    # A keyed value a later one for the same link replaced, in any case.
+    replaced = naming_from(work, *CHAIN_ARGS, "--link-source",
+                           f"openXdox={spare}", "--link-source",
+                           f"OPENXDOX={tree}", "codexDox")
+    assert replaced.returncode == 0, replaced.stderr
+    assert "WARNING" not in replaced.stderr
+    assert (f"NOTE --link-source openXdox={spare}: not used — the later "
+            f"`--link-source OPENXDOX={tree}` replaced it.\n"
+            in replaced.stderr), replaced.stderr
+
+    # The same value given twice is one value: noted once, for its own
+    # reason, and never as having replaced itself.
+    twice = naming_from(work, *CHAIN_ARGS, "--link-source",
+                        f"openXdox={tree}", "--link-source", str(spare),
+                        "--link-source", str(spare), "codexDox")
+    assert twice.returncode == 0, twice.stderr
+    assert twice.stderr.count("NOTE ") == 1, twice.stderr
+    assert "replaced it" not in twice.stderr
+
+    # A value for the chain's END: its own declaration is never read, so a
+    # source for it decided nothing, readable or not.
+    end = naming_from(work, *CHAIN_ARGS, "--link-source", f"openXdox={tree}",
+                      "--link-source", f"openDox={spare}", "codexDox")
+    assert end.returncode == 0, end.stderr
+    assert (f"NOTE --link-source openDox={spare}: not used — no name "
+            "classified here reads openDox's own declaration.\n"
+            in end.stderr), end.stderr
+
+    # No name records a chain at all.
+    none = naming_from(work, "--link-source", str(tree), "Atlas")
+    assert none.returncode == 0, none.stderr
+    assert (f"NOTE --link-source {tree}: not used — no name classified here "
+            "records a referent chain.\n" in none.stderr), none.stderr
+
+    # `--quiet`, the project's own `make bootstrap` and the doctor's
+    # `naming` row: nothing is said, as no WARNING is.
+    quiet = naming_from(work, *CHAIN_ARGS, "--quiet", "--link-source",
+                        str(spare), "--link-source", typo, "codexDox")
+    assert quiet.returncode == 0, quiet.stderr
+    assert quiet.stderr == ""
+
+
+@pytest.mark.parametrize("case", [
+    pytest.param("keyed-parent-not-searchable", marks=SEARCH_DENIED),
+    pytest.param("env-parent-not-searchable", marks=SEARCH_DENIED),
+    pytest.param("sibling-not-searchable", marks=SEARCH_DENIED),
+    "keyed-name-too-long",
+])
+def test_a_link_source_that_cannot_be_entered_or_named_is_a_warning(
+        tmp_path, case):
+    """THE DEFECT, its second half (#338). Each of these was a traceback on
+    3.9 to 3.13, exit 1, and on 3.14 a declared-unverified WARNING offering
+    the very source that had been given. Now each is the declared-unverified
+    WARNING it is, and beside it the source, named with the system's own
+    reason, on every Python; the exit is 0, because a link no source answers
+    for is a warning in this validator, an explicit source included.
+
+    The long name is RELATIVE, so the system has to refuse it by name. It
+    runs everywhere: whatever Windows calls it, the line is asserted, and the
+    reason is POSIX's `ENAMETOOLONG` only where that is the call."""
+    work = tmp_path / "work"
+    work.mkdir()
+    locked, env, args = None, None, ()
+    said = os.strerror(errno.EACCES)
+    if case in ("keyed-parent-not-searchable", "env-parent-not-searchable"):
+        source = _tree(tmp_path / "locked" / "openXdox", "openDox")
+        locked = tmp_path / "locked"
+        if case.startswith("keyed"):
+            how, args = ("--link-source openXdox=...",
+                         ("--link-source", f"openXdox={source}"))
+        else:
+            how = "$SHAPE_PIN_SOURCE_OPENXDOX"
+            env = {"SHAPE_PIN_SOURCE_OPENXDOX": str(source)}
+    elif case == "sibling-not-searchable":
+        locked = _tree(tmp_path / "openXdox", "openDox")
+        source = work.resolve().parent / "openXdox"
+        how = f"sibling checkout ({source})"
+        said = f"its project.yaml: {said}"
+    else:
+        source = Path("n" * 300)
+        how, args = ("--link-source openXdox=...",
+                     ("--link-source", f"openXdox={source}"))
+        said = None if os.name == "nt" else os.strerror(errno.ENAMETOOLONG)
+    if locked is not None:
+        locked.chmod(0)
+    try:
+        result = run_script(VALIDATOR, *CHAIN_ARGS, *args, "codexDox",
+                            cwd=work, env=env)
+    finally:
+        if locked is not None:
+            locked.chmod(0o700)
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "domain-descendant/assembly" in result.stdout
+    assert "WARNING codexDox: declared-unverified" in result.stderr
+    assert (f"{UNREADABLE}{source} ({how}) could not answer for openXdox: "
+            in result.stderr), result.stderr
+    if said is not None:
+        assert f"could not answer for openXdox: {said}\n" in result.stderr
+    assert "NOTE" not in result.stderr
+
+
+@pytest.mark.parametrize("case", [
+    pytest.param("not-readable", marks=SEARCH_DENIED),
+    "not-utf-8",
+    "not-a-mapping",
+])
+def test_a_link_manifest_that_cannot_be_read_is_named(tmp_path, case):
+    """A source that HAS a `project.yaml` the link cannot be read from:
+    named, with the reason, beside the declared-unverified WARNING it always
+    was. It used to be that WARNING alone."""
+    tree = tmp_path / "trees" / "openXdox"
+    tree.mkdir(parents=True)
+    manifest = tree / "project.yaml"
+    if case == "not-utf-8":
+        manifest.write_bytes(b"neutral_product_pins:\n  - open\xffDox\n")
+        said = f"{manifest}: not UTF-8 at byte "
+    elif case == "not-a-mapping":
+        manifest.write_bytes(b"- openDox\n")
+        said = f"{manifest}: not a mapping\n"
+    else:
+        manifest.write_bytes(b"neutral_product_pins:\n  - openDox\n")
+        said = f"{manifest}: {os.strerror(errno.EACCES)}\n"
+        manifest.chmod(0)
+    try:
+        result = naming_from(tmp_path / "work", *CHAIN_ARGS, "--link-source",
+                             f"openXdox={tree}", "codexDox")
+    finally:
+        manifest.chmod(0o600)
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "WARNING codexDox: declared-unverified" in result.stderr
+    assert (f"{UNREADABLE}{tree} (--link-source openXdox=...) could not "
+            f"answer for openXdox: {said}" in result.stderr), result.stderr
+
+
+@pytest.mark.parametrize("case", [
+    "env-no-manifest",
+    pytest.param("sibling-not-searchable", marks=SEARCH_DENIED),
+])
+def test_a_source_asked_only_for_the_chain_end_is_never_named(tmp_path,
+                                                               case):
+    """`openDox` ends the chain and its own declaration is never read, so a
+    `SHAPE_PIN_SOURCE_OPENDOX` at a checkout with no manifest (a CI job may
+    seed one for `validate-pins.py`'s digest), or an `../openDox` this user
+    cannot enter, decides nothing and is not said. The second was a
+    traceback before 3.14: the lookup asks for every link."""
+    tree = _tree(tmp_path / "trees" / "openXdox", "openDox")
+    work = tmp_path / "work"
+    work.mkdir()
+    env, locked = None, None
+    if case == "env-no-manifest":
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        env = {"SHAPE_PIN_SOURCE_OPENDOX": str(plain)}
+    else:
+        locked = tmp_path / "openDox"
+        locked.mkdir()
+        locked.chmod(0)
+    try:
+        result = run_script(VALIDATOR, *CHAIN_ARGS, "--explain",
+                            "--link-source", f"openXdox={tree}", "codexDox",
+                            cwd=work, env=env)
+    finally:
+        if locked is not None:
+            locked.chmod(0o700)
+    assert result.returncode == 0, result.stderr
+    assert "CHAIN openXdox → openDox   [verified]" in result.stdout
+    assert "WARNING" not in result.stdout + result.stderr
+    assert "NOTE" not in result.stderr
+
+
+def _codexdox(project: Path) -> Path:
+    """The scaffolded `Atlas` root's manifest, recast as `codexDox` pinning
+    `openXdox` and RECORDING the chain `openXdox → openDox`, exactly as
+    `test_cli_reads_the_chain_out_of_a_project_manifest` recasts it."""
+    manifest = project / "project.yaml"
+    text = manifest.read_text().replace(
+        "repository: testorg/Atlas\n    path: \".\"",
+        "repository: testorg/codexDox\n    path: \".\"")
+    text = text.replace("neutral_product_pins: []",
+                        "neutral_product_pins:\n  - openXdox")
+    text = text.replace(
+        "      form: project-leg\n      role: assembly\n"
+        "      also_matches: []",
+        "      form: domain-descendant\n      role: assembly\n"
+        "      also_matches: [project-leg/assembly]\n"
+        "      descendant_referent: openDox\n"
+        "      referent_declared: true\n"
+        "      referent_chain: [openXdox, openDox]")
+    manifest.write_text(text)
+    return manifest
+
+
+def test_under_project_a_link_is_one_a_leg_records(project, tmp_path):
+    """`--project` reads each leg's `naming.referent_chain:`, so its links
+    are the names a value may be keyed to, with no `--referent-chain`: a
+    bare tree under `a=b/` is a path, and verifies, where it used to be
+    keyed to `<tmp>/a`; and `openXdox=<tree>` is keyed to the leg's link,
+    and verifies, as it always did."""
+    manifest = _codexdox(project)
+    tree = _tree(tmp_path / "a=b" / "openXdox", "openDox")
+    for value in (str(tree), f"openXdox={tree}"):
+        result = run_script(VALIDATOR, "--project", str(manifest),
+                            "--link-source", value, cwd=project)
+        assert result.returncode == 0, result.stderr
+        assert "codexDox                         domain-descendant" \
+            in result.stdout
+        assert result.stderr == "", value
+
+
+@SEARCH_DENIED
+def test_the_projects_own_gates_name_a_checkout_beside_it_they_cannot_enter(
+        project):
+    """`../openXdox` at mode 000 beside a project whose leg records the
+    chain: the lookup every run of the project's gate makes. The naming step
+    (`validate-repository-naming.py --project`, which `make validate`,
+    `validate.yml` and `make bootstrap` run), its `--quiet` form (the naming
+    step of `make bootstrap`, and the doctor's `naming` row) and
+    `validate-manifest.py` (the same lookup, through `link_pins_from_trees`)
+    each ended in a `PermissionError` traceback, exit 1, before 3.14. Each now
+    exits 0 with the link declared-unverified, and the naming step names the
+    checkout with the system's reason.
+
+    WHAT THIS DOES NOT SAY is that those three TARGETS stop crashing on this
+    row. They also run `validate-pins.py`, whose `resolve_neutral_pin_source`
+    asks `(sibling / ".git").exists()` with no guard, so a sibling at mode 000
+    still ends it in a `PermissionError` traceback before 3.14. That is a
+    separate defect in a separate file, and not this change's."""
+    manifest = _codexdox(project)
+    sibling = _tree(project.parent / "openXdox", "openDox")
+    sibling.chmod(0)
+    try:
+        gate = run_script(VALIDATOR, "--project", str(manifest), cwd=project)
+        quiet = run_script(VALIDATOR, "--project", str(manifest), "--quiet",
+                           cwd=project)
+        own = run_script(project / "scripts" / "validate-manifest.py",
+                         cwd=project)
+    finally:
+        sibling.chmod(0o700)
+    assert gate.returncode == 0, gate.stderr
+    assert "Traceback" not in gate.stderr, gate.stderr
+    assert "WARNING codexDox: declared-unverified" in gate.stderr
+    resolved = project.resolve().parent / "openXdox"
+    assert (f"{UNREADABLE}{resolved} (sibling checkout ({resolved})) could "
+            "not answer for openXdox: its project.yaml: "
+            f"{os.strerror(errno.EACCES)}\n" in gate.stderr), gate.stderr
+    assert quiet.returncode == 0, quiet.stderr
+    assert quiet.stderr == ""
+    assert "Traceback" not in own.stderr, own.stderr
+    assert ("WARNING naming-referent-chain: leg 'assembly': "
+            "declared-unverified" in own.stdout + own.stderr), (
+        own.stdout + own.stderr)
+
+
+@SEARCH_DENIED
+def test_scaffold_reads_a_link_past_a_variable_it_cannot_enter(tmp_path):
+    """`scaffold-project.py --referent-chain` reads each link through the
+    same lookup, with `--pin-source` as the bare source. A
+    `SHAPE_PIN_SOURCE_OPENXDOX` under a parent this user cannot enter was
+    a `PermissionError` traceback at the plan, exit 1; it is now passed
+    over, and `--pin-source` verifies the link. (A `--pin-source` that
+    cannot be entered is #339, `pin_digest_from_source`, and not this.)"""
+    source = tmp_path / "openXdox"
+    source.mkdir()
+    (source / "project.yaml").write_bytes(
+        b"schema_version: 1\nkind: project-manifest\n"
+        b"neutral_product_pins:\n  - openDox\n")
+    git("init", "-q", "-b", "main", cwd=source)
+    git("add", "-A", cwd=source)
+    git("commit", "-qm", "seed", cwd=source)
+    commit = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    locked = tmp_path / "locked"
+    _tree(locked / "openXdox", "openDox")
+    locked.chmod(0)
+    try:
+        result = run_script(
+            SCAFFOLD, "--org", "codexSoft", "--project", "codexDox",
+            "--elected-by", "Test Human", "--elected-on", "2026-09-05",
+            "--pin", f"openXdox@{commit}", "--pin-source", str(source),
+            "--referent-chain", "openXdox,openDox", "--dry-run",
+            "--local-remote-dir", str(tmp_path / "remotes"),
+            env={"SHAPE_PIN_SOURCE_OPENXDOX": str(locked / "openXdox")})
+    finally:
+        locked.chmod(0o700)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "declared-unverified" not in result.stderr + result.stdout
+    assert "--dry-run: nothing was created." in result.stdout
+
+
+@SEARCH_DENIED
+def test_link_pins_from_trees_records_why_a_source_did_not_answer(
+        tmp_path, monkeypatch):
+    """The lookup itself, in this process: a checkout beside the project
+    that cannot be entered is ABSENT from the answer, as one that is not
+    there is, and never raises; `tried` says which sources were asked, in
+    order, and why each did not answer."""
+    clear_ambient_pin_sources(monkeypatch)
+    locked = _tree(tmp_path / "openXdox", "openDox")
+    elsewhere = tmp_path / "elsewhere"
+    locked.chmod(0)
+    tried: dict = {}
+    try:
+        found = link_pins_from_trees(
+            ("openXdox", "openDox"), root=tmp_path / "codexDox",
+            keyed_sources={"openxdox": elsewhere}, tried=tried)
+    finally:
+        locked.chmod(0o700)
+    assert found == {}
+    sibling = tmp_path.resolve() / "openXdox"
+    assert tried["openXdox"] == [
+        ("keyed", "--link-source openXdox=...", elsewhere,
+         "no such file or directory"),
+        ("sibling", f"sibling checkout ({sibling})", sibling,
+         f"its project.yaml: {os.strerror(errno.EACCES)}"),
+    ]
+    assert [rule for rule, *_ in tried["openDox"]] == ["sibling"]
+
+
+# --- fix round 1 on #338: pins that are not a list of names, the sources
+# --- that were never exercised, and a chain nobody reads --------------------
+
+#: The ways a link manifest's `neutral_product_pins:` is not a list of names.
+#: Each is a tree that CANNOT ANSWER, never an answer: `5` ended the naming
+#: gate in a `TypeError`, a scalar `openDox` was read as the characters `D`,
+#: `e`, `n`, `o`, `p`, `x` (so the chain broke, and under `--project` that is
+#: a FINDING), a mapping as its keys (so `openDox: yes` DECLARED `openDox`),
+#: and a number among the names as its digits.
+#:
+#: The FALSY ones (fix round 2) are rows of their own, because each is a
+#: change the first fix round made without a test: `0`, `false` and `''` were
+#: read as an empty list, so a chain through the tree was BROKEN ("declares no
+#: pin at all", and under `--project` a FINDING), and they are now a tree that
+#: cannot answer. A `0`, `false` or `true` AMONG the names was dropped as a
+#: blank, or read as the text `True`, so a chain through it VERIFIED, and it
+#: is now unverified too. A blank entry (`null`, `''`) is still dropped, and
+#: `test_a_link_manifest_with_an_absent_or_blank_pin_list_still_answers` holds
+#: that side.
+NOT_A_LIST_OF_NAMES = [
+    pytest.param("neutral_product_pins: 5\n", "is not a list", id="number"),
+    pytest.param("neutral_product_pins: openDox\n", "is not a list",
+                 id="scalar-string"),
+    pytest.param("neutral_product_pins:\n  openDox: yes\n", "is not a list",
+                 id="mapping"),
+    pytest.param("neutral_product_pins:\n  - openDox\n  - 5\n",
+                 "holds an entry that is not text", id="list-with-a-number"),
+    pytest.param("neutral_product_pins:\n  - openDox\n  - a: b\n",
+                 "holds an entry that is not text", id="list-with-a-mapping"),
+    pytest.param("neutral_product_pins: 0\n", "is not a list",
+                 id="falsy-zero"),
+    pytest.param("neutral_product_pins: false\n", "is not a list",
+                 id="falsy-false"),
+    pytest.param("neutral_product_pins: ''\n", "is not a list",
+                 id="falsy-empty-string"),
+    pytest.param("neutral_product_pins:\n  - openDox\n  - 0\n",
+                 "holds an entry that is not text", id="list-with-a-zero"),
+    pytest.param("neutral_product_pins:\n  - openDox\n  - false\n",
+                 "holds an entry that is not text", id="list-with-false"),
+    pytest.param("neutral_product_pins:\n  - openDox\n  - true\n",
+                 "holds an entry that is not text", id="list-with-true"),
+]
+
+
+@pytest.mark.parametrize("body,said", NOT_A_LIST_OF_NAMES)
+def test_a_link_manifest_whose_pins_are_not_a_list_of_names_is_named(
+        tmp_path, body, said):
+    """A manifest that cannot be read AS a declaration is declared-unverified
+    with the reason named, as `not a mapping` is: never a traceback, and never
+    a chain broken by a declaration nobody made."""
+    tree = tmp_path / "trees" / "openXdox"
+    tree.mkdir(parents=True)
+    manifest = tree / "project.yaml"
+    manifest.write_bytes(
+        ("schema_version: 1\nkind: project-manifest\n" + body).encode())
+    result = naming_from(tmp_path / "work", *CHAIN_ARGS, "--link-source",
+                         f"openXdox={tree}", "codexDox")
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "WARNING codexDox: declared-unverified" in result.stderr
+    assert "is broken" not in result.stderr, result.stderr
+    assert (f"{UNREADABLE}{tree} (--link-source openXdox=...) could not "
+            f"answer for openXdox: {manifest}: neutral_product_pins {said}\n"
+            in result.stderr), result.stderr
+
+
+def test_under_project_pins_that_are_not_a_list_are_a_warning_not_a_finding(
+        tmp_path):
+    """`--project` makes a chain that does not hold a FINDING, exit 1. A
+    scalar `openDox` made one that way, from characters, with nothing wrong
+    in the tree: now the tree cannot answer, and the exit is 0."""
+    ws = tmp_path / "ws" / "codexDox"
+    ws.mkdir(parents=True)
+    (ws / "project.yaml").write_bytes((
+        "neutral_product_pins:\n  - openXdox\nlegs:\n"
+        "  - repository: testorg/codexDox\n    path: \".\"\n"
+        "    role: assembly\n    naming:\n"
+        "      referent_chain: [openXdox, openDox]\n").encode())
+    sibling = tmp_path / "ws" / "openXdox"
+    sibling.mkdir()
+    manifest = sibling / "project.yaml"
+    manifest.write_bytes(b"neutral_product_pins: openDox\n")
+    result = run_script(VALIDATOR, "--project", "project.yaml", cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert "FINDING" not in result.stderr, result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "WARNING codexDox: declared-unverified" in result.stderr
+    resolved = sibling.resolve()
+    assert (f"{UNREADABLE}{resolved} (sibling checkout ({resolved})) could "
+            f"not answer for openXdox: {resolved / 'project.yaml'}: "
+            "neutral_product_pins is not a list\n" in result.stderr), (
+        result.stderr)
+
+
+@pytest.mark.parametrize("body,said", NOT_A_LIST_OF_NAMES)
+def test_link_pins_from_trees_passes_over_pins_that_are_not_a_list_of_names(
+        tmp_path, monkeypatch, body, said):
+    """The lookup itself, in this process, which the scaffold and the
+    project's own `validate-manifest.py` call too: the link is ABSENT from the
+    answer, as one that is not there is, and `tried` carries the reason."""
+    clear_ambient_pin_sources(monkeypatch)
+    tree = tmp_path / "openXdox"
+    tree.mkdir()
+    (tree / "project.yaml").write_bytes(("schema_version: 1\n"
+                                         + body).encode())
+    tried: dict = {}
+    found = link_pins_from_trees(("openXdox", "openDox"),
+                                 root=tmp_path / "codexDox", tried=tried)
+    assert found == {}
+    sibling = tmp_path.resolve() / "openXdox"
+    assert tried["openXdox"] == [
+        ("sibling", f"sibling checkout ({sibling})", sibling,
+         f"{sibling / 'project.yaml'}: neutral_product_pins {said}")]
+
+
+@pytest.mark.parametrize("body,expected", [
+    pytest.param("", set(), id="key-absent"),
+    pytest.param("neutral_product_pins:\n", set(), id="null"),
+    pytest.param("neutral_product_pins: []\n", set(), id="empty-list"),
+    pytest.param("neutral_product_pins:\n  - \n  - openDox\n", {"openDox"},
+                 id="blank-entry"),
+    pytest.param("neutral_product_pins:\n  - ''\n  - openDox\n", {"openDox"},
+                 id="empty-string-entry"),
+    pytest.param("neutral_product_pins:\n  - testorg/openDox\n  - openYdox\n",
+                 {"openDox", "openYdox"}, id="qualified-entry"),
+])
+def test_a_link_manifest_with_an_absent_or_blank_pin_list_still_answers(
+        tmp_path, monkeypatch, body, expected):
+    """THE OTHER SIDE of the guard: an absent or empty list declares nothing,
+    and a blank entry in a list is dropped, as they always were. Only a value
+    that is not a list of names stops the tree answering."""
+    clear_ambient_pin_sources(monkeypatch)
+    tree = tmp_path / "openXdox"
+    tree.mkdir()
+    (tree / "project.yaml").write_bytes(
+        ("schema_version: 1\n" + body).encode())
+    assert link_pins_from_trees(("openXdox", "openDox"),
+                                root=tmp_path / "codexDox") == {
+        "openxdox": expected}
+
+
+@pytest.mark.parametrize("case", [
+    "manifest-is-a-directory",
+    pytest.param("source-is-a-device", marks=pytest.mark.skipif(
+        not os.path.exists("/dev/null"), reason="needs /dev/null")),
+])
+def test_a_source_that_is_not_a_file_where_one_is_wanted_is_named(tmp_path,
+                                                                  case):
+    """Two sources `stat()` answers for and `load_yaml` must never be handed:
+    a tree whose `project.yaml` is a directory, and a path that is neither a
+    directory nor a file (a device here; a named pipe, which would hang the
+    gate, is the next test)."""
+    if case == "manifest-is-a-directory":
+        source = tmp_path / "trees" / "openXdox"
+        (source / "project.yaml").mkdir(parents=True)
+        said = "its project.yaml is not a file"
+    else:
+        source = Path("/dev/null")
+        said = "it is neither a directory nor a file"
+    result = naming_from(tmp_path / "work", *CHAIN_ARGS, "--link-source",
+                         f"openXdox={source}", "codexDox")
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "WARNING codexDox: declared-unverified" in result.stderr
+    assert (f"{UNREADABLE}{source} (--link-source openXdox=...) could not "
+            f"answer for openXdox: {said}\n" in result.stderr), result.stderr
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs mkfifo")
+def test_a_fifo_is_never_opened_as_a_manifest(tmp_path):
+    """A named pipe as the source: `stat()` says it is neither a directory nor
+    a file, and that is the whole answer. Opening one for reading blocks until
+    somebody writes to it, so a lookup that took it for the manifest would
+    hang the gate; this asks the lookup alone, and fails by an assertion."""
+    fifo = tmp_path / "openXdox"
+    os.mkfifo(fifo)
+    assert link_manifest_lookup(fifo) == (
+        None, "it is neither a directory nor a file")
+
+
+@pytest.mark.parametrize("case", [
+    "env-missing", "env-no-manifest", "env-not-a-mapping"])
+def test_a_variable_that_cannot_answer_is_named_whatever_the_reason(
+        tmp_path, case):
+    """A `SHAPE_PIN_SOURCE_<LINK>` is something somebody SET, so every way it
+    fails to answer for a link that holds a pin is said, not only a
+    permission: a path that is not there, a directory with no `project.yaml`
+    and a file that is no manifest. (A checkout BESIDE the project is
+    different: that one being absent, or holding no manifest, is the ordinary
+    case and is never said.)"""
+    work = tmp_path / "work"
+    work.mkdir()
+    if case == "env-missing":
+        source = tmp_path / "nowhere" / "openXdox"
+        said = "no such file or directory"
+    elif case == "env-no-manifest":
+        source = tmp_path / "plain"
+        source.mkdir()
+        said = "it holds no project.yaml"
+    else:
+        source = tmp_path / "notes.yaml"
+        source.write_bytes(b"- openDox\n")
+        said = f"{source}: not a mapping"
+    result = run_script(VALIDATOR, *CHAIN_ARGS, "codexDox", cwd=work,
+                        env={"SHAPE_PIN_SOURCE_OPENXDOX": str(source)})
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "WARNING codexDox: declared-unverified" in result.stderr
+    assert (f"{UNREADABLE}{source} ($SHAPE_PIN_SOURCE_OPENXDOX) could not "
+            f"answer for openXdox: {said}\n" in result.stderr), result.stderr
+    assert "NOTE" not in result.stderr
+
+
+def test_a_value_given_again_after_another_is_the_one_in_force(tmp_path):
+    """A, then B, then A for the chain's END, which nothing reads: B was
+    replaced by the last A, and A was replaced by nothing, so A says only that
+    no name reads openDox's declaration. A note that had kept `A replaced by
+    B` would call the value in force a dead one."""
+    tree = _tree(tmp_path / "trees" / "openXdox", "openDox")
+    first, second = tmp_path / "first", tmp_path / "second"
+    result = naming_from(
+        tmp_path / "work", *CHAIN_ARGS, "--link-source", f"openXdox={tree}",
+        "--link-source", f"openDox={first}", "--link-source",
+        f"openDox={second}", "--link-source", f"openDox={first}", "codexDox")
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == (
+        f"NOTE --link-source openDox={first}: not used — no name classified "
+        "here reads openDox's own declaration.\n"
+        f"NOTE --link-source openDox={second}: not used — the later "
+        f"`--link-source openDox={first}` replaced it.\n"), result.stderr
+
+
+def test_a_value_holding_an_equals_sign_is_not_misread_when_no_chain_exists(
+        tmp_path):
+    """With no chain at all there is no link a key could have been meant for,
+    so the value is not said to have been READ as a path for want of one: the
+    note that no name records a chain is the whole of it."""
+    result = naming_from(tmp_path / "work", "--link-source", "a=b/openXdox",
+                         "Atlas")
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == (
+        "NOTE --link-source a=b/openXdox: not used — no name classified "
+        "here records a referent chain.\n"), result.stderr
+
+
+#: What a chain a classification does NOT read is. Each is run on its own, with
+#: the same `--link-source` and the same variable, and none is asked.
+UNREAD_CHAINS = [
+    pytest.param(("--pins", "openXdox", "--referent-chain", "openXdox,openDox",
+                  "Atlas"), id="a-name-with-no-referent-to-reach"),
+    pytest.param(("--referent-chain", "openXdox,openDox", "codexDox"),
+                 id="a-chain-that-does-not-begin-at-a-held-pin"),
+    # `codexInk` would need `openInk`: `openXdox` is the x-stem spelling of
+    # `openDox`, so a pin on it is a DIRECT pin on `codexDox`'s referent.
+    pytest.param(("--pins", "openXdox", "--referent-chain",
+                  "openXdox,openYdox", "codexInk"),
+                 id="a-chain-that-ends-at-no-referent-of-the-name"),
+]
+
+
+@pytest.mark.parametrize("args", UNREAD_CHAINS)
+def test_a_chain_no_classification_reads_is_neither_read_nor_reported(
+        tmp_path, args):
+    """`classify` consults a link's own declaration only for a name that
+    claims a referent, with a chain whose shape holds. For any other chain a
+    source was still asked, and so reported UNREADABLE (a path that is not
+    there) or counted USED (a good tree), for a question nobody put. Now none
+    is asked: the keyed value is a NOTE saying so, and the variable, a
+    checkout that nothing needed, says nothing."""
+    work = tmp_path / "work"
+    work.mkdir()
+    tree = _tree(tmp_path / "trees" / "openXdox", "openDox")
+    missing = tmp_path / "nowhere" / "openXdox"
+    env = {"SHAPE_PIN_SOURCE_OPENXDOX": str(missing)}
+    for source in (missing, tree):
+        result = run_script(VALIDATOR, "--role", "assembly", *args[:-1],
+                            "--link-source", f"openXdox={source}", args[-1],
+                            cwd=work, env=env)
+        assert result.returncode == 0, result.stderr
+        assert result.stderr == (
+            f"NOTE --link-source openXdox={source}: not used — no name "
+            "classified here reads openXdox's own declaration.\n"), (
+            result.stderr)
+
+
+def _spec_leg_chain_project(tmp_path: Path) -> Path:
+    """A `codexDox` project whose chain is read, and whose spec leg records
+    a SECOND chain, through `openYdox`, that its own name never reads."""
+    ws = tmp_path / "ws" / "codexDox"
+    ws.mkdir(parents=True)
+    (ws / "project.yaml").write_bytes((
+        "neutral_product_pins:\n  - openXdox\n  - openYdox\nlegs:\n"
+        "  - repository: testorg/codexDox\n    path: \".\"\n"
+        "    role: assembly\n    naming:\n"
+        "      referent_chain: [openXdox, openDox]\n"
+        "  - repository: testorg/codexDox-spec\n    path: spec\n"
+        "    role: spec\n    naming:\n"
+        "      referent_chain: [openYdox, openDox]\n").encode())
+    _tree(tmp_path / "ws" / "openXdox", "openDox")
+    return ws
+
+
+def test_a_chain_recorded_on_a_spec_leg_is_not_read_for_the_leg(tmp_path):
+    """THE REVIEW'S CASE. `codexDox-spec` is a project leg: it claims no
+    referent, so the chain its manifest entry records is never consulted, and
+    the `openYdox` it names is neither asked for nor reported. The keyed value
+    for it is a NOTE, as it is for a link nobody reads; the one for the
+    assembly leg's chain is used, and says nothing."""
+    ws = _spec_leg_chain_project(tmp_path)
+    missing = tmp_path / "nowhere" / "openYdox"
+    result = run_script(VALIDATOR, "--project", "project.yaml",
+                        "--link-source", f"openYdox={missing}", cwd=ws)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == (
+        f"NOTE --link-source openYdox={missing}: not used — no name "
+        "classified here reads openYdox's own declaration.\n"), result.stderr
+
+
+@SEARCH_DENIED
+def test_a_checkout_beside_the_project_that_no_chain_reads_is_never_asked(
+        tmp_path):
+    """The same case with no `--link-source` at all: `../openYdox` at mode 000
+    is beside a project whose only reader of that chain is a spec leg. It used
+    to be named UNREADABLE, for a link nothing needed."""
+    ws = _spec_leg_chain_project(tmp_path)
+    locked = _tree(tmp_path / "ws" / "openYdox", "openDox")
+    locked.chmod(0)
+    try:
+        result = run_script(VALIDATOR, "--project", "project.yaml", cwd=ws)
+    finally:
+        locked.chmod(0o700)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == "", result.stderr
+
+
+class _ReadSpy(dict):
+    """A `link_pins` mapping that notes whether `resolve_referent` read it."""
+    read = False
+
+    def items(self):
+        self.read = True
+        return super().items()
+
+
+def _chain_read_cases(policy) -> list:
+    too_long = ("openXdox",
+                *(f"open{'x' * n}dox" for n in range(
+                    int(policy.chain_rule()["max_length"]))), "openDox")
+    return [
+        ("codexDox", {"openXdox"}, ("openXdox", "openDox"), True),
+        ("codexDox", {"openXdox"}, ("openXdox", "openYdox", "openDox"), True),
+        ("codexDox", {"testorg/openXdox"}, ("openXdox", "openDox"), True),
+        # A QUALIFIED chain link: `resolve_referent` compares its basename, and
+        # a gate that compared the text as typed would call the chain broken
+        # at its first link and never read a tree (fix round 2).
+        ("codexDox", {"openXdox"}, ("testorg/openXdox", "openDox"), True),
+        ("codexDox", {"openXdox"}, (), False),
+        ("codexDox", {"openXdox"}, ("", " "), False),
+        ("Atlas", {"openXdox"}, ("openXdox", "openDox"), False),
+        ("codexDox", set(), ("openXdox", "openDox"), False),
+        ("codexDox", {"openXdox"}, ("openXdox", "openYdox"), False),
+        ("codexDox", {"openXdox"}, ("openXdox", "openXdox", "openDox"), False),
+        ("codexDox", {"openXdox"}, too_long, False),
+    ]
+
+
+def test_the_policy_says_a_chain_is_read_exactly_when_it_is_read(policy):
+    """`reads_link_declarations` is what the validator asks before it reads a
+    tree, and it must never drift from `resolve_referent`, which is what
+    reads one: both are run over every way a chain is, and is not, consulted,
+    with a mapping that notes whether `resolve_referent` took it."""
+    for name, pins, chain, expected in _chain_read_cases(policy):
+        spy = _ReadSpy({"openxdox": {"openDox"}})
+        policy.resolve_referent(name, pins, chain, spy)
+        assert spy.read is expected, (name, pins, chain)
+        assert policy.reads_link_declarations(name, pins, chain) is expected, (
+            name, pins, chain)
+
+
+# --- fix round 2 on #338: what the unverified warning says of a tree that was
+# --- reached ---------------------------------------------------------------
+#
+# A link whose own tree went unread is `declared-unverified`, and the warning
+# said the tree "is not reachable here". That is true of a tree nothing found.
+# It is untrue of one `--pin-source` DID reach and whose `neutral_product_
+# pins:` could not be read, which is what the first fix round made of the
+# scaffold's `chain-not-declared` refusal on a scalar: a REFUSAL became a
+# warning that blamed the path. The scaffold now asks for the reason
+# (`link_pins_from_trees(..., with_reasons=True)`) and says it. Every other
+# reader's text is exactly what it was, and these tests hold both halves.
+
+#: The warning a link whose tree nothing reached has always carried.
+NOT_REACHED = (
+    "declared-unverified: openXdox declaring a pin on openDox is a fact in "
+    "openXdox's own tree, which is not reachable here (a sibling checkout, "
+    "SHAPE_PIN_SOURCE_OPENXDOX, or --link-source openXdox=<path> would let "
+    "it be read). The recorded chain still classifies.")
+
+
+def _unverified_warnings(policy, link_pins) -> list[str]:
+    return list(policy.resolve_referent("codexDox", {"openXdox"},
+                                        ("openXdox", "openDox"),
+                                        link_pins).warnings)
+
+
+def test_the_unverified_warning_is_unchanged_where_no_tree_was_reached(
+        policy, tmp_path, monkeypatch):
+    """Nothing reached the tree, or whoever asked did not ask for a reason:
+    the warning is the same bytes it was. That covers a plain mapping, a
+    `LinkPins` with nothing in `unreadable`, a tree that is not there even
+    when the reason was asked for, and a tree that WAS reached and could not
+    be read when it was not (the naming validator, which says why on a line
+    of its own, and `validate-manifest.py`)."""
+    clear_ambient_pin_sources(monkeypatch)
+    assert _unverified_warnings(policy, {}) == [NOT_REACHED]
+    assert _unverified_warnings(policy, LinkPins()) == [NOT_REACHED]
+    absent = link_pins_from_trees(("openXdox", "openDox"),
+                                  root=tmp_path / "codexDox",
+                                  with_reasons=True)
+    assert absent == {} and absent.unreadable == {}
+    assert _unverified_warnings(policy, absent) == [NOT_REACHED]
+    tree = tmp_path / "openXdox"
+    tree.mkdir()
+    (tree / "project.yaml").write_bytes(
+        b"schema_version: 1\nneutral_product_pins: openDox\n")
+    plain = link_pins_from_trees(("openXdox", "openDox"),
+                                 root=tmp_path / "codexDox")
+    assert type(plain) is dict
+    assert _unverified_warnings(policy, plain) == [NOT_REACHED]
+
+
+def test_the_unverified_warning_says_a_tree_was_reached_when_it_was(
+        policy, tmp_path, monkeypatch):
+    """The other half, in this process: asked to say why, the lookup keeps the
+    reason for the link whose source answered, and the warning for it names
+    the reason and no longer says the tree is not reachable. The mapping is
+    still equal to a plain one, with the link absent from it."""
+    clear_ambient_pin_sources(monkeypatch)
+    tree = tmp_path / "openXdox"
+    tree.mkdir()
+    manifest = tree / "project.yaml"
+    manifest.write_bytes(b"schema_version: 1\nneutral_product_pins: openDox\n")
+    found = link_pins_from_trees(("openXdox", "openDox"),
+                                 root=tmp_path / "codexDox",
+                                 with_reasons=True)
+    why = f"{manifest}: neutral_product_pins is not a list"
+    assert isinstance(found, dict) and found == {}
+    assert found.unreadable == {"openxdox": why}
+    assert _unverified_warnings(policy, found) == [
+        "declared-unverified: openXdox declaring a pin on openDox is a fact "
+        "in openXdox's own tree, which was reached but could not be read as a "
+        f"declaration ({why}). The recorded chain still classifies."]
+
+
+#: The other trees a `--pin-source` REACHES and cannot read as a declaration,
+#: those whose manifest is not a pins list at all (reviewW2's NIT-R1). The
+#: scaffold's reached branch is keyed on the fact that the source ANSWERED, not
+#: on the reason, so a manifest that is not a mapping or does not parse says
+#: "reached but could not be read" too, where on main (and at 4b21263) it said
+#: "is not reachable here" of a file it had just opened. Narrowing the branch
+#: to the not-a-list reasons (`why.endswith(("is not a list", "is not text"))`
+#: before `unreadable[...] = why` in `link_pins_from_trees`) passed every
+#: `NOT_A_LIST_OF_NAMES` row; these two kill it. The reasons are the
+#: repository's own parser's, so they hold on every platform.
+UNREADABLE_AS_A_DECLARATION = [
+    pytest.param(b"- openInk\n", "not a mapping", id="not-a-mapping"),
+    pytest.param(
+        b"schema_version: 1\nkind: project-manifest\n"
+        b"neutral_product_pins: [openInk\n",
+        "not a flow collection: '[openInk'", id="does-not-parse"),
+]
+
+
+@pytest.mark.parametrize("body,said", UNREADABLE_AS_A_DECLARATION)
+def test_the_lookup_remembers_why_a_manifest_it_reached_cannot_be_read(
+        policy, tmp_path, monkeypatch, body, said):
+    """The same two manifests in this process (NIT-R1): a manifest that is
+    not a mapping, or does not parse, is a tree the source REACHED, so asked to
+    say why, the lookup keeps the reason for the link, the mapping is still
+    equal to a plain one with the link absent, and the warning names the
+    reason instead of saying the tree is not reachable."""
+    clear_ambient_pin_sources(monkeypatch)
+    tree = tmp_path / "openXdox"
+    tree.mkdir()
+    manifest = tree / "project.yaml"
+    manifest.write_bytes(body)
+    found = link_pins_from_trees(("openXdox", "openDox"),
+                                 root=tmp_path / "codexDox",
+                                 with_reasons=True)
+    why = f"{manifest}: {said}"
+    assert isinstance(found, dict) and found == {}
+    assert found.unreadable == {"openxdox": why}
+    assert _unverified_warnings(policy, found) == [
+        "declared-unverified: openXdox declaring a pin on openDox is a fact "
+        "in openXdox's own tree, which was reached but could not be read as a "
+        f"declaration ({why}). The recorded chain still classifies."]
+
+
+def _scaffold_with_link_tree(tmp_path, manifest_body: bytes | None, *,
+                             raw: bool = False):
+    """`scaffold-project.py --dry-run` for `codexInk` with `--pin-source` a
+    git clone of a stand-in `openXdox` whose `project.yaml` is
+    `manifest_body` after a two-line header (none: the clone holds no
+    `project.yaml`; `raw`: the manifest is `manifest_body` and nothing else,
+    for one that must not begin with a mapping), and the chain
+    `openXdox,openInk`. Returns the result and the manifest's path."""
+    source = tmp_path / "trees" / "openXdox"
+    source.mkdir(parents=True)
+    if manifest_body is None:
+        (source / "README").write_bytes(b"no manifest here\n")
+    elif raw:
+        (source / "project.yaml").write_bytes(manifest_body)
+    else:
+        (source / "project.yaml").write_bytes(
+            b"schema_version: 1\nkind: project-manifest\n" + manifest_body)
+    git("init", "-q", "-b", "main", cwd=source)
+    git("add", "-A", cwd=source)
+    git("commit", "-qm", "seed", cwd=source)
+    commit = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    result = run_script(
+        SCAFFOLD, "--org", "codexSoft", "--project", "codexInk",
+        "--elected-by", "Test Human", "--elected-on", "2026-09-05",
+        "--pin", f"openXdox@{commit}", "--pin-source", str(source),
+        "--referent-chain", "openXdox,openInk", "--dry-run",
+        "--local-remote-dir", str(tmp_path / "remotes"),
+        "--work-dir", str(tmp_path / "work"))
+    return result, source / "project.yaml"
+
+
+@pytest.mark.parametrize("body,said", NOT_A_LIST_OF_NAMES)
+def test_scaffold_says_a_pin_source_it_reached_could_not_be_read(
+        tmp_path, body, said):
+    """REVIEWW2's ROW. `--pin-source` is a tree whose `neutral_product_pins:`
+    is a scalar (or any value that is not a list of names). On main the
+    scaffold REFUSED `chain-not-declared`, exit 2, with `openXdox declares I,
+    e, k, n, o, p, not openInk` read from the characters; it is now a
+    declared-unverified WARNING and the scaffold goes on, which is the rule
+    for a tree that cannot answer. The warning says the tree was REACHED and
+    could not be read, with the reason, because `--pin-source` did reach it:
+    the clause "is not reachable here" blamed a path that was right."""
+    result, manifest = _scaffold_with_link_tree(tmp_path, body.encode())
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert "not reachable here" not in result.stderr, result.stderr
+    assert (
+        "WARNING declared-unverified: openXdox declaring a pin on openInk is "
+        "a fact in openXdox's own tree, which was reached but could not be "
+        f"read as a declaration ({manifest}: neutral_product_pins {said}). "
+        "The recorded chain still classifies.\n") in result.stderr, (
+        result.stderr)
+    assert "(1 link declared-unverified)" in result.stdout
+    assert "--dry-run: nothing was created." in result.stdout
+
+
+@pytest.mark.parametrize("body,said", UNREADABLE_AS_A_DECLARATION)
+def test_scaffold_says_a_pin_source_whose_manifest_cannot_be_read_was_reached(
+        tmp_path, body, said):
+    """NIT-R1. `--pin-source` is a clone whose `project.yaml` is a list, or is
+    a flow list that never closes. The tree was REACHED and its manifest could
+    not be read, so the scaffold's declared-unverified warning says so, with
+    the reason, as it does for a `neutral_product_pins:` that is not a list:
+    "is not reachable here" blamed a path that was right, and a narrower
+    reading of "reached" (the not-a-list reasons only) would leave that
+    untruth for every manifest the lookup cannot parse."""
+    result, manifest = _scaffold_with_link_tree(tmp_path, body, raw=True)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert "not reachable here" not in result.stderr, result.stderr
+    assert (
+        "WARNING declared-unverified: openXdox declaring a pin on openInk is "
+        "a fact in openXdox's own tree, which was reached but could not be "
+        f"read as a declaration ({manifest}: {said}). "
+        "The recorded chain still classifies.\n") in result.stderr, (
+        result.stderr)
+    assert "(1 link declared-unverified)" in result.stdout
+    assert "--dry-run: nothing was created." in result.stdout
+
+
+def test_scaffold_keeps_its_old_warning_for_a_pin_source_with_no_manifest(
+        tmp_path):
+    """A `--pin-source` clone that holds no `project.yaml` is the ordinary
+    absence, as it always was, and its warning is the bytes it always was:
+    the scaffold changes only for a tree it reached and could not READ."""
+    result, _manifest = _scaffold_with_link_tree(tmp_path, None)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert ("WARNING declared-unverified: openXdox declaring a pin on openInk "
+            "is a fact in openXdox's own tree, which is not reachable here (a "
+            "sibling checkout, SHAPE_PIN_SOURCE_OPENXDOX, or --link-source "
+            "openXdox=<path> would let it be read). The recorded chain still "
+            "classifies.\n") in result.stderr, result.stderr
+    assert "was reached" not in result.stderr
+
+
+def test_the_naming_validator_keeps_its_own_two_lines_for_a_tree_it_reached(
+        tmp_path):
+    """The validator names the reason on a line of its own, so its
+    declared-unverified WARNING is unchanged by fix round 2: the same bytes
+    as before, and the `link-source-unreadable` line beside it."""
+    tree = tmp_path / "trees" / "openXdox"
+    tree.mkdir(parents=True)
+    manifest = tree / "project.yaml"
+    manifest.write_bytes(b"schema_version: 1\nneutral_product_pins: openDox\n")
+    result = naming_from(tmp_path / "work", *CHAIN_ARGS, "--link-source",
+                         f"openXdox={tree}", "codexDox")
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == (
+        f"WARNING codexDox: {NOT_REACHED}\n"
+        f"{UNREADABLE}{tree} (--link-source openXdox=...) could not answer "
+        f"for openXdox: {manifest}: neutral_product_pins is not a list\n"), (
+        result.stderr)
+
+
+def test_the_projects_own_manifest_gate_keeps_its_warning_for_a_tree_it_reached(
+        project):
+    """`validate-manifest.py` reads the same link tree through the same
+    lookup and prints no reason of its own, so it is the text it always was;
+    this change reaches the scaffold alone."""
+    _codexdox(project)
+    sibling = project.parent / "openXdox"
+    sibling.mkdir()
+    (sibling / "project.yaml").write_bytes(
+        b"schema_version: 1\nneutral_product_pins: openDox\n")
+    own = run_script(project / "scripts" / "validate-manifest.py",
+                     cwd=project)
+    assert "Traceback" not in own.stderr, own.stderr
+    assert "which is not reachable here (a sibling checkout, " in (
+        own.stdout + own.stderr), own.stdout + own.stderr
+    assert "was reached" not in own.stdout + own.stderr
 
 
 # --- the ruling: a NEUTRAL PRODUCT MAY ELECT THE SHAPE ---------------------
