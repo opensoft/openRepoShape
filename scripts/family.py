@@ -1226,7 +1226,10 @@ def _create_holder_worktree(args, work: Path, values: dict, shape_commit: str,
     except CommandFailed as exc:
         print(exc.loudly("pushing the family holder"), file=sys.stderr)
         print(RULESET_HINT.format(work=work, repo=repository,
-                                  role="family"), file=sys.stderr)
+                                  role="family",
+                                  local=args.tracking_branch,
+                                  tracking=args.tracking_branch),
+              file=sys.stderr)
         return 2
     return None
 
