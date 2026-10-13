@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -186,31 +187,89 @@ def _held_upstream_past_the_pin(sub: Path, branch: str, local: str,
     return upstream
 
 
+def _check_out(sub: Path, branch: str,
+               pin: str) -> tuple[bool, list[str] | None]:
+    """`git checkout <branch>`, judged by WHERE HEAD IS AFTERWARDS, not by
+    git's exit code. Returns whether HEAD is on the branch at the pin, and
+    git's lines when it exited non-zero (never `None` when HEAD is not).
+
+    The two disagree both ways. A checkout git refused (a stale
+    `index.lock`, a local edit in the way) leaves HEAD where it was, and a
+    later run used to print `on <branch>` over a leg still detached. A
+    post-checkout hook's exit status is the checkout's own, so a hook that
+    fails after HEAD has moved makes git exit non-zero over a checkout that
+    happened, which is not a refusal.
+    """
+    why = _git_says(["checkout", "-q", branch], sub)
+    if _head_of(sub) == (pin, f"refs/heads/{branch}"):
+        return True, why
+    return False, why or [
+        "`git checkout` exited 0, and HEAD is not on the branch at the pin"]
+
+
 def _move_and_check_out(sub: Path, branch: str,
-                        pin: str) -> tuple[bool, list[str] | None]:
-    """From HEAD DETACHED AT THE PIN: `branch -f <branch> <pin>`, then a
-    `checkout` of the branch, which is by then the commit already checked
+                        pin: str) -> tuple[bool, bool, list[str] | None]:
+    """From HEAD DETACHED AT THE PIN: `branch -f <branch> <pin>`, then
+    `_check_out` of the branch, which is by then the commit already checked
     out, so no file in the leg changes, a local edit included.
 
-    Returns whether the branch moved, and git's lines when a step was
-    refused (`None` when both worked). The checkout runs only once `branch
-    -f` has worked. Not `checkout -B`: git 2.43 resets a branch another
-    worktree has checked out with it, leaving that worktree's files behind
-    its own HEAD, where `branch -f` refuses.
+    Returns whether the branch moved, whether HEAD is on it at the pin, and
+    git's lines (`None` when both steps exited 0). The checkout runs only
+    once `branch -f` has worked. A branch that moved is left at the pin when
+    the checkout is refused, never put back: putting it back is a second
+    ref write a stale lock refuses as well, and the next run finds the
+    branch at the pin and says again whether it could check it out. Not
+    `checkout -B`: git 2.43 resets a branch another worktree has checked
+    out with it, leaving that worktree's files behind its own HEAD, where
+    `branch -f` refuses.
     """
     why = _git_says(["branch", "-f", branch, pin], sub)
     if why is not None:
-        return False, why
-    return True, _git_says(["checkout", "-q", branch], sub)
+        return False, False, why
+    placed, why = _check_out(sub, branch, pin)
+    return True, placed, why
+
+
+def _say_lines(why: list[str]) -> None:
+    for line in why:
+        print(f"          {spelled(line.strip())}")
 
 
 def _say_refused(first: str, why: list[str]) -> None:
     """A move git refused: `first`, git's own lines under it, spelled
     (#391), then what to do."""
     print(first)
-    for line in why:
-        print(f"          {spelled(line.strip())}")
+    _say_lines(why)
     print(NOTHING_ELSE)
+
+
+def _say_after(why: list[str] | None) -> None:
+    """What git said when it exited non-zero AFTER HEAD reached the branch
+    (a failing post-checkout hook): the move happened and its line has been
+    printed, so git's words follow it as they are, not as a refusal."""
+    if why:
+        print("          checked out, and then git said:")
+        _say_lines(why)
+
+
+def place_at_pin(sub: Path, label: str, branch: str, pin: str) -> None:
+    """Step (a) for a leg whose tracking branch IS the pin: check it out,
+    and say `on <branch>` only when HEAD is on it afterwards.
+
+    A checkout git refuses is said in git's words, and the leg stays where
+    it is. It used to be ignored and the `on` line printed anyway, over a
+    leg left detached (a stale `index.lock`) or on another branch (a local
+    edit in the way): the next commit made there was on no branch, or on
+    the wrong one, under a line saying otherwise.
+    """
+    named = spelled(branch)
+    placed, why = _check_out(sub, branch, pin)
+    if not placed:
+        _say_refused(f"  {label}: branch {named} is at the pin "
+                     f"{_short(pin)}, and git refused to check it out:", why)
+        return
+    print(f"  {label}: on {named} at {_short(pin)} (branch tip == pin)")
+    _say_after(why)
 
 
 def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
@@ -244,12 +303,12 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
     """
     named = spelled(branch)
     head, current = _head_of(sub)
-    moved = False
     if current == f"refs/heads/{branch}":
         why = _git_says(["-c", "merge.autostash=false", "merge", "--ff-only",
                          "-q", pin], sub)
+        moved = placed = why is None
     elif current is None and head == pin:
-        moved, why = _move_and_check_out(sub, branch, pin)
+        moved, placed, why = _move_and_check_out(sub, branch, pin)
     else:
         place = "detached"
         if current is not None:
@@ -261,7 +320,7 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
               "there on a branch, check out the pin or the branch in the "
               "leg, and run bootstrap again.")
         return
-    if why is not None:
+    if not placed:
         if moved:
             first = (f"  {label}: branch {named} moved {_short(local)} -> "
                      f"{_short(pin)}, the pin, and git refused to check it "
@@ -270,7 +329,7 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
             first = (f"  {label}: branch {named} tip {_short(local)} is "
                      f"behind the PIN {_short(pin)}, and git refused to move "
                      "it:")
-        _say_refused(first, why)
+        _say_refused(first, why or [])
         return
     note = ""
     if remote is not None and remote != pin:
@@ -278,6 +337,7 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
                 "deliberately does NOT follow")
     print(f"  {label}: branch {named} fast-forwarded {_short(local)} -> "
           f"{_short(pin)}, the pin{note}")
+    _say_after(why)
 
 
 def move_back_to_pin(sub: Path, label: str, path: str, branch: str,
@@ -298,12 +358,20 @@ def move_back_to_pin(sub: Path, label: str, path: str, branch: str,
     detached AT the pin, so `_move_and_check_out` changes no file. The one
     line printed says where those commits are and names the command that
     brings the branch forward, which is the person's to run: what this
-    project records is the pin.
+    project records is the pin. The command's leg path and upstream are
+    shell-quoted, then spelled, as `scripts/family.py` quotes the commands
+    it prints.
+
+    "Nothing is lost" holds at the last fetch. A commit the branch held
+    that the remote has since DROPPED, by a force-push to the leg's shared
+    branch, is left only in the reflog once the next fetch moves the
+    remote-tracking ref; nothing in the leg can see that before it fetches.
     """
     named = spelled(branch)
-    held = spelled(upstream[len(REMOTE_TRACKING):])
-    moved, why = _move_and_check_out(sub, branch, pin)
-    if why is not None:
+    short = upstream[len(REMOTE_TRACKING):]
+    held = spelled(short)
+    moved, placed, why = _move_and_check_out(sub, branch, pin)
+    if not placed:
         if moved:
             first = (f"  {label}: branch {named} moved back {_short(local)} "
                      f"-> {_short(pin)}, the pin ({held} still holds "
@@ -312,12 +380,14 @@ def move_back_to_pin(sub: Path, label: str, path: str, branch: str,
             first = (f"  {label}: branch {named} tip {_short(local)} is "
                      f"ahead of the PIN {_short(pin)} with no commit {held} "
                      "lacks, and git refused to move it back:")
-        _say_refused(first, why)
+        _say_refused(first, why or [])
         return
     print(f"  {label}: branch {named} moved back {_short(local)} -> "
           f"{_short(pin)}, the pin; nothing is lost, {held} still holds "
-          f"those commits, and `git -C {spelled(path)} merge --ff-only "
-          f"{held}` brings the branch forward")
+          f"those commits, and `git -C {spelled(shlex.quote(path))} merge "
+          f"--ff-only {spelled(shlex.quote(short))}` brings the branch "
+          "forward")
+    _say_after(why)
 
 
 def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
@@ -359,9 +429,7 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
         return
 
     if local == pin:
-        _try_git(["checkout", "-q", branch], sub)
-        print(f"  {where}: on {named} at {_short(pin)} "
-              f"(branch tip == pin)")
+        place_at_pin(sub, where, branch, pin)
         return
 
     if _is_ancestor(sub, local, pin):
