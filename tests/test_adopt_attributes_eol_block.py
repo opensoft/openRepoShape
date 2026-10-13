@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -144,6 +145,18 @@ def test_a_new_copy_joins_the_block_before_the_lines_after_it():
                         + after)
 
 
+def test_the_last_block_is_extended_when_the_source_held_the_head_already():
+    """A source that already held a copy of the head line gets the
+    adoption's block after it, so the LAST head is the block: a new line
+    goes there, after the source's later `* text eol=crlf`, which would
+    otherwise win over it (#471's review, NIT-1)."""
+    earlier = (f"{EOL_BLOCK_HEAD}\n/Makefile text eol=lf\n".encode(UTF8)
+               + b"* text eol=crlf\n")
+    data = earlier + COPIES_BLOCK
+    assert extend_eol_block(data, ["AGENTS-x.md"]) == (
+        data + b"/AGENTS-x.md text eol=lf\n")
+
+
 def test_extending_with_copies_already_named_changes_nothing():
     data = OWN + COPIES_BLOCK
     assert extend_eol_block(data, COPIES) == data
@@ -236,6 +249,46 @@ def test_an_attributes_symlink_is_not_written_through(tmp_path):
     assert (target / "config" / "attributes").read_bytes() == OWN
 
 
+def index_only_link(repo: Path, link: str, target: str) -> None:
+    """`link -> target` in git's INDEX only, mode 120000 with the target as
+    its blob, as a tree records it: no symlink on the disk, so no privilege
+    is needed on any platform."""
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(repo), input=target, capture_output=True,
+                          text=True, check=True)
+    git("update-index", "--add", "--cacheinfo",
+        f"120000,{blob.stdout.strip()},{link}", cwd=repo)
+
+
+def test_a_link_checked_out_as_a_plain_file_is_not_written_through(tmp_path):
+    """Git for Windows' default `core.symlinks=false` checks a tracked
+    symlink out as a PLAIN FILE holding the path it leads to, so the disk
+    says "not a link" there. The append used to land in the link itself:
+    the split kept mode 120000 over the old target followed by the block,
+    and the verification called the source's file lost after both legs were
+    pushed (#471's review, MUST-1). Git's index says what the file is, and
+    this test reads it the same way on every platform."""
+    target = target_holding(tmp_path, {"config/attributes": OWN,
+                                       "README.md": b"# Thing\n"})
+    git("init", "-q", "-b", "main", ".", cwd=target)
+    git("add", "-A", "--", ".", cwd=target)
+    index_only_link(target, ATTRIBUTES, "config/attributes")
+    git("commit", "-qm", "The source", cwd=target)
+    git("-c", "core.symlinks=false", "checkout", "--", ATTRIBUTES, cwd=target)
+    assert not (target / ATTRIBUTES).is_symlink()
+    assert (target / ATTRIBUTES).read_bytes() == b"config/attributes"
+    staged = git("ls-files", "--stage", "--", ATTRIBUTES, cwd=target).stdout
+    assert staged.startswith("120000 "), staged
+    result = materialize_assembly_root(REPO, target, template_values(),
+                                       collision_dir=COLLISION_DIR)
+    assert (ATTRIBUTES, f"{COLLISION_DIR}/{ATTRIBUTES}") in result.collisions
+    assert result.eol_block == []
+    assert (target / ATTRIBUTES).read_bytes() == b"config/attributes"
+    assert (target / "config" / "attributes").read_bytes() == OWN
+    assert git("ls-files", "--stage", "--", ATTRIBUTES,
+               cwd=target).stdout == staged
+
+
 # ---------------------------------------------------------------------------
 # What the human reads: the follow-up and the split commit's message
 # ---------------------------------------------------------------------------
@@ -247,10 +300,39 @@ def test_the_follow_up_says_what_the_block_protects():
     assert f"`{EOL_BLOCK_HEAD}`" in said
     assert "shape-copy-drift" in said and "Windows" in said
     assert "None of the source's own lines is changed" in said
-    assert "symlink" in said
+    # A link gets the other follow-up, below.
+    assert "symlink" not in said
     # Every other collision keeps its own wording.
     assert collision_follow_up("Makefile", "shape/Makefile").startswith(
         "merge shape/Makefile into Makefile")
+
+
+def test_the_follow_up_for_a_linked_attributes_file_lists_the_lines_it_needs(
+        tmp_path):
+    """A `.gitattributes` that is a symlink gets no block, and git reads
+    no `.gitattributes` that is one, so the follow-up says that nothing was
+    appended, gives the remedy that works, and lists the exact lines: the
+    ones a regular file would have had appended. It used to describe a
+    block that was never written and send the person to add its lines
+    where the link leads, which git never reads (#471's review, SHOULD-2)."""
+    target = target_holding(tmp_path, {ATTRIBUTES: OWN, "Makefile": b"all:\n"})
+    result = materialize_assembly_root(REPO, target, template_values(),
+                                       collision_dir=COLLISION_DIR)
+    needed = eol_block(eol_block_paths(result.shape_files,
+                                       COLLISION_DIR)).splitlines()
+    beside = dict(result.collisions)
+    said = collision_follow_up(ATTRIBUTES, beside[ATTRIBUTES], beside,
+                               attributes_link=True)
+    assert said.startswith(f"{ATTRIBUTES} is a symlink, so the split "
+                           "appended nothing to it"), said
+    assert f"Git reads no {ATTRIBUTES} that is a symlink" in said
+    assert f"replace the link with a regular {ATTRIBUTES}" in said
+    assert ", ".join(f"`{line}`" for line in needed) in said
+    assert needed[0] == EOL_BLOCK_HEAD
+    assert "`/scripts/validate-pins.py text eol=lf`" in said
+    # The Makefile went beside the source's, under `shape/`.
+    assert "/Makefile text eol=lf" not in said
+    assert "keep the block" not in said
 
 
 def split_message(adopter, appended=()) -> str:
@@ -290,21 +372,25 @@ PINNED = [f"{COLLISION_DIR}/{ATTRIBUTES}", "Makefile",
 ROOT_COPIES = ["Makefile", "scripts/validate-pins.py"]
 
 
-def commit_files(repo: Path, files: dict, message: str) -> str:
+def commit_files(repo: Path, files: dict, message: str,
+                 links: dict | None = None) -> str:
     for name, body in files.items():
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_bytes(body)
     git("add", "-A", "--", ".", cwd=repo)
+    for link, target in (links or {}).items():
+        index_only_link(repo, link, target)
     git("-c", "user.name=T", "-c", "user.email=t@invalid.example", "commit",
         "-qm", message, cwd=repo)
     return git("rev-parse", "HEAD", cwd=repo).stdout.strip()
 
 
 def accounted(adopter, tmp_path: Path, attributes: bytes,
-              pin_path: str = SHAPE_PIN) -> tuple:
+              pin_path: str = SHAPE_PIN, links: dict | None = None) -> tuple:
     """A source commit holding `OWN`, and a split commit over it whose root
     `.gitattributes` is `attributes`: `(lines counted, findings, counts,
-    the source's oid, after)` from the verification's own steps."""
+    the source's oid, after)` from the verification's own steps. `links`
+    go into the split's tree only (`index_only_link`)."""
     repo = tmp_path / "repo"
     repo.mkdir()
     git("init", "-q", "-b", "main", ".", cwd=repo)
@@ -314,12 +400,12 @@ def accounted(adopter, tmp_path: Path, attributes: bytes,
         ATTRIBUTES: attributes, pin_path: pin_of(PINNED),
         f"{COLLISION_DIR}/{ATTRIBUTES}": (TEMPLATE / ATTRIBUTES).read_bytes(),
         "Makefile": b"all:\n", "scripts/validate-pins.py": b"print()\n"},
-        "The split")
+        "The split", links=links)
     before = {path: oid for path, _, oid, _ in adopter._tree_of(repo, source)}
     tree = adopter._tree_of(repo, split)
     after: dict = {}
     assert adopter._land_the_root_tree(after, tree, before, {}) == []
-    lines = adopter._land_the_eol_block(repo, tree, before, after)
+    lines = adopter._land_the_eol_block(repo, split, tree, before, after)
     counts, findings = adopter._account_for(before, after, [])
     return lines, findings, counts, before[ATTRIBUTES], after
 
@@ -342,6 +428,19 @@ def test_the_shapes_pin_is_read_from_shape_when_the_source_kept_its_own(
         adopter, tmp_path, with_eol_block(OWN, ROOT_COPIES),
         pin_path=f"{COLLISION_DIR}/{SHAPE_PIN}")
     assert (lines, findings) == (2, [])
+
+
+def test_the_pin_is_read_through_a_link_the_root_kept(adopter, tmp_path):
+    """`contracts -> meta` kept in the root: the materializer wrote the pin
+    through the link, to `meta/shape-pin.yaml`, and `_shape_file_findings`
+    finds it by its pinned name. A lookup among the tree's plain files found
+    none, so the appended file was `adopt-lost` where main verified the
+    same source (#471's review, SHOULD-3)."""
+    lines, findings, _, oid, after = accounted(
+        adopter, tmp_path, with_eol_block(OWN, ROOT_COPIES),
+        pin_path="meta/shape-pin.yaml", links={"contracts": "meta"})
+    assert (lines, findings) == (2, [])
+    assert after[ATTRIBUTES] == [f"root:{oid}"]
 
 
 def test_the_sources_own_bytes_untouched_need_no_exception(adopter, tmp_path):

@@ -751,6 +751,12 @@ def extend_eol_block(existing: bytes, paths) -> bytes | None:
     The block is the head line and the `/<path> text eol=lf` lines straight
     after it. Lines a human wrote after the block stay after the new ones.
 
+    THE LAST HEAD IS THE BLOCK (#471's review, NIT-1). A source that already
+    held a copy of the head line keeps it, and the split appends its own
+    block after it, so the adoption's block is the last one; extending an
+    earlier copy would put the new lines before rules of the source's that
+    come after it, and a later `eol` rule would win over them.
+
     A WINDOWS CHECKOUT OF THE FILE MAY BE CRLF: the source's own rules
     govern `.gitattributes` too, and `* text=auto` there, or Git for
     Windows' `core.autocrlf=true`, writes it with CRLF. So lines are matched
@@ -758,10 +764,10 @@ def extend_eol_block(existing: bytes, paths) -> bytes | None:
     line has; git normalises the file when it is committed either way."""
     lines = existing.splitlines(keepends=True)
     bare = [line.rstrip(b"\r\n") for line in lines]
-    try:
-        start = bare.index(EOL_BLOCK_HEAD.encode("utf-8"))
-    except ValueError:
+    head = EOL_BLOCK_HEAD.encode("utf-8")
+    if head not in bare:
         return None
+    start = len(bare) - 1 - bare[::-1].index(head)
     end, named = start + 1, set()
     while end < len(lines):
         match = re.fullmatch(rb"/(\S+) text eol=lf", bare[end])
@@ -780,6 +786,30 @@ def extend_eol_block(existing: bytes, paths) -> bytes | None:
     return b"".join(lines[:end] + new + lines[end:])
 
 
+#: The mode git records for a symlink.
+LINK_MODE = "120000"
+
+
+def _tracked_as_link(target: Path, rel: str) -> bool:
+    """Whether the git index in `target` records `rel` as a symlink.
+
+    THE INDEX, NOT THE DISK (#471's review, MUST-1). Git for Windows'
+    default `core.symlinks=false` checks a tracked link out as a PLAIN FILE
+    holding the path it leads to, so `is_symlink()` says no there, and an
+    append wrote the block into the link itself: the split commit kept mode
+    120000 over a blob that was now the old target followed by the block,
+    and the verification called the source's file lost after both legs were
+    pushed. A `target` that is no repository has no index to ask, and its
+    disk is all there is."""
+    try:
+        listed = run(["git", "--literal-pathspecs", "-C", str(target),
+                      "ls-files", "--stage", "-z", "--", rel])
+    except CommandFailed:
+        return False
+    return any(entry.startswith(f"{LINK_MODE} ")
+               for entry in listed.split("\0"))
+
+
 def _append_eol_block(target: Path, result: "Materialized",
                       collision_dir: str) -> None:
     """Append the block to the source's own `.gitattributes`, when the
@@ -787,12 +817,14 @@ def _append_eol_block(target: Path, result: "Materialized",
 
     A SYMLINK IS NOT WRITTEN THROUGH: what it leads to may be another file of
     the source's, or nothing in this repository, and git reads no
-    `.gitattributes` through a link anyway. It is left as it is, and the
-    follow-up names the lines to add where it leads."""
+    `.gitattributes` that is a link anyway. It is left as it is, and the
+    follow-up says so and lists the lines a regular file would need. A link
+    is one on the disk OR in git's index (`_tracked_as_link`)."""
     if (ATTRIBUTES, f"{collision_dir}/{ATTRIBUTES}") not in result.collisions:
         return
     path = target / ATTRIBUTES
-    if path.is_symlink() or not path.is_file():
+    if path.is_symlink() or not path.is_file() \
+            or _tracked_as_link(target, ATTRIBUTES):
         return
     paths = eol_block_paths(result.shape_files, collision_dir)
     path.write_bytes(with_eol_block(path.read_bytes(), paths))
@@ -800,7 +832,8 @@ def _append_eol_block(target: Path, result: "Materialized",
 
 
 def collision_follow_up(intended: str, actual: str,
-                        beside: dict | None = None) -> str:
+                        beside: dict | None = None, *,
+                        attributes_link: bool = False) -> str:
     """The follow-up for ONE collision, in one place.
 
     Both callers say it: `adopt-project.py plan` PREDICTS the collisions from
@@ -817,7 +850,16 @@ def collision_follow_up(intended: str, actual: str,
     Where the root's `scripts/bootstrap.py` is the source's own, that command
     runs the source's script and exits 0, so the follow-up names no command,
     and says both merges come first (#493's review, F2).
+
+    A `.gitattributes` THAT IS A SYMLINK gets no block (`_append_eol_block`),
+    so `attributes_link` says which of two things happened, and the follow-up
+    for a link says that nothing was appended, that git reads no
+    `.gitattributes` that is a link, and the exact lines a regular file in
+    its place needs (#471's review, SHOULD-2). `plan` knows it from the
+    source tree's mode.
     """
+    if intended == ATTRIBUTES and attributes_link:
+        return _attributes_link_follow_up(intended, actual, beside)
     if intended == ATTRIBUTES:
         return (
             f"keep the block at the end of {intended} that opens with "
@@ -830,9 +872,7 @@ def collision_follow_up(intended: str, actual: str,
             "contracts/shape-pin.yaml records; without it a Windows clone "
             "reports shape-copy-drift on each one. None of the source's own "
             f"lines is changed. Merge the rest of {actual} into {intended} "
-            "only if the whole project should check out with LF. A "
-            f"{intended} that is a symlink is not written through: add the "
-            "block's lines where it leads")
+            "only if the whole project should check out with LF")
     if intended in ASSISTANT_INSTRUCTIONS:
         return (
             f"add the line `{SHAPE_POINTER_LINE}` to the existing {intended} "
@@ -858,6 +898,31 @@ def collision_follow_up(intended: str, actual: str,
             f"own until {script} is merged into it as well, so neither `make "
             f"bootstrap` nor `python3 {BOOTSTRAP}` runs the shape's "
             "bootstrap before both merges are made")
+
+
+def _attributes_link_follow_up(intended: str, actual: str,
+                               beside: dict | None) -> str:
+    """The follow-up for a source `.gitattributes` that is a symlink: no
+    block was appended, nothing git reads gives the root's pinned copies a
+    line ending, and these are the lines a regular file needs.
+
+    The copies are the pinned ones that kept their own names, in the pin's
+    order: every one `beside` does not send under the collision directory,
+    as `eol_block_paths` reads them out of what was written."""
+    pinned = [*COPIED_VERBATIM, *(rel for _, rel in COPIED_FROM_SHAPE)]
+    lines = ", ".join(f"`{line}`" for line in eol_block(
+        [path for path in pinned if path not in (beside or {})]).splitlines())
+    return (
+        f"{intended} is a symlink, so the split appended nothing to it (it "
+        f"never writes through a link) and wrote the shape's copy beside it "
+        f"as {actual}, which governs only its own directory. Git reads no "
+        f"{intended} that is a symlink, so no line-ending rule reaches the "
+        "pinned copies outside it: a Windows clone writes them with CRLF and "
+        "reports shape-copy-drift on each one. To give every clone one, "
+        f"replace the link with a regular {intended} holding the lines of "
+        "the file it leads to that should still apply, then these, one per "
+        f"line: {lines}. Adding the same lines to a clone's "
+        "`.git/info/attributes` fixes that clone alone")
 
 
 def copy_in_the_way(target: Path, actual: str) -> str | None:

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -813,3 +814,132 @@ def test_a_source_pin_kept_in_the_root_fails_verification_with_the_plan_answer(
     assert "fix the plan and re-run" in after
     assert after.rstrip().endswith(f"--delete {BRANCH}"), result.stderr
     assert git("show", f"{BRANCH}:{PIN}", cwd=source).stdout == own_pin
+
+
+# ---------------------------------------------------------------------------
+# #471's review: a linked `.gitattributes`, and a linked `contracts`
+# ---------------------------------------------------------------------------
+
+#: A source whose root `.gitattributes` is a symlink to `config/attributes`.
+LINKED_ATTRIBUTES_TREE = {
+    README: "# Thing\n",
+    IGNORE_FILE: "__pycache__/\n",
+    "specs/001-feature/spec.md": "# The feature\n",
+    "src/app/main.py": "import contracts_reader\n",
+    "config/attributes": OWN_ATTRIBUTES,
+}
+
+
+def planned_and_checked(source: Path, base: Path, env: dict | None = None,
+                        keep: tuple = ()) -> Path:
+    """The plan for `source`, each path in `keep` answered `root`, checked."""
+    plan = base / "adoption-plan.yaml"
+    written = run_script(ADOPT, "plan", "--source", str(source), "--project",
+                         PROJECT, "--org", "testorg", "--elected-by",
+                         "Test Human", "--elected-on", "2026-09-02", "--out",
+                         str(plan), env=env)
+    assert written.returncode == 0, written.stderr + written.stdout
+    for path in keep:
+        text = plan.read_text(encoding="utf-8")
+        if f"  - path: {path}\n    leg: null\n" in text:
+            resolve(plan, path, "root", "the project's own, kept at the root")
+            continue
+        answered = re.search(rf"(?m)^  - path: {re.escape(path)}\n"
+                             r"    leg: (spec|code|drop)\n", text)
+        if answered:
+            with plan.open("w", encoding="utf-8", newline="\n") as handle:
+                handle.write(text.replace(
+                    answered.group(0),
+                    f"  - path: {path}\n    leg: root\n    resolution: "
+                    "\"the project's own, kept at the root\"\n", 1))
+        assert f"  - path: {path}\n    leg: root\n" in \
+            plan.read_text(encoding="utf-8"), f"{path} is not kept in the root"
+    checked = run_script(ADOPT, "check", "--plan", str(plan), env=env)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    return plan
+
+
+@needs_filter_repo
+def test_a_linked_attributes_file_checked_out_as_a_plain_file_adopts(
+        tmp_path):
+    """Git for Windows' default `core.symlinks=false`, on every platform: the
+    link is in the source's TREE only (`update-index --cacheinfo`), and every
+    git the run starts checks it out as a plain file holding its target.
+    The split used to append the block into that file, so the link's target
+    became the old one followed by the block, and `execute` printed "none of
+    its own lines was changed" and then failed `adopt-lost: .gitattributes`
+    after both legs were pushed; main verified the same source (#471's
+    review, MUST-1). Now nothing is written through, the split holds the
+    source's link as it was, and the plan's follow-up says no block was
+    appended and lists the lines a regular file needs (SHOULD-2)."""
+    source = make_source_repo(tmp_path / "Thing", tree=LINKED_ATTRIBUTES_TREE)
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(source), input="config/attributes",
+                          capture_output=True, text=True, check=True)
+    link = blob.stdout.strip()
+    git("update-index", "--add", "--cacheinfo",
+        f"{SYMLINK},{link},{ATTRIBUTES}", cwd=source)
+    commit_index(source, "Link our attributes")
+    env = command_scope("core.symlinks", "false")
+    plan = planned_and_checked(source, tmp_path, env,
+                               keep=(ATTRIBUTES, "config/"))
+    planned = plan.read_text(encoding="utf-8")
+    assert f"{ATTRIBUTES} is a symlink, so the split appended nothing" \
+        in planned, planned
+    assert EOL_BLOCK_HEAD in planned
+
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"), env=env)
+
+    output = result.stderr + result.stdout
+    assert result.returncode == 0, output
+    assert "adoption verified" in result.stdout, output
+    assert f"appended to {ATTRIBUTES}" not in result.stdout, output
+    entry = git("ls-tree", BRANCH, "--", ATTRIBUTES, cwd=source).stdout
+    assert entry.split("\t")[0].split() == [SYMLINK, "blob", link], entry
+    message = git("log", "-1", "--format=%B", BRANCH, cwd=source).stdout
+    assert f"APPENDED TO {ATTRIBUTES}" not in message
+    assert f"{ATTRIBUTES} is a symlink, so the split appended nothing" \
+        in " ".join(message.split()), message
+
+
+@needs_filter_repo
+@needs_disk_symlinks
+def test_own_attributes_and_a_linked_contracts_kept_in_the_root_adopt(
+        tmp_path):
+    """The source keeps its own `.gitattributes` AND `contracts -> meta` at
+    the root. The materializer writes the shape's pin through the link, to
+    `meta/shape-pin.yaml`, and the verification read the pin among the
+    split's plain files only, found none, and called the appended
+    `.gitattributes` lost where main verified the same source (#471's
+    review, SHOULD-3). It reads the pin through the links now, as the
+    shape-file check does."""
+    source = make_source_repo(
+        tmp_path / "Thing",
+        tree={README: "# Thing\n", IGNORE_FILE: "__pycache__/\n",
+              "specs/001-feature/spec.md": "# The feature\n",
+              "src/app/main.py": "import contracts_reader\n",
+              "meta/README.md": "# Project metadata\n",
+              ATTRIBUTES: OWN_ATTRIBUTES})
+    symlink(source / "contracts", "meta")
+    commit_all(source, "Link contracts to meta")
+    plan = planned_and_checked(source, tmp_path,
+                               keep=("contracts", "meta/", ATTRIBUTES))
+
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+
+    output = result.stderr + result.stdout
+    assert result.returncode == 0, output
+    assert "adoption verified" in result.stdout, output
+    assert f"root   {ATTRIBUTES} is the source's own bytes, then the " \
+        "shape's block" in result.stdout, output
+    modes = {line.split("\t", 1)[1]: line.split(" ", 1)[0]
+             for line in git("ls-tree", "-r", BRANCH,
+                             cwd=source).stdout.splitlines()}
+    assert modes["contracts"] == SYMLINK
+    assert "meta/shape-pin.yaml" in modes
+    text = git("show", f"{BRANCH}:{ATTRIBUTES}", cwd=source).stdout
+    assert text.startswith(f"{OWN_ATTRIBUTES}{EOL_BLOCK_HEAD}\n"), text

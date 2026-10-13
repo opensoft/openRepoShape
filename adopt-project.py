@@ -2691,7 +2691,9 @@ def cmd_plan(args) -> int:
     # the plan as written. A source with no such path plans as it did.
     ruled = walk(policy, [(path, size) for path, _, _, size in tree])
     implied = ask_about_refused_paths(ruled, tree)
-    materialized = _predict_collisions(implied)
+    materialized = _predict_collisions(
+        implied, attributes_link=any(path == ATTRIBUTES and mode == SYMLINK_MODE
+                                     for path, mode, _, _ in tree))
     follow_ups = follow_ups_for(source, implied, names, args.spec_path,
                                 args.code_path, materialized)
     seeded = seeded_legs(assigned_paths(implied))
@@ -2754,7 +2756,8 @@ def _print_summary(entries: list[Entry]) -> None:
               f"{row['byte_share']:>6.1%} of bytes")
 
 
-def _predict_collisions(entries: list[Entry]) -> list[str]:
+def _predict_collisions(entries: list[Entry], *,
+                        attributes_link: bool = False) -> list[str]:
     """Which shape files will not be able to take their own names.
 
     Known BEFORE `execute` runs, because the plan says which paths survive in
@@ -2774,12 +2777,17 @@ def _predict_collisions(entries: list[Entry]) -> list[str]:
     Each follow-up is told the WHOLE list: the Makefile's names what runs
     until it is merged, and that depends on whether `scripts/bootstrap.py`
     went aside too (#493's review, F2).
+
+    `attributes_link` says the source's root `.gitattributes` is a symlink,
+    read from the source tree's mode as `execute` reads it from the index:
+    no block is appended to one, and its follow-up says so (#471).
     """
     surviving = {e.path for e in entries if e.leg == "root"}
     beside = {path: f"{COLLISION_DIR}/{path}"
               for path in sorted(set(assembly_root_paths()))
               if path in surviving or f"{path.split('/')[0]}/" in surviving}
-    return [collision_follow_up(path, actual, beside)
+    return [collision_follow_up(path, actual, beside,
+                                attributes_link=attributes_link)
             for path, actual in beside.items()]
 
 
@@ -6950,7 +6958,8 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
     root_findings = _land_the_root_tree(after, split_tree, before, mounts)
     root_findings += _mount_commit_findings(
         split_tree, mounts, _pushed_commits(work_root, names))
-    block = _land_the_eol_block(assembly, split_tree, before, after)
+    block = _land_the_eol_block(assembly, split_commit, split_tree, before,
+                                after)
 
     counts, findings = _account_for(before, after, paths_for["drop"])
     findings += _shape_file_findings(assembly, split_commit)
@@ -6967,8 +6976,8 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
     return findings + root_findings
 
 
-def _land_the_eol_block(assembly: Path, tree: list, before: dict,
-                        after: dict) -> int:
+def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
+                        before: dict, after: dict) -> int:
     """Count the source's `.gitattributes` as landed in the root when the
     root holds its bytes followed by exactly the shape's block; return how
     many lines that block has, or 0 when there is none to count.
@@ -6985,8 +6994,13 @@ def _land_the_eol_block(assembly: Path, tree: list, before: dict,
 
     The pin is the shape's: under `shape/` when the source kept its own
     `contracts/shape-pin.yaml`, which nothing else can put there
-    (`plan-root-blocks-shape-copy`). An unreadable one counts nothing, and
-    `_shape_file_findings` reports it.
+    (`plan-root-blocks-shape-copy`). It is read THROUGH the split's symlinks
+    (`_SplitTree`), as `_shape_file_findings` reads it: a source that keeps
+    `contracts -> meta` in the root has the pin written through the link, and
+    a lookup among the tree's plain files found none, so the appended file
+    was `adopt-lost` where main verified it (#471's review, SHOULD-3). A pin
+    neither can read counts nothing here, and `_shape_file_findings` reports
+    it.
     """
     source_oid = before.get(ATTRIBUTES)
     landed = after.get(ATTRIBUTES, [])
@@ -6995,7 +7009,7 @@ def _land_the_eol_block(assembly: Path, tree: list, before: dict,
             or root[0] == f"root:{source_oid}":
         return 0
     blobs = {path: oid for path, mode, oid, _ in tree if mode in FILE_MODES}
-    pin = blobs.get(f"{COLLISION_DIR}/{SHAPE_PIN}") or blobs.get(SHAPE_PIN)
+    pin = _pin_through_links(_SplitTree(assembly, split_commit))
     pinned = _pinned_shape_paths(assembly, pin) if pin else None
     if pinned is None or blobs.get(ATTRIBUTES) != root[0].split(":", 1)[1]:
         return 0
@@ -7006,6 +7020,18 @@ def _land_the_eol_block(assembly: Path, tree: list, before: dict,
     after[ATTRIBUTES] = [f"root:{source_oid}" if where == root[0] else where
                          for where in landed]
     return len(paths)
+
+
+def _pin_through_links(tree: "_SplitTree") -> str | None:
+    """The oid of the shape's pin in the split, under `shape/` first, each
+    path followed through the tree's links; None when neither leads to a
+    file."""
+    for path in (f"{COLLISION_DIR}/{SHAPE_PIN}", SHAPE_PIN):
+        try:
+            return tree.blob_at(path)
+        except _NotInTheSplitError:
+            continue
+    return None
 
 
 def _blob_bytes(repo: Path, oid: str) -> bytes:
