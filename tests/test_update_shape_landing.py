@@ -43,6 +43,7 @@ import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -1360,6 +1361,197 @@ def test_a_copy_kept_as_a_committed_link_is_what_head_commits(root, project,
     assert (root.path / LOCAL).is_symlink()
     assert git("rev-parse", f"HEAD:{LOCAL}", cwd=root.path).stdout == link
     assert git("status", "--porcelain", cwd=root.path).stdout == ""
+
+
+# --- what the comparison never reads, and what it cannot vouch for (#436) ---
+#
+# Codex's review of 1af060e. A FIFO where a pinned copy was blocked
+# `git hash-object` for good, so every `--branch` run hung where main refused;
+# and a link HEAD commits is HEAD's, but the bytes the run reads and writes
+# are at its far end, which no commit of the link carries.
+
+#: Long enough for any refusal `apply` makes before its first write, on the
+#: slowest runner. A run still going after it is blocked on a read.
+HANG = 120
+
+
+def release(path) -> None:
+    """Open the FIFO at `path` for writing and close it again, so a process
+    left blocked opening it for reading is let go, with nothing to read."""
+    try:
+        os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+    except OSError:
+        pass
+
+
+def apply_within(root, project, *extra, env):
+    """`apply` as `apply` above runs it, given `HANG` seconds: a run still
+    going then is killed and reported as a hang, not waited for. A FIFO at
+    `LOCAL` is released after the kill, so no `git` it started stays
+    blocked behind the test."""
+    full = blank_unnamed_pin_sources(
+        {**os.environ, **env, "LANES_LANE": ""}, env)
+    proc = subprocess.Popen(
+        [sys.executable, str(UPDATE), "apply", "--root", str(root.path),
+         "--yes", "--upstream", str(project["upstream"]),
+         "--at", project["b"], *extra],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, env=full)
+    try:
+        out, err = proc.communicate(timeout=HANG)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        release(root.path / LOCAL)
+        proc.communicate()
+        pytest.fail(f"apply was still running after {HANG}s: blocked "
+                    f"reading what stands at {LOCAL}")
+    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+
+
+def a_fifo_in_place_of_the_copy(root) -> None:
+    (root.path / LOCAL).unlink()
+    os.mkfifo(root.path / LOCAL)
+
+
+def a_fifo_where_head_commits_nothing(root) -> None:
+    git("rm", "-q", "--", LOCAL, cwd=root.path)
+    git("commit", "-q", "-m", "Drop a copy", cwd=root.path)
+    os.mkfifo(root.path / LOCAL)
+
+
+def a_socket_in_place_of_the_copy(root) -> None:
+    """Bound by its name inside its directory: a socket's whole path has to
+    fit in about a hundred bytes, which a temporary directory may not."""
+    (root.path / LOCAL).unlink()
+    here = os.getcwd()
+    os.chdir(root.path / os.path.dirname(LOCAL))
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.bind(os.path.basename(LOCAL))
+    finally:
+        os.chdir(here)
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo"),
+    reason="no FIFOs or Unix sockets in a Windows working tree: os.mkfifo "
+           "is POSIX only")
+@pytest.mark.parametrize("flags", [(), ("--push", "--pr")],
+                         ids=["branch", "push-pr"])
+@pytest.mark.parametrize("prepare", [
+    a_fifo_in_place_of_the_copy,
+    a_fifo_where_head_commits_nothing,
+    a_socket_in_place_of_the_copy,
+], ids=["fifo", "fifo-head-commits-nothing", "socket"])
+def test_a_copy_replaced_by_what_is_not_a_file_is_not_read(
+        root, project, gh, prepare, flags):
+    """A FIFO, OR A SOCKET, IS `classify`'s, AS ON MAIN (#436, codex
+    review of 1af060e). `classify` calls a pinned copy that is not a file
+    `copy-missing`, and main refused `update-conflict` before writing. The
+    comparison handed the path to `git hash-object`, which opens it: over
+    a FIFO the open waits for a writer that never comes, and `apply` hung;
+    over a socket the open fails, and the path was called a change HEAD
+    does not commit, which no remedy changes. It is `lstat`ed first now
+    and never read, so the run refuses as main does, with nothing written,
+    no branch made and `gh` not asked."""
+    prepare(root)
+    head = git("rev-parse", "HEAD", cwd=root.path).stdout.strip()
+    branches = git("for-each-ref", "--format=%(refname)", "refs/heads/",
+                   cwd=root.path).stdout
+    status = git("status", "--porcelain", cwd=root.path).stdout
+
+    result = apply_within(root, project, "--branch", BRANCH, *flags,
+                          env=gh.env)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith("REFUSED update-conflict: "), \
+        result.stderr
+    assert f"{LOCAL}: pinned but absent from the root" in result.stderr
+    assert "update-branch-uncommitted" not in result.stderr
+    assert result.stdout == "", "nothing copied, re-pinned or said done"
+    assert git("rev-parse", "HEAD", cwd=root.path).stdout.strip() == head
+    assert git("for-each-ref", "--format=%(refname)", "refs/heads/",
+               cwd=root.path).stdout == branches, "no branch was made"
+    assert git("status", "--porcelain", cwd=root.path).stdout == status
+    assert gh.calls() == []
+
+
+def a_link_in_place_of(root, path: str, end: str) -> str:
+    """`path` kept as a committed relative link to `end`, beside it, which
+    holds its bytes. Returns `end`."""
+    os.replace(root.path / path, root.path / end)
+    (root.path / path).symlink_to(os.path.basename(end))
+    git("add", "--", path, end, cwd=root.path)
+    git("commit", "-q", "-m", f"Keep {path} as a link", cwd=root.path)
+    return end
+
+
+def a_copy_upstream_changes_kept_as_a_link(root) -> str:
+    """B changes `CHANGED`, which the root keeps as a link."""
+    return a_link_in_place_of(root, CHANGED,
+                              "scripts/validate-manifest-real.py")
+
+
+def an_edit_at_the_end_of_a_linked_copy(root) -> str:
+    """`LOCAL` kept as a link, its far end edited and not committed."""
+    end = a_link_in_place_of(root, LOCAL, "scripts/bootstrap-real.py")
+    (root.path / end).write_bytes((root.path / end).read_bytes()
+                                  + b"\n# edited at the link's end\n")
+    return end
+
+
+def the_pin_kept_as_a_link(root) -> str:
+    return a_link_in_place_of(root, PIN, "contracts/shape-pin-real.yaml")
+
+
+def the_manifest_kept_as_a_link(root) -> str:
+    return a_link_in_place_of(root, "project.yaml", "project-real.yaml")
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="a committed symlink is checked out as a plain file on Windows "
+           "unless core.symlinks is on, and making one needs a privilege "
+           "the runners do not grant")
+@pytest.mark.parametrize("prepare, extra, linked", [
+    (a_copy_upstream_changes_kept_as_a_link, (), CHANGED),
+    (an_edit_at_the_end_of_a_linked_copy, ("--accept-local", LOCAL), LOCAL),
+    (the_pin_kept_as_a_link, (), PIN),
+    (the_manifest_kept_as_a_link, (), "project.yaml"),
+], ids=["upstream-changed", "accepted-edit", "pin", "manifest"])
+def test_a_branch_run_that_would_write_through_a_link_is_refused(
+        root, project, gh, prepare, extra, linked):
+    """GIT COMMITS THE LINK, SO NOTHING IS WRITTEN OR RE-PINNED THROUGH ONE
+    (#436, codex review of 1af060e). The comparison holds a committed link
+    to be HEAD's, which it is; but the run reads, writes and re-pins the
+    bytes at its far end. Main and 1af060e exited 0 on each of these: a
+    copy B rewrote through its link, an edit `--accept-local` took at the
+    link's end, the pin and the manifest each rewritten through one, with
+    the commit holding the links as HEAD had them and its own
+    `validate-pins.py` red in a clean checkout. `--branch` refuses them by
+    name before the first write now, `gh` not asked."""
+    end = prepare(root)
+    kept = (root.path / end).read_bytes()
+    head = git("rev-parse", "HEAD", cwd=root.path).stdout.strip()
+    branches = git("for-each-ref", "--format=%(refname)", "refs/heads/",
+                   cwd=root.path).stdout
+    status = git("status", "--porcelain", cwd=root.path).stdout
+
+    result = apply(root, project, *extra, "--branch", BRANCH, "--push",
+                   "--pr", env=gh.env)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith("REFUSED update-rewrite-symlink: "), \
+        result.stderr
+    assert linked in result.stderr, result.stderr
+    assert result.stdout == "", "nothing copied, re-pinned or said done"
+    assert (root.path / end).read_bytes() == kept, "nothing written there"
+    assert git("rev-parse", "HEAD", cwd=root.path).stdout.strip() == head
+    assert git("for-each-ref", "--format=%(refname)", "refs/heads/",
+               cwd=root.path).stdout == branches, "no branch was made"
+    assert git("status", "--porcelain", cwd=root.path).stdout == status
+    assert on_the_remote(root) is None, "nothing was pushed"
+    assert gh.calls() == []
 
 
 # --- the same tree without `--branch`: no commit line to get wrong (#436) -----

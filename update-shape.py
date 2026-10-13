@@ -52,10 +52,13 @@ recording an identity, so this tool never records one it cannot justify:
     manifest and every pinned copy are compared with HEAD, and a difference
     is refused by name (`update-branch-uncommitted`): commit those changes
     or put them back. The commit is never widened to take them in. A
-    directory where HEAD commits one is HEAD's, not a difference: the copy
-    is `update-conflict`'s `copy-missing`. Without `--branch` the run writes
-    as it always did, and its NEXT line names those copies instead of
-    printing a commit that would leave them out.
+    directory where HEAD commits one is HEAD's, not a difference, and a
+    FIFO or a socket is never read: the copy is `update-conflict`'s
+    `copy-missing`. A copy, the pin or the manifest this run would write or
+    re-pin THROUGH a symlink is refused too (`update-rewrite-symlink`): git
+    commits the link, not the bytes it leads to. Without `--branch` the run
+    writes as it always did, and its NEXT line names those copies instead
+    of printing a commit that would leave them out.
   * Nothing is left red: the root's OWN `validate-pins.py` and
     `validate-manifest.py` run after the rewrite, and every byte is rolled
     back if either refuses.
@@ -2745,6 +2748,8 @@ def cmd_apply(args) -> int:
             return 0
         _refuse_conflicts(rows, accepted)
         _refuse_local_drift(rows, accepted)
+        if args.branch:
+            _refuse_writes_through_a_link(root, rows, kind, args.branch)
         confirm(args, rows, taking, target)
         target_tree = upstream.tree_sha256(target)
         # READ BEFORE THE COPIES, REWRITTEN AFTER THE PIN. `.gitattributes`
@@ -3043,6 +3048,61 @@ def _branch_uncommitted(branch: str, head: str, differ: list[str],
         "written, committed or pushed.")
 
 
+def _refuse_writes_through_a_link(root: Path, rows: list[Row], kind: Kind,
+                                  branch: str) -> None:
+    """`update-rewrite-symlink` under `--branch` (#436, codex review of
+    1af060e): this run would write, or re-pin from, a file it reaches
+    THROUGH a symlink, so the commit would not hold what it judged.
+
+    `_not_what_head_commits` compares a link's own text with HEAD, because
+    that is what git commits there. But `classify` and `file_sha256` read
+    the bytes the link leads to, and `Rollback.write` writes through it. So
+    a copy upstream rewrote, a local edit `--accept-local` took at the
+    link's end, and the pin and the manifest themselves land at the far end
+    of a link, while the commit holds HEAD's link unchanged: exit 0 over a
+    commit whose own `validate-pins.py` reports `shape-copy-drift`, or the
+    pin and the manifest disagreeing, in a clean checkout (measured on main
+    and on 1af060e alike). Refused here, before the first write.
+
+    ASKED AFTER `update-conflict` AND `update-local-drift`, so every row
+    still not UNCHANGED is one this run writes or re-pins, and those
+    refusals keep main's answers. A linked copy the run leaves UNCHANGED is
+    not refused: the pin keeps HEAD's row for it, so the commit claims
+    nothing new about it. The name is the rewrite twin of `--add`'s
+    `update-add-symlink` (#239), for a file this run overwrites rather than
+    creates. Without `--branch` nothing is committed, and a write through
+    a link is made as on main (#286).
+    """
+    pin = "contracts/shape-pin.yaml"
+    paths = [pin, kind.manifest] + [row.path for row in rows
+                                    if row.state != UNCHANGED]
+    linked = []
+    for path in paths:
+        link = symlink_on_the_way(root, path)
+        if link is not None:
+            name, points = link
+            above = "" if name == path else " above it"
+            linked.append(f"    {path}: {name} is a symlink{above}, "
+                          f"pointing at {points!r}")
+    if not linked:
+        return
+    raise Refusal(
+        "update-rewrite-symlink",
+        f"--branch {branch} would commit HEAD plus the paths this run "
+        "writes, but this run would write, or re-pin from, bytes it reaches "
+        "THROUGH a symlink, and git commits the link, never what it leads "
+        "to:\n" + "\n".join(linked)
+        + "\n  The commit would hold each link as HEAD does, under a pin "
+          "recording bytes it does not carry, so its own validate-pins.py "
+          "would refuse it in a clean checkout.",
+        "Remediation: replace each link with what it points at — a plain "
+        "file, or directory, at that path, so git holds the bytes there — "
+        "commit that, on a branch, since the tracking branch takes no "
+        "direct commit, and run the same command again. A root that keeps "
+        "a link takes the update by hand, at the link's end. Nothing was "
+        "written, committed or pushed.")
+
+
 def _not_what_head_commits(root: Path, paths: list[str]) -> list[str]:
     """Those of `paths` whose bytes on disk are not the blob HEAD commits
     at that path, or that HEAD does not commit at all, in the order given
@@ -3054,7 +3114,7 @@ def _not_what_head_commits(root: Path, paths: list[str]) -> list[str]:
     hides an edit — `readme_is_committed`'s second question, asked of each
     path.
 
-    THREE ANSWERS THAT ARE NOT DIFFERENCES (#436), now that every `--branch`
+    FOUR ANSWERS THAT ARE NOT DIFFERENCES (#436), now that every `--branch`
     run asks rather than only #333's re-run, whose rows were all present
     and none of them links. A path neither the disk nor HEAD holds — a
     pinned copy deleted and committed — is the same on both sides, and is
@@ -3063,8 +3123,9 @@ def _not_what_head_commits(root: Path, paths: list[str]) -> list[str]:
     above it), what git commits is THE LINK, its target as text, never the
     bytes it leads to, which `hash-object` on the path would read: so the
     link's own text is hashed against HEAD's entry for the link. A pinned
-    copy kept as a link HEAD commits is then HEAD's, as it is to git; what
-    `apply` should do with a link is not this question. And a directory
+    copy kept as a link HEAD commits is then HEAD's, as it is to git; the
+    bytes it leads to, which this run reads and may write, are
+    `_refuse_writes_through_a_link`'s question. And a directory
     where HEAD commits a directory (`_head_holds_a_directory`) is HEAD's
     too: a pinned copy replaced by a directory, that type change committed,
     has nothing for `hash-object` to read, so it was named a difference
@@ -3075,25 +3136,41 @@ def _not_what_head_commits(root: Path, paths: list[str]) -> list[str]:
     kinds is a difference: a directory over a file HEAD commits, a file
     over a directory HEAD commits, or a directory where HEAD commits
     nothing, is a type change nobody has committed.
+
+    And a node that is NOT A FILE, A DIRECTORY OR A LINK — a FIFO, a
+    socket, a device — is never READ (codex review of 1af060e): `lstat`
+    says what it is first. `hash-object` opens what it is given, and a
+    FIFO with no writer blocks that open for good, so `apply --branch`
+    hung over a pinned copy replaced by one, where main refused. git
+    commits none of them, so there is nothing of HEAD's to compare, and
+    `classify`, whose `is_file()` says no, already calls it `copy-missing`:
+    `update-conflict` names it before anything is written, as on main.
     """
     return [path for path in paths if _differs_from_head(root, path)]
 
 
 def _differs_from_head(root: Path, path: str) -> bool:
-    """`_not_what_head_commits`' question for one path."""
+    """`_not_what_head_commits`' question for one path. What stands there
+    is `lstat`ed before git is asked to read it, so git is handed a regular
+    file or nothing, and never opens what could block."""
     link = symlink_on_the_way(root, path)
     if link is not None:
         name, points = link
         disk = _blob_of(root, os.fsencode(points))
         return not disk or disk != _head_blob(root, name)
-    head = _head_blob(root, path)
-    if not head and not os.path.lexists(root / path):
-        return False
-    if (root / path).is_dir():
+    try:
+        mode = os.lstat(root / path).st_mode
+    except (OSError, ValueError):
+        # Nothing on disk: a difference only where HEAD commits something.
+        return bool(_head_blob(root, path))
+    if stat.S_ISDIR(mode):
         # Nothing here to hash: `hash-object` on a directory fails.
         return not _head_holds_a_directory(root, path)
+    if not stat.S_ISREG(mode):
+        # A FIFO, a socket or a device: not read, and `classify`'s.
+        return False
     disk = (_git_answer(root, ["hash-object", "--", path]) or "").strip()
-    return not disk or disk != head
+    return not disk or disk != _head_blob(root, path)
 
 
 def _head_holds_a_directory(root: Path, path: str) -> bool:
