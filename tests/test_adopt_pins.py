@@ -49,8 +49,8 @@ from conftest import (ADOPT, FILE_PROTOCOL, REPO, SCAFFOLD, SYNTHETIC_TREE,
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
-from repo_shape import (Refusal, load_yaml, pin_source_env_name,  # noqa: E402
-                        tree_digest)
+from repo_shape import (Refusal, load_yaml, parse_yaml,  # noqa: E402
+                        pin_source_env_name, tree_digest)
 
 UTF8 = "utf-8"
 PROJECT = "MedxGlass"
@@ -321,6 +321,172 @@ def test_the_adopted_root_passes_its_own_gate(adopted, glass):
     assert "bootstrap ok" in booted.stdout
     assert RECOMPUTES.format(commit=adopted["commit"][:12]) in booted.stdout
     assert gh_calls(adopted["env"]) == ""
+
+
+# --- a product the project's reader would take for a number (#514) ----------
+#
+# `plan` records the product quoted (`product: "007"`, `_pin_lines`), and
+# `check` and `execute` pass it. On main 631f087 `execute` then listed it in
+# `neutral_product_pins:` bare, `  - 007`, which the project's own reader
+# reads back as the number 7 (and `2026` and `1.5` as numbers), so the root
+# `execute` called verified failed its own `validate-pins.py` with
+# `neutral-pin-entry-malformed`. Each entry is now spelled so that it reads
+# back as the text `plan` recorded. `openGlass` is the control: its line
+# does not move by a byte.
+
+#: The project the products below are pinned by, a name no product here
+#: makes a domain descendant of.
+TEXT_PROJECT = "Northwind"
+#: `(the product, how its `neutral_product_pins:` entry is spelled)`.
+AS_TEXT = [
+    pytest.param(("007", '"007"'), id="007"),
+    pytest.param(("2026", '"2026"'), id="2026"),
+    pytest.param(("1.5", '"1.5"'), id="1.5"),
+    pytest.param(("openGlass", "openGlass"), id="openGlass"),
+]
+
+
+@pytest.fixture(scope="module", params=AS_TEXT)
+def adopted_as_text(request, tmp_path_factory):
+    """One real adoption with `--pin <product>@<commit> --pin-source <a local
+    clone>`: plan, answer, check, execute, and a recursive clone of the split,
+    which is the root a person gets."""
+    if shutil.which("git-filter-repo") is None:
+        pytest.skip("git filter-repo is not installed")
+    product, spelled = request.param
+    base = tmp_path_factory.mktemp("adopt-pin-text")
+    env = stub_gh(base)
+    readable, commit, _ = make_product(base / "product")
+    source = make_source_repo(base / "Thing")
+    plan = base / "adoption-plan.yaml"
+    planned_run = plan_with(source, plan, f"{product}@{commit}",
+                            extra=("--pin-source", str(readable)), env=env,
+                            project=TEXT_PROJECT)
+    assert planned_run.returncode == 0, planned_run.stderr + planned_run.stdout
+    for path, leg in ANSWERS:
+        resolve(plan, path, leg)
+    checked = run_script(ADOPT, "check", "--plan", str(plan), env=env)
+    executed = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                          "--local-remote-dir", str(base / "remotes"),
+                          "--work-dir", str(base / "work"), env=env)
+    clone = base / "clone" / TEXT_PROJECT
+    if executed.returncode == 0:
+        proc = subprocess.run(
+            ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
+             "-b", BRANCH, str(source), str(clone)],
+            capture_output=True, check=False)
+        assert proc.returncode == 0, proc.stderr.decode(UTF8, "replace")
+    return {"product": product, "spelled": spelled, "commit": commit,
+            "readable": readable, "source": source, "plan": plan, "env": env,
+            "checked": checked, "executed": executed, "clone": clone}
+
+
+@needs_filter_repo
+def test_a_pinned_product_is_listed_as_the_text_plan_recorded(
+        adopted_as_text):
+    """The manifest lists the product so that the project's own reader reads
+    it back as the text `plan` recorded: `"007"`, and `openGlass` as it always
+    was. The line is read from git, as bytes, and not from a working tree."""
+    adopted = adopted_as_text
+    product = adopted["product"]
+    assert load_yaml(adopted["plan"])["pins"][0]["product"] == product
+    checked, executed = adopted["checked"], adopted["executed"]
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert executed.returncode == 0, executed.stderr + executed.stdout
+    assert "adoption verified" in executed.stdout
+    blob = subprocess.run(["git", "show", f"{BRANCH}:project.yaml"],
+                          cwd=str(adopted["source"]), capture_output=True,
+                          check=True).stdout
+    line = f"\nneutral_product_pins: \n  - {adopted['spelled']}\n\n"
+    text = blob.decode(UTF8, "replace")
+    at = text.find("\nneutral_product_pins:")
+    assert line.encode(UTF8) in blob, text[at:at + len(line) + 16]
+    manifest = load_yaml(adopted["clone"] / "project.yaml")
+    assert manifest["neutral_product_pins"] == [product]
+    assert gh_calls(adopted["env"]) == ""
+
+
+@needs_filter_repo
+def test_a_pinned_product_passes_the_adopted_roots_own_gate(adopted_as_text):
+    """The point of #514: `execute` said `adoption verified`, so the root's
+    own `validate-manifest.py` and `validate-pins.py` pass, the second with
+    the pin's digest recomputed from the stand-in."""
+    adopted = adopted_as_text
+    product, clone = adopted["product"], adopted["clone"]
+    env = {**adopted["env"],
+           pin_source_env_name(product): str(adopted["readable"])}
+    for validator in ("validate-manifest.py", "validate-pins.py"):
+        result = run_script(clone / "scripts" / validator, "--root", ".",
+                            cwd=clone, env=env)
+        said = result.stderr + result.stdout
+        assert result.returncode == 0, f"{validator}: {said}"
+        assert "neutral-pin-entry-malformed" not in said, said
+    assert (f"{product}: pin commit {adopted['commit'][:12]} digest "
+            "recomputes") in result.stdout, result.stdout
+    assert gh_calls(adopted["env"]) == ""
+
+
+#: Product names `PIN_ARG_RE` admits, by how the project's reader takes each
+#: written bare: as a number, as a bool or None, or as the text itself.
+NUMBERS = ("007", "2026", "1.5", "-1", "-0.5", "20261011")
+KEYWORDS = ("true", "True", "TRUE", "false", "False", "FALSE", "null",
+            "Null", "NULL")
+PLAIN = ("openGlass", "open-glass", "open_glass", "openGlass2", ".5", "x.y",
+         "_x", "Openglass")
+#: Text to the reader bare, and quoted all the same, as `plan` quotes them in
+#: `product:`: `y` writes bare only a name that begins with a letter, `_` or
+#: `.`, and a YAML reader other than the project's takes `0x1F` and `1e3`
+#: for numbers.
+QUOTED_BY_Y = ("3dGlass", "-x", "0x1F", "1e3")
+
+
+def entries_read_back(entries: str) -> object:
+    """`entries`, the `NEUTRAL_PRODUCT_PINS` value, rendered into the
+    template's own line and read as the project reads its manifest."""
+    template = (REPO / "templates" / "assembly-root" / "project.yaml")
+    line = next(line for line in template.read_text(encoding=UTF8)
+                .splitlines() if "{{NEUTRAL_PRODUCT_PINS}}" in line)
+    rendered = shape_materialize.render(
+        line + "\n", {"NEUTRAL_PRODUCT_PINS": entries}, "project.yaml")
+    return parse_yaml(rendered)["neutral_product_pins"]
+
+
+@pytest.mark.parametrize("product", [
+    *(pytest.param(name, id=f"number-{name}") for name in NUMBERS),
+    *(pytest.param(name, id=f"keyword-{name}") for name in KEYWORDS),
+    *(pytest.param(name, id=f"plain-{name}") for name in PLAIN),
+    *(pytest.param(name, id=f"quoted-by-y-{name}") for name in QUOTED_BY_Y),
+])
+def test_each_entry_reads_back_as_the_product(adopter, product):
+    """Every product reads back as its text. A name `y` writes bare and the
+    reader reads back is written bare, as on main, so a root's `openGlass`
+    line does not move by a byte; every other is double-quoted, as `plan`
+    quotes it in `product:`. A keyword is the one `y` writes bare and the
+    reader takes for a bool or None (#181). It reaches `execute` only from a
+    plan edited by hand, because `plan` writes `product: true` bare and
+    `check` then refuses it, but the manifest reads back as the plan does,
+    edited or not."""
+    entries = adopter._neutral_product_pins({product})
+    assert entries_read_back(entries) == [product]
+    if product in PLAIN:
+        assert entries == f"\n  - {product}"
+    else:
+        assert entries == f'\n  - "{product}"'
+
+
+def test_every_entry_together_reads_back_in_order(adopter):
+    """All of them in one list, as a plan with many pins writes it: one line
+    each, sorted, and each read back as its text."""
+    every = {*NUMBERS, *KEYWORDS, *PLAIN, *QUOTED_BY_Y}
+    entries = adopter._neutral_product_pins(every)
+    assert len(entries.splitlines()) == len(every) + 1
+    assert entries_read_back(entries) == sorted(every)
+
+
+def test_no_pin_is_an_empty_list(adopter):
+    """A plan with no pin lists none, as it always has."""
+    assert adopter._neutral_product_pins(set()) == "[]"
+    assert entries_read_back("[]") == []
 
 
 # --- what `plan` refuses, in the scaffold's words ---------------------------
