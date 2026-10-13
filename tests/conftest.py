@@ -859,13 +859,14 @@ _CONTROLLING = ("import fcntl, os, sys, termios; "
                 "os.execvp(sys.argv[1], sys.argv[1:])")
 
 #: The same terminal, the command run in a BACKGROUND process group of it: a
-#: `timeout N ./setup.sh` typed in a shell, or any runner that backgrounds a
-#: job sharing the terminal. `_CONTROLLING_IN_THE_BACKGROUND` stays the
-#: session's leader and its foreground group, and the command is a child in a
-#: group of its own, so a read of the terminal from it stops on SIGTTIN. A
-#: stopped command is killed and shows as a status of 128 + the signal, so a
-#: run that waits where it should have refused fails at once and leaves
-#: nothing stopped behind it.
+#: piped run, `cat setup.sh | timeout N bash -s -- ...`, typed in a shell
+#: (GNU `timeout` puts its command in a group of its own), or any runner that
+#: backgrounds a job sharing the terminal. `_CONTROLLING_IN_THE_BACKGROUND`
+#: stays the session's leader and its foreground group, and the command is a
+#: child in a group of its own, so a read of the terminal from it stops on
+#: SIGTTIN. A stopped command is killed and shows as a status of 128 + the
+#: signal, so a run that waits where it should have refused fails at once and
+#: leaves nothing stopped behind it.
 _CONTROLLING_IN_THE_BACKGROUND = """
 import fcntl, os, signal, sys, termios
 fcntl.ioctl(0, termios.TIOCSCTTY, 0)

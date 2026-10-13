@@ -1974,11 +1974,12 @@ def test_a_terminal_in_raw_mode_is_no_terminal_to_ask_on(tmp_path):
 
 @PTY_SKIP
 def test_a_background_process_group_is_no_terminal_to_ask_on(tmp_path):
-    """`timeout N ./setup.sh` typed in a shell, or any runner that
-    backgrounds a job sharing the terminal: a read of the terminal from a
-    background process group stops the run on SIGTTIN, and it stays stopped.
-    A terminal the run is not in the foreground of is no terminal to ask
-    on."""
+    """`cat setup.sh | timeout N bash -s -- ...` typed in a shell, or any
+    runner that backgrounds a job sharing the terminal: a read of the
+    terminal from a background process group stops the run on SIGTTIN, and it
+    stays stopped. A terminal the run is not in the foreground of is no
+    terminal to ask on. Typed without the pipe the run's stdin IS the
+    terminal, and it never reaches this check."""
     assert_refuses_on_a_terminal_it_cannot_answer_on(tmp_path,
                                                      background=True)
 

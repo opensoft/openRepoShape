@@ -1338,8 +1338,9 @@ def open_terminal():
     - this run is in the terminal's FOREGROUND process group
       (`tcgetpgrp`). A background group's read stops on SIGTTIN, or fails
       with EIO when the group is orphaned or the signal is ignored - which is
-      what `timeout N ./setup.sh` typed in a shell is, as GNU `timeout` puts
-      the command in a group of its own;
+      what `cat setup.sh | timeout N bash -s -- ...` typed in a shell is, as
+      GNU `timeout` puts the command in a group of its own, and what any
+      runner that backgrounds a job sharing the terminal is;
     - the terminal reads WHOLE LINES (`ICANON`). An assistant's full-screen
       interface owns its pane in raw mode, where the person's Enter sends a
       carriage return and a read for the end of a line never ends.
