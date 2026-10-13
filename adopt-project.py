@@ -2820,11 +2820,16 @@ class Plan:
                 "Remediation: re-run `plan`, which writes `mode: in-place`. "
                 "A `new-root` mode is described in the tool's own docstring "
                 "and is not implemented.")
-        self.entries = [e for e in (data.get("paths") or [])
+        # Each read takes only what `plan` writes, and `_plan_key_findings`
+        # names what it leaves out (#386). `legs:` is kept as it stands: the
+        # doctor's PLACEMENT plan, handed here by `tests/test_shape_doctor.py`,
+        # carries it as a list, and its readers ask its type themselves.
+        self.entries = [e for e in _plan_list(data, "paths")
                         if isinstance(e, dict)]
         self.legs = data.get("legs") or {}
         # The products only: what the naming policy classifies by. Whether
-        # each entry is a pin `execute` can write is `_read_pins`'s (#273).
+        # each entry is a pin `execute` can write is `_read_pins`'s (#273);
+        # `_pin_products` reads a list only, as `_plan_list` does.
         self.pins = _pin_products(data.get("pins"))
 
     @classmethod
@@ -2835,12 +2840,19 @@ class Plan:
         return cls(path, data)
 
     @property
+    def source(self) -> dict:
+        """The plan's `source:` when it is a mapping, as `plan` writes it, and
+        `{}` for anything else, which `_plan_key_findings` names (#386)."""
+        source = self.data.get("source")
+        return source if isinstance(source, dict) else {}
+
+    @property
     def source_commit(self) -> str:
-        return str((self.data.get("source") or {}).get("commit") or "")
+        return str(self.source.get("commit") or "")
 
     def open_source(self, override: str | None, work_root: Path) -> Source:
-        spec = override or (self.data.get("source") or {}).get("local_path") \
-            or (self.data.get("source") or {}).get("repository")
+        spec = override or self.source.get("local_path") \
+            or self.source.get("repository")
         if not spec:
             raise Refusal("plan-no-source",
                           f"{self.path}: `source:` names neither a local path "
@@ -2853,8 +2865,14 @@ class Plan:
         They reach `gh repo create` and a push URL, so they are checked here
         rather than trusted because they came out of a file this tool wrote:
         the file is edited between `plan` and `execute`, on purpose.
+
+        Only a `legs:` MAPPING holds them, as `_plan_leg_path` reads it:
+        anything else is read as no `legs:` at all, and never with `.get` on
+        a number or a list. `check` and `execute` name such a `legs:` first,
+        in `_plan_key_findings`, before this is asked (#386).
         """
-        return {role: checked_value(f"legs.{role}", self.legs.get(role))
+        legs = self.legs if isinstance(self.legs, dict) else {}
+        return {role: checked_value(f"legs.{role}", legs.get(role))
                 for role in ("assembly", "spec", "code")}
 
     @property
@@ -2888,9 +2906,13 @@ class Plan:
         """The legs this PLAN consents to having seeded. `execute` unions it
         with its own `--allow-empty-leg`, so consent can be given at either
         end — but it is never inferred from the entries being empty, which is
-        the state the consent exists to be deliberate about."""
-        return {str(role) for role in (self.data.get("allow_empty_legs") or [])
-                if role}
+        the state the consent exists to be deliberate about.
+
+        Each item of a LIST that is text, as `plan` writes it: text on the
+        key's own line is not read one character at a time, and what is left
+        out is named by `_plan_key_findings` (#386)."""
+        return {role for role in _plan_list(self.data, "allow_empty_legs")
+                if isinstance(role, str) and role}
 
     def seeding_record_disagreements(self, seeded: list[str]) -> list[str]:
         """Where the plan's `seeding:` record and its own entries disagree.
@@ -4220,6 +4242,208 @@ def _plan_field_findings(plan: Plan) -> tuple[list[str], list[str]]:
             + ([FOLLOW_UPS_REMEDIATION] if followed else []))
 
 
+# ---------------------------------------------------------------------------
+# The keys a plan is opened by are the types `plan` writes (#386)
+# ---------------------------------------------------------------------------
+#
+# `Plan` read five keys of a plan file without asking their type. `plan`
+# writes `source:` and `legs:` as mappings and `pins:`, `allow_empty_legs:`
+# and `paths:` as lists, and the file is edited between `plan` and `execute`
+# on purpose. `x or []` rescues only the falsy values: a number or a boolean
+# ended `check` and `execute` in a `TypeError` or an `AttributeError`, exit 1,
+# naming Python's error and not the key, and text, which is iterable, was read
+# one character at a time. `pins: openGlass` passed `check`, adopted, and
+# wrote eight one-letter neutral-product pins, `G`, `a`, `e`, `l`, `n`, `o`,
+# `p` and `s`, which the project's own `validate-pins.py` then refused.
+#
+# So each is read through one reader that takes only what `plan` writes
+# (`_plan_list`, `Plan.source`, `Plan.names`), and `_plan_key_findings` names
+# what the reader left out in #293's words: a code per key, `plan-bad-<key>`
+# as `follow_ups:`' is `plan-bad-follow-ups`, `_read_as` for what the file
+# holds, and each key's remediation said once.
+#
+# `pins:` IS #273'S. Since #273, `plan` writes it as a list of MAPPINGS, one
+# per pin, recording `product:`, `repository:`, `commit:`, `tree_sha256:`
+# and `digest_source:`. `_pin_products` reads the products out of a list
+# only, and `_read_pins` judges each entry beside the entries: a name alone
+# is `plan-pin-unrecorded`, anything else `plan` never writes there is
+# `plan-pin-malformed`, each with the `plan --pin` that records the pin
+# whole. So only a `pins:` that is no list at all is asked here, and its
+# finding is `_read_pins`' own, so that it is said once and under one code.
+#
+# THEY ARE ASKED FIRST, right after `Plan.load`, and not in `_entry_findings`
+# beside #293's and #294's. These keys are what the rest of the run is built
+# from: the source is opened from `source:`, the names `execute` refuses on
+# first come from `legs:`, and the constructor builds the entries and the
+# pins. Every later finding is a statement about what they say, so a `paths:`
+# that is not a list would be reported as every source path uncovered.
+# `check` reports them, and stops, exit 1, with #293's and #294's findings
+# beside them, so that every key of the plan that is not what `plan` writes
+# is named in one run. `execute` refuses the same list, in
+# `_refuse_what_check_finds`' shape, before the work directory, the source or
+# a leg exists.
+
+#: `check`'s finding for each key below that is not what `plan` writes, and
+#: the code `execute` refuses it under (#386). A `pins:` that is no list is
+#: `_read_pins`' `plan-pin-malformed` (#273).
+BAD_SOURCE = "plan-bad-source"
+BAD_LEGS = "plan-bad-legs"
+BAD_ALLOW_EMPTY_LEGS = "plan-bad-allow-empty-legs"
+BAD_PATHS = "plan-bad-paths"
+
+#: Said once after the findings for each key.
+SOURCE_REMEDIATION = (
+    "Remediation: write `source:` in the plan file as `plan` writes it, a "
+    "mapping whose `local_path:` or `repository:` names the repository to "
+    "adopt and whose `commit:` is the one the plan was written against, or "
+    "re-run `plan`. `--source` says where to read that repository; it does "
+    "not stand in for the plan's record of it.")
+LEGS_REMEDIATION = (
+    "Remediation: write `legs:` in the plan file as `plan` writes it, a "
+    "mapping of the three repository names, `assembly:`, `spec:` and "
+    "`code:`, and the two mount paths, `spec_path:` and `code_path:`; or "
+    "re-run `plan`.")
+PINS_REMEDIATION = (
+    "Remediation: `pins:` is the list of pins `plan` wrote, one mapping per "
+    "pin of its `product:`, `repository:`, `commit:`, `tree_sha256:` and "
+    "`digest_source:`, or `pins: []` for none, which a value on the key's own "
+    "line replaced. Restore the block from the plan `plan` wrote, or re-run "
+    "`plan` with each `--pin <openProduct>@<40 hex commit>`: `execute` writes "
+    "each pin's file from what `plan` recorded, and a commit or a digest "
+    "typed by hand is one nobody read.")
+ALLOW_EMPTY_LEGS_REMEDIATION = (
+    "Remediation: write `allow_empty_legs:` in the plan file as `plan` "
+    "writes it, a list of the legs that may be seeded, "
+    "`allow_empty_legs: [code]`, or `allow_empty_legs: []` for none; or "
+    "re-run `plan` with `--allow-empty-leg code`, or pass that to `execute`. "
+    "Each item is `spec` or `code`, the two legs `execute` extracts: text on "
+    "the key's own line would be read one character per leg, and consents "
+    "to nothing.")
+PATHS_REMEDIATION = (
+    "Remediation: `paths:` is the list of entries `plan` wrote, a `- path:` "
+    "and its `leg:` for each path of the source, which a value on the key's "
+    "own line replaced. Restore the block from the plan `plan` wrote, or "
+    "re-run `plan` and answer its questions again.")
+
+#: Said first in `execute`'s refusal of these findings.
+PLAN_KEY_REFUSAL = (
+    "Remediation: no leg repository was created and nothing was pushed: the "
+    "plan was refused before the work directory was made or the source was "
+    "opened. Correct each key named above in the plan file and run `check` "
+    "until it prints `plan ok`, then run `execute` again.")
+
+
+def _plan_list(data: dict, key: str) -> list:
+    """The plan's `key` when it is a LIST, as `plan` writes `paths:` and
+    `allow_empty_legs:`, and `[]` for anything else: THE ONE READ of the two,
+    so that neither iterates a number or reads text one character at a time.
+    What it leaves out is named by `_plan_key_findings` (#386). `pins:` is
+    read by `_pin_products` and `_read_pins`, which take a list only (#273)."""
+    value = data.get(key)
+    return value if isinstance(value, list) else []
+
+
+def _not_a(code: str, key: str, value, kind: str, why: str) -> str:
+    """The finding for a `key:` that holds `value` where `plan` writes a
+    `kind`, in `_follow_ups_findings`' words."""
+    return (f"FINDING {code}: `{key}:` is {_read_as(value)}, not a {kind}: "
+            f"{why}")
+
+
+def _plan_key_findings(plan: Plan) -> tuple[list[str], list[str]]:
+    """A FINDING for each of the five keys `Plan` reads to open the source and
+    name the repositories that is present and is not what `plan` writes, in
+    the order `plan` writes them, and for each item of `allow_empty_legs:`
+    that is not a leg; and what to print once after them (#386).
+
+    A key that is absent or bare is not a finding here, whichever it is: it
+    is read as it always was. For `source:` that is `plan-no-source`, unless
+    `--source` names the repository.
+
+    `pins:` is asked only whether it is a list, the one thing its readers
+    need before anything else is read: the naming policy classifies the
+    root by its products, and a `pins:` that is no list has none. The
+    finding is `_read_pins`' own `plan-pin-malformed`, and each entry of a
+    list, a mapping as `plan` writes it or not, is `_read_pins`' to judge
+    beside the entries (#273).
+    """
+    data = plan.data
+    said: list[tuple[list[str], str]] = []
+
+    source, legs = data.get("source"), data.get("legs")
+    said.append(([] if source is None or isinstance(source, dict) else [
+        _not_a(BAD_SOURCE, "source", source, "mapping",
+               "`check` and `execute` open the repository to adopt by its "
+               "`local_path:` or `repository:`, and hold it to its "
+               "`commit:`")], SOURCE_REMEDIATION))
+    said.append(([] if legs is None or isinstance(legs, dict) else [
+        _not_a(BAD_LEGS, "legs", legs, "mapping",
+               "the three repository names and the two mount paths are read "
+               "out of it by their keys")], LEGS_REMEDIATION))
+
+    pins = data.get("pins")
+    no_list = pins is not None and not isinstance(pins, list)
+    said.append((_read_pins(plan)[1] if no_list else [], PINS_REMEDIATION))
+
+    allowed = data.get("allow_empty_legs")
+    if allowed is None:
+        found = []
+    elif not isinstance(allowed, list):
+        found = [_not_a(BAD_ALLOW_EMPTY_LEGS, "allow_empty_legs", allowed,
+                        "list", "each item of a list names one leg `execute` "
+                        "may seed from the shape's template")]
+    else:
+        found = [f"FINDING {BAD_ALLOW_EMPTY_LEGS}: item {number} of "
+                 f"`allow_empty_legs:` is {_read_as(item)}, not a leg "
+                 "`execute` can seed, `spec` or `code`"
+                 for number, item in enumerate(allowed, 1)
+                 if item not in EXTRACTED_LEGS]
+    said.append((found, ALLOW_EMPTY_LEGS_REMEDIATION))
+
+    paths = data.get("paths")
+    said.append(([] if paths is None or isinstance(paths, list) else [
+        _not_a(BAD_PATHS, "paths", paths, "list",
+               "each item of a list is one entry, a path of the source and "
+               "the leg it goes to")], PATHS_REMEDIATION))
+
+    return ([finding for found, _ in said for finding in found],
+            [remediation for found, remediation in said if found])
+
+
+def _plan_type_findings(plan: Plan) -> tuple[list[str], list[str]]:
+    """What `check` reports, and `execute` refuses, before it opens anything:
+    `_plan_key_findings`, and, when there is one, `_plan_field_findings`
+    too, so that every key of the plan that is not what `plan` writes is
+    named in one run and not the first of them (#386). `([], [])` for a plan
+    whose five keys `Plan` reads are what `plan` writes; #293's and #294's
+    keys are then asked in `_entry_findings`, beside everything else."""
+    findings, remediation = _plan_key_findings(plan)
+    if not findings:
+        return [], []
+    fields, field_remediation = _plan_field_findings(plan)
+    return findings + fields, remediation + field_remediation
+
+
+def _refuse_a_mistyped_plan(plan: Plan) -> None:
+    """Refuse what `_plan_type_findings` finds, in the shape
+    `_refuse_what_check_finds` refuses `check`'s other findings -- the first
+    finding's code, every finding as `check` prints it, capped at
+    `REFUSED_FINDINGS_SHOWN` -- but first thing, before `_work_root` makes the
+    work directory or the source is opened or cloned (#386)."""
+    findings, remediation = _plan_type_findings(plan)
+    if not findings:
+        return
+    # `FINDING <code>: <detail>` is the one shape every finding is written in.
+    code = findings[0].split()[1].rstrip(":")
+    lines = [f"{len(findings)} finding(s) in {plan.path}, as `check` prints "
+             "them:"]
+    lines += [f"  {finding}" for finding in findings[:REFUSED_FINDINGS_SHOWN]]
+    if len(findings) > REFUSED_FINDINGS_SHOWN:
+        lines.append(f"  and {len(findings) - REFUSED_FINDINGS_SHOWN} more")
+    raise Refusal(code, "\n".join(lines),
+                  "\n".join([PLAN_KEY_REFUSAL, *remediation]))
+
+
 #: What a plan whose entry `entry_path_problem` refuses is told to do. Said by
 #: `check`, once after its findings, and by `execute`'s refusal.
 UNSAFE_PATH_REMEDIATION = (
@@ -4855,6 +5079,13 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 
 def cmd_check(args) -> int:
     plan = Plan.load(Path(args.plan))
+    # FIRST, before anything is opened: the keys the rest is read from (#386).
+    mistyped, mistyped_remediation = _plan_type_findings(plan)
+    if mistyped:
+        for line in [*mistyped, *mistyped_remediation]:
+            print(line, file=sys.stderr)
+        print(f"\n{len(mistyped)} finding(s) in {plan.path}", file=sys.stderr)
+        return 1
     work_root = _work_root(args)
     source = plan.open_source(args.source, work_root)
     naming = NamingPolicy.load(NAMING_POLICY)
@@ -6469,6 +6700,7 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
 
 def cmd_execute(args) -> int:
     plan = Plan.load(Path(args.plan))
+    _refuse_a_mistyped_plan(plan)
     work_root = _work_root(args)
     source = plan.open_source(args.source, work_root)
     naming = NamingPolicy.load(NAMING_POLICY)
