@@ -1340,7 +1340,9 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       that this user cannot open, naming the path and the system&rsquo;s reason, with the same ids
       and the remedy of making it readable and running the command again; a root standing on its
       own tracking branch (the next step is a pull request, never a
-      push to the default branch); and a validator that goes red &mdash; rolling the pin, the
+      push to the default branch: <code>git switch -c &lt;branch&gt;</code> first;
+      <code>--dry-run</code> writes nothing, so it runs there and prints that command); and a
+      validator that goes red &mdash; rolling the pin, the
       workflow files, the leg&rsquo;s checkout and the index back first, so a refusal leaves the
       tree exactly as it was found.</p>
       <p>The leg is left DETACHED at the new commit; <code>make bootstrap</code> re-places it on its
@@ -1827,10 +1829,12 @@ resume InkRouter                # on workstation B, and the estate is back</code
       name, added (#289); <code>bump-leg.py</code> refusing a workflow file, the workflows directory
       or the leg&rsquo;s pin that this user cannot open, by name, added (#383); what
       <code>setup.sh --help</code> does from a download, which clones nothing, and which commands
-      list every flag, added (#341); the statements the v1.0.0 accuracy pass found false,
-      corrected here as in the README, added (#483) &mdash; a page cannot name the commit that
-      contains it, and the blob below is the fact a test checks.
-      README.md blob c5c3c1817026e82b875245e69d6daee0ff3908c9. Every command, flag, exit code
+      list every flag, added (#341); <code>bump-leg.py --dry-run</code> running on the tracking
+      branch and naming the branch the real run needs, added (#477); the statements the
+      v1.0.0 accuracy pass found false, corrected here as in the README, added (#483)
+      &mdash; a page cannot name the commit that contains it, and the blob below is the fact a
+      test checks.
+      README.md blob a071d6bfcb10089899808cf3530b4d9a6224f9be. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
