@@ -35,7 +35,9 @@ recording an identity, so this tool never records one it cannot justify:
     Recomputing that row silently would turn the drift `validate-pins.py`
     reports today into a digest that agrees with the fork — which is exactly
     the "record the fork as the standard" failure `shape-pin.yaml`'s own
-    header forbids.
+    header forbids. `check`'s NEXT line never passes the flag for them
+    (#501): the `apply` it hands over meets that refusal, which is where the
+    human is asked.
   * A file changed on BOTH sides is refused outright, UNLESS the human passes
     `--accept-local <path>` on it too — the same exception `locally-modified`
     gets, above. Two edits to one file is a merge, and a merge is a human's
@@ -1597,6 +1599,23 @@ def accept_local_exit(path: str) -> str:
             f"{path}` so the row is recomputed from what you merged")
 
 
+def keep_local_exits(path: str) -> str:
+    """The sentence `check` appends to a `locally-modified` row's detail: the
+    three exits `update-local-drift` names, the human's word first (#501).
+
+    THE FLAG IS NAMED HERE, WHERE NO PASTE REACHES IT. `check`'s NEXT line
+    carried `--accept-local <path>` for every such row, beside `--yes`, so
+    the `apply` it handed over re-pinned the project's edit as the standard
+    and the refusal that asks the human never fired. Brett Heap ruled on
+    2026-10-13, "Stop pre-filling it": the NEXT leaves the flag out, and the
+    row's detail may still name it, as `accept_local_exit` does for `both`.
+    Display only, for the reason that function gives.
+    """
+    return (". Whether the project keeps the edit is the human's decision: "
+            "revert it, carry it upstream, or, on their word, `apply "
+            f"--accept-local {path}`")
+
+
 def report(root: Path, upstream: Upstream, pinned: str, target: str,
            pin_tree: str, target_tree: str, rows: list[Row]) -> None:
     print(f"root        {root}")
@@ -1614,6 +1633,8 @@ def report(root: Path, upstream: Upstream, pinned: str, target: str,
             detail = row.detail
             if row.state == BOTH and detail:
                 detail += accept_local_exit(row.path)
+            elif row.state == LOCALLY_MODIFIED and detail:
+                detail += keep_local_exits(row.path)
             line = f"  {state:<{width}}  {row.path}"
             if detail:
                 line += f"\n  {'':<{width}}  ({detail})"
@@ -1656,8 +1677,7 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
     return root, pin, rows, additions, upstream, pinned, target, kind
 
 
-def apply_command(root: Path, label: str, target: str,
-                  accept: list[str] = ()) -> str:
+def apply_command(root: Path, label: str, target: str) -> str:
     """The `apply` that `check`'s NEXT line hands a person to paste: this
     tool run again from the checkout of the standard, pointed at `root`.
 
@@ -1666,11 +1686,20 @@ def apply_command(root: Path, label: str, target: str,
     `my projects/` or `it's here/` or `$HOME` printed bare was two
     arguments, an unterminated quotation or an expansion in front of whoever
     pasted the line, which `landing_failed`'s and the rollback's lines were
-    already quoted against (#202, #204). So is each `--accept-local` path,
-    which comes out of the project's own pin, and the branch. `shlex.join`
+    already quoted against (#202, #204). So is the branch. `shlex.join`
     leaves a value it has nothing to say about exactly as it was, so a plain
     root prints what it always printed. On POSIX: `_by_hand` says what a
     Windows root, which always holds a backslash, prints instead.
+
+    NEVER AN `--accept-local` (#501). The line carried one for every
+    `locally-modified` row, and pasted, it re-pinned the project's edit FROM
+    ITS OWN BYTES: `update-local-drift`, the refusal that asks the human
+    whether the project keeps that edit, never fired, and AGENTS.md tells an
+    assistant both to run the line a row names and never to pass the flag
+    on its own initiative. So the `apply` meets that refusal, whose
+    remediation names the three exits, and `check` names the flag in the
+    row's detail (`keep_local_exits`). The `--yes` stays: it is the yes the
+    human gives after reading `check`, which the line follows.
 
     THE LANE, WHEN THE ENVIRONMENT NAMES ONE (2026-09-11, #111). A run that
     pastes this line then lands a commit carrying the `Lane:` trailer the
@@ -1687,10 +1716,8 @@ def apply_command(root: Path, label: str, target: str,
     currency` row has always printed it in.
     """
     words = [PYTHON, Path(__file__).name, "apply", "--root", str(root),
-             "--upstream", label, "--at", target, "--yes"]
-    for path in accept:
-        words += ["--accept-local", path]
-    words += ["--branch", f"shape/update-{target[:12]}"]
+             "--upstream", label, "--at", target, "--yes",
+             "--branch", f"shape/update-{target[:12]}"]
     return shlex.join(words) + lane_trailer_argument(shlex.quote)
 
 
@@ -1743,7 +1770,6 @@ def cmd_check(args) -> int:
                      else f"the pin and {README}'s Shape: line")
             print(f"no copied file differs; `apply` would move {alone}")
         conflicts = [row for row in rows if row.is_conflict]
-        local = [row for row in rows if row.state == LOCALLY_MODIFIED]
         if conflicts:
             print("REFUSAL AHEAD: `apply` will refuse while these are "
                   "unresolved — " + ", ".join(row.path for row in conflicts))
@@ -1760,9 +1786,9 @@ def cmd_check(args) -> int:
                   "pin, and `apply` writes none of them unless it is told to, "
                   "one path at a time — "
                   + " ".join(f"--add {add.path}" for add in offered))
-        # QUOTED WHOLE, THE LANE'S TRAILER INCLUDED: see `apply_command`.
-        print("NEXT  " + apply_command(
-            root, upstream.label, target, [row.path for row in local]))
+        # QUOTED WHOLE, THE LANE'S TRAILER INCLUDED, AND NEVER AN
+        # `--accept-local` (#501): see `apply_command`.
+        print("NEXT  " + apply_command(root, upstream.label, target))
         return 1
     finally:
         upstream.close()

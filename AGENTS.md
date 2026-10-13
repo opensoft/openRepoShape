@@ -294,7 +294,7 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
    locally edited file FROM THE PROJECT'S OWN BYTES, which makes the drift
    `validate-pins.py` reports today invisible. Whether the project keeps its
    edit is the human's decision; the other two exits are to revert it or to
-   carry it upstream.
+   carry it upstream. No `NEXT` line passes it: `apply` refuses, and asks.
 4. **`both` is a merge, and the tool refuses it unless you say `--accept-local
    <path>` too.** Merge by hand, commit, then re-run with `--accept-local
    <path>` on the file you merged — that commit goes on the branch `apply` is

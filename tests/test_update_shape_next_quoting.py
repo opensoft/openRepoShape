@@ -166,7 +166,8 @@ def check_run(project, root, *, lane: str = "", upstream=None):
 
 def edit_local(root: Path) -> None:
     """Edit the project's own copy of a pinned file, which is what makes
-    `check` name it as `locally-modified` and offer `--accept-local`."""
+    `check` name it as `locally-modified`, and which its NEXT offered
+    `--accept-local` for until #501."""
     path = root / LOCAL
     path.write_text(path.read_text(encoding="utf-8") + "\n# an edit\n",
                     encoding="utf-8")
@@ -175,25 +176,26 @@ def edit_local(root: Path) -> None:
 # --- check's NEXT line ------------------------------------------------------
 
 
-@pytest.mark.parametrize("variant", ["plain", "lane", "accept-local"])
+@pytest.mark.parametrize("variant", ["plain", "lane", "local-edit"])
 @pytest.mark.parametrize("name", AWKWARD)
 def test_the_next_line_check_prints_is_one_argv(project, make_root, name,
                                                 variant):
     """The `apply` `check` tells a person to run, read back by the shell:
     the root, the upstream and the branch each ONE word, with the lane's
-    trailer and a locally edited path where there are any."""
+    trailer where there is one.
+
+    AND NO LOCALLY EDITED PATH (#501). The line carried `--accept-local
+    <path>` for one, and pasted, it re-pinned the edit; a project keeping
+    its edit is the human's word, which `update-local-drift` asks for."""
     root = make_root(name)
-    if variant == "accept-local":
+    if variant == "local-edit":
         edit_local(root)
     result = check_run(project, root,
                        lane=LANE if variant == "lane" else "")
     expected = [PYTHON, "update-shape.py", "apply", "--root",
                 str(root.resolve()), "--upstream",
                 str(project["upstream"].resolve()), "--at", project["b"],
-                "--yes"]
-    if variant == "accept-local":
-        expected += ["--accept-local", LOCAL]
-    expected += ["--branch", f"shape/update-{project['b'][:12]}"]
+                "--yes", "--branch", f"shape/update-{project['b'][:12]}"]
     if variant == "lane":
         expected += ["--trailer", f"Lane: {LANE}"]
     assert argv_of(next_line_of(result.stdout)) == expected
@@ -213,26 +215,6 @@ def test_the_upstream_check_names_is_one_argument_too(project, make_root,
     assert argv[argv.index("--upstream") + 1] == str(upstream.resolve())
     assert argv[argv.index("--root") + 1] == str(root.resolve())
     assert argv[-2:] == ["--branch", f"shape/update-{project['b'][:12]}"]
-
-
-@pytest.mark.parametrize("path", [
-    "docs/shape guide.md", "it's [x].md", "$HOME/file", "a;b.md",
-    'say "hi".md'])
-def test_a_path_check_offers_to_accept_is_one_argument(update_shape,
-                                                       monkeypatch, path):
-    """`--accept-local <path>` comes out of the project's own pin, so it is
-    quoted like the rest. No copy-list entry holds such a name today, which
-    is why the line is built here and not by a run."""
-    monkeypatch.setenv("LANES_LANE", "")
-    root = Path("project root")
-    target = "ab" * 20
-    command = update_shape.apply_command(root, "owner/repo", target,
-                                         ["scripts/a.py", path])
-    assert shlex.split(command) == [
-        PYTHON, "update-shape.py", "apply", "--root", "project root",
-        "--upstream", "owner/repo", "--at", target, "--yes",
-        "--accept-local", "scripts/a.py", "--accept-local", path,
-        "--branch", f"shape/update-{target[:12]}"]
 
 
 def test_the_lane_trailer_is_spelled_by_the_same_quoter(update_shape,

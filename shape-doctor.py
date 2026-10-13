@@ -2619,8 +2619,9 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     <that commit>~1` for `committed`, every change since the newest one
     that reads. Mending the file, or merging it, is the person's, as the
     `both` exit of `update-shape.py` says of a copy changed on both sides:
-    a merge by hand, then `--accept-local` on it, which is what the `shape
-    currency` row names for the same file.
+    a merge by hand, then `--accept-local` on it, on the person's word,
+    which `update-shape.py check` names in that file's row and the `shape
+    currency` row never pre-fills (#501).
     """
     root = ctx.root
     git_c = f"git -C {quote_arg(root)}"
@@ -3055,9 +3056,15 @@ def check_shape_currency(ctx: Context) -> Row:
                        f"{quote_arg(target)} --yes --branch "
                        f"{quote_arg('shape/update-' + target[:12])}"
                        f"{lane_trailer_command()}", detail)
-        accept = "".join(f" --accept-local {quote_arg(row.path)}"
-                         for row in rows
-                         if row.state == us.LOCALLY_MODIFIED)
+        # NO `--accept-local` ON THE `apply` (#501). It carried one for
+        # every `locally-modified` row, and pasted, it re-pinned the
+        # project's edit as the standard: `update-local-drift`, the refusal
+        # that asks the human whether the project keeps it, never fired.
+        # Brett Heap ruled on 2026-10-13, "Stop pre-filling it", so the
+        # `apply` meets that refusal, whose remediation names the three
+        # exits, and `update-shape.py check` names the flag in the row's
+        # detail. `both` was never pre-filled: its hand merge comes first.
+        accept = ""
         named = ", ".join(row.path for row in moved[:4])
         if len(moved) > 4:
             named += f", and {len(moved) - 4} more"

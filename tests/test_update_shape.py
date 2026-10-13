@@ -780,6 +780,48 @@ def test_a_locally_modified_copy_is_refused_by_name(root,
         "a refused apply writes nothing at all")
 
 
+def test_checks_next_leaves_a_local_edit_to_the_human(root,
+                                                      upstream_and_project):
+    """#501. `check`'s NEXT carried `--accept-local <path>` for every
+    `locally-modified` row, so the line AGENTS.md says to run, pasted as
+    printed, re-pinned the project's edit as the standard: exit 0, a green
+    `validate-pins.py`, and no question to the human. Brett Heap ruled on
+    2026-10-13, "Stop pre-filling it".
+
+    The NEXT names no such flag now. Pasted as printed it is refused
+    `update-local-drift`, whose remediation names the three exits, and the
+    row keeps the digest the pin recorded. The row's detail still names the
+    flag, as the human's word, and given, it re-pins from the local bytes.
+    The edit is committed first, as a project's is, so the paste's
+    `--branch` meets the drift refusal and not `update-branch-uncommitted`.
+    """
+    edit_locally(root, LOCAL)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "The project edits its own copy", "--", LOCAL, cwd=root)
+    recorded = pin_rows(root)[LOCAL]
+    checked = check(root, upstream_and_project)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert verdicts(checked.stdout)[LOCAL] == "locally-modified"
+    line = next_line_of(checked.stdout)
+    assert "--accept-local" not in line, line
+    assert ("the human's decision: revert it, carry it upstream, or, on "
+            f"their word, `apply --accept-local {LOCAL}`") in checked.stdout
+
+    argv = shlex.split(line[len("NEXT  "):])
+    assert argv[1:3] == ["update-shape.py", "apply"], line
+    pasted = run_script(UPDATE, *argv[2:])
+    assert_refused_and_unpinned(pasted, root, upstream_and_project,
+                                "update-local-drift", LOCAL,
+                                "revert each edit", "carry it upstream",
+                                f"--accept-local {LOCAL}")
+    assert pin_rows(root)[LOCAL] == recorded, (
+        "the pasted line must not recompute the row from the local bytes")
+
+    worded = run_script(UPDATE, *argv[2:], "--accept-local", LOCAL)
+    assert worded.returncode == 0, worded.stdout + worded.stderr
+    assert pin_rows(root)[LOCAL] == file_sha256(root / LOCAL)
+
+
 def test_accept_local_repins_that_file_from_the_root_bytes(
         root, upstream_and_project):
     edit_locally(root, LOCAL)

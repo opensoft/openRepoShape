@@ -262,6 +262,14 @@ def test_an_edited_shape_copy_is_drift_and_names_update_shape(standard,
     FOR — and a verdict of `INVALID (pins)` would send the reader at the
     symptom while the exit is `update-shape.py`. Both rows are printed, and
     this asserts both.
+
+    THE FIX IS NAMED WITHOUT `--accept-local` (#501). This test pinned the
+    hand-over of that flag on purpose, on the reasoning that a reader would
+    know not to paste it; but AGENTS.md tells the reader to run the command
+    a row names, and pasted, it re-pinned the project's edit as the standard
+    before `update-local-drift` could ask the human whether the project keeps
+    it. Brett Heap ruled on 2026-10-13, "Stop pre-filling it", so the
+    assertion is now the opposite one, in every line the report prints.
     """
     edited = project / DRIFT_TARGET
     edited.write_text(edited.read_text(encoding="utf-8")
@@ -273,10 +281,10 @@ def test_an_edited_shape_copy_is_drift_and_names_update_shape(standard,
         result.stdout
     assert DRIFT_TARGET in result.stdout
     assert "update-shape.py" in result.stdout
-    assert f"--accept-local {DRIFT_TARGET}" in result.stdout, (
-        "a `locally-modified` row must hand over the exact flag that re-pins "
-        "it, which is the one AGENTS.md says never to pass on your own "
-        "initiative")
+    assert "--accept-local" not in result.stdout, (
+        "a `locally-modified` row must not hand over the flag that re-pins "
+        "it: whether the project keeps its edit is the human's decision, and "
+        "the `apply` it names asks it by refusing `update-local-drift`")
     # The pins row is red too, and is still printed with its own next step.
     rows = rows_of(doctor(standard, project, "--json"))
     assert rows["pins"]["status"] == "FINDING", rows["pins"]
@@ -5202,7 +5210,7 @@ def test_a_copy_conflicted_on_its_own_is_shown_and_merged_by_a_person(
 
 def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
         standard, project):
-    """P10b. In the same report the `shape currency` row names `apply
+    """P10b. In the same report the `shape currency` row named `apply
     --accept-local` on the copy, which keeps the local bytes, while the
     `manifest kinds` row took one side whole. AGENTS.md says `both` is a
     merge: by hand, commit, then `--accept-local` on the file merged.
@@ -5211,12 +5219,17 @@ def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
     are one path: the merge by hand, then the `shape currency` row's own
     NEXT, run as its note spells it, ends COMPLIANT with every line of
     both sides in the copy and its pin.
+
+    THE FLAG IS THE PERSON'S, NOT THE ROW'S (#501). The note's `apply`
+    carries no `--accept-local`: run as printed it is refused
+    `update-local-drift`, which asks whether the project keeps the merge,
+    and with the person's `--accept-local` on the copy it ends COMPLIANT.
     """
     a_copy_conflicted_on_its_own(project)
     kinds, currency = kinds_and_currency(standard, project)
     assert "merge it by hand" in kinds["next"].split("   #", 1)[1], kinds
     assert "checkout" not in kinds["next"], kinds["next"]
-    assert f"--accept-local {NAMING_COPY}" in currency["next"], currency
+    assert "--accept-local" not in currency["next"], currency
     merge_by_hand(project / NAMING_COPY)
     git("add", "--", NAMING_COPY, cwd=project)
     commit_in(project, "the naming copy merged by hand")
@@ -5227,9 +5240,14 @@ def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
         currency["next"]
     then = currency["next"].split("   #", 1)[1].split()
     assert then[:2] == ["then", "apply"], currency["next"]
-    assert then[then.index("--accept-local") + 1] == NAMING_COPY, then
-    applied = run_script(standard / "update-shape.py", "apply", "--root",
-                         str(project), "--upstream", str(standard), *then[2:])
+    assert "--accept-local" not in then, then
+    apply = (standard / "update-shape.py", "apply", "--root", str(project),
+             "--upstream", str(standard), *then[2:])
+    asked = run_script(*apply)
+    assert asked.returncode == 2, asked.stdout + asked.stderr
+    assert "REFUSED update-local-drift" in asked.stderr, asked.stderr
+    assert f"--accept-local {NAMING_COPY}" in asked.stderr, asked.stderr
+    applied = run_script(*apply, "--accept-local", NAMING_COPY)
     assert applied.returncode == 0, applied.stdout + applied.stderr
     compliant_again(standard, project)
     kept = git("show", f"HEAD:{NAMING_COPY}", cwd=project).stdout
