@@ -433,7 +433,7 @@ human says it rather than lets it default.
 bootstrap will run, and that `gh` is installed and authenticated — and, for `gh`, an
 offer to install it, log it in or set up git's credential helper, whichever is
 missing, which Dana answers `yes` to. (2) The three names checked against the naming
-policy — `Atlas`, `Atlas-spec`, `Atlas-code`; a hyphenated name is
+policy — `Atlas`, `Atlas-spec`, `Atlas-code`; a hyphenated project name is
 refused here with the rule printed. (3) The scaffold plan, a dry run of everything
 about to be created. (4) `This will create THREE repositories in 'Northwind'.` and
 `Type yes to continue:` — Dana types `yes`. If an AI agent is driving, it runs the
