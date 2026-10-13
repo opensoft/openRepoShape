@@ -36,14 +36,17 @@ from conftest import FILE_PROTOCOL, REPO, git, rmtree, run_script
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
-from test_commit_trailers import TRAILERS, message_of, trailers_of
+from test_commit_trailers import (
+    ENVIRONMENTS, NON_ASCII_BYTES, POSIX_ONLY, TRAILERS, argv_of, environment,
+    message_bytes_of, message_of, trailer_bytes_of, trailers_of,
+)
 #: The renderer of the README line #148 made `update-shape.py apply` rewrite,
 #: and the module that owns its tests, imported rather than retyped for the
 #: same reason.
 from test_update_shape import rendered_shape_line, strip_shape_block
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import load_yaml, tree_digest  # noqa: E402
+from repo_shape import Refusal, load_yaml, tree_digest  # noqa: E402
 from shape_materialize import (  # noqa: E402
     SHAPE_REPOSITORY, readme_shape_lines, readme_trailing_shape_line,
 )
@@ -1206,6 +1209,72 @@ def test_bump_refuses_a_malformed_trailer(holder, value):
     assert "usage:" in result.stderr
     assert "member-to-not-a-commit" not in result.stderr, (
         "argparse refuses before the tool reads anything at all")
+
+
+@ENVIRONMENTS
+def test_bump_with_a_non_ascii_trailer_lands_it_as_typed(
+        holder, tmp_path, git_kind, locale):
+    """#322: `--trailer "Co-Authored-By: José ..."` lands as the bytes typed.
+
+    The cell that was broken is `old-git-c-locale`: a git without `commit
+    --trailer` takes the trailer in the stdin message, a `C` locale reads the
+    argument as lone surrogates, and `_commit_one`'s `errors="replace"` wrote
+    each as `?`. The stand-in git refuses the option outright, so a run that
+    passed it would fail here rather than pass. The member moves by an empty
+    commit in the holder's own mount, so nothing in the shared remotes does."""
+    after = commit_in_member(holder / "members" / "IRRS")
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", after,
+                        "--trailer", argv_of(NON_ASCII_BYTES),
+                        "--trailer", TRAILERS[0],
+                        env=environment(tmp_path, git_kind, locale))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert message_bytes_of(holder).endswith(
+        b"\n\n" + NON_ASCII_BYTES + b"\n" + TRAILERS[0].encode() + b"\n")
+    assert trailer_bytes_of(holder) == [NON_ASCII_BYTES,
+                                        TRAILERS[0].encode()], (
+        "and git reads them back as the trailer block, byte for byte")
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("locale", ["c", "utf8"])
+def test_bump_refuses_a_trailer_that_is_not_utf8_by_name(
+        holder, tmp_path, locale):
+    typed = b"Co-Authored-By: Jos\xe9 <jose@example.invalid>"
+    head = git("rev-parse", "HEAD", cwd=holder).stdout.strip()
+    result = run_script(FAMILY, "bump", "--family-root", str(holder),
+                        "--member", "IRRS", "--to", "0" * 40,
+                        "--trailer", argv_of(typed),
+                        env=environment(tmp_path, "old", locale))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "usage:" in result.stderr
+    assert "not UTF-8 text" in result.stderr
+    assert repr(typed) in result.stderr
+    assert "member-to-not-a-commit" not in result.stderr, (
+        "argparse refuses before the tool reads anything at all")
+    assert git("rev-parse", "HEAD", cwd=holder).stdout.strip() == head
+
+
+@POSIX_ONLY
+def test_commit_one_refuses_a_trailer_that_is_no_text_before_it_stages(
+        tmp_path):
+    """A caller that reaches the helper without the command line's own check
+    gets the same refusal, raised before the stage: the file is still
+    untracked and there is no commit."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=root)
+    (root / "a.txt").write_text("x\n", encoding="utf-8")
+
+    with pytest.raises(Refusal) as caught:
+        family_module()._commit_one(
+            root, "A commit\n", ["a.txt"],
+            trailers=[argv_of(b"Co-Authored-By: Jos\xe9")])
+
+    assert caught.value.code == "trailer-not-utf8"
+    assert git("status", "--porcelain", cwd=root).stdout == "?? a.txt\n"
+    assert git("rev-parse", "--verify", "-q", "HEAD", cwd=root,
+               check=False).returncode != 0, "nothing was committed"
 
 
 # --- remove -----------------------------------------------------------------
