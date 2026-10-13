@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import html
 import importlib.util
 import os
 import re
@@ -1184,6 +1185,51 @@ def test_readme_is_short_enough_to_be_read():
     #   would send a reader to a command that no longer prints it.
     assert len(lines) <= 1422, (
         f"README.md is {len(lines)} lines; the cap is 1422")
+
+
+#: #476: what each document that carries the first rule says an assistant does
+#: when its shell has no terminal, and the sentence that keeps `--yes` the
+#: person's. Phrases, not the lines, because the page words it its own way.
+NO_TERMINAL_ROUTE = {
+    "AGENTS.md": "Never pass `--yes` yourself",
+    "README.md": "it runs the command WITHOUT `--yes`",
+    "docs/handbook.html": "never pass --yes yourself",
+}
+
+
+@pytest.mark.parametrize("name", sorted(NO_TERMINAL_ROUTE))
+def test_the_documents_say_what_an_assistant_does_with_no_terminal(name):
+    """#476: the first rule sends an assistant to run setup WITHOUT `--yes`
+    and let it ask, and an assistant's shell has no terminal, so setup stops
+    after the plan and the refusal was the only thing that said what next.
+    Every document that carries the rule now carries the way on: the plan
+    goes to the human, who runs the same command in their own terminal. The
+    assistant never passes `--yes` for them.
+
+    #492: and that command may be the one-liner itself, because setup reads
+    the answer from the person's terminal and never from the pipe the script
+    arrived down. "From a file and not a pipe", which #476 had to say, is no
+    longer true and is no longer said.
+
+    The page is read as text: tags dropped, entities decoded, whitespace
+    folded, so a re-wrap or a `<code>` around a flag does not fail it. Tags
+    are dropped from the `.html` page ONLY: a Markdown document names its
+    placeholders in angle brackets (`<Project>`, `<org>`) and may hold a bare
+    `<`, and the strip would take everything up to the next `>` out of what
+    it says.
+    """
+    text = (REPO / name).read_text(encoding="utf-8")
+    said = " ".join((html.unescape(re.sub(r"<[^>]+>", "", text))
+                     if name.endswith(".html") else text).split())
+    assert re.search(r"stops after the plan.{0,400}?own terminal.{0,200}?"
+                     r"never (?:from )?the pipe", said, re.IGNORECASE), (
+        f"{name} does not say that setup stops after the plan where there is "
+        "no terminal, and that the human runs the same command in their own "
+        "terminal, which reads the answer there and never from the pipe")
+    assert "from a file and not a pipe" not in said, (
+        f"{name} still sends the human to a file instead of the pipe")
+    assert NO_TERMINAL_ROUTE[name] in said, (
+        f"{name} no longer says {NO_TERMINAL_ROUTE[name]!r}")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

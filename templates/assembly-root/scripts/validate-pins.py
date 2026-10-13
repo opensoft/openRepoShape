@@ -58,6 +58,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import stat
 import sys
 from collections.abc import Iterator
@@ -66,6 +67,8 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+#: The interpreter the `pin-gitlink-mismatch` repair lines name (#478).
+from repo_shape import PYTHON  # noqa: E402
 from repo_shape import (  # noqa: E402
     COMMIT_RE, SHA256_RE, TREE_DIGEST_DEFINITION, Refusal, file_sha256,
     find_repo_root, git_out, load_yaml, pin_product_key,
@@ -97,9 +100,20 @@ class Report:
     def __init__(self) -> None:
         self.findings: list[str] = []
         self.notes: list[str] = []
+        #: Each finding's code, and the role of the leg whose `bump-leg.py`
+        #: line puts it right, or None: in step with `findings` (#478).
+        self.cleared_by: list[tuple[str, object]] = []
+        #: Each `pin-gitlink-mismatch`, as `(its index in findings, role,
+        #: path, gitlink, pin commit)`, for `_end_gitlink_mismatches` (#478).
+        self.mismatches: list[tuple[int, object, str, str, str]] = []
 
-    def finding(self, code: str, detail: str) -> None:
+    def finding(self, code: str, detail: str, leg=None) -> None:
+        """`leg` is the role of the leg a `bump-leg.py` line moves when that
+        line also clears this finding: the leg's gitlink against its pin,
+        its pin's digest, and a workflow reference to its repository, the
+        three facts it rewrites (#478)."""
         self.findings.append(f"FINDING {code}: {detail}")
+        self.cleared_by.append((code, leg))
 
     def note(self, text: str) -> None:
         self.notes.append(f"  ok  {text}")
@@ -327,6 +341,100 @@ def _git_runs(unread: str) -> Iterator[None]:
             "cannot answer is never a pass.") from exc
 
 
+def _gitlink_repairs(root: Path, role, gitlink: str, commit: str) -> str:
+    """The two commands a `pin-gitlink-mismatch` ends on, when they can
+    commit (#478; `_end_gitlink_mismatches` says when).
+
+    WHICH COMMIT STAYS IS THE PERSON'S CALL, so both are named and neither
+    is chosen. A gitlink moved and committed by hand (`git -C spec pull`,
+    then `git add spec` in the root) wants the first, `--to` the gitlink's
+    commit, if the move was meant and the second, `--to` the pin's, if it
+    was not; a pin edited by hand reads the same with the two the other way
+    round. Either is `bump-leg.py`, which puts all three facts at one commit
+    in ONE commit and runs this validator before it commits: a gitlink put
+    back by hand is the same single-fact move this check refuses. Its
+    `--dry-run` comes first, as openRepoShape's AGENTS.md says of advancing
+    a leg.
+
+    FROM A CHECKOUT OF openRepoShape, as `validate-family.py` names
+    `family.py`: no project carries `bump-leg.py`, and this file cannot know
+    where the reader's checkout is, so the script is relative to one and the
+    root, which it does know, is absolute and quoted.
+    """
+    bump = (f"{PYTHON} scripts/bump-leg.py --root {shlex.quote(str(root))} "
+            f"--leg {shlex.quote(str(role))} --to")
+    return ("Which commit stays is the person's call. From a checkout of "
+            "openRepoShape, the first command keeps the gitlink's commit and "
+            "the second the pin's; run either with `--dry-run` first. Either "
+            "puts all three at it in one commit, on a branch other than the "
+            "tracking branch, once this validator and validate-manifest.py "
+            "pass on its rewrite (it rolls the bump back when either is red), "
+            "and refuses a commit no branch of the leg's remote contains, so "
+            f"push one made in the leg first:\n    {bump} {gitlink}\n"
+            f"    {bump} {commit}")
+
+
+def _gitlink_repairs_held_back(paths: list[str], others: list[str]) -> str:
+    """Why a `pin-gitlink-mismatch` names no command, and what comes first
+    (#478): `bump-leg.py` runs this validator before it commits and rolls
+    the bump back when it is red, so no single line commits while another
+    leg is off its pin or another finding stands."""
+    what, first = [], []
+    if others:
+        what.append("this validator also reports " + ", ".join(others))
+        first.append("clear " + ("that finding" if len(others) == 1
+                                 else "those findings"))
+    if len(paths) > 1:
+        what.insert(0, " and ".join(paths) + (" are both" if len(paths) == 2
+                                              else " are all")
+                    + " off their pins")
+        first.append("put one leg's gitlink back at its pin (check that leg "
+                     "out at the pin's commit and commit its gitlink in this "
+                     "root), or undo the commit that moved them")
+    return ("No single bump-leg.py line can commit while "
+            + " and ".join(what) + ": bump-leg.py moves one leg and runs "
+            "this validator before it commits, rolling the bump back when it "
+            "is red. First " + ", and ".join(first) + "; this validator then "
+            "names the two bump-leg.py lines for "
+            + ("the leg that is left." if len(paths) > 1 else "that leg."))
+
+
+def _end_gitlink_mismatches(root: Path, report: Report) -> None:
+    """What each `pin-gitlink-mismatch` ends on, once every check has run
+    (#478).
+
+    `bump-leg.py` RUNS THIS WHOLE VALIDATOR after its rewrite and before it
+    commits, and rolls the bump back when it is red. So its two lines are
+    named only where they can commit: ONE leg's gitlink is off its pin, and
+    every other finding is one a bump of that leg clears (`Report.finding`'s
+    `leg`). Two legs off, or any other finding, and either line is rolled
+    back, so the finding names none and says what comes first instead.
+
+    ONLY OVER A ROOT THAT HAS THIS GATE OF ITS OWN. `bump-leg.py` runs the
+    root's `scripts/validate-pins.py` and skips an absent one, so this copy
+    run against a root that has none cannot say what the bump's run will:
+    the finding ends at THE LOCKSTEP RULE, as it did before #478, and the
+    root's own gate is the thing to put back first.
+    """
+    if not report.mismatches \
+            or not os.path.isfile(root / "scripts" / "validate-pins.py"):
+        return
+    roles = [role for _, role, _, _, _ in report.mismatches]
+    others: list[str] = []
+    for code, leg in report.cleared_by:
+        if (leg is None or leg not in roles) and code not in others:
+            others.append(code)
+    if len(report.mismatches) == 1 and not others:
+        index, role, _, gitlink, commit = report.mismatches[0]
+        report.findings[index] += "\n  " + _gitlink_repairs(root, role,
+                                                            gitlink, commit)
+        return
+    why = _gitlink_repairs_held_back(
+        [path for _, _, path, _, _ in report.mismatches], others)
+    for index, *_ in report.mismatches:
+        report.findings[index] += "\n  " + why
+
+
 def _check_gitlink_matches_pin(root: Path, role, path: str, commit: str,
                                rel: str, report: Report) -> str:
     """Fact 1 vs fact 2: the recorded gitlink against the pin file's
@@ -347,17 +455,21 @@ def _check_gitlink_matches_pin(root: Path, role, path: str, commit: str,
         report.finding(
             "pin-gitlink-mismatch",
             f"{path}: gitlink {gitlink} != {rel} commit {commit}\n  " + LOCKSTEP,
+            leg=role,
         )
+        report.mismatches.append((len(report.findings) - 1, role, path,
+                                  gitlink, commit))
     else:
         report.note(f"{path}: gitlink == {rel} commit {commit[:12]}")
     return gitlink
 
 
 def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
-                      report: Report) -> None:
+                      report: Report, role=None) -> None:
     """The digest: split from `_check_leg` for #132. Recomputes the leg's
     tree sha256 at the pinned commit, because a gitlink and a pin file that
-    agree on a commit may still disagree on that commit's bytes.
+    agree on a commit may still disagree on that commit's bytes. A mismatch
+    is one `bump-leg.py` clears, since it recomputes the digest (#478).
     """
     submodule = root / path
     if not (submodule / ".git").exists():
@@ -403,15 +515,18 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
                 f"       recomputed at {commit[:12]} {actual}\n"
                 f"  The gitlink and the pin may agree on a commit whose bytes "
                 f"are not the bytes the pin was written against.\n  " + LOCKSTEP,
+                leg=role,
             )
         else:
             report.note(f"{path}: tree digest recomputes ({recorded[:12]}…)")
 
 
 def _check_workflow_refs_for_leg(refs, repository: str, path: str,
-                                 gitlink: str, report: Report) -> None:
+                                 gitlink: str, report: Report,
+                                 role=None) -> None:
     """Fact 3: split from `_check_leg` for #132 — every workflow `@<sha>`
-    reference naming this leg's repository must agree with the gitlink.
+    reference naming this leg's repository must agree with the gitlink. A
+    mismatch is one `bump-leg.py` clears, since it moves every one (#478).
     """
     seen = 0
     for wf_path, wf_repo, wf_sha in refs:
@@ -423,6 +538,7 @@ def _check_workflow_refs_for_leg(refs, repository: str, path: str,
                 "pin-workflow-ref-mismatch",
                 f"{wf_path.name}: `{wf_repo}@{wf_sha}` != the gitlink "
                 f"{gitlink} recorded at {path!r}\n  " + LOCKSTEP,
+                leg=role,
             )
     if seen:
         report.note(f"{repository}: {seen} workflow @<sha> reference(s) "
@@ -435,8 +551,9 @@ def _check_leg(root: Path, leg: dict, report: Report, refs) -> None:
     repository = str(leg.get("repository") or "")
     pin, rel, commit = _load_leg_pin(root, role, path, repository, report)
     gitlink = _check_gitlink_matches_pin(root, role, path, commit, rel, report)
-    _check_pin_digest(root, path, commit, pin, rel, report)
-    _check_workflow_refs_for_leg(refs, repository, path, gitlink, report)
+    _check_pin_digest(root, path, commit, pin, rel, report, role)
+    _check_workflow_refs_for_leg(refs, repository, path, gitlink, report,
+                                 role)
 
 
 def _check_shape_pin_header(root: Path, manifest: dict, report: Report
@@ -990,6 +1107,7 @@ def _run_all_checks(root: Path, report: Report,
         _check_leg(root, leg, report, refs)
     _check_shape_pin(root, manifest, report)
     _check_neutral_product_pins(root, manifest, report, pin_source_values)
+    _end_gitlink_mismatches(root, report)
 
 
 def _emit_report(report: Report, quiet: bool) -> int:
