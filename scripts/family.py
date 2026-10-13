@@ -132,8 +132,9 @@ sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, PROJECT_ID_RE, PYTHON, TREE_DIGEST_DEFINITION,
-    VISIBILITY_CHOICES, NamingPolicy, Refusal, checked_value, git_out,
-    load_yaml, recorded_gitlink, repo_basename, same_repository, tree_digest,
+    VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError, checked_value,
+    double_quoted, git_out, load_yaml, parse_yaml, recorded_gitlink,
+    repo_basename, same_repository, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
@@ -333,12 +334,46 @@ class Family:
         return "\n".join(out) + "\n"
 
 
+def _member_id(value) -> str:
+    """A row's `id:` as `_member_lines` spells it: bare where the holder's
+    reader takes the bare text back as that same text, and between double
+    quotes where it does not (#259).
+
+    THE MEMBER'S OWN `project.yaml` QUOTES ITS ID NOW. A project scaffolded
+    with `--id 007` used to write `id: 007`, which every reader took as the
+    number 7; this row then recorded `str(7)`, and the two agreed on a
+    misread. The template writes `id: "007"` since #259, so the id read here
+    is `007`, and written bare it would come back as 7: `validate-family.py`
+    would report `member-id-mismatch` for a member it had just pinned, and so
+    would `2026`, `20261011`, `true` and `null`. The reader is asked, not a
+    list of the words it treats as something else, so a word it learns later
+    is quoted with no edit here. An id that reads back bare, which is every
+    ordinary one, is written as it always was, so a row whose id reads back
+    as text does not move.
+
+    A ROW WHOSE BARE ID THE READER MISREADS MOVES, ONCE. A holder written
+    before #259 holds `id: 2026` for a member scaffolded with `--id 2026`,
+    and the next `bump`, `add` or `remove` of that holder rewrites the row as
+    `id: "2026"`. That is harmless: `validate-family.py` compares the id with
+    `str()`, and passes before and after.
+    """
+    text = str(value)
+    try:
+        if parse_yaml(f"id: {text}\n") == {"id": text}:
+            return text
+    except YamlError:
+        # Bare, `[`, `{`, `&a`, `*a`, `!t` and an unclosed quote are not read
+        # as another type: the reader raises, and the holder would not load.
+        pass
+    return double_quoted(text)
+
+
 def _member_lines(row: dict) -> list[str]:
     """One member as the YAML subset `repo_shape.parse_yaml` reads back."""
     pin = row.get("pin") or {}
     return [
         f"  - project: {row['project']}",
-        f"    id: {row['id']}",
+        f"    id: {_member_id(row['id'])}",
         f"    repository: {row['repository']}",
         f"    path: {row['path']}",
         "    pin:",
@@ -652,8 +687,10 @@ def _commit_one(root: Path, message: str, paths: list[str],
     environment. Only this variable: the other pathspec variables turn magic
     ON or change only how a glob matches, and the magic still reads.
     """
-    force_stage(root, paths if add is None else add)
+    # BEFORE THE STAGE: a trailer that cannot be carried exactly is refused
+    # while nothing has been staged (#322).
     message, trailer_args = commit_trailers(message, trailers)
+    force_stage(root, paths if add is None else add)
     args = ["git", "commit", "-q", "-F", "-", *trailer_args, "--",
             *[f":(literal){path}" for path in paths]]
     check_program(args)
