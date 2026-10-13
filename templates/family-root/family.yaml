@@ -30,25 +30,25 @@ kind: family-manifest
 # this file assert anything about a tree it does not own.
 # ===========================================================================
 
-id: {{FAMILY_ID}}
+id: "{{FAMILY_ID}}"
 name: "{{FAMILY_NAME}}"
-org: {{ORG}}
+org: "{{ORG}}"
 repository: {{FAMILY_REPOSITORY}}
 
 # Creating a family is a human's act, like electing the shape, so the manifest
 # records whose act it was and when.
 created_by: "{{CREATED_BY}}"
-created_on: {{CREATED_ON}}
+created_on: "{{CREATED_ON}}"
 
 # `private`, `public` or `internal`. NOT ENFORCED HERE — GitHub is the source
 # of truth for what a repository's visibility actually is — but recording it
 # is what lets a reader tell why the members need a credential in CI.
-visibility: {{VISIBILITY}}
+visibility: "{{VISIBILITY}}"
 
 # The branch `scripts/bootstrap.py` places each member on, AT its pinned
 # commit. `.gitmodules` carries no `branch=`: there is exactly one
 # authoritative answer to "what commit of this member is this family".
-tracking_branch: {{TRACKING_BRANCH}}
+tracking_branch: "{{TRACKING_BRANCH}}"
 
 # The directory every member is mounted under. One name, so a reader and a
 # validator cannot disagree about where to look.
