@@ -841,6 +841,13 @@ def collision_follow_up(intended: str, actual: str,
     actually happened. Two spellings of the same instruction is how the plan a
     human approves stops matching the commit message they read afterwards.
 
+    A `.gitattributes` THAT IS A SYMLINK gets no block (`_append_eol_block`),
+    so `attributes_link` says which of two things happened, and the follow-up
+    for a link says that nothing was appended, that git reads no
+    `.gitattributes` that is a link, and the exact lines a regular file in
+    its place needs (#471's review, SHOULD-2). `plan` knows it from the
+    source tree's mode.
+
     THE MAKEFILE'S MERGE IS WHAT BRINGS THE SHAPE'S MAKE TARGETS (#480). Until
     it is made, `make bootstrap` in the root exits 2 with `No rule to make
     target 'bootstrap'`, so the follow-up says that, and what runs meanwhile:
@@ -850,13 +857,6 @@ def collision_follow_up(intended: str, actual: str,
     Where the root's `scripts/bootstrap.py` is the source's own, that command
     runs the source's script and exits 0, so the follow-up names no command,
     and says both merges come first (#493's review, F2).
-
-    A `.gitattributes` THAT IS A SYMLINK gets no block (`_append_eol_block`),
-    so `attributes_link` says which of two things happened, and the follow-up
-    for a link says that nothing was appended, that git reads no
-    `.gitattributes` that is a link, and the exact lines a regular file in
-    its place needs (#471's review, SHOULD-2). `plan` knows it from the
-    source tree's mode.
     """
     if intended == ATTRIBUTES and attributes_link:
         return _attributes_link_follow_up(intended, actual, beside)
