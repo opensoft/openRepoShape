@@ -47,6 +47,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import unicodedata
@@ -1406,8 +1407,13 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     not answer is `declared-unverified` and never a failure: the recorded
     declaration is the offline fact, and reading the other tree is the
     stronger check, available or not.
+
+    A `LinkPins` carries, beside the links that answered, why a tree that WAS
+    reached could not: a warning for such a link says so, where a plain
+    mapping's says the tree is not reachable (#338).
     """
     available = _link_declarations(link_pins)
+    unreadable = getattr(link_pins, "unreadable", None) or {}
     warnings: list[str] = []
     unverified: list[str] = []
     # A link whose variable another link of the chain shares is never offered
@@ -1415,6 +1421,17 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     shared = pin_source_env_shared(chain)
     for holder, held in zip(chain, chain[1:]):
         declared = available.get(holder.casefold())
+        why = unreadable.get(holder.casefold())
+        if declared is None and why is not None:
+            # A source REACHED this tree and could not read a declaration out
+            # of it, so "not reachable here" would be untrue (#338).
+            unverified.append(holder)
+            warnings.append(
+                f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
+                f"is a fact in {holder}'s own tree, which was reached but "
+                f"could not be read as a declaration ({why}). The recorded "
+                "chain still classifies.")
+            continue
         if declared is None:
             unverified.append(holder)
             alone = pin_product_key(holder) not in shared
@@ -1773,6 +1790,26 @@ class NamingPolicy:
             return (f"it ends at {chain[-1]}, but {name} would need "
                     + " or ".join(referents))
         return None
+
+    def reads_link_declarations(self, name: str, declared_pins=None,
+                                referent_chain=None) -> bool:
+        """Does `resolve_referent` ask what a link's OWN manifest declares?
+
+        Only for a name in `<Domainx><Product>` form whose recorded chain's
+        SHAPE holds: a name that claims no referent never reads a chain, and
+        a chain that is broken in its shape is reported broken before any
+        link is consulted. A caller about to read link trees asks this first,
+        so that it neither reads nor reports on a tree no classification
+        will use (#338). `tests/test_naming_policy.py` holds the two
+        together: `resolve_referent` is run with a mapping that notes
+        whether it was read, over every way a chain is not.
+        """
+        referents = self.descendant_referents(name)
+        chain = _chain_links(referent_chain)
+        if not referents or not chain:
+            return False
+        return self._chain_shape_problem(
+            name, chain, _pinned_basenames(declared_pins), referents) is None
 
     # -- classification ----------------------------------------------------
 
@@ -2559,40 +2596,108 @@ def same_repository(one: str, two: str) -> bool:
 # product's checkout, down to the same environment variable, because it is the
 # same checkout answering a second question about the same product.
 
+#: Why a source did not answer when there is nothing at its path, and when it
+#: is a directory holding no manifest: the two ORDINARY absences, which a
+#: checkout looked for beside the project is allowed to have without anybody
+#: being told. Every other reason is the system's own (#338).
+LINK_SOURCE_ABSENT = "no such file or directory"
+LINK_SOURCE_NO_MANIFEST = "it holds no project.yaml"
 
-def link_manifest_path(path) -> Path | None:
-    """`<dir>` -> `<dir>/project.yaml`; a file is taken as the manifest."""
-    candidate = Path(path)
-    if candidate.is_dir():
-        candidate = candidate / "project.yaml"
-    return candidate if candidate.is_file() else None
+
+def _os_reason(exc: BaseException) -> str:
+    """The system's own reason for an `OSError` (`Permission denied`, `File
+    name too long`), or the exception's text where it carries none (a
+    `ValueError` for a name the system cannot be handed at all)."""
+    return getattr(exc, "strerror", None) or str(exc)
 
 
-def declared_neutral_pins(manifest_path,
-                          key: str = CHAIN_LINK_DECLARED_BY) -> set[str] | None:
-    """The neutral products a manifest DECLARES a pin on, or None.
+def link_manifest_lookup(path) -> tuple[Path | None, str | None]:
+    """`(manifest, None)` where `path` can answer as a link's tree, else
+    `(None, why)`. `<dir>` -> `<dir>/project.yaml`; a file is taken as the
+    manifest. IT NEVER RAISES (#338). It replaced `link_manifest_path`, which
+    is gone: that said only `None`, and both of its callers needed the reason.
 
-    None means "this tree could not answer" — no manifest, unreadable YAML, or
-    a file that is not a mapping — and is deliberately distinct from the empty
-    set, which means "this tree answered, and declares no pin at all". The
-    first is unverified and the second breaks a chain that runs through it.
+    `stat()` INSIDE THE GUARD, not `is_dir()` and `is_file()`: before 3.14
+    those two swallow only ENOENT, ENOTDIR, EBADF and ELOOP and raise every
+    other `OSError`, so a source under a parent this user cannot enter, a
+    checkout beside the project at mode 000, or a name longer than the
+    filesystem takes ended the naming gate in a traceback on 3.9 to 3.13 and,
+    on 3.14, went unread with nobody told why. `validate-pins.py`'s
+    `_digest_from_source` asks the same way for the same reason (#295).
+    `stat()` follows a symlink, as `is_dir()` did, so a checkout linked into
+    place still answers.
     """
-    path = link_manifest_path(manifest_path)
+    candidate = Path(path)
+    try:
+        mode = candidate.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return None, LINK_SOURCE_ABSENT
+    except (OSError, ValueError) as exc:
+        return None, _os_reason(exc)
+    if stat.S_ISDIR(mode):
+        candidate = candidate / "project.yaml"
+        try:
+            mode = candidate.stat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            return None, LINK_SOURCE_NO_MANIFEST
+        except (OSError, ValueError) as exc:
+            return None, f"its project.yaml: {_os_reason(exc)}"
+        if not stat.S_ISREG(mode):
+            return None, "its project.yaml is not a file"
+    elif not stat.S_ISREG(mode):
+        return None, "it is neither a directory nor a file"
+    return candidate, None
+
+
+def link_declarations(manifest_path, key: str = CHAIN_LINK_DECLARED_BY
+                      ) -> tuple[set[str] | None, str | None]:
+    """The neutral products a link's manifest DECLARES a pin on, with why the
+    tree could not answer beside it: `(pins, None)`, or `(None, why)`.
+
+    `None` means "this tree could not answer" and is deliberately distinct
+    from the empty set, which means "this tree answered, and declares no pin
+    at all". The first is unverified and the second breaks a chain that runs
+    through it. A tree cannot answer when there is no manifest, when it
+    cannot be read, when it is not a mapping, or when its `key` is not a list
+    of names: a scalar, a number or a mapping there is not a declaration, and
+    iterating it as one read `openDox` as the characters `D`, `e`, `n`, `o`,
+    `p`, `x` and ended the run in a `TypeError` for `5` (#338). An absent or
+    empty `key`, and a blank entry in the list, declare nothing, as ever.
+    """
+    path, why = link_manifest_lookup(manifest_path)
     if path is None:
-        return None
+        return None, why
     try:
         data = load_yaml(path)
-    except (YamlError, Refusal, OSError, UnicodeDecodeError):
-        return None
+    except Refusal as exc:
+        cause = exc.__cause__
+        if isinstance(cause, OSError):
+            return None, f"{path}: {_os_reason(cause)}"
+        return None, exc.detail
+    except (YamlError, OSError, UnicodeDecodeError) as exc:
+        return None, f"{path}: {exc}"
     if not isinstance(data, dict):
-        return None
-    return {repo_basename(str(pin)) for pin in (data.get(key) or []) if pin}
+        return None, f"{path}: not a mapping"
+    declared = data.get(key)
+    if declared is None:
+        return set(), None
+    if not isinstance(declared, list):
+        return None, f"{path}: {key} is not a list"
+    pins: set[str] = set()
+    for pin in declared:
+        if pin is None or pin == "":
+            continue
+        if not isinstance(pin, str):
+            return None, f"{path}: {key} holds an entry that is not text"
+        pins.add(repo_basename(pin))
+    return pins, None
 
 
 def resolve_link_source(product: str, root: Path | None = None,
                         keyed_sources: dict | None = None,
                         default_source=None,
-                        env_shared: bool = False
+                        env_shared: bool = False, *,
+                        tried: list | None = None
                         ) -> tuple[Path | None, str | None]:
     """Where `product`'s own manifest can be read, if anywhere at all.
 
@@ -2601,37 +2706,85 @@ def resolve_link_source(product: str, root: Path | None = None,
       3. a checkout sitting BESIDE this project (`../openXdox`)
       4. a bare `--link-source <path>` with no `product=` prefix
 
+    The first that holds a manifest answers, and one that does not is passed
+    over whatever the reason: one that cannot be entered no longer raises
+    (#338).
+
+    WHAT WAS ASKED (#338). `tried`, when given, receives one `(rule, how,
+    path, why)` per source asked, in order: `rule` is `keyed`, `env`,
+    `sibling` or `bare`, the four above; `why` is None for the one that
+    answered, else `link_manifest_lookup`'s reason. Nothing here prints, so
+    each caller says what it needs to: the naming validator names a
+    `--link-source` that could not be read, and one no link used.
+
     `env_shared` says another product asked about alongside this one names
     the same variable, so rule 2 is skipped: a variable that does not say
     which product it holds is not read for either (#275).
     """
-    candidates: list[tuple[Path, str]] = []
+    candidates: list[tuple[str, Path, str]] = []
     keyed = (keyed_sources or {}).get(product.casefold())
     if keyed is not None:
-        candidates.append((Path(keyed), f"--link-source {product}=..."))
+        candidates.append(("keyed", Path(keyed),
+                           f"--link-source {product}=..."))
     env_name = pin_source_env_name(product)
     env_value = None if env_shared else os.environ.get(env_name)
     if env_value:
-        candidates.append((Path(env_value), f"${env_name}"))
+        candidates.append(("env", Path(env_value), f"${env_name}"))
     if root is not None:
         sibling = Path(root).resolve().parent / product
-        candidates.append((sibling, f"sibling checkout ({sibling})"))
+        candidates.append(("sibling", sibling,
+                           f"sibling checkout ({sibling})"))
     if default_source is not None:
-        candidates.append((Path(default_source), "--link-source"))
-    for path, how in candidates:
-        if link_manifest_path(path) is not None:
+        candidates.append(("bare", Path(default_source), "--link-source"))
+    for rule, path, how in candidates:
+        manifest, why = link_manifest_lookup(path)
+        if tried is not None:
+            tried.append((rule, how, path, why))
+        if manifest is not None:
             return path, how
     return None, None
+
+
+class LinkPins(dict):
+    """`link_pins_from_trees`'s answer for a caller that asks it to say why:
+    the same `{link: the pins ITS manifest declares}`, equal to a plain one,
+    with `unreadable` beside it, `{link casefolded: why}` for each link whose
+    source REACHED a manifest that could not be read as a declaration (#338).
+
+    A link in `unreadable` is absent from the mapping, as one that is not on
+    the disk is. What differs is the warning `_chain_link_findings` writes for
+    it, which names the reason instead of saying the tree is "not reachable
+    here". Only a caller that asks for one gets one, so every other
+    reader's warning is exactly the text it always was.
+    """
+
+    def __init__(self, found=(), unreadable: dict | None = None) -> None:
+        super().__init__(found)
+        self.unreadable: dict[str, str] = dict(unreadable or {})
 
 
 def link_pins_from_trees(links, root: Path | None = None,
                          keyed_sources: dict | None = None,
                          default_source=None,
-                         key: str = CHAIN_LINK_DECLARED_BY) -> dict[str, set]:
+                         key: str = CHAIN_LINK_DECLARED_BY, *,
+                         tried: dict | None = None,
+                         with_reasons: bool = False) -> dict[str, set]:
     """`{link: the pins ITS manifest declares}` for the links that answered.
 
     A link whose tree is not on the disk is simply ABSENT from the mapping,
     which is what `NamingPolicy.resolve_referent` reads as declared-unverified.
+    So is one whose tree cannot be entered or whose manifest cannot be read:
+    nothing a source does raises out of here (#338).
+
+    `tried`, when given, maps each link, by the name `repo_basename` gives
+    it, to what `resolve_link_source` asked for it. The source that answered
+    carries the reason its manifest could not be read, when it could not,
+    because that is where the link stopped (#338).
+
+    `with_reasons` returns a `LinkPins`, which remembers that reason for each
+    link a source reached and could not read, so that the caller that has no
+    line of its own for it (the scaffold) can have the warning say so. It is
+    off for the callers that print the reason themselves, and for the rest.
 
     A link whose `SHAPE_PIN_SOURCE_<PRODUCT>` another of `links` names too is
     not read through it (#275): one tree would answer for two links, and a
@@ -2641,20 +2794,28 @@ def link_pins_from_trees(links, root: Path | None = None,
     policy's `open<Product>` form, which has no `-`, `.` or `_` to fold.
     """
     found: dict[str, set] = {}
+    unreadable: dict[str, str] = {}
     links = list(links)
     shared = pin_source_env_shared(repo_basename(str(link)) for link in links)
     for link in links:
         name = repo_basename(str(link))
+        asked: list = []
         path, _how = resolve_link_source(name, root, keyed_sources,
                                          default_source,
-                                         pin_product_key(name) in shared)
+                                         pin_product_key(name) in shared,
+                                         tried=asked)
+        if tried is not None:
+            tried[name] = asked
         if path is None:
             continue
-        pins = declared_neutral_pins(path, key)
+        pins, why = link_declarations(path, key)
         if pins is None:
+            rule, how, _path, _answered = asked[-1]
+            asked[-1] = (rule, how, path, why)
+            unreadable[name.casefold()] = why
             continue
         found[name.casefold()] = pins
-    return found
+    return LinkPins(found, unreadable) if with_reasons else found
 
 
 def find_repo_root(start: Path) -> Path:
