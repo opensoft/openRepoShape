@@ -489,7 +489,7 @@ def test_the_doctors_shape_currency_row_keeps_the_root_whole(project,
                                                              make_root, name):
     """THE HALF OF #325 THAT WAS ALREADY RIGHT. The doctor spells every value
     in this row with `quote_arg` (#101, #102), so its `check` and the `apply`
-    in its comment carry the same words the NEXT line above does. Asserted
+    in its `why` carry the same words the NEXT line above does. Asserted
     here for the roots #325 names, and for `$`, which the earlier tests of
     this row did not use."""
     root = make_root(name)
@@ -500,7 +500,11 @@ def test_the_doctors_shape_currency_row_keeps_the_root_whole(project,
     row = {r["id"]: r for r in json.loads(result.stdout)["rows"]}[
         "shape-currency"]
     assert row["status"] == "FINDING", row
-    command, _, then = row["next"].partition("   # then ")
+    # The `check` is the NEXT, alone, and the `apply` that follows it is the
+    # row's `why`, which opens with `then ` (#277).
+    command = row["next"]
+    assert row["why"].startswith("then "), row["why"]
+    then = row["why"].removeprefix("then ")
     assert shlex.split(command) == [
         PYTHON, str(upstream / "update-shape.py"), "check", "--root",
         str(root.resolve()), "--upstream", str(upstream)]
