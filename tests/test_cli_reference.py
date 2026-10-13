@@ -41,10 +41,15 @@ from __future__ import annotations
 import ast
 import difflib
 import importlib.util
+import os
+import re
+import shutil
+import subprocess
+import sys
 
 import pytest
 
-from conftest import REPO, WINDOWS_SKIP
+from conftest import REPO, WINDOWS_SKIP, git
 
 REFERENCE = REPO / "docs" / "cli.md"
 GENERATOR = REPO / "scripts" / "render-cli-reference.py"
@@ -72,15 +77,16 @@ REGENERATE = "python3 scripts/render-cli-reference.py"
 NOT_A_CLI_OF_THE_STANDARD = {"scripts/render-cli-reference.py"}
 
 
-def generator_module():
+def generator_module(path=GENERATOR):
     """`scripts/render-cli-reference.py` imported as a module.
 
     The filename has a hyphen and cannot be imported by name;
     `tests/test_repo_hygiene.py::entry_point_module` does the same for
-    `setup-project.py` for the same reason.
+    `setup-project.py` for the same reason. `path` is for a COPY of the
+    generator, whose `REPO` is then the copy's tree.
     """
     spec = importlib.util.spec_from_file_location("render_cli_reference",
-                                                  GENERATOR)
+                                                  path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -404,3 +410,228 @@ def test_the_generators_own_check_agrees_with_this_suite():
     assert module.main(["--check"]) == 0, (
         f"`{REGENERATE} --check` disagrees with this suite; one of the two "
         "is wrong")
+
+
+# --- a tree that is not a checkout (#341) ------------------------------------
+#
+# `setup.sh --help` is `setup-project.py`'s usage only inside a checkout of the
+# standard. Outside one it is the shim's own short text, and before #341 the
+# shim cloned the public upstream to answer at all — so the generator, run in
+# a `git archive` or release extraction, reached GitHub and then rendered
+# UPSTREAM's usage as that tree's `setup.sh` section. It now refuses such a
+# tree before it runs anything, and every child it starts runs under
+# `GIT_ALLOW_PROTOCOL=file`. Every run below sets that variable too, so that a
+# regression fails closed rather than reaching the network.
+
+def copy_of_the_tree(destination):
+    """Every file git tracks here, copied with no `.git`: the tree a `git
+    archive` extraction holds, but taken from the WORKING TREE, so that it
+    carries the generator under test and not whatever HEAD commits."""
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=str(REPO),
+                            capture_output=True, check=True).stdout
+    for name in listed.decode("utf-8").split("\0"):
+        source = REPO / name
+        if name and source.is_file():
+            target = destination / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    return destination
+
+
+def offline_env(tmp_path):
+    """No network, no clone unrecorded, no git search above `tmp_path`.
+
+    `GIT_CEILING_DIRECTORIES` keeps a basetemp that happens to sit inside a
+    git work tree from turning the plain copy into part of it.
+    `$OPENREPOSHAPE_REPO` is removed, so a regression would reach for the
+    DEFAULT upstream and be refused by `GIT_ALLOW_PROTOCOL` — the measure
+    itself, rather than a local clone that happened to succeed."""
+    env = dict(os.environ)
+    env.pop("OPENREPOSHAPE_REPO", None)
+    tmpdir = tmp_path / "tmpdir"
+    tmpdir.mkdir(exist_ok=True)
+    env.update({"GIT_ALLOW_PROTOCOL": "file",
+                "GIT_CEILING_DIRECTORIES": str(tmp_path),
+                "GIT_TRACE": str(tmp_path / "git-trace.log"),
+                "TMPDIR": str(tmpdir)})
+    return env
+
+
+def traced_clones(tmp_path) -> list:
+    trace = tmp_path / "git-trace.log"
+    lines = (trace.read_text(encoding="utf-8", errors="replace").splitlines()
+             if trace.exists() else [])
+    return [line for line in lines if "git clone" in line]
+
+
+def test_child_env_never_lets_a_child_reach_the_network(monkeypatch):
+    """`GIT_ALLOW_PROTOCOL=file` in every child, whatever the caller had:
+    asking a tool for its help is never a network act, so a child that
+    tried one fails closed and `capture_help` names it."""
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file:https:ssh")
+    assert generator_module().child_env()["GIT_ALLOW_PROTOCOL"] == "file"
+
+
+def test_the_generators_checkout_test_is_the_shims_own():
+    """The question `require_a_checkout` asks is `setup.sh`'s
+    `is_shape_checkout`, read from the shim and not guessed: the top level
+    git names, and the same files at it. If the shim's probe ever changes,
+    the generator's has to follow, or it renders trees the shim does not
+    treat as checkouts again."""
+    source = (REPO / "setup.sh").read_text(encoding="utf-8")
+    probe = re.search(r"^is_shape_checkout\(\) \{\n(.*?)^\}", source,
+                      re.MULTILINE | re.DOTALL)
+    assert probe, "setup.sh no longer defines is_shape_checkout()"
+    assert "rev-parse --show-toplevel" in probe.group(1)
+    files = set(re.findall(r'-f "\$toplevel/([^"]+)"', probe.group(1)))
+    assert files == set(generator_module().SHAPE_CHECKOUT_FILES), (
+        f"setup.sh's is_shape_checkout asks for {sorted(files)}; the "
+        f"generator asks for {sorted(generator_module().SHAPE_CHECKOUT_FILES)}")
+
+
+@pytest.mark.parametrize("layout,reason", [
+    pytest.param("plain", "git finds no work tree there", id="no-git-at-all"),
+    pytest.param("in-a-work-tree", "whose top level has no",
+                 id="inside-another-work-tree"),
+    pytest.param("in-a-checkout", "is not the top level of a checkout",
+                 id="inside-a-checkout-of-the-standard"),
+])
+def test_the_generator_refuses_a_tree_that_is_not_a_checkout(tmp_path, layout,
+                                                             reason):
+    """`--check`, and a plain write, both refused — exit 2, the tree named,
+    nothing written, no clone made.
+
+    Three trees. A plain copy with no `.git`, which is what a download or an
+    extraction is. A copy inside an unrelated git work tree, where git
+    answers with a top level that is not a checkout of the standard. And a
+    copy inside a work tree whose top level DOES look like one: the shim's
+    probe passes there, and its `setup.sh --help` would print THAT top
+    level's `setup-project.py` usage under this tree's heading, which is why
+    the generator also asks that the top level be the tree itself."""
+    if layout == "plain":
+        tree = copy_of_the_tree(tmp_path / "tree")
+    else:
+        outer = tmp_path / "outer"
+        outer.mkdir()
+        git("init", "-q", cwd=outer)
+        if layout == "in-a-checkout":
+            (outer / "contracts").mkdir()
+            (outer / "scaffold-project.py").write_bytes(b"")
+            (outer / "contracts" / "repository-naming.yaml").write_bytes(b"")
+        tree = copy_of_the_tree(outer / "tree")
+    reference = (tree / "docs" / "cli.md").read_bytes()
+    env = offline_env(tmp_path)
+
+    for argv in (["--check"], []):
+        result = subprocess.run(
+            [sys.executable, str(tree / "scripts" / "render-cli-reference.py"),
+             *argv], cwd=str(tree), env=env, stdin=subprocess.DEVNULL,
+            capture_output=True, check=False)
+        stderr = result.stderr.decode("utf-8", "replace")
+        said = stderr + result.stdout.decode("utf-8", "replace")
+        assert result.returncode == 2, f"{argv}: exit {result.returncode}\n{said}"
+        assert str(tree.resolve()) in stderr, said
+        assert reason in stderr, said
+        assert "git clone" in stderr, (
+            f"the refusal does not say what to do instead:\n{said}")
+        assert "(0) self-bootstrap" not in said
+    assert (tree / "docs" / "cli.md").read_bytes() == reference, (
+        "a refused run wrote docs/cli.md")
+    assert not traced_clones(tmp_path), traced_clones(tmp_path)
+    assert not list((tmp_path / "tmpdir").iterdir())
+
+
+def test_render_itself_refuses_a_tree_that_is_not_a_checkout(tmp_path,
+                                                             monkeypatch):
+    """`render()`, not only `main()`: the byte-equality test above calls it
+    directly, so a suite run in an extraction is a rendering made in one."""
+    tree = copy_of_the_tree(tmp_path / "tree")
+    for name, value in offline_env(tmp_path).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("OPENREPOSHAPE_REPO", raising=False)
+    module = generator_module(tree / "scripts" / "render-cli-reference.py")
+    assert module.REPO == tree.resolve()
+    with pytest.raises(module.Refusal, match="is not a checkout"):
+        module.render()
+    assert not traced_clones(tmp_path), traced_clones(tmp_path)
+
+
+def test_the_checkout_refusal_comes_before_the_no_bash_one(tmp_path,
+                                                           monkeypatch,
+                                                           capsys):
+    """Where there is no bash (the windows runner), `--check` stops with exit
+    3 before it renders anything, and a write without `--skip-bash` with
+    exit 2 naming that flag. Neither is what is wrong with a tree that is
+    not a checkout, on any machine, so `main` asks about the tree FIRST.
+    `shutil.which` is monkeypatched, as the no-bash test above does it, so
+    this runs on every platform."""
+    tree = copy_of_the_tree(tmp_path / "tree")
+    for name, value in offline_env(tmp_path).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("OPENREPOSHAPE_REPO", raising=False)
+    module = generator_module(tree / "scripts" / "render-cli-reference.py")
+    monkeypatch.setattr(module.shutil, "which", lambda name: None)
+    for argv in (["--check"], [], ["--skip-bash"]):
+        assert module.main(argv) == 2, argv
+        err = capsys.readouterr().err
+        assert "is not a checkout" in err, f"{argv}: {err}"
+        assert "bash entry points" not in err, (
+            f"{argv}: the no-bash refusal came first: {err}")
+
+
+# --- checkouts the shim accepts and the generator must too (#341) ------------
+#
+# The generator's probe is the shim's, so it has to read git's answer the way
+# the shim does. Bash's `$(...)` keeps every byte of the top level but the
+# trailing newlines; a generator that stripped the path, or decoded it with
+# `replace`, refused two real checkouts the shim treats as checkouts: one whose
+# directory name ends in a space, and one whose path is not UTF-8. Both tests
+# are skipped where the file system cannot hold the name (Windows takes
+# neither; macOS refuses what is not UTF-8), because there is then no such
+# checkout to refuse.
+
+def a_checkout_at(path):
+    """`copy_of_the_tree`, plus the `git init` that makes it a work tree.
+
+    The shim's probe, and the generator's, ask for a top level and two files at
+    it, so an empty repository is a checkout to both: no commit is needed."""
+    copy_of_the_tree(path)
+    subprocess.run(["git", "init", "-q"], cwd=str(path), check=True,
+                   stdin=subprocess.DEVNULL, capture_output=True)
+    return path
+
+
+def the_generator_accepts(tree, tmp_path):
+    """`--check` IN `tree`, as a person runs it: it renders and agrees with the
+    committed reference (the copy carries this tree's own `docs/cli.md`), exit
+    0, with no refusal and no clone."""
+    result = subprocess.run(
+        [sys.executable, str(tree / "scripts" / "render-cli-reference.py"),
+         "--check"], cwd=str(tree), env=offline_env(tmp_path),
+        stdin=subprocess.DEVNULL, capture_output=True, check=False)
+    said = (result.stderr + result.stdout).decode("utf-8", "replace")
+    assert result.returncode == 0, f"exit {result.returncode}\n{said}"
+    assert "[ok]" in said, said
+    assert "is not a checkout" not in said, said
+    assert not traced_clones(tmp_path), traced_clones(tmp_path)
+
+
+@WINDOWS_SKIP
+def test_a_checkout_whose_path_ends_in_a_space_is_a_checkout(tmp_path):
+    tree = a_checkout_at(tmp_path / "trail" / "openRepoShape ")
+    assert str(tree).endswith(" "), "the fixture lost the space it is about"
+    the_generator_accepts(tree, tmp_path)
+
+
+@WINDOWS_SKIP
+def test_a_checkout_whose_path_is_not_utf8_is_a_checkout(tmp_path):
+    parent = tmp_path / os.fsdecode(b"bad\xffname")
+    try:
+        parent.mkdir()
+    except OSError as error:
+        pytest.skip(f"this file system cannot hold a name that is not UTF-8: "
+                    f"{error}")
+    tree = a_checkout_at(parent / "openRepoShape")
+    with pytest.raises(UnicodeDecodeError):
+        os.fsencode(tree).decode("utf-8")
+    the_generator_accepts(tree, tmp_path)
