@@ -17,10 +17,12 @@ a tracking branch that is no branch of the source
 request goes to, and its own otherwise.
 
 The GitHub-mode runs, a `master` and a `trunk` source whose pull request opens
-against that branch and a base the source lacks refused before any `gh` runs,
-are in `tests/test_adopt_github_exits.py`, beside the other exits a GitHub run
-has. Nothing here runs `gh`: every run below is `plan` and `check`, which read
-a local source, or `execute --local-remote-dir`, which refuses before any leg.
+against that branch, a base the source lacks refused before any `gh` runs, and
+one the clone remembers after GitHub renamed it, which `execute` asks the
+remote about, are in `tests/test_adopt_github_exits.py`, beside the other exits
+a GitHub run has. Nothing here runs `gh`: every run below is `plan` and
+`check`, which read a local source, or `execute --local-remote-dir`, which
+refuses before any leg.
 """
 
 from __future__ import annotations
@@ -41,6 +43,11 @@ TREE = {"README.md": "# Northwind\n", "src/app.py": "print(1)\n",
         "docs/spec.md": "# Spec\n"}
 MISSING = "plan-tracking-branch-missing"
 REMEDIATION = "Remediation: set `tracking_branch:` in the plan"
+#: How the plan's last follow-up names the pull request's base: by the plan's
+#: key, never its value (#493's review, F3).
+PULL_REQUEST_FOLLOW_UP = (
+    "open the split as a pull request against the plan's `tracking_branch`, "
+    "the branch the assembly root and both legs track;")
 
 
 def planned(tmp_path, source, *flags: str):
@@ -71,8 +78,9 @@ def retracked(plan, old: str, new: str) -> None:
 
 def test_plan_records_the_branch_it_reads_the_source_at(tmp_path):
     """No flag: the source's own branch, `master`, which `plan` also records
-    as `source.default_branch`, and the last follow-up names it. An explicit
-    `--tracking-branch` still wins, and the follow-up names that instead."""
+    as `source.default_branch`, and the last follow-up names the plan's
+    `tracking_branch` as the pull request's base. An explicit
+    `--tracking-branch` still wins."""
     source = make_source_repo(tmp_path / "Northwind", tree=TREE, edits=(),
                               branch="master")
     git("branch", "develop", cwd=source)
@@ -81,18 +89,38 @@ def test_plan_records_the_branch_it_reads_the_source_at(tmp_path):
     written = load_yaml(plan)
     assert written["source"]["default_branch"] == "master"
     assert written["tracking_branch"] == "master", written
-    assert written["follow_ups"][-1].startswith(
-        "open the split as a pull request against master, the branch the "
-        "assembly root and both legs track;"), written["follow_ups"]
+    assert written["follow_ups"][-1].startswith(PULL_REQUEST_FOLLOW_UP), \
+        written["follow_ups"]
     assert MISSING not in result.stdout + result.stderr
 
     result, plan = planned(tmp_path / "explicit", source,
                            "--tracking-branch", "develop")
     assert tracking_branch_of(plan) == "develop"
-    assert load_yaml(plan)["follow_ups"][-1].startswith(
-        "open the split as a pull request against develop,")
     assert MISSING not in result.stdout + result.stderr
     assert check(plan).returncode == 0
+
+
+def test_the_follow_up_names_no_branch_a_hand_edit_can_leave_behind(tmp_path):
+    """The follow-ups are written once, by `plan`, and `execute` copies them
+    into the split commit, which is also the pull request's body. The last
+    one named the branch, so a plan made with `--tracking-branch develop`
+    and then edited to `master`, as `plan-tracking-branch-missing`'s
+    remediation asks, checked ok saying `develop`, and its pull request
+    opened against `master` with a body saying `develop` (#493's review,
+    F3). It names the plan's key now, which no edit leaves behind."""
+    source = make_source_repo(tmp_path / "Northwind", tree=TREE, edits=(),
+                              branch="master")
+    git("branch", "develop", cwd=source)
+    _, plan = planned(tmp_path, source, "--tracking-branch", "develop")
+    retracked(plan, "develop", "master")
+
+    result = check(plan)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    (said,) = [line for line in result.stdout.splitlines()
+               if "open the split as a pull request" in line]
+    assert said.startswith(f"  follow-up: {PULL_REQUEST_FOLLOW_UP}"), said
+    assert "develop" not in said and "master" not in said, said
 
 
 def test_check_finds_a_tracking_branch_the_source_does_not_have(tmp_path):

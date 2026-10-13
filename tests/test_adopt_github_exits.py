@@ -59,7 +59,7 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, REPO, WINDOWS_SKIP, git, make_source_repo,
-                      write_plan)
+                      run_script, write_plan)
 
 #: `execute` REQUIRES `git filter-repo`; without it the runs below are
 #: skipped, as every `execute` test in this suite is.
@@ -210,7 +210,7 @@ def step_7() -> str:
 def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
                keep_contracts: bool = False, merge_stderr: bool = False,
                stdout_closed: bool = False, branch: str = "main",
-               plan_flags: tuple = ()):
+               plan_flags: tuple = (), before_plan=None):
     """Plan a small source and `execute` it in GitHub mode, with a `gh` that
     refuses `refuses`. Returns `(result, github)`: the run, and the directory
     that stands for github.com, with `testorg/<name>.git` in it.
@@ -222,7 +222,9 @@ def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
     tool flushed them. `stdout_closed` gives the run a stdout whose reading end
     is already closed, as `| head` leaves it once `head` has quit, so that
     `result.stdout` is None. `branch` is the source's own (default) branch,
-    and `plan_flags` go to `plan` after the ones `write_plan` passes."""
+    and `plan_flags` go to `plan` after the ones `write_plan` passes.
+    `before_plan`, when given, is called with the source and the directory
+    that stands for github.com once the assembly is there, before `plan`."""
     github = tmp_path / "github"
     (github / ORG).mkdir(parents=True)
     source = make_source_repo(tmp_path / NORTHWIND, tree=tree, edits=(),
@@ -231,6 +233,8 @@ def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
     # split branch is pushed back to it.
     git("clone", "-q", "--bare", ".", str(github / ORG / f"{NORTHWIND}.git"),
         cwd=source)
+    if before_plan is not None:
+        before_plan(source, github)
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -632,6 +636,22 @@ def test_a_topic_refused_on_one_repository_names_that_one_alone(tmp_path):
 
 # --- the pull request's base is a branch the source has (#479) --------------
 
+TRACKING_MISSING = "plan-tracking-branch-missing"
+#: The assembly's url, as `execute` names it.
+ASSEMBLY_URL = f"`https://github.com/{ORG}/{NORTHWIND}.git`"
+
+
+def assert_refused_before_any_repository(result, github: Path,
+                                         code: str) -> None:
+    """`execute` refused as `code`, saying it had made nothing, and it had
+    not: no `gh` was run and no leg repository is on the fake GitHub."""
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"REFUSED {code}: " in result.stderr, result.stderr
+    assert "no leg repository was created" in result.stderr, result.stderr
+    assert gh_calls(github) == []
+    assert not (github / ORG / f"{NORTHWIND}-spec.git").exists()
+
+
 @WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
 @needs_filter_repo
 @pytest.mark.parametrize("branch", ["master", "trunk"])
@@ -666,14 +686,86 @@ def test_a_base_the_source_lacks_is_refused_before_any_repository(tmp_path):
     result, github = github_run(tmp_path, "never", branch="master",
                                 plan_flags=("--tracking-branch", "main"))
 
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert "REFUSED plan-tracking-branch-missing:" in result.stderr
+    assert_refused_before_any_repository(result, github, TRACKING_MISSING)
     assert ("`tracking_branch` is `main`, which is no branch of the source "
             "(its branches: `master`; the source's default branch is "
             "`master`)") in result.stderr, result.stderr
-    assert "no leg repository was created" in result.stderr
-    assert gh_calls(github) == []
-    assert not (github / ORG / f"{NORTHWIND}-spec.git").exists()
+
+
+# --- the remote is asked, before any repository (#493's review, F1) ---------
+
+def renamed_on_github(source: Path, github: Path) -> None:
+    """The source becomes a clone made while its repository's default branch
+    was `master`, and GitHub then renames `master` to `main`. An ordinary
+    `git fetch` does not prune, so the clone keeps `origin/master`, and
+    `origin/HEAD` still names it, beside the `origin/main` the fetch brings."""
+    assembly = github / ORG / f"{NORTHWIND}.git"
+    git("remote", "add", "origin", str(assembly), cwd=source)
+    git("fetch", "-q", "origin", cwd=source)
+    git("remote", "set-head", "origin", "master", cwd=source)
+    git("branch", "-m", "master", "main", cwd=assembly)
+    git("symbolic-ref", "HEAD", "refs/heads/main", cwd=assembly)
+    git("fetch", "-q", "origin", cwd=source)
+
+
+@WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
+@needs_filter_repo
+def test_a_branch_the_clone_remembers_and_github_renamed_is_refused_first(
+        tmp_path):
+    """`check` reads the branches the source's clone remembers, and passes
+    `master`, which `plan` took from `origin/HEAD`. `execute` asks the
+    remote itself before it makes anything, and refuses: it used to push
+    both legs and the split, and then GitHub refused the pull request,
+    `Base ref must be a branch`, where before #479 the same clone planned
+    `main` and adopted. The way out it names, the clone pruned and told its
+    remote's default branch, and its own branch renamed to match, makes a
+    plan that tracks `main` and checks ok."""
+    result, github = github_run(tmp_path, "never", branch="master",
+                                before_plan=renamed_on_github)
+
+    assert_refused_before_any_repository(result, github, TRACKING_MISSING)
+    assert (f"`tracking_branch` is `master`, which {ASSEMBLY_URL}, the "
+            "repository the split is pushed to, does not have as `git "
+            "ls-remote` reads it now") in result.stderr, result.stderr
+    said = " ".join(result.stderr.split())
+    assert ("run `git fetch --prune origin` and `git remote set-head origin "
+            "--auto`, and where the default branch was renamed, rename the "
+            "clone's own to match, as GitHub's notice of the rename says (`git "
+            "branch -m <old> <new>`). Then re-run `plan`") in said, said
+
+    source = tmp_path / NORTHWIND
+    git("fetch", "-q", "--prune", "origin", cwd=source)
+    git("remote", "set-head", "origin", "--auto", cwd=source)
+    git("branch", "-m", "master", "main", cwd=source)
+    replanned = tmp_path / "replanned.yaml"
+    written = write_plan(source, replanned)
+    assert written.returncode == 0, written.stdout + written.stderr
+    assert "\ntracking_branch: main\n" in replanned.read_text(encoding="utf-8")
+    checked = run_script(ADOPT, "check", "--plan", str(replanned))
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+def moved_off_github(source: Path, github: Path) -> None:
+    """The assembly is no longer at the url `execute` pushes the split to."""
+    assembly = github / ORG / f"{NORTHWIND}.git"
+    assembly.rename(assembly.with_name("Elsewhere.git"))
+
+
+@WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
+@needs_filter_repo
+def test_a_remote_that_cannot_be_asked_is_refused_before_any_repository(
+        tmp_path):
+    """The question fails closed: a remote `git ls-remote` cannot read is
+    refused as such, before any leg exists, since the split push needs the
+    same remote."""
+    result, github = github_run(tmp_path, "never",
+                                before_plan=moved_off_github)
+
+    assert_refused_before_any_repository(result, github,
+                                         "adopt-remote-unreadable")
+    assert (f"`git ls-remote` could not read {ASSEMBLY_URL}, the repository "
+            "the split is pushed to, to ask whether it has `main`, the "
+            "plan's `tracking_branch`: exit ") in result.stderr, result.stderr
 
 
 # --- the real `gh` stays out of reach ---------------------------------------

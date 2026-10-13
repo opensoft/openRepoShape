@@ -173,6 +173,9 @@ from shape_materialize import (  # noqa: E402
 # Whether a value this tool writes into a file is text a file can hold
 # (#255), asked beside `one_printable_line`, the trailer's question.
 from shape_materialize import unwritable_reason  # noqa: E402
+# The shape's bootstrap script, which its `make bootstrap` runs: where it
+# went beside one the source kept decides what NEXT can name (#480).
+from shape_materialize import BOOTSTRAP  # noqa: E402
 
 #: The naming policy this tool classifies leg names against. One constant,
 #: because three spellings of the same path is how the second one goes stale.
@@ -1351,17 +1354,21 @@ def _search_by_hand(named: str, why: str) -> str:
 
 def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
                    spec_path: str, code_path: str,
-                   collisions: list[str], tracking: str) -> list[str]:
+                   collisions: list[str]) -> list[str]:
     """The code changes an in-place split MAKES NECESSARY, named in the plan.
 
     A split that moved `contracts/` into the spec leg and said nothing about
     the harness that reads it would have handed somebody a red build and no
     explanation.
 
-    The last one names `tracking`, the base `execute` opens the pull request
-    against (#479). It said "the source's default branch" while `execute`
-    used `--base main` whatever that branch was; the two now agree by
-    default, and a `--tracking-branch` that names another is named here.
+    The last one names the base `execute` opens the pull request against as
+    the plan's `tracking_branch` (#479). It said "the source's default
+    branch" while `execute` used `--base main` whatever that branch was. It
+    names the KEY and not its value: this list is written once, by `plan`,
+    and a value named here went on naming the old branch after a hand edit
+    of `tracking_branch:`, which `plan-tracking-branch-missing`'s
+    remediation asks for, in `check`'s output and in the pull request's own
+    body (#493's review, F3).
     """
     out = cross_leg_references(source, entries, spec_path, code_path)
     if any(e.leg == "spec" and (e.path == "contracts/"
@@ -1378,10 +1385,10 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
             "owner rule cannot cross a repository boundary")
     out.extend(collisions)
     out.append(
-        f"open the split as a pull request against {tracking}, the branch the "
-        f"assembly root and both legs track; the legs {names['spec']} and "
-        f"{names['code']} are seeded before it, so review the root's diff and "
-        "the two new repositories together")
+        "open the split as a pull request against the plan's "
+        "`tracking_branch`, the branch the assembly root and both legs track; "
+        f"the legs {names['spec']} and {names['code']} are seeded before it, "
+        "so review the root's diff and the two new repositories together")
     return out
 
 
@@ -1781,12 +1788,22 @@ def _kept_collision_notes(args, entries: list, tree: list) -> list[str]:
 # clone of, and the source knows that repository's branches as its remote
 # `origin`'s: `gh repo clone` and `git clone` fetch every branch. A source
 # that has fetched none, a repository with no remote, is asked about its own
-# branches; `--local-remote-dir` pushes the split back into it. Nothing is
-# asked of the network, and a branch made on GitHub after the clone is
-# fetched first, as the remediation says.
+# branches; `--local-remote-dir` pushes the split back into it. `plan` and
+# `check` ask nothing of the network, and a branch made on GitHub after the
+# clone is fetched first, as the remediation says.
+#
+# BUT A CLONE REMEMBERS WHAT ITS REMOTE HAS SINCE LOST. An ordinary `git
+# fetch` does not prune, so a branch deleted or renamed on GitHub stays as
+# `origin/<branch>`, and a clone made before GitHub renamed `master` to
+# `main` keeps `origin/HEAD -> origin/master`, which `plan` takes as the
+# default. Such a plan checked ok, and `execute` pushed both legs and the
+# split before GitHub refused the base (#493's review, F1). So `execute`
+# also asks the remote itself, before any leg exists
+# (`_refuse_a_tracking_branch_the_remote_lacks`).
 
 #: `check`'s finding for a tracking branch the source does not have, and
-#: what it prints once after it (#479).
+#: what it prints once after it (#479). `execute` refuses under the same code
+#: a tracking branch the remote the split goes to does not have.
 TRACKING_BRANCH_MISSING = "plan-tracking-branch-missing"
 TRACKING_BRANCH_REMEDIATION = (
     "Remediation: set `tracking_branch:` in the plan to a branch the source "
@@ -1866,6 +1883,85 @@ def _tracking_branch_notes(args, source: Source) -> list[str]:
             f"     `check` reports this as `{TRACKING_BRANCH_MISSING}` while "
             "`tracking_branch:` names it; `plan` refuses nothing for it, "
             "because the plan is yours to edit."]
+
+
+#: `execute`'s refusal of a remote `git ls-remote` cannot read, asked before
+#: any leg exists whether it has the tracking branch.
+REMOTE_UNREADABLE = "adopt-remote-unreadable"
+#: How `_refuse_a_tracking_branch_the_remote_lacks` ends, and the sentence it
+#: adds under `--local-remote-dir`, where the source is the remote.
+REMOTE_LACKS_REMEDIATION = (
+    "Remediation: no leg repository was created and nothing was pushed. "
+    "`check` reads the branches the source's clone remembers, and a clone "
+    "keeps one its remote has since deleted or renamed: an ordinary `git "
+    "fetch` does not prune it, and a clone made before GitHub renamed its "
+    "default branch still names the old one. In the source, run `git fetch "
+    "--prune origin` and `git remote set-head origin --auto`, and where the "
+    "default branch was renamed, rename the clone's own to match, as "
+    "GitHub's notice of the rename says (`git branch -m <old> <new>`). Then "
+    "re-run `plan` (without `--tracking-branch` it records the default "
+    "branch the remote names now) and `check`, and run `execute` again.")
+LOCAL_REMOTE_LACKS = (
+    " Under `--local-remote-dir` the split is pushed back into the source "
+    "itself, so the tracking branch must be one of the source's own "
+    "branches, and one only its remote `origin` has is not: `git branch "
+    "<name> origin/<name>` makes it one.")
+
+
+def _refuse_a_tracking_branch_the_remote_lacks(urls: dict, tracking: str,
+                                               local: bool) -> None:
+    """Refuse a tracking branch the repository the split goes to does not
+    have, BEFORE a leg repository exists (#479; #493's review, F1).
+
+    `plan-tracking-branch-missing`, as `check` finds it, reads the branches
+    the source's clone remembers its remote by, and asks no network. A clone
+    of a repository whose `master` GitHub has since renamed to `main` still
+    has `origin/master`, and `origin/HEAD` names it, so `plan` recorded
+    `master` and `check` passed it. `execute` then created and pushed both
+    legs and the split before `gh pr create` refused the base, `Base ref must
+    be a branch`, where the same clone had adopted against `main` before
+    #479. A branch named by `--tracking-branch` and deleted on GitHub since
+    the clone's last fetch went the same way.
+
+    So the branch is asked of the very remote the split is pushed to, with
+    `git ls-remote`, as `_refuse_a_split_branch_left_behind` asks it about
+    the split branch: the answer is the one the pull request will get. Under
+    `--local-remote-dir` that remote is the source itself, the split's
+    destination there, so its own branches are the ones asked. A remote that
+    cannot be read is refused as `adopt-remote-unreadable`, at the same
+    point: the split push needs it as much, and that came after both legs.
+    """
+    ref = f"refs/heads/{tracking}"
+    remote = _spelled(urls["assembly"])
+    try:
+        listed = run(["git", "ls-remote", urls["assembly"], ref])
+    except (CommandFailed, OSError) as exc:
+        why = (f"exit {exc.code}: {' '.join(exc.output.split())}"
+               if isinstance(exc, CommandFailed) else str(exc))
+        raise Refusal(
+            REMOTE_UNREADABLE,
+            f"`git ls-remote` could not read {remote}, the repository the "
+            f"split is pushed to, to ask whether it has {_spelled(tracking)}, "
+            f"the plan's `tracking_branch`: {why}",
+            "Remediation: no leg repository was created and nothing was "
+            "pushed. `execute` pushes the split to that repository, which "
+            "needs it as readable as this question does, so the run stops "
+            "here and not once both legs exist. Make it readable from here "
+            "-- its url, the network, the credentials git uses for it -- and "
+            "run `execute` again.") from exc
+    if any(line.split("\t")[-1] == ref for line in listed.splitlines()):
+        return
+    raise Refusal(
+        TRACKING_BRANCH_MISSING,
+        f"`tracking_branch` is {_spelled(tracking)}, which {remote}, the "
+        "repository the split is pushed to, does not have as `git ls-remote` "
+        "reads it now: "
+        + ("it is the branch the split is to be merged into there, and the "
+           "one the root's `project.yaml` says the project tracks" if local
+           else "`execute` opens the split's pull request against it once "
+           "both legs and the split are pushed, where GitHub refuses a base "
+           "that is not a branch (`Base ref must be a branch`)"),
+        REMOTE_LACKS_REMEDIATION + (LOCAL_REMOTE_LACKS if local else ""))
 
 
 def _checked_plan_inputs(args, source: Source,
@@ -2246,8 +2342,7 @@ def cmd_plan(args) -> int:
     implied = ask_about_refused_paths(ruled, tree)
     materialized = _predict_collisions(implied)
     follow_ups = follow_ups_for(source, implied, names, args.spec_path,
-                                args.code_path, materialized,
-                                args.tracking_branch)
+                                args.code_path, materialized)
     seeded = seeded_legs(assigned_paths(implied))
     entries = ask_about_refused_paths(
         ask_about_submodules(policy, ruled, tree), tree)
@@ -2323,13 +2418,17 @@ def _predict_collisions(entries: list[Entry]) -> list[str]:
     reads, so the two cannot list different files. The list this function
     kept itself lacked `contracts/shape-pin.yaml`, which `execute` also
     writes beside a copy the source keeps, and names in the split commit.
+
+    Each follow-up is told the WHOLE list: the Makefile's names what runs
+    until it is merged, and that depends on whether `scripts/bootstrap.py`
+    went aside too (#493's review, F2).
     """
     surviving = {e.path for e in entries if e.leg == "root"}
-    out = []
-    for path in sorted(set(assembly_root_paths())):
-        if path in surviving or f"{path.split('/')[0]}/" in surviving:
-            out.append(collision_follow_up(path, f"{COLLISION_DIR}/{path}"))
-    return out
+    beside = {path: f"{COLLISION_DIR}/{path}"
+              for path in sorted(set(assembly_root_paths()))
+              if path in surviving or f"{path.split('/')[0]}/" in surviving}
+    return [collision_follow_up(path, actual, beside)
+            for path, actual in beside.items()]
 
 
 # ---------------------------------------------------------------------------
@@ -5183,10 +5282,10 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
     Returns `(split_commit, message, collisions)` — the message travels on
     because it is also the pull request's body, and the collisions,
     `(intended, actual)` for each shape file written beside one the source
-    kept, because where the shape's Makefile went decides what `_next_steps`
-    can tell a person to run (#480) — or None when making it failed, having
-    printed which step, why and what it leaves behind. Split out of
-    `cmd_execute` for #138.
+    kept, because where the shape's Makefile and `scripts/bootstrap.py` went
+    decides what `_next_steps` can tell a person to run (#480) — or None
+    when making it failed, having printed which step, why and what it leaves
+    behind. Split out of `cmd_execute` for #138.
 
     BOTH LEGS ARE PUSHED BY NOW, so a split that cannot be cloned, mounted,
     committed or pushed leaves the same two leg repositories a leg that
@@ -5299,6 +5398,9 @@ def cmd_execute(args) -> int:
     # What an earlier run left, the work directory first: a refusal below
     # whose way out is "run `execute` again" then meets one that is free.
     _refuse_an_occupied_work_dir(work_root, names, seeded)
+    # The remote's own answer about the tracking branch, which `check` reads
+    # only from what the source's clone remembers (#493's review, F1).
+    _refuse_a_tracking_branch_the_remote_lacks(urls, tracking, local)
     _refuse_a_split_branch_left_behind(source, urls, branch, local)
     for line in plan.seeding_record_disagreements(seeded):
         print(line)
@@ -5368,10 +5470,9 @@ def cmd_execute(args) -> int:
                        split_commit, spec_path, code_path, seeded,
                        urls=urls, branch=branch)
     if not verified and refused is None:
-        # Where the shape's Makefile WENT, as the materializer reports it,
-        # and not a second look at the tree (#480).
-        _next_steps(names, any(intended == SHAPE_MAKEFILE
-                               for intended, _ in collisions))
+        # Where the shape's Makefile and bootstrap script WENT, as the
+        # materializer reports it, and not a second look at the tree (#480).
+        _next_steps(names, collisions)
     _finish_by_hand(not verified, refused, topic, unset)
     if verified:
         # A verification mismatch outranks a refused pull request and a
@@ -5764,30 +5865,50 @@ def _left_by_the_split(source: Source, urls: dict, names: dict,
 SHAPE_MAKEFILE = "Makefile"
 
 
-def _next_steps(names: dict, makefile_aside: bool) -> None:
+def _next_steps(names: dict, collisions: list) -> None:
     """What a person does once the split is verified AND its pull request is
     open. Not said where there is none to review: after a refused `gh pr
     create`, the command to open it is the next step (#304).
 
-    `make bootstrap` is a target of the SHAPE's Makefile. A source that kept
-    its own `Makefile` in the root has the shape's beside it, at
-    `shape/Makefile`, until a person merges the two as the follow-up says
-    (`makefile_aside`, read from where `execute` wrote it), and in that root
-    `make bootstrap` exits 2, `No rule to make target 'bootstrap'` (#480).
-    So the command there is the one `make bootstrap` runs, `python3
-    scripts/bootstrap.py`, and a line says why. Elsewhere the block is what
-    it was, byte for byte."""
-    bootstrap = ("python3 scripts/bootstrap.py" if makefile_aside
-                 else "make bootstrap")
+    `collisions` is each `(intended, actual)` the materializer wrote beside a
+    file the source kept: where the shape's files WENT, and not a second
+    look at the tree. `make bootstrap` is a target of the SHAPE's Makefile. A
+    source that kept its own `Makefile` in the root has the shape's beside
+    it, at `shape/Makefile`, until a person merges the two as the follow-up
+    says, and in that root `make bootstrap` exits 2, `No rule to make target
+    'bootstrap'` (#480). So the command there is the one `make bootstrap`
+    runs, `python3 scripts/bootstrap.py`, and a line says why.
+
+    UNLESS THAT SCRIPT WENT ASIDE TOO (#493's review, F2). A root that kept
+    its own `scripts/bootstrap.py` has the shape's at
+    `shape/scripts/bootstrap.py`, and there both commands run the SOURCE's
+    script, which can exit 0 having placed no leg and validated nothing. So
+    no bootstrap command is named: a line says which merges come first, and
+    that `make bootstrap` is run after them. Elsewhere the block is what it
+    was, byte for byte."""
+    aside = dict(collisions)
+    script, makefile = aside.get(BOOTSTRAP), aside.get(SHAPE_MAKEFILE)
+    bootstrap = ("" if script else
+                 "\n    python3 scripts/bootstrap.py" if makefile else
+                 "\n    make bootstrap")
     print(f"\nNEXT: review the pull request on {names['assembly']}, then\n"
-          f"    git clone --recurse-submodules <{names['assembly']} url>\n"
-          f"    {bootstrap}")
-    if makefile_aside:
+          f"    git clone --recurse-submodules <{names['assembly']} url>"
+          f"{bootstrap}")
+    if script:
+        kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
+                if path in aside]
+        print(f"NOTE the root keeps its own {_and_listed(kept)}, and the "
+              f"shape's {'are' if len(kept) > 1 else 'is'} "
+              f"{_and_listed([aside[path] for path in kept])}, so neither "
+              f"`make bootstrap` nor `python3 {BOOTSTRAP}` runs the "
+              "shape's bootstrap yet: merge "
+              + _and_listed([f"{aside[path]} into {path}" for path in kept])
+              + " first, and then run `make bootstrap`.")
+    elif makefile:
         print(f"NOTE the root keeps its own {SHAPE_MAKEFILE} and the shape's "
-              f"is {COLLISION_DIR}/{SHAPE_MAKEFILE}, so `make bootstrap` and "
-              "the shape's other make targets arrive only once the follow-up "
-              "merges the two; `python3 scripts/bootstrap.py` is what `make "
-              "bootstrap` runs.")
+              f"is {makefile}, so `make bootstrap` and the shape's other make "
+              "targets arrive only once the follow-up merges the two; "
+              "`python3 scripts/bootstrap.py` is what `make bootstrap` runs.")
 
 
 def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, list]:

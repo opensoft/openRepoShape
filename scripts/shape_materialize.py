@@ -649,7 +649,8 @@ ASSISTANT_INSTRUCTIONS = ("AGENTS.md", "CLAUDE.md")
 SHAPE_MAKE_TARGETS = ("bootstrap", "validate", "pins", "park", "resume")
 
 
-def collision_follow_up(intended: str, actual: str) -> str:
+def collision_follow_up(intended: str, actual: str,
+                        beside: dict | None = None) -> str:
     """The follow-up for ONE collision, in one place.
 
     Both callers say it: `adopt-project.py plan` PREDICTS the collisions from
@@ -659,7 +660,13 @@ def collision_follow_up(intended: str, actual: str) -> str:
 
     THE MAKEFILE'S MERGE IS WHAT BRINGS THE SHAPE'S MAKE TARGETS (#480). Until
     it is made, `make bootstrap` in the root exits 2 with `No rule to make
-    target 'bootstrap'`, so the follow-up says that, and what runs meanwhile.
+    target 'bootstrap'`, so the follow-up says that, and what runs meanwhile:
+    `python3 scripts/bootstrap.py`, unless that script went aside as well.
+    `beside` maps each shape file written beside one the source kept to where
+    it went, the whole list, and only the Makefile's follow-up reads it.
+    Where the root's `scripts/bootstrap.py` is the source's own, that command
+    runs the source's script and exits 0, so the follow-up names no command,
+    and says both merges come first (#493's review, F2).
     """
     if intended in ASSISTANT_INSTRUCTIONS:
         return (
@@ -676,9 +683,16 @@ def collision_follow_up(intended: str, actual: str) -> str:
     if intended != "Makefile":
         return merge
     targets = ", ".join(f"`{target}`" for target in SHAPE_MAKE_TARGETS)
+    script = (beside or {}).get(BOOTSTRAP)
+    if script is None:
+        return (f"{merge}. The shape's make targets ({targets}) arrive only "
+                "with that merge; until then `python3 scripts/bootstrap.py` "
+                "is what `make bootstrap` runs")
     return (f"{merge}. The shape's make targets ({targets}) arrive only with "
-            "that merge; until then `python3 scripts/bootstrap.py` is what "
-            "`make bootstrap` runs")
+            f"that merge, and the root's {BOOTSTRAP} is the source's "
+            f"own until {script} is merged into it as well, so neither `make "
+            f"bootstrap` nor `python3 {BOOTSTRAP}` runs the shape's "
+            "bootstrap before both merges are made")
 
 
 def copy_in_the_way(target: Path, actual: str) -> str | None:
@@ -1780,7 +1794,8 @@ class Materialized:
         self.shape_files: list[str] = []
 
     def follow_ups(self) -> list[str]:
-        return [collision_follow_up(intended, actual)
+        beside = dict(self.collisions)
+        return [collision_follow_up(intended, actual, beside)
                 for intended, actual in self.collisions]
 
 
