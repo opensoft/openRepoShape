@@ -1118,22 +1118,22 @@ directory first — which is what makes the verdict offline.
 For an assembly root the rows are **naming** (this standard's own
 `contracts/repository-naming.yaml`), **manifest** and **pins** (the project's
 OWN `scripts/validate-manifest.py` and `scripts/validate-pins.py` when it
-carries them — they are the pinned copies, which is the point — else the
-template copies, and the row says which answered), **manifest kinds** (every
-`kind:`-bearing manifest in the root against a registry, so a `contracts/*.yaml`
-nothing validates is a finding by name rather than a silence, and so is a
-`family.yaml` beside `project.yaml`), **shape currency** (`update-shape.py
-check`'s per-file verdicts, summarised), **legs** (each one mounted, and its
-checked-out commit against the pin, with no fetch), **leg shape files** (each
-leg's `AGENTS.md`, `CLAUDE.md` and `.gitignore` against `templates/<role>-root/`
-— a comparison and not a gate: no leg file is pinned anywhere), **placement**
-(every tracked path of every leg, against the path policy), **agent files**, and
-**machine**. A FAMILY holder gets **family**, **manifest kinds**, **shape
-currency**, **placement** (`n/a` — a holder has no legs of its own), **members**
-and **machine**; a directory that is neither gets what it is CALLED under the
-naming policy, what IS in it, and the way in — and a repository the advisory is
-not silent about gets the **Triad** row, status `advisory`: the preference said
-once and stepped over by the verdict (a leg gets its assembly root).
+carries them — the pinned copies — else the template copies, and the row says
+which answered), **manifest kinds** (every `kind:`-bearing manifest in the
+root against a registry, so a `contracts/*.yaml` nothing validates, or a
+`family.yaml` beside `project.yaml`, is a finding by name), **shape currency**
+(`update-shape.py check`'s per-file verdicts, summarised), **legs** (each one
+mounted, and its checked-out commit against the pin, with no fetch), **leg
+shape files** (each leg's `AGENTS.md`, `CLAUDE.md` and `.gitignore` against
+`templates/<role>-root/`, a comparison: no leg file is pinned), **placement**
+(every tracked path of every leg, against the path policy), **agent files**,
+and **machine**. A FAMILY holder gets **family**, **manifest kinds**, **shape
+currency**, **placement** (`n/a`: no legs of its own), **agent files**, **members**
+and **machine**. Either, mid-merge, gets **merge** first: a `FINDING` naming the
+unmerged paths, or a `note` if none is left. A directory that is neither gets what
+it is CALLED under the naming policy, what IS in it, the way in and **machine** —
+and a repository the advisory is not silent about gets the **Triad** row, status
+`advisory`: said once and stepped over by the verdict (a leg gets its root).
 
 Every row is `ok`, `note`, `FINDING` or `n/a` — or `advisory`, the Triad row
 alone — and a row that is not `ok` names the exact command that fixes it
@@ -1152,23 +1152,23 @@ one verdict, and its exit code:
 | `COMPLIANT` | 0 | no row is a `FINDING`, and the pin names this standard's commit |
 | `COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)`, or `(pin <a> -> <b>, no copied file differs)` | 1 | valid, and the standard has moved on |
 | `DRIFTED (…)` | 1 | a copy was edited, deleted or no longer maps onto the standard, or a leg (a member, in a holder) is off its pin |
-| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere |
-| `INVALID (<rows>)` | 1 | a validator went red |
+| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere, or a submodule in a leg other than the one its `submodules:` record names |
+| `INVALID (<rows>)` | 1 | a validator went red, or (`merge`) the index holds an unmerged path |
 | `NOT A SHAPE ROOT` | 2 | neither manifest is there — adopt, or scaffold |
 
 Exit 3 is usage or environment (a flag argparse rejects is exit 2) — nothing about
 it is a statement about the tree you pointed at: no such path, a refused
 `--placement-plan`, a `shape-doctor.py` not sitting in a
 checkout of the standard, or a pin naming a commit **this** checkout does not
-carry (`CANNOT ANSWER`). **Drift outranks a red validator**
-on the verdict line, deliberately — an edited shape copy is exactly what makes
-`validate-pins.py` red, so answering `INVALID (pins)` would send the reader at
-the symptom while the fix is `update-shape.py`. The pins row is printed either
-way, with its own next command. `MISPLACED` sits between the two: a path in
-the wrong leg is a fact about the shape that no validator, pin or manifest
-here can see, while a red validator names itself in the table whether or not
-it also names the verdict line. `--json` is the same report as one object,
-each row carrying its `id`.
+carry (`CANNOT ANSWER`). **Drift outranks a red validator** on the verdict
+line, deliberately — an edited shape copy is exactly what makes
+`validate-pins.py` red, so `INVALID (pins)` would send the reader at the
+symptom while the fix is `update-shape.py`; the pins row still prints its own
+next command. `MISPLACED` sits between the two: a path in the wrong leg is a
+fact about the shape no validator, pin or manifest here can see. **An
+unfinished merge outranks all three**, as `INVALID (merge)`: the conflict is
+what turns the other rows red, and no fix commits until it is finished.
+`--json` is the same report as one object, each row carrying its `id`.
 
 **`placement` is the row that reads what is *inside* the legs.** Brett Heap,
 2026-09-10: *"we have to look for code in spec and spec in code"*. It runs the
