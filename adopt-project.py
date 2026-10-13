@@ -1914,28 +1914,6 @@ LOCAL_REMOTE_LACKS = (
     "<name> origin/<name>` makes it one.")
 
 
-class RemoteUnreadable(CommandFailed):
-    """The `git ls-remote` that could not read the repository the split is
-    pushed to, said as `adopt-remote-unreadable` (#479 with #320).
-
-    A repository git cannot list fails `execute`'s listings as `CommandFailed`,
-    as `_refuse_a_split_branch_left_behind` and `_branches_at` do (#320), and
-    what catches that, or tests it, takes the command from `args_list`. The
-    tracking branch is the first listing now, and it is refused as
-    `REFUSED adopt-remote-unreadable`, with what it left (#493's review, F1).
-    Both hold of this one exception: it IS the failed command, and `loudly`,
-    the one place `main` asks how a failed command is said, is the refusal.
-    """
-
-    def __init__(self, failed: CommandFailed, refusal: Refusal):
-        super().__init__(failed.args_list, failed.cwd, failed.code,
-                         failed.output)
-        self.refusal = refusal
-
-    def loudly(self, what: str) -> str:
-        return str(self.refusal)
-
-
 def _refuse_a_tracking_branch_the_remote_lacks(urls: dict, tracking: str,
                                                local: bool) -> None:
     """Refuse a tracking branch the repository the split goes to does not
@@ -1966,7 +1944,7 @@ def _refuse_a_tracking_branch_the_remote_lacks(urls: dict, tracking: str,
     except (CommandFailed, OSError) as exc:
         why = (f"exit {exc.code}: {' '.join(exc.output.split())}"
                if isinstance(exc, CommandFailed) else str(exc))
-        refusal = Refusal(
+        raise Refusal(
             REMOTE_UNREADABLE,
             f"`git ls-remote` could not read {remote}, the repository the "
             f"split is pushed to, to ask whether it has {_spelled(tracking)}, "
@@ -1976,13 +1954,7 @@ def _refuse_a_tracking_branch_the_remote_lacks(urls: dict, tracking: str,
             "needs it as readable as this question does, so the run stops "
             "here and not once both legs exist. Make it readable from here "
             "-- its url, the network, the credentials git uses for it -- and "
-            "run `execute` again.")
-        # A failed command stays one (`RemoteUnreadable`), so that this
-        # listing fails as `_refuse_a_split_branch_left_behind`'s does when
-        # it is the first to ask; an `OSError` has no command to be.
-        if isinstance(exc, CommandFailed):
-            raise RemoteUnreadable(exc, refusal) from exc
-        raise refusal from exc
+            "run `execute` again.") from exc
     if any(line.split("\t")[-1] == ref for line in listed.splitlines()):
         return
     raise Refusal(
