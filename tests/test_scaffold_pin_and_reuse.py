@@ -10,6 +10,7 @@ network or a real repository.
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 
@@ -638,16 +639,42 @@ def committed(clone, rel: str) -> bytes:
                           capture_output=True, check=True).stdout
 
 
+#: The reader the scaffolded root ships, its own `scripts/repo_shape.py`,
+#: asked what the text it is handed on stdin holds.
+ROOTS_READER = ("import json, sys; sys.path.insert(0, sys.argv[1]); "
+                "from repo_shape import parse_yaml; "
+                "print(json.dumps(parse_yaml(sys.stdin.buffer.read()"
+                ".decode('utf-8')), default=repr))")
+
+
+def read_by_the_root(clone, rel: str) -> dict:
+    """`rel`, as the clone's commit holds it, read by the reader the root
+    ships, which is what its validators read with, and not by the one this
+    test imported."""
+    proc = subprocess.run([sys.executable, "-I", "-c", ROOTS_READER,
+                           str(clone / "scripts")],
+                          input=committed(clone, rel), capture_output=True,
+                          check=False)
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    return json.loads(proc.stdout)
+
+
 def test_a_pinned_product_is_listed_as_the_text_given(pinned_as_text):
-    """The manifest lists the product so that the project's own reader reads
-    it back as the text given: `"007"`, and `openGlass` as it always was."""
+    """The manifest lists the product so that the root's own reader reads it
+    back as the text given: `"007"`, and `openGlass` as it always was. That
+    reader is a copy of this standard's `scripts/repo_shape.py`, byte for
+    byte, which is the reader the scaffold asks and the tables below ask."""
     pinned = pinned_as_text
     blob = committed(pinned["clone"], "project.yaml")
     line = f"\nneutral_product_pins: \n  - {pinned['spelled']}\n\n".encode()
     at = blob.find(b"\nneutral_product_pins:")
     assert line in blob, blob[at:at + len(line) + 16]
-    manifest = parse_yaml(blob.decode("utf-8"))
+    manifest = read_by_the_root(pinned["clone"], "project.yaml")
     assert manifest["neutral_product_pins"] == [pinned["product"]]
+    shipped = committed(pinned["clone"], "scripts/repo_shape.py")
+    own = (REPO / "scripts" / "repo_shape.py").read_bytes()
+    assert shipped == own.replace(b"\r\n", b"\n"), (
+        "the root's reader is not this standard's")
 
 
 def test_a_pinned_products_pin_file_names_it_as_the_text_given(
@@ -656,8 +683,7 @@ def test_a_pinned_products_pin_file_names_it_as_the_text_given(
     text given, where it said `product: 007` and was read back as 7."""
     pinned = pinned_as_text
     product = pinned["product"]
-    pin = parse_yaml(committed(pinned["clone"], neutral_pin_path(product))
-                     .decode("utf-8"))
+    pin = read_by_the_root(pinned["clone"], neutral_pin_path(product))
     assert pin["product"] == product
     assert pin["source_repository"] == f"opensoft/{product}"
     assert pin["commit"] == pinned["commit"]
@@ -679,6 +705,38 @@ def test_a_pinned_product_passes_the_scaffolded_roots_own_gate(
         assert check.returncode == 0, f"{validator}: {said}"
         assert "neutral-pin-entry-malformed" not in said, said
     assert_pin_digest_recomputed(check, product, pinned["commit"])
+
+
+def test_pins_are_listed_in_the_order_they_were_given(tmp_path):
+    """Two `--pin`s given out of sorted order are listed as given, one line
+    each: the scaffold has always kept the `--pin` order (`adopt-project.py`
+    sorts its plan's), and the root's own gate passes both."""
+    source, commit = product_repo(tmp_path, "openGlass")
+    given = ("openGlass", "2026")
+    remotes = tmp_path / "remotes"
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", PROJECT,
+                        "--elected-by", "Test Human",
+                        "--elected-on", "2026-09-02",
+                        *(arg for product in given
+                          for arg in ("--pin", f"{product}@{commit}")),
+                        "--pin-source", str(source),
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    clone = tmp_path / "clone" / PROJECT
+    proc = clone_just_pushed(remotes / f"{PROJECT}.git", clone)
+    assert proc.returncode == 0, proc.stderr
+    blob = committed(clone, "project.yaml")
+    assert b'\nneutral_product_pins: \n  - openGlass\n  - "2026"\n\n' \
+        in blob, blob[blob.find(b"\nneutral_product_pins:"):][:80]
+    manifest = read_by_the_root(clone, "project.yaml")
+    assert manifest["neutral_product_pins"] == list(given)
+    env = {pin_source_env_name(product): str(source) for product in given}
+    check = run_script(clone / "scripts" / "validate-pins.py", "--root", ".",
+                       cwd=clone, env=env)
+    assert check.returncode == 0, check.stdout + check.stderr
+    for product in given:
+        assert_pin_digest_recomputed(check, product, commit)
 
 
 @pytest.fixture(scope="module")
