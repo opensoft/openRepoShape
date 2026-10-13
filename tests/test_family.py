@@ -63,6 +63,13 @@ MEMBERS = ("IRRS", "IRSS")
 #: removing a member to make room would test `remove` by accident.
 SPARE = "IRQS"
 
+#: The branch the fixture grows the family on (#487). `add`, `bump` and
+#: `remove` refuse to commit onto the holder's tracking branch, so the members
+#: are added on a branch, as a person adds them for a pull request, and the
+#: remote's `main` is then moved to it, as merging that pull request leaves
+#: it. Every copy of the holder a test makes stands on this branch.
+WORK_BRANCH = "family/members"
+
 #: `git` reads one-off configuration out of the environment, which is how a
 #: test gives a plain `git submodule update` permission to clone a local path
 #: without the tool under test knowing anything about it.
@@ -103,12 +110,13 @@ def family(tmp_path_factory) -> dict:
         "--work-dir", str(base / "fam"))
     assert created.returncode == 0, created.stderr + created.stdout
     root = base / "fam" / NAME
+    git("switch", "-q", "-c", WORK_BRANCH, cwd=root)
     for project in MEMBERS:
         added = run_script(FAMILY, "add", "--family-root", str(root),
                            "--member", f"{ORG}/{project}",
                            "--local-remote-dir", str(base / "remotes"))
         assert added.returncode == 0, added.stderr + added.stdout
-    git("push", "-q", "origin", "main", cwd=root)
+    git("push", "-q", "origin", f"{WORK_BRANCH}:main", cwd=root)
     return {"base": base, "root": root, "remotes": base / "remotes",
             "work": base / "work", "init": created}
 
@@ -1792,7 +1800,7 @@ def test_siblings_clones_each_member_beside_the_holder_on_its_branch(estate):
     assert "siblings ok: 2 member(s)" in proc.stdout
     assert layout(proc.stdout) == [
         "what name state branch",
-        f"holder {NAME} the holder main",
+        f"holder {NAME} the holder {WORK_BRANCH}",
         "sibling IRRS cloned main",
         "sibling IRSS cloned main",
         "pinned members/IRRS pinned in the holder main",
@@ -1889,11 +1897,14 @@ def test_siblings_warns_about_the_parent_folder_and_moves_nothing(family,
     assert "NOTHING WAS MOVED" in result.stderr
     assert "LINKED WORKTREE" in result.stderr
     # The exact commands, and the staging name the one-step `mv A A/A` cannot
-    # be spelled without.
-    assert f"mv {holder} {tmp_path / 'InkRouter.holder'}" in result.stderr
-    assert f"mkdir -p {tmp_path / 'InkRouter'}" in result.stderr
-    assert f"mv {tmp_path / 'InkRouter.holder'} " \
-           f"{tmp_path / 'InkRouter' / 'InkRouter'}" in result.stderr
+    # be spelled without. Each is a POSIX shell's and quoted for one (#486):
+    # `shlex.join` is the standard library's spelling of that, which leaves
+    # these paths bare everywhere but in Windows' backslashes.
+    staged, wanted = tmp_path / "InkRouter.holder", tmp_path / "InkRouter"
+    assert shlex.join(["mv", str(holder), str(staged)]) in result.stderr
+    assert shlex.join(["mkdir", "-p", str(wanted)]) in result.stderr
+    assert shlex.join(["mv", str(staged), str(wanted / "InkRouter")]) \
+        in result.stderr
     assert holder.is_dir(), "it moves nothing, and that is the whole point"
     assert (holder / "family.yaml").is_file(), (
         "it moves nothing, and that is the whole point")

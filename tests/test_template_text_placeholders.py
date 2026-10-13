@@ -24,6 +24,11 @@ those fields between double quotes, `render` spells the value there with
 before this keeps its bare lines, which read correctly for every name that is
 plain text, so the readers keep their `str()`.
 
+The neutral product pin's `product:` joined them for #516. Both tools render
+`contracts/neutral-product-pin.yaml`, and its bare `product: {{PIN_PRODUCT}}`
+gave `--pin 007@<commit>` a `contracts/007-pin.yaml` saying `product: 007`,
+read back as 7.
+
 NO NETWORK AND NO GITHUB: templates rendered in memory, and scaffolds,
 adoptions and families into local bare remotes (`--local-remote-dir`), which
 never call `gh`.
@@ -47,7 +52,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
     YamlError, double_quoted, load_yaml, parse_yaml,
 )
-from shape_materialize import render  # noqa: E402
+from shape_materialize import neutral_pin_path, render  # noqa: E402
 
 FAMILY = REPO / "scripts" / "family.py"
 BUMP = REPO / "scripts" / "bump-leg.py"
@@ -80,6 +85,8 @@ TEXT_FIELDS = [
      ("submodule_path",)),
     ("templates/assembly-root/contracts/code-pin.yaml", "CODE_PATH",
      ("submodule_path",)),
+    ("templates/assembly-root/contracts/neutral-product-pin.yaml",
+     "PIN_PRODUCT", ("product",)),
     ("templates/family-root/family.yaml", "FAMILY_ID", ("id",)),
     ("templates/family-root/family.yaml", "ORG", ("org",)),
     ("templates/family-root/family.yaml", "CREATED_ON", ("created_on",)),
@@ -323,6 +330,46 @@ def test_an_adoption_reads_back_every_value_it_was_given(tmp_path, project_id,
 
     root = clone(source, tmp_path / "clone" / ADOPTED, "-b", ADOPT_BRANCH)
     assert_the_clone_works(root, branch, spec, code)
+
+
+# --- the neutral product pin `adopt-project.py execute` writes (#516) ------
+#
+# The scaffold's end-to-end cases are beside its other `--pin` tests, in
+# `tests/test_scaffold_pin_and_reuse.py`; this is the other tool that renders
+# the same template. `plan` records the product quoted, and on main fc48854
+# `execute` wrote the pin file's `product: 007` bare all the same. What the
+# manifest's `neutral_product_pins:` says is #514's, and not asked here.
+
+PIN_PRODUCTS = ("007", "2026", "1.5", "openGlass")
+
+
+@pytest_filter_repo
+@pytest.mark.parametrize("product", PIN_PRODUCTS)
+def test_an_adopted_pin_names_its_product_as_the_text_given(tmp_path,
+                                                            product):
+    source = make_source_repo(tmp_path / "Thing", tree=SOURCE_TREE, edits=())
+    stand_in = make_source_repo(tmp_path / "product",
+                                tree={"README.md": f"# {product}\n"},
+                                edits=())
+    commit = git("rev-parse", "HEAD", cwd=stand_in).stdout.strip()
+    plan = tmp_path / "adoption-plan.yaml"
+    planned = run_script(ADOPT, "plan", "--source", str(source),
+                         "--project", ADOPTED, "--org", ORG,
+                         "--elected-by", "Test Human",
+                         "--elected-on", "2026-09-02",
+                         "--pin", f"{product}@{commit}",
+                         "--pin-source", str(stand_in), "--out", str(plan))
+    assert planned.returncode == 0, planned.stderr + planned.stdout
+    checked = run_script(ADOPT, "check", "--plan", str(plan))
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    executed = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                          "--local-remote-dir", str(tmp_path / "remotes"),
+                          "--work-dir", str(tmp_path / "work"))
+    assert executed.returncode == 0, executed.stderr + executed.stdout
+    rel = neutral_pin_path(product)
+    pin = parse_yaml(git("show", f"{ADOPT_BRANCH}:{rel}", cwd=source).stdout)
+    assert pin["product"] == product
+    assert pin["commit"] == commit
 
 
 # --- family.py, end to end -------------------------------------------------

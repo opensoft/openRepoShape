@@ -108,13 +108,16 @@ project the row claims and not merely a repository at the right commit.
 From a checkout of `{{SHAPE_REPOSITORY}}`:
 
 ```sh
+git -C <path> switch -c family/add-<project>
 python3 scripts/family.py add    --family-root <path> --member {{ORG}}/<Project>
 python3 scripts/family.py bump   --family-root <path> --member <Project> --to <40 hex>
 python3 scripts/family.py remove --family-root <path> --member <Project>
 ```
 
 Each writes ONE commit, with explicit pathspecs, moving the gitlink and the
-pin together. Land it as a pull request.
+pin together, on the branch the holder stands on: it refuses the tracking
+branch, so make a branch first, as the block's first line does. Push it as its
+`NEXT` line says and land it as a pull request.
 
 ## Private members in CI
 
