@@ -33,7 +33,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, git, rmtree
+from conftest import (FILE_PROTOCOL, REPO, assert_read_through_git,
+                      assert_store_read_through_git, git, rmtree)
 
 SETUP_PROJECT = REPO / "setup-project.py"
 SETUP_SH = REPO / "setup.sh"
@@ -144,6 +145,65 @@ def test_the_assembly_root_is_cloned_where_into_says(setup_run):
     assert clone.is_dir(), f"{clone} does not exist"
     assert (clone / "project.yaml").is_file()
     assert (clone / ".gitmodules").is_file()
+
+
+def test_the_entry_points_clone_was_read_through_git_not_through_files(
+        setup_run):
+    """#440, through the interpreter alone: see `assert_read_through_git`."""
+    assert_read_through_git(setup_run["clone"])
+
+
+def test_the_rewrite_reads_a_plain_path_through_git_in_an_awkward_directory(
+        tmp_path):
+    """#440: the two leg clones `--recurse-submodules` makes are git's own,
+    from the plain path `.gitmodules` records, and no flag reaches them. What
+    does is `local_remotes_by_url`'s `url.<file URI>.insteadOf` rewrite, and
+    this is it ALONE (no `--no-local`) on a plain path, in a directory whose
+    name a URL must encode: a space, and a `%` that would read as an escape
+    if the base were spelled by hand. Source objects pushed into a bare
+    repository are loose; the clone holds one pack."""
+    remotes = tmp_path / "odd dir 100%" / "remotes"
+    source = tmp_path / "source"
+    source.mkdir()
+    git("init", "-q", "-b", "main", cwd=source)
+    (source / "leg.txt").write_bytes(b"a leg\n")
+    git("add", "leg.txt", cwd=source)
+    git("commit", "-q", "-m", "one", cwd=source)
+    bare = remotes / "Leg.git"
+    git("init", "-q", "--bare", str(bare), cwd=tmp_path)
+    git("push", "-q", str(bare), "main", cwd=source)
+
+    args = entry_point_module().local_remotes_by_url(str(remotes))
+    clone = tmp_path / "clone"
+    proc = subprocess.run(["git", *FILE_PROTOCOL, *args, "clone", "-q",
+                           str(bare), str(clone)],
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    assert_store_read_through_git(clone, "the clone")
+
+
+def test_the_root_is_read_through_git_when_the_remotes_are_spelled_by_a_symlink(
+        tmp_path):
+    """#440: `--no-local` is what covers the ROOT, and not the rewrite.
+
+    The rewrite's prefix is the directory RESOLVED, as the scaffold wrote it
+    into `.gitmodules`, so it reaches the legs; the root's own URL is the
+    directory as it was TYPED (`abspath`, never `resolve()`), which a symlink
+    makes another spelling of the same directory (on macOS the temporary
+    root, `/var`, is one: `/private/var`) and the prefix does not match.
+    Only `--no-local` is left to read the root through git."""
+    base = tmp_path / "run"
+    real, link = tmp_path / "real", tmp_path / "link"
+    real.mkdir()
+    try:
+        os.symlink(real, link, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"this platform cannot create a symlink here: {exc}")
+    result = run_entry("--project", "Sample", "--yes", "--org", "demoorg",
+                       "--local-remote-dir", str(link / "remotes"),
+                       "--into", str(base / "work"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert_read_through_git(base / "work" / "Sample")
 
 
 def test_both_legs_are_on_main_after_bootstrap(setup_run):
@@ -1570,9 +1630,13 @@ def test_a_rehearsal_that_stops_at_the_plan_makes_no_family_folder(tmp_path):
 #: (`--quiet`, `--depth`), it may pin a ref (`--shape-ref`), it owns the
 #: directory it cloned into (`--keep-shape-checkout`), it asks git one
 #: question (`--show-toplevel`), and it tells the child where the person was
-#: standing (`--into`).
+#: standing (`--into`). And `--help` since #341, which decides whether there
+#: is a checkout to make AT ALL: outside one, the shim answers it itself with
+#: a few lines that list no flag, rather than cloning the standard to print
+#: this file's usage. THE EXCUSE IS FOR TWO PLACES, NOT FOR THE SPELLING:
+#: those few lines and the one case label, both pinned below.
 SHIM_FLAGS = {"--quiet", "--depth", "--show-toplevel", "--into", "--shape-ref",
-              "--keep-shape-checkout"}
+              "--keep-shape-checkout", "--help"}
 
 #: THE ONE SPELLING IN `setup.sh` THAT LOOKS LIKE A FLAG AND IS NOT ONE.
 #: `xcode-select --install` is APPLE'S command, inside the Darwin sentence
@@ -1632,10 +1696,37 @@ def test_setup_sh_parses_no_flags_of_its_own():
         "setup.sh names --install somewhere other than inside "
         "`xcode-select --install`; SHIM_TEXT_ONLY excuses that spelling only "
         "as Apple's command quoted in a message")
-    for label in ("-y)", "-h)", "--yes)", "--help)"):
+    for label in ("-y)", "-h)", "--yes)"):
         assert label not in code, (
             f"setup.sh defines a case label {label!r} - a parser growing "
             "back one flag at a time")
+    # THE HELP IS THE ONE LABEL ALLOWED (#341), spelled exactly once and
+    # exactly so: section 0's scan answers `-h` and `--help` together
+    # outside a checkout, before any clone. A second `--help)` anywhere, or
+    # a help label of another shape, is a parser growing back after all.
+    assert code.count("--help)") == code.count("-h|--help)") == 1, (
+        "setup.sh's one help label must be section 0's `-h|--help)`, once")
+    # ...AND EVERY OTHER `--help` IS THE SHIM'S OWN TEXT, which is `say`
+    # lines and nothing else. `SHIM_FLAGS` excuses a SPELLING, and a second
+    # reader needs no case label to be one: a quoted `"--help")`, a
+    # `[[ $1 == --help ]]` in the developer path or inside the scan, or a
+    # `--help` read from a command substitution inside a `say`. So the
+    # spelling is excused in exactly two places, the text and the label, and
+    # the text is held to one double-quoted string per line, with no command
+    # substitution, no `${...}` and no backtick in it.
+    text = re.search(r"^shim_help\(\) \{\n(.*?)^\}\n", code,
+                     re.MULTILINE | re.DOTALL)
+    assert text, "setup.sh no longer defines shim_help()"
+    prints_only = re.compile(r'say "(?:[^"\\`$]|\\.|\$(?![({]))*"')
+    assert all(prints_only.fullmatch(line.strip())
+               for line in text.group(1).splitlines()), (
+        "shim_help() does something other than print its text: every line "
+        "must be one `say \"...\"` with no command substitution in it")
+    rest = code.replace(text.group(0), "")
+    assert rest.count("--help") == rest.count("-h|--help)") == 1, (
+        "setup.sh reads --help somewhere other than section 0's one label")
+    assert len(re.findall(r"(?<![\w-])-h(?![\w-])", rest)) == 1, (
+        "setup.sh reads -h somewhere other than section 0's one label")
 
 
 def test_the_shim_names_the_command_line_tools_on_a_mac():

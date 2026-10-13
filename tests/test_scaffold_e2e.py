@@ -12,7 +12,7 @@ import re
 import subprocess
 
 from conftest import (FILE_PROTOCOL, ORG, PROJECT, REPO, SCAFFOLD,
-                      WINDOWS_SKIP, git, run_script)
+                      WINDOWS_SKIP, assert_read_through_git, git, run_script)
 
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
@@ -257,6 +257,19 @@ def test_the_scaffold_creates_three_bare_remotes(scaffolded):
         assert (scaffolded["remotes"] / f"{name}.git").is_dir()
     assert "NEXT STEPS" in scaffolded["stdout"]
     assert "make bootstrap" in scaffolded["stdout"]
+
+
+def test_the_session_clone_was_read_through_git_not_through_the_remotes(
+        scaffolded):
+    """#440: the root and both legs arrived as ONE PACK each.
+
+    The remotes were pushed into a moment before the clone, so their objects
+    are loose; a clone that walked them (git's local clone, the one a plain
+    path gets) would hold them loose too, and on the macOS runner lost a file
+    to a maintenance run that packed them mid-walk. Whether `conftest.py`'s
+    clone reads them through the transport is what `git count-objects` says.
+    """
+    assert_read_through_git(scaffolded["clone"])
 
 
 def test_rescaffolding_over_an_existing_remote_refuses(scaffolded, tmp_path):

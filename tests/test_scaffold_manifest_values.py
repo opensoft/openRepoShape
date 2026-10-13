@@ -17,8 +17,8 @@ The question is still asked. A template line that writes such a value bare is
 refused again, with no edit to the rule: the tests below show it on a copy of
 this standard whose `project.yaml` writes those four lines bare, as it did
 before #259. `--tracking-branch=~` now reads back as `~`, which git refuses
-as a branch name; that is #283's, and its row is an expected failure until
-the fix for #283 (PR #355) lands.
+as a branch name; that is #283's, whose fix (PR #355) refuses it before
+anything is created as `scaffold-bad-tracking-branch`.
 
 It also accepted what the project's own `validate-manifest.py` refuses -- a
 blank `--elected-by`, `--reference` or `--name`, `--elected-on 2026-W41-6` or
@@ -118,22 +118,13 @@ ONCE_MISREAD_VALUES = [
 #: `(flag, value)`: a value the misread rule refused while the template wrote
 #: it bare (`~` is no value at all to the reader) that reads back as typed now,
 #: and is still no name git gives a branch. Refusing it is not this file's
-#: rule: it is #283's, whose fix asks `git check-ref-format --branch` (PR
-#: #355). Until that lands the scaffold passes it and dies at `git init -b ~`,
-#: which against GitHub is after `gh repo create` has made all three
-#: repositories, so the row is an expected failure that turns into an
-#: unexpected pass, and fails, the day #355 refuses it.
+#: rule: it is #283's, which asks `git check-ref-format --branch` (PR #355,
+#: on main as 6c2a3712) and refuses it as `scaffold-bad-tracking-branch`
+#: before anything exists. Without that rule the scaffold passed it and died
+#: at `git init -b ~`, which against GitHub is after `gh repo create` has made
+#: all three repositories; this row was an expected failure until #355 landed.
 NOT_A_BRANCH = [
-    pytest.param("--tracking-branch", "~", id="branch-tilde",
-                 marks=pytest.mark.xfail(
-                     strict=True,
-                     reason="#283: `~` reads back as text once the template "
-                            "quotes `tracking_branch` (#259), and git refuses "
-                            "it as a branch name, so the scaffold dies at "
-                            "`git init -b ~` (after `gh repo create` against "
-                            "GitHub); PR #355 refuses it first with `git "
-                            "check-ref-format --branch`. Take this mark off "
-                            "when #355 lands.")),
+    pytest.param("--tracking-branch", "~", id="branch-tilde"),
 ]
 
 #: The placeholder each flag of `ONCE_MISREAD_VALUES` fills.
@@ -148,10 +139,10 @@ QUOTED_BY_259 = (("id", "PROJECT_ID"), ("elected_on", "ELECTED_ON"),
 
 #: Values the reader takes for text, so the manifest holds what was typed.
 #: `yes` and `on` are YAML 1.1 booleans and this reader reads them as text;
-#: `0x1F`, `1e3` and `.inf` are numbers elsewhere and text here. They are not
+#: `0x1F` and `1e3` are numbers elsewhere and text here. They are not
 #: refused: the reader is asked, not a list of its words.
 TEXT_BRANCHES = ["trunk", "release-1", "feature/x", "v1.2.3", "1.5.2", "yes",
-                 "on", "0x1F", "1e3", ".inf"]
+                 "on", "0x1F", "1e3"]
 TEXT_IDS = ["atlas-2", "v2", "null-island", "truelove", "yes", "on", "1e3"]
 
 #: `(flag args, code, what the refusal names)`: values the new project's own
@@ -327,7 +318,7 @@ def test_a_value_git_refuses_as_a_branch_is_refused_before_anything_is_made(
     anything exists, by the rule that asks git (#283), and not die at the
     first `git init -b` as `a git or gh command failed`."""
     result = scaffold(tmp_path, f"{flag}={value}")
-    assert_refused(result, "REFUSED ")
+    assert_refused(result, "REFUSED scaffold-bad-tracking-branch: ")
     assert "a git or gh command failed" not in result.stderr
     assert flag in result.stderr
     assert_nothing_was_created(tmp_path)

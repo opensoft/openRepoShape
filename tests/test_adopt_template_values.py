@@ -422,7 +422,10 @@ def test_check_finds_and_execute_refuses_a_hand_edited_value(
     assert found.returncode == 1, said(found)
     assert finding in found.stderr, said(found)
     assert refused.returncode == 2, said(refused)
-    assert PLAN_REFUSED in refused.stderr, said(refused)
+    # A name-only `pins:` item is `plan-pin-unrecorded` first (#273).
+    headline = (b"REFUSED plan-pin-unrecorded: " if key == "pins"
+                else PLAN_REFUSED)
+    assert headline in refused.stderr, said(refused)
     assert b"\n  " + finding in refused.stderr, said(refused)
     assert b"no leg repository was created" in refused.stderr
 
@@ -456,13 +459,14 @@ def test_plan_and_check_say_the_same_sentence(tmp_path, answered):
 #: execute's refusal)`: a value `check` printed raw under `WHAT WILL
 #: HAPPEN`, which raised on a strict stdout before any finding about it was
 #: printed. It is shown as a name is (`_shown`), a byte that is not UTF-8 as
-#: `\xe9`. A leg path is `plan-bad-leg-path`; the adopt branch passes `check`
-#: and is `unsafe-value` to `execute`, as each was on main before #247.
+#: `\udce9`, as the plan's own `path:` spells it (#329). A leg path is
+#: `plan-bad-leg-path`; the adopt branch passes `check` and is `unsafe-value`
+#: to `execute`, as each was on main before #247.
 PRINTED = [
     ("spec_path-surrogate", "  spec_path", "sp\ud800ec", rb"`sp\ud800ec`/",
      1, b"FINDING plan-bad-leg-path: legs.spec_path is ",
      b"plan-bad-leg-path"),
-    ("code_path-byte", "  code_path", "co\udce9de", rb"`co\xe9de`/", 1,
+    ("code_path-byte", "  code_path", "co\udce9de", rb"`co\udce9de`/", 1,
      b"FINDING plan-bad-leg-path: legs.code_path is ", b"plan-bad-leg-path"),
     ("adopt_branch-surrogate", "adopt_branch", "adopt/x\ud800",
      rb"`adopt/x\ud800` of", 0, PLAN_OK, b"unsafe-value"),

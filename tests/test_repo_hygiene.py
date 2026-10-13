@@ -600,9 +600,22 @@ def test_agents_md_is_short_enough_to_be_read():
     branch, and re-run into a fresh `--work-dir`, or none.
     `tests/test_adopt_late_failure.py` holds the point to it, and
     `tests/test_adopt_github_exits.py` still holds the two exits after the
-    push."""
+    push.
+
+    2026-10-12: 482 -> 490 — the adoption's `submodules:` record (#189).
+    Four lines and a blank one under "Adopting an existing repository" say
+    that `execute` now writes one more thing into the split: the plan's
+    answer for each source submodule a leg keeps, under `project.yaml`'s
+    `submodules:`, which nothing rewrites afterwards. Three lines end
+    "Checking"'s point 4, and they are the part an assistant would get
+    wrong: a MISPLACED submodule carries `rule: null` and `confidence:
+    recorded` because the record judged it and no rule did, so a row with
+    no rule id is not a broken row; and a submodule moved on purpose stays
+    MISPLACED against its row, which is the human's to change -- never a
+    manifest edit an assistant makes to turn the row green, the hand-edited
+    pin arriving through a new door."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 482, f"AGENTS.md is {len(lines)} lines; the cap is 482"
+    assert len(lines) <= 490, f"AGENTS.md is {len(lines)} lines; the cap is 490"
 
 
 def test_claude_md_points_at_agents_md():
@@ -1161,8 +1174,16 @@ def test_readme_is_short_enough_to_be_read():
     #   before anything is created. The README's own text had said only what
     #   a `--pin` writes, so a reader met either refusal by running the
     #   scaffold.
-    assert len(lines) <= 1419, (
-        f"README.md is {len(lines)} lines; the cap is 1419")
+    # 2026-10-12: 1419 -> 1422 — `setup.sh --help` from a download (#341).
+    #   The sentence that sent a reader to `setup.sh --help` for every flag
+    #   now says that holds from a checkout, and what the same command does
+    #   from a download: it clones nothing, lists no flag, and names
+    #   `setup-project.py --help` and `docs/cli.md`. Three lines, because the
+    #   shim's answer there changed from a clone of the upstream to a few
+    #   lines of its own, and a README that still promised the flag list
+    #   would send a reader to a command that no longer prints it.
+    assert len(lines) <= 1422, (
+        f"README.md is {len(lines)} lines; the cap is 1422")
 
 
 @pytest.mark.parametrize("name", SHIPPED_BASH)

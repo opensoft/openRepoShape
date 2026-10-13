@@ -177,9 +177,9 @@ POLICY = [
     ("line\u2028sep.md", "line separator `\\u2028`"),
     # A byte that is not UTF-8, as `Source.tree` keeps it: since #199 the
     # path list carries it byte-exact.
-    ("caf\udce9.md", "`\\xe9`, which is not UTF-8"),
-    ("docs/\udcff/", "`\\xff`, which is not UTF-8"),
-    ("\udc80.md", "`\\x80`, which is not UTF-8"),
+    ("caf\udce9.md", "`\\udce9`, which is not UTF-8"),
+    ("docs/\udcff/", "`\\udcff`, which is not UTF-8"),
+    ("\udc80.md", "`\\udc80`, which is not UTF-8"),
 ]
 
 
@@ -653,8 +653,8 @@ def with_a_name_that_is_not_utf8(adopter, tmp_path: Path):
 #: The finding `check` must print first for `NOT_UTF8`, spelled as
 #: `_spelled` spells a byte that is not UTF-8.
 NOT_UTF8_FINDING = (
-    f"FINDING {UNSAFE}: `docs/caf\\xe9.md` has leg: spec, and `execute` "
-    "will not extract it into a leg: it holds `\\xe9`, which is not UTF-8 "
+    f"FINDING {UNSAFE}: `docs/caf\\udce9.md` has leg: spec, and `execute` "
+    "will not extract it into a leg: it holds `\\udce9`, which is not UTF-8 "
     "and which `execute` refuses as policy, though git and `git filter-repo` "
     "would take it literally: a name that holds one prints as an escape and "
     "never as itself, the split commit's message would list it with a `?` "
