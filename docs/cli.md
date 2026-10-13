@@ -122,7 +122,7 @@ Anything after `--` is passed straight through to scaffold-project.py.
 ```
 openRepoShape --install            install (or update) this command into ~/.local/bin
 openRepoShape --preflight          check this MACHINE and stop; creates nothing
-openRepoShape --doctor [<path>]    diagnose a REPOSITORY against this standard
+openRepoShape --doctor [<path>] [--json] [--placement-plan <file>]
 openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]
 openRepoShape --help | --version
 
@@ -162,9 +162,9 @@ over <path> (default `.`) and prints one row per check and ONE verdict:
 fixes it. Exit 0 compliant, 1 findings, 2 not a shape root, 3 when it cannot
 answer (`CANNOT ANSWER`, no such <path>, a `--placement-plan` it cannot
 write); this command's own refusals exit 2. `--json` is the same report as
-one JSON object. It writes nothing into the repository: `--placement-plan
-<file>` writes that one file (a relative <file> lands in the directory you
-ran this from) and moves nothing.
+one JSON object. The doctor writes no file but the `--placement-plan <file>`
+you name, at the path you give (a relative <file> lands in the directory you
+ran this from, even inside the repository), and moves nothing.
 
 Run beside a checkout of the standard, it uses that one. Run from anywhere
 else, it clones the standard into a temporary directory first and KEEPS it,

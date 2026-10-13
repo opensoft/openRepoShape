@@ -2077,9 +2077,9 @@ def test_the_shim_runs_the_script_beside_it_and_fetches_nothing(
 
 #: The sentence the installed doctor ends on when it has kept its clone
 #: (#500), cut where the directory's name begins and where it ends.
-KEPT = "the standard this report ran from is kept at "
-KEPT_TAIL = (", because NEXT commands name files in it; it is safe to delete "
-             "once you are done with those commands.")
+KEPT = "the standard this run used is kept at "
+KEPT_TAIL = (", and any NEXT command above runs from it; it is safe to delete "
+             "once you are done with them.")
 
 
 def kept_by(text: str) -> Path:
@@ -2293,6 +2293,32 @@ def test_the_installed_doctors_placement_plan_lands_where_you_stand(
     assert "placement plan written to plan.yaml" in result.stdout
     assert snapshot() == before
     assert not (kept_by(result.stdout) / "shape" / "plan.yaml").exists()
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_a_refused_doctor_still_names_its_kept_clone_without_next_lines(
+        standard, tmp_path):
+    """THE CLONE IS KEPT WHENEVER THE DOCTOR RAN, so the last line cannot say
+    there are NEXT commands (#500, review of 9808aec, SHOULD-1).
+
+    A `<path>` that is not there is refused by `shape-doctor.py` itself, exit
+    3, with no report and so no NEXT line. The clone is kept all the same --
+    Brett Heap's ruling keeps it once the doctor has run -- and the one line
+    on stdout says where, as true of this run as of one that printed a dozen
+    NEXT lines: "any NEXT command above" is empty here.
+    """
+    result = run_installed(standard, tmp_path, "--doctor",
+                           str(tmp_path / "nonexistent"))
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "shape-doctor-root-missing" in result.stderr
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(lines) == 1, result.stdout
+    kept = kept_by(result.stdout)
+    assert (kept / "shape" / DOCTOR).is_file(), (
+        f"{kept} is named as kept and is not there")
+    assert [entry.resolve() for entry in (tmp_path / "tmp").iterdir()] == \
+        [kept.resolve()]
 
 
 @WINDOWS_SKIP
