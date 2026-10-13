@@ -1,13 +1,12 @@
 # AGENTS.md — scaffolding, adopting, updating, advancing a leg, families
 
-You are an AI assistant a human has asked to "scaffold a new project with
-this shape", or "convert this repository to it", or "put these services in a
-family". This is the whole procedure; `README.md` says what the shape is.
-Sections 1-3 scaffold a NEW project; the ones after them cover an EXISTING
-repository (including one with no code yet), a project that declares descent
-from a neutral product, a repository nobody is sure about, a project whose
-copied shape files have fallen behind the upstream, a leg that has moved on,
-and a FAMILY holder.
+You are an AI assistant a human has asked to "scaffold a new project with this
+shape", or "convert this repository to it", or "put these services in a family".
+This is the whole procedure; `README.md` says what the shape is. Sections 1-3
+scaffold a NEW project; the ones after them cover an EXISTING repository
+(including one with no code yet), a project that declares descent from a neutral
+product, a repository nobody is sure about, a project whose copied shape files
+have fallen behind the upstream, a leg that has moved on, and a FAMILY holder.
 
 `docs/cli.md` is the flag-level reference: every tool's own `--help`, and
 every subcommand's, in one file — the ones you run from a checkout of this
@@ -115,11 +114,11 @@ the three names, `scaffold-project.py --dry-run`, an explicit human yes,
 
 ## Adopting an existing repository
 
-`adopt-project.py` converts a repository that already exists, IN PLACE: it
-keeps its name, its identity and its full history and becomes the assembly
-root, and the two legs are new repositories extracted with `git filter-repo`
-(a hard dependency; the preflight prints the install command). Seven steps, in
-order, and step 4 is the one you must not skip.
+`adopt-project.py` converts a repository that already exists, IN PLACE: it keeps
+its name, its identity and its full history and becomes the assembly root, and
+the two legs are new repositories extracted with `git filter-repo` (a hard
+dependency: `execute` refuses without it, printing the install command). Seven
+steps, in order, and step 4 is the one you must not skip.
 
 ```sh
 ./adopt-project.py plan --source <org/repo|path> --project <Project>
@@ -162,11 +161,10 @@ only. Never suggest a direct push to the default branch, and never `--admin`.
 
 ### Adopting a repository that has NO code yet (or no spec)
 
-A leg no plan entry assigns a path to is SEEDED from
-`templates/<role>-root/`, not extracted — `git filter-repo` over an empty
-path list yields an empty history, not an empty repository. `plan` and
-`check` both WARN; `check` still passes, because a spec-only repository is a
-legitimate thing to adopt.
+A leg no plan entry assigns a path to is SEEDED from `templates/<role>-root/`,
+not extracted — `git filter-repo` over an empty path list yields an empty
+history, not an empty repository. `plan` and `check` both WARN; `check` still
+passes, because a spec-only repository is a legitimate thing to adopt.
 
 ```sh
 ./adopt-project.py plan --source <org>/<Repo> --project <Project> \
@@ -178,14 +176,15 @@ legitimate thing to adopt.
    plan that lost its code paths to a bad edit is indistinguishable from a
    repository that has no code. Do not pass it because the tool asked for it;
    pass it because the human confirmed the repository genuinely has none.
-2. Everything else is unchanged, step 7 included: the verification table
-   reads `code: 0 of N source paths (seeded from template)` and still
-   accounts for every source path by blob sha.
+2. Everything else is unchanged, step 7 included: the verification table's
+   `code` row reads `0 of N source paths (seeded from template)`, and the table
+   still accounts for every source path by blob sha.
 
 ## Scaffolding a project that DECLARES descent
 
-`MedxGlass` descends from `openGlass` only if it PINS it (2026-09-02). Pass
-the pin and the scaffold records the descent and still gives it two legs:
+`MedxGlass` descends from `openGlass` only if it PINS it, or pins a layer that
+does and records the chain (`--referent-chain`; 2026-09-02, chains 2026-09-05).
+Pass the pin and the scaffold records the descent and still gives it two legs:
 
 ```sh
 ./scaffold-project.py --org MedxSoft --project MedxGlass \
@@ -207,34 +206,36 @@ the tool, not scaffold.
 
 ## Checking a repository's compliance
 
-`openRepoShape --doctor [<path>]` — or `./shape-doctor.py --root <path>` from
-a checkout — answers ONE question about ONE repository: is it compliant with
-this shape, and what is missing. Run it before you propose a change to a
-repository you did not scaffold, and again after any procedure above. It
-writes nothing into the repository and fetches nothing, so there is no
-confirmation to get and no `--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
+`openRepoShape --doctor [<path>]` — or `./shape-doctor.py --root <path>` from a
+checkout — answers ONE question about ONE repository: is it compliant with this
+shape, and what is missing. Run it before you propose a change to a repository
+you did not scaffold, and again after any procedure above. It writes nothing
+into the repository and fetches nothing, so there is no confirmation to get and
+no `--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
 in each of them, which is where a repair mode will hang; nothing in it writes
-today. The one exception to "writes nothing" is `--placement-plan <file>`,
-which writes that file and nothing else — see 4.
+today. The one exception to "writes nothing" is `--placement-plan <file>`, which
+writes that file and nothing else — see 4. Installed, `openRepoShape --doctor`
+runs from a temporary clone of the standard, deleted on exit, and takes a path
+and nothing else: to ACT on a row (`--json`, `--placement-plan`, its next
+command) run `./shape-doctor.py --root <path>` from a checkout.
 
 1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
-   BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0,
-   1, 1, 1, 1, 2 — and `CANNOT ANSWER`, exit 3, which is THIS CHECKOUT
-   failing to ask, never
-   a statement about their repository. The verdict names the MOST SPECIFIC
-   finding and the TABLE names every one, so a report summarised from the
-   verdict line alone is a report you did not read. Relay the rows.
+   BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0, 1,
+   1, 1, 1, 2 — and `CANNOT ANSWER`, exit 3, which is THIS CHECKOUT failing to
+   ask, never a statement about their repository. The verdict names the MOST
+   SPECIFIC finding and the TABLE names every one, so a report summarised from
+   the verdict line alone is a report you did not read. Relay the rows.
 2. **`note` is not a finding and you do not "fix" it.** A row says `note`
    when it found a difference nothing asserts — a leg file no pin names, a
    rendered `AGENTS.md`. It never moves the verdict. Report it; propose a
    change only if the human asks.
 3. **A FINDING names its fix, and you run THAT.** Every one carries the exact
-   next command — `update-shape.py apply …`, `make bootstrap`, `bump-leg.py
-   …`, the project's own validator. Run the one the row names. Do not
-   improvise a repair, and never edit a pinned file, a digest or a manifest
-   to make a row go green: that is the hand-edited pin this standard spends a
-   section refusing. Each of those commands has its own section above and its
-   own refusals, and they all still apply.
+   next command, where one can be named — `update-shape.py check …` and its
+   `apply`, `git submodule update …` (in a holder, its `scripts/bootstrap.py`),
+   the project's own validator. Run the one the row names. Do not improvise a
+   repair, and never edit a pinned file, a digest or a manifest to make a row go
+   green: that is the hand-edited pin this standard spends a section refusing.
+   Each of those commands keeps its own refusals, and they all still apply.
 4. **`placement` says what is in the wrong leg, and you never move a file
    to answer it.** It runs the adoption's own path policy over each mounted
    leg and names the paths it would have put elsewhere — code in the spec
@@ -258,13 +259,12 @@ which writes that file and nothing else — see 4.
    which of them is wanted is a fact about their repository. Report the
    verdict and both commands; adopt or scaffold nothing on your own
    initiative. There is no `--force`, deliberately.
-6. **The `machine` row is not about the repository.** It is `n/a` by status
-   and never changes the verdict: it says whether THIS workstation can run
-   the fixes the other rows named. Relay a missing prerequisite;
-   `openRepoShape --preflight` is what offers to install one, and the human
-   types that yes.
-7. `--json` is the same report as one object, each row carrying its `id`, for
-   when you have to act on a row rather than quote it.
+6. **The `machine` row is not about the repository.** It is `n/a` by status and
+   never changes the verdict: it says whether THIS workstation can run the fixes
+   the other rows named. Relay a missing prerequisite; `openRepoShape
+   --preflight` offers only the `gh` set-up, and the human types that yes.
+7. `./shape-doctor.py --json` is the same report as one object, each row
+   carrying its `id`, for when you have to act on a row rather than quote it.
 
 ## Updating a project's shape
 
@@ -282,10 +282,11 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
 ```
 
 1. **`check` first, always.** It writes nothing and prints one verdict per
-   PINNED file: `unchanged`, `upstream-changed`, `locally-modified` (the
-   project edited its own copy) or `both`. A file with no row in
-   `contracts/shape-pin.yaml` is not a shape copy and is none of your business
-   — an adopted project merged some of them away on purpose.
+   PINNED file: `unchanged`, `upstream-changed`, `locally-modified` (the project
+   edited its own copy), `both`, `already-at-target`, `upstream-removed`,
+   `unmapped` or `copy-missing`; `apply` refuses the last three. A file with no
+   row in `contracts/shape-pin.yaml` is not a shape copy and is none of your
+   business — an adopted project merged some of them away on purpose.
 2. **Show the human the verdicts and let them say yes.** Re-pinning records
    which openRepoShape this project is a copy of. Do not pass `--yes` on your
    own initiative.
@@ -352,7 +353,7 @@ git -C <path> push -u origin <branch>   # then open a pull request
    world cannot fetch is a root it cannot bootstrap. A red validator has
    already been rolled back; the finding above it is the thing to fix.
 5. The leg is left DETACHED at the new commit. `make bootstrap` in the root
-   re-places it on its tracking branch AT the new pin; say so in your relay.
+   puts it on its tracking branch AT the new pin, or says why not; relay which.
 6. **`--trailer "<Key>: <value>"` puts a line on the commit this writes.**
    Repeatable, kept in the order given, as `update-shape.py apply` and
    `family.py bump` take it. `--dry-run` prints them after the `old -> new`
@@ -431,11 +432,10 @@ make park                         # then leave
 make bootstrap && make resume     # on the other machine, after a clone
 ```
 
-1. **The overlay is a PREREQUISITE and the refusal names it.** Both targets
-   exit 2 with `install it with: setup-openspeckit` when
-   `.specify/extensions/git/` is not there. Relay that line; never hand-roll
-   the WIP commit, the `git worktree add` or the soft reset yourself because
-   a target refused.
+1. **The overlay is a PREREQUISITE and the refusal names it.** Both targets exit
+   2 with `install it with: setup-openspeckit` when `.specify/extensions/git/`
+   is not there. Relay that line; never hand-roll the WIP commit, the `git
+   worktree add` or the soft reset yourself because a target refused.
 2. **`resume` refusing on DIVERGENCE is not something to work around.** The
    remote tip is not the commit that was parked, which means somebody's work
    is on that branch; the refusal names both commits and the commands to

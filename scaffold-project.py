@@ -39,13 +39,16 @@ copy of, and has anyone edited it since" both have answers.
 WHAT THE NEW PROJECT MUST BE ABLE TO HOLD (#258, #261). The manifest is
 rendered from the values the run is about to use, read with the project's own
 YAML reader and put through the validator the template ships, BEFORE anything
-is created and under `--dry-run` alike. A value the reader turns into something
-else (`--id null`, `--tracking-branch true` or `007`: the template writes them
-bare) is refused as `scaffold-manifest-misread`, and one the validator refuses
-(a blank `--elected-by`, `--reference` or `--name`, an `--org` it cannot hold)
-as `scaffold-manifest-invalid`, in the validator's own words; an
-`--elected-on` is read in the validator's form only, on every Python. A name
-that cannot be a directory's is refused as `scaffold-name-too-long`.
+is created and under `--dry-run` alike. A value the reader would turn into
+something else where a template line writes it bare is refused as
+`scaffold-manifest-misread`. The template writes `id` and `tracking_branch`
+between double quotes (#259), so `--id null` or `--tracking-branch 007` is
+held as typed, and that refusal guards the template rather than the flags. A
+value the validator refuses (a blank `--elected-by`, `--reference` or
+`--name`, an `--org` it cannot hold) is refused as
+`scaffold-manifest-invalid`, in the validator's own words; an `--elected-on`
+is read in the validator's form only, on every Python. A name that cannot be a
+directory's is refused as `scaffold-name-too-long`.
 
 IDEMPOTENCY. It refuses to write into a remote or a working directory that
 already exists. There is no --force: re-running over a live project is not a
@@ -202,9 +205,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="the assembly-root name, e.g. Atlas")
     parser.add_argument("--id", default=None,
                         help="lowercase project id (default: --project "
-                             "lowercased). One the project's YAML reader "
-                             "would read as another type -- `null`, `true`, "
-                             "`007` -- is refused.")
+                             "lowercased)")
     parser.add_argument("--name", default=None, help="display name")
     parser.add_argument("--visibility", choices=VISIBILITY_CHOICES,
                         default=None,
@@ -237,9 +238,7 @@ def main(argv: list[str] | None = None) -> int:
                              "that did not exist yet.")
     parser.add_argument("--tracking-branch", default="main",
                         help="the branch every repository is created on "
-                             "(default: main). One the project's YAML reader "
-                             "would read as another type -- `null`, `true`, "
-                             "`007`, `2026` -- is refused.")
+                             "(default: main)")
     parser.add_argument("--spec-path", default="spec",
                         help="where the spec leg is mounted, as a path in "
                              "the assembly root (default: spec). A path that "
@@ -425,11 +424,13 @@ def _refuse_unholdable_manifest(args, values: dict, policy) -> None:
 
     `values` is the whole substitution table, so the project's own YAML
     reader and `validate-manifest.py` are asked about the `project.yaml` the
-    run is about to write: a value the reader turns into something else
-    (`--id null`, `--tracking-branch 007`) is `scaffold-manifest-misread`, and
-    one the validator refuses (a blank `--elected-by`, `--org test+org`) is
-    `scaffold-manifest-invalid`. `shape_materialize.refuse_manifest_values`
-    asks both, and says why each is refused.
+    run is about to write: a value the reader would turn into something else
+    where a template line writes it bare is `scaffold-manifest-misread` (the
+    template quotes `id` and `tracking_branch`, #259, so `--id null` and
+    `--tracking-branch 007` are held as typed), and one the validator refuses
+    (a blank `--elected-by`, `--org test+org`) is `scaffold-manifest-invalid`.
+    `shape_materialize.refuse_manifest_values` asks both, and says why each is
+    refused.
 
     A value a flag did not supply is named by where it came from, so the
     sentence does not point at a flag nobody typed.
