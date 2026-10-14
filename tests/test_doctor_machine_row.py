@@ -13,8 +13,12 @@ verdict, and the verdict points "above" at the lines of the check that failed
 the row said what was wrong.
 
 THE FIX READS THE CHILD'S OWN LINES. The `[!!]` ones, one per failed check,
-without the verdict that carries the same mark. `setup-project.py` is not
-changed: its mark is already the thing a line of its report is read by.
+without the verdict that carries the same mark, and the reason keeps the
+FIRST SENTENCE of each (`gh is not installed`): what follows it is the
+scaffold's remedy, `re-run with --local-remote-dir <dir>` for one, a flag the
+doctor refuses and under which the preflight says the machine is ready. The
+whole lines are `detail.not_ready`. `setup-project.py` is not changed: its
+mark is already the thing a line of its report is read by.
 
 THE CHILD IS A SCRIPT THIS FILE WRITES, printing what the real preflight
 prints, so the rows are the same on every host and none reaches `gh`. The one
@@ -51,6 +55,10 @@ GIT_MISSING = "git is not installed. Install it: https://git-scm.com/downloads"
 GH_MISSING = ("gh is not installed. Install it: https://cli.github.com - or "
               "re-run with --local-remote-dir <dir> to try this offline "
               "against bare repositories on disk.")
+#: What each of those says before its remedy, which is the part the row's
+#: reason keeps.
+GIT_FACT = "git is not installed"
+GH_FACT = "gh is not installed"
 #: The closing line, on the same stream and with the same mark.
 VERDICT = "  [!!] this machine is not ready yet (see above).\n"
 
@@ -85,15 +93,17 @@ def machine_row(module, tmp_path, monkeypatch, *, out="", err="", code=1,
 @pytest.mark.parametrize("adoption", [True, False])
 def test_a_machine_that_is_not_ready_says_which_checks_failed(
         standard, tmp_path, monkeypatch, adoption):
-    """Both failed checks, in the order the preflight made them, each as the
-    line it printed and without that line's mark or full stop; the closing
-    verdict is not among them; the adoption aside, when there is one, follows
-    them; and the row still hands over the preflight as its one NEXT."""
+    """Both failed checks, in the order the preflight made them, each by the
+    first sentence of the line it printed, so no remedy of the scaffold's
+    (`re-run with --local-remote-dir`, a flag the doctor refuses) is in the
+    reason; the closing verdict is not among them; the adoption aside, when
+    there is one, follows them; `detail.not_ready` keeps the whole lines; and
+    the row still hands over the preflight as its one NEXT."""
     row = machine_row(
         doctor_module(standard), tmp_path, monkeypatch, out=PASSED,
         err=f"  [!!] {GIT_MISSING}\n  [!!] {GH_MISSING}\n{VERDICT}",
         adoption=adoption)
-    said = f"{GIT_MISSING}; {GH_MISSING.removesuffix('.')}"
+    said = f"{GIT_FACT}; {GH_FACT}"
     assert row["reason"] == f"{HEAD}: {said}{'' if adoption else ASIDE}"
     assert row["detail"]["not_ready"] == [GIT_MISSING, GH_MISSING]
     assert row["status"] == "n/a"
@@ -111,6 +121,19 @@ def test_a_child_that_fails_without_naming_a_check_is_quoted_by_its_last_line(
             "  File \"setup-project.py\", line 1, in <module>\n"
             "ZeroDivisionError: division by zero\n")
     assert row["reason"] == f"{HEAD}: ZeroDivisionError: division by zero"
+    assert row["detail"]["not_ready"] == []
+
+
+def test_a_child_that_prints_only_the_verdict_is_not_quoted_as_the_reason(
+        standard, tmp_path, monkeypatch):
+    """Not reachable through the real preflight, which marks a failed check
+    before it says the machine is not ready, and closed all the same: the
+    last line the child printed is the verdict, which points at lines this
+    table does not show, so it is not quoted and the reason is the head
+    alone."""
+    row = machine_row(doctor_module(standard), tmp_path, monkeypatch,
+                      err=VERDICT)
+    assert row["reason"] == HEAD
     assert row["detail"]["not_ready"] == []
 
 
@@ -135,7 +158,7 @@ def test_preflight_failures_reads_the_marked_lines_of_a_constructed_report(
     failures = doctor_module(standard).preflight_failures
     report = ("(1) preflight\n"
               "  [ok] git 2.43.0\n"
-              "  [!!] gh is not authenticated — run: gh auth login\n"
+              "  [!!] gh is not authenticated \u2014 run: gh auth login\n"
               "  [??] git core.autocrlf is true.\n"
               "[!!] python 3.8 is too old\n"
               "  [!!]\n"
@@ -147,3 +170,27 @@ def test_preflight_failures_reads_the_marked_lines_of_a_constructed_report(
     assert failures("  [ok] git 2.43.0\n") == []
     assert failures(VERDICT) == []
     assert failures("") == []
+
+
+def test_first_sentence_stops_at_the_first_full_stop_that_ends_one(standard):
+    """`first_sentence` keeps what is not ready and drops the remedy after
+    it: the real preflight lines, a full stop inside a version number that
+    ends nothing, a line that ends on its stop, and one with none."""
+    first = doctor_module(standard).first_sentence
+    lines = [
+        "gh is not authenticated. Run: gh auth login",
+        GH_MISSING,
+        "this interpreter is 3.8, and 3.9 or newer is required. Install a "
+        "newer Python and re-run it with that one: https://www.python.org/",
+        "ends on its stop.",
+        "no stop at all",
+        "a.b and 3.9 end nothing",
+        ""]
+    assert [first(line) for line in lines] == [
+        "gh is not authenticated",
+        GH_FACT,
+        "this interpreter is 3.8, and 3.9 or newer is required",
+        "ends on its stop",
+        "no stop at all",
+        "a.b and 3.9 end nothing",
+        ""]

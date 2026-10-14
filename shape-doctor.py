@@ -5940,9 +5940,33 @@ def preflight_failures(whole: str) -> list[str]:
         if not text.startswith(PREFLIGHT_FAILED):
             continue
         said = ascii_text(text[len(PREFLIGHT_FAILED):].strip())
-        if said and not said.startswith(PREFLIGHT_VERDICT):
+        if said and not is_preflight_verdict(said):
             failed.append(said)
     return failed
+
+
+def is_preflight_verdict(line: str) -> bool:
+    """Whether `line` is the preflight's closing verdict, `[!!]` mark on it
+    or not -- the one line of its report that summarises the checks above it
+    instead of being one of them (#549)."""
+    return line.strip().removeprefix(PREFLIGHT_FAILED).strip().startswith(
+        PREFLIGHT_VERDICT)
+
+
+def first_sentence(line: str) -> str:
+    """`line` up to its first full stop that ends a sentence: one followed by
+    white space or by the end. `3.9` ends nothing; `gh is not installed.
+    Install it: ...` says `gh is not installed`.
+
+    A FAILED CHECK'S LINE IS THE FACT, THEN THE PREFLIGHT'S OWN REMEDY FOR
+    SOMEBODY RUNNING THE SCAFFOLD (#549, review): `Run: gh auth login`, or
+    `re-run with --local-remote-dir <dir>`. This command refuses that flag,
+    and `setup-project.py --preflight --local-remote-dir <dir>` then says the
+    machine is ready, which is false for this row. The row's NEXT is its one
+    remedy, so the reason keeps only what is not ready and
+    `detail.not_ready` keeps the whole line."""
+    stop = re.search(r"\.(?:\s|$)", line)
+    return line[:stop.start()] if stop else line
 
 
 def check_machine(ctx: Context) -> Row:
@@ -5968,10 +5992,13 @@ def check_machine(ctx: Context) -> Row:
     saying and is not this repository being non-compliant. So the row reports
     and never changes the verdict.
 
-    WHEN IT IS NOT READY THE REASON NAMES WHAT IS NOT (#549): the preflight's
-    own `[!!]` check lines (`preflight_failures`), `; `-joined, and also
+    WHEN IT IS NOT READY THE REASON NAMES WHAT IS NOT (#549): the first
+    sentence (`first_sentence`) of each of the preflight's own `[!!]` check
+    lines (`preflight_failures`), `; `-joined, and the whole lines in
     `detail.not_ready`. It used to quote the child's last line, a verdict that
-    points "above" at output this table does not show.
+    points "above" at output this table does not show, and the first version
+    of this change quoted the lines whole, remedies and all, beside a NEXT
+    that is the one command.
     """
     entry = ctx.shape / "setup-project.py"
     adoption = shutil.which(ADOPTION_TOOL)
@@ -5991,17 +6018,19 @@ def check_machine(ctx: Context) -> Row:
              if line.strip().startswith(("[ok]", "[!!]", "[??]"))]
     detail["report"] = marks
     # WHAT IS NOT READY, in the preflight's own words (#549): its `[!!]`
-    # lines. `quoted` is the child's last line and, for a machine that is not
-    # ready, that is its verdict pointing "above" at lines this table does not
-    # print -- so it is the fallback for a child that said nothing better.
+    # lines, whole in `detail`, and the first sentence of each in the reason.
+    # `quoted` is the child's last line and, for a machine that is not ready,
+    # that is its verdict pointing "above" at lines this table does not print
+    # -- so it is the fallback for a child that said nothing better, and never
+    # the verdict itself.
     failures = preflight_failures(whole) if code != 0 else []
     detail["not_ready"] = failures
     ready = "this machine is ready" if code == 0 else \
         "this machine is missing something the fixes above may need"
     reason = f"{ready} (setup-project.py --preflight, exit {code})"
-    # The `; ` that joins them stands in for each line's own full stop.
-    said = "; ".join(line.removesuffix(".") for line in failures) or \
-        (quoted if code != 0 else "")
+    said = "; ".join(first_sentence(line) for line in failures)
+    if not said and code != 0 and not is_preflight_verdict(quoted):
+        said = quoted
     if said:
         reason += f": {said}"
     if not adoption:
