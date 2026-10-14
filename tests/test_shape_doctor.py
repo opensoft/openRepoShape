@@ -262,6 +262,14 @@ def test_an_edited_shape_copy_is_drift_and_names_update_shape(standard,
     FOR — and a verdict of `INVALID (pins)` would send the reader at the
     symptom while the exit is `update-shape.py`. Both rows are printed, and
     this asserts both.
+
+    THE FIX IS NAMED WITHOUT `--accept-local` (#501). This test pinned the
+    hand-over of that flag on purpose, on the reasoning that a reader would
+    know not to paste it; but AGENTS.md tells the reader to run the command
+    a row names, and pasted, it re-pinned the project's edit as the standard
+    before `update-local-drift` could ask the human whether the project keeps
+    it. Brett Heap ruled on 2026-10-13, "Stop pre-filling it", so the
+    assertion is now the opposite one, in every line the report prints.
     """
     edited = project / DRIFT_TARGET
     edited.write_text(edited.read_text(encoding="utf-8")
@@ -273,10 +281,10 @@ def test_an_edited_shape_copy_is_drift_and_names_update_shape(standard,
         result.stdout
     assert DRIFT_TARGET in result.stdout
     assert "update-shape.py" in result.stdout
-    assert f"--accept-local {DRIFT_TARGET}" in result.stdout, (
-        "a `locally-modified` row must hand over the exact flag that re-pins "
-        "it, which is the one AGENTS.md says never to pass on your own "
-        "initiative")
+    assert "--accept-local" not in result.stdout, (
+        "a `locally-modified` row must not hand over the flag that re-pins "
+        "it: whether the project keeps its edit is the human's decision, and "
+        "the `apply` it names asks it by refusing `update-local-drift`")
     # The pins row is red too, and is still printed with its own next step.
     rows = rows_of(doctor(standard, project, "--json"))
     assert rows["pins"]["status"] == "FINDING", rows["pins"]
@@ -4532,7 +4540,7 @@ def test_a_readme_conflicted_over_the_projects_own_lines_is_left_to_a_person(
     README.md holds no `Shape:` line here, so nothing in it is the shape's,
     and where it holds one every other line is still the project's own.
     Taken whole, edit-a's paragraph went with it (review of PR #267). The
-    NEXT takes the pin alone, and its note and `left_for_a_person` say that
+    NEXT takes the pin alone, and its `why` and `left_for_a_person` say that
     README.md is a person's to merge.
     """
     readme = project / "README.md"
@@ -5631,7 +5639,7 @@ def test_a_copy_conflicted_on_its_own_is_shown_and_merged_by_a_person(
 
 def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
         standard, project):
-    """P10b. In the same report the `shape currency` row names `apply
+    """P10b. In the same report the `shape currency` row named `apply
     --accept-local` on the copy, which keeps the local bytes, while the
     `manifest kinds` row took one side whole. AGENTS.md says `both` is a
     merge: by hand, commit, then `--accept-local` on the file merged.
@@ -5640,12 +5648,18 @@ def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
     are one path: the merge by hand, then the `shape currency` row's own
     NEXT, run as its note spells it, ends COMPLIANT with every line of
     both sides in the copy and its pin.
+
+    THE FLAG IS THE PERSON'S, NOT THE ROW'S (#501). The `why`'s `apply`
+    carries no `--accept-local`: run as printed it is refused
+    `update-local-drift`, which asks whether the project keeps the merge,
+    and with the person's `--accept-local` on the copy it ends COMPLIANT.
     """
     a_copy_conflicted_on_its_own(project)
     kinds, currency = kinds_and_currency(standard, project)
     assert "merge it by hand" in kinds["why"], kinds
     assert "checkout" not in kinds["next"], kinds["next"]
-    assert f"--accept-local {NAMING_COPY}" in currency["why"], currency
+    assert "--accept-local" not in currency["next"] + currency["why"], \
+        currency
     merge_by_hand(project / NAMING_COPY)
     git("add", "--", NAMING_COPY, cwd=project)
     commit_in(project, "the naming copy merged by hand")
@@ -5655,10 +5669,15 @@ def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
     assert Path(argv[1]).name == "update-shape.py" and argv[2] == "check", \
         currency["next"]
     then = currency["why"].split()
-    assert then[:2] == ["then", "apply"], currency["next"]
-    assert then[then.index("--accept-local") + 1] == NAMING_COPY, then
-    applied = run_script(standard / "update-shape.py", "apply", "--root",
-                         str(project), "--upstream", str(standard), *then[2:])
+    assert then[:2] == ["then", "apply"], currency["why"]
+    assert "--accept-local" not in then, then
+    apply = (standard / "update-shape.py", "apply", "--root", str(project),
+             "--upstream", str(standard), *then[2:])
+    asked = run_script(*apply)
+    assert asked.returncode == 2, asked.stdout + asked.stderr
+    assert "REFUSED update-local-drift" in asked.stderr, asked.stderr
+    assert f"--accept-local {NAMING_COPY}" in asked.stderr, asked.stderr
+    applied = run_script(*apply, "--accept-local", NAMING_COPY)
     assert applied.returncode == 0, applied.stdout + applied.stderr
     compliant_again(standard, project)
     kept = git("show", f"HEAD:{NAMING_COPY}", cwd=project).stdout
@@ -6022,7 +6041,7 @@ def assert_the_merge_is_finished(verdict: str, rows: dict,
 def assert_the_pin_alone_is_taken(currency: dict, kinds: dict,
                                   copy: str) -> None:
     """The shape pin's NEXT names the pin alone, both rows print it, and
-    its note and `left_for_a_person` give the copy to a person."""
+    its `why` and `left_for_a_person` give the copy to a person."""
     assert currency["detail"]["restore"] == "unmerged", currency["detail"]
     assert pasted(currency["next"])[3:] == [
         "checkout", "--ours", "--", SHAPE_PIN], currency["next"]
@@ -6038,52 +6057,54 @@ def assert_the_pin_alone_is_taken(currency: dict, kinds: dict,
     assert "every path named" not in note, note
     for words in ("update-shape.py apply --accept-local on that copy "
                   "re-pins it from the merge",
-                  "check calls the copy locally-modified",
-                  "where check calls it both, the apply the row names is "
-                  "refused as update-conflict and asks for --accept-local "
-                  "on that path"):
+                  "The shape currency row never names it",
+                  "check calls the copy locally-modified, the apply the row "
+                  "names is refused as update-local-drift",
+                  "where check calls it both, as update-conflict, and "
+                  "either refusal asks for --accept-local on that path"):
         assert words in note, (words, note)
     assert_a_plain_next(currency)
 
 
 def re_pinned_from_the_merge(moved: Path, root: Path, currency: dict,
                              copy: str, ours: str) -> None:
-    """The note's last sentences, followed from the `shape currency` row
+    """The `why`'s last sentences, followed from the `shape currency` row
     both ways round (review of PR #496, F1), to COMPLIANT.
 
-    With the update side's pin taken, the copy as merged is
-    `locally-modified`, and the row's own `apply` names `--accept-local
-    <copy>`. With the person's side's pin taken, behind the standard the
-    copy was merged from, it is `both`, and the row names no
-    `--accept-local`, as AGENTS.md's rule 3 wants: its `apply`, run as
-    spelled, is refused `update-conflict`, moves nothing, and asks for
-    `--accept-local` on that path. Either way that `apply --accept-local
+    The row's `apply` names no `--accept-local` either way round, as
+    AGENTS.md's rule 3 wants (#501): run as spelled it moves nothing and
+    asks for the flag on that path. With the update side's pin taken, the
+    copy as merged is `locally-modified`, and the refusal is
+    `update-local-drift`; with the person's side's pin taken, behind the
+    standard the copy was merged from, it is `both`, and the refusal is
+    `update-conflict`. Either way the person's `apply --accept-local
     <copy>` re-pins the copy from the merge and the root is COMPLIANT.
     """
     then = currency["why"].split()
-    assert then[:2] == ["then", "apply"], currency["next"]
+    assert then[:2] == ["then", "apply"], currency["why"]
     args = then[2:]
     apply = (moved / "update-shape.py", "apply", "--root", str(root),
              "--upstream", str(moved))
+    assert "--accept-local" not in args, then
+
+    def held() -> tuple:
+        return (git("rev-parse", "HEAD", cwd=root).stdout,
+                git("branch", "--list", cwd=root).stdout,
+                git("status", "--porcelain=v1", cwd=root).stdout,
+                (root / copy).read_bytes())
+
+    before = held()
+    refused = run_script(*apply, *args)
+    said = refused.stdout + refused.stderr
+    assert refused.returncode == 2, said
     if ours == "upgrade":
-        assert args[args.index("--accept-local") + 1] == copy, then
+        assert "update-local-drift" in said, said
+        assert f"--accept-local {copy}" in said, said
     else:
-        assert "--accept-local" not in args, then
-
-        def held() -> tuple:
-            return (git("rev-parse", "HEAD", cwd=root).stdout,
-                    git("branch", "--list", cwd=root).stdout,
-                    git("status", "--porcelain=v1", cwd=root).stdout,
-                    (root / copy).read_bytes())
-
-        before = held()
-        refused = run_script(*apply, *args)
-        said = refused.stdout + refused.stderr
-        assert refused.returncode == 2, said
         assert "update-conflict" in said and f"    {copy}: " in said, said
         assert "--accept-local on that path" in said, said
-        assert held() == before, "the refused apply moved something"
-        args = [*args, "--accept-local", copy]
+    assert held() == before, "the refused apply moved something"
+    args = [*args, "--accept-local", copy]
     applied = run_script(*apply, *args)
     assert applied.returncode == 0, applied.stdout + applied.stderr
     compliant_again(moved, root)
@@ -6108,9 +6129,10 @@ def test_a_copy_conflicted_with_the_shape_pin_is_left_to_a_person(
     it is in, where it said `project` while its NEXT overwrote the file.
     The next run names the copy's read-only `diff`, and the doctor is not
     COMPLIANT until a person has merged it and, where the merge differs
-    from the pin, re-pinned it with `apply --accept-local`: the `shape
-    currency` row names it for a `locally-modified` copy, and the row's
-    refused `apply` asks for it on a `both` one. HEAD then holds every
+    from the pin, re-pinned it with `apply --accept-local` on their word:
+    the `shape currency` row's `apply` never names the flag (#501), and
+    refused, it asks for it, `update-local-drift` for a `locally-modified`
+    copy and `update-conflict` for a `both` one. HEAD then holds every
     line of both sides, either way round.
 
     Until the merge is committed the verdict is #424's `INVALID (merge)`,

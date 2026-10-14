@@ -283,10 +283,10 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
 
 1. **`check` first, always.** It writes nothing and prints one verdict per
    PINNED file: `unchanged`, `upstream-changed`, `locally-modified` (the project
-   edited its own copy), `both`, `already-at-target`, `upstream-removed`,
-   `unmapped` or `copy-missing`; `apply` refuses the last three. A file with no
-   row in `contracts/shape-pin.yaml` is not a shape copy and is none of your
-   business — an adopted project merged some of them away on purpose.
+   edited its own copy), `both`, `already-at-target`, `merged-away` (a `shape/`
+   copy merged into its own file and removed: `apply` drops its row),
+   `upstream-removed`, `unmapped` or `copy-missing`; `apply` refuses the last
+   three. A file with no row is not a shape copy and is none of your business.
 2. **Show the human the verdicts and let them say yes.** Re-pinning records
    which openRepoShape this project is a copy of. Do not pass `--yes` on your
    own initiative.
@@ -294,7 +294,7 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
    locally edited file FROM THE PROJECT'S OWN BYTES, which makes the drift
    `validate-pins.py` reports today invisible. Whether the project keeps its
    edit is the human's decision; the other two exits are to revert it or to
-   carry it upstream.
+   carry it upstream. No `NEXT` line passes it: `apply` refuses, and asks.
 4. **`both` is a merge, and the tool refuses it unless you say `--accept-local
    <path>` too.** Merge by hand, commit, then re-run with `--accept-local
    <path>` on the file you merged — that commit goes on the branch `apply` is
