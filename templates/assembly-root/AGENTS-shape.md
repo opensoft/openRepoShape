@@ -83,8 +83,8 @@ script guessing at `../`.
 ## The five commands
 
 ```
-make bootstrap   the legs onto their tracking branch AT the pinned commit,
-                 then the validators, then the review-authority readout
+make bootstrap   the legs onto their tracking branch AT the pin, or says why
+                 not; then the validators, then the review-authority readout
 make validate    naming + manifest + lockstep pins (what CI runs)
 make pins        the lockstep pin validator alone
 make park        commit, push and RECORD every open feature, so another
@@ -92,9 +92,9 @@ make park        commit, push and RECORD every open feature, so another
 make resume      recreate the parked features here, from that record
 ```
 
-`make bootstrap` places each leg on the tracking branch AT its pinned commit —
-not a detached HEAD, and not somebody's newer tip. The line `authority is not
-wallet-carried in this org` is a report, not a fault.
+`make bootstrap` places each leg on the tracking branch AT its pinned commit
+where that loses nothing, and otherwise leaves it where it is and says why. The
+line `authority is not wallet-carried in this org` is a report, not a fault.
 
 **`make park` BEFORE the human leaves a workstation; on the next one, clone,
 `make bootstrap`, then `make resume`** — that order, because `resume`

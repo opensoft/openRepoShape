@@ -35,6 +35,16 @@ branch already at the pin too: one git refused is never called `on main`,
 and a failing post-checkout hook after HEAD moved is not called a refusal.
 The command the move-back line prints is shell-quoted.
 
+THE BRANCH AT THE PIN (#533). `bump-leg.py --to` a branch's own tip leaves
+the leg detached AT the branch, and a commit made there is on no branch.
+Bootstrap used to check the branch out regardless, printing `on main at
+<pin>` over a commit held only by HEAD's reflog; a leg detached at a commit
+that is not the pin is now left there and said, as the behind branch's is. A
+checkout git refuses with HEAD already on the branch at the pin changes
+nothing, and is said so rather than as `checked out, and then git said:`.
+`not moving an existing branch` names where the checkout stays, which is not
+always the pin: HEAD may be on the branch itself.
+
 EACH TEST GOES THE WAY A PERSON DOES: a scaffold into bare repositories on
 disk, cloned recursively and bootstrapped, so each leg is on `main` at its
 pin; a new commit pushed to the spec leg's remote; a branch in the root,
@@ -72,13 +82,15 @@ EDITED = "README.md"
 MOVED_ON = "MOVED-ON.md"
 
 
-def not_moving(pin: str, tip: str) -> str:
+def not_moving(pin: str, tip: str, stays: str = "at the pin") -> str:
     """Step (a)'s refusal of a spec branch holding a commit the pin lacks,
-    byte for byte as main prints it."""
+    byte for byte as main prints it. `stays` is where the checkout is:
+    `at the pin` (detached there), `on main at its tip`, or `at <sha12>
+    (detached)` / `at <sha12> (on <branch>)` (#533)."""
     return (f"  [spec] spec: PIN {pin[:12]} != branch main tip {tip[:12]}\n"
-            "          not moving an existing branch. The checkout stays at "
-            "the pin; the recorded pin is authoritative and advancing it is "
-            "an explicit commit in this repository.\n")
+            f"          not moving an existing branch. The checkout stays "
+            f"{stays}; the recorded pin is authoritative and advancing it "
+            "is an explicit commit in this repository.\n")
 
 
 def moved_back(tip: str, pin: str, branch: str = "main", leg: str = "spec",
@@ -162,10 +174,9 @@ def root(bootstrapped, tmp_path) -> Path:
     return target
 
 
-def bumped(root: Path, remotes: Path, tmp_path: Path, branch: str,
-           touch: str | None = None) -> str:
-    """A new commit on the spec leg's REMOTE, then `bump-leg.py` to it from
-    a branch of the root, exactly as AGENTS.md has it. Returns the commit.
+def advance(remotes: Path, tmp_path: Path, branch: str,
+            touch: str | None = None) -> str:
+    """A new commit on the spec leg's REMOTE. Returns it.
 
     The commit is pushed to `branch` rather than to `main`, so the remote's
     `main` stays where every copy of the clone has it; `bump-leg.py` asks
@@ -183,13 +194,27 @@ def bumped(root: Path, remotes: Path, tmp_path: Path, branch: str,
         git("add", "--", touch, cwd=work)
     git("commit", "-q", "-m", "Advance the spec leg", cwd=work)
     git("push", "-q", "origin", f"HEAD:refs/heads/{branch}", cwd=work)
-    new = rev(work)
+    return rev(work)
+
+
+def bump_spec(root: Path, remotes: Path, new: str):
+    """`bump-leg.py` to `new` from a branch of the root, exactly as
+    AGENTS.md has it. Returns the run, whose output is what a person reads."""
     git("checkout", "-q", "-b", "bump/spec", cwd=root)
     result = run_script(BUMP, "--root", str(root), "--leg", "spec", "--to",
                         new, "--local-remote-dir", str(remotes))
     assert result.returncode == 0, result.stderr + result.stdout
     assert head_ref(root / "spec") is None, "bump-leg.py leaves it detached"
     assert rev(root / "spec") == new
+    return result
+
+
+def bumped(root: Path, remotes: Path, tmp_path: Path, branch: str,
+           touch: str | None = None) -> str:
+    """A new commit on the spec leg's REMOTE (`advance`), then `bump-leg.py`
+    to it (`bump_spec`). Returns the commit."""
+    new = advance(remotes, tmp_path, branch, touch)
+    bump_spec(root, remotes, new)
     return new
 
 
@@ -246,6 +271,8 @@ def test_a_branch_ahead_of_the_pin_is_not_moved(root):
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"PIN {pin[:12]} != branch main tip {ahead[:12]}" in result.stdout
     assert NOT_MOVING in result.stdout
+    assert not_moving(pin, ahead, "on main at its tip") in result.stdout, (
+        "HEAD is on `main`, which is where the checkout stays")
     assert "fast-forwarded" not in result.stdout
     assert rev(leg, MAIN) == ahead
     assert head_ref(leg) == MAIN
@@ -268,6 +295,7 @@ def test_a_branch_that_diverged_from_the_pin_is_not_moved(
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"PIN {new[:12]} != branch main tip {mine[:12]}" in result.stdout
     assert NOT_MOVING in result.stdout
+    assert not_moving(new, mine) in result.stdout, "detached at the pin"
     assert rev(leg, MAIN) == mine, "the local commit is still on main"
     assert head_ref(leg) is None and rev(leg) == new
 
@@ -633,20 +661,22 @@ def pinned_beside_main(leg: Path) -> None:
     git("add", "--", leg.name, cwd=leg.parent)
 
 
-@pytest.mark.parametrize("make", [without_upstream, upstream_ref_missing,
-                                  upstream_local, on_main,
-                                  pinned_beside_main],
-                         ids=["no upstream", "upstream ref missing",
-                              "upstream a local branch", "HEAD on main",
-                              "diverged from the pin"])
+@pytest.mark.parametrize(
+    "make, stays",
+    [(without_upstream, "at the pin"), (upstream_ref_missing, "at the pin"),
+     (upstream_local, "at the pin"), (on_main, "on main at its tip"),
+     (pinned_beside_main, "at the pin")],
+    ids=["no upstream", "upstream ref missing", "upstream a local branch",
+         "HEAD on main", "diverged from the pin"])
 def test_a_fresh_leg_main_nothing_vouches_for_is_not_moved(
-        fresh, leg_main_ahead, make):
+        fresh, leg_main_ahead, make, stays):
     """Ahead of the pin and moved by nothing: with no upstream, one whose
     remote-tracking ref is not there, or a local branch as the upstream,
     nothing says the commits past the pin are held on a remote; with HEAD
     on `main`, the move would change the files checked out; and a `main`
     that does not contain the pin has diverged from it rather than moved
-    past it. Each refusal is main's, byte for byte."""
+    past it. Each refusal is main's, byte for byte, and says where the
+    checkout stays: at the pin, or on `main` where HEAD is on it (#533)."""
     leg = fresh / "spec"
     ahead = leg_main_ahead["ahead"]
     make(leg)
@@ -656,7 +686,7 @@ def test_a_fresh_leg_main_nothing_vouches_for_is_not_moved(
     result = run_script(fresh / "scripts" / "bootstrap.py",
                         "--skip-validators", cwd=fresh)
     assert result.returncode == 0, result.stderr + result.stdout
-    assert not_moving(pin, ahead) in result.stdout, result.stdout
+    assert not_moving(pin, ahead, stays) in result.stdout, result.stdout
     assert "moved back" not in result.stdout
     assert rev(leg, MAIN) == ahead
     assert rev(leg) == head and head_ref(leg) == where
@@ -718,3 +748,191 @@ def test_the_command_that_brings_the_branch_forward_is_shell_quoted(
     assert command[:3] == ["git", "-C", "my spec"], command
     git(*command[1:], cwd=fresh)
     assert rev(leg, MAIN) == ahead
+
+
+# --- the branch IS the pin: a leg detached off it is left where it is (#533) -
+
+def neither(pin: str, head: str, place: str = "detached") -> str:
+    """The two lines step (a) prints for a leg whose branch IS the pin and
+    whose checkout is somewhere else, byte for byte as main prints them."""
+    return (f"  [spec] spec: branch main is at the pin {pin[:12]}, and the "
+            f"checkout is at {head[:12]} ({place}), which is neither\n"
+            "          not moving the checkout off it. Keep any commit made "
+            "there on a branch, check out the pin or the branch in the leg, "
+            "and run bootstrap again.\n")
+
+
+def branch_at_the_new_pin(root: Path, remotes: Path, tmp_path: Path,
+                          branch: str) -> tuple[Path, str]:
+    """A bump to a commit, and the tracking branch brought to it as a pull
+    in the leg would: the leg DETACHED at the pin over a `main` that IS the
+    pin, which is what `bump-leg.py --to` a branch's own tip leaves."""
+    new = bumped(root, remotes, tmp_path, branch)
+    leg = root / "spec"
+    git("branch", "-q", "-f", "main", new, cwd=leg)
+    assert head_ref(leg) is None and rev(leg, MAIN) == new == rev(leg)
+    return leg, new
+
+
+def test_a_commit_made_on_a_leg_detached_at_its_branch_tip_is_not_stranded(
+        root, bootstrapped, tmp_path):
+    """THE ISSUE'S CASE: `bump-leg.py --to` the branch's own tip, a commit
+    made on the leg while it is detached there, then bootstrap. It checked
+    `main` out and printed `on main at <pin>`, and the commit was on no
+    branch, held by HEAD's reflog alone, with nothing said. The leg is left
+    where it is, said, and exits 0 as every refusal in step (a) does."""
+    leg, new = branch_at_the_new_pin(root, bootstrapped["remotes"], tmp_path,
+                                     "advance-branch-tip")
+    git("commit", "-q", "--allow-empty", "-m", "made on the detached leg",
+        cwd=leg)
+    made = rev(leg)
+
+    result = bootstrap(root)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert neither(new, made) in result.stdout, result.stdout
+    assert "[spec] spec: on main at" not in result.stdout
+    assert head_ref(leg) is None and rev(leg) == made, (
+        "the leg is still detached at the commit")
+    assert rev(leg, MAIN) == new, "`main` is not moved"
+    assert git("rev-list", "--count", f"{new}..{made}",
+               cwd=leg).stdout.strip() == "1", "the commit is held where it was"
+
+    git("checkout", "-q", "--detach", new, cwd=leg)
+    again = skip_validators(root)
+    assert f"  [spec] spec: on main at {new[:12]} (branch tip == pin)" in (
+        again.stdout), "the way out the lines name works"
+    assert head_ref(leg) == MAIN
+
+
+def test_a_leg_detached_at_its_branch_tip_with_nothing_made_is_put_on_it(
+        root, bootstrapped, tmp_path):
+    """THE CONTROL: the same state with no commit made. Detached AT the pin
+    is a checkout of the branch that loses nothing, and it is made."""
+    leg, new = branch_at_the_new_pin(root, bootstrapped["remotes"], tmp_path,
+                                     "advance-control")
+
+    result = bootstrap(root)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n" in (
+        result.stdout), result.stdout
+    assert "neither" not in result.stdout
+    assert head_ref(leg) == MAIN and rev(leg) == new
+
+
+def test_a_leg_on_another_branch_with_its_own_branch_at_the_pin_is_as_it_was(
+        root, bootstrapped, tmp_path):
+    """HEAD on ANOTHER branch is left as it always was: that branch holds
+    its commits, so checking `main` out strands nothing, and the checkout
+    is made. `fast_forward_to_pin` refuses the same state for a branch
+    BEHIND the pin; that difference is #458's to rule on, not this one's."""
+    leg, new = branch_at_the_new_pin(root, bootstrapped["remotes"], tmp_path,
+                                     "advance-other-branch")
+    git("checkout", "-q", "-b", "elsewhere", cwd=leg)
+    git("commit", "-q", "--allow-empty", "-m", "work on elsewhere", cwd=leg)
+
+    result = bootstrap(root)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n" in (
+        result.stdout), result.stdout
+    assert head_ref(leg) == MAIN and rev(leg) == new
+    assert rev(leg, "refs/heads/elsewhere") != new, "its commit is on it"
+
+
+def test_a_refused_checkout_over_a_leg_already_on_its_branch_is_said_so(
+        root):
+    """HEAD already on `main` at the pin, and a stale `index.lock`: git
+    refuses the checkout, which would have changed nothing. The line said
+    `checked out, and then git said:` over a checkout that never happened.
+    Git's words still follow, because the same lock blocks the person's next
+    commit."""
+    leg = root / "spec"
+    pin = rev(leg)
+    assert head_ref(leg) == MAIN and rev(leg, MAIN) == pin
+    lock = lock_index(leg)
+
+    result = skip_validators(root)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (f"  [spec] spec: on main at {pin[:12]} (branch tip == pin)\n"
+            "          git refused a checkout that would have changed "
+            "nothing:\n") in result.stdout, result.stdout
+    assert "checked out, and then git said" not in result.stdout
+    assert "index.lock" in result.stdout, "git's own words"
+    assert head_ref(leg) == MAIN and rev(leg) == pin
+
+    lock.unlink()
+    again = skip_validators(root)
+    assert f"  [spec] spec: on main at {pin[:12]} (branch tip == pin)\n" in (
+        again.stdout), "once the lock is gone, nothing more is said"
+    assert "git refused a checkout" not in again.stdout
+    assert "then git said" not in again.stdout
+
+
+def test_a_failing_hook_after_a_real_checkout_still_says_checked_out(
+        root, tmp_path):
+    """The ride-along changes only a checkout that moved nothing. A
+    post-checkout hook that fails after HEAD moved from the pin onto the
+    branch keeps `checked out, and then git said:`: it was checked out."""
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "post-checkout").write_bytes(
+        b"#!/bin/sh\necho 'post-checkout hook failed' >&2\nexit 1\n")
+    (hooks / "post-checkout").chmod(0o755)
+    leg = root / "spec"
+    pin = rev(leg)
+    git("checkout", "-q", "--detach", pin, cwd=leg)
+
+    result = run_script(root / "scripts" / "bootstrap.py",
+                        "--skip-validators", cwd=root,
+                        env=configured("core.hooksPath", hooks.as_posix()))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (f"  [spec] spec: on main at {pin[:12]} (branch tip == pin)\n"
+            "          checked out, and then git said:\n"
+            "          post-checkout hook failed\n") in result.stdout, (
+        result.stdout)
+    assert head_ref(leg) == MAIN and rev(leg) == pin
+
+
+# --- `not moving an existing branch` names where the checkout stays (#533) --
+
+@pytest.mark.parametrize("make, place", [("commit", "detached"),
+                                         ("branch", "on elsewhere")],
+                         ids=["detached off the pin", "on another branch"])
+def test_the_not_moving_line_names_a_checkout_that_is_neither(
+        root, bootstrapped, tmp_path, make, place):
+    """`main` holds a commit the pin lacks, and the leg stands neither on it
+    nor detached at the pin: detached at a commit made after the bump, or on
+    another branch. The line said `The checkout stays at the pin` over a
+    checkout that was not there; it names the commit and the place."""
+    leg = root / "spec"
+    pin = rev(root, "HEAD:spec")
+    git("commit", "-q", "--allow-empty", "-m", "local work", cwd=leg)
+    mine = rev(leg)
+    git("checkout", "-q", "--detach", pin, cwd=leg)
+    new = bumped(root, bootstrapped["remotes"], tmp_path,
+                 f"advance-stays-{make}")
+    if make == "branch":
+        git("checkout", "-q", "-b", "elsewhere", cwd=leg)
+    git("commit", "-q", "--allow-empty", "-m", "made after the bump", cwd=leg)
+    head = rev(leg)
+
+    result = bootstrap(root)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not_moving(new, mine, f"at {head[:12]} ({place})") in (
+        result.stdout), result.stdout
+    assert "stays at the pin" not in result.stdout
+    assert rev(leg, MAIN) == mine and rev(leg) == head
+
+
+def test_the_bump_prints_that_bootstrap_places_the_leg_or_says_why_not(
+        root, bootstrapped, tmp_path):
+    """`bump-leg.py` said `make bootstrap in the root re-places it on its
+    tracking branch AT the new pin` after every bump. Since #490 bootstrap
+    leaves a leg alone where placing it would lose a commit, and says why;
+    the line says the same."""
+    new = advance(bootstrapped["remotes"], tmp_path, "advance-printed")
+
+    result = bump_spec(root, bootstrapped["remotes"], new)
+    assert (f"  spec/ is left DETACHED at {new[:12]}; `make bootstrap` in the "
+            "root puts it on its tracking branch AT the new pin, or says "
+            "why not\n") in result.stdout, result.stdout
+    assert "re-places" not in result.stdout

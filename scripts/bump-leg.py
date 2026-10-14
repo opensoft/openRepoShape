@@ -1512,7 +1512,8 @@ def cmd_bump(args) -> int:
         + body, args.trailer)
     print(f"\n  committed {head[:12]}: " + ", ".join(staged))
     print(f"  {path}/ is left DETACHED at {commit[:12]}; `make bootstrap` in "
-          "the root re-places it on its tracking branch AT the new pin")
+          "the root puts it on its tracking branch AT the new pin, or says "
+          "why not")
     print(f"\nNEXT  git -C {root} push -u origin {branch}")
     print(f"      then open a pull request against {project.tracking}; never "
           "push the bump to the default branch directly")
