@@ -50,7 +50,8 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import (ADOPT, DEFAULT_EDITS, FILE_PROTOCOL, SYNTHETIC_TREE,
-                      git, make_source_repo, resolve, run_script, write_plan)
+                      cloned_just_pushed, git, make_source_repo, resolve,
+                      run_script, write_plan)
 
 #: What the end-to-end tests need and the mount tests do not. Spelled here
 #: rather than imported from another test module, so that the files do not
@@ -193,9 +194,9 @@ def head(repo: Path) -> str:
     return git("rev-parse", "HEAD", cwd=repo).stdout.strip()
 
 
-def clone(source: Path, destination: Path, *options: str) -> None:
-    git(*FILE_PROTOCOL, "clone", "-q", *options, str(source),
-        str(destination), cwd=destination.parent)
+def clone(source: Path, destination: Path) -> None:
+    git(*FILE_PROTOCOL, "clone", "-q", str(source), str(destination),
+        cwd=destination.parent)
 
 
 def assembly_of(source: Path, tmp_path: Path) -> Path:
@@ -621,8 +622,7 @@ def test_the_assembly_whose_gitignore_hides_its_mounts_bootstraps(adopted,
     """With #167's forced staging of the shape's own files, nothing else
     stands between this source and a working assembly."""
     assert adopted.result.returncode == 0, adopted.result.stderr
-    checkout = tmp_path / PROJECT
-    clone(adopted.source, checkout, "--recurse-submodules", "-b", BRANCH)
+    checkout = cloned_just_pushed(adopted.source, tmp_path / PROJECT, BRANCH)
     bootstrapped = run_script(checkout / "scripts" / "bootstrap.py",
                               cwd=checkout)
     output = bootstrapped.stderr + bootstrapped.stdout

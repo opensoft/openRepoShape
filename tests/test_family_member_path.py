@@ -49,7 +49,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import git, run_script
+from conftest import cloned_just_pushed, git, run_script
 #: The family fixture, its names and the offline environment, imported from
 #: the modules that own them rather than rebuilt: a holder made any other way
 #: would test a different holder.
@@ -254,8 +254,8 @@ def test_bump_refuses_a_row_naming_a_directory_that_is_really_there(
     as a gitlink of its own. The refusal comes before all of that: the clone
     stays where it was."""
     env = isolated(offline, tmp_path)
-    git("clone", "-q", str(family["remotes"] / f"{MEMBER}.git"), GLOB,
-        cwd=holder)
+    cloned_just_pushed(family["remotes"] / f"{MEMBER}.git", holder / GLOB,
+                       recurse=False)
     star = holder / "members" / "*"
     assert (star / ".git").exists(), "premise: the literal checkout is there"
     tip = raw(star, env, "rev-parse", "HEAD").stdout

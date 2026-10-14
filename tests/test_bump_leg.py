@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ORG, PROJECT, REPO, git, run_script
+from conftest import ORG, PROJECT, REPO, cloned_just_pushed, git, run_script
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
@@ -79,12 +79,9 @@ jobs:
 @pytest.fixture(scope="module")
 def advanced(scaffolded, tmp_path_factory) -> str:
     """A real new commit on the spec leg's bare remote; returns its sha."""
-    work = tmp_path_factory.mktemp("spec-advance") / f"{PROJECT}-spec"
-    proc = subprocess.run(
-        ["git", "clone", "-q",
-         str(scaffolded["remotes"] / f"{PROJECT}-spec.git"), str(work)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    work = cloned_just_pushed(
+        scaffolded["remotes"] / f"{PROJECT}-spec.git",
+        tmp_path_factory.mktemp("spec-advance") / f"{PROJECT}-spec")
     (work / "NEW-CONTRACT.md").write_text("# a contract the leg gained\n")
     git("add", "--", "NEW-CONTRACT.md", cwd=work)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",

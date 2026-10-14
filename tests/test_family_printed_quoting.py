@@ -43,7 +43,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, git, run_script
+from conftest import NO_BYTECODE, REPO, git, run_script
 #: The family fixture and its names, imported from the module that owns them.
 from test_family import (  # noqa: F401
     FAMILY, NAME, ORG, SPARE, family, manifest, validate,
@@ -372,7 +372,7 @@ def test_the_siblings_mv_lines_paste_whole_and_move_the_holder(family,
     move the holder to `<tmp>/InkRouter/InkRouter`."""
     holder = copied_holder(family, tmp_path / folder)
     result = run_script(FAMILY, "siblings", "--family-root", str(holder),
-                        "--dry-run")
+                        "--dry-run", env=NO_BYTECODE)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "NOTHING WAS MOVED" in result.stderr
     assert "in a POSIX shell (Git Bash" in result.stderr
