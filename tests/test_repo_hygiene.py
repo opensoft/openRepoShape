@@ -1832,13 +1832,21 @@ HANDBOOK_RETIRED_README_BLOB = re.compile(
 
 #: The sentence that closes the footer's history (#519). Before it are the
 #: "added (#N)" clauses README pull requests wrote there until ruling 29,
-#: kept as they were written; an "added (#N)" clause after it is the retired
-#: convention coming back. Keyed on the sentence, never on the last number
-#: before it: a pull request opened before #519 landed may still bring its
-#: clause in with a merge, and that clause is history too.
+#: kept as they were written, and nothing follows it.
 HANDBOOK_HISTORY_END = re.compile(
     r"That\s+list\s+is\s+history,\s+and\s+it\s+ends\s+there\.")
-HANDBOOK_ADDED_CLAUSE = re.compile(r"added\s+\(#[0-9]+\)")
+HANDBOOK_ADDED_CLAUSE = re.compile(r"added\s+\(#([0-9]+)\)")
+
+#: THE HISTORY, FROZEN (#519): the issue or pull request numbers of the
+#: footer's "added (#N)" clauses, in the order the footer gives them. The
+#: footer carries exactly these, in this order and before the closing
+#: sentence, so a new clause is refused wherever it is put - before the
+#: closing sentence as much as after it. The convention retired with
+#: ruling 29; a section's markers say what it read, and the test checks
+#: them. This tuple does not grow.
+HANDBOOK_HISTORY_CLAUSES = (
+    97, 99, 154, 163, 211, 207, 288, 289, 383, 341, 477, 411, 424, 476, 492,
+    483, 498, 462, 487, 500, 499, 502)
 
 #: What a marker calls the text before README.md's first `## ` heading. Every
 #: other segment is called by its heading's text.
@@ -1930,11 +1938,22 @@ README_ATX_H2 = re.compile(r" {0,3}##(?:[ \t]|$)")
 README_SETEXT_H2 = re.compile(r" {0,3}-+[ \t]*")
 
 #: A line that a `-` run under it does NOT turn into a heading, because it is
-#: no paragraph text: a blank, an ATX heading, a list item, a block quote, a
-#: table row, an HTML line, indented code, or a thematic break.
+#: no top-level paragraph text: a blank, an ATX heading, a block quote, a
+#: table row, an HTML line, a thematic break, a line indented by a tab or
+#: four spaces, or a list item (`README_LIST_ITEM`).
 README_NOT_PARAGRAPH = re.compile(
-    r"[ \t]*$| {0,3}(?:#{1,6}(?:[ \t]|$)|[-*+](?:[ \t]|$)"
-    r"|[0-9]{1,9}[.)](?:[ \t]|$)|>|\||<|(?:[-*_][ \t]*){3,}$)| {4}")
+    r"[ \t]*$| {0,3}(?:#{1,6}(?:[ \t]|$)|>|\||<|(?:[-*_][ \t]*){3,}$)"
+    r"| {0,3}\t| {4}")
+
+#: A list item's first line: a bullet, or a number and `.` or `)`, then a
+#: blank or the end of the line.
+README_LIST_ITEM = re.compile(r" {0,3}(?:[-*+]|[0-9]{1,9}[.)])(?:[ \t]|$)")
+
+#: A line that starts a block of its own, and so is never the lazy
+#: continuation of a paragraph in a list item or a block quote: an ATX
+#: heading, a thematic break, an HTML line or a table row.
+README_BLOCK_START = re.compile(
+    r" {0,3}(?:#{1,6}(?:[ \t]|$)|(?:[-*_][ \t]*){3,}$|<|\|)")
 
 
 def _readme_lines(text):
@@ -1986,21 +2005,48 @@ def readme_segments(text):
 
 
 def readme_uncut_h2s(text):
-    """`(line number, line)` of every line outside a code fence that GitHub
-    renders as a `##` heading and `readme_segments` does not cut at: an ATX
-    `##` indented one to three spaces or followed by a tab, and a setext
-    heading, paragraph text underlined with `-`. Its text would be read as
-    the section above it, and a marker would name the wrong one."""
-    found, previous = [], None
+    """`(line number, line, setext)` of every line outside a code fence that
+    GitHub renders as a `##` heading and `readme_segments` does not cut at:
+    an ATX `##` indented one to three spaces or followed by a tab or nothing,
+    and a setext underline, a `-` run under top-level paragraph text. Its
+    text would be read as the section above it, and a marker would name the
+    wrong one.
+
+    A paragraph inside a list item or a block quote is no top-level text: a
+    setext underline can be no lazy continuation line, so a `-` run under it
+    at the left margin is a horizontal rule. `contained` says the paragraph
+    being read is in one: a list item or a quote line opens it, and the
+    lines that continue it - lazily, or indented two or more columns while
+    a list is open - keep it; a blank line ends it, and a list closes at the
+    first other line back at the left margin. An approximation of
+    CommonMark, erring toward passing: a nested container or a lazy line
+    indented four columns is read as continuing the paragraph it follows.
+    """
+    found, previous, contained, listing = [], None, False, False
     for number, (line, outside) in enumerate(_readme_lines(text), 1):
         body = line.rstrip("\r\n")
-        if outside:
-            if README_ATX_H2.match(body) and not body.startswith("## "):
-                found.append((number, body))
-            elif (README_SETEXT_H2.fullmatch(body) and previous is not None
-                  and not README_NOT_PARAGRAPH.match(previous)):
-                found.append((number, body))
-        previous = body if outside else None
+        if not outside:
+            previous, contained = None, False
+            continue
+        if README_ATX_H2.match(body) and not body.startswith("## "):
+            found.append((number, body, False))
+        elif (README_SETEXT_H2.fullmatch(body) and previous is not None
+              and not contained and not README_NOT_PARAGRAPH.match(previous)
+              and not README_LIST_ITEM.match(previous)):
+            found.append((number, body, True))
+        indented = body[:2] in ("  ", " \t") or body.startswith("\t")
+        if not body.strip():
+            contained = False
+        elif README_LIST_ITEM.match(body):
+            contained = listing = True
+        elif body.lstrip(" ").startswith(">"):
+            contained = True
+        elif listing and indented:
+            contained = True
+        elif not (contained and previous and previous.strip()
+                  and not README_BLOCK_START.match(body)):
+            contained = listing = False
+        previous = body
     return found
 
 
@@ -2045,13 +2091,16 @@ def readme_text_problems(readme):
         f"README.md:{number}: `{line}` makes a `##` heading on GitHub, and "
         "the README is cut into segments only at a line that starts `## `, "
         "so its text would be read as part of the section above it; write it "
-        "as `## <name>` at the start of the line."
-        for number, line in readme_uncut_h2s(readme)]
+        "as `## <name>` at the start of the line"
+        + (" - or, if you meant a horizontal rule, put a blank line above it."
+           if setext else ".")
+        for number, line, setext in readme_uncut_h2s(readme)]
     return problems
 
 
 def handbook_parts(page):
-    """`(id, start, end)` of the masthead, each section and the footer.
+    """`(id, start, end, body)` of the masthead, each section and the
+    footer, `body` being where the part's opening tag ends.
 
     A part with no `id` is named by its tag, which no table names, so a
     marker inside one still fails by a name somebody can search for.
@@ -2060,7 +2109,7 @@ def handbook_parts(page):
     for match in HANDBOOK_PART.finditer(page):
         found = re.search(r'(?:^|\s)id="([^"]+)"', match.group(2))
         parts.append((found.group(1) if found else match.group(1),
-                      match.start(), match.end()))
+                      match.start(), match.end(), match.end(2) + 1))
     return parts
 
 
@@ -2099,8 +2148,9 @@ def _handbook_markers(page, parts, problems):
                 "README.md § <heading, or preamble>: blob <40 hex> -->`, and "
                 "a mistyped one would be skipped by every check here.")
             continue
-        part = next((name for name, start, end in parts
-                     if start <= comment.start() < end), None)
+        part, body_start = next(((name, body) for name, start, end, body
+                                 in parts if start <= comment.start() < end),
+                                (None, None))
         if part is None:
             problems.append(
                 f"docs/handbook.html:{line}: the marker for README.md § "
@@ -2110,16 +2160,20 @@ def _handbook_markers(page, parts, problems):
                 "reads it.")
             continue
         why = _marker_layout(lines, line - 1, comment.group(0))
+        if HANDBOOK_MARKER.sub("", page[body_start:comment.start()]).strip():
+            why.append("is not at the top of its section")
         if why and line not in misplaced:
             misplaced.add(line)
             problems.append(
                 f"docs/handbook.html:{line}: the marker for README.md § "
                 f"{found.group(1)} {' and '.join(why)}. A marker stands alone "
                 "on its line, with a blank line above and below it, at the "
-                "top of its section: git merges two pull requests that each "
-                "change one line only when an unchanged line stands between "
-                "them, so a marker beside page text or another marker "
-                "conflicts with the pull request that edits its neighbour.")
+                "top of its section - nothing but blank lines and other "
+                "markers between it and the opening tag: git merges two pull "
+                "requests that each change one line only when an unchanged "
+                "line stands between them, so a marker beside or among page "
+                "text conflicts with the pull request that edits or deletes "
+                "its neighbour.")
         markers.append((found.group(1), found.group(2), line, part,
                         comment.group(0)))
     return markers
@@ -2231,7 +2285,7 @@ def handbook_marker_problems(readme, page, heading_to_id, reads):
         for name in names if name in doubled]
 
     parts = handbook_parts(page)
-    part_names = list(dict.fromkeys(name for name, _, _ in parts))
+    part_names = list(dict.fromkeys(part[0] for part in parts))
     markers = _handbook_markers(page, parts, problems)
 
     lines_of = {}
@@ -2288,10 +2342,10 @@ def handbook_marker_problems(readme, page, heading_to_id, reads):
     return problems
 
 
-def handbook_footer_problems(page):
+def handbook_footer_problems(page, clauses=HANDBOOK_HISTORY_CLAUSES):
     """The footer's history stays history (#519): no hash of the whole
     README in any spelling, one sentence closing the "added (#N)" clauses,
-    and no such clause after it."""
+    exactly `clauses` before it, in that order, and none after it."""
     problems = []
     retired = [" ".join(found.group(0).split())
                for found in HANDBOOK_RETIRED_README_BLOB.finditer(page)]
@@ -2318,6 +2372,21 @@ def handbook_footer_problems(page):
                 "README pull request no longer writes an \"added (#N)\" "
                 "clause: each section's markers say what it read, and this "
                 "test checks them (#519).")
+    footer = re.search(r"<footer\b.*?</footer>", page, re.S)
+    said = tuple(int(found.group(1)) for found in
+                 HANDBOOK_ADDED_CLAUSE.finditer(footer.group(0) if footer
+                                                else ""))
+    if said != tuple(clauses):
+        new = [number for number in said if number not in clauses]
+        problems.append(
+            f"docs/handbook.html's footer gives \"added (#N)\" clauses for "
+            f"{list(said)}, and its history is frozen at "
+            f"HANDBOOK_HISTORY_CLAUSES, {list(clauses)}, in that order"
+            + (f"; {new} {'is' if len(new) == 1 else 'are'} new" if new
+               else "") +
+            ". A README pull request no longer writes an \"added (#N)\" "
+            "clause, before the closing sentence or after it: each section's "
+            "markers say what it read, and this test checks them (#519).")
     return problems
 
 
@@ -2357,10 +2426,11 @@ def test_the_handbook_follows_the_readmes_outline():
            maps is in the row of the section it maps to, so the two tables
            and the markers tell one story.
        Around those, a marker that is mistyped, outside every page section,
-       repeated in one section, or not alone between blank lines is refused;
-       so is a carriage return in README.md, a `##` heading spelt so the cut
-       would miss it, and, in the footer, a hash of the whole README or an
-       "added (#N)" clause after its history closes.
+       repeated in one section, not alone between blank lines, or below
+       anything but the opening tag and other markers is refused; so is a
+       carriage return in README.md, a `##` heading spelt so the cut would
+       miss it, and, in the footer, a hash of the whole README or any
+       "added (#N)" clause but the frozen `HANDBOOK_HISTORY_CLAUSES`.
 
     THE FIX WHEN (4c) GOES RED IS TO RE-READ, and #89 is the precedent for
     what that means: read what changed in the segment it names since the page

@@ -171,21 +171,25 @@ def test_a_fingerprint_moves_with_one_byte():
     assert readme_fingerprint("a\nb\n") != readme_fingerprint("a\nb \n")
 
 
-@pytest.mark.parametrize("added", [
-    "  ## Indented\n",
-    "   ## Indented three\n",
-    "##\tTabbed\n",
-    "##\n",
-    "Paragraph text\n---\n",
-    "Paragraph text\n  -\n",
+@pytest.mark.parametrize("added, setext", [
+    ("  ## Indented\n", False),
+    ("   ## Indented three\n", False),
+    ("##\tTabbed\n", False),
+    ("##\n", False),
+    ("Paragraph text\n---\n", True),
+    ("Paragraph text\n  -\n", True),
+    ("- item\n\nTop-level paragraph after the list\n---\n", True),
 ])
-def test_a_heading_github_renders_that_the_cut_misses_is_refused(added):
+def test_a_heading_github_renders_that_the_cut_misses_is_refused(added,
+                                                                 setext):
     readme = README + "\n" + added
     said = only(problems_with(page_reading(readme), readme),
                 "makes a `##` heading on GitHub")
     line = README.count("\n") + 1 + added.count("\n")
     assert said.startswith(f"README.md:{line}: `{added.splitlines()[-1]}`")
     assert "write it as `## <name>` at the start of the line" in said
+    hint = "or, if you meant a horizontal rule, put a blank line above it"
+    assert (hint in said) is setext
 
 
 @pytest.mark.parametrize("added", [
@@ -196,6 +200,14 @@ def test_a_heading_github_renders_that_the_cut_misses_is_refused(added):
     "# Title\n---\n",
     "```\n  ## inside a fence\n```\n",
     "    ## indented code\n",
+    # The review of PR #551's three: a horizontal rule after a list item's
+    # continuation line, after a lazy block-quote line, and after a line
+    # indented by a tab or four spaces. None is a heading.
+    "- item\n  its continuation\n---\n",
+    "> quoted\nlazy continuation of the quote\n---\n",
+    "\tindented by a tab\n---\n",
+    "    indented four spaces\n---\n",
+    "- item\n\n  a second paragraph of the item\n---\n",
 ])
 def test_what_github_does_not_render_as_a_heading_passes(added):
     readme = README + "\n" + added
@@ -314,11 +326,16 @@ PREAMBLE = marker("preamble", blobs_of(README)["preamble"])
      f"{FIRST}\n  <p>What first says.</p>", "has no blank line below it"),
     (f"{FIRST}\n\n  <p>What first says.</p>",
      f"{FIRST} <p>What first says.</p>", "shares its line"),
+    (f'<section id="first">\n\n{FIRST}\n\n  <p>What first says.</p>\n',
+     f'<section id="first">\n\n  <p>What first says.</p>\n\n{FIRST}\n\n',
+     "is not at the top of its section"),
 ])
 def test_a_marker_stands_alone_between_blank_lines(before, after, why):
     """A marker beside page text conflicts with the pull request that
     rewords that text for another README section; two on one line conflict
-    with each other. The review of PR #551 merged exactly that conflict."""
+    with each other. The review of PR #551 merged exactly that conflict, and
+    then a marker moved below a paragraph, blank lines and all, conflicting
+    with a branch that deleted the paragraph: so a marker is at the top."""
     page = page_reading(README)
     assert before in page
     said = only(problems_with(page.replace(before, after, 1)), why)
@@ -364,16 +381,34 @@ FOOTER = ('<footer id="licence"><p class="meta">First cut (#71); a row '
           "added (#97); the verdict added (#502). That\n      list is "
           "history, and it ends there.</p>\n<p class=\"meta\">Each section "
           "that reads the README records it (#519).</p></footer>")
+CLAUSES = (97, 502)
+
+
+def footer_problems(page):
+    return handbook_footer_problems(page, CLAUSES)
 
 
 def test_a_closed_footer_history_has_no_problem():
-    assert handbook_footer_problems(FOOTER) == []
+    assert footer_problems(FOOTER) == []
 
 
-def test_a_clause_merged_into_the_history_before_it_closes_is_history():
-    merged = FOOTER.replace("(#502). That", "(#502); a block added (#471). "
-                                             "That")
-    assert handbook_footer_problems(merged) == []
+def test_a_new_clause_before_the_history_closes_is_refused():
+    """The review of PR #551 slipped `a new row, added (#600)` in before the
+    closing sentence and the check, which looked only after it, passed. The
+    history is a fixed list of numbers now."""
+    new = FOOTER.replace("(#502). That", "(#502); a new row, added (#600). "
+                                         "That")
+    said = only(footer_problems(new), "gives \"added (#N)\" clauses for "
+                                      "[97, 502, 600]")
+    assert "frozen at HANDBOOK_HISTORY_CLAUSES, [97, 502]" in said
+    assert "[600] is new" in said
+
+
+def test_the_frozen_history_keeps_its_order():
+    swapped = FOOTER.replace("added (#97)", "added (#X)").replace(
+        "added (#502)", "added (#97)").replace("added (#X)", "added (#502)")
+    said = only(footer_problems(swapped), "clauses for [502, 97]")
+    assert "in that order" in said and "is new" not in said
 
 
 @pytest.mark.parametrize("retired", [
@@ -382,7 +417,7 @@ def test_a_clause_merged_into_the_history_before_it_closes_is_history():
     "README.md blob AE817C5FDB324FF6",
 ])
 def test_a_hash_of_the_whole_readme_is_refused_in_any_spelling(retired):
-    said = only(handbook_footer_problems(FOOTER.replace(
+    said = only(footer_problems(FOOTER.replace(
         "</footer>", f"<p>{retired}</p></footer>")), "retired by #519")
     assert " ".join(retired.split()) in said
 
@@ -390,12 +425,12 @@ def test_a_hash_of_the_whole_readme_is_refused_in_any_spelling(retired):
 def test_an_added_clause_after_the_history_closes_is_refused():
     late = FOOTER.replace("records it (#519).",
                           "records it (#519); a section added (#560).")
-    only(handbook_footer_problems(late), "adds ['added (#560)'] after the "
-                                         "footer's history closed")
+    only(footer_problems(late), "adds ['added (#560)'] after the footer's "
+                                "history closed")
 
 
 def test_the_history_closes_once():
-    only(handbook_footer_problems(FOOTER.replace("it ends there", "it is")),
+    only(footer_problems(FOOTER.replace("it ends there", "it is")),
          "must close the footer's history once", "it does 0 times")
 
 
