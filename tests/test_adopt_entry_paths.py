@@ -17,8 +17,8 @@ path reaches `git` reads it literally.
 `check` to refuse that answer.
 
 NO NETWORK AND NO GITHUB. `git filter-repo` is needed only by the end-to-end
-test at the bottom, which skips without it as `test_adopt_e2e.py` does; the
-Windows job installs none, so there it is the tests above it that run. They
+test at the bottom, which skips without it as `test_adopt_e2e.py` does; on a
+machine that has none, it is the tests above it that run. They
 load `adopt-project.py` through importlib and stub its probe for the tool, as
 `test_adopt_execute_refusals.py` does: every refusal under test is raised
 before the tool would be used.

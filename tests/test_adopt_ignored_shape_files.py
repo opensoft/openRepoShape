@@ -9,6 +9,13 @@ with `adoption verified`, because `_verify` accounts for the SOURCE's paths and
 never for the ones the shape added. The assembly then failed its first
 bootstrap with `shape-copy-missing`.
 
+The source that tracks its OWN `.gitattributes` is also where Windows failed
+(#471): the shape's `* text=auto eol=lf` goes beside it, under `shape/`, and
+governs nothing at the root, so a checkout that writes CRLF -- Git for
+Windows' default -- broke every pinned copy's digest there. The split now
+appends one block of `text eol=lf` lines for those copies to the source's
+own file, and the end-to-end tests clone it with a checkout that writes CRLF.
+
 Two halves, so two groups of tests: the split now FORCES the shape's own paths
 (and only those), and the verification now FAILS when a pinned file is not in
 the split commit. Both read a path the way a checkout does, through any
@@ -16,14 +23,15 @@ symlink the plan kept in the root: the forced add stages a file where the link
 put it, and the check finds a pinned file through the split tree's own links,
 so it agrees with the first bootstrap. All repositories and remotes are local
 fixtures; no network is used. The end-to-end tests need `git filter-repo`; the
-others do not, so they run on the Windows job, which installs none -- except
-the ones that make a symlink on the DISK, which skip there.
+others do not, so they run on a machine that has none too. The ones that make
+a symlink on the DISK skip on Windows.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,7 +46,9 @@ from conftest import (ADOPT, FILE_PROTOCOL, REPO, clear_ambient_pin_sources,
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import parse_yaml  # noqa: E402
-from shape_materialize import Materialized, root_key  # noqa: E402
+from shape_materialize import (  # noqa: E402
+    EOL_BLOCK_HEAD, Materialized, eol_block, root_key,
+)
 
 #: What the end-to-end tests need and the rest do not: they call the two new
 #: helpers on hand-made repositories, so they run on a machine with no
@@ -529,9 +539,21 @@ def test_the_split_lands_the_files_the_pin_names(adopted):
     assert {adopted.attributes, WORKFLOW} <= rows
     assert rows <= tree, f"pinned but not in the split: {sorted(rows - tree)}"
     if adopted.own:
-        # Beside, not over: the source's own bytes are where they were.
-        assert git("show", f"{BRANCH}:{ATTRIBUTES}",
-                   cwd=adopted.source).stdout == OWN_ATTRIBUTES
+        # Beside, and ONE BLOCK AFTER (#471, Brett Heap 2026-10-12T22:48Z):
+        # the source's own bytes are where they were and come first, and all
+        # that follows them is a `text eol=lf` line for each pinned copy
+        # outside `shape/`, in the pin's order. Nothing under `shape/`, which
+        # the shape's own copy governs.
+        outside = [row["path"] for row in pin["files"]
+                   if not row["path"].startswith("shape/")]
+        text = git("show", f"{BRANCH}:{ATTRIBUTES}",
+                   cwd=adopted.source).stdout
+        assert text == OWN_ATTRIBUTES + eol_block(outside), text
+        assert text.startswith(f"{OWN_ATTRIBUTES}{EOL_BLOCK_HEAD}\n")
+        for path in (MAKEFILE, WORKFLOW, "AGENTS-shape.md",
+                     "scripts/bootstrap.py", "scripts/validate-pins.py"):
+            assert f"\n/{path} text eol=lf\n" in text, path
+        assert "/shape/" not in text and README not in text
 
 
 @needs_filter_repo
@@ -543,6 +565,59 @@ def test_the_assembly_bootstraps_where_it_failed_with_shape_copy_missing(
     bootstrapped = run_script(clone / "scripts" / "bootstrap.py", cwd=clone)
     output = bootstrapped.stderr + bootstrapped.stdout
     assert "shape-copy-missing" not in output, output
+    assert bootstrapped.returncode == 0, output
+
+
+#: Two ways a checkout writes CRLF: Git for Windows' installer default, and
+#: the line ending a `text` file takes on Windows when its attributes say
+#: `text=auto` and no `eol` (`core.eol=native`). Either is what a Windows
+#: colleague's first clone of the assembly does (#471); CI's Windows job has
+#: the second, with `core.autocrlf=false`.
+CRLF_CHECKOUTS = [pytest.param("core.autocrlf", "true", id="autocrlf"),
+                  pytest.param("core.eol", "crlf", id="eol-crlf")]
+
+
+def command_scope(key: str, value: str) -> dict:
+    """`key=value` in git's command scope for every git a run starts,
+    APPENDED to what the environment holds: the Windows job sets
+    `core.autocrlf=false` there, which outranks any config file, so a
+    clone's own `--config` would not reach its checkout. The last entry of a
+    key is the one git reads."""
+    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+    return {**os.environ, "GIT_CONFIG_COUNT": str(held + 1),
+            f"GIT_CONFIG_KEY_{held}": key, f"GIT_CONFIG_VALUE_{held}": value}
+
+
+@needs_filter_repo
+@pytest.mark.parametrize(("key", "value"), CRLF_CHECKOUTS)
+def test_a_checkout_that_writes_crlf_still_bootstraps(adopted, tmp_path, key,
+                                                     value):
+    """The assembly cloned the way Windows clones it: every pinned copy is
+    on the disk with the bytes the pin records, and the first bootstrap
+    passes. Before #471 the source with attributes of its own failed here
+    with shape-copy-drift on all nine copies at the root.
+
+    THE CONTROL IS IN THE SAME CLONE: the source's own `README.md` is not a
+    shape copy, its `* text=auto` alone governs it, and it IS checked out
+    with CRLF, so the setting reached the checkout and the pass means what
+    it says."""
+    clone = tmp_path / PROJECT
+    cloned = subprocess.run(
+        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
+         BRANCH, str(adopted.source), str(clone)], cwd=str(tmp_path),
+        env=command_scope(key, value), capture_output=True, text=True,
+        check=False)
+    assert cloned.returncode == 0, cloned.stderr
+    if adopted.own:
+        assert b"\r\n" in (clone / README).read_bytes(), \
+            "this clone did not write CRLF, so it tests nothing"
+    pin = parse_yaml((clone / PIN).read_text(encoding="utf-8"))
+    crlf = [row["path"] for row in pin["files"]
+            if b"\r\n" in (clone / row["path"]).read_bytes()]
+    assert crlf == [], f"pinned copies checked out with CRLF: {crlf}"
+    bootstrapped = run_script(clone / "scripts" / "bootstrap.py", cwd=clone)
+    output = bootstrapped.stderr + bootstrapped.stdout
+    assert "shape-copy-drift" not in output, output
     assert bootstrapped.returncode == 0, output
 
 
@@ -739,3 +814,132 @@ def test_a_source_pin_kept_in_the_root_fails_verification_with_the_plan_answer(
     assert "fix the plan and re-run" in after
     assert after.rstrip().endswith(f"--delete {BRANCH}"), result.stderr
     assert git("show", f"{BRANCH}:{PIN}", cwd=source).stdout == own_pin
+
+
+# ---------------------------------------------------------------------------
+# #471's review: a linked `.gitattributes`, and a linked `contracts`
+# ---------------------------------------------------------------------------
+
+#: A source whose root `.gitattributes` is a symlink to `config/attributes`.
+LINKED_ATTRIBUTES_TREE = {
+    README: "# Thing\n",
+    IGNORE_FILE: "__pycache__/\n",
+    "specs/001-feature/spec.md": "# The feature\n",
+    "src/app/main.py": "import contracts_reader\n",
+    "config/attributes": OWN_ATTRIBUTES,
+}
+
+
+def planned_and_checked(source: Path, base: Path, env: dict | None = None,
+                        keep: tuple = ()) -> Path:
+    """The plan for `source`, each path in `keep` answered `root`, checked."""
+    plan = base / "adoption-plan.yaml"
+    written = run_script(ADOPT, "plan", "--source", str(source), "--project",
+                         PROJECT, "--org", "testorg", "--elected-by",
+                         "Test Human", "--elected-on", "2026-09-02", "--out",
+                         str(plan), env=env)
+    assert written.returncode == 0, written.stderr + written.stdout
+    for path in keep:
+        text = plan.read_text(encoding="utf-8")
+        if f"  - path: {path}\n    leg: null\n" in text:
+            resolve(plan, path, "root", "the project's own, kept at the root")
+            continue
+        answered = re.search(rf"(?m)^  - path: {re.escape(path)}\n"
+                             r"    leg: (spec|code|drop)\n", text)
+        if answered:
+            with plan.open("w", encoding="utf-8", newline="\n") as handle:
+                handle.write(text.replace(
+                    answered.group(0),
+                    f"  - path: {path}\n    leg: root\n    resolution: "
+                    "\"the project's own, kept at the root\"\n", 1))
+        assert f"  - path: {path}\n    leg: root\n" in \
+            plan.read_text(encoding="utf-8"), f"{path} is not kept in the root"
+    checked = run_script(ADOPT, "check", "--plan", str(plan), env=env)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    return plan
+
+
+@needs_filter_repo
+def test_a_linked_attributes_file_checked_out_as_a_plain_file_adopts(
+        tmp_path):
+    """Git for Windows' default `core.symlinks=false`, on every platform: the
+    link is in the source's TREE only (`update-index --cacheinfo`), and every
+    git the run starts checks it out as a plain file holding its target.
+    The split used to append the block into that file, so the link's target
+    became the old one followed by the block, and `execute` printed "none of
+    its own lines was changed" and then failed `adopt-lost: .gitattributes`
+    after both legs were pushed; main verified the same source (#471's
+    review, MUST-1). Now nothing is written through, the split holds the
+    source's link as it was, and the plan's follow-up says no block was
+    appended and lists the lines a regular file needs (SHOULD-2)."""
+    source = make_source_repo(tmp_path / "Thing", tree=LINKED_ATTRIBUTES_TREE)
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(source), input=b"config/attributes",
+                          capture_output=True, check=True)
+    link = blob.stdout.decode("utf-8").strip()
+    git("update-index", "--add", "--cacheinfo",
+        f"{SYMLINK},{link},{ATTRIBUTES}", cwd=source)
+    commit_index(source, "Link our attributes")
+    env = command_scope("core.symlinks", "false")
+    plan = planned_and_checked(source, tmp_path, env,
+                               keep=(ATTRIBUTES, "config/"))
+    planned = plan.read_text(encoding="utf-8")
+    assert f"{ATTRIBUTES} is a symlink, so the split appended nothing" \
+        in planned, planned
+    assert EOL_BLOCK_HEAD in planned
+
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"), env=env)
+
+    output = result.stderr + result.stdout
+    assert result.returncode == 0, output
+    assert "adoption verified" in result.stdout, output
+    assert f"appended to {ATTRIBUTES}" not in result.stdout, output
+    entry = git("ls-tree", BRANCH, "--", ATTRIBUTES, cwd=source).stdout
+    assert entry.split("\t")[0].split() == [SYMLINK, "blob", link], entry
+    message = git("log", "-1", "--format=%B", BRANCH, cwd=source).stdout
+    assert f"APPENDED TO {ATTRIBUTES}" not in message
+    assert f"{ATTRIBUTES} is a symlink, so the split appended nothing" \
+        in " ".join(message.split()), message
+
+
+@needs_filter_repo
+@needs_disk_symlinks
+def test_own_attributes_and_a_linked_contracts_kept_in_the_root_adopt(
+        tmp_path):
+    """The source keeps its own `.gitattributes` AND `contracts -> meta` at
+    the root. The materializer writes the shape's pin through the link, to
+    `meta/shape-pin.yaml`, and the verification read the pin among the
+    split's plain files only, found none, and called the appended
+    `.gitattributes` lost where main verified the same source (#471's
+    review, SHOULD-3). It reads the pin through the links now, as the
+    shape-file check does."""
+    source = make_source_repo(
+        tmp_path / "Thing",
+        tree={README: "# Thing\n", IGNORE_FILE: "__pycache__/\n",
+              "specs/001-feature/spec.md": "# The feature\n",
+              "src/app/main.py": "import contracts_reader\n",
+              "meta/README.md": "# Project metadata\n",
+              ATTRIBUTES: OWN_ATTRIBUTES})
+    symlink(source / "contracts", "meta")
+    commit_all(source, "Link contracts to meta")
+    plan = planned_and_checked(source, tmp_path,
+                               keep=("contracts", "meta/", ATTRIBUTES))
+
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+
+    output = result.stderr + result.stdout
+    assert result.returncode == 0, output
+    assert "adoption verified" in result.stdout, output
+    assert f"root   {ATTRIBUTES} is the source's own bytes, then the " \
+        "shape's block" in result.stdout, output
+    modes = {line.split("\t", 1)[1]: line.split(" ", 1)[0]
+             for line in git("ls-tree", "-r", BRANCH,
+                             cwd=source).stdout.splitlines()}
+    assert modes["contracts"] == SYMLINK
+    assert "meta/shape-pin.yaml" in modes
+    text = git("show", f"{BRANCH}:{ATTRIBUTES}", cwd=source).stdout
+    assert text.startswith(f"{OWN_ATTRIBUTES}{EOL_BLOCK_HEAD}\n"), text

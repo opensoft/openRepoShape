@@ -45,7 +45,8 @@ import pytest
 
 from conftest import (ADOPT, FILE_PROTOCOL, REPO, SCAFFOLD, SYNTHETIC_TREE,
                       WINDOWS_SKIP, as_human, findings, git, make_source_repo,
-                      planned, refused_before_any_leg, resolve, run_script)
+                      planned, refused_before_any_leg, resolve, rmtree,
+                      run_script)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -223,7 +224,7 @@ def adopted(request, tmp_path_factory, glass):
     assert planned_run.returncode == 0, planned_run.stderr + planned_run.stdout
     for path, leg in ANSWERS:
         resolve(plan, path, leg)
-    shutil.rmtree(readable)
+    rmtree(readable)
     checked = run_script(ADOPT, "check", "--plan", str(plan), env=env)
     executed = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
                           "--local-remote-dir", str(base / "remotes"),

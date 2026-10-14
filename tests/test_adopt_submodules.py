@@ -28,7 +28,7 @@ from repo_shape import load_yaml, parse_yaml  # noqa: E402
 
 #: What the end-to-end test needs and the mount tests below do not: they call
 #: `_mount_the_legs` on hand-made repositories, so they run on a machine with
-#: no `git filter-repo` (the Windows CI job installs none).
+#: no `git filter-repo`.
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
     reason="git filter-repo is not installed: `pip install git-filter-repo`")

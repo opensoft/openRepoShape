@@ -1194,7 +1194,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="adopt">
 
-      <!-- reads README.md § Adopting an existing repository: blob 5f9b93f3e5b68fa36f499c58906c9a9c0458333e -->
+      <!-- reads README.md § Adopting an existing repository: blob a768fa1b4fe592c0a9dde7c6abb415e8af37d99c -->
 
       <p class="eyebrow">Reference</p>
       <h2>Adopting an existing repository</h2>
@@ -1212,7 +1212,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       <code>pip install git-filter-repo</code>, or the same name from apt or brew. It is
       deliberately not vendored: history extraction has one correct implementation, and a copy is a
       second one that drifts.</p>
-      <p><strong>Ambiguous is an answer, and nothing is overwritten.</strong>
+      <p><strong>Ambiguous is an answer, and no source line is overwritten.</strong>
       <code>contracts/path-classification.yaml</code> maps path globs to
       <code>spec | code | root | ambiguous</code>, first match wins, each with a reason. The fourth
       class is not a failure: those entries get <code>leg: null</code>,
@@ -1220,9 +1220,12 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       any remain, because an unanswered question is never an implicit <code>root</code>. A shape
       file whose name the source already holds &mdash; <code>README.md</code>,
       <code>Makefile</code>, <code>.gitignore</code> &mdash; is written under <code>shape/</code> and
-      the collision becomes a follow-up for a human to merge. Then <code>execute</code> VERIFIES:
+      the collision becomes a follow-up for a human to merge, and a root
+      <code>.gitattributes</code> the source keeps gets a block of
+      <code>/&lt;copy&gt; text eol=lf</code> lines appended. Then <code>execute</code> VERIFIES:
       every source path at the source commit is in exactly one of {spec leg, code leg, root tree
-      after the split} <strong>by blob sha</strong>, or listed as <code>drop</code>.</p>
+      after the split} <strong>by blob sha</strong> (that file as the source&rsquo;s bytes plus the
+      block), or listed as <code>drop</code>.</p>
       <p><strong>A leg with nothing in it is SEEDED, not extracted.</strong>
       <code>git filter-repo</code> over an empty path list rewrites every commit to nothing and
       leaves an empty HISTORY, which is not the same thing as an empty repository &mdash; so a leg
@@ -1413,7 +1416,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="copied">
 
-      <!-- reads README.md § Bootstrap is COPIED into the project, not fetched: blob 9adcd5eb2d95f1e84414e343231217ea326462eb -->
+      <!-- reads README.md § Bootstrap is COPIED into the project, not fetched: blob 41f2c88376772ca41ab2fe05668337a4eb2a7bd5 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Bootstrap is COPIED into the project, not fetched</h2>
@@ -1429,8 +1432,9 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       bytes ON DISK, and Git for Windows&rsquo; installer default is
       <code>core.autocrlf=true</code> &mdash; so without this file a colleague who did nothing but
       clone the finished project gets CRLF in the worktree, and every pinned row is false for them
-      alone. <code>* text=auto eol=lf</code> puts the answer in the project, where the digests are,
-      so no clone-time setting is needed on any machine.</p>
+      alone. <code>* text=auto eol=lf</code> &mdash; or, in an adopted root that kept its own
+      <code>.gitattributes</code>, the block appended to that file &mdash; puts the answer in the
+      project, where the digests are, so no clone-time setting is needed on any machine.</p>
       <p><strong>Why an agent file is one of the copies.</strong> An agent working in a project
       learns the shape&rsquo;s rules &mdash; advance a leg in ONE commit, never edit a pinned file,
       never <code>--admin</code> &mdash; from a file that travels WITH the shape rather than from
@@ -1446,7 +1450,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="current">
 
-      <!-- reads README.md § Keeping a project's shape current: blob 1a96ae972c3dcc761f3533c76c52190487c03856 -->
+      <!-- reads README.md § Keeping a project's shape current: blob 408c49c1603699fbe7ae74fa16c6330ec7860c10 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Keeping a project&rsquo;s shape current</h2>
@@ -1487,8 +1491,10 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
         away. Once a human merges a <code>shape/</code> copy and removes it, <code>check</code> calls its row <code>merged-away</code> and <code>apply</code> drops the row.</li>
         <li>A file the standard ADDS later is reported as <code>upstream-added</code> and counts as
         something to do. <code>apply</code> writes NONE of them unless <code>--add &lt;path&gt;</code>
-        names one, per file; <code>--add</code> refuses a path that is already pinned, one the
-        target&rsquo;s lists do not name, and one the root ALREADY has a file at.</li>
+        names one, per file, and names each file it adds in the line-ending block of an adopted
+        root&rsquo;s own <code>.gitattributes</code> when the root carries one; <code>--add</code>
+        refuses a path that is already pinned, one the target&rsquo;s lists do not name, and one the
+        root ALREADY has a file at.</li>
       </ul>
       <p><code>--upstream</code> takes a path to a clone (offline) or an <code>owner/repo</code> it
       bare-clones itself; it defaults to the repository the pin names. <code>make bootstrap</code>
@@ -1502,7 +1508,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doctor">
 
-      <!-- reads README.md § Keeping a project's shape current: blob 1a96ae972c3dcc761f3533c76c52190487c03856 -->
+      <!-- reads README.md § Keeping a project's shape current: blob 408c49c1603699fbe7ae74fa16c6330ec7860c10 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Is this repository compliant? <code>openRepoShape --doctor</code></h2>
@@ -1942,8 +1948,10 @@ resume InkRouter                # on workstation B, and the estate is back</code
       never the tracking branch, and printing the push of it, added (#487); the installed doctor
       keeping its clone of the standard, which its NEXT lines run from, added (#500); an
       adoption&rsquo;s <code>--project</code> as the source&rsquo;s own name, added (#499); the
-      <code>merged-away</code> verdict, whose row <code>apply</code> drops, added (#502). That
-      list is history, and it ends there.</p>
+      <code>merged-away</code> verdict, whose row <code>apply</code> drops, added (#502); the
+      line-ending block an adoption appends to a root <code>.gitattributes</code> the source keeps,
+      and its verification as the source&rsquo;s bytes plus that block, added (#471). That list is
+      history, and it ends there.</p>
       <p class="meta">Each section that reads the README records every README section it reads,
       with the hash of each as it read it, in comments at the top of the section, and a test
       checks those records against the README (#519). Every command, flag, exit code and file

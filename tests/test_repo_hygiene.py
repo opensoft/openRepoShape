@@ -1843,10 +1843,11 @@ HANDBOOK_ADDED_CLAUSE = re.compile(r"added\s+\(#([0-9]+)\)")
 #: sentence, so a new clause is refused wherever it is put - before the
 #: closing sentence as much as after it. The convention retired with
 #: ruling 29; a section's markers say what it read, and the test checks
-#: them. This tuple does not grow.
+#: them. This tuple does not grow: its last entry, #471, is the clause #511
+#: wrote under the old rule, which landed in v1.0.0 before this check did.
 HANDBOOK_HISTORY_CLAUSES = (
     97, 99, 154, 163, 211, 207, 288, 289, 383, 341, 477, 411, 424, 476, 492,
-    483, 498, 462, 487, 500, 499, 502)
+    483, 498, 462, 487, 500, 499, 502, 471)
 
 #: What a marker calls the text before README.md's first `## ` heading. Every
 #: other segment is called by its heading's text.

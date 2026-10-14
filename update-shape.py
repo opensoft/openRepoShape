@@ -152,9 +152,10 @@ from repo_shape import (  # noqa: E402
     tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
+    ATTRIBUTES, COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
-    commit_trailers, escape_what_stdout_cannot_encode, force_stage,
+    commit_trailers, escape_what_stdout_cannot_encode, extend_eol_block,
+    force_stage,
     inherited_child_environment, lane_trailer_argument, readme_shape_lines,
     is_nested_key, readme_trailing_shape_line, rewrite_fault, run,
     trailer_line, with_scalar,
@@ -3057,6 +3058,37 @@ def _write_copies(root: Path, rows: list[Row], taking: list[Addition],
     return copied
 
 
+def _extend_the_eol_block(root: Path, taking: list[Addition],
+                          ledger: Rollback) -> list[str]:
+    """Name each `--add` file in the line-ending block of the root's own
+    `.gitattributes`; the paths this wrote, for the commit (#471).
+
+    An ADOPTED root whose source kept its own `.gitattributes` carries the
+    shape's `* text=auto eol=lf` under `shape/`, where it governs that
+    directory alone, and a block that `adopt-project.py` appended to its own
+    file names each pinned copy outside it, so a Windows checkout keeps their
+    bytes. An `--add` file is written at its own path, never under `shape/`,
+    so it is one more such copy, and without its line a Windows clone reports
+    shape-copy-drift on it. A root with no block -- a scaffolded one, whose
+    `.gitattributes` IS the shape's, or one adopted before #471 -- is left
+    alone, as is a `.gitattributes` that is a symlink: this tool never
+    writes through one. Through the ledger, so a refusal after it puts the
+    file back.
+    """
+    path = root / ATTRIBUTES
+    if not taking or symlink_on_the_way(root, ATTRIBUTES) is not None \
+            or not path.is_file():
+        return []
+    before = path.read_bytes()
+    after = extend_eol_block(before, [add.path for add in taking])
+    if after is None or after == before:
+        return []
+    ledger.write(path, after)
+    print(f"  extended {ATTRIBUTES}' line-ending block with the --add "
+          "files, so every checkout keeps their bytes")
+    return [ATTRIBUTES]
+
+
 def _repin(root: Path, kind: Kind, ledger: Rollback, rows: list[Row],
            pinned: str, target: str, target_tree: str) -> None:
     """Rewrite `contracts/shape-pin.yaml` and the kind's manifest onto the
@@ -3237,6 +3269,8 @@ def cmd_apply(args) -> int:
         readme = _read_readme(root, upstream, target)
         with ledger.writing("writing the copies and the --add files"):
             copied = _write_copies(root, rows, taking, ledger)
+        with ledger.writing(f"extending {ATTRIBUTES}' line-ending block"):
+            attributes = _extend_the_eol_block(root, taking, ledger)
         with ledger.writing("re-pinning contracts/shape-pin.yaml and "
                             f"{kind.manifest}"):
             _repin(root, kind, ledger, rows, pinned, target, target_tree)
@@ -3244,7 +3278,7 @@ def cmd_apply(args) -> int:
         _refuse_red_validators(root, kind)
         added = [add.path for add in taking]
         paths = sorted({row.path for row in copied} | set(added)
-                       | {SHAPE_PIN, kind.manifest}
+                       | {SHAPE_PIN, kind.manifest} | set(attributes)
                        | ({README} if readme.rewritten else set()))
         # A DROPPED ROW IS NOT A PINNED PATH ANY MORE (#502): the pin this
         # run wrote has no row for it, so it is neither said in the commit
