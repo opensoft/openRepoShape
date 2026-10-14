@@ -86,6 +86,11 @@ the commit that clone resolved, for the `id:` and the digest the row records,
 and prints that row, the gitlink, the `.gitmodules` section, the registration
 and the directory the mount would make, and the trailers its commit would end
 with; it never runs `git submodule add` and writes nothing of the holder's.
+`init --dry-run` asks whether `<org>/<Family>` already exists, with the
+question the real run asks before it creates the holder (#537): `gh repo
+view` and the commit listing, or the bare repository with
+`--local-remote-dir`. It refuses `family-remote-exists` as the real run does,
+and makes no folder, remote or repository.
 
 WHAT ONLY THE WRITE ITSELF CAN ANSWER IS NOT ASKED. A member whose local
 changes `git checkout` would refuse to overwrite gets exit 0 and a row from
@@ -843,10 +848,25 @@ def _remote_is_empty(repository: str) -> bool | None:
     does not exist. GitHub answers a commit listing for an empty repository
     with 409 and the words "Git Repository is empty", which is the only
     reliable signal — `size: 0` is also what a repository of small files says.
+
+    NO `gh` ON PATH IS `gh-not-found` (#537), as `pin_digest_from_gh` names
+    it, and not a `FileNotFoundError` traceback: `init --dry-run` asks this
+    question too now, and before that a dry run needed no `gh` at all.
     """
-    probe = subprocess.run(["gh", "repo", "view", repository, "--json", "name"],
-                           capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", check=False)
+    try:
+        probe = subprocess.run(
+            ["gh", "repo", "view", repository, "--json", "name"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except FileNotFoundError as exc:
+        raise Refusal(
+            "gh-not-found",
+            f"the `gh` CLI is not on PATH, so whether {repository} already "
+            f"exists on GitHub cannot be asked: {exc}",
+            "Remediation: put `gh` on PATH, logged in (`gh auth login`), and "
+            "run this again: the real run creates the holder with `gh repo "
+            "create`. `openRepoShape --preflight` names each missing "
+            "prerequisite and offers to install it, on a typed yes.") from exc
     if probe.returncode != 0:
         return None
     commits = subprocess.run(
@@ -1720,6 +1740,13 @@ def cmd_init(args) -> int:
     _print_init_plan(values, repository, url, shape_commit, shape_tree,
                      folder, holder, local, topic, args.reuse_empty_repo)
     if args.dry_run:
+        # THE DRY RUN ASKS WHETHER THE HOLDER'S REMOTE EXISTS (#537), with
+        # the real run's own question, `_checked_reuse`, and refuses what it
+        # refuses: `family-remote-exists` used to come only from the real
+        # run, after `_prepare_landing_dir` had made the family folder. It
+        # READS, a `gh repo view` and a commit listing, or the bare
+        # repository on disk with `--local-remote-dir`, and creates nothing.
+        _checked_reuse(args.reuse_empty_repo, local, url, repository)
         print("\n--dry-run: nothing was created.")
         return 0
 
@@ -4781,7 +4808,13 @@ def build_parser() -> argparse.ArgumentParser:
                            "<work-dir>/<Family> and make no family folder at "
                            "all. Mutually exclusive with --into.")
     init.add_argument("--no-push", action="store_true")
-    init.add_argument("--dry-run", action="store_true")
+    init.add_argument("--dry-run", action="store_true",
+                      help="print the plan and ask, as the real run does, "
+                           "whether <org>/<Family> already exists (`gh repo "
+                           "view` and its commit listing; with "
+                           "--local-remote-dir, the bare repository), "
+                           "refusing what it refuses; make no folder, "
+                           "remote or repository")
     init.set_defaults(func=cmd_init)
 
     add = subparsers.add_parser(

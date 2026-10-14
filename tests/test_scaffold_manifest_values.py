@@ -54,7 +54,7 @@ from pathlib import Path
 import pytest
 
 from conftest import (FILE_PROTOCOL, ORG, REPO, SCAFFOLD, WINDOWS_SKIP, git,
-                      run_script)
+                      run_script, scaffold_dry_run_on_github)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -629,14 +629,19 @@ def test_a_project_whose_work_directory_name_is_too_long_is_refused_too(
         assert not (tmp_path / WORK).exists()
 
 
-def test_the_longest_name_a_disk_keeps_is_still_accepted(tmp_path):
+def test_the_longest_name_a_disk_keeps_is_still_accepted(tmp_path, monkeypatch,
+                                                         capsys):
     """246 characters is `<project>-spec.git` at exactly 255 bytes. A dry run
-    only: a real tree this deep is a Windows path the OS will not open."""
+    only: a real tree this deep is a Windows path the OS will not open.
+    Without `--local-remote-dir` the dry run asks GitHub whether the three
+    exist (#537), so that half runs in process and asks a stand-in."""
     result = scaffold(tmp_path, "--project", "N" * 246, "--dry-run")
     assert result.returncode == 0, result.stderr + result.stdout
-    without_remotes = scaffold(tmp_path, "--project", "N" * 250, "--dry-run",
-                               local=False)
-    assert without_remotes.returncode == 0, without_remotes.stderr
+    code, _out, err, asked = scaffold_dry_run_on_github(
+        monkeypatch, capsys, *IDENTITY, "--project", "N" * 250)
+    assert code == 0, err
+    assert asked == [f"{ORG}/{'N' * 250}{tail}" for tail in
+                     ("", "-spec", "-code")]
 
 
 def test_the_name_rule_is_the_same_bytes_the_tools_make():
