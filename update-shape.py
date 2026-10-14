@@ -448,6 +448,10 @@ class Row:
         self.path = path
         self.recorded = (recorded or "").lower()
         self.source: str | None = None
+        #: The commit `source` is read at: the run's target, set where the
+        #: source is, so a remedy can name `git show <target>:<source>` whole
+        #: (#535).
+        self.target: str | None = None
         self.state = UNCHANGED
         self.detail = ""
         self.target_bytes: bytes | None = None
@@ -690,6 +694,7 @@ def _classify_row(root: Path, row: Row, upstream: Upstream, pinned: str,
         return
     source = source_for(row.path, upstream, target, kind)
     row.source = source
+    row.target = target
     if source is None:
         row.state = UNMAPPED
         row.detail = ("no file in the upstream tree corresponds to this "
@@ -738,7 +743,12 @@ def _row_verdict(row: Row, source: str, here: bytes,
         return
     if locally_modified and upstream_changed:
         row.state = BOTH
-        row.detail = "edited here AND upstream since the pin"
+        # THE UPSTREAM'S FILE IS NAMED (#535): the remedy sends the person to
+        # read its bytes, and a copy's path in the root is not its path in the
+        # standard (`scripts/validate-manifest.py` is
+        # `templates/assembly-root/scripts/validate-manifest.py`).
+        row.detail = ("edited here AND upstream since the pin "
+                      f"(upstream's file: {source})")
         # Precomputed the same way `locally-modified` precomputes it,
         # below: IF `--accept-local` later names this path, `cmd_apply`
         # must re-pin from what is on disk NOW, not from whatever was
@@ -2336,7 +2346,8 @@ def pull_request_repository(manifest: dict | None,
 def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
                      upstream: Upstream, count: int, kind: Kind,
                      added: list[str] = (), trailers: list[str] = (), *,
-                     ledger: Rollback, dropped: list[str] = ()) -> None:
+                     ledger: Rollback, dropped: list[str] = (),
+                     accepted: list[str] = ()) -> None:
     """A branch and ONE commit, with EXPLICIT PATHSPECS.
 
     `git commit -- <paths>` commits the working-tree state of exactly those
@@ -2391,6 +2402,14 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     writes its own commit message can be told any other way. Passed none, the
     message is exactly the one this function has always written; see
     `shape_materialize.commit_trailers` for the two ways git is asked.
+
+    THE MESSAGE CLAIMS "NOT HAND-EDITED" ONLY OF WHAT WAS RE-COPIED (#535).
+    `accepted` are the paths `--accept-local` kept as the project holds them,
+    which the run did not copy and whose pin rows it recomputed from the
+    project's own bytes: the sentence it ended on, "the copies are not
+    hand-edited", was false of exactly those files, in a history nobody
+    rewrites. It now says it of the copies re-copied from the upstream, and a
+    run with `accepted` names them in a paragraph of their own.
     """
     checked_value("--branch", branch)
     manifest = load_yaml(root / kind.manifest)
@@ -2436,13 +2455,14 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     # an unexplained edit to a document the project owns (#148).
     prose = (f", and {README}'s `Shape:` line now names it too"
              if README in paths else "")
+    kept = f"{accepted_local_said(accepted)}\n\n" if accepted else ""
     message = (
         f"Re-sync the shape copies to {upstream.repository} @ {target[:12]}\n\n"
         f"{count} copied file(s) re-copied from the upstream{gained}; "
         f"contracts/shape-pin.yaml and {kind.manifest}'s `shape:` block now "
-        f"record {target}{prose}.\n\nWritten by update-shape.py; the copies "
-        f"are not hand-edited and the digests are recomputed, not "
-        f"adjusted.\n")
+        f"record {target}{prose}.\n\n{kept}Written by update-shape.py; the "
+        f"copies re-copied from the upstream are not hand-edited and the "
+        f"digests are recomputed, not adjusted.\n")
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape update"),
                           ("GIT_COMMITTER_NAME", "openRepoShape update"),
@@ -3001,14 +3021,37 @@ def _refuse_conflicts(rows: list[Row], accepted: set) -> None:
             conflict_remediation(conflicts))
 
 
-#: What `update-conflict` tells a row it can name a merge for: `both`, and
-#: the two states that cannot be compared. The words it always printed, so a
-#: refusal naming no `copy-missing` row reads exactly as it did.
-MERGE_BY_HAND = (
-    "merge each one by hand (the upstream bytes are `git show "
-    "<target>:<source path>` in a shape clone), commit it, then re-run this "
-    "with --accept-local on that path so the row is recomputed from what "
-    "you merged.")
+def merge_by_hand(rows: list[Row]) -> str:
+    """What `update-conflict` tells the rows it can name a merge for: `both`,
+    and the two states that cannot be compared. The words it always printed,
+    with the upstream's bytes NAMED where there are some to name (#535).
+
+    The remedy said `git show <target>:<source path>` and nothing in the
+    refusal or in `check` said what either was. A `both` row holds both, so
+    the command is spelled whole: the full target commit, which `git show`
+    reads in a shape clone, and the path the standard keeps the file at,
+    which is not the path in the root (`scripts/validate-manifest.py` is
+    `templates/assembly-root/scripts/validate-manifest.py`). One row is the
+    sentence it always was with its two placeholders filled; several are one
+    command each, by the path in the root they are for. A row that is not
+    `both` is named no command, because none reads: `unmapped` has no
+    upstream file, and an `upstream-removed` one is gone at the target, where
+    `git show` would fail.
+    """
+    shows = [(row.path, f"git show {row.target}:{row.source}")
+             for row in rows
+             if row.state == BOTH and row.source and row.target]
+    if len(shows) == 1:
+        where = f" (the upstream bytes are `{shows[0][1]}` in a shape clone)"
+    elif shows:
+        where = (" (the upstream bytes, in a shape clone: "
+                 + "; ".join(f"`{command}` for {path}"
+                             for path, command in shows) + ")")
+    else:
+        where = ""
+    return (f"merge each one by hand{where}, commit it, then re-run this "
+            "with --accept-local on that path so the row is recomputed from "
+            "what you merged.")
 
 
 def conflict_remediation(conflicts: list[Row]) -> str:
@@ -3036,12 +3079,14 @@ def conflict_remediation(conflicts: list[Row]) -> str:
     row. The sentence says so, because a person who removed the copy
     without the merge reads it here.
 
-    The other three states keep `MERGE_BY_HAND`, after it where a
-    `copy-missing` row is named too.
+    The other three states keep `merge_by_hand`'s sentence, after it where a
+    `copy-missing` row is named too, naming each `both` row's upstream file
+    (#535).
     """
     missing = [row.path for row in conflicts if row.state == COPY_MISSING]
+    others = [row for row in conflicts if row.state != COPY_MISSING]
     if not missing:
-        return f"Remediation: {MERGE_BY_HAND}"
+        return f"Remediation: {merge_by_hand(conflicts)}"
     verb = "is" if len(missing) == 1 else "are"
     said = (f"Remediation: {', '.join(missing)} {verb} pinned and gone from "
             "the root, so --accept-local has no bytes to keep, and this "
@@ -3054,8 +3099,8 @@ def conflict_remediation(conflicts: list[Row]) -> str:
             "copy merged into the file it collided with is not refused: "
             "with that file at the root, `check` reports it merged-away and "
             "`apply` drops its row.")
-    if len(missing) < len(conflicts):
-        said += f" For the others, {MERGE_BY_HAND}"
+    if others:
+        said += f" For the others, {merge_by_hand(others)}"
     return said
 
 
@@ -3285,13 +3330,27 @@ def _refuse_red_validators(root: Path, kind: Kind) -> None:
             "somebody else's pull request.")
 
 
+def _accepted_local(rows: list[Row]) -> list[str]:
+    """The paths `--accept-local` kept as the project holds them: the rows
+    still `locally-modified` or `both` when the writes are done, since a row
+    in either state that nobody accepted was refused before the first one
+    (#535). Sorted, so a message names them in an order that does not move.
+    `already-at-target` is not one: the project's bytes ARE the standard's
+    there."""
+    return sorted(row.path for row in rows
+                  if row.state in (LOCALLY_MODIFIED, BOTH))
+
+
 def _land(root: Path, args, paths: list[str], added: list[str], target: str,
           upstream: Upstream, kind: Kind, count: int,
-          ledger: Rollback, dropped: list[str] = ()) -> None:
+          ledger: Rollback, dropped: list[str] = (),
+          accepted: list[str] = ()) -> None:
     """The three optional acts after a clean rewrite — commit, push, open a
     pull request — each done only because a flag asked for it. Split out of
     `cmd_apply` for #133. `dropped` names the merged-away rows the re-pin
-    left out (#502), for the commit message.
+    left out (#502), for the commit message; `accepted` the paths
+    `--accept-local` kept as the project holds them (#535), which neither the
+    commit message nor the pull request's body may call "not hand-edited".
 
     Nested the way the flags are: `--push` and `--pr` have nothing to act on
     without `--branch`, which `main` refuses before this is ever reached.
@@ -3307,11 +3366,17 @@ def _land(root: Path, args, paths: list[str], added: list[str], target: str,
     """
     if not args.branch:
         return
-    create = (pull_request_line(root, args, target, upstream, kind)
+    # THE WORDS `--pr` OPENS WITH, kept for `next_line`, which runs after this
+    # and prints the same title and body in the `gh pr create` it hands a
+    # person (#535): it is not given the upstream or the accepted paths, and
+    # `cmd_apply`'s call to it does not change.
+    args.pull_request_words = pull_request_words(upstream.repository, target,
+                                                 accepted)
+    create = (pull_request_line(root, args, target, upstream, kind, accepted)
               if args.push or args.pr else [])
     commit_on_branch(root, args.branch, paths, target, upstream,
                      count, kind, added, args.trailer, ledger=ledger,
-                     dropped=dropped)
+                     dropped=dropped, accepted=accepted)
     print(f"\n  committed on {args.branch}: " + ", ".join(paths))
     if args.push:
         push_branch(root, args, create)
@@ -3376,7 +3441,7 @@ def cmd_apply(args) -> int:
         # as re-copied nor asked about as a copy the commit leaves out.
         dropped = [row.path for row in rows if row.state == MERGED_AWAY]
         _land(root, args, paths, added, target, upstream, kind, len(copied),
-              ledger, dropped)
+              ledger, dropped, accepted=_accepted_local(rows))
         print()
         next_line(root, args, paths, target, added, kind,
                   pinned_paths=[row.path for row in rows
@@ -3900,35 +3965,67 @@ def pull_request_target(root: Path, kind: Kind) -> tuple[str, str]:
     return repository, base
 
 
+def accepted_local_said(accepted: list[str]) -> str:
+    """The sentence that names what `--accept-local` kept, for the commit
+    message and the pull request's body alike (#535): neither may say a copy
+    was not hand-edited of a file the run re-pinned FROM THE PROJECT'S OWN
+    BYTES, which is what the flag does."""
+    many = len(accepted) > 1
+    each = "each" if many else "it"
+    return (f"{', '.join(accepted)} {'were' if many else 'was'} not "
+            f"re-copied: `--accept-local` kept {each} as the project holds "
+            f"it, so the pin's row for {each} records a digest of the "
+            "project's own bytes, not of the upstream's file.")
+
+
+def pull_request_words(repository: str, target: str,
+                       accepted: list[str] = ()) -> tuple[str, str]:
+    """`(title, body)` of the pull request that lands `--branch`: what
+    `--pr` opens it with, and what the `gh pr create` the plain `--branch`
+    NEXT line hands a person carries (#535). ONE PLACE, so the two cannot
+    say different things.
+
+    "NOT HAND-EDITED" IS CLAIMED OF THE COPIES RE-COPIED FROM THE UPSTREAM
+    ONLY, as the commit message claims it: the body said "No copy was
+    hand-edited" of every file, which `--accept-local` makes false of the
+    paths it kept, and they are named here when there are any.
+    """
+    title = f"Re-sync the shape copies to {repository} @ {target[:12]}"
+    body = ("Written by openRepoShape's `update-shape.py`: the copied "
+            "shape files were re-copied from the upstream and "
+            "`contracts/shape-pin.yaml` and `project.yaml` re-pinned onto "
+            f"{target}. No copy re-copied from the upstream was hand-edited "
+            "and every digest was recomputed."
+            + (f" {accepted_local_said(accepted)}" if accepted else ""))
+    return title, body
+
+
 def pull_request_line(root: Path, args, target: str, upstream: Upstream,
-                      kind: Kind) -> list[str]:
+                      kind: Kind, accepted: list[str] = ()) -> list[str]:
     """The `gh pr create` that lands `--branch` (#204): under `--pr` the one
     `--pr` runs, title and body included, so the NEXT line a failure prints
-    is that same command; without it, the bare form the plain `--branch`
-    NEXT line prints (#209): `--repo` the manifest's repository, then
-    `--base`/`--head` against this root's own tracking branch.
+    is that same command; without it, the form the plain `--branch` NEXT
+    line prints (#209): `--repo` the manifest's repository, then
+    `--base`/`--head` against this root's own tracking branch, and the same
+    `--title` and `--body` (#535: a bare line has gh ask for them, which a
+    shell with no terminal cannot answer, and `--fill` would read commits
+    from wherever the line is pasted).
 
     WITHOUT `--pr` A MANIFEST NAMING NO REPOSITORY LEAVES `--repo` OFF rather
     than refusing: nothing is opened, so nothing is wrong yet, and the
     `<org>/<Project>` placeholder `next_line` prints would be one literal
     argument in a line quoted to be pasted as an argv."""
+    title, body = pull_request_words(upstream.repository, target, accepted)
     if not args.pr:
         manifest = load_yaml(root / kind.manifest)
         repository, _ = pull_request_repository(manifest, kind)
         where = ["--repo", repository] if repository else []
         return ["gh", "pr", "create", *where, "--base",
-                tracking_branch_of(manifest), "--head", args.branch]
+                tracking_branch_of(manifest), "--head", args.branch,
+                "--title", title, "--body", body]
     repository, base = pull_request_target(root, kind)
     return ["gh", "pr", "create", "--repo", repository, "--base", base,
-            "--head", args.branch, "--title",
-            f"Re-sync the shape copies to {upstream.repository} @ "
-            f"{target[:12]}",
-            "--body",
-            "Written by openRepoShape's `update-shape.py`: the copied "
-            "shape files were re-copied from the upstream and "
-            "`contracts/shape-pin.yaml` and `project.yaml` re-pinned onto "
-            f"{target}. No copy was hand-edited and every digest was "
-            "recomputed."]
+            "--head", args.branch, "--title", title, "--body", body]
 
 
 def open_pull_request(root: Path, args, create: list[str]) -> None:
@@ -3962,10 +4059,16 @@ def _unwritten_changes(root: Path, paths: list[str],
     the one it always printed.
     """
     rest = [path for path in pinned_paths if path not in paths]
-    if not rest or _git_answer(root, ["rev-parse", "--verify", "--quiet",
-                                      "HEAD"]) is None:
+    if not rest or not _has_head(root):
         return []
     return _not_what_head_commits(root, rest)
+
+
+def _has_head(root: Path) -> bool:
+    """Does `root` have a commit HEAD names? A root with none has nothing for
+    a commit line to be compared with (#436, #535)."""
+    return _git_answer(root, ["rev-parse", "--verify", "--quiet",
+                              "HEAD"]) is not None
 
 
 def next_line(root: Path, args, paths: list[str], target: str,
@@ -3994,8 +4097,20 @@ def next_line(root: Path, args, paths: list[str], target: str,
         # `shlex.quote` leaves alone, so this prints the bytes it always
         # printed; it is quoted so that widening that alphabet one day cannot
         # reopen a line that has a whole argument to itself.
+        #
+        # WITH A TITLE AND A BODY (#535). Bare, the line has `gh` prompt for
+        # both, and in a shell with no terminal the pasted line stops there
+        # (gh's behaviour without one was not run: a real `gh pr create` is
+        # never run here). `--fill` is not the answer: it reads the commits of
+        # wherever the line is pasted, and `check`'s NEXT sends people to
+        # paste from the standard's checkout. The words are `--pr`'s, which
+        # `_land` kept on `args`; a caller that did not come through it is
+        # given the standard's own repository to name.
+        title, body = getattr(args, "pull_request_words", None) or \
+            pull_request_words(SHAPE_REPOSITORY, target)
         create = (f"gh pr create{where} --base {base} --head "
-                  f"{shlex.quote(args.branch)}")
+                  f"{shlex.quote(args.branch)} --title {shlex.quote(title)} "
+                  f"--body {shlex.quote(body)}")
         if args.push:
             print(f"NEXT  {create}")
         else:
@@ -4021,6 +4136,18 @@ def next_line(root: Path, args, paths: list[str], target: str,
               "bytes it does not carry. Commit those changes with them if "
               "this re-pin is to carry them, or put both back to HEAD's "
               "bytes and run apply again")
+        return
+    # NOTHING TO COMMIT IS NOT A COMMIT LINE (#535). An `apply` that moved the
+    # pin back to what HEAD commits writes copies, a pin and a manifest that
+    # are HEAD's bytes again, and the line below, pasted, is git's "nothing to
+    # commit". Asked of the paths THIS RUN WROTE, which is the commit's whole
+    # content: an `--add` file is not in HEAD, so a run that added one still
+    # gets its line. Asked only where HEAD names a commit: a root with none
+    # has nothing to compare with, and prints the line it always printed.
+    if _has_head(root) and not _not_what_head_commits(root, paths):
+        print("NEXT  nothing to commit: the working tree now holds what HEAD "
+              f"commits at {', '.join(paths)}, so this run left no change to "
+              "record")
         return
     # A `git add` for the ADDITIONS only. A hint that a human pastes has to
     # work when they paste it, and `git commit -- <path>` refuses a path git
