@@ -4145,7 +4145,8 @@ def _unwritten_changes(root: Path, paths: list[str],
 def _same_as_head(root: Path, paths: list[str]) -> bool:
     """Does `git diff --quiet HEAD` find nothing among `paths`: no content,
     and no file mode, that HEAD does not commit? `--literal-pathspecs`, as
-    the commit line is printed (#202); an answer git does not give is "no"
+    the commit line is printed (#202). An answer git does not give is "no",
+    which is what a root with no HEAD gets: nothing there to be the same as
     (#535)."""
     return _git_answer(root, ["--literal-pathspecs", "diff", "--quiet",
                               "HEAD", "--", *paths]) is not None
@@ -4229,15 +4230,16 @@ def next_line(root: Path, args, paths: list[str], target: str,
     # are HEAD's bytes again, and the line below, pasted, is git's "nothing to
     # commit". Asked of the paths THIS RUN WROTE, which is the commit's whole
     # content: an `--add` file is not in HEAD, so a run that added one still
-    # gets its line. Asked only where HEAD names a commit: a root with none
-    # has nothing to compare with, and prints the line it always printed.
+    # gets its line.
     #
     # BY BYTES AND BY MODE (review of PR #558). `_not_what_head_commits`
     # compares blobs, so a pinned script that `apply` left executable or
     # not, where HEAD commits the other, would read "nothing to commit" over
-    # a change git does commit. `git diff --quiet HEAD` counts a mode change.
-    if (_has_head(root) and not _not_what_head_commits(root, paths)
-            and _same_as_head(root, paths)):
+    # a change git does commit. `_same_as_head` asks `git diff --quiet HEAD`,
+    # which counts a mode change, and which is answered only where HEAD names
+    # a commit: a root with none has nothing to compare with, and prints the
+    # line it always printed.
+    if _same_as_head(root, paths) and not _not_what_head_commits(root, paths):
         print("NEXT  nothing to commit: the working tree now holds what HEAD "
               f"commits at {', '.join(paths)}, so this run left no change to "
               "record")
