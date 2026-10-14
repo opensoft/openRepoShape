@@ -23,15 +23,16 @@ WHAT IT DOES, in order:
       what git's own recursive clone leaves when the leg's remote has moved
       past the pin, and the remote-tracking ref still holds every commit.
       Any other branch holding a commit the pin does not contain is never
-      moved; bootstrap prints both and leaves them alone. A leg DETACHED at
-      a commit that is not the pin is never moved off it either, whatever
-      its branch holds: a commit made there is on no branch, and checking
-      one out would leave it only in the reflog, so bootstrap says where
-      the leg is instead. Advancing a pin remains an explicit commit in this
-      repository — see `README.md`, "The lockstep invariant". This is why
-      `.gitmodules` carries no `branch=`: that would buy the same ergonomics
-      by weakening the pin, and then "what commit is this project" would have
-      two answers.
+      moved; bootstrap prints both and leaves them alone. A leg DETACHED at a
+      commit that is not the pin is never moved off it either, whether its
+      branch is at the pin, behind it, ahead of it or not there at all, and
+      whatever the branch or `origin` holds: a commit made there is on no
+      branch, and a checkout would leave it only in the reflog, so bootstrap
+      says where the leg is instead. Advancing a pin remains an explicit commit
+      in this repository — see `README.md`, "The lockstep invariant". This is
+      why `.gitmodules` carries no `branch=`: that would buy the same
+      ergonomics by weakening the pin, and then "what commit is this project"
+      would have two answers.
 
   (b) RUNS THE NEUTRAL VALIDATORS — naming, manifest, lockstep pins. These are
       the only ones a fork with no review lane and no wallet register has, and
@@ -253,16 +254,17 @@ def _say_after(why: list[str] | None, moved: bool = True) -> None:
     printed, so git's words follow it as they are, not as a refusal.
 
     `moved` is whether the checkout changed where HEAD is. HEAD already on
-    the branch at the pin, nothing was checked out, so `checked out, and
-    then git said:` over a stale `.git/index.lock` was false; it is said
-    for what it was, a checkout git refused that would have changed nothing
-    (#533). Git's lines follow either way: the same lock blocks the
+    the branch at the pin, there was nothing to check out, so `checked out,
+    and then git said:` over a stale `.git/index.lock` was false (#533). What
+    is true of that state whatever git exited over (a stale lock, a failing
+    post-checkout hook, an unmerged index) is that there was nothing to check
+    out, so that is what it says, and never `refused`: a hook failing is not
+    a refusal. Git's lines follow either way: the same lock blocks the
     person's next commit.
     """
     if why:
         print("          checked out, and then git said:" if moved else
-              "          git refused a checkout that would have changed "
-              "nothing:")
+              "          nothing to check out, and then git said:")
         _say_lines(why)
 
 
@@ -274,6 +276,14 @@ def _place_of(current: str | None) -> str:
     return "on " + spelled(current.split("refs/heads/", 1)[-1])
 
 
+def _say_keep(options: str = "the pin or the branch") -> None:
+    """What to do about a checkout step (a) will not move, in the words
+    both refusals of it share. Nothing moves."""
+    print("          not moving the checkout off it. Keep any commit made "
+          f"there on a branch, check out {options} in the leg, and run "
+          "bootstrap again.")
+
+
 def _say_neither(label: str, state: str, head: str | None,
                  current: str | None) -> None:
     """The checkout is not one a move starts from: `state` says what the
@@ -283,9 +293,7 @@ def _say_neither(label: str, state: str, head: str | None,
     and a leg on another branch is somebody's work."""
     print(f"  {label}: {state}, and the checkout is at {_short(head)} "
           f"({_place_of(current)}), which is neither")
-    print("          not moving the checkout off it. Keep any commit made "
-          "there on a branch, check out the pin or the branch in the leg, "
-          "and run bootstrap again.")
+    _say_keep()
 
 
 def place_at_pin(sub: Path, label: str, branch: str, pin: str) -> None:
@@ -470,6 +478,17 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
     if local is None:
         if pin is None:
             print(f"  {where}: no gitlink recorded; leaving as is")
+            return
+        head, current = _head_of(sub)
+        if current is None and head != pin:
+            # `checkout -b <branch> <pin>` from a leg detached anywhere else
+            # leaves the commit made there on no branch (#533), as placing a
+            # branch that exists would. The branch is not there to check
+            # out, so the way out names the pin alone.
+            print(f"  {where}: branch {named} does not exist, and the "
+                  f"checkout is at {_short(head)} (detached), which is not "
+                  f"the pin {_short(pin)}")
+            _say_keep("the pin")
             return
         if _try_git(["checkout", "-q", "-b", branch, pin], sub) is None:
             print(f"  {where}: could not create branch {branch!r} at "
