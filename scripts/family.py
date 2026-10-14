@@ -4083,6 +4083,16 @@ def _checked_to_names_a_commit(member: Path, path: str, row: dict,
     working clone beside the holder and not pushed yet, and the fetch of the
     mount brings only what the member's remote has. When that fetch failed,
     the refusal says so and does not claim the remote lacks it.
+
+    A TAG WHOSE COMMIT IS ON NO BRANCH is refused `member-to-unknown` too,
+    and so is that commit, while `add --at` pins the same tag's id. The
+    fetch here brings every branch and, by git's own rule, only the tags
+    that point into the history those branches bring; `add`'s bare clone
+    brings every tag. A `git push origin v2` without the branch makes one,
+    and the refusal's push to a branch is what lets `bump` pin it. Left as
+    it is: `bump-leg.py` refuses its twin the same way, as
+    `bump-leg-commit-not-on-remote`, and fetching every tag would write refs
+    the person's member did not have, which is a new act.
     """
     repository = row.get("repository")
     try:
@@ -4402,12 +4412,14 @@ def cmd_bump(args) -> int:
     # tree or a blob is refused alike, with nothing in the holder moved.
     # `suggested` keeps the id as typed: the real run's branch refusal named
     # it before the fetch, and the dry run's `branch` line names the same.
+    # The line says WOULD BE PINNED: the dry run prints it, and so does a
+    # run refused by a question asked after it, and neither pins anything.
     typed = commit
     commit = _checked_to_names_a_commit(member, path, row, typed, fetched)
     if commit != typed:
         print(f"--to {typed[:12]} is an annotated tag in "
               f"{row.get('repository')}; the commit it names, "
-              f"{commit[:12]}, is what is pinned", flush=True)
+              f"{commit[:12]}, is what would be pinned", flush=True)
     if args.dry_run:
         return _bump_dry_run(family, row, path, commit, args.trailer,
                              fetched, suggested)
@@ -4911,7 +4923,8 @@ def build_parser() -> argparse.ArgumentParser:
                           "never a leg")
     add.add_argument("--at", default=None, metavar="COMMIT",
                      help="pin this 40-hex commit instead of the member's "
-                          "current tip")
+                          "current tip (an annotated tag's own 40-hex id is "
+                          "peeled to the commit it names)")
     add.add_argument("--local-remote-dir", type=Path, default=None,
                      help="resolve the member to a bare repository here "
                           "instead of github.com (the TEST path)")
@@ -4937,7 +4950,9 @@ def build_parser() -> argparse.ArgumentParser:
     bump.add_argument("--member", required=True, metavar="PROJECT")
     bump.add_argument("--to", required=True, metavar="COMMIT",
                       help="the 40-hex commit to move the gitlink and the pin "
-                           "to, together")
+                           "to, together (an annotated tag's own 40-hex id is "
+                           "peeled to the commit it names, as `add --at` "
+                           "peels one)")
     bump.add_argument("--trailer", action="append", metavar='"KEY: VALUE"',
                       default=[], type=trailer_line,
                       help="append this `<Key>: <value>` line to the commit "

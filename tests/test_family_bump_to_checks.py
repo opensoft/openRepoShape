@@ -3,7 +3,8 @@
 unpushed commit first (#541).
 
 TWO LINES OF #541 ARE HELD HERE; its riding line, an annotated tag's own id,
-is held by `test_family_bump_to_a_tag.py`.
+is held by `test_family_bump_to_a_tag.py`, and here where it meets the other
+two: a refusal after the peel, and the branch a person is told to make.
 
 THE DUPLICATE ID. `add` refuses a member whose `project.yaml` records the
 `id` another row records (#330, `member-duplicate-id`): that is one project
@@ -45,13 +46,20 @@ from test_family import (  # noqa: F401
 )
 from test_family_add_refusals import holder, offline, refusal  # noqa: F401
 #: "Changes nothing", asked as bytes in the order a bump would write.
-from test_family_dry_run import bump, commit_in_mount, isolated, pinned_at
+from test_family_dry_run import (
+    BUMP_ORDER, assert_as_it_was, bump, commit_in_mount, isolated, pinned_at,
+    state,
+)
 from test_family_bump_remove_rollback import (
     BUMP_PUT_BACK, assert_same, bump_undone, snapshot,
 )
-#: Both runs over one holder, refused alike with nothing moved.
-from test_family_bump_to_a_tag import both_runs
-from test_family_member_path import MEMBER, OTHER, raw
+#: Both runs over one holder, refused alike with nothing moved; an annotated
+#: tag, and the line a peel prints.
+from test_family_bump_to_a_tag import annotated, both_runs, peeled_line
+from test_family_member_path import MEMBER, OTHER, older, raw
+#: The shell's reading of a printed line, and of a refusal's `switch`.
+from test_family_printed_quoting import host_words
+from test_family_tracking_branch import remedy_switch
 
 PATH = f"members/{MEMBER}"
 
@@ -87,7 +95,7 @@ def duplicate_id_refusal(to: str) -> tuple[str, str]:
         "`project.yaml` files, mended in that project, not in the family.")
 
 
-# --- the duplicate id ---------------------------------------------------------
+# --- the duplicate id --------------------------------------------------------
 
 def test_bump_to_a_commit_recording_another_rows_id_is_refused_alike(
         holder, offline, tmp_path):
@@ -142,7 +150,62 @@ def test_a_duplicate_id_read_through_a_linked_manifest_is_put_back(
     offline.assert_left_nothing()
 
 
-# --- the commit not yet pushed --------------------------------------------------
+def test_a_duplicate_id_behind_a_tag_is_refused_after_the_peel_line(
+        holder, offline, tmp_path):
+    """THE PEEL LINE ABOVE A REFUSAL. `--to` is an annotated tag of a
+    commit whose `project.yaml` records the neighbour's id. Both runs peel
+    it and say so, in the line that says what WOULD be pinned, then refuse
+    `member-duplicate-id` for the commit the tag names, exit 2, and pin
+    nothing: the holder is as it was and still passes its gate."""
+    env = isolated(offline, tmp_path)
+    made = commit_in_mount(holder, env, lambda mount:
+                           records_the_neighbours_id(mount / "project.yaml"))
+    to = annotated(holder / PATH, env, "v-duplicate", made)
+
+    stderr = both_runs(holder, env, to, peeled_line(to, made) + "\n")
+
+    assert refusal(stderr) == duplicate_id_refusal(made)
+    assert validate(holder).returncode == 0
+    offline.assert_left_nothing()
+
+
+# --- the branch a person is told to make -------------------------------------
+
+def test_both_runs_name_the_branch_for_the_tag_id_as_typed(
+        family, holder, offline, tmp_path):
+    """On the holder's tracking branch the real run refuses
+    `family-on-tracking-branch` before it fetches, so before any peel,
+    naming `family/bump-<id>-<the typed id's first twelve>`. The dry run
+    fetches and peels, and its hint still names that branch, not one made
+    from the commit the tag names: the branch a person makes from the dry
+    run is the one the real run asks for."""
+    env = isolated(offline, tmp_path)
+    raw(holder, env, "switch", "-q", "-C", "main")
+    target = older(family)
+    to = annotated(holder / PATH, env, "v-release", target)
+    assert to[:12] != target[:12], "premise: the two names differ"
+    switch = ["git", "-C", str(holder.resolve()), "switch", "-c",
+              f"family/bump-{MEMBER.lower()}-{to[:12]}"]
+    before = state(holder, env)
+
+    dry = bump(holder, env, to, "--dry-run")
+    real = bump(holder, env, to)
+
+    assert_as_it_was(holder, env, before, BUMP_ORDER)
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    lines = dry.stdout.splitlines()
+    assert lines[0] == peeled_line(to, target)
+    at = lines.index("branch       main is the holder's tracking branch, "
+                     "where a real bump refuses (family-on-tracking-branch); "
+                     "make a branch first:")
+    assert host_words(lines[at + 1]) == switch
+    assert real.returncode == 2, real.stdout + real.stderr
+    assert real.stdout == ""
+    assert remedy_switch(real.stderr) == switch
+    offline.assert_left_nothing()
+
+
+# --- the commit not yet pushed -----------------------------------------------
 
 def a_private_remote(holder: Path, env: dict, tmp_path: Path) -> Path:
     """A bare repository of the test's own holding the member's history, its

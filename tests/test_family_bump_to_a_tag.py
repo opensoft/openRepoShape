@@ -72,9 +72,10 @@ def oid(mount: Path, env: dict, rev: str) -> str:
 
 def peeled_line(to: str, target: str) -> str:
     """The line both runs of `bump --to <to>` begin with when `to` is an
-    annotated tag that names the commit `target`."""
+    annotated tag that names the commit `target`: what WOULD be pinned,
+    since the dry run prints it and so does a run refused after it."""
     return (f"--to {to[:12]} is an annotated tag in {ORG}/{MEMBER}; the "
-            f"commit it names, {target[:12]}, is what is pinned")
+            f"commit it names, {target[:12]}, is what would be pinned")
 
 
 def pins_the_tagged_commit(holder: Path, env: dict, to: str,
@@ -93,10 +94,11 @@ def pins_the_tagged_commit(holder: Path, env: dict, to: str,
     assert validate(holder).returncode == 0
 
 
-def both_runs(holder: Path, env: dict, to: str) -> str:
+def both_runs(holder: Path, env: dict, to: str, stdout: str = "") -> str:
     """`bump --to <to>` with `--dry-run` and then for real, over the same
-    holder: both refused, exit 2, in the same words, with nothing written to
-    stdout and nothing in the holder moved. Returns the shared stderr."""
+    holder: both refused, exit 2, in the same words, with `stdout` and
+    nothing else written to stdout (nothing, unless a line came before the
+    refusal) and nothing in the holder moved. Returns the shared stderr."""
     before = state(holder, env)
 
     dry = bump(holder, env, to, "--dry-run")
@@ -106,7 +108,7 @@ def both_runs(holder: Path, env: dict, to: str) -> str:
     assert_as_it_was(holder, env, before, BUMP_ORDER)
     assert dry.returncode == real.returncode == 2, (
         dry.stdout + dry.stderr + real.stdout + real.stderr)
-    assert dry.stdout == real.stdout == ""
+    assert dry.stdout == real.stdout == stdout
     assert dry.stderr == real.stderr
     return real.stderr
 
