@@ -282,11 +282,15 @@ jobs:
       # for the reason this one exists — those two are what a stock Mac's bash
       # 3.2 has to parse, and the repository that ships a file is the one that
       # can say so.
+      #
+      # `install.sh` joined the list in v1.0.1 (#564): the one-line install,
+      # `curl … | bash` on a Mac, hands it to this same `/bin/bash`.
       - name: /bin/bash parses every bash entry point
         run: |
           /bin/bash --version
           /bin/bash -n setup.sh
           /bin/bash -n openRepoShape
+          /bin/bash -n install.sh
 
       - name: tests
         run: python3 -m pytest tests -q

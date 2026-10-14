@@ -102,10 +102,10 @@ is on no `PATH` by default, and its installer finishes by printing the line that
 puts it there — run that line, or the next shell cannot find `brew`. Then `brew
 install gh`, and `brew install git-filter-repo` only if you are ADOPTING an
 existing repository rather than scaffolding a new one. The stock `/bin/bash` is
-3.2 and is enough: `setup.sh` and the `openRepoShape` command use no syntax
-newer than that, and CI runs the whole suite on `macos-latest`, parsing both
-there with `/bin/bash` itself. That the login shell is zsh changes nothing —
-both entry points are run under `bash` explicitly.
+3.2 and is enough: `setup.sh`, `install.sh` and the `openRepoShape` command use
+no syntax newer than that, and CI runs the whole suite on `macos-latest`,
+parsing all three there with `/bin/bash` itself. That the login shell is zsh
+changes nothing — all three entry points are run under `bash` explicitly.
 
 </details>
 
@@ -225,7 +225,27 @@ offer to configure git's credential helper, or run `gh auth setup-git`: the
 first commits go up with a plain `git push` over HTTPS, and without it the
 three repositories are created and the push fails.
 
-**3. Install the `openRepoShape` command**, once:
+**3. Install the `openRepoShape` command**, once, in one line:
+
+```sh
+curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash
+```
+
+`install.sh` is attached to every release, so that line installs the newest:
+it reads which one that is from github.com's `releases/latest` redirect (no
+`gh`, no login), installs that release's command PINNED to it, installs
+`git-filter-repo` with `pipx` when `pipx` is there and it is not, or prints
+the one command that would, and ends with `openRepoShape --preflight`. It
+never runs `sudo`. `| bash -s -- v1.0.1` installs a named release instead.
+Exit 0 is installed and ready, 1 installed but the preflight or the pin needs
+you, 2 nothing installed. Run the same line again to upgrade.
+
+**Pinned** means the command stays on its release while main moves on:
+`--install` records the ref in `openRepoShape.ref` beside the command, and the
+command fetches `setup.sh`, clones the standard and runs `--doctor` at it.
+`$OPENREPOSHAPE_REF` overrides it for one run; `--version` prints the ref.
+
+By hand, the same command at main, which records no ref and follows main:
 
 ```sh
 gh api repos/opensoft/openRepoShape/contents/openRepoShape \
@@ -239,7 +259,7 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRep
     | bash -s -- --install
 ```
 
-It installs ONE command into `~/.local/bin`, idempotently — a second run
+Each way installs ONE command into `~/.local/bin`, idempotently — a second run
 prints `unchanged` — and prints the `export PATH=…` line if that directory is
 not on `PATH`. The estate verbs `park` and `resume`, for [carrying in-flight
 work](#carrying-in-flight-work-to-another-workstation), are
@@ -380,7 +400,14 @@ records as whose act the election was, and it defaults to the `gh` login.
 
 #### Install the command
 
-Two ways in, the short one first. Install `openRepoShape` as a command:
+Two ways in, the short one first. Install `openRepoShape` as a command, the
+newest release and pinned to it, as step 3 above does:
+
+```sh
+curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash
+```
+
+or by hand, at main, through the API:
 
 ```sh
 gh api repos/opensoft/openRepoShape/contents/openRepoShape \
@@ -1389,6 +1416,7 @@ scripts/path_classify.py          the classifier over the path policy
 scripts/shape_materialize.py      the ONE materializer, used by both tools
 scripts/validate-repository-naming.py
 openRepoShape                     installs itself as a command; runs setup.sh
+install.sh                        the one-line install: a release, pinned
 setup.sh                          the shim: find an interpreter, hand over
 setup-project.py                  THE FLOW, and the Windows way in (no bash there)
 scaffold-project.py               creates the three repositories and the pins
