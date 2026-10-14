@@ -38,7 +38,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import git, run_script
+from conftest import cloned_just_pushed, git, run_script
 #: The family fixture, its names and the offline environment, imported from
 #: the modules that own them rather than rebuilt: a holder made any other way
 #: would test a different holder.
@@ -82,8 +82,8 @@ def renamed_copy(family, tmp_path: Path) -> Path:
     name. The fixture's own remotes are not written to."""
     remotes = tmp_path / "remotes"
     remotes.mkdir()
-    git("clone", "-q", "--bare", str(family["remotes"] / f"{PINNED}.git"),
-        str(remotes / f"{RENAMED}.git"), cwd=tmp_path)
+    cloned_just_pushed(family["remotes"] / f"{PINNED}.git",
+                       remotes / f"{RENAMED}.git", bare=True)
     return remotes
 
 

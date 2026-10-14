@@ -39,12 +39,11 @@ before any spelling question is asked.
 from __future__ import annotations
 
 import codecs
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from conftest import ORG, PROJECT, git
+from conftest import ORG, PROJECT, cloned_just_pushed, git
 # A fixture is used by being named in this module's namespace, which is what
 # the import of `bump_leg_module` is for.
 from test_bump_leg import (  # noqa: F401
@@ -74,13 +73,9 @@ UTF16_WORKFLOW = (codecs.BOM_UTF16_LE
 @pytest.fixture(scope="module")
 def advanced(scaffolded, tmp_path_factory) -> str:
     """A real new commit on the spec leg's bare remote; returns its sha."""
-    work = (tmp_path_factory.mktemp("spec-advance-unreadable")
-            / f"{PROJECT}-spec")
-    proc = subprocess.run(
-        ["git", "clone", "-q",
-         str(scaffolded["remotes"] / f"{PROJECT}-spec.git"), str(work)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    work = cloned_just_pushed(
+        scaffolded["remotes"] / f"{PROJECT}-spec.git",
+        tmp_path_factory.mktemp("spec-advance-unreadable") / f"{PROJECT}-spec")
     (work / "UNREADABLE-CONTRACT.md").write_text("# a contract gained\n")
     git("add", "--", "UNREADABLE-CONTRACT.md", cwd=work)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",

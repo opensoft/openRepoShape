@@ -38,6 +38,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import cloned_just_pushed
 #: The family fixture and its names, from the module that owns them.
 from test_family import ORG, family, manifest, validate  # noqa: F401
 from test_family_add_refusals import holder, offline, refusal  # noqa: F401
@@ -144,8 +145,8 @@ def test_a_release_tag_only_the_fetch_brings_is_refused_after_the_fetch(
     # A PRIVATE COPY of the member's remote, which the mount is pointed at:
     # the fixture's own remote is read here and never written to.
     remote = tmp_path / f"{MEMBER}-private.git"
-    raw(tmp_path, env, "clone", "-q", "--bare", "--",
-        str(family["remotes"] / f"{MEMBER}.git"), str(remote))
+    cloned_just_pushed(family["remotes"] / f"{MEMBER}.git", remote,
+                       bare=True, env=env)
     work = tmp_path / f"{MEMBER}-release"
     raw(tmp_path, env, "clone", "-q", "--", str(remote), str(work))
     (work / "RELEASE.md").write_bytes(b"release 2\n")

@@ -61,7 +61,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FILE_PROTOCOL, git, rmtree, run_script
+from conftest import (FILE_PROTOCOL, cloned_just_pushed, git, rmtree,
+                      run_script)
 #: The family fixture, its names, the offline environment and the holder's
 #: byte-for-byte state, imported from the modules that own them rather than
 #: rebuilt: a holder made, or compared, any other way would test a
@@ -866,7 +867,7 @@ def test_a_checkout_whose_git_dir_deinit_absorbed_is_put_back(
               cwd=holder).stdout.strip()
     rmtree(mount)
     rmtree(holder / ".git" / "modules" / "members" / MEMBER)
-    git(*FILE_PROTOCOL, "clone", "-q", url, str(mount), cwd=tmp_path)
+    cloned_just_pushed(Path(url), mount, recurse=False)
     assert (mount / ".git").is_dir(), "premise: an embedded .git directory"
     embedded = Path(git("rev-parse", "--absolute-git-dir", cwd=mount
                         ).stdout.strip())
