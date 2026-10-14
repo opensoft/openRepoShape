@@ -1087,12 +1087,12 @@ rolled back whole if a validator goes red. Without `--add` it says `not added;
 pass --add <path>` and re-pins the rest. `--add` refuses a path already pinned
 (`update-add-already-pinned`), one the target's lists do not name
 (`update-add-not-upstream`), one with a symlink at or above it, which is never
-written through (`update-add-symlink`), one whose directory the root holds as a
-file (`update-add-not-a-directory`) — and one the root ALREADY has a file at,
-because two files with one name is a merge and this command copies bytes
-(`update-add-would-overwrite`). A project that declines an addition has no way
-to say so yet: it will be reported by every `check` until it is taken or a file
-arrives at that path.
+written through (`update-add-symlink`), one with a file where a directory above
+it goes (`update-add-not-a-directory`) — and one the root ALREADY has a file at
+(`update-add-would-overwrite`), because two files with one name is a merge and
+this command copies bytes. A project that declines an addition has no way to say
+so yet: it will be reported by every `check` until it is taken or a file arrives
+at that path.
 
 `--upstream` takes a path to a clone (offline, and what the tests use) or an
 `owner/repo` it bare-clones itself; it defaults to the repository the pin

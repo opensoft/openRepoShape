@@ -5,10 +5,10 @@
 its own that a person meets on stderr as `REFUSED update-add-...`:
 `update-add-already-pinned`, `update-add-not-upstream`, `update-add-symlink`
 (#239), `update-add-not-a-directory` (#285) and `update-add-would-overwrite`.
-README.md and `docs/handbook.html` list them in one sentence each, and for
-months that sentence named three: #269 and #346 each added a refusal and left
-both documents alone, so a reader who met `update-add-symlink` or
-`update-add-not-a-directory` found no sentence for it, and the list read as
+README.md and `docs/handbook.html` list them in one sentence each, and that
+sentence named three: #269 and #346 (both landed 2026-10-12) each added a
+refusal and left both documents alone, so a reader who met `update-add-symlink`
+or `update-add-not-a-directory` found no sentence for it, and the list read as
 complete (#429). Nothing tied the sentence to the tool.
 
 This is the guard, in both directions, and it is the kind this repository
@@ -20,13 +20,14 @@ already keeps for AGENTS.md's codes (`tests/test_agents_md_codes.py`):
 - every `update-add-*` token either document spells is a code the tool raises:
   a misspelt or renamed one fails here, naming the token and the document.
 
-WHICH CODES THE TOOL RAISES. An exact `str` constant in `update-shape.py`'s
-syntax tree whose whole text is `update-add-` followed by lowercase words, found
-with `ast` and never a grep, so a comment or a docstring that merely names a
-code cannot satisfy it, and nothing runs: no process, no git, no network, the
-same on every platform. `FLOOR` is the five the tool raises today, so a scan
-that stopped finding them (a rename, a code built from pieces) fails by name
-here and does not turn into a test that checks nothing.
+WHICH CODES THE TOOL RAISES. A string `update-shape.py` could print whole,
+which is `tests/test_agents_md_codes.py::printed_strings` (found with `ast`,
+never a grep, so a comment cannot satisfy it; a docstring and the pieces of an
+f-string are left out), kept when its whole text is `update-add-` followed by
+lowercase words. Nothing runs: no process, no git, no network, the same on
+every platform. `FLOOR` is the five the tool raises today, so a scan that
+stopped finding them (a rename, a code built from pieces) fails by name here
+and does not turn into a test that checks nothing.
 
 WHICH TOKENS A DOCUMENT SPELLS. Any `update-add-` followed by lowercase words
 joined by hyphens, anywhere in its text. A new document naming a code is held
@@ -35,10 +36,11 @@ to the tool without anybody adding it to a list here.
 
 from __future__ import annotations
 
-import ast
 import re
 
 from conftest import REPO
+
+from test_agents_md_codes import printed_strings
 
 #: What an `update-add-*` code looks like: the prefix, then lowercase words
 #: joined by hyphens. `fullmatch`ed against a constant, `findall`ed in a
@@ -64,11 +66,10 @@ DOCUMENTS = {
 
 def raised_codes() -> frozenset[str]:
     """The `update-add-*` codes `update-shape.py` holds as whole constants."""
-    tree = ast.parse((REPO / "update-shape.py").read_bytes())
     return frozenset(
-        node.value for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-        and re.fullmatch(CODE, node.value))
+        text for text in printed_strings(
+            (REPO / "update-shape.py").read_bytes())
+        if re.fullmatch(CODE, text))
 
 
 def document_text(name: str) -> str:
