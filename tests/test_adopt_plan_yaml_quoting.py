@@ -1189,20 +1189,22 @@ def test_the_misread_rule_asks_nothing_of_a_value_execute_never_writes(
 BRANCH_GIT_REFUSES = "~"
 
 
-def test_plan_records_a_branch_git_will_not_create_as_on_main(
+def test_plan_refuses_a_branch_git_will_not_create_in_gits_words(
         answered, tmp_path):
     """`plan` refused `--tracking-branch ~` as misread, with a remediation
     saying `execute` writes it and the run would still end `adoption
-    verified`. Git will not create `~`, so no source has it: `check` finds
-    it `plan-tracking-branch-missing` and `execute` refuses it before any
-    leg exists (#479). `plan` writes the plan, with #479's note and no
-    misread refusal, as on main (rv181f's H1)."""
+    verified` (rv181f's H1). Git will not create `~`, so no source has it,
+    and since #520 `plan` asks git about the flag: it refuses it as
+    `adopt-bad-tracking-branch`, in git's words, and never as misread, and
+    writes no plan (#420)."""
     source, _ = answered
     plan = tmp_path / PLAN_FILE
     result = write_plan(source, plan,
                         extra=(TRACKING_FLAG, BRANCH_GIT_REFUSES))
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "REFUSED adopt-bad-tracking-branch: " in result.stderr
     assert "adopt-manifest-misread" not in result.stderr, result.stderr
+    assert not plan.exists()
 
 
 def test_git_is_asked_only_about_a_branch_the_loader_misreads(
