@@ -76,6 +76,11 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     `--dry-run` as well, whether or not the file names the leg, and a line
     for a file git does not track is marked as it is for a file that is not
     UTF-8.
+  * a pin file whose layout the rewrite cannot carry, though the validators
+    read it (`digests: {tree_sha256: ...}`, a value on the line below its
+    key): `bump-leg-pin-unrecognised`. The rewrite is computed once, before
+    the `--dry-run` return, so the dry run is refused exactly as the real run
+    is, with nothing written (#438).
   * a validator that goes red after the rewrite. Every byte is rolled back
     first — the pin file, the workflow files, the leg's checkout and the index
     — so a refusal leaves the tree exactly as it was found.
@@ -1422,11 +1427,21 @@ def _with_verdict(detail: str, verdict: str) -> str:
 
 
 def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
-                   pin_path: Path, pin_text: str, digest: str, plans: list,
+                   pin_path: Path, new_pin: str, plans: list,
                    staged: list[str], message: str,
                    trailers: list[str]) -> str:
-    """Rewrite the pin and every workflow file, stage them, validate them and
+    """Write the pin and every workflow file, stage them, validate them and
     commit them — or roll every byte back and re-raise. Returns the commit.
+
+    THE PIN'S NEW TEXT IS PASSED IN, NOT COMPUTED HERE (#438). `cmd_bump`
+    asks `rewrite_pin` once, after the digest and before the dry-run return,
+    because a layout `rewrite_pin` refuses (`bump-leg-pin-unrecognised`, or
+    the read-back fault) must be refused by the dry run as it is by the real
+    run: computed in here, after the leg had been checked out, the dry run
+    never reached it and previewed `old -> new` with exit 0 for a pin the real
+    run then refused. It is a pure function of text that was read before, so
+    the dry run writes nothing new, and a refusal now comes before the leg
+    has been checked out at all: there is nothing to roll back.
 
     Split from `cmd_bump` for #136: the whole rewrite-or-roll-back sequence
     is one question, asked once, instead of being the tail half of a
@@ -1472,7 +1487,7 @@ def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
         # at the pin — and a bump that also moved `main` in the leg would be
         # this tool pushing somebody's branch around from inside a submodule.
         run(["git", "checkout", "-q", "--detach", commit], cwd=submodule)
-        for target, data in [(pin_path, rewrite_pin(pin_text, commit, digest))
+        for target, data in [(pin_path, new_pin)
                              ] + [(wf_path, text) for wf_path, text, _ in plans]:
             written[target] = target.read_bytes()
             # LF, on every platform. `.github/workflows/validate.yml` is
@@ -1541,6 +1556,23 @@ def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
 
 
 def cmd_bump(args) -> int:
+    """Advance one leg. The ORDER is what makes `--dry-run` the real run's
+    answer (#534, #438): everything that can REFUSE the move is asked before
+    the dry-run return, so the dry run and the real run refuse alike and the
+    only thing the dry run skips is the writing.
+
+    1. the root: clean, on a branch, the leg initialized and recorded;
+    2. the fetch, and the commit `--to` names in the leg's objects (an
+       annotated tag's own id is peeled, a tree or a blob refused) and
+       whether the remote has it — `fetch_leg`;
+    3. the digest, recomputed from the leg's own objects;
+    4. the pin as it stands, the workflow plan and the report;
+    5. the pin's new text (`rewrite_pin`, once), `nothing to do` (exit 1)
+       and the trailers;
+    6. `--dry-run` returns here, exit 0;
+    7. only the real run checks the leg out, writes, validates and commits,
+       in `_apply_rewrite`, which writes the text computed in step 5.
+    """
     project = Project.open(args.root)
     root = project.root
     role = checked_value("--leg", args.leg)
@@ -1578,8 +1610,18 @@ def cmd_bump(args) -> int:
     print(f"pin          {pin_rel}")
     _print_workflow_plan(root, plans)
 
-    if was == commit and not plans and rewrite_pin(pin_text, commit,
-                                                   digest) == pin_text:
+    # THE REWRITE, ONCE, BEFORE THE DRY-RUN RETURN (#438). `rewrite_pin` ran
+    # there only inside the test below, so a pin the validators read and the
+    # rewrite refuses (`digests: {tree_sha256: ...}`, a value on the line
+    # below its key) previewed `old -> new`, exit 0, and the real run was
+    # refused `bump-leg-pin-unrecognised` after the leg was checked out. Its
+    # refusals now reach both runs, exit 2, with nothing written. The same
+    # text is what the nothing-to-do test compares and what `_apply_rewrite`
+    # writes; the digest in it is the one computed above from the leg's own
+    # objects, never edited (AGENTS.md rule 2).
+    new_pin = rewrite_pin(pin_text, commit, digest)
+
+    if was == commit and not plans and new_pin == pin_text:
         print(f"\nnothing to do: {repository} is already pinned at "
               f"{commit[:12]} and every fact agrees.")
         return 1
@@ -1620,8 +1662,7 @@ def cmd_bump(args) -> int:
           "openRepoShape's `scripts/bump-leg.py`; the digest is recomputed "
           "from the leg's own objects, not adjusted.\n")
     head = _apply_rewrite(
-        root, submodule, commit, was, pin_path, pin_text, digest, plans,
-        staged,
+        root, submodule, commit, was, pin_path, new_pin, plans, staged,
         f"Bump {role} leg to {commit[:12]} in {project.display_name}\n\n"
         + body, args.trailer)
     print(f"\n  committed {head[:12]}: " + ", ".join(staged))

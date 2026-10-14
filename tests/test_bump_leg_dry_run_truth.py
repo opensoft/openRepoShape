@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`scripts/bump-leg.py --dry-run` gives the real run's answer (#534).
+"""`scripts/bump-leg.py --dry-run` gives the real run's answer (#534, #438).
 
 STEP 1 OF "Advancing a leg" IS A DRY RUN, and the line it prints is what the
 human reads and agrees to. Two answers differed:
@@ -11,7 +11,13 @@ human reads and agrees to. Two answers differed:
     wrote the TAG's id into the pin and the workflow references, was refused by
     the project's own `validate-pins.py` and rolled back, exit 2.
 
-THE RULING THIS FILE HOLDS BOTH RUNS TO: the tag's id is PEELED, as
+  * a pin the validators read and the rewrite refuses (#438): `rewrite_pin`
+    ran before the dry-run return only inside the nothing-to-do test, so
+    `digests: {tree_sha256: ...}` (a flow mapping) previewed `old -> new`,
+    exit 0, and the real run was refused `bump-leg-pin-unrecognised` after the
+    leg had been checked out. It is now computed once, before the return.
+
+THE RULING THIS FILE HOLDS BOTH RUNS TO FOR A TAG: the tag's id is PEELED, as
 `family.py add --at` peels one. The run goes on with the commit the tag names,
 the same in the dry run and the real run, and prints one line saying so ahead
 of the `commit` line. A tree's or a blob's id, or a tag of either, is refused
@@ -19,16 +25,16 @@ of the `commit` line. A tree's or a blob's id, or a tag of either, is refused
 
 WHAT THE FETCH BRINGS, measured here and not assumed. `fetch_leg` fetches
 `+refs/heads/*:refs/remotes/origin/*`, and git follows an annotated tag that
-points into the history that brings: a release tag pushed to the leg's remote
+points into the history it brings: a release tag pushed to the leg's remote
 reaches the leg's object store through that fetch, from the
 `--local-remote-dir` bare repository and from the leg's own `origin` alike
 (both are run below). A tag whose commit is on no branch is NOT brought, and
 neither is its commit: it is `bump-leg-commit-not-on-remote` in both runs, and
 one test holds that. The peel is therefore asked AFTER the fetch.
 
-Every case here runs the dry run AND the real run over the same root and asserts
-that they give one answer. The leg's remote is a PRIVATE bare copy of the
-session's, so a tag pushed here never reaches another module's leg.
+Every case here runs the dry run AND the real run over the same root and
+asserts that they give one answer. The leg's remote is a PRIVATE bare copy of
+the session's, so a tag pushed here never reaches another module's leg.
 
 NO NETWORK, NO `gh`, NO BASH: the bare remotes are on disk, so this runs on
 every OS the suite runs on.
@@ -44,8 +50,8 @@ import pytest
 
 from conftest import FILE_PROTOCOL, ORG, PROJECT, REPO, git, run_script
 from test_bump_leg import (
-    BUMP, SPEC_PIN, branched, bump, committed, reference_both_legs, spec_ref,
-    validate,
+    BUMP, SPEC_PIN, branched, bump, commit_spec_pin, committed,
+    reference_both_legs, spec_ref, validate,
 )
 from test_bump_leg_rollback import assert_nothing_changed, snapshot
 
@@ -388,3 +394,90 @@ def test_a_tag_the_fetch_never_brings_is_not_on_the_remote_in_both_runs(
     assert not holds(project, tag_only["tag"]), "the fetch did not bring it"
     assert not holds(project, tag_only["commit"])
     assert "no branch containing" in stderr
+
+
+# --- #438: a pin layout the rewrite refuses is refused by the dry run -------
+
+def flow_mapping(text: str) -> str:
+    """The issue's layout: `digests` as one flow mapping. The reader and
+    `validate-pins.py` accept it; a LINE rewrite finds no `tree_sha256:`
+    line in it."""
+    digest = next(line.split('"')[1] for line in text.splitlines()
+                  if line.startswith("  tree_sha256:"))
+    laid = text.replace(f'digests:\n  tree_sha256: "{digest}"\n',
+                        f'digests: {{tree_sha256: "{digest}"}}\n', 1)
+    assert laid != text, "fixture: the scaffold's layout was found"
+    return laid
+
+
+def folded_commit(text: str) -> str:
+    """`commit:`'s value on the line below its key: it reads, and it is the
+    one layout the rewrite's own read-back refuses."""
+    pinned = next(line.split('"')[1] for line in text.splitlines()
+                  if line.startswith("commit:"))
+    laid = text.replace(f'commit: "{pinned}"\n', f"commit: >-\n  {pinned}\n",
+                        1)
+    assert laid != text, "fixture: the scaffold's commit line was found"
+    return laid
+
+
+#: The layout, the words of the refusal, and what the rewrite found wrong.
+REFUSED_LAYOUTS = {
+    "a flow mapping for digests": (
+        flow_mapping, "has 0 `tree_sha256` line(s)"),
+    "commit folded onto the next line": (
+        folded_commit, "does not read back to the target"),
+}
+
+
+@pytest.mark.parametrize("layout", REFUSED_LAYOUTS)
+def test_a_pin_layout_the_rewrite_refuses_is_refused_by_the_dry_run_too(
+        project, leg_remote, release, layout):
+    """THE ISSUE'S FLOW. The pin is committed in a layout the validators accept
+    and the rewrite cannot carry; before, the dry run printed `old -> new` and
+    exited 0, and the real run exited 2 `bump-leg-pin-unrecognised` after
+    the leg had been checked out. Both runs now refuse it, exit 2, in the
+    same words, and neither wrote a byte or moved the leg.
+
+    The leg stands ON its branch, as `bootstrap.py` leaves it, so a checkout
+    of the leg is something the snapshot would see."""
+    transform, why = REFUSED_LAYOUTS[layout]
+    git("checkout", "-q", "-B", "main", cwd=project / "spec")
+    branched(project)
+    pin = project / SPEC_PIN
+    commit_spec_pin(project, transform(pin.read_text(encoding="utf-8")),
+                    "Lay the pin out another way")
+    if transform is flow_mapping:
+        assert validate(project).returncode == 0, (
+            "premise: the project's own gate accepts the layout")
+    before = snapshot(project)
+    run = runner(project, leg_remote, "local-remote-dir")
+
+    stderr = assert_one_refusal(project, run, release["commit"],
+                                "bump-leg-pin-unrecognised", before)
+
+    assert why in stderr
+    assert "bump-leg-validators-red" not in stderr
+    assert "rolled back" not in stderr, (
+        "nothing was moved, so nothing needed rolling back")
+
+
+def test_the_scaffolds_own_pin_layout_is_accepted_by_both_runs(
+        project, leg_remote, release):
+    """THE CONTROL: the layout every project has gives exit 0 from the dry run
+    and exit 0 from the real run, and the real run commits."""
+    reference_both_legs(project)
+    branched(project)
+    before = snapshot(project)
+    run = runner(project, leg_remote, "local-remote-dir")
+
+    dry = run(release["commit"], "--dry-run")
+    assert dry.returncode == 0, dry.stderr + dry.stdout
+    assert_nothing_changed(project, before)
+    real = run(release["commit"])
+
+    assert real.returncode == 0, real.stderr + real.stdout
+    assert report_of(real, real=True) == report_of(dry, real=False)
+    assert git("rev-parse", "HEAD:spec", cwd=project).stdout.strip() == (
+        release["commit"])
+    assert validate(project).returncode == 0
