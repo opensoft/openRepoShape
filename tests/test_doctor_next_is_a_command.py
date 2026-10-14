@@ -80,7 +80,7 @@ from test_shape_doctor import (  # noqa: F401
 #: the guard of every row it reads.
 from test_shape_doctor import (
     READ_NOWHERE, assert_next_holds_no_prose, commit_all, family_beside,
-    plant_family_yaml, write_inventory,
+    outside_single_quotes, plant_family_yaml, write_inventory,
 )
 #: The lockstep remedy `validate-pins.py` prints under its refusals, and the
 #: one every `Refusal` carried before #370, from the module that spells it;
@@ -459,8 +459,10 @@ def _removal_next_committed(standard, project, holder, tmp_path):
 
 
 def _removal_next_loose(standard, project, holder, tmp_path):
-    # A kind nothing registers, never added: the `git clean` of it, where
-    # the NEXT was "register the kind ..., or remove the file" (#548).
+    # A kind nothing registers, never added: the `git status --ignored` that
+    # shows it, where the NEXT was "register the kind ..., or remove the
+    # file" (#548), and never the deletion no history can undo (review of
+    # PR #555).
     write_inventory(project)
     return _kinds(standard, project)
 
@@ -649,8 +651,9 @@ CASES = {
         "gate here reads"),
     "removal_next-loose": (
         _removal_next_loose,
-        "deletes contracts/inventory.yaml, which git does not track, so there "
-        "is nothing to commit. Or register the kind"),
+        "shows contracts/inventory.yaml, which git does not track: no commit "
+        "holds it, so deleting it cannot be undone and is a person's act, "
+        "never this row's -- `git -C "),
     "removal_next-changed": (
         _removal_next_changed,
         "shows the changes no commit holds in contracts/family.yaml, which "
@@ -692,28 +695,6 @@ def unquoted_operators(command: str) -> list[str]:
 #: so it is one of them. `<` and `>` are not here: the way-in row's
 #: `<your-org>` is a placeholder the reader replaces, unquoted on purpose.
 LIVE_OPERATORS = ";&|()"
-
-
-def outside_single_quotes(command: str) -> str:
-    """`command` less what `sh` reads literally: single-quoted spans and the
-    character after a backslash. A `$(` left in it is run -- inside double
-    quotes as much as outside them -- which `shlex`'s tokens cannot show:
-    they read `"$(make)"` as the one word `$(make)`, exactly as they read
-    the quoted path `'$(make)'`, which runs nothing."""
-    kept, single, double, at = [], False, False, 0
-    while at < len(command):
-        char = command[at]
-        if single:
-            single = char != "'"
-        elif char == "\\":
-            at += 1
-        elif char == "'" and not double:
-            single = True
-        else:
-            double = double != (char == '"')
-            kept.append(char)
-        at += 1
-    return "".join(kept)
 
 
 def test_the_operator_readers_see_what_sh_runs_and_not_a_quoted_path():
@@ -1082,12 +1063,14 @@ def test_the_rows_guard_finds_a_backtick_or_a_remediation_in_a_next():
     suite reads, shown to fail on each NEXT #548 and #408 were filed about
     and on prose that opens with `Remediation:`, and to pass a row with no
     NEXT and a command whose quoted path holds a backtick, which is a
-    character of the path."""
+    character of the path -- in each spelling `quote_arg` has for an
+    apostrophe, `sh`'s `'\\''` and PowerShell's `''`."""
     for line in (FAMILY_BESIDE_NEXT_BEFORE_548, REMEDIATION,
                  "Remediation: run the gate again"):
         with pytest.raises(AssertionError):
             assert_next_holds_no_prose({"id": "before", "next": line})
     for line in (None, "git -C '/w/it`s here' status",
+                 "git -C '/w/it'\\''s `here`' status",
                  "git -C 'C:\\it''s `here`' status"):
         assert_next_holds_no_prose({"id": "after", "next": line})
 

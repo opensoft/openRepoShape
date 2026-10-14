@@ -184,9 +184,31 @@ def rows_of(result) -> dict:
     return {row["id"]: row for row in payload["rows"]}
 
 
-#: A single-quoted span, as `quote_arg` spells a value in either shell: what
-#: is inside it is the value's own characters, never shell syntax.
-QUOTED_SPAN = re.compile(r"'[^']*'")
+def outside_single_quotes(command: str) -> str:
+    """`command` less what `sh` reads literally: single-quoted spans and the
+    character after a backslash. A `$(` left in it is run -- inside double
+    quotes as much as outside them -- which `shlex`'s tokens cannot show:
+    they read `"$(make)"` as the one word `$(make)`, exactly as they read
+    the quoted path `'$(make)'`, which runs nothing.
+
+    HERE, beside `rows_of`, because the guard below reads a NEXT with it and
+    `tests/test_doctor_next_is_a_command.py`, which imports this module,
+    reads one with it too; `quote_arg`'s `'\\''` form is read as `sh` reads
+    it, where a regular expression for a quoted span is not."""
+    kept, single, double, at = [], False, False, 0
+    while at < len(command):
+        char = command[at]
+        if single:
+            single = char != "'"
+        elif char == "\\":
+            at += 1
+        elif char == "'" and not double:
+            single = True
+        else:
+            double = double != (char == '"')
+            kept.append(char)
+        at += 1
+    return "".join(kept)
 
 
 def assert_next_holds_no_prose(row: dict) -> None:
@@ -209,7 +231,7 @@ def assert_next_holds_no_prose(row: dict) -> None:
     command = row.get("next")
     if not command:
         return
-    assert "`" not in QUOTED_SPAN.sub("", command), (row["id"], command)
+    assert "`" not in outside_single_quotes(command), (row["id"], command)
     assert "Remediation:" not in command, (row["id"], command)
 
 
@@ -609,19 +631,35 @@ UNREGISTERED_WAY = ("Or register the kind contracts/inventory.yaml declares "
                     "in shape-doctor.py's MANIFEST_VALIDATORS, beside the "
                     "check that validates it, as the human decides")
 
-#: What the `why` says first where the NEXT deletes the suite's untracked
-#: `contracts/inventory.yaml`.
-INVENTORY_DELETED = ("deletes contracts/inventory.yaml, which git does not "
-                     "track, so there is nothing to commit")
-
-
 def removal_command(payload: dict, verb: str, names: list) -> str:
     """The NEXT that takes `names` out of the root a `--json` run reports
-    on: `git -C <root> <verb> -- <names>`, every value spelled by the
-    doctor's own `quote_arg`, as the reader's shell hands it back (#548)."""
+    on, or shows them: `git -C <root> <verb> -- <names>`, every value
+    spelled by the doctor's own `quote_arg`, as the reader's shell hands it
+    back (#548)."""
     module = doctor_module(REPO)
     return (f"git -C {module.quote_arg(Path(payload['root']))} {verb} -- "
             + " ".join(module.quote_arg(name) for name in names))
+
+
+#: The suite's manifest of a kind nothing registers, as the row names it.
+INVENTORY = ["contracts/inventory.yaml"]
+
+#: The NEXT for files git does not track: it shows them, and never deletes
+#: them, which no history could undo (review of PR #555).
+SHOW_UNTRACKED = "status --ignored"
+
+
+def shown_untracked(payload: dict, names: list, ignored: bool = False) -> str:
+    """What the `why` says first where the NEXT shows `names`, which git does
+    not track: that deleting them cannot be undone, and the `git clean`
+    that does it, for a person to run (review of PR #555)."""
+    them = "it" if len(names) == 1 else "them"
+    clean = removal_command(payload, "clean -f -x" if ignored else "clean -f",
+                            names)
+    return (f"shows {', '.join(names)}, which git does not track: no commit "
+            f"holds {them}, so deleting {them} cannot be undone and is a "
+            f"person's act, never this row's -- `{clean}` deletes {them}, "
+            "and there is nothing to commit")
 
 
 def family_beside(project: Path, holder: dict) -> str:
@@ -862,10 +900,15 @@ def test_a_family_yaml_beside_an_unregistered_kind_says_both(
     commit_in(project, "Take the family.yaml beside project.yaml out")
     again = doctor(standard, project, "--json")
     row = only_finding_is_manifest_kinds(again)
-    assert row["next"] == removal_command(json.loads(again.stdout), "clean -f",
-                                          ["contracts/inventory.yaml"]), row
-    assert row["why"] == f"{INVENTORY_DELETED}. {UNREGISTERED_WAY}", row
+    payload = json.loads(again.stdout)
+    assert row["next"] == removal_command(payload, SHOW_UNTRACKED,
+                                          INVENTORY), row
+    assert row["why"] == (shown_untracked(payload, INVENTORY) + ". "
+                          + UNREGISTERED_WAY), row
     run_pasted(row["next"])
+    assert (project / INVENTORY[0]).is_file()
+    # The deletion the `why` names, as a person would run it.
+    run_pasted(removal_command(payload, "clean -f", INVENTORY))
     compliant_again(standard, project)
 
 
@@ -895,10 +938,11 @@ def test_a_root_with_no_family_yaml_beside_gets_the_row_it_always_got(
     assert set(row["detail"]) == MANIFEST_KINDS_DETAIL_KEYS, row["detail"]
     assert row["reason"] == ("no validator registered for kind "
                              "contracts/inventory.yaml (service-inventory)")
-    assert row["next"] == removal_command(json.loads(result.stdout),
-                                          "clean -f",
-                                          ["contracts/inventory.yaml"]), row
-    assert row["why"] == f"{INVENTORY_DELETED}. {UNREGISTERED_WAY}", row
+    payload = json.loads(result.stdout)
+    assert row["next"] == removal_command(payload, SHOW_UNTRACKED,
+                                          INVENTORY), row
+    assert row["why"] == (shown_untracked(payload, INVENTORY) + ". "
+                          + UNREGISTERED_WAY), row
 
     result = doctor(standard, holder["root"], "--json")
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1136,13 +1180,17 @@ def git_rm_refuses(project: Path, planted: Path) -> None:
 
 
 @pytest.mark.parametrize("state", ["untracked", "ignored"])
-def test_a_contracts_family_yaml_git_does_not_track_is_deleted(
+def test_a_contracts_family_yaml_git_does_not_track_is_shown_not_deleted(
         standard, project, holder, state):
     """A `contracts/family.yaml` nobody has committed -- copied in and not
-    added, or hidden by the root's own excludes -- is the same FINDING, and
-    its NEXT is `git clean -f` of it, with nothing to commit, `-x` too where
-    the excludes hide it, which `clean` otherwise leaves. It names no `git
-    rm`, which fails on it; run as printed, the root is COMPLIANT again."""
+    added, or hidden by the root's own excludes -- is the same FINDING. Its
+    NEXT is the `git status --ignored` that shows it, and never the deletion
+    (review of PR #555): no commit holds it, so deleting it cannot be
+    undone, and an agent runs the NEXT. The `why` names the `git clean -f`
+    that deletes it, `-x` too where the excludes hide it, which `clean`
+    otherwise leaves. It names no `git rm`, which fails on it. Run as
+    printed, the NEXT leaves the file where it is; the `why`'s deletion, run
+    as a person would, leaves the root COMPLIANT."""
     planted = plant_family_yaml(project, holder)
     if state == "ignored":
         exclude = project / git("rev-parse", "--git-path", "info/exclude",
@@ -1155,12 +1203,11 @@ def test_a_contracts_family_yaml_git_does_not_track_is_deleted(
     payload = json.loads(result.stdout)
     assert payload["verdict"] == "INVALID (manifest-kinds)", payload
     row = only_finding_is_manifest_kinds(result)
-    verb = "clean -f -x" if state == "ignored" else "clean -f"
-    assert row["next"] == removal_command(payload, verb,
-                                          ["contracts/family.yaml"]), row
+    names = ["contracts/family.yaml"]
+    assert row["next"] == removal_command(payload, SHOW_UNTRACKED, names), \
+        row
     assert row["why"] == why_for_one(
-        "deletes contracts/family.yaml, which git does not track, so there "
-        "is nothing to commit"), row["why"]
+        shown_untracked(payload, names, state == "ignored")), row["why"]
     assert row["detail"]["registered_elsewhere"] == [
         {"manifest": "contracts/family.yaml", "kind": "family-manifest",
          "validator": "scripts/validate-family.py", "runs_in": ["family"],
@@ -1168,6 +1215,9 @@ def test_a_contracts_family_yaml_git_does_not_track_is_deleted(
     git_rm_refuses(project, planted)
 
     run_pasted(row["next"])
+    assert planted.is_file(), "the NEXT deleted a file no commit holds"
+    run_pasted(removal_command(
+        payload, "clean -f -x" if state == "ignored" else "clean -f", names))
     assert not planted.exists()
     compliant_again(standard, project)
 
@@ -1261,26 +1311,39 @@ def test_manifests_that_come_out_differently_are_each_named(
         ("contracts/x-family.yaml", "changed")], row["detail"]
 
 
-def test_a_name_git_reads_as_a_pattern_is_passed_literally(project):
-    """`git rm -- 'contracts/shape-pin[.]yaml'` takes out every tracked path
-    the pattern matches, the shape pin with it. So a name holding a pattern
-    character is passed after `--literal-pathspecs`, and the command, run
-    as printed, takes out that file alone; a name with none is spelled as
-    it always was."""
-    module = doctor_module(REPO)
-    ctx = SimpleNamespace(root=project)
-    odd = "contracts/shape-pin[.]yaml"
+#: Windows takes no `*` in a file name.
+NO_STAR_IN_A_NAME = pytest.mark.skipif(
+    os.name == "nt", reason="Windows takes no `*` in a file name")
+
+
+@pytest.mark.parametrize("odd", [
+    pytest.param("contracts/*-pin.yaml", id="every-pin",
+                 marks=NO_STAR_IN_A_NAME),
+    pytest.param("contracts/[s]hape-pin.yaml", id="the-shape-pin"),
+])
+def test_a_name_git_reads_as_a_pattern_is_passed_literally(standard, project,
+                                                           odd):
+    """A manifest of a kind nothing registers, committed under a name git's
+    pathspec reads as a pattern: `contracts/*-pin.yaml` matches every pin in
+    the root, `contracts/[s]hape-pin.yaml` the shape pin. The row's NEXT
+    passes it after `--literal-pathspecs`, so run as printed it stages the
+    removal of that file alone. Through the row, since a name that does not
+    end `.yaml` is no candidate at all (review of PR #555); a name with no
+    pattern in it is spelled as it always was."""
+    module = doctor_module(standard)
     (project / odd).write_bytes(b"kind: service-inventory\n")
     commit_all(project, "a manifest named like a pattern")
-    command, said = module.removal_next(ctx, [odd], {odd: "committed"})
-    assert pasted(command) == ["git", "-C", str(project),
-                               "--literal-pathspecs", "rm", "--", odd], \
-        command
-    assert said == TAKES_OUT.format(names=odd), said
-    run_pasted(command)
-    assert not (project / odd).exists()
-    assert (project / SHAPE_PIN).is_file(), "the shape pin went with it"
-    plain, _ = module.removal_next(ctx, ["contracts/x.yaml"],
+    matched = git("ls-files", "-z", "--", odd, cwd=project).stdout
+    assert len([name for name in matched.split("\0") if name]) > 1, matched
+    row = module.check_manifest_kinds(module.Context(project)).as_dict()
+    assert row["next"] == (f"git -C {module.quote_arg(project)} "
+                           "--literal-pathspecs rm -- "
+                           f"{module.quote_arg(odd)}"), row
+    run_pasted(row["next"])
+    staged = git("diff", "--cached", "--name-only", "-z", cwd=project).stdout
+    assert [name for name in staged.split("\0") if name] == [odd], staged
+    plain, _ = module.removal_next(SimpleNamespace(root=project),
+                                   ["contracts/x.yaml"],
                                    {"contracts/x.yaml": "committed"})
     assert "--literal-pathspecs" not in plain, plain
 
@@ -1523,6 +1586,82 @@ def test_a_pin_a_gate_reads_stays_validated_by_any_name_it_has(standard,
     for pin in (NEUTRAL_PIN, SPEC_PIN, CODE_PIN):
         assert f"{pin} (pinned_contract_manifest)" in \
             row["detail"]["validated"], (pin, row)
+
+
+#: The review of PR #555's two roots: a file a gate reads, with the fault
+#: somewhere else -- a typo in a leg's role, or a wrong `kind:` in the naming
+#: policy -- as the file edited, the bytes before and after, the file the
+#: `manifest kinds` row must still count `validated`, and the code the
+#: `manifest` row names. Main said `manifest kinds ok` over both; the row
+#: then called the spec leg's pin, and the naming policy, read by nothing,
+#: and its NEXT took each out.
+FAULT_ELSEWHERE = {
+    "a-leg-role-typo": (
+        "project.yaml", b"  - role: spec\n", b"  - role: specs\n",
+        "contracts/spec-pin.yaml (pinned_contract_manifest)",
+        "manifest-roles"),
+    "a-wrong-kind-where-a-gate-reads": (
+        "contracts/repository-naming.yaml",
+        b"kind: repository-naming-policy\n",
+        b"kind: pinned_contract_manifest\n",
+        "contracts/repository-naming.yaml (pinned_contract_manifest)",
+        "policy-wrong-kind"),
+}
+
+
+@pytest.mark.parametrize("case", list(FAULT_ELSEWHERE))
+def test_a_file_a_gate_reads_is_never_unread_when_the_fault_is_elsewhere(
+        standard, project, case):
+    """THE GATE'S FINDING, NOT THIS ROW'S (review of PR #555). With a leg's
+    role misspelt, `contracts/spec-pin.yaml` is still the spec leg's pin,
+    the shape's own path (`own_pins`), which the gate reads again once the
+    role is right. With the naming policy declaring another kind, it is
+    still the file `validate-manifest.py` reads, and refuses. Each is the
+    `manifest` row's FINDING; `manifest kinds` says `ok`, as main did, and
+    lists the file `validated` -- never `unread`, so no NEXT takes it out.
+    """
+    rel, before, after, validated, code = FAULT_ELSEWHERE[case]
+    path = project / rel
+    body = path.read_bytes()
+    assert body.count(before) == 1, body
+    path.write_bytes(body.replace(before, after))
+    commit_all(project, f"{case}, committed")
+    rows = rows_of(doctor(standard, project, "--json"))
+    assert rows["manifest"]["status"] == "FINDING", rows["manifest"]
+    assert code in rows["manifest"]["reason"], rows["manifest"]["reason"]
+    kinds = rows["manifest-kinds"]
+    assert kinds["status"] == "ok", kinds
+    assert set(kinds["detail"]) == MANIFEST_KINDS_DETAIL_KEYS, kinds
+    assert validated in kinds["detail"]["validated"], kinds
+
+
+def test_the_next_never_takes_out_a_file_a_gate_reads(standard, project):
+    """A kind nothing registers in the naming policy is still this row's
+    finding, as on main, but the gate that reads that path judges the file,
+    and a NEXT that took it out would take out the naming policy. So the row
+    has no NEXT for it, and its `why` says so; beside a file the row may take
+    out, the NEXT shows that file alone (review of PR #555)."""
+    module = doctor_module(standard)
+    naming = project / NAMING_COPY
+    body = naming.read_bytes()
+    assert body.count(b"kind: repository-naming-policy\n") == 1, body
+    naming.write_bytes(body.replace(b"kind: repository-naming-policy\n",
+                                    b"kind: service-inventory\n"))
+    judged = ("contracts/repository-naming.yaml is read by a gate here, "
+              "whose own row judges it: this row never takes out a file a "
+              "gate reads")
+
+    row = module.check_manifest_kinds(module.Context(project)).as_dict()
+    assert row["detail"]["unregistered"] == [
+        "contracts/repository-naming.yaml (service-inventory)"], row
+    assert row["next"] is None, row
+    assert row["why"].startswith(judged + ". Or register the kind "), row
+
+    write_inventory(project)
+    row = module.check_manifest_kinds(module.Context(project)).as_dict()
+    assert row["next"] == (f"git -C {module.quote_arg(project)} "
+                           f"{SHOW_UNTRACKED} -- {INVENTORY[0]}"), row
+    assert judged in row["why"], row["why"]
 
 
 def test_gitlinks_under_lists_one_directory_and_nothing_above_it(project):
@@ -5578,8 +5717,11 @@ def test_an_unregistered_kind_beside_a_file_that_does_not_load(standard,
     what kind a file declares until it loads. Run, the row is the one the
     unregistered kind alone got, sentence, keys and all."""
     write_inventory(project)
-    alone = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
-    assert alone["why"] == f"{INVENTORY_DELETED}. {UNREGISTERED_WAY}", alone
+    result = doctor(standard, project, "--json")
+    alone = rows_of(result)["manifest-kinds"]
+    assert alone["why"] == (
+        shown_untracked(json.loads(result.stdout), INVENTORY) + ". "
+        + UNREGISTERED_WAY), alone
     assert set(alone["detail"]) == {"validated", "unregistered", "unreadable",
                                     "registered_kinds"}, alone["detail"]
     break_the_pin(project, conflicted_pin)

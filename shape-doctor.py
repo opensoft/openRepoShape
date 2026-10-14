@@ -866,22 +866,61 @@ class ManifestKind:
 NAMING_COPY = "contracts/repository-naming.yaml"
 
 
+def own_pins(ctx: Context) -> set:
+    """The pins the shape itself writes in this kind of root, whatever its
+    manifest declares: the shape pin, and in an assembly root
+    `contracts/<role>-pin.yaml` for each role the schema has (review of PR
+    #555).
+
+    A leg's role is the schema's, and `validate-manifest.py` refuses any
+    other (`manifest-roles`). So a `- role: specs` typo leaves
+    `contracts/spec-pin.yaml` the spec leg's pin, which the gate reads again
+    once the typo is fixed, and not a file nothing reads: `declared_pins`
+    alone named `contracts/specs-pin.yaml`, and the row's NEXT took the
+    real pin out, over a manifest the `manifest` row already names.
+    """
+    if ctx.kind == FAMILY:
+        return {SHAPE_PIN}
+    return {SHAPE_PIN} | {f"contracts/{role}-pin.yaml" for role in LEG_ROLES}
+
+
 def pins_read_here(ctx: Context) -> set | None:
     """Where this root's gate reads a `pinned_contract_manifest` (#439).
 
     In a holder, `validate-family.py` reads the shape pin and no other: a
     holder has no legs and declares no product. In an assembly root,
     `validate-pins.py` reads `declared_pins` -- the shape pin, a pin per leg
-    and a pin per `neutral_product_pins:` entry. Where `project.yaml` does
-    not load, it declares nothing this run can read, and None leaves every
-    pin counted as before: a leg pin called read by nothing would be a NEXT
-    that takes it out, over a manifest the `manifest` row already names.
+    and a pin per `neutral_product_pins:` entry -- and `own_pins` are
+    counted read whatever the legs declare. Where `project.yaml` does not
+    load, it declares nothing this run can read, and None leaves every pin
+    counted as before: a pin called read by nothing would be a NEXT that
+    takes it out, over a manifest the `manifest` row already names.
     """
     if ctx.kind == FAMILY:
-        return {SHAPE_PIN}
+        return own_pins(ctx)
     if ctx.manifest_refusal is not None:
         return None
-    return declared_pins(ctx)
+    return own_pins(ctx) | declared_pins(ctx)
+
+
+def read_by_a_gate(ctx: Context) -> set:
+    """Every root path a gate that runs here reads a file at, as any kind
+    (review of PR #555): each kind's `read_at` for the kinds whose check
+    runs on this root, and `own_pins`.
+
+    A FILE AT ONE OF THESE PATHS IS THAT GATE'S TO JUDGE. A
+    `contracts/repository-naming.yaml` declaring `kind:
+    pinned_contract_manifest` is refused by `validate-manifest.py`
+    (`policy-wrong-kind`), and the `manifest` row names it. Called read by
+    nothing here, it got a NEXT that took out the file the gate reads. So
+    such a file is never `unread`, and the row's NEXT never takes out a
+    file at one of these paths, whatever this row finds in it.
+    """
+    paths = own_pins(ctx)
+    for entry in MANIFEST_VALIDATORS.values():
+        if ctx.kind in entry.runs_in():
+            paths |= entry.reads(ctx) or set()
+    return paths
 
 
 MANIFEST_VALIDATORS: dict[str, ManifestKind] = {
@@ -2483,7 +2522,7 @@ PATHSPEC_MAGIC = re.compile(r"[*?\[\\]")
 
 def removal_next(ctx: Context, names: list,
                  states: dict) -> tuple[str | None, str]:
-    """`(command, said)`: the ONE command that takes `names` out of the
+    """`(command, said)`: the ONE command for taking `names` out of the
     root as git has them, and the sentence that says what it does -- the
     `manifest kinds` row's NEXT and the start of its `why` (#327, #548).
 
@@ -2501,9 +2540,17 @@ def removal_next(ctx: Context, names: list,
     (exit 128) for one git does not track, ignored or not, and refuses one
     with changes no commit holds. So `git_states` asks first, and:
       committed   `git rm`, committed on a branch and landed as a pull
-                  request, the way every change here lands;
-      untracked,  `git clean -f`, `-x` too where one is ignored, which
-      ignored     `clean` otherwise leaves: nothing to commit;
+                  request, the way every change here lands, which the
+                  history can undo;
+      untracked,  `git status --ignored`, which shows them. NEVER the
+      ignored     deletion as the NEXT (review of PR #555): no commit
+                  holds such a file, so deleting it cannot be undone, and
+                  AGENTS.md tells an agent to run the NEXT -- a person's
+                  draft would be gone. The `why` names it, `git clean -f`
+                  (`-x` too where one is ignored, which `clean` otherwise
+                  leaves), for a person to run, as `pin_restore` shows a
+                  file a person may have edited rather than putting it back
+                  (#291, #358);
       changed     `git status`, which shows the changes, since `git rm`
                   will not discard them: commit or drop them first.
     Each path is quoted for the reader's shell like every path this report
@@ -2529,9 +2576,13 @@ def removal_next(ctx: Context, names: list,
                 "branch and land it as a pull request")
     elif state == "loose":
         ignored = any(states[name] == "ignored" for name in group)
-        command = f"{git_c} clean -f{' -x' if ignored else ''} -- {spelled}"
-        said = (f"deletes {listed(group)}, which git does not track, so "
-                "there is nothing to commit")
+        command = f"{git_c} status --ignored -- {spelled}"
+        them = "it" if len(group) == 1 else "them"
+        said = (f"shows {listed(group)}, which git does not track: no "
+                f"commit holds {them}, so deleting {them} cannot be undone "
+                f"and is a person's act, never this row's -- `{git_c} clean "
+                f"-f{' -x' if ignored else ''} -- {spelled}` deletes {them}, "
+                "and there is nothing to commit")
     else:
         command = f"{git_c} status -- {spelled}"
         said = (f"shows the changes no commit holds in {listed(group)}, "
@@ -2542,6 +2593,34 @@ def removal_next(ctx: Context, names: list,
     if rest:
         said += f". The next run names the way out for {listed(rest)}"
     return command, said
+
+
+def taking_out(ctx: Context, names: list, states: dict, gated: set,
+               ways: list) -> tuple[str | None, str]:
+    """`(command, why)` for the `manifest kinds` row's files to take out,
+    `ways` being each fault's other way out, a sentence each (#548).
+
+    A FILE A GATE HERE READS IS NEVER TAKEN OUT (review of PR #555). An
+    unregistered kind, or one whose check runs elsewhere, at a path in
+    `gated` is still this row's finding, as it always was, but the gate
+    that reads that path judges it in its own row, and a NEXT that took it
+    out would take out the shape pin, a leg pin or the naming policy. So
+    `removal_next` is asked only of the rest, and the `why` says which
+    files it leaves, and why. With none left, the row has no NEXT.
+    """
+    judged = [name for name in names
+              if read_here(ctx, ctx.root / name, name, gated)]
+    rest = [name for name in names if name not in judged]
+    command, taken = (removal_next(ctx, rest, states) if rest
+                      else (None, None))
+    said = [taken] if taken else []
+    if judged:
+        one = len(judged) == 1
+        said.append(f"{listed(judged)} {'is' if one else 'are'} read by a "
+                    "gate here, whose own row judges "
+                    f"{'it' if one else 'them'}: this row never takes out a "
+                    "file a gate reads")
+    return command, ". ".join([*said, *ways])
 
 
 def check_manifest_kinds(ctx: Context) -> Row:
@@ -2575,21 +2654,26 @@ def check_manifest_kinds(ctx: Context) -> Row:
 
     THE NEXT IS ONE COMMAND, OR NOTHING (#548). Each fault but a file that
     does not load is a file to take out of the root, so the NEXT is the one
-    command `removal_next` names for all of them, as git has them, and the
-    `why` says what it does and then, a sentence each, the other way out of
-    each fault, which is the human's to choose: register the kind, move
-    what the file describes to its `home`, declare the pin, move a
-    membership to a holder. Those sentences were the NEXT, joined by `; `,
-    and held `family.py init` and `family.py add` in backticks, which an
-    interactive zsh runs where the line is pasted (#277).
+    command `removal_next` names for them, as git has them -- a `git rm` of
+    what a commit holds, and for the rest a `git status` that shows them,
+    never a deletion no history can undo -- and the `why` says what it does
+    and then, a sentence each, the other way out of each fault, which is
+    the human's to choose: register the kind, move what the file describes
+    to its `home`, declare the pin, move a membership to a holder. Those
+    sentences were the NEXT, joined by `; `, and held `family.py init` and
+    `family.py add` in backticks, which an interactive zsh runs where the
+    line is pasted (#277). A path a gate here reads (`read_by_a_gate`) is
+    never `unread` and never taken out: what is wrong with a file there is
+    that gate's finding, and `taking_out` says so (review of PR #555).
 
     THE ROOT'S OWN MANIFEST, WHEN IT DOES NOT LOAD, IS NOT THIS ROW'S (#205).
     The `manifest` (or `family`) row quotes its refusal and names its gate,
     and the kind of the root was read off its filename for exactly that
     reason. Listed here as well, it would be the same fault twice, under a
-    next command -- register a kind, or remove the file from the root --
-    that is the wrong remedy for a merge conflict in a project's own
-    manifest. So it is skipped, and the row says where it went.
+    second NEXT beside the gate that row names, and on main before #291
+    that NEXT was "register a kind, or remove the file from the root", the
+    wrong remedy for a merge conflict in a project's own manifest. So it is
+    skipped, and the row says where it went.
 
     A FILE THAT DOES NOT LOAD IS NOT AN UNREGISTERED KIND (#291). It used to
     share that case's next command -- register the kind, or remove the file
@@ -2621,6 +2705,9 @@ def check_manifest_kinds(ctx: Context) -> Row:
     elsewhere = (ctx.manifest_path if ctx.manifest_refusal is not None
                  else None)
     beside: tuple[str, dict] | None = None
+    #: Every path a gate here reads, as any kind: never `unread`, and never
+    #: taken out by the NEXT (review of PR #555).
+    gated = read_by_a_gate(ctx)
     for path in manifest_candidates(ctx.root):
         if path == elsewhere:
             continue
@@ -2655,8 +2742,10 @@ def check_manifest_kinds(ctx: Context) -> Row:
         if ctx.kind not in entry.runs_in():
             ungated.append((rel, kind, entry))
             continue
+        # At a path a gate here reads as ANY kind, a wrong kind is that
+        # gate's own finding, not a file nothing reads (review of PR #555).
         paths = entry.reads(ctx)
-        if paths is None or read_here(ctx, path, rel, paths):
+        if paths is None or read_here(ctx, path, rel, gated):
             known.append(f"{rel} ({kind})")
         else:
             unread.append((rel, kind, sorted(paths)))
@@ -2716,8 +2805,7 @@ def check_manifest_kinds(ctx: Context) -> Row:
             restore, command, why = unreadable_next(ctx, unreadable, detail)
             detail.update({"restore": restore, "refusals": refusals})
         else:
-            command, taken = removal_next(ctx, names, states)
-            why = ". ".join([taken, *ways])
+            command, why = taking_out(ctx, names, states, gated, ways)
         return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
                    "; ".join(parts) + aside, command, detail, why=why)
     return Row("manifest-kinds", LABEL_MANIFEST_KINDS, OK,
