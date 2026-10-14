@@ -25,6 +25,7 @@ import ast
 import importlib.util
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1946,9 +1947,9 @@ def test_a_path_taken_after_step_three_is_the_backstops(monkeypatch, tmp_path,
         "    cd %s\n"
         "    git -c protocol.file.allow=always clone --recurse-submodules %s\n"
         "    cd Sample && %s scripts/bootstrap.py"
-        % (parent / "Sample", module.shell_word(parent),
+        % (parent / "Sample", module.shell_word(parent, posix=True),
            module.shell_word(os.path.join(opts.local_remote_dir,
-                                          "Sample.git")),
+                                          "Sample.git"), posix=True),
            module.PYTHON_CMD))
     assert runs.calls == [], f"something was run: {runs.calls}"
 
@@ -1988,6 +1989,62 @@ def test_a_folder_step_seven_cannot_make_is_refused_with_the_way_on(
     assert folder.read_bytes() == b"not a folder\n"
 
 
+#: `(a Windows clone path, the word the printed lines spell it as)`. The
+#: spelling is `sh`'s: Git Bash is the shell a Windows person pastes these
+#: into, and #532 rules the printed commands POSIX-only. PowerShell's rule
+#: leaves the first bare, so Git Bash reads `C:workSample`, and doubles the
+#: apostrophe of the third, so Git Bash reads `ONeill`.
+WINDOWS_CLONES = (
+    (r"C:\work\Sample", r"'C:\work\Sample'"),
+    (r"C:\Users\a b\work\Sample", r"'C:\Users\a b\work\Sample'"),
+    (r"C:\Users\Jane O'Neill\work\Sample",
+     r"'C:\Users\Jane O'\''Neill\work\Sample'"),
+)
+WINDOWS_ASSEMBLY = (r"C:\Users\Jane O'Neill\remotes\Sample.git",
+                    r"'C:\Users\Jane O'\''Neill\remotes\Sample.git'")
+
+
+@pytest.mark.parametrize("clone,spelled", WINDOWS_CLONES)
+def test_the_changed_paste_lines_are_posix_quoted_on_windows_too(
+        monkeypatch, capsys, clone, spelled):
+    """#538, under #532's ruling that printed commands are POSIX-only: the
+    hand-over's `cd <clone>` and the backstop's `cd <parent>` and `<assembly>`
+    are spelled for `sh` on every host, as the scaffold's own NEXT STEPS
+    clone is (`shell_line(..., "posix")`). `os.name` and `SHELL_BARE` are
+    switched for the calls, the two things `shell_word` reads to choose
+    PowerShell's dialect, so this holds on any host; the lines are then read
+    back by `shlex.split`, as Git Bash reads them. The family lines are
+    #532's and are not asked."""
+    module = entry_point_module()
+    assembly, assembly_spelled = WINDOWS_ASSEMBLY
+    urls = {"assembly": assembly, "spec": assembly, "code": assembly}
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(module, "SHELL_BARE",
+                        re.compile(r"[A-Za-z0-9_./:%+=\\-]+"))
+    module.hand_over("Sample", clone, urls, "demoorg",
+                     module.Landing(None, "", None))
+    local = module.finish_by_hand(clone, assembly, "Sample", True)
+    github = module.finish_by_hand(
+        clone, "https://github.com/demoorg/Sample.git", "Sample", False)
+    monkeypatch.undo()
+    [closing] = [line for line in capsys.readouterr().out.splitlines()
+                 if line.startswith("    cd ")]
+    assert closing == "    cd " + spelled, closing
+    assert shlex.split(closing) == ["cd", clone], closing
+    assert local == (
+        "    cd %s\n"
+        "    git -c protocol.file.allow=always clone --recurse-submodules %s\n"
+        "    cd Sample && %s scripts/bootstrap.py"
+        % (spelled, assembly_spelled, module.PYTHON_CMD)), local
+    assert [shlex.split(line) for line in local.splitlines()[:2]] == [
+        ["cd", clone],
+        ["git", *FILE_PROTOCOL, "clone", "--recurse-submodules", assembly]]
+    assert github.splitlines()[:2] == [
+        "    cd " + spelled,
+        "    git clone --recurse-submodules "
+        "https://github.com/demoorg/Sample.git"], github
+
+
 @pytest.mark.parametrize("case", ["a-file-two-levels-up", "a-link-to-nothing",
                                   "a-link-to-a-folder", "nothing-there"])
 def test_what_stands_above_a_clone_path(tmp_path, case):
@@ -2012,13 +2069,16 @@ def test_what_stands_above_a_clone_path(tmp_path, case):
                              else "nowhere")
         if case == "a-link-to-a-folder":
             target.mkdir()
-        else:
-            expected = ("a symbolic link to %s, which is not a folder"
-                        % target)
         try:
             os.symlink(target, blocker, target_is_directory=True)
         except (NotImplementedError, OSError) as exc:
             pytest.skip(f"this platform cannot create a symlink here: {exc}")
+        if case == "a-link-to-nothing":
+            # THE TARGET AS THE LINK HOLDS IT, not as it was given:
+            # `os.readlink` on Windows returns the substitute name with its
+            # `\\?\` prefix (Python 3.8+), and the refusal names that.
+            expected = ("a symbolic link to %s, which is not a folder"
+                        % os.readlink(blocker))
     if expected is None:
         assert module.refuse_a_taken_clone_path(str(clone), "Sample") is None
         return

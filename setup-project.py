@@ -2163,18 +2163,21 @@ def finish_by_hand(parent: str, assembly: str, project: str,
 
     EVERY PATH IS ONE WORD (#538), through `shell_word`, as the family lines
     are (#486): under `--into "/home/a b"` the bare lines split at the space,
-    and under `--local-remote-dir` `<assembly>` is a path too. And THAT clone
-    carries `-c protocol.file.allow=always`, which setup's own clone passes:
-    the legs are cloned from the plain paths `.gitmodules` records, the file
-    transport, which git refuses a submodule without it. The project name is
-    a word already: step (4) held it to the naming policy.
+    and under `--local-remote-dir` `<assembly>` is a path too. THE WORD IS
+    SPELLED FOR `sh` ON EVERY HOST (`posix=True`; #532 rules the printed
+    commands POSIX-only), so a Windows path reaches Git Bash whole. And THAT
+    clone carries `-c protocol.file.allow=always`, which setup's own clone
+    passes: the legs are cloned from the plain paths `.gitmodules` records,
+    the file transport, which git refuses a submodule without it. The project
+    name is a word already: step (4) held it to the naming policy.
     """
     clone = "git -c protocol.file.allow=always clone" if local else "git clone"
     return ("    cd %s\n"
             "    %s --recurse-submodules %s\n"
             "    cd %s && %s %s"
-            % (shell_word(parent), clone, shell_word(assembly), project,
-               PYTHON_CMD, BOOTSTRAP))
+            % (shell_word(parent, posix=True), clone,
+               shell_word(assembly, posix=True), project, PYTHON_CMD,
+               BOOTSTRAP))
 
 
 def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
@@ -2296,24 +2299,36 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
 # 8. hand over
 # ---------------------------------------------------------------------------
 
+#: A word `sh` reads as itself, needing no quotes: `scripts/repo_shape.py`'s
+#: `SHELL_BARE_POSIX`. A backslash is not in it, so a Windows path is quoted.
+SHELL_BARE_POSIX = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")
+
 #: A word this host's shell reads as itself, needing no quotes:
 #: `scripts/repo_shape.py`'s `SHELL_BARE_NT` on Windows, else its
 #: `SHELL_BARE_POSIX`. This file runs before any checkout of the standard
 #: exists, so it carries its own copy of the rule, and
 #: `tests/test_family_printed_quoting.py` holds the two to one answer.
 SHELL_BARE = re.compile(r"[A-Za-z0-9_./:%+=\\-]+" if os.name == "nt"
-                        else r"[A-Za-z0-9_./:@%+=,-]+")
+                        else SHELL_BARE_POSIX.pattern)
 
 
-def shell_word(value) -> str:
+def shell_word(value, posix: bool = False) -> str:
     """`value` as ONE word of a command pasted into this host's shell: bare
     where every character is itself to it, else in single quotes, doubled
     inside for PowerShell, closed-escaped-reopened for `sh` (#486). A
-    leading `=` is quoted too, which zsh would expand."""
+    leading `=` is quoted too, which zsh would expand.
+
+    `posix` spells it for `sh` on EVERY host, Windows too: Git Bash reads
+    the backslash of a bare `C:\\work` as an escape and an apostrophe doubled
+    for PowerShell as two quotes, and #532 rules the printed commands
+    POSIX-only. The lines #538 adds or changes pass it, as the scaffold's
+    NEXT STEPS clone does (`shell_line(..., "posix")`); the family lines
+    (`family_next_command`) are #532's and still take this host's dialect."""
     text = str(value)
-    if not text.startswith("=") and SHELL_BARE.fullmatch(text):
+    bare = SHELL_BARE_POSIX if posix else SHELL_BARE
+    if not text.startswith("=") and bare.fullmatch(text):
         return text
-    if os.name == "nt":
+    if os.name == "nt" and not posix:
         return "'" + re.sub("(['\u2018\u2019\u201a\u201b])", r"\1\1",
                             text) + "'"
     return "'" + text.replace("'", "'\\''") + "'"
@@ -2374,7 +2389,7 @@ def hand_over(project: str, clone: str, urls: dict, org: str,
     say("")
     # ONE WORD (#538): a clone under `--into "/home/a b"` is a `cd` the
     # shell would split.
-    say("    cd %s" % shell_word(clone))
+    say("    cd %s" % shell_word(clone, posix=True))
     say("    make validate          # naming, manifest, lockstep pins - what "
         "CI runs")
     # setup.sh's hand-over block, with ONE line added: this file runs where
