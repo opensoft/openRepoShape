@@ -356,9 +356,9 @@ def test_a_pin_layout_the_rewrite_cannot_carry_is_refused_and_rolled_back(
     """THE PIN IS READ BACK, as update-shape's are (#208). A `commit:` whose
     value sits on the line below it reads and validates, and is the one layout
     a line rewrite cannot move. The bump says the fault is its own, by this
-    tool's refusal id rather than the validators' lockstep remedy, and the
-    leg's detached checkout it had already made is put back with everything
-    else."""
+    tool's refusal id rather than the validators' lockstep remedy. The
+    refusal comes before the leg is checked out (#438), so nothing is moved
+    and nothing needs putting back."""
     branched(project)
     pin = project / SPEC_PIN
     pinned = load_yaml(pin)["commit"]

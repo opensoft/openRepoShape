@@ -967,7 +967,7 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
     commit = peeled_target(submodule, repository, named)
     if commit != named:
         print(f"--to {named[:12]} is an annotated tag; it names commit "
-              f"{commit[:12]}, which is what is pinned")
+              f"{commit[:12]}, which is what would be pinned")
     if on_a_remote_branch(submodule, commit):
         return commit
     stale = ("" if fetched else

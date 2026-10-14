@@ -42,6 +42,7 @@ every OS the suite runs on.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -72,9 +73,12 @@ ADVANCE_BRANCH = "bump-leg-dry-run-truth-advance"
 
 
 def peel_line(tag: str, commit: str) -> str:
-    """The one line a peel adds, as the tool prints it."""
+    """The one line a peel adds, as the tool prints it. `would be pinned`,
+    because a refusal can still follow it (the commit may be on no branch of
+    the remote), and a run that says `is pinned` and then refuses is not true
+    on screen."""
     return (f"--to {tag[:12]} is an annotated tag; it names commit "
-            f"{commit[:12]}, which is what is pinned")
+            f"{commit[:12]}, which is what would be pinned")
 
 
 # --- the private remote, and what is pushed to it ---------------------------
@@ -394,6 +398,46 @@ def test_a_tag_the_fetch_never_brings_is_not_on_the_remote_in_both_runs(
     assert not holds(project, tag_only["tag"]), "the fetch did not bring it"
     assert not holds(project, tag_only["commit"])
     assert "no branch containing" in stderr
+
+
+# --- the branch a tag's id names, on the tracking branch --------------------
+
+#: The branch a `git switch -c` line creates, wherever the line sits.
+SWITCH_BRANCH = re.compile(r"switch -c (\S+)")
+
+
+@pytest.mark.parametrize("via", VIA)
+def test_the_dry_runs_branch_hint_names_the_branch_the_real_runs_refusal_names(
+        project, leg_remote, release, via):
+    """ON THE TRACKING BRANCH with an annotated tag's id as `--to`. The real
+    run is refused `bump-leg-on-tracking-branch` BEFORE the fetch, naming
+    `bump/spec-<the id as typed>`; `_branch_to_bump_from` has only the typed id
+    to name it from. The dry run goes on, peels the tag, and ends with a hint
+    for the same `git switch -c`. The hint reads the typed id as well, so a
+    person who pastes either line creates ONE branch: the dry run does not
+    name a branch from the peeled commit while the real run names it from the
+    tag, which would be two answers to one question (#534)."""
+    tag, commit = release["tag"], release["commit"]
+    assert tag[:12] != commit[:12], "premise: the two ids name two branches"
+    assert git("symbolic-ref", "--short", "HEAD",
+               cwd=project).stdout.strip() == "main", (
+        "premise: a fresh project stands on its tracking branch")
+    run = runner(project, leg_remote, via)
+    before = snapshot(project)
+
+    dry = run(tag, "--dry-run")
+    real = run(tag)
+
+    assert dry.returncode == 0, dry.stderr + dry.stdout
+    assert real.returncode == 2, real.stdout + real.stderr
+    assert_nothing_changed(project, before)
+    assert peel_line(tag, commit) in dry.stdout, "the dry run peeled the tag"
+    assert "REFUSED bump-leg-on-tracking-branch" in real.stderr
+    hint = dry.stdout.splitlines()[-1]
+    assert "the real run needs a branch" in hint
+    named_by_dry_run = SWITCH_BRANCH.search(hint).group(1)
+    named_by_real_run = SWITCH_BRANCH.search(real.stderr).group(1)
+    assert named_by_dry_run == named_by_real_run == f"bump/spec-{tag[:12]}"
 
 
 # --- #438: a pin layout the rewrite refuses is refused by the dry run -------
