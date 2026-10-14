@@ -165,12 +165,11 @@ from repo_shape import (  # noqa: E402
     tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    ADOPT_MAKEFILE_BLOCK, ATTRIBUTES, SHAPE_REPOSITORY,
+    ADOPT_MAKEFILE_BLOCK, SHAPE_REPOSITORY,
     SYMLINK_HOPS, TOO_MANY_SYMLINKS, CommandFailed, Materialized,
     assembly_root_paths,
     collision_follow_up, copy_tree, default_reference, election_date,
     env_commit, escape_what_stdout_cannot_encode, git_init_commit,
-    eol_block_paths, eol_line, with_eol_block,
     materialize_assembly_root, naming_block, run, template_files, write_lf,
     write_paths_listing,
 )
@@ -189,6 +188,12 @@ import shape_advisory  # noqa: E402
 from shape_materialize import (  # noqa: E402
     CASE_ASIDE as _CASE_ASIDE, MOVE_THE_LEG, first_and_more as _first_and_more,
     path_overlap as _overlap, shape_path_collisions,
+)
+# The line-ending block the split appends to a source's own root
+# `.gitattributes` (#471): that file's name, which copies the block names,
+# the line it writes for one, and the bytes it makes of the source's own.
+from shape_materialize import (  # noqa: E402
+    ATTRIBUTES, eol_block_paths, eol_line, with_eol_block,
 )
 # What the project's own `validate-manifest.py` would say of the values written
 # into its manifest, and whether a repository's name can be a directory's:
