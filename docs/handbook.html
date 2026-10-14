@@ -472,7 +472,7 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
 
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
 
@@ -609,7 +609,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -972,7 +972,8 @@ sudo dnf install gh</code></pre></div>
         it refuses, creating nothing, if anything stands at <code>&lt;into&gt;/Atlas</code>:</p>
         <div class="code" data-lang="sh"><pre><code>git clone --depth 1 https://github.com/opensoft/openRepoShape.git &lt;tmp-dir&gt;
 python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-code
-python3 scaffold-project.py --org &lt;your-org&gt; --project Atlas --dry-run
+python3 scaffold-project.py --org &lt;your-org&gt; --project Atlas \
+    --visibility private --elected-by 'Your Name' --dry-run
 python3 scaffold-project.py --org &lt;your-org&gt; --project Atlas \
     --visibility private --elected-by 'Your Name'   # or public / internal
 mkdir -p &lt;into&gt;/&lt;Family&gt;   # --family only, and skipped when &lt;into&gt; IS &lt;Family&gt;
@@ -1021,7 +1022,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1056,7 +1057,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
 
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
 
@@ -1114,7 +1115,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
 
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
 
@@ -1350,7 +1351,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1450,7 +1451,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="current">
 
-      <!-- reads README.md § Keeping a project's shape current: blob 408c49c1603699fbe7ae74fa16c6330ec7860c10 -->
+      <!-- reads README.md § Keeping a project's shape current: blob f7887984369929ec6594247e136cf2480a8430c5 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Keeping a project&rsquo;s shape current</h2>
@@ -1493,8 +1494,12 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
         something to do. <code>apply</code> writes NONE of them unless <code>--add &lt;path&gt;</code>
         names one, per file, and names each file it adds in the line-ending block of an adopted
         root&rsquo;s own <code>.gitattributes</code> when that file carries #471&rsquo;s block;
-        <code>--add</code> refuses a path that is already pinned, one the target&rsquo;s lists do
-        not name, and one the root ALREADY has a file at.</li>
+        <code>--add</code> refuses a path that is already pinned
+        (<code>update-add-already-pinned</code>), one the target&rsquo;s lists do not name
+        (<code>update-add-not-upstream</code>), one with a symlink at or above it, which is never
+        written through (<code>update-add-symlink</code>), one whose directory the root holds as a
+        file (<code>update-add-not-a-directory</code>), and one the root ALREADY has a file at
+        (<code>update-add-would-overwrite</code>).</li>
       </ul>
       <p><code>--upstream</code> takes a path to a clone (offline) or an <code>owner/repo</code> it
       bare-clones itself; it defaults to the repository the pin names. <code>make bootstrap</code>
@@ -1508,7 +1513,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doctor">
 
-      <!-- reads README.md § Keeping a project's shape current: blob 408c49c1603699fbe7ae74fa16c6330ec7860c10 -->
+      <!-- reads README.md § Keeping a project's shape current: blob f7887984369929ec6594247e136cf2480a8430c5 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Is this repository compliant? <code>openRepoShape --doctor</code></h2>
@@ -1642,7 +1647,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 

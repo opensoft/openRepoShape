@@ -527,7 +527,8 @@ the second it refuses, creating nothing, if anything stands at `<into>/Atlas`:
 ```sh
 git clone --depth 1 https://github.com/opensoft/openRepoShape.git <tmp-dir>
 python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-code
-python3 scaffold-project.py --org <your-org> --project Atlas --dry-run
+python3 scaffold-project.py --org <your-org> --project Atlas \
+    --visibility private --elected-by 'Your Name' --dry-run
 python3 scaffold-project.py --org <your-org> --project Atlas \
     --visibility private --elected-by 'Your Name'   # or public / internal
 mkdir -p <into>/<Family>   # --family only, and skipped when <into> IS <Family>
@@ -1083,11 +1084,15 @@ file: `apply --at <commit> --yes --add AGENTS-shape.md` copies it, chmods it if
 the materializer would, names it in a root `.gitattributes` block of #471,
 appends its `sha256` row and moves the pin, all inside the same transaction and
 rolled back whole if a validator goes red. Without `--add` it says `not added;
-pass --add <path>` and re-pins the rest. `--add` refuses a path that is already
-pinned, one the target's lists do not name — and one the root ALREADY has a file
-at, because two files with one name is a merge and this command copies bytes. A
-project that declines an addition has no way to say so yet: it will be reported
-by every `check` until it is taken or a file arrives at that path.
+pass --add <path>` and re-pins the rest. `--add` refuses a path already pinned
+(`update-add-already-pinned`), one the target's lists do not name
+(`update-add-not-upstream`), one with a symlink at or above it, which is never
+written through (`update-add-symlink`), one whose directory the root holds as a
+file (`update-add-not-a-directory`) — and one the root ALREADY has a file at,
+because two files with one name is a merge and this command copies bytes
+(`update-add-would-overwrite`). A project that declines an addition has no way
+to say so yet: it will be reported by every `check` until it is taken or a file
+arrives at that path.
 
 `--upstream` takes a path to a clone (offline, and what the tests use) or an
 `owner/repo` it bare-clones itself; it defaults to the repository the pin
