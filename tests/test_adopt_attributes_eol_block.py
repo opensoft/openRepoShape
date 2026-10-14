@@ -300,6 +300,14 @@ def test_the_follow_up_says_what_the_block_protects():
     assert f"`{EOL_BLOCK_HEAD}`" in said
     assert "shape-copy-drift" in said and "Windows" in said
     assert "None of the source's own lines is changed" in said
+    # The copy is merged only on that condition and removed only after it,
+    # and the row the removal leaves is said in #512's words for every other
+    # pinned copy (#502): it returned before them, and said nothing.
+    assert said.endswith(
+        f"Merge the rest of {COLLISION_DIR}/{ATTRIBUTES} into {ATTRIBUTES} "
+        "only if the whole project should check out with LF, and only then "
+        f"remove {COLLISION_DIR}/{ATTRIBUTES}: `update-shape.py check` "
+        "reports its pin row `merged-away`, and `apply` drops the row"), said
     # A link gets the other follow-up, below.
     assert "symlink" not in said
     # Every other collision keeps its own wording.
@@ -333,6 +341,9 @@ def test_the_follow_up_for_a_linked_attributes_file_lists_the_lines_it_needs(
     # The Makefile went beside the source's, under `shape/`.
     assert "/Makefile text eol=lf" not in said
     assert "keep the block" not in said
+    # It never sends anyone to merge or remove the shape's copy, which stays
+    # pinned, so it says nothing of a row that removal would leave.
+    assert "merged-away" not in said and "remove shape/" not in said
 
 
 def split_message(adopter, appended=()) -> str:
