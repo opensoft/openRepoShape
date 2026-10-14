@@ -53,7 +53,11 @@ inventory plugs in by adding one row to that table. A kind whose check never
 runs on THIS kind of root is that failure too, and the same FINDING (#327):
 `validate-family.py` is registered for `family-manifest` and runs in a family
 holder only, so a `contracts/family.yaml` in an assembly root -- or a
-`contracts/project.yaml` in a holder -- is a manifest nothing here reads.
+`contracts/project.yaml` in a holder -- is a manifest nothing here reads. So
+is one at a path its gate never opens, in a root that runs it (#439): every
+gate reads fixed paths, so a `contracts/project.yaml` in an assembly root,
+or a `contracts/<x>-pin.yaml` no leg and no product names, is the same
+FINDING, and its NEXT takes the file out as git has it (#548).
 
 THE ROWS, for an assembly root, in this order:
 
@@ -74,7 +78,8 @@ THE ROWS, for an assembly root, in this order:
     pins              the project's own `scripts/validate-pins.py` likewise:
                       the lockstep invariant, and the shape-copy digests
     manifest kinds    every `kind:`-bearing manifest in the root, against
-                      MANIFEST_VALIDATORS and the kind of root it is in
+                      MANIFEST_VALIDATORS, the kind of root it is in and the
+                      path it sits at
     shape currency    `update-shape.py check`'s per-file verdicts, summarised
     legs              each leg mounted, and its checked-out commit against the
                       pin (no fetch)
@@ -818,14 +823,30 @@ class ManifestKind:
     is one sentence on every platform, so it names `setup-project.py` beside
     `setup.sh`, which is a bash script Windows cannot run -- the reason
     `scaffold_command` spells that line per platform (Copilot, PR #102).
+
+    AND ONLY AT A PATH THAT CHECK READS (#439). Each gate opens fixed paths:
+    `validate-manifest.py` the root's `project.yaml` (and the naming policy
+    at `contracts/repository-naming.yaml`), `validate-pins.py` the shape pin
+    and each pin `project.yaml` declares, `validate-family.py` the holder's
+    `family.yaml`, the shape pin and the naming policy. So a
+    `contracts/project.yaml` in an assembly root, or a
+    `contracts/release-pin.yaml` that no leg and no product names, is read
+    by nothing, though its kind's check runs here. `read_at(ctx)` says where
+    the check that runs here reads the kind, as root paths, and
+    `check_manifest_kinds` counts a file `validated` only at one of them.
+    None is a kind this row does not decide by path:
+    `path-classification-policy`, which the registry covers with this row
+    itself, and a pin in an assembly root whose `project.yaml` does not
+    load, which declares nothing this run can read (`pins_read_here`).
     """
 
     def __init__(self, kind: str, covered_by: tuple, how: str,
-                 home: str | None = None):
+                 home: str | None = None, read_at=None):
         self.kind = kind
         self.covered_by = covered_by
         self.how = how
         self.home = home
+        self.read_at = read_at
 
     def runs_in(self) -> tuple:
         """The kinds of root a check that `covered_by` names runs on."""
@@ -834,24 +855,55 @@ class ManifestKind:
                             and root in check.applies_to
                             for check in CHECKS))
 
+    def reads(self, ctx: Context) -> set | None:
+        """The root paths a check that runs here reads this kind at, or None
+        where this row does not decide by path (#439)."""
+        return None if self.read_at is None else self.read_at(ctx)
+
+
+#: Where an assembly root keeps the naming policy `validate-manifest.py`
+#: reads, and a holder the one `validate-family.py` reads (#439).
+NAMING_COPY = "contracts/repository-naming.yaml"
+
+
+def pins_read_here(ctx: Context) -> set | None:
+    """Where this root's gate reads a `pinned_contract_manifest` (#439).
+
+    In a holder, `validate-family.py` reads the shape pin and no other: a
+    holder has no legs and declares no product. In an assembly root,
+    `validate-pins.py` reads `declared_pins` -- the shape pin, a pin per leg
+    and a pin per `neutral_product_pins:` entry. Where `project.yaml` does
+    not load, it declares nothing this run can read, and None leaves every
+    pin counted as before: a leg pin called read by nothing would be a NEXT
+    that takes it out, over a manifest the `manifest` row already names.
+    """
+    if ctx.kind == FAMILY:
+        return {SHAPE_PIN}
+    if ctx.manifest_refusal is not None:
+        return None
+    return declared_pins(ctx)
+
 
 MANIFEST_VALIDATORS: dict[str, ManifestKind] = {
     "project-manifest": ManifestKind(
         "project-manifest", ("manifest",), "scripts/validate-manifest.py",
         "an assembly root of its own (`setup.sh`, or `setup-project.py` on "
         "Windows, for a new one; `adopt-project.py plan` for a repository "
-        "that exists), which a holder pins with `family.py add`"),
+        "that exists), which a holder pins with `family.py add`",
+        read_at=lambda ctx: {PROJECT_MANIFEST}),
     "family-manifest": ManifestKind(
         "family-manifest", ("family",), "scripts/validate-family.py",
         "a family holder of its own (`family.py init`, then `family.py add` "
-        "there)"),
+        "there)", read_at=lambda ctx: {FAMILY_MANIFEST}),
     "pinned_contract_manifest": ManifestKind(
         "pinned_contract_manifest", ("pins", "family"),
-        "scripts/validate-pins.py (or validate-family.py in a holder)"),
+        "scripts/validate-pins.py (or validate-family.py in a holder)",
+        read_at=pins_read_here),
     "repository-naming-policy": ManifestKind(
         "repository-naming-policy", ("naming", "family"),
         "scripts/validate-repository-naming.py, through NamingPolicy.load "
-        "(validate-family.py, through the same, in a holder)"),
+        "(validate-family.py, through the same, in a holder)",
+        read_at=lambda ctx: {NAMING_COPY}),
     "path-classification-policy": ManifestKind(
         "path-classification-policy", ("manifest-kinds",),
         "scripts/path_classify.py reads it; nothing validates it in a root"),
@@ -1558,6 +1610,25 @@ def refusal_line(refusal: Refusal) -> str:
     return line.removesuffix("\n" + refusal.remediation)
 
 
+def remedy_as_why(refusal: Refusal) -> str | None:
+    """A refusal's remedy as a row's `why`, less its `Remediation:` label,
+    or None where it carries none (#408, #548).
+
+    NEVER AS A ROW'S NEXT. A remedy is prose a tool prints under its own
+    refusal, and the one most tools used to print, `repo_shape.REMEDIATION`,
+    held `git submodule update` and `validate-pins.py` in backticks, which
+    an interactive zsh runs where the line is pasted (#277). Two places --
+    `run_checks`, for a check that lets a refusal out, and
+    `placement_policy`, for a standard whose own path policy does not load
+    -- printed it as the NEXT. They print no NEXT now, and the remedy, when
+    there is one, is the row's `why`, so what the refusal had to say is not
+    lost.
+    """
+    said = (refusal.remediation or "").strip()
+    said = said.removeprefix("Remediation:").strip()
+    return said or None
+
+
 def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
                           template: str) -> Row:
     """The `manifest` (or `family`) row for a manifest that is THERE and does
@@ -2199,28 +2270,47 @@ def family_beside_project(ctx: Context, data: dict) -> tuple[str, dict]:
                       "undeclared_gitlinks": undeclared}
 
 
-#: The `manifest kinds` row's next command for #211, named once so the row
-#: and `tests/test_shape_doctor.py` spell it the same way. NOT `family.py
-#: add`, which is what `validate-family.py`'s own refusal offers: run here,
-#: it would mount the members INSIDE a project, which is the one shape the
-#: family ruling rules out. Which of the two exits is right is a fact about
-#: the repository, so the line offers both and decides neither.
-FAMILY_BESIDE_FIX = (
-    "an assembly root is not a family holder: take family.yaml out of this "
-    "root, or move the membership to a holder of its own (`family.py init`, "
-    "then `family.py add` there), as the human decides -- never `family.py "
-    "add` here, which would mount the members inside a project")
+#: The other way out of #211's finding, a sentence of the `manifest kinds`
+#: row's `why` and never its NEXT (#548): the backticks it holds are
+#: commands an interactive zsh runs where the line is pasted. NOT `family.py
+#: add` here, which is what `validate-family.py`'s own refusal offers: run
+#: in an assembly root it would mount the members INSIDE a project, which is
+#: the one shape the family ruling rules out. Which exit is right is a fact
+#: about the repository, so the row names both and decides neither.
+FAMILY_BESIDE_WAY = (
+    "Or move the membership family.yaml records to a holder of its own "
+    "(`family.py init`, then `family.py add` there), as the human decides "
+    "-- never `family.py add` here, which would mount the members inside a "
+    "project")
 
 
-def registered_elsewhere(ctx: Context, found: list) -> tuple[str, str, list]:
+def listed(names: list) -> str:
+    """`names` as a sentence lists them."""
+    return ", ".join(names)
+
+
+def register_way(names: list) -> str:
+    """The other way out for files of a kind nothing registers, a sentence
+    of the `manifest kinds` row's `why` (#548): what its NEXT said, less the
+    removal its command now is."""
+    one = len(names) == 1
+    return (f"Or register the kind{'' if one else 's'} {listed(names)} "
+            f"declare{'s' if one else ''} in shape-doctor.py's "
+            "MANIFEST_VALIDATORS, beside the check that validates "
+            f"{'it' if one else 'each'}, as the human decides")
+
+
+def registered_elsewhere(ctx: Context, found: list,
+                         states: dict) -> tuple[str, list, list]:
     """Manifests whose kind is registered to a gate this root never runs:
-    the sentence, the next command, and the facts (#327).
+    the sentence, the other way out, and the facts (#327).
 
-    `found` is `(path, kind, entry)` for each, in the row's own order. The
-    sentence opens the way the unregistered kind's does -- "no validator
-    ... is registered for kind" -- because to this root it is the same
-    fact: the registry has a validator for the kind, and none that runs
-    here. Each file says which validator that is and where it does run.
+    `found` is `(path, kind, entry)` for each, in the row's own order, and
+    `states` each file's git state, from `git_states`. The sentence opens
+    the way the unregistered kind's does -- "no validator ... is registered
+    for kind" -- because to this root it is the same fact: the registry has
+    a validator for the kind, and none that runs here. Each file says which
+    validator that is and where it does run.
 
     A FINDING, NOT A NOTE, for the reason an unregistered kind is one. A
     `note` is a difference nothing asserts, and a file declaring `kind:`
@@ -2229,32 +2319,16 @@ def registered_elsewhere(ctx: Context, found: list) -> tuple[str, str, list]:
     in a root whose gate never reads it. Nor could the same bytes be a
     FINDING as `family.yaml` (#211) and a note as `contracts/family.yaml`.
 
-    THE NEXT COMMAND IS ONE THAT EXISTS, FOR THE FILE AS GIT HAS IT. The
-    doctor reads the disk, so the file may be one nobody has committed yet,
-    and `git rm` takes out only a file whose every byte a commit holds: it
-    says "did not match any files" (exit 128) for one git does not track,
-    ignored or not, and refuses one with changes no commit holds. So
-    `git_states` asks first, and each file gets the exit that works:
-      committed   `git rm`, quoted for the reader's shell like every path
-                  this report prints, committed on a branch and landed as
-                  a pull request, the way every change here lands;
-      untracked,  deleting it, with nothing to commit;
-      ignored
-      changed     committing or dropping those changes first, since `git
-                  rm` will not discard them, and the next run names the
-                  `git rm`.
-    Where git cannot say, the line is #211's, which holds in any state:
-    take it out of this root. Each file's state is `detail`'s `git`.
-
-    The other exit is the kind's `home`, as the human decides. Renaming the
-    file to the root's own manifest name is ruled out in the line itself,
+    The row's NEXT takes the file out as git has it (`removal_next`), and
+    this names the other exit, the kind's `home`, as the human decides --
+    a sentence of the row's `why`, never of its NEXT (#548). Renaming the
+    file to the root's own manifest name is ruled out in that sentence,
     because that is the one move that looks like a fix: in a holder it
     makes the root read as a project, and in an assembly root it is #211's
-    finding instead of this one.
+    finding instead of this one. Each file's state is `detail`'s `git`.
     """
     names = [rel for rel, _, _ in found]
     one = len(names) == 1
-    states = git_states(ctx.root, names)
     clauses, detail = [], []
     for rel, kind, entry in found:
         runs = entry.runs_in()
@@ -2270,18 +2344,84 @@ def registered_elsewhere(ctx: Context, found: list) -> tuple[str, str, list]:
     homes = {rel: entry.home or "a root whose gate runs its validator"
              for rel, _, entry in found}
     if len(set(homes.values())) == 1:
-        other_exit = (f"move what {'it describes' if one else 'they describe'}"
-                      f" to {homes[names[0]]}")
+        other_exit = (f"move what {listed(names)} "
+                      f"describe{'s' if one else ''} to {homes[names[0]]}")
     else:
         other_exit = "move what each describes to " + "; ".join(
             f"{rel}: {home}" for rel, home in homes.items())
-    fix = (f"take {', '.join(names)} out of this root"
-           f"{removal_ways(ctx, names, states)}, or {other_exit}, as the "
-           f"human decides -- never rename {'it' if one else 'one'} to "
-           f"{PROJECT_MANIFEST} or {FAMILY_MANIFEST} in this root: a family "
-           "holder is not a project, and an assembly root is not a family "
-           "holder")
-    return sentence, fix, detail
+    way = (f"Or {other_exit}, as the human decides -- never rename "
+           f"{'it' if one else 'one'} to {PROJECT_MANIFEST} or "
+           f"{FAMILY_MANIFEST} in this root: a family holder is not a "
+           "project, and an assembly root is not a family holder")
+    return sentence, [way], detail
+
+
+def read_nowhere(ctx: Context, found: list,
+                 states: dict) -> tuple[str, list, list]:
+    """Manifests of a kind whose check runs here, at a path that check never
+    reads: the sentence, the other ways out, and the facts (#439).
+
+    `found` is `(path, kind, paths)` for each, in the row's own order, where
+    `paths` are the root paths the check that runs here reads that kind at
+    (`ManifestKind.read_at`), and `states` each file's git state.
+
+    A FINDING, as Brett Heap ruled on 2026-10-12 ("#439 (registered kind at
+    a path no check reads): FINDING"), for #327's reason: a file that
+    declares `kind:` asserts what it is, and a kind whose check runs here is
+    no better answered at a path that check never opens than in a root
+    where it never runs. The sentence names the path, the kind and where a
+    gate here does read that kind.
+
+    The row's NEXT takes the file out as git has it (`removal_next`). The
+    other way out is the human declaring it, and only a pin in an assembly
+    root can be declared: a product this root descends from is named under
+    `neutral_product_pins:`, and AGENTS.md says no pin is declared that the
+    human has not asked for, so the sentence says that too and never
+    declares one itself. Nothing here suggests renaming the file onto a path
+    a gate reads -- that would put its bytes where another file's are read
+    -- and the last sentence says so.
+    """
+    clauses, detail = [], []
+    for rel, kind, paths in found:
+        clauses.append(f"{rel} ({kind}, which a gate here reads only at "
+                       f"{listed(paths)})")
+        detail.append({"manifest": rel, "kind": kind, "read_at": paths,
+                       "git": states.get(rel)})
+    sentence = "no gate here reads " + ", ".join(clauses)
+    pins = [rel for rel, kind, _ in found
+            if ctx.kind == PROJECT and kind == "pinned_contract_manifest"]
+    ways = []
+    if pins:
+        ways.append(
+            f"Or, if {listed(pins)} pin{'s' if len(pins) == 1 else ''} a "
+            "product this root descends from, the human names that product "
+            f"under `neutral_product_pins:` in {PROJECT_MANIFEST} -- and "
+            "nobody declares a pin the human has not asked for")
+    ways.append(f"Never rename {'it' if len(found) == 1 else 'one'} onto a "
+                "path a gate here reads")
+    return sentence, ways, detail
+
+
+def read_here(ctx: Context, path: Path, rel: str, paths: set) -> bool:
+    """Whether a gate here reads the file at `path` (`rel` from the root),
+    `paths` being the root paths it reads that kind at (#439).
+
+    BY THE FILE, NOT ONLY BY ITS SPELLING. A filesystem that folds case
+    hands `validate-pins.py` the file `contracts/Spec-pin.yaml` when it
+    opens `contracts/spec-pin.yaml`, and a hard link is the file its other
+    name is. Called read by nothing, such a file would get a NEXT that takes
+    out a pin a gate does read. So a name that is not one of `paths` is
+    still read where it is the same file as one of them.
+    """
+    if rel in paths:
+        return True
+    for other in paths:
+        try:
+            if path.samefile(ctx.root / other):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def git_states(root: Path, names: list) -> dict:
@@ -2335,44 +2475,73 @@ def git_states(root: Path, names: list) -> dict:
     return states
 
 
-def removal_ways(ctx: Context, names: list, states: dict) -> str:
-    """How each of `names` comes out of the root, as git has it: the
-    parenthesis the `manifest kinds` row's NEXT carries (#327), or nothing
-    where git could not say. A file is named again only where the files
-    do not all come out the same way."""
-    root = quote_arg(ctx.root)
+#: What git reads as a pattern in a pathspec. A name holding one is passed
+#: after `--literal-pathspecs`, or `git rm -- 'contracts/shape-pin[.]yaml'`
+#: would take `contracts/shape-pin.yaml` out with it.
+PATHSPEC_MAGIC = re.compile(r"[*?\[\\]")
+
+
+def removal_next(ctx: Context, names: list,
+                 states: dict) -> tuple[str | None, str]:
+    """`(command, said)`: the ONE command that takes `names` out of the
+    root as git has them, and the sentence that says what it does -- the
+    `manifest kinds` row's NEXT and the start of its `why` (#327, #548).
+
+    THE NEXT IS ONE COMMAND AND NOTHING ELSE (#548). It used to be prose:
+    "take ... out of this root" with each way in a parenthesis, joined by
+    `; ` to the next fault's sentence and holding commands in backticks,
+    which an interactive zsh runs where the line is pasted (#277). Now the
+    command is the first of these that applies and the sentence goes in the
+    row's `why`; a file that comes out another way is named there, and the
+    next run names its command.
+
+    FOR THE FILE AS GIT HAS IT. The doctor reads the disk, so the file may
+    be one nobody has committed yet, and `git rm` takes out only a file
+    whose every byte a commit holds: it says "did not match any files"
+    (exit 128) for one git does not track, ignored or not, and refuses one
+    with changes no commit holds. So `git_states` asks first, and:
+      committed   `git rm`, committed on a branch and landed as a pull
+                  request, the way every change here lands;
+      untracked,  `git clean -f`, `-x` too where one is ignored, which
+      ignored     `clean` otherwise leaves: nothing to commit;
+      changed     `git status`, which shows the changes, since `git rm`
+                  will not discard them: commit or drop them first.
+    Each path is quoted for the reader's shell like every path this report
+    prints, and passed after `--literal-pathspecs` where git would read it
+    as a pattern. Where git cannot say, there is no command, and the
+    sentence is #211's, which holds in any state: take it out of this root.
+    """
     groups = {state: [name for name in names if states.get(name) in kinds]
               for state, kinds in (("committed", ("committed",)),
                                    ("loose", ("untracked", "ignored")),
                                    ("changed", ("changed",)))}
     groups = {state: group for state, group in groups.items() if group}
-    alone = len(groups) == 1
-
-    def subject(group: list, pronoun: str) -> str:
-        return pronoun if alone else ", ".join(group)
-
-    ways = []
-    if "committed" in groups:
-        ways.append(f"`git -C {root} rm -- "
-                    + " ".join(quote_arg(n) for n in groups["committed"])
-                    + "`, committed on a branch and landed as a pull "
-                    "request")
-    if "loose" in groups:
-        group = groups["loose"]
-        single = len(group) == 1
-        ways.append(f"delete {subject(group, 'it' if single else 'them')}, "
-                    "which git does not track, so there is nothing to "
-                    "commit")
-    if "changed" in groups:
-        group = groups["changed"]
-        single = len(group) == 1
-        ways.append(
-            f"{subject(group, 'it' if single else 'they')} "
-            f"{'has' if single else 'have'} changes no commit holds, which "
-            "`git rm` will not discard: commit or drop them (`git -C "
-            f"{root} status -- {' '.join(quote_arg(n) for n in group)}` "
-            "shows them), and the next run names the `git rm`")
-    return f" ({'; '.join(ways)})" if ways else ""
+    if not groups:
+        return None, f"take {listed(names)} out of this root"
+    state, group = next(iter(groups.items()))
+    literal = (" --literal-pathspecs"
+               if any(PATHSPEC_MAGIC.search(name) for name in group) else "")
+    git_c = f"git -C {quote_arg(ctx.root)}{literal}"
+    spelled = " ".join(quote_arg(name) for name in group)
+    if state == "committed":
+        command = f"{git_c} rm -- {spelled}"
+        said = (f"takes {listed(group)} out of this root: commit that on a "
+                "branch and land it as a pull request")
+    elif state == "loose":
+        ignored = any(states[name] == "ignored" for name in group)
+        command = f"{git_c} clean -f{' -x' if ignored else ''} -- {spelled}"
+        said = (f"deletes {listed(group)}, which git does not track, so "
+                "there is nothing to commit")
+    else:
+        command = f"{git_c} status -- {spelled}"
+        said = (f"shows the changes no commit holds in {listed(group)}, "
+                "which `git rm` will not discard: commit or drop them, and "
+                "the next run names the way out")
+    rest = [name for other, more in groups.items() if other != state
+            for name in more]
+    if rest:
+        said += f". The next run names the way out for {listed(rest)}"
+    return command, said
 
 
 def check_manifest_kinds(ctx: Context) -> Row:
@@ -2394,6 +2563,26 @@ def check_manifest_kinds(ctx: Context) -> Row:
     assembly root is the same fact with more to say: `family_beside_project`
     also checks the members it pins against the gitlinks.
 
+    AND SO IS ONE AT A PATH ITS GATE NEVER READS, in a root that runs that
+    gate (#439, ruled a FINDING by Brett Heap on 2026-10-12). Each gate
+    opens fixed paths, and `ManifestKind.read_at` says which, so a
+    `contracts/project.yaml` in an assembly root, a `contracts/family.yaml`
+    or `contracts/spec-pin.yaml` in a holder, or a `contracts/<x>-pin.yaml`
+    no leg and no product names, is listed under `unread` and is the FINDING
+    `read_nowhere()` explains. Every file a root's own gates read is
+    `validated` as before, so an untouched root's row is byte for byte the
+    row it was.
+
+    THE NEXT IS ONE COMMAND, OR NOTHING (#548). Each fault but a file that
+    does not load is a file to take out of the root, so the NEXT is the one
+    command `removal_next` names for all of them, as git has them, and the
+    `why` says what it does and then, a sentence each, the other way out of
+    each fault, which is the human's to choose: register the kind, move
+    what the file describes to its `home`, declare the pin, move a
+    membership to a holder. Those sentences were the NEXT, joined by `; `,
+    and held `family.py init` and `family.py add` in backticks, which an
+    interactive zsh runs where the line is pasted (#277).
+
     THE ROOT'S OWN MANIFEST, WHEN IT DOES NOT LOAD, IS NOT THIS ROW'S (#205).
     The `manifest` (or `family`) row quotes its refusal and names its gate,
     and the kind of the root was read off its filename for exactly that
@@ -2410,21 +2599,25 @@ def check_manifest_kinds(ctx: Context) -> Row:
     and `unreadable_next` picks the command. That sentence stays the
     unregistered kind's alone, and where a row has more than one fault -- an
     unregistered kind, a kind registered to a gate this root never runs, a
-    `family.yaml` beside `project.yaml` -- it names the restore alone, first,
-    because the row cannot say what kind a file declares until it loads, and
-    because a command and a sentence joined by `;` would be a second command
-    in a pasted line (#277). The reason still names every fault, and the
-    next run names the rest. `restore` and `refusals` join `detail` only
-    when a file does not load, so every other root reports the row it
-    always did.
+    `family.yaml` beside `project.yaml`, a kind at a path no gate reads --
+    it names the restore alone, first, because the row cannot say what kind
+    a file declares until it loads, and because a command and a sentence
+    joined by `;` would be a second command in a pasted line (#277). The
+    reason still names every fault, and the next run names the rest.
+    `restore` and `refusals` join `detail` only when a file does not load,
+    so every other root reports the row it always did.
     """
     known: list[str] = []
-    unknown: list[str] = []
+    #: `(path, kind)` for each manifest of a kind the registry does not know.
+    unknown: list[tuple] = []
     unreadable: list[str] = []
     refusals: dict[str, dict] = {}
     #: `(path, kind, entry)` for each manifest whose registered gate never
     #: runs on this kind of root (#327).
     ungated: list[tuple] = []
+    #: `(path, kind, paths)` for each manifest whose gate runs here and
+    #: never reads its path, with the paths it does read that kind at (#439).
+    unread: list[tuple] = []
     elsewhere = (ctx.manifest_path if ctx.manifest_refusal is not None
                  else None)
     beside: tuple[str, dict] | None = None
@@ -2457,19 +2650,36 @@ def check_manifest_kinds(ctx: Context) -> Row:
             continue
         entry = MANIFEST_VALIDATORS.get(kind)
         if entry is None:
-            unknown.append(f"{rel} ({kind})")
-        elif ctx.kind not in entry.runs_in():
+            unknown.append((rel, kind))
+            continue
+        if ctx.kind not in entry.runs_in():
             ungated.append((rel, kind, entry))
-        else:
+            continue
+        paths = entry.reads(ctx)
+        if paths is None or read_here(ctx, path, rel, paths):
             known.append(f"{rel} ({kind})")
-    detail = {"validated": known, "unregistered": unknown,
+        else:
+            unread.append((rel, kind, sorted(paths)))
+    detail = {"validated": known,
+              "unregistered": [f"{rel} ({kind})" for rel, kind in unknown],
               "unreadable": unreadable,
               "registered_kinds": sorted(MANIFEST_VALIDATORS)}
-    ungated_said = registered_elsewhere(ctx, ungated) if ungated else None
+    #: Every file the row's NEXT takes out of the root, in the row's order,
+    #: and how git has each, asked once (#548).
+    names = ([rel for rel, _ in unknown] + [rel for rel, _, _ in ungated]
+             + [rel for rel, _, _ in unread]
+             + ([FAMILY_MANIFEST] if beside is not None else []))
+    states = git_states(ctx.root, names) if names else {}
+    ungated_said = (registered_elsewhere(ctx, ungated, states) if ungated
+                    else None)
     if ungated_said is not None:
         # ONLY WHEN THERE IS ONE, like `family_beside` below, so every root
         # without such a file reports the row it reported before #327.
         detail["registered_elsewhere"] = ungated_said[2]
+    unread_said = read_nowhere(ctx, unread, states) if unread else None
+    if unread_said is not None:
+        # Likewise, so every root without one reports the row of #327.
+        detail["unread"] = unread_said[2]
     # Only when there is one, so every other root's row is the row it was.
     aside = ""
     if elsewhere is not None:
@@ -2481,31 +2691,33 @@ def check_manifest_kinds(ctx: Context) -> Row:
         # ONLY WHEN THERE IS ONE, so every root without it reports the same
         # row, byte for byte, as it did before #211.
         detail["family_beside"] = beside[1]
-    if (unknown or unreadable or ungated_said is not None
-            or beside is not None):
+    if names or unreadable:
         parts = []
-        fixes = []
+        #: The sentences of the `why` that name the other way out of each
+        #: fault, in the row's order: never the NEXT's (#548).
+        ways = []
         if unknown:
-            parts.append("no validator registered for kind "
-                         + ", ".join(unknown))
-            fixes.append("register the kind in shape-doctor.py's "
-                         "MANIFEST_VALIDATORS, beside the check that "
-                         "validates it, or remove the file from the root")
+            parts.append("no validator registered for kind " + ", ".join(
+                detail["unregistered"]))
+            ways.append(register_way([rel for rel, _ in unknown]))
         if unreadable:
             said = {rel: ": ".join(filter(None, (why["code"], why["detail"])))
                     for rel, why in refusals.items()}
             parts.append("unreadable as YAML: " + ", ".join(
                 f"{rel} ({said[rel]})" for rel in unreadable))
-        if ungated_said is not None:
-            parts.append(ungated_said[0])
-            fixes.append(ungated_said[1])
+        for found in (ungated_said, unread_said):
+            if found is not None:
+                parts.append(found[0])
+                ways += found[1]
         if beside is not None:
             parts.append(beside[0])
-            fixes.append(FAMILY_BESIDE_FIX)
-        command, why = "; ".join(fixes), None
+            ways.append(FAMILY_BESIDE_WAY)
         if unreadable:
             restore, command, why = unreadable_next(ctx, unreadable, detail)
             detail.update({"restore": restore, "refusals": refusals})
+        else:
+            command, taken = removal_next(ctx, names, states)
+            why = ". ".join([taken, *ways])
         return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
                    "; ".join(parts) + aside, command, detail, why=why)
     return Row("manifest-kinds", LABEL_MANIFEST_KINDS, OK,
@@ -3346,10 +3558,11 @@ def linked_record_row(ctx: Context, us) -> Row | None:
     linked pin is answered as a link, whatever else reads it next.
 
     THE REFUSAL, QUOTED AS `update-shape.py` PRINTS IT, and its remedy for
-    the NEXT: replace the link with what it points at, commit that, run the
-    doctor again. Said, not spelled as a command: what the link points at
-    may be shared with other trees, and removing a link -- a junction above
-    all -- is a person's call.
+    the `why`: replace the link with what it points at, commit that, run
+    the doctor again. Said, not spelled as a command: what the link points
+    at may be shared with other trees, and removing a link -- a junction
+    above all -- is a person's call. So the row has no NEXT, which is one
+    pasteable command or nothing (#548); the sentence was the NEXT once.
     """
     linked = us.linked_record(ctx.root, us.root_kind(ctx.root))
     if linked is None:
@@ -3358,13 +3571,13 @@ def linked_record_row(ctx: Context, us) -> Row | None:
     refusal = us.rewrite_link_refusal([linked])
     return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                "update-shape.py cannot re-pin this root: "
-               f"REFUSED {refusal.code}: {refusal.detail}",
-               f"replace {name} with the file or directory it points at, "
-               "or with what it replaced where it points at nothing, commit "
-               "that, and run this doctor again -- update-shape.py never "
-               f"rewrites {record} through a link",
+               f"REFUSED {refusal.code}: {refusal.detail}", None,
                {"error": refusal.code, "path": record, "link": name,
-                "points": points})
+                "points": points},
+               why=f"replace {name} with the file or directory it points "
+                   "at, or with what it replaced where it points at "
+                   "nothing, commit that, and run this doctor again -- "
+                   f"update-shape.py never rewrites {record} through a link")
 
 
 def head_of(path: Path) -> str | None:
@@ -4540,10 +4753,12 @@ def placement_policy(ctx: Context, policy_path: Path) -> tuple:
     try:
         policy = adopt.PathPolicy.load(policy_path)
     except Refusal as exc:
+        # No NEXT: a remedy is prose, and goes in the `why` (#408, #548).
         return None, None, placement_row(
             NA,
             f"the standard's own path policy could not be read: {exc.detail}",
-            exc.remediation or None, {"policy": policy_path.as_posix()})
+            None, {"policy": policy_path.as_posix()},
+            why=remedy_as_why(exc))
     return adopt, policy, None
 
 
@@ -6487,9 +6702,11 @@ def run_checks(ctx: Context) -> list[Row]:
             if row is not None:
                 rows.append(row)
         except Refusal as exc:
+            # No NEXT: a refusal's remedy is prose, never a command to paste,
+            # so it is the row's `why` (#408, #548).
             rows.append(Row(check.id, check.label, FINDING,
-                            f"refused: {exc.detail}", exc.remediation or None,
-                            {"error": exc.code}))
+                            f"refused: {exc.detail}", None,
+                            {"error": exc.code}, why=remedy_as_why(exc)))
         except OSError as exc:
             rows.append(Row(check.id, check.label, FINDING,
                             f"could not be run: {exc}", None, {}))
