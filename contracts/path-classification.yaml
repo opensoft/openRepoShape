@@ -419,6 +419,47 @@ rules:
       `adopt-project.py` refuses a plan that keeps the repository's own file
       there.
 
+  # A REPOSITORY'S OWN `single-repository.yaml` is this standard's optional
+  # record that a project STAYS one repository
+  # (`contracts/single-repository-record.yaml`), so a repository that carries
+  # one and is adopted into the Triad holds a record of the very decision the
+  # adoption reverses (#528). The general question below offers `spec`,
+  # `code` and `root` for "a declaration, run-time configuration or wiring",
+  # and the file is none of those: its one reader is the Triad advisory
+  # (`scripts/shape_advisory.py`), which is silent in an assembly root
+  # whatever the file holds, so neither leg has any use for it. So it is asked
+  # a question of its own that names the file and offers drop or root, drop
+  # by default (Brett Heap's ruling of 2026-10-12, the A7 line of #457).
+  #
+  # THE DEFAULT IS THE QUESTION'S OWN WORDS, NOT A VALUE THE PLAN FILLS IN.
+  # `plan` still writes `leg: null` and `execute` still refuses while it is
+  # open, because an unanswered question is never an implicit anything and a
+  # path is dropped only when a person has answered `drop`. Nothing refuses
+  # `root` here, unlike `ambiguous-project-yaml`: the file blocks nothing the
+  # shape writes and no validator, gate or doctor row reads it. As for the
+  # rules above, what `execute` does is said of a repository WHEN IT IS
+  # ADOPTED; `shape-doctor.py --placement-plan` prints this question too, for
+  # a leg already split.
+  - id: ambiguous-single-repository-record
+    paths:
+      - "single-repository.yaml"
+    leg: ambiguous
+    reason: >-
+      A top-level `single-repository.yaml` is this standard's record that a
+      project STAYS a single repository: who decided it, when and why.
+      Adopting the repository into the Triad is the decision it records being
+      reversed, so the file no longer describes the project it sits in. It
+      confers nothing, and its only reader is the Triad advisory, which is
+      silent in an assembly root whatever the file holds.
+    question: >-
+      This file records that the repository stays a single repository, and
+      adopting it makes the project a Triad. Drop it (drop, the default: the
+      decision it records is the one being reversed), or keep it in the
+      assembly root (root) as a record of who decided to stay single and why?
+      Neither leg has any use for it, and nothing but the Triad advisory
+      reads it, which is silent in an assembly root whatever it says, so
+      keeping it breaks nothing.
+
   - id: ambiguous-top-level-yaml
     paths:
       - "*.yaml"
