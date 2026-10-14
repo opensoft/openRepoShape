@@ -165,6 +165,13 @@ from shape_materialize import (  # noqa: E402
     is_nested_key, readme_trailing_shape_line, rewrite_fault, run,
     trailer_line, with_scalar,
 )
+# What the branch question is asked with (#431): the one helper that asks git
+# with no repository in play, and the two words for a git that could not
+# answer. Private and imported on purpose, as `_strip_comment` is above: a
+# second copy of the question is how two tools come to judge one name apart.
+from shape_materialize import (  # noqa: E402
+    BRANCH_CONTROL, BRANCH_UNCHECKED_REMEDIATION, _ask_git_branch,
+)
 # Where a root keeps its shape pin. The materializer that writes it names it
 # once; this module spells the path by that name and never by a literal (#290).
 from shape_materialize import SHAPE_PIN  # noqa: E402
@@ -2190,6 +2197,25 @@ def checked_branch(value: str) -> str:
     put to `git check-ref-format --branch`, which is the authority on what a
     branch name is: it is asked, not copied. A spelling it would expand
     rather than echo is refused too: `apply` names the branch it creates.
+
+    GIT IS ASKED WITH NO REPOSITORY IN PLAY (#431), through
+    `shape_materialize._ask_git_branch`, the one helper that asks it so for
+    the scaffold and the family holder too. Asked in the operator's own
+    directory, `--branch` set up whatever repository surrounded it and died
+    where git could not open it (a `.git` file naming a gitdir that is gone,
+    a `.git/config` that does not parse, a directory removed under the
+    shell), and the refusal below read that failure as the name's fault. A
+    repository it did open lent `@{-1}` its own reflog. `--root` names the
+    repository `apply` works on and has nothing to do with where the person
+    stands, so the answer is the same from every directory.
+
+    A GIT THAT COULD NOT ANSWER IS NOT THE NAME'S FAULT. When git refuses the
+    name it is asked about `BRANCH_CONTROL`, a name every git creates, as
+    `shape_materialize._branch_verdict` does: a git that refuses that too
+    judged nothing, and the refusal says the name "could not be checked"
+    and sends the person to git (`BRANCH_UNCHECKED_REMEDIATION`), not to
+    another name. The code, the `--branch '<name>' ` opening of the detail
+    and `BRANCH_REMEDIATION` for a name git judged are unchanged.
     """
     if not BRANCH_RE.fullmatch(value):
         raise Refusal(
@@ -2199,23 +2225,49 @@ def checked_branch(value: str) -> str:
             "digit and hold only letters, digits and `. _ / @ + -`",
             BRANCH_REMEDIATION)
     try:
-        verdict = subprocess.run(["git", "check-ref-format", "--branch", value],
-                                 capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace",
-                                 check=False)
-    except OSError as exc:
-        raise Refusal(
-            "update-branch-invalid",
-            f"--branch {value!r} could not be checked: `git check-ref-format "
-            f"--branch` could not be run ({exc})", BRANCH_REMEDIATION) from exc
-    if verdict.returncode != 0 or verdict.stdout.strip() != value:
-        said = (verdict.stderr or verdict.stdout).strip()
+        answer = _ask_git_branch(value)
+    except CommandFailed as exc:
+        said = f" ({exc.output})" if exc.output else ""
+        if _git_cannot_answer_for_any_name():
+            raise Refusal(
+                "update-branch-invalid",
+                f"--branch {value!r} could not be checked: `git "
+                f"check-ref-format --branch` fails for `{BRANCH_CONTROL}` "
+                f"too, so git could not answer{said}",
+                BRANCH_UNCHECKED_REMEDIATION) from exc
         raise Refusal(
             "update-branch-invalid",
             f"--branch {value!r} is not a branch name git will create: `git "
-            "check-ref-format --branch` refuses it"
-            + (f" ({said})" if said else ""), BRANCH_REMEDIATION)
+            f"check-ref-format --branch` refuses it{said}",
+            BRANCH_REMEDIATION) from exc
+    except OSError as exc:
+        # `git` is missing, or no empty directory could be made to ask it
+        # from: the answer is not git's, and the fault is not the name's.
+        raise Refusal(
+            "update-branch-invalid",
+            f"--branch {value!r} could not be checked: `git check-ref-format "
+            f"--branch` could not be run ({exc})",
+            BRANCH_UNCHECKED_REMEDIATION) from exc
+    if answer != value:
+        raise Refusal(
+            "update-branch-invalid",
+            f"--branch {value!r} is not a branch name git will create: `git "
+            f"check-ref-format --branch` reads it as {answer!r}, not as "
+            "written", BRANCH_REMEDIATION)
     return value
+
+
+def _git_cannot_answer_for_any_name() -> bool:
+    """Does `git check-ref-format --branch` fail for `BRANCH_CONTROL`, a name
+    every git creates as a branch? Git's words are localised, so they are
+    never read: a git that refuses this one too could not answer (a
+    malformed global config, say), and the name it was first asked about was
+    never judged (#431)."""
+    try:
+        _ask_git_branch(BRANCH_CONTROL)
+    except (CommandFailed, OSError):
+        return True
+    return False
 
 
 def branch_exists(root: Path, branch: str) -> bool:
