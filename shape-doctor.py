@@ -3443,8 +3443,10 @@ def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
     Measured for an empty mount whose section is gone and for one that lost
     only its `url` key, and for a populated mount whose section is gone: a
     mount git already holds is asked for its url all the same. A NEXT that
-    exits 128 is the defect #276 was about, so a mount this answers no url
-    for is never put on that line.
+    exits 128 is the defect #276 was about. A section that gives the path
+    and no url is not the end of the question, though: `--init` reads the
+    url the root's own config already holds first (`configured_url`), and
+    `checkout_reach` asks that before it calls a mount url-less.
 
     READ WHERE GIT READS IT, WHICH IS NOT ALWAYS THE FILE. git reads the
     working tree's `.gitmodules` when there is one, else the copy in the
@@ -3491,6 +3493,34 @@ def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
             return None, None
         return named, urls.get(named) or None
     return None, None
+
+
+def configured_url(root: Path, name: str) -> str | None:
+    """The url the root's own config gives the submodule NAMED `name`, or
+    None (#414).
+
+    `git submodule init` copies a mount's url out of `.gitmodules` into the
+    root's config, and from then on `--init` reads it there first and asks
+    `.gitmodules` only when the config has none. So an initialized mount
+    whose `.gitmodules` section kept its `path` and lost its `url` key still
+    updates: measured, populated past its pin or emptied by `rm`, the git
+    line exits 0 and the row is `ok`. Calling that mount url-less withheld a
+    line that cures it. `deinit` removes the configured url, and a section
+    that is gone leaves git no NAME to look one up by (`No url found`, exit
+    128, measured), so neither is helped by this.
+
+    `git config --get` in the root, which reads what git reads: the
+    repository's config and the ones above it. Read only.
+    """
+    try:
+        proc = subprocess.run(["git", "config", "--get",
+                               f"submodule.{name}.url"],
+                              cwd=str(root), capture_output=True, check=False)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.decode("utf-8", "replace").strip() or None
 
 
 def kept_gitdir(root: Path, name: str) -> Path | None:
@@ -3590,10 +3620,12 @@ def unborn_branch(path: Path) -> str | None:
 def checkout_reach(root: Path, rel: str, gitlink: str, populated: bool,
                    own_git: bool,
                    head: str | None) -> tuple[str, object, bool]:
-    """`(route, keep, repository)` for a mount a CHECKOUT would cure, as the
+    """`(route, keep, nested)` for a mount a CHECKOUT would cure, as the
     `legs` and `members` rows both read it, so the two rows route by one
-    definition (#414). `repository` is whether git has one for the mount,
-    its own or a kept one: a member's own legs live in it (#413 c).
+    definition (#414). `nested` is whether the mount carries submodules of
+    its own that the line's `--recursive` checks out too: a `.gitmodules` in
+    it, or a kept repository that keeps theirs (`modules/`). A member's legs
+    are those (#413 c), and so is anything a leg mounts.
 
     `route` is:
 
@@ -3605,8 +3637,10 @@ def checkout_reach(root: Path, rel: str, gitlink: str, populated: bool,
       links anything: it tries a clone into a directory that is not empty
       and exits 1 (`destination path ... already exists`, measured), so it
       is the lockstep gate's.
-    - `no-url`: `.gitmodules` gives no url for it, so the git line would exit
-      128 (`gitmodules_entry`, #414 3). No line is printed for it.
+    - `no-url`: no `.gitmodules` section gives its path, or the one that does
+      gives no url and the root's own config has none either
+      (`gitmodules_entry`, `configured_url`, #414 3), so the git line would
+      exit 128. No line is printed for it.
 
     `keep` is what the line would leave in a reflog alone (`left_in_reflog`):
     the mount itself, for `git -C <mount> branch NAME`, or `(repository,
@@ -3621,11 +3655,14 @@ def checkout_reach(root: Path, rel: str, gitlink: str, populated: bool,
     """
     mount = root / rel
     name, url = gitmodules_entry(root, rel)
+    if name is not None and url is None:
+        url = configured_url(root, name)
     if url is None:
         return "no-url", None, False
+    carries = populated and (mount / ".gitmodules").is_file()
     if own_git:
-        return "checkout", (mount if left_in_reflog(detached(mount), head,
-                                                    gitlink) else None), True
+        stranded = left_in_reflog(detached(mount), head, gitlink)
+        return "checkout", (mount if stranded else None), carries
     git_dir = kept_gitdir(root, name)
     if git_dir is None:
         return ("gone" if populated else "checkout"), None, False
@@ -3633,7 +3670,8 @@ def checkout_reach(root: Path, rel: str, gitlink: str, populated: bool,
     keep = None
     if left_in_reflog(is_detached, kept_at, gitlink):
         keep = (git_dir, kept_at, None if mount.is_dir() else root)
-    return ("relink" if populated else "checkout"), keep, True
+    return (("relink" if populated else "checkout"), keep,
+            carries or (git_dir / "modules").is_dir())
 
 
 def kept_branch_line(kept: tuple, platform: str) -> str:
@@ -3675,20 +3713,21 @@ def checkout_notes(noun: str, off_pin: list[Path], kept: list = (),
     - `kept`: `(repository, commit, work tree)` for mounts with no `.git` of
       their own whose kept repository is detached off it (#413 a), each kept
       first with `kept_branch_line`, which names the commit as well.
-    - `nested`, for the `members` row: the line is recursive, so it checks
-      out each member's own legs too, at the commits THE MEMBER records, and
-      a commit made on no branch in one of them is left in its reflog the
-      same way (#413 c). Said in general words, without walking into them,
-      and only where a member it reaches has a repository for them to be in.
-      `--recursive` stays: the holder's bootstrap recurses
-      (`fetch_members`), and a git line that did not would leave a member's
-      legs where a bootstrap would not.
+    - `nested`: the line is recursive, so it checks out the submodules a
+      mount it names carries of its own too, at the commits THAT MOUNT
+      records, and a commit made on no branch in one of them is left in its
+      reflog the same way. For the `members` row those are each member's
+      legs (#413 c); for the `legs` row, whatever a leg mounts. Said in
+      general words, with a placeholder keep line, without walking into
+      them, and only where a mount the line names carries some
+      (`checkout_reach`). `--recursive` stays: the holder's bootstrap
+      recurses (`fetch_members`), and a git line that did not would leave a
+      member's legs where a bootstrap would not.
 
     A commit made in a mount on a BRANCH stays on that branch, and nothing
     is said where no mount is in any of these states, because a reader told
     about a loss that cannot happen learns to skip the sentence on the day
-    it can. None of `;`, `'`, a backtick or a parenthesis is written here
-    (`submodule_update_next` says why).
+    it can.
     """
     target = os.name if platform is None else platform
     notes = "".join(f". {rel} has files but no .git of its own, and git kept "
@@ -3705,12 +3744,19 @@ def checkout_notes(noun: str, off_pin: list[Path], kept: list = (),
         notes += (". A mount with no .git of its own is named by the "
                   "repository git kept for it, because git run inside such a "
                   "mount walks up and acts on this repository")
-    if nested:
+    if nested and noun == "member":
         notes += (". It is recursive, so it also checks out the legs of each "
                   "member at the commits that member records, and a commit "
                   "made on no branch in one of those legs is left only in its "
                   "reflog too. To keep one, run first git -C LEG branch NAME, "
                   "with LEG the directory of that leg")
+    elif nested:
+        notes += (f". It is recursive, so it also checks out the submodules "
+                  f"a {noun} carries of its own, at the commits that {noun} "
+                  "records, and a commit made on no branch in one of them is "
+                  "left only in its reflog too. To keep one, run first git -C "
+                  "LEG/SUB branch NAME, with LEG/SUB the directory of that "
+                  "submodule")
     return notes
 
 
@@ -3725,9 +3771,10 @@ def rerun_sentence(noun: str) -> str:
 
 
 def unborn_sentence(rel: str, noun: str) -> str:
-    """The `why` for an unborn HEAD, the NEXT being None (#414 2): it names
-    the state and says that nothing here picks the commit. Not the lockstep
-    gate, which says `pins ok` and changes nothing."""
+    """The `why` for an unborn HEAD, the NEXT being None (#414 2) or the
+    lockstep gate: it names the state and says that nothing here picks the
+    commit. Never the gate's own line for it, which says `pins ok` and
+    changes nothing."""
     return (f"HEAD in {rel} names a branch with no commit, so there is no "
             "commit to compare with the pin, and nothing here chooses one "
             f"for you. Check out in that {noun} the commit you mean, then run "
@@ -3735,14 +3782,16 @@ def unborn_sentence(rel: str, noun: str) -> str:
 
 
 def no_url_sentence(rel: str) -> str:
-    """The `why` for a mount `.gitmodules` gives no url for, the NEXT being
-    None (#414 3). No command, deliberately: the entry is restored from the
+    """The `why` for a mount git finds no url for, in `.gitmodules` or in the
+    root's own config, the NEXT being None (#414 3) or the lockstep gate.
+    No command, deliberately: the entry is restored from the
     repository's history by a person, and a `git checkout -- .gitmodules`
     would discard an edit nobody has committed yet."""
-    return (f"git finds no url for {rel} in .gitmodules, so no submodule "
-            "update can fetch it or check it out, and the git line would exit "
-            "128. A person restores that entry from the history of this "
-            "repository, then runs the doctor again")
+    return (f"git finds no url for {rel} in .gitmodules, nor in the config "
+            "of this repository, so no submodule update can fetch it or check "
+            "it out, and the git line would exit 128. A person restores that "
+            "entry from the history of this repository, then runs the doctor "
+            "again")
 
 
 def gone_sentence(rel: str) -> str:
@@ -3801,15 +3850,15 @@ def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
     repositories git kept for mounts with no `.git` of their own whose HEAD
     is (#413 a). `relinked` and `nested` are its too.
 
-    THE SENTENCE CARRIES NONE OF `;`, `'`, A BACKTICK OR A PARENTHESIS. It
-    was written as a `   # ` tail, and a tail is pasted with the line: a
-    shell that does not treat `#` as a comment reads each of those as
-    syntax. It was plain words so that moving it out of the NEXT (#277)
-    would be a move and not a rewrite, and it was: it is the row's `why`,
-    on a line of its own. `after` is the caller's own closing sentence, and
-    `rerun` adds the one the `legs` and `members` rows share
-    (`rerun_sentence`): something this line leaves wrong, in another leg or
-    member or in one it checks out, is named by the next run.
+    THE SENTENCE IS THE ROW'S `why`, ON A LINE OF ITS OWN (#277). It was a
+    `   # ` tail, pasted with the line, and so was written with none of `;`,
+    `'`, a backtick or a parenthesis, each of which a shell that does not
+    read `#` as a comment takes as syntax. Off the line nothing in it is
+    pasted, so that rule no longer binds it, and the paths in its keep lines
+    are spelled by `quote_arg`, which may quote one. `after` is the caller's
+    own closing sentence, and `rerun` adds the one the `legs` and `members`
+    rows share (`rerun_sentence`): something this line leaves wrong, in
+    another leg or member or in one it checks out, is named by the next run.
 
     `platform` is `quote_arg`'s and `copy_command`'s, and for the same
     reason: the line is spelled for the reader's shell, not the host's.
@@ -3894,7 +3943,13 @@ def check_legs(ctx: Context) -> Row:
     WHAT THE LINE WOULD LEAVE IN A REFLOG IS NAMED, wherever it is (#413):
     in a populated leg detached off the gitlink, and in the repository git
     kept for a leg with no `.git` of its own, read through `--git-dir` and
-    kept with a line that names that repository (`checkout_notes`).
+    kept with a line that names that repository (`checkout_notes`). A leg
+    that carries submodules of its own is said in general words: the line's
+    `--recursive` checks those out too, and the row does not walk into them.
+
+    WHERE THE GATE IS THE LINE, the legs no line cures are said beside it:
+    an unborn HEAD or a leg with no url gets the same sentence it gets with
+    no line at all, which ends by saying to run the doctor again.
     """
     waiting = waiting_row(ctx, "legs", "legs",
                           "the legs it declares are not known and none is "
@@ -3917,6 +3972,7 @@ def check_legs(ctx: Context) -> Row:
     gone: list[str] = []
     stuck: list[str] = []
     rerun = False
+    nested = False
     for leg in legs:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
@@ -3965,16 +4021,18 @@ def check_legs(ctx: Context) -> Row:
             else:
                 lockstep.append(rel)
         if cures:
-            route, keep, _ = checkout_reach(ctx.root, rel, gitlink,
-                                            populated, own_git, head)
+            route, keep, carries = checkout_reach(ctx.root, rel, gitlink,
+                                                  populated, own_git, head)
             if route == "no-url":
-                problem += ", and git finds no url for it in .gitmodules"
+                problem += (", and git finds no url for it in .gitmodules or "
+                            "in the config of this repository")
                 stuck.append(no_url_sentence(rel))
             elif route == "gone":
                 lockstep.append(rel)
                 gone.append(rel)
             else:
                 checkout.append(rel)
+                nested = nested or carries
                 if route == "relink":
                     relinked.append(rel)
                 if isinstance(keep, tuple):
@@ -4007,15 +4065,18 @@ def check_legs(ctx: Context) -> Row:
             # line of its own (#277).
             next_command, why = submodule_update_next(
                 ctx.root, checkout, off_pin, "leg", after, rerun, kept=kept,
-                relinked=relinked)
+                relinked=relinked, nested=nested)
         elif lockstep:
             # NO CHECKOUT CURES IT: the lockstep gate, one definition of it
-            # for this row and the `pins` row (`lockstep_next`), and which
-            # mount with no `.git` of its own is the gate's because git kept
-            # no repository for it (#414).
+            # for this row and the `pins` row (`lockstep_next`), which mount
+            # with no `.git` of its own is the gate's because git kept no
+            # repository for it, and what no line cures (#414).
             next_command, why = lockstep_next(ctx, PINS_GATE, "leg")
             if why:
                 why += "".join(gone_sentence(rel) for rel in gone)
+                why += "".join(f". {sentence}" for sentence in stuck)
+            elif stuck:
+                why = ". ".join(stuck)
         else:
             # NO LINE CURES IT without choosing for the person (#414).
             next_command, why = None, ". ".join(stuck)
@@ -6033,7 +6094,7 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
                         or gitlink != entry["pin"]):
                     lockstep = True
                     continue
-            route, keep, repository = checkout_reach(
+            route, keep, carries = checkout_reach(
                 ctx.root, rel, gitlink, entry["populated"], own_git,
                 entry["head"])
             if route == "no-url":
@@ -6045,7 +6106,7 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
                 gone.append(rel)
                 continue
             checkout.append(rel)
-            nested = nested or repository
+            nested = nested or carries
             if route == "relink":
                 relinked.append(rel)
             if isinstance(keep, tuple):
@@ -6065,10 +6126,11 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
         #
         # BUT NOT OVER A MEMBER WITH NO URL (#414). Its update names no path,
         # so it inits every member, and git stops that whole run at a section
-        # that gives a path and no url (`No url found`, exit 128, measured)
-        # before it fetches any other; the bootstrap reports the fetch
-        # incomplete and exits 0 with the row as red as it was. The git line
-        # names only the members it cures, and git runs it.
+        # that gives a path and no url, where the holder's own config has
+        # none either (`No url found`, exit 128, measured), before it fetches
+        # any other; the bootstrap reports the fetch incomplete and exits 0
+        # with the row as red as it was. The git line names only the members
+        # it cures, and git runs it.
         if checkout and own_bootstrap(ctx.root) and not no_url:
             next_command = (
                 f"{PYTHON} "
@@ -6076,20 +6138,22 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
                 f"--root {quote_arg(ctx.root)}")
             # The same sentences the git line carries, built by the same
             # function (#413 b), for every member it moves. Its update is
-            # recursive too, into every member that is there.
+            # recursive too, into every member that carries legs.
             why = ("what `make bootstrap` runs in a holder: it fetches every "
                    "member at its pin and leaves it detached there"
                    + checkout_notes(
                        "member", moved, kept, relinked,
-                       nested or any(entry["populated"] for entry in rows)))
+                       nested or any((ctx.root / entry["path"]
+                                      / ".gitmodules").is_file()
+                                     for entry in rows)))
             if rerun:
                 why += rerun_sentence("member")
         elif checkout:
             if own_bootstrap(ctx.root):
                 after = (". This holder has its own scripts/bootstrap.py, "
                          "but it updates every member at once, and a member "
-                         "with no url in .gitmodules can stop that run before "
-                         "it fetches any other, so this is the plain git line "
+                         "git finds no url for can stop that run before it "
+                         "fetches any other, so this is the plain git line "
                          "over the rest, with no credential rewrite for a "
                          "private member")
             else:
@@ -6101,10 +6165,14 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
                 kept=kept, relinked=relinked, nested=nested)
         elif lockstep:
             # THE FAMILY GATE, one definition of it for this row and the
-            # `family` row (`lockstep_next`).
+            # `family` row (`lockstep_next`), and, beside it, what no line
+            # cures, as `check_legs` says it (#414).
             next_command, why = lockstep_next(ctx, FAMILY_GATE, "member")
             if why:
                 why += "".join(gone_sentence(rel) for rel in gone)
+                why += "".join(f". {sentence}" for sentence in stuck)
+            elif stuck:
+                why = ". ".join(stuck)
         else:
             # NO LINE CURES IT without choosing for the person (#414).
             next_command, why = None, ". ".join(stuck)
