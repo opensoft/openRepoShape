@@ -2606,6 +2606,12 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
     return digest.hexdigest()
 
 
+#: How a pin file says its digest was read (`digest_source:`): from a clone
+#: on this machine, or from the forge's own recursive tree listing.
+DIGEST_FROM_CLONE = "local-clone"
+DIGEST_FROM_GH = "gh-api-tree-recursive"
+
+
 def declared_pin_values(args) -> dict[str, dict[str, str]]:
     """The template values for every `--pin`, with its digest resolved.
 
@@ -2617,6 +2623,17 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
     are the same three flags in `scaffold-project.py` and in
     `adopt-project.py plan`, which records these values in the plan so that
     `check` and `execute` read no network for them (#273).
+
+    A CLONE IS RECORDED AS `local-clone`, AND ITS PATH IS NOT (#540). The
+    path went into the committed pin file's `digest_source:` as it was
+    typed, `local-clone (<path>)`, so an absolute `--pin-source` committed
+    the directory a clone sat in on the machine that ran the tool, which is
+    of no use to any other reader of the file. The path was also written
+    bare (#450): one holding a line break wrote a line of its own choosing
+    into the pin file, and the scaffold died in `write_lf` on one holding a
+    byte that is not UTF-8, after all three repositories existed. What the
+    field is for is which of the two ways the digest was read, so that is
+    what it says; the refusals above still name the path the run was given.
     """
     pins: dict[str, dict[str, str]] = {}
     for raw in args.pin:
@@ -2624,10 +2641,10 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
         if args.pin_source is not None:
             digest = pin_digest_from_source(
                 _resolved_pin_source(args.pin_source), commit, repository)
-            digest_source = f"local-clone ({args.pin_source})"
+            digest_source = DIGEST_FROM_CLONE
         else:
             digest = pin_digest_from_gh(repository, commit)
-            digest_source = "gh-api-tree-recursive"
+            digest_source = DIGEST_FROM_GH
         pins[product] = {
             "PIN_PRODUCT": product,
             "PIN_REPOSITORY": repository,
@@ -2652,6 +2669,49 @@ def declared_pin_products(args) -> dict[str, None]:
     the same products, before it reads a digest (#273).
     """
     return dict.fromkeys(parse_pin(raw, args.pin_owner)[0] for raw in args.pin)
+
+
+def refuse_an_unread_pin_source(pin_source, pins, chain=None, *,
+                                nothing_made: str) -> None:
+    """`--pin-source` is read by this run, or this refuses it as
+    `pin-source-unused` (#451): before anything exists and before any digest
+    is read, so the scaffold's `--dry-run` refuses it too and `plan` writes
+    no plan.
+
+    ITS READERS ARE `declared_pin_values`, which reads each `--pin`'s digest
+    there, and, in the scaffold, `link_pins_from_trees`, which reads a
+    `--referent-chain` link's declaration there when nothing keyed names that
+    link's tree. With neither, nothing read it, so nothing asked about it
+    either: a path that does not exist was accepted, `--dry-run` said
+    `nothing was created.` and `plan` wrote its plan, each exit 0 with no
+    word that the flag had changed nothing. Typed meaning to pin, with the
+    `--pin` forgotten, it made a project that declares no descent. The
+    root's own `validate-pins.py` NOTES an unused `--pin-source` of its own
+    (#295), a check that is run again and again; the two tools that make a
+    project refuse one, before it is made, as they refuse each other value
+    they cannot use.
+
+    `pins` is the `--pin` list and `chain` the scaffold's `--referent-chain`
+    links, or `None` for a tool that takes no chain (`adopt-project.py
+    plan`), so the sentence names only flags the tool has. `nothing_made`
+    begins the remediation in the tool's own words. The path is never read
+    here, and is named as `shown_source` names it.
+    """
+    if pin_source is None or pins or chain:
+        return
+    if chain is None:
+        given, reads = "no --pin", "each --pin's digest is read from"
+    else:
+        given = "no --pin and no --referent-chain"
+        reads = ("each --pin's digest is read from, and each "
+                 "--referent-chain link's declaration")
+    raise Refusal(
+        "pin-source-unused",
+        f"--pin-source {shown_source(pin_source)} was given with {given}, so "
+        f"nothing reads it: it names the clone {reads}.",
+        f"Remediation: {nothing_made} Add the --pin "
+        "<openProduct>@<40 hex commit> that clone was given for, or drop "
+        "--pin-source.")
 
 
 #: What every refused `--pin` is told to do. The file a pin is written at is

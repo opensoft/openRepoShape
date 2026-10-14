@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import errno
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -43,7 +44,7 @@ import pytest
 from conftest import ADOPT, ORG, REPO, SCAFFOLD, git, make_source_repo, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import load_yaml, tree_digest  # noqa: E402
+from repo_shape import load_yaml, parse_yaml, tree_digest  # noqa: E402
 
 PROJECT = "MedxGlass"
 #: Any 40 hex: no source below is asked for it, but the clone that is not one.
@@ -82,22 +83,24 @@ RUNS = ["scaffold-dry-run", "scaffold-run", "adopt-plan"]
 
 
 def run(kind: str, base: Path, adoptable: Path, typed: str,
-        commit: str = COMMIT, cwd: Path | None = None,
-        env: dict | None = None) -> subprocess.CompletedProcess:
+        commit: str | None = COMMIT, cwd: Path | None = None,
+        env: dict | None = None,
+        extra: tuple = ()) -> subprocess.CompletedProcess:
     """`--pin openGlass@<commit> --pin-source <typed>` through `kind`, into
-    `base`."""
+    `base`: with no `--pin` when `commit` is None, and `extra` after."""
+    pin = ("--pin", f"openGlass@{commit}") if commit is not None else ()
     if kind == "adopt-plan":
         return run_script(ADOPT, "plan", "--source", str(adoptable),
                           "--project", PROJECT, "--org", ORG,
                           "--elected-by", "Test Human",
                           "--elected-on", "2026-09-02",
                           "--out", str(base / "plan.yaml"),
-                          "--pin", f"openGlass@{commit}",
-                          "--pin-source", typed, cwd=cwd, env=env)
+                          *pin, "--pin-source", typed, *extra,
+                          cwd=cwd, env=env)
     return run_script(SCAFFOLD, "--org", ORG, "--project", PROJECT,
                       "--elected-by", "Test Human",
                       "--elected-on", "2026-09-02",
-                      "--pin", f"openGlass@{commit}", "--pin-source", typed,
+                      *pin, "--pin-source", typed, *extra,
                       "--local-remote-dir", str(base / "remotes"),
                       "--work-dir", str(base / "work"),
                       *(("--dry-run",) if kind == "scaffold-dry-run" else ()),
@@ -294,19 +297,16 @@ def test_the_source_is_printed_escaped_and_never_raised_on(
     name: the refusal is never a `UnicodeEncodeError` in its place. The
     second row is a name that is not UTF-8 (POSIX only: a Windows command
     line has no such byte), read with `surrogateescape`, so it prints as
-    the surrogate it was read as. `adopt-project.py plan` records the path
-    in the plan, which cannot hold that byte, so it refuses the name as a
-    value it cannot record before it reads any digest (#273's review, N2),
-    and spells it the same way."""
+    the surrogate it was read as. `adopt-project.py plan` refused that name
+    as a value it could not record (#273's review, N2) while it recorded
+    the path; it records none since #540, so it is read, and refused, as
+    the scaffold refuses it."""
     typed = str(tmp_path / name)
     result = run(kind, tmp_path, adoptable, typed, env=env)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "Traceback" not in result.stderr, result.stderr
     assert spelled in result.stderr, result.stderr
-    code = ("adopt-unwritable-value"
-            if kind == "adopt-plan" and "\udcff" in name
-            else "pin-source-unreadable")
-    assert f"REFUSED {code}: " in result.stderr
+    assert "REFUSED pin-source-unreadable: " in result.stderr
     assert made(kind, tmp_path) == []
 
 
@@ -356,22 +356,17 @@ def assert_one_refusal_of_the_tools(result: subprocess.CompletedProcess,
 @pytest.mark.parametrize("name", CONTROL_NAMES)
 def test_a_source_holding_a_control_character_is_named_spelled(
         kind, name, tmp_path, adoptable):
-    """Through every way in. The scaffold refuses it as
-    `pin-source-unreadable`; `adopt-project.py plan` refuses it before any
-    digest is read, as a value it cannot record (#273's review, N2), and
-    names it the same way."""
+    """Through every way in, in one refusal, `pin-source-unreadable`.
+    `adopt-project.py plan` refused such a path before it read a digest, as
+    a value it could not record (#273's review, N2); it records no path
+    since #540, so it reads this one and says what the scaffold says."""
     typed = str(tmp_path / name)
     result = run(kind, tmp_path, adoptable, typed)
     assert_one_refusal_of_the_tools(result, typed)
-    if kind == "adopt-plan":
-        assert result.stderr.startswith(
-            f"REFUSED adopt-unwritable-value: --pin-source is {typed!r}, "), \
-            result.stderr
-    else:
-        assert result.stderr == (
-            f"REFUSED pin-source-unreadable: {typed!r} could not answer for "
-            f"opensoft/openGlass @ {COMMIT}: {NO_SUCH_DIRECTORY}\n"
-            f"{REMEDIATION}\n")
+    assert result.stderr == (
+        f"REFUSED pin-source-unreadable: {typed!r} could not answer for "
+        f"opensoft/openGlass @ {COMMIT}: {NO_SUCH_DIRECTORY}\n"
+        f"{REMEDIATION}\n")
     assert made(kind, tmp_path) == []
 
 
@@ -437,8 +432,123 @@ def test_a_source_that_answers_is_read_as_before(kind, spelling, tmp_path,
         pin = load_yaml(tmp_path / "plan.yaml")["pins"][0]
         assert pin["commit"] == commit
         assert pin["tree_sha256"] == digest
-        assert pin["digest_source"] == f"local-clone ({typed})"
+        assert pin["digest_source"] == "local-clone"
     else:
         assert f"tree {digest[:12]}" in result.stdout, result.stdout
-        assert f"(local-clone ({typed}))" in result.stdout, result.stdout
+        assert " (local-clone)\n" in result.stdout, result.stdout
         assert "--dry-run: nothing was created." in result.stdout
+
+
+# --- a `--pin-source` nothing reads is `pin-source-unused` (#451) ------------
+#
+# `--pin-source` is read by each `--pin` (its digest) and, in the scaffold, by
+# each `--referent-chain` link (its declaration). With neither, nothing read
+# it, so nothing asked about it: `--dry-run` said `nothing was created.`,
+# the real run made a project that declares no descent, and `plan` wrote a
+# plan, each exit 0, with no word of the flag, even for a path that does not
+# exist. It is refused, before anything exists, as `pin-source-unused`.
+
+#: What each tool says of a `--pin-source <typed>` no flag of its reads.
+UNUSED = {
+    "scaffold": (
+        "REFUSED pin-source-unused: --pin-source {typed} was given with no "
+        "--pin and no --referent-chain, so nothing reads it: it names the "
+        "clone each --pin's digest is read from, and each --referent-chain "
+        "link's declaration.\nRemediation: nothing was created, and "
+        "`--dry-run` refuses the same. Add the --pin <openProduct>@<40 hex "
+        "commit> that clone was given for, or drop --pin-source.\n"),
+    "adopt": (
+        "REFUSED pin-source-unused: --pin-source {typed} was given with no "
+        "--pin, so nothing reads it: it names the clone each --pin's digest "
+        "is read from.\nRemediation: no plan was written. Add the --pin "
+        "<openProduct>@<40 hex commit> that clone was given for, or drop "
+        "--pin-source.\n"),
+}
+
+
+@pytest.mark.parametrize("kind", RUNS)
+def test_a_pin_source_nothing_reads_is_pin_source_unused(kind, tmp_path,
+                                                         adoptable):
+    """#451's table, through every way in: no `--pin`, and a `--pin-source`
+    that does not exist. Exit 2, the one refusal in each tool's words, the
+    path as typed, and nothing made; the dry run and the real run say the
+    same."""
+    typed = str(tmp_path / "no-such-clone")
+    result = run(kind, tmp_path, adoptable, typed, commit=None)
+    assert result.returncode == 2, result.stdout + result.stderr
+    tool = kind.split("-", 1)[0]
+    assert result.stderr == UNUSED[tool].format(typed=typed), result.stderr
+    assert result.stdout == ""
+    assert made(kind, tmp_path) == []
+
+
+@pytest.mark.parametrize("kind", ["scaffold-dry-run", "adopt-plan"])
+def test_a_pin_source_a_pin_reads_is_not_unused(kind, tmp_path, adoptable,
+                                                glass):
+    """The control: the same command line with a `--pin` the clone answers
+    for is planned. (The real scaffold is the last test's.)"""
+    product, commit = glass
+    result = run(kind, tmp_path, adoptable, str(product), commit=commit)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "pin-source-unused" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("kind", ["scaffold-dry-run", "scaffold-run"])
+def test_a_referent_chain_reads_the_pin_source(kind, tmp_path, adoptable):
+    """A `--referent-chain` link with no keyed source reads the bare
+    `--pin-source` (`link_pins_from_trees`), so a chain is a reader: with
+    no `--pin`, the refusal is the chain's own, which names the `--pin` the
+    chain begins at, and not `pin-source-unused`."""
+    result = run(kind, tmp_path, adoptable, str(tmp_path / "no-such-clone"),
+                 commit=None,
+                 extra=("--referent-chain", "openXglass,openGlass"))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith("REFUSED chain-not-declared: "), \
+        result.stderr
+    assert "pin-source-unused" not in result.stderr
+    assert made(kind, tmp_path) == []
+
+
+# --- a source that answers is not recorded (#540, #450) ----------------------
+#
+# The pin file's `digest_source:` was `local-clone (<the path as typed>)`: an
+# absolute `--pin-source` committed the directory a clone sat in on the
+# machine that scaffolded (#540). Written bare, a path holding a line break
+# wrote a line of its own into the pin file, exit 0, and one holding a byte
+# that is not UTF-8 died in `write_lf` once all three repositories existed,
+# exit 1 (#450). The field says how the digest was read, `local-clone`, and
+# the path is in no file.
+
+#: Where each clone below sits: in a directory of its own, so that the pin
+#: file can be searched for it.
+CLONE_NAMES = [
+    pytest.param("openGlass", id="absolute"),
+    pytest.param("gl\nass", id="lf", marks=CONTROL_ARGV),
+    pytest.param("gl\udcffass", id="not-utf-8", marks=POSIX_ARGV),
+]
+
+
+@pytest.mark.parametrize("name", CLONE_NAMES)
+def test_the_pin_file_says_how_the_digest_was_read_and_not_where(
+        name, tmp_path, adoptable, glass):
+    """A real scaffold from a clone at each path: exit 0, the plan's `pin`
+    line ending `(local-clone)`, and the pin file the root commits, read
+    from git, holding `digest_source: local-clone` and no byte of the
+    clone's directory."""
+    product, commit = glass
+    clones = tmp_path / "clones"
+    shutil.copytree(product, clones / name, symlinks=True)
+    result = run("scaffold-run", tmp_path, adoptable, str(clones / name),
+                 commit=commit)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    assert [line for line in result.stdout.splitlines()
+            if line.startswith("pin ")][0].endswith(
+        "-> contracts/openglass-pin.yaml (local-clone)"), result.stdout
+    blob = subprocess.run(
+        ["git", "show", "main:contracts/openglass-pin.yaml"],
+        cwd=tmp_path / "remotes" / f"{PROJECT}.git", capture_output=True,
+        check=True).stdout
+    assert os.fsencode(str(clones)) not in blob, blob
+    assert parse_yaml(blob.decode("utf-8"))["digest_source"] == "local-clone"
+    assert b"\ndigest_source: local-clone\n" in blob, blob

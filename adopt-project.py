@@ -246,7 +246,7 @@ PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
 from shape_materialize import (  # noqa: E402
     PIN_ARG_RE, declared_pin_products, declared_pin_values, neutral_pin_path,
     one_printable_line, pin_collisions, pin_variable_collisions,
-    refuse_colliding_pins,
+    refuse_an_unread_pin_source, refuse_colliding_pins,
 )
 from repo_shape import SHA256_RE, repo_basename  # noqa: E402
 
@@ -2857,6 +2857,11 @@ def _checked_plan_inputs(args, source: Source,
     # miscount one written over the shape's or listed twice. A name with no
     # `@<commit>` is `parse_pin`'s `pin-malformed`. No digest is read yet.
     args.pin_owner = checked_value("--pin-owner", args.pin_owner)
+    # A `--pin-source` no `--pin` will read is refused, in the scaffold's
+    # words (#451): it names the clone a pin's digest is read from, and with
+    # no `--pin` it changed nothing and was never even asked about.
+    refuse_an_unread_pin_source(args.pin_source, args.pin,
+                                nothing_made="no plan was written.")
     refuse_colliding_pins(args.pin, args.pin_owner, "adopt-pin-collides")
     products = list(declared_pin_products(args))
     # Then the paths the shape writes, which are known before any plan is
@@ -2918,8 +2923,6 @@ def _checked_plan_inputs(args, source: Source,
                       "named again, retyped; when `--elected-by` is not "
                       "given, `plan` reads `git config user.name`, so pass "
                       "the flag or correct that. " + WRITTEN_AS_TEXT)
-    if args.pin and args.pin_source is not None:
-        _refuse_an_unrecordable_pin_source(args.pin_source, products)
     names = _names(args.project)
     pins = declared_pin_values(args)
     _check_names(naming, names, set(pins), source)
@@ -2950,43 +2953,6 @@ def _refuse_misread_values(args, given: set, pins: dict, source: Source,
         raise Refusal("adopt-manifest-misread",
                       " ".join(f"{problem}." for problem in misread),
                       f"{MANIFEST_MISREAD_REMEDIATION} No plan was written.")
-
-
-def _refuse_an_unrecordable_pin_source(source: Path, products) -> None:
-    """`--pin-source` is a path `plan` can record, or this refuses it as
-    `adopt-unwritable-value`, before any digest is read and before a plan
-    is written.
-
-    `plan` records the path in each pin's `digest_source:`, `execute`
-    writes that into the pin file as it stands, and `check` holds it to
-    `one_printable_line` (`_pin_row_problem`). A path holding a line break,
-    an ESC or a byte that is not UTF-8 was planned, exit 0, and printed raw
-    in `plan`'s report -- the line break split it -- and `check` then found
-    `plan-pin-malformed` and said to re-run the `plan` that wrote it. So
-    `plan` asks `check`'s question of the value it would record, and says
-    why in #270's words (`unwritable_reason`) where they name it; the one
-    thing `check` refuses that they do not is an invisible formatting
-    character, a zero-width joiner among them. The `local-clone (` and `)`
-    that `declared_pin_values` puts around the path are printable, so the
-    path alone decides.
-    """
-    text = str(source)
-    if one_printable_line(text):
-        return
-    reason = (unwritable_reason(text)
-              or "it holds an invisible formatting character")
-    files = ", ".join(f"`{neutral_pin_path(product)}`"
-                      for product in products)
-    raise Refusal(
-        "adopt-unwritable-value",
-        f"--pin-source is {text!r}, which `plan` records in each pin's "
-        f"`digest_source:` and `execute` writes into {files}, and {reason}.",
-        "Remediation: no plan was written. Point --pin-source at a clone "
-        "whose path is one line of printable UTF-8 text, or drop "
-        "--pin-source and let `gh api` read the forge. `check` refuses a "
-        "`digest_source:` that is not one printable line as "
-        "`plan-pin-malformed`, because `execute` writes it into the pin file "
-        "as it stands.")
 
 
 # ---------------------------------------------------------------------------
@@ -9640,7 +9606,11 @@ def main(argv: list[str] | None = None) -> int:
     plan.add_argument("--pin-source", type=Path, default=None,
                       help="a local clone to compute --pin digests from, "
                            "instead of reading the forge with `gh api` (the "
-                           "TEST path; no network)")
+                           "TEST path; no network). The plan and the pin "
+                           "file say only that the digest was read from "
+                           "`local-clone`, never the path. Given with no "
+                           "--pin to read it, the flag is refused as "
+                           "`pin-source-unused`.")
     plan.add_argument("--allow-empty-leg", action="append", default=[],
                       choices=EXTRACTED_LEGS,
                       help="record in the plan that this leg having NO path "

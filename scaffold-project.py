@@ -126,6 +126,7 @@ MANIFEST_FLAGS = {
 #: by, so what it refuses, and in which words, is unchanged.
 from shape_materialize import (  # noqa: E402
     declared_pin_products, declared_pin_values,
+    refuse_an_unread_pin_source,
     refuse_colliding_pins as _refuse_colliding_pins,
 )
 
@@ -304,7 +305,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pin-source", type=Path, default=None,
                         help="a local clone to compute --pin digests from, "
                              "instead of reading the forge with `gh api` (the "
-                             "TEST path; no network)")
+                             "TEST path; no network). The pin file says "
+                             "only that the digest was read from "
+                             "`local-clone`, never the path. Given with no "
+                             "--pin and no --referent-chain to read it, it "
+                             "is refused as `pin-source-unused`.")
     parser.add_argument("--work-dir", type=Path, default=None,
                         help="where the working trees are built "
                              "(default: a temporary directory)")
@@ -647,6 +652,10 @@ ROOT_MANIFEST_AND_README = "the assembly root's `project.yaml` and `README.md`"
 NAME_WRITTEN_INTO = (
     "the assembly root's `project.yaml` and `README.md`, each repository's "
     "`AGENTS.md` and each first commit's message")
+
+#: How a `pin-source-unused` refusal's remediation begins (#451).
+UNREAD_PIN_SOURCE_MADE = ("nothing was created, and `--dry-run` refuses the "
+                          "same.")
 
 #: What every `scaffold-unwritable-value` is told to do (#282).
 UNWRITABLE_REMEDIATION = (
@@ -1362,6 +1371,12 @@ def _scaffold(args) -> int:
     args.code_path = checked_value(*code_leg)
     args.org = checked_value("--org", args.org)
     args.pin_owner = checked_value("--pin-owner", args.pin_owner)
+    # A `--pin-source` NOTHING WILL READ (#451): no `--pin` reads a digest
+    # there and no `--referent-chain` link a declaration. Asked of the flags
+    # as typed, with no process started, so a dry run refuses it too.
+    refuse_an_unread_pin_source(args.pin_source, args.pin,
+                                referent_chain_links(args.referent_chain),
+                                nothing_made=UNREAD_PIN_SOURCE_MADE)
     # EACH `--pin`'S FILE AGAINST THE SHAPE'S OWN AND AGAINST EACH OTHER, from
     # the arguments as typed (#241), and first: the leg-path question below
     # asks about every pin's file, and would miscount one written over the
