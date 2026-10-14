@@ -115,13 +115,13 @@ scripts/bootstrap.py`. README's "What setup.sh does" carries the exact commands.
 ## Adopting an existing repository
 
 `adopt-project.py` converts a repository that already exists, IN PLACE: it keeps
-its name, its identity and its full history and becomes the assembly root, and
-the two legs are new repositories extracted with `git filter-repo` (a hard
-dependency: `execute` refuses without it, printing the install command). Seven
-steps, in order, and step 4 is the one you must not skip.
+its name, which `--project` must be, its identity and its full history and
+becomes the assembly root, and the two legs are new repositories extracted with
+`git filter-repo` (a hard dependency: `execute` refuses without it, printing the
+install command). Seven steps, in order, and step 4 is the one you must not skip.
 
 ```sh
-./adopt-project.py plan --source <org/repo|path> --project <Project>
+./adopt-project.py plan --source <org/repo|path> --project <its own name>
 # 2. answer every `review_required: true` entry IN THE PLAN
 ./adopt-project.py check --plan adoption-plan.yaml
 # 4. show the human the plan and the follow-ups; get an explicit yes
@@ -167,7 +167,7 @@ history, not an empty repository. `plan` and `check` both WARN; `check` still
 passes, because a spec-only repository is a legitimate thing to adopt.
 
 ```sh
-./adopt-project.py plan --source <org>/<Repo> --project <Project> \
+./adopt-project.py plan --source <org>/<Repo> --project <Repo> \
     --allow-empty-leg code
 ```
 
@@ -215,9 +215,9 @@ no `--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
 in each of them, which is where a repair mode will hang; nothing in it writes
 today. The one exception to "writes nothing" is `--placement-plan <file>`, which
 writes that file and nothing else — see 4. Installed, `openRepoShape --doctor`
-runs from a temporary clone of the standard, deleted on exit, and takes a path
-and nothing else: to ACT on a row (`--json`, `--placement-plan`, its next
-command) run `./shape-doctor.py --root <path>` from a checkout.
+takes `--json` and `--placement-plan <file>` as well, and KEEPS its temporary
+clone of the standard, because the NEXT lines run from it: its last line names
+that directory, which is the human's to delete once those commands have run.
 
 1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
    BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0, 1,
@@ -263,7 +263,7 @@ command) run `./shape-doctor.py --root <path>` from a checkout.
    never changes the verdict: it says whether THIS workstation can run the fixes
    the other rows named. Relay a missing prerequisite; `openRepoShape
    --preflight` offers only the `gh` set-up, and the human types that yes.
-7. `./shape-doctor.py --json` is the same report as one object, each row
+7. `--json` is the same report as one object, alone on stdout, each row
    carrying its `id`, for when you have to act on a row rather than quote it.
 
 ## Updating a project's shape
@@ -368,33 +368,34 @@ nothing. Use one when the parts DEPLOY SEPARATELY; one project is what parts
 that ship together already are.
 
 ```sh
-python3 scripts/family.py init --org <org> --family <Name> [--reuse-empty-repo]
+python3 scripts/family.py init --org <org> --family <Name> --into .. [--reuse-empty-repo]
+git -C <path> switch -c family/add-<project>   # a branch first: see 3
 python3 scripts/family.py add  --family-root <path> --member <org>/<Project>
 python3 scripts/family.py bump --family-root <path> --member <Project> --to <sha>
 python3 scripts/family.py siblings --family-root <path>
 ```
 
-1. **`init` creates a repository, so the human must say so first.** There is
-   no prompt here — `family.py` is not `setup.sh` — which makes it your job
-   to get an explicit yes before you run it, and to run `--dry-run` first and
-   show them the plan. If `<org>/<Name>` already exists and is EMPTY, add
-   `--reuse-empty-repo`; if it has commits, stop and ask.
+1. **`init` creates a repository, so the human must say so first.** No
+   prompt asks — `family.py` is not `setup.sh` — so get an explicit yes, and
+   run `--dry-run` first and show them the plan. If `<org>/<Name>` exists and
+   is EMPTY, add `--reuse-empty-repo`; if it has commits, stop and ask.
    **It lands at `<into>/<Family>/<Family>`** — `--into` is the PARENT
-   directory and defaults to where you are standing, the folder `<Family>/`
-   is created in it, and the holder goes inside that. Standing in the family
-   folder already, it does not nest a second one. `--work-dir <dir>` is the
-   override (`<dir>/<Family>`, no folder) and the two are refused together.
+   directory, the folder `<Family>/` is made in it (not again when you stand
+   in it already) and the holder goes inside that. `--into` defaults to where
+   you stand, refused inside a checkout of this standard, hence `--into ..`
+   above (`family-landing-in-standard`). `--work-dir <dir>` is the override
+   (`<dir>/<Family>`, no folder) and the two are refused together.
    Say the landing path back to the human: the doubled `<Family>/<Family>` is
    deliberate and reads like a mistake until somebody explains it.
 2. **A family pins ASSEMBLY ROOTS, never legs.** `--member <org>/<Project>`,
-   never `<Project>-spec`. The tool refuses a leg, and the refusal is
-   correct: a leg has no `project.yaml` and belongs to its own root.
+   never `<Project>-spec`: a leg has no `project.yaml`, and is rightly refused.
 3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the
-   gitlink and the pin together. Land it as a pull request; never suggest a
-   push to the default branch. Do not hand-edit `family.yaml`'s `members:`
+   gitlink and the pin together, on a branch you make first (see above): the
+   tracking branch is refused (`family-on-tracking-branch`). Push the branch
+   as its `NEXT` line says and land it as a pull request; never suggest a
+   push to the default branch. Never hand-edit `family.yaml`'s `members:`
    block — the tool rewrites it wholesale. `bump` takes the same repeatable
-   `--trailer "<Key>: <value>"` as `update-shape.py apply`, for the lines its
-   commit must end with.
+   `--trailer "<Key>: <value>"` as `update-shape.py apply`.
 4. **The member must be scaffolded or adopted FIRST.** A family cannot make a
    project out of a repository; it can only pin one that already is.
 5. **`make siblings` in the holder — or `family.py siblings --family-root
@@ -407,11 +408,10 @@ python3 scripts/family.py siblings --family-root <path>
    parent folder is not named after the family it warns and prints an `mv`,
    and running that `mv` yourself relocates a checkout out from under a
    shell, an editor and every agent lane, and breaks any linked worktree
-   (its `.git` file carries an absolute path). It also never touches an
-   existing clone beyond `git fetch`: no checkout, no reset, no pull,
-   because somebody is working in there. A directory that is a clone of a
-   different repository is reported and skipped; the exit is the human's
-   hand, not an overwrite.
+   (its `.git` file carries an absolute path). An existing clone gets only
+   `git fetch` — no checkout, no reset, no pull — because somebody works in
+   there; one of a different repository is reported and skipped, and the
+   exit is the human's hand, not an overwrite.
 6. `update-shape.py` updates a family root exactly as it updates a project,
    with the same four refusals, and mirrors into `family.yaml`. An existing
    holder receives `scripts/siblings.py` that way: `check` reports it as

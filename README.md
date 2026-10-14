@@ -727,14 +727,14 @@ it satisfies no leg form to be admitted into, and is still refused as any leg.
 
 ## Adopting an existing repository
 
-A repository that already exists is converted **in place**, by
-`adopt-project.py`, and this is a ruling (**Brett Heap, 2026-09-02**): it KEEPS
-ITS NAME, ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly root, while
-`<Project>-spec` and `<Project>-code` are NEW repositories extracted with
-history-preserving filters. The source is never deleted, never renamed and never
-force-pushed; the only change to its history is ONE split commit, arriving on a
-branch by pull request — the organisations this serves are pull-request only,
-and a tool needing a bypass cannot be used where it is needed.
+A repository that already exists is converted **in place**, by `adopt-project.py`,
+and this is a ruling (**Brett Heap, 2026-09-02**): it KEEPS ITS NAME, which
+`--project` must be, ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly
+root, while `<Project>-spec` and `<Project>-code` are NEW repositories extracted
+with history-preserving filters. The source is never deleted, never renamed and
+never force-pushed; the only change to its history is ONE split commit, arriving
+on a branch by pull request — the organisations this serves are pull-request
+only, and a tool needing a bypass cannot be used where it is needed.
 
 ```sh
 ./adopt-project.py plan --source MedxSoft/MedxEHR --project MedxEHR
@@ -900,27 +900,27 @@ InkRouter/                      the family FOLDER (see the layout above)
 
 ```sh
 python3 scripts/family.py init --org InkRouter --family InkRouter --into .. --reuse-empty-repo
+git -C ../InkRouter/InkRouter switch -c family/add-irrs
 python3 scripts/family.py add  --family-root ../InkRouter/InkRouter --member InkRouter/IRRS
 python3 scripts/family.py bump --family-root ../InkRouter/InkRouter --member IRRS --to <40 hex>
 python3 scripts/family.py remove --family-root ../InkRouter/InkRouter --member IRRS
 python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter
 ```
 
-`add`, `bump` and `remove` each write ONE commit, with explicit pathspecs,
-moving the gitlink and `members[].pin` together — the same lockstep rule an
-assembly root applies to its legs, and `scripts/validate-family.py` refuses
-when they disagree. Each row also records the member's own `project.yaml`
-`id`, so the validator can check the tree mounted at `members/<Project>` is
-the project the row claims rather than merely a repository at the right
-commit. **A family pins assembly roots, never legs**: adding `<Project>-spec`
-is refused, because a leg has no `project.yaml` and belongs to its own root.
+`add`, `bump` and `remove` each write ONE commit, with explicit pathspecs, on a
+branch made first (the tracking branch is refused) and print its push: the
+gitlink and `members[].pin` move together, the lockstep rule an assembly root
+applies to its legs, which `scripts/validate-family.py` enforces. Each row
+records the member's `project.yaml` `id`, so the validator can check
+`members/<Project>` holds the project the row claims, not merely a repository
+at the right commit. **A family pins assembly roots, never legs**:
+`<Project>-spec` is refused; a leg has no `project.yaml`.
 
 `make bootstrap` in the holder fetches every member and its legs — resolving
-the same GitHub App or `SHAPE_LEGS_TOKEN` credential the workflow does,
-because a member is a private assembly root that mounts two private legs of
-its own — and then runs each member's own `make bootstrap`. `make validate`
-runs the family validator and then each member's `make validate`. A member
-that could not be fetched is reported and skipped, never a failure.
+the GitHub App or `SHAPE_LEGS_TOKEN` credential the workflow does, as a member
+is a private assembly root mounting two private legs — then runs each member's
+own `make bootstrap`; `make validate` runs the family validator, then each
+member's. A member it cannot fetch is reported and skipped, never a failure.
 
 The holder carries the same COPY pin an assembly root does, so
 `update-shape.py` re-syncs it the same way; it mirrors into `family.yaml`
@@ -1109,11 +1109,11 @@ openRepoShape --doctor                 # the repository you are standing in
 ./shape-doctor.py --root ../MedxEHR --json
 ```
 
-It **writes nothing and fetches nothing**, and it reimplements nothing: every
-row is one of the checks this file already documents. The standard a project's
-copies are compared against is the checkout the script is RUN FROM — beside
-one it uses that one, installed it clones the standard into a temporary
-directory first — which is what makes the verdict offline.
+It **writes nothing into the repository and fetches nothing from it**, and it
+reimplements nothing: each row is a check this file documents. It compares
+against the checkout it is RUN FROM, so the verdict is offline. Installed, it
+clones the standard into a temporary directory and KEEPS it, because its NEXT
+lines run from there: its last line names it, safe to delete after they run.
 
 For an assembly root the rows are **naming** (this standard's own
 `contracts/repository-naming.yaml`), **manifest** and **pins** (the project's
@@ -1168,7 +1168,7 @@ next command. `MISPLACED` sits between the two: a path in the wrong leg is a
 fact about the shape no validator, pin or manifest here can see. **An
 unfinished merge outranks all three**, as `INVALID (merge)`: the conflict is
 what turns the other rows red, and no fix commits until it is finished.
-`--json` is the same report as one object, each row carrying its `id`.
+`--json` is the same report as one object on stdout, each row carrying its `id`.
 
 **`placement` is the row that reads what is *inside* the legs.** Brett Heap,
 2026-09-10: *"we have to look for code in spec and spec in code"*. It runs the
@@ -1209,7 +1209,7 @@ is already split. `adopt-project.py` refuses this kind by name, and the refusal
 says which tool consumes one. A later `--fix --plan <file>` will carry a
 **resolved** plan out by paired leg pull requests and a pin bump, printing what
 it will do and asking first; until then the moves are yours. `--placement-plan`
-is the only thing this command writes, and it writes only the file you name.
+is all `shape-doctor.py` ever writes, and it writes only the file you name.
 
 **`machine` is the one row that is not about the repository**, so it is `n/a`
 by status and can never move the verdict: a workstation with no `gh` is not
