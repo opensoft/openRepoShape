@@ -26,9 +26,11 @@ WHAT THIS MODULE OWNS
   - `same_repository` and the remote-url arithmetic under it — the ONE
     definition of whether two remote spellings name one repository, which
     `shape-doctor.py` reports by and `scripts/siblings.py` refuses by.
-  - `Refusal` — the fail-closed exception every validator raises, carrying a
-    remediation string, because a refusal that names what is wrong without
-    naming what to run puts the exit in tribal memory instead of the message.
+  - `Refusal` — the fail-closed exception every validator raises, carrying
+    the remediation its caller names, because a refusal that names what is
+    wrong without naming what to run puts the exit in tribal memory instead
+    of the message. Where the caller names none it carries none (#370):
+    a wrong remedy is worse than the `REFUSED` line alone.
   - `spelled` and `escape_unencodable_stdout` — how both roots'
     `bootstrap.py` print a person's text: what a terminal must not be handed
     raw is escaped, and a stdout that cannot encode it never raises (#391).
@@ -130,6 +132,14 @@ SAFE_PATH_RE = re.compile(r"^(?:[A-Za-z]:)?[A-Za-z0-9._/@+~ \\-]{1,4096}$")
 #: happened to run.
 PYTHON = "python" if os.name == "nt" else "python3"
 
+#: THE ASSEMBLY ROOT'S LOCKSTEP REMEDY, and no longer every refusal's (#370).
+#: It names `validate-pins.py`, a leg's gitlink and `contracts/<leg>-pin.yaml`,
+#: so it is right where an assembly root's legs are the question, and that
+#: is `validate-pins.py`, which prints it under each refusal of its own that
+#: names no other. As `Refusal`'s default it reached every tool: a family
+#: holder, which has no legs and no `validate-pins.py`, was told to run that
+#: file and move a leg pin, and so was everyone refused over an adoption
+#: plan, a shape pin or a naming policy.
 REMEDIATION = (
     "Remediation: run `git submodule update --init --recursive`, then "
     f"`{PYTHON} scripts/validate-pins.py`. If the PIN itself is stale, advance "
@@ -144,16 +154,24 @@ class Refusal(Exception):
     `code` is machine-readable and `detail` is for humans; `str(exc)` renders
     code, detail and the remediation trailer together, so a caller that prints
     the exception cannot accidentally drop the remedy.
+
+    NO REMEDY IS ASSUMED (#370). A refusal built without one prints its
+    `REFUSED` line alone, which already says what failed and where, because
+    this module cannot know which tool, or which kind of root, it refuses
+    for: a default here was one tool's remedy printed under all of them. A
+    caller with a remedy to name passes it; `validate-pins.py` gives its own
+    refusals the lockstep one, `REMEDIATION`.
     """
 
-    def __init__(self, code: str, detail: str, remediation: str = REMEDIATION):
+    def __init__(self, code: str, detail: str, remediation: str = ""):
         super().__init__(code, detail)
         self.code = code
         self.detail = detail
         self.remediation = remediation
 
     def __str__(self) -> str:  # pragma: no cover - trivial
-        return f"REFUSED {self.code}: {self.detail}\n{self.remediation}"
+        line = f"REFUSED {self.code}: {self.detail}"
+        return f"{line}\n{self.remediation}" if self.remediation else line
 
 
 class YamlError(Exception):
