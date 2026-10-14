@@ -816,8 +816,10 @@ def pin_row(product: str, commit: bool = True) -> str:
 
 def declare(plan: Path, block: str) -> None:
     """The plan's `pins: []` replaced by `block`, which starts with `pins:`,
-    as a hand edit would leave it: bytes, so LF everywhere."""
-    text = plan.read_bytes().decode(UTF8)
+    as a hand edit would leave it: bytes, so LF everywhere. It is read as
+    text, which reads `\\r\\n` as `\\n`, because `answer` writes the plan
+    back with `write_text`, and on Windows that ends every line `\\r\\n`."""
+    text = plan.read_text(encoding=UTF8)
     assert text.count(NO_PIN) == 1, "the plan was written with no pin"
     plan.write_bytes(text.replace(NO_PIN, block, 1).encode(UTF8))
 
