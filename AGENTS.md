@@ -115,13 +115,13 @@ scripts/bootstrap.py`. README's "What setup.sh does" carries the exact commands.
 ## Adopting an existing repository
 
 `adopt-project.py` converts a repository that already exists, IN PLACE: it keeps
-its name, its identity and its full history and becomes the assembly root, and
-the two legs are new repositories extracted with `git filter-repo` (a hard
-dependency: `execute` refuses without it, printing the install command). Seven
-steps, in order, and step 4 is the one you must not skip.
+its name, which `--project` must be, its identity and its full history and
+becomes the assembly root, and the two legs are new repositories extracted with
+`git filter-repo` (a hard dependency: `execute` refuses without it, printing the
+install command). Seven steps, in order, and step 4 is the one you must not skip.
 
 ```sh
-./adopt-project.py plan --source <org/repo|path> --project <Project>
+./adopt-project.py plan --source <org/repo|path> --project <its own name>
 # 2. answer every `review_required: true` entry IN THE PLAN
 ./adopt-project.py check --plan adoption-plan.yaml
 # 4. show the human the plan and the follow-ups; get an explicit yes
@@ -167,7 +167,7 @@ history, not an empty repository. `plan` and `check` both WARN; `check` still
 passes, because a spec-only repository is a legitimate thing to adopt.
 
 ```sh
-./adopt-project.py plan --source <org>/<Repo> --project <Project> \
+./adopt-project.py plan --source <org>/<Repo> --project <Repo> \
     --allow-empty-leg code
 ```
 

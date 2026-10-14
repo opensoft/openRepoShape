@@ -681,15 +681,20 @@ def test_check_reads_github_as_the_sources_origin_last_fetched_it(
 
 def test_an_origin_that_is_not_the_assembly_repository_is_not_asked(
         tmp_path):
+    """Since #499 `plan` writes no such plan, so the assembly is edited by
+    hand: `check` finds that the plan names another repository than the
+    source, and asks nothing of the branches the source's `origin` holds,
+    which are not the ones a run of this plan would push to."""
     source = small_source(tmp_path)
     with_origin(source, github_repository(tmp_path))
-    plan = tmp_path / "plan" / "adoption-plan.yaml"
-    plan.parent.mkdir()
-    written = run_script(ADOPT, "plan", "--source", str(source), "--project",
-                         "Elsewhere", "--org", ORG, "--elected-by", "Test",
-                         "--elected-on", "2026-09-02", "--out", str(plan))
-    assert written.returncode == 0, written.stderr + written.stdout
-    assert findings(plan) == []
+    plan = plan_for(source, tmp_path)
+    text = plan.read_bytes()
+    for key in (b"project", b"  assembly"):
+        line = b"\n" + key + b": " + PROJECT.encode() + b"\n"
+        assert line in text, text
+        text = text.replace(line, b"\n" + key + b": Elsewhere\n", 1)
+    plan.write_bytes(text)
+    assert [code for code, _ in findings(plan)] == ["plan-not-the-source"]
 
 
 def test_a_branch_gone_from_github_leaves_check_once_the_source_prunes(

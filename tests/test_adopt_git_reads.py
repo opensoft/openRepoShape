@@ -73,13 +73,14 @@ def by_git_config(base: Path, source: Path, extra: dict,
                    str(base / WORK), *flags, extra=extra)
 
 
-def without_org(base: Path, source: Path) -> subprocess.CompletedProcess:
+def without_org(base: Path, source: Path,
+                *flags: str) -> subprocess.CompletedProcess:
     """`plan` as `planned` runs it, but with no --org, so the org is what
-    the source's `origin` names."""
+    the source's `origin` names, and with `flags` after it."""
     return adopted("plan", "--source", str(source), "--project", PROJECT,
                    "--elected-by", "Test Human", "--elected-on", "2026-09-02",
                    "--out", str(base / PLAN_FILE), "--work-dir",
-                   str(base / WORK))
+                   str(base / WORK), *flags)
 
 
 def command_scope(key: str, value: bytes) -> dict:
@@ -268,9 +269,11 @@ def test_plan_reads_an_origin_that_is_not_utf8_as_none(tmp_path, url,
     """The issue's last row, with --org: on the base `plan` ended in a
     `UnicodeDecodeError` traceback from `_remote_repository`, exit 1, and
     wrote no plan. Now it plans, and records no repository. The ASCII URL
-    is the control: its `org/repo` is read, so the None is the byte's."""
+    is the control: its `org/repo` is read, so the None is the byte's, and
+    the plan is written in that name, which `plan` refuses any other for
+    (#499)."""
     source = with_origin(make_source_repo(tmp_path / "Thing"), url)
-    done = planned(tmp_path, source)
+    done = planned(tmp_path, source, "--org", "cafe", "--project", "repo")
     assert_no_traceback({"plan": done})
     assert done.returncode == 0, said(done)
     assert load_yaml(tmp_path / PLAN_FILE)["source"]["repository"] \
@@ -319,9 +322,9 @@ def test_plan_refuses_an_unsafe_org_that_is_passed(tmp_path, org):
 
 def test_plan_without_org_takes_the_org_an_ascii_origin_names(tmp_path):
     """Control: an origin that names `cafe/repo` is the org, as on the
-    base."""
+    base, for a plan in the source's own name (#499)."""
     source = with_origin(make_source_repo(tmp_path / "Thing"), ASCII_URL)
-    done = without_org(tmp_path, source)
+    done = without_org(tmp_path, source, "--project", "repo")
     assert_no_traceback({"plan": done})
     assert done.returncode == 0, said(done)
     assert load_yaml(tmp_path / PLAN_FILE)["org"] == "cafe"
