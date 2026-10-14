@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import ast
+import datetime
+import hashlib
 import html
 import importlib.util
 import os
@@ -697,7 +699,18 @@ def test_readme_is_short_enough_to_be_read():
     first question anyone asks about it — family or one project? — is
     answered by a table and an example rather than by a definition, and
     because "what a holder does NOT confer" is the half that keeps it from
-    becoming a governance boundary."""
+    becoming a governance boundary.
+
+    FROM 2026-10-14 A RAISE IS A FILE, NOT A COMMENT (#519). Every README
+    pull request used to edit this one function — a dated comment below and
+    the number in the assertion — so any two open at once conflicted here.
+    Brett Heap's ruling 29: *"Each line-cap raise becomes its own small file
+    with its reason."* The cap is now `README_CAP_BASE`, 1422, plus the sum of
+    the raises in `tests/readme-cap.d/`, one file per issue or pull request
+    that grows the README (`README_CAP_FORMAT` says what a file holds), and
+    each file's reason is argued the way this history argues each raise. This
+    docstring and the dated comments below are that history up to 1422, kept
+    as they were written; they do not grow."""
     lines = (REPO / "README.md").read_text().splitlines()
     # 2026-09-04: 508 -> 509 — the election reference paragraph now names the
     #   ratified docs/project-repo-schema.md and keeps the staged path valid for
@@ -1183,8 +1196,129 @@ def test_readme_is_short_enough_to_be_read():
     #   shim's answer there changed from a clone of the upstream to a few
     #   lines of its own, and a README that still promised the flag list
     #   would send a reader to a command that no longer prints it.
-    assert len(lines) <= 1422, (
-        f"README.md is {len(lines)} lines; the cap is 1422")
+    # 2026-10-14: the log above is history and stops here (#519). A raise from
+    #   this date on is its own file in tests/readme-cap.d/, with its reason.
+    raises, problems = readme_cap_raises(README_CAP_LEDGER)
+    assert not problems, readme_cap_ledger_refusal(problems)
+    cap = README_CAP_BASE + sum(n for _, n in raises)
+    print(f"README.md is {len(lines)} lines; the cap is "
+          f"{readme_cap_sum(raises)}")
+    assert len(lines) <= cap, readme_cap_refusal(len(lines), raises)
+
+
+#: README.md's line cap on 2026-10-14, the day its raises stopped being
+#: comments in the test above (#519). Never moved again: a raise is a file.
+README_CAP_BASE = 1422
+
+#: The ledger of raises since then: one file per issue or pull request that
+#: grows the README, so two README pull requests never edit one line (#519).
+#: It does not exist until the first raise, and an absent ledger raises
+#: nothing. Its format is carried by `README_CAP_FORMAT`, in every message
+#: about it, rather than by a README of its own a reader may never open.
+README_CAP_LEDGER = REPO / "tests" / "readme-cap.d"
+
+README_CAP_FORMAT = (
+    "one file per issue or pull request that grows README.md, named for "
+    "its number (`tests/readme-cap.d/519.txt`): line 1 `+N`, N the lines it "
+    "adds, a positive integer; line 2 the date, `YYYY-MM-DD`; then one or "
+    "more lines saying why the README earns them, argued the way the "
+    "history in `test_readme_is_short_enough_to_be_read` argues each raise")
+
+#: A ledger file's name, line 1 and line 2, as `README_CAP_FORMAT` says them.
+README_CAP_NAME = re.compile(r"[1-9][0-9]*\.txt")
+README_CAP_RAISE = re.compile(r"\+([1-9][0-9]*)")
+README_CAP_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _shown(path):
+    """A path as a message names it: from the repository root, if under it."""
+    try:
+        return path.resolve().relative_to(REPO).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def readme_cap_raise_problem(name, data):
+    """What is wrong with one ledger file, or None (#519).
+
+    `name` is the file's name and `data` its bytes, so a fixture can be
+    checked without a directory. Line endings are whatever the checkout
+    wrote: `splitlines` reads LF and CRLF alike.
+    """
+    if not README_CAP_NAME.fullmatch(name):
+        return ("is not named `<issue or PR number>.txt`, and the ledger "
+                "holds nothing else")
+    try:
+        lines = data.decode("utf-8").splitlines()
+    except UnicodeDecodeError as error:
+        return f"is not UTF-8 ({error.reason} at byte {error.start})"
+    first = lines[0].strip() if lines else ""
+    if not README_CAP_RAISE.fullmatch(first):
+        return (f"line 1 must be `+N`, N a positive integer; it is "
+                f"{first!r}")
+    second = lines[1].strip() if len(lines) > 1 else ""
+    try:
+        dated = (README_CAP_DATE.fullmatch(second)
+                 and datetime.date.fromisoformat(second))
+    except ValueError:
+        dated = None
+    if not dated:
+        return (f"line 2 must be the date the raise was made, `YYYY-MM-DD`; "
+                f"it is {second!r}")
+    if not any(line.strip() for line in lines[2:]):
+        return ("gives no reason: line 3 on says why the README earns the "
+                "lines, and a raise with no reason is the cap moving for "
+                "prose")
+    return None
+
+
+def readme_cap_raises(ledger):
+    """Every raise in the ledger as `(path, N)`, and every malformed file.
+
+    The second list holds one message per file that is not a raise, each
+    naming its path. A ledger that is not there raises nothing.
+    """
+    raises, problems = [], []
+    if not ledger.is_dir():
+        return raises, problems
+    for path in sorted(ledger.iterdir(), key=lambda p: (len(p.name), p.name)):
+        if not path.is_file():
+            problems.append(f"{_shown(path)} is not a file, and the ledger "
+                            "holds nothing else")
+            continue
+        data = path.read_bytes()
+        problem = readme_cap_raise_problem(path.name, data)
+        if problem:
+            problems.append(f"{_shown(path)} {problem}")
+            continue
+        first = data.decode("utf-8").splitlines()[0].strip()
+        raises.append((path, int(first[1:])))
+    return raises, problems
+
+
+def readme_cap_sum(raises):
+    """The cap, and how it is made: `1422 + 8 (519.txt) = 1430`."""
+    if not raises:
+        return (f"{README_CAP_BASE}, with no raise in "
+                f"{_shown(README_CAP_LEDGER)}/")
+    terms = " + ".join(f"{n} ({path.name})" for path, n in raises)
+    total = README_CAP_BASE + sum(n for _, n in raises)
+    return f"{README_CAP_BASE} + {terms} = {total}"
+
+
+def readme_cap_refusal(count, raises):
+    """The message when README.md is longer than the cap allows."""
+    return (f"README.md is {count} lines; the cap is "
+            f"{readme_cap_sum(raises)}. A README that has to grow raises the "
+            f"cap in a file of its own - {README_CAP_FORMAT}. A cap that "
+            "never moves for a rule pushes the rule into tribal memory; a cap "
+            "that moves for prose is not a cap.")
+
+
+def readme_cap_ledger_refusal(problems):
+    """The message when a ledger file is not a raise: each path, then how."""
+    return ("\n".join(problems) +
+            f"\nA raise of README.md's line cap is {README_CAP_FORMAT}.")
 
 
 #: #476: what each document that carries the first rule says an assistant does
@@ -1646,11 +1780,15 @@ README_HEADING_TO_HANDBOOK_ID = {
 #: for the assistant rules. A section appearing with no entry in either table
 #: fails, so a page section can never become unexplained.
 HANDBOOK_SECTION_WITHOUT_A_README_H2 = {
-    "confers": "the README's `> [!IMPORTANT]` callout, promoted to the top",
+    "confers": "the README's `> [!IMPORTANT]` callout, promoted to the top, "
+               "with the rest of the preamble around it",
     "partway": "the `> [!WARNING]` inside `### A worked example: Northwind "
-               "starts Atlas`",
+               "starts Atlas`, inside § Starting a project in a new "
+               "organisation",
+    #: It reads § Starting too: the worked example's own paragraph on
+    #: private legs is said on the page here and nowhere else (#519).
     "ci": "`### Reading private legs in CI: a GitHub App first, "
-          "SHAPE_LEGS_TOKEN as fallback`",
+          "SHAPE_LEGS_TOKEN as fallback`, inside § The three legs",
     "agents": "AGENTS.md — the rules that outrank the rest, not README.md",
     #: `### Is this repository compliant? openRepoShape --doctor`, which sits
     #: under § Keeping a project's shape current in the README (#95). Its own
@@ -1662,42 +1800,299 @@ HANDBOOK_SECTION_WITHOUT_A_README_H2 = {
               "inside § Keeping a project's shape current",
 }
 
-#: The footer carries the page's history as PROSE — "first cut from README.md
-#: at c093813 (#71); regenerated at cbca5b4 (#89)" — and, separately, its ONE
-#: MACHINE-CHECKED fact: `README.md blob <hash>` (#91). A commit sha named
-#: where the page came FROM and had to exist as a commit object to diff
-#: against; a blob hash names WHAT THE PAGE SAYS and needs no history at all
-#: — `git hash-object README.md` on the bare working tree file, in a shallow
-#: clone or a deep one, is the whole check. Matched on the literal word
-#: "blob" rather than a bare hex run, so it can never pick up either commit
-#: sha sitting in the prose sentence beside it, and `{40}` rather than
-#: `{7,40}` because `git hash-object` always prints the full hash.
-HANDBOOK_README_BLOB = re.compile(r"README\.md blob ([0-9a-f]{40})\b")
+#: The footer once carried the page's ONE MACHINE-CHECKED fact, `README.md
+#: blob <hash>` (#91): the blob hash of the whole README, which had to equal
+#: `git hash-object README.md`. Every change to the README moved it, so every
+#: README pull request edited that one footer line - and, by convention, an
+#: "added (#N)" clause in the prose beside it - and any two open at once
+#: conflicted there (#519); and a red check named the whole page to re-read
+#: when one section of the README had moved. Brett Heap's ruling 29
+#: (2026-10-14) retired it for the markers below, and the footer's prose stops
+#: at #502, as history. This pattern stays to assert that the fact is GONE, so
+#: the page never again carries a claim about the README that nothing checks.
+HANDBOOK_RETIRED_README_BLOB = re.compile(r"README\.md blob [0-9a-f]{40}")
+
+#: What a marker calls the text before README.md's first `## ` heading. Every
+#: other segment is called by its heading's text.
+README_PREAMBLE = "preamble"
+
+#: HOW THE PAGE SAYS WHAT IT READ (#519). Every page section that reads a
+#: README segment carries one HTML comment per segment it reads, exactly
+#:
+#:     <!-- reads README.md § <heading, or preamble>: blob <40 hex> -->
+#:
+#: the hash being `readme_fingerprint` of that segment as the section last
+#: read it. A section may read several segments, and a segment may be read by
+#: several sections. Two markers are never on adjacent lines, and the check
+#: says so: git merges two pull requests that each change one line only when
+#: an unchanged line stands between them, and keeping two README pull
+#: requests apart is what the markers are for. `[^\n]+?` and the literal
+#: `: blob ` after it read a heading that holds a colon (`Families: a holder
+#: ...`) whole.
+HANDBOOK_MARKER = re.compile(
+    r"<!-- reads README\.md § ([^\n]+?): blob ([0-9a-f]{40}) -->")
+
+#: Every HTML comment on the page. One that mentions the README, or opens
+#: with `reads`, is a marker or a mistake: a mistyped marker would drop out of
+#: every check below without a word, so it is refused instead.
+HANDBOOK_COMMENT = re.compile(r"<!--(.*?)-->", re.S)
+
+#: The parts of the page a marker sits in: the masthead (`<header
+#: id="masthead">`), each `<section>`, and the `<footer id="licence">`. None
+#: nests inside another, so the first closing tag of the same name ends one.
+HANDBOOK_PART = re.compile(r"<(header|section|footer)\b([^>]*)>.*?</\1>",
+                           re.S)
+
+#: The page sections that read NO README segment, and so carry no marker.
+#: Every other part of the page carries at least one, or the README text it
+#: renders could move with nothing saying so. `agents` reads AGENTS.md (see
+#: HANDBOOK_SECTION_WITHOUT_A_README_H2), which `NO_TERMINAL_ROUTE` and
+#: `test_setup_sh_is_the_documented_front_door` hold it to by phrase.
+HANDBOOK_SECTION_READING_NO_README = frozenset({"agents"})
 
 
-def _readme_h2s(path):
-    """Every `## ` heading of a Markdown file, fenced code blocks skipped.
+def readme_segments(text):
+    """README.md cut into the pieces a page section says it read (#519).
 
-    `## ` opens a shell comment as readily as a heading, and this README's
-    own fenced blocks already carry two lines a naive grep reads as headings
-    (`# on the other workstation:`, and the `#   ... a human or an AI
-    answers` line in the adopt sequence). Neither is `## ` today, which is
-    precisely the kind of thing that stops being true quietly, so the fences
-    are tracked rather than assumed harmless.
+    `(name, text)` pairs: first the preamble, everything before the first
+    `## ` heading, named `README_PREAMBLE`; then one segment per `## `
+    heading, named by its text and running from that heading up to the next.
+    Every byte belongs to exactly one segment, so the segments joined are the
+    file. `### ` and deeper stay inside their `## `, so a subsection changing
+    is its section changing. The preamble comes first even when it is empty,
+    and an empty one has nothing to read, so no marker is asked for it.
+
+    A `## ` line inside a fenced code block is not a heading. `## ` opens a
+    shell comment as readily as a heading, and this README's own fenced
+    blocks already carry two lines a naive grep reads as headings (`# on the
+    other workstation:`, and the `#   ... a human or an AI answers` line in
+    the adopt sequence). Neither is `## ` today, which is precisely the kind
+    of thing that stops being true quietly, so the fences are tracked rather
+    than assumed harmless.
     """
-    headings, fence = [], None
-    for line in path.read_bytes().decode("utf-8").splitlines():
+    segments, fence = [(README_PREAMBLE, [])], None
+    for line in text.splitlines(keepends=True):
         stripped = line.strip()
         if fence is not None:
             if stripped.startswith(fence):
                 fence = None
-            continue
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        elif stripped.startswith(("```", "~~~")):
             fence = stripped[:3]
+        elif line.startswith("## "):
+            segments.append((line[3:].strip(), []))
+        segments[-1][1].append(line)
+    return [(name, "".join(lines)) for name, lines in segments]
+
+
+def readme_fingerprint(text):
+    """What a marker records of one segment: its git blob hash, CRLF as LF.
+
+    `sha1(b"blob <length>\\0" + bytes)` is the name git stores bytes under,
+    so a segment that is a whole LF file hashes to that file's `git
+    hash-object`. Computed here and never by running git (#519): `git
+    hash-object <path>` applies `.gitattributes` and `--stdin` does not, so
+    the two disagree about the same text checked out CRLF - and this
+    repository's own `.gitattributes` is such a rule. Reading CRLF as LF
+    first gives one hash on every checkout, which is the only thing a hash
+    written on the page is for.
+    """
+    data = text.replace("\r\n", "\n").encode("utf-8")
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def _readme_h2s(path):
+    """Every `## ` heading of a Markdown file, fenced code blocks skipped:
+    the names `readme_segments` gives after the preamble's, so the outline
+    the tables check and the segments the markers name are one reading."""
+    text = path.read_bytes().decode("utf-8")
+    return [name for name, _ in readme_segments(text)[1:]]
+
+
+def handbook_parts(page):
+    """`(id, start, end)` of the masthead, each section and the footer.
+
+    A part with no `id` is named by its tag, which no table names, so a
+    marker inside one still fails by a name somebody can search for.
+    """
+    parts = []
+    for match in HANDBOOK_PART.finditer(page):
+        found = re.search(r'(?:^|\s)id="([^"]+)"', match.group(2))
+        parts.append((found.group(1) if found else match.group(1),
+                      match.start(), match.end()))
+    return parts
+
+
+def _page_line(page, offset):
+    return page.count("\n", 0, offset) + 1
+
+
+def _handbook_markers(page, parts, problems):
+    """Every well-formed marker inside a page part, as `(segment, blob, line,
+    part, comment)`; a malformed or stray one goes on `problems` instead."""
+    markers = []
+    for comment in HANDBOOK_COMMENT.finditer(page):
+        body = comment.group(1)
+        if not (re.search(r"readme", body, re.I)
+                or body.strip().startswith("reads")):
             continue
-        if line.startswith("## "):
-            headings.append(line[3:].strip())
-    return headings
+        line = _page_line(page, comment.start())
+        found = HANDBOOK_MARKER.fullmatch(comment.group(0))
+        if found is None:
+            problems.append(
+                f"docs/handbook.html:{line}: `{comment.group(0)}` reads like "
+                "a marker and is not one. A marker is exactly `<!-- reads "
+                "README.md § <heading, or preamble>: blob <40 hex> -->`, and "
+                "a mistyped one would be skipped by every check here.")
+            continue
+        part = next((name for name, start, end in parts
+                     if start <= comment.start() < end), None)
+        if part is None:
+            problems.append(
+                f"docs/handbook.html:{line}: the marker for README.md § "
+                f"{found.group(1)} sits in no page section - not in the "
+                "masthead, a `<section>` or the footer - so no failure could "
+                "say who reads that segment. Move it into the section that "
+                "reads it.")
+            continue
+        markers.append((found.group(1), found.group(2), line, part,
+                        comment.group(0)))
+    return markers
+
+
+def _stale_reading(name, blob, mine, stale):
+    """The message for (c): one README segment some markers read as it was."""
+    readers = ", ".join(f"`{part}`" for part in
+                        dict.fromkeys(marker[3] for marker in mine))
+    where = ", ".join(f"`{part}` (docs/handbook.html:{line}, blob {old})"
+                      for _, old, line, part, _ in stale)
+    which, record = (("marker", "records") if len(stale) == 1 else
+                     ("markers", "record"))
+    return (
+        f"README.md § {name} has moved since the page read it: it hashes to "
+        f"{blob} now, and the {which} in {where} still {record} what was "
+        f"read before. Page sections that read it: {readers}. Re-read what "
+        "changed in that segment - `git log -S <the old blob> -- "
+        "docs/handbook.html` names the commit that set the marker, and `git "
+        "diff <that commit> -- README.md` shows what moved since - and amend "
+        "those page sections in the page's own design and voice, keeping "
+        "every code block byte-identical to the README's (modulo the "
+        "README's line-wrapping); #89 is the precedent for what that means. "
+        f"Then set each of their markers to blob {blob}. A README change "
+        "that touches nothing the page says is the one case where moving the "
+        "markers alone is honest - and saying so in the commit message is "
+        "part of it. Editing a marker to quiet this test without reading "
+        "what changed is the documentation equivalent of hand-editing a pin "
+        "to make the validator agree.")
+
+
+def handbook_marker_problems(readme, page, heading_to_id,
+                             reads_nothing=frozenset()):
+    """Everything wrong with the page's record of what it read (#519).
+
+    `readme` and `page` are the two documents' text, and `heading_to_id` and
+    `reads_nothing` the tables kept beside them, all passed in so the checks
+    run on a few lines of fixture as readily as on the real files. One
+    message per problem, each saying what to do about it; an empty list is a
+    page whose every record is current.
+    """
+    segments = readme_segments(readme)
+    every_name = [name for name, _ in segments]
+    names = list(dict.fromkeys(every_name))
+    current = {name: readme_fingerprint(text) for name, text in segments}
+    problems = [
+        f"README.md has more than one segment called `{name}`, so a marker "
+        "naming it cannot say which one it read; give the headings distinct "
+        "text"
+        for name in names if every_name.count(name) > 1]
+
+    parts = handbook_parts(page)
+    markers = _handbook_markers(page, parts, problems)
+
+    lines_of = {}
+    for segment, _, line, part, _ in markers:
+        lines_of.setdefault((part, segment), []).append(line)
+    problems += [
+        f"page section `{part}` carries {len(lines)} markers for README.md § "
+        f"{segment} (docs/handbook.html lines "
+        f"{', '.join(map(str, lines))}); a section carries one per segment it "
+        "reads, so one change to that segment moves one line in it"
+        for (part, segment), lines in lines_of.items() if len(lines) > 1]
+    problems += [
+        f"docs/handbook.html:{above[2]} and :{below[2]} hold the markers for "
+        f"README.md § {above[0]} and § {below[0]} on adjacent lines, and git "
+        "merges two pull requests that each change one of them only when an "
+        "unchanged line stands between them: put a line of the page between "
+        "the two."
+        for above, below in zip(markers, markers[1:])
+        if below[2] == above[2] + 1 and below[0] != above[0]]
+
+    # (a) Every marker names a segment that exists.
+    problems += [
+        f"docs/handbook.html:{line}: the marker `{comment}` in page section "
+        f"`{part}` names README.md § {segment}, and README.md has no such "
+        f"segment. Its segments are: {'; '.join(names)}. A renamed heading "
+        "moves its GitHub anchor too: re-read the section against the "
+        "renamed text, point the marker at the new name and its blob, and "
+        "check the section's `Full text` link while you are there."
+        for segment, _, line, part, comment in markers
+        if segment not in current]
+
+    # (b) Every README segment is read by at least one marker.
+    read = {marker[0] for marker in markers}
+    problems += [
+        f"README.md § {name} is read by no marker in docs/handbook.html. "
+        "Every segment of the README is read by at least one page section: "
+        "read it, say what the page should say of it in the section that "
+        "should say it, in the page's own design and voice, and record the "
+        f"reading there as `<!-- reads README.md § {name}: blob "
+        f"{current[name]} -->`. A new `## ` heading is also an entry in "
+        "README_HEADING_TO_HANDBOOK_ID."
+        for name, text in segments if text and name not in read]
+
+    # (c) Every marker's blob is its segment's fingerprint now.
+    for name in names:
+        mine = [marker for marker in markers if marker[0] == name]
+        stale = [marker for marker in mine if marker[1] != current[name]]
+        if stale:
+            problems.append(_stale_reading(name, current[name], mine, stale))
+
+    # (d) Every mapped heading is read inside the section the table maps it
+    # to; every page section reads something unless it is declared to read
+    # nothing, and one declared so reads nothing.
+    read_in = {}
+    for segment, _, _, part, _ in markers:
+        read_in.setdefault(part, set()).add(segment)
+    problems += [
+        f"README_HEADING_TO_HANDBOOK_ID maps README.md § {heading} to page "
+        f"section `{part}`, and no marker inside `{part}` reads it. The table "
+        "names the section that renders that heading, so that section "
+        f"records its reading - `<!-- reads README.md § {heading}: blob "
+        f"{current[heading]} -->` - or, if another section renders it now, "
+        "the table is what changes."
+        for heading, part in heading_to_id.items()
+        if heading in current and heading not in read_in.get(part, ())]
+    part_names = list(dict.fromkeys(name for name, _, _ in parts))
+    problems += [
+        f"HANDBOOK_SECTION_READING_NO_README names `{part}`, and the page has "
+        "no section with that id; drop it from the set."
+        for part in sorted(reads_nothing) if part not in part_names]
+    for part in part_names:
+        if part in reads_nothing and part in read_in:
+            named = "; § ".join(sorted(read_in[part]))
+            problems.append(
+                f"page section `{part}` is declared to read no README segment "
+                "(HANDBOOK_SECTION_READING_NO_README), and it carries markers "
+                f"for README.md § {named}: drop it from that set, or drop the "
+                "markers.")
+        elif part not in reads_nothing and part not in read_in:
+            problems.append(
+                f"page section `{part}` carries no marker, so nothing would "
+                "say when the README text it renders has moved. Record each "
+                "README segment it reads, as `<!-- reads README.md § "
+                "<heading, or preamble>: blob <hash> -->` - or, if it renders "
+                "no README text at all, name it in "
+                "HANDBOOK_SECTION_READING_NO_README.")
+    return problems
 
 
 def test_the_handbook_follows_the_readmes_outline():
@@ -1716,25 +2111,42 @@ def test_the_handbook_follows_the_readmes_outline():
        somebody to look at both.
     3. Every mapped id is a real element id on the page - `<section id=...>`
        for ten of them and the `<footer id="licence">` for the eleventh.
-    4. And the page names README.md's own BLOB HASH, which must equal
-       `git hash-object README.md` on the working tree file (#91). No
-       commit needed, no diff, no history: two files with identical bytes
-       hash identically regardless of which commit either sits on, or
-       whether either is on a commit at all.
+    4. And the page records WHAT IT READ of each README section, and the
+       record is current (#519, replacing #91's one README blob). README.md
+       is cut into segments - the preamble, then one per `## ` heading
+       (`readme_segments`) - and every page section that reads one carries a
+       marker naming it and its `readme_fingerprint` as the section last read
+       it (`HANDBOOK_MARKER`). Then:
+       (a) every marker names a segment README.md has, so a renamed heading
+           fails naming the marker and the headings that do exist;
+       (b) every segment is read by at least one marker;
+       (c) every marker's blob is its segment's fingerprint NOW, and a stale
+           one fails naming the segment, every page section that reads it
+           and the value to set;
+       (d) every heading `README_HEADING_TO_HANDBOOK_ID` maps has a marker
+           inside the section it maps to, and every page section carries a
+           marker unless `HANDBOOK_SECTION_READING_NO_README` says it reads
+           no README text, so the two tables and the markers tell one story.
+       Around those, a marker that is mistyped, sits outside every page
+       section, repeats in one section or stands on the line next to another
+       segment's marker is refused too.
+       A section names every segment it reads, not only its own heading's:
+       the masthead reads four, and `ci`, `legs`, `doublepin` and `park`
+       each read § Starting besides their own, for a paragraph or a command
+       the README says only there (private legs, the naming check, editing
+       a pin by hand, openRepoTools' install line).
 
-    THE FIX WHEN (4) GOES RED IS TO REGENERATE THE PAGE, and #89 is the
-    precedent for what that means: read what changed in README.md since the
-    page was last regenerated — the footer's prose names that regeneration's
-    commit — add or amend the page's sections in the page's own design and
-    voice, keep every code block byte-identical to the README's (modulo the
-    README's line-wrapping), then set the footer's `README.md blob <hash>`
-    to the new `git hash-object README.md`. A README change that touches
-    nothing the page says is the one case where moving the hash alone is
-    honest — and saying so in the commit message is part of it. Editing the
-    hash to quiet this test without reading what changed is the
-    documentation equivalent of hand-editing a pin to make the validator
-    agree, which is the thing this repository spends a whole section
-    refusing.
+    THE FIX WHEN (4c) GOES RED IS TO RE-READ, and #89 is the precedent for
+    what that means: read what changed in the segment it names since the page
+    last read it, amend the page sections it names in the page's own design
+    and voice, keep every code block byte-identical to the README's (modulo
+    the README's line-wrapping), then set those sections' markers to the new
+    fingerprint the failure prints. A README change that touches nothing the
+    page says is the one case where moving the markers alone is honest — and
+    saying so in the commit message is part of it. Editing a marker to quiet
+    this test without reading what changed is the documentation equivalent of
+    hand-editing a pin to make the validator agree, which is the thing this
+    repository spends a whole section refusing.
 
     CHECK (4) USED TO BE `git diff <sha> -- README.md` against the commit
     the page named, SKIPPED when that commit was not in this clone — the
@@ -1750,53 +2162,70 @@ def test_the_handbook_follows_the_readmes_outline():
     all. `fetch-depth: 0` stays in the workflow — a generally useful default
     for whatever history-based check this suite grows next — but nothing
     about THIS test's correctness depends on it any more.
+
+    #519 cut #91's one hash into one per README section. The one hash moved
+    with every README change, so every README pull request edited the same
+    footer line, and any two open at once conflicted there; and a red check
+    named the whole page to re-read when one section had moved. Brett Heap's
+    ruling 29 (2026-10-14): *"Each handbook section records the hash of the
+    README section it covers; a failing test names exactly which handbook
+    sections to re-read."* A fingerprint is still a git blob hash of working
+    tree text and still needs no history, but it is computed here rather than
+    by `git hash-object` (see `readme_fingerprint`), and the footer's prose
+    stops at #502, as history.
     """
+    readme = (REPO / "README.md").read_bytes().decode("utf-8")
     readme_h2s = _readme_h2s(REPO / "README.md")
     page = (REPO / "docs" / "handbook.html").read_bytes().decode("utf-8")
+    # Every check runs and every failure is reported together, so a renamed
+    # heading is told about the table entry and the markers in one run.
+    problems = []
 
     unmapped = [h for h in readme_h2s
                 if h not in README_HEADING_TO_HANDBOOK_ID]
-    assert not unmapped, (
-        f"README.md has `## ` heading(s) no entry accounts for: {unmapped}. "
-        "Add the section to docs/handbook.html and map the heading to its id "
-        "in README_HEADING_TO_HANDBOOK_ID, or map it to the page section it "
-        "is deliberately folded into - an omission must be a named decision.")
+    if unmapped:
+        problems.append(
+            f"README.md has `## ` heading(s) no entry accounts for: "
+            f"{unmapped}. Add the section to docs/handbook.html and map the "
+            "heading to its id in README_HEADING_TO_HANDBOOK_ID, or map it to "
+            "the page section it is deliberately folded into - an omission "
+            "must be a named decision.")
 
     stale = [h for h in README_HEADING_TO_HANDBOOK_ID if h not in readme_h2s]
-    assert not stale, (
-        f"README_HEADING_TO_HANDBOOK_ID names heading(s) README.md no longer "
-        f"has: {stale}. A reworded heading moves its GitHub anchor too, so "
-        "check the page's `Full text` links into it while you are here.")
+    if stale:
+        problems.append(
+            f"README_HEADING_TO_HANDBOOK_ID names heading(s) README.md no "
+            f"longer has: {stale}. A reworded heading moves its GitHub anchor "
+            "too, so check the page's `Full text` links into it while you are "
+            "here.")
 
     ids = set(re.findall(r'\sid="([^"]+)"', page))
     absent = sorted(set(README_HEADING_TO_HANDBOOK_ID.values()) - ids)
-    assert not absent, (
-        f"docs/handbook.html has no element with id(s) {absent}, which "
-        "README_HEADING_TO_HANDBOOK_ID maps README headings to")
+    if absent:
+        problems.append(
+            f"docs/handbook.html has no element with id(s) {absent}, which "
+            "README_HEADING_TO_HANDBOOK_ID maps README headings to")
 
     sections = set(re.findall(r'<section id="([^"]+)">', page))
     accounted = (set(README_HEADING_TO_HANDBOOK_ID.values())
                  | set(HANDBOOK_SECTION_WITHOUT_A_README_H2))
     unaccounted = sorted(sections - accounted)
-    assert not unaccounted, (
-        f"docs/handbook.html section(s) {unaccounted} appear in neither "
-        "table. A section that is a README `## ` heading belongs in "
-        "README_HEADING_TO_HANDBOOK_ID; one that is not belongs in "
-        "HANDBOOK_SECTION_WITHOUT_A_README_H2, with where it came from.")
+    if unaccounted:
+        problems.append(
+            f"docs/handbook.html section(s) {unaccounted} appear in neither "
+            "table. A section that is a README `## ` heading belongs in "
+            "README_HEADING_TO_HANDBOOK_ID; one that is not belongs in "
+            "HANDBOOK_SECTION_WITHOUT_A_README_H2, with where it came from.")
 
-    blobs = HANDBOOK_README_BLOB.findall(page)
-    assert len(blobs) == 1, (
-        "docs/handbook.html must name README.md's blob hash exactly once, "
-        f"as `README.md blob <hash>`; found {blobs}")
-    actual_blob = subprocess.run(
-        ["git", "hash-object", "README.md"], cwd=str(REPO),
-        capture_output=True, text=True, check=True).stdout.strip()
-    assert blobs[0] == actual_blob, (
-        f"docs/handbook.html says README.md blob {blobs[0]}, but the "
-        f"working tree's README.md hashes to {actual_blob} - it has moved "
-        "since the page was cut. Regenerate the page - read what changed, "
-        "add or amend its sections in the page's own design, then set the "
-        "footer's `README.md blob <hash>` to the new `git hash-object "
-        "README.md` (#89 is the precedent for what regenerating means, and "
-        "the docstring above says so). Do not move the hash alone unless "
-        "the change genuinely touched nothing the page says.")
+    retired = HANDBOOK_RETIRED_README_BLOB.findall(page)
+    if retired:
+        problems.append(
+            f"docs/handbook.html names {retired}: one hash of the whole "
+            "README, retired by #519. Each page section records the README "
+            "segment it reads in a marker of its own, and the footer carries "
+            "no hash.")
+
+    problems += handbook_marker_problems(
+        readme, page, README_HEADING_TO_HANDBOOK_ID,
+        HANDBOOK_SECTION_READING_NO_README)
+    assert not problems, "\n\n".join(problems)

@@ -16,8 +16,8 @@ misspelt both and got 63 passed), and so did renaming either code in
 
 This is the guard, in both directions, and it is the kind this repository
 already keeps for other copied facts: the Windows two-liner's file names, the
-handbook's README blob, and `docs/cli.md` against `--help`
-(`tests/test_cli_reference.py`).
+handbook's hash of each README section it reads, and `docs/cli.md` against
+`--help` (`tests/test_cli_reference.py`).
 
 WHICH NAMES. Every backticked token in the document whose whole text matches
 `CODE_SHAPE` (`[a-z]+(-[a-z0-9]+)+`), never a pattern read out of a refusal
