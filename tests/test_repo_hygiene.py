@@ -1521,7 +1521,10 @@ def writes_nothing_unexcepted(paragraph: str) -> list:
     nothing" is `--placement-plan <file>`', so the next sentence counts when
     it says "writes nothing" too, and a mere mention of the flag further on
     does not."""
-    sentences = re.split(r"(?<=[.!?])\s+", paragraph)
+    # A sentence also ends at `.)`, `."` or `.**`: the stop inside a bracket,
+    # a quotation or bold text.
+    sentences = re.split(r"(?<=[.!?])\s+|(?<=[.!?][)\"'*])\s+"
+                         r"|(?<=[.!?][)\"'*]{2})\s+", paragraph)
 
     def excepted(sentence: str) -> bool:
         return bool(WRITES_NOTHING.search(sentence)) \

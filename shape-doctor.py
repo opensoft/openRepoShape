@@ -21,20 +21,19 @@ row each, and then prints ONE verdict. Every row is somebody else's check.
 WHAT IT NEVER DOES. It writes nothing into the repository it is pointed at
 but a `--placement-plan <file>` the caller names there, and it never fetches.
 ONE FLAG WRITES AT ALL, and it writes one file the caller named and nothing
-else: `--placement-plan <file>`, below. The upstream a
-project's copies are compared against is THE CHECKOUT THIS FILE IS RUN FROM,
-which is the whole of why the verdict is offline: no clone, no authenticated
-call, and the same answer on a machine that has never spoken to github.com.
-It runs the project's own validators OFFLINE: `run_validator` starts each
-child with no token, no `gh` configuration and a proxy that goes nowhere
-(#297), so they are offline whatever their own contract says. ONE ROW IS THE
-EXCEPTION AND IT IS NAMED: `machine` asks `gh` who
-it is logged in as (`setup-project.py --preflight` runs `gh --version`, `gh
-auth status` and `gh api user`), which `gh` answers by talking to its host. That row
-is `n/a` by status and cannot move the verdict -- a workstation missing `gh`
-is not a repository being non-compliant -- so nothing this command CONCLUDES
-depends on a network, and a machine with no `gh` at all is reported rather
-than refused.
+else: `--placement-plan <file>`, below. The upstream a project's copies are
+compared against is THE CHECKOUT THIS FILE IS RUN FROM, which is the whole of
+why the verdict is offline: no clone, no authenticated call, and the same
+answer on a machine that has never spoken to github.com. It runs the project's
+own validators OFFLINE: `run_validator` starts each child with no token, no
+`gh` configuration and a proxy that goes nowhere (#297), so they are offline
+whatever their own contract says. ONE ROW IS THE EXCEPTION AND IT IS NAMED:
+`machine` asks `gh` who it is logged in as (`setup-project.py --preflight`
+runs `gh --version`, `gh auth status` and `gh api user`), which `gh` answers
+by talking to its host. That row is `n/a` by status and cannot move the
+verdict -- a workstation missing `gh` is not a repository being non-compliant
+-- so nothing this command CONCLUDES depends on a network, and a machine with
+no `gh` at all is reported rather than refused.
 
 THE CHECKS ARE A REGISTRY, not a function with eight paragraphs in it. Each
 one is a `Check` -- an `id`, the root kinds it `applies_to`, a `run(ctx)` that
