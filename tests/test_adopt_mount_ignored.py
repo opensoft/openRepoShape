@@ -31,8 +31,8 @@ the guard end to end, past #172's root-kept half, and proves its refusal,
 what its remediation says of the run, and that its next step adopts.
 
 The mount tests call `_mount_the_legs` on hand-made repositories, so they need
-no `git filter-repo` and run on the Windows job, which installs none -- except
-the two that make a symlink on the DISK, which skip there. The end-to-end
+no `git filter-repo` and run on a machine that has none too; the two that
+make a symlink on the DISK skip on Windows. The end-to-end
 tests need `git filter-repo`. All repositories and remotes are local fixtures;
 no network is used.
 """

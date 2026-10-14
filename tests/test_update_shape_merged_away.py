@@ -69,13 +69,35 @@ SOURCE_TREE = {
 #: The pinned collision copies, and the file each was cut for.
 MERGED = {"shape/.gitignore": ".gitignore", "shape/Makefile": "Makefile"}
 
+#: The same source keeping a root `.gitattributes` of its own (#471): the
+#: shape's copy is pinned beside it as `shape/.gitattributes`, and the split
+#: appends its line-ending block to the source's file. A rule that changes
+#: no line ending, so every platform checks the clone out as it was written.
+ATTRIBUTES = ".gitattributes"
+ATTRIBUTES_TREE = {**SOURCE_TREE, ATTRIBUTES: "*.png binary\n"}
+
 
 @pytest.fixture(scope="module")
 def adopted_here(standard, tmp_path_factory) -> dict:
     """`SOURCE_TREE` adopted with the standard's own `adopt-project.py`, its
     pull request merged, and a recursive clone of it."""
-    base = tmp_path_factory.mktemp("merged-away")
-    source = make_source_repo(base / PROJECT, tree=SOURCE_TREE, edits=())
+    return adopt_and_clone(standard, tmp_path_factory.mktemp("merged-away"),
+                           SOURCE_TREE)
+
+
+@pytest.fixture(scope="module")
+def adopted_with_attributes(standard, tmp_path_factory) -> dict:
+    """`ATTRIBUTES_TREE`, adopted and cloned as `adopted_here` is."""
+    return adopt_and_clone(
+        standard, tmp_path_factory.mktemp("merged-away-attributes"),
+        ATTRIBUTES_TREE)
+
+
+def adopt_and_clone(standard: Path, base: Path, tree: dict) -> dict:
+    """`tree` adopted with the standard's own `adopt-project.py` in `base`,
+    its pull request merged, and a recursive clone of it: the plan and the
+    clone."""
+    source = make_source_repo(base / PROJECT, tree=tree, edits=())
     plan = base / "adoption-plan.yaml"
     adopt = standard / "adopt-project.py"
     planned = run_script(adopt, "plan", "--source", str(source), "--project",
@@ -389,3 +411,55 @@ def test_the_plans_follow_up_says_what_happens_to_the_row(adopted_here):
     (readme,) = [item for item in follow_ups
                  if item.startswith("merge shape/README.md into README.md")]
     assert "pin row" not in readme, readme
+
+
+def test_a_merged_away_attributes_copys_row_goes_and_the_root_file_stays(
+        standard, adopted_with_attributes, tmp_path):
+    """The `.gitattributes` copy, end to end (#471, #502). A source keeping
+    its own root `.gitattributes` gets the shape's copy pinned beside it as
+    `shape/.gitattributes`, and its follow-up said to merge the rest of that
+    copy only if the whole project should check out with LF, then returned
+    before the sentence every other pinned copy's follow-up carries, so
+    nothing said what removing the copy does to its row. It says it now, in
+    the same words, and they hold: the copy merged into the root file and
+    removed, `check` calls its row `merged-away`, its NEXT pasted drops that
+    row and nothing else, the root file stays as the merge left it, block
+    and all, and the gate and the doctor are green."""
+    copy = f"shape/{ATTRIBUTES}"
+    follow_ups = load_yaml(adopted_with_attributes["plan"])["follow_ups"]
+    opening = f"keep the block at the end of {ATTRIBUTES}"
+    (said,) = [item for item in follow_ups if item.startswith(opening)]
+    assert said.endswith(
+        "should check out with LF, and only then remove "
+        f"{copy}: `update-shape.py check` reports its pin row `merged-away`, "
+        "and `apply` drops the row"), said
+
+    root = tmp_path / PROJECT
+    shutil.copytree(adopted_with_attributes["clone"], root, symlinks=True)
+    before = pin_files(root)
+    assert copy in {path for path, _ in before}, before
+    assert ATTRIBUTES not in {path for path, _ in before}, before
+    merge_away(root, ATTRIBUTES)
+    merged = git("show", f"HEAD:{ATTRIBUTES}", cwd=root).stdout
+
+    checked = update_shape(standard, root, "check")
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert verdicts(checked.stdout)[copy] == "merged-away", checked.stdout
+    assert "REFUSAL AHEAD" not in checked.stdout, checked.stdout
+    line = next_line_of(checked.stdout)
+    argv = shlex.split(line[len("NEXT  "):])
+    assert argv[1:3] == ["update-shape.py", "apply"], line
+    applied = run_script(standard / "update-shape.py", *argv[2:])
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert f"  dropped  {copy} " in applied.stdout, applied.stdout
+
+    assert pin_files(root) == [row for row in before if row[0] != copy], \
+        "the copy's row goes, and nothing else in the pin moves"
+    committed = set(git("show", "--name-only", "--format=", "HEAD",
+                        cwd=root).stdout.split())
+    assert ATTRIBUTES not in committed, committed
+    assert git("show", f"HEAD:{ATTRIBUTES}", cwd=root).stdout == merged
+    ran = gate(root, "validate-pins.py")
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    again = doctor(standard, root)
+    assert verdict_line(again).startswith("COMPLIANT   (exit 0)"), again.stdout
