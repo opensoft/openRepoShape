@@ -1137,7 +1137,8 @@ def test_413a_with_the_mount_directory_gone_the_keep_line_still_runs(
     (project / "spec").rmdir()
     row = row_of(standard, project, "legs")
     keep = KEPT_LINE.search(why_of(row))
-    assert keep and "--work-tree=" in keep.group(0), why_of(row)
+    assert keep, why_of(row)
+    assert "--work-tree=" in keep.group(0), why_of(row)
     kept = sh(keep.group(0).replace("NAME", "kept"), tmp_path / "keep")
     assert kept.returncode == 0, kept.stdout + kept.stderr
     result = paste(row, tmp_path / "elsewhere")
@@ -1216,7 +1217,8 @@ def test_413b_the_keep_line_keeps_a_members_commit_through_the_bootstrap(
     commit = commit_in(member)
     row = row_of(standard, root, "members")
     keep = re.search(r"git -C \S+ branch NAME", why_of(row))
-    assert keep and "LEG" not in keep.group(0), why_of(row)
+    assert keep, why_of(row)
+    assert "LEG" not in keep.group(0), why_of(row)
     kept = sh(keep.group(0).replace("NAME", "kept"), tmp_path / "keep")
     assert kept.returncode == 0, kept.stdout + kept.stderr
     result = paste(row, tmp_path / "elsewhere")
@@ -1444,7 +1446,8 @@ def test_414_3_a_leg_gitmodules_gives_no_url_for_gets_no_line(
     assert "no url for it in .gitmodules" in row["reason"], row["reason"]
     why = why_of(row)
     assert "no url for spec in .gitmodules" in why, why
-    assert "history" in why and "person" in why, why
+    assert "history" in why, why
+    assert "person" in why, why
 
 
 def test_414_3_a_populated_leg_off_its_pin_with_no_url_gets_no_line_either(
@@ -1903,5 +1906,251 @@ def test_where_the_gate_is_the_line_the_states_no_line_cures_are_said(
     row = row_of(standard, project, "legs")
     assert command_of(row) == pins_gate(module, standard, project, True), \
         row["next"]
+    assert "names a branch with no commit" in why_of(row), why_of(row)
+    assert "doctor again" in why_of(row), why_of(row)
+
+
+# --- after verification: every member the holder's bootstrap stops at, the ---
+# --- url read apart from git, a submodule whose directory is gone, and the ---
+# --- members row's gate --------------------------------------------------
+
+def with_a_second_member(root: Path, at_pin: bool, section: str) -> Path:
+    """`Ghost`, a clone of the first member at that member's HEAD, with a
+    `family.yaml` row copied from the first, pin included. Recorded at that
+    pin, where the row has nothing to say of it, or at a commit made past
+    it, which the row hands to the family gate. `section` is what
+    `.gitmodules` says of it: `full`, `path-only` or `none`. It is never
+    `submodule init`ed, so the holder's own config gives it no url."""
+    first = root / "members" / FAMILY_MEMBER
+    ghost = root / "members" / "Ghost"
+    url = git("config", "-f", ".gitmodules", "--get",
+              f"submodule.members/{FAMILY_MEMBER}.url", cwd=root).stdout
+    git("-c", "protocol.file.allow=always", "clone", "-q", "--no-local",
+        str(first), str(ghost), cwd=root)
+    add_member_row(root, "Ghost")
+    if section != "none":
+        git("config", "-f", ".gitmodules", "submodule.members/Ghost.path",
+            "members/Ghost", cwd=root)
+    if section == "full":
+        git("config", "-f", ".gitmodules", "submodule.members/Ghost.url",
+            url.strip(), cwd=root)
+    if at_pin:
+        record_gitlink(root, "members/Ghost",
+                       git("rev-parse", "HEAD", cwd=ghost).stdout.strip())
+    else:
+        git("checkout", "-q", "--detach", cwd=ghost)
+        record_gitlink(root, "members/Ghost",
+                       commit_in(ghost, "the commit the holder records"))
+    return ghost
+
+
+def beside_a_member_git_finds_no_url_for(root: Path, section: str,
+                                         at_pin: bool) -> None:
+    """IRRS emptied, so a checkout cures it, beside a populated `Ghost`
+    that git finds no url for (`with_a_second_member`). The row never sends
+    Ghost to a checkout: at its pin it passes it over, and off it hands it
+    to the family gate. The holder's own bootstrap inits every gitlinked
+    member all the same, and git stops it at Ghost."""
+    with_a_second_member(root, at_pin=at_pin, section=section)
+    member_unbootstrapped(root)
+
+
+UNROUTED_NO_URL = pytest.mark.parametrize(
+    "section, at_pin",
+    [("none", True), ("path-only", True), ("none", False),
+     ("path-only", False)],
+    ids=["no-section-at-pin", "path-only-at-pin", "no-section-gate",
+         "path-only-gate"])
+
+
+@UNROUTED_NO_URL
+def test_a_member_the_row_never_routes_with_no_url_takes_the_bootstrap_off(
+        standard, holder, tmp_path, section, at_pin):
+    """The holder's own bootstrap names no path, so a member git finds no
+    url for stops it whether the row sends that member to a checkout or
+    not. Every member with a gitlink is asked, the NEXT is the git line
+    over the member a checkout cures, and the `why` names the one with no
+    url."""
+    root = holder_copy(holder, tmp_path)
+    beside_a_member_git_finds_no_url_for(root, section, at_pin)
+    module = doctor_module(standard)
+    row = row_of(standard, root, "members")
+    assert row["status"] == "FINDING", row
+    assert command_of(row) == (
+        f"git -C {module.quote_arg(root.resolve())} {UPDATE} -- "
+        f"members/{FAMILY_MEMBER}"), row["next"]
+    why = why_of(row)
+    assert "can stop that run" in why, why
+    assert "no url for members/Ghost" in why, why
+
+
+@WINDOWS_SKIP
+@UNROUTED_NO_URL
+def test_pasted_there_the_git_line_fills_the_member_the_bootstrap_would_not(
+        standard, holder, tmp_path, section, at_pin):
+    """Pasted, the line exits 0 and fills IRRS, which the bootstrap left
+    empty. With Ghost at its pin the row is then `ok`; off it, the row
+    names Ghost alone, for the gate."""
+    root = holder_copy(holder, tmp_path)
+    beside_a_member_git_finds_no_url_for(root, section, at_pin)
+    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any((root / "members" / FAMILY_MEMBER).iterdir())
+    after = row_of(standard, root, "members")
+    if at_pin:
+        assert after["status"] == "ok", (after, result.stdout, result.stderr)
+    else:
+        assert after["status"] == "FINDING", after
+        assert FAMILY_MEMBER not in after["reason"], after["reason"]
+        assert "members/Ghost" in after["reason"], after["reason"]
+
+
+def test_section_url_reads_gits_listing_and_the_last_value_wins(standard,
+                                                                 tmp_path):
+    """`section_url` is the pure half of `gitmodules_entry`: one `git config
+    -z --get-regexp` listing in, `(name, url)` out. Fed git's own listing of
+    a `.gitmodules` whose section NAME holds a space and a dot and gives its
+    url twice, and of a path two sections give: the last value given wins
+    each time, as git reads the file, and an empty url is no url."""
+    module = doctor_module(standard)
+    (tmp_path / ".gitmodules").write_bytes(
+        b'[submodule "my lib.v2"]\n\tpath = vendor/lib\n'
+        b"\turl = ../first.git\n\turl = ../second.git\n"
+        b'[submodule "old"]\n\tpath = vendor/both\n\turl = ../old.git\n'
+        b'[submodule "new"]\n\tpath = vendor/both\n\turl =\n')
+    listing = git("config", "-z", "--file", ".gitmodules", "--get-regexp",
+                  r"^submodule\..*\.(path|url)$", cwd=tmp_path).stdout
+    assert module.section_url(listing, "vendor/lib") == (
+        "my lib.v2", "../second.git"), listing
+    assert module.section_url(listing, "vendor/both") == ("new", None), \
+        listing
+    assert module.section_url(listing, "vendor/none") == (None, None), \
+        listing
+
+
+#: The keep line for a commit in a submodule whose directory is gone: it
+#: names that submodule's repository under the mount's own, with the root
+#: as the work tree.
+SPELLED = "git --git-dir=REPO/modules/SUB --work-tree=ROOT branch NAME HEAD"
+
+
+def spelled_filled(module, repository: Path, sub: str, root: Path) -> str:
+    """`SPELLED` with its placeholders filled in as a reader fills them:
+    REPO the mount's git directory, SUB the submodule's name, ROOT the
+    root, and the branch `kept`."""
+    return (SPELLED
+            .replace("--git-dir=REPO/modules/SUB", module.quote_arg(
+                f"--git-dir={repository.as_posix()}/modules/{sub}"))
+            .replace("--work-tree=ROOT", module.quote_arg(
+                f"--work-tree={root.as_posix()}"))
+            .replace("NAME", "kept"))
+
+
+@WINDOWS_SKIP
+def test_an_emptied_legs_own_submodule_is_kept_through_its_repository(
+        standard, project, tmp_path):
+    """`deinit` empties the leg and takes its submodule's directory with
+    it, so `git -C LEG/SUB branch NAME` has nowhere to run and exits 128.
+    The repository git kept for the leg keeps its submodule's under
+    `modules/`, and the `why` spells the line through it: filled in and run
+    first, it exits 0, and after the paste the commit is on that branch."""
+    commit = with_a_submodule_in_the_leg(project, tmp_path)
+    git("submodule", "deinit", "-q", "-f", "--", "spec", cwd=project)
+    module = doctor_module(standard)
+    row = row_of(standard, project, "legs")
+    why = why_of(row)
+    assert SPELLED in why, why
+    assert "git -C LEG/SUB" not in why, why
+    resolved = project.resolve()
+    kept = sh(spelled_filled(module, kept_repository(resolved, "spec"),
+                             "vendor/lib", resolved), tmp_path / "keep")
+    assert kept.returncode == 0, kept.stdout + kept.stderr
+    result = paste(row, tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row_of(standard, project, "legs")["status"] == "ok"
+    nested = project / "spec" / "vendor" / "lib"
+    assert git("rev-parse", "HEAD", cwd=nested).stdout.strip() != commit
+    assert "kept" in git("branch", "--contains", commit, cwd=nested).stdout
+
+
+@WINDOWS_SKIP
+def test_an_emptied_members_own_leg_is_kept_through_its_repository(
+        standard, holder, tmp_path):
+    """The members twin: the member is emptied by `deinit`, its legs'
+    directories with it, and the line spelled through the repository git
+    kept for the member keeps a commit made in its own `spec` leg."""
+    root = holder_copy(holder, tmp_path)
+    holder_without(root, "bootstrap.py")
+    leg, commit = made_in_a_members_own_leg(root)
+    git("submodule", "deinit", "-q", "-f", "--", f"members/{FAMILY_MEMBER}",
+        cwd=root)
+    module = doctor_module(standard)
+    row = row_of(standard, root, "members")
+    why = why_of(row)
+    assert SPELLED in why, why
+    assert "git -C LEG branch" not in why, why
+    resolved = root.resolve()
+    repository = kept_repository(resolved, f"members/{FAMILY_MEMBER}")
+    kept = sh(spelled_filled(module, repository, "spec", resolved),
+              tmp_path / "keep")
+    assert kept.returncode == 0, kept.stdout + kept.stderr
+    result = paste(row, tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row_of(standard, root, "members")["status"] == "ok"
+    assert git("rev-parse", "HEAD", cwd=leg).stdout.strip() != commit
+    assert "kept" in git("branch", "--contains", commit, cwd=leg).stdout
+
+
+@WINDOWS_SKIP
+def test_a_leg_past_a_commit_that_dropped_its_submodule_still_names_it(
+        standard, project, tmp_path):
+    """The leg walks past its pin at a commit that removes its submodule,
+    `.gitmodules` included, so its working tree carries none. The gitlink's
+    commit still mounts it, and `--recursive` links the repository the leg
+    keeps for it again and checks it out. The leg's own repository is asked
+    for its `modules/`, the `why` spells the line through it, and that
+    line, run first, keeps the commit."""
+    commit = with_a_submodule_in_the_leg(project, tmp_path)
+    spec = project / "spec"
+    git("rm", "-q", "-f", "vendor/lib", cwd=spec)
+    if (spec / ".gitmodules").exists():
+        git("rm", "-q", "-f", ".gitmodules", cwd=spec)
+    commit_in(spec, "drop the library")
+    assert not (spec / ".gitmodules").exists()
+    module = doctor_module(standard)
+    row = row_of(standard, project, "legs")
+    why = why_of(row)
+    assert SPELLED in why, why
+    repository = Path(git("rev-parse", "--absolute-git-dir",
+                          cwd=spec).stdout.strip())
+    resolved = project.resolve()
+    kept = sh(spelled_filled(module, repository, "vendor/lib", resolved),
+              tmp_path / "keep")
+    assert kept.returncode == 0, kept.stdout + kept.stderr
+    result = paste(row, tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row_of(standard, project, "legs")["status"] == "ok"
+    nested = spec / "vendor" / "lib"
+    assert git("rev-parse", "HEAD", cwd=nested).stdout.strip() != commit
+    assert "kept" in git("branch", "--contains", commit, cwd=nested).stdout
+
+
+def test_where_the_gate_is_the_members_line_the_states_no_line_cures_are_said(
+        standard, holder, tmp_path):
+    """The members twin of the test above: an unborn HEAD in IRRS, and
+    `Ghost` recorded off its pin. The family gate is the NEXT, for Ghost,
+    and IRRS is said beside it, with the sentence it gets when it is the
+    only one."""
+    root = holder_copy(holder, tmp_path)
+    with_a_second_member(root, at_pin=False, section="full")
+    git("symbolic-ref", "HEAD", "refs/heads/never-made",
+        cwd=root / "members" / FAMILY_MEMBER)
+    module = doctor_module(standard)
+    row = row_of(standard, root, "members")
+    assert row["status"] == "FINDING", row
+    resolved = root.resolve()
+    assert command_of(row) == module.validator_command(
+        standard, resolved / "scripts" / "validate-family.py", True,
+        ["--root", str(resolved)]), row["next"]
     assert "names a branch with no commit" in why_of(row), why_of(row)
     assert "doctor again" in why_of(row), why_of(row)
