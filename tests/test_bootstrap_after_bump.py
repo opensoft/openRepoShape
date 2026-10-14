@@ -1043,6 +1043,12 @@ def test_a_leg_whose_gitdir_is_gone_is_not_said_to_be_detached_off_the_pin(
     it could not, as it always did."""
     leg = root / "spec"
     pin = rev(leg)
+    # Delete the gitfile before rewriting it: Git for Windows marks `.git`
+    # HIDDEN (`core.hideDotFiles=dotGitOnly`), a gitfile as much as a
+    # directory, and Windows refuses to open an existing hidden file for
+    # overwrite (`CreateFile` with `CREATE_ALWAYS` is ACCESS_DENIED), so
+    # `write_bytes` over it raises `PermissionError` there. `unlink` works.
+    (leg / ".git").unlink()
     (leg / ".git").write_bytes(b"gitdir: ../.git/modules/gone\n")
 
     result = skip_validators(root)
