@@ -480,11 +480,13 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
             print(f"  {where}: no gitlink recorded; leaving as is")
             return
         head, current = _head_of(sub)
-        if current is None and head != pin:
+        if head is not None and current is None and head != pin:
             # `checkout -b <branch> <pin>` from a leg detached anywhere else
             # leaves the commit made there on no branch (#533), as placing a
             # branch that exists would. The branch is not there to check
-            # out, so the way out names the pin alone.
+            # out, so the way out names the pin alone. A HEAD git cannot
+            # read (the leg's gitdir is gone) is no commit to keep: the
+            # checkout below fails, and says it could not.
             print(f"  {where}: branch {named} does not exist, and the "
                   f"checkout is at {_short(head)} (detached), which is not "
                   f"the pin {_short(pin)}")

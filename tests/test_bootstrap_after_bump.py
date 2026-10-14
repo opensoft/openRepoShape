@@ -784,6 +784,36 @@ def branch_at_the_new_pin(root: Path, remotes: Path, tmp_path: Path,
     return leg, new
 
 
+def detached_at_a_held_commit(leg: Path, old: str, where: str) -> str:
+    """Detach the leg at a commit that is not the pin but that something
+    holds, and return it: an ANCESTOR of the pin (`old`, which the branch
+    held), or `origin/main` past the pin (a remote-tracking ref made to hold
+    it, as `git submodule update --remote` leaves a leg)."""
+    if where == "ancestor":
+        git("checkout", "-q", "--detach", old, cwd=leg)
+        return old
+    git("commit", "-q", "--allow-empty", "-m", "the remote moved on", cwd=leg)
+    here = rev(leg)
+    git("update-ref", "refs/remotes/origin/main", here, cwd=leg)
+    return here
+
+
+def no_branch(pin: str, head: str) -> str:
+    """The two lines step (a) prints for a leg detached at `head`, which is
+    not the pin, when the tracking branch is not there, byte for byte as main
+    prints them."""
+    return (f"  [spec] spec: branch main does not exist, and the checkout is "
+            f"at {head[:12]} (detached), which is not the pin {pin[:12]}\n"
+            "          not moving the checkout off it. Keep any commit made "
+            "there on a branch, check out the pin in the leg, and run "
+            "bootstrap again.\n")
+
+
+def has_no_branch(leg: Path) -> bool:
+    return git("rev-parse", "--verify", "--quiet", MAIN, cwd=leg,
+               check=False).returncode != 0
+
+
 def test_a_commit_made_on_a_leg_detached_at_its_branch_tip_is_not_stranded(
         root, bootstrapped, tmp_path):
     """THE ISSUE'S CASE: `bump-leg.py --to` the branch's own tip, a commit
@@ -938,14 +968,7 @@ def test_a_leg_detached_at_a_commit_its_branch_or_remote_holds_is_not_moved(
     old = rev(root / "spec")
     leg, new = branch_at_the_new_pin(root, bootstrapped["remotes"], tmp_path,
                                      f"advance-held-{where}")
-    if where == "ancestor":
-        here = old
-        git("checkout", "-q", "--detach", old, cwd=leg)
-    else:
-        git("commit", "-q", "--allow-empty", "-m", "the remote moved on",
-            cwd=leg)
-        here = rev(leg)
-        git("update-ref", "refs/remotes/origin/main", here, cwd=leg)
+    here = detached_at_a_held_commit(leg, old, where)
 
     result = bootstrap(root)
     assert result.returncode == 0, result.stderr + result.stdout
@@ -973,21 +996,62 @@ def test_a_missing_tracking_branch_is_not_made_over_a_detached_commit(
 
     result = skip_validators(root)
     assert result.returncode == 0, result.stderr + result.stdout
-    assert (f"  [spec] spec: branch main does not exist, and the checkout is "
-            f"at {made[:12]} (detached), which is not the pin {pin[:12]}\n"
-            "          not moving the checkout off it. Keep any commit made "
-            "there on a branch, check out the pin in the leg, and run "
-            "bootstrap again.\n") in result.stdout, result.stdout
+    assert no_branch(pin, made) in result.stdout, result.stdout
     assert "created at" not in result.stdout
     assert head_ref(leg) is None and rev(leg) == made, "HEAD stays"
-    assert git("rev-parse", "--verify", "--quiet", MAIN, cwd=leg,
-               check=False).returncode != 0, "no branch is made"
+    assert has_no_branch(leg), "no branch is made"
 
     git("checkout", "-q", "--detach", pin, cwd=leg)
     again = skip_validators(root)
     assert f"  [spec] spec: branch main created at {pin[:12]}" in (
         again.stdout), again.stdout
     assert head_ref(leg) == MAIN and rev(leg) == pin
+
+
+@pytest.mark.parametrize(
+    "where", ["ancestor", "remote"],
+    ids=["ancestor of the pin", "origin/main past the pin"])
+def test_a_missing_branch_is_not_made_over_a_leg_detached_at_a_held_commit(
+        root, bootstrapped, tmp_path, where):
+    """The create path's twins of the two cases above: NO `main` in the leg,
+    and the leg detached at an ancestor of the pin, or at `origin/main` past
+    it. `checkout -b main <pin>` moved the leg onto the pin and made the
+    branch there, as bootstrap once did for a branch that exists. Nothing is
+    lost either way, and the rule is one: a leg detached at a commit that is
+    not the pin is left where it is, with no branch made."""
+    old = rev(root / "spec")
+    new = bumped(root, bootstrapped["remotes"], tmp_path,
+                 f"advance-missing-{where}")
+    leg = root / "spec"
+    here = detached_at_a_held_commit(leg, old, where)
+    git("branch", "-q", "-D", "main", cwd=leg)
+
+    result = skip_validators(root)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert no_branch(new, here) in result.stdout, result.stdout
+    assert "created at" not in result.stdout
+    assert head_ref(leg) is None and rev(leg) == here, "HEAD stays"
+    assert has_no_branch(leg), "no branch is made"
+
+
+def test_a_leg_whose_gitdir_is_gone_is_not_said_to_be_detached_off_the_pin(
+        root):
+    """A leg whose `.git` file names a gitdir that is not there: git can read
+    no HEAD, so there is no commit to keep and no place to say the checkout
+    is at. The guard read that as `?` and a detached HEAD, and told the
+    person to check out the pin. The branch cannot be made, and the line says
+    it could not, as it always did."""
+    leg = root / "spec"
+    pin = rev(leg)
+    (leg / ".git").write_bytes(b"gitdir: ../.git/modules/gone\n")
+
+    result = skip_validators(root)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (f"  [spec] spec: could not create branch 'main' at the pin "
+            f"{pin[:12]}; leaving detached\n") in result.stdout, result.stdout
+    assert "does not exist" not in result.stdout
+    assert "which is not the pin" not in result.stdout
+    assert "(detached)" not in result.stdout
 
 
 # --- `not moving an existing branch` names where the checkout stays (#533) --
