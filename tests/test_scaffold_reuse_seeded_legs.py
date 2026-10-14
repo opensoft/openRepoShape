@@ -18,23 +18,31 @@ with commits is still refused, a root with commits still names
 `adopt-project.py`, and nothing deletes, rewrites or force-pushes a remote.
 
 Everything here runs against bare repositories on disk (`--local-remote-dir`)
-but the one test of a reused leg's GitHub visibility, which runs against a
-fake `gh` on `PATH`, with `--no-push`. The ruleset is the `pre-receive` hook
+but the tests of GitHub's side, a reused leg's visibility and a leg `gh` sees
+that git cannot read (#542), which run against a fake `gh` on `PATH`, with
+`--no-push`, and point git's `https://github.com/` at a path or a local
+server that refuses it. The ruleset is the `pre-receive` hook
 `test_ruleset_hint_tracking_branch.py` builds, and an empty `RULESET_REFUSES`
 is the operator holding the bypass right.
 """
 
 from __future__ import annotations
 
+import http.server
+import importlib.util
 import os
+import re
 import stat
 import subprocess
+import sys
 import textwrap
+import threading
 from pathlib import Path
 
 import pytest
 
-from conftest import ORG, PROJECT, SCAFFOLD, WINDOWS_SKIP, git, rmtree, run_script
+from conftest import (ORG, PROJECT, PTY_SKIP, SCAFFOLD, WINDOWS_SKIP, git,
+                      rmtree, run_in_a_terminal, run_script)
 from test_ruleset_hint_tracking_branch import refusing, template  # noqa: F401
 
 LEGS = ("spec", "code")
@@ -271,9 +279,9 @@ def test_a_leg_this_run_would_seed_with_another_tree_is_refused(
     assert_refused_as_not_the_seed(tmp_path, result, before)
 
 
-def test_a_leg_somebody_else_made_is_refused(tmp_path):
-    """One commit, but not a tree this scaffold writes: somebody's
-    repository that happens to have the name."""
+def theirs_at_one_commit(tmp_path) -> None:
+    """The spec leg's bare repository, holding ONE commit that is not a tree
+    this scaffold writes: somebody's repository that has the name."""
     work = tmp_path / "theirs"
     git("init", "-q", "-b", "main", str(work), cwd=tmp_path)
     (work / "README.md").write_text("# live\n", encoding="utf-8")
@@ -281,6 +289,12 @@ def test_a_leg_somebody_else_made_is_refused(tmp_path):
     git("commit", "-q", "-m", "live", cwd=work)
     reserve(tmp_path, "spec")
     git("push", "-q", str(bare(tmp_path, "spec")), "main", cwd=work)
+
+
+def test_a_leg_somebody_else_made_is_refused(tmp_path):
+    """One commit, but not a tree this scaffold writes: somebody's
+    repository that happens to have the name."""
+    theirs_at_one_commit(tmp_path)
     before = {role: tip(tmp_path, role) for role in REPOS}
     result = scaffold(tmp_path, "work", "--reuse-empty-repo")
     assert_refused_as_not_the_seed(tmp_path, result, before)
@@ -289,9 +303,11 @@ def test_a_leg_somebody_else_made_is_refused(tmp_path):
 
 # --- a reused leg's visibility (GitHub) -------------------------------------
 
-#: A `gh` that knows three EMPTY repositories, each at the visibility
-#: `FAKE_GH_REPOS` gives it (`org/name=VISIBILITY,...`), answers `repo create`
-#: and `repo edit` with success, and logs every call.
+#: A `gh` that knows the repositories `FAKE_GH_REPOS` names
+#: (`org/name=VISIBILITY,...`), each at that visibility and EMPTY unless
+#: `FAKE_GH_FULL` names it too (`org/name,...`), when its commit listing has
+#: one commit; it answers `repo create` and `repo edit` with success, and
+#: logs every call.
 FAKE_GH = textwrap.dedent("""\
     #!/usr/bin/env python3
     import json
@@ -303,6 +319,7 @@ FAKE_GH = textwrap.dedent("""\
         f.write(" ".join(argv) + "\\n")
     KNOWN = dict(pair.split("=") for pair in
                  os.environ["FAKE_GH_REPOS"].split(","))
+    FULL = os.environ.get("FAKE_GH_FULL", "").split(",")
 
     if argv[:2] == ["repo", "view"]:
         repo = argv[2]
@@ -317,13 +334,40 @@ FAKE_GH = textwrap.dedent("""\
             out["visibility"] = KNOWN[repo]
         print(json.dumps(out))
     elif argv[:1] == ["api"] and argv[1].split("/commits")[0][6:] in KNOWN:
-        print("[]")
+        print('[{"sha": "0"}]' if argv[1].split("/commits")[0][6:] in FULL
+              else "[]")
     elif argv[:2] in (["repo", "create"], ["repo", "edit"]):
         pass
     else:
         print(f"fake gh: unhandled {argv!r}", file=sys.stderr)
         sys.exit(1)
     """)
+
+
+def fake_gh(tmp_path, repos: dict, full=()) -> tuple[dict, Path]:
+    """`FAKE_GH` first on PATH, knowing `repos` (`{name: VISIBILITY}`, each
+    under `ORG`) and holding commits in each of `full`: the environment for
+    the run, and the log of every call. Nothing it answers reaches GitHub."""
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    gh = fakebin / "gh"
+    gh.write_text(FAKE_GH, encoding="utf-8")
+    gh.chmod(gh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    log = tmp_path / "gh.log"
+    log.write_text("", encoding="utf-8")
+    return {"PATH": f"{fakebin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "FAKE_GH_LOG": str(log),
+            "FAKE_GH_REPOS": ",".join(f"{ORG}/{name}={visibility}"
+                                      for name, visibility in repos.items()),
+            "FAKE_GH_FULL": ",".join(f"{ORG}/{name}" for name in full)}, log
+
+
+def on_github(tmp_path, *extra: str, env: dict, cwd: Path | None = None):
+    """The scaffold in its GitHub mode, against `fake_gh`, pushing nothing."""
+    return run_script(SCAFFOLD, "--org", ORG, "--project", PROJECT,
+                      "--elected-by", "Test Human", "--no-push",
+                      "--work-dir", str(tmp_path / "work"), *extra,
+                      cwd=cwd, env=env)
 
 
 @WINDOWS_SKIP
@@ -334,22 +378,10 @@ def test_a_reused_leg_keeps_its_visibility_and_a_disagreement_is_said(
     `_leg_visibility` tells it about a reused root. The shebang `gh` is why
     this is skipped on Windows, which does not run one; what it pins is a
     `gh repo view` read, which is platform-blind."""
-    fakebin = tmp_path / "fakebin"
-    fakebin.mkdir()
-    gh = fakebin / "gh"
-    gh.write_text(FAKE_GH, encoding="utf-8")
-    gh.chmod(gh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    log = tmp_path / "gh.log"
-    log.write_text("", encoding="utf-8")
-    env = {"PATH": f"{fakebin}{os.pathsep}{os.environ.get('PATH', '')}",
-           "FAKE_GH_LOG": str(log),
-           "FAKE_GH_REPOS": f"{ORG}/{PROJECT}=PRIVATE,"
-                            f"{ORG}/{PROJECT}-spec=PUBLIC,"
-                            f"{ORG}/{PROJECT}-code=PRIVATE"}
-    result = run_script(SCAFFOLD, "--org", ORG, "--project", PROJECT,
-                        "--elected-by", "Test Human", "--reuse-empty-repo",
-                        "--no-push", "--work-dir", str(tmp_path / "work"),
-                        env=env)
+    env, log = fake_gh(tmp_path, {PROJECT: "PRIVATE",
+                                  f"{PROJECT}-spec": "PUBLIC",
+                                  f"{PROJECT}-code": "PRIVATE"})
+    result = on_github(tmp_path, "--reuse-empty-repo", env=env)
     assert result.returncode == 0, result.stderr + result.stdout
     assert (f"WARNING {ORG}/{PROJECT}-spec is reused and is public on GitHub, "
             "where this run's visibility is private.") in result.stderr
@@ -357,3 +389,198 @@ def test_a_reused_leg_keeps_its_visibility_and_a_disagreement_is_said(
         "a reused leg that agrees is not warned about")
     assert "repo create" not in log.read_text(encoding="utf-8"), (
         "a reused repository is never created")
+
+
+# --- the reuse re-run's visibility text (#542) ------------------------------
+
+SPEC_REPO, CODE_REPO = f"{ORG}/{PROJECT}-spec", f"{ORG}/{PROJECT}-code"
+#: What the private-leg NOTE says after its subject, for one leg and for two.
+READ_IT = (f": give {ORG}/{PROJECT} a way to read it — a GitHub App "
+           "(SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a "
+           "SHAPE_LEGS_TOKEN PAT (contents:read on that leg, fallback) — or "
+           "the `validate` check cannot check it out.")
+READ_THEM = (f": give {ORG}/{PROJECT} a way to read them — a GitHub App "
+             "(SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a "
+             "SHAPE_LEGS_TOKEN PAT (contents:read on the legs, fallback) — or "
+             "the `validate` check cannot check them out.")
+INHERITED = (f"NOTE {ORG}/{PROJECT} is already private on GitHub; a leg this "
+             "run creates inherits that visibility, and a leg it reuses keeps "
+             "its own (pass --visibility to choose one explicitly).")
+DISAGREES = (f"WARNING --visibility public disagrees with the reused "
+             f"{ORG}/{PROJECT}, which is private on GitHub. A leg this run "
+             "creates is created public because that is what you asked for, "
+             "not because it is what the assembly root already is; a leg it "
+             "reuses keeps its own.")
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("repos,flags,said", [
+    # A private run that reuses a PUBLIC spec leg: on main the NOTE called
+    # both legs private, beside the WARNING that the spec leg is public.
+    ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PUBLIC",
+      f"{PROJECT}-code": "PRIVATE"}, (),
+     [INHERITED, f"NOTE {CODE_REPO} is private{READ_IT}"]),
+    # A public run that reuses a private and an internal leg: on main it
+    # printed no NOTE at all, and its WARNING spoke of "the two new legs".
+    ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PRIVATE",
+      f"{PROJECT}-code": "INTERNAL"}, ("--visibility", "public"),
+     [DISAGREES,
+      f"NOTE {SPEC_REPO} is private and {CODE_REPO} is internal{READ_THEM}"]),
+    # One leg created at the run's public, one reused private.
+    ({PROJECT: "PUBLIC", f"{PROJECT}-code": "PRIVATE"},
+     ("--visibility", "public"), [f"NOTE {CODE_REPO} is private{READ_IT}"]),
+    # Both legs private: the sentence the note has always printed.
+    ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PRIVATE",
+      f"{PROJECT}-code": "PRIVATE"}, (),
+     [f"NOTE {SPEC_REPO} and {CODE_REPO} are private{READ_THEM}"]),
+    # Both legs public: no note.
+    ({PROJECT: "PUBLIC", f"{PROJECT}-spec": "PUBLIC",
+      f"{PROJECT}-code": "PUBLIC"}, ("--visibility", "public"), []),
+], ids=["reused-public-leg-under-private", "reused-closed-legs-under-public",
+        "created-public-reused-private", "both-private", "both-public"])
+def test_the_visibility_text_follows_each_leg_as_it_stands(
+        tmp_path, repos, flags, said):
+    """The reuse re-run's visibility lines (#542). `_private_leg_note` names
+    each leg that is private or internal at the visibility it has, a reused
+    one's read from GitHub, and no other; `_leg_visibility`'s two lines,
+    printed before anything is asked of the legs, no longer call them "the
+    two new legs", which a re-run that reuses one or both is not."""
+    env, _log = fake_gh(tmp_path, repos)
+    result = on_github(tmp_path, "--reuse-empty-repo", *flags, env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+    printed = result.stdout + result.stderr
+    for line in said:
+        assert line in printed, printed
+    notes = [line for line in result.stdout.splitlines()
+             if line.startswith("NOTE ") and "a way to read" in line]
+    assert len(notes) == len([line for line in said if "a way to read" in line
+                              ]), notes
+    assert "two new legs" not in printed
+
+
+# --- a leg that gh sees and git cannot read (#542) --------------------------
+
+def test_the_two_git_commands_that_read_a_leg_ask_no_terminal(
+        tmp_path, monkeypatch):
+    """`only_commit`'s `git ls-remote` and `git fetch`, the two commands
+    that reach the leg, run under `PROBE_ENV`, `GIT_TERMINAL_PROMPT=0`
+    (#542). Asked in-process of a leg on disk, so it runs on every platform,
+    Windows included, where the terminal test below cannot."""
+    spec = importlib.util.spec_from_file_location("scaffold_for_probe_env",
+                                                  SCAFFOLD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.PROBE_ENV == {"GIT_TERMINAL_PROMPT": "0"}
+    asked = []
+    real = module.run
+
+    def recording(args, cwd=None, capture=True, env=None):
+        asked.append((args[1], env))
+        return real(args, cwd=cwd, capture=capture, env=env)
+
+    monkeypatch.setattr(module, "run", recording)
+    theirs_at_one_commit(tmp_path)
+    held = module.only_commit(str(bare(tmp_path, "spec")), tmp_path / "probe")
+    assert held is not None and held[0] == tip(tmp_path, "spec"), asked
+    assert {verb: env for verb, env in asked
+            if verb in ("ls-remote", "fetch")} == {
+        "ls-remote": module.PROBE_ENV, "fetch": module.PROBE_ENV}, asked
+
+
+def git_reads_github_from(base: str) -> dict:
+    """What makes git read `https://github.com/<ORG>/` at `base` instead,
+    with no credential helper and no askpass program, so git answers a leg
+    as it would with no login of its own. The prefix is longer than an
+    operator's own `https://github.com/` rewrite, so it wins over one."""
+    return {"GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": f"url.{base}.insteadOf",
+            "GIT_CONFIG_VALUE_0": f"https://github.com/{ORG}/",
+            "GIT_CONFIG_KEY_1": "credential.helper", "GIT_CONFIG_VALUE_1": "",
+            "GIT_ASKPASS": ""}
+
+
+#: The legs `gh` sees: the spec leg, holding commits. The root and the code
+#: leg do not exist, so nothing but the spec leg is asked of git.
+SEEN_SPEC = {f"{PROJECT}-spec": "PRIVATE"}
+UNREAD = (f"REFUSED scaffold-remote-exists: {SPEC_REPO} already exists on "
+          "GitHub and has commits\nRemediation: git could not read it "
+          f"(`git ls-remote https://github.com/{SPEC_REPO}.git` exited 128: "
+          "fatal: ")
+UNREAD_EXIT = ("so whether its one commit is the seed this scaffold pushes "
+               "cannot be asked. Let git read it (on GitHub, `gh auth "
+               "setup-git` gives git the login `gh` has), then re-run: with "
+               "--reuse-empty-repo a leg whose one commit is that seed is "
+               "reused, and a leg holding anything else is still refused. "
+               "There is no --force.")
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("flags", [(), ("--reuse-empty-repo",)],
+                         ids=["without-the-flag", "with-the-flag"])
+def test_a_leg_git_cannot_read_is_refused_as_existing_not_as_a_failure(
+        tmp_path, flags):
+    """On main through bfed143 `_held_seed` let `only_commit`'s
+    `CommandFailed` through, so a leg `gh` sees with commits and git cannot
+    read was `REFUSED a git or gh command failed`, the generic line; with
+    the flag and without it, since the seed is asked either way. Now it is
+    `scaffold-remote-exists`, saying git could not read it, before anything
+    is created."""
+    env, log = fake_gh(tmp_path, SEEN_SPEC, full=[f"{PROJECT}-spec"])
+    env.update(git_reads_github_from(f"{tmp_path / 'unreadable'}/"))
+    result = on_github(tmp_path, *flags, env=env, cwd=tmp_path)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "a git or gh command failed" not in result.stderr
+    assert UNREAD in result.stderr, result.stderr
+    assert "does not appear to be a git repository), " + UNREAD_EXIT in (
+        result.stderr), result.stderr
+    assert "repo create" not in log.read_text(encoding="utf-8"), (
+        "nothing was created")
+
+
+class _AsksForALogin(http.server.BaseHTTPRequestHandler):
+    """A git host that answers every request 401, as GitHub answers git for
+    a private repository it is given no login for."""
+
+    def do_GET(self):  # noqa: N802 - the name `BaseHTTPRequestHandler` calls
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="w542"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_POST = do_GET
+
+    def log_message(self, *args):  # the test reads the screen, not this
+        pass
+
+
+@WINDOWS_SKIP
+@PTY_SKIP
+def test_a_leg_git_would_ask_a_login_for_does_not_wait_on_the_terminal(
+        tmp_path):
+    """`only_commit` runs git with `GIT_TERMINAL_PROMPT=0` (#542). Typed in a
+    terminal, a re-run whose leg git has no login for stopped at git's
+    `Username for ...:` prompt before a word about the leg; on main through
+    bfed143 this run waits there until the harness kills it. Now git's ask
+    is a failure, and the run is refused as `scaffold-remote-exists`."""
+    env, _log = fake_gh(tmp_path, SEEN_SPEC, full=[f"{PROJECT}-spec"])
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _AsksForALogin)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        status, screen, _typed = run_in_a_terminal(
+            [sys.executable, str(SCAFFOLD), "--org", ORG, "--project",
+             PROJECT, "--elected-by", "Test Human", "--no-push",
+             "--reuse-empty-repo", "--work-dir", str(tmp_path / "work")],
+            cwd=tmp_path, timeout=90,
+            env={**os.environ, **env, "LANES_LANE": "",
+                 **git_reads_github_from(f"http://127.0.0.1:{port}/{ORG}/")})
+    finally:
+        server.shutdown()
+        server.server_close()
+    # git's prompt starts a line; its refusal says `could not read Username
+    # for '...': terminal prompts disabled` inside the remedy's line.
+    assert not re.search(r"(?m)^Username for ", screen), screen
+    assert status == 2, screen
+    assert f"REFUSED scaffold-remote-exists: {SPEC_REPO} already exists" in (
+        screen), screen
+    assert "terminal prompts disabled" in screen, screen
