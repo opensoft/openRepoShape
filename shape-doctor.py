@@ -1549,9 +1549,13 @@ def refusal_line(refusal: Refusal) -> str:
     the text up to its first newline: `detail` opens with the path the
     loader was given, and a root whose directory name holds a newline would
     be cut after its first line and quoted short -- a different report from
-    the one this row has always printed, with no error to say so.
+    the one this row has always printed, with no error to say so. A refusal
+    with no remedy has no trailer (#370), and its `str()` is the line whole.
     """
-    return str(refusal).removesuffix("\n" + refusal.remediation)
+    line = str(refusal)
+    if not refusal.remediation:
+        return line
+    return line.removesuffix("\n" + refusal.remediation)
 
 
 def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
@@ -1568,9 +1572,10 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
     validator line is cut at 200 characters and this one ends with the line
     number, after a path of any length.
 
-    NOT THE REFUSAL'S REMEDIATION. `yaml-unparsable` carries `repo_shape`'s
+    NOT THE REFUSAL'S REMEDIATION. `yaml-unparsable` carried `repo_shape`'s
     default one, which is about submodules and the lockstep invariant: it
-    would send a person resolving a merge conflict to `git submodule update`.
+    sent a person resolving a merge conflict to `git submodule update`. It
+    carries none since #370, and the row names the gate either way.
 
     THE NEXT COMMAND IS THE GATE THAT OWNS THE FILE, picked by
     `validator_for` exactly as the row would have run it, AND IT NAMES THE
@@ -3123,11 +3128,11 @@ def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
     is what `read_pin` raised, in the spelling the project's own validator
     prints for the same file, and it names the line or the field at fault.
     Its `Remediation:` trailer is left off on purpose: `yaml-unparsable`
-    carries `repo_shape`'s default one, about submodules and the lockstep
-    invariant, which would send a person resolving a merge conflict to `git
-    submodule update`. This is the wording #232's `unloaded_manifest_row`
-    gives a `project.yaml` that does not load, so the two files are answered
-    alike.
+    carried `repo_shape`'s default one, about submodules and the lockstep
+    invariant, which sent a person resolving a merge conflict to `git
+    submodule update` (it carries none since #370). This is the wording
+    #232's `unloaded_manifest_row` gives a `project.yaml` that does not
+    load, so the two files are answered alike.
 
     THE NEXT PUTS BACK THE PIN A TOOL WROTE, NEVER A FETCH. `pin_restore`
     names the git command from the pin's own state, and run as printed it
