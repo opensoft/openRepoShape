@@ -151,6 +151,11 @@ from repo_shape import (  # noqa: E402
     checked_value, die, file_sha256, git_out, load_yaml, parse_yaml,
     tree_digest,
 )
+# The reader's own rule for where a comment starts, by its private name on
+# purpose: `shape_materialize` imports it the same way and says why (#380). A
+# block header is found with it, so this tool and the reader agree on which
+# line is `files:` and which is `shape:` (#437).
+from repo_shape import _strip_comment  # noqa: E402
 from shape_materialize import (  # noqa: E402
     ATTRIBUTES, COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
@@ -1339,6 +1344,24 @@ def resolve_additions(rows: list[Row], additions: list[Addition],
 # ---------------------------------------------------------------------------
 
 
+def _is_block_header(line: str, key: str) -> bool:
+    """Is `line` the column-0 header `<key>:` of a block, a trailing
+    `# comment` aside? Asked the reader's way, `_strip_comment`, so a
+    comment that a quoted scalar holds is not one, and the `#` a comment
+    starts at is one only after a space or a tab (#437). A header indented
+    at all is not this one: the reader's own top-level keys start at 0."""
+    return _strip_comment(line) == f"{key}:"
+
+
+def _header_as_it_was(line: str) -> str:
+    """`line`, a block header, with its comment and the spacing in front of
+    it kept (#437). A header with no comment loses trailing whitespace, as
+    `shape_materialize.with_scalar` says of its own lines."""
+    body = _strip_comment(line)
+    tail = line[len(body):]
+    return body + (tail if tail.strip() else "")
+
+
 def rewrite_shape_pin(text: str, commit: str, tree: str,
                       rows: list[Row]) -> str:
     """`commit:`, `digests.tree_sha256:` and the whole `files:` block.
@@ -1359,6 +1382,15 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
     four spaces was refused as hand-edited and a comment was dropped. The
     `files:` block below them is still written whole, as before.
 
+    THE `files:` HEADER IS FOUND THE WAY THE READER FINDS IT (#437): at column
+    0, once the reader's own `_strip_comment` has dropped a trailing
+    `# comment`. It was `line.rstrip() == "files:"`, so a header that carried
+    a comment, which the reader and both validators accept, was counted as no
+    `files` line and refused as `update-pin-unrecognised`, after `check` had
+    sent the person to this `apply`. The header is written back AS THE LINE
+    WAS, comment and the spacing in front of it included, like the two lines
+    above; only the rows under it are written whole.
+
     WHAT IS RETURNED HAS BEEN READ BACK, as `rewrite_manifest`'s is
     (`shape_materialize.rewrite_fault`): a layout this line rewrite cannot
     carry is refused HERE as this tool's failure, before any byte is written.
@@ -1375,9 +1407,9 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
             seen["tree"] += 1
             out.append(with_scalar(line, "tree_sha256", tree))
             continue
-        if line.rstrip() == "files:":
+        if _is_block_header(line, "files"):
             seen["files"] += 1
-            out.append("files:")
+            out.append(_header_as_it_was(line))
             for row in rows:
                 out.append(f"  - path: {row.path}")
                 out.append(f'    sha256: "{row.digest}"')
@@ -1496,10 +1528,17 @@ def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
     next top-level key — or at the end of the file, which is the `shape:`
     block a scaffold writes last. No `shape:` block at all is the one
     refusal, raised here because there is nothing to return.
+
+    THE HEADER IS FOUND THE WAY THE READER FINDS IT (#437): at column 0, once
+    `_strip_comment` has dropped a trailing `# comment`. It was
+    `line.rstrip() == "shape:"`, so `shape:  # mirrors the pin`, which both
+    validators accept, was refused as having NO `shape:` block, and the
+    remedy, "add it", would have given the manifest a second `shape:` key.
+    The header line itself is never rewritten, so its comment stays.
     """
     start = None
     for index, line in enumerate(lines):
-        if line.rstrip() == "shape:":
+        if _is_block_header(line, "shape"):
             start = index
             break
     if start is None:
