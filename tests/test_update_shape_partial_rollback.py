@@ -35,7 +35,13 @@ reads the refusal and the tree:
     file that stayed listed after it;
   * a path a symlink or a second name reached between the write and the
     undo is never written or removed through, and is listed, so the block
-    never says the tree is exactly as it was while one is left.
+    never says the tree is exactly as it was while one is left; a
+    symlink on the way to the path, a directory moved out and linked
+    back, counts as much as one at the path, and its line says the
+    directory has to be this root's own again;
+  * a directory a validator deleted does not take the checkout line
+    away from the file in it: git makes the missing directories, and
+    the line says nothing of making a file writable that is not there.
 
 The pastes run where the suite has a POSIX `sh`, or with no shell at all
 where the line is one command. THE FIXTURE is
@@ -353,7 +359,10 @@ def kept_line(refusal, root: Path) -> list[str]:
     lines = left(refusal.detail)
     said = (f"file      {CHANGED} was not put back ({DENIED}); its bytes "
             "before this run are kept as blob ")
-    assert len(lines) == 1 and lines[0].startswith(said), lines
+    assert len(lines) == 1, (
+        f"one line was expected, and {len(lines)} were printed: {lines}")
+    assert lines[0].startswith(said), (
+        f"the line does not begin as it should: {lines[0]!r}")
     words = shlex.split(lines[0].split(", then: ", 1)[1])
     assert words[:5] == ["git", "-C", str(root), "cat-file", "blob"], words
     assert words[6:] == [">", str(root / CHANGED)], words
@@ -401,7 +410,10 @@ def test_bytes_a_checkout_would_write_otherwise_are_not_sent_to_head(
     refusal = refused_by(update_shape, standard, root, "b")
     assert_reported_as_red(refusal)
     lines = left(refusal.detail)
-    assert len(lines) == 1 and "kept as blob" in lines[0], lines
+    assert len(lines) == 1, (
+        f"one line was expected, and {len(lines)} were printed: {lines}")
+    assert "kept as blob" in lines[0], (
+        f"the bytes were not kept in the object store: {lines[0]!r}")
     assert "HEAD's bytes" not in lines[0]
     words = shlex.split(lines[0].split(", then: ", 1)[1])
     assert subprocess.run(words[:6], capture_output=True,
@@ -488,7 +500,11 @@ def test_a_directory_that_will_not_go_is_named_with_its_rmdir_line(
     assert left(refusal.detail) == [
         f"directory {DIR}/, made to hold an --add file, was not removed "
         f"({DENIED}): " + shlex.join(["rmdir", "--", str(root / DIR)])]
-    assert (root / DIR).is_dir() and not any((root / DIR).iterdir())
+    assert (root / DIR).is_dir(), (
+        f"{DIR}/ is gone, and the patched rmdir should have kept it")
+    assert not any((root / DIR).iterdir()), (
+        f"{DIR}/ still holds {sorted((root / DIR).iterdir())}, and the "
+        "undo should have removed the file it made there")
 
 
 @WINDOWS_SKIP
@@ -530,8 +546,14 @@ def test_an_index_holding_another_blob_is_never_sent_to_head(
     refusal = refused_by(update_shape, standard, root, "b")
     assert_reported_as_red(refusal)
     lines = left(refusal.detail)
-    assert len(lines) == 1 and "kept as blob" in lines[0], lines
-    assert "checkout" not in lines[0] and "HEAD's bytes" not in lines[0]
+    assert len(lines) == 1, (
+        f"one line was expected, and {len(lines)} were printed: {lines}")
+    assert "kept as blob" in lines[0], (
+        f"the bytes were not kept in the object store: {lines[0]!r}")
+    assert "checkout" not in lines[0], (
+        f"a checkout was offered over a staged blob: {lines[0]!r}")
+    assert "HEAD's bytes" not in lines[0], (
+        f"the staged blob was called HEAD's: {lines[0]!r}")
     words = shlex.split(lines[0].split(", then: ", 1)[1])
     assert subprocess.run(words[:6], capture_output=True,
                           check=True).stdout == bytes_before[MANIFEST]
@@ -567,7 +589,10 @@ def test_a_directory_nobody_may_write_into_gets_the_line_that_writes_in_place(
         lines = left(refusal.detail)
         said = (f"file      {PIN} was not put back ({DENIED}); its bytes "
                 "before this run are kept as blob ")
-        assert len(lines) == 1 and lines[0].startswith(said), lines
+        assert len(lines) == 1, (
+            f"one line was expected, and {len(lines)} were printed: {lines}")
+        assert lines[0].startswith(said), (
+            f"the line does not begin as it should: {lines[0]!r}")
         assert "checkout" not in lines[0]
         pin.chmod(0o644)
         subprocess.run(["sh", "-c", lines[0].split(", then: ", 1)[1]],
@@ -576,6 +601,51 @@ def test_a_directory_nobody_may_write_into_gets_the_line_that_writes_in_place(
     finally:
         contracts.chmod(0o755)
         pin.chmod(0o644)
+
+
+@WINDOWS_SKIP
+def test_a_directory_a_validator_deleted_still_gets_the_checkout_line(
+        update_shape, root, standard, monkeypatch):
+    """ROUND 1'S REGRESSION (review of PR #560, round 2). Round 1 asked
+    `os.access` of the pin's own parent, and a validator that deletes
+    `contracts/` leaves none: the answer was no, so the pin's line fell to a
+    `cat-file` redirect into a directory that does not exist ("Directory
+    nonexistent"), and said "make it writable" of a file that is not there.
+    git makes the missing directories, so the question is asked of the
+    nearest one that exists, and the line is the checkout again: which,
+    pasted, puts the pin's bytes back."""
+    contracts, pin = root / "contracts", root / PIN
+    bytes_before = held(root)
+
+    def red_and_deleted(_root, _script):
+        if contracts.exists():
+            shutil.rmtree(contracts)
+        return 1
+
+    monkeypatch.setattr(update_shape, "run_validator", red_and_deleted)
+
+    refusal = refused_by(update_shape, standard, root, "b", "--branch",
+                         BRANCH)
+    assert not contracts.exists(), "the validator did not delete contracts/"
+    assert_reported_as_red(refusal)
+    assert put_back(refusal.detail) == [
+        f"restored  {rel}" for rel in (CHANGED, AGENTS, MANIFEST)]
+    lines = left(refusal.detail)
+    said = (f"file      {PIN} was not put back "
+            f"({os.strerror(errno.ENOENT)}); it held HEAD's bytes, then: ")
+    assert len(lines) == 1, (
+        f"one line was expected, and {len(lines)} were printed: {lines}")
+    assert lines[0].startswith(said), (
+        f"the line does not begin as it should: {lines[0]!r}")
+    assert "make it writable" not in lines[0], (
+        f"a file that is not there was called not writable: {lines[0]!r}")
+    command = lines[0][len(said):]
+    assert shlex.split(command) == [
+        "git", "-C", str(root), "--literal-pathspecs", "checkout", "HEAD",
+        "--", PIN], command
+
+    subprocess.run(["sh", "-c", command], check=True, capture_output=True)
+    assert pin.read_bytes() == bytes_before[PIN]
 
 
 def test_a_file_already_holding_its_old_bytes_is_not_written_again(
@@ -658,13 +728,73 @@ def test_a_symlink_that_arrives_before_the_undo_is_never_written_through(
             f"it, {MANIFEST} in this root is a symlink, pointing at "
             f"{str(away)!r}, and this run never writes through one; it held "
             f"HEAD's bytes, so once {MANIFEST} is not a link: ")
-    assert len(lines) == 1 and lines[0].startswith(said), lines
+    assert len(lines) == 1, (
+        f"one line was expected, and {len(lines)} were printed: {lines}")
+    assert lines[0].startswith(said), (
+        f"the line does not begin as it should: {lines[0]!r}")
     fix = shlex.split(lines[0][len(said):])
     assert fix == ["git", "-C", str(root), "--literal-pathspecs", "checkout",
                    "HEAD", "--", MANIFEST], fix
 
     (root / MANIFEST).unlink()
     subprocess.run(fix, check=True, capture_output=True)
+    assert_untouched(before, snapshot(root))
+
+
+@WINDOWS_SKIP
+def test_a_directory_linked_in_above_the_path_is_never_written_through(
+        update_shape, root, standard, monkeypatch, tmp_path):
+    """THE SAME RUN, ONE LEVEL UP (R560v's mutant MS3, which the test above
+    let through): a validator moves `contracts/` out of the root and links
+    it back. The pin is a plain file at the link's end, so only a walk of
+    every component finds the link. Narrowed to the pin's own `is_symlink`,
+    the undo wrote the old bytes outside the root and said "exactly as it
+    was" over a root holding a link. The pin is left as the validator left
+    it, and listed; the line says the directory has to be this root's own
+    again, rather than "not a link", which read as removing the link and
+    then failed, "Directory nonexistent". Moved back, the line puts the
+    bytes back and leaves the tree exactly as it was."""
+    contracts, away = root / "contracts", outside(tmp_path) / "contracts"
+    seen: dict = {}
+
+    def moved_and_linked(_root, _script):
+        if not contracts.is_symlink():
+            shutil.move(str(contracts), str(away))
+            contracts.symlink_to(away, target_is_directory=True)
+            seen["pin"] = (away / Path(PIN).name).read_bytes()
+        return 1
+
+    monkeypatch.setattr(update_shape, "run_validator", moved_and_linked)
+    before = snapshot(root)
+
+    refusal = refused_by(update_shape, standard, root, "b")
+    assert (away / Path(PIN).name).read_bytes() == seen["pin"], (
+        "the old bytes were written THROUGH the directory link, outside "
+        "the root")
+    assert contracts.is_symlink()
+    assert_reported_as_red(refusal)
+    assert "exactly as it was" not in refusal.detail
+    assert put_back(refusal.detail) == [
+        f"restored  {rel}" for rel in (CHANGED, AGENTS, MANIFEST)]
+    lines = left(refusal.detail)
+    said = (f"file      {PIN} was not put back: since this run wrote it, "
+            f"contracts in this root is a symlink, on the way to {PIN}, "
+            f"pointing at {str(away)!r}, and this run never writes through "
+            "one; it held HEAD's bytes, so once contracts is this root's "
+            "own directory again: ")
+    assert len(lines) == 1, (
+        f"one line was expected, and {len(lines)} were printed: {lines}")
+    assert lines[0].startswith(said), (
+        f"the line does not begin as it should: {lines[0]!r}")
+    assert "is not a link" not in lines[0], lines[0]
+    command = lines[0][len(said):]
+    assert shlex.split(command) == [
+        "git", "-C", str(root), "--literal-pathspecs", "checkout", "HEAD",
+        "--", PIN], command
+
+    contracts.unlink()
+    shutil.move(str(away), str(contracts))
+    subprocess.run(["sh", "-c", command], check=True, capture_output=True)
     assert_untouched(before, snapshot(root))
 
 
@@ -712,8 +842,10 @@ def test_a_second_name_that_arrives_before_the_undo_is_never_written_through(
     assert_reported_as_red(refusal)
     assert "exactly as it was" not in refusal.detail
     lines = left(refusal.detail)
-    assert len(lines) == 1 and lines[0].startswith(
-        second_name_said(root)), lines
+    assert len(lines) == 1, (
+        f"one line was expected, and {len(lines)} were printed: {lines}")
+    assert lines[0].startswith(second_name_said(root)), (
+        f"the line does not begin as it should: {lines[0]!r}")
     assert shlex.split(lines[0][len(second_name_said(root)):]) == [
         "git", "-C", str(root), "--literal-pathspecs", "checkout", "HEAD",
         "--", MANIFEST]
@@ -767,3 +899,44 @@ def test_a_link_at_an_add_path_is_never_removed_by_the_undo(
     assert f"removed   {DIR_ADDED} (written by --add)" in put_back(
         refusal.detail)
     assert not (root / DIR).exists()
+
+
+@WINDOWS_SKIP
+def test_a_directory_linked_in_above_an_add_path_is_never_removed_under(
+        update_shape, root, standard, monkeypatch, tmp_path):
+    """THE SAME RUN, ONE LEVEL UP (R560v's mutant MR2, which the test above
+    let through): the validators move the `docs/` that `--add` made out of
+    the root and link it back. `docs/shape-guide.md` is a plain file at the
+    link's end, so only a walk of every component finds the link; narrowed
+    to the path's own `is_symlink`, the undo deleted that file OUTSIDE the
+    root and said it had removed it, which is #239's hazard. Both the file
+    and the directory are left and listed, each with what stands there; the
+    file at the link's end is as the validators left it, and the other
+    addition and every copy are put back as before."""
+    docs, away = root / DIR, outside(tmp_path) / DIR
+
+    def moved_and_linked(_root, _script):
+        if not docs.is_symlink():
+            shutil.move(str(docs), str(away))
+            docs.symlink_to(away, target_is_directory=True)
+        return 1
+
+    monkeypatch.setattr(update_shape, "run_validator", moved_and_linked)
+
+    refusal = refused_by(update_shape, standard, root, "b", *ADDING)
+    assert (away / Path(DIR_ADDED).name).read_bytes() == BODIES[DIR_ADDED], (
+        "the file at the link's end was removed, outside the root")
+    assert docs.is_symlink()
+    assert_reported_as_red(refusal)
+    assert put_back(refusal.detail) == [
+        *(f"restored  {rel}" for rel in REWRITTEN),
+        f"removed   {ADDED} (written by --add)"]
+    leads = ("and this run never removes at or through a link it did not "
+             "make; what it leads to is yours to judge")
+    assert left(refusal.detail) == [
+        f"file      {DIR_ADDED}, written by --add, was not removed: since "
+        f"this run wrote it, {DIR} in this root is a symlink, on the way to "
+        f"{DIR_ADDED}, pointing at {str(away)!r}, {leads}",
+        f"directory {DIR}/, made to hold an --add file, was not removed: "
+        f"since this run wrote it, {DIR} in this root is a symlink, "
+        f"pointing at {str(away)!r}, {leads}"]

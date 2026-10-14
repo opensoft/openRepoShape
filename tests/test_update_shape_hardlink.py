@@ -219,8 +219,11 @@ def test_check_says_refusal_ahead_and_every_row_keeps_its_verdict(
     assert verdicts(result.stdout)[CHANGED] == "upstream-changed"
     assert hard_link_lines(plain.stdout) == []
     said = hard_link_lines(result.stdout)
-    assert len(said) == 1 and said[0].endswith(f" — {rel} (2 names)"), (
-        result.stdout)
+    assert len(said) == 1, (
+        f"one REFUSAL AHEAD line was expected, and {len(said)} were "
+        f"printed: {result.stdout}")
+    assert said[0].endswith(f" — {rel} (2 names)"), (
+        f"the line does not end with the path and its count: {said[0]!r}")
     assert "REFUSAL AHEAD: `apply` will refuse while" not in result.stdout, (
         "a hard link is not counted among the conflicts")
     assert_untouched(before, snapshot(root))

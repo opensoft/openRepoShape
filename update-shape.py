@@ -2699,10 +2699,15 @@ class Rollback:
                 path.write_bytes(original)
         except OSError as exc:
             where, command = self._restore_by_hand(path, name, original)
+            # "MAKE IT WRITABLE" IS SAID OF A FILE THAT IS THERE (review of
+            # PR #560, round 2). A directory a validator deleted took the
+            # file with it, and a file that is not there cannot be made
+            # writable: the line is then the command alone, which creates it.
+            how = (f"{where}, so make it writable, then: {command}"
+                   if os.path.lexists(path) else f"{where}, then: {command}")
             left.append(f"file      {name} was not put back "
                         f"({exc.strerror or exc}); "
-                        + (f"{where}, so make it writable, then: {command}"
-                           if command else where))
+                        + (how if command else where))
             return
         done.append(f"restored  {name}")
 
@@ -2713,7 +2718,11 @@ class Rollback:
 
         A SYMLINK is the operator's, or whoever made it, so the line never
         removes it: the bytes go back once it is not a link, which is the
-        same exit `update-rewrite-symlink` gives before a write. A SECOND
+        same exit `update-rewrite-symlink` gives before a write. One ABOVE
+        the path is a directory moved out of the root and linked back, and
+        is said as that: once it is this root's own directory again, since
+        a command run over a link merely removed has no directory to write
+        into (probed in the round-2 review). A SECOND
         NAME is broken from this side first, with the line
         `update-rewrite-hardlink` prints (`_copy_over_itself`), so the
         other name keeps the bytes it holds: a `cat-file` redirect writes
@@ -2723,7 +2732,13 @@ class Rollback:
         if link is not None:
             said = (f"since this run wrote it, {link_said(name, link)}, and "
                     "this run never writes through one")
-            fix = (f"{where}, so once {link[0]} is not a link: {command}"
+            # A link ABOVE the path is a directory that is no longer this
+            # root's own (review of PR #560, round 2): "is not a link" read
+            # as "remove it", and with the link gone and nothing in its
+            # place the command fails, "Directory nonexistent".
+            again = (f"{link[0]} is not a link" if link[0] == name else
+                     f"{link[0]} is this root's own directory again")
+            fix = (f"{where}, so once {again}: {command}"
                    if command else where)
         else:
             said = (f"since this run wrote it, it has gained another name "
@@ -2752,7 +2767,11 @@ class Rollback:
         DIRECTORY TAKES A NEW FILE (review of PR #560): a checkout unlinks
         the path and creates it again, which a directory nobody may write
         into refuses however writable the file is made, while a redirect
-        writes into the file where it stands.
+        writes into the file where it stands. The directory asked is the
+        NEAREST ONE THAT EXISTS (`_nearest_directory`): a validator that
+        deleted `contracts/` left none to ask at the path's own parent, and
+        git makes the missing ones, so the question is whether what is
+        there takes them (round 2 of the review).
 
         ELSE FROM THE OBJECT STORE. The bytes are written into this
         repository with `git hash-object -w --stdin` — on stdin, so no
@@ -2763,7 +2782,7 @@ class Rollback:
         not store them either, the line says so, and that the bytes are
         nowhere this run can point at.
         """
-        if (os.access(path.parent, os.W_OK)
+        if (os.access(self._nearest_directory(path.parent), os.W_OK)
                 and self._head_restores(name, original)):
             return ("it held HEAD's bytes",
                     _by_hand(self.root, "--literal-pathspecs", "checkout",
@@ -2777,6 +2796,16 @@ class Rollback:
         return ("and git would not keep its bytes before this run either, "
                 "so they are nowhere this run can point at: only a copy of "
                 f"{name} made before it can put it back", "")
+
+    @staticmethod
+    def _nearest_directory(directory: Path) -> Path:
+        """`directory` when it is one, else the nearest directory above it
+        that is: the one `git checkout` would have to write into to make
+        what is missing. `os.path.isdir`, which answers False rather than
+        raising for a path it may not look at."""
+        while not os.path.isdir(directory) and directory != directory.parent:
+            directory = directory.parent
+        return directory
 
     def _head_restores(self, name: str, original: bytes) -> bool:
         """Would `git checkout HEAD -- <name>` write exactly `original` and
