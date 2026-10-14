@@ -23,6 +23,9 @@ standard is:
     now name imports it, so it reaches a project only by `--add`.
   * `family`: `repo_shape.py` gains `NEW_NAME`, and the holder's
     `siblings.py` imports it.
+  * `val-name`: `repo_shape.py` gains `NEW_NAME`, and the assembly root's
+    `validate-manifest.py` imports it: a copy that is one of the root's
+    validators, which would go red after the writes and be rolled back.
 
 The project's own edit is committed, as a project's is, so `check` reads
 `repo_shape.py` as `both` and `--branch` meets this refusal rather than
@@ -61,6 +64,10 @@ REFUSAL = "update-accept-local-missing-name"
 REPO_SHAPE = "scripts/repo_shape.py"
 BOOTSTRAP = "scripts/bootstrap.py"
 SIBLINGS = "scripts/siblings.py"
+VALIDATE_MANIFEST = "scripts/validate-manifest.py"
+#: What the refusal says only when no copy it names is one of the root's
+#: validators: those import what they need, and would go red.
+VALIDATORS_PASS = "though the validators, which never import it, pass"
 #: The file `added` names in the assembly root's copy lists.
 ADDED_CHECK = "scripts/kept-helper-check.py"
 BRANCH = "shape/update-kept-helper"
@@ -129,7 +136,7 @@ def naming_the_added_check(data: bytes) -> bytes:
 
 @pytest.fixture(scope="module")
 def standard(tmp_path_factory) -> dict:
-    """A clone at A, `Atlas` and `InkRouter` cut from it, and four branches
+    """A clone at A, `Atlas` and `InkRouter` cut from it, and five branches
     off A, one per case."""
     base, upstream, a, clone = scaffold_upstream_and_project(
         tmp_path_factory, "update-shape-kept-helper")
@@ -156,6 +163,9 @@ def standard(tmp_path_factory) -> dict:
     commits["family"] = branch_off(upstream, a, "family", {
         REPO_SHAPE: defining_the_new_name,
         f"templates/family-root/{SIBLINGS}": importing_the_new_name})
+    commits["val-name"] = branch_off(upstream, a, "val-name", {
+        REPO_SHAPE: defining_the_new_name,
+        f"{assembly}/{VALIDATE_MANIFEST}": importing_the_new_name})
     return {"upstream": upstream, "clone": clone,
             "holder": base / "fam" / FAMILY, **commits}
 
@@ -258,6 +268,9 @@ def test_keeping_a_helper_that_lacks_a_name_bootstrap_imports_is_refused(
     assert (f"`git show {standard['new-name']}:{REPO_SHAPE}` for "
             f"{REPO_SHAPE}") in result.stderr
     assert "`update-conflict`'s merge by hand again" in result.stderr
+    assert VALIDATORS_PASS in result.stderr, (
+        "bootstrap.py is none of the validators, and the refusal says so: "
+        + result.stderr)
 
     beside = root.parent / "beside" / "scripts"
     beside.mkdir(parents=True)
@@ -267,7 +280,25 @@ def test_keeping_a_helper_that_lacks_a_name_bootstrap_imports_is_refused(
     started = run_script(beside / "bootstrap.py", "--help",
                          env={"PYTHONDONTWRITEBYTECODE": "1"})
     assert started.returncode != 0, started.stdout
-    assert "ImportError" in started.stderr and NEW_NAME in started.stderr
+    assert "ImportError" in started.stderr, (
+        "bootstrap.py did not stop on an ImportError: " + started.stderr)
+    assert NEW_NAME in started.stderr, (
+        f"the ImportError does not name {NEW_NAME}: " + started.stderr)
+
+
+def test_keeping_a_helper_a_validator_imports_is_refused_without_the_clause(
+        root, standard):
+    """`validate-manifest.py` is a copy this run writes, and it imports the
+    name the kept `repo_shape.py` lacks. That one the validators DO see:
+    run after the writes, it goes red and the run is rolled back. So the
+    refusal still comes first, before the yes and before a byte is
+    written, and does not say the validators pass."""
+    before = snapshot(root)
+    result = apply(root, standard, "val-name", "--accept-local", REPO_SHAPE)
+    assert_refused_writing_nothing(result, root, before, VALIDATE_MANIFEST)
+    assert VALIDATORS_PASS not in result.stderr, (
+        "validate-manifest.py is one of the validators, which would not "
+        "pass: " + result.stderr)
 
 
 def test_with_branch_it_is_refused_before_any_branch_exists(root, standard):
@@ -362,9 +393,11 @@ def test_every_name_a_shipped_importer_takes_is_found_defined(update_shape,
     data = (REPO / importer).read_bytes()
     spelled = set().union(*spelled_imports(data.decode("utf-8")))
     taken = update_shape._names_imported(data).get("repo_shape", set())
-    assert spelled and taken == spelled, sorted(taken ^ spelled)
+    assert spelled, f"{importer} no longer spells `from repo_shape import`"
+    assert taken == spelled, sorted(taken ^ spelled)
     defined = update_shape._names_defined(REPO / REPO_SHAPE)
-    assert defined is not None and taken <= defined, sorted(taken - defined)
+    assert defined is not None, f"{REPO_SHAPE} reads as one it cannot tell"
+    assert taken <= defined, sorted(taken - defined)
 
 
 def test_the_reader_finds_all_three_of_validate_pins_statements(update_shape):
@@ -386,7 +419,9 @@ def test_what_siblings_takes_from_the_holders_bootstrap_is_found_defined(
     taken = update_shape._names_imported(
         (family / "siblings.py").read_bytes())["bootstrap"]
     defined = update_shape._names_defined(family / "bootstrap.py")
-    assert taken and taken <= defined, sorted(taken - defined)
+    assert taken, "siblings.py takes nothing from bootstrap"
+    assert defined is not None, "the holder's bootstrap.py cannot be told"
+    assert taken <= defined, sorted(taken - defined)
 
 
 # --- the readers, in process -------------------------------------------------
@@ -457,10 +492,12 @@ def imports(*names: str, module: str = "repo_shape") -> bytes:
 
 def refusal(update_shape, root: Path, kept: dict, written: dict,
             added: dict | None = None, state: str = "both",
-            accepted: set | None = None, writing: str = "upstream-changed"):
+            accepted: set | None = None, writing: str = "upstream-changed",
+            kind=None):
     """`_refuse_kept_copies_missing_names` over rows made by hand: `kept`
     (`{path: bytes on disk}`) in `state`, `written` (`{path: target bytes}`)
-    in `writing`, and `added` as `--add` files. The refusal, or None."""
+    in `writing`, and `added` as `--add` files, in a root of `kind` (a
+    project's unless one is given). The refusal, or None."""
     rows = []
     for path, data in kept.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
@@ -478,7 +515,7 @@ def refusal(update_shape, root: Path, kept: dict, written: dict,
     try:
         update_shape._refuse_kept_copies_missing_names(
             root, rows, taking, set(kept) if accepted is None else accepted,
-            "a" * 40)
+            "a" * 40, update_shape.PROJECT_KIND if kind is None else kind)
     except update_shape.Refusal as exc:
         return exc
     return None
@@ -504,10 +541,134 @@ def test_every_binding_at_module_scope_is_a_name_the_kept_copy_defines(
     refused = refusal(update_shape, tmp_path, kept,
                       {BOOTSTRAP: imports("ASSIGNED", "INSIDE_A_FUNCTION",
                                           "ONLY_ANNOTATED")})
-    assert refused is not None and refused.code == REFUSAL
+    assert refused is not None, "two of the names are not bound there"
+    assert refused.code == REFUSAL, refused.code
     assert (f"    {REPO_SHAPE} (kept) lacks INSIDE_A_FUNCTION, "
             f"ONLY_ANNOTATED, which {BOOTSTRAP} imports from it"
             in refused.detail), refused.detail
+
+
+#: `match` and `type X =` are newer syntax than this suite's floor; a
+#: Python that cannot parse them cannot import a copy that spells them.
+MATCH = pytest.mark.skipif(sys.version_info < (3, 10),
+                           reason="`match` is Python 3.10 syntax")
+TYPE_STATEMENT = pytest.mark.skipif(sys.version_info < (3, 12),
+                                    reason="`type X =` is Python 3.12 syntax")
+
+
+@pytest.mark.parametrize("kept", [
+    pytest.param(b"if (NEW := 1):\n    pass\n", id=":= at module scope"),
+    pytest.param(b"_ = [x for x in [1] if (NEW := x)]\n",
+                 id=":= in a module-level comprehension"),
+    pytest.param(b"match 1:\n    case NEW:\n        pass\n",
+                 id="a match capture", marks=MATCH),
+    pytest.param(b"match [1]:\n    case [*NEW]:\n        pass\n",
+                 id="a match star capture", marks=MATCH),
+    pytest.param(b"match {}:\n    case {**NEW}:\n        pass\n",
+                 id="the rest of a match mapping", marks=MATCH),
+    pytest.param(b"match 1:\n    case 1:\n        NEW = 1\n",
+                 id="an assignment in a case body", marks=MATCH),
+    pytest.param(b"type NEW = int\n", id="a type alias", marks=TYPE_STATEMENT),
+    pytest.param(b"def _init():\n    global NEW\n    NEW = 1\n\n\n_init()\n",
+                 id="global in a function the module calls"),
+    pytest.param(b"NEW = 1\ndel NEW\n",
+                 id="bound and then deleted, a known false negative"),
+])
+def test_a_name_newer_syntax_binds_is_read_as_defined(update_shape, tmp_path,
+                                                      kept):
+    """`:=` (in a comprehension too, which binds it in the module), a
+    `match` capture, `type X =`, and a `global` declared in a function: a
+    kept copy that binds the name these ways imports, and is not refused.
+    `del` is not read, so a name bound and then deleted reads as bound:
+    the docstring names that false negative, and this pins it."""
+    path = tmp_path / "repo_shape.py"
+    path.write_bytes(kept)
+    defined = update_shape._names_defined(path)
+    assert defined is not None, "every one of these parses and is read"
+    assert "NEW" in defined, sorted(defined)
+    assert refusal(update_shape, tmp_path / "run", {REPO_SHAPE: kept},
+                   {BOOTSTRAP: imports("NEW")}) is None
+
+
+@pytest.mark.parametrize("kept", [
+    pytest.param(b"def assign():\n    return (NEW := 1)\n",
+                 id=":= inside a function"),
+    pytest.param(b"assign = lambda: (NEW := 1)\n", id=":= inside a lambda"),
+    pytest.param(b"_ = [NEW for NEW in [1]]\n",
+                 id="a comprehension's own target"),
+    pytest.param(b"match 1:\n    case OTHER:\n        pass\n",
+                 id="a match capturing another name", marks=MATCH),
+])
+def test_a_name_bound_in_another_scope_is_not_the_modules(update_shape,
+                                                          tmp_path, kept):
+    """The walk stays in the module's own scope: a function, a lambda and
+    a comprehension's loop variable bind names of their own, and the
+    importer still stops on an `ImportError`."""
+    refused = refusal(update_shape, tmp_path, {REPO_SHAPE: kept},
+                      {BOOTSTRAP: imports("NEW")})
+    assert refused is not None, "the module itself binds no NEW"
+    assert f"    {REPO_SHAPE} (kept) lacks NEW, which {BOOTSTRAP}" \
+        in refused.detail, refused.detail
+
+
+@pytest.mark.parametrize("kind, importers, said", [
+    pytest.param("PROJECT_KIND", [BOOTSTRAP], True,
+                 id="a project's bootstrap.py"),
+    pytest.param("PROJECT_KIND", ["scripts/validate-pins.py"], False,
+                 id="a project's validate-pins.py"),
+    pytest.param("PROJECT_KIND", [BOOTSTRAP, VALIDATE_MANIFEST], False,
+                 id="bootstrap.py and validate-manifest.py together"),
+    pytest.param("FAMILY_KIND", [SIBLINGS], True,
+                 id="a holder's siblings.py"),
+    pytest.param("FAMILY_KIND", ["scripts/validate-family.py"], False,
+                 id="a holder's validate-family.py"),
+])
+def test_the_validators_are_said_to_pass_only_when_none_imports_it(
+        update_shape, tmp_path, kind, importers, said):
+    """`kind.validators` are what runs after the writes. A copy among them
+    that imports a name the kept copy lacks goes red there and is rolled
+    back, so the refusal says the validators pass only when no copy it
+    names is one of them: with one validator in the list, that clause
+    would be false of it."""
+    refused = refusal(update_shape, tmp_path, {REPO_SHAPE: b"OLD = 1\n"},
+                      {path: imports("NEW") for path in importers},
+                      kind=getattr(update_shape, kind))
+    assert refused is not None, "every importer here lacks NEW"
+    for path in importers:
+        assert f"lacks NEW, which {path} imports from it" in refused.detail, \
+            refused.detail
+    assert (VALIDATORS_PASS in refused.detail) == said, refused.detail
+
+
+BOM = b"\xef\xbb\xbf"
+
+
+@pytest.mark.parametrize("kept, written, lacking", [
+    pytest.param(BOM + b"OLD = 1\n", imports("NEW"), True,
+                 id="a kept copy that starts with a BOM"),
+    pytest.param(b"OLD = 1\n", BOM + imports("NEW"), True,
+                 id="a written copy that starts with a BOM"),
+    pytest.param(BOM + b"NEW = 1\n", imports("NEW"), False,
+                 id="a kept copy with a BOM that defines the name"),
+    pytest.param(b"# -*- coding: latin-1 -*-\nOLD = '\xe9'\n", imports("NEW"),
+                 True, id="a kept copy in latin-1 under a coding cookie"),
+])
+def test_the_bytes_are_read_as_python_reads_them(update_shape, tmp_path,
+                                                 kept, written, lacking):
+    """A BOM, or a coding cookie, means what it means to Python's own
+    import. Decoded as UTF-8 first, a BOM was a character no parser takes
+    and a latin-1 byte did not decode, so a copy Python imports read as one
+    this could not tell about, and #536's `ImportError` went unrefused. The
+    kept copy is the project's own file, where a Windows editor puts a
+    BOM."""
+    refused = refusal(update_shape, tmp_path, {REPO_SHAPE: kept},
+                      {BOOTSTRAP: written})
+    if not lacking:
+        assert refused is None, refused.detail
+        return
+    assert refused is not None, "the kept copy lacks NEW, and is read"
+    assert f"    {REPO_SHAPE} (kept) lacks NEW, which {BOOTSTRAP}" \
+        in refused.detail, refused.detail
 
 
 def test_a_function_level_import_counts(update_shape, tmp_path):
@@ -517,7 +678,8 @@ def test_a_function_level_import_counts(update_shape, tmp_path):
                b"    from repo_shape import " + NEW_NAME.encode() + b"\n")
     refused = refusal(update_shape, tmp_path, {REPO_SHAPE: b"OLD = 1\n"},
                       {BOOTSTRAP: written})
-    assert refused is not None and NEW_NAME in refused.detail
+    assert refused is not None, "a function-level import was not read"
+    assert NEW_NAME in refused.detail, refused.detail
 
 
 @pytest.mark.parametrize("kept, written", [
@@ -533,6 +695,10 @@ def test_a_function_level_import_counts(update_shape, tmp_path):
                  id="a kept copy that does not parse"),
     pytest.param(b"\xff = 1\n", b"from repo_shape import NEW\n",
                  id="a kept copy that is not UTF-8"),
+    pytest.param(b"OLD = 1\n", b"from repo_shape import NEW\x00\n",
+                 id="written bytes with a null byte"),
+    pytest.param(b"OLD = 1\x00\n", b"from repo_shape import NEW\n",
+                 id="a kept copy with a null byte"),
     pytest.param(b"from elsewhere import *\n", b"from repo_shape import NEW\n",
                  id="a kept copy with a star import"),
     pytest.param(b"def __getattr__(name):\n    return name\n",
@@ -550,11 +716,87 @@ def test_a_function_level_import_counts(update_shape, tmp_path):
                  b"from typing import TYPE_CHECKING\n"
                  b"if TYPE_CHECKING:\n    from repo_shape import NEW\n",
                  id="an import under TYPE_CHECKING"),
+    pytest.param(b"OLD = 1\n",
+                 b"import typing\n"
+                 b"if typing.TYPE_CHECKING:\n    from repo_shape import NEW\n",
+                 id="an import under typing.TYPE_CHECKING"),
+    pytest.param(b"OLD = 1\n",
+                 b"try:\n    from repo_shape import NEW\n"
+                 b"except ImportError:\n    def NEW():\n        return None\n",
+                 id="an import whose handler defines a fallback"),
+    pytest.param(b"OLD = 1\n",
+                 b"try:\n    from repo_shape import NEW as new\n"
+                 b"except ImportError:\n    new = None\n",
+                 id="an aliased import whose handler binds the alias"),
+    pytest.param(b"OLD = 1\n",
+                 b"try:\n    from repo_shape import NEW\n"
+                 b"except ModuleNotFoundError:\n    raise\n"
+                 b"except ImportError:\n    NEW = None\n",
+                 id="the first handler that catches it binds a fallback"),
+    pytest.param(b"OLD = 1\n",
+                 b"try:\n    from repo_shape import NEW\n"
+                 b"except ImportError:\n    from compat import *\n",
+                 id="a handler whose star import may bind it"),
 ])
 def test_what_the_check_cannot_tell_or_is_answered_it_does_not_refuse(
         update_shape, tmp_path, kept, written):
     assert refusal(update_shape, tmp_path, {REPO_SHAPE: kept},
                    {BOOTSTRAP: written}) is None
+
+
+#: The guarded import the cases below share, before their handler's body.
+GUARDED = b"try:\n    from repo_shape import NEW\nexcept ImportError:\n"
+
+
+@pytest.mark.parametrize("written", [
+    pytest.param(GUARDED + b"    raise SystemExit('needs a new repo_shape')\n",
+                 id="the handler exits"),
+    pytest.param(b"try:\n    from repo_shape import NEW\n"
+                 b"except ImportError as exc:\n"
+                 b"    raise RuntimeError('an old helper') from exc\n",
+                 id="the handler re-raises"),
+    pytest.param(GUARDED + b"    pass\nprint(NEW)\n", id="the handler passes"),
+    pytest.param(GUARDED + b"    pass\nexcept Exception:\n    NEW = None\n",
+                 id="only a later handler binds a fallback"),
+    pytest.param(b"try:\n    from repo_shape import NEW as new\n"
+                 b"except ImportError:\n    NEW = None\n",
+                 id="the handler binds the name, not the alias"),
+    pytest.param(b"try:\n    def main():\n        from repo_shape import NEW\n"
+                 b"        return NEW\nexcept Exception:\n    pass\n",
+                 id="a def inside the try"),
+    pytest.param(b"try:\n    def main():\n        from repo_shape import NEW\n"
+                 b"        return NEW\nexcept Exception:\n    NEW = None\n",
+                 id="a def inside the try, the fallback outside it"),
+    pytest.param(b"try:\n    try:\n        from repo_shape import NEW\n"
+                 b"    except ImportError:\n        pass\n"
+                 b"except ImportError:\n    NEW = None\n",
+                 id="an inner handler passes, inside one that binds"),
+])
+def test_a_guard_whose_first_handler_binds_no_fallback_still_refuses(
+        update_shape, tmp_path, written):
+    """A `try` that catches the `ImportError` answers a name only where
+    the first handler that catches it binds that same local name itself:
+    the copy's own fallback. A handler that exits, re-raises or passes
+    leaves the copy stopping there, or on a `NameError` later, and a
+    `def` in the `try` imports when it is called, outside the handler."""
+    refused = refusal(update_shape, tmp_path, {REPO_SHAPE: b"OLD = 1\n"},
+                      {BOOTSTRAP: written})
+    assert refused is not None, "nothing the copy runs binds NEW"
+    assert f"    {REPO_SHAPE} (kept) lacks NEW, which {BOOTSTRAP}" \
+        in refused.detail, refused.detail
+
+
+def test_a_fallback_answers_only_the_names_its_handler_binds(
+        update_shape, tmp_path):
+    """`NEW, OTHER` under one `try`, with a fallback for `NEW` alone: the
+    copy still stops on `OTHER`, and the refusal names that one only."""
+    written = (b"try:\n    from repo_shape import NEW, OTHER\n"
+               b"except ImportError:\n    NEW = None\n")
+    refused = refusal(update_shape, tmp_path, {REPO_SHAPE: b"OLD = 1\n"},
+                      {BOOTSTRAP: written})
+    assert refused is not None, "OTHER has no fallback"
+    assert (f"    {REPO_SHAPE} (kept) lacks OTHER, which {BOOTSTRAP} "
+            "imports from it") in refused.detail.splitlines(), refused.detail
 
 
 @pytest.mark.parametrize("raised", [RecursionError, MemoryError])
@@ -585,7 +827,8 @@ def test_a_handler_that_misses_a_missing_name_still_refuses(update_shape,
                b"except ModuleNotFoundError:\n    NEW = None\n")
     refused = refusal(update_shape, tmp_path, {REPO_SHAPE: b"OLD = 1\n"},
                       {BOOTSTRAP: written})
-    assert refused is not None and "lacks NEW" in refused.detail
+    assert refused is not None, "ModuleNotFoundError was read as catching"
+    assert "lacks NEW" in refused.detail, refused.detail
 
 
 @pytest.mark.parametrize("written, how", [
