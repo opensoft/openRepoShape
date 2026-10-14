@@ -5906,6 +5906,44 @@ def check_what_is_here(ctx: Context) -> Row:
 #: at. Absent is not a finding -- it is needed to ADOPT and for nothing else.
 ADOPTION_TOOL = "git-filter-repo"
 
+#: The mark the preflight puts on a check that failed. `setup-project.py`'s
+#: `CROSS`, spelled again here because that file is run, never imported.
+PREFLIGHT_FAILED = "[!!]"
+#: How the preflight's closing line opens: `this machine is not ready yet (see
+#: above).`, which it prints with the same mark as the checks it points at.
+PREFLIGHT_VERDICT = "this machine is not ready yet"
+
+
+def preflight_failures(whole: str) -> list[str]:
+    """What the preflight found NOT READY, as the lines it printed (#549).
+
+    THE ROW USED TO QUOTE THE CHILD'S LAST LINE, which is that closing
+    verdict -- `this machine is not ready yet (see above).` -- and above it
+    the doctor shows nothing: the preflight's lines are kept only in `--json`
+    (`detail.report`). A reader of the table got a pointer at output that was
+    never printed. The lines it points at are the `[!!]` ones, one per check
+    that failed, in the order the preflight made them; each is returned
+    without its mark and flattened by `ascii_text`, as `detail.report` is.
+
+    THE VERDICT IS NOT ONE OF THEM, though it carries the same mark: it is
+    the child summarising its own failures, so it is dropped here and a
+    machine that failed two checks says two things. Nothing in
+    `setup-project.py` had to change for this: the mark was already the one
+    thing a line of the report is read by (`check_machine` reads `[ok]` and
+    `[??]` by theirs). An empty list is a child that exited non-zero without
+    saying which check failed -- a crash, an interpreter that would not
+    start -- and the caller falls back to the one line `run_validator` quoted.
+    """
+    failed: list[str] = []
+    for line in whole.splitlines():
+        text = line.strip()
+        if not text.startswith(PREFLIGHT_FAILED):
+            continue
+        said = ascii_text(text[len(PREFLIGHT_FAILED):].strip())
+        if said and not said.startswith(PREFLIGHT_VERDICT):
+            failed.append(said)
+    return failed
+
 
 def check_machine(ctx: Context) -> Row:
     """Can this machine run the fixes the rows above name?
@@ -5929,6 +5967,11 @@ def check_machine(ctx: Context) -> Row:
     with no `gh` cannot open the pull request a fix needs, which is worth
     saying and is not this repository being non-compliant. So the row reports
     and never changes the verdict.
+
+    WHEN IT IS NOT READY THE REASON NAMES WHAT IS NOT (#549): the preflight's
+    own `[!!]` check lines (`preflight_failures`), `; `-joined, and also
+    `detail.not_ready`. It used to quote the child's last line, a verdict that
+    points "above" at output this table does not show.
     """
     entry = ctx.shape / "setup-project.py"
     adoption = shutil.which(ADOPTION_TOOL)
@@ -5947,14 +5990,23 @@ def check_machine(ctx: Context) -> Row:
     marks = [ascii_text(line.strip()) for line in whole.splitlines()
              if line.strip().startswith(("[ok]", "[!!]", "[??]"))]
     detail["report"] = marks
+    # WHAT IS NOT READY, in the preflight's own words (#549): its `[!!]`
+    # lines. `quoted` is the child's last line and, for a machine that is not
+    # ready, that is its verdict pointing "above" at lines this table does not
+    # print -- so it is the fallback for a child that said nothing better.
+    failures = preflight_failures(whole) if code != 0 else []
+    detail["not_ready"] = failures
     ready = "this machine is ready" if code == 0 else \
         "this machine is missing something the fixes above may need"
-    extra = ("" if adoption else
-             f"; {ADOPTION_TOOL} is not on PATH, which only `adopt-project.py`"
-             " needs")
-    reason = f"{ready} (setup-project.py --preflight, exit {code}){extra}"
-    if code != 0 and quoted:
-        reason += f": {quoted}"
+    reason = f"{ready} (setup-project.py --preflight, exit {code})"
+    # The `; ` that joins them stands in for each line's own full stop.
+    said = "; ".join(line.removesuffix(".") for line in failures) or \
+        (quoted if code != 0 else "")
+    if said:
+        reason += f": {said}"
+    if not adoption:
+        reason += (f"; {ADOPTION_TOOL} is not on PATH, which only "
+                   "`adopt-project.py` needs")
     if code == 0:
         return Row("machine", "machine", NA, reason, None, detail)
     return Row("machine", "machine", NA, reason,

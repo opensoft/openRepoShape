@@ -163,7 +163,13 @@ def test_the_doctors_machine_row_meets_the_guard(gh_guard, project, request):
     assert not any("gh is authenticated" in line for line in report), report
     assert machine["reason"].startswith(
         "this machine is missing something the fixes above may need "
-        "(setup-project.py --preflight, exit 1)"), machine["reason"]
+        "(setup-project.py --preflight, exit 1): gh is not authenticated. "
+        "Run: gh auth login"), machine["reason"]
+    # The failed check's line, and not the closing verdict (#549): the
+    # preflight's own words, which `setup-project.py` is still the author of.
+    assert machine["detail"]["not_ready"] == [
+        "gh is not authenticated. Run: gh auth login"], machine
+    assert "see above" not in machine["reason"], machine["reason"]
     taken = calls(gh_guard.take())
     assert [(kind, argv) for kind, argv, _ in taken] == [
         ("probe", ["--version"]), ("probe", ["auth", "status"])], taken
