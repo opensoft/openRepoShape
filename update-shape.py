@@ -72,7 +72,11 @@ recording an identity, so this tool never records one it cannot justify:
     puts back the copies, the pin, the README line, the index and the
     branch, and the refusal names the step that failed and lists what it
     put back. A re-run then finds the tree it found the first time, rather
-    than an uncommitted re-pin it would read as already done.
+    than an uncommitted re-pin it would read as already done. What the
+    rollback itself cannot put back — a file that will not take its old
+    bytes, an `--add` file that will not go — it names with the line that
+    finishes it by hand, and it goes on to the rest: the refusal that
+    started it is still the one reported (#428).
   * Nothing is written THROUGH A SYMLINK (#239, #286). A rewrite opens the
     file where it stands, so a pinned copy, `contracts/shape-pin.yaml` or
     the manifest kept as a link — or under a directory link — would have the
@@ -2621,13 +2625,23 @@ class Rollback:
         something nobody here wrote is in it, and removing that is not a
         rollback.
 
-        THE GIT HALF NEVER RAISES OVER THE REFUSAL, which is the rule
-        `bump-leg.py`'s own rollback states: what it cannot put back is
-        NAMED, with the command that finishes it by hand, and the failure
-        that started the rollback is still the one reported. And each git
-        undo is judged by READING THE STATE AFTERWARDS rather than by git's
-        exit code — a `post-checkout` hook's exit status is `git checkout`'s
-        own, so a switch that happened can still exit non-zero.
+        NEITHER HALF RAISES OVER THE REFUSAL (#428), which is the rule
+        `bump-leg.py`'s own rollback states (#253): what it cannot put back
+        is NAMED, with the command that finishes it by hand, and the failure
+        that started the rollback is still the one reported. The git half
+        always kept it. The byte half wrote each file back with a bare
+        `write_bytes` and took away what `--add` made with a bare `rmdir` or
+        `unlink`, so one file that would not take its old bytes — a
+        permission a validator took away, a full disk, a lock — escaped
+        `_rolled_back` and `main` as a traceback, exit 1, the refusal that
+        started it surviving only as the exception's context, and no path
+        after it was tried: a pin put back under a manifest left re-pinned,
+        the lockstep break this ledger exists to prevent. So every restore
+        and every removal is attempted, each under its own handler, and each
+        one that fails is listed with its line (`_restore`, `_remove`). And
+        each git undo is judged by READING THE STATE AFTERWARDS rather than
+        by git's exit code — a `post-checkout` hook's exit status is `git
+        checkout`'s own, so a switch that happened can still exit non-zero.
         """
         if self.landed or not (self.written or self.created or self.branch
                                or self.staged):
@@ -2637,22 +2651,147 @@ class Rollback:
         self._undo_index(done, left)
         self._undo_branch(done, left)
         for path, original in self.written.items():
-            path.write_bytes(original)
-            done.append(f"restored  {self._name(path)}")
+            self._restore(path, original, done, left)
+        stuck: list[Path] = []
         for path in reversed(self.created):
+            self._remove(path, stuck, done, left)
+        return self._said(done, left)
+
+    def _restore(self, path: Path, original: bytes, done: list[str],
+                 left: list[str]) -> None:
+        """`path` given back `original`, the bytes it held before this run
+        first wrote it, or listed under `left` with the line that does it
+        by hand (#428).
+
+        WRITTEN ONLY OVER A FILE THAT NO LONGER HOLDS THEM, as `bump-leg.py`
+        restores its own (`_restore_file`, #253): a file that holds what it
+        held is back, and a write it never needed must not list it as left
+        because that write would have failed. One that cannot even be READ
+        is written all the same.
+        """
+        name = self._name(path)
+        try:
+            held = path.read_bytes()
+        except OSError:
+            held = None
+        try:
+            if held != original:
+                path.write_bytes(original)
+        except OSError as exc:
+            left.append(f"file      {name} was not put back "
+                        f"({exc.strerror or exc}); "
+                        + self._restore_by_hand(path, name, original))
+            return
+        done.append(f"restored  {name}")
+
+    def _restore_by_hand(self, path: Path, name: str,
+                         original: bytes) -> str:
+        """The rest of `_restore`'s `left` line: how to put `original` back
+        at `path` by hand, once whatever stopped the write is cleared.
+
+        HEAD'S, WHERE `git checkout HEAD -- <path>` WOULD WRITE EXACTLY THOSE
+        BYTES AND CHANGE NOTHING ELSE (`_head_restores`). That is not a
+        given, and it was measured: a `--branch` run over a clean tree holds
+        HEAD's bytes at every path it writes, but an `apply` without
+        `--branch` writes over whatever the tree holds — after an earlier
+        `apply` left uncommitted, not one of the copy, the pin and the
+        manifest was HEAD's — and even `--branch` takes a working-tree file
+        whose CRLF `hash-object` normalises away (`_not_what_head_commits`),
+        which a checkout would then write back as LF.
+
+        ELSE FROM THE OBJECT STORE. The bytes are written into this
+        repository with `git hash-object -w --stdin` — on stdin, so no
+        filter touches them — and `git cat-file blob <id>`, redirected to
+        the file's own path, writes back exactly those bytes. The object is
+        referenced by nothing, so a `git gc` prunes it, two weeks on by
+        default: long enough for a line meant to be run now. Where git will
+        not store them either, the line says so, and that the bytes are
+        nowhere this run can point at.
+        """
+        if self._head_restores(name, original):
+            return ("it held HEAD's bytes, so make it writable, then: "
+                    + _by_hand(self.root, "--literal-pathspecs", "checkout",
+                               "HEAD", "--", name))
+        kept = self._kept(original)
+        if kept:
+            return (f"its bytes before this run are kept as blob "
+                    f"{kept[:12]} in this repository, so make it writable, "
+                    "then: " + _by_hand(self.root, "cat-file", "blob", kept)
+                    + " > " + shlex.quote(str(path)))
+        return ("and git would not keep its bytes before this run either, "
+                "so they are nowhere this run can point at: only a copy of "
+                f"{name} made before it can put it back")
+
+    def _head_restores(self, name: str, original: bytes) -> bool:
+        """Would `git checkout HEAD -- <name>` write exactly `original` and
+        leave the index as it is? Three answers from git, any one missing a
+        no: HEAD commits a blob at `name`; the index holds that same blob
+        there, so the checkout, which writes the index too, changes nothing
+        in it (the hazard `Rollback.stage` names); and that blob as a
+        checkout writes it — `cat-file --filters`, smudge and line-ending
+        conversion included — is `original`, byte for byte."""
+        head = _head_blob(self.root, name)
+        staged = _git_answer(self.root, ["rev-parse", "--verify", "--quiet",
+                                         f":0:{name}"])
+        if not head or (staged or "").strip() != head:
+            return False
+        proc = _git_quietly(["git", "cat-file", "--filters", f"HEAD:{name}"],
+                            self.root)
+        return (proc is not None and proc.returncode == 0
+                and proc.stdout == original)
+
+    def _kept(self, original: bytes) -> str:
+        """The id of `original`, written into this repository's objects as
+        BYTES on stdin, or "" when git will not store it."""
+        proc = _git_quietly(["git", "hash-object", "-w", "--stdin"],
+                            self.root, original)
+        if proc is None or proc.returncode != 0:
+            return ""
+        kept = proc.stdout.decode("ascii", "replace").strip()
+        return (kept if re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", kept)
+                else "")
+
+    def _remove(self, path: Path, stuck: list[Path], done: list[str],
+                left: list[str]) -> None:
+        """What `write_added` made at `path` — an `--add` file, or a
+        directory made to hold one — taken away, or listed under `left`
+        with the POSIX line that does it by hand (#428).
+
+        `stuck` collects what could not be taken away. A directory still
+        holding one of those is listed as left after it, with its own line,
+        never as kept for "something this run did not write": what is in it
+        is this run's own file. A path is a directory here when
+        `write_added` made it to hold another path it made, which is what
+        names the line's verb when even asking what stands there fails.
+        """
+        name = self._name(path)
+        directory = any(path in made.parents for made in self.created)
+        try:
             if path.is_dir():
-                if any(path.iterdir()):
-                    done.append(f"kept      {self._name(path)}/ (made to hold "
-                                "an --add file, and something this run did "
-                                "not write is in it now)")
-                    continue
-                path.rmdir()
-                done.append(f"removed   {self._name(path)}/ (made to hold an "
-                            "--add file)")
+                if not any(path.iterdir()):
+                    path.rmdir()
+                    done.append(f"removed   {name}/ (made to hold an --add "
+                                "file)")
+                elif any(path in kept.parents for kept in stuck):
+                    stuck.append(path)
+                    left.append(f"directory {name}/, made to hold an --add "
+                                "file, still holds the one above; once that "
+                                "is gone: "
+                                + shlex.join(["rmdir", "--", str(path)]))
+                else:
+                    done.append(f"kept      {name}/ (made to hold an --add "
+                                "file, and something this run did not "
+                                "write is in it now)")
             elif path.exists():
                 path.unlink()
-                done.append(f"removed   {self._name(path)} (written by --add)")
-        return self._said(done, left)
+                done.append(f"removed   {name} (written by --add)")
+        except OSError as exc:
+            stuck.append(path)
+            what, verb = ((f"directory {name}/, made to hold an --add file,",
+                           "rmdir") if directory else
+                          (f"file      {name}, written by --add,", "rm"))
+            left.append(f"{what} was not removed ({exc.strerror or exc}): "
+                        + shlex.join([verb, "--", str(path)]))
 
     def _name(self, path: Path) -> str:
         try:
@@ -2762,12 +2901,16 @@ class Rollback:
 
     @staticmethod
     def _said(done: list[str], left: list[str]) -> str:
-        """The block a refusal prints under its own first line."""
+        """The block a refusal prints under its own first line. A rollback
+        that put nothing back says `nothing` there, rather than run its
+        heading straight into the list of what is left (#428): every restore
+        can fail, on a disk that filled, now that one failing no longer
+        stops the rest."""
         lines = (["ROLLED BACK IN PART: the tree is NOT as it was. Put back:"]
                  if left else
                  ["ROLLED BACK: every byte this command wrote has been put "
                   "back, and the tree is exactly as it was:"])
-        lines += [f"    {line}" for line in done]
+        lines += [f"    {line}" for line in done] or ["    nothing"]
         if left:
             lines.append("  NOT put back — finish these by hand:")
             lines += [f"    {line}" for line in left]
