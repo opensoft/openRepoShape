@@ -1419,11 +1419,15 @@ def test_a_case_variant_of_the_mount_path_in_the_index_is_refused_first(
 
 
 def test_a_gitlink_git_stages_under_another_spelling_is_named_not_hidden(
-        family, holder, offline):
+        family, holder, offline, family_module, monkeypatch, capsys):
     """THE CLOSING SENTENCE SAYS "EXACTLY AS IT WAS" ONLY FOR WHAT IT
     COMPARED (#302). The index holds `Members/README`, a case variant of
-    `members/` and not of the mount path, so `member-path-taken` lets it
-    by: it is not at `members/IRQS` or under it in any spelling. With
+    `members/` and not of the mount path. #318 let it by, by design; Brett
+    Heap's ruling of 2026-10-14 ("Refuse on every disk") reverses that, and
+    `add` refuses it before the member is read (#362,
+    `test_family_members_case_variants.py`). That refusal is switched off
+    here, in process, because what this asks is what the unwind says when
+    git stages under a name no step asks for all the same. With
     `core.ignorecase` set, git stages the new gitlink in the spelling the
     index already gives the directory, `Members/IRQS`, and the commit, whose
     pathspec is `members/IRQS`, matches nothing. The unwind puts back every
@@ -1436,14 +1440,18 @@ def test_a_gitlink_git_stages_under_another_spelling_is_named_not_hidden(
     tip = git("rev-parse", "main",
               cwd=family["remotes"] / f"{SPARE}.git").stdout.strip()
     before, index = snapshot(holder), index_bytes(holder)
+    monkeypatch.setattr(family_module, "_members_spellings",
+                        lambda root, project, on_disk: [])
 
-    result = offline.add(holder, SPARE, remotes=family["remotes"])
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert result.stdout == (f"checking {ORG}/{SPARE} before mounting it\n"
-                             f"mounting {ORG}/{SPARE} at {SPARE_MOUNT}\n")
+    code = add_in_process(family_module, monkeypatch, offline, holder, SPARE,
+                          family["remotes"])
+    out, err = capsys.readouterr()
+    assert code == 2, out + err
+    assert out == (f"checking {ORG}/{SPARE} before mounting it\n"
+                   f"mounting {ORG}/{SPARE} at {SPARE_MOUNT}\n")
     # The step that failed, and not the command's own spelling, which is the
     # commit's business and changes with it.
-    lines = result.stderr.splitlines()
+    lines = err.splitlines()
     assert lines[0] == (f"REFUSED committing {SPARE} to the family. THE "
                         "EXACT COMMAND WAS:")
     assert lines[-1] == INDEX_MOVED.format(
@@ -1527,7 +1535,15 @@ def test_the_index_is_asked_at_the_mount_path_in_any_case_and_literally(
     never what a glob would add: `members/IRQ*` is a name, so it selects
     itself in any case, where `git --icase-pathspecs` would read it as a
     glob and select `members/IRQS`, `members/IRQSX/b` and `MEMBERS/irqs/a`
-    besides. (The entries are planted, with nothing on disk.)"""
+    besides. (The entries are planted, with nothing on disk.)
+
+    A VARIANT OF `members/` ALONE IS NO LONGER LET BY. #318 pinned it here
+    as not refused, by design; Brett Heap's ruling of 2026-10-14 ("Refuse
+    on every disk") reverses that (#362). It is still not `_index_entries`'s
+    to select, since it is not at the mount path, and `_members_spellings`
+    names it instead, with every other path under a spelling of `members`
+    that is not `members` itself, and each case variant of the mount path
+    under `members/` itself, by the spelling a remedy renames."""
     for name in ("MEMBERS/irqs/a", SPARE_MOUNT, f"{SPARE_MOUNT}X/b",
                  "Members/README", "members/IRQ*/c", "members/irq*"):
         plant(holder, "100644", name)
@@ -1537,6 +1553,13 @@ def test_the_index_is_asked_at_the_mount_path_in_any_case_and_literally(
         (f"members/{SPARE.lower()}/d", "a submodule")]
     assert family_module._index_entries(holder, "members/IRQ*") == [
         ("members/IRQ*/c", "a file"), ("members/irq*", "a file")]
+    found = family_module._members_spellings(
+        holder, SPARE, family_module._members_on_disk(holder))
+    assert [(spelled.name, spelled.target, spelled.mount)
+            for spelled in found] == [
+        ("MEMBERS/irqs/a", "MEMBERS", True),
+        ("Members/README", "Members", False),
+        (f"members/{SPARE.lower()}/d", f"members/{SPARE.lower()}", True)]
 
 
 def test_a_conflicted_entry_at_the_mount_path_is_counted_once_per_stage(

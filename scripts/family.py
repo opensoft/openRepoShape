@@ -130,6 +130,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
@@ -1868,6 +1869,309 @@ def _index_entries(root: Path, path: str) -> list[tuple[str, str]]:
     return entries
 
 
+#: `str.translate`'s table for folding ASCII letters and nothing else, as
+#: `_index_entries` folds a name's bytes and as git's own `icase` folds.
+ASCII_FOLD = {upper: upper + 32 for upper in range(ord("A"), ord("Z") + 1)}
+
+#: Where `_members_spellings` found a path, as its refusal says it, and so
+#: which remedy that path takes (#362, #363, #364).
+IN_INDEX = "in the index"
+IN_HEAD_ONLY = "in HEAD and no longer in the index"
+ON_DISK = "on disk and untracked"
+
+
+class Spelled(NamedTuple):
+    """A path at or under a spelling of `members/` other than `members/`
+    itself, as `_members_spellings` found it: `name` as git or the disk
+    spells it, `kind` (`a file`, `a submodule`, `a symlink`, `a directory`),
+    `where` (`IN_INDEX`, `IN_HEAD_ONLY` or `ON_DISK`), `target`, the path the
+    remedy renames, moves or leaves to a commit, and `mount`, whether it is at
+    or under a case variant of the mount path itself."""
+
+    name: str
+    kind: str
+    where: str
+    target: str
+    mount: bool
+
+
+def _folded(name: str) -> str:
+    """`name` with ASCII case folded, as git's `icase` folds it."""
+    return name.translate(ASCII_FOLD)
+
+
+def _spelled_target(name: str, project: str) -> tuple[str, bool] | None:
+    """`(the path a remedy acts on, whether it is at or under a case variant
+    of members/<project>)` for a path `name`, `/`-separated as git spells
+    it, or None when nothing about `name` is a case variant.
+
+    Every path whose first component is a spelling of `members` other than
+    `members` itself is one, and its remedy acts on that first component,
+    the directory (`Members`). Under `members/` itself only a case variant
+    of the mount path is one (`members/irqs`), and its remedy acts on that.
+    The mount path itself, `members/<project>` exactly, is no variant: what
+    is there is `member-path-taken`'s first two questions."""
+    first, _, rest = name.partition("/")
+    if _folded(first) != MEMBERS_DIR:
+        return None
+    second = rest.partition("/")[0]
+    mount = bool(rest) and _folded(second) == _folded(project)
+    if first != MEMBERS_DIR:
+        return first, mount
+    if mount and second != project:
+        return f"{first}/{second}", True
+    return None
+
+
+def _disk_kind(path: Path) -> str:
+    """What is at `path`, not following a link, as a refusal names it."""
+    mode = path.lstat().st_mode
+    if stat.S_ISLNK(mode):
+        return "a symlink"
+    return "a directory" if stat.S_ISDIR(mode) else "a file"
+
+
+def _members_on_disk(root: Path) -> dict[str, tuple[str, list[str]]]:
+    """`{spelling: (kind, its entries)}` for every spelling of `members` the
+    holder's root holds on disk, `members` itself included, READ BY LISTING
+    DIRECTORIES (#364). `kind` is `_disk_kind`'s; the entries are the
+    directory's own names, through a link, and none for a file or for a
+    directory that cannot be listed.
+
+    `os.path.lexists(root / path)` was the question, and it answers as the
+    disk resolves a name: exactly on Linux, in any case on macOS and
+    Windows. So an untracked `Members/<Project>` was refused there and the
+    member mounted beside it on Linux. A listing hands back each name in the
+    spelling the disk keeps, on every disk, so the answer is the same on all
+    three: the root is listed for every spelling of `members`, ASCII case
+    folded, and each of those for its entries, one level at a time and never
+    through a pathspec. A `Members` directory on macOS or Windows is listed
+    as `Members`, and `members/<Project>` resolves into it there, so it is
+    the same variant on every disk.
+    """
+    found: dict[str, tuple[str, list[str]]] = {}
+    for name in sorted(os.listdir(root)):
+        if _folded(name) != MEMBERS_DIR:
+            continue
+        top = root / name
+        try:
+            entries = sorted(os.listdir(top)) if top.is_dir() else []
+        except OSError:
+            entries = []
+        found[name] = (_disk_kind(top), entries)
+    return found
+
+
+def _disk_spellings(root: Path, on_disk: dict[str, tuple[str, list[str]]],
+                    project: str) -> list[tuple[str, str]]:
+    """`[(path, kind)]` of every spelling of `members/` and of the mount path
+    on disk that is not that path itself, from `_members_on_disk`'s listing:
+    each spelling of `members` other than `members`, and, in any spelling of
+    `members` that is a directory and not a link, each entry that is a case
+    variant of `<project>` (`members/irqs`, `Members/IRQS`).
+
+    A spelling that is a link is named and not entered, and `members` itself
+    through a link is not judged here: what is behind a link is git's own
+    dry run's to refuse (`member-path-unaddable`)."""
+    found: list[tuple[str, str]] = []
+    for name, (kind, entries) in on_disk.items():
+        if name != MEMBERS_DIR:
+            found.append((name, kind))
+        if kind != "a directory":
+            continue
+        found.extend((f"{name}/{entry}", _disk_kind(root / name / entry))
+                     for entry in entries
+                     if _folded(entry) == _folded(project)
+                     and (name, entry) != (MEMBERS_DIR, project))
+    return found
+
+
+def _tree_entries(root: Path, tree: str,
+                  recursive: bool = False) -> list[tuple[str, str, str]]:
+    """`[(name, kind, object)]` of the tree object `tree`, by `git ls-tree
+    -z` with NO PATH, so no pathspec setting in the environment can narrow
+    what is read. `kind` is `a tree` or, as `INDEX_ENTRY_KINDS` names an
+    index entry, `a submodule`, `a symlink` or `a file`. `recursive` lists
+    every file and gitlink below `tree`, and no tree."""
+    listed = git_out(["ls-tree", *(["-r"] if recursive else []), "-z", tree],
+                     cwd=root, binary=True)
+    entries = []
+    for record in listed.split(b"\0"):
+        if not record:
+            continue
+        meta, _, name = record.partition(b"\t")
+        mode, kind, oid = meta.split()
+        entries.append((name.decode("utf-8", "surrogateescape"),
+                        "a tree" if kind == b"tree" else
+                        INDEX_ENTRY_KINDS.get(int(mode, 8), "a file"),
+                        oid.decode("ascii")))
+    return entries
+
+
+def _head_spellings(root: Path) -> list[tuple[str, str]]:
+    """`[(path, kind)]` of every file and gitlink HEAD holds at or under a
+    spelling of `members` (`members/` itself included), or none in a holder
+    with NO COMMIT YET (#363).
+
+    HEAD's root tree is listed, and each entry there whose name folds to
+    `members` is listed through by its object, so nothing else of HEAD is
+    read and no pathspec is used. `-q --verify HEAD^{tree}` answers nothing
+    at all, without a word, where HEAD names no commit yet, as
+    `MountRollback._head` reads it."""
+    try:
+        tree = git_out(["rev-parse", "-q", "--verify", "HEAD^{tree}"],
+                       cwd=root)
+    except Refusal:
+        return []
+    held: list[tuple[str, str]] = []
+    for name, kind, oid in _tree_entries(root, tree):
+        if _folded(name) != MEMBERS_DIR:
+            continue
+        if kind != "a tree":
+            held.append((name, kind))
+            continue
+        held.extend((f"{name}/{below}", what)
+                    for below, what, _ in _tree_entries(root, oid, True))
+    return held
+
+
+def _members_spellings(root: Path, project: str,
+                       on_disk: dict[str, tuple[str, list[str]]]
+                       ) -> list[Spelled]:
+    """Every path the holder has at or under a spelling of `members/` other
+    than `members/` itself, or at or under a case variant of the mount path
+    `members/<project>`: in the index, in HEAD and no longer in the index,
+    and on disk untracked (#362, #363, #364). `on_disk` is
+    `_members_on_disk`'s listing.
+
+    THE INDEX, the whole of it, as `_index_entries` reads it (#362). THEN
+    HEAD, for what it holds that the index no longer does, a `git rm -r
+    Members` not committed yet (#363): the add's own commit names three
+    paths and nothing else, so it would keep that file beside the member,
+    and with `core.ignorecase` set git records the member's gitlink in the
+    spelling HEAD has, where a fresh clone cannot find it. THEN THE DISK, by
+    `_disk_spellings` (#364), for what no index entry holds:
+
+    - A path the index holds in exactly that spelling, or holds anything
+      under, is the index's to name, and is not named twice.
+    - A spelling of `members` with no `members` beside it on disk, holding
+      a directory the index tracks under any spelling of `members/`, is the
+      directory a case-insensitive disk made for `members/`, spelled as a
+      checkout of a holder that held `Members/README` made it: what it holds
+      is tracked, and moving it would move the members' checkouts. A
+      case-sensitive disk keeps `members/` beside it, and there it is named.
+    - A case variant of the mount path is named in place of the spelling of
+      `members` that holds it, whose remedy moves them both.
+    """
+    found: list[Spelled] = []
+    indexed: list[str] = []
+    for name, records in _index_records(root).items():
+        text = name.decode("utf-8", "surrogateescape")
+        indexed.append(text)
+        spelled = _spelled_target(text, project)
+        if spelled is not None:
+            found.append(Spelled(
+                name.decode("utf-8", "replace"),
+                INDEX_ENTRY_KINDS.get(int(records[0].split()[0], 8),
+                                      "a file"),
+                IN_INDEX, *spelled))
+    held = set(indexed)
+    for name, kind in _head_spellings(root):
+        spelled = _spelled_target(name, project)
+        if spelled is not None and name not in held:
+            # Shown as the index's names are: a byte that is not UTF-8 as
+            # U+FFFD, never as a lone surrogate a stream may not encode.
+            shown = name.encode("utf-8", "surrogateescape").decode(
+                "utf-8", "replace")
+            found.append(Spelled(shown, kind, IN_HEAD_ONLY, *spelled))
+    tracked_in_members = {
+        _folded(rest.partition("/")[0]) for first, _, rest
+        in (name.partition("/") for name in indexed)
+        if rest and _folded(first) == MEMBERS_DIR}
+    untracked = [(path, kind) for path, kind
+                 in _disk_spellings(root, on_disk, project)
+                 if not any(name == path or name.startswith(path + "/")
+                            for name in indexed)]
+    holding = {path.partition("/")[0] for path, _ in untracked if "/" in path}
+    for path, kind in untracked:
+        if "/" not in path and (path in holding or (
+                MEMBERS_DIR not in on_disk and tracked_in_members.intersection(
+                    _folded(entry) for entry in on_disk[path][1]))):
+            continue
+        found.append(Spelled(path, kind, ON_DISK,
+                             *_spelled_target(path, project)))
+    return found
+
+
+#: The order `_spellings_refusal` names its groups in. Its remedies run in
+#: another: a pending change in HEAD is committed first.
+SPELLED_ORDER = (IN_INDEX, IN_HEAD_ONLY, ON_DISK)
+
+
+def _spellings_refusal(path: str, found: list[Spelled]) -> Refusal:
+    """The refusal for what `_members_spellings` found: every path named in
+    its exact spelling, at most five in each place, with where it was found,
+    and the remedy for each place (Brett Heap's ruling of 2026-10-14,
+    "Refuse on every disk", #362, #363, #364).
+
+    `member-path-taken` where any is at or under a case variant of the mount
+    path, as #318 refuses one in the index; `family-members-dir-variant`
+    where every one is under a spelling of `members/` alone: a fault of the
+    holder's `members/` directory (`members_dir`, as `family.yaml` names
+    it), which no member can be added past.
+
+    A REMEDY FOR EACH PLACE, run in this order. What HEAD holds and the index
+    no longer does is a pending change, and committed first: the add's own
+    commit names three paths. What the index holds is renamed with `git mv`
+    and committed, to a name the human chooses. What is on disk and
+    untracked is moved, with `mv`. Each is named by the spelling of
+    `members` that holds it, or, under `members/` itself, by the variant of
+    the mount path, and quoted for a POSIX shell.
+    """
+    mount = any(spelled.mount for spelled in found)
+    groups, parts = [], []
+    for where in SPELLED_ORDER:
+        here = [spelled for spelled in found if spelled.where == where]
+        if not here:
+            continue
+        shown = ", ".join(f"`{spelled.name}` ({spelled.kind})"
+                          for spelled in here[:5])
+        more = f" and {len(here) - 5} more" if len(here) > 5 else ""
+        groups.append(f"{where}: {shown}{more}")
+        targets = sorted({spelled.target for spelled in here})
+        named = ", ".join(f"`{target}`" for target in targets)
+        if where == IN_HEAD_ONLY:
+            parts.insert(0, (
+                "commit the pending change first (`git commit`), since the "
+                f"add's own commit names {GITMODULES}, {path} and {MANIFEST} "
+                f"alone: HEAD would keep {named} beside the member, or, with "
+                "`core.ignorecase` set, record the member's gitlink in that "
+                "spelling"))
+            continue
+        commands = " and ".join(
+            f"`{'git mv' if where == IN_INDEX else 'mv'} -- "
+            f"{shell_quoted(target, 'posix')} <new name>`"
+            for target in targets)
+        parts.append(
+            f"rename what the index holds with `git mv`, so that nothing is "
+            f"left at or under {named} ({commands}), and commit the rename"
+            if where == IN_INDEX else
+            f"move what is on disk and untracked out of the way ({commands})")
+    said = "; ".join(parts)
+    return Refusal(
+        "member-path-taken" if mount else "family-members-dir-variant",
+        (f"the family root holds a case variant of {path}, the same path on "
+         "a case-insensitive disk, though no `members:` row names it"
+         if mount else
+         f"the family root holds a spelling of {MEMBERS_DIR}/ other than "
+         f"{MEMBERS_DIR}/ itself, which macOS and Windows hold as one "
+         "directory with it")
+        + " — " + "; ".join(groups),
+        f"Remediation: every member is mounted under {MEMBERS_DIR}/, and a "
+        "holder keeps that directory in one spelling on every disk. "
+        + said[:1].upper() + said[1:] + "; then re-run.")
+
+
 def _submodule_paths(
         root: Path) -> dict[str, tuple[str, str | None, tuple[str, ...]]]:
     """`{name: (path, url, keys)}` of every submodule the holder's
@@ -1944,11 +2248,28 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
     `_mount_and_pin`), and `--force` turns them off or moves them to after
     the clone. So each is asked here first, the way git asks it, and named:
 
-    - SOMETHING AT THE PATH. On disk, by `lexists`, so a dangling link counts
-      as well as a directory a half-finished add or a hand left there. In
-      the INDEX, any entry at the path or under it, with nothing on disk:
-      given `--force`, git accepts a gitlink there and replaces it with the
+    - SOMETHING AT THE PATH. On disk, by a listing of `members/` in which
+      the path's own spelling is found (`_members_on_disk`, #364), so a
+      dangling link counts as well as a directory a half-finished add or a
+      hand left there; and by `lexists` too, last of the three, for a
+      directory no listing could read. In the INDEX, any entry at the path
+      or under it, in any case, with nothing on disk in that spelling: given
+      `--force`, git accepts a gitlink there and replaces it with the
       member's, and whatever the human had staged is gone without a word.
+    - ANOTHER SPELLING OF `members/` OR OF THE PATH, ANYWHERE (#362, #363,
+      #364): in the index, in HEAD and no longer in the index, or on disk
+      untracked, `_members_spellings` reads it and `_spellings_refusal`
+      names it. Brett Heap ruled on 2026-10-14, "Refuse on every disk":
+      macOS and Windows hold `Members/` and `members/` as one directory, and
+      with `core.ignorecase` set git files a new member's gitlink in the
+      spelling it already holds, which the add's commit, naming the path,
+      then cannot record (#362) or records where `.gitmodules` and
+      `family.yaml` do not say (#363). So it is refused on all three, Linux
+      included, where a `Members/` of a holder's own is harmless until a
+      clone of it is made on the other two; the cost is that such a holder
+      renames it first. `member-path-taken` where a path is a case variant
+      of the mount path, `family-members-dir-variant` where it is under a
+      spelling of `members/` alone.
     - GIT'S OWN DRY RUN, `git add --dry-run --ignore-missing` of the path —
       the check `--force` skips — made here with `-f`, so an ignore rule
       passes it and nothing else does. It refuses a path beyond a symbolic
@@ -1976,13 +2297,15 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
       decide whose without asking. The path is compared exactly; git reads
       `.gitmodules` that way too.
     """
-    if os.path.lexists(root / path):
-        raise Refusal(
-            "member-path-taken",
-            f"{path} already exists in the family root but no `members:` row "
-            "names it",
-            "Remediation: this is a half-finished add or a hand-made "
-            "directory. Remove it (`git rm -r` if it is tracked), then re-run.")
+    taken = Refusal(
+        "member-path-taken",
+        f"{path} already exists in the family root but no `members:` row "
+        "names it",
+        "Remediation: this is a half-finished add or a hand-made "
+        "directory. Remove it (`git rm -r` if it is tracked), then re-run.")
+    on_disk = _members_on_disk(root)
+    if project in on_disk.get(MEMBERS_DIR, ("", []))[1]:
+        raise taken
     held = _index_entries(root, path)
     if held:
         at_it = [entry for entry in held if entry[0].lower() == path.lower()]
@@ -2023,6 +2346,13 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
                f"spelling other than the {path} that {GITMODULES} and "
                f"{MANIFEST} say, or both; then ")
             + "re-run.")
+    spelled = _members_spellings(root, project, on_disk)
+    if spelled:
+        raise _spellings_refusal(path, spelled)
+    # A DIRECTORY NO LISTING COULD READ hides nothing: `lexists` asks the
+    # path itself, as it always did, after every listing has answered.
+    if os.path.lexists(root / path):
+        raise taken
     try:
         run(["git", "--literal-pathspecs", "add", "--dry-run",
              "--ignore-missing", "-f", "--no-warn-embedded-repo", "--", path],
@@ -2450,11 +2780,14 @@ class MountRollback:
     back what it recorded, by its exact name. git can stage under a name no
     step asks for: with `core.ignorecase` set, a mount whose directory the
     index already holds in another case is staged in that case, and the
-    commit's pathspec then matches nothing. So the WHOLE index is recorded
-    too, and `undo` compares it after its steps. Only when the two agree
-    does the sentence say the holder is as it was. When they do not, it
-    names what differs and sends the human to `git ls-files -s`, and the one
-    command that changes anything, `git rm -r --cached`, touches no file.
+    commit's pathspec then matches nothing. `_checked_mount_path` refuses
+    such an index before the mount now (#362); this stays behind it, for
+    anything else git stages under a name no step names. So the WHOLE index
+    is recorded too, and `undo` compares it after its steps. Only when the
+    two agree does the sentence say the holder is as it was. When they do
+    not, it names what differs and sends the human to `git ls-files -s`,
+    and the one command that changes anything, `git rm -r --cached`,
+    touches no file.
     """
 
     def __init__(self, root: Path, path: str) -> None:
