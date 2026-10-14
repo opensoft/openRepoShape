@@ -652,14 +652,16 @@ SHOW_UNTRACKED = "status --ignored"
 def shown_untracked(payload: dict, names: list, ignored: bool = False) -> str:
     """What the `why` says first where the NEXT shows `names`, which git does
     not track: that deleting them cannot be undone, and the `git clean`
-    that does it, for a person to run (review of PR #555)."""
+    that does it, for a person to run (review of PR #555). The command
+    follows a colon and is in no backticks, which a shell the sentence was
+    pasted into whole would run (round 2)."""
     them = "it" if len(names) == 1 else "them"
     clean = removal_command(payload, "clean -f -x" if ignored else "clean -f",
                             names)
     return (f"shows {', '.join(names)}, which git does not track: no commit "
             f"holds {them}, so deleting {them} cannot be undone and is a "
-            f"person's act, never this row's -- `{clean}` deletes {them}, "
-            "and there is nothing to commit")
+            f"person's act, never this row's, with nothing to commit after. "
+            f"A person deletes {them} with: {clean}")
 
 
 def family_beside(project: Path, holder: dict) -> str:
@@ -1246,7 +1248,7 @@ def test_a_contracts_family_yaml_with_changes_no_commit_holds(
                                           ["contracts/family.yaml"]), row
     assert row["why"] == why_for_one(
         "shows the changes no commit holds in contracts/family.yaml, which "
-        "`git rm` will not discard: commit or drop them, and the next run "
+        "git rm will not discard: commit or drop them, and the next run "
         "names the way out"), row["why"]
     assert [entry["git"] for entry in
             row["detail"]["registered_elsewhere"]] == ["changed"], row
@@ -1637,31 +1639,37 @@ def test_a_file_a_gate_reads_is_never_unread_when_the_fault_is_elsewhere(
 
 def test_the_next_never_takes_out_a_file_a_gate_reads(standard, project):
     """A kind nothing registers in the naming policy is still this row's
-    finding, as on main, but the gate that reads that path judges the file,
-    and a NEXT that took it out would take out the naming policy. So the row
-    has no NEXT for it, and its `why` says so; beside a file the row may take
-    out, the NEXT shows that file alone (review of PR #555)."""
+    finding, as on main, but a NEXT that took the file out would take out
+    the naming policy (review of PR #555). The NEXT shows the change that
+    set the kind, the `why` names the kind a gate here reads that path as
+    and the `manifest` row, whose gate checks it, and offers no other way
+    out -- registering the kind is no answer for the naming policy (round
+    2). Beside a file the row may take out, the next run names that one."""
     module = doctor_module(standard)
     naming = project / NAMING_COPY
     body = naming.read_bytes()
     assert body.count(b"kind: repository-naming-policy\n") == 1, body
     naming.write_bytes(body.replace(b"kind: repository-naming-policy\n",
                                     b"kind: service-inventory\n"))
-    judged = ("contracts/repository-naming.yaml is read by a gate here, "
-              "whose own row judges it: this row never takes out a file a "
-              "gate reads")
+    shown = (f"shows the change to {NAMING_COPY} that no commit holds. "
+             f"{NAMING_COPY} declares kind service-inventory where a gate "
+             "here reads it as repository-naming-policy, and the manifest "
+             "row's gate finds that too: put its kind line back to "
+             "repository-naming-policy")
 
     row = module.check_manifest_kinds(module.Context(project)).as_dict()
     assert row["detail"]["unregistered"] == [
         "contracts/repository-naming.yaml (service-inventory)"], row
-    assert row["next"] is None, row
-    assert row["why"].startswith(judged + ". Or register the kind "), row
+    assert row["next"] == (f"git -C {module.quote_arg(project)} diff HEAD "
+                           f"-- {NAMING_COPY}"), row
+    assert row["why"] == shown, row["why"]
 
     write_inventory(project)
     row = module.check_manifest_kinds(module.Context(project)).as_dict()
-    assert row["next"] == (f"git -C {module.quote_arg(project)} "
-                           f"{SHOW_UNTRACKED} -- {INVENTORY[0]}"), row
-    assert judged in row["why"], row["why"]
+    assert row["next"] == (f"git -C {module.quote_arg(project)} diff HEAD "
+                           f"-- {NAMING_COPY}"), row
+    assert row["why"] == (f"{shown}. The next run names the way out for "
+                          f"{INVENTORY[0]}. {UNREGISTERED_WAY}"), row["why"]
 
 
 def test_gitlinks_under_lists_one_directory_and_nothing_above_it(project):
@@ -6029,11 +6037,13 @@ def merge_by_hand(path: Path) -> None:
 
 
 def run_read_only(standard: Path, root: Path, row: dict) -> bytes:
-    """Run the printed NEXT, which must be `git -C <root> diff ...`, and
-    require that it changed nothing: the file's bytes, the status, HEAD.
-    Its output."""
+    """Run the printed NEXT, which must be `git -C <root> diff ...`, or the
+    `git -C <root> log -p ...` that shows the last commit to change a file
+    (review of PR #555, round 2), and require that it changed nothing: the
+    file's bytes, the status, HEAD. Its output."""
     argv = pasted(row["next"])
-    assert argv[:2] == ["git", "-C"] and argv[3] == "diff", row["next"]
+    assert argv[:2] == ["git", "-C"], row["next"]
+    assert argv[3] in ("diff", "log"), row["next"]
     assert "checkout" not in row["next"], row["next"]
     rel = argv[-1]
     before = ((root / rel).read_bytes(),
@@ -6378,6 +6388,168 @@ def test_a_neutral_product_pin_is_shown_never_put_back(standard, project,
     run_read_only(standard, project, row)
     assert (project / NEUTRAL_PIN).read_bytes() == before
     assert b"2" * 40 in before
+
+
+# --- a wrong `kind:` in a file a gate reads (review of PR #555, round 2) ----
+#
+# Round 1 kept such a file out of every NEXT and said that "its own row
+# judges it". For the shape pin and a neutral product pin no row does:
+# `validate-pins.py` reads their fields and never their kind. So the row was
+# a FINDING with no NEXT, and its `why` sent the reader to a row that said
+# `ok`. The NEXT now shows, read-only, how the file came to declare that
+# kind, and the `why` names the kind a gate here reads its path as, and the
+# row that judges it.
+
+#: The kind a gate here reads every pin as.
+PIN_KIND = "pinned_contract_manifest"
+#: A kind one letter short of it, which nothing registers.
+MISSPELT_KIND = "pinned_contract_manifes"
+
+#: Each wrong kind given to the shape pin, whether it is committed, the
+#: row's reason, and the `detail` keys beyond main's. E1 and E2 are the
+#: review's: a kind nothing registers, and one registered to a gate that
+#: runs only in a holder. E4 is a kind whose check runs here, which the row
+#: counted `validated`, COMPLIANT, though no gate checks the shape pin's kind.
+SHAPE_PIN_WRONG_KIND = {
+    "e1-a-kind-nothing-registers": (
+        MISSPELT_KIND, True,
+        f"no validator registered for kind {SHAPE_PIN} ({MISSPELT_KIND})",
+        set()),
+    "e1-uncommitted": (
+        MISSPELT_KIND, False,
+        f"no validator registered for kind {SHAPE_PIN} ({MISSPELT_KIND})",
+        set()),
+    "e2-a-kind-a-holder-runs": (
+        "family-manifest", True,
+        "no validator that runs in an assembly root is registered for kind "
+        f"{SHAPE_PIN} (family-manifest: scripts/validate-family.py runs only "
+        "in a family holder)", {"registered_elsewhere"}),
+    "e4-a-kind-checked-here": (
+        "repository-naming-policy", True,
+        f"{SHAPE_PIN} declares kind repository-naming-policy where a gate "
+        f"here reads it as {PIN_KIND}, and no gate here checks the kind it "
+        "declares", {"misdeclared"}),
+}
+
+
+def misdeclared_why(rel: str, kind: str, judge: str | None,
+                    committed: bool) -> str:
+    """The `manifest kinds` row's whole `why` for `rel`, a pin a gate here
+    reads, declaring `kind`: what its NEXT shows, both kinds, which row
+    judges it -- `judge`'s gate, or this row where no gate checks the kind
+    -- and to put the kind line back. No other way out: registering the
+    kind, or moving what the file describes to a holder, is no answer for a
+    pin. Spelt out here for the reason `FAMILY_BESIDE_WAY` is."""
+    shown = (f"shows the last commit that changed {rel}" if committed else
+             f"shows the change to {rel} that no commit holds")
+    judged = (f"the {judge} row's gate finds that too" if judge else
+              "no gate here checks the kind it declares, so this row is the "
+              "one that says so")
+    return (f"{shown}. {rel} declares kind {kind} where a gate here reads "
+            f"it as {PIN_KIND}, and {judged}: put its kind line back to "
+            f"{PIN_KIND}")
+
+
+def give_a_kind(root: Path, rel: str, kind: str, commit: bool) -> bytes:
+    """`rel`'s `kind:` line made to declare `kind`, committed or not, and
+    the bytes it held before, to put back."""
+    path = root / rel
+    body = path.read_bytes()
+    line = f"kind: {PIN_KIND}\n".encode()
+    assert body.count(line) == 1, body
+    path.write_bytes(body.replace(line, f"kind: {kind}\n".encode()))
+    if commit:
+        commit_all(root, f"{rel} declares {kind}")
+    return body
+
+
+def shows_the_kind(standard: Path, root: Path, row: dict, kind: str) -> None:
+    """Run the row's read-only NEXT, which changes nothing, and require that
+    it shows the line that declares `kind`."""
+    shown = run_read_only(standard, root, row).splitlines()
+    assert f"+kind: {kind}".encode() in shown, shown
+
+
+@pytest.mark.parametrize("case", list(SHAPE_PIN_WRONG_KIND))
+def test_a_wrong_kind_in_the_shape_pin_is_shown_never_a_dead_end(
+        standard, project, case):
+    """E1, E2 and E4: the shape pin given another kind, a FINDING of this
+    row alone, INVALID. Its NEXT is the `git log -p -1` of the commit that
+    gave it that kind, or the `git diff HEAD` of a change no commit holds,
+    and its `why` says no gate here checks the kind, so this row says so,
+    and to put the kind line back -- nothing else. Run as printed, the NEXT
+    shows the line and changes nothing; with the line put back, the root is
+    COMPLIANT again.
+    """
+    kind, commit, reason, more = SHAPE_PIN_WRONG_KIND[case]
+    body = give_a_kind(project, SHAPE_PIN, kind, commit)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "INVALID (manifest-kinds)", payload
+    row = only_finding_is_manifest_kinds(result)
+    assert row["reason"] == reason, row["reason"]
+    assert set(row["detail"]) == MANIFEST_KINDS_DETAIL_KEYS | more, row
+    if "misdeclared" in more:
+        assert row["detail"]["misdeclared"] == [
+            {"manifest": SHAPE_PIN, "kind": kind, "read_as": PIN_KIND,
+             "git": "committed"}], row["detail"]
+    assert row["next"] == removal_command(
+        payload, "log -p -1" if commit else "diff HEAD", [SHAPE_PIN]), row
+    assert row["why"] == misdeclared_why(SHAPE_PIN, kind, None, commit), \
+        row["why"]
+    shows_the_kind(standard, project, row, kind)
+
+    (project / SHAPE_PIN).write_bytes(body)
+    if commit:
+        commit_all(project, "Put the shape pin's kind line back")
+    compliant_again(standard, project)
+
+
+def test_a_leg_pin_of_the_wrong_kind_is_offered_no_registration(standard,
+                                                                project):
+    """E3: the spec leg's pin given a kind nothing registers. The `pins`
+    row's gate refuses it `pin-wrong-kind`, and this row's `why` says that
+    gate finds it too, where it offered to register the kind; the NEXT
+    shows the commit that gave it."""
+    give_a_kind(project, SPEC_PIN, MISSPELT_KIND, True)
+    result = doctor(standard, project, "--json")
+    assert result.returncode == 1, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "INVALID (pins, manifest-kinds)", payload
+    rows = rows_of(result)
+    assert "pin-wrong-kind" in rows["pins"]["reason"], rows["pins"]
+    row = rows["manifest-kinds"]
+    assert row["next"] == removal_command(payload, "log -p -1",
+                                          [SPEC_PIN]), row
+    assert row["why"] == misdeclared_why(SPEC_PIN, MISSPELT_KIND, "pins",
+                                         True), row["why"]
+    shows_the_kind(standard, project, row, MISSPELT_KIND)
+
+
+def test_a_declared_neutral_pin_of_the_wrong_kind_is_this_rows_to_say(
+        standard, project):
+    """A neutral product pin `project.yaml` declares, given a kind nothing
+    registers: like the shape pin's, no gate checks its kind, so this row
+    is the one that says so, and its NEXT shows the commit.
+
+    In process, for the reason `test_a_pin_is_what_the_root_declares_not_
+    what_it_is_called` gives: a declared neutral pin sends the `pins` row
+    to `gh`."""
+    declare_a_neutral_pin(project)
+    pin = project / NEUTRAL_PIN
+    pin.write_bytes(f"kind: {MISSPELT_KIND}\n".encode() + pin.read_bytes())
+    commit_all(project, "The neutral pin declares a kind nothing registers")
+    module = doctor_module(standard)
+    row = module.check_manifest_kinds(module.Context(project)).as_dict()
+    assert_next_holds_no_prose(row)
+    assert row["detail"]["unregistered"] == [
+        f"{NEUTRAL_PIN} ({MISSPELT_KIND})"], row["detail"]
+    assert row["next"] == (f"git -C {module.quote_arg(project)} log -p -1 "
+                           f"-- {NEUTRAL_PIN}"), row
+    assert row["why"] == misdeclared_why(NEUTRAL_PIN, MISSPELT_KIND, None,
+                                         True), row["why"]
+    shows_the_kind(standard, project, row, MISSPELT_KIND)
 
 
 # --- the shape pin and a copy conflicted together (#485) --------------------

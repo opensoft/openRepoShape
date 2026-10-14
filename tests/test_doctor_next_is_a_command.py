@@ -79,8 +79,9 @@ from test_shape_doctor import (  # noqa: F401
 #: that owns them: the row is that module's, and so is `rows_of`, which asks
 #: the guard of every row it reads.
 from test_shape_doctor import (
-    READ_NOWHERE, assert_next_holds_no_prose, commit_all, family_beside,
-    outside_single_quotes, plant_family_yaml, write_inventory,
+    MISSPELT_KIND, READ_NOWHERE, assert_next_holds_no_prose, commit_all,
+    family_beside, give_a_kind, outside_single_quotes, plant_family_yaml,
+    write_inventory,
 )
 #: The lockstep remedy `validate-pins.py` prints under its refusals, and the
 #: one every `Refusal` carried before #370, from the module that spells it;
@@ -469,9 +470,26 @@ def _removal_next_loose(standard, project, holder, tmp_path):
 
 def _removal_next_changed(standard, project, holder, tmp_path):
     # #327's file, staged and never committed: the `git status` that shows
-    # the change `git rm` will not discard.
+    # the change git rm will not discard.
     plant_family_yaml(project, holder)
     git("add", "--", "contracts/family.yaml", cwd=project)
+    return _kinds(standard, project)
+
+
+def _taking_out_committed(standard, project, holder, tmp_path):
+    # The shape pin given a kind nothing registers, committed: no NEXT and a
+    # `why` naming a row that said `ok` (review of PR #555, round 2), now
+    # the `git log -p -1` that shows the commit.
+    give_a_kind(project, SHAPE_PIN, MISSPELT_KIND, True)
+    return _kinds(standard, project)
+
+
+def _taking_out_changed(standard, project, holder, tmp_path):
+    # The naming policy given a kind nothing registers, and not committed:
+    # the `git diff HEAD` that shows the change, never a NEXT taking it out.
+    naming = project / NAMING_COPY
+    naming.write_bytes(naming.read_bytes().replace(
+        b"kind: repository-naming-policy\n", b"kind: service-inventory\n"))
     return _kinds(standard, project)
 
 
@@ -499,8 +517,10 @@ def _every_fault(standard, project, holder, tmp_path):
 #: VERBATIM, less the `#`, so these are the words main, doctors A and B and
 #: lane 2's #237, #291 and #496 printed. The `manifest kinds` NEXTs #277
 #: left as prose (#211, #327) are here too since #548, by the git state the
-#: one command they print now reaches (`removal_next`), with the sentence
-#: that now opens their `why`; a `Refusal.remediation` reaches no NEXT
+#: one command they print now reaches (`removal_next`), or, for a file a
+#: gate here reads, the read-only one that shows its kind line (`taking_out`,
+#: review of PR #555), with the sentence that now opens their `why`; a
+#: `Refusal.remediation` reaches no NEXT
 #: (`test_a_refusal_a_check_lets_out_has_no_next_and_keeps_its_remedy`).
 CASES = {
     "validator_row-neither-readable": (
@@ -653,12 +673,27 @@ CASES = {
         _removal_next_loose,
         "shows contracts/inventory.yaml, which git does not track: no commit "
         "holds it, so deleting it cannot be undone and is a person's act, "
-        "never this row's -- `git -C "),
+        "never this row's, with nothing to commit after. A person deletes it "
+        "with: git -C "),
     "removal_next-changed": (
         _removal_next_changed,
         "shows the changes no commit holds in contracts/family.yaml, which "
-        "`git rm` will not discard: commit or drop them, and the next run "
+        "git rm will not discard: commit or drop them, and the next run "
         "names the way out. Or move what contracts/family.yaml describes"),
+    "taking_out-committed": (
+        _taking_out_committed,
+        "shows the last commit that changed contracts/shape-pin.yaml. "
+        "contracts/shape-pin.yaml declares kind pinned_contract_manifes "
+        "where a gate here reads it as pinned_contract_manifest, and no gate "
+        "here checks the kind it declares, so this row is the one that says "
+        "so"),
+    "taking_out-changed": (
+        _taking_out_changed,
+        "shows the change to contracts/repository-naming.yaml that no commit "
+        "holds. contracts/repository-naming.yaml declares kind "
+        "service-inventory where a gate here reads it as "
+        "repository-naming-policy, and the manifest row's gate finds that "
+        "too"),
     "check_manifest_kinds-family-beside": (
         _family_beside,
         "takes family.yaml out of this root: commit that on a branch and land "

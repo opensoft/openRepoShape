@@ -903,24 +903,51 @@ def pins_read_here(ctx: Context) -> set | None:
     return own_pins(ctx) | declared_pins(ctx)
 
 
-def read_by_a_gate(ctx: Context) -> set:
-    """Every root path a gate that runs here reads a file at, as any kind
-    (review of PR #555): each kind's `read_at` for the kinds whose check
-    runs on this root, and `own_pins`.
+def kinds_read_here(ctx: Context) -> dict:
+    """`{path: kind}`: every root path a gate that runs here reads a file
+    at, and the kind it reads that file as -- each kind's `read_at`, for the
+    kinds whose check runs on this root, and `own_pins` as pins (review of
+    PR #555).
 
-    A FILE AT ONE OF THESE PATHS IS THAT GATE'S TO JUDGE. A
-    `contracts/repository-naming.yaml` declaring `kind:
-    pinned_contract_manifest` is refused by `validate-manifest.py`
-    (`policy-wrong-kind`), and the `manifest` row names it. Called read by
-    nothing here, it got a NEXT that took out the file the gate reads. So
-    such a file is never `unread`, and the row's NEXT never takes out a
-    file at one of these paths, whatever this row finds in it.
+    A FILE AT ONE OF THESE PATHS IS NEVER `unread`, AND THE NEXT NEVER TAKES
+    IT OUT, whatever this row finds in it. A `contracts/repository-naming.yaml`
+    declaring `kind: pinned_contract_manifest` called read by nothing got a
+    NEXT that took out the file `validate-manifest.py` reads. What is wrong
+    with such a file is the kind it declares, and the row says which kind
+    that path is read as (`taking_out`).
     """
-    paths = own_pins(ctx)
-    for entry in MANIFEST_VALIDATORS.values():
+    kinds = {pin: "pinned_contract_manifest" for pin in own_pins(ctx)}
+    for kind, entry in MANIFEST_VALIDATORS.items():
         if ctx.kind in entry.runs_in():
-            paths |= entry.reads(ctx) or set()
-    return paths
+            kinds.update((path, kind) for path in entry.reads(ctx) or ())
+    return kinds
+
+
+def kind_checked_by(ctx: Context) -> dict:
+    """`{path: row}`: the paths whose gate refuses a file declaring another
+    kind than it reads the path as, and the row that runs that gate (review
+    of PR #555, round 2).
+
+    ONLY THESE, because the row says that gate judges the file, and that
+    has to be true. `validate-pins.py` checks the `kind:` of each LEG pin
+    `project.yaml` declares (`pin-wrong-kind`), and `NamingPolicy.load`,
+    which `validate-manifest.py` and `validate-family.py` both call, that of
+    the naming policy (`policy-wrong-kind`). Nothing checks the kind of the
+    shape pin (`_check_shape_pin_header` reads its fields, not its kind), of
+    a neutral product pin, or of `contracts/spec-pin.yaml` while no leg
+    declares the role `spec`. And where the root's own manifest does not
+    load, its gate stops there and checks nothing. For every other path in
+    `kinds_read_here`, this row is the one that says the kind is wrong.
+    """
+    if ctx.manifest_refusal is not None:
+        return {}
+    if ctx.kind == FAMILY:
+        return {NAMING_COPY: "family"}
+    checked = {NAMING_COPY: "manifest"}
+    checked.update((f"contracts/{leg['role']}-pin.yaml", "pins")
+                   for leg in ctx.legs()
+                   if isinstance(leg.get("role"), str) and leg["role"])
+    return checked
 
 
 MANIFEST_VALIDATORS: dict[str, ManifestKind] = {
@@ -2339,17 +2366,22 @@ def register_way(names: list) -> str:
             f"{'it' if one else 'each'}, as the human decides")
 
 
-def registered_elsewhere(ctx: Context, found: list,
-                         states: dict) -> tuple[str, list, list]:
+def registered_elsewhere(ctx: Context, found: list, states: dict,
+                         held: set = frozenset()) -> tuple[str, list, list]:
     """Manifests whose kind is registered to a gate this root never runs:
     the sentence, the other way out, and the facts (#327).
 
-    `found` is `(path, kind, entry)` for each, in the row's own order, and
-    `states` each file's git state, from `git_states`. The sentence opens
-    the way the unregistered kind's does -- "no validator ... is registered
-    for kind" -- because to this root it is the same fact: the registry has
-    a validator for the kind, and none that runs here. Each file says which
-    validator that is and where it does run.
+    `found` is `(path, kind, entry)` for each, in the row's own order,
+    `states` each file's git state, from `git_states`, and `held` the
+    files a gate here reads, which are offered no other way out: what is
+    wrong with the shape pin declaring `family-manifest` is its kind line,
+    not where a family holder is (review of PR #555, round 2).
+
+    The sentence opens the way the unregistered kind's does -- "no
+    validator ... is registered for kind" -- because to this root it is the
+    same fact: the registry has a validator for the kind, and none that
+    runs here. Each file says which validator that is and where it does
+    run.
 
     A FINDING, NOT A NOTE, for the reason an unregistered kind is one. A
     `note` is a difference nothing asserts, and a file declaring `kind:`
@@ -2366,8 +2398,6 @@ def registered_elsewhere(ctx: Context, found: list,
     makes the root read as a project, and in an assembly root it is #211's
     finding instead of this one. Each file's state is `detail`'s `git`.
     """
-    names = [rel for rel, _, _ in found]
-    one = len(names) == 1
     clauses, detail = [], []
     for rel, kind, entry in found:
         runs = entry.runs_in()
@@ -2381,7 +2411,11 @@ def registered_elsewhere(ctx: Context, found: list,
     sentence = (f"no validator that runs in {ROOT_IN_WORDS[ctx.kind]} is "
                 "registered for kind " + ", ".join(clauses))
     homes = {rel: entry.home or "a root whose gate runs its validator"
-             for rel, _, entry in found}
+             for rel, _, entry in found if rel not in held}
+    if not homes:
+        return sentence, [], detail
+    names = list(homes)
+    one = len(names) == 1
     if len(set(homes.values())) == 1:
         other_exit = (f"move what {listed(names)} "
                       f"describe{'s' if one else ''} to {homes[names[0]]}")
@@ -2441,26 +2475,27 @@ def read_nowhere(ctx: Context, found: list,
     return sentence, ways, detail
 
 
-def read_here(ctx: Context, path: Path, rel: str, paths: set) -> bool:
-    """Whether a gate here reads the file at `path` (`rel` from the root),
-    `paths` being the root paths it reads that kind at (#439).
+def read_here(ctx: Context, path: Path, rel: str, paths) -> str | None:
+    """Which of `paths` -- the root paths a gate here reads -- is the file at
+    `path` (`rel` from the root), or None where it is none of them (#439).
 
     BY THE FILE, NOT ONLY BY ITS SPELLING. A filesystem that folds case
     hands `validate-pins.py` the file `contracts/Spec-pin.yaml` when it
     opens `contracts/spec-pin.yaml`, and a hard link is the file its other
     name is. Called read by nothing, such a file would get a NEXT that takes
     out a pin a gate does read. So a name that is not one of `paths` is
-    still read where it is the same file as one of them.
+    still read where it is the same file as one of them, and the path it
+    is read at is the one returned.
     """
     if rel in paths:
-        return True
+        return rel
     for other in paths:
         try:
             if path.samefile(ctx.root / other):
-                return True
+                return other
         except OSError:
             continue
-    return False
+    return None
 
 
 def git_states(root: Path, names: list) -> dict:
@@ -2566,9 +2601,7 @@ def removal_next(ctx: Context, names: list,
     if not groups:
         return None, f"take {listed(names)} out of this root"
     state, group = next(iter(groups.items()))
-    literal = (" --literal-pathspecs"
-               if any(PATHSPEC_MAGIC.search(name) for name in group) else "")
-    git_c = f"git -C {quote_arg(ctx.root)}{literal}"
+    git_c = git_on(ctx, group)
     spelled = " ".join(quote_arg(name) for name in group)
     if state == "committed":
         command = f"{git_c} rm -- {spelled}"
@@ -2578,15 +2611,18 @@ def removal_next(ctx: Context, names: list,
         ignored = any(states[name] == "ignored" for name in group)
         command = f"{git_c} status --ignored -- {spelled}"
         them = "it" if len(group) == 1 else "them"
+        # The deletion is spelled after a colon and never in backticks,
+        # which an interactive zsh or bash would run where this sentence was
+        # pasted whole (review of PR #555, round 2).
         said = (f"shows {listed(group)}, which git does not track: no "
                 f"commit holds {them}, so deleting {them} cannot be undone "
-                f"and is a person's act, never this row's -- `{git_c} clean "
-                f"-f{' -x' if ignored else ''} -- {spelled}` deletes {them}, "
-                "and there is nothing to commit")
+                f"and is a person's act, never this row's, with nothing to "
+                f"commit after. A person deletes {them} with: {git_c} clean "
+                f"-f{' -x' if ignored else ''} -- {spelled}")
     else:
         command = f"{git_c} status -- {spelled}"
         said = (f"shows the changes no commit holds in {listed(group)}, "
-                "which `git rm` will not discard: commit or drop them, and "
+                "which git rm will not discard: commit or drop them, and "
                 "the next run names the way out")
     rest = [name for other, more in groups.items() if other != state
             for name in more]
@@ -2595,31 +2631,83 @@ def removal_next(ctx: Context, names: list,
     return command, said
 
 
-def taking_out(ctx: Context, names: list, states: dict, gated: set,
-               ways: list) -> tuple[str | None, str]:
-    """`(command, why)` for the `manifest kinds` row's files to take out,
-    `ways` being each fault's other way out, a sentence each (#548).
+def git_on(ctx: Context, names: list) -> str:
+    """`git -C <root>`, quoted for the reader's shell, and
+    `--literal-pathspecs` where git would read one of `names` as a
+    pattern."""
+    literal = (" --literal-pathspecs"
+               if any(PATHSPEC_MAGIC.search(name) for name in names) else "")
+    return f"git -C {quote_arg(ctx.root)}{literal}"
 
-    A FILE A GATE HERE READS IS NEVER TAKEN OUT (review of PR #555). An
-    unregistered kind, or one whose check runs elsewhere, at a path in
-    `gated` is still this row's finding, as it always was, but the gate
-    that reads that path judges it in its own row, and a NEXT that took it
-    out would take out the shape pin, a leg pin or the naming policy. So
-    `removal_next` is asked only of the rest, and the `why` says which
-    files it leaves, and why. With none left, the row has no NEXT.
+
+def showing_the_kind(ctx: Context, rel: str,
+                     states: dict) -> tuple[str | None, str | None]:
+    """`(command, said)`: the read-only command that shows how `rel`, a file
+    a gate here reads, came to declare the kind it does, and what it shows
+    (review of PR #555, round 2): its uncommitted change where it has one,
+    else the last commit that changed it, else the file itself where git
+    does not track it. None where git cannot say."""
+    git_c, spelled = git_on(ctx, [rel]), quote_arg(rel)
+    state = states.get(rel)
+    if state == "changed":
+        return (f"{git_c} diff HEAD -- {spelled}",
+                f"shows the change to {rel} that no commit holds")
+    if state == "committed":
+        return (f"{git_c} log -p -1 -- {spelled}",
+                f"shows the last commit that changed {rel}")
+    if state in ("untracked", "ignored"):
+        return (f"{git_c} status --ignored -- {spelled}",
+                f"shows {rel}, which git does not track")
+    return None, None
+
+
+def misdeclared_said(rel: str, kind: str, read_as: str,
+                     row: str | None) -> str:
+    """The sentence of the `manifest kinds` row's `why` for a file a gate
+    here reads as `read_as` that declares `kind` instead (review of PR
+    #555, round 2): which row judges it -- that gate's own, only where the
+    gate checks the kind (`kind_checked_by`), else this one -- and to put
+    its kind line back."""
+    judge = (f"the {row} row's gate finds that too" if row else
+             "no gate here checks the kind it declares, so this row is the "
+             "one that says so")
+    return (f"{rel} declares kind {kind} where a gate here reads it as "
+            f"{read_as}, and {judge}: put its kind line back to {read_as}")
+
+
+def taking_out(ctx: Context, names: list, states: dict, judged: list,
+               ways: list) -> tuple[str | None, str]:
+    """`(command, why)` for the `manifest kinds` row's files, `names` being
+    those to take out, `judged` those a gate here reads, as `(path, kind,
+    read_as, row)`, and `ways` each other fault's other way out, a sentence
+    each (#548).
+
+    A FILE A GATE HERE READS IS NEVER TAKEN OUT (review of PR #555). It is
+    the shape pin, a leg pin, a neutral product pin or the naming policy,
+    and what is wrong with it is the kind it declares. So the NEXT is the
+    read-only `showing_the_kind` for the first of them, and the `why` names,
+    for each, the kind a gate here reads its path as, the kind it declares
+    instead, and which row judges it, and says to put its kind line back.
+    No other way out is offered for such a file: registering its kind, or
+    moving what it describes to a holder, is no answer for a pin (round 2).
+    The files to take out are named for the next run. With none judged, the
+    NEXT is `removal_next`'s, as before.
     """
-    judged = [name for name in names
-              if read_here(ctx, ctx.root / name, name, gated)]
-    rest = [name for name in names if name not in judged]
-    command, taken = (removal_next(ctx, rest, states) if rest
-                      else (None, None))
-    said = [taken] if taken else []
+    said = []
     if judged:
-        one = len(judged) == 1
-        said.append(f"{listed(judged)} {'is' if one else 'are'} read by a "
-                    "gate here, whose own row judges "
-                    f"{'it' if one else 'them'}: this row never takes out a "
-                    "file a gate reads")
+        command, shown = showing_the_kind(ctx, judged[0][0], states)
+        said += [shown] if shown else []
+        said += [misdeclared_said(*entry) for entry in judged]
+        if len(judged) > 1:
+            said.append("The next run shows "
+                        + listed([entry[0] for entry in judged[1:]]))
+        if names:
+            said.append(f"The next run names the way out for {listed(names)}")
+    elif names:
+        command, taken = removal_next(ctx, names, states)
+        said.append(taken)
+    else:
+        command = None
     return command, ". ".join([*said, *ways])
 
 
@@ -2662,9 +2750,17 @@ def check_manifest_kinds(ctx: Context) -> Row:
     to its `home`, declare the pin, move a membership to a holder. Those
     sentences were the NEXT, joined by `; `, and held `family.py init` and
     `family.py add` in backticks, which an interactive zsh runs where the
-    line is pasted (#277). A path a gate here reads (`read_by_a_gate`) is
-    never `unread` and never taken out: what is wrong with a file there is
-    that gate's finding, and `taking_out` says so (review of PR #555).
+    line is pasted (#277).
+
+    A FILE AT A PATH A GATE HERE READS IS NEVER `unread` AND NEVER TAKEN OUT
+    (review of PR #555). `kinds_read_here` says which kind each such path is
+    read as. Declaring another, the file is a fault in the kind line, and
+    the NEXT shows how it came to say that (`showing_the_kind`). The `why`
+    names both kinds and the row that judges it: the gate's own, where that
+    gate checks the kind (`kind_checked_by`), else this one. A kind whose
+    check runs here is this row's finding only there, as `misdeclared`: the
+    shape pin declaring `repository-naming-policy` read COMPLIANT, though
+    no gate checks the shape pin's kind (round 2).
 
     THE ROOT'S OWN MANIFEST, WHEN IT DOES NOT LOAD, IS NOT THIS ROW'S (#205).
     The `manifest` (or `family`) row quotes its refusal and names its gate,
@@ -2702,12 +2798,20 @@ def check_manifest_kinds(ctx: Context) -> Row:
     #: `(path, kind, paths)` for each manifest whose gate runs here and
     #: never reads its path, with the paths it does read that kind at (#439).
     unread: list[tuple] = []
+    #: `(path, kind, read_as)` for each file of a kind whose check runs here,
+    #: at a path a gate reads as another kind and checks no kind at (review
+    #: of PR #555, round 2): this row is the only one that can say so.
+    misdeclared: list[tuple] = []
+    #: `(path, kind, read_as, row)` for each file this row finds a fault in
+    #: at a path a gate here reads: never taken out (`taking_out`).
+    judged: list[tuple] = []
     elsewhere = (ctx.manifest_path if ctx.manifest_refusal is not None
                  else None)
     beside: tuple[str, dict] | None = None
-    #: Every path a gate here reads, as any kind: never `unread`, and never
-    #: taken out by the NEXT (review of PR #555).
-    gated = read_by_a_gate(ctx)
+    #: Every path a gate here reads, and the kind it reads it as, and the
+    #: paths whose gate refuses another kind (review of PR #555).
+    read_as = kinds_read_here(ctx)
+    checked = kind_checked_by(ctx)
     for path in manifest_candidates(ctx.root):
         if path == elsewhere:
             continue
@@ -2736,31 +2840,46 @@ def check_manifest_kinds(ctx: Context) -> Row:
             beside = family_beside_project(ctx, data)
             continue
         entry = MANIFEST_VALIDATORS.get(kind)
-        if entry is None:
-            unknown.append((rel, kind))
+        # The path a gate here reads this file at, as any kind, if any.
+        at = read_here(ctx, path, rel, read_as)
+        wrong = (rel, kind, read_as[at], checked.get(at)) \
+            if at is not None and read_as[at] != kind else None
+        if entry is None or ctx.kind not in entry.runs_in():
+            if entry is None:
+                unknown.append((rel, kind))
+            else:
+                ungated.append((rel, kind, entry))
+            judged += [wrong] if wrong else []
             continue
-        if ctx.kind not in entry.runs_in():
-            ungated.append((rel, kind, entry))
-            continue
-        # At a path a gate here reads as ANY kind, a wrong kind is that
-        # gate's own finding, not a file nothing reads (review of PR #555).
         paths = entry.reads(ctx)
-        if paths is None or read_here(ctx, path, rel, gated):
-            known.append(f"{rel} ({kind})")
-        else:
+        if at is None and paths is not None:
             unread.append((rel, kind, sorted(paths)))
+        elif wrong is not None and wrong[3] is None:
+            # A kind whose check runs here, at a path a gate reads as
+            # another kind and never checks the kind of: no row but this
+            # one says so (review of PR #555, round 2).
+            misdeclared.append(wrong[:3])
+            judged.append(wrong)
+        else:
+            # Its own path, or one whose gate refuses the kind it declares
+            # in its own row, which is that gate's finding (round 1).
+            known.append(f"{rel} ({kind})")
     detail = {"validated": known,
               "unregistered": [f"{rel} ({kind})" for rel, kind in unknown],
               "unreadable": unreadable,
               "registered_kinds": sorted(MANIFEST_VALIDATORS)}
     #: Every file the row's NEXT takes out of the root, in the row's order,
-    #: and how git has each, asked once (#548).
-    names = ([rel for rel, _ in unknown] + [rel for rel, _, _ in ungated]
-             + [rel for rel, _, _ in unread]
-             + ([FAMILY_MANIFEST] if beside is not None else []))
-    states = git_states(ctx.root, names) if names else {}
-    ungated_said = (registered_elsewhere(ctx, ungated, states) if ungated
-                    else None)
+    #: and how git has each and every file it judges, asked once (#548).
+    held = {entry[0] for entry in judged}
+    names = [rel for rel in
+             ([rel for rel, _ in unknown] + [rel for rel, _, _ in ungated]
+              + [rel for rel, _, _ in unread]
+              + ([FAMILY_MANIFEST] if beside is not None else []))
+             if rel not in held]
+    states = (git_states(ctx.root, names + [entry[0] for entry in judged])
+              if names or judged else {})
+    ungated_said = (registered_elsewhere(ctx, ungated, states, held)
+                    if ungated else None)
     if ungated_said is not None:
         # ONLY WHEN THERE IS ONE, like `family_beside` below, so every root
         # without such a file reports the row it reported before #327.
@@ -2769,6 +2888,11 @@ def check_manifest_kinds(ctx: Context) -> Row:
     if unread_said is not None:
         # Likewise, so every root without one reports the row of #327.
         detail["unread"] = unread_said[2]
+    if misdeclared:
+        # Likewise.
+        detail["misdeclared"] = [
+            {"manifest": rel, "kind": kind, "read_as": read,
+             "git": states.get(rel)} for rel, kind, read in misdeclared]
     # Only when there is one, so every other root's row is the row it was.
     aside = ""
     if elsewhere is not None:
@@ -2780,15 +2904,17 @@ def check_manifest_kinds(ctx: Context) -> Row:
         # ONLY WHEN THERE IS ONE, so every root without it reports the same
         # row, byte for byte, as it did before #211.
         detail["family_beside"] = beside[1]
-    if names or unreadable:
+    if names or judged or unreadable:
         parts = []
         #: The sentences of the `why` that name the other way out of each
-        #: fault, in the row's order: never the NEXT's (#548).
+        #: fault, in the row's order: never the NEXT's (#548), and never for
+        #: a file a gate here reads (`taking_out`).
         ways = []
         if unknown:
             parts.append("no validator registered for kind " + ", ".join(
                 detail["unregistered"]))
-            ways.append(register_way([rel for rel, _ in unknown]))
+            free = [rel for rel, _ in unknown if rel not in held]
+            ways += [register_way(free)] if free else []
         if unreadable:
             said = {rel: ": ".join(filter(None, (why["code"], why["detail"])))
                     for rel, why in refusals.items()}
@@ -2798,6 +2924,11 @@ def check_manifest_kinds(ctx: Context) -> Row:
             if found is not None:
                 parts.append(found[0])
                 ways += found[1]
+        if misdeclared:
+            parts.append(", ".join(
+                f"{rel} declares kind {kind} where a gate here reads it as "
+                f"{read}, and no gate here checks the kind it declares"
+                for rel, kind, read in misdeclared))
         if beside is not None:
             parts.append(beside[0])
             ways.append(FAMILY_BESIDE_WAY)
@@ -2805,7 +2936,7 @@ def check_manifest_kinds(ctx: Context) -> Row:
             restore, command, why = unreadable_next(ctx, unreadable, detail)
             detail.update({"restore": restore, "refusals": refusals})
         else:
-            command, why = taking_out(ctx, names, states, gated, ways)
+            command, why = taking_out(ctx, names, states, judged, ways)
         return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
                    "; ".join(parts) + aside, command, detail, why=why)
     return Row("manifest-kinds", LABEL_MANIFEST_KINDS, OK,
