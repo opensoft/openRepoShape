@@ -3432,9 +3432,225 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
                      "names the repair where it has one")
 
 
+def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
+    """`(name, url)` of the `.gitmodules` section whose `path` is `rel`, read
+    as `git submodule update` reads it, or `(None, None)` when no section
+    gives that path (#413).
+
+    THE NAME SAYS WHERE GIT KEEPS THE MOUNT'S REPOSITORY (`kept_gitdir`),
+    and it is not always the path: git allows a submodule mounted by hand
+    under another one.
+
+    READ WHERE GIT READS IT, WHICH IS NOT ALWAYS THE FILE. git reads the
+    working tree's `.gitmodules` when there is one, else the copy in the
+    index, else the one in HEAD. So a root whose `.gitmodules` was deleted
+    from the working tree alone still updates, and `git config -f
+    .gitmodules` by itself would find no section there. A file git cannot
+    parse gives nothing here.
+
+    THE LAST VALUE GIVEN WINS, for a path two sections give and for a key a
+    section gives twice, because git reads `.gitmodules` with each later
+    value overwriting the one before. `-z`, because a section name may hold
+    a space, a dot or a quote. An empty `url =` is no url. Read only:
+    `--get-regexp` writes nothing.
+    """
+    if os.path.lexists(root / ".gitmodules"):
+        sources = [["--file", ".gitmodules"]]
+    else:
+        sources = [["--blob", ":.gitmodules"], ["--blob", "HEAD:.gitmodules"]]
+    for source in sources:
+        try:
+            proc = subprocess.run(
+                ["git", "config", "-z", *source, "--get-regexp",
+                 r"^submodule\..*\.(path|url)$"],
+                cwd=str(root), capture_output=True, check=False)
+        except OSError:
+            return None, None
+        if proc.returncode == 1:
+            # Read, and no section gives a path or a url.
+            return None, None
+        if proc.returncode != 0:
+            # No such copy, or one git cannot parse: the next place, as git.
+            continue
+        named = None
+        urls: dict[str, str] = {}
+        for record in proc.stdout.decode("utf-8", "replace").split("\0"):
+            key, _, value = record.partition("\n")
+            name, _, field = key[len("submodule."):].rpartition(".")
+            if field == "path" and value == rel:
+                named = name
+            elif field == "url":
+                urls[name] = value
+        if named is None:
+            return None, None
+        return named, urls.get(named) or None
+    return None, None
+
+
+def kept_gitdir(root: Path, name: str) -> Path | None:
+    """The repository git keeps in `root` for the submodule NAMED `name`, or
+    None when it keeps none (#413).
+
+    `git submodule deinit -f` empties a mount and KEEPS its repository under
+    the root's `.git/modules/`. `git submodule update` links the mount to
+    that repository again rather than fetching a new one (measured: a branch
+    made in it before the update is still there after), so what its HEAD
+    holds is what the line moves.
+
+    BY NAME, which is not always the path: `--git-path modules/<name>` says
+    where git keeps it, in the common directory of a linked worktree too.
+    """
+    try:
+        where = git_out(["rev-parse", "--git-path", f"modules/{name}"],
+                        cwd=root)
+    except (Refusal, OSError, UnicodeDecodeError):
+        return None
+    path = Path(where)
+    if not path.is_absolute():
+        path = root / path
+    return path if path.is_dir() else None
+
+
+def kept_head(root: Path, git_dir: Path) -> tuple[bool | None, str | None]:
+    """`(detached, commit)` of the HEAD in a repository git kept for a mount
+    (`kept_gitdir`), or `(None, None)` when git cannot read one (#413).
+
+    ASKED THROUGH `--git-dir`, NEVER IN THE MOUNT. In an empty mount git
+    walks up and answers about the ROOT, which is why the row reads no HEAD
+    in one. `detached` is the same function the populated mounts are asked
+    through, so one question decides both. The root is the `--work-tree`
+    for the reason `emptied_reach` gives: the kept repository's own names
+    the mount, which may be gone.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", f"--git-dir={git_dir}", f"--work-tree={root}",
+             "rev-parse", "--verify", "-q", "HEAD"],
+            cwd=str(root), capture_output=True, check=False)
+    except OSError:
+        return None, None
+    if proc.returncode != 0:
+        return None, None
+    return (detached(root, git_dir=git_dir),
+            proc.stdout.decode("ascii", "replace").strip().lower())
+
+
+def left_in_reflog(is_detached: bool | None, head: str | None,
+                   gitlink: str) -> bool:
+    """Does checking `gitlink` out leave the commit HEAD is on held by a
+    reflog entry alone?
+
+    ONE RULE for a mount the row read a HEAD in and for a repository git
+    kept for an emptied one (#413): HEAD DETACHED, at a commit that is not
+    the gitlink. A commit on a branch stays on it, and a HEAD at the
+    gitlink does not move.
+    """
+    return bool(is_detached) and head is not None and head != gitlink
+
+
+def emptied_reach(root: Path, rel: str,
+                  gitlink: str) -> tuple[tuple | None, bool]:
+    """`(keep, repository)` for the EMPTY mount at `rel`: what the line would
+    leave in a reflog alone there, and whether git kept a repository for it
+    at all (#413).
+
+    `keep` is `(repository, commit, work tree)` when the kept repository's
+    HEAD is detached off the gitlink (`left_in_reflog`), and None otherwise.
+    `work tree` is the root when the mount directory is GONE, and None
+    otherwise: the kept repository's own `core.worktree` names the mount,
+    and git refuses every command in it while that directory is missing
+    (`cannot chdir`, exit 128, measured), the keep line included, unless a
+    `--work-tree` overrides it. Neither the read nor `branch` touches a work
+    tree, so which one is named changes nothing else. `repository` is
+    whether git kept one: a member's own legs live in it (#413 c).
+    """
+    name, _ = gitmodules_entry(root, rel)
+    git_dir = kept_gitdir(root, name) if name is not None else None
+    if git_dir is None:
+        return None, False
+    is_detached, kept_at = kept_head(root, git_dir)
+    if not left_in_reflog(is_detached, kept_at, gitlink):
+        return None, True
+    return (git_dir, kept_at, None if (root / rel).is_dir() else root), True
+
+
+def kept_branch_line(kept: tuple, platform: str) -> str:
+    """`git --git-dir=<repository> branch NAME <commit>`: the line that keeps
+    a commit a kept repository holds on a detached HEAD (#413 a).
+
+    It names the REPOSITORY, because in a mount with no `.git` of its own
+    `git -C <mount> branch NAME` walks up and would branch the ROOT. And it
+    names the COMMIT, so the `why` says which commit is at stake, and the
+    line keeps that one wherever the repository's HEAD is by the time it
+    runs. Every value through `quote_arg`.
+    """
+    git_dir, commit, work_tree = kept
+    words = ["git", quote_arg(f"--git-dir={git_dir}", platform)]
+    if work_tree is not None:
+        words.append(quote_arg(f"--work-tree={work_tree}", platform))
+    return " ".join([*words, "branch", "NAME", commit])
+
+
+def checkout_notes(noun: str, off_pin: list[Path], kept: list = (),
+                   nested: bool = False,
+                   platform: str | None = None) -> str:
+    """What a NEXT that moves HEAD owes a reader before it is pasted, as the
+    sentences that follow the one saying what it does, or `""` when it owes
+    nothing (#276, #413).
+
+    ONE DEFINITION FOR THE GIT LINE AND THE HOLDER'S BOOTSTRAP. #276 wrote
+    the keep sentence into `submodule_update_next` alone, and the `members`
+    row's other NEXT, the holder's own `scripts/bootstrap.py`, runs the same
+    update (`fetch_members`) and moves the same HEADs: a commit made in the
+    pinned, detached `members/<P>` was left in its reflog with no word about
+    it (#413 b). So both build the sentence here.
+
+    - `off_pin`: populated mounts detached off the commit the root records,
+      each kept first with `git -C <mount> branch NAME`.
+    - `kept`: `(repository, commit, work tree)` for emptied mounts whose kept
+      repository is detached off it (#413 a), each kept first with
+      `kept_branch_line`, which names the commit as well.
+    - `nested`, for the `members` row: the line is recursive, so it checks
+      out each member's own legs too, at the commits THE MEMBER records, and
+      a commit made on no branch in one of them is left in its reflog the
+      same way (#413 c). Said in general words, without walking into them,
+      and only where a member it reaches has a repository for them to be in.
+      `--recursive` stays: the holder's bootstrap recurses
+      (`fetch_members`), and a git line that did not would leave a member's
+      legs where a bootstrap would not.
+
+    A commit made in a mount on a BRANCH stays on that branch, and nothing
+    is said where no mount is in any of these states, because a reader told
+    about a loss that cannot happen learns to skip the sentence on the day
+    it can. None of `;`, `'`, a backtick or a parenthesis is written here
+    (`submodule_update_next` says why).
+    """
+    target = os.name if platform is None else platform
+    keeps = [f"git -C {quote_arg(mount, target)} branch NAME"
+             for mount in off_pin]
+    keeps += [kept_branch_line(entry, target) for entry in kept]
+    notes = ""
+    if keeps:
+        notes += (f". A commit made in a {noun} on no branch is left only in "
+                  "its reflog by this line. To keep one, run first "
+                  f"{' and '.join(keeps)} with a name of your choice")
+    if kept:
+        notes += (". A mount with no .git of its own is named by the "
+                  "repository git kept for it, because git run inside such a "
+                  "mount walks up and acts on this repository")
+    if nested:
+        notes += (". It is recursive, so it also checks out the legs of each "
+                  "member at the commits that member records, and a commit "
+                  "made on no branch in one of those legs is left only in its "
+                  "reflog too. To keep one, run first git -C LEG branch NAME, "
+                  "with LEG the directory of that leg")
+    return notes
+
+
 def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
                           noun: str, after: str = "", rerun: bool = False,
-                          platform: str | None = None) -> tuple[str, str]:
+                          platform: str | None = None, *, kept: list = (),
+                          nested: bool = False) -> tuple[str, str]:
     """`(the line, what it does)`: the script-free command that checks each
     submodule at `paths` out at the commit `root` records for it, and the
     sentence a reader needs before pasting it (#276).
@@ -3468,11 +3684,11 @@ def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
     IT MOVES HEAD, AND THAT IS NOT FREE, so the sentence says so. A commit
     made in a leg on a BRANCH stays on that branch. A commit made on a
     detached HEAD is left only in the leg's reflog, which is what bootstrap's
-    own `checkout <branch>` does to it too. `off_pin` is the mounts whose
-    HEAD is exactly that, and each is named with the line that keeps the
-    commit first, `git -C <leg> branch NAME`. Nothing is said when no mount
-    is in that state, because a reader told about a loss that cannot happen
-    learns to skip the sentence on the day it can.
+    own `checkout <branch>` does to it too. `checkout_notes` names each
+    place that can happen with the line that keeps the commit first: `off_pin`,
+    the populated mounts whose HEAD is exactly that, and `kept`, the
+    repositories git kept for emptied mounts whose HEAD is (#413 a).
+    `nested` is its too.
 
     THE SENTENCE CARRIES NONE OF `;`, `'`, A BACKTICK OR A PARENTHESIS. It
     was written as a `   # ` tail, and a tail is pasted with the line: a
@@ -3492,14 +3708,9 @@ def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
                      "update", "--init", "--recursive", "--checkout", "--",
                      *(quote_arg(path, target) for path in paths)])
     why = (f"checks each {noun} out at the commit this repository records "
-           "for it, and fetches a mount that is empty")
-    if off_pin:
-        keep = " and ".join(f"git -C {quote_arg(mount, target)} branch NAME"
-                            for mount in off_pin)
-        why += (f". A commit made in a {noun} on no branch is left only in "
-                "its reflog by this line. To keep one, run first "
-                f"{keep} with a name of your choice")
-    why += after
+           "for it, and fetches a mount that is empty"
+           + checkout_notes(noun, off_pin, kept, nested, target)
+           + after)
     if rerun:
         why += (f". Run the doctor again afterwards, because a {noun} this "
                 "line does not cure is named by the next run")
@@ -3550,6 +3761,11 @@ def check_legs(ctx: Context) -> Row:
     walks up, and the HEAD it answers with is the ROOT's (see `member_state`),
     which the update does not cure either unless a leftover gitdir happens to
     still be there.
+
+    WHAT THE LINE WOULD LEAVE IN A REFLOG IS NAMED, wherever it is (#413):
+    in a populated leg detached off the gitlink, and in the repository git
+    kept for an emptied one, read through `--git-dir` and kept with a line
+    that names that repository (`checkout_notes`).
     """
     waiting = waiting_row(ctx, "legs", "legs",
                           "the legs it declares are not known and none is "
@@ -3566,6 +3782,7 @@ def check_legs(ctx: Context) -> Row:
     problems: list[str] = []
     checkout: list[str] = []
     off_pin: list[Path] = []
+    kept: list[tuple] = []
     lockstep: list[str] = []
     for leg in legs:
         role = str(leg.get("role") or "?")
@@ -3586,6 +3803,10 @@ def check_legs(ctx: Context) -> Row:
             problems.append(f"{rel}: the gitlink is there and the directory "
                             "is empty -- an unbootstrapped clone")
             checkout.append(rel)
+            # ITS KEPT REPOSITORY'S HEAD, read where it is (#413).
+            keep, _ = emptied_reach(ctx.root, rel, gitlink)
+            if keep is not None:
+                kept.append(keep)
         elif head is None:
             problems.append(f"{rel}: populated, but git cannot read a HEAD in "
                             "it")
@@ -3599,7 +3820,7 @@ def check_legs(ctx: Context) -> Row:
                             f"{pinned[:12]}")
             if gitlink == pinned and (mount / ".git").exists():
                 checkout.append(rel)
-                if detached(mount):
+                if left_in_reflog(detached(mount), head, gitlink):
                     off_pin.append(mount)
             else:
                 lockstep.append(rel)
@@ -3620,7 +3841,8 @@ def check_legs(ctx: Context) -> Row:
             # The line is the NEXT and what it does is the row's `why`, on a
             # line of its own (#277).
             next_command, why = submodule_update_next(
-                ctx.root, checkout, off_pin, "leg", after, bool(lockstep))
+                ctx.root, checkout, off_pin, "leg", after, bool(lockstep),
+                kept=kept)
         else:
             # NO CHECKOUT CURES IT: the lockstep gate, one definition of it
             # for this row and the `pins` row (`lockstep_next`).
@@ -5198,17 +5420,27 @@ def check_agent_files(ctx: Context) -> Row:
                "absent: " + ", ".join(absent), fix, detail, why=why)
 
 
-def detached(path: Path) -> bool | None:
+def detached(path: Path, git_dir: Path | None = None) -> bool | None:
     """Is this checkout on a detached HEAD? None when git cannot say.
 
-    `symbolic-ref -q HEAD` succeeds with a branch name and fails when HEAD
-    is detached, which is the one question with no ambiguity in it.
+    `symbolic-ref -q HEAD` succeeds with a branch name and exits 1 when HEAD
+    is detached, which is the one question with no ambiguity in it. Any
+    other exit is git unable to answer, not an answer: it was read as
+    "detached".
+
+    `git_dir` asks it of a repository git KEPT for a mount with no `.git` of
+    its own, through `--git-dir`, with `path` as the work tree (`kept_head`):
+    asked in such a mount, git walks up and answers about the root (#413).
     """
-    if not (path / ".git").exists():
+    if git_dir is None and not (path / ".git").exists():
         return None
-    proc = subprocess.run(["git", "symbolic-ref", "-q", "HEAD"],
+    where = ([] if git_dir is None
+             else [f"--git-dir={git_dir}", f"--work-tree={path}"])
+    proc = subprocess.run(["git", *where, "symbolic-ref", "-q", "HEAD"],
                           cwd=str(path), capture_output=True, check=False)
-    return proc.returncode != 0
+    if proc.returncode not in (0, 1):
+        return None
+    return proc.returncode == 1
 
 
 def is_this_member(sibling: Path, row: dict) -> bool:
@@ -5573,22 +5805,39 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
         # answers with the HOLDER's HEAD, `member_state`).
         checkout: list[str] = []
         off_pin: list[Path] = []
+        kept: list[tuple] = []
+        moved: list[Path] = []
         lockstep = False
+        nested = False
         for entry in rows:
+            rel = entry["path"]
+            mount = ctx.root / rel
+            gitlink = recorded_gitlink(ctx.root, rel)
+            # WHAT THE HOLDER'S BOOTSTRAP MOVES IS EVERY MEMBER (#413 b): its
+            # update names no path, so a member detached off its gitlink is
+            # moved whatever this row says of it, and is named for it.
+            if (gitlink is not None and entry["populated"]
+                    and (mount / ".git").exists()
+                    and left_in_reflog(entry["detached"], entry["head"],
+                                       gitlink)):
+                moved.append(mount)
             if member_problem(entry) is None:
                 continue
-            mount = ctx.root / entry["path"]
-            gitlink = recorded_gitlink(ctx.root, entry["path"])
             if gitlink is None:
                 lockstep = True
             elif not entry["populated"]:
-                checkout.append(entry["path"])
+                checkout.append(rel)
+                keep, repository = emptied_reach(ctx.root, rel, gitlink)
+                nested = nested or repository
+                if keep is not None:
+                    kept.append(keep)
             elif (entry["pin"] is None or entry["head"] is None
                     or not (mount / ".git").exists()):
                 lockstep = True
             elif gitlink == entry["pin"]:
-                checkout.append(entry["path"])
-                if entry["detached"]:
+                checkout.append(rel)
+                nested = True
+                if left_in_reflog(entry["detached"], entry["head"], gitlink):
                     off_pin.append(mount)
             else:
                 lockstep = True
@@ -5603,14 +5852,21 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
                 f"{PYTHON} "
                 f"{quote_arg(ctx.root / 'scripts' / 'bootstrap.py')} "
                 f"--root {quote_arg(ctx.root)}")
+            # The same sentences the git line carries, built by the same
+            # function (#413 b), for every member it moves. Its update is
+            # recursive too, into every member that is there.
             why = ("what `make bootstrap` runs in a holder: it fetches every "
-                   "member at its pin and leaves it detached there")
+                   "member at its pin and leaves it detached there"
+                   + checkout_notes(
+                       "member", moved, kept,
+                       nested or any(entry["populated"] for entry in rows)))
         elif checkout:
             after = (". This holder has no scripts/bootstrap.py that can "
                      "run, so this is the plain git line, with no "
                      "credential rewrite for a private member")
             next_command, why = submodule_update_next(
-                ctx.root, checkout, off_pin, "member", after, lockstep)
+                ctx.root, checkout, off_pin, "member", after, lockstep,
+                kept=kept, nested=nested)
         else:
             # THE FAMILY GATE, one definition of it for this row and the
             # `family` row (`lockstep_next`).

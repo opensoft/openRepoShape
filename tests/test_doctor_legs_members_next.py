@@ -745,7 +745,10 @@ def test_a_pasted_members_git_line_cures_the_row(standard, holder, tmp_path):
 def test_the_members_reflog_note_is_printed_for_a_detached_member_only(
         standard, holder, tmp_path):
     """The git line moves a member's HEAD too: a commit made on its detached
-    HEAD is left only in the reflog, and a commit made on a branch is not."""
+    HEAD is left only in the reflog, and a commit made on a branch is not.
+    The branched member is still named in general words for its own legs,
+    which the recursive line checks out too (#413 c), but not by a keep
+    line of its own."""
     detached = holder_copy(holder, tmp_path / "detached")
     holder_without(detached, "bootstrap.py")
     member = detached / "members" / FAMILY_MEMBER
@@ -764,7 +767,9 @@ def test_the_members_reflog_note_is_printed_for_a_detached_member_only(
     commit_in(member)
     why = why_of(row_of(standard, branched, "members"))
     assert why, "the line must say what it does"
-    assert "reflog" not in why, why
+    assert "A commit made in a member on no branch" not in why, why
+    assert f"git -C {module.quote_arg(member.resolve())} branch NAME" \
+        not in why, why
 
 
 @WINDOWS_SKIP
@@ -986,3 +991,314 @@ def test_an_empty_member_with_no_pin_is_still_a_checkout_first(
     again = row_of(standard, root, "members")
     assert again["status"] == "FINDING", again
     assert "validate-family.py" in command_of(again), again["next"]
+
+
+# --- #413: every detached commit the line moves is named --------------------
+#
+# The keep sentence named a mount only where the row had read a HEAD in it,
+# detached off its pin. The line moves three more HEADs that can hold the
+# only copy of a commit: the repository git kept for an emptied mount (a),
+# every member the holder's own bootstrap updates (b), and a member's own
+# legs, which `--recursive` checks out (c). Each test has the shape of
+# `test_the_keep_line_in_the_explanation_keeps_a_detached_commit`: the
+# commit is named before the paste, the keep line the row names, run first,
+# leaves it on a branch, and without that line no ref holds it afterwards.
+
+#: The keep line for a repository git kept (#413 a): it names the
+#: REPOSITORY and the commit, and a work tree only where the mount directory
+#: itself is gone.
+KEPT_LINE = re.compile(r"git --git-dir=\S+(?: --work-tree=\S+)? branch NAME "
+                       r"[0-9a-f]{40}")
+
+
+def sh(line: str, cwd: Path) -> subprocess.CompletedProcess:
+    """A line the row's `why` names, run as a reader pastes it: in a POSIX
+    shell, from a directory that is not the root."""
+    cwd.mkdir(exist_ok=True)
+    return subprocess.run(["sh", "-c", line], cwd=str(cwd),
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", check=False, env=PASTE_ENV,
+                          stdin=subprocess.DEVNULL)
+
+
+def kept_repository(root: Path, name: str) -> Path:
+    """Where git keeps the repository of the submodule NAMED `name`."""
+    where = Path(git("rev-parse", "--git-path", f"modules/{name}",
+                     cwd=root).stdout.strip())
+    return where if where.is_absolute() else root / where
+
+
+def emptied_with_its_repository_kept(root: Path, mount: str) -> str:
+    """A commit made on a mount's detached HEAD, and then the mount emptied
+    with `git submodule deinit -f`, which KEEPS its repository: that
+    commit's sha. The row reads no HEAD in an empty mount, and the update
+    links the mount to the kept repository again and checks the gitlink out
+    over the commit."""
+    commit = commit_in(root / mount, "work on a detached HEAD, then deinit")
+    git("submodule", "deinit", "-q", "-f", "--", mount, cwd=root)
+    assert not any((root / mount).iterdir())
+    return commit
+
+
+def detached_member(root: Path) -> Path:
+    """The fixture's member is on a branch (`git submodule add` checks one
+    out); a fresh recursive clone of a holder leaves it detached, which is
+    where a commit made in it is on no branch."""
+    member = root / "members" / FAMILY_MEMBER
+    git("checkout", "-q", "--detach", "HEAD", cwd=member)
+    return member
+
+
+def with_its_own_legs(root: Path) -> Path:
+    """`family.py add` does not recurse, so the fixture's member has empty
+    legs: fill them, as a recursive clone of the holder does. Each is then
+    detached at the commit the MEMBER records for it."""
+    git("-c", "protocol.file.allow=always", "submodule", "update", "--init",
+        "--recursive", "--", f"members/{FAMILY_MEMBER}", cwd=root)
+    return root / "members" / FAMILY_MEMBER
+
+
+def test_413a_an_emptied_legs_kept_repository_names_its_detached_commit(
+        standard, project):
+    """(a) The mount is empty, so the row read no HEAD in it, and the line
+    said nothing. git kept its repository, detached at a commit no branch
+    holds, and the line moves it. The commit is named, by a keep line that
+    names the REPOSITORY: run in the empty mount, git walks up and would
+    branch the root."""
+    commit = emptied_with_its_repository_kept(project, "spec")
+    module = doctor_module(standard)
+    row = row_of(standard, project, "legs")
+    resolved = project.resolve()
+    assert command_of(row) == (
+        f"git -C {module.quote_arg(resolved)} {UPDATE} -- spec"), row["next"]
+    why = why_of(row)
+    repository = kept_repository(resolved, "spec")
+    assert (f"git {module.quote_arg(f'--git-dir={repository}')} branch NAME "
+            f"{commit}") in why, why
+    assert "reflog" in why, why
+    assert f"git -C {module.quote_arg(resolved / 'spec')} branch" not in why
+    for character in (";", "'", "`", "(", ")"):
+        assert character not in why, (character, why)
+
+
+def test_413a_a_kept_repository_on_a_branch_or_at_the_gitlink_is_not_named(
+        standard, project):
+    """The same rule as a populated mount's, `left_in_reflog`: a kept HEAD
+    on a branch keeps its commit there, and one at the gitlink does not
+    move, so neither is a loss to warn about."""
+    commit_in(project / "spec")
+    git("checkout", "-q", "-B", "work", cwd=project / "spec")
+    git("submodule", "deinit", "-q", "-f", "--", "spec", cwd=project)
+    git("submodule", "deinit", "-q", "-f", "--", "code", cwd=project)
+    why = why_of(row_of(standard, project, "legs"))
+    assert "reflog" not in why, why
+    assert "--git-dir" not in why, why
+
+
+@WINDOWS_SKIP
+def test_413a_the_keep_line_keeps_the_emptied_legs_commit_through_the_paste(
+        standard, project, tmp_path):
+    commit = emptied_with_its_repository_kept(project, "spec")
+    row = row_of(standard, project, "legs")
+    keep = KEPT_LINE.search(why_of(row))
+    assert keep, why_of(row)
+    kept = sh(keep.group(0).replace("NAME", "kept"), tmp_path / "keep")
+    assert kept.returncode == 0, kept.stdout + kept.stderr
+    result = paste(row, tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row_of(standard, project, "legs")["status"] == "ok"
+    assert "kept" in git("branch", "--contains", commit,
+                         cwd=project / "spec").stdout
+
+
+@WINDOWS_SKIP
+def test_413a_without_the_keep_line_the_emptied_legs_commit_is_in_no_ref(
+        standard, project, tmp_path):
+    commit = emptied_with_its_repository_kept(project, "spec")
+    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row_of(standard, project, "legs")["status"] == "ok"
+    spec = project / "spec"
+    assert git("for-each-ref", "--contains", commit,
+               cwd=spec).stdout.strip() == ""
+    assert git("rev-parse", "HEAD", cwd=spec).stdout.strip() != commit
+    assert commit in git("reflog", cwd=spec).stdout
+
+
+@WINDOWS_SKIP
+def test_413a_with_the_mount_directory_gone_the_keep_line_still_runs(
+        standard, project, tmp_path):
+    """The kept repository's own `core.worktree` names the mount, and with
+    that directory gone git refuses every command in the repository, the
+    keep line included (`cannot chdir`, exit 128). The line then carries a
+    `--work-tree`, and runs."""
+    commit = emptied_with_its_repository_kept(project, "spec")
+    (project / "spec").rmdir()
+    row = row_of(standard, project, "legs")
+    keep = KEPT_LINE.search(why_of(row))
+    assert keep and "--work-tree=" in keep.group(0), why_of(row)
+    kept = sh(keep.group(0).replace("NAME", "kept"), tmp_path / "keep")
+    assert kept.returncode == 0, kept.stdout + kept.stderr
+    result = paste(row, tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row_of(standard, project, "legs")["status"] == "ok"
+    assert "kept" in git("branch", "--contains", commit,
+                         cwd=project / "spec").stdout
+
+
+def test_413a_the_kept_repositorys_keep_line_is_spelled_for_the_readers_shell(
+        standard):
+    """`quote_arg` over the whole `--git-dir=` word, in both dialects: a
+    root with a space is one argument to `sh` and to PowerShell."""
+    module = doctor_module(standard)
+    commit = "a" * 40
+    _, why = module.submodule_update_next(
+        PurePosixPath("/srv/my atlas"), ["spec"], [], "leg",
+        platform="posix",
+        kept=[(PurePosixPath("/srv/my atlas/.git/modules/spec"), commit,
+               None)])
+    assert (f"git '--git-dir=/srv/my atlas/.git/modules/spec' branch NAME "
+            f"{commit}") in why, why
+    _, why = module.submodule_update_next(
+        PureWindowsPath("C:/Work/My Atlas"), ["spec"], [], "leg",
+        platform="nt",
+        kept=[(PureWindowsPath("C:/Work/My Atlas/.git/modules/spec"), commit,
+               PureWindowsPath("C:/Work/My Atlas"))])
+    assert ("git '--git-dir=C:\\Work\\My Atlas\\.git\\modules\\spec' "
+            "'--work-tree=C:\\Work\\My Atlas' branch NAME " + commit) in why
+
+
+def test_413a_an_emptied_members_kept_repository_names_its_detached_commit(
+        standard, holder, tmp_path):
+    """The members row takes the same rule: the holder's own bootstrap is
+    the NEXT here, and it names the commit the kept repository holds."""
+    root = holder_copy(holder, tmp_path)
+    detached_member(root)
+    commit = emptied_with_its_repository_kept(root, f"members/{FAMILY_MEMBER}")
+    module = doctor_module(standard)
+    row = row_of(standard, root, "members")
+    assert row["status"] == "FINDING", row
+    assert "bootstrap.py" in command_of(row), row["next"]
+    repository = kept_repository(root.resolve(), f"members/{FAMILY_MEMBER}")
+    assert (f"git {module.quote_arg(f'--git-dir={repository}')} branch NAME "
+            f"{commit}") in why_of(row), why_of(row)
+
+
+def test_413b_the_holders_own_bootstrap_names_a_detached_members_keep_line(
+        standard, holder, tmp_path):
+    """(b) The holder's own bootstrap runs the same update the git line does
+    (`fetch_members`), so a commit made in the pinned, detached member is
+    left in its reflog by it too. Its `why` carries the same sentence, built
+    by the same function, `checkout_notes`, and the recursive one (c)."""
+    root = holder_copy(holder, tmp_path)
+    member = detached_member(root)
+    commit_in(member)
+    module = doctor_module(standard)
+    row = row_of(standard, root, "members")
+    assert row["status"] == "FINDING", row
+    resolved = root.resolve()
+    assert command_of(row) == (
+        f"{module.PYTHON} "
+        f"{module.quote_arg(resolved / 'scripts' / 'bootstrap.py')} "
+        f"--root {module.quote_arg(resolved)}"), row["next"]
+    why = why_of(row)
+    assert module.checkout_notes("member", [member.resolve()]) in why, why
+    assert f"git -C {module.quote_arg(member.resolve())} branch NAME" in why
+    assert "git -C LEG branch NAME" in why, why
+
+
+@WINDOWS_SKIP
+def test_413b_the_keep_line_keeps_a_members_commit_through_the_bootstrap(
+        standard, holder, tmp_path):
+    root = holder_copy(holder, tmp_path)
+    member = detached_member(root)
+    commit = commit_in(member)
+    row = row_of(standard, root, "members")
+    keep = re.search(r"git -C \S+ branch NAME", why_of(row))
+    assert keep and "LEG" not in keep.group(0), why_of(row)
+    kept = sh(keep.group(0).replace("NAME", "kept"), tmp_path / "keep")
+    assert kept.returncode == 0, kept.stdout + kept.stderr
+    result = paste(row, tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row_of(standard, root, "members")["status"] == "ok"
+    assert "kept" in git("branch", "--contains", commit, cwd=member).stdout
+
+
+@WINDOWS_SKIP
+def test_413b_without_it_the_holders_bootstrap_leaves_the_commit_in_no_ref(
+        standard, holder, tmp_path):
+    root = holder_copy(holder, tmp_path)
+    member = detached_member(root)
+    commit = commit_in(member)
+    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row_of(standard, root, "members")["status"] == "ok"
+    assert git("for-each-ref", "--contains", commit,
+               cwd=member).stdout.strip() == ""
+    assert commit in git("reflog", cwd=member).stdout
+
+
+def made_in_a_members_own_leg(root: Path) -> tuple[Path, str]:
+    """A commit in the member, so the row is red, and one in the member's
+    own detached `spec` leg, which the row never reads: the leg and the
+    second commit's sha."""
+    member = with_its_own_legs(root)
+    git("checkout", "-q", "--detach", "HEAD", cwd=member)
+    commit_in(member, "work in the member")
+    leg = member / "spec"
+    return leg, commit_in(leg, "work in the member's own leg")
+
+
+def test_413c_the_members_git_line_says_it_checks_out_each_members_legs(
+        standard, holder, tmp_path):
+    """(c) `--recursive` checks out the member's own legs at the commits the
+    MEMBER records, and the row walks into none of them. The `why` says so
+    in general words, with the keep line to run in that leg first."""
+    root = holder_copy(holder, tmp_path)
+    holder_without(root, "bootstrap.py")
+    made_in_a_members_own_leg(root)
+    module = doctor_module(standard)
+    row = row_of(standard, root, "members")
+    assert command_of(row) == (
+        f"git -C {module.quote_arg(root.resolve())} {UPDATE} -- "
+        f"members/{FAMILY_MEMBER}"), row["next"]
+    why = why_of(row)
+    assert "It is recursive" in why, why
+    assert "the legs of each member" in why, why
+    assert "git -C LEG branch NAME" in why, why
+    for character in (";", "'", "`", "(", ")"):
+        assert character not in why, (character, why)
+
+
+@WINDOWS_SKIP
+def test_413c_the_leg_keep_line_keeps_a_members_leg_commit_through_the_paste(
+        standard, holder, tmp_path):
+    root = holder_copy(holder, tmp_path)
+    holder_without(root, "bootstrap.py")
+    leg, commit = made_in_a_members_own_leg(root)
+    module = doctor_module(standard)
+    row = row_of(standard, root, "members")
+    keep = re.search(r"git -C LEG branch NAME", why_of(row))
+    assert keep, why_of(row)
+    kept = sh(keep.group(0).replace("LEG", module.quote_arg(leg.resolve()))
+              .replace("NAME", "kept"), tmp_path / "keep")
+    assert kept.returncode == 0, kept.stdout + kept.stderr
+    result = paste(row, tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row_of(standard, root, "members")["status"] == "ok"
+    assert "kept" in git("branch", "--contains", commit, cwd=leg).stdout
+
+
+@WINDOWS_SKIP
+def test_413c_without_it_the_members_leg_commit_is_in_no_ref(
+        standard, holder, tmp_path):
+    root = holder_copy(holder, tmp_path)
+    holder_without(root, "bootstrap.py")
+    leg, commit = made_in_a_members_own_leg(root)
+    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row_of(standard, root, "members")["status"] == "ok"
+    assert git("for-each-ref", "--contains", commit,
+               cwd=leg).stdout.strip() == ""
+    assert commit in git("reflog", cwd=leg).stdout
+
