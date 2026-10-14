@@ -469,6 +469,15 @@
 
   <main>
     <header class="masthead" id="masthead">
+
+      <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
+
+      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+
+      <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
+
+      <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
+
       <div class="masthead-top">
         <p class="eyebrow"><span class="on">Ratified standard</span> &middot; Apache-2.0</p>
         <h1>openRepoShape</h1>
@@ -476,7 +485,6 @@
 
       <div class="masthead-grid">
         <div class="path">
-          <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
           <p class="lede">The mechanics of a project that spans several repositories: what they
           are called, how they are pinned to each other, how one clone brings the whole project
           down, and what an AI assistant does when a human says &ldquo;scaffold a new project with
@@ -485,7 +493,6 @@
           several of them is held together by convention or by nothing. This repository is the
           convention, as data and as running code.</p>
 
-          <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
           <h4>The fastest path &mdash; macOS, Linux, WSL2</h4>
           <div class="code" data-lang="sh"><pre><code>curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRepoShape \
     | bash -s -- --install
@@ -501,7 +508,6 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
           here</a>.</p>
         </div>
 
-        <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
         <figure class="diagram">
           <svg viewBox="0 0 340 414" role="img" aria-labelledby="dg-title dg-desc">
             <title id="dg-title">The three legs and the three pins</title>
@@ -544,7 +550,6 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
             <text class="dg-mount" x="320" y="374" text-anchor="end">code/</text>
             <text class="dg-sub" x="56" y="393">the implementation and its tests</text>
           </svg>
-          <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
           <figcaption>Each leg is pinned twice, in the same commit: by the gitlink git records for
           the submodule, and by <code>contracts/&lt;role&gt;-pin.yaml</code>.</figcaption>
         </figure>
@@ -552,7 +557,9 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
     </header>
 
     <section id="confers">
+
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
+
       <div class="card confers">
         <h4>The one thing to read before electing it</h4>
         <p><strong>The shape is elective and confers nothing.</strong> Electing it changes no gate,
@@ -601,7 +608,9 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
     </section>
 
     <section id="start">
+
       <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
       <p>Pick your machine. Each panel says what the machine needs, how the tool offers to supply
@@ -1011,7 +1020,9 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
     </section>
 
     <section id="partway">
+
       <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
       <p>Nothing is created before the typed <code>yes</code>: the preflight, the naming check and
@@ -1044,7 +1055,11 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
     </section>
 
     <section id="ci">
+
+      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
+
       <p class="eyebrow">Setup</p>
       <h2>Reading private legs in CI</h2>
       <p>The <code>validate</code> workflow&rsquo;s default <code>GITHUB_TOKEN</code> cannot clone a
@@ -1063,7 +1078,6 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       <p><strong>Fallback, for an org without the App yet:</strong> a fine-grained
       <code>SHAPE_LEGS_TOKEN</code> PAT, <code>contents:read</code> on the LEGS ONLY.</p>
       <div class="code" data-lang="sh"><pre><code>gh secret set SHAPE_LEGS_TOKEN --org &lt;your-org&gt; --body '&lt;token&gt;'</code></pre></div>
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
       <p><strong>On the Free plan, use <code>--repo</code>, not <code>--org</code>.</strong> GitHub
       delivers org secrets only to PUBLIC repositories, so on a private one
       <code>secrets.SHAPE_LEGS_APP_ID</code> is silently empty and <code>validate</code> goes GREEN
@@ -1099,7 +1113,11 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
     </section>
 
     <section id="legs">
+
+      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
+
       <p class="eyebrow">Reference</p>
       <h2>The three legs, and naming</h2>
       <div class="tw">
@@ -1165,7 +1183,6 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       computed and thrown away. <code>&lt;X&gt;-Install</code> is admitted into nothing at all: it
       carries a hyphen, so it satisfies no leg form to be admitted into, and is still refused as any
       leg.</p>
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
       <div class="code" data-lang="sh"><pre><code>python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-code</code></pre></div>
       <p class="aside">Ruled by <strong>Brett Heap on 2026-09-02</strong>: <em>descendant only if it
       pins <code>open&lt;Product&gt;</code></em> &mdash; and a descendant MAY carry legs, so
@@ -1176,7 +1193,9 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
     </section>
 
     <section id="adopt">
+
       <!-- reads README.md § Adopting an existing repository: blob 5f9b93f3e5b68fa36f499c58906c9a9c0458333e -->
+
       <p class="eyebrow">Reference</p>
       <h2>Adopting an existing repository</h2>
       <p>A repository that already exists is converted <strong>in place</strong>. It KEEPS ITS NAME,
@@ -1221,7 +1240,9 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
     </section>
 
     <section id="families">
+
       <!-- reads README.md § Families: a holder for projects that ship separately: blob 89ef0ab5ec8801ab69c7b1fea30a6b2e273f27e2 -->
+
       <p class="eyebrow">Reference</p>
       <h2>Families: a holder for projects that ship separately</h2>
       <p>A <strong>family</strong> is a repository that pins other projects&rsquo; <strong>assembly
@@ -1325,7 +1346,11 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
     </section>
 
     <section id="doublepin">
+
+      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
+
       <p class="eyebrow">Reference</p>
       <h2>The double pin, and the lockstep invariant</h2>
       <p>Each leg is pinned TWICE, in the same commit: by the <strong>gitlink</strong> git records
@@ -1380,7 +1405,6 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       validator that goes red &mdash; rolling the pin, the
       workflow files, the leg&rsquo;s checkout and the index back first, so a refusal leaves the
       tree exactly as it was found.</p>
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
       <p>The leg is left DETACHED at the new commit; <code>make bootstrap</code> re-places it on its
       tracking branch AT the new pin, or says why not. Editing the pin file by hand to make the
       validator agree is what the validator exists to refuse.</p>
@@ -1388,7 +1412,9 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
     </section>
 
     <section id="copied">
+
       <!-- reads README.md § Bootstrap is COPIED into the project, not fetched: blob 9adcd5eb2d95f1e84414e343231217ea326462eb -->
+
       <p class="eyebrow">Reference</p>
       <h2>Bootstrap is COPIED into the project, not fetched</h2>
       <p><code>scripts/bootstrap.py</code>, the validators and <code>AGENTS-shape.md</code> are
@@ -1419,7 +1445,9 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
     </section>
 
     <section id="current">
+
       <!-- reads README.md § Keeping a project's shape current: blob 1a96ae972c3dcc761f3533c76c52190487c03856 -->
+
       <p class="eyebrow">Reference</p>
       <h2>Keeping a project&rsquo;s shape current</h2>
       <p>The copies are the trade: a project runs its own gate, which never consults this standard
@@ -1473,7 +1501,9 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
     </section>
 
     <section id="doctor">
+
       <!-- reads README.md § Keeping a project's shape current: blob 1a96ae972c3dcc761f3533c76c52190487c03856 -->
+
       <p class="eyebrow">Reference</p>
       <h2>Is this repository compliant? <code>openRepoShape --doctor</code></h2>
       <p>Five commands answered that question and the order of them was tribal knowledge.
@@ -1605,7 +1635,11 @@ openRepoShape --doctor                 # the repository you are standing in
     </section>
 
     <section id="park">
+
+      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
+
       <p class="eyebrow">Reference</p>
       <h2>Carrying in-flight work to another workstation</h2>
       <p>Two verbs on the assembly root, for the day the machine your half-finished work is on is
@@ -1625,7 +1659,6 @@ cd &lt;Project&gt; &amp;&amp; make bootstrap &amp;&amp; make resume</code></pre>
       and <strong><code>resume</code></strong> on your <code>PATH</code> &mdash; one line, which
       <code>openRepoShape --install</code> prints and never runs, because a standard that reached
       into its own tools to finish an install would depend on them at runtime:</p>
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
       <div class="code" data-lang="sh"><pre><code>curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRepoTools | bash -s -- --install</code></pre></div>
       <p>&mdash; so the whole of that sequence is one word from any folder on either machine:</p>
       <div class="code" data-lang="sh"><pre><code>park InkRouter                  # on workstation A, from any folder
@@ -1740,7 +1773,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
     </section>
 
     <section id="degrade">
+
       <!-- reads README.md § The degrade rule: blob e28bf2cdbbee43509e2db13bdd3c2a10ed067276 -->
+
       <p class="eyebrow">Reference</p>
       <h2>The degrade rule</h2>
       <p><code>make bootstrap</code> looks for a wallet review-authority register at
@@ -1755,7 +1790,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
     </section>
 
     <section id="layout">
+
       <!-- reads README.md § Layout of this repository: blob c8be0af4910debc70cdd1a1f41c6f984caa65794 -->
+
       <p class="eyebrow">Reference</p>
       <h2>Layout of this repository</h2>
       <dl class="files">
@@ -1869,7 +1906,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
     </section>
 
     <footer id="licence">
+
       <!-- reads README.md § Licence: blob 57e2469bc2ed7fca4cb2543ab2c38e4e061a0e22 -->
+
       <p>Licence <strong>Apache-2.0</strong>. See <code>LICENSE</code> in the repository.</p>
       <p><a href="https://github.com/opensoft/openRepoShape#readme">github.com/opensoft/openRepoShape</a></p>
       <p class="meta">First cut from README.md at c093813 (#71); regenerated at cbca5b4 (#89);
@@ -1905,10 +1944,10 @@ resume InkRouter                # on workstation B, and the estate is back</code
       adoption&rsquo;s <code>--project</code> as the source&rsquo;s own name, added (#499); the
       <code>merged-away</code> verdict, whose row <code>apply</code> drops, added (#502). That
       list is history, and it ends there.</p>
-      <p class="meta">Each section of this page records, in a comment inside it, the README
-      section it reads and the hash of that section as it read it, and a test checks those
-      records against the README (#519). Every command, flag, exit code and file name on this
-      page is quoted from the README and from AGENTS.md.</p>
+      <p class="meta">Each section that reads the README records every README section it reads,
+      with the hash of each as it read it, in comments at the top of the section, and a test
+      checks those records against the README (#519). Every command, flag, exit code and file
+      name on this page is quoted from the README and from AGENTS.md.</p>
     </footer>
   </main>
 </div>
