@@ -240,10 +240,12 @@ def test_a_scaffold_reads_back_every_value_it_was_given(tmp_path, project_id,
 #
 # `plan` writes a value the plan's own reader would misread between double
 # quotes when it starts with a digit, so `2026`, `007`, `1.5` and `20261011`
-# go through the flags. It writes `true` and `null` bare, and the plan's
-# reader then takes them as a boolean and as no value: that is the PLAN's
-# writer, #181's to fix. Those two rows quote the value in the plan by hand,
-# as #181's writer will, and ask `check` and `execute` the rest.
+# go through the flags. It wrote `true` and `null` bare, and the plan's
+# reader then took them as a boolean and as no value: that was the PLAN's
+# writer, which #181 fixes, and `plan` quotes them too now
+# (tests/test_adopt_plan_yaml_quoting.py drives them through the flags).
+# These two rows quote the value in the plan by hand, as a plan edited by
+# hand does, and ask `check` and `execute` the rest.
 
 ADOPTIONS = [
     # --id,      --tracking-branch, --spec-path, --code-path, by hand
