@@ -196,9 +196,10 @@ def readings(adopter, value: str) -> list:
 
 def assert_reads_back(adopter, value: str) -> None:
     for shape, got in zip(SHAPES_OF_A_STRING, readings(adopter, value)):
-        assert isinstance(got, str) and got == value, (
-            f"{value!r} was written as {adopter.y(value)} and read back "
-            f"as {got!r} ({type(got).__name__}) as {shape}")
+        said = (f"{value!r} was written as {adopter.y(value)} and read back "
+                f"as {got!r} ({type(got).__name__}) as {shape}")
+        assert isinstance(got, str), said
+        assert got == value, said
 
 
 # --- the round trip, through the real loader -------------------------------
@@ -271,8 +272,10 @@ def test_a_float_a_bool_an_int_and_none_are_still_typed_values(adopter):
     numbers and booleans on purpose, and `None` is how `leg: null` says an
     entry is unresolved."""
     assert adopter.y(None) == "null"
-    assert adopter.y(True) == "true" and adopter.y(False) == FALSE_WORD
-    assert adopter.y(0) == "0" and adopter.y(1234) == "1234"
+    assert adopter.y(True) == "true"
+    assert adopter.y(False) == FALSE_WORD
+    assert adopter.y(0) == "0"
+    assert adopter.y(1234) == "1234"
     assert adopter.y(0.5) == "0.5000"
 
 
@@ -316,7 +319,8 @@ def test_the_writer_follows_the_loader_when_the_loader_learns_a_keyword(
     def learned(raw):
         return True if raw.strip() in ("yes", "on") else reads(raw)
 
-    assert adopter.y("yes") == "yes" and adopter.y("on") == "on"
+    assert adopter.y("yes") == "yes"
+    assert adopter.y("on") == "on"
     monkeypatch.setattr(repo_shape, SCALAR_READER, learned)
     assert adopter.y("yes") == QUOTED_YES
     assert adopter.y("on") == '"on"'
@@ -721,7 +725,8 @@ def test_plan_refuses_a_value_the_projects_loader_would_misread(
     assert code == 2, stderr
     assert stderr.startswith("REFUSED adopt-manifest-misread: "), stderr
     who, what = misread(FLAG_NAMED.get(flag, flag), value, reading)
-    assert who in stderr and what in stderr, stderr
+    assert who in stderr, stderr
+    assert what in stderr, stderr
     assert "No plan was written." in stderr
     assert not plan.exists()
 
@@ -914,9 +919,9 @@ def test_the_misread_rule_names_an_id_plan_derived_by_where_it_came_from(
         tracking_branch="main", spec_path="spec", code_path="code", pin=[],
         pin_owner=PIN_OWNER, pin_source=None, out=str(tmp_path / PLAN_FILE))
     naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
+    source = argparse.Namespace(repository=None)
     with pytest.raises(adopter.Refusal) as refused:
-        adopter._checked_plan_inputs(
-            args, argparse.Namespace(repository=None), naming)
+        adopter._checked_plan_inputs(args, source, naming)
     assert refused.value.code == "adopt-manifest-misread", refused.value
     who, what = misread("--id (not given, so --project lowercased)", "true",
                         TRUE_READ)
@@ -1036,8 +1041,8 @@ def test_the_misread_rule_names_an_id_it_derived_from_the_assembly(
     said = adopter.manifest_misreads([adopter._id_field(
         adopter.Plan.load(plan))])
     assert len(said) == 1, said
-    assert said[0].startswith(who) and said[0].endswith(what.rstrip(".")), (
-        said)
+    assert said[0].startswith(who), said
+    assert said[0].endswith(what.rstrip(".")), said
 
 
 #: `(plan key, as a hand-edited plan spells it, what the plan's loader reads
@@ -1279,8 +1284,11 @@ def test_a_misread_branch_the_source_lacks_is_479s_finding_alone(
 def with_origin(tmp_path: Path, branch: str | None) -> Path:
     """A source whose remote `origin` has been fetched, `origin` holding
     `branch` beside `main` where one is given, and the source no branch of
-    its own but `main`."""
-    seed = make_source_repo(tmp_path / "seed")
+    its own but `main`. `origin` is under `testorg/Northwind`, the
+    repository `plan` is given, because `plan` reads the source's
+    repository from its `origin`'s last two directories and refuses a plan
+    for another (#499)."""
+    seed = make_source_repo(tmp_path / TEST_ORG / PROJECT_NAME)
     if branch:
         holding(seed, TRACKING_KEY, branch)
     source = make_source_repo(tmp_path / SOURCE_NAME)
@@ -2314,7 +2322,8 @@ def test_a_source_file_named_like_a_keyword_is_one_entry_with_that_path(
             "src/app/main.py": "VALUE = 1\n", "specs/001/spec.md": "# s\n"}
     plan = planned(tmp_path, tree=tree)
     paths = [e["path"] for e in load_yaml(plan)[PATHS]]
-    assert "null" in paths and "True" in paths, paths
+    assert "null" in paths, paths
+    assert "True" in paths, paths
     assert all(isinstance(path, str) for path in paths), paths
     for path in ("null", "True"):
         answer(plan, path, "root")

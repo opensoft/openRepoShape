@@ -56,8 +56,8 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            any case), every value `execute` writes into the project's YAML
            (`id`, the branch, the leg paths, the pins, the election record)
            one its loader reads back as that same text, which `null`, `true`
-           and `2026` are not where a template writes them bare, as
-           `project.yaml` still writes each pin's product (#181), and
+           and `2026` are not where a line is written bare (since #259 and
+           #514 no line `execute` writes them into is) (#181), and
            the source's own submodules kept on one leg with their
            `.gitmodules`, registered there and never in the root, each
            relative url naming the same repository from the leg as from the
@@ -2115,15 +2115,16 @@ def _kept_collision_notes(args, entries: list, tree: list) -> list[str]:
 #
 # THE TEMPLATES QUOTE THOSE LINES NOW (#259), and `render` spells a value
 # between a YAML template's double quotes with `double_quoted`, which reads
-# back as typed: on them the question below finds nothing. What `execute`
-# still writes bare is each pin's product, an item of the manifest's
-# `neutral_product_pins:` list (lane 2's #514 quotes it).
+# back as typed: on them the question below finds nothing. Since #514
+# (main's e6fbd748) `_neutral_product_pins` quotes an item of the manifest's
+# `neutral_product_pins:` list the reader would misread, so a pin's product
+# reads back too, and on the shipped templates nothing is left to refuse.
 #
 # SO THE GATE STAYS, AND REFUSES. `plan` (before the plan is written),
 # `check` (a FINDING) and `execute` (through `_entry_findings`, before any
 # leg exists) ask the ONE question below and refuse a value the project's
 # loader would read back as anything but that same text, on whatever line
-# `execute` writes it into: today a pin's product, and any line a template
+# `execute` writes it into: any line a template, or `_template_table`,
 # writes bare tomorrow, with no edit here.
 #
 # THE LOADER DECIDES, AND THE TEMPLATE SAYS WHERE. Each value is put into
@@ -2133,16 +2134,14 @@ def _kept_collision_notes(args, entries: list, tree: list) -> list[str]:
 # placeholders are quoted: `elected_by: "{{ELECTED_BY}}"` is asked as the
 # line `render` writes, the value spelled by `double_quoted` (#284), so
 # `Null` and `CORP\tom` both read back there, as they do after
-# `tracking_branch:` since #259, and a bare `- Null` in the pins' list does
-# not.
+# `tracking_branch:` since #259, and as `- "Null"` in the pins' list since
+# #514; a bare `- Null` there would not.
 
 #: The assembly root's templated files that are YAML: what the project's own
 #: loader reads back out of the split commit. The materializer's list, so a
 #: templated YAML file added there is asked about here without an edit.
 ASSEMBLY_TEMPLATE = SHAPE_ROOT / "templates" / "assembly-root"
 TEMPLATED_YAML = tuple(rel for rel in TEMPLATED if rel.endswith(".yaml"))
-#: The manifest, which holds the one list `_template_values` writes itself.
-MANIFEST_YAML = "project.yaml"
 #: The plan's keys for the election record, as `_template_values` reads them
 #: out of the plan and as the tables below ask about them: one spelling.
 ELECTED_BY_KEY = "elected_by"
@@ -2253,9 +2252,10 @@ def _pin_field(what: str, plan: "Plan", product: str,
     and never of a copy of how it spells an item: the table
     `_manifest_values` builds from `plan` with this one pin (`execute`'s
     `_template_values` is the same table), put into the template's line by
-    `render` (`_written`). The list is written bare, and quoting its items
-    is lane 2's #514: the day `_template_table` quotes one, this asks the
-    quoted line, and the gate passes it with no edit here. No line where the
+    `render` (`_written`). Since #514 (main's e6fbd748) `_template_table`
+    quotes an item the reader would misread, so this asks the quoted line
+    and the gate passes it, with no edit here; written bare again, the line
+    is refused. No line where the
     table cannot be built (`_manifest_values` is None), which `plan` and
     `check` report in their own words. Since #273 a product is `parse_pin`'s,
     or a `pins:` entry `_read_pins` accepts, which both hold to
@@ -2574,7 +2574,8 @@ def _misread_findings(plan: Plan, unwritten=()) -> list[str]:
     the same `ignore`), and a value it makes a finding about is its alone,
     as on main, and not also this (while the template wrote `id:` bare,
     `id: "007"` was `manifest-id: id is 7` alone). Where it refuses the
-    whole file (a pin `? x`, which its reader cannot read) or makes a
+    whole file (as a pin `? x` did while the pins' list was written bare,
+    before #514) or makes a
     finding about no one value, no value can be said to
     pass it, so every value is its, as on main (rv181f's G1, G2); and where
     it is asked about no manifest (`_manifest_values` is None, as for an
@@ -2988,9 +2989,8 @@ def _refuse_an_unrecordable_pin_source(source: Path, products) -> None:
 # the one `execute` renders from. Only the validator's question is asked here,
 # and it is asked FIRST: a value it refuses is its alone. Whether the
 # project's YAML reader reads back as the text it is a value the validator
-# accepts -- since #259 quoted the other lines, a pin's product alone,
-# `--pin null@<commit>` -- is #181's, asked after (`_misread_findings`), and
-# the scaffold asks both.
+# accepts -- since #259 and #514, only one on a line written bare -- is
+# #181's, asked after (`_misread_findings`), and the scaffold asks both.
 
 #: How `check` and `execute` name each value the manifest records: its key
 #: in the plan. The id's placeholder and `MANIFEST_FIELDS` are #181's, so
