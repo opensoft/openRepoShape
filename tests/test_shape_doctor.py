@@ -66,6 +66,9 @@ from test_update_shape import rendered_shape_line
 from test_shape_advisory import NOT_UTF8, repository, with_origin
 
 DOCTOR = "shape-doctor.py"
+#: What both scaffold rows say beside their line (#545).
+SCAFFOLD_WHY = ("replace <your-org> with the GitHub organisation to create "
+                "it in; without --yes, it asks")
 ORG = "testorg"
 PROJECT = "Atlas"
 FAMILY_NAME = "InkRouter"
@@ -1414,7 +1417,7 @@ def test_a_directory_that_is_not_a_repository_says_scaffold(standard,
         rows["way-in"]["next"], rows["way-in"]["next"]
     assert "--org <your-org>" in rows["way-in"]["next"]
     # Said beside the command, never on it (#277).
-    assert "without --yes" in rows["way-in"]["why"]
+    assert rows["way-in"]["why"] == SCAFFOLD_WHY, rows["way-in"]
     assert rows["way-in"]["detail"]["git_repository"] is False
     assert "an ordinary directory" in rows["contents"]["reason"]
     # THE SCAFFOLD IS NOT PRINTED TWICE: it is this row, and a directory
@@ -8413,7 +8416,7 @@ def test_the_way_in_row_matches_the_host_platform_end_to_end(standard,
     scaffolds = module.check_the_way_in(module.Context(here))
     assert scaffolds.next_command == module.scaffold_command(
         module.SHAPE_ROOT, "Loose", os.name), scaffolds.next_command
-    assert scaffolds.why == "without --yes; it asks", scaffolds.why
+    assert scaffolds.why == SCAFFOLD_WHY, scaffolds.why
     # The other way in, from the same directory once it is a repository.
     git("init", "-q", "-b", "main", ".", cwd=here)
     adopts = module.check_the_way_in(module.Context(here))
@@ -8450,7 +8453,7 @@ def test_a_git_repository_is_told_of_both_ways_in(standard, tmp_path):
     assert scaffolds["status"] == "n/a", scaffolds
     assert scaffolds["next"] == module.scaffold_command(
         module.SHAPE_ROOT, "Loose"), scaffolds
-    assert scaffolds["why"] == "without --yes; it asks", scaffolds
+    assert scaffolds["why"] == SCAFFOLD_WHY, scaffolds
     assert scaffolds["detail"]["suggested_project"] == "Loose", scaffolds
 
     text = doctor(standard, here)
@@ -8465,16 +8468,6 @@ def an_origin_of(path: Path, url: str | bytes | None) -> Path:
     if isinstance(url, bytes):
         return with_origin(repository(path), url)
     return repository(path, origin=url)
-
-
-def adopt_module():
-    """`adopt-project.py` loaded as a module, for a function with no command
-    line of its own."""
-    spec = importlib.util.spec_from_file_location("adopt_for_the_way_in",
-                                                  REPO / "adopt-project.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 #: `(origin URL, the organisation `adopt-project.py plan` reads from it)`, for
@@ -8509,7 +8502,7 @@ def test_the_adoption_line_names_an_org_only_where_plan_reads_none(
     """
     module = doctor_module(standard)
     here = an_origin_of(tmp_path / "Atlas", url)
-    read = adopt_module()._remote_repository(here)
+    read = adoption_module(standard)._remote_repository(here)
     assert (read or "/").split("/")[0] == (org or ""), read
     assert module.origin_org(here) == org
 

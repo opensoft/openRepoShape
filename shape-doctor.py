@@ -6036,6 +6036,13 @@ def python_command(platform: str | None = None) -> str:
 #: quoting it would tell them to type the angle brackets.
 ORG_PLACEHOLDER = "<your-org>"
 
+#: What both scaffold rows say about their one line (#545): the placeholder
+#: the line carries is the reader's to replace, and the scaffold asks before
+#: it creates anything. Said once, so the non-repository row and the second
+#: row of a repository cannot word it two ways.
+SCAFFOLD_WHY = (f"replace {ORG_PLACEHOLDER} with the GitHub organisation to "
+                "create it in; without --yes, it asks")
+
 
 def scaffold_command(shape: Path, project: str,
                      platform: str | None = None) -> str:
@@ -6225,7 +6232,7 @@ def check_the_way_in(ctx: Context) -> Row:
                   "ADOPTED in place, keeping its name, identity and history")
     else:
         fix = scaffold_command(ctx.shape, project)
-        why = "without --yes; it asks"
+        why = SCAFFOLD_WHY
         reason = ("there is no repository here to adopt: a new project is "
                   "SCAFFOLDED, which creates three repositories and asks "
                   "first")
@@ -6277,7 +6284,7 @@ def check_the_other_way_in(ctx: Context) -> Row | None:
                "repository: it creates three repositories and asks first",
                scaffold_command(ctx.shape, project),
                {"git_repository": True, "suggested_project": project},
-               why="without --yes; it asks")
+               why=SCAFFOLD_WHY)
 
 
 #: Named once, like `LABEL_MANIFEST_KINDS` above: this function's three
