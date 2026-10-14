@@ -2187,14 +2187,19 @@ MANIFEST_FIELDS = {TRACKING_KEY: "TRACKING_BRANCH",
                    VISIBILITY_KEY: "VISIBILITY", ELECTED_BY_KEY: "ELECTED_BY",
                    ELECTED_ON_KEY: "ELECTED_ON", REFERENCE_KEY: "REFERENCE"}
 LEG_PATH_PLACEHOLDERS = {"spec": "SPEC_PATH", "code": "CODE_PATH"}
-#: How `plan` fills a flag nobody passed, where the value it fills in can be
-#: one the loader misreads: a sentence about it names where it came from,
-#: as `checked_value` names the same default (the tracking branch, #479).
-#: Not the elector it takes from `git config user.name`: the manifest writes
-#: that between double quotes, which `render` spells with `double_quoted`
-#: (#284), and no elector is misread there.
+#: How `plan` fills a flag nobody passed: a sentence about the value it fills
+#: in names where it came from (`_flag_named`), as `checked_value` names the
+#: tracking branch (#479), and never as a flag the person did not type. #181's
+#: misread rule asks only about a value the loader can read as something else,
+#: and no elector is one: the manifest writes it between double quotes, which
+#: `render` spells with `double_quoted` (#284). The validator's rule (#261)
+#: asks about every value, so an elector `git config user.name` leaves empty,
+#: or an org the source's `origin` names that it or `checked_value` refuses,
+#: is named by where it came from as well (#529).
 FLAG_DEFAULTS = {"id": "--project lowercased",
-                 TRACKING_KEY: "the source's default branch"}
+                 "org": "the source's `origin`",
+                 TRACKING_KEY: "the source's default branch",
+                 ELECTED_BY_KEY: "`git config user.name`"}
 #: How a sentence names the id `execute` derives when the plan sets none:
 #: when it has no `id:`, or an `id:` with no value (`null`, `~` or nothing,
 #: as `main`'s `plan --id null` wrote it), which `Plan.get` reads alike.
@@ -2388,6 +2393,18 @@ def manifest_misreads(fields) -> list[str]:
     return problems
 
 
+def _flag_named(key: str, given: set) -> str:
+    """`key`'s flag as a sentence names it: `--elected-by` when the person
+    passed it (`key` is in `given`), and, where `plan` fills the flag in by
+    itself (`FLAG_DEFAULTS`) and nobody passed it, where the value came from:
+    `--elected-by (not given, so `git config user.name`)`. A refusal of a
+    value `plan` chose must not point at a flag nobody typed (#529)."""
+    spelled = "--" + key.replace("_", "-")
+    if key in FLAG_DEFAULTS and key not in given:
+        spelled += f" (not given, so {FLAG_DEFAULTS[key]})"
+    return spelled
+
+
 def _flag_fields(args, given: set, pins: dict, source: Source,
                  planned: "Plan", naming: NamingPolicy) -> list[tuple]:
     """`plan`'s values as it is about to record them, each named by its flag,
@@ -2404,10 +2421,7 @@ def _flag_fields(args, given: set, pins: dict, source: Source,
     (#479). `plan` records either, and notes one that is no branch of the
     source."""
     def flag(key: str) -> str:
-        spelled = "--" + key.replace("_", "-")
-        if key in FLAG_DEFAULTS and key not in given:
-            spelled += f" (not given, so {FLAG_DEFAULTS[key]})"
-        return spelled
+        return _flag_named(key, given)
 
     fields = [_field(flag("id"), ID_PLACEHOLDER, args.id)]
     fields += [_field(flag(key), placeholder, getattr(args, key))
@@ -2889,7 +2903,10 @@ def _checked_plan_inputs(args, source: Source,
             "this tool can read: it has none, its URL is not UTF-8, or its "
             "URL ends in no `org/repo`",
             "Remediation: pass --org <org>.")
-    args.org = checked_value("--org", args.org)
+    # An org taken from the source's `origin` is named by where it came from,
+    # as the tracking branch is above and as the validator's sentence names
+    # it (#529), and not as a flag the person never passed.
+    args.org = checked_value(_flag_named("org", flags_given), args.org)
     # IN PLACE, THE SOURCE'S OWN NAME (#499), as soon as both halves are
     # known and before any pin's digest is read: `execute` acts on the
     # repository `--org` and `--project` name, so they must be the source.
@@ -2902,8 +2919,7 @@ def _checked_plan_inputs(args, source: Source,
     args.reference = args.reference or default_reference(args.elected_on)
     # A value `plan` filled in by itself is named by where it came from, as
     # #181 names one, and not as a flag the person never passed.
-    elector = ("--elected-by" if args.elected_by else
-               "--elected-by (not given, so `git config user.name`)")
+    elector = _flag_named(ELECTED_BY_KEY, flags_given)
     args.elected_by = args.elected_by or _elector()
     # Before the plan is written, in the words `check` would use (#255): a
     # value `execute` writes into a file must be text one can hold. The
@@ -2931,7 +2947,8 @@ def _checked_plan_inputs(args, source: Source,
     # exists (#181); since #259 and #514 that is only a value on a line
     # written bare, so every value that refusal names is one `execute` would
     # write and end `adoption verified` with, as its remediation says.
-    planned = _refuse_unholdable_values(args, names, pins, naming)
+    planned = _refuse_unholdable_values(args, flags_given, names, pins,
+                                        naming)
     _refuse_misread_values(args, flags_given, pins, source, planned, naming)
     return names, pins
 
@@ -3025,10 +3042,18 @@ MANIFEST_PLAN_KEYS = {
     "ORG": "org",
 }
 
-#: And how `plan` names the same values: the flag a person typed, which is
-#: the key, dashed, as `_flag_fields` spells #181's.
-MANIFEST_FLAGS = {placeholder: "--" + key.replace("_", "-")
-                  for placeholder, key in MANIFEST_PLAN_KEYS.items()}
+
+def _manifest_flag_names(given: set) -> dict[str, str]:
+    """How `plan` names each value the manifest records: by the flag that
+    gives it, as `_flag_fields` spells #181's, and a value `plan` filled in
+    when its flag is not in `given` by where it came from (`_flag_named`,
+    #529), so the validator's sentence never points at a flag nobody typed."""
+    return {placeholder: _flag_named(key, given)
+            for placeholder, key in MANIFEST_PLAN_KEYS.items()}
+
+
+#: And the same names when the person typed every flag: the key, dashed.
+MANIFEST_FLAGS = _manifest_flag_names(set(FLAG_DEFAULTS))
 
 #: The validator's findings about a leg's mount path, which `check` already
 #: reports as `plan-bad-leg-path` and `plan-leg-path-collides` from the same
@@ -3189,7 +3214,7 @@ def _named_as_read(plan: Plan) -> dict[str, str]:
     return named
 
 
-def _refuse_unholdable_values(args, names: dict, pins: dict,
+def _refuse_unholdable_values(args, given: set, names: dict, pins: dict,
                               naming: NamingPolicy) -> "Plan":
     """`plan` refuses, before it writes a file, what `check` would find in the
     plan it is about to write (#261): the three repository names it derives,
@@ -3197,12 +3222,15 @@ def _refuse_unholdable_values(args, names: dict, pins: dict,
     255 characters planned, then `check` refused `legs.spec`), and the
     manifest's values, through the one question `check` asks of them. It
     returns that plan, built once (`_flag_plan`), for #181's question to ask
-    of the same values (`_refuse_misread_values`)."""
+    of the same values (`_refuse_misread_values`). `given` says which flags
+    the person passed: a value `plan` filled in by itself, an elector
+    `git config user.name` left empty, is named by where it came from
+    (#529)."""
     plan = _flag_plan(args, names, pins)
     values = _manifest_values(plan, naming)
     if values is not None:
         refuse_manifest_values(
-            "adopt", values, naming, MANIFEST_FLAGS,
+            "adopt", values, naming, _manifest_flag_names(given),
             "No plan was written.", misreads=False)
     return plan
 

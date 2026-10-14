@@ -406,6 +406,30 @@ def test_the_flags_and_the_plan_keys_name_the_same_values(adopter):
     assert mapped - {"PROJECT_NAME"} <= set(adopter.MANIFEST_FLAGS)
 
 
+def test_a_value_plan_filled_in_is_named_by_where_it_came_from(adopter):
+    """#529: the four values `plan` fills in when its flag is not given are
+    named by the default, in the words `_flag_fields` and the unwritable-value
+    path use; the flags typed give the same names as `MANIFEST_FLAGS`, and
+    no other value is renamed. Two of the four (the id, the tracking branch)
+    are refused before the validator is asked, so this is where their names
+    are held."""
+    defaults = {"ELECTED_BY": "`git config user.name`",
+                "ORG": "the source's `origin`",
+                "PROJECT_ID": "--project lowercased",
+                "TRACKING_BRANCH": "the source's default branch"}
+    typed = adopter._manifest_flag_names(set(adopter.FLAG_DEFAULTS))
+    assert typed == adopter.MANIFEST_FLAGS
+    filled = adopter._manifest_flag_names(set())
+    assert filled == {
+        placeholder: (f"{flag} (not given, so {defaults[placeholder]})"
+                      if placeholder in defaults else flag)
+        for placeholder, flag in typed.items()}
+    assert filled["ELECTED_BY"] == ("--elected-by (not given, so "
+                                    "`git config user.name`)")
+    assert adopter._manifest_flag_names({"elected_by"})["ELECTED_BY"] == (
+        "--elected-by")
+
+
 # --- the question is asked with no git at all -------------------------------
 #
 # The manifest is rendered here to be ASKED ABOUT and never written: the
