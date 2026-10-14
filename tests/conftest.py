@@ -940,6 +940,273 @@ def assert_a_taken_clone_path_is_refused(run, tmp_path: Path,
     assert after == before, f"{taken} was changed by a run that refused"
 
 
+# --- setup's paste lines, its step checks and the upstream guard (#538) ------
+#
+# ONE READING, TWO ENTRY POINTS, as for #498 above: each helper takes the
+# runner of the file that calls it, and every run passes `--local-remote-dir`
+# for the reason given there.
+
+#: A folder whose name holds a space, which a shell splits a bare path at:
+#: `--into "/home/a b"`, or a Windows profile folder.
+SPACED = "a b"
+
+#: The word setup prints for the interpreter a person types:
+#: `setup-project.py`'s `PYTHON_CMD`.
+SETUP_PYTHON_CMD = "python" if os.name == "nt" else "python3"
+
+#: Where a FILE can stand above the clone path: the `--family` folder,
+#: `<into>/<Family>`, and `--into` itself.
+FILE_ABOVE_THE_CLONE = ("family folder", "into")
+
+#: `(spelling, --yes)`: `--dry-run` passed through after `--` as the
+#: scaffold's argparse reads it, whole and as a prefix it takes for the same
+#: flag, told `--yes`; and whole with no `--yes` and no terminal to ask on.
+DRY_RUNS = (("--dry-run", True), ("--dry", True), ("--dry-run", False))
+
+#: What setup says when that `--dry-run` ends the run at its plan.
+DRY_RUN_ENDS_IT = ("--dry-run was passed through to the scaffold, so this run "
+                   "ends at the plan above: nothing was created and nothing "
+                   "was cloned.")
+
+#: What a project declares after `--` that the naming check must hear: a
+#: `--pin` in either spelling, and a pin chain.
+DECLARATIONS = ("--pin", "--pin=", "--referent-chain")
+
+#: `opensoft` in a case other than its own, which GitHub reads as opensoft.
+UPSTREAM_CASINGS = ("OpenSoft", "OPENSOFT")
+
+
+def read_through_git(remotes: Path) -> dict:
+    """The environment that makes every git a pasted line starts read the
+    bare repositories in `remotes` through git, not through their files
+    (#440): `clone_just_pushed`'s `url.<file URI>.insteadOf` rewrites, as
+    `GIT_CONFIG_COUNT` entries, because the line under test is run exactly
+    as it was printed and a submodule's own clone inherits the environment.
+    The directory as typed and as resolved, so the root's URL and the legs'
+    `.gitmodules` URLs are both rewritten."""
+    uri = remotes.resolve().as_uri().rstrip("/") + "/"
+    prefixes = list(dict.fromkeys(
+        spelling for directory in (Path(os.path.abspath(remotes)),
+                                   remotes.resolve())
+        for spelling in (os.path.join(str(directory), ""),
+                         directory.as_posix().rstrip("/") + "/")))
+    env = {"GIT_CONFIG_COUNT": str(len(prefixes))}
+    for index, prefix in enumerate(prefixes):
+        env[f"GIT_CONFIG_KEY_{index}"] = f"url.{uri}.insteadOf"
+        env[f"GIT_CONFIG_VALUE_{index}"] = prefix
+    return env
+
+
+def pasted(lines, cwd: Path,
+           env: dict | None = None) -> subprocess.CompletedProcess:
+    """`lines` pasted into `sh` one after another, stopping at the first that
+    fails: what a person does with the commands a tool prints."""
+    return subprocess.run(["sh", "-c", "set -e\n" + "\n".join(lines)],
+                          cwd=str(cwd), env={**os.environ, **(env or {})},
+                          capture_output=True, text=True, check=False)
+
+
+def indented_commands(text: str) -> list:
+    """The commands `text` prints for pasting, each on a line of its own
+    indented four spaces, as setup indents them, with the indent dropped."""
+    return [line.strip() for line in text.splitlines()
+            if line.startswith("    ") and not line[4:5].isspace()]
+
+
+def assert_the_closing_cd_is_one_word(run, tmp_path: Path) -> None:
+    """The hand-over's `cd <clone>` names the clone as ONE word, so a folder
+    with a space in `--into` reaches `cd` whole. On main it printed `cd
+    /.../a b/work/Sample`, which `cd` refuses as two arguments. Read the way
+    a POSIX shell reads it on every host, and run in one where there is
+    one."""
+    into = tmp_path / SPACED / "work"
+    clone = os.path.abspath(str(into / "Sample"))
+    result = run("--project", "Sample", "--yes", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / SPACED / "remotes"),
+                 "--into", str(into))
+    assert result.returncode == 0, result.stderr + result.stdout
+    [cd] = [line for line in indented_commands(
+        result.stdout.split("\nNext:\n", 1)[-1]) if line.startswith("cd ")]
+    assert shlex.split(cd) == ["cd", clone], cd
+    if os.name != "nt":
+        ran = pasted([cd, "test -f project.yaml"], cwd=tmp_path)
+        assert ran.returncode == 0, ran.stderr
+
+
+def assert_the_backstop_is_finished_by_hand_as_printed(
+        run, tmp_path: Path) -> None:
+    """Step (7)'s backstop, followed the way it says: move the path aside,
+    then paste the lines. Each path is ONE word, and under
+    `--local-remote-dir` the recursive clone carries `-c
+    protocol.file.allow=always`, as setup's own clone does: the legs are
+    cloned over the file transport, which git refuses a submodule without
+    it. On main the lines split at the space, and the clone failed
+    `transport 'file' not allowed`.
+
+    THE PATH APPEARS WHILE THE RUN IS GOING because the scaffold is told to
+    build its working trees in `--into` itself (`--work-dir`, passed through
+    after `--`), so its root tree stands at `<into>/Sample` by step (7)."""
+    into = tmp_path / SPACED / "work"
+    remotes = tmp_path / SPACED / "remotes"
+    clone = into / "Sample"
+    result = run("--project", "Sample", "--yes", "--org", "demoorg",
+                 "--local-remote-dir", str(remotes), "--into", str(into),
+                 "--", "--work-dir", str(into))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert ("REFUSED: %s already exists - it was not there when step (3) "
+            "looked" % os.path.abspath(str(clone))) in result.stderr, (
+        result.stderr)
+    lines = indented_commands(result.stderr.split("REFUSED: ", 1)[-1])
+    assert [shlex.split(line) for line in lines] == [
+        ["cd", os.path.abspath(str(into))],
+        ["git", *FILE_PROTOCOL, "clone", "--recurse-submodules",
+         os.path.join(os.path.abspath(str(remotes)), "Sample.git")],
+        ["cd", "Sample", "&&", SETUP_PYTHON_CMD, "scripts/bootstrap.py"],
+    ], lines
+    if os.name != "nt":
+        clone.rename(into / "Sample.aside")
+        ran = pasted(lines, cwd=tmp_path, env=read_through_git(remotes))
+        assert ran.returncode == 0, ran.stderr + ran.stdout
+        assert "bootstrap ok" in ran.stdout, ran.stdout
+
+
+def assert_the_scaffold_leaves_its_next_steps_to_setup(result) -> None:
+    """Inside setup the scaffold's own NEXT STEPS block (`git clone`, `cd`,
+    `make bootstrap`) is not printed: step (7) runs those very steps next,
+    and the block read as work left to the person. Its `Working trees are
+    at` line stays, after the scaffold and before step (7): README's
+    rehearsal paragraph sends a person to it."""
+    out = result.stdout
+    assert "NEXT STEPS" not in out, out
+    trees = out.find("\nWorking trees are at ")
+    assert out.find("(6) scaffold") < trees, out
+    assert trees < out.find("(7) clone and bootstrap"), out
+
+
+def assert_a_file_above_the_clone_path_is_refused(run, tmp_path: Path,
+                                                  where: str) -> None:
+    """A FILE where a folder above the clone path must be - one of
+    `FILE_ABOVE_THE_CLONE` - is refused in step (3), naming it, and is left
+    as it was. On main `lexists(<file>/Sample)` was False, so step (3)
+    passed, all three repositories were created, and the run ended in a
+    `FileExistsError` traceback where step (7) made the folder."""
+    work = tmp_path / "work"
+    if where == "into":
+        blocker, family = work, ()
+    else:
+        work.mkdir()
+        blocker, family = work / "Zephyr", ("--family", "Zephyr")
+    blocker.write_bytes(b"not a folder\n")
+    result = run("--project", "Sample", "--yes", "--org", "demoorg", *family,
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(work))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert ("REFUSED: %s is a file, and this project would be cloned inside "
+            "it, at %s, so the run stops here and nothing was created. %s"
+            % (os.path.abspath(str(blocker)),
+               os.path.abspath(str(blocker / "Sample")), KEEP_IT)
+            ) in result.stderr, result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    for later in ("(4) naming policy", "(5) the plan", "(6) scaffold"):
+        assert later not in result.stdout, f"the run reached {later}"
+    assert not (tmp_path / "remotes").exists()
+    assert blocker.read_bytes() == b"not a folder\n"
+
+
+def assert_a_dry_run_passed_through_ends_at_the_plan(run, tmp_path: Path,
+                                                     spelling: str,
+                                                     yes: bool) -> None:
+    """`-- --dry-run` (`spelling` and `yes`, one of `DRY_RUNS`) ends the run
+    at the plan, exit 0, whatever `--yes` says and with no terminal to ask on:
+    nothing is created, nothing is cloned, and no folder is made. On main
+    the scaffold made nothing, step (7)'s clone failed, and the refusal said
+    "The three repositories WERE created"; the family folder was left
+    behind."""
+    work = tmp_path / "work"
+    result = run("--project", "Sample", *(["--yes"] if yes else []),
+                 "--org", "demoorg", "--family", "Zephyr",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(work), "--", spelling)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert DRY_RUN_ENDS_IT in result.stdout, result.stdout
+    assert "WERE created" not in result.stderr, result.stderr
+    assert "no terminal to confirm on" not in result.stderr, result.stderr
+    for later in ("(6) scaffold", "(7) clone and bootstrap", "DONE."):
+        assert later not in result.stdout, f"the run reached {later}"
+    assert not (tmp_path / "remotes").exists()
+    assert not work.exists(), f"{work} was made by a run that made nothing"
+
+
+def assert_the_naming_check_hears_what_is_passed_through(run, tmp_path: Path,
+                                                         how: str) -> None:
+    """Step (4) asks the naming check with the `--pin` products and the
+    `--referent-chain` passed through after `--` (`how`, one of
+    `DECLARATIONS`), so a descendant-form name is reported as the
+    descendant the plan then says it is. On main step (4) asked about the
+    three names alone and reported `no referent pin declared`. The run
+    stops at the confirm: no terminal, and nothing is created."""
+    source = tmp_path / "product"
+    source.mkdir()
+    git("init", "-q", "-b", "main", cwd=source)
+    (source / "README.md").write_bytes(b"# a neutral product\n")
+    git("add", "README.md", cwd=source)
+    git("commit", "-q", "-m", "seed", cwd=source)
+    commit = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    project, declared = "MedxGlass", ("--pin", f"openGlass@{commit}")
+    if how == "--pin=":
+        declared = (f"--pin=openGlass@{commit}",)
+    elif how == "--referent-chain":
+        project = "codexDox"
+        declared = ("--pin", f"openXdox@{commit}",
+                    "--referent-chain", "openXdox,openDox")
+    result = run("--project", project, "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", *declared, "--pin-source", str(source))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert_refuses_for_want_of_a_terminal(result.stderr)
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert f"{project}: domain-descendant" in step_four, step_four
+    assert "no referent pin declared" not in step_four, step_four
+    assert not (tmp_path / "remotes").exists()
+
+
+def assert_the_upstream_org_is_refused_in_any_case(run, tmp_path: Path,
+                                                   org: str) -> None:
+    """`--org OpenSoft` (`org`, one of `UPSTREAM_CASINGS`) is refused as
+    `--org opensoft` is: GitHub reads an organisation's login in any case,
+    so it is opensoft's namespace. On main the guard compared exactly and
+    scaffolded."""
+    result = run("--project", "Sample", "--yes", "--org", org,
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert f"the organisation is '{org}', which is the UPSTREAM" in (
+        result.stderr), result.stderr
+    assert "--allow-upstream-org" in result.stderr, result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+def assert_an_upstream_origin_in_any_case_needs_an_org(run,
+                                                       tmp_path: Path) -> None:
+    """A checkout whose `origin` is `OpenSoft/openRepoShape` IS the upstream
+    checkout, and with no `--org` the run refuses as it does for
+    `opensoft/`. On main the casing went through as the organisation."""
+    fork = tmp_path / "fork"
+    fork.mkdir()
+    git("init", "-q", cwd=fork)
+    git("remote", "add", "origin",
+        "https://github.com/OpenSoft/openRepoShape.git", cwd=fork)
+    result = run("--project", "Sample", "--yes",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"), cwd=fork)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "you are running from the upstream checkout" in result.stderr, (
+        result.stderr)
+    assert not (tmp_path / "remotes").exists()
+
+
 #: THE PERSON'S OWN TERMINAL, IN A TEST (#492). The one-liner reads its yes
 #: from the CONTROLLING terminal when its stdin is the pipe the script came
 #: down, so a test that says it asks has to give the run one: a

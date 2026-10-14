@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 
 from conftest import (FILE_PROTOCOL, ORG, PROJECT, REPO, SCAFFOLD,
                       WINDOWS_SKIP, assert_read_through_git, git, run_script)
+
+from conftest import indented_commands, pasted, read_through_git
 
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
@@ -257,6 +260,27 @@ def test_the_scaffold_creates_three_bare_remotes(scaffolded):
         assert (scaffolded["remotes"] / f"{name}.git").is_dir()
     assert "NEXT STEPS" in scaffolded["stdout"]
     assert "make bootstrap" in scaffolded["stdout"]
+
+
+@WINDOWS_SKIP
+def test_the_next_steps_clone_under_local_remotes_reads_the_legs(scaffolded,
+                                                                 tmp_path):
+    """#538: under `--local-remote-dir` the NEXT STEPS clone carries `-c
+    protocol.file.allow=always`, as setup's own clone does. The legs are
+    cloned from the plain paths `.gitmodules` records, the file transport,
+    which git refuses a submodule by default since the 2022 advisories, so
+    on main the line as printed failed `transport 'file' not allowed`. Run
+    as printed, with its `cd`, by `sh`."""
+    block = scaffolded["stdout"].split("NEXT STEPS", 1)[1]
+    clone, cd = indented_commands(block)[:2]
+    remote = (scaffolded["remotes"] / f"{PROJECT}.git").resolve()
+    assert shlex.split(clone) == ["git", *FILE_PROTOCOL, "clone",
+                                  "--recurse-submodules", str(remote)], clone
+    assert cd == f"cd {PROJECT}", cd
+    ran = pasted([clone, cd, "git -C spec rev-parse -q --verify HEAD",
+                  "git -C code rev-parse -q --verify HEAD"], cwd=tmp_path,
+                 env=read_through_git(scaffolded["remotes"]))
+    assert ran.returncode == 0, ran.stderr + ran.stdout
 
 
 def test_the_session_clone_was_read_through_git_not_through_the_remotes(
