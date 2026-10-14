@@ -393,39 +393,6 @@ def test_plan_without_org_takes_the_org_an_ascii_origin_names(tmp_path):
     assert load_yaml(tmp_path / PLAN_FILE)["org"] == "cafe"
 
 
-#: `(origin URL, the org it names, the code `plan` refuses it as, the rest of
-#: the sentence)`: an org one of `plan`'s two gates refuses. The validator
-#: refuses a `+` (`--org=test+org` is `test_adopt_manifest_values.py`'s
-#: `org-plus`), and `checked_value` a space.
-DERIVED_ORGS = [
-    pytest.param(b"../test+org/Thing.git", "test+org",
-                 b"adopt-manifest-invalid",
-                 b"the project's own validate-manifest.py refuses: "
-                 b"manifest-leg-repository: ", id="validator"),
-    pytest.param(b"../my org/Thing.git", "my org", b"unsafe-value",
-                 b"is not a value this tool will put on a `git` or `gh` "
-                 b"command line\n", id="unsafe"),
-]
-
-
-@pytest.mark.parametrize("url, org, code, rest", DERIVED_ORGS)
-def test_plan_names_an_org_it_took_from_the_origin_by_where_it_came_from(
-        tmp_path, url, org, code, rest):
-    """An org the source's `origin` names, with no `--org` given, was refused
-    as `--org is 'test+org'`, the flag nobody passed (#529). It is named by
-    where it came from, as the elector is, and the code and the rest of each
-    sentence are as they were."""
-    source = with_origin(make_source_repo(tmp_path / "Thing"), url)
-    refused = without_org(tmp_path, source, "--project", "Thing")
-    assert_no_traceback({"plan": refused})
-    assert refused.returncode == 2, said(refused)
-    assert b"REFUSED " + code + b": --org (not given, so the source's " \
-        b"`origin`) is " + repr(org).encode("ascii") + b", which " + rest \
-        in refused.stderr, said(refused)
-    assert b"--org is " not in refused.stderr, said(refused)
-    assert not (tmp_path / PLAN_FILE).exists()
-
-
 @needs_filter_repo
 def test_check_and_execute_adopt_a_source_whose_origin_is_not_utf8(
         tmp_path):

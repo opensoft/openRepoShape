@@ -2193,11 +2193,9 @@ LEG_PATH_PLACEHOLDERS = {"spec": "SPEC_PATH", "code": "CODE_PATH"}
 #: misread rule asks only about a value the loader can read as something else,
 #: and no elector is one: the manifest writes it between double quotes, which
 #: `render` spells with `double_quoted` (#284). The validator's rule (#261)
-#: asks about every value, so an elector `git config user.name` leaves empty,
-#: or an org the source's `origin` names that it or `checked_value` refuses,
+#: asks about every value, so an elector `git config user.name` leaves empty
 #: is named by where it came from as well (#529).
 FLAG_DEFAULTS = {"id": "--project lowercased",
-                 "org": "the source's `origin`",
                  TRACKING_KEY: "the source's default branch",
                  ELECTED_BY_KEY: "`git config user.name`"}
 #: How a sentence names the id `execute` derives when the plan sets none:
@@ -2855,8 +2853,7 @@ def _checked_plan_inputs(args, source: Source,
     # `--elected-by` is below, and not as a flag the person never passed.
     given = args.tracking_branch is not None
     args.tracking_branch = checked_value(
-        "--tracking-branch" if given else
-        "--tracking-branch (not given, so the source's default branch)",
+        _flag_named(TRACKING_KEY, {TRACKING_KEY} if given else set()),
         args.tracking_branch if given else source.branch)
     # The ONE question first -- spelling, Git's and Windows's names, then the
     # alphabet `checked_value` allows -- so `spec/` is refused here with the
@@ -2903,10 +2900,7 @@ def _checked_plan_inputs(args, source: Source,
             "this tool can read: it has none, its URL is not UTF-8, or its "
             "URL ends in no `org/repo`",
             "Remediation: pass --org <org>.")
-    # An org taken from the source's `origin` is named by where it came from,
-    # as the tracking branch is above and as the validator's sentence names
-    # it (#529), and not as a flag the person never passed.
-    args.org = checked_value(_flag_named("org", flags_given), args.org)
+    args.org = checked_value("--org", args.org)
     # IN PLACE, THE SOURCE'S OWN NAME (#499), as soon as both halves are
     # known and before any pin's digest is read: `execute` acts on the
     # repository `--org` and `--project` name, so they must be the source.
@@ -3052,7 +3046,9 @@ def _manifest_flag_names(given: set) -> dict[str, str]:
             for placeholder, key in MANIFEST_PLAN_KEYS.items()}
 
 
-#: And the same names when the person typed every flag: the key, dashed.
+#: And the same names when the person typed every flag: the key, dashed. No
+#: production code asks for this table any more (`_refuse_unholdable_values`
+#: asks `_manifest_flag_names` for the flags given); the tests pin it.
 MANIFEST_FLAGS = _manifest_flag_names(set(FLAG_DEFAULTS))
 
 #: The validator's findings about a leg's mount path, which `check` already
