@@ -150,10 +150,19 @@ opensoft/openRepoTools', and its own installer places them:
   curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRepoTools | bash -s -- --install
 
   $OPENREPOSHAPE_REPO       owner/name to fetch from (default opensoft/openRepoShape)
-  $OPENREPOSHAPE_REF        the ref to fetch it at   (default main)
+  $OPENREPOSHAPE_REF        the ref to fetch it at   (default: the ref --install
+                            recorded, else main)
   $OPENREPOSHAPE_ORG        the organisation, when --org is not given
   $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
+
+`--install` RECORDS THE REF it runs at, in `openRepoShape.ref` beside the
+command it places: $OPENREPOSHAPE_REF, which the one-line installer
+(install.sh) sets to the release it installs. The installed command then
+stays on that ref: it fetches setup.sh at it, setup.sh clones the standard
+at it (`--shape-ref`), and `--doctor` checks its clone out at it.
+$OPENREPOSHAPE_REF set for one run still wins, and `--version` prints the
+ref in force. Installed with no ref, it records none and follows main.
 
 `--doctor [<path>] [--json] [--placement-plan <file>]` runs `shape-doctor.py`
 over <path> (default `.`) and prints one row per check and ONE verdict:
