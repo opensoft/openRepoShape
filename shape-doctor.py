@@ -18,9 +18,10 @@ carrying neither manifest is not a shape root at all and wants
 `adopt-project.py plan` or `setup.sh`. This runs them in sequence, prints one
 row each, and then prints ONE verdict. Every row is somebody else's check.
 
-WHAT IT NEVER DOES. It never writes into the repository it is pointed at and
-it never fetches. ONE FLAG WRITES AT ALL, and it writes one file the caller
-named and nothing else: `--placement-plan <file>`, below. The upstream a
+WHAT IT NEVER DOES. It writes nothing into the repository it is pointed at
+but a `--placement-plan <file>` the caller names there, and it never fetches.
+ONE FLAG WRITES AT ALL, and it writes one file the caller named and nothing
+else: `--placement-plan <file>`, below. The upstream a
 project's copies are compared against is THE CHECKOUT THIS FILE IS RUN FROM,
 which is the whole of why the verdict is offline: no clone, no authenticated
 call, and the same answer on a machine that has never spoken to github.com.

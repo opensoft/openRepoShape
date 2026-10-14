@@ -2295,7 +2295,7 @@ def test_the_installed_doctor_hands_on_json_and_keeps_stdout_one_object(
                  False, id="path-then-flag"),
     pytest.param(("--doctor", "--placement-plan=plan.yaml", "{project}"),
                  False, id="flag-then-path"),
-    pytest.param(("--doctor", "{project}", "--placement-plan", "plan.yaml"),
+    pytest.param(("--doctor", "--placement-plan", "plan.yaml"),
                  True, id="standing-in-the-repository"),
 ])
 def test_the_installed_doctors_placement_plan_lands_where_you_stand(
@@ -2304,7 +2304,8 @@ def test_the_installed_doctors_placement_plan_lands_where_you_stand(
     form (#500) -- it is the `placement` row's own NEXT, which the installed
     form refused -- and a RELATIVE `<file>` lands in the directory the
     command was run from: not in the kept clone, and in the repository only
-    when that is where you stand (#546).
+    when that is where you stand (#546), as with `openRepoShape --doctor
+    --placement-plan plan.yaml` typed there, the default path `.`.
 
     The plan is the only thing written, as AGENTS.md's doctor section says,
     and the doctor's own wording now says too: "writes nothing into it but"

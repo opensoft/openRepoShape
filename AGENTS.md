@@ -211,13 +211,13 @@ checkout — answers ONE question about ONE repository: is it compliant with thi
 shape, and what is missing. Run it before you propose a change to a repository
 you did not scaffold, and again after any procedure above. It writes nothing
 into the repository and fetches nothing, so there is no confirmation to get and
-no `--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
-in each of them, which is where a repair mode will hang; nothing in it writes
-today. The one exception to "writes nothing" is `--placement-plan <file>`, which
-writes that file and nothing else — see 4. Installed, `openRepoShape --doctor`
-takes `--json` and `--placement-plan <file>` as well, and KEEPS its temporary
-clone of the standard for the NEXT lines that name it: its last line names
-that directory, which is the human's to delete once those commands have run.
+no `--dry-run` to do first. The one exception to "writes nothing" is
+`--placement-plan <file>`, which writes that file and nothing else — see 4.
+The checks are a REGISTRY with an empty `fix` slot in each of them, which is
+where a repair mode will hang; nothing in it writes today. Installed,
+`openRepoShape --doctor` takes `--json` and `--placement-plan <file>` as well,
+and KEEPS its temporary clone of the standard for the NEXT lines that name it:
+its last line names that directory, the human's to delete once those have run.
 
 1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
    BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0, 1,

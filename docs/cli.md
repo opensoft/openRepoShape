@@ -34,7 +34,7 @@ one today, and the generator refuses to write this file if one ever appears.
 | [`scaffold-project.py`](#scaffold-projectpy) | Creates the three repositories and writes the pins. What the front door calls once the human has said yes. |
 | [`adopt-project.py`](#adopt-projectpy) | Converts an EXISTING repository into the shape, in place, keeping its name and its history. |
 | [`update-shape.py`](#update-shapepy) | Re-copies a project's shape files from this standard and re-pins them. It never merges. |
-| [`shape-doctor.py`](#shape-doctorpy) | Answers ONE question about ONE repository: is it compliant with this shape, and what is missing. Writes nothing. |
+| [`shape-doctor.py`](#shape-doctorpy) | Answers ONE question about ONE repository: is it compliant with this shape, and what is missing. Writes nothing but a `--placement-plan` file you name. |
 | [`bootstrap`](#bootstrap) | Runs this standard's canonical bootstrap against a project that was never scaffolded, so a repository that elected nothing still has the command. |
 | [`scripts/bump-leg.py`](#scriptsbump-legpy) | Advances ONE leg's pin — the gitlink, `contracts/<role>-pin.yaml` and every workflow `@<sha>` — in one lockstep commit. |
 | [`scripts/family.py`](#scriptsfamilypy) | Creates a FAMILY holder and maintains its member pins. |
