@@ -123,6 +123,7 @@ Anything after `--` is passed straight through to scaffold-project.py.
 openRepoShape --install            install (or update) this command into ~/.local/bin
 openRepoShape --preflight          check this MACHINE and stop; creates nothing
 openRepoShape --doctor [<path>] [--json] [--placement-plan <file>]
+                                   diagnose a REPOSITORY against this standard
 openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]
 openRepoShape --help | --version
 
@@ -168,7 +169,7 @@ ran this from, even inside the repository), and moves nothing.
 
 Run beside a checkout of the standard, it uses that one. Run from anywhere
 else, it clones the standard into a temporary directory first and KEEPS it,
-because its NEXT lines name files in it. The report's last line names
+for the NEXT lines that name files in it. The report's last line names
 that directory, which is safe to delete once you are done with those
 commands; under `--json` that line goes to stderr, so stdout stays one JSON
 object.

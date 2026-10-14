@@ -1491,6 +1491,55 @@ def test_the_openrepotools_install_line_is_the_same_everywhere(name):
         f"    {OPENREPOTOOLS_INSTALL}")
 
 
+#: Where each document describes `openRepoShape --doctor`: the file, the
+#: line its passage begins with, and what ends it. `docs/cli.md`'s is the
+#: command's own `--help`.
+DOCTOR_PASSAGES = [
+    ("README.md", "### Is this repository compliant?", "\n## "),
+    ("AGENTS.md", "## Checking a repository's compliance", "\n## "),
+    ("docs/handbook.html", '<section id="doctor">', "</section>"),
+    ("docs/cli.md", "### `openRepoShape`", "\n### "),
+]
+
+
+@pytest.mark.parametrize(("name", "begins", "ends"), DOCTOR_PASSAGES,
+                         ids=[passage[0] for passage in DOCTOR_PASSAGES])
+def test_the_doctor_says_what_it_writes_and_why_it_keeps_its_clone(
+        name, begins, ends):
+    """Two things every description of the doctor said that it does not do
+    (#546).
+
+    "It writes nothing into the repository" left out the one file it writes:
+    the `--placement-plan <file>` you name, at the path you give, so a
+    relative one typed inside the repository lands there. A paragraph that
+    says the doctor writes nothing names that flag too.
+
+    And the installed form KEEPS its clone of the standard "because its NEXT
+    lines run from it". A `pins` row's NEXT can name no file in it, and "run
+    from it" reads as "cd into it", where the `placement` row's relative
+    `--placement-plan placement-plan.yaml` writes the plan into the directory
+    the same sentence calls safe to delete. It is kept for the NEXT lines that
+    name it, and every passage says so.
+    """
+    text = (REPO / name).read_text(encoding="utf-8")
+    start = text.index(begins)
+    passage = text[start:text.find(ends, start + len(begins))]
+    problems, kept = [], 0
+    for paragraph in re.split(r"\n\s*\n|</p>", passage):
+        said = " ".join(re.sub(r"<[^>]+>", "", paragraph).split())
+        if "writes nothing" in said and "--placement-plan" not in said:
+            problems.append("says the doctor writes nothing, and not that it "
+                            f"writes the --placement-plan file you name: {said}")
+        if "KEEPS" in said:
+            kept += 1
+            if not re.search(r"for the NEXT lines (?:that name|naming)\b", said) \
+                    or re.search(r"NEXT (?:lines?|commands?) runs? from", said):
+                problems.append("gives a reason for the kept clone other than "
+                                f"the NEXT lines that name it: {said}")
+    assert kept, f"{name} no longer says that the installed doctor KEEPS its clone"
+    assert not problems, f"{name}:\n" + "\n".join(problems)
+
+
 def test_nothing_here_installs_park_or_resume():
     """The carve, asserted rather than remembered (#92).
 

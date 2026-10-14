@@ -216,7 +216,7 @@ in each of them, which is where a repair mode will hang; nothing in it writes
 today. The one exception to "writes nothing" is `--placement-plan <file>`, which
 writes that file and nothing else — see 4. Installed, `openRepoShape --doctor`
 takes `--json` and `--placement-plan <file>` as well, and KEEPS its temporary
-clone of the standard, because the NEXT lines run from it: its last line names
+clone of the standard for the NEXT lines that name it: its last line names
 that directory, which is the human's to delete once those commands have run.
 
 1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
