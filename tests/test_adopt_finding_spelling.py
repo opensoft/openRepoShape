@@ -454,7 +454,7 @@ SPLIT_TREE_CASES = {
                      "climbs above the root of the split commit {commit} at "
                      "the symlink `u{s}p`, so "),
     "a-loop": ("lo{c}op/x", "lo{c}op", "lo{c}op",
-               "runs round a symlink loop at `lo{s}op` in the split commit "
+               "follows too many symlinks at `lo{s}op` in the split commit "
                "{commit}, so "),
     "through-a-non-directory": ("t{c}hru/x", "t{c}hru", "n{c}owhere/../x",
                                 "passes through `n{s}owhere`, which is not a "
