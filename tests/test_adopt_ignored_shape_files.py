@@ -448,10 +448,10 @@ LEADS_NOWHERE = [
                  "climbs above the root of the split commit {c} at the "
                  "symlink `.github`", id="a-link-above-the-root"),
     pytest.param({".github": ".github"},
-                 "runs round a symlink loop at `.github` in the split commit "
+                 "follows too many symlinks at `.github` in the split commit "
                  "{c}", id="a-link-to-itself"),
     pytest.param({".github": "loop", "loop": ".github"},
-                 "runs round a symlink loop at ", id="a-loop-of-two"),
+                 "follows too many symlinks at ", id="a-loop-of-two"),
     pytest.param({".github": "nowhere/../ci"},
                  "passes through `nowhere`, which is not a directory in the "
                  "split commit {c}",
