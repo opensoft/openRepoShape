@@ -427,6 +427,18 @@ def _way_in(standard, project, holder, tmp_path):
     return rows_of(doctor(standard, here, "--json"))["way-in"]
 
 
+def _a_repository_row(row_id):
+    """The builder of a `the way in` row for a git repository with no
+    `origin`, which is the adoption with `--org <your-org>` and the scaffold
+    beside it (#545)."""
+    def build(standard, project, holder, tmp_path):
+        here = tmp_path / "Loose"
+        here.mkdir()
+        git("init", "-q", "-b", "main", ".", cwd=here)
+        return rows_of(doctor(standard, here, "--json"))[row_id]
+    return build
+
+
 #: One fixture per NEXT #277 converted, by the builder and branch it reaches,
 #: and how the sentence that used to follow `   # ` on it now opens -- moved
 #: VERBATIM, less the `#`, so these are the words main, doctors A and B and
@@ -576,6 +588,13 @@ CASES = {
         "typed yes"),
     "check_the_way_in": (
         _way_in, "without --yes; it asks"),
+    # #545's, which were never a `   # ` tail; the property holds them to the
+    # same rule, and the placeholder is the one the scaffold line carries.
+    "check_the_way_in-adopt-no-origin": (
+        _a_repository_row("way-in"),
+        "replace <your-org> with the GitHub organisation to adopt under"),
+    "check_the_other_way_in": (
+        _a_repository_row("way-in-scaffold"), "without --yes; it asks"),
 }
 
 
