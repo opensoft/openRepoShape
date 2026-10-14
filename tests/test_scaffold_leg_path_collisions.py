@@ -536,7 +536,7 @@ def test_a_pinned_run_refuses_before_anything_exists(tmp_path, glass):
             "--local-remote-dir", str(remotes), "--work-dir", str(work))
     control = run_script(SCAFFOLD, *args, "--dry-run")
     assert control.returncode == 0, control.stdout + control.stderr
-    assert f"-> {GLASS_PIN} (local-clone (" in control.stdout
+    assert f"-> {GLASS_PIN} (local-clone)\n" in control.stdout
     dry = run_script(SCAFFOLD, *args, "--spec-path", GLASS_PIN, "--dry-run")
     real = run_script(SCAFFOLD, *args, "--spec-path", GLASS_PIN)
     assert (dry.returncode, real.returncode) == (2, 2), (
