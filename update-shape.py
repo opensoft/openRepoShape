@@ -2778,8 +2778,10 @@ class Rollback:
         filter touches them — and `git cat-file blob <id>`, redirected to
         the file's own path, writes back exactly those bytes. The object is
         referenced by nothing, so a `git gc` prunes it, two weeks on by
-        default: long enough for a line meant to be run now. Where git will
-        not store them either, the line says so, and that the bytes are
+        default: long enough for a line meant to be run now. A directory
+        that is gone is made first, `mkdir -p <directory> && ...`, which
+        keeps it one pasteable command. Where git will not store them
+        either, the line says so, and that the bytes are
         nowhere this run can point at.
         """
         if (os.access(self._nearest_directory(path.parent), os.W_OK)
@@ -2789,10 +2791,15 @@ class Rollback:
                              "HEAD", "--", name))
         kept = self._kept(original)
         if kept:
+            # A redirect creates the file and never the directory above it,
+            # so a directory a validator deleted is made first, in the same
+            # command (round 2 of the review): "Directory nonexistent".
+            make = ("" if os.path.isdir(path.parent) else
+                    "mkdir -p " + shlex.quote(str(path.parent)) + " && ")
             return (f"its bytes before this run are kept as blob "
                     f"{kept[:12]} in this repository",
-                    _by_hand(self.root, "cat-file", "blob", kept) + " > "
-                    + shlex.quote(str(path)))
+                    make + _by_hand(self.root, "cat-file", "blob", kept)
+                    + " > " + shlex.quote(str(path)))
         return ("and git would not keep its bytes before this run either, "
                 "so they are nowhere this run can point at: only a copy of "
                 f"{name} made before it can put it back", "")

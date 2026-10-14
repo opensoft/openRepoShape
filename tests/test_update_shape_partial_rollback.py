@@ -41,7 +41,9 @@ reads the refusal and the tree:
     directory has to be this root's own again;
   * a directory a validator deleted does not take the checkout line
     away from the file in it: git makes the missing directories, and
-    the line says nothing of making a file writable that is not there.
+    the line says nothing of making a file writable that is not there;
+    where the bytes are not HEAD's, the `cat-file` redirect, which
+    never makes a directory, is preceded by a `mkdir -p` of it.
 
 The pastes run where the suite has a POSIX `sh`, or with no shell at all
 where the line is one command. THE FIXTURE is
@@ -643,6 +645,60 @@ def test_a_directory_a_validator_deleted_still_gets_the_checkout_line(
     assert shlex.split(command) == [
         "git", "-C", str(root), "--literal-pathspecs", "checkout", "HEAD",
         "--", PIN], command
+
+    subprocess.run(["sh", "-c", command], check=True, capture_output=True)
+    assert pin.read_bytes() == bytes_before[PIN]
+
+
+@WINDOWS_SKIP
+def test_the_object_store_line_makes_the_directory_a_validator_deleted(
+        update_shape, root, standard, monkeypatch):
+    """THE SAME DELETED DIRECTORY, WHERE HEAD IS NOT THE ANSWER (round 2,
+    out of the first report). An `apply` without `--branch` left
+    uncommitted, then a second one whose validator deletes `contracts/`:
+    the pin held B's bytes, which HEAD does not commit, so its line is the
+    `cat-file` redirect, and a redirect creates the file and never the
+    directory above it ("Directory nonexistent"). The line makes the
+    directory first, in the same command, so that pasted through `sh` the
+    pin's bytes come back, exit 0."""
+    contracts, pin = root / "contracts", root / PIN
+    validators(monkeypatch, update_shape, 0)
+    args = update_shape.build_parser().parse_args(
+        apply_args(standard, root, "b"))
+    assert update_shape.cmd_apply(args) == 0
+    bytes_before = held(root)
+
+    def red_and_deleted(_root, _script):
+        if contracts.exists():
+            shutil.rmtree(contracts)
+        return 1
+
+    monkeypatch.setattr(update_shape, "run_validator", red_and_deleted)
+
+    refusal = refused_by(update_shape, standard, root, "c")
+    assert not contracts.exists(), "the validator did not delete contracts/"
+    assert_reported_as_red(refusal)
+    assert put_back(refusal.detail) == [
+        f"restored  {rel}" for rel in (CHANGED, MANIFEST)]
+    lines = left(refusal.detail)
+    said = (f"file      {PIN} was not put back "
+            f"({os.strerror(errno.ENOENT)}); its bytes before this run are "
+            "kept as blob ")
+    assert len(lines) == 1, (
+        f"one line was expected, and {len(lines)} were printed: {lines}")
+    assert lines[0].startswith(said), (
+        f"the line does not begin as it should: {lines[0]!r}")
+    command = lines[0].split(", then: ", 1)[1]
+    prefix = f"mkdir -p {shlex.quote(str(contracts))} && "
+    assert command.startswith(prefix), (
+        f"the directory is not made first: {command!r}")
+    words = shlex.split(command)
+    assert words[:4] == ["mkdir", "-p", str(contracts), "&&"], words
+    assert words[4:9] == ["git", "-C", str(root), "cat-file", "blob"], words
+    assert words[10:] == [">", str(pin)], words
+    blob = subprocess.run(words[4:10], capture_output=True,
+                          check=True).stdout
+    assert blob == bytes_before[PIN], "the kept blob is not the pin's bytes"
 
     subprocess.run(["sh", "-c", command], check=True, capture_output=True)
     assert pin.read_bytes() == bytes_before[PIN]
