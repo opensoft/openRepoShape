@@ -219,6 +219,9 @@ from shape_materialize import branch_problem  # noqa: E402
 # The shape's bootstrap script, which its `make bootstrap` runs: where it
 # went beside one the source kept decides what NEXT can name (#480).
 from shape_materialize import BOOTSTRAP  # noqa: E402
+# `run`'s own check of a command line, for the one command `run` cannot run:
+# `_git_rm`, whose path goes to git as the bytes the tree holds (#527).
+from shape_materialize import check_program  # noqa: E402
 
 #: The naming policy this tool classifies leg names against. One constant,
 #: because three spellings of the same path is how the second one goes stale.
@@ -666,6 +669,32 @@ def _git_path(raw: bytes) -> str:
     gitlink and its `.gitmodules` registration are compared as strings, so
     both are decoded here."""
     return raw.decode("utf-8", "surrogateescape")
+
+
+def _path_argument(path: str) -> str | bytes:
+    """A path `_git_path` decoded, as `subprocess` must be handed it for git
+    to receive the bytes the tree holds, under any locale (#527).
+
+    BYTES ON POSIX: `_git_path` undone, UTF-8 with `surrogateescape`, so the
+    NFC and the NFD spelling of a name stay two paths, and a byte that is
+    not UTF-8 is that byte again. Handed a `str`, `subprocess` encodes it
+    with the filesystem encoding, which is the locale's codec when Python is
+    not in UTF-8 mode: under `LC_ALL=C PYTHONUTF8=0` that is ASCII, and
+    `git rm` of `caf\\u00e9.md` raised `UnicodeEncodeError` after both legs
+    were pushed. A `bytes` argument reaches the command line as it is.
+
+    TEXT ON WINDOWS, as before. `subprocess` hands `CreateProcessW` the
+    command line as UTF-16, which no locale codec touches, and git for
+    Windows turns it into the UTF-8 its index holds. Python would turn a
+    `bytes` argument back into text there first, with `os.fsdecode`
+    (`subprocess.list2cmdline`), which raises on a byte that is not UTF-8.
+
+    ONLY FOR A PATH READ FROM GIT. A path read from the disk -- `Path`,
+    `os.readlink`, `Path.resolve` -- is text `os.fsdecode` made, and the
+    `os.fsencode` that `subprocess` applies to it gives back the same bytes
+    in any locale, so `_stage_the_split` hands git such paths as they are.
+    """
+    return path if os.name == "nt" else path.encode("utf-8", "surrogateescape")
 
 
 def _one_line(text: str) -> str:
@@ -7412,6 +7441,33 @@ def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
                             "directory")
 
 
+#: `git rm` of one path the split moves to a leg or drops, up to the path.
+#: `--literal-pathspecs` (#196): after `--` a path is no option, but it is
+#: still a pathspec, where `*` and `?` are wildcards and a leading `:` is
+#: magic -- `git rm -- ':!keep.md'` removes every other path in the tree.
+GIT_RM = ("git", "--literal-pathspecs", "rm", "-r", "-q", "--")
+
+
+def _git_rm(assembly: Path, path: str) -> None:
+    """`git rm` of `path`, an entry's path as the plan holds it, in the
+    assembly: what `run` does, with `path` handed to git as the bytes the
+    tree holds (`_path_argument`, #527).
+
+    `run` takes only text (`check_program`), so this asks `check_program` of
+    the command as the person reads it, and a git that refuses raises
+    `CommandFailed` with that command, as `run` raises it: what `execute`
+    reports after both legs exist is unchanged.
+    """
+    command = [*GIT_RM, path]
+    check_program(command)
+    proc = subprocess.run([*GIT_RM, _path_argument(path)], cwd=str(assembly),
+                          capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise CommandFailed(command, assembly, proc.returncode,
+                            (proc.stderr + proc.stdout).decode("utf-8",
+                                                               "replace"))
+
+
 def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
                     paths_for: dict, spec_path: str, code_path: str) -> None:
     """(c, first half) `git rm` what moved, then mount the two legs.
@@ -7419,17 +7475,16 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     The submodule is added from the LEG'S WORKING TREE and its recorded URL is
     then rewritten to the canonical remote, exactly as the scaffold does: the
     adoption never depends on a push having propagated.
+
+    Each path is the source tree's, so `_git_rm` hands it to git as the bytes
+    the tree holds (#527). The mount paths are `checked_value`s, ASCII.
     """
     removed = sorted((p.rstrip("/") for p in (paths_for["spec"]
                                               + paths_for["code"]
                                               + paths_for["drop"])),
                      key=lambda p: (p != GITMODULES, p))
-    # `--literal-pathspecs` (#196): after `--` a path is no option, but it is
-    # still a pathspec, where `*` and `?` are wildcards and a leading `:` is
-    # magic -- `git rm -- ':!keep.md'` removes every other path in the tree.
     for path in removed:
-        run(["git", "--literal-pathspecs", "rm", "-r", "-q", "--", path],
-            cwd=assembly)
+        _git_rm(assembly, path)
     # The plan moved (or dropped) the source's own .gitmodules, so its deletion
     # is staged, and `git submodule add` refuses to write into a file the index
     # says is going away. Give the assembly a fresh, EMPTY, staged one for its
