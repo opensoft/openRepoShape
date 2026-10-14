@@ -1753,7 +1753,9 @@ def check_pins(ctx: Context) -> Row:
     output: list[str] = []
     row = validator_row(ctx, "pins", "pins", *PINS_GATE,
                         ["--root", str(ctx.root)], output=output)
-    return with_gitlink_repairs(ctx, row, "".join(output))
+    whole = "".join(output)
+    return with_merged_away_rows(ctx, with_gitlink_repairs(ctx, row, whole),
+                                 whole)
 
 
 def bump_leg_command(shape: Path, root: Path, role: str, commit: str,
@@ -1960,6 +1962,102 @@ def with_gitlink_repairs(ctx: Context, row: Row, output: str) -> Row:
         "remote contains, so a commit made in the leg is pushed first")
     row.detail["gitlink_repairs"] = off
     return row
+
+
+#: How every `validate-pins.py` since v0 spells a pinned copy that is not
+#: there: the code, and the words after `<pin>: <path>` (#502).
+COPY_MISSING_CODE = "shape-copy-missing"
+COPY_MISSING_TAIL = " is pinned but absent"
+
+
+def merged_away_findings(ctx: Context, output: str) -> dict | None:
+    """`{pinned path: the file it was merged into}` when EVERY finding in
+    the gate's `output` is `shape-copy-missing` for a `shape/` collision
+    copy `update-shape.py` calls merged-away (#502); None when there is
+    none, or when any finding is anything else.
+
+    THE PATH IS READ OUT OF THE GATE'S OWN LINE, `FINDING
+    shape-copy-missing: contracts/shape-pin.yaml: <path> is pinned but
+    absent`, and judged by `update-shape.py`'s `merged_into`, the function
+    `check` classifies the row with, so this row and the `shape currency`
+    row cannot disagree about which rows `apply` drops. A line this cannot
+    read that way is a finding it cannot vouch for, and the answer is None.
+    """
+    us = ctx.update_shape()
+    lead = f"{SHAPE_PIN}: "
+    merged: dict[str, str] = {}
+    for line in output.splitlines():
+        found = FINDING_LINE.match(line)
+        if found is None:
+            continue
+        code, rest = found.group("code", "rest")
+        if code != COPY_MISSING_CODE or not rest.startswith(lead) \
+                or not rest.endswith(COPY_MISSING_TAIL):
+            return None
+        path = rest[len(lead):-len(COPY_MISSING_TAIL)]
+        original = us.merged_into(ctx.root, path)
+        if original is None:
+            return None
+        merged[path] = original
+    return merged or None
+
+
+def with_merged_away_rows(ctx: Context, row: Row, output: str) -> Row:
+    """The `pins` row, naming `update-shape.py check` as its NEXT where every
+    finding the gate reports is a merged-away collision copy's row (#502).
+
+    THE DEFECT. An adopted root that did its follow-up, "merge shape/X into
+    X", and removed the merged copy kept the copy's pin row, so its own
+    `validate-pins.py` said `shape-copy-missing`, and this row's NEXT was
+    that gate, which names no repair. No tool removed the row, and the hand
+    edit of the pin that would is the one AGENTS.md forbids. Brett Heap
+    ruled that the row goes, with `check` naming it and `apply` dropping it,
+    so this row names the same step the `shape currency` row does: `check`,
+    which reports the row `merged-away` and prints the `apply` that drops
+    it behind the human's yes. The reason says so, and the command is the
+    whole NEXT.
+
+    ONLY WHERE THE STEP CLEARS EVERY FINDING, as `with_gitlink_repairs`
+    names `bump-leg.py` only where a bump clears them: any other finding, a
+    gate that refused or crashed, and the row is returned untouched, its
+    NEXT the gate. A NEW ROW rather than this one changed in place, so
+    nothing said about the gate's command stays beside a NEXT that is not
+    the gate.
+
+    AND ONLY WHERE `check` CAN READ THE ROOT (#286). A root that keeps its
+    pin or its manifest as a symlink, or under one, is refused by `check`
+    itself, `update-rewrite-symlink`, before it classifies a row: named
+    here, `check` exited 2 and reported nothing `merged-away`, and the
+    `shape currency` row named replacing the link, not `check`
+    (`linked_record_row`), so both of this row's sentences were false. The
+    same `linked_record` question that row asks keeps this one the gate
+    until the link is replaced; the doctor run again then names `check`.
+    """
+    if row.status != FINDING or row.detail.get("exit") != 1 \
+            or row.detail.get("crashed"):
+        return row
+    merged = merged_away_findings(ctx, output)
+    if merged is None:
+        return row
+    us = ctx.update_shape()
+    if us.linked_record(ctx.root, us.root_kind(ctx.root)) is not None:
+        return row
+    one = len(merged) == 1
+    copies = ", ".join(f"{path} (merged into {original})"
+                       for path, original in merged.items())
+    reason = (f"{row.reason}. {copies} "
+              + ("is a collision copy" if one else "are collision copies")
+              + " the root merged away, so `update-shape.py check` reports "
+              + ("it" if one else "them") + " `merged-away`, and the "
+              "`apply` it prints drops "
+              + ("its pin row" if one else "their pin rows")
+              + " in the re-pin commit: the step the `shape currency` row "
+              "names too")
+    return Row(row.id, row.label, row.status, reason,
+               f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} check "
+               f"--root {quote_arg(ctx.root)} --upstream "
+               f"{quote_arg(ctx.shape)}",
+               {**row.detail, "merged_away": merged})
 
 
 def check_family(ctx: Context) -> Row:
@@ -2602,16 +2700,17 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    keeping the hunks git merged, as a copy conflicted on its
                    own is merged, and that `update-shape.py apply
                    --accept-local` on a copy merged unlike the pin re-pins
-                   it from the merge. The `shape currency` row names it
-                   where `check` calls the copy `locally-modified`, as it
-                   does with the update side's pin taken. With the
-                   person's side's pin taken, behind the standard the copy
-                   was merged from, `check` calls it `both`, and the row's
-                   `apply` is refused `update-conflict` and asks for it
-                   (review of PR #496). The row never names it for `both`:
-                   AGENTS.md's rule 3 is never to pass it to make a refusal
-                   go away, and nothing here tells a copy merged by hand
-                   from one nobody merged.
+                   it from the merge. The `shape currency` row never names
+                   it (#501), and the `apply` it names is refused and asks
+                   for it: `update-local-drift` where `check` calls the
+                   copy `locally-modified`, as it does with the update
+                   side's pin taken, and `update-conflict` where it calls
+                   it `both`, as it does with the person's side's pin
+                   taken, behind the standard the copy was merged from
+                   (review of PR #496). Whether the project keeps the merge
+                   is the person's word: AGENTS.md's rule 3 is never to
+                   pass the flag to make a refusal go away, and nothing
+                   here tells a copy merged by hand from one nobody merged.
                    The manifest and README.md are never named either, though
                    `apply` writes lines of them: every other line is the
                    project's own, and one side taken whole drops the other
@@ -2680,8 +2779,9 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     <that commit>~1` for `committed`, every change since the newest one
     that reads. Mending the file, or merging it, is the person's, as the
     `both` exit of `update-shape.py` says of a copy changed on both sides:
-    a merge by hand, then `--accept-local` on it, which is what the `shape
-    currency` row names for the same file.
+    a merge by hand, then `--accept-local` on it, on the person's word,
+    which `update-shape.py check` names in that file's row and the `shape
+    currency` row never pre-fills (#501).
     """
     root = ctx.root
     git_c = f"git -C {quote_arg(root)}"
@@ -2753,11 +2853,13 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                     after = (". Where a copy as merged differs from the pin, "
                              "update-shape.py apply --accept-local on that "
                              "copy re-pins it from the merge. The shape "
-                             "currency row names it where update-shape.py "
-                             "check calls the copy locally-modified, and "
-                             "where check calls it both, the apply the row "
-                             "names is refused as update-conflict and asks "
-                             "for --accept-local on that path")
+                             "currency row never names it. Where "
+                             "update-shape.py check calls the copy "
+                             "locally-modified, the apply the row names is "
+                             "refused as update-local-drift, and where "
+                             "check calls it both, as update-conflict, and "
+                             "either refusal asks for --accept-local on that "
+                             "path")
                 then = ". " + ". ".join(said) + ". Then finish"
             return "unmerged", (
                 f"{git_c} checkout {side} -- {quote_arg(pin)}"
@@ -3110,10 +3212,19 @@ def check_shape_currency(ctx: Context) -> Row:
         added = [add for add in additions if not add.present]
         reported = list(rows) + added
         counts = us.counted(reported)
+        # A MERGED-AWAY ROW IS COUNTED WHERE THERE IS ONE (#502, review of PR
+        # #512). The five states every root has a word for are always
+        # printed; without `merged-away` beside them the counts fell one
+        # short of the rows for each such row, and the path `named` below
+        # stood under no count, in the reason of the very row whose `apply`
+        # drops it. Zero is left unsaid, so a root with no such row reads
+        # as it always did.
+        states = (us.UNCHANGED, us.UPSTREAM_CHANGED, us.LOCALLY_MODIFIED,
+                  us.BOTH, us.UPSTREAM_ADDED)
+        if counts.get(us.MERGED_AWAY):
+            states += (us.MERGED_AWAY,)
         summary = " / ".join(f"{counts.get(state, 0)} {state}"
-                             for state in (us.UNCHANGED, us.UPSTREAM_CHANGED,
-                                           us.LOCALLY_MODIFIED, us.BOTH,
-                                           us.UPSTREAM_ADDED))
+                             for state in states)
         by_state: dict[str, list[str]] = {}
         for row in reported:
             by_state.setdefault(row.state, []).append(row.path)
@@ -3124,8 +3235,12 @@ def check_shape_currency(ctx: Context) -> Row:
                   "paths": by_state, "conflicts": conflicts,
                   "behind": bool(counts.get(us.UPSTREAM_CHANGED)
                                  or counts.get(us.UPSTREAM_ADDED)),
+                  # A MERGED-AWAY ROW IS DRIFT TOO (#502): the pin names a
+                  # copy the tree does not hold, and `apply` drops the row.
                   "drifted": bool(counts.get(us.LOCALLY_MODIFIED)
-                                  or counts.get(us.BOTH) or conflicts)}
+                                  or counts.get(us.BOTH)
+                                  or counts.get(us.MERGED_AWAY)
+                                  or conflicts)}
         where = f"pinned {pinned[:12]}, this standard {target[:12]}"
         note = readme_shape_note(ctx, us, upstream.repository, pinned, detail)
         moved = [row for row in reported if row.state != us.UNCHANGED]
@@ -3172,23 +3287,29 @@ def check_shape_currency(ctx: Context) -> Row:
                            "--branch "
                            f"{quote_arg('shape/update-' + target[:12])}"
                            f"{lane_trailer_command()}")
-        accept = "".join(f" --accept-local {quote_arg(row.path)}"
-                         for row in rows
-                         if row.state == us.LOCALLY_MODIFIED)
         named = ", ".join(row.path for row in moved[:4])
         if len(moved) > 4:
             named += f", and {len(moved) - 4} more"
         # The `check` is the NEXT, and the `apply` that follows the human's
-        # yes is the row's `why`, `--accept-local` and the lane's trailer
-        # included (#111): it is the second of two acts, never pasted with
-        # the first, and the `   # ` that joined them is what #277 removed.
+        # yes is the row's `why`, the lane's trailer included (#111): it is
+        # the second of two acts, never pasted with the first, and the `   # `
+        # that joined them is what #277 removed.
+        #
+        # NO `--accept-local` ON THAT `apply` (#501). It carried one for
+        # every `locally-modified` row, and pasted, it re-pinned the
+        # project's edit as the standard: `update-local-drift`, the refusal
+        # that asks the human whether the project keeps it, never fired.
+        # Brett Heap ruled on 2026-10-13, "Stop pre-filling it", so the
+        # `apply` meets that refusal, whose remediation names the three
+        # exits, and `update-shape.py check` names the flag in the row's
+        # detail. `both` was never pre-filled: its hand merge comes first.
         return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                    f"{summary} ({where}): {named}{note}",
                    f"{PYTHON} "
                    f"{quote_arg(ctx.shape / 'update-shape.py')} check --root "
                    f"{quote_arg(ctx.root)} --upstream {quote_arg(ctx.shape)}",
                    detail,
-                   why=f"then apply --at {quote_arg(target)} --yes{accept} "
+                   why=f"then apply --at {quote_arg(target)} --yes "
                        f"--branch {quote_arg('shape/update-' + target[:12])}"
                        f"{lane_trailer_command()}")
     finally:
@@ -6401,12 +6522,20 @@ def drifted_file_reasons(counts: dict) -> list:
     A state is named only when its count is non-zero: a verdict line reading
     `0 unmapped` would be a parenthetical contradicting the words above it.
 
+    `merged-away` IS NAMED LAST (#502): a `shape/` collision copy merged into
+    the file it collided with and removed, whose row `update-shape.py apply`
+    drops. Until it does, the pin names a copy the tree does not hold, which
+    is what makes the project's own `validate-pins.py` red, so the verdict
+    names the cause and not the `pins` row.
+
     Split out of `verdict_for` for #134.
     """
+    merged = ("merged-away",)
     edited = ("locally-modified", "both")
     unmapped = ("upstream-removed", "unmapped", "copy-missing",
                 "copy-is-link")
     return [f"{counts[state]} {state}" for state in edited + unmapped
+            + merged
             if counts.get(state)]
 
 

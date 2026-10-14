@@ -857,6 +857,12 @@ def collision_follow_up(intended: str, actual: str,
     Where the root's `scripts/bootstrap.py` is the source's own, that command
     runs the source's script and exits 0, so the follow-up names no command,
     and says both merges come first (#493's review, F2).
+
+    AND A PINNED COPY'S FOLLOW-UP SAYS WHAT HAPPENS TO ITS ROW (#502). The
+    shape pin has a row for a copied file at the path it landed on, so once
+    the merged copy is removed that row names a file that is not there, and
+    the project's own `validate-pins.py` is red until `update-shape.py
+    apply` drops it. A rendered file, `README.md` among them, has no row.
     """
     if intended == ATTRIBUTES and attributes_link:
         return _attributes_link_follow_up(intended, actual, beside)
@@ -885,6 +891,10 @@ def collision_follow_up(intended: str, actual: str,
         f"merge {actual} into {intended}: the source repository already has "
         "that name, so the shape's copy was written beside it and NOTHING was "
         "overwritten")
+    if intended in COPIED_VERBATIM or any(rel == intended
+                                          for _, rel in COPIED_FROM_SHAPE):
+        merge += (f". Then remove {actual}: `update-shape.py check` reports "
+                  "its pin row `merged-away`, and `apply` drops the row")
     if intended != "Makefile":
         return merge
     targets = ", ".join(f"`{target}`" for target in SHAPE_MAKE_TARGETS)

@@ -262,6 +262,14 @@ def test_an_edited_shape_copy_is_drift_and_names_update_shape(standard,
     FOR — and a verdict of `INVALID (pins)` would send the reader at the
     symptom while the exit is `update-shape.py`. Both rows are printed, and
     this asserts both.
+
+    THE FIX IS NAMED WITHOUT `--accept-local` (#501). This test pinned the
+    hand-over of that flag on purpose, on the reasoning that a reader would
+    know not to paste it; but AGENTS.md tells the reader to run the command
+    a row names, and pasted, it re-pinned the project's edit as the standard
+    before `update-local-drift` could ask the human whether the project keeps
+    it. Brett Heap ruled on 2026-10-13, "Stop pre-filling it", so the
+    assertion is now the opposite one, in every line the report prints.
     """
     edited = project / DRIFT_TARGET
     edited.write_text(edited.read_text(encoding="utf-8")
@@ -273,10 +281,10 @@ def test_an_edited_shape_copy_is_drift_and_names_update_shape(standard,
         result.stdout
     assert DRIFT_TARGET in result.stdout
     assert "update-shape.py" in result.stdout
-    assert f"--accept-local {DRIFT_TARGET}" in result.stdout, (
-        "a `locally-modified` row must hand over the exact flag that re-pins "
-        "it, which is the one AGENTS.md says never to pass on your own "
-        "initiative")
+    assert "--accept-local" not in result.stdout, (
+        "a `locally-modified` row must not hand over the flag that re-pins "
+        "it: whether the project keeps its edit is the human's decision, and "
+        "the `apply` it names asks it by refusing `update-local-drift`")
     # The pins row is red too, and is still printed with its own next step.
     rows = rows_of(doctor(standard, project, "--json"))
     assert rows["pins"]["status"] == "FINDING", rows["pins"]
@@ -2089,7 +2097,56 @@ def test_the_shim_runs_the_script_beside_it_and_fetches_nothing(
     assert "COMPLIANT   (exit 0)" in result.stdout
     assert f"standard    {standard}" in result.stdout, (
         "the checkout beside the file is the standard it must use")
+    assert KEPT not in result.stdout + result.stderr, (
+        "nothing was cloned beside a checkout, so there is nothing to keep "
+        "or to name (#500)")
     fetched_nothing(tmp_path, doctor_ran=True)
+
+
+#: The sentence the installed doctor ends on when it has kept its clone
+#: (#500), cut where the directory's name begins and where it ends.
+KEPT = "the standard this run used is kept at "
+KEPT_TAIL = (", and any NEXT command above runs from it; it is safe to delete "
+             "once you are done with them.")
+
+
+def kept_by(text: str) -> Path:
+    """The directory the installed doctor's LAST line says it kept.
+
+    The last non-empty line and no other: Brett Heap's ruling on #500 puts
+    the sentence there, so a report saved to a file still ends by saying what
+    it left behind.
+    """
+    last = [line for line in text.splitlines() if line.strip()][-1]
+    assert last.startswith(KEPT) and last.endswith(KEPT_TAIL), last
+    return Path(last[len(KEPT):-len(KEPT_TAIL)])
+
+
+def installed(tmp_path) -> Path:
+    """`openRepoShape` alone in a directory, as `--install` places it: one
+    file, no checkout beside it, so `--doctor` has to clone the standard."""
+    target = tmp_path / "bin" / "openRepoShape"
+    target.parent.mkdir(exist_ok=True)
+    shutil.copy2(REPO / "openRepoShape", target)
+    return target
+
+
+def run_installed(standard: Path, tmp_path, *args,
+                  cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """The installed command, cloning `standard` from a local PATH.
+
+    `$TMPDIR` is a directory of the test's own, both because the clone now
+    OUTLIVES the run (#500) and must not outlive it in the machine's `/tmp`,
+    and because it is what shows what the run left behind.
+    """
+    temporary = tmp_path / "tmp"
+    temporary.mkdir(exist_ok=True)
+    return subprocess.run(
+        ["bash", str(installed(tmp_path)), *args],
+        capture_output=True, text=True, check=False, input="",
+        cwd=str(cwd or tmp_path),
+        env=shim_env(tmp_path, OPENREPOSHAPE_REPO=str(standard),
+                     TMPDIR=str(temporary)))
 
 
 @WINDOWS_SKIP
@@ -2103,13 +2160,22 @@ def test_the_shim_from_stdin_clones_the_standard_first(standard, project,
     uses for self-bootstrap — so the clone is real and the network is not
     touched. The standard it reports must be the temporary clone and not the
     directory the project lives in.
+
+    AND THE CLONE OUTLIVES THE RUN (#500). This asserted the opposite until
+    Brett Heap's ruling, "Keep the run's clone" (2026-10-13): an EXIT trap
+    removed it, so every NEXT line naming a file in it failed when pasted. It
+    is kept, it is the one thing left in `$TMPDIR`, and the report's last
+    line names it.
     """
+    temporary = tmp_path / "tmp"
+    temporary.mkdir()
     result = subprocess.run(
         ["bash", "-s", "--", "--doctor", str(project)],
         capture_output=True, text=True, check=False,
         input=(REPO / "openRepoShape").read_text(encoding="utf-8"),
         cwd=str(tmp_path),
-        env=shim_env(tmp_path, OPENREPOSHAPE_REPO=str(standard)))
+        env=shim_env(tmp_path, OPENREPOSHAPE_REPO=str(standard),
+                     TMPDIR=str(temporary)))
     assert result.returncode == 0, result.stdout + result.stderr
     assert "COMPLIANT   (exit 0)" in result.stdout
     [reported] = [line.split(None, 1)[1].strip()
@@ -2118,9 +2184,205 @@ def test_the_shim_from_stdin_clones_the_standard_first(standard, project,
     assert reported != str(standard), (
         "with no checkout beside it the shim must clone one, not reach for "
         "the directory the project happens to sit next to")
-    assert not Path(reported).exists(), (
-        f"{reported} outlived the run; the EXIT trap did not fire")
+    assert (Path(reported) / DOCTOR).is_file(), (
+        f"{reported} did not outlive the run, and every NEXT line names a "
+        "file in it (#500)")
+    kept = kept_by(result.stdout)
+    assert Path(reported).parent == kept, (reported, kept)
+    assert [entry.resolve() for entry in temporary.iterdir()] == \
+        [kept.resolve()], "the kept clone is the one thing the run left"
+    assert kept.name.startswith("openRepoShape-doctor."), (
+        "a kept directory carries the name of what made it, so a person can "
+        f"find every one they have been left: {kept}")
     fetched_nothing(tmp_path, doctor_ran=True)
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_the_installed_doctors_next_lines_run_after_it_has_exited(
+        standard, project, tmp_path):
+    """#500: every NEXT the installed form printed named a file in a clone
+    its EXIT trap had already removed, so each one, pasted, died with
+    `python3: can't open file`, exit 2 -- the `shape currency` row's
+    `update-shape.py check --upstream <clone>` included.
+
+    The installed form here is the one file `--install` places, with nothing
+    beside it, run over a project with one edited shape copy. Every NEXT
+    that names a file in the kept clone is run AFTER the command has exited,
+    as the reader's shell splits it, and the `shape currency` one must
+    reproduce the finding it was printed for.
+    """
+    edited = project / DRIFT_TARGET
+    edited.write_text(edited.read_text(encoding="utf-8")
+                      + "\n# a local edit nobody carried upstream\n",
+                      encoding="utf-8")
+    result = run_installed(standard, tmp_path, "--doctor", str(project))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "DRIFTED (1 locally-modified)   (exit 1)" in result.stdout, \
+        result.stdout
+    fetched_nothing(tmp_path, doctor_ran=True)
+    kept = kept_by(result.stdout)
+    shape = kept / "shape"
+    nexts = [line.split("NEXT", 1)[1].strip()
+             for line in result.stdout.splitlines()
+             if line.lstrip().startswith("NEXT ")]
+    from_the_clone = [line for line in nexts if str(shape) in line]
+    assert any("update-shape.py" in line for line in from_the_clone), nexts
+    for line in from_the_clone:
+        argv = pasted(line)
+        named = [Path(arg) for arg in argv if arg.startswith(str(shape))]
+        for path in named:
+            assert path.exists(), f"{line}\nnames {path}, which is gone"
+        proc = subprocess.run(argv, capture_output=True, text=True,
+                              check=False, stdin=subprocess.DEVNULL,
+                              start_new_session=True, cwd=str(tmp_path),
+                              env={**shim_env(tmp_path),
+                                   "PYTHONDONTWRITEBYTECODE": "1"})
+        assert "can't open file" not in proc.stdout + proc.stderr, (
+            line + "\n" + proc.stdout + proc.stderr)
+        if "update-shape.py" in argv[1]:
+            assert proc.returncode == 1, line + "\n" + proc.stdout \
+                + proc.stderr
+            assert re.search(rf"locally-modified\s+{re.escape(DRIFT_TARGET)}",
+                             proc.stdout), proc.stdout
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_the_installed_doctor_hands_on_json_and_keeps_stdout_one_object(
+        standard, project, tmp_path):
+    """`--json` reaches `shape-doctor.py` from the installed form (#500),
+    which refused it outright -- AGENTS.md's doctor step 7 is "`--json` ...
+    for when you have to act on a row".
+
+    STDOUT IS THE JSON AND NOTHING ELSE. The line naming the kept clone
+    goes to stderr under `--json`, because one line after the object makes
+    a document `json.load` refuses; the object names the clone already, as
+    `standard`. And the rows are the rows a checkout's `--json` gives, with
+    only the standard's path differing.
+    """
+    result = run_installed(standard, tmp_path, "--doctor", str(project),
+                           "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "COMPLIANT", payload["verdict"]
+    kept = kept_by(result.stderr)
+    assert KEPT not in result.stdout
+    shape = Path(payload["standard"])
+    assert shape.parent == kept and (shape / DOCTOR).is_file(), (shape, kept)
+    beside = subprocess.run(
+        ["bash", str(standard / "openRepoShape"), "--doctor", str(project),
+         "--json"],
+        capture_output=True, text=True, check=False, input="",
+        env=shim_env(tmp_path))
+    assert beside.returncode == 0, beside.stdout + beside.stderr
+    assert KEPT not in beside.stdout + beside.stderr
+    checkout = json.loads(beside.stdout)
+    assert Path(checkout["standard"]) == standard.resolve()
+    rows = json.loads(result.stdout.replace(str(shape), checkout["standard"]))
+    assert rows["rows"] == checkout["rows"]
+    assert beyond_the_machine_row(network_calls(tmp_path)) == []
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize("args", [
+    pytest.param(("--doctor", "{project}", "--placement-plan", "plan.yaml"),
+                 id="path-then-flag"),
+    pytest.param(("--doctor", "--placement-plan=plan.yaml", "{project}"),
+                 id="flag-then-path"),
+])
+def test_the_installed_doctors_placement_plan_lands_where_you_stand(
+        args, standard, project, tmp_path):
+    """`--placement-plan <file>` reaches `shape-doctor.py` from the installed
+    form (#500) -- it is the `placement` row's own NEXT, which the installed
+    form refused -- and a RELATIVE `<file>` lands in the directory the
+    command was run from: not in the repository, and not in the kept clone.
+
+    The plan is the only thing written, as AGENTS.md's doctor section says;
+    the project's tree is compared file by file before and after.
+    """
+    here = tmp_path / "here"
+    here.mkdir()
+
+    def snapshot():
+        return sorted(
+            (path.relative_to(project).as_posix(), path.stat().st_size)
+            for path in project.rglob("*") if path.is_file())
+
+    before = snapshot()
+    result = run_installed(
+        standard, tmp_path,
+        *[arg.format(project=project) for arg in args], cwd=here)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert [entry.name for entry in here.iterdir()] == ["plan.yaml"]
+    assert "kind: placement-plan" in (here / "plan.yaml").read_text(
+        encoding="utf-8")
+    assert "placement plan written to plan.yaml" in result.stdout
+    assert snapshot() == before
+    assert not (kept_by(result.stdout) / "shape" / "plan.yaml").exists()
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_a_refused_doctor_still_names_its_kept_clone_without_next_lines(
+        standard, tmp_path):
+    """THE CLONE IS KEPT WHENEVER THE DOCTOR RAN, so the last line cannot say
+    there are NEXT commands (#500, review of 9808aec, SHOULD-1).
+
+    A `<path>` that is not there is refused by `shape-doctor.py` itself, exit
+    3, with no report and so no NEXT line. The clone is kept all the same --
+    Brett Heap's ruling keeps it once the doctor has run -- and the one line
+    on stdout says where, as true of this run as of one that printed a dozen
+    NEXT lines: "any NEXT command above" is empty here.
+    """
+    result = run_installed(standard, tmp_path, "--doctor",
+                           str(tmp_path / "nonexistent"))
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "shape-doctor-root-missing" in result.stderr
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(lines) == 1, result.stdout
+    kept = kept_by(result.stdout)
+    assert (kept / "shape" / DOCTOR).is_file(), (
+        f"{kept} is named as kept and is not there")
+    assert [entry.resolve() for entry in (tmp_path / "tmp").iterdir()] == \
+        [kept.resolve()]
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize("args", [
+    pytest.param(("--doctor", "--org", "Foo"), id="a-scaffold-flag"),
+    pytest.param(("--doctor", ".", "Atlas"), id="a-second-path"),
+    pytest.param(("--json", "--doctor", "."), id="json-before-doctor"),
+    pytest.param(("--doctor", ".", "--placement-plan"), id="plan-no-file"),
+    pytest.param(("--doctor", ".", "--placement-plan="), id="plan-empty"),
+    pytest.param(("--doctor", ".", "--placement-plan", "--json"),
+                 id="plan-a-flag"),
+])
+def test_the_installed_doctor_refuses_before_it_clones(args, standard,
+                                                       tmp_path):
+    """What `--doctor` does not take is still refused by name, exit 2,
+    before anything is cloned (#500 hands on two flags, and only those).
+
+    A scaffold flag, a second path, or `--json` typed BEFORE `--doctor` --
+    the doctor's flags follow it, as a subcommand's do, and anywhere else
+    they are the lone flags a scaffold run passes on. `--placement-plan`
+    with no file, an empty one, or a flag where the file goes is refused
+    rather than handed to argparse or written to a file called `--json`.
+    Nothing reaches stdout, `$TMPDIR` stays empty, and nothing is fetched.
+    """
+    result = run_installed(standard, tmp_path, *args)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == ""
+    assert "REFUSED: " in result.stderr
+    if "--placement-plan" in " ".join(args):
+        assert "--placement-plan needs the file" in result.stderr
+    else:
+        assert "--doctor takes a path, --json and --placement-plan <file>, " \
+            "and nothing else" in result.stderr
+    assert list((tmp_path / "tmp").iterdir()) == []
+    fetched_nothing(tmp_path, doctor_ran=False)
 
 
 @WINDOWS_SKIP
@@ -2131,7 +2393,8 @@ def test_the_shim_doctor_takes_a_path_and_nothing_else(standard, tmp_path):
         capture_output=True, text=True, check=False, input="",
         env=shim_env(tmp_path))
     assert result.returncode == 2, result.stdout + result.stderr
-    assert "--doctor takes a path and nothing else" in result.stderr
+    assert "--doctor takes a path, --json and --placement-plan <file>, and " \
+        "nothing else" in result.stderr
     assert "openRepoShape --preflight" in result.stderr, (
         "the refusal must name the machine check, because `--doctor` meant "
         "that until 2026-09-10")
@@ -4278,7 +4541,7 @@ def test_a_readme_conflicted_over_the_projects_own_lines_is_left_to_a_person(
     README.md holds no `Shape:` line here, so nothing in it is the shape's,
     and where it holds one every other line is still the project's own.
     Taken whole, edit-a's paragraph went with it (review of PR #267). The
-    NEXT takes the pin alone, and its note and `left_for_a_person` say that
+    NEXT takes the pin alone, and its `why` and `left_for_a_person` say that
     README.md is a person's to merge.
     """
     readme = project / "README.md"
@@ -5377,7 +5640,7 @@ def test_a_copy_conflicted_on_its_own_is_shown_and_merged_by_a_person(
 
 def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
         standard, project):
-    """P10b. In the same report the `shape currency` row names `apply
+    """P10b. In the same report the `shape currency` row named `apply
     --accept-local` on the copy, which keeps the local bytes, while the
     `manifest kinds` row took one side whole. AGENTS.md says `both` is a
     merge: by hand, commit, then `--accept-local` on the file merged.
@@ -5386,12 +5649,18 @@ def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
     are one path: the merge by hand, then the `shape currency` row's own
     NEXT, run as its note spells it, ends COMPLIANT with every line of
     both sides in the copy and its pin.
+
+    THE FLAG IS THE PERSON'S, NOT THE ROW'S (#501). The `why`'s `apply`
+    carries no `--accept-local`: run as printed it is refused
+    `update-local-drift`, which asks whether the project keeps the merge,
+    and with the person's `--accept-local` on the copy it ends COMPLIANT.
     """
     a_copy_conflicted_on_its_own(project)
     kinds, currency = kinds_and_currency(standard, project)
     assert "merge it by hand" in kinds["why"], kinds
     assert "checkout" not in kinds["next"], kinds["next"]
-    assert f"--accept-local {NAMING_COPY}" in currency["why"], currency
+    assert "--accept-local" not in currency["next"] + currency["why"], \
+        currency
     merge_by_hand(project / NAMING_COPY)
     git("add", "--", NAMING_COPY, cwd=project)
     commit_in(project, "the naming copy merged by hand")
@@ -5401,10 +5670,15 @@ def test_a_conflicted_copys_next_agrees_with_shape_currency_and_agents_md(
     assert Path(argv[1]).name == "update-shape.py" and argv[2] == "check", \
         currency["next"]
     then = currency["why"].split()
-    assert then[:2] == ["then", "apply"], currency["next"]
-    assert then[then.index("--accept-local") + 1] == NAMING_COPY, then
-    applied = run_script(standard / "update-shape.py", "apply", "--root",
-                         str(project), "--upstream", str(standard), *then[2:])
+    assert then[:2] == ["then", "apply"], currency["why"]
+    assert "--accept-local" not in then, then
+    apply = (standard / "update-shape.py", "apply", "--root", str(project),
+             "--upstream", str(standard), *then[2:])
+    asked = run_script(*apply)
+    assert asked.returncode == 2, asked.stdout + asked.stderr
+    assert "REFUSED update-local-drift" in asked.stderr, asked.stderr
+    assert f"--accept-local {NAMING_COPY}" in asked.stderr, asked.stderr
+    applied = run_script(*apply, "--accept-local", NAMING_COPY)
     assert applied.returncode == 0, applied.stdout + applied.stderr
     compliant_again(standard, project)
     kept = git("show", f"HEAD:{NAMING_COPY}", cwd=project).stdout
@@ -5768,7 +6042,7 @@ def assert_the_merge_is_finished(verdict: str, rows: dict,
 def assert_the_pin_alone_is_taken(currency: dict, kinds: dict,
                                   copy: str) -> None:
     """The shape pin's NEXT names the pin alone, both rows print it, and
-    its note and `left_for_a_person` give the copy to a person."""
+    its `why` and `left_for_a_person` give the copy to a person."""
     assert currency["detail"]["restore"] == "unmerged", currency["detail"]
     assert pasted(currency["next"])[3:] == [
         "checkout", "--ours", "--", SHAPE_PIN], currency["next"]
@@ -5784,52 +6058,54 @@ def assert_the_pin_alone_is_taken(currency: dict, kinds: dict,
     assert "every path named" not in note, note
     for words in ("update-shape.py apply --accept-local on that copy "
                   "re-pins it from the merge",
-                  "check calls the copy locally-modified",
-                  "where check calls it both, the apply the row names is "
-                  "refused as update-conflict and asks for --accept-local "
-                  "on that path"):
+                  "The shape currency row never names it",
+                  "check calls the copy locally-modified, the apply the row "
+                  "names is refused as update-local-drift",
+                  "where check calls it both, as update-conflict, and "
+                  "either refusal asks for --accept-local on that path"):
         assert words in note, (words, note)
     assert_a_plain_next(currency)
 
 
 def re_pinned_from_the_merge(moved: Path, root: Path, currency: dict,
                              copy: str, ours: str) -> None:
-    """The note's last sentences, followed from the `shape currency` row
+    """The `why`'s last sentences, followed from the `shape currency` row
     both ways round (review of PR #496, F1), to COMPLIANT.
 
-    With the update side's pin taken, the copy as merged is
-    `locally-modified`, and the row's own `apply` names `--accept-local
-    <copy>`. With the person's side's pin taken, behind the standard the
-    copy was merged from, it is `both`, and the row names no
-    `--accept-local`, as AGENTS.md's rule 3 wants: its `apply`, run as
-    spelled, is refused `update-conflict`, moves nothing, and asks for
-    `--accept-local` on that path. Either way that `apply --accept-local
+    The row's `apply` names no `--accept-local` either way round, as
+    AGENTS.md's rule 3 wants (#501): run as spelled it moves nothing and
+    asks for the flag on that path. With the update side's pin taken, the
+    copy as merged is `locally-modified`, and the refusal is
+    `update-local-drift`; with the person's side's pin taken, behind the
+    standard the copy was merged from, it is `both`, and the refusal is
+    `update-conflict`. Either way the person's `apply --accept-local
     <copy>` re-pins the copy from the merge and the root is COMPLIANT.
     """
     then = currency["why"].split()
-    assert then[:2] == ["then", "apply"], currency["next"]
+    assert then[:2] == ["then", "apply"], currency["why"]
     args = then[2:]
     apply = (moved / "update-shape.py", "apply", "--root", str(root),
              "--upstream", str(moved))
+    assert "--accept-local" not in args, then
+
+    def held() -> tuple:
+        return (git("rev-parse", "HEAD", cwd=root).stdout,
+                git("branch", "--list", cwd=root).stdout,
+                git("status", "--porcelain=v1", cwd=root).stdout,
+                (root / copy).read_bytes())
+
+    before = held()
+    refused = run_script(*apply, *args)
+    said = refused.stdout + refused.stderr
+    assert refused.returncode == 2, said
     if ours == "upgrade":
-        assert args[args.index("--accept-local") + 1] == copy, then
+        assert "update-local-drift" in said, said
+        assert f"--accept-local {copy}" in said, said
     else:
-        assert "--accept-local" not in args, then
-
-        def held() -> tuple:
-            return (git("rev-parse", "HEAD", cwd=root).stdout,
-                    git("branch", "--list", cwd=root).stdout,
-                    git("status", "--porcelain=v1", cwd=root).stdout,
-                    (root / copy).read_bytes())
-
-        before = held()
-        refused = run_script(*apply, *args)
-        said = refused.stdout + refused.stderr
-        assert refused.returncode == 2, said
         assert "update-conflict" in said and f"    {copy}: " in said, said
         assert "--accept-local on that path" in said, said
-        assert held() == before, "the refused apply moved something"
-        args = [*args, "--accept-local", copy]
+    assert held() == before, "the refused apply moved something"
+    args = [*args, "--accept-local", copy]
     applied = run_script(*apply, *args)
     assert applied.returncode == 0, applied.stdout + applied.stderr
     compliant_again(moved, root)
@@ -5854,9 +6130,10 @@ def test_a_copy_conflicted_with_the_shape_pin_is_left_to_a_person(
     it is in, where it said `project` while its NEXT overwrote the file.
     The next run names the copy's read-only `diff`, and the doctor is not
     COMPLIANT until a person has merged it and, where the merge differs
-    from the pin, re-pinned it with `apply --accept-local`: the `shape
-    currency` row names it for a `locally-modified` copy, and the row's
-    refused `apply` asks for it on a `both` one. HEAD then holds every
+    from the pin, re-pinned it with `apply --accept-local` on their word:
+    the `shape currency` row's `apply` never names the flag (#501), and
+    refused, it asks for it, `update-local-drift` for a `locally-modified`
+    copy and `update-conflict` for a `both` one. HEAD then holds every
     line of both sides, either way round.
 
     Until the merge is committed the verdict is #424's `INVALID (merge)`,

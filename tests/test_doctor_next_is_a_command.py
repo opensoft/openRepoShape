@@ -168,9 +168,10 @@ def _shape_currency_moved(standard, project, holder, tmp_path):
                       + "\n# a local edit nobody carried upstream\n",
                       encoding="utf-8")
     row = behind_row(ahead, project, LANE)
-    # The `apply` -- its `--accept-local` and the lane's trailer with it --
-    # is the row's `why`, and nothing of it is on the NEXT.
-    assert f"--accept-local {DRIFT_TARGET}" in row["why"], row["why"]
+    # The `apply` -- the lane's trailer with it -- is the row's `why`, and
+    # nothing of it is on the NEXT. Neither carries `--accept-local`: the
+    # flag is the person's to add, never the row's (#501).
+    assert "--accept-local" not in row["why"], row["why"]
     assert row["why"].endswith(f" --trailer 'Lane: {LANE}'"), row["why"]
     for moved in ("apply", "--accept-local", "--trailer"):
         assert moved not in row["next"], (moved, row["next"])
