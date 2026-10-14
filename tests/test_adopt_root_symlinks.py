@@ -1028,10 +1028,10 @@ def test_a_link_to_a_pins_file_finds_the_pin_place_wrote_first(
     under `shape/`, as it does for any path the root holds. The walk now
     says the same, where it said the link led to what is not in the source
     tree, and `check` prints no link finding for it. (The root's
-    `contracts/shape-pin.yaml` is then not the shape's pin, and `execute`'s
-    verification fails after both legs, as on `main` and as for a file the
-    source keeps there: a question of what the root keeps at the shape's
-    pin, not of where this link leads.)"""
+    `contracts/shape-pin.yaml` is then not the shape's pin: a question of
+    what the root keeps at the shape's pin, not of where this link leads,
+    which `plan-root-holds-pin` now answers before any leg, as it does for
+    a file the source keeps there, #524.)"""
     files, legs = REAL_CONTRACTS
     _, plan = planned(tmp_path, files, {SHAPE_PIN: PIN_NAME}, legs)
     declare(plan, A_PIN)

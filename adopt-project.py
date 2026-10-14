@@ -258,7 +258,9 @@ PIN_FIELDS = (("product", "PIN_PRODUCT"), ("repository", "PIN_REPOSITORY"),
 #: The two a pin is a fact by. A pin without either is a name.
 PIN_RECORDED = ("commit", "tree_sha256")
 
-#: `check`'s findings about the plan's `pins:`.
+#: `check`'s findings about the plan's `pins:`, and the last of them about a
+#: path the root keeps where `execute` writes a pin: a declared pin's file
+#: (#273), or the shape's own pin (#524).
 PIN_UNRECORDED = "plan-pin-unrecorded"
 PIN_MALFORMED = "plan-pin-malformed"
 PIN_COLLIDES = "plan-pin-collides"
@@ -443,23 +445,40 @@ def _recorded_pins(plan: "Plan") -> dict[str, dict[str, str]]:
     return {product: values for _, product, values in _read_pins(plan)[0]}
 
 
+def _pin_files(plan: "Plan") -> list[tuple[str, str | None]]:
+    """`(path, product)` for each pin file `execute` writes, in the order
+    `place` writes them: each declared pin's, once, then the shape's own
+    pin, whose product is None (#524)."""
+    return [*((neutral_pin_path(product), product)
+              for product in dict.fromkeys(_declared_pins(plan))),
+            (SHAPE_PIN, None)]
+
+
 def _kept_pin_findings(plan: "Plan", tree: list) -> list[str]:
-    """A FINDING for each declared pin whose file a path the plan keeps in
-    the root already holds. The materializer writes the shape's pin beside
-    such a path, under `COLLISION_DIR`, as it writes any shape file the root
-    holds; for a pin that is no copy to merge but the wrong file, because the
-    root's own `validate-pins.py` reads `contracts/<product>-pin.yaml` and
-    would read the source's. Asked of a disk that keeps case and, where that
-    finds nothing, of one that ignores it."""
-    products = list(dict.fromkeys(_declared_pins(plan)))
-    kept = _kept_in_root(plan.entries, tree) if products else []
+    """A FINDING for each pin file a path the plan keeps in the root already
+    holds: a declared pin's (#273), or the shape's own pin (#524). The
+    materializer writes the pin beside such a path, under `COLLISION_DIR`,
+    as it writes any shape file the root holds; for a pin that is no copy to
+    merge but the wrong file at the pin's path, which the root reads there:
+    its own `validate-pins.py` reads `contracts/<product>-pin.yaml`, and
+    `execute`'s verification, `validate-pins.py` and `make bootstrap` read
+    `contracts/shape-pin.yaml`. Asked of a disk that keeps case and, where
+    that finds nothing, of one that ignores it.
+
+    THE SHAPE'S OWN PIN WAS NEVER ASKED (#524). A file the source keeps at
+    `contracts/shape-pin.yaml`, with a pin declared or without, or a link
+    there that leads to something, passed `check`; `execute` made and
+    pushed both legs, wrote the shape's pin beside it and failed its
+    verification as `adopt-shape-pin-unreadable`. A link there that leads
+    nowhere, which `place` writes the pin through, is named here too, and
+    not again by the walk (`_links_at_a_pin`)."""
+    kept = _kept_in_root(plan.entries, tree)
     if not kept:
         return []
     disks = ((_KeptTree(kept, fold=False), ""),
              (_KeptTree(kept, fold=True), _CASE_ASIDE))
     out = []
-    for product in products:
-        rel = neutral_pin_path(product)
+    for rel, product in _pin_files(plan):
         for disk, aside in disks:
             at = disk.at(rel)
             rows = [row for row in ([at] if at else disk.under(rel))
@@ -469,23 +488,45 @@ def _kept_pin_findings(plan: "Plan", tree: list) -> list[str]:
             path, mode, entry = rows[0]
             under = "" if entry == path else f" under the entry {_spelled(entry)}"
             where = "at" if at else "inside"
+            written = (_declared_pin_held(product) if product
+                       else _shape_pin_held(mode if at else None))
             out.append(
                 f"FINDING {ROOT_HOLDS_PIN}: the plan keeps {_kind_of(mode)} "
                 f"{_spelled(path)} in the assembly root{under}, {where} "
-                f"`{rel}`{aside}, where `execute` writes the pin the plan "
-                f"declares on `{product}`. The shape's pin would be written "
-                f"beside it, under `{COLLISION_DIR}/`, and the root's own "
-                "`validate-pins.py` would read the source's file as that "
-                f"pin: {_fix_the_kept_path(entry)}.")
+                f"`{rel}`{aside}, where `execute` writes {written}: "
+                f"{_fix_the_kept_path(entry)}.")
             break
     return out
+
+
+def _declared_pin_held(product: str) -> str:
+    """What `plan-root-holds-pin` says of a declared pin's file (#273)."""
+    return (f"the pin the plan declares on `{product}`. The shape's pin would "
+            f"be written beside it, under `{COLLISION_DIR}/`, and the root's "
+            "own `validate-pins.py` would read the source's file as that pin")
+
+
+def _shape_pin_held(mode: str | None) -> str:
+    """What `plan-root-holds-pin` says of the shape's own pin (#524), where
+    the root keeps an entry of `mode` AT it, or, with None, a directory
+    there."""
+    found = "directory" if mode is None else _kind_of(mode).split()[-1]
+    through = (", or written through it where it leads nowhere"
+               if mode == SYMLINK_MODE else "")
+    return ("the shape's own pin: the openRepoShape commit the root's copies "
+            "came from and each copy's digest, which `execute`'s "
+            "verification, the root's own `validate-pins.py` and `make "
+            "bootstrap` read at that path. The split would hold the source's "
+            f"{found} there, and the shape's pin beside it, under "
+            f"`{COLLISION_DIR}/`{through}")
 
 
 def _pin_findings(plan: "Plan", tree: list) -> list[str]:
     """Every FINDING about the plan's pins: each entry `execute` cannot
     write a pin file from, two pins at one file or one at a file the shape
     writes, two whose products one `SHAPE_PIN_SOURCE_<PRODUCT>` names
-    (#275), and a path the root keeps where a pin is written."""
+    (#275), and a path the root keeps where a pin is written, the shape's
+    own among them (#524)."""
     return _read_pins(plan)[1] + _kept_pin_findings(plan, tree)
 
 
@@ -3693,8 +3734,9 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
         findings += _root_shape_findings(plan, tree)
         # THE PINS, LAST (#273): each `pins:` entry `execute` cannot write a
         # pin file from, two pins at one file, and a path the root keeps
-        # where a pin is written. Each finding names the `plan` that records
-        # the pin whole. A leg mounted over a pin's file is
+        # where a pin is written, the shape's own pin among them (#524).
+        # Each finding about an entry names the `plan` that records the pin
+        # whole. A leg mounted over a pin's file is
         # `plan-leg-path-collides`, above, with the shape's own paths.
         findings += _pin_findings(plan, tree)
     return findings
@@ -5823,7 +5865,10 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 # them, a link that only a pin's file runs through passed `check`, and
 # `execute` stopped at it after both legs; and a link to a pin's file was
 # taken to lead nowhere, though `place` meets the pin there. A symlink AT a
-# pin's file is #273's `plan-root-holds-pin`, said once there.
+# pin's file is #273's `plan-root-holds-pin`, said once there, and so is one
+# AT the shape's own pin, wherever it leads (#524): where it leads to
+# something, `place` writes the shape's pin beside it and the root's
+# `contracts/shape-pin.yaml` is the source's link, which no walk refuses.
 
 #: The finding for a symlink the plan keeps in the root that the shape cannot
 #: write through.
@@ -6344,20 +6389,20 @@ def _links_at_a_copy(plan: Plan, tree: list) -> set[str]:
 
 
 def _links_at_a_pin(plan: Plan, tree: list) -> set[str]:
-    """Each symlink the plan keeps AT the file a declared pin is written to,
-    `contracts/<product>-pin.yaml`, that #273's `plan-root-holds-pin` names
-    (`_kept_pin_findings`): the walks follow each pin's file too, and the
-    link is not said again by them. Asked as `_kept_pin_findings` asks it,
-    in `_leg_findings`, of a plan whose `legs` it can read: of each declared
-    pin, on a disk that keeps case and, where that finds nothing there, on
+    """Each symlink the plan keeps AT a file a pin is written to, a declared
+    pin's `contracts/<product>-pin.yaml` or the shape's own
+    `contracts/shape-pin.yaml`, that #273's `plan-root-holds-pin` names
+    (`_kept_pin_findings`, #524): the walks follow each pin's file too, and
+    the link is not said again by them. Asked as `_kept_pin_findings` asks
+    it, in `_leg_findings`, of a plan whose `legs` it can read: of each pin
+    file, on a disk that keeps case and, where that finds nothing there, on
     one that ignores it."""
-    products = list(dict.fromkeys(_declared_pins(plan)))
-    if not products or not isinstance(plan.legs, dict):
+    if not isinstance(plan.legs, dict):
         return set()
     kept = _kept_in_root(plan.entries, tree)
     disks = (_KeptTree(kept, fold=False), _KeptTree(kept, fold=True))
     named: set[str] = set()
-    for rel in map(neutral_pin_path, products):
+    for rel, _ in _pin_files(plan):
         # The disk `_kept_pin_findings` names its row from.
         disk = next((one for one in disks if _holds_a_pin(one, rel)), None)
         at = disk.at(rel) if disk else None
@@ -6393,8 +6438,8 @@ def _root_symlink_findings(plan: Plan, source: Source,
     this check's, because #262's rule follows no link. A symlink AT
     `project.yaml` is #305's `plan-root-blocks-manifest`, which
     `_shape_blocks` reports the same way, and is not said again either; nor
-    is a symlink AT a declared pin's file, #273's `plan-root-holds-pin`
-    (`_links_at_a_pin`).
+    is a symlink AT a declared pin's file or AT the shape's own pin, #273's
+    `plan-root-holds-pin` (`_links_at_a_pin`, #524).
 
     A walk that stops at a symlink with an empty target is #303's to say:
     `plan-empty-symlink` names every such symlink in the source, first in
@@ -6475,8 +6520,10 @@ class _SymlinkProbe:
                 # user cannot write (J4 of #183's re-verify). Taken as a disk
                 # that holds symlinks, `check` prints the finding it printed
                 # before B-OFF for a link AT a path that a walk cannot follow,
-                # and `execute` refuses with it, where both would otherwise
-                # end in a traceback.
+                # beside `adopt-work-dir-unwritable` (#524), and
+                # `_refuse_what_check_finds` refuses with it, where both
+                # would otherwise end in a traceback. `execute` itself
+                # refuses such a directory before it gets here (#524).
                 self._answer = True
         return self._answer
 
@@ -6538,9 +6585,23 @@ def cmd_check(args) -> int:
         print(f"\n{len(mistyped)} finding(s) in {plan.path}", file=sys.stderr)
         return 1
     work_root = _work_root(args)
-    source = plan.open_source(args.source, work_root)
+    # Asked before the source is opened, as `execute` asks it (#524). An
+    # `org/repo` source is cloned into the work directory, so where that
+    # directory cannot be written there is no source to read: refused as
+    # `execute` refuses it, where it ended in a PermissionError traceback.
+    unwritable = _unwritable_work_dir(args, work_root)
+    try:
+        source = plan.open_source(args.source, work_root)
+    except OSError:
+        if not unwritable:
+            raise
+        raise Refusal(WORK_DIR_UNWRITABLE, unwritable,
+                      f"Remediation: {WORK_DIR_FIX}") from None
     naming = NamingPolicy.load(NAMING_POLICY)
     findings: list[str] = []
+    if unwritable:
+        findings.append(
+            f"FINDING {WORK_DIR_UNWRITABLE}: {unwritable}. {WORK_DIR_FIX}")
     # FIRST, because it is said where work starts; it is never one of the
     # findings below and never moves this command's exit code.
     _print_triad_advisory(source.path,
@@ -6998,6 +7059,54 @@ def _refuse_an_occupied_work_dir(work_root: Path, names: dict,
             "Remediation: no leg repository was created and nothing was "
             "pushed. Pass a --work-dir that is new or empty, or none: without "
             "one, each run makes a new one.")
+
+
+#: `check`'s finding, and the code `execute` refuses it under, for a
+#: `--work-dir` this user cannot write in (#524); and what both say to do.
+WORK_DIR_UNWRITABLE = "adopt-work-dir-unwritable"
+WORK_DIR_FIX = ("Pass a --work-dir this user can write in, or none: without "
+                "one, each run makes a new one.")
+
+
+def _unwritable_work_dir(args, work_root: Path) -> str | None:
+    """Why this run cannot build in the `--work-dir` it was given, or None:
+    a directory made in it, and removed again, could not be (#524).
+
+    `_work_root` only makes the directory, and what `execute` builds there,
+    the legs and the split (`BUILT_IN`), it builds only after
+    `_create_leg_remotes` has made both leg repositories. So with a
+    `--work-dir` this user cannot write in (`chmod 500`), `check` said `plan
+    ok`, and `execute` made and pushed both legs and stopped `extracting the
+    spec leg`, exit 2, as on main at 8beb3d92 and bfed143. Each command now
+    asks the directory itself, as `execute` will use it: `execute` refuses
+    it first, before it opens the source (an `org/repo` source is cloned
+    there), and `check` names it beside the plan's findings, so the two
+    agree. The probe has a name of its own (`tempfile.mkdtemp`), so it
+    meets nothing an earlier run left there, and it is removed again.
+
+    Without `--work-dir`, `_work_root` makes a new directory, which this
+    user owns and can write in, and nothing is asked."""
+    if not getattr(args, "work_dir", None):
+        return None
+    try:
+        os.rmdir(tempfile.mkdtemp(prefix="write-probe-", dir=work_root))
+    except OSError as exc:
+        return (f"--work-dir {_spelled(str(work_root))} cannot be written: "
+                "making a directory in it, and removing it again, failed "
+                f"({exc.strerror or exc}), and `execute` builds "
+                f"{_and_listed(list(BUILT_IN.values()))} there, only after "
+                "it has made both leg repositories")
+    return None
+
+
+def _refuse_an_unwritable_work_dir(args, work_root: Path) -> None:
+    """Refuse `_unwritable_work_dir`'s `--work-dir`, before any leg
+    repository exists (#524)."""
+    unwritable = _unwritable_work_dir(args, work_root)
+    if unwritable:
+        raise Refusal(WORK_DIR_UNWRITABLE, unwritable,
+                      "Remediation: no leg repository was created and "
+                      f"nothing was pushed. {WORK_DIR_FIX}")
 
 
 def _why_occupied(built: list[tuple[str, str]], names: dict,
@@ -8186,6 +8295,8 @@ def cmd_execute(args) -> int:
     plan = Plan.load(Path(args.plan))
     _refuse_a_mistyped_plan(plan)
     work_root = _work_root(args)
+    # Before the source is opened, so before any leg exists (#524).
+    _refuse_an_unwritable_work_dir(args, work_root)
     source = plan.open_source(args.source, work_root)
     naming = NamingPolicy.load(NAMING_POLICY)
     _require_filter_repo()
