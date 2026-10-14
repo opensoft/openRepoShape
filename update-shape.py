@@ -35,7 +35,9 @@ recording an identity, so this tool never records one it cannot justify:
     Recomputing that row silently would turn the drift `validate-pins.py`
     reports today into a digest that agrees with the fork — which is exactly
     the "record the fork as the standard" failure `shape-pin.yaml`'s own
-    header forbids.
+    header forbids. `check`'s NEXT line never passes the flag for them
+    (#501): the `apply` it hands over meets that refusal, which is where the
+    human is asked.
   * A file changed on BOTH sides is refused outright, UNLESS the human passes
     `--accept-local <path>` on it too — the same exception `locally-modified`
     gets, above. Two edits to one file is a merge, and a merge is a human's
@@ -85,9 +87,13 @@ ONLY THE PIN'S OWN ROWS ARE CONSIDERED. The set of shape files is read from
 `contracts/shape-pin.yaml`, never re-derived from this repository's copy
 lists. An in-place adoption collides on `Makefile`, `README.md` and
 `.gitignore` — the shape's copies land under `shape/` and a human merges them,
-usually deleting the `shape/` copy and its pin row (MedxEHR did exactly that).
-A file with no row is not a shape copy and is invisible here; re-deriving the
-list would resurrect a file the project deliberately merged away.
+usually deleting the `shape/` copy. Its row then names a file that is not
+there; MedxEHR dropped such rows by hand, which is the hand edit of a pin
+this standard forbids. So `check` calls the row `merged-away` where the root
+holds the file the copy was merged into, and `apply` drops it in its re-pin
+commit (#502). A file with no row is not a shape copy and is invisible here;
+re-deriving the list would resurrect a file the project deliberately merged
+away.
 
 WHAT A PIN CANNOT NAME IS THE FILE THE STANDARD ADDED AFTERWARDS (2026-09-04),
 and "only the pin's own rows are RE-SYNCED" is a different claim from "only the
@@ -270,6 +276,15 @@ UPSTREAM_ADDED = "upstream-added"
 LOCALLY_MODIFIED = "locally-modified"
 BOTH = "both"
 ALREADY_AT_TARGET = "already-at-target"
+#: A `shape/` collision copy the project merged into the file it collided
+#: with, and removed (#502): the root holds `X` and nothing at `shape/X`. Its
+#: row is the one thing left of it, and `apply` DROPS that row in its re-pin
+#: commit, behind the same yes as every other row it moves. Named for the
+#: act the adoption's own follow-up asks for ("merge shape/X into X"), and
+#: spelled as the other states are, so a person reading `check` reads what
+#: happened to the copy rather than what is missing. Not a conflict: there
+#: is nothing to merge and no bytes to keep, so nothing here refuses it.
+MERGED_AWAY = "merged-away"
 UPSTREAM_REMOVED = "upstream-removed"
 UNMAPPED = "unmapped"
 COPY_MISSING = "copy-missing"
@@ -284,6 +299,7 @@ COPY_IS_LINK = "copy-is-link"
 #: Anything here is a merge or a decision, never a byte copy.
 CONFLICTS = (BOTH, UPSTREAM_REMOVED, UNMAPPED, COPY_MISSING, COPY_IS_LINK)
 ORDER = (UPSTREAM_CHANGED, UPSTREAM_ADDED, BOTH, LOCALLY_MODIFIED,
+         MERGED_AWAY,
          ALREADY_AT_TARGET, UPSTREAM_REMOVED, UNMAPPED, COPY_MISSING,
          COPY_IS_LINK, UNCHANGED)
 
@@ -566,6 +582,36 @@ def source_for(rel: str, upstream: Upstream, rev: str,
     return known or None
 
 
+def merged_into(root: Path, rel: str) -> str | None:
+    """The file a pinned `shape/` collision copy was merged into, or None
+    when `rel` is not a merged-away copy (#502).
+
+    THREE FACTS, ALL READ FROM THE ROOT, AND ALL THREE HAVE TO HOLD. `rel`
+    lies under `COLLISION_DIR`, where only an in-place adoption puts a shape
+    copy, and only because the source already used its name; the root holds
+    NOTHING at `rel`, not even a dangling link (`lexists`: a FIFO or a
+    directory there is something, so either stays `copy-missing`); and the root
+    holds a FILE at the path the copy was cut for, `shape/X` -> `X`, which
+    is what the adoption's follow-up said to merge it into. Where `X` is
+    gone too, nothing says a merge happened, and the row stays
+    `copy-missing` with its own refusal, as does a pinned copy deleted
+    anywhere else.
+
+    WHAT MERGING MEANS IS NOT JUDGED. The row is dropped and nothing is
+    copied, so no byte of `X` is compared with the shape's: the follow-up is
+    the person's, and `X` was never a shape copy of this pin. Read by
+    `classify` and by the doctor's `pins` row, so the two cannot disagree
+    about which rows go.
+    """
+    prefix = f"{COLLISION_DIR}/"
+    if not rel.startswith(prefix):
+        return None
+    original = rel[len(prefix):]
+    if not original or os.path.lexists(root / rel):
+        return None
+    return original if (root / original).is_file() else None
+
+
 def classify(root: Path, rows: list[Row], upstream: Upstream, pinned: str,
              target: str, kind: Kind = PROJECT_KIND) -> None:
     """Fill in every row's verdict. Four byte-strings decide it:
@@ -580,8 +626,19 @@ def classify(root: Path, rows: list[Row], upstream: Upstream, pinned: str,
     as an upstream change merely for being appended to. `locally-modified` is
     sha256(R) != D, which is the same question `validate-pins.py` asks and the
     same answer it gives.
+
+    A MERGED-AWAY `shape/` COPY IS ASKED ABOUT FIRST (#502), because none of
+    the four is there to decide it: R is absent and the row is going, so the
+    upstream is not read for it. `merged_into` says which rows those are.
     """
     for row in rows:
+        original = merged_into(root, row.path)
+        if original is not None:
+            row.state = MERGED_AWAY
+            row.detail = (f"merged into {original} and removed; `apply` "
+                          "drops this pin row in its re-pin commit and "
+                          "copies nothing")
+            continue
         _classify_row(root, row, upstream, pinned, target, kind)
 
 
@@ -1795,6 +1852,23 @@ def accept_local_exit(path: str) -> str:
             f"{path}` so the row is recomputed from what you merged")
 
 
+def keep_local_exits(path: str) -> str:
+    """The sentence `check` appends to a `locally-modified` row's detail: the
+    three exits `update-local-drift` names, the human's word first (#501).
+
+    THE FLAG IS NAMED HERE, WHERE NO PASTE REACHES IT. `check`'s NEXT line
+    carried `--accept-local <path>` for every such row, beside `--yes`, so
+    the `apply` it handed over re-pinned the project's edit as the standard
+    and the refusal that asks the human never fired. Brett Heap ruled on
+    2026-10-13, "Stop pre-filling it": the NEXT leaves the flag out, and the
+    row's detail may still name it, as `accept_local_exit` does for `both`.
+    Display only, for the reason that function gives.
+    """
+    return (". Whether the project keeps the edit is the human's decision: "
+            "revert it, carry it upstream, or, on their word, `apply "
+            f"--accept-local {path}`")
+
+
 def report(root: Path, upstream: Upstream, pinned: str, target: str,
            pin_tree: str, target_tree: str, rows: list[Row]) -> None:
     print(f"root        {root}")
@@ -1812,6 +1886,8 @@ def report(root: Path, upstream: Upstream, pinned: str, target: str,
             detail = row.detail
             if row.state == BOTH and detail:
                 detail += accept_local_exit(row.path)
+            elif row.state == LOCALLY_MODIFIED and detail:
+                detail += keep_local_exits(row.path)
             line = f"  {state:<{width}}  {row.path}"
             if detail:
                 line += f"\n  {'':<{width}}  ({detail})"
@@ -1860,8 +1936,7 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
     return root, pin, rows, additions, upstream, pinned, target, kind
 
 
-def apply_command(root: Path, label: str, target: str,
-                  accept: list[str] = ()) -> str:
+def apply_command(root: Path, label: str, target: str) -> str:
     """The `apply` that `check`'s NEXT line hands a person to paste: this
     tool run again from the checkout of the standard, pointed at `root`.
 
@@ -1870,11 +1945,20 @@ def apply_command(root: Path, label: str, target: str,
     `my projects/` or `it's here/` or `$HOME` printed bare was two
     arguments, an unterminated quotation or an expansion in front of whoever
     pasted the line, which `landing_failed`'s and the rollback's lines were
-    already quoted against (#202, #204). So is each `--accept-local` path,
-    which comes out of the project's own pin, and the branch. `shlex.join`
+    already quoted against (#202, #204). So is the branch. `shlex.join`
     leaves a value it has nothing to say about exactly as it was, so a plain
     root prints what it always printed. On POSIX: `_by_hand` says what a
     Windows root, which always holds a backslash, prints instead.
+
+    NEVER AN `--accept-local` (#501). The line carried one for every
+    `locally-modified` row, and pasted, it re-pinned the project's edit FROM
+    ITS OWN BYTES: `update-local-drift`, the refusal that asks the human
+    whether the project keeps that edit, never fired, and AGENTS.md tells an
+    assistant both to run the line a row names and never to pass the flag
+    on its own initiative. So the `apply` meets that refusal, whose
+    remediation names the three exits, and `check` names the flag in the
+    row's detail (`keep_local_exits`). The `--yes` stays: it is the yes the
+    human gives after reading `check`, which the line follows.
 
     THE LANE, WHEN THE ENVIRONMENT NAMES ONE (2026-09-11, #111). A run that
     pastes this line then lands a commit carrying the `Lane:` trailer the
@@ -1891,10 +1975,8 @@ def apply_command(root: Path, label: str, target: str,
     currency` row has always printed it in.
     """
     words = [PYTHON, Path(__file__).name, "apply", "--root", str(root),
-             "--upstream", label, "--at", target, "--yes"]
-    for path in accept:
-        words += ["--accept-local", path]
-    words += ["--branch", f"shape/update-{target[:12]}"]
+             "--upstream", label, "--at", target, "--yes",
+             "--branch", f"shape/update-{target[:12]}"]
     return shlex.join(words) + lane_trailer_argument(shlex.quote)
 
 
@@ -1947,7 +2029,6 @@ def cmd_check(args) -> int:
                      else f"the pin and {README}'s Shape: line")
             print(f"no copied file differs; `apply` would move {alone}")
         conflicts = [row for row in rows if row.is_conflict]
-        local = [row for row in rows if row.state == LOCALLY_MODIFIED]
         if conflicts:
             print("REFUSAL AHEAD: `apply` will refuse while these are "
                   "unresolved — " + ", ".join(row.path for row in conflicts))
@@ -1964,9 +2045,9 @@ def cmd_check(args) -> int:
                   "pin, and `apply` writes none of them unless it is told to, "
                   "one path at a time — "
                   + " ".join(f"--add {add.path}" for add in offered))
-        # QUOTED WHOLE, THE LANE'S TRAILER INCLUDED: see `apply_command`.
-        print("NEXT  " + apply_command(
-            root, upstream.label, target, [row.path for row in local]))
+        # QUOTED WHOLE, THE LANE'S TRAILER INCLUDED, AND NEVER AN
+        # `--accept-local` (#501): see `apply_command`.
+        print("NEXT  " + apply_command(root, upstream.label, target))
         return 1
     finally:
         upstream.close()
@@ -1992,8 +2073,13 @@ def confirm(args, rows: list[Row], taking: list[Addition],
             "they have read `check`.")
     changed = [row.path for row in rows if row.state == UPSTREAM_CHANGED]
     adding = (f", adds the {len(taking)} file(s) --add named" if taking else "")
+    # THE SAME YES COVERS A DROPPED ROW (#502): it is a row this re-pin
+    # moves, like any other, so it is said here before anybody answers.
+    merged = [row.path for row in rows if row.state == MERGED_AWAY]
+    dropping = (f", drops the pin row(s) of {', '.join(merged)} (merged "
+                "away)" if merged else "")
     print(f"\nThis re-copies {len(changed)} file(s) from {target[:12]}"
-          f"{adding} and re-pins this project onto it.")
+          f"{adding}{dropping} and re-pins this project onto it.")
     try:
         answered = input("Type yes to proceed: ").strip().lower()
     except EOFError:
@@ -2158,7 +2244,7 @@ def pull_request_repository(manifest: dict | None,
 def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
                      upstream: Upstream, count: int, kind: Kind,
                      added: list[str] = (), trailers: list[str] = (), *,
-                     ledger: Rollback) -> None:
+                     ledger: Rollback, dropped: list[str] = ()) -> None:
     """A branch and ONE commit, with EXPLICIT PATHSPECS.
 
     `git commit -- <paths>` commits the working-tree state of exactly those
@@ -2247,6 +2333,11 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     ledger.step = f"committing the re-synced shape on {branch}"
     gained = (f"; {len(added)} new upstream file(s) added because --add named "
               "them" if added else "")
+    # `dropped` ARE THE MERGED-AWAY ROWS (#502): a pin change no copied byte
+    # explains, so the message says which rows went and why.
+    if dropped:
+        gained += (f"; the pin row(s) of {', '.join(dropped)} dropped, each "
+                   "a collision copy merged into the file it collided with")
     # READ OFF THE PATHSPECS RATHER THAN PASSED IN: `README.md` is in `paths`
     # only when `_rewrite_readme` moved its sha, so the message names the one
     # file in this commit that carries no pin row and would otherwise read as
@@ -2791,6 +2882,10 @@ def _refuse_linked_copies(rows: list[Row]) -> None:
 def _refuse_conflicts(rows: list[Row], accepted: set) -> None:
     """The `update-conflict` refusal, split out of `cmd_apply` for #133.
 
+    ITS REMEDIATION IS `conflict_remediation`'s, per kind of row (#502): a
+    `copy-missing` row was told to re-run with `--accept-local`, which this
+    function never honours for it, so the re-run printed the same refusal.
+
     `both` ALONE has an accepted exit: `--accept-local <path>` on it means the
     human already did the merge this refusal asks for, so that row is excluded
     here and handled with LOCALLY_MODIFIED further down — never copied over,
@@ -2811,10 +2906,65 @@ def _refuse_conflicts(rows: list[Row], accepted: set) -> None:
             "a merge is a human's judgement rather than a byte copy:\n"
             + "\n".join(f"    {row.path}: {row.detail or row.state}"
                         for row in conflicts),
-            "Remediation: merge each one by hand (the upstream bytes are "
-            "`git show <target>:<source path>` in a shape clone), commit "
-            "it, then re-run this with --accept-local on that path so the "
-            "row is recomputed from what you merged.")
+            conflict_remediation(conflicts))
+
+
+#: What `update-conflict` tells a row it can name a merge for: `both`, and
+#: the two states that cannot be compared. The words it always printed, so a
+#: refusal naming no `copy-missing` row reads exactly as it did.
+MERGE_BY_HAND = (
+    "merge each one by hand (the upstream bytes are `git show "
+    "<target>:<source path>` in a shape clone), commit it, then re-run this "
+    "with --accept-local on that path so the row is recomputed from what "
+    "you merged.")
+
+
+def conflict_remediation(conflicts: list[Row]) -> str:
+    """`update-conflict`'s remediation, a sentence per kind of row it names
+    (#502).
+
+    A `copy-missing` ROW HAS AN EXIT OF ITS OWN, AND IT IS NOT
+    `--accept-local`. The one remediation this refusal had told every row to
+    merge by hand and re-run with that flag, which `_refuse_conflicts`
+    honours on a `both` row alone, so for a pinned copy the root no longer
+    holds the re-run printed the same refusal. Such a copy has no bytes for
+    the flag to keep, and this command never records the deletion of a copy
+    the project still needs -- the only rows it drops are merged-away
+    copies', below -- so the copy goes back from the project's own history.
+    WHERE IN THAT HISTORY DEPENDS ON WHETHER THE DELETION WAS COMMITTED
+    (review of PR #512): an `rm` or `git rm` not yet committed leaves the
+    copy in HEAD, and `git checkout HEAD -- <path>` puts it back, as the
+    doctor's own line for a lost `repo_shape.py` does; a committed one is in
+    the parent of the commit that removed it, which `git log -1 -- <path>`
+    names. Naming the parent alone sent the common case -- an `rm`, then
+    `apply` -- to a removing commit that does not exist, and that `git log`
+    names the commit that ADDED the copy instead. A `shape/` copy merged
+    into the file it collided with does not reach here while that file is
+    at the root: `classify` calls it `merged-away`, and `apply` drops its
+    row. The sentence says so, because a person who removed the copy
+    without the merge reads it here.
+
+    The other three states keep `MERGE_BY_HAND`, after it where a
+    `copy-missing` row is named too.
+    """
+    missing = [row.path for row in conflicts if row.state == COPY_MISSING]
+    if not missing:
+        return f"Remediation: {MERGE_BY_HAND}"
+    verb = "is" if len(missing) == 1 else "are"
+    said = (f"Remediation: {', '.join(missing)} {verb} pinned and gone from "
+            "the root, so --accept-local has no bytes to keep, and this "
+            "command never records the deletion of a copy the project "
+            "still needs. Put each copy back from this project's own "
+            "history: a deletion not yet committed comes back with "
+            "`git checkout HEAD -- <path>` in the project, and a committed "
+            "one from the parent of the commit that removed it, which "
+            "`git log -1 -- <path>` names. Then run this again. A `shape/` "
+            "copy merged into the file it collided with is not refused: "
+            "with that file at the root, `check` reports it merged-away and "
+            "`apply` drops its row.")
+    if len(missing) < len(conflicts):
+        said += f" For the others, {MERGE_BY_HAND}"
+    return said
 
 
 def _refuse_local_drift(rows: list[Row], accepted: set) -> None:
@@ -2892,6 +3042,12 @@ def _write_copies(root: Path, rows: list[Row], taking: list[Addition],
         elif row.state == ALREADY_AT_TARGET:
             print(f"  kept     {row.path} (already the target's bytes; "
                   "the row was stale)")
+        elif row.state == MERGED_AWAY:
+            # NOTHING IS WRITTEN AT ITS PATH (#502): `_repin` leaves its row
+            # out of the pin, and that is the whole of what dropping it is.
+            original = row.path[len(COLLISION_DIR) + 1:]
+            print(f"  dropped  {row.path} (merged into {original} and "
+                  "removed; its pin row goes, and nothing is copied)")
     for add in taking:
         ledger.write_added(root / add.path, add.target_bytes or b"",
                            add.executable)
@@ -2907,11 +3063,17 @@ def _repin(root: Path, kind: Kind, ledger: Rollback, rows: list[Row],
     target, through the ledger so both roll back. Split out of `cmd_apply`
     for #133; the two rewriters are where the refusals about an unrecognised
     pin or manifest live.
+
+    A MERGED-AWAY ROW IS LEFT OUT OF THE PIN (#502), in this same rewrite and
+    behind the same yes: the row names a copy the project merged into the
+    file it collided with and removed, and Brett Heap ruled that its pin row
+    goes. Every other row is written as `classify` left it.
     """
     pin_path = root / "contracts" / "shape-pin.yaml"
     manifest_path = root / kind.manifest
+    kept = [row for row in rows if row.state != MERGED_AWAY]
     ledger.write(pin_path, rewrite_shape_pin(
-        pin_path.read_text(encoding="utf-8"), target, target_tree, rows
+        pin_path.read_text(encoding="utf-8"), target, target_tree, kept
     ).encode("utf-8"))
     ledger.write(manifest_path, rewrite_manifest(
         manifest_path.read_text(encoding="utf-8"), target, target_tree, kind
@@ -3002,10 +3164,11 @@ def _refuse_red_validators(root: Path, kind: Kind) -> None:
 
 def _land(root: Path, args, paths: list[str], added: list[str], target: str,
           upstream: Upstream, kind: Kind, count: int,
-          ledger: Rollback) -> None:
+          ledger: Rollback, dropped: list[str] = ()) -> None:
     """The three optional acts after a clean rewrite — commit, push, open a
     pull request — each done only because a flag asked for it. Split out of
-    `cmd_apply` for #133.
+    `cmd_apply` for #133. `dropped` names the merged-away rows the re-pin
+    left out (#502), for the commit message.
 
     Nested the way the flags are: `--push` and `--pr` have nothing to act on
     without `--branch`, which `main` refuses before this is ever reached.
@@ -3024,7 +3187,8 @@ def _land(root: Path, args, paths: list[str], added: list[str], target: str,
     create = (pull_request_line(root, args, target, upstream, kind)
               if args.push or args.pr else [])
     commit_on_branch(root, args.branch, paths, target, upstream,
-                     count, kind, added, args.trailer, ledger=ledger)
+                     count, kind, added, args.trailer, ledger=ledger,
+                     dropped=dropped)
     print(f"\n  committed on {args.branch}: " + ", ".join(paths))
     if args.push:
         push_branch(root, args, create)
@@ -3082,11 +3246,16 @@ def cmd_apply(args) -> int:
         paths = sorted({row.path for row in copied} | set(added)
                        | {SHAPE_PIN, kind.manifest}
                        | ({README} if readme.rewritten else set()))
+        # A DROPPED ROW IS NOT A PINNED PATH ANY MORE (#502): the pin this
+        # run wrote has no row for it, so it is neither said in the commit
+        # as re-copied nor asked about as a copy the commit leaves out.
+        dropped = [row.path for row in rows if row.state == MERGED_AWAY]
         _land(root, args, paths, added, target, upstream, kind, len(copied),
-              ledger)
+              ledger, dropped)
         print()
         next_line(root, args, paths, target, added, kind,
-                  pinned_paths=[row.path for row in rows])
+                  pinned_paths=[row.path for row in rows
+                                if row.state != MERGED_AWAY])
         return 0
     except (Refusal, CommandFailed) as exc:
         return _rolled_back(exc, ledger)
@@ -3385,11 +3554,14 @@ def _refuse_writes_through_a_link(root: Path, rows: list[Row], kind: Kind,
     nothing new about it. The name is the rewrite twin of `--add`'s
     `update-add-symlink` (#239), for a file this run overwrites rather than
     creates. Without `--branch` nothing is committed, and a write through
-    a link is made as on main (#286).
+    a link is made as on main (#286). A `merged-away` row is not asked
+    about either (#502): its row is dropped, and nothing is read or written
+    at its path.
     """
     pin = "contracts/shape-pin.yaml"
     paths = [pin, kind.manifest] + [row.path for row in rows
-                                    if row.state != UNCHANGED]
+                                    if row.state not in (UNCHANGED,
+                                                         MERGED_AWAY)]
     linked = []
     for path in paths:
         link = symlink_on_the_way(root, path)

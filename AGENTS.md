@@ -115,13 +115,13 @@ scripts/bootstrap.py`. README's "What setup.sh does" carries the exact commands.
 ## Adopting an existing repository
 
 `adopt-project.py` converts a repository that already exists, IN PLACE: it keeps
-its name, its identity and its full history and becomes the assembly root, and
-the two legs are new repositories extracted with `git filter-repo` (a hard
-dependency: `execute` refuses without it, printing the install command). Seven
-steps, in order, and step 4 is the one you must not skip.
+its name, which `--project` must be, its identity and its full history and
+becomes the assembly root, and the two legs are new repositories extracted with
+`git filter-repo` (a hard dependency: `execute` refuses without it, printing the
+install command). Seven steps, in order, and step 4 is the one you must not skip.
 
 ```sh
-./adopt-project.py plan --source <org/repo|path> --project <Project>
+./adopt-project.py plan --source <org/repo|path> --project <its own name>
 # 2. answer every `review_required: true` entry IN THE PLAN
 ./adopt-project.py check --plan adoption-plan.yaml
 # 4. show the human the plan and the follow-ups; get an explicit yes
@@ -167,7 +167,7 @@ history, not an empty repository. `plan` and `check` both WARN; `check` still
 passes, because a spec-only repository is a legitimate thing to adopt.
 
 ```sh
-./adopt-project.py plan --source <org>/<Repo> --project <Project> \
+./adopt-project.py plan --source <org>/<Repo> --project <Repo> \
     --allow-empty-leg code
 ```
 
@@ -215,9 +215,9 @@ no `--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
 in each of them, which is where a repair mode will hang; nothing in it writes
 today. The one exception to "writes nothing" is `--placement-plan <file>`, which
 writes that file and nothing else — see 4. Installed, `openRepoShape --doctor`
-runs from a temporary clone of the standard, deleted on exit, and takes a path
-and nothing else: to ACT on a row (`--json`, `--placement-plan`, its next
-command) run `./shape-doctor.py --root <path>` from a checkout.
+takes `--json` and `--placement-plan <file>` as well, and KEEPS its temporary
+clone of the standard, because the NEXT lines run from it: its last line names
+that directory, which is the human's to delete once those commands have run.
 
 1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
    BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0, 1,
@@ -263,7 +263,7 @@ command) run `./shape-doctor.py --root <path>` from a checkout.
    never changes the verdict: it says whether THIS workstation can run the fixes
    the other rows named. Relay a missing prerequisite; `openRepoShape
    --preflight` offers only the `gh` set-up, and the human types that yes.
-7. `./shape-doctor.py --json` is the same report as one object, each row
+7. `--json` is the same report as one object, alone on stdout, each row
    carrying its `id`, for when you have to act on a row rather than quote it.
 
 ## Updating a project's shape
@@ -283,10 +283,10 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
 
 1. **`check` first, always.** It writes nothing and prints one verdict per
    PINNED file: `unchanged`, `upstream-changed`, `locally-modified` (the project
-   edited its own copy), `both`, `already-at-target`, `upstream-removed`,
-   `unmapped` or `copy-missing`; `apply` refuses the last three. A file with no
-   row in `contracts/shape-pin.yaml` is not a shape copy and is none of your
-   business — an adopted project merged some of them away on purpose.
+   edited its own copy), `both`, `already-at-target`, `merged-away` (a `shape/`
+   copy merged into its own file and removed: `apply` drops its row),
+   `upstream-removed`, `unmapped` or `copy-missing`; `apply` refuses the last
+   three. A file with no row is not a shape copy and is none of your business.
 2. **Show the human the verdicts and let them say yes.** Re-pinning records
    which openRepoShape this project is a copy of. Do not pass `--yes` on your
    own initiative.
@@ -294,7 +294,7 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
    locally edited file FROM THE PROJECT'S OWN BYTES, which makes the drift
    `validate-pins.py` reports today invisible. Whether the project keeps its
    edit is the human's decision; the other two exits are to revert it or to
-   carry it upstream.
+   carry it upstream. No `NEXT` line passes it: `apply` refuses, and asks.
 4. **`both` is a merge, and the tool refuses it unless you say `--accept-local
    <path>` too.** Merge by hand, commit, then re-run with `--accept-local
    <path>` on the file you merged — that commit goes on the branch `apply` is
