@@ -863,6 +863,13 @@ def collision_follow_up(intended: str, actual: str,
     the merged copy is removed that row names a file that is not there, and
     the project's own `validate-pins.py` is red until `update-shape.py
     apply` drops it. A rendered file, `README.md` among them, has no row.
+    `.gitattributes`'s follow-up says it too, under the condition its merge
+    already carries: the rest of the copy is merged only if the whole
+    project should check out with LF, so the copy is removed only then
+    (#471). It returned before that sentence, and a person who merged it
+    and removed it was told nothing of the row `check` then reports. The
+    follow-up for a `.gitattributes` that is a symlink does not say it: it
+    never sends anyone to merge or remove the copy, which stays, pinned.
     """
     if intended == ATTRIBUTES and attributes_link:
         return _attributes_link_follow_up(intended, actual, beside)
@@ -878,7 +885,9 @@ def collision_follow_up(intended: str, actual: str,
             "contracts/shape-pin.yaml records; without it a Windows clone "
             "reports shape-copy-drift on each one. None of the source's own "
             f"lines is changed. Merge the rest of {actual} into {intended} "
-            "only if the whole project should check out with LF")
+            "only if the whole project should check out with LF, and only "
+            f"then remove {actual}: `update-shape.py check` reports its pin "
+            "row `merged-away`, and `apply` drops the row")
     if intended in ASSISTANT_INSTRUCTIONS:
         return (
             f"add the line `{SHAPE_POINTER_LINE}` to the existing {intended} "
