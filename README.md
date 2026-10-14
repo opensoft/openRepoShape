@@ -769,7 +769,7 @@ the ten identical assistant stubs stay at the root because an assistant reading
 `CLAUDE.md` from inside the code leg would be told about specifications it
 cannot see.
 
-### Ambiguous is an answer, and nothing is overwritten
+### Ambiguous is an answer, and no source line is overwritten
 
 `contracts/path-classification.yaml` maps path globs to `spec | code | root |
 ambiguous`, first match wins, each with a reason. The fourth class is not a
@@ -778,13 +778,13 @@ about half the time and silent about it. Those entries get `leg: null`,
 `review_required: true` and the QUESTION; `execute` refuses while any remain,
 because an unanswered question is never an implicit `root`.
 
-A shape file whose name the source already holds — `README.md`, `Makefile`,
-`.gitignore` — is written under `shape/` and the collision becomes a follow-up
-for a human to merge. Then `execute` VERIFIES: every source path at the source
-commit is in exactly one of {spec leg, code leg, root tree after the split}
-**by blob sha**, or listed as `drop`. Counting paths would pass a split that
-truncated a file; blob shas cannot, and a path in two places is as much a
-finding as a path in none.
+A shape file whose name the source already holds — `README.md`, `Makefile` — is
+written under `shape/` as a follow-up to merge, and a kept root `.gitattributes`
+gets a block of `/<copy> text eol=lf` lines appended. Then `execute` VERIFIES:
+every source path at the source commit is in exactly one of {spec leg, code leg,
+root tree} **by blob sha** (that file as the source's bytes plus the block), or
+as `drop`. Counting paths would pass a split that truncated a file; blob shas
+cannot, and a path in two places is as much a finding as a path in none.
 
 An empty repository is not a live one: `scaffold-project.py --reuse-empty-repo`
 uses a zero-commit `<org>/<Project>` as the assembly root, and refuses one with
@@ -1006,10 +1006,10 @@ with the exit named (carry it upstream; do not update the digest).
 
 **Why `.gitattributes` is one of the copies.** The pin digests the bytes ON
 DISK, and Git for Windows' installer default is `core.autocrlf=true` — so
-without this file a colleague who did nothing but clone the finished project
-gets CRLF in the worktree, and every pinned row is false for them alone.
-`* text=auto eol=lf` puts the answer in the project, where the digests are, so
-no clone-time setting is needed on any machine (#51, 2026-09-05).
+without this file a colleague who just clones the project gets CRLF in the
+worktree, and every pinned row is false for them alone. `* text=auto eol=lf` (or
+the block appended to an adopted root's own file, #471) puts the answer where
+the digests are, so no clone-time setting is needed (#51, 2026-09-05).
 
 **Why an agent file is one of the copies.** An agent working in a project
 learns the shape's rules — advance a leg in ONE commit, never edit a pinned
@@ -1075,17 +1075,17 @@ assumed.** A pin can only record what existed the day it was written, so
 `AGENTS-shape.md` — added to both root templates after MedxEHR, MedxGlass,
 MedxScribe and the InkRouter members were cut — reached none of them. `check`
 therefore also reports **`upstream-added`**: a path the UPSTREAM's copy lists
-name AT THE TARGET COMMIT (read out of that commit's own
-`shape_materialize.py`, so the answer is the target's lists and not this
-checkout's) that the pin has no row for and the root has no file at. It counts
-as something to do, so `check` still exits 1. `apply` writes NONE of them
-unless `--add <path>` names one, per file: `apply --at <commit> --yes --add
-AGENTS-shape.md` copies it, chmods it if the materializer would, appends its
-`sha256` row and moves the pin, all inside the same transaction and rolled back
-whole if a validator goes red. Without `--add` it says `not added; pass --add
-<path>` and re-pins the rest. `--add` refuses a path that is already pinned,
-one the target's lists do not name — and one the root ALREADY has a file at,
-because two files with one name is a merge and this command copies bytes. A
+name AT THE TARGET COMMIT (read out of that commit's own `shape_materialize.py`,
+so the answer is the target's lists and not this checkout's) that the pin has no
+row for and the root has no file at. It counts as something to do, so `check`
+still exits 1. `apply` writes NONE of them unless `--add <path>` names one, per
+file: `apply --at <commit> --yes --add AGENTS-shape.md` copies it, chmods it if
+the materializer would, names it in a root `.gitattributes` block of #471,
+appends its `sha256` row and moves the pin, all inside the same transaction and
+rolled back whole if a validator goes red. Without `--add` it says `not added;
+pass --add <path>` and re-pins the rest. `--add` refuses a path that is already
+pinned, one the target's lists do not name — and one the root ALREADY has a file
+at, because two files with one name is a merge and this command copies bytes. A
 project that declines an addition has no way to say so yet: it will be reported
 by every `check` until it is taken or a file arrives at that path.
 

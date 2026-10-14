@@ -197,6 +197,12 @@ from shape_materialize import (  # noqa: E402
     CASE_ASIDE as _CASE_ASIDE, MOVE_THE_LEG, first_and_more as _first_and_more,
     path_overlap as _overlap, shape_path_collisions,
 )
+# The line-ending block the split appends to a source's own root
+# `.gitattributes` (#471): that file's name, which copies the block names,
+# the line it writes for one, and the bytes it makes of the source's own.
+from shape_materialize import (  # noqa: E402
+    ATTRIBUTES, eol_block_paths, eol_line, with_eol_block,
+)
 # What the project's own `validate-manifest.py` would say of the values written
 # into its manifest, and whether a repository's name can be a directory's:
 # asked of the plan's values by `plan`, `check` and `execute` (#261).
@@ -3324,7 +3330,9 @@ def cmd_plan(args) -> int:
     # the plan as written. A source with no such path plans as it did.
     ruled = walk(policy, [(path, size) for path, _, _, size in tree])
     implied = ask_about_refused_paths(ruled, tree)
-    materialized = _predict_collisions(implied)
+    materialized = _predict_collisions(
+        implied, attributes_link=any(path == ATTRIBUTES and mode == SYMLINK_MODE
+                                     for path, mode, _, _ in tree))
     follow_ups = follow_ups_for(source, implied, names, args.spec_path,
                                 args.code_path, materialized)
     seeded = seeded_legs(assigned_paths(implied))
@@ -3387,7 +3395,8 @@ def _print_summary(entries: list[Entry]) -> None:
               f"{row['byte_share']:>6.1%} of bytes")
 
 
-def _predict_collisions(entries: list[Entry]) -> list[str]:
+def _predict_collisions(entries: list[Entry], *,
+                        attributes_link: bool = False) -> list[str]:
     """Which shape files will not be able to take their own names.
 
     Known BEFORE `execute` runs, because the plan says which paths survive in
@@ -3407,12 +3416,17 @@ def _predict_collisions(entries: list[Entry]) -> list[str]:
     Each follow-up is told the WHOLE list: the Makefile's names what runs
     until it is merged, and that depends on whether `scripts/bootstrap.py`
     went aside too (#493's review, F2).
+
+    `attributes_link` says the source's root `.gitattributes` is a symlink,
+    read from the source tree's mode as `execute` reads it from the index:
+    no block is appended to one, and its follow-up says so (#471).
     """
     surviving = {e.path for e in entries if e.leg == "root"}
     beside = {path: f"{COLLISION_DIR}/{path}"
               for path in sorted(set(assembly_root_paths()))
               if path in surviving or f"{path.split('/')[0]}/" in surviving}
-    return [collision_follow_up(path, actual, beside)
+    return [collision_follow_up(path, actual, beside,
+                                attributes_link=attributes_link)
             for path, actual in beside.items()]
 
 
@@ -8138,11 +8152,17 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
         for intended, actual in materialized.collisions:
             print(f"  beside  {actual} (the source already has {intended}; "
                   "nothing was overwritten)")
+        if materialized.eol_block:
+            print(f"  appended to {ATTRIBUTES}: a `text eol=lf` line for "
+                  f"each of {len(materialized.eol_block)} pinned copies, so "
+                  "every checkout keeps their bytes (#471); none of its own "
+                  "lines was changed")
 
         follow_ups = _plan_follow_ups(plan)
         message = _split_message(names, paths_for, leg_commits, spec_path,
                                  code_path, follow_ups,
-                                 materialized.collisions, seeded)
+                                 materialized.collisions, seeded,
+                                 appended=materialized.eol_block)
         _stage_the_split(assembly, materialized)
         env_commit(assembly, message)
         split_commit = git_out(["rev-parse", "HEAD"], cwd=assembly).lower()
@@ -8534,7 +8554,7 @@ def _template_table(plan: Plan, names, repositories, urls, spec_path,
 
 
 def _split_message(names, paths_for, leg_commits, spec_path, code_path,
-                   follow_ups, collisions, seeded=()) -> str:
+                   follow_ups, collisions, seeded=(), *, appended=()) -> str:
     def none_line(role: str) -> list[str]:
         if role not in seeded:
             return ["  (none)"]
@@ -8573,6 +8593,14 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
                   "first):"]
         lines += [f"  {actual}  <- the shape's {intended}"
                   for intended, actual in collisions]
+    if appended:
+        # The one source file the split writes into (#471): said with every
+        # line it added, so nobody has to diff the file to see what changed.
+        lines += ["", f"APPENDED TO {ATTRIBUTES}, after this repository's own "
+                  "lines, which are unchanged (each pinned copy outside "
+                  f"{COLLISION_DIR}/ checks out with LF, as the pin records "
+                  "it):"]
+        lines += [f"  {eol_line(path)}" for path in appended]
     if follow_ups:
         lines += ["", "FOLLOW-UPS, which this commit does NOT do:"]
         lines += [f"  - {item}" for item in follow_ups]
@@ -8678,6 +8706,8 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
     root_findings = _land_the_root_tree(after, split_tree, before, mounts)
     root_findings += _mount_commit_findings(
         split_tree, mounts, _pushed_commits(work_root, names))
+    block = _land_the_eol_block(assembly, split_commit, split_tree, before,
+                                after)
 
     counts, findings = _account_for(before, after, paths_for["drop"])
     findings += _shape_file_findings(assembly, split_commit)
@@ -8688,7 +8718,72 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
               f"paths{note}")
     print(f"  added  {len(added):>5} new paths (manifest, pins, shape files"
           + (", seeded leg" if seeded else "") + ")")
+    if block:
+        print(f"  root   {ATTRIBUTES} is the source's own bytes, then the "
+              f"shape's block of {block} `text eol=lf` lines (#471)")
     return findings + root_findings
+
+
+def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
+                        before: dict, after: dict) -> int:
+    """Count the source's `.gitattributes` as landed in the root when the
+    root holds its bytes followed by exactly the shape's block; return how
+    many lines that block has, or 0 when there is none to count.
+
+    THE ONE FILE THE SPLIT WRITES INTO (#471, ruled by Brett Heap at
+    2026-10-12T22:48Z), so the one exception to "by blob sha": its blob in the
+    root is not the source's, and without this it was `adopt-lost`. It is
+    allowed exactly one shape, recomputed here rather than trusted from the
+    run that wrote it: the source's bytes, untouched, then
+    `shape_materialize.with_eol_block` over the pinned copies outside
+    `shape/`, read out of the split's own pin. Anything else -- a source line
+    changed, the block short of a copy or holding one too many -- leaves the
+    source's blob in no place, and `_account_for` reports it as before.
+
+    The pin is the shape's: under `shape/` when the source kept its own
+    `contracts/shape-pin.yaml`, which nothing else can put there
+    (`plan-root-blocks-shape-copy`). It is read THROUGH the split's symlinks
+    (`_SplitTree`), as `_shape_file_findings` reads it: a source that keeps
+    `contracts -> meta` in the root has the pin written through the link, and
+    a lookup among the tree's plain files found none, so the appended file
+    was `adopt-lost` where main verified it (#471's review, SHOULD-3). A pin
+    neither can read counts nothing here, and `_shape_file_findings` reports
+    it.
+    """
+    source_oid = before.get(ATTRIBUTES)
+    landed = after.get(ATTRIBUTES, [])
+    root = [where for where in landed if where.startswith("root:")]
+    if source_oid is None or len(root) != 1 \
+            or root[0] == f"root:{source_oid}":
+        return 0
+    blobs = {path: oid for path, mode, oid, _ in tree if mode in FILE_MODES}
+    pin = _pin_through_links(_SplitTree(assembly, split_commit))
+    pinned = _pinned_shape_paths(assembly, pin) if pin else None
+    if pinned is None or blobs.get(ATTRIBUTES) != root[0].split(":", 1)[1]:
+        return 0
+    paths = eol_block_paths(pinned, COLLISION_DIR)
+    expected = with_eol_block(_blob_bytes(assembly, source_oid), paths)
+    if _blob_bytes(assembly, blobs[ATTRIBUTES]) != expected:
+        return 0
+    after[ATTRIBUTES] = [f"root:{source_oid}" if where == root[0] else where
+                         for where in landed]
+    return len(paths)
+
+
+def _pin_through_links(tree: "_SplitTree") -> str | None:
+    """The oid of the shape's pin in the split, under `shape/` first, each
+    path followed through the tree's links; None when neither leads to a
+    file."""
+    for path in (f"{COLLISION_DIR}/{SHAPE_PIN}", SHAPE_PIN):
+        try:
+            return tree.blob_at(path)
+        except _NotInTheSplitError:
+            continue
+    return None
+
+
+def _blob_bytes(repo: Path, oid: str) -> bytes:
+    return git_out([GIT_CAT_FILE, "blob", oid], cwd=repo, binary=True)
 
 
 def _left_by_the_split(source: Source, urls: dict, names: dict,

@@ -41,7 +41,7 @@ What is here:
     swapped after the mount.
 
 Only the end-to-end tests need `git filter-repo`. The verification tests build
-their legs by hand, so the Windows job, which installs none, runs them. Every
+their legs by hand, so a machine that has none still runs them. Every
 repository and remote is local; no network is used, and the operator's
 configuration reaches git through `GIT_CONFIG_GLOBAL`, a file each test
 writes, so nothing here reads or writes the global configuration of whoever

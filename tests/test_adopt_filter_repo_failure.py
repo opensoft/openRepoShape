@@ -16,9 +16,12 @@ below fail the extraction the way `check` can never foresee: a
 The unit tests need no `git filter-repo`: they stub the leg builders, or run
 a real leg builder against a remote that does not exist (the extraction
 skips only the filter itself), and call `_build_the_legs` in this process.
-The stub is a `#!/bin/sh` script, so the tests that put it on PATH skip on
-Windows; the one that then follows the notice into a real adoption needs the
-real tool as well.
+The stub is a `#!/bin/sh` script, and it is GIT that runs it: `git
+filter-repo` launches `git-filter-repo` from PATH, and Git for Windows reads
+a `#!` line itself and runs the script with its own `sh`, so these run on
+Windows too (#471), where a stub `gh` started by `subprocess` cannot. The
+one that then follows the notice into a real adoption needs the real tool as
+well.
 
 NO NETWORK AND NO GITHUB: every remote is a bare repository on disk, or no
 repository at all.
@@ -35,7 +38,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, WINDOWS_SKIP, git, make_source_repo, rmtree,
+from conftest import (ADOPT, git, make_source_repo, rmtree,
                       run_script, spelled, write_plan)
 
 SPEC, CODE = "spec", "code"
@@ -314,8 +317,10 @@ def failing_filter_repo(tmp_path) -> dict:
     `git <command>` looks in git's own exec-path before PATH, so a tool
     installed THERE would shadow the stub and extract for real; the test is
     skipped rather than allowed to pass or fail for that reason. A `#!` line
-    is a POSIX kernel convention, so the tests that use it carry
-    `WINDOWS_SKIP`, as `tests/test_free_plan_hint.py`'s stub `gh` does.
+    is a POSIX kernel convention, but GIT is what starts this stub, and Git
+    for Windows reads the line itself and runs it with its own `sh`; so,
+    unlike `tests/test_free_plan_hint.py`'s stub `gh`, which `subprocess`
+    starts, its tests are not `WINDOWS_SKIP` (#471).
     """
     exec_path = Path(git("--exec-path", cwd=tmp_path).stdout.strip())
     if (exec_path / FILTER_REPO_TOOL).exists():
@@ -347,7 +352,6 @@ def execute(plan: Path, remotes: Path, work: Path, env: dict | None = None):
                       str(work), env=env)
 
 
-@WINDOWS_SKIP
 def test_a_failed_git_filter_repo_names_itself_on_stderr(
         tmp_path, failing_filter_repo):
     """The issue, end to end: `check` passes, both leg remotes are created,
@@ -376,7 +380,6 @@ def test_a_failed_git_filter_repo_names_itself_on_stderr(
     assert "neither leg is pushed" in err
 
 
-@WINDOWS_SKIP
 @needs_filter_repo
 def test_following_the_notice_after_a_failed_leg_ends_adoption_verified(
         tmp_path, failing_filter_repo):
@@ -394,15 +397,20 @@ def test_following_the_notice_after_a_failed_leg_ends_adoption_verified(
                   if line.startswith(ROLLED_BACK))
     named = NAMED.search(notice)
     assert named, notice
-    assert [named["spec"], named["code"]] == [
-        str(remotes / f"{ASSEMBLY}-{role}.git") for role in UNIT_ROLES]
+    # AS THE NOTICE SPELLS THEM (#212): between backticks, a backslash
+    # escaped, so a Windows path reads `D:\\a\\...` there. Compared with
+    # the raw path, this held on POSIX alone, and the Windows run of #471's
+    # probe 2 failed here on the doubled separators, which are the spelling.
+    legs = [remotes / f"{ASSEMBLY}-{role}.git" for role in UNIT_ROLES]
+    assert [f"`{named['spec']}`", f"`{named['code']}`"] == list(
+        map(spelled, legs))
     assert (f"Use a fresh --work-dir as well, or none: {spelled(work)} holds "
             f"{spelled(f'{ASSEMBLY}-{SPEC}')} from this run") in notice
 
     # What it says: delete the two repositories it names, and a fresh
     # --work-dir. The --local-remote-dir is the same one.
-    for role in UNIT_ROLES:
-        rmtree(Path(named[role]))
+    for leg in legs:
+        rmtree(leg)
     rerun = execute(plan, remotes, tmp_path / "fresh work")
 
     assert rerun.returncode == 0, rerun.stderr + rerun.stdout
