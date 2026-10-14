@@ -1416,8 +1416,8 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       <p><code>check</code> prints one verdict per file the pin names, and the verdict is the
       product: <code>unchanged</code>, <code>upstream-changed</code> (the bytes differ between the
       pinned commit and the target), <code>locally-modified</code> (the project&rsquo;s bytes differ
-      from the pinned digest &mdash; drift it introduced), <code>both</code> or
-      <code>already-at-target</code> (the root already holds the target&rsquo;s bytes) &mdash; or,
+      from the pinned digest &mdash; drift it introduced), <code>both</code>,
+      <code>already-at-target</code> (the root already holds the target&rsquo;s bytes) or <code>merged-away</code> (below) &mdash; or,
       where there is nothing to compare, <code>upstream-removed</code> (the standard no longer has
       the file), <code>unmapped</code> (no file there corresponds to it) or
       <code>copy-missing</code> (the root has no such file), each of which <code>apply</code>
@@ -1439,7 +1439,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
         <li><strong>Only the pin&rsquo;s own rows are RE-SYNCED.</strong> The file list is read from
         <code>contracts/shape-pin.yaml</code> and never re-derived from this repository&rsquo;s copy
         lists &mdash; re-deriving it would resurrect a file the project deliberately merged
-        away.</li>
+        away. Once a human merges a <code>shape/</code> copy and removes it, <code>check</code> calls its row <code>merged-away</code> and <code>apply</code> drops the row.</li>
         <li>A file the standard ADDS later is reported as <code>upstream-added</code> and counts as
         something to do. <code>apply</code> writes NONE of them unless <code>--add &lt;path&gt;</code>
         names one, per file; <code>--add</code> refuses a path that is already pinned, one the
@@ -1879,9 +1879,10 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <code>add</code>, <code>bump</code> and <code>remove</code> committing on a branch made first,
       never the tracking branch, and printing the push of it, added (#487); the installed doctor
       keeping its clone of the standard, which its NEXT lines run from, added (#500); an
-      adoption&rsquo;s <code>--project</code> as the source&rsquo;s own name, added (#499) &mdash; a
+      adoption&rsquo;s <code>--project</code> as the source&rsquo;s own name, added (#499); the
+      <code>merged-away</code> verdict, whose row <code>apply</code> drops, added (#502) &mdash; a
       page cannot name the commit that contains it, and the blob below is the fact a test checks.
-      README.md blob 6bf94d583bb15fc6196c1e0c5232281edc723885. Every command, flag, exit code
+      README.md blob ae817c5fdb324ff60440b959a15f3ad3b2a18b43. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>
