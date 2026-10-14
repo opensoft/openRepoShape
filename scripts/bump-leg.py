@@ -27,7 +27,14 @@ unnoticed for a day because the check runs on pull requests only.
 WHAT IT REFUSES, and why each is a refusal rather than a warning:
 
   * `--to` that is not exactly 40 hex. A tag can be moved and a short oid can
-    become ambiguous; a pin is a whole commit or it is nothing.
+    become ambiguous; a pin is a whole commit or it is nothing. A tag NAME is
+    still not taken. An annotated tag's own 40-hex id (what `git rev-parse
+    v2` prints for a release tag) is PEELED to the commit it names, as
+    `family.py add --at` peels one: the tag object names one commit and
+    cannot be moved, so the commit is what is pinned, and the `--dry-run`
+    says so and moves the commit, exactly as the real run does (#534). A
+    tree, a blob or a tag of either is refused `bump-leg-target-not-a-commit`
+    by name, in both runs.
   * a commit the leg's REMOTE does not have. A pin nobody else can fetch is a
     root nobody else can bootstrap.
   * a dirty root. The commit is made with explicit pathspecs, so unrelated
@@ -803,6 +810,81 @@ def object_present(submodule: Path, commit: str) -> bool:
     return proc.returncode == 0
 
 
+def object_kind(submodule: Path, oid: str) -> str | None:
+    """What `oid` IS in the leg's object store (`commit`, `tag`, `tree` or
+    `blob`), or None when the leg does not hold it."""
+    proc = subprocess.run(
+        ["git", "cat-file", "-t", oid], cwd=str(submodule),
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def peeled_target(submodule: Path, repository: str, target: str) -> str:
+    """The COMMIT `--to` names in the leg's own objects (#534): `target`
+    itself for a commit, the commit an annotated tag names, or the refusal
+    saying which of the other kinds it is.
+
+    AN ANNOTATED TAG'S OWN ID IS 40 HEX, and it is what `git rev-parse v2`
+    prints for a release tag, so `COMMIT_RE` passes it. Nothing after that
+    refused it: reachability (`for-each-ref --contains`) and `object_present`
+    (`<id>^{commit}`) both peel a tag, so the `--dry-run` printed the tag's id
+    as the new commit and exited 0; the real run checked the leg out at the
+    commit the tag names, wrote the TAG's id into the pin and the workflow
+    references, was refused by the project's own `validate-pins.py` and
+    rolled back, exit 2. The dry run did not say what the real run does.
+
+    PEELED, as `family.py add --at` peels one. A tag object's id fixes its
+    content, so it names exactly one commit for ever and, unlike a tag NAME,
+    cannot be moved: it is as exact a pin as the commit is. `^{}` peels
+    through a tag of a tag too. The caller goes on with the returned commit,
+    the same in both runs, so the gitlink, `commit:`, the digest and every
+    workflow reference carry the commit and never the tag.
+
+    A TREE OR A BLOB IS NAMED AS ONE, and so is a tag of either. Its id is in
+    the leg (`git ls-tree` prints them) so "no branch contains it" would send
+    the human looking for a push that is not missing; refused under the
+    existing `bump-leg-target-not-a-commit`, by both runs.
+
+    ASKED AFTER THE FETCH, which is where `fetch_leg` calls it. A release tag
+    pushed to the leg's remote reaches the leg's object store only through
+    that fetch (git follows a tag that points into the history it brings), so
+    a question asked before it finds nothing and lets the tag's id through to
+    the reachability check. An id the leg does not hold at all is not asked
+    here: it is the reachability verdict's, `bump-leg-commit-not-on-remote`.
+    """
+    kind = object_kind(submodule, target)
+    if kind is None or kind == "commit":
+        return target
+    peeled = ""
+    names = None
+    if kind == "tag":
+        proc = subprocess.run(
+            ["git", "rev-parse", "-q", "--verify", f"{target}^{{}}"],
+            cwd=str(submodule), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=False)
+        peeled = proc.stdout.strip().lower() if proc.returncode == 0 else ""
+        names = object_kind(submodule, peeled) if peeled else None
+        if names == "commit":
+            return peeled
+    if kind != "tag":
+        what = f"names a {kind}"
+    elif names in ("tree", "blob"):
+        what = f"is an annotated tag of a {names}"
+    else:
+        what = "is an annotated tag that names no commit"
+    raise Refusal(
+        "bump-leg-target-not-a-commit",
+        f"--to {target} {what} in the leg ({repository}), not a commit",
+        "Remediation: pass a commit — `git log --format=%H` in the leg lists "
+        "them — or an annotated tag of one, whose own id is peeled to the "
+        "commit it names, as `family.py add --at` peels one. A tree's or a "
+        "blob's id is part of a commit and never one, and a pin is a commit "
+        "or it is nothing.")
+
+
 def on_a_remote_branch(submodule: Path, commit: str) -> bool:
     """Is `commit` reachable from one of this leg's `origin/*` branches?"""
     proc = subprocess.run(
@@ -814,8 +896,27 @@ def on_a_remote_branch(submodule: Path, commit: str) -> bool:
 
 
 def fetch_leg(submodule: Path, repository: str, commit: str,
-              local_remote_dir: Path | None) -> None:
-    """Get `commit` into the leg's object store, and prove the REMOTE has it.
+              local_remote_dir: Path | None) -> str:
+    """Get `commit` into the leg's object store, prove the REMOTE has it, and
+    return the commit to pin.
+
+    THE COMMIT RETURNED IS `commit`, OR THE ONE AN ANNOTATED TAG NAMES (#534).
+    `peeled_target` is asked right after the fetch and before the
+    reachability verdict, so both runs reach the verdict with the same commit
+    and the fetch is made once. A peel is announced by one line, ahead of the
+    `commit` line the caller prints; a tree, a blob or a tag of either is
+    refused there and never reaches the verdict.
+
+    WHAT THE FETCH BRINGS: every branch, and, by git's own rule, an annotated
+    tag that points into the history those branches bring (it is stored as
+    `refs/tags/<name>` in the leg, as any `git fetch` of a branch does). That
+    is how a release tag pushed to the leg's remote reaches the leg, from the
+    `--local-remote-dir` bare repository and from the leg's own `origin`
+    alike. A tag whose commit is on no branch is not brought, and neither is
+    its commit: it is still `bump-leg-commit-not-on-remote`, in both runs.
+    This adds no tags fetch of its own: a ref the person's leg did not have
+    is a new act, and reachability from a tag is a different question from
+    the one asked here.
 
     A pin nobody else can fetch is a root nobody else can bootstrap, so
     "present in this checkout" is not the question — "on the leg's remote" is.
@@ -857,8 +958,13 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
         print(f"  note: `git fetch {remote}` in {submodule.name} exited "
               f"{exc.code}; answering from the remote-tracking refs this "
               "checkout already has", file=sys.stderr)
+    named = commit
+    commit = peeled_target(submodule, repository, named)
+    if commit != named:
+        print(f"--to {named[:12]} is an annotated tag; it names commit "
+              f"{commit[:12]}, which is what is pinned")
     if on_a_remote_branch(submodule, commit):
-        return
+        return commit
     stale = ("" if fetched else
              " The fetch above FAILED, so this was answered from stale "
              "remote-tracking refs; fix the network or the credential and "
@@ -1452,7 +1558,15 @@ def cmd_bump(args) -> int:
 
     print(f"project      {project.display_name} ({project.data.get('id')})")
     print(f"leg          {role:<8} {repository} at {path}/")
-    fetch_leg(submodule, repository, commit, args.local_remote_dir)
+    # THE COMMIT FROM HERE ON IS THE ONE `fetch_leg` RETURNS (#534): `--to`
+    # itself, or the commit an annotated tag's own id names. Both runs take
+    # the same answer before the digest, the report and the dry-run return,
+    # so neither prints or writes the tag's id as a pin. `asked` stays what
+    # was typed, because `_branch_to_bump_from` named its `switch -c` from
+    # that, before the fetch, and the dry run's hint below must name the
+    # branch the real run's refusal names.
+    asked = commit
+    commit = fetch_leg(submodule, repository, commit, args.local_remote_dir)
     digest = tree_digest(submodule, commit)
     pin_rel = f"contracts/{role}-pin.yaml"
     pin_path = _leg_pin_path(root, pin_rel)
@@ -1484,7 +1598,7 @@ def cmd_bump(args) -> int:
             print(f"\nthe real run needs a branch: {root} is on {branch!r}, "
                   "the tracking branch. Create one first with: "
                   + shlex.join(["git", "-C", str(root), "switch", "-c",
-                                f"bump/{role}-{commit[:12]}"]))
+                                f"bump/{role}-{asked[:12]}"]))
         return 0
 
     # ---- the rewrite and the commit, remembered byte for byte so a failure
@@ -1531,7 +1645,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "project.yaml declares")
     parser.add_argument("--to", required=True, metavar="COMMIT",
                         help="the 40-hex commit to move the gitlink, the pin "
-                             "and every workflow reference to, together")
+                             "and every workflow reference to, together (an "
+                             "annotated tag's own 40-hex id is peeled to the "
+                             "commit it names, as `family.py add --at` peels "
+                             "one)")
     parser.add_argument("--trailer", action="append", metavar='"KEY: VALUE"',
                         default=[], type=trailer_line,
                         help="append this `<Key>: <value>` line to the "
