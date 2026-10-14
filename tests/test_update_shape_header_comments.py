@@ -13,11 +13,15 @@ which was false (the manifest has the block) and whose remedy, "add it",
 would have given the manifest a second `shape:` key.
 
 Both headers are now found with the reader's own `_strip_comment`, at column
-0, and the line is written back as it was. TWO LEVELS, as the issue's
-reproduction asks for the second and #380's tests for the first: the rewrites
-called in-process on the text the scaffold renders (no scaffold, no git), and
-`apply` run end to end on a scaffolded project and on a family holder, whose
-`family.yaml` `shape:` block goes through the same function.
+0, and the line is written back as it was. That is the whole claim: the
+reader's rule for a comment, and nothing about how else a key may be spelled
+(a quoted `"files":` or `files :` is not found, as it was not before).
+
+TWO LEVELS, as the issue's reproduction asks for the second and #380's tests
+for the first: the rewrites called in-process on the text the scaffold
+renders (no scaffold, no git), and `apply` run end to end on a scaffolded
+project and on a family holder, whose `family.yaml` `shape:` block goes
+through the same function.
 
 FIXTURES ARE BYTES. A comment is put on a header with `write_bytes` and a
 regular expression that keeps a carriage return where there is one, so no
@@ -161,8 +165,8 @@ def test_a_shape_header_with_a_comment_is_rewritten_and_keeps_it(
         NEW_COMMIT, NEW_TREE)
 
 
-# --- a header that is missing is still refused, and a doubled one is not
-# --- mistaken for it ----------------------------------------------------------
+# --- a header that is missing is still refused, and a doubled one is refused
+# --- by name ---------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("damage", [
@@ -221,27 +225,52 @@ def test_a_manifest_with_no_shape_header_still_names_this_kinds_validator(
     assert validator in caught.value.remediation
 
 
-def test_a_doubled_shape_header_is_refused_by_the_read_back(update_shape):
-    """THE READER DOES NOT REFUSE A DOUBLED `shape:` (it keeps the last), and
-    the header search stops at the first, so the rewrite would move one block
-    while the reader reads the other. `rewrite_fault`'s read-back is what
-    catches it, as `update-manifest-unrecognised`: it was refused this way
-    before #437 and is now, with the header found by `_strip_comment`. A
-    comment on the first header changes none of that."""
+def doubled_manifest() -> str:
+    """A manifest whose `shape:` key is written twice, the second block holding
+    the old values: the reader keeps the LAST block."""
     doubled = (MANIFEST.format(member="e" * 40, commit=OLD_COMMIT,
                                tree=OLD_TREE)
                + f'shape:\n  commit: "{OLD_COMMIT}"\n  digests:\n'
                  f'    tree_sha256: "{OLD_TREE}"\n')
     assert parse_yaml(doubled)["shape"]["commit"] == OLD_COMMIT, (
         "fixture: the reader keeps the last block")
-    commented = doubled.replace("\nshape:\n", "\nshape:  # first\n", 1)
-    assert commented != doubled
-    for text in (doubled, commented):
-        with pytest.raises(Refusal) as caught:
-            update_shape.rewrite_manifest(
-                text, NEW_COMMIT, NEW_TREE, update_shape.PROJECT_KIND)
-        assert caught.value.code == "update-manifest-unrecognised"
-        assert "does not read back to the target" in caught.value.detail
+    return doubled
+
+
+@pytest.mark.parametrize("kind_name", ["PROJECT_KIND", "FAMILY_KIND"])
+@pytest.mark.parametrize("which", ["neither", "first", "last", "both"])
+def test_a_doubled_shape_header_is_refused_by_name_as_a_key_written_twice(
+        update_shape, kind_name, which):
+    """THE READER DOES NOT REFUSE A DOUBLED `shape:` (it keeps the last), and a
+    rewrite of the first block would move a pin nobody reads. It is refused
+    BY NAME, in words that are true of a key written twice, whichever header
+    carries a comment: the read-back's, "this tool's line rewrite", are not.
+    On main a first header with a comment was skipped by the exact match, so
+    that manifest was rewritten at its last block and went through (review of
+    PR #558); it is refused here, as the uncommented one always was."""
+    text = doubled_manifest()
+    first, last = text.index("\nshape:\n"), text.rindex("\nshape:\n")
+    assert first != last
+    if which in ("first", "both"):
+        text = text[:first] + "\nshape:  # first\n" + text[first + 8:]
+    if which in ("last", "both"):
+        last = text.rindex("\nshape:\n")
+        text = text[:last] + "\nshape:  # last\n" + text[last + 8:]
+    assert (text != doubled_manifest()) is (which != "neither")
+
+    with pytest.raises(Refusal) as caught:
+        update_shape.rewrite_manifest(text, NEW_COMMIT, NEW_TREE,
+                                      getattr(update_shape, kind_name))
+
+    kind = getattr(update_shape, kind_name)
+    assert caught.value.code == "update-manifest-unrecognised"
+    assert caught.value.detail.startswith(
+        f"{kind.manifest} holds the `shape:` key twice, at lines 8 and 17, "
+        "where exactly one was expected: the reader keeps the last block")
+    assert "Remediation: delete the extra `shape:` block by hand" in \
+        caught.value.remediation
+    assert "line rewrite" not in (caught.value.detail
+                                  + caught.value.remediation)
 
 
 # --- `apply`, end to end ------------------------------------------------------

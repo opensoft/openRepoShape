@@ -153,8 +153,8 @@ from repo_shape import (  # noqa: E402
 )
 # The reader's own rule for where a comment starts, by its private name on
 # purpose: `shape_materialize` imports it the same way and says why (#380). A
-# block header is found with it, so this tool and the reader agree on which
-# line is `files:` and which is `shape:` (#437).
+# block header is found with it, so a trailing comment is one here wherever it
+# is one to the reader (#437).
 from repo_shape import _strip_comment  # noqa: E402
 from shape_materialize import (  # noqa: E402
     ATTRIBUTES, COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
@@ -1399,14 +1399,17 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
     four spaces was refused as hand-edited and a comment was dropped. The
     `files:` block below them is still written whole, as before.
 
-    THE `files:` HEADER IS FOUND THE WAY THE READER FINDS IT (#437): at column
-    0, once the reader's own `_strip_comment` has dropped a trailing
-    `# comment`. It was `line.rstrip() == "files:"`, so a header that carried
-    a comment, which the reader and both validators accept, was counted as no
-    `files` line and refused as `update-pin-unrecognised`, after `check` had
-    sent the person to this `apply`. The header is written back AS THE LINE
-    WAS, comment and the spacing in front of it included, like the two lines
-    above; only the rows under it are written whole.
+    THE `files:` HEADER IS FOUND WITH THE READER'S RULE FOR A COMMENT (#437):
+    at column 0, once the reader's own `_strip_comment` has dropped a
+    trailing `# comment`. It was `line.rstrip() == "files:"`, so a header
+    that carried a comment, which the reader and both validators accept, was
+    counted as no `files` line and refused as `update-pin-unrecognised`,
+    after `check` had sent the person to this `apply`. That is ALL this
+    claims: a header spelled with a quoted key or a space before the colon
+    is read as the key by the reader and is not found here, as before. The
+    header is written back AS THE LINE WAS, comment and the spacing in front
+    of it included, like the two lines above; only the rows under it are
+    written whole.
 
     WHAT IS RETURNED HAS BEEN READ BACK, as `rewrite_manifest`'s is
     (`shape_materialize.rewrite_fault`): a layout this line rewrite cannot
@@ -1546,18 +1549,37 @@ def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
     block a scaffold writes last. No `shape:` block at all is the one
     refusal, raised here because there is nothing to return.
 
-    THE HEADER IS FOUND THE WAY THE READER FINDS IT (#437): at column 0, once
-    `_strip_comment` has dropped a trailing `# comment`. It was
-    `line.rstrip() == "shape:"`, so `shape:  # mirrors the pin`, which both
-    validators accept, was refused as having NO `shape:` block, and the
+    THE HEADER IS FOUND WITH THE READER'S RULE FOR A COMMENT (#437): at
+    column 0, once `_strip_comment` has dropped a trailing `# comment`. It
+    was `line.rstrip() == "shape:"`, so `shape:  # mirrors the pin`, which
+    both validators accept, was refused as having NO `shape:` block, and the
     remedy, "add it", would have given the manifest a second `shape:` key.
-    The header line itself is never rewritten, so its comment stays.
+    That is ALL this claims: a quoted key or a space before the colon is
+    read as the key by the reader and is not found here, as before. The
+    header line itself is never rewritten, so its comment stays.
+
+    A HEADER THAT APPEARS TWICE IS REFUSED BY NAME (review of PR #558). The
+    reader keeps the last block, so a rewrite of the first would move a pin
+    nobody reads. That was left to `rewrite_fault`'s read-back, whose words
+    blame this tool's line rewrite, which is false of a key written twice.
+    And where the first header carries a comment, the exact match skipped it
+    and rewrote the last block, which is what the reader reads, so such a
+    manifest went through; this finder sees the first header, and would
+    have refused it in those same false words.
     """
-    start = None
-    for index, line in enumerate(lines):
-        if _is_block_header(line, "shape"):
-            start = index
-            break
+    starts = [index for index, line in enumerate(lines)
+              if _is_block_header(line, "shape")]
+    if len(starts) > 1:
+        raise Refusal(
+            "update-manifest-unrecognised",
+            f"{kind.manifest} holds the `shape:` key twice, at lines "
+            + " and ".join(str(index + 1) for index in starts[:2])
+            + ", where exactly one was expected: the reader keeps the last "
+              "block, so this tool will not guess which of them is the "
+              "manifest's",
+            "Remediation: delete the extra `shape:` block by hand (the "
+            "validators read the last one) and run the same command again.")
+    start = starts[0] if starts else None
     if start is None:
         raise Refusal(
             "update-manifest-no-shape",
@@ -3371,7 +3393,7 @@ def _land(root: Path, args, paths: list[str], added: list[str], target: str,
     # person (#535): it is not given the upstream or the accepted paths, and
     # `cmd_apply`'s call to it does not change.
     args.pull_request_words = pull_request_words(upstream.repository, target,
-                                                 accepted)
+                                                 kind.manifest, accepted)
     create = (pull_request_line(root, args, target, upstream, kind, accepted)
               if args.push or args.pr else [])
     commit_on_branch(root, args.branch, paths, target, upstream,
@@ -3903,6 +3925,42 @@ def _pull_requests(answer: str) -> "list[tuple[str, str]] | None":
             for pull in pulls]
 
 
+def _accepted_in_the_pin(root: Path, upstream: Upstream, target: str,
+                         kind: Kind) -> list[str]:
+    """The pinned copies a run that has already committed kept as the
+    project holds them, read back out of the pin it wrote (#535).
+
+    A ROW IS ONE WHEN IT IS TWO THINGS. Its recorded digest is not that of
+    the upstream's file at `target`, so the project's bytes are what the pin
+    names there; and it is not the digest the tracking branch's pin already
+    held for it, so THIS RUN moved it. Without the second, an in-place
+    adoption's `Makefile`, whose row has always recorded the file with the
+    adoption's block appended, would be reported as kept by a flag nobody
+    passed. Where the tracking branch's pin cannot be read (a clone that has
+    never seen `origin/<tracking>`) there is nothing to tell the two apart,
+    and the answer is none: a body that names too few paths is incomplete,
+    one that names a path nobody accepted is false. Sorted, as
+    `_accepted_local` is.
+    """
+    base = tracking_branch_of(load_yaml(root / kind.manifest))
+    landed = _git_answer(root, ["show", f"refs/remotes/origin/{base}:"
+                                f"{SHAPE_PIN}"])
+    try:
+        held = {str(row["path"]): str(row["sha256"]).lower()
+                for row in parse_yaml(landed or "")["files"]}
+    except (YamlError, KeyError, TypeError):
+        return []
+    _, rows = read_pin(root)
+    kept = []
+    for row in rows:
+        source = source_for(row.path, upstream, target, kind)
+        blob = upstream.blob(target, source) if source else None
+        if (blob is not None and file_bytes_sha256(blob) != row.recorded
+                and held.get(row.path, row.recorded) != row.recorded):
+            kept.append(row.path)
+    return sorted(kept)
+
+
 def _finish_landing(root: Path, args, upstream: Upstream, target: str,
                     kind: Kind) -> int:
     """The re-run `_awaits_its_pull_request` recognised: nothing to write,
@@ -3915,13 +3973,20 @@ def _finish_landing(root: Path, args, upstream: Upstream, target: str,
     pushed again under `--push` (a no-op when origin has it) and handed to
     `open_pull_request` with the same `gh pr create` the first run built.
     Every failure on the way is `landing_failed`'s, named by its own step.
+
+    THE BODY NAMES WHAT `--accept-local` KEPT, AS THE FIRST RUN'S DID (#535,
+    review of PR #558). This run has no rows that say so, and the flag is not
+    repeated by "the same command" necessarily, so the committed pin is
+    asked (`_accepted_in_the_pin`).
     """
     branch = args.branch
     print(f"nothing to write: every copied file matches {upstream.repository}"
           f" @ {target[:12]}, which the pin on {branch} already names; "
           f"--pr asked for {branch}'s pull request")
     repository, _ = pull_request_target(root, kind)
-    create = pull_request_line(root, args, target, upstream, kind)
+    create = pull_request_line(root, args, target, upstream, kind,
+                               _accepted_in_the_pin(root, upstream, target,
+                                                    kind))
     listing = ["gh", "pr", "list", "--repo", repository, "--head", branch,
                "--state", "all", "--json", "state,url"]
     asking = f"asking gh for {branch}'s pull request"
@@ -3978,22 +4043,34 @@ def accepted_local_said(accepted: list[str]) -> str:
             "project's own bytes, not of the upstream's file.")
 
 
-def pull_request_words(repository: str, target: str,
+def pull_request_words(repository: str, target: str, manifest: str,
                        accepted: list[str] = ()) -> tuple[str, str]:
     """`(title, body)` of the pull request that lands `--branch`: what
     `--pr` opens it with, and what the `gh pr create` the plain `--branch`
     NEXT line hands a person carries (#535). ONE PLACE, so the two cannot
     say different things.
 
+    THE BODY NAMES THE MANIFEST THIS ROOT HAS (#535, review of PR #558):
+    `project.yaml` for a project and `family.yaml` for a holder, as the
+    commit message names `kind.manifest`. It said `project.yaml` of both.
+
     "NOT HAND-EDITED" IS CLAIMED OF THE COPIES RE-COPIED FROM THE UPSTREAM
     ONLY, as the commit message claims it: the body said "No copy was
     hand-edited" of every file, which `--accept-local` makes false of the
     paths it kept, and they are named here when there are any.
+
+    NOR DOES IT SAY ANY COPY WAS RE-COPIED. The opening clause said "the
+    copied shape files were re-copied from the upstream" in every state,
+    which is false for a run whose only change is a row `--accept-local`
+    kept. What the body says of the files is the sentence after it, which is
+    true of none, one or many. A count, as the commit message gives, is left
+    out on purpose: a re-run that only opens the missing pull request does
+    not know it, and opens the very command the first run tried
+    (`_finish_landing`), which the tests hold it to.
     """
     title = f"Re-sync the shape copies to {repository} @ {target[:12]}"
-    body = ("Written by openRepoShape's `update-shape.py`: the copied "
-            "shape files were re-copied from the upstream and "
-            "`contracts/shape-pin.yaml` and `project.yaml` re-pinned onto "
+    body = ("Written by openRepoShape's `update-shape.py`: "
+            f"`contracts/shape-pin.yaml` and `{manifest}` re-pinned onto "
             f"{target}. No copy re-copied from the upstream was hand-edited "
             "and every digest was recomputed."
             + (f" {accepted_local_said(accepted)}" if accepted else ""))
@@ -4015,7 +4092,8 @@ def pull_request_line(root: Path, args, target: str, upstream: Upstream,
     than refusing: nothing is opened, so nothing is wrong yet, and the
     `<org>/<Project>` placeholder `next_line` prints would be one literal
     argument in a line quoted to be pasted as an argv."""
-    title, body = pull_request_words(upstream.repository, target, accepted)
+    title, body = pull_request_words(upstream.repository, target,
+                                     kind.manifest, accepted)
     if not args.pr:
         manifest = load_yaml(root / kind.manifest)
         repository, _ = pull_request_repository(manifest, kind)
@@ -4064,6 +4142,15 @@ def _unwritten_changes(root: Path, paths: list[str],
     return _not_what_head_commits(root, rest)
 
 
+def _same_as_head(root: Path, paths: list[str]) -> bool:
+    """Does `git diff --quiet HEAD` find nothing among `paths`: no content,
+    and no file mode, that HEAD does not commit? `--literal-pathspecs`, as
+    the commit line is printed (#202); an answer git does not give is "no"
+    (#535)."""
+    return _git_answer(root, ["--literal-pathspecs", "diff", "--quiet",
+                              "HEAD", "--", *paths]) is not None
+
+
 def _has_head(root: Path) -> bool:
     """Does `root` have a commit HEAD names? A root with none has nothing for
     a commit line to be compared with (#436, #535)."""
@@ -4107,7 +4194,7 @@ def next_line(root: Path, args, paths: list[str], target: str,
         # `_land` kept on `args`; a caller that did not come through it is
         # given the standard's own repository to name.
         title, body = getattr(args, "pull_request_words", None) or \
-            pull_request_words(SHAPE_REPOSITORY, target)
+            pull_request_words(SHAPE_REPOSITORY, target, kind.manifest)
         create = (f"gh pr create{where} --base {base} --head "
                   f"{shlex.quote(args.branch)} --title {shlex.quote(title)} "
                   f"--body {shlex.quote(body)}")
@@ -4144,7 +4231,13 @@ def next_line(root: Path, args, paths: list[str], target: str,
     # content: an `--add` file is not in HEAD, so a run that added one still
     # gets its line. Asked only where HEAD names a commit: a root with none
     # has nothing to compare with, and prints the line it always printed.
-    if _has_head(root) and not _not_what_head_commits(root, paths):
+    #
+    # BY BYTES AND BY MODE (review of PR #558). `_not_what_head_commits`
+    # compares blobs, so a pinned script that `apply` left executable or
+    # not, where HEAD commits the other, would read "nothing to commit" over
+    # a change git does commit. `git diff --quiet HEAD` counts a mode change.
+    if (_has_head(root) and not _not_what_head_commits(root, paths)
+            and _same_as_head(root, paths)):
         print("NEXT  nothing to commit: the working tree now holds what HEAD "
               f"commits at {', '.join(paths)}, so this run left no change to "
               "record")

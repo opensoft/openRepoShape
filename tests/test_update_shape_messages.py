@@ -24,6 +24,7 @@ run, and nothing here says what it does.
 from __future__ import annotations
 
 import importlib.util
+import re
 import shlex
 import shutil
 import sys
@@ -32,13 +33,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import ORG, REPO, git, run_script
+from conftest import ORG, REPO, WINDOWS_SKIP, git, run_script
 from test_commit_trailers import message_of
 from test_update_shape import (CHANGED, CHANGED_SOURCE, LOCAL, PROJECT,
                                UPSTREAM_FIX_LINE, commit_upstream_changes,
-                               next_line_of, scaffold_upstream_and_project)
+                               next_line_of, pin_rows,
+                               scaffold_upstream_and_project)
+from test_update_shape_header_comments import (  # noqa: F401
+    HOLDER, holder_project,
+)
 
 sys.path.insert(0, str(REPO / "scripts"))
+from repo_shape import file_sha256  # noqa: E402
 from shape_materialize import SHAPE_REPOSITORY  # noqa: E402
 
 UPDATE = REPO / "update-shape.py"
@@ -270,17 +276,17 @@ def test_a_path_accept_local_names_but_the_run_re_copied_is_not_called_kept(
     assert "not re-copied" not in message
 
 
-@pytest.fixture
-def gh_calls(update_shape, monkeypatch) -> list:
-    """Every `gh` command the tool tries to run, none of them run: `gh` is
-    answered with a pull request URL and `git` still runs for real."""
+def stub_gh(update_shape, monkeypatch, answer) -> list:
+    """`update_shape.run` with `gh` answered by `answer(command, calls)`, which
+    is never run, and `git` still run for real: a commit under test has to be
+    a real one. Returns the list of every `gh` command the tool tried."""
     real = update_shape.run
     calls: list = []
 
     def run(command, *args, **kwargs):
         if command[0] == "gh":
             calls.append(list(command))
-            return "https://example.invalid/pull/1"
+            return answer(command, calls, update_shape)
         return real(command, *args, **kwargs)
 
     monkeypatch.setattr(update_shape, "run", run)
@@ -293,13 +299,29 @@ def gh_calls(update_shape, monkeypatch) -> list:
     return calls
 
 
+@pytest.fixture
+def gh_calls(update_shape, monkeypatch) -> list:
+    """Every `gh` command the tool tries to run, none of them run: `gh` is
+    answered with a pull request URL."""
+    return stub_gh(update_shape, monkeypatch,
+                   lambda command, calls, module:
+                   "https://example.invalid/pull/1")
+
+
+def apply_in_process(update_shape, root: Path, project: dict, at: str,
+                     branch: str, *extra: str) -> int:
+    """`apply --branch <branch> --pr` run in this process, whose `gh` is a
+    stub; the exit code."""
+    return update_shape.main(["apply", "--root", str(root), "--yes",
+                              "--upstream", str(project["upstream"]), "--at",
+                              project[at], "--branch", branch, "--pr", *extra])
+
+
 def opened_by_pr(update_shape, gh_calls: list, root: Path, project: dict,
                  at: str, branch: str, *extra: str) -> tuple[str, str]:
     """`(title, body)` of the one `gh pr create` `--pr` runs."""
-    code = update_shape.main(["apply", "--root", str(root), "--yes",
-                              "--upstream", str(project["upstream"]), "--at",
-                              project[at], "--branch", branch, "--pr", *extra])
-    assert code == 0
+    assert apply_in_process(update_shape, root, project, at, branch,
+                            *extra) == 0
     assert len(gh_calls) == 1, gh_calls
     command = gh_calls[0]
     assert command[:3] == ["gh", "pr", "create"], command
@@ -315,6 +337,9 @@ def test_the_pull_request_body_claims_not_hand_edited_of_the_re_copied_only(
     assert title == ("Re-sync the shape copies to "
                      f"{SHAPE_REPOSITORY} @ {project['b'][:12]}")
     assert BODY_SAYS in body
+    assert body.startswith("Written by openRepoShape's `update-shape.py`: "
+                           "`contracts/shape-pin.yaml` and `project.yaml` "
+                           "re-pinned onto "), body
     assert "No copy was hand-edited" not in body
     assert "not re-copied" not in body
 
@@ -382,9 +407,11 @@ def test_the_line_after_a_push_carries_the_words_too(update_shape, tmp_path,
         "tracking_branch: main\nlegs:\n  - role: assembly\n"
         "    repository: acme/Atlas\n", encoding="utf-8")
     target = "ab" * 20
-    kept = update_shape.pull_request_words("acme/Shape", target, [LOCAL])
-    for stash, words in ((kept, kept), (None, update_shape.pull_request_words(
-            SHAPE_REPOSITORY, target))):
+    kept = update_shape.pull_request_words("acme/Shape", target, MANIFEST,
+                                           [LOCAL])
+    fallback = update_shape.pull_request_words(SHAPE_REPOSITORY, target,
+                                               MANIFEST)
+    for stash, words in ((kept, kept), (None, fallback)):
         args = SimpleNamespace(branch="shape/x", push=True, pr=False)
         if stash:
             args.pull_request_words = stash
@@ -409,7 +436,8 @@ def test_the_bare_form_a_failed_push_prints_carries_the_words_too(
                                      encoding="utf-8")
     args = SimpleNamespace(branch="shape/x", push=True, pr=False)
     upstream = SimpleNamespace(repository="o/r")
-    title, body = update_shape.pull_request_words("o/r", "cd" * 20, [LOCAL])
+    title, body = update_shape.pull_request_words("o/r", "cd" * 20, MANIFEST,
+                                                  [LOCAL])
 
     create = update_shape.pull_request_line(
         tmp_path, args, "cd" * 20, upstream, update_shape.PROJECT_KIND,
@@ -419,6 +447,142 @@ def test_the_bare_form_a_failed_push_prints_carries_the_words_too(
                       "shape/x", "--title", title, "--body", body]
     assert title == f"Re-sync the shape copies to o/r @ {'cd' * 6}"
     assert LOCAL in body
+
+
+# --- the words are true in every state (review of PR #558) -------------------
+
+
+def test_a_pull_request_that_re_copied_nothing_does_not_say_it_did(
+        update_shape, gh_calls, project, root):
+    """`CHANGED` is the one file upstream changed at B, and this project
+    edited it: its row is `both`, accepted, so NOTHING is re-copied. The body
+    opened with "the copied shape files were re-copied from the upstream" in
+    every state; it claims no copy was re-copied, and names the one kept."""
+    edit(root, CHANGED, commit=True)
+
+    _, body = opened_by_pr(update_shape, gh_calls, root, project, "b",
+                           "shape/update-n3b", "--accept-local", CHANGED)
+
+    assert body.startswith("Written by openRepoShape's `update-shape.py`: "
+                           "`contracts/shape-pin.yaml` and `project.yaml` "
+                           "re-pinned onto "), body
+    assert "shape files were re-copied" not in body
+    assert f" {CHANGED} was not re-copied: " in body
+
+
+def test_a_holders_pull_request_words_name_family_yaml_and_not_project_yaml(
+        update_shape, gh_calls, holder_project, tmp_path):
+    """A holder has a `family.yaml` and no `project.yaml`, and the body said
+    `project.yaml` was re-pinned: in what `--pr` opens the pull request
+    with, in the plain `--branch` NEXT line and in the line a failed
+    `--push` prints. The words are read whole here, never stripped."""
+    printed = tmp_path / "printed" / HOLDER
+    opened = tmp_path / "opened" / HOLDER
+    for holder in (printed, opened):
+        shutil.copytree(holder_project["clone"], holder, symlinks=True)
+
+    result = run_script(UPDATE, "apply", "--root", str(printed), "--yes",
+                        "--upstream", str(holder_project["upstream"]), "--at",
+                        holder_project["b"], "--branch", "shape/update-fam")
+    assert result.returncode == 0, result.stdout + result.stderr
+    argv = create_argv(next_line_of(result.stdout))
+    printed_body = argv[argv.index("--body") + 1]
+    _, opened_body = opened_by_pr(update_shape, gh_calls, opened,
+                                  holder_project, "b", "shape/update-fam")
+
+    assert printed_body == opened_body
+    for body in (printed_body, opened_body):
+        assert ("`contracts/shape-pin.yaml` and `family.yaml` re-pinned onto "
+                f"{holder_project['b']}") in body, body
+        assert "project.yaml" not in body, body
+    args = SimpleNamespace(branch="shape/x", push=True, pr=False)
+    failed_push = update_shape.pull_request_line(
+        opened, args, holder_project["b"],
+        SimpleNamespace(repository=SHAPE_REPOSITORY), update_shape.FAMILY_KIND)
+    assert "`family.yaml` re-pinned" in failed_push[failed_push.index(
+        "--body") + 1]
+    assert "project.yaml" not in " ".join(failed_push)
+
+
+def failing_once(command, calls, module):
+    """`gh`, as a stub: no pull request exists, and the first one it is asked
+    to open fails, as it does when `gh` is not logged in."""
+    if command[:3] == ["gh", "pr", "list"]:
+        return "[]"
+    if sum(1 for each in calls if each[:3] == ["gh", "pr", "create"]) == 1:
+        raise module.CommandFailed(command, None, 1, "stubbed: gh failed")
+    return "https://example.invalid/pull/1"
+
+
+def creations(calls: list) -> list[list[str]]:
+    return [call for call in calls if call[:3] == ["gh", "pr", "create"]]
+
+
+def adopt_the_makefile(root: Path) -> None:
+    """As an in-place adoption leaves it: the project's own `Makefile` carries
+    a block the standard's does not, and the pin's row records THOSE bytes.
+    Committed, so `--branch` takes the run."""
+    makefile = root / "Makefile"
+    makefile.write_bytes(makefile.read_bytes() + b"\n# the adoption's block\n")
+    pin = root / PIN
+    old = pin_rows(root)["Makefile"]
+    text, count = re.subn(old, file_sha256(makefile),
+                          pin.read_bytes().decode("utf-8"), flags=re.I)
+    assert count == 1, "fixture: one row holds that digest"
+    pin.write_bytes(text.encode("utf-8"))
+    git("add", "--", "Makefile", PIN, cwd=root)
+    git("commit", "-q", "-m", "Adopt in place", cwd=root)
+    # ... and landed: the tracking branch the clone has seen holds it too.
+    git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=root)
+
+
+KEPT = (f"{LOCAL} was not re-copied: `--accept-local` kept it as the project "
+        "holds it, so the pin's row for it records a digest of the project's "
+        "own bytes, not of the upstream's file.")
+
+
+@pytest.mark.parametrize("adopted", [False, True],
+                         ids=["plain", "adopted-makefile"])
+def test_the_rerun_that_opens_the_missing_pull_request_names_what_was_kept(
+        update_shape, monkeypatch, project, root, adopted):
+    """THE RE-RUN (`_finish_landing`). The first run commits, and its `gh pr
+    create` fails; `apply --pr` run again has nothing to write and opens the
+    pull request, with no rows to say what `--accept-local` kept. Its body
+    names the same path, read back out of the pin. An in-place adoption's
+    `Makefile` row records bytes the standard's file does not hold and was
+    never accepted: it is not named, and the body says what is true."""
+    calls = stub_gh(update_shape, monkeypatch, failing_once)
+    if adopted:
+        adopt_the_makefile(root)
+    edit(root, LOCAL, commit=True)
+
+    first = apply_in_process(update_shape, root, project, "b",
+                             "shape/update-rerun", "--accept-local", LOCAL)
+    again = apply_in_process(update_shape, root, project, "b",
+                             "shape/update-rerun")
+
+    assert first == 2 and again == 0
+    opened_first, opened_again = [call[call.index("--body") + 1]
+                                  for call in creations(calls)]
+    assert opened_first.endswith(KEPT), opened_first
+    assert opened_again == opened_first, (
+        "the re-run opens the very command the first run tried")
+    assert "Makefile" not in opened_again
+
+
+def test_the_rerun_of_a_run_that_accepted_nothing_names_nothing(
+        update_shape, monkeypatch, project, root):
+    calls = stub_gh(update_shape, monkeypatch, failing_once)
+    adopt_the_makefile(root)
+
+    first = apply_in_process(update_shape, root, project, "b",
+                             "shape/update-rerun-none")
+    again = apply_in_process(update_shape, root, project, "b",
+                             "shape/update-rerun-none")
+
+    assert first == 2 and again == 0
+    body = creations(calls)[1]
+    assert "not re-copied" not in body[body.index("--body") + 1]
 
 
 # --- N1: a commit line with nothing to commit -----------------------------------
@@ -494,6 +658,27 @@ def test_a_root_with_no_commit_gets_the_line_it_always_got(
                             capsys=capsys)
 
     assert out.startswith("NEXT  git -C "), out
+    assert "nothing to commit" not in out
+
+
+@WINDOWS_SKIP
+def test_a_written_path_whose_mode_differs_from_head_still_gets_its_commit_line(
+        update_shape, repository, capsys):
+    """`_not_what_head_commits` compares blobs, which a mode change leaves
+    alone, and git commits the change: the file is HEAD's bytes and not
+    HEAD's mode, so "nothing to commit" would be false (review of PR #558).
+    POSIX only: Windows runs with `core.fileMode=false`."""
+    assert git("config", "core.fileMode", cwd=repository).stdout.strip() \
+        == "true", "fixture: modes are tracked"
+    (repository / PIN).chmod(0o755)
+    assert git("diff", "--name-only", "HEAD", cwd=repository).stdout.split() \
+        == [PIN], "fixture: git sees the mode change"
+
+    out = said_by_next_line(update_shape, repository, [PIN, MANIFEST],
+                            capsys=capsys)
+
+    assert out.startswith("NEXT  git -C "), out
+    assert " commit -m 'Re-sync the shape @ " in out
     assert "nothing to commit" not in out
 
 

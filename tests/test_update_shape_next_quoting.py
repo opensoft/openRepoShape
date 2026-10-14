@@ -169,8 +169,7 @@ def pr_words(project: dict) -> tuple[str, str]:
     `gh pr create` without them has `gh` prompt for them."""
     return (f"Re-sync the shape copies to {SHAPE_REPOSITORY} @ "
             f"{project['b'][:12]}",
-            BODY_OPENS + "the copied shape files were re-copied from the "
-            "upstream and `contracts/shape-pin.yaml` and `project.yaml` "
+            BODY_OPENS + "`contracts/shape-pin.yaml` and `project.yaml` "
             f"re-pinned onto {project['b']}. No copy re-copied from the "
             "upstream was hand-edited and every digest was recomputed.")
 
