@@ -13,9 +13,12 @@ never tried, so a pin put back sat under a manifest left re-pinned.
 
 IN PROCESS, as the issue asks. `Path.write_bytes`, `Path.unlink` or
 `Path.rmdir` is made to raise `PermissionError` for one path, and ONLY while
-`undo` runs: nothing is patched at the write. A file is never `chmod`ed to
-make it fail, which is POSIX-shaped. The rollback is started by the
-project's validators going red (`run_validator` answers 1), or by a git
+`undo` runs: nothing is patched at the write. A file is `chmod`ed to make
+it fail only where the permission is the point — a directory nobody may
+write into, which a checkout's unlink needs — and that test is POSIX-only.
+The rollback is started by the project's validators going red
+(`run_validator` answers 1, and may first do what a validator could: put
+a file back, move it out and link it, give it a second name), or by a git
 command that fails, so the refusal under test is the real one. Each test
 reads the refusal and the tree:
 
@@ -29,7 +32,10 @@ reads the refusal and the tree:
     from the object store, where those bytes were kept; or, when git will
     keep nothing either, a line that says so;
   * a removal that failed is `rm --` or `rmdir --`, the directory above a
-    file that stayed listed after it.
+    file that stayed listed after it;
+  * a path a symlink or a second name reached between the write and the
+    undo is never written or removed through, and is listed, so the block
+    never says the tree is exactly as it was while one is left.
 
 The pastes run where the suite has a POSIX `sh`, or with no shell at all
 where the line is one command. THE FIXTURE is
@@ -498,3 +504,266 @@ def test_the_removal_lines_pasted_leave_the_tree_as_it_was(
     for line in left(refusal.detail):
         subprocess.run(["sh", "-c", line.rsplit(": ", 1)[1]], check=True)
     assert_untouched(before, snapshot(root))
+
+
+# ---------------------------------------------------------------------------
+# Which line, and when (review of PR #560)
+# ---------------------------------------------------------------------------
+
+
+def test_an_index_holding_another_blob_is_never_sent_to_head(
+        update_shape, root, standard, monkeypatch):
+    """`git checkout HEAD -- <path>` writes the index too. With another
+    blob staged at the manifest and the working tree at HEAD's bytes, that
+    checkout would throw the staged entry away, so the line keeps the bytes
+    in the object store instead, and the index is left as it was."""
+    staged = (root / MANIFEST).read_bytes() + b"# somebody's staged draft\n"
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=root,
+                          input=staged, capture_output=True,
+                          check=True).stdout.decode("ascii").strip()
+    git("update-index", "--cacheinfo", f"100644,{blob},{MANIFEST}", cwd=root)
+    index = git("ls-files", "--stage", "--", MANIFEST, cwd=root).stdout
+    validators(monkeypatch, update_shape, 1)
+    failing_in_undo(monkeypatch, update_shape, write=[MANIFEST])
+    bytes_before = held(root)
+
+    refusal = refused_by(update_shape, standard, root, "b")
+    assert_reported_as_red(refusal)
+    lines = left(refusal.detail)
+    assert len(lines) == 1 and "kept as blob" in lines[0], lines
+    assert "checkout" not in lines[0] and "HEAD's bytes" not in lines[0]
+    words = shlex.split(lines[0].split(", then: ", 1)[1])
+    assert subprocess.run(words[:6], capture_output=True,
+                          check=True).stdout == bytes_before[MANIFEST]
+    assert git("ls-files", "--stage", "--", MANIFEST,
+               cwd=root).stdout == index
+
+
+@WINDOWS_SKIP
+def test_a_directory_nobody_may_write_into_gets_the_line_that_writes_in_place(
+        update_shape, root, standard, monkeypatch):
+    """A checkout unlinks the file and creates it again, which a directory
+    nobody may write into refuses however writable the file is made. With
+    `contracts/` at 0555 and the pin at 0444 when the validators go red,
+    the pin's line is the `cat-file` redirect, which writes in place: made
+    writable, as the line says, the pin takes its bytes back with the
+    directory still shut."""
+    pin, contracts = root / PIN, root / "contracts"
+    bytes_before = held(root)
+
+    def red_and_shut(_root, _script):
+        pin.chmod(0o444)
+        contracts.chmod(0o555)
+        return 1
+
+    monkeypatch.setattr(update_shape, "run_validator", red_and_shut)
+    try:
+        refusal = refused_by(update_shape, standard, root, "b")
+        if f"restored  {PIN}" in refusal.detail:  # pragma: no cover
+            pytest.skip("this user is not stopped by permission bits")
+        assert_reported_as_red(refusal)
+        assert put_back(refusal.detail) == [
+            f"restored  {rel}" for rel in (CHANGED, AGENTS, MANIFEST)]
+        lines = left(refusal.detail)
+        said = (f"file      {PIN} was not put back ({DENIED}); its bytes "
+                "before this run are kept as blob ")
+        assert len(lines) == 1 and lines[0].startswith(said), lines
+        assert "checkout" not in lines[0]
+        pin.chmod(0o644)
+        subprocess.run(["sh", "-c", lines[0].split(", then: ", 1)[1]],
+                       check=True)
+        assert pin.read_bytes() == bytes_before[PIN]
+    finally:
+        contracts.chmod(0o755)
+        pin.chmod(0o644)
+
+
+def test_a_file_already_holding_its_old_bytes_is_not_written_again(
+        update_shape, root, standard, monkeypatch):
+    """A validator put the manifest's own bytes back before it went red,
+    and the manifest would refuse a write. It holds what it held, so it is
+    not written — the write it does not need would fail — and the rollback
+    is whole."""
+    original = (root / MANIFEST).read_bytes()
+
+    def put_back_then_red(_root, _script):
+        (root / MANIFEST).write_bytes(original)
+        return 1
+
+    monkeypatch.setattr(update_shape, "run_validator", put_back_then_red)
+    failing_in_undo(monkeypatch, update_shape, write=[MANIFEST])
+
+    refusal = refused_by(update_shape, standard, root, "b")
+    assert refusal.code == "update-validators-red"
+    assert ("ROLLED BACK: every byte this command wrote has been put back, "
+            "and the tree is exactly as it was:") in refusal.detail
+    assert f"restored  {MANIFEST}" in refusal.detail
+    assert HEADING not in refusal.detail
+
+
+# ---------------------------------------------------------------------------
+# A link that arrives between the write and the undo (review of PR #560)
+# ---------------------------------------------------------------------------
+
+
+def outside(tmp_path: Path) -> Path:
+    """A directory beside the root, where a link can lead."""
+    where = tmp_path / "outside"
+    where.mkdir(exist_ok=True)
+    return where
+
+
+def hard_links_or_skip(tmp_path: Path) -> None:
+    """Skip where this filesystem will not make a second name."""
+    probe = outside(tmp_path) / "probe"
+    probe.write_bytes(b"x")
+    try:
+        os.link(probe, outside(tmp_path) / "probe-too")
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover
+        pytest.skip(f"this filesystem will not hard-link: {exc}")
+
+
+@WINDOWS_SKIP
+def test_a_symlink_that_arrives_before_the_undo_is_never_written_through(
+        update_shape, root, standard, monkeypatch, tmp_path):
+    """The reviewer's run: a validator moves `project.yaml` out of the root,
+    links it back, and goes red. The undo wrote the old bytes at the link's
+    end and said "the tree is exactly as it was" over a root holding a
+    link. The link's end is left as the validator left it now, and the
+    manifest is listed, with the line that puts it back once it is not a
+    link, which, run so, leaves the tree exactly as it was."""
+    away = outside(tmp_path) / MANIFEST
+    seen: dict = {}
+
+    def moved_and_linked(_root, _script):
+        if not (root / MANIFEST).is_symlink():
+            shutil.move(str(root / MANIFEST), str(away))
+            (root / MANIFEST).symlink_to(away)
+            seen["away"] = away.read_bytes()
+        return 1
+
+    monkeypatch.setattr(update_shape, "run_validator", moved_and_linked)
+    before = snapshot(root)
+
+    refusal = refused_by(update_shape, standard, root, "b")
+    assert away.read_bytes() == seen["away"], (
+        "the old bytes were written THROUGH the link, outside the root")
+    assert (root / MANIFEST).is_symlink()
+    assert_reported_as_red(refusal)
+    assert "exactly as it was" not in refusal.detail
+    assert put_back(refusal.detail) == [f"restored  {rel}"
+                                        for rel in (CHANGED, AGENTS, PIN)]
+    lines = left(refusal.detail)
+    said = (f"file      {MANIFEST} was not put back: since this run wrote "
+            f"it, {MANIFEST} in this root is a symlink, pointing at "
+            f"{str(away)!r}, and this run never writes through one; it held "
+            f"HEAD's bytes, so once {MANIFEST} is not a link: ")
+    assert len(lines) == 1 and lines[0].startswith(said), lines
+    fix = shlex.split(lines[0][len(said):])
+    assert fix == ["git", "-C", str(root), "--literal-pathspecs", "checkout",
+                   "HEAD", "--", MANIFEST], fix
+
+    (root / MANIFEST).unlink()
+    subprocess.run(fix, check=True, capture_output=True)
+    assert_untouched(before, snapshot(root))
+
+
+def second_name_said(root: Path) -> str:
+    """The manifest's line, up to the command that puts its bytes back."""
+    here = str(root / MANIFEST)
+    copy = f"{here}.update-shape-copy"
+    return (f"file      {MANIFEST} was not put back: since this run wrote "
+            "it, it has gained another name on this filesystem (2 names), "
+            "and a write in place would change that file too; it held "
+            "HEAD's bytes, so replace it with a copy of itself first: "
+            + shlex.join(["cp", "-p", "--", here, copy]) + " && "
+            + shlex.join(["mv", "-f", "--", copy, here]) + ", then: ")
+
+
+def second_name_then_red(update_shape, standard, root: Path, monkeypatch,
+                         tmp_path: Path):
+    """A validator gives the re-pinned manifest a second name outside the
+    root and goes red. Returns the refusal, that name, and what it held."""
+    hard_links_or_skip(tmp_path)
+    other = outside(tmp_path) / MANIFEST
+    seen: dict = {}
+
+    def linked(_root, _script):
+        if not other.exists():
+            os.link(root / MANIFEST, other)
+            seen["held"] = other.read_bytes()
+        return 1
+
+    monkeypatch.setattr(update_shape, "run_validator", linked)
+    return refused_by(update_shape, standard, root, "b"), other, seen
+
+
+def test_a_second_name_that_arrives_before_the_undo_is_never_written_through(
+        update_shape, root, standard, monkeypatch, tmp_path):
+    """The undo's `write_bytes` writes in place, so the old bytes would
+    have landed under the other name too. The manifest is not written and
+    is listed, with the copy line that breaks the link from this side
+    first; the other name keeps the bytes it was given."""
+    refusal, other, seen = second_name_then_red(update_shape, standard, root,
+                                                monkeypatch, tmp_path)
+    assert other.read_bytes() == seen["held"], (
+        "the old bytes were written THROUGH the second name")
+    assert os.path.samefile(root / MANIFEST, other)
+    assert_reported_as_red(refusal)
+    assert "exactly as it was" not in refusal.detail
+    lines = left(refusal.detail)
+    assert len(lines) == 1 and lines[0].startswith(
+        second_name_said(root)), lines
+    assert shlex.split(lines[0][len(second_name_said(root)):]) == [
+        "git", "-C", str(root), "--literal-pathspecs", "checkout", "HEAD",
+        "--", MANIFEST]
+
+
+@WINDOWS_SKIP
+def test_the_second_name_lines_pasted_put_the_bytes_back_and_leave_it_be(
+        update_shape, root, standard, monkeypatch, tmp_path):
+    """Both commands, as printed: the manifest holds its old bytes as a
+    file of its own, and the other name still holds what it was given."""
+    bytes_before = held(root)
+    refusal, other, seen = second_name_then_red(update_shape, standard, root,
+                                                monkeypatch, tmp_path)
+    line = left(refusal.detail)[0]
+    copy, checkout = line.split("first: ", 1)[1].split(", then: ", 1)
+    subprocess.run(["sh", "-c", copy], check=True)
+    subprocess.run(["sh", "-c", checkout], check=True, capture_output=True)
+    assert (root / MANIFEST).read_bytes() == bytes_before[MANIFEST]
+    assert other.read_bytes() == seen["held"]
+    assert not os.path.samefile(root / MANIFEST, other)
+
+
+@WINDOWS_SKIP
+def test_a_link_at_an_add_path_is_never_removed_by_the_undo(
+        update_shape, root, standard, monkeypatch, tmp_path):
+    """The `--add` file is replaced by the operator's link while the
+    validators run. Unlinking it would delete their link, which #239
+    measured; it is left, and listed, and the other addition and the
+    directory made for it go as before."""
+    theirs = outside(tmp_path) / "theirs.md"
+    theirs.write_bytes(b"someone else's file\n")
+
+    def replaced(_root, _script):
+        if not (root / ADDED).is_symlink():
+            (root / ADDED).unlink()
+            (root / ADDED).symlink_to(theirs)
+        return 1
+
+    monkeypatch.setattr(update_shape, "run_validator", replaced)
+
+    refusal = refused_by(update_shape, standard, root, "b", *ADDING)
+    assert (root / ADDED).is_symlink()
+    assert os.readlink(root / ADDED) == str(theirs)
+    assert theirs.read_bytes() == b"someone else's file\n"
+    assert_reported_as_red(refusal)
+    assert left(refusal.detail) == [
+        f"file      {ADDED}, written by --add, was not removed: since this "
+        f"run wrote it, {ADDED} in this root is a symlink, pointing at "
+        f"{str(theirs)!r}, and this run never removes at or through a link "
+        "it did not make; what it leads to is yours to judge"]
+    assert f"removed   {DIR_ADDED} (written by --add)" in put_back(
+        refusal.detail)
+    assert not (root / DIR).exists()

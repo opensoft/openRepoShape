@@ -382,16 +382,18 @@ def test_a_hard_linked_readme_is_still_kept(root, standard, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def give_attributes_a_block(root: Path) -> None:
-    """The root's `.gitattributes` carrying #471's line-ending block, as an
-    adopted root's own file does, committed, its pin row moved to the new
-    bytes so the copy reads `unchanged`. A scaffolded root stands in for the
-    adopted one, whose own file the pin does not carry: what `apply` asks
-    of the file is the same, and an adoption costs a filter-repo run."""
+def give_attributes_a_block(root: Path, named: tuple) -> None:
+    """The root's `.gitattributes` carrying #471's line-ending block, naming
+    the copies in `named`, as an adopted root's own file does, committed,
+    its pin row moved to the new bytes so the copy reads `unchanged`. A
+    scaffolded root stands in for the adopted one, whose own file the pin
+    does not carry: what `apply` asks of the file is the same, and an
+    adoption costs a filter-repo run."""
     path = root / ATTRIBUTES
     old = file_sha256(path)
-    path.write_bytes(path.read_bytes() + (
-        f"{EOL_BLOCK_HEAD}\n/{AGENTS} text eol=lf\n").encode("utf-8"))
+    path.write_bytes(path.read_bytes() + "".join(
+        f"{line}\n" for line in (EOL_BLOCK_HEAD, *(
+            f"/{rel} text eol=lf" for rel in named))).encode("utf-8"))
     pin = (root / PIN).read_bytes()
     assert pin.count(old.encode("ascii")) == 1, "the row is not one row"
     (root / PIN).write_bytes(pin.replace(old.encode("ascii"),
@@ -402,19 +404,22 @@ def give_attributes_a_block(root: Path) -> None:
 
 
 @pytest.mark.parametrize("block, add, refused", [
-    pytest.param(True, True, True, id="add-would-extend-the-block"),
-    pytest.param(True, False, False, id="no-add"),
-    pytest.param(False, True, False, id="no-block-to-extend"),
+    pytest.param((AGENTS,), True, True, id="add-would-extend-the-block"),
+    pytest.param((AGENTS,), False, False, id="no-add"),
+    pytest.param(None, True, False, id="no-block-to-extend"),
+    pytest.param((AGENTS, ADDED), True, False,
+                 id="the-block-already-names-the-add"),
 ])
 def test_attributes_are_refused_only_when_add_would_extend_their_block(
         root, standard, tmp_path, block, add, refused):
     """`_extend_the_eol_block` writes the root's own `.gitattributes`
-    through the ledger only when `--add` names a file and the file holds the
-    block. That one case is refused, by name, before anything is written;
-    without `--add`, or without a block, the file is not written and its
-    second name is no reason to refuse."""
-    if block:
-        give_attributes_a_block(root)
+    through the ledger only when `--add` names a file the block does not
+    name yet. That one case is refused, by name, before anything is
+    written; without `--add`, without a block, or with a block that names
+    the file already, the file is not written and its second name is no
+    reason to refuse."""
+    if block is not None:
+        give_attributes_a_block(root, block)
     other = second_name(root, ATTRIBUTES, tmp_path)
     held = other.read_bytes()
     before = snapshot(root)
