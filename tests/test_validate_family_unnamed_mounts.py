@@ -85,12 +85,20 @@ GITLINK_SAID = (
 GITLINK_REMEDY = (
     " If its row was deleted or its path: edited by hand, put the row back "
     "as git last had it (git log -p -- family.yaml shows the change). If it "
-    "was mounted by hand, take it out with the first command below, which "
-    "refuses while its checkout holds changes and takes its .gitmodules "
-    "section out too, then mount it with the second, from a checkout of "
-    "openRepoShape: family.py add writes its row and its gitlink in one "
-    "commit, and names the object store git rm leaves under .git/modules if "
-    "one is still there.")
+    "was mounted by hand, make a branch with the first command below, since "
+    "family.py add refuses the holder's tracking branch, take it out with "
+    "the second, which refuses while its checkout holds changes and takes "
+    "its .gitmodules section out too, then mount it with the third, from a "
+    "checkout of openRepoShape: family.py add writes its row and its gitlink "
+    "in one commit, and names the object store git rm leaves under "
+    ".git/modules if one is still there.")
+
+
+def switch_for(holder, member: str) -> str:
+    """The first command a hand mount's gitlink prints (#539): the branch
+    `family.py add` suggests for `member`, in this holder."""
+    return (f"git -C {shlex.quote(str(holder.resolve()))} switch -c "
+            f"family/add-{member.lower()}")
 
 #: The same two halves for an unnamed `.gitmodules` section.
 SECTION_SAID = (
@@ -287,6 +295,7 @@ def test_a_member_mounted_by_hand_is_two_findings(family, holder, tmp_path,
     assert gitlink.splitlines()[0] == GITLINK_SAID.format(
         path=f"members/{SPARE}", commit=tip) + GITLINK_REMEDY
     assert commands(gitlink) == [
+        switch_for(holder, SPARE),
         f"git rm -- members/{SPARE}",
         f"{PYTHON} scripts/family.py add --family-root "
         f"{shlex.quote(str(holder.resolve()))} --member <org>/{SPARE}"]
@@ -590,7 +599,7 @@ def test_two_sections_for_a_hand_mounts_path_each_keep_their_commands(
     assert commands(second) == removal("second", "path", "url")
     assert first.splitlines()[0].endswith(SECTION_REMEDY)
     assert "takes this section out too" not in result.stderr
-    git(*shlex.split(commands(findings(result)[1])[0])[1:], cwd=holder)
+    git(*shlex.split(commands(findings(result)[1])[1])[1:], cwd=holder)
     listed = git("config", "-f", ".gitmodules", "--list", cwd=holder).stdout
     assert listed.count(f".path={path}") == 1, listed
 
@@ -642,25 +651,31 @@ def test_the_add_remedy_quotes_the_member_it_names(family, holder, project,
     result = validate(holder, "--no-members")
     assert result.returncode == 1, result.stderr + result.stdout
     (gitlink,) = findings(result)
-    rm, add = commands(gitlink)
+    switch, rm, add = commands(gitlink)
     assert add.endswith(f" --member {quoted}"), add
     assert shlex.split(add)[-1] == f"<org>/{project}"
     assert shlex.split(rm)[-1] == f"members/{project}"
+    # No branch word spells the project, so the branch says `member`, as
+    # `family.py add` would suggest it (#539).
+    assert shlex.split(switch)[-1] == "family/add-member", switch
 
 
 # --- the remedy, run as printed, from a real mount ---------------------------
 
 def test_a_hand_mount_is_taken_out_and_added_back_as_printed(family, holder):
-    """ROW (a) FOR REAL, and the gitlink's remedy run as printed. `git rm`
-    takes the checkout and its section out; `family.py add`, run as printed
-    with the org filled in, then refuses `member-git-dir-cached` for the
-    object store `git rm` leaves, as the remedy says it will name; with that
-    gone, the same `add` mounts and pins the member with its row, and the
-    holder passes in every mode.
+    """ROW (a) FOR REAL, and the gitlink's remedy run as printed, from the
+    holder's TRACKING BRANCH, where `init` leaves it and `add` refuses to
+    commit (#487): the first line makes the branch `add` suggests (#539).
+    `git rm` takes the checkout and its section out; `family.py add`, run
+    as printed with the org filled in, then refuses `member-git-dir-cached`
+    for the object store `git rm` leaves, as the remedy says it will name;
+    with that gone, the same `add` mounts and pins the member with its row
+    on that branch, and the holder passes in every mode.
 
     `git rm --cached`, which the issue proposed, is NOT the remedy: it
     leaves the checkout at the mount path, and `add` refuses that as
     `member-path-taken` before it gets as far as the store."""
+    git("switch", "-q", "-C", "main", cwd=holder)
     git("-c", "protocol.file.allow=always", "submodule", "add", "-q", "--",
         str(family["remotes"] / f"{SPARE}.git"), f"members/{SPARE}",
         cwd=holder)
@@ -669,8 +684,9 @@ def test_a_hand_mount_is_taken_out_and_added_back_as_printed(family, holder):
     assert result.returncode == 1, result.stderr + result.stdout
     assert codes(result) == ["member-gitlink-unnamed",
                              "gitmodules-path-unnamed"]
-    rm, add = commands(findings(result)[0])
+    switch, rm, add = commands(findings(result)[0])
     assert commands(findings(result)[1]) == []
+    git(*shlex.split(switch)[1:], cwd=holder.parent)
     git(*shlex.split(rm)[1:], cwd=holder)
     assert not (holder / "members" / SPARE).exists()
     assert f"members/{SPARE}" not in (holder / ".gitmodules").read_text(
@@ -689,6 +705,8 @@ def test_a_hand_mount_is_taken_out_and_added_back_as_printed(family, holder):
     added = add_as_printed()
     assert added.returncode == 0, added.stdout + added.stderr
     assert git("status", "--porcelain", cwd=holder).stdout == ""
+    assert git("symbolic-ref", "--short", "HEAD",
+               cwd=holder).stdout.strip() == f"family/add-{SPARE.lower()}"
     assert_passes_in_every_mode(holder, 3)
 
 
