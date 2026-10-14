@@ -43,8 +43,9 @@ clones beside it:
 ```
 
 `make siblings` is what places it: for each row in `family.yaml` it clones the
-member at `../<Project>` from the same url `make bootstrap` uses, then runs
-that member's own `scripts/bootstrap.py` so its legs are on their tracking
+member at `../<Project>` from the same url `make bootstrap` uses, on the
+tracking branch the member's pinned `project.yaml` declares, then runs that
+member's own `scripts/bootstrap.py` so its legs are on their tracking
 branches at their pins. A member that is already there is **fetched and
 nothing else** — no checkout, no reset, no pull — because somebody is working
 in it. A directory that is a clone of a DIFFERENT repository is reported and
@@ -63,10 +64,12 @@ named after the family because that is what the folder holds. `family.yaml`
 is the only thing that tells the two apart, and it is inside the holder.
 
 **Nothing ever moves a checkout.** When this holder's parent folder is not
-named after the family, `make siblings` WARNS and prints the exact `mv` for a
-human to run — it moves nothing itself. Relocating a directory out from under
-a shell, an editor or an agent lane breaks linked worktrees, whose `.git`
-files carry absolute paths, and this standard does not act by surprise.
+named after the family, `make siblings` WARNS, prints the exact `mv` for a
+human to run and stops before it clones anything, so that the run after the
+move clones each member once — it moves nothing itself. Relocating a
+directory out from under a shell, an editor or an agent lane breaks linked
+worktrees, whose `.git` files carry absolute paths, and this standard does
+not act by surprise.
 
 From a checkout of `{{SHAPE_REPOSITORY}}` the same utility runs against a
 holder anywhere on disk, which is what to use before this repository is

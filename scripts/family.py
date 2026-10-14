@@ -49,8 +49,8 @@ clones beside it. The doubled name is kept on purpose: the holder is a
 repository and keeps its own name, and `family.yaml` is what tells the two
 apart. `siblings` is the holder's own `make siblings`, run from a checkout of
 this standard so it works before the holder is anywhere else; there is ONE
-implementation of it, `templates/family-root/scripts/siblings.py`, and this
-subcommand runs that file rather than a second copy of its logic.
+implementation of it, the holder's pinned `scripts/siblings.py`, and this
+subcommand runs that file rather than a second copy of its logic (#543).
 
 EXIT CODES: 0 done, or a `--dry-run` printed what it would do · 1 nothing to
 do · 2 a refusal, and a refusal made before the first write is the same
@@ -60,7 +60,7 @@ real `add`, `bump` or `remove` refuses to commit onto the holder's tracking
 branch, or onto no branch at all, as `bump-leg.py` does for a leg; a dry run
 commits nothing, so it runs on any branch and says where the real run's commit
 would land, or that it would refuse there and the command that makes a branch.
-`siblings` exits with the template script's own code, unchanged. A `bump` whose
+`siblings` exits with the holder's script's own code, unchanged. A `bump` whose
 commit would record nothing — the member is already pinned at `--to`, in the
 gitlink and in `family.yaml` alike — is `nothing`: it says `nothing to do`, as
 `bump-leg.py` does for a leg, and writes no commit; its dry run says the same
@@ -122,7 +122,6 @@ import datetime as _dt
 import json
 import os
 import re
-import runpy
 import shlex
 import shutil
 import stat
@@ -884,8 +883,10 @@ def _local_remote_is_empty(bare: Path) -> bool | None:
 # ---------------------------------------------------------------------------
 
 
-SIBLINGS_SCRIPT = (SHAPE_ROOT / "templates" / "family-root" / "scripts" /
-                   "siblings.py")
+#: The holder's own copy of the workstation utility, relative to the holder:
+#: the path its Makefile's `SIBLINGS_SCRIPT` names, and the file `siblings`
+#: runs (#543).
+SIBLINGS_SCRIPT = "scripts/siblings.py"
 
 
 def _family_script() -> str:
@@ -925,10 +926,10 @@ def _standard_checkout(start: Path) -> Path | None:
 
     A checkout is a directory holding `scripts/family.py` beside
     `templates/family-root/`, which is what this file needs of its own
-    (`SIBLINGS_SCRIPT`, `FAMILY_TEMPLATE`), so it is found whatever the
-    directory is called and whichever copy of the standard is asked: this
-    one, another clone, an install. `os.path`'s tests, which answer False
-    for a directory this user cannot search rather than raising.
+    (`FAMILY_TEMPLATE`), so it is found whatever the directory is called and
+    whichever copy of the standard is asked: this one, another clone, an
+    install. `os.path`'s tests, which answer False for a directory this user
+    cannot search rather than raising.
     """
     for directory in (start, *start.parents):
         if os.path.isfile(directory / "scripts" / "family.py") and \
@@ -4682,16 +4683,25 @@ def cmd_siblings(args) -> int:
 
     ONE IMPLEMENTATION, TWO ENTRY POINTS (Brett Heap, 2026-09-09, ruling 1b:
     *"One implementation, two entry points… No second code path."*). The
-    implementation is `templates/family-root/scripts/siblings.py`, the file a
-    holder CARRIES and its Makefile calls; this subcommand runs that same file
+    implementation is the HOLDER'S OWN `scripts/siblings.py`, the pinned copy
+    its Makefile's `siblings` target runs; this subcommand runs that same file
     against `--family-root`, exactly as the root `bootstrap` shim runs the
-    assembly root's `scripts/bootstrap.py`. That is what makes it work before
-    the holder is cloned anywhere else — the standard has the utility, the
-    holder is only where it usually lives.
+    assembly root's `scripts/bootstrap.py`: from a checkout of the standard,
+    against a holder anywhere on disk.
 
-    `runpy` rather than an import: the script is a `__main__` program that
-    ends in `sys.exit(main())`, so its exit code is the one this process
-    exits with, unchanged and unrewritten.
+    NOT THE STANDARD'S COPY (#543). It used to run this checkout's
+    `templates/family-root/scripts/siblings.py`, through `runpy`, so a holder
+    pinned at another shape ran other code under the two entry points, and
+    did so inside THIS process, whose `repo_shape` its file then imported in
+    place of the holder's own. So it runs as `make siblings` runs it: the
+    holder's file, by this interpreter, in a process of its own, standing in
+    the holder, with the holder's own `repo_shape.py` and `bootstrap.py`
+    beside it, and its exit code is the one this subcommand returns,
+    unchanged.
+
+    A HOLDER WITHOUT ONE IS REFUSED BY NAME, as its Makefile refuses (#489,
+    #503): `siblings-script-missing`, exit 2, before anything is cloned, in
+    the Makefile's words, which name `update-shape.py` and its `--add`.
     """
     root = Path(args.family_root).expanduser().resolve()
     if not (root / MANIFEST).is_file():
@@ -4701,18 +4711,33 @@ def cmd_siblings(args) -> int:
             "Remediation: `family.py init --org <org> --family <Name>` creates "
             "one; point --family-root at the HOLDER (the `<Family>/<Family>` "
             "clone), not at the family folder around it.")
-    if not SIBLINGS_SCRIPT.is_file():
+    script = root / SIBLINGS_SCRIPT
+    if not script.is_file():
         raise Refusal(
             "siblings-script-missing",
-            f"{SIBLINGS_SCRIPT} is missing from this checkout of the standard",
-            "Remediation: this subcommand runs the holder's own copy of that "
-            "file and has no second implementation to fall back on. Re-clone "
-            "openRepoShape, or run `make siblings` in the holder, which uses "
-            "its own copy.")
-    sys.argv = ["siblings", "--root", str(root),
-                *(["--dry-run"] if args.dry_run else [])]
-    runpy.run_path(str(SIBLINGS_SCRIPT), run_name="__main__")
-    return 0  # pragma: no cover - the script exits before returning here
+            f"family.py siblings needs {SIBLINGS_SCRIPT}, which this holder "
+            f"does not have: there is no {script}. It runs the holder's own "
+            "copy, as `make siblings` does, and has no second implementation "
+            "to fall back on, so nothing was cloned or fetched.",
+            "Remediation: update-shape.py copies a changed Makefile but adds "
+            "a new file only on the human's word, so a holder updated without "
+            f"--add {SIBLINGS_SCRIPT} lands here. From a checkout of "
+            "openRepoShape run `"
+            + shlex.join(["python3", "update-shape.py", "check", "--root",
+                          str(root)])
+            + f"`, which reports {SIBLINGS_SCRIPT} as upstream-added. When "
+            "the human says to take it, run the apply command it prints with "
+            f"--add {SIBLINGS_SCRIPT} added. If it reports copy-missing "
+            "instead, a pinned copy was deleted: restore it from this "
+            "holder's history rather than with --add.")
+    # STANDING IN THE HOLDER, AS MAKE STANDS THERE, so every word of the
+    # command is a constant and none is a value from this command line: the
+    # holder is the directory it runs in, and `--root .` names it.
+    sys.stdout.flush()
+    return subprocess.run(
+        [sys.executable or PYTHON, SIBLINGS_SCRIPT, "--root", ".",
+         *(["--dry-run"] if args.dry_run else [])],
+        cwd=str(root), check=False).returncode
 
 
 # ---------------------------------------------------------------------------

@@ -23,14 +23,44 @@ The clone this command puts BESIDE the holder is where a human works — its own
 it afterwards with `family.py bump`. Neither copy is the other's mirror, and
 this command never touches the pinned one.
 
-WHAT IT DOES, per member row in `family.yaml`:
+WHAT IT DOES:
+
+  FIRST    THE PARENT-FOLDER CHECK, BEFORE ANYTHING IS CLONED (#543). When
+           the holder's parent directory is not named after the family, this
+           WARNS, prints the exact `mv` and STOPS, exit 1: nothing is cloned,
+           fetched or moved. A member cloned first would land in the wrong
+           folder, and the re-run after the move would clone it a second time
+           beside the moved holder. It MOVES NOTHING itself. Relocating a
+           checkout out from under somebody's shell, editor and agent lanes
+           breaks linked worktrees, whose `.git` files carry absolute paths,
+           and is the one act this standard refuses everywhere else: done by
+           surprise, with no hand on it. The doctor pattern, not a mover.
+
+  then, per member row in `family.yaml`:
 
   ABSENT   `git clone --recurse-submodules` from the SAME url `make bootstrap`
            resolves — `.gitmodules` first, `family.yaml`'s `repository:` as
-           the fallback — with the same credential, resolved the same way, and
-           then the member's OWN `scripts/bootstrap.py`, which puts its legs
-           on their tracking branches AT their pins. The result is a working
-           clone on its branch, not a detached one.
+           the fallback — with the same credential, resolved the same way, ON
+           THE MEMBER'S TRACKING BRANCH, and then the member's OWN
+           `scripts/bootstrap.py`, which puts its legs on their tracking
+           branches AT their pins. The result is a working clone on its
+           branch, not a detached one.
+
+           THE TRACKING BRANCH IS THE ONE THE MEMBER DECLARES (#543): the
+           `tracking_branch:` of its own `project.yaml`, read in the PINNED
+           copy under `members/`, which is this holder's record of the member.
+           A plain clone checks out the remote's DEFAULT branch, and the two
+           differ when a member tracks another branch. A member whose pinned
+           copy is not checked out (`make bootstrap` checks it out), or that
+           declares none, is cloned on its remote's default branch, as it
+           always was, and its line says so. Nothing else is read for it:
+           `.gitmodules` carries no `branch=`, and `family.yaml`'s
+           `tracking_branch:` is the HOLDER's branch, the one `family.py`
+           refuses to commit on.
+
+           `--no-local` (#461): a url that is a path on this machine is read
+           through git, as a remote is, and not copied file by file, so a
+           repack running in it cannot fail the clone half way (#440).
 
   PRESENT  `git fetch`, AND NOTHING ELSE. No checkout, no reset, no pull, no
            stash, no branch switch. Somebody is working in that clone — that
@@ -39,14 +69,6 @@ WHAT IT DOES, per member row in `family.yaml`:
            clone is first verified to BE that member (its `origin` names the
            row's repository and its own `project.yaml` id is the row's `id`);
            when it is not, that is reported and SKIPPED, never overwritten.
-
-  THEN     THE PARENT-FOLDER CHECK. When the holder's parent directory is not
-           named after the family, this WARNS and prints the exact `mv` — and
-           MOVES NOTHING. Relocating a checkout out from under somebody's
-           shell, editor and agent lanes breaks linked worktrees, whose `.git`
-           files carry absolute paths, and is the one act this standard
-           refuses everywhere else: done by surprise, with no hand on it. The
-           doctor pattern, not a mover.
 
 IDEMPOTENT. A second run is every member `present`, one `git fetch` each, and
 exit 0. That is what makes it safe to put in a handoff document.
@@ -86,8 +108,11 @@ IT CONFERS NOTHING, and neither does the layout. A folder is navigation.
 EXIT CODES
     0  every member is beside the holder; nothing to report. With `--make`:
        every member RAN and exited 0
-    1  a FINDING a human can act on: a sibling that is a DIFFERENT repository,
-       a clone that failed, a member's own bootstrap that went red. With
+    1  a FINDING a human can act on: a holder whose parent folder is not
+       named after the family (nothing is cloned until it is moved), a
+       sibling that is a DIFFERENT repository, a clone that failed (a
+       tracking branch its remote does not have included), a member's own
+       bootstrap that went red. With
        `--make`: any member that was skipped or whose verb exited non-zero —
        a `make resume` that skipped every member because nobody had run `make
        siblings` must never read as success
@@ -273,6 +298,35 @@ def clone_url(root: Path, row: dict, urls: dict[str, str]) -> tuple[str, str]:
     return f"https://github.com/{repository}.git", f"{MANIFEST} repository:"
 
 
+def tracking_branch(root: Path, row: dict) -> tuple[str | None, str]:
+    """`(the member's tracking branch, where it was read)`, or `(None, why
+    there is none)` — the branch a NEW working clone is checked out on.
+
+    THE MEMBER'S OWN DECLARATION, as this holder pins it (#543): the
+    `tracking_branch:` of `project.yaml` in the pinned copy under `members/`,
+    the file the member's own bootstrap reads for the same answer. It is
+    read from disk, as `validate-family.py` reads that copy's `id:`, and
+    only `load_yaml` is used to read it, a name every `repo_shape.py` a
+    holder may have kept carries. None, with the reason, when the copy is
+    not checked out or declares no branch: the clone then takes the remote's
+    default branch, as it always did, and says so.
+    """
+    label = (str(row.get("path") or f"members/{row.get('project')}")
+             + "/project.yaml")
+    manifest = member_path(root, row) / "project.yaml"
+    if not manifest.is_file():
+        return None, (f"{label} is not checked out, so its tracking branch "
+                      "is not known here (`make bootstrap` checks it out)")
+    try:
+        data = load_yaml(manifest)
+    except (Refusal, OSError, ValueError):
+        return None, f"{label} could not be read"
+    branch = data.get("tracking_branch") if isinstance(data, dict) else None
+    if not isinstance(branch, str) or not branch.strip():
+        return None, f"{label} declares no tracking_branch"
+    return branch, label
+
+
 # ---------------------------------------------------------------------------
 # git, with the credential the family already resolves
 # ---------------------------------------------------------------------------
@@ -445,14 +499,20 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
         return sibling
 
     if not present:
+        branch, where = tracking_branch(root, row)
+        on = (f"on {branch}, its tracking branch ({where})" if branch else
+              f"on its remote's default branch: {where}")
         if dry_run:
             sibling.state = "would clone"
-            print(f"  [{project}] would clone {url} ({source}) -> {target}")
+            print(f"  [{project}] would clone {url} ({source}) -> {target}, "
+                  f"{on}")
             return sibling
-        print(f"  [{project}] cloning {url} ({source})")
+        print(f"  [{project}] cloning {url} ({source}) {on}")
         sys.stdout.flush()
         proc = subprocess.run(
-            ["git", *prefix, "clone", "-q", "--recurse-submodules", "--",
+            ["git", *prefix, "clone", "-q", "--no-local",
+             "--recurse-submodules",
+             *([f"--branch={branch}"] if branch else []), "--",
              url, str(target)],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", check=False)
@@ -742,6 +802,11 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
     editor and every agent lane standing in it, and would break linked
     worktrees, whose `.git` files carry ABSOLUTE paths. The warning plus the
     command gives the same outcome with the human's hand on it.
+
+    AND IT IS ASKED BEFORE ANYTHING IS CLONED (#543), which is why it says
+    nothing was. It used to come after the placement: every member was
+    cloned into the wrong folder first, and the re-run the warning asked for
+    cloned each one again beside the moved holder.
     """
     folder = root.parent
     if folder.name == family:
@@ -752,16 +817,20 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
         f"        {root} should sit in a plain folder named {family}, beside "
         "the members'",
         "        working clones — that is the layout `make siblings` places. "
-        "The siblings",
-        f"        go beside the holder either way, so they are in {folder}.",
+        "So",
+        "        NOTHING WAS CLONED: a member cloned now would land in "
+        f"{folder}, and",
+        "        the re-run after the move would clone it a second time, "
+        "beside the",
+        "        moved holder.",
         "",
-        "        NOTHING WAS MOVED. Relocating a checkout breaks an open "
-        "shell, an editor",
-        "        and any LINKED WORKTREE (its `.git` file carries an absolute "
-        "path), so it",
-        "        is yours to run, when nothing is standing in it, in a POSIX "
-        "shell (Git Bash",
-        "        on Windows):",
+        "        NOTHING WAS MOVED either. Relocating a checkout breaks an "
+        "open",
+        "        shell, an editor and any LINKED WORKTREE (its `.git` file "
+        "carries",
+        "        an absolute path), so it is yours to run, when nothing is "
+        "standing",
+        "        in it, in a POSIX shell (Git Bash on Windows):",
         "",
     ]
     wanted = folder.parent / family
@@ -786,7 +855,7 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
     lines += ["",
               "        Then re-run `make siblings` from the moved holder; the "
               "members are",
-              "        cloned beside it, in the folder."]
+              "        cloned beside it, in the folder, once."]
     return "\n".join(lines)
 
 
@@ -905,12 +974,18 @@ def _report_placement(root: Path, siblings: list[Sibling],
 
 def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
                    dry_run: bool) -> int:
-    """THE PLACEMENT RUN: every member cloned or fetched beside the holder,
-    the layout table, the parent-folder warning, and the exit code.
+    """THE PLACEMENT RUN: the parent-folder check, then every member cloned
+    or fetched beside the holder, the layout table, and the exit code.
 
     Split from `main` for #137: once `_resolve_make_target` and
     `_load_family` are also lifted out of it, `main` is left with only the
     dispatch-or-placement choice.
+
+    THE FOLDER IS ASKED FIRST (#543). A holder whose parent folder is not
+    named after the family stops here, exit 1, before any credential is
+    resolved or any member cloned, and `--dry-run` stops in the same words:
+    once the holder is moved, the run after it clones each member once, in
+    the right folder.
     """
     family = family_folder_name(manifest, root)
     print(f"siblings: {name} ({root}) — {len(rows)} member(s)")
@@ -921,6 +996,17 @@ def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
           "validate, the")
     print("  sibling is where you work.")
 
+    warning = parent_folder_warning(root, family)
+    if warning:
+        print()
+        sys.stdout.flush()          # so the warning lands where it belongs
+        print(warning, file=sys.stderr)
+        print(f"\nsiblings: stopped before cloning: the holder is not in a "
+              f"folder named {family}. Nothing was cloned, fetched or moved.",
+              file=sys.stderr)
+        sys.stderr.flush()
+        return 1
+
     prefix, source, token = git_prefix()
     urls = submodule_urls(root)
     print(f"\n(a) the members, beside the holder (credential source: "
@@ -928,13 +1014,6 @@ def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
     siblings = _place_all_members(root, rows, urls, prefix, token, dry_run)
 
     _print_layout_table(root, siblings, rows)
-
-    warning = parent_folder_warning(root, family)
-    if warning:
-        print()
-        sys.stdout.flush()          # so the warning lands where it belongs
-        print(warning, file=sys.stderr)
-        sys.stderr.flush()
 
     return _report_placement(root, siblings, dry_run)
 
