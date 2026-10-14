@@ -32,7 +32,8 @@ import sys
 
 import pytest
 
-from conftest import REPO, cloned_just_pushed, git, rmtree, run_script
+from conftest import (NO_BYTECODE, REPO, cloned_just_pushed, git, rmtree,
+                      run_script)
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
@@ -1935,7 +1936,7 @@ def test_family_py_siblings_runs_the_holders_own_file(family, tmp_path):
     theirs = one("target", lambda holder: siblings(holder))
     ours = one("shim", lambda holder: run_script(
         FAMILY, "siblings", "--family-root", str(holder),
-        env=ALLOW_FILE_PROTOCOL))
+        env={**ALLOW_FILE_PROTOCOL, **NO_BYTECODE}))
 
     assert layout(ours["result"].stdout) == layout(theirs["result"].stdout)
     for project in MEMBERS:

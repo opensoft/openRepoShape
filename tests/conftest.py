@@ -155,6 +155,14 @@ def load_without_bytecode(path: Path, name: str):
     return module
 
 
+#: `load_without_bytecode`'s counterpart for a CHILD process (#544). `family.py
+#: siblings` runs the standard's `templates/family-root/scripts/siblings.py`
+#: through `runpy`, and that file imports `bootstrap` from beside it, so
+#: without this in the child's environment the import writes
+#: `__pycache__/bootstrap.*.pyc` into the template tree.
+NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
+
+
 #: THE DEFAULT IDENTITY `git()` GIVES GIT (#279). A commit needs an author and
 #: a committer, and git guesses them from the passwd entry and a hostname with
 #: a domain; a container whose hostname has none cannot, and the commit dies

@@ -5,13 +5,16 @@
 that cloned a just-pushed local remote by its plain path onto it, and those
 tests clone in the ways this file asks of the helper: without the submodules,
 as a bare copy, with `-c` for the one command, with variables of their own,
-and at a branch. Each case is one of those, and each asks the one thing the
-helper is for: the clone's store holds a pack and no loose object, which a
-clone that walked the remote's own files would not
-(`assert_store_read_through_git`).
+and at a branch. Each case is one of those, and each case that makes a clone
+asks the one thing the helper is for of it: the clone's store holds a pack and
+no loose object, which a clone that walked the remote's own files would not
+(`assert_store_read_through_git`). The option itself is asked of git beside
+it, and the last case is the clone that fails.
 """
 
 from __future__ import annotations
+
+import os
 
 import pytest
 
@@ -49,8 +52,19 @@ def test_a_bare_copy_is_bare_and_was_read_through_git(remote, tmp_path):
 
 def test_a_branch_is_the_one_checked_out(remote, tmp_path):
     clone = cloned_just_pushed(remote, tmp_path / "clone", "main")
+    assert_read_through_git(clone)
     assert git("rev-parse", "--abbrev-ref", "HEAD",
                cwd=clone).stdout.strip() == "main"
+
+
+def test_a_branch_the_remote_lacks_fails_the_clone(remote, tmp_path):
+    """`-b` reaches git: `main` is the default branch, so the case above
+    passes without it, and a branch no remote has is refused only by git."""
+    asked = clone_just_pushed(remote, tmp_path / "x", "no-such-branch")
+    assert asked.returncode != 0, asked.stderr
+    assert "no-such-branch" in asked.stderr, asked.stderr
+    with pytest.raises(AssertionError, match="no-such-branch"):
+        cloned_just_pushed(remote, tmp_path / "x", "no-such-branch")
 
 
 def test_config_and_env_reach_the_one_command_and_nothing_is_stored(
@@ -62,12 +76,18 @@ def test_config_and_env_reach_the_one_command_and_nothing_is_stored(
     by_config = cloned_just_pushed(
         remote, tmp_path / "by-config", recurse=False,
         config=["-c", "clone.defaultRemoteName=by-config"])
+    assert_store_read_through_git(by_config, "the clone made with `config`")
     assert git("remote", cwd=by_config).stdout.split() == ["by-config"]
+    # APPENDED to what the environment holds, as `command_scope` does in
+    # `test_adopt_ignored_shape_files.py`: the Windows job sets two entries
+    # of its own there, and `GIT_CONFIG_COUNT=1` would drop them.
+    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
     by_env = cloned_just_pushed(
         remote, tmp_path / "by-env", recurse=False,
-        env={"GIT_CONFIG_COUNT": "1",
-             "GIT_CONFIG_KEY_0": "clone.defaultRemoteName",
-             "GIT_CONFIG_VALUE_0": "by-env"})
+        env={"GIT_CONFIG_COUNT": str(held + 1),
+             f"GIT_CONFIG_KEY_{held}": "clone.defaultRemoteName",
+             f"GIT_CONFIG_VALUE_{held}": "by-env"})
+    assert_store_read_through_git(by_env, "the clone made with `env`")
     assert git("remote", cwd=by_env).stdout.split() == ["by-env"]
     stored = git("config", "--local", "--list", cwd=by_env).stdout
     assert "insteadof" not in stored.lower(), stored

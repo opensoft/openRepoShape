@@ -1046,7 +1046,7 @@ GOOD_KEYS = {
 
 
 @pytest.mark.parametrize("edit", sorted(GOOD_KEYS))
-def test_a_list_an_empty_list_a_bare_key_and_no_key_are_not_findings(
+def test_a_list_an_empty_list_a_bare_key_and_no_key_are_not_plan_bad_findings(
         adopter, world, edit):
     """#386 (d): what `plan` writes, and the ways of writing none, are not
     findings of this kind; a plan with no entries is `plan-uncovered`, as it
