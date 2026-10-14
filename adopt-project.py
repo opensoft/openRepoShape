@@ -6236,17 +6236,19 @@ def _failed_loudly(step: str, exc: BaseException) -> str:
     """What failed during `step`, as the REFUSED block `CommandFailed` prints.
 
     `CommandFailed` says it itself. A `Refusal` keeps its code and detail,
-    and its own remediation unless it is the validators' generic one, which
-    `git_out` hands every refusal it raises and which is about pins: here it
-    would contradict the notice printed under it. Anything else is named by
-    its type, and is a REFUSAL only if it is one of `LATE_FAILURES`; the rest
-    STOPPED the run, and their traceback follows.
+    and its own remediation if it has one and it is not the validators'
+    generic one, which is about pins: here it would contradict the notice
+    printed under it. `git_out` handed every refusal it raised that one, and
+    hands them none since #370, which is no line at all rather than an empty
+    one. Anything else is named by its type, and is a REFUSAL only if it is
+    one of `LATE_FAILURES`; the rest STOPPED the run, and their traceback
+    follows.
     """
     if isinstance(exc, CommandFailed):
         return exc.loudly(step)
     if isinstance(exc, Refusal):
         said = f"REFUSED {step}. {exc.code}: {exc.detail}"
-        return said if exc.remediation == REMEDIATION \
+        return said if exc.remediation in ("", REMEDIATION) \
             else f"{said}\n{exc.remediation}"
     what = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
     if isinstance(exc, LATE_FAILURES):
