@@ -64,8 +64,12 @@ SECOND_SIBLING = "../second"
 #: every platform and strips it only where `\` separates directories, so on
 #: Windows this is #190's own case.
 BACKSLASH = "..\\dependency"
+#: The source's own name, which every plan here is written in: an in-place
+#: adoption keeps it, and `plan` refuses another for a source whose `origin`
+#: names its repository (#499).
+THING = "Thing"
 #: The source's own name for its remote, beside the repositories it makes.
-THING_REMOTE = "Thing.git"
+THING_REMOTE = f"{THING}.git"
 #: Where each test's `execute` works, and what a verified one says.
 WORK = "work"
 VERIFIED = "adoption verified"
@@ -80,9 +84,11 @@ REMOTES = "remotes"
 #: ../remotes/Thing.git` writes it from `<tmp>/Thing`: RELATIVE.
 RELATIVE_ORIGIN = f"../{REMOTES}/{THING_REMOTE}"
 #: The code leg's GitHub remote, as `check` resolves from it.
-CODE_LEG = "https://github.com/{org}/Northwind-code.git"
+CODE_LEG = "https://github.com/{org}/" + THING + "-code.git"
 #: The code leg's bare remote, as `execute --local-remote-dir` names it.
-CODE_BARE = "Northwind-code.git"
+CODE_BARE = f"{THING}-code.git"
+#: `check`'s finding for a plan whose organisation is not the source's (#499).
+NOT_THE_SOURCE = "plan-not-the-source"
 #: The source's `origin` on GitHub, in the spellings a clone may carry.
 HTTPS_ORIGIN = "https://github.com/testorg/Thing.git"
 SCP_ORIGIN = "git@github.com:testorg/Thing.git"
@@ -144,15 +150,36 @@ def commit(source: Path, message: str) -> None:
 
 def planned(source: Path, base: Path, org: str = ORG,
             answers: dict | None = None, name: str | None = None) -> Path:
-    """A plan of `source` for `org`, in a directory of its own under `base`
-    (`name`, else `plan-<org>`), with `.gitmodules` and DEPENDENCY both kept
-    in code unless `answers` says otherwise."""
+    """A plan of `source` for `org`, in the source's own name, in a
+    directory of its own under `base` (`name`, else `plan-<org>`), with
+    `.gitmodules` and DEPENDENCY both kept in code unless `answers` says
+    otherwise. `org` is the source's, as `plan` reads it from its `origin`,
+    or `plan` refuses it (#499): see `its_org` for a local one."""
     plan = base / (name or f"plan-{org}") / "adoption-plan.yaml"
     plan.parent.mkdir(parents=True)
-    written = write_plan(source, plan, org=org)
+    written = write_plan(source, plan, project=THING, org=org)
     assert written.returncode == 0, written.stderr + written.stdout
     for path, leg in (answers or BOTH_IN_CODE).items():
         resolve(plan, path, leg)
+    return plan
+
+
+def its_org(origin: str) -> str:
+    """The organisation a LOCAL `origin` names, as `plan` reads one (#499):
+    the directory its repository is in, `remotes` for `remotes/Thing.git`.
+    (Where git keeps the path with `\\`, as on Windows, `plan` reads no
+    repository from it, and compares nothing.)"""
+    return Path(origin).parent.name
+
+
+def in_another_org(plan: Path, org: str) -> Path:
+    """`plan` with its `org:` edited by hand to `org`: legs in another
+    organisation than the source's, which no `plan` writes since #499, so
+    `check` finds the plan `plan-not-the-source` beside anything else."""
+    text = plan.read_bytes().decode()
+    line = f"\norg: {ORG}\n"
+    assert line in text, text
+    plan.write_bytes(text.replace(line, f"\norg: {org}\n", 1).encode())
     return plan
 
 
@@ -246,19 +273,24 @@ def test_check_keeps_a_relative_url_its_github_leg_resolves_alike(
     organisation it names another repository, and that is found, with the
     submodule, its url, the leg's remote and both resolutions, and the
     remediation once after it. A url with a scheme is printed through
-    `redacted`, which hides its user too (`ssh://***@github.com:22/...`)."""
+    `redacted`, which hides its user too (`ssh://***@github.com:22/...`).
+    Only a hand edit puts the legs in another organisation than the
+    source's, which `check` finds too (#499)."""
     source = source_with(tmp_path, SIBLING, origin)
     same = check(planned(source, tmp_path))
     passes(same)
     assert notes(same.stdout) == [alike(ORG, (SIBLING, DEPENDENCY,
                                               GITHUB_DEPENDENCY))]
 
-    result = check(planned(source, tmp_path, OTHER_ORG))
+    result = check(in_another_org(
+        planned(source, tmp_path, name=f"plan-{OTHER_ORG}"), OTHER_ORG))
     assert result.returncode == 1, result.stderr + result.stdout
-    assert found(result.stderr) == [(RELATIVE, moved(
+    relative, (other, _) = found(result.stderr)
+    assert relative == (RELATIVE, moved(
         adopter, SIBLING, adopter.redacted(origin), ITS_ORIGIN,
         f"to `{adopter.redacted(resolved)}`", CODE_LEG.format(org=OTHER_ORG),
-        "to `https://github.com/otherorg/dependency`"))]
+        "to `https://github.com/otherorg/dependency`"))
+    assert other == NOT_THE_SOURCE
     assert notes(result.stdout) == []
     # Said once, after the findings, and it is not #166's remediation.
     assert result.stderr.count(adopter.RELATIVE_URL_REMEDIATION) == 1
@@ -271,7 +303,7 @@ def test_check_keeps_a_relative_url_its_github_leg_resolves_alike(
 @pytest.mark.parametrize("url, there", [
     # Inside the repository that holds it: another one for every leg.
     (INSIDE,
-     "to `https://github.com/testorg/Northwind-code.git/dependency`"),
+     "to `https://github.com/testorg/Thing-code.git/dependency`"),
     # More `..` than the remote has components: git says so, in words
     # this pins only the start of, since they are git's to change.
     ("../" * 8 + "dependency", "not at all (fatal: "),
@@ -310,19 +342,21 @@ def test_a_source_with_no_remote_resolves_from_its_own_directory(adopter,
 
 def test_the_source_resolves_from_the_remote_its_branch_tracks(tmp_path):
     """git's default remote is the one the branch tracks, and `origin` only
-    when it tracks none: a fork's `origin` is not where its `main` comes
-    from, and `upstream` is."""
-    source = source_with(tmp_path, SIBLING,
-                         "https://github.com/someone/Thing.git")
-    git("remote", "add", "upstream", HTTPS_ORIGIN, cwd=source)
-    git("config", "branch.main.remote", "upstream", cwd=source)
-    passes(check(planned(source, tmp_path)))
-    git("config", "--unset", "branch.main.remote", cwd=source)
-    result = check(planned(source, tmp_path, name="untracked"))
+    when it tracks none: a `main` that tracks a fork resolves against the
+    fork, and against `origin`, the repository being adopted, once it
+    tracks none. (`origin` is the source's own repository, which the plan
+    names, #499; the fork is the remote it tracks.)"""
+    source = source_with(tmp_path, SIBLING, HTTPS_ORIGIN)
+    git("remote", "add", "fork", "https://github.com/someone/Thing.git",
+        cwd=source)
+    git("config", "branch.main.remote", "fork", cwd=source)
+    result = check(planned(source, tmp_path))
     assert [code for code, _ in found(result.stderr)] == [RELATIVE]
     assert ("from the source, at `https://github.com/someone/Thing.git` "
-            f"({ITS_ORIGIN}), to `https://github.com/someone/dependency`"
+            "(its remote `fork`), to `https://github.com/someone/dependency`"
             ) in result.stderr
+    git("config", "--unset", "branch.main.remote", cwd=source)
+    passes(check(planned(source, tmp_path, name="untracked")))
 
 
 def test_each_relative_url_is_resolved_on_its_own(adopter, tmp_path):
@@ -338,7 +372,7 @@ def test_each_relative_url_is_resolved_on_its_own(adopter, tmp_path):
         adopter, INSIDE, HTTPS_ORIGIN, ITS_ORIGIN,
         "to `https://github.com/testorg/Thing.git/dependency`",
         CODE_LEG.format(org=ORG),
-        "to `https://github.com/testorg/Northwind-code.git/dependency`"))]
+        "to `https://github.com/testorg/Thing-code.git/dependency`"))]
     assert notes(result.stdout) == []
 
     both = source_with(tmp_path / "both", SIBLING, HTTPS_ORIGIN,
@@ -381,14 +415,19 @@ def test_a_credential_in_the_source_remote_is_never_printed(adopter,
     secret = "s3cret-token"
     origin = f"https://x-access-token:{secret}@github.com/testorg/Thing.git"
     source = source_with(tmp_path, SIBLING, origin)
-    result = check(planned(source, tmp_path, OTHER_ORG))
+    result = check(in_another_org(
+        planned(source, tmp_path, name=f"plan-{OTHER_ORG}"), OTHER_ORG))
     assert secret not in result.stderr + result.stdout
-    assert found(result.stderr) == [(RELATIVE, moved(
+    relative, (other, _) = found(result.stderr)
+    assert relative == (RELATIVE, moved(
         adopter, SIBLING,
         "https://***@github.com/testorg/Thing.git", ITS_ORIGIN,
         "to `https://***@github.com/testorg/dependency`",
         CODE_LEG.format(org=OTHER_ORG),
-        "to `https://github.com/otherorg/dependency`"))]
+        "to `https://github.com/otherorg/dependency`"))
+    # #499's finding names the source by the `org/repo` its `origin` ends
+    # in, which holds no credential.
+    assert other == NOT_THE_SOURCE
     # And from the plan's own organisation it is one repository: the
     # credential is not part of a repository's identity.
     same = check(planned(source, tmp_path))
@@ -440,9 +479,11 @@ def refusal_of(adopter, plan: Path, tmp_path: Path,
     (HTTPS_ORIGIN, SIBLING, ORG),
     (SCP_ORIGIN, SIBLING, ORG),
     (SCP_OTHER_CASE, SIBLING, ORG),
-    # git's arithmetic, not the organisation: two `..` leave both behind.
-    (HTTPS_ORIGIN, TWO_UP, OTHER_ORG),
-], ids=["https", "scp", "scp-other-case", "dotdot-dotdot-other-org"])
+    # git's arithmetic: two `..` leave the organisation behind. It is the
+    # source's own, as every plan's is since #499; one in another was this
+    # case's point, and is now `plan-not-the-source` first.
+    (HTTPS_ORIGIN, TWO_UP, ORG),
+], ids=["https", "scp", "scp-other-case", "dotdot-dotdot"])
 def test_execute_resolves_again_from_the_remotes_it_would_create(
         adopter, tmp_path, monkeypatch, origin, url, org):
     """(c) `check` cannot know where `execute` will make the legs, so it
@@ -529,12 +570,13 @@ def test_one_directory_through_a_symlink_is_one_repository(adopter,
         pytest.skip(f"this platform cannot create a symlink here: {exc}")
     linked = source_with(tmp_path / "linked", SIBLING,
                          str(link / THING_REMOTE))
-    plan = planned(linked, tmp_path / "linked")
+    plan = planned(linked, tmp_path / "linked",
+                   its_org(str(link / THING_REMOTE)))
     assert refusal_of(adopter, plan, tmp_path, remotes) is None
 
-    elsewhere = source_with(tmp_path / "elsewhere", SIBLING,
-                            str(tmp_path / "elsewhere" / THING_REMOTE))
-    plan = planned(elsewhere, tmp_path / "elsewhere")
+    there = str(tmp_path / "elsewhere" / THING_REMOTE)
+    elsewhere = source_with(tmp_path / "elsewhere", SIBLING, there)
+    plan = planned(elsewhere, tmp_path / "elsewhere", its_org(there))
     refusal = refusal_of(adopter, plan, tmp_path, remotes)
     assert refusal is not None and refusal.code == RELATIVE
 
@@ -554,7 +596,7 @@ def test_a_relative_origin_resolves_from_the_source_working_tree(
     remotes = tmp_path / REMOTES
     origin = RELATIVE_ORIGIN if relative else str(remotes / THING_REMOTE)
     source = source_with(tmp_path, SIBLING, origin, remotes / "dependency")
-    plan = planned(source, tmp_path)
+    plan = planned(source, tmp_path, its_org(origin))
     assert refusal_of(adopter, plan, tmp_path, remotes) is None
 
     elsewhere = tmp_path / "elsewhere"
@@ -593,14 +635,14 @@ def clone_the_split(source: Path, clone: Path):
 @pytest.mark.parametrize("url, leg, there", [
     # #190 itself: the re-verifier's `relative-url` case.
     (SIBLING, "code", "remotes/dependency"),
-    (INSIDE, "code", "remotes/Northwind-code.git/dependency"),
+    (INSIDE, "code", "remotes/Thing-code.git/dependency"),
     (TWO_UP, "code", "dependency"),
     # The SPEC leg's own remote, which `./` names from inside.
-    (INSIDE, "spec", "remotes/Northwind-spec.git/dependency"),
+    (INSIDE, "spec", "remotes/Thing-spec.git/dependency"),
     # Where `\` separates nothing, git appends `..\dependency` whole.
     (BACKSLASH, "code",
      "remotes/dependency" if sys.platform == "win32"
-     else "remotes/Northwind-code.git/..\\dependency"),
+     else "remotes/Thing-code.git/..\\dependency"),
 ], ids=["dotdot", "dot-slash", "dotdot-dotdot", "spec-leg", "backslash"])
 def test_execute_refuses_a_relative_url_its_leg_resolves_elsewhere(
         tmp_path, url, leg, there):
@@ -679,9 +721,9 @@ def test_a_relative_url_its_leg_resolves_alike_adopts_and_clones(
     the remotes directory."""
     remotes = tmp_path / REMOTES
     dependency = remotes / "dependency"
-    source = source_with(tmp_path, url, origin if origin.startswith("..")
-                         else str(remotes / origin), dependency)
-    plan = planned(source, tmp_path)
+    origin = origin if origin.startswith("..") else str(remotes / origin)
+    source = source_with(tmp_path, url, origin, dependency)
+    plan = planned(source, tmp_path, its_org(origin))
     assert [code for code, _ in found(check(plan).stderr)] == [RELATIVE]
     result = execute(plan, tmp_path / WORK, remotes / legs)
     assert result.returncode == 0, result.stderr + result.stdout

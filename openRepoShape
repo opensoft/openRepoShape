@@ -36,6 +36,11 @@ ORG=""
 MODE="run"
 PREFLIGHT=0
 DOCTOR_PATH=""
+DOCTOR_PATH_GIVEN=0
+# `shape-doctor.py`'s own two flags, as `--doctor` hands them on (#500).
+DOCTOR_ARGS=()
+DOCTOR_JSON=0
+PLAN_FILE=""
 PASSTHROUGH=()
 WORKDIR=""
 STAGED=""
@@ -56,7 +61,7 @@ usage() {
 	cat <<'USAGE'
 openRepoShape --install            install (or update) this command into ~/.local/bin
 openRepoShape --preflight          check this MACHINE and stop; creates nothing
-openRepoShape --doctor [<path>]    diagnose a REPOSITORY against this standard
+openRepoShape --doctor [<path>] [--json] [--placement-plan <file>]
 openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]
 openRepoShape --help | --version
 
@@ -89,12 +94,23 @@ opensoft/openRepoTools', and its own installer places them:
   $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
 
-`--doctor [<path>]` runs `shape-doctor.py` over <path> (default `.`) and prints
-one row per check and ONE verdict: COMPLIANT, COMPLIANT SHAPE BEHIND, DRIFTED,
-INVALID or NOT A SHAPE ROOT. It writes nothing, and every finding names the
-command that fixes it. Exit 0 compliant, 1 findings, 2 not a shape root, 3
-usage. Run beside a checkout of the standard it uses that one; run from
-anywhere else it clones the standard into a temporary directory first.
+`--doctor [<path>] [--json] [--placement-plan <file>]` runs `shape-doctor.py`
+over <path> (default `.`) and prints one row per check and ONE verdict:
+`COMPLIANT`, `COMPLIANT, SHAPE BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`,
+`NOT A SHAPE ROOT` or `CANNOT ANSWER`. Every finding names the command that
+fixes it. Exit 0 compliant, 1 findings, 2 not a shape root, 3 when it cannot
+answer (`CANNOT ANSWER`, no such <path>, a `--placement-plan` it cannot
+write); this command's own refusals exit 2. `--json` is the same report as
+one JSON object. The doctor writes no file but the `--placement-plan <file>`
+you name, at the path you give (a relative <file> lands in the directory you
+ran this from, even inside the repository), and moves nothing.
+
+Run beside a checkout of the standard, it uses that one. Run from anywhere
+else, it clones the standard into a temporary directory first and KEEPS it,
+because its NEXT lines name files in it. The report's last line names
+that directory, which is safe to delete once you are done with those
+commands; under `--json` that line goes to stderr, so stdout stays one JSON
+object.
 
 `--preflight` is the MACHINE check -- it was spelled `--doctor` until
 2026-09-10, and the name moved to the repository diagnosis above, which is
@@ -109,9 +125,33 @@ USAGE
 # instant the substitution closes, so `rm -rf` ran before a single fetched
 # byte had landed in the directory, and $WORKDIR out here was still empty.
 # A trap only ever fires in the shell that set it. Callers read $WORKDIR.
+#
+# A NAME, WHEN ONE IS GIVEN, IS FOR A DIRECTORY THAT OUTLIVES THE RUN (#500).
+# `--doctor` keeps its clone of the standard, because the NEXT lines it
+# prints name files in there, so the directory carries the name of what
+# made it: `ls "$TMPDIR"/openRepoShape-doctor.*` finds every one a person has
+# been left, where `tmp.*` would be anybody's. The template form is the one
+# GNU and BSD `mktemp` both read. It is RESOLVED, `pwd -P`, because the
+# doctor prints its standard resolved, and on macOS `$TMPDIR` sits under the
+# `/var` -> `/private/var` link: the report's first and last lines would
+# otherwise name one directory two ways.
+#
+# EVERY STEP OF THAT IS CHECKED, because `--doctor` runs this under `set +e`
+# and the trap below removes whatever $WORKDIR holds. A failed `mktemp`
+# followed by an unchecked `cd -- ""` would leave `pwd -P` printing the
+# directory the person is standing in, and the trap would remove THAT.
 workdir() {
+	local base made
 	if [ -z "$WORKDIR" ]; then
-		WORKDIR="$(mktemp -d)"
+		if [ -n "${1:-}" ]; then
+			base="${TMPDIR:-/tmp}"
+			made="$(mktemp -d "${base%/}/$1.XXXXXXXX")" &&
+				made="$(cd -- "$made" && pwd -P)" && [ -n "$made" ] ||
+				die "could not make a temporary directory under $base. Set \$TMPDIR to a directory you can write to."
+			WORKDIR="$made"
+		else
+			WORKDIR="$(mktemp -d)"
+		fi
 		trap 'rm -rf -- "$WORKDIR"' EXIT
 	fi
 }
@@ -332,7 +372,7 @@ shape_checkout() {
 	case "$url" in
 	-* | *[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
 	esac
-	workdir
+	workdir openRepoShape-doctor
 	SHAPE_DIR="$WORKDIR/shape"
 	git clone --quiet -- "$url" "$SHAPE_DIR" ||
 		die "could not clone $REPO into a temporary directory, so there is no
@@ -377,7 +417,7 @@ checked_ref() {
 # the doctor compares a project's copies against a standard, so it must have
 # a standard, and a single file in ~/.local/bin is not one.
 run_doctor() {
-	local py selfdir="" shape=""
+	local py selfdir="" shape="" cloned=0 kept
 	py="$(find_python)" || die "no Python 3.9 or newer on this machine (tried python3, python). \`--doctor\` is a Python program: https://www.python.org/downloads/"
 	if [ -f "$SELF" ]; then
 		selfdir="$(cd -- "$(dirname -- "$SELF")" && pwd)"
@@ -389,6 +429,7 @@ run_doctor() {
 			die "git is not installed, and with no checkout of the standard beside this command there is nothing to clone one with. Install it: https://git-scm.com/downloads"
 		shape_checkout
 		shape="$SHAPE_DIR"
+		cloned=1
 	fi
 	# NAMED, RATHER THAN LEFT TO THE INTERPRETER. A checkout at a ref older
 	# than the doctor — or a fork that does not carry it — produces a
@@ -398,11 +439,61 @@ run_doctor() {
 		die "$shape has no $DOCTOR, so there is nothing to run. That checkout is $REPO at $REF.
     Set \$OPENREPOSHAPE_REF to a ref that carries it, or run this from a checkout of the standard."
 	# RUN, never `exec`: the EXIT trap that removes a cloned checkout belongs
-	# to THIS process, and exec would replace the shell that owes it.
+	# to THIS process, and exec would replace the shell that owes it -- and
+	# the line below, which names a kept clone, is this shell's to print.
+	#
+	# IN THE PERSON'S OWN DIRECTORY, never `cd`'d anywhere: that is what
+	# resolves a relative `--root` and a relative `--placement-plan <file>`
+	# against where they typed the command, exactly as `./shape-doctor.py`
+	# would from a checkout, and never against the clone (#500).
 	set +e
-	"$py" "$shape/$DOCTOR" --root "${DOCTOR_PATH:-.}"
+	"$py" "$shape/$DOCTOR" --root "${DOCTOR_PATH:-.}" \
+		${DOCTOR_ARGS[@]+"${DOCTOR_ARGS[@]}"}
 	STATUS=$?
 	set -e
+	# THE CLONE IS KEPT, AND SAID SO LAST (#500; Brett Heap, 2026-10-13:
+	# "Keep the run's clone"). The NEXT lines the doctor prints name files in
+	# the standard it ran from -- `update-shape.py check --upstream
+	# <standard>`, `adopt-project.py plan`, `setup-project.py --preflight`,
+	# the template validators -- and the EXIT trap used to remove that
+	# standard as this command returned, so each one, pasted, died with
+	# `can't open file`. A fix that names a file nobody has is no fix.
+	#
+	# DISARMED HERE, ONCE THE DOCTOR HAS RUN, AND NOT BEFORE. A refusal on
+	# the way here (the clone failed, the ref did not check out, the ref
+	# carries no doctor) printed no NEXT line, and a run interrupted mid-way
+	# (bash runs the EXIT trap on INT, TERM and HUP too) printed no report;
+	# both leave nothing behind, as before. Beside a checkout nothing was
+	# cloned, so there is nothing to keep or to name.
+	#
+	# ON STDERR UNDER `--json`, on stdout otherwise. The JSON object on
+	# stdout is a contract a caller parses whole, and one line after it is a
+	# document `json.load` refuses; that object already names the clone, as
+	# `standard`, and its rows' `next` commands name files in it. A person at a
+	# terminal reads stderr as well, which is where this command's REFUSED
+	# lines already go. Without `--json` the line is the report's own last
+	# line, so a report saved to a file still says what it left behind.
+	#
+	# IT SAYS "ANY NEXT COMMAND ABOVE", NEVER "BECAUSE NEXT COMMANDS NAME
+	# FILES IN IT". The clone is kept whenever the doctor RAN, and the doctor
+	# can refuse (exit 3: a missing <path>, a `--placement-plan` it cannot
+	# write) with no report and no NEXT line at all; the first wording said
+	# there were NEXT commands where there were none (#500, review of
+	# 9808aec, SHOULD-1). Whether the clone is kept does not change, only
+	# what the line claims about it.
+	#
+	# IT NAMES THE DIRECTORY AND HANDS OUT NO `rm`. Every other line here
+	# that reads like a command is one to run; an agent told to run what the
+	# report names would delete the clone before the commands it holds ran.
+	if [ "$cloned" -eq 1 ]; then
+		trap - EXIT
+		kept="the standard this run used is kept at $WORKDIR, and any NEXT command above runs from it; it is safe to delete once you are done with them."
+		if [ "$DOCTOR_JSON" -eq 1 ]; then
+			say "$kept" >&2
+		else
+			say "$kept"
+		fi
+	fi
 	return "$STATUS"
 }
 
@@ -420,15 +511,51 @@ while [ $# -gt 0 ]; do
 	# `--doctor [<path>]`: the REPOSITORY diagnosis. The optional path is
 	# eaten here rather than passed on, because it is a positional and
 	# would otherwise be taken for the <Project> a scaffold run names. A
-	# word beginning with a dash is NOT the path -- it is somebody's flag,
-	# and the refusal below tells them this mode takes none.
+	# word beginning with a dash is NOT the path -- it is a flag, and the
+	# two below are the only ones this mode takes.
 	--doctor)
 		set_mode doctor; shift
 		if [ $# -gt 0 ]; then
 			case "$1" in
 			-*) ;;
-			*) DOCTOR_PATH="$1"; shift ;;
+			*) DOCTOR_PATH="$1"; DOCTOR_PATH_GIVEN=1; shift ;;
 			esac
+		fi
+		;;
+	# `shape-doctor.py`'s TWO FLAGS, HANDED ON (#500). AGENTS.md's doctor
+	# steps use both -- `--json` to act on a row by its id, `--placement-plan
+	# <file>` as the `placement` row's own NEXT -- and the installed form
+	# refused them, so a person who held no checkout could ask for neither.
+	#
+	# THEY ARE THE DOCTOR'S ONLY AFTER `--doctor`, the way a subcommand's
+	# flags follow the subcommand. Typed anywhere else they are what they
+	# always were, a lone flag passed on to setup.sh, which refuses both as
+	# unknown: a scaffold run reads these words exactly as it did before.
+	#
+	# `--placement-plan=<file>` IS WHAT REACHES THE DOCTOR, whichever way it
+	# was typed, so a <file> beginning with `-` is still a file to argparse.
+	# The separate word is refused when it begins with `-`, as argparse
+	# refuses it, so `--placement-plan --json` is not a plan written to a
+	# file called `--json`; the `=` form is the way to name such a file.
+	--json | --placement-plan | --placement-plan=*)
+		if [ "$MODE" != "doctor" ]; then
+			PASSTHROUGH+=("$1"); shift
+		elif [ "$1" = "--json" ]; then
+			DOCTOR_ARGS+=(--json); DOCTOR_JSON=1; shift
+		else
+			case "$1" in
+			--placement-plan=*) PLAN_FILE="${1#--placement-plan=}"; shift ;;
+			*)
+				PLAN_FILE="${2-}"; shift
+				case "$PLAN_FILE" in
+				-*) PLAN_FILE="" ;;
+				*) [ $# -eq 0 ] || shift ;;
+				esac
+				;;
+			esac
+			[ -n "$PLAN_FILE" ] ||
+				die "--placement-plan needs the file to write the plan to: --placement-plan <file>, or --placement-plan=<file> for a name that begins with '-'."
+			DOCTOR_ARGS+=("--placement-plan=$PLAN_FILE")
 		fi
 		;;
 	# NAMED, THOUGH `-*` BELOW WOULD ALREADY PASS IT ON. The case exists
@@ -455,19 +582,28 @@ while [ $# -gt 0 ]; do
 	--) shift; PASSTHROUGH+=(-- "$@"); break ;;
 	-*) PASSTHROUGH+=("$1"); shift ;;
 	*)
+		# AFTER `--doctor` AND ITS FLAGS, THE ONE PATH IT HAS NOT YET HAD:
+		# `--doctor --json ../Atlas` is the same run as `--doctor ../Atlas
+		# --json` (#500). A word before `--doctor`, or a second path, is
+		# still a <Project>, and the doctor refuses it below as before.
+		if [ "$MODE" = "doctor" ] && [ "$DOCTOR_PATH_GIVEN" -eq 0 ]; then
+			DOCTOR_PATH="$1"; DOCTOR_PATH_GIVEN=1; shift; continue
+		fi
 		[ -z "$PROJECT" ] || die "two project names, '$PROJECT' and '$1'. One positional <Project>, then flags."
 		PROJECT="$1"; shift ;;
 	esac
 done
 
 if [ "$MODE" = "doctor" ]; then
-	# ONE PATH AND NOTHING ELSE. Every other argument this command knows is
-	# about a run that CREATES something, and silently ignoring one typed
-	# alongside `--doctor` would answer a question nobody asked. `--json`
-	# is `shape-doctor.py`'s and reaches it from a checkout, deliberately
-	# not plumbed through here while the mode is one path wide.
+	# ONE PATH AND THE DOCTOR'S TWO FLAGS, NOTHING ELSE. Every other
+	# argument this command knows is about a run that CREATES something, and
+	# silently ignoring one typed alongside `--doctor` would answer a
+	# question nobody asked. `--json` and `--placement-plan` were refused
+	# here too until #500, while the mode was one path wide; they are
+	# `shape-doctor.py`'s own, and are handed on above.
 	[ -z "$PROJECT" ] && [ -z "$ORG" ] && [ ${#PASSTHROUGH[@]} -eq 0 ] ||
-		die "--doctor takes a path and nothing else; it reads a repository and writes nothing.
+		die "--doctor takes a path, --json and --placement-plan <file>, and nothing else; it reads a repository and writes nothing into it.
+    openRepoShape --doctor [<path>] [--json] [--placement-plan <file>]
     To scaffold, drop --doctor. To check this machine, run: openRepoShape --preflight"
 	set +e
 	run_doctor

@@ -727,14 +727,14 @@ it satisfies no leg form to be admitted into, and is still refused as any leg.
 
 ## Adopting an existing repository
 
-A repository that already exists is converted **in place**, by
-`adopt-project.py`, and this is a ruling (**Brett Heap, 2026-09-02**): it KEEPS
-ITS NAME, ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly root, while
-`<Project>-spec` and `<Project>-code` are NEW repositories extracted with
-history-preserving filters. The source is never deleted, never renamed and never
-force-pushed; the only change to its history is ONE split commit, arriving on a
-branch by pull request — the organisations this serves are pull-request only,
-and a tool needing a bypass cannot be used where it is needed.
+A repository that already exists is converted **in place**, by `adopt-project.py`,
+and this is a ruling (**Brett Heap, 2026-09-02**): it KEEPS ITS NAME, which
+`--project` must be, ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly
+root, while `<Project>-spec` and `<Project>-code` are NEW repositories extracted
+with history-preserving filters. The source is never deleted, never renamed and
+never force-pushed; the only change to its history is ONE split commit, arriving
+on a branch by pull request — the organisations this serves are pull-request
+only, and a tool needing a bypass cannot be used where it is needed.
 
 ```sh
 ./adopt-project.py plan --source MedxSoft/MedxEHR --project MedxEHR
@@ -1041,9 +1041,9 @@ HAND: re-copy, re-pin, re-validate. `update-shape.py` is that, as one command:
 product: **`unchanged`**, **`upstream-changed`** (the bytes differ between the
 pinned commit and the target), **`locally-modified`** (the project's bytes
 differ from the pinned digest — drift it introduced) or **`both`**; also
-`already-at-target` (the root has the target's bytes) and `upstream-removed`,
-`unmapped` and `copy-missing`; `apply` refuses the last three. It exits 1 when
-there is anything to do, so it can be a scheduled job.
+`already-at-target` (the root has the target's bytes), `merged-away` (below),
+`upstream-removed`, `unmapped` and `copy-missing`; `apply` refuses the last
+three. It exits 1 when there is anything to do, so it can be a scheduled job.
 
 `apply` copies the `upstream-changed` files, rewrites `contracts/shape-pin.yaml`
 (`commit`, `digests.tree_sha256` recomputed over the upstream tree under the
@@ -1066,9 +1066,9 @@ copying the upstream bytes over that would delete it without saying so.
 **Only the pin's own rows are RE-SYNCED.** The file list is read from
 `contracts/shape-pin.yaml` and never re-derived from this repository's copy
 lists. An in-place adoption collides on `Makefile`, `README.md` and
-`.gitignore`; the shape's copies land under `shape/`, a human merges them and
-usually drops the rows. A file with no row is not a shape copy, and re-deriving
-the list would resurrect one the project deliberately merged away.
+`.gitignore`; the shape's copies land under `shape/`. Once a human merges one
+and removes it, `check` calls its row `merged-away` and `apply` drops the row.
+A file with no row is no shape copy; re-deriving the list would resurrect it.
 
 **A file the standard ADDS later is the other half, and it is named, never
 assumed.** A pin can only record what existed the day it was written, so
@@ -1109,11 +1109,11 @@ openRepoShape --doctor                 # the repository you are standing in
 ./shape-doctor.py --root ../MedxEHR --json
 ```
 
-It **writes nothing and fetches nothing**, and it reimplements nothing: every
-row is one of the checks this file already documents. The standard a project's
-copies are compared against is the checkout the script is RUN FROM — beside
-one it uses that one, installed it clones the standard into a temporary
-directory first — which is what makes the verdict offline.
+It **writes nothing into the repository and fetches nothing from it**, and it
+reimplements nothing: each row is a check this file documents. It compares
+against the checkout it is RUN FROM, so the verdict is offline. Installed, it
+clones the standard into a temporary directory and KEEPS it, because its NEXT
+lines run from there: its last line names it, safe to delete after they run.
 
 For an assembly root the rows are **naming** (this standard's own
 `contracts/repository-naming.yaml`), **manifest** and **pins** (the project's
@@ -1168,7 +1168,7 @@ next command. `MISPLACED` sits between the two: a path in the wrong leg is a
 fact about the shape no validator, pin or manifest here can see. **An
 unfinished merge outranks all three**, as `INVALID (merge)`: the conflict is
 what turns the other rows red, and no fix commits until it is finished.
-`--json` is the same report as one object, each row carrying its `id`.
+`--json` is the same report as one object on stdout, each row carrying its `id`.
 
 **`placement` is the row that reads what is *inside* the legs.** Brett Heap,
 2026-09-10: *"we have to look for code in spec and spec in code"*. It runs the
@@ -1209,7 +1209,7 @@ is already split. `adopt-project.py` refuses this kind by name, and the refusal
 says which tool consumes one. A later `--fix --plan <file>` will carry a
 **resolved** plan out by paired leg pull requests and a pin bump, printing what
 it will do and asking first; until then the moves are yours. `--placement-plan`
-is the only thing this command writes, and it writes only the file you name.
+is all `shape-doctor.py` ever writes, and it writes only the file you name.
 
 **`machine` is the one row that is not about the repository**, so it is `n/a`
 by status and can never move the verdict: a workstation with no `gh` is not

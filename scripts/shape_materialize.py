@@ -679,6 +679,12 @@ def collision_follow_up(intended: str, actual: str,
     Where the root's `scripts/bootstrap.py` is the source's own, that command
     runs the source's script and exits 0, so the follow-up names no command,
     and says both merges come first (#493's review, F2).
+
+    AND A PINNED COPY'S FOLLOW-UP SAYS WHAT HAPPENS TO ITS ROW (#502). The
+    shape pin has a row for a copied file at the path it landed on, so once
+    the merged copy is removed that row names a file that is not there, and
+    the project's own `validate-pins.py` is red until `update-shape.py
+    apply` drops it. A rendered file, `README.md` among them, has no row.
     """
     if intended in ASSISTANT_INSTRUCTIONS:
         return (
@@ -692,6 +698,10 @@ def collision_follow_up(intended: str, actual: str,
         f"merge {actual} into {intended}: the source repository already has "
         "that name, so the shape's copy was written beside it and NOTHING was "
         "overwritten")
+    if intended in COPIED_VERBATIM or any(rel == intended
+                                          for _, rel in COPIED_FROM_SHAPE):
+        merge += (f". Then remove {actual}: `update-shape.py check` reports "
+                  "its pin row `merged-away`, and `apply` drops the row")
     if intended != "Makefile":
         return merge
     targets = ", ".join(f"`{target}`" for target in SHAPE_MAKE_TARGETS)
@@ -1853,6 +1863,22 @@ def _local_strays(src: Path) -> frozenset[str]:
                      if name)
 
 
+def template_files(src: Path) -> list[str]:
+    """Every file `copy_tree` copies out of the template tree `src`, in its
+    order, relative to `src` in POSIX spelling: what a leg seeded from `src`
+    holds.
+
+    ONE LISTING, read by `copy_tree` and by `adopt-project.py check`, which
+    follows a symlink the plan keeps into a seeded leg's mount and must find
+    there what `execute` will have written (#183).
+    """
+    strays = _local_strays(src)
+    return [rel for rel in (path.relative_to(src).as_posix()
+                            for path in sorted(src.rglob("*"))
+                            if not path.is_dir())
+            if rel not in strays]
+
+
 def copy_tree(src: Path, dst: Path, values: dict[str, str]) -> list[str]:
     """Copy a template tree, substituting placeholders in every text file.
 
@@ -1863,12 +1889,9 @@ def copy_tree(src: Path, dst: Path, values: dict[str, str]) -> list[str]:
     neither copied nor returned, so an operator's `.vscode/settings.json` in
     `templates/spec-root/` is never forced into a new leg.
     """
-    strays = _local_strays(src)
     written: list[str] = []
-    for path in sorted(src.rglob("*")):
-        if path.is_dir() or path.relative_to(src).as_posix() in strays:
-            continue
-        target = dst / path.relative_to(src)
+    for rel in template_files(src):
+        path, target = src / rel, dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         write_lf(target, render(path.read_text(encoding="utf-8"), values,
                                 str(path)))
@@ -1970,7 +1993,7 @@ def materialize_assembly_root(shape_root: Path, target: Path,
                               collision_dir: str | None = None,
                               append: dict[str, str] | None = None,
                               neutral_pins: dict[str, dict] | None = None,
-                              ) -> Materialized:
+                              spell=None) -> Materialized:
     """Write the assembly-root skeleton into `target`.
 
     `collision_dir` — where a template file goes when the target path is
@@ -1982,12 +2005,18 @@ def materialize_assembly_root(shape_root: Path, target: Path,
 
     `neutral_pins` maps a neutral product name to the values for its pin file,
     each rendered from `contracts/neutral-product-pin.yaml`.
+
+    `spell` writes each path a refusal names (#183's `materialize-*`), as
+    `first_and_more` takes one: between backticks when it is None, which is
+    all the scaffold's own paths need. `adopt-project.py` passes its
+    `_spelled`, because the source it adopts can hold a symlink to any name.
     """
     return _materialize(
         shape_root, shape_root / "templates" / "assembly-root", target, values,
         templated=TEMPLATED, verbatim=COPIED_VERBATIM,
         from_shape=COPIED_FROM_SHAPE, executable=EXECUTABLE,
-        collision_dir=collision_dir, append=append, neutral_pins=neutral_pins)
+        collision_dir=collision_dir, append=append, neutral_pins=neutral_pins,
+        spell=spell)
 
 
 def assembly_root_paths(neutral_pins=()) -> tuple[str, ...]:
@@ -2000,13 +2029,16 @@ def assembly_root_paths(neutral_pins=()) -> tuple[str, ...]:
     declared pin is written to (`neutral_pin_path`) and the pin it writes
     last, never kept by hand: `adopt-project.py` (#172) and
     `scaffold-project.py` (#197) refuse a leg mount path that overlaps one of
-    these, and a second list would let the shape gain a file the refusal
-    does not know about. `EXECUTABLE` adds no path (it marks paths the lists
-    already write), and a collision moves a path under the caller's
-    `collision_dir`, which is the caller's to name.
-    `tests/test_adopt_leg_path_collisions.py` and
+    these, and `adopt-project.py check` follows each of them through the
+    symlinks a plan keeps in the root before any leg exists (#178). A second
+    list would let the shape gain a file the refusal does not know about,
+    or one that `check` does not follow. `EXECUTABLE` adds no path (it
+    marks paths the lists already write), and a collision moves a path
+    under the caller's `collision_dir`, which is the caller's to name.
+    `tests/test_adopt_leg_path_collisions.py`,
+    `tests/test_adopt_root_symlinks.py` and
     `tests/test_scaffold_leg_path_collisions.py` materialize into an empty
-    directory and hold this to what was written, the second with pins too.
+    directory and hold this to what was written, the last with pins too.
     """
     return (*TEMPLATED, *COPIED_VERBATIM,
             *(rel for _, rel in COPIED_FROM_SHAPE),
@@ -2585,11 +2617,217 @@ def materialize_family_root(shape_root: Path, target: Path,
         from_shape=FAMILY_COPIED_FROM_SHAPE, executable=FAMILY_EXECUTABLE)
 
 
+# ---------------------------------------------------------------------------
+# Writing only where the shape's files belong (#183)
+# ---------------------------------------------------------------------------
+#
+# An adoption materializes INTO a clone of the source, and the plan can keep a
+# symlink in the root at or above a path the shape writes. `.github -> ci`,
+# with `ci/` in the same tree, is followed, and the workflow lands in `ci/`.
+# A link that led out of the clone was followed too, and the shape's
+# `validate.yml` went into a directory nobody named. A link round a loop, a
+# link to nothing, or a checkout with `core.symlinks=false` (which writes each
+# symlink as a plain FILE) ended in a Python traceback after both legs had
+# been pushed. `adopt-project.py check` reports such a link before any leg
+# exists. The refusals below apply the same rule where the files are
+# written, for a caller that skipped `check`.
+#
+# A symlink AT a path the shape writes, whose destination is already there,
+# is never written through: `place` sees the path taken and writes the
+# shape's copy beside it, under the collision directory. A symlink at or above
+# that COPY was followed, and the copy landed on whatever it led to: over the
+# source's own `README.md` for `shape -> .`, or into a directory, in a
+# traceback. Where a copy lands is `copy_in_the_way`'s question (#262), which
+# `place` asks first, a symlink on the way or not; what is asked here is
+# what still holds for the copy after it, as for any other path.
+
+#: How many symlinks one lookup follows: Linux's own limit (MAXSYMLINKS),
+#: past which `open()` gives up with ELOOP, whether the links go round a loop
+#: or only chain that far. `adopt-project.py` follows the plan's tree and the
+#: split commit's by the same count. macOS gives up after 32, so a chain of 33
+#: to 40 passes here and fails there, as it did before #183.
+SYMLINK_HOPS = 40
+#: What a lookup that follows more than `SYMLINK_HOPS` symlinks has met. It
+#: cannot tell a loop from a long chain, and need not: `open()` gives up on
+#: both. `adopt-project.py`'s finding says it in the same words.
+TOO_MANY_SYMLINKS = (f"more than {SYMLINK_HOPS}, round a loop or along a "
+                     "chain longer than Linux's `open()` follows")
+
+#: What each refusal below says to do. It is raised BEFORE the `mkdir` and the
+#: write, so nothing was written at the path it names. It does not send the
+#: reader to `adopt-project.py check`: `check` reports what is in the way
+#: before any leg exists (a symlink as `plan-root-symlink`, #183; a plain
+#: FILE where the shape needs a directory as `plan-root-blocks-shape`, #263),
+#: and `execute` refuses it there, so this refusal is met only by a caller
+#: that skipped `check`.
+#: It names the work directory as #200's mount remediation does: by now
+#: `execute` has cloned both legs into it, and a re-run cannot clone there.
+UNWRITABLE_REMEDIATION = (
+    "Remediation: nothing was written at that path. The shape writes its "
+    "files only inside the directory it is given, only beneath directories, "
+    "and through a symlink only when its relative target stays inside and "
+    "leads where nothing is yet. What is in the way is the source "
+    "repository's own: when adopting, send it to a leg or `drop` it in the "
+    "plan, and run `execute` again with fresh leg repositories and an empty "
+    "`--work-dir`, or none: a `--work-dir` this run was given still holds "
+    "its clones of both legs, and the next run cannot clone into them.")
+
+#: The parts of a path that name no entry of their own: `open()` takes each
+#: of them only from a directory that is there.
+NOT_A_NAME = ("", ".", "..")
+
+#: The refusal for a path something in the way stops the shape writing.
+BLOCKED = "materialize-blocked"
+
+
+def _ticked(name: str) -> str:
+    """`name` between backticks: how a refusal below names a path when its
+    caller passes no `spell`, as `first_and_more` names one. The shape's own
+    paths need nothing more. `adopt-project.py` passes its `_spelled`,
+    because a source's symlink can lead to a name holding a line break or an
+    ESC, and #212 keeps every refusal on its one line."""
+    return f"`{name}`"
+
+
+def _link_parts(here: Path, at: str, rel: str, target: Path, hops: int,
+                name) -> list[tuple[str, str]]:
+    """The target of the symlink `here` (spelled `at`) as path parts, each
+    with `at`, or a refusal when it is one hop more than `open()` follows,
+    it is empty, or it is absolute. `name` writes each path a refusal names.
+
+    An empty target is not `.`: `open()` finds nothing through it, and the
+    parts below would read it as the directory the link is in."""
+    if hops > SYMLINK_HOPS:
+        raise Refusal("materialize-symlink-loop",
+                      f"{name(rel)} follows too many symlinks at {name(at)} "
+                      f"in {target}: {TOO_MANY_SYMLINKS}",
+                      UNWRITABLE_REMEDIATION)
+    link = os.readlink(here)
+    if not link:
+        raise Refusal(BLOCKED,
+                      f"{name(rel)} cannot be written: the symlink "
+                      f"{name(at)} has an empty target, which leads nowhere",
+                      UNWRITABLE_REMEDIATION)
+    if os.path.isabs(link) or os.path.splitdrive(link)[0]:
+        raise Refusal(
+            "materialize-outside",
+            f"{name(rel)} would be written through the symlink {name(at)}, "
+            f"which leads to the absolute path {name(link)}; the shape "
+            f"follows only a symlink whose relative target stays inside "
+            f"{target}",
+            UNWRITABLE_REMEDIATION)
+    # Windows reads a link back in its own separator; a POSIX name may hold
+    # a backslash, so only the platform's own separator is translated.
+    return [(part, at) for part in link.replace(os.sep, "/").split("/")]
+
+
+def _from_a_directory(target: Path, rel: str, done: list[str], part: str,
+                      via: str, name) -> None:
+    """Refuse `part`, a `..`, `.` or empty part of the target of the symlink
+    `via`, where `open()` cannot take it: `..` above `target`, or any of
+    them after something that is not a directory. `open()` takes them
+    physically, so `a/..` fails where `a` is missing (FileNotFoundError) or
+    a file (NotADirectoryError), and `ci/` where `ci` is missing
+    (IsADirectoryError): each was a traceback after both legs."""
+    if not done:
+        if part == "..":
+            raise Refusal(
+                "materialize-outside",
+                f"{name(rel)} would be written outside {target}: at the "
+                f"symlink {name(via)} it climbs above it",
+                UNWRITABLE_REMEDIATION)
+        return
+    here = target.joinpath(*done)
+    if not here.is_dir():
+        raise Refusal(
+            BLOCKED,
+            f"{name(rel)} cannot be written: the target of the symlink "
+            f"{name(via)} goes on from {name(root_key(here, target))}, which "
+            "is not a directory here",
+            UNWRITABLE_REMEDIATION)
+
+
+def _followed(target: Path, rel: str, name) -> list[str]:
+    """`rel` under `target` with each symlink on the way followed, the way
+    `open()` follows them: the parts it lands on, relative to `target`. A
+    refusal when one leads out of `target`, when there are more of them than
+    `open()` follows, or when one leads on from something that is not a
+    directory."""
+    parts = [(part, "") for part in rel.split("/")]
+    done: list[str] = []
+    hops = 0
+    while parts:
+        part, via = parts.pop(0)
+        if part in NOT_A_NAME:
+            _from_a_directory(target, rel, done, part, via, name)
+            if part == "..":
+                done.pop()
+            continue
+        here = target.joinpath(*done, part)
+        if here.is_symlink():
+            hops += 1
+            parts = _link_parts(here, root_key(here, target), rel, target,
+                                hops, name) + parts
+        else:
+            done.append(part)
+    return done
+
+
+def _blocker(target: Path, rel: str, landed: list[str],
+             name) -> str | None:
+    """What stands where `rel` needs a directory, or where a symlink at it
+    leads, or None.
+
+    `mkdir(parents=True)` makes a MISSING directory and everything below it,
+    and passes through a directory or a symlink to one. It cannot pass a
+    file, or a symlink that leads to no directory, and it raised a traceback
+    there. A symlink at `rel` itself is written through only into a
+    directory that is already there. No path reaches here with something
+    already where it lands: `place` writes the shape's copy beside a path
+    that is taken, and asks `copy_in_the_way` (#262) where the copy lands
+    before it asks this.
+    """
+    parts = rel.split("/")
+    for end in range(1, len(parts)):
+        above = target.joinpath(*parts[:end])
+        if above.is_dir():
+            continue
+        if above.is_symlink():
+            return (f"{name(root_key(above, target))} is a symlink to "
+                    f"{name(os.readlink(above))}, which is not a directory "
+                    "here")
+        if above.exists():
+            return (f"{name(root_key(above, target))} is a file, not a "
+                    "directory")
+        return None
+    path = target / rel
+    if path.is_symlink() and not target.joinpath(*landed[:-1]).is_dir():
+        return (f"the symlink {name(rel)} leads to {name(os.readlink(path))}, "
+                "and there is no directory there to write it in")
+    return None
+
+
+def _refuse_unwritable(target: Path, rel: str, spell=None) -> None:
+    """Refuse, before the `mkdir` and the write, a path the shape must not
+    write at (outside `target`, or through too many symlinks) or cannot
+    (#183). `spell` writes each path the refusal names, `_ticked` where it
+    is None.
+    `target` itself is the directory the caller gave, and is named as it
+    is, as `materialize-collision` names it."""
+    name = spell or _ticked
+    blocker = _blocker(target, rel, _followed(target, rel, name), name)
+    if blocker:
+        raise Refusal(BLOCKED,
+                      f"{name(rel)} cannot be written: {blocker}",
+                      UNWRITABLE_REMEDIATION)
+
+
 def _materialize(shape_root: Path, template_root: Path, target: Path,
                  values: dict[str, str], *, templated, verbatim, from_shape,
                  executable, collision_dir: str | None = None,
                  append: dict[str, str] | None = None,
-                 neutral_pins: dict[str, dict] | None = None) -> Materialized:
+                 neutral_pins: dict[str, dict] | None = None,
+                 spell=None) -> Materialized:
     """The shared body. Four lists in, one `Materialized` out.
 
     The order is load-bearing and is the same for every root: templated files
@@ -2631,6 +2869,7 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
                     "given.")
             result.collisions.append((rel, actual))
             path = target / actual
+        _refuse_unwritable(target, root_key(path, target), spell)
         path.parent.mkdir(parents=True, exist_ok=True)
         write(path)
         rel_written = root_key(path, target)
@@ -2775,9 +3014,11 @@ def copy_out(src: Path, dst: Path) -> None:
 
 #: `D:\work\Thing` or `D:/work/Thing` — a Windows absolute path, in either
 #: spelling. `_spelling_reason` below asks it whether a leg path is a drive
-#: letter's. adopt-project.py imports it too, for its own `--source` flag:
-#: `Source.open` there tells a path the operator got wrong from a repository
-#: name. `--source` and `Source.open` are adopt-project.py's, not this file's.
+#: letter's. adopt-project.py imports it too, for two questions of its own:
+#: `Source.open` tells a `--source` path the operator got wrong from a
+#: repository name, and `_PlannedRoot` asks, on Windows only, whether a
+#: symlink the plan keeps leads to an absolute place on that machine. Both
+#: are adopt-project.py's, not this file's.
 WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 #: Git's own names, casefolded: a leg cannot be mounted at a segment spelled

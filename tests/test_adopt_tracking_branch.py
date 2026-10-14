@@ -179,7 +179,9 @@ def test_the_branches_asked_are_origins_once_the_source_has_fetched_any(
     `plan` notes it and `check` finds it, naming `origin`."""
     seed = make_source_repo(tmp_path / "seed", tree=TREE, edits=())
     git("branch", "develop", cwd=seed)
-    remote = tmp_path / "Northwind.git"
+    # Under `testorg/`: `plan` reads the source's repository from its
+    # `origin`'s last two directories, and the plan's must be it (#499).
+    remote = tmp_path / "testorg" / "Northwind.git"
     git(*FILE_PROTOCOL, "clone", "-q", "--bare", str(seed), str(remote),
         cwd=tmp_path)
     source = tmp_path / "Northwind"
