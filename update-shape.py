@@ -81,7 +81,15 @@ recording an identity, so this tool never records one it cannot justify:
     `check` calls such a copy `copy-is-link` and `apply` refuses it; both
     refuse a linked pin or manifest. Each refusal is `update-rewrite-symlink`,
     before anything is written, as `--add` refuses a link at a path it would
-    create as `update-add-symlink`.
+    create as `update-add-symlink`. Nor through a HARD LINK (#422): a file
+    with a second name — outside the root, or in a `cp -al` snapshot of it
+    — is the same bytes under both, so a rewrite in place would change the
+    other name too, which no pin covers and git does not record. `apply`
+    refuses each file it would rewrite that has one — a copy it copies, the
+    pin, the manifest, a `.gitattributes` whose block `--add` extends — as
+    `update-rewrite-hardlink`, before anything is written, and `check` says
+    so first in a `REFUSAL AHEAD` line; the row keeps its verdict, since the
+    copy holds the right bytes. A hard-linked `README.md` is kept, as ever.
 
 ONLY THE PIN'S OWN ROWS ARE CONSIDERED. The set of shape files is read from
 `contracts/shape-pin.yaml`, never re-derived from this repository's copy
@@ -1142,8 +1150,8 @@ def link_refusal(path: str, link: tuple[str, str]) -> Refusal:
     a pinned copy, or the pin, kept as a link was still rewritten through
     it; `rewrite_link_refusal` now refuses those, so the sentence is true of
     every write `apply` makes. It says SYMLINK, not "link": a HARD link is
-    another name for the same bytes, which `Rollback.write` still writes
-    through everywhere but the README.
+    another name for the same bytes, refused in words of its own
+    (`update-rewrite-hardlink`, #422).
     """
     name = link[0]
     return Refusal(
@@ -2033,6 +2041,7 @@ def cmd_check(args) -> int:
         if conflicts:
             print("REFUSAL AHEAD: `apply` will refuse while these are "
                   "unresolved — " + ", ".join(row.path for row in conflicts))
+        _say_hard_links_ahead(root, rows)
         # NOT AN --add `apply` WOULD REFUSE (#285): a path under a file the
         # root keeps is reported above, with why, but a flag to paste that
         # is known to fail is the tool handing a human a wrong answer.
@@ -2443,11 +2452,29 @@ class Rollback:
         was written before it. What the walk cannot see is a link that
         arrives in the instant between it and the open, as
         `write_added` cannot see one that arrives above its path.
+
+        NOR THROUGH A HARD LINK (#422). `r+b` overwrites the bytes where they
+        are, and a file with a second name — anywhere on this filesystem, a
+        `cp -al` snapshot of the whole root included — is the same bytes
+        under both, so that other name would change too: a file no `check`
+        showed and no pin covers, while git records only this one. `apply`
+        refuses every such file before `confirm` waits
+        (`_refuse_hard_linked_rewrites`); this asks the same question,
+        `hard_links`, after the symlink walk and before anything is read or
+        recorded, for a name that arrived while it waited, and the same
+        refusal arm puts back what was written before it. NOT BY REPLACE,
+        which is the other way to write and the one the README's own guard
+        rejects: a new file moved in with `os.replace` leaves the other name
+        holding the old bytes and the link broken, and a broken link is not
+        something `undo` can put back.
         """
         rel = self._name(path)
         link = symlink_on_the_way(self.root, rel)
         if link is not None:
             raise rewrite_link_refusal([(rel, link)], arrived=True)
+        names = hard_links(path)
+        if names:
+            raise hard_link_refusal(self.root, [(rel, names)], arrived=True)
         with path.open("r+b") as handle:
             self.written.setdefault(path, handle.read())
             handle.seek(0)
@@ -2880,6 +2907,160 @@ def _refuse_linked_copies(rows: list[Row]) -> None:
         raise rewrite_link_refusal(linked)
 
 
+def hard_links(path: Path) -> int:
+    """How many names `path` has on this filesystem when it is a REGULAR
+    FILE with more than one — a hard link — and 0 otherwise: one name, not
+    a regular file, or nothing `lstat` can read (#422).
+
+    THE ONE QUESTION, AND EVERY CALLER ASKS THIS ONE: `check`'s `REFUSAL
+    AHEAD` line and `apply`'s refusal before `confirm`, both through
+    `hard_linked_rewrites`, and `Rollback.write` at the write itself.
+    `lstat`, so a symlink at the path is never followed to the count of
+    the file it leads to: it is not a regular file here, and it is #286's,
+    refused before this is asked. NTFS fills `st_nlink` as POSIX does,
+    which is how the README's own guard (`ReadmeShapeLine`) already reads
+    it on every platform.
+    """
+    try:
+        info = os.lstat(path)
+    except (OSError, ValueError):
+        return 0
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink < 2:
+        return 0
+    return info.st_nlink
+
+
+def hard_linked_rewrites(root: Path, rows: list[Row], kind: Kind,
+                         taking: list[Addition] = ()
+                         ) -> list[tuple[str, int]]:
+    """Every file `apply` will rewrite IN PLACE that has another name on
+    this filesystem, as `(path, names)`, in the order it writes them (#422).
+
+    What `apply` rewrites is what is asked about: each copy it copies (an
+    `upstream-changed` row), `contracts/shape-pin.yaml` and the manifest,
+    which every run that writes at all rewrites, and the root's own
+    `.gitattributes` when the `--add` files in `taking` would extend its
+    line-ending block (#511) — asked of `extend_eol_block` as
+    `_extend_the_eol_block` asks it, without writing. `check` passes no
+    `taking`: it has no `--add` to know about.
+
+    NOT `README.md`. Its reader already keeps a hard-linked README and says
+    so (`README_HARDLINK`), which is the answer for prose this standard does
+    not own; refusing the whole re-pin over it would take that answer away.
+    Nor a row `apply` keeps, re-pins from its own bytes or drops: nothing
+    is written at its path.
+    """
+    paths = [row.path for row in rows if row.state == UPSTREAM_CHANGED]
+    attributes = root / ATTRIBUTES
+    if taking and hard_links(attributes):
+        try:
+            before = attributes.read_bytes()
+        except OSError:
+            before = None
+        after = (extend_eol_block(before, [add.path for add in taking])
+                 if before is not None else None)
+        if after is not None and after != before:
+            paths.append(ATTRIBUTES)
+    paths += [SHAPE_PIN, kind.manifest]
+    linked = []
+    for path in dict.fromkeys(paths):
+        names = hard_links(root / path)
+        if names:
+            linked.append((path, names))
+    return linked
+
+
+def hard_link_refusal(root: Path, linked: list[tuple[str, int]],
+                      arrived: bool = False) -> Refusal:
+    """`update-rewrite-hardlink`: a file `apply` rewrites in place has
+    another name on this filesystem (#422). `linked` is `[(path, names)]`,
+    `names` being `hard_links`' count for `path`.
+
+    `update-rewrite-symlink`'s twin, for a second NAME rather than a link,
+    and raised the same two ways: before `confirm`, by
+    `_refuse_hard_linked_rewrites`, for every such file at once; and, with
+    `arrived`, by `Rollback.write` for a name that arrived while `confirm`
+    waited. One path is one line, several are a list, as there.
+
+    THE REMEDY BREAKS THE LINK FROM THIS SIDE. A copy of the file put in
+    its place — the same bytes, as a new file — leaves the other name
+    holding its own, and git sees no change at the path, so there is
+    nothing to commit before the same command is run again. Each line is
+    quoted for a POSIX shell, as `_by_hand`'s are, and `cp -p` keeps the
+    mode, so a validator that was executable stays so.
+    """
+    many = len(linked) > 1
+    sentences = (["It had no other name when this run looked: one arrived "
+                  "while `apply` ran, after this run had decided what to "
+                  "write."] if arrived else [])
+    sentences.append(
+        "A rewrite in place changes the bytes under every name they have, "
+        "so it would change "
+        + ("those other files" if many else "that other file")
+        + " too — outside this root, or in a snapshot of it — which no "
+        "`check` showed, no pin covers and git does not record. This "
+        "command never writes through a hard link")
+    if many:
+        detail = ("`apply` would rewrite these files in place, but each has "
+                  "another name on this filesystem:\n"
+                  + "\n".join(f"    {path}: {names} names"
+                              for path, names in linked)
+                  + "".join(f"\n  {sentence}" for sentence in sentences))
+    else:
+        path, names = linked[0]
+        detail = " ".join([f"`apply` would rewrite {path} in place, but it "
+                           f"has {names} names on this filesystem.",
+                           *sentences])
+    lines = []
+    for path, _ in linked:
+        here = str(root / path)
+        copy = f"{here}.update-shape-copy"
+        lines.append(shlex.join(["cp", "-p", "--", here, copy]) + " && "
+                     + shlex.join(["mv", "-f", "--", copy, here]))
+    return Refusal(
+        "update-rewrite-hardlink", detail,
+        "Remediation: replace " + ("each file" if many else "the file")
+        + " with a copy of itself — the same bytes as a new file at the "
+        "same path, so the other name keeps its own — then run this "
+        "command again. git sees no change there, so there is nothing to "
+        "commit:" + "".join(f"\n    {line}" for line in lines))
+
+
+def _refuse_hard_linked_rewrites(root: Path, rows: list[Row], kind: Kind,
+                                 taking: list[Addition]) -> None:
+    """`update-rewrite-hardlink` for every file this run will rewrite that
+    has another name, before `confirm` and before any write (#422).
+
+    ASKED RIGHT AFTER `update-rewrite-symlink`'s copies, and before
+    `update-conflict` and `update-local-drift`: like a link, a second name
+    is no merge and no local edit, so neither remedy is its answer.
+    """
+    linked = hard_linked_rewrites(root, rows, kind, taking)
+    if linked:
+        raise hard_link_refusal(root, linked)
+
+
+def _say_hard_links_ahead(root: Path, rows: list[Row]) -> None:
+    """`check`'s `REFUSAL AHEAD` line for the files `apply` would refuse to
+    rewrite because each has another name (#422): the copies it would
+    copy, the pin and the manifest. The manifest is the one `root_kind`
+    reads from the tree, as `prepare` read it.
+
+    A LINE, NEVER A ROW STATE. A hard-linked copy holds the right bytes, so
+    it is not drift, and a state of its own — or `copy-is-link`'s — would
+    have the doctor's `shape currency` row call the project DRIFTED over
+    nothing wrong in its tree. Every row keeps its verdict, and the doctor,
+    which reads the rows, reads what it always read.
+    """
+    linked = hard_linked_rewrites(root, rows, root_kind(root))
+    if linked:
+        print("REFUSAL AHEAD: `apply` will refuse to rewrite these in place "
+              "while each has another name on this filesystem (a hard "
+              "link; replace it with a copy of itself) — "
+              + ", ".join(f"{path} ({names} names)"
+                          for path, names in linked))
+
+
 def _refuse_conflicts(rows: list[Row], accepted: set) -> None:
     """The `update-conflict` refusal, split out of `cmd_apply` for #133.
 
@@ -3256,6 +3437,7 @@ def cmd_apply(args) -> int:
                   "already names")
             return 0
         _refuse_linked_copies(rows)
+        _refuse_hard_linked_rewrites(root, rows, kind, taking)
         _refuse_conflicts(rows, accepted)
         _refuse_local_drift(rows, accepted)
         if args.branch:
