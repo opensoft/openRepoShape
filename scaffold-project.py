@@ -781,9 +781,11 @@ def _declaration(args) -> tuple[dict, set, tuple, dict]:
     `codexDox` pins `openXdox` and reaches `openDox` through it; the chain is a
     DECLARATION, so it is checked by `_check_declared_names` below and written
     into the manifest rather than re-derived by every reader. A link is
-    verified against its own tree when `--pin-source` (or
-    `SHAPE_PIN_SOURCE_<PRODUCT>`) points at one, and is declared-unverified
-    otherwise — a warning, never a refusal, because the check is offline.
+    verified against its own tree when `SHAPE_PIN_SOURCE_<PRODUCT>` points
+    at one, or `--pin-source` for the FIRST link alone (#441: it is the
+    pinned product's checkout, never a later link's tree), and is
+    declared-unverified otherwise — a warning, never a refusal, because the
+    check is offline.
 
     A tree `--pin-source` reached whose declaration could not be read (a
     `neutral_product_pins:` that is not a list of names) is declared-unverified

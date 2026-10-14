@@ -884,14 +884,18 @@ options:
                         or of a leg's naming.referent_chain: under --project),
                         and then that reading wins even over a directory
                         spelled like the whole value (./PATH reads that
-                        directory); any other value is a bare PATH, which
-                        applies to whichever link has no more specific answer.
-                        Repeatable; a value no link used is noted.
-                        SHAPE_PIN_SOURCE_<PRODUCT> and a checkout beside the
-                        project are tried too. A link no source answers for is
-                        declared-unverified, and a source that cannot be read
-                        is named with the system's reason: both are warnings
-                        and not findings, an explicit source included.
+                        directory); any other value is a bare PATH: the tree
+                        of the chain's FIRST link (the pin the project holds),
+                        read when that link has no more specific answer, and
+                        never a later link's, which needs its own
+                        PRODUCT=PATH. A value that names no path (PRODUCT=, or
+                        empty) is refused. Repeatable; a value no link used is
+                        noted. SHAPE_PIN_SOURCE_<PRODUCT> and a checkout
+                        beside the project are tried too. A link no source
+                        answers for is declared-unverified, and a source that
+                        cannot be read is named with the system's reason: both
+                        are warnings and not findings, an explicit source
+                        included.
   --explain             print every family each name satisfies, why one of
                         them won, and what the others are recorded as
   --quiet
