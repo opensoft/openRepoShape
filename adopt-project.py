@@ -171,7 +171,7 @@ from repo_shape import (  # noqa: E402
     tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    ADOPT_MAKEFILE_BLOCK, PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS,
+    PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS, adopt_makefile_block,
     TEMPLATED, TOO_MANY_SYMLINKS, CommandFailed, Materialized,
     assembly_root_paths, collision_follow_up, copy_tree, default_reference,
     election_date, env_commit, escape_what_stdout_cannot_encode,
@@ -1679,17 +1679,46 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
         # DOES read it under twenty of them is how a follow-up list stops
         # being read at all.
         hits.sort(key=lambda h: ("fixture" in h or h.startswith("tests/"), h))
+        across = spec_leg_from_code_leg(spec_path, code_path)
         for hit in hits[:8]:
             shown = "".join(map(_spelled_character, hit))
             out.append(
                 f"{code_path}/{shown} names `{named}`, which moves to the "
                 f"spec leg: it must read across the assembly root — "
-                f"`../{spec_path}/{named}` relative to `{code_path}/` — or "
+                f"`{across}/{named}` relative to `{code_path}/` — or "
                 "take the path from the environment")
         if len(hits) > 8:
             out.append(f"… and {len(hits) - 8} more file(s) under the code leg "
                        f"naming `{named}`")
     return out
+
+
+def spec_leg_from_code_leg(spec_path: str, code_path: str) -> str:
+    """The spec leg's mount, `spec_path`, as a path relative to the code
+    leg's, `code_path`: `../spec` for the defaults, `../spec` for
+    `legs/spec` beside `legs/code`, and `../../spec` for `spec` beside
+    `impl/code`.
+
+    ONE `..` PER SEGMENT OF THE CODE LEG'S PATH BELOW WHAT THE TWO SHARE
+    (#522, auA-13). The follow-up wrote `../<spec_path>`, which is right only
+    while the code leg sits in the root: with `--spec-path legs/spec
+    --code-path legs/code` it said `../legs/spec/contracts/` "relative to
+    `legs/code/`", a path that leads to `legs/legs/spec`.
+
+    Both are canonical mount paths, asked by `plan` before it writes a
+    follow-up and by `execute` before it mounts a leg: `/` between
+    segments, and no segment empty, `.` or `..`. So the segments are
+    compared as text, and nothing is resolved against a disk. Two segments
+    that differ only in case are two segments here, which climbs one level
+    more than a disk that folds case needs and still leads to the same
+    directory.
+    """
+    spec, code = spec_path.split("/"), code_path.split("/")
+    shared = 0
+    while (shared < min(len(spec), len(code))
+           and spec[shared] == code[shared]):
+        shared += 1
+    return "/".join([".."] * (len(code) - shared) + spec[shared:])
 
 
 def _search_by_hand(named: str, why: str) -> str:
@@ -8132,8 +8161,10 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
         step = "committing the split"
         # The plan's submodule answers outlive the plan only here (#189).
         # An empty record appends nothing, so a source with no submodule
-        # gets the manifest it always got.
-        append = {"Makefile": ADOPT_MAKEFILE_BLOCK}
+        # gets the manifest it always got. The Makefile's block names the
+        # spec leg where this plan mounts it (#522), and a default plan gets
+        # the block it always got.
+        append = {"Makefile": adopt_makefile_block(spec_path, code_path)}
         record = submodule_record(plan.entries, source.tree(),
                                   source.commit)
         if record:
