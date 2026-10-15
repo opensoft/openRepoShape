@@ -6575,21 +6575,26 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
 # `shape/.gitattributes` where that goes beside the source's, and the kept
 # nested files, and `git check-attr` is asked about each pinned copy where
 # the split puts it: `_PlannedRoot`'s walks, which follow the root's symlinks
-# as the materializer does. No system or global attributes file is read, since
-# a clone on another machine has neither. What a checkout then writes over the
-# copy's LF blob is `checked_out_as`: the blob itself where the copy is not
-# text or says `eol=lf`, CRLF everywhere where it says `eol=crlf`, and CRLF
-# wherever git is set to write it where it is text and says no `eol`. So
+# as the materializer does. No system or global attributes file is read, nor
+# a tree `GIT_ATTR_SOURCE` or `attr.tree` names, nor system or global config,
+# since a clone on another machine has none of them (`_probe_env`). What a
+# checkout then writes over the copy's LF blob is `checked_out_as`: the blob
+# itself where the copy is not text or says `eol=lf`, CRLF everywhere where
+# it says `eol=crlf`, and CRLF wherever git is set to write it where it is
+# text and says no `eol`; git reads `text` first, and `crlf` only where
+# `text` is unspecified, both measured with real checkouts. So
 # `-text` and `binary` are no finding: a checkout writes a file that is not
 # text as its blob, and the blob is LF (measured too).
 #
 # ONE FINDING PER CAUSE. A copy is outranked when the root's own files keep
 # it LF and the kept nested files, added, do not. Each kept file that,
-# added to the root's own files alone, changes what git says of such a copy
-# is named once, with every outranked copy it reaches and the line its own
-# directory spells for each; ending every named file with its lines keeps
-# each copy LF. A deeper kept file that restores LF leaves nothing to find,
-# and one that says only what the root says is not named. A root
+# added to the root's own files alone, makes a checkout write such a copy
+# with CRLF is named once (and only where no file alone does, each that
+# changes what git says of the copy), with every outranked copy it reaches
+# and the line its own directory spells for each; a copy still outranked
+# once those lines are in is named again by the next `check`, under the
+# file that then decides it. A deeper kept file that restores LF leaves
+# nothing to find, and one that alone keeps the copy LF is not named. A root
 # `.gitattributes` that is a symlink, which git reads no rule from, is
 # #471's follow-up, not this finding: its copies are asked against the block
 # that follow-up asks a regular file to hold, so a kept nested file is still
@@ -6607,8 +6612,9 @@ NESTED_ATTRIBUTES = "plan-nested-attributes"
 #: in `Materialized.shape_files`, each at its own path or under `shape/`.
 PINNED_COPIES = (*COPIED_VERBATIM, *(rel for _, rel in COPIED_FROM_SHAPE))
 
-#: The attributes a checkout reads a file's line endings from, in the order
-#: git's `convert.c` reads them: `crlf`, the old spelling of `text`, first.
+#: The attributes a checkout reads a file's line endings from. Git's
+#: `convert.c` reads `text` first, and `crlf`, its old spelling, only where
+#: `text` is unspecified.
 LINE_ENDING_ATTRIBUTES = ("crlf", "text", "eol")
 
 #: What `crlf` or `text` asks of a checkout, as git's `git_path_check_crlf`
@@ -6624,9 +6630,43 @@ CRLF_EVERYWHERE = "everywhere"
 CRLF_BY_CONFIG = "by config"
 
 #: What a question to `git check-attr` must not inherit: a repository, an
-#: index or a work tree named for another one.
-_ANOTHER_REPOSITORY = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
-                       "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY")
+#: index or a work tree named for another one; a tree to read attributes
+#: from instead of the work tree (`GIT_ATTR_SOURCE`); and a parent git's
+#: `-c` settings, whose quoted form is not read here and none of which the
+#: question needs (`GIT_CONFIG_PARAMETERS`).
+_NOT_INHERITED = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                  "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ATTR_SOURCE",
+                  "GIT_CONFIG_PARAMETERS")
+#: The setting that reads attributes from a tree instead of the work tree.
+ATTR_TREE = "attr.tree"
+
+
+def _probe_env(nothing: Path) -> dict:
+    """The environment `git check-attr` is asked in: this process's, with
+    nothing of `_NOT_INHERITED`, no system config, the empty file `nothing`
+    as the global config, and no `attr.tree` in git's command scope
+    (`GIT_CONFIG_COUNT`), whose other entries are kept in their order. Each
+    of those could steer the answer here and holds nothing on another
+    machine: git 2.43 reads `attr.tree` from any config, and one naming the
+    empty tree made `check-attr` read no rule at all, which silenced the
+    finding; `GIT_ATTR_SOURCE=HEAD` made it fail in the empty repository."""
+    count = os.environ.get("GIT_CONFIG_COUNT", "")
+    scoped = [(os.environ.get(f"GIT_CONFIG_KEY_{n}", ""),
+               os.environ.get(f"GIT_CONFIG_VALUE_{n}", ""))
+              for n in range(int(count) if count.isdigit() else 0)]
+    env = {name: value for name, value in os.environ.items()
+           if name.upper() not in _NOT_INHERITED
+           and not re.fullmatch(r"GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)",
+                                name.upper())}
+    kept = [(key, value) for key, value in scoped
+            if key.lower() != ATTR_TREE]
+    for n, (key, value) in enumerate(kept):
+        env[f"GIT_CONFIG_KEY_{n}"], env[f"GIT_CONFIG_VALUE_{n}"] = key, value
+    if kept:
+        env["GIT_CONFIG_COUNT"] = str(len(kept))
+    env.update(GIT_ATTR_NOSYSTEM="1", GIT_CONFIG_NOSYSTEM="1",
+               GIT_CONFIG_GLOBAL=str(nothing))
+    return env
 
 
 def checked_out_as(values: dict) -> str:
@@ -6636,12 +6676,12 @@ def checked_out_as(values: dict) -> str:
     `core.autocrlf` or `core.eol` asks for it, as Git for Windows' default
     does.
 
-    Git's `convert.c`, `convert_attrs`, read for a checkout: `crlf`, else
-    `text`, says whether the file is text, and one that is not is written as
+    Git's `convert.c`, `convert_attrs`, read for a checkout: `text`, else
+    `crlf`, says whether the file is text, and one that is not is written as
     its blob. Then `eol=lf` keeps LF and `eol=crlf` writes CRLF; with
     neither, only `input` keeps LF without asking the configuration."""
     crlf, text, eol = (values.get(name, "") for name in LINE_ENDING_ATTRIBUTES)
-    action = _TEXT_ACTIONS.get(crlf) or _TEXT_ACTIONS.get(text)
+    action = _TEXT_ACTIONS.get(text) or _TEXT_ACTIONS.get(crlf)
     if action == _NOT_TEXT or eol == "lf":
         return KEPT
     if eol == "crlf":
@@ -6659,11 +6699,10 @@ class _AttributesProbe:
         self._scratch = Path(tempfile.mkdtemp(
             prefix="openreposhape-attributes-"))
         self._asked = 0
-        self._env = {name: value for name, value in os.environ.items()
-                     if name.upper() not in _ANOTHER_REPOSITORY}
-        self._env["GIT_ATTR_NOSYSTEM"] = "1"
-        #: Read in place of the person's own `core.attributesFile`.
-        self._nothing = self._scratch / "no-attributes"
+        #: An empty file, read in place of the person's own global config
+        #: and `core.attributesFile`.
+        self._nothing = self._scratch / "nothing"
+        self._env = _probe_env(self._nothing)
         self._git_dir = self._scratch / "repository" / ".git"
 
     def __enter__(self) -> "_AttributesProbe":
@@ -6808,7 +6847,8 @@ def _nested_attributes_finding(row: tuple, at: str, copies: list[str],
     directory = at[:-len(ATTRIBUTES) - 1]
     many = len(copies) > 1
     under = "" if entry == path else f" under the entry {_spelled(entry)}"
-    where = ("on every platform, Linux and macOS included"
+    where = (("on such a disk, whatever git is set to" if aside else
+              "on every platform, Linux and macOS included")
              if CRLF_EVERYWHERE in written else
              "wherever git writes them, as Git for Windows does by default "
              "(`core.autocrlf=true`)")
@@ -6837,19 +6877,31 @@ def _outranking(asked: _AttributesProbe, fold: bool, landed: list[str],
     """`(path, finding)` for each kept nested file that outranks the root's
     rule for a copy landed at one of `landed`, asked of git on the disk
     `fold` says. `root` is `_root_attributes`', and `placed` is
-    `{where git reads it: (row, its bytes)}`."""
+    `{where git reads it: (row, its bytes)}`.
+
+    A file is named for a copy when, added to the root's files alone, it
+    makes a checkout write that copy with CRLF. Where no file alone does,
+    and two or more do it only together, each that changes what git says
+    of the copy is named (r530's F3)."""
     held = {at: data for at, (_, data) in placed.items()}
     before = asked.ask(root, landed, fold)
     after = asked.ask({**root, **held}, landed, fold)
     outranked = [path for path in landed
                  if checked_out_as(before[path]) == KEPT
                  and checked_out_as(after[path]) != KEPT]
-    found = []
-    for at, (row, data) in placed.items():
+    alone = {}
+    for at, data in held.items():
         under = [path for path in outranked
                  if path.startswith(at[:-len(ATTRIBUTES)])]
-        alone = asked.ask({**root, at: data}, under, fold) if under else {}
-        copies = [path for path in under if alone[path] != before[path]]
+        alone[at] = asked.ask({**root, at: data}, under, fold) if under else {}
+    breaks = {(at, path) for at, said in alone.items() for path in said
+              if checked_out_as(said[path]) != KEPT}
+    broken = {path for _, path in breaks}
+    found = []
+    for at, (row, _) in placed.items():
+        copies = [path for path in alone[at] if (at, path) in breaks
+                  or (path not in broken
+                      and alone[at][path] != before[path])]
         if copies:
             found.append((row[0], _nested_attributes_finding(
                 row, at, copies, [checked_out_as(after[path])

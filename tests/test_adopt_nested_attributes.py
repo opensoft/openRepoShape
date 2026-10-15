@@ -62,6 +62,8 @@ MINUS_TEXT = "* -text\n"
 REMEDIED = f"{YML_CRLF}{VALIDATE_LINE}\n"
 ROOT = "root"
 UTF8 = "utf-8"
+#: The tree git knows with no object stored: one with nothing in it.
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 #: How the finding says where the copies go CRLF.
 EVERYWHERE = "with CRLF line endings on every platform"
 BY_CONFIG = "with CRLF line endings wherever git writes them"
@@ -117,22 +119,27 @@ def adopter():
 
 #: `crlf text eol => what a checkout writes`, each value as `git check-attr`
 #: prints it: the blob, CRLF everywhere, or what `core.autocrlf` and
-#: `core.eol` say. `crlf` is the old spelling of `text`, and is read first.
+#: `core.eol` say. `crlf` is the old spelling of `text`, read only where
+#: `text` is unspecified. Each row was checked against real checkouts with
+#: git 2.43: as configured, with `core.autocrlf=true` and with
+#: `core.eol=crlf` (r530's review found three rows backwards).
 CHECKOUTS = [
     "unspecified set lf => kept",
     "unspecified auto lf => kept",
     "unspecified unspecified lf => kept",
     "unspecified unset crlf => kept",
-    "unset set crlf => kept",
+    "unset set crlf => everywhere",
+    "unset unspecified crlf => kept",
     "input unspecified unspecified => kept",
     "unspecified input unset => kept",
     "input set crlf => everywhere",
     "unspecified auto crlf => everywhere",
-    "set unset crlf => everywhere",
+    "set unset crlf => kept",
     "unspecified set unspecified => by config",
     "unspecified auto unset => by config",
     "unspecified unspecified unspecified => by config",
-    "set unset native => by config",
+    "set unset native => kept",
+    "unset set unspecified => by config",
 ]
 
 
@@ -166,6 +173,9 @@ OUTRANKED = [
     pytest.param(github(YML_CRLF, None), KEEP_GITHUB, f"`{VALIDATE}`",
                  [f"`{VALIDATE_LINE}`"], EVERYWHERE,
                  id="no-root-attributes"),
+    pytest.param(github("*.yml -crlf eol=crlf\n"), KEEP_GITHUB,
+                 f"`{VALIDATE}`", [f"`{VALIDATE_LINE}`"], EVERYWHERE,
+                 id="crlf-unset-beside-the-roots-text"),
     pytest.param({ROOT_ATTRIBUTES: TEXT_AUTO,
                   "scripts/.gitattributes": "*.py eol=crlf\n",
                   "scripts/run.sh": "echo hi\n"}, {"scripts/": ROOT},
@@ -280,6 +290,8 @@ KEPT_LF = [
     pytest.param(github("* -crlf\n* crlf=input\n"), KEEP_GITHUB,
                  id="the-old-crlf-spelling"),
     pytest.param(github("*.png binary\n"), KEEP_GITHUB, id="another-path"),
+    pytest.param(github("*.yml crlf -text eol=crlf\n"), KEEP_GITHUB,
+                 id="crlf-set-under-minus-text"),
     pytest.param(github(REMEDIED), KEEP_GITHUB, id="the-remedy"),
     pytest.param(github(YML_CRLF), {GITHUB_ATTRIBUTES: "code"},
                  id="sent-to-a-leg"),
@@ -305,6 +317,28 @@ def test_only_a_file_that_changes_a_copy_is_named(tmp_path):
     assert WORKFLOWS_ATTRIBUTES not in found[0][1]
 
 
+def test_a_file_that_alone_keeps_the_copy_lf_is_not_named(tmp_path):
+    """`.github/.gitattributes` says `* text=auto`, which changes what git
+    says of the copy but, alone over the root's rule, leaves it LF: the
+    copy's CRLF is the deeper `* eol=crlf`'s, which alone is named, and
+    whose line alone keeps the copy LF (r530's F3)."""
+    files = {**github(TEXT_AUTO), WORKFLOWS_ATTRIBUTES: ALL_CRLF}
+    found = findings(adoption_plan(tmp_path, files, KEEP_BOTH))
+    assert [detail.split("`")[1] for _, detail in found] == [
+        WORKFLOWS_ATTRIBUTES], found
+
+
+def test_a_cause_two_files_make_only_together_is_still_named(tmp_path):
+    """`* -text eol=crlf` alone leaves the copy as its blob, and `* text`
+    alone says what the root says; together they write it CRLF. No file
+    alone breaks the copy, so the one that changes what git says of it is
+    named, and its line keeps the copy LF."""
+    files = {**github("* -text eol=crlf\n"), WORKFLOWS_ATTRIBUTES: "* text\n"}
+    found = findings(adoption_plan(tmp_path, files, KEEP_BOTH))
+    assert [detail.split("`")[1] for _, detail in found] == [
+        GITHUB_ATTRIBUTES], found
+
+
 def test_each_file_that_changes_a_copy_has_a_finding_with_its_own_lines(
         tmp_path):
     """Both kept files change the copy's `eol`, so each is named once, with
@@ -325,22 +359,67 @@ def test_a_pattern_that_matches_only_once_case_is_ignored_says_so(tmp_path):
                                    KEEP_GITHUB))
     assert [code for code, _ in found] == [NESTED], found
     assert f"`{VALIDATE}`{CASE_ASIDE}:" in found[0][1]
+    assert "line endings on such a disk, whatever git is set to," \
+        in found[0][1]
+    assert "Linux and macOS included" not in found[0][1]
+
+
+def command_scope(key: str, value: str) -> dict:
+    """`key=value` in git's command scope (`GIT_CONFIG_COUNT`), appended to
+    what the environment holds: the Windows job sets `core.autocrlf` there,
+    and the last entry of a key is the one git reads."""
+    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+    return {"GIT_CONFIG_COUNT": str(held + 1),
+            f"GIT_CONFIG_KEY_{held}": key, f"GIT_CONFIG_VALUE_{held}": value}
+
+
+def checked_with(tmp_path: Path, env: dict, rules: str = YML_CRLF):
+    """`check` of the plan keeping `.github/.gitattributes` holding
+    `rules`, run with `env` laid over this process's own."""
+    plan = adoption_plan(tmp_path, github(rules), KEEP_GITHUB)
+    return run_script(ADOPT, "check", "--plan", str(plan), env=env)
 
 
 def test_this_machines_own_attributes_are_not_read(tmp_path):
     """A clone on another machine reads none of this one's attributes. A
-    global `* -crlf` here makes git take every copy as not text, which
-    `check` would then call kept, so it is not read: `core.attributesFile`
-    is set by this run's git's command scope (`GIT_CONFIG_COUNT`, appended
-    to what the environment holds), and the finding still stands."""
+    macro this machine's global attributes file defines, `[attr]keepbytes
+    -text`, would make the kept `*.yml keepbytes eol=crlf` say `text:
+    unset`, which `check` would then call kept, so that file is not read:
+    `core.attributesFile` is set by this run's git's command scope
+    (`GIT_CONFIG_COUNT`, appended to what the environment holds), and the
+    finding still stands."""
     rules = tmp_path / "global-attributes"
-    rules.write_bytes(b"* -crlf\n")
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
-    plan = adoption_plan(tmp_path, github(YML_CRLF), KEEP_GITHUB)
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env={
-        "GIT_CONFIG_COUNT": str(held + 1),
-        f"GIT_CONFIG_KEY_{held}": "core.attributesFile",
-        f"GIT_CONFIG_VALUE_{held}": str(rules)})
+    rules.write_bytes(b"[attr]keepbytes -text\n")
+    checked = checked_with(
+        tmp_path, command_scope("core.attributesFile", str(rules)),
+        "*.yml keepbytes eol=crlf\n")
+    assert f"FINDING {NESTED}: " in checked.stderr, checked.stderr
+
+
+def global_attr_tree(tmp_path: Path) -> dict:
+    """A global config naming the empty tree as `attr.tree`."""
+    config = tmp_path / "global-config"
+    config.write_bytes(f"[attr]\n\ttree = {EMPTY_TREE}\n".encode(UTF8))
+    return {"GIT_CONFIG_GLOBAL": str(config)}
+
+
+@pytest.mark.parametrize("where", [
+    pytest.param(lambda _: {"GIT_ATTR_SOURCE": "HEAD"},
+                 id="git-attr-source-head"),
+    pytest.param(lambda _: {"GIT_ATTR_SOURCE": EMPTY_TREE},
+                 id="git-attr-source-the-empty-tree"),
+    pytest.param(global_attr_tree, id="attr-tree-in-the-global-config"),
+    pytest.param(lambda _: command_scope("attr.tree", EMPTY_TREE),
+                 id="attr-tree-in-the-command-scope")])
+def test_no_tree_this_machine_names_steers_the_question(tmp_path, where):
+    """`GIT_ATTR_SOURCE` and `attr.tree` make git read attributes from a
+    tree instead of the work tree the question is written into (r530's
+    checklist item 2). With git 2.43, `GIT_ATTR_SOURCE=HEAD` failed there,
+    an empty repository, so `check` printed `REFUSED git-failed`; and the
+    empty tree, named by either, made git read no rule at all, which
+    silenced the finding. None of them is read, and the finding stands."""
+    checked = checked_with(tmp_path, where(tmp_path))
+    assert "REFUSED" not in checked.stderr, checked.stderr
     assert f"FINDING {NESTED}: " in checked.stderr, checked.stderr
 
 
