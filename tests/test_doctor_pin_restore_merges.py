@@ -13,7 +13,9 @@ reads the standard from the checkout the doctor runs from, so the same
 merge asked of a checkout short of a side's commit is a hand merge. The
 `manifest kinds` row prints the same NEXT, and calls a copy under
 `contracts/` that it takes `unmerged`, never `project`, as #485 has it call
-one it leaves to a person.
+one it leaves to a person. A copy whose mode one side changed, one a side
+deleted, one the other side's pin has no row for, and every copy where the
+standard's checkout is a partial clone, stay a person's (review of PR #586).
 
 L2-9. A slip amended into `bump-leg.py`'s own commit leaves the commit
 before it holding the pin for the OLD leg commit. Putting that pin back is
@@ -265,7 +267,8 @@ def test_a_copy_one_side_edited_is_left_to_a_person(standard, project,
     moved, c2, c3, _frozen = the_standard_moved(standard, tmp_path,
                                                 UPSTREAM_TARGET)
     status = two_applies_merged(moved, root, c2, c3, {edited_on: MAKEFILE})
-    assert f"UU {MAKEFILE}" in status and f"UU {SHAPE_PIN}" in status, status
+    assert f"UU {MAKEFILE}" in status, status
+    assert f"UU {SHAPE_PIN}" in status, status
     _verdict, rows = rows_from(moved, root)
     currency = assert_both_rows_name_it(rows)
     assert pasted(currency["next"])[3:] == [
@@ -343,7 +346,8 @@ def test_a_copy_the_standard_lacks_at_a_sides_commit_is_a_hand_merge(
     git("add", "--", SHAPE_PIN, cwd=root)
     commit_in(root, "shape/b's pin names C3")
     status = merge_a_into_b(root)
-    assert f"UU {MAKEFILE}" in status and f"UU {SHAPE_PIN}" in status, status
+    assert f"UU {MAKEFILE}" in status, status
+    assert f"UU {SHAPE_PIN}" in status, status
     # The one fault is the path: against C4 the stage would be proved.
     assert stage_of(root, 2, MAKEFILE) == standard_file(moved, c4,
                                                         UPSTREAM_TARGET)
@@ -546,8 +550,8 @@ def test_a_naming_copy_taken_with_the_pin_is_unmerged_in_both_rows(
     moved, c2, c3, _frozen = the_standard_moved(standard, tmp_path,
                                                 NAMING_COPY)
     status = two_applies_merged(moved, root, c2, c3)
-    assert f"UU {NAMING_COPY}" in status and f"UU {SHAPE_PIN}" in status, \
-        status
+    assert f"UU {NAMING_COPY}" in status, status
+    assert f"UU {SHAPE_PIN}" in status, status
     _verdict, rows = rows_from(moved, root)
     currency, kinds = rows["shape-currency"], rows["manifest-kinds"]
     assert pasted(currency["next"])[3:] == [
@@ -561,3 +565,177 @@ def test_a_naming_copy_taken_with_the_pin_is_unmerged_in_both_rows(
     run_pasted(currency["next"])
     assert (root / NAMING_COPY).read_bytes() == standard_file(moved, c3,
                                                               NAMING_COPY)
+
+
+# --- what else stays a hand merge (review of PR #586) -----------------------
+
+def index_stages(root: Path, rel: str) -> dict:
+    """`{stage: (mode, object)}` the index holds for `rel`, read as bytes."""
+    listing = subprocess.run(["git", "ls-files", "-u", "-z", "--", rel],
+                             cwd=str(root), capture_output=True,
+                             check=True).stdout
+    held = {}
+    for record in listing.split(b"\0"):
+        meta, _tab, path = record.partition(b"\t")
+        if path == rel.encode():
+            mode, oid, number = meta.decode("ascii").split(" ")
+            held[int(number)] = (mode, oid)
+    return held
+
+
+def restaged(root: Path, rel: str, stages: dict) -> None:
+    """`rel`'s stages in the index replaced by `stages`, `{stage: (mode,
+    object)}`, through git's plumbing, as bytes on its stdin: the stage-0
+    removal line first, then one line per stage."""
+    data = f"0 {'0' * 40}\t{rel}\0".encode()
+    for number, (mode, oid) in sorted(stages.items()):
+        data += f"{mode} {oid} {number}\t{rel}\0".encode()
+    subprocess.run(["git", "update-index", "-z", "--index-info"],
+                   cwd=str(root), input=data, capture_output=True, check=True)
+
+
+def assert_only_bootstrap_is_taken(rows: dict) -> dict:
+    """Both rows name the pin and `scripts/bootstrap.py`, taken; the
+    Makefile goes to a person with `project.yaml`. The `shape currency`
+    row."""
+    currency = assert_both_rows_name_it(rows)
+    assert pasted(currency["next"])[3:] == [
+        "checkout", "--ours", "--", SHAPE_PIN, BOOTSTRAP], currency["next"]
+    detail = currency["detail"]
+    assert detail["taken_with_the_pin"] == [BOOTSTRAP], detail
+    assert detail["left_for_a_person"] == [MAKEFILE, "project.yaml"], detail
+    assert f"{MAKEFILE} is a copy {LEFT}" in currency["why"], currency["why"]
+    return currency
+
+
+@pytest.mark.parametrize("on", [
+    pytest.param("shape/b", id="mode-changed-on-the-side-ours-takes"),
+    pytest.param("shape/a", id="mode-changed-on-the-other-side"),
+])
+def test_a_copy_whose_mode_one_side_changed_is_left_to_a_person(
+        standard, project, tmp_path, on):
+    """Both copies re-copied on both sides, edited on neither, but on ONE
+    side the project makes its Makefile executable. Each stage's bytes are
+    still the standard's file at that side's pin, and the mode is an edit
+    no byte compare sees: taken whole, `--ours` kept one side's mode and
+    dropped the other's, while the `why` said neither side held an edit.
+    Now a copy whose two stages disagree on its mode is a person's, either
+    side, and bootstrap.py is still taken.
+
+    The x bit is set in the INDEX, which is what git merges and the doctor
+    reads, so the state is the same on every system; the file's own mode is
+    set too only where the file system keeps one."""
+    root = under_an_awkward_name(project, tmp_path)
+    moved, c2, c3, _frozen = the_standard_moved(
+        standard, tmp_path, UPSTREAM_TARGET, BOOTSTRAP_SOURCE)
+    for commit, branch in ((c2, "shape/a"), (c3, "shape/b")):
+        apply_on(moved, root, commit, branch)
+        if branch == on:
+            git("update-index", "--chmod=+x", "--", MAKEFILE, cwd=root)
+            if os.name != "nt":
+                os.chmod(root / MAKEFILE, 0o755)
+            commit_in(root, "the project's Makefile made executable")
+    status = merge_a_into_b(root)
+    assert f"UU {MAKEFILE}" in status, status
+    held = index_stages(root, MAKEFILE)
+    assert held[2][0] != held[3][0], held
+    assert stage_of(root, 2, MAKEFILE) == standard_file(moved, c3,
+                                                        UPSTREAM_TARGET)
+    assert stage_of(root, 3, MAKEFILE) == standard_file(moved, c2,
+                                                        UPSTREAM_TARGET)
+    _verdict, rows = rows_from(moved, root)
+    assert_only_bootstrap_is_taken(rows)
+
+
+def test_a_copy_one_side_deleted_is_left_to_a_person(standard, project,
+                                                     tmp_path):
+    """shape/a re-pins to C2 and then deletes its Makefile; shape/b
+    re-pins to C3. Merged, the Makefile is a delete/modify conflict:
+    stages 1 and 2, no stage 3, and shape/a's pin still has its row. No
+    side's absence proves anything, so the Makefile is a person's -- taken
+    whole as ours, the NEXT would drop the other side's deletion -- and
+    bootstrap.py is still taken. Run, the NEXT leaves the Makefile
+    unmerged, as the merge left it."""
+    root = under_an_awkward_name(project, tmp_path)
+    moved, c2, c3, _frozen = the_standard_moved(
+        standard, tmp_path, UPSTREAM_TARGET, BOOTSTRAP_SOURCE)
+    apply_on(moved, root, c2, "shape/a")
+    git("rm", "-q", "--", MAKEFILE, cwd=root)
+    commit_in(root, "the project's Makefile removed")
+    apply_on(moved, root, c3, "shape/b")
+    status = merge_a_into_b(root)
+    assert f"UD {MAKEFILE}" in status, status
+    assert f"UU {SHAPE_PIN}" in status, status
+    assert sorted(index_stages(root, MAKEFILE)) == [1, 2]
+    _verdict, rows = rows_from(moved, root)
+    currency = assert_only_bootstrap_is_taken(rows)
+    run_pasted(currency["next"])
+    assert sorted(index_stages(root, MAKEFILE)) == [1, 2]
+
+
+def test_a_copy_the_other_sides_pin_has_no_row_for_is_left_to_a_person(
+        both_pure):
+    """(a)'s merge, with the other side's pin restaged without the
+    Makefile's `files:` row. That side then says the Makefile is not a
+    shape copy, so whether it holds the project's edit is a person's
+    question, though its bytes are the standard's: the Makefile is left,
+    and bootstrap.py, which both pins name, is still taken."""
+    root = both_pure["root"]
+    stages = index_stages(root, SHAPE_PIN)
+    mode, oid = stages[3]
+    blob = subprocess.run(["git", "cat-file", "blob", oid], cwd=str(root),
+                          capture_output=True, check=True).stdout
+    row = (rb'(?m)^  - path: ' + re.escape(MAKEFILE.encode())
+           + rb'\n    sha256: "[0-9a-f]{64}"\n')
+    without, count = re.subn(row, b"", blob)
+    assert count == 1, blob
+    written = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                             cwd=str(root), input=without,
+                             capture_output=True, check=True)
+    stages[3] = (mode, written.stdout.decode("ascii").strip())
+    restaged(root, SHAPE_PIN, stages)
+    assert stage_of(root, 3, SHAPE_PIN) == without
+    _verdict, rows = rows_from(both_pure["moved"], root)
+    assert_only_bootstrap_is_taken(rows)
+
+
+def test_a_partial_clone_of_the_standard_proves_nothing_and_fetches_nothing(
+        both_pure, tmp_path):
+    """(a)'s merge, asked of a `--filter=blob:none` clone of the standard,
+    which holds the commits and not the blobs C2's copies were made from.
+    A `git show` of one would fetch it from the clone's promisor remote,
+    and Brett Heap's ruling is never to fetch. So nothing is proved, every
+    copy is a person's, the `why` says why, and the two blobs are still
+    missing afterwards (`rev-list --missing=print`, which never fetches)."""
+    root, moved, c2 = both_pure["root"], both_pure["moved"], both_pure["c2"]
+    git("config", "uploadpack.allowFilter", "true", cwd=moved)
+    partial = tmp_path / "partial" / "openRepoShape"
+    cloned = subprocess.run(
+        ["git", *FILE_PROTOCOL, "clone", "-q", "--no-local",
+         "--filter=blob:none", moved.as_uri(), str(partial)],
+        capture_output=True, check=False)
+    assert cloned.returncode == 0, cloned.stdout + cloned.stderr
+    left_out = {git("rev-parse", f"{c2}:{source}", cwd=moved).stdout.strip()
+                for source in (UPSTREAM_TARGET, BOOTSTRAP_SOURCE)}
+
+    def missing() -> set:
+        listed = subprocess.run(
+            ["git", "rev-list", "--objects", "--missing=print", c2],
+            cwd=str(partial), capture_output=True, check=True).stdout
+        return {line[1:].decode("ascii") for line in listed.split()
+                if line.startswith(b"?")}
+
+    assert left_out <= missing(), "the clone holds C2's blobs"
+    _verdict, rows = rows_from(partial, root)
+    currency = assert_both_rows_name_it(rows)
+    assert pasted(currency["next"])[3:] == [
+        "checkout", "--ours", "--", SHAPE_PIN], currency["next"]
+    detail = currency["detail"]
+    assert "taken_with_the_pin" not in detail, detail
+    assert detail["left_for_a_person"] == [MAKEFILE, "project.yaml",
+                                           BOOTSTRAP], detail
+    assert ("The checkout of the standard this doctor runs from is a "
+            "partial clone, which fetches what it lacks on a read, so "
+            "nothing was read from it to prove a copy unedited") \
+        in currency["why"], currency["why"]
+    assert left_out <= missing(), "the doctor fetched a blob"

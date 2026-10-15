@@ -2712,15 +2712,18 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    PROVE AND TAKE (Brett Heap, 2026-10-14T23:54:30Z, #547):
                    a conflicted copy whose two stages are each, byte for
                    byte, the standard's own file at the commit THAT side's
-                   pin names holds no edit of the project on either side.
-                   It is pure tool output, so the command names it beside
-                   the pin and takes it whole, and the `why` says so;
-                   `taken_with_the_pin` makes the proof, and
+                   pin names, in one mode, holds no edit of the project on
+                   either side. It is pure tool output, so the command
+                   names it beside the pin and takes it whole, and the
+                   `why` says so; `taken_with_the_pin` makes the proof, and
                    `detail["taken_with_the_pin"]` lists what it proved.
                    Every other conflicted copy is still a person's: one side
-                   that differs, a side's pin naming a commit the checkout
-                   this doctor runs from does not hold, a path the standard
-                   does not have at that commit, a read that fails. Where
+                   that differs, a mode the two sides disagree on, a side's
+                   pin naming a commit the checkout this doctor runs from
+                   does not hold, a path the standard does not have at that
+                   commit, a read that fails. So is every copy where that
+                   checkout is a partial clone, where a read can fetch, and
+                   the `why` says so (`partial_clone`). Where
                    one of them is conflicted the `why` says a person merges
                    it by hand, keeping the hunks git merged, as a copy
                    conflicted on its own is merged, and that
@@ -2834,15 +2837,16 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     if xy in UNMERGED_STATUS:
         us = ctx.update_shape()
         kind = us.root_kind(root)
-        # `<mode> SP <object> SP <stage> TAB <path>`, one record per stage.
-        stages: dict[str, set] = {}
+        # `<mode> SP <object> SP <stage> TAB <path>`, one record per stage:
+        # `{path: {stage: mode}}`, the mode kept for `taken_with_the_pin`.
+        stages: dict[str, dict] = {}
         listing = git_answer(["ls-files", "-u", "-z"], root, binary=True)
         for record in (listing or b"").split(b"\0"):
             meta, _tab, path = record.partition(b"\t")
             if path:
-                stages.setdefault(path.decode("utf-8", "replace"),
-                                  set()).add(meta.rsplit(b" ", 1)[-1])
-        pin_stages = stages.get(pin, set())
+                stages.setdefault(path.decode("utf-8", "replace"), {})[
+                    meta.rsplit(b" ", 1)[-1]] = meta.split(b" ", 1)[0]
+        pin_stages = stages.get(pin, {})
         side, stage = (("--ours", b"2") if b"2" in pin_stages else
                        ("--theirs", b"3") if b"3" in pin_stages else
                        (None, None))
@@ -2851,14 +2855,17 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                     f"{what} whole" if b"3" in pin_stages and side == "--ours"
                     else f"only that side of the merge holds a {what}. Take "
                     "it whole")
-            lines, copies, taken = [], [], []
+            lines, copies, taken, partial = [], [], [], False
             if pin == SHAPE_PIN:
                 lines = sorted(name for name in (kind.manifest, us.README)
                                if name in stages)
                 copies = sorted(name for name in set(
                     pin_at(ctx, f":{stage.decode()}") or ())
                     if name in stages)
-                taken = taken_with_the_pin(ctx, kind, copies)
+                # A read of a partial clone can fetch: prove nothing there.
+                partial = bool(copies) and partial_clone(ctx.shape)
+                if not partial:
+                    taken = taken_with_the_pin(ctx, kind, copies, stages)
                 copies = [name for name in copies if name not in taken]
             then, after = ", then finish", ""
             said = []
@@ -2895,6 +2902,8 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                         "taken whole: a person merges "
                         + ("each" if len(copies) > 1 else "it")
                         + " by hand, keeping the hunks git merged")
+                    if partial:
+                        said.append(PARTIAL_CLONE_WHY)
                     after = (". Where a copy as merged differs from the pin, "
                              "update-shape.py apply --accept-local on that "
                              "copy re-pins it from the merge. The shape "
@@ -2963,10 +2972,12 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     return "none", None, None
 
 
-def taken_with_the_pin(ctx: Context, kind, copies: list) -> list:
+def taken_with_the_pin(ctx: Context, kind, copies: list,
+                       stages: dict) -> list:
     """Which of `copies`, conflicted beside the shape pin, `pin_restore`
     takes whole with it: those PROVED to be pure tool output on both sides
-    of the merge, in `copies`' order (#547).
+    of the merge, in `copies`' order (#547). `stages` is `{path: {stage:
+    mode}}`, as `pin_restore` reads `ls-files -u`.
 
     PROVE AND TAKE, Brett Heap's ruling on #460's L2-8 (2026-10-14T23:54:30Z).
     Before #496 one NEXT took every conflicted copy whole with the pin,
@@ -2982,18 +2993,29 @@ def taken_with_the_pin(ctx: Context, kind, copies: list) -> list:
     output either way, and the side the restore takes is the copy that
     matches the pin it keeps.
 
+    THE MODE IS PART OF THE COPY (review of PR #586). The bytes say nothing
+    of the executable bit, and a project that changed it on one side holds
+    an edit no byte compare sees: taken whole, `--ours` dropped the other
+    side's mode, and the `why` said neither side held an edit. So the two
+    stages must hold one regular-file mode, `one_regular_mode`, and the
+    restore then keeps the mode both sides hold.
+
     THE STANDARD'S FILE IS `update-shape.py`'s, by its `source_for`, so a
     pinned path maps to the file `check` compares it with, a collision copy
     under `shape/` included. And it comes from the checkout this doctor
     runs from, as AGENTS.md says to run it, read by `git show`: nothing is
-    fetched or cloned.
+    fetched or cloned. `pin_restore` never asks this of a checkout that is a
+    partial clone (`partial_clone`), where a read fetches what it lacks.
 
     ANYTHING NOT PROVED STAYS THE HAND MERGE, as before: a stage that
-    differs or is missing, a side's pin that does not read or has no row
-    for the copy, a commit that checkout does not hold, a path the standard
-    does not have at that commit, a read that fails. None of those is a
+    differs or is missing, a mode the two sides disagree on, a side's pin
+    that does not read or has no row for the copy, a commit that checkout
+    does not hold, a path the standard does not have at that commit, a read
+    that fails, a checkout that is a partial clone. None of those is a
     guess this makes.
     """
+    if not copies:
+        return []
     us = ctx.update_shape()
     standard = us.Upstream(ctx.shape, str(ctx.shape))
     sides = []
@@ -3005,8 +3027,44 @@ def taken_with_the_pin(ctx: Context, kind, copies: list) -> list:
         sides.append((number, str(held["commit"]).lower(),
                       {row.path for row in rows}))
     return [copy for copy in copies
-            if all(as_the_standard_wrote_it(ctx, us, kind, standard, copy,
+            if one_regular_mode(stages.get(copy, {}))
+            and all(as_the_standard_wrote_it(ctx, us, kind, standard, copy,
                                             *side) for side in sides)]
+
+
+#: The modes `ls-files -u` gives a regular file's stage, executable or not.
+REGULAR_FILE_MODES = (b"100644", b"100755")
+
+
+def one_regular_mode(held: dict) -> bool:
+    """Whether the stages the two sides of a merge hold for a copy agree on
+    ONE regular-file mode (#547, review of PR #586). `held` is that copy's
+    `{stage: mode}`. A side with no stage is not a mode it disagrees on:
+    `as_the_standard_wrote_it` finds no stage to read and proves nothing."""
+    modes = {held[number] for number in (b"2", b"3") if number in held}
+    return len(modes) == 1 and modes <= set(REGULAR_FILE_MODES)
+
+
+#: What the `why` adds where `pin_restore` proved no copy, because the
+#: checkout of the standard is a partial clone (#547).
+PARTIAL_CLONE_WHY = (
+    "The checkout of the standard this doctor runs from is a partial clone, "
+    "which fetches what it lacks on a read, so nothing was read from it to "
+    "prove a copy unedited")
+
+
+def partial_clone(shape: Path) -> bool:
+    """Whether the checkout of the standard at `shape` is a partial clone:
+    its config names a promisor remote or a partial-clone filter (#547).
+
+    A READ THERE CAN FETCH. `git show` of a blob a `--filter` clone left
+    out asks its promisor remote for it, and Brett Heap's ruling for
+    `taken_with_the_pin` is never to fetch, clone or touch the network. So
+    `pin_restore` proves no copy there and every one stays the hand merge.
+    The config is only read, which fetches nothing and writes nothing.
+    """
+    return bool(git_answer(["config", "--get-regexp", r"^(extensions\."
+                            r"partialclone|remote\..*\.promisor)$"], shape))
 
 
 def as_the_standard_wrote_it(ctx: Context, us, kind, standard, copy: str,
