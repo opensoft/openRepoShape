@@ -25,6 +25,7 @@ import ast
 import importlib.util
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -45,6 +46,17 @@ from conftest import (DISCARD_IT, DISCARD_IT_IF_UNUSED, KEEP_IT,
                       assert_a_rehearsals_clone_stops_the_real_run,
                       assert_a_taken_clone_path_is_refused,
                       assert_the_plan_refuses_a_remote_that_exists)
+
+from conftest import (DECLARATIONS, DRY_RUNS, FILE_ABOVE_THE_CLONE,
+                      UPSTREAM_CASINGS,
+                      assert_a_dry_run_passed_through_ends_at_the_plan,
+                      assert_a_file_above_the_clone_path_is_refused,
+                      assert_an_upstream_origin_in_any_case_needs_an_org,
+                      assert_the_backstop_is_finished_by_hand_as_printed,
+                      assert_the_closing_cd_is_one_word,
+                      assert_the_naming_check_hears_what_is_passed_through,
+                      assert_the_scaffold_leaves_its_next_steps_to_setup,
+                      assert_the_upstream_org_is_refused_in_any_case)
 
 SETUP_PROJECT = REPO / "setup-project.py"
 SETUP_SH = REPO / "setup.sh"
@@ -1872,7 +1884,8 @@ def test_a_path_taken_after_step_three_is_the_backstops(monkeypatch, tmp_path,
     SHOULD-2). Its way out moves the thing aside and clones from the clone's
     PARENT: as it used to read, the printed `git clone` met the same
     directory, and `cd <Project>` from anywhere else entered whatever stood
-    there. Nothing is cloned."""
+    there. Each path is one word, and the local clone can read its legs
+    (#538). Nothing is cloned."""
     module = entry_point_module()
     runs = _Runs()
     monkeypatch.setattr(module, "run", runs)
@@ -1897,13 +1910,247 @@ def test_a_path_taken_after_step_three_is_the_backstops(monkeypatch, tmp_path,
     assert str(refused.value) == (
         "%s already exists - it was not there when step (3) looked - so "
         "there is nowhere to clone into. The three repositories WERE "
-        "created. Move it aside, then finish by hand in %s:\n"
-        "    git clone --recurse-submodules %s\n"
+        "created. Move it aside, then finish by hand:\n"
+        "    cd %s\n"
+        "    git -c protocol.file.allow=always clone --recurse-submodules %s\n"
         "    cd Sample && %s scripts/bootstrap.py"
-        % (parent / "Sample", parent,
-           os.path.join(opts.local_remote_dir, "Sample.git"),
+        % (parent / "Sample", module.shell_word(parent, posix=True),
+           module.shell_word(os.path.join(opts.local_remote_dir,
+                                          "Sample.git"), posix=True),
            module.PYTHON_CMD))
     assert runs.calls == [], f"something was run: {runs.calls}"
+
+
+def test_a_folder_step_seven_cannot_make_is_refused_with_the_way_on(
+        monkeypatch, tmp_path):
+    """#538: a file that appeared at `<into>/<Family>` after step (3)
+    looked is a refusal naming it, with the lines that finish the run by
+    hand, not the `FileExistsError` traceback `os.makedirs` raised after all
+    three repositories existed. Nothing is cloned."""
+    module = entry_point_module()
+    runs = _Runs()
+    monkeypatch.setattr(module, "run", runs)
+    opts = module.parse_args(["--project", "Sample", "--org", "demoorg",
+                              "--family", FAMILY,
+                              "--local-remote-dir", str(tmp_path / "remotes"),
+                              "--into", str(tmp_path / "work")],
+                             str(tmp_path))
+    folder = Path(opts.into) / FAMILY
+    folder.parent.mkdir(parents=True)
+    folder.write_bytes(b"not a folder\n")
+    with pytest.raises(module.Refusal) as refused:
+        module.clone_and_bootstrap(opts, "demoorg",
+                                   module.Landing(folder, FAMILY,
+                                                  folder / FAMILY))
+    assert refused.value.code == 2
+    said = str(refused.value)
+    assert said.startswith("%s could not be made a folder (" % folder), said
+    assert said.endswith(
+        "), so there is nowhere to clone into. The three repositories WERE "
+        "created. Make it one, then finish by hand:\n"
+        + module.finish_by_hand(str(folder),
+                                os.path.join(opts.local_remote_dir,
+                                             "Sample.git"),
+                                "Sample", True)), said
+    assert runs.calls == [], f"something was run: {runs.calls}"
+    assert folder.read_bytes() == b"not a folder\n"
+
+
+#: `(a Windows clone path, the word the printed lines spell it as)`. The
+#: spelling is `sh`'s: Git Bash is the shell a Windows person pastes these
+#: into, and #532 rules the printed commands POSIX-only. PowerShell's rule
+#: leaves the first bare, so Git Bash reads `C:workSample`, and doubles the
+#: apostrophe of the third, so Git Bash reads `ONeill`.
+WINDOWS_CLONES = (
+    (r"C:\work\Sample", r"'C:\work\Sample'"),
+    (r"C:\Users\a b\work\Sample", r"'C:\Users\a b\work\Sample'"),
+    (r"C:\Users\Jane O'Neill\work\Sample",
+     r"'C:\Users\Jane O'\''Neill\work\Sample'"),
+)
+WINDOWS_ASSEMBLY = (r"C:\Users\Jane O'Neill\remotes\Sample.git",
+                    r"'C:\Users\Jane O'\''Neill\remotes\Sample.git'")
+
+
+@pytest.mark.parametrize("clone,spelled", WINDOWS_CLONES)
+def test_the_changed_paste_lines_are_posix_quoted_on_windows_too(
+        monkeypatch, capsys, clone, spelled):
+    """#538, under #532's ruling that printed commands are POSIX-only: the
+    hand-over's `cd <clone>` and the backstop's `cd <parent>` and `<assembly>`
+    are spelled for `sh` on every host, as the scaffold's own NEXT STEPS
+    clone is (`shell_line(..., "posix")`). `os.name` and `SHELL_BARE` are
+    switched for the calls, the two things `shell_word` reads to choose
+    PowerShell's dialect, so this holds on any host; the lines are then read
+    back by `shlex.split`, as Git Bash reads them. The family lines are
+    #532's and are not asked."""
+    module = entry_point_module()
+    assembly, assembly_spelled = WINDOWS_ASSEMBLY
+    urls = {"assembly": assembly, "spec": assembly, "code": assembly}
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(module, "SHELL_BARE",
+                        re.compile(r"[A-Za-z0-9_./:%+=\\-]+"))
+    module.hand_over("Sample", clone, urls, "demoorg",
+                     module.Landing(None, "", None))
+    local = module.finish_by_hand(clone, assembly, "Sample", True)
+    github = module.finish_by_hand(
+        clone, "https://github.com/demoorg/Sample.git", "Sample", False)
+    monkeypatch.undo()
+    [closing] = [line for line in capsys.readouterr().out.splitlines()
+                 if line.startswith("    cd ")]
+    assert closing == "    cd " + spelled, closing
+    assert shlex.split(closing) == ["cd", clone], closing
+    assert local == (
+        "    cd %s\n"
+        "    git -c protocol.file.allow=always clone --recurse-submodules %s\n"
+        "    cd Sample && %s scripts/bootstrap.py"
+        % (spelled, assembly_spelled, module.PYTHON_CMD)), local
+    assert [shlex.split(line) for line in local.splitlines()[:2]] == [
+        ["cd", clone],
+        ["git", *FILE_PROTOCOL, "clone", "--recurse-submodules", assembly]]
+    assert github.splitlines()[:2] == [
+        "    cd " + spelled,
+        "    git clone --recurse-submodules "
+        "https://github.com/demoorg/Sample.git"], github
+
+
+@pytest.mark.parametrize("case", ["a-file-two-levels-up", "a-link-to-nothing",
+                                  "a-link-to-a-folder", "nothing-there"])
+def test_what_stands_above_a_clone_path(tmp_path, case):
+    """#538, step (3): the first thing on the way up from the clone's parent
+    must be a folder, or there is nowhere to make the folders between. A
+    file is said to be one; a link is said to be one, by its target; a link
+    TO a folder is a folder; and a path nothing stands on at all is left to
+    the clone, as it was."""
+    module = entry_point_module()
+    blocker = tmp_path / "work" / FAMILY
+    blocker.parent.mkdir()
+    clone = blocker / "Sample"
+    expected = None
+    if case == "a-file-two-levels-up":
+        blocker.write_bytes(b"not a folder\n")
+        clone = blocker / "deeper" / "Sample"
+        expected = "a file"
+    elif case == "nothing-there":
+        clone = blocker / "deeper" / "Sample"
+    else:
+        target = tmp_path / ("real" if case == "a-link-to-a-folder"
+                             else "nowhere")
+        if case == "a-link-to-a-folder":
+            target.mkdir()
+        try:
+            os.symlink(target, blocker, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"this platform cannot create a symlink here: {exc}")
+        if case == "a-link-to-nothing":
+            # THE TARGET AS THE LINK HOLDS IT, not as it was given:
+            # `os.readlink` on Windows returns the substitute name with its
+            # `\\?\` prefix (Python 3.8+), and the refusal names that.
+            expected = ("a symbolic link to %s, which is not a folder"
+                        % os.readlink(blocker))
+    if expected is None:
+        assert module.refuse_a_taken_clone_path(str(clone), "Sample") is None
+        return
+    with pytest.raises(module.Refusal) as refused:
+        module.refuse_a_taken_clone_path(str(clone), "Sample")
+    assert refused.value.code == 2
+    assert str(refused.value) == (
+        "%s is %s, and this project would be cloned inside it, at %s, so the "
+        "run stops here and nothing was created. %s"
+        % (blocker, expected, clone, KEEP_IT))
+
+
+#: 40 hex, for a `--pin` nothing reads the digest of.
+A_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.mark.parametrize("passthrough,dry", [
+    ([], False), (["--dry-run"], True), (["--d"], True),
+    (["--work-dir", "w", "--dry-ru"], True), (["--name=--dry-run"], False),
+    (["--", "--dry-run"], False), (["--d=x"], True), (["--"], False)])
+def test_a_dry_run_is_read_as_the_scaffold_reads_one(passthrough, dry):
+    """#538: `--dry-run`, or a prefix of it, up to an inner `--`; never a
+    value given with `=` to another flag."""
+    assert entry_point_module().passes_a_dry_run(passthrough) is dry
+
+
+@pytest.mark.parametrize("passthrough,declared", [
+    ([], []),
+    (["--pin", f"acme/openGlass@{A_COMMIT}", f"--pin=openChart@{A_COMMIT}"],
+     ["--pins=openGlass,openChart"]),
+    (["--referent-chain", "openA,openB", "--referent=openXdox,openDox"],
+     ["--referent-chain=openXdox,openDox"]),
+    (["--pin-owner", "acme", "--pin-source", "src", "--reference", "doc.md",
+      "--referen", "x"], []),
+    (["--pin", f"openGlass@{A_COMMIT}", "--",
+      "--pin", f"openChart@{A_COMMIT}"], ["--pins=openGlass"]),
+    (["--pin"], []), (["--pin", f"@{A_COMMIT}"], [])])
+def test_the_declarations_are_read_as_the_scaffold_reads_them(passthrough,
+                                                              declared):
+    """#538: each `--pin`'s product, at its last `/` and before `@`; the
+    last `--referent-chain`, in any spelling the scaffold takes for it; and
+    nothing from a flag that only shares a prefix with one of them."""
+    assert entry_point_module().naming_declarations(passthrough) == declared
+
+
+def test_each_passed_flag_is_spelled_as_the_scaffold_takes_it():
+    """`PASSED_FLAGS` against the scaffold's own `--help`: each flag is one
+    of its options; a shortest spelling shorter than the flag names that
+    flag alone; and one character less is not that flag alone any more, so
+    the row is the shortest. A flag the scaffold renamed, or one it grew a
+    sibling of, fails here instead of being misread."""
+    module = entry_point_module()
+    helped = subprocess.run([sys.executable, str(REPO / "scaffold-project.py"),
+                             "--help"], capture_output=True, text=True,
+                            check=True).stdout
+    usage = helped.split("\n\n", 1)[0]
+    options = sorted(set(re.findall(r"--[a-z][a-z-]*", usage)))
+    for flag, shortest in module.PASSED_FLAGS.items():
+        assert flag in options, flag
+        assert flag.startswith(shortest), flag
+        if shortest != flag:
+            assert [o for o in options if o.startswith(shortest)] == [flag]
+        if len(shortest) > 3:
+            assert [o for o in options if o.startswith(shortest[:-1])] != [
+                flag], flag
+
+
+# --- #538, on an interpreter alone: each is `conftest`'s helper of that name -
+
+def test_the_closing_cd_names_the_clone_as_one_word(tmp_path):
+    assert_the_closing_cd_is_one_word(run_entry, tmp_path)
+
+
+def test_the_backstop_is_finished_by_hand_as_printed(tmp_path):
+    assert_the_backstop_is_finished_by_hand_as_printed(run_entry, tmp_path)
+
+
+def test_the_scaffold_leaves_its_next_steps_to_setup(setup_run):
+    assert_the_scaffold_leaves_its_next_steps_to_setup(setup_run["result"])
+
+
+@pytest.mark.parametrize("where", FILE_ABOVE_THE_CLONE)
+def test_a_file_above_the_clone_path_is_refused(tmp_path, where):
+    assert_a_file_above_the_clone_path_is_refused(run_entry, tmp_path, where)
+
+
+@pytest.mark.parametrize("spelling,yes", DRY_RUNS)
+def test_a_dry_run_passed_through_ends_at_the_plan(tmp_path, spelling, yes):
+    assert_a_dry_run_passed_through_ends_at_the_plan(run_entry, tmp_path,
+                                                     spelling, yes)
+
+
+@pytest.mark.parametrize("how", DECLARATIONS)
+def test_the_naming_check_hears_what_is_passed_through(tmp_path, how):
+    assert_the_naming_check_hears_what_is_passed_through(run_entry, tmp_path,
+                                                         how)
+
+
+@pytest.mark.parametrize("org", UPSTREAM_CASINGS)
+def test_the_upstream_org_is_refused_in_any_case(tmp_path, org):
+    assert_the_upstream_org_is_refused_in_any_case(run_entry, tmp_path, org)
+
+
+def test_an_upstream_origin_in_any_case_needs_an_org(tmp_path):
+    assert_an_upstream_origin_in_any_case_needs_an_org(run_entry, tmp_path)
 
 
 # --- setup.sh is a shim, not a second flag list -----------------------------

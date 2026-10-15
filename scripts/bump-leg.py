@@ -1120,6 +1120,25 @@ def _ensure_root_clean(root: Path) -> None:
             "exists to keep readable.")
 
 
+def _switch_command(root: Path, role: str, commit: str) -> str:
+    """`git -C <root> switch -c bump/<role>-<commit[:12]>` as a line a person
+    pastes, every word quoted for a POSIX shell (#532).
+
+    THE ONE PLACE THE THREE `switch -c` LINES ARE SPELLED: the two refusals
+    below and the dry run's closing hint (#477) all name the same branch, and
+    the dry run's rule is that it names the branch the real run's refusal
+    names. Two of them concatenated `str(root)` bare, so a root under `My
+    Projects/` printed a line that ran in the wrong directory or did not
+    parse, and one under `it's here/` a quotation nothing closes; a Windows
+    root, which always holds a backslash, prints in single quotes, as
+    `shlex` spells it. They are lines for a POSIX shell (Git Bash, or WSL2
+    on Windows), as `update-shape.py`'s are, and README's "Windows,
+    natively" says so.
+    """
+    return shlex.join(["git", "-C", str(root), "switch", "-c",
+                       f"bump/{role}-{commit[:12]}"])
+
+
 def _branch_to_bump_from(root: Path, project: "Project", role: str,
                          commit: str, *, dry_run: bool = False) -> str:
     """The branch on which the bump commits, refused if there is none or
@@ -1130,7 +1149,8 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
     next step would be a push to the default branch. A `--dry-run` makes no
     commit, so on the tracking branch it is let through and ends by naming
     the branch the real run needs (#477); a root on no branch at all is
-    refused either way.
+    refused either way. Both refusals name that branch's `switch -c`
+    through `_switch_command`, quoted (#532).
     """
     branch = current_branch(root)
     if branch is None:
@@ -1138,8 +1158,8 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
             "bump-leg-root-detached",
             f"{root} is not on a branch, so there is no branch to push and "
             "open a pull request from",
-            "Remediation: `git -C " + str(root) + " switch -c bump/"
-            + f"{role}-{commit[:12]}` and re-run.")
+            f"Remediation: `{_switch_command(root, role, commit)}` and "
+            "re-run.")
     if branch == project.tracking and not dry_run:
         raise Refusal(
             "bump-leg-on-tracking-branch",
@@ -1147,8 +1167,8 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
             "project's tracking branch",
             "Remediation: these organisations are pull-request only, so this "
             "will not make a commit whose only next step is a push to the "
-            "default branch. Run:\n    git -C " + str(root)
-            + f" switch -c bump/{role}-{commit[:12]}\nand re-run.")
+            "default branch. Run:\n    "
+            f"{_switch_command(root, role, commit)}\nand re-run.")
     return branch
 
 
@@ -1357,10 +1377,12 @@ def _restore_leg_if_moved(submodule: Path, placement: str | None,
                         cwd=submodule).lower() == was.lower()):
         restore_leg(submodule, placement, was)
     if _leg_status(submodule) != status:
+        # QUOTED (#532): the leg's path is a root's, and a person pastes it.
+        where = shlex.join(["git", "-C", str(submodule), "status"])
         raise LegNotAsFound(
             "its `git status` no longer reads as it did before the bump, "
             "which is what a checkout cut off part way leaves behind. Read "
-            f"`git -C {submodule} status` before anything else, and remove "
+            f"`{where}` before anything else, and remove "
             "only what you did not put there yourself.")
 
 
@@ -1639,8 +1661,7 @@ def cmd_bump(args) -> int:
             # The command is quoted, so a root under `My Projects/` pastes.
             print(f"\nthe real run needs a branch: {root} is on {branch!r}, "
                   "the tracking branch. Create one first with: "
-                  + shlex.join(["git", "-C", str(root), "switch", "-c",
-                                f"bump/{role}-{asked[:12]}"]))
+                  + _switch_command(root, role, asked))
         return 0
 
     # ---- the rewrite and the commit, remembered byte for byte so a failure
@@ -1669,7 +1690,11 @@ def cmd_bump(args) -> int:
     print(f"  {path}/ is left DETACHED at {commit[:12]}; `make bootstrap` in "
           "the root puts it on its tracking branch AT the new pin, or says "
           "why not")
-    print(f"\nNEXT  git -C {root} push -u origin {branch}")
+    # QUOTED WHOLE (#532), the root and the branch: a root under `My
+    # Projects/` pasted as two arguments, and the line is the one this run
+    # ends on, the one a person runs next.
+    print("\nNEXT  " + shlex.join(["git", "-C", str(root), "push", "-u",
+                                   "origin", branch]))
     print(f"      then open a pull request against {project.tracking}; never "
           "push the bump to the default branch directly")
     return 0
