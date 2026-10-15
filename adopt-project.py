@@ -73,9 +73,11 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            is pushed that the push cannot fast-forward, and none git cannot
            hold beside it there or in the source. Each pin's digest is
            recomputed at its commit in the clone `plan` read it from, where
-           that clone is still on this machine, with no network; a NOTE
-           names each pin it was not rechecked for (#449). It prints what
-           will happen and changes nothing.
+           that clone is still on this machine, with no network: a partial
+           clone (`git clone --filter`), whose `git` would fetch what it
+           lacks, is not asked, and a NOTE names each pin it was not
+           rechecked for (#449). It prints what will happen and changes
+           nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three and then opens the split's
@@ -246,9 +248,10 @@ PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
 #: plan does not record whole, a name alone among them (an old plan, or an
 #: edit). The manifest lists each product with its owner stripped, as the
 #: file is named. Where the clone `plan` read a digest from is still on this
-#: machine, `check` and `execute` recompute the digest there, with `plan`'s
-#: own reader (`pin_digest_from_source`) and no network, and find a commit
-#: or a digest edited after `plan` read them (#449).
+#: machine, and is no partial clone, `check` and `execute` recompute the
+#: digest there with `plan`'s own reader (`pin_digest_from_source`), which
+#: in such a clone reads no network, and find a commit or a digest edited
+#: after `plan` read them (#449).
 from shape_materialize import (  # noqa: E402
     PIN_ARG_RE, declared_pin_products, declared_pin_values, neutral_pin_path,
     one_printable_line, pin_collisions, pin_digest_from_source,
@@ -527,11 +530,20 @@ def _pin_findings(plan: "Plan", tree: list) -> list[str]:
 #
 # NOTHING ELSE IS ASKED. `check` and `execute` read no network for a pin, and
 # `execute --local-remote-dir` needs no `gh`, so a digest `gh api` read is
-# not read again, and a clone no longer at its path is not looked for. Each
-# such pin gets one NOTE saying its digest was not rechecked here; the root's
-# own `validate-pins.py` recomputes it wherever it can read the product. A
-# relative path is read from the current directory, as `plan` read it.
-# `check` and `execute` ask this through `_entry_findings`, the one list.
+# not read again, and a clone no longer at its path is not looked for. Nor is
+# a partial clone (`git clone --filter`) asked: `git` there fetches an object
+# the clone lacks from its promisor remote, a commit edited into the plan
+# among them, so whether it is one is read from its own config, which reads
+# no network (`_a_partial_clone`). Each such pin gets one NOTE saying its
+# digest was not rechecked here; the root's own `validate-pins.py` recomputes
+# it wherever it can read the product. A relative path is read from the
+# directory `check` or `execute` runs in, as `plan` read it from the one it
+# ran in, and every sentence naming one says where that is
+# (`_read_from_here`). Anything else at the path that cannot answer -- a
+# commit it lacks, a directory that is no clone, a file -- is
+# `plan-pin-source-unreadable`, as `validate-pins.py` finds a source it reads
+# that cannot answer. `check` and `execute` ask this through
+# `_entry_findings`, the one list.
 
 #: Why a pin's digest `gh api` read was not rechecked.
 NOT_RECHECKED_GH = "`plan` read it with `gh api`, and `check` reads no network"
@@ -544,12 +556,37 @@ def _recorded_clone(how: str) -> str | None:
     return clone["path"] if clone else None
 
 
+def _read_from_here(clone: str) -> str:
+    """` (read from this directory as <absolute path>)` for a relative clone
+    path, which `check` and `execute` read from the directory they run in,
+    as `plan` read it from the one it ran in; nothing for an absolute one."""
+    if Path(clone).is_absolute():
+        return ""
+    return f" (read from this directory as {_shown(os.path.abspath(clone))})"
+
+
+def _a_partial_clone(clone: Path) -> bool:
+    """Whether `git` in `clone` fetches an object the clone lacks from a
+    promisor remote (`git clone --filter`): read from the clone's own
+    config, with no network. A path that is no clone is not one."""
+    try:
+        proc = subprocess.run(
+            ["git", "config", "--local", "--get-regexp",
+             r"^(extensions\.partialclone|remote\..*\.promisor)$"],
+            cwd=str(clone), capture_output=True, check=False)
+    except OSError:
+        return False
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
 def _why_not_rechecked(how: str) -> str | None:
     """Why the digest `plan` read as `how` says cannot be recomputed here, or
-    None where the clone it names is still at its path. Only nothing there
-    is gone, what `plan`'s reader calls "no such directory": anything else at
-    the path, a file or a directory that cannot be entered among it, is
-    asked, and the reader says why it cannot answer."""
+    None where the clone it names is still at its path and is no partial
+    clone. Only nothing there is gone, what `plan`'s reader calls "no such
+    directory": anything else at the path, a file or a directory that cannot
+    be entered among it, is asked, and the reader says why it cannot answer.
+    A partial clone is not asked, because `git` there would fetch what it
+    lacks over the network."""
     clone = _recorded_clone(how)
     if clone is None:
         return (NOT_RECHECKED_GH if how == GH_DIGEST_SOURCE else
@@ -558,10 +595,16 @@ def _why_not_rechecked(how: str) -> str | None:
     try:
         Path(clone).stat()
     except (FileNotFoundError, NotADirectoryError):
-        return (f"the clone `plan` read it from, {_shown(clone)}, is not "
-                "there any more")
+        return (f"the clone `plan` read it from is not at {_shown(clone)}"
+                f"{_read_from_here(clone)}")
     except OSError:
-        pass  # there: `pin_digest_from_source` names why it cannot answer
+        # There: `pin_digest_from_source` names why it cannot answer.
+        return None
+    if _a_partial_clone(Path(clone)):
+        return (f"the clone at {_shown(clone)}{_read_from_here(clone)} is a "
+                "partial clone (`git clone --filter`), whose `git` fetches "
+                "what it lacks over the network, and `check` reads no "
+                "network")
     return None
 
 
@@ -577,19 +620,21 @@ def _recomputed_pin_finding(said: str, values: dict) -> str | None:
         actual = pin_digest_from_source(Path(clone), commit, repository)
     except Refusal as exc:
         return (f"FINDING {PIN_SOURCE_UNREADABLE}: {said} records `commit: "
-                f"{commit}`, and the clone `plan` read its digest from "
-                f"cannot answer for it: {_shown(exc.detail)}. A commit that "
-                "clone does not hold is one `plan` did not read: "
-                f"{_pin_fix(repository)}.")
+                f"{commit}`, and the clone its `digest_source:` names"
+                f"{_read_from_here(clone)} cannot answer for it: "
+                f"{_shown(exc.detail)}. Either the commit was edited after "
+                "`plan` read it, or that path no longer holds the clone "
+                "`plan` read it in: run `check` where `plan` ran, or `git "
+                f"fetch` in that clone, or {_pin_fix(repository)}.")
     if actual == recorded:
         return None
     return (f"FINDING {PIN_DIGEST_MISMATCH}: {said} records `commit: "
             f"{commit}` and `tree_sha256: {recorded}`, and the clone `plan` "
-            f"read the digest from, {_shown(clone)}, recomputes {actual} at "
-            "that commit: one of the two was edited after `plan` read them, "
-            "and the root's own `validate-pins.py` would refuse the pin file "
-            "`execute` writes from them (`neutral-pin-digest-mismatch`): "
-            f"{_pin_fix(repository)}.")
+            f"read the digest from, {_shown(clone)}{_read_from_here(clone)}, "
+            f"recomputes {actual} at that commit: one of the two was edited "
+            "after `plan` read them, and the root's own `validate-pins.py` "
+            "would refuse the pin file `execute` writes from them "
+            f"(`neutral-pin-digest-mismatch`): {_pin_fix(repository)}.")
 
 
 def _pin_digest_findings(plan: "Plan") -> tuple[list[str], list[str]]:
@@ -611,9 +656,11 @@ def _pin_digest_findings(plan: "Plan") -> tuple[list[str], list[str]]:
         elif found:
             findings.append(found)
         else:
+            clone = _recorded_clone(how)
             notes.append(f"NOTE {said}: digest recomputes at "
                          f"{values['PIN_COMMIT'][:12]} in the clone `plan` "
-                         f"read it from, {_shown(_recorded_clone(how))}.")
+                         f"read it from, {_shown(clone)}"
+                         f"{_read_from_here(clone)}.")
     return findings, notes
 
 
@@ -5889,8 +5936,9 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     # cannot write is a finding, printed after this. Whether its digest was
     # recomputed is said once per pin with the NOTEs `_entry_findings`
     # returns: it recomputes, or it was not rechecked here, where the clone
-    # `plan` read it from is gone or `gh api` read it, because `check` and
-    # `execute` read no network for a pin (#273's review, S3; #449).
+    # `plan` read it from is gone or partial or `gh api` read it, because
+    # `check` and `execute` read no network for a pin (#273's review, S3;
+    # #449).
     recorded = _recorded_pins(plan)
     for product, values in recorded.items():
         print(f"  write {neutral_pin_path(product)}: "
