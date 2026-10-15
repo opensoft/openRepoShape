@@ -201,7 +201,7 @@ def test_the_mount_hands_git_rm_each_path_as_the_bytes_the_tree_holds(
 
 
 def test_a_path_git_refuses_is_refused_as_the_command_reads(tmp_path):
-    """`_git_rm`'s failure path (r527's review). A `git rm` git refuses
+    """`_git_rm`'s failure path (#527's review). A `git rm` git refuses
     raises `CommandFailed` as `run` raised it: naming the command as the
     person reads it (the path as text, not the bytes git was handed) and the
     directory it ran in, and carrying git's own words, which `execute`
