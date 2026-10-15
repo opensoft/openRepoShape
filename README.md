@@ -1135,11 +1135,11 @@ openRepoShape --doctor                 # the repository you are standing in
 ./shape-doctor.py --root ../MedxEHR --json
 ```
 
-It **writes nothing into the repository and fetches nothing from it**, and it
-reimplements nothing: each row is a check this file documents. It compares
-against the checkout it is RUN FROM, so the verdict is offline. Installed, it
-clones the standard into a temporary directory and KEEPS it, because its NEXT
-lines run from there: its last line names it, safe to delete after they run.
+It **writes nothing into the repository but a `--placement-plan` file you name,
+and fetches nothing from it**, and it reimplements nothing: each row is a check
+this file documents. It compares against the checkout it is RUN FROM, so the
+verdict is offline. Installed, it KEEPS its temporary clone of the standard for
+the NEXT lines naming it: its last line names it, safe to delete after they run.
 
 For an assembly root the rows are **naming** (this standard's own
 `contracts/repository-naming.yaml`), **manifest** and **pins** (the project's

@@ -1466,7 +1466,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="current">
 
-      <!-- reads README.md § Keeping a project's shape current: blob 9d21bfcf6a23fc23b4d2dd6a18a4f32f75ee400b -->
+      <!-- reads README.md § Keeping a project's shape current: blob 545639ebf5e9ab7837df5c012f216832dc7de56f -->
 
       <p class="eyebrow">Reference</p>
       <h2>Keeping a project&rsquo;s shape current</h2>
@@ -1528,7 +1528,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doctor">
 
-      <!-- reads README.md § Keeping a project's shape current: blob 9d21bfcf6a23fc23b4d2dd6a18a4f32f75ee400b -->
+      <!-- reads README.md § Keeping a project's shape current: blob 545639ebf5e9ab7837df5c012f216832dc7de56f -->
 
       <p class="eyebrow">Reference</p>
       <h2>Is this repository compliant? <code>openRepoShape --doctor</code></h2>
@@ -1538,12 +1538,13 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       <div class="code" data-lang="sh"><pre><code>openRepoShape --doctor ../MedxEHR      # or: ./shape-doctor.py --root ../MedxEHR
 openRepoShape --doctor                 # the repository you are standing in
 ./shape-doctor.py --root ../MedxEHR --json</code></pre></div>
-      <p>It <strong>writes nothing into the repository and fetches nothing from it</strong>, and
-      it reimplements nothing. One flag writes at all, and it writes one file you named:
-      <code>--placement-plan</code>, below. It compares against the checkout it is RUN FROM, so
-      the verdict is offline. Installed, it clones the standard into a temporary directory and
-      KEEPS it, because its NEXT lines run from there: its last line names it, safe to delete
-      after they run.</p>
+      <p>It <strong>writes nothing into the repository but a <code>--placement-plan</code> file you
+      name, and fetches nothing from it</strong>, and it reimplements nothing. That flag, below, is
+      the one that writes at all, and it writes one file, at the path you give: a relative one
+      lands in the directory you stand in, inside the repository when you stand there. It
+      compares against the checkout it is RUN FROM, so the verdict is offline. Installed, it
+      clones the standard into a temporary directory and KEEPS it for the NEXT lines that name
+      it: its last line names it, safe to delete after they run.</p>
       <p>For an assembly root the rows are <strong>naming</strong>, <strong>manifest</strong> and
       <strong>pins</strong> (the project&rsquo;s OWN validators when it carries them &mdash; they
       are the pinned copies, which is the point &mdash; else the template copies, and the row says

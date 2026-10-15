@@ -146,6 +146,21 @@ def test_help_prints_every_usage_line():
         assert line in lines, f"--help never printed:\n    {line}"
 
 
+def test_the_doctor_line_keeps_its_description_column():
+    """#500 gave the doctor's synopsis its two flags, and the full form
+    filled the column the other lines describe themselves in, so its
+    description went (#546). It is back, on the line under the form and in
+    that same column, where argparse puts the help of an option too long for
+    it; the form itself stays one line."""
+    lines = run_cmd("--help").stdout.splitlines()
+    column = USAGE_LINES[0].index("install (or update)")
+    assert USAGE_LINES[1].index("check this MACHINE") == column
+    doctor = lines.index(next(line for line in USAGE_LINES if "--doctor" in line))
+    assert lines[doctor + 1] == \
+        " " * column + "diagnose a REPOSITORY against this standard", (
+            lines[doctor:doctor + 2])
+
+
 def test_help_points_at_openrepotools():
     """`--help` used to list the other two commands; it names their new home.
 
@@ -596,6 +611,10 @@ def test_two_modes_is_a_refusal_not_last_wins(args, tmp_path):
                      env={"OPENREPOSHAPE_BIN_DIR": str(bin_dir)})
     assert result.returncode == 2, result.stdout + result.stderr
     assert "two different runs" in result.stderr
+    # "and writes nothing" was false of a `--placement-plan` typed inside the
+    # repository (#546): it says which one file the doctor does write.
+    assert "--doctor reads a repository and writes nothing into it but a " \
+        "--placement-plan <file> you name." in " ".join(result.stderr.split())
     assert not bin_dir.exists(), "a refused run placed a command anyway"
 
 
