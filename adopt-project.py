@@ -7038,7 +7038,7 @@ def _stored_as_written(blob: bytes, mode: str, written: bytes) -> str | None:
                                cwd=str(repository), env=env,
                                capture_output=True, check=False)
         if added.returncode:
-            said = added.stderr.decode("utf-8", "replace").strip()
+            said = added.stderr.decode(errors="replace").strip()
             return said.splitlines()[-1] if said else \
                 f"exit {added.returncode}"
         staged = git_out([*git, "ls-files", "-s", "--", ATTRIBUTES],

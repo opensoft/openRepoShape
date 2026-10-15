@@ -65,6 +65,7 @@ TEXT_AUTO = "* text=auto\n"
 YML_CRLF = "*.yml eol=crlf\n"
 ALL_CRLF = "* eol=crlf\n"
 MINUS_TEXT = "* -text\n"
+TEXT_SET = "* text\n"
 #: The finding's own remedy for `.github/.gitattributes`, applied.
 REMEDIED = f"{YML_CRLF}{VALIDATE_LINE}\n"
 ROOT = "root"
@@ -79,6 +80,8 @@ SCRIPTS = ("validate-pins.py", "validate-manifest.py", "bootstrap.py",
            "repo_shape.py", "validate-repository-naming.py")
 BRANCH = "adopt/three-repo-shape"
 PIN = "contracts/shape-pin.yaml"
+#: Where a root `.gitattributes` that is a symlink leads.
+LINKED_RULES = "config/attributes"
 
 #: A source with nothing for the plan to ask about, and a workflow of its own
 #: under `.github/workflows/`, which the policy sends to the code leg.
@@ -236,8 +239,8 @@ def test_a_root_attributes_symlink_still_has_its_copies_outranked(tmp_path):
     platform, is still found."""
     source = make_source_repo(
         tmp_path / "Thing", tree={**SOURCE, **github(YML_CRLF, None),
-                                  "config/attributes": TEXT_AUTO}, edits=())
-    index_link(source, ROOT_ATTRIBUTES, "config/attributes")
+                                  LINKED_RULES: TEXT_AUTO}, edits=())
+    index_link(source, ROOT_ATTRIBUTES, LINKED_RULES)
     found = findings(planned(source, tmp_path,
                              {**KEEP_GITHUB, "config/": ROOT}))
     assert [code for code, _ in found] == [NESTED], found
@@ -293,7 +296,7 @@ def test_a_kept_shape_attributes_file_is_the_copys_finding_alone(tmp_path):
 KEPT_LF = [
     pytest.param(github(MINUS_TEXT), KEEP_GITHUB, id="minus-text"),
     pytest.param(github("* binary\n"), KEEP_GITHUB, id="binary"),
-    pytest.param(github("* text\n"), KEEP_GITHUB, id="text-alone"),
+    pytest.param(github(TEXT_SET), KEEP_GITHUB, id="text-alone"),
     pytest.param(github("* -crlf\n* crlf=input\n"), KEEP_GITHUB,
                  id="the-old-crlf-spelling"),
     pytest.param(github("*.png binary\n"), KEEP_GITHUB, id="another-path"),
@@ -317,7 +320,7 @@ def test_a_kept_file_that_leaves_each_copy_lf_is_no_finding(tmp_path, files,
 def test_only_a_file_that_changes_a_copy_is_named(tmp_path):
     """`.github/workflows/.gitattributes` says `text`, which the root's rule
     says already: the copy's CRLF is `.github/.gitattributes`' alone."""
-    files = {**github(ALL_CRLF), WORKFLOWS_ATTRIBUTES: "* text\n"}
+    files = {**github(ALL_CRLF), WORKFLOWS_ATTRIBUTES: TEXT_SET}
     found = findings(adoption_plan(tmp_path, files, KEEP_BOTH))
     assert [code for code, _ in found] == [NESTED], found
     assert found[0][1].startswith(f"the plan keeps `{GITHUB_ATTRIBUTES}`")
@@ -340,7 +343,7 @@ def test_a_cause_two_files_make_only_together_is_still_named(tmp_path):
     alone says what the root says; together they write it CRLF. No file
     alone breaks the copy, so the one that changes what git says of it is
     named, and its line keeps the copy LF."""
-    files = {**github("* -text eol=crlf\n"), WORKFLOWS_ATTRIBUTES: "* text\n"}
+    files = {**github("* -text eol=crlf\n"), WORKFLOWS_ATTRIBUTES: TEXT_SET}
     found = findings(adoption_plan(tmp_path, files, KEEP_BOTH))
     assert [detail.split("`")[1] for _, detail in found] == [
         GITHUB_ATTRIBUTES], found
@@ -380,11 +383,15 @@ def command_scope(key: str, value: str) -> dict:
             f"GIT_CONFIG_KEY_{held}": key, f"GIT_CONFIG_VALUE_{held}": value}
 
 
+def checked(plan: Path, env: dict):
+    """`check` of `plan`, run with `env` laid over this process's own."""
+    return run_script(ADOPT, "check", "--plan", str(plan), env=env)
+
+
 def checked_with(tmp_path: Path, env: dict, rules: str = YML_CRLF):
     """`check` of the plan keeping `.github/.gitattributes` holding
     `rules`, run with `env` laid over this process's own."""
-    plan = adoption_plan(tmp_path, github(rules), KEEP_GITHUB)
-    return run_script(ADOPT, "check", "--plan", str(plan), env=env)
+    return checked(adoption_plan(tmp_path, github(rules), KEEP_GITHUB), env)
 
 
 def test_this_machines_own_attributes_are_not_read(tmp_path):
@@ -572,8 +579,7 @@ def checked_root_with(tmp_path: Path, env: dict,
                       data: bytes = CRLF_UNDER_TEXT):
     """`check` of the plan keeping a root `.gitattributes` committed as
     `data`, run with `env` laid over this process's own."""
-    plan = root_attributes_plan(tmp_path, data)
-    return run_script(ADOPT, "check", "--plan", str(plan), env=env)
+    return checked(root_attributes_plan(tmp_path, data), env)
 
 
 def reencoded(checked) -> str:
@@ -635,9 +641,9 @@ def no_root_attributes(base: Path) -> Path:
 
 def a_root_attributes_symlink(base: Path) -> Path:
     source = make_source_repo(
-        base / "Thing", tree={**SOURCE, "config/attributes": TEXT_AUTO},
+        base / "Thing", tree={**SOURCE, LINKED_RULES: TEXT_AUTO},
         edits=())
-    index_link(source, ROOT_ATTRIBUTES, "config/attributes")
+    index_link(source, ROOT_ATTRIBUTES, LINKED_RULES)
     return source
 
 
@@ -667,6 +673,16 @@ needs_filter_repo = pytest.mark.skipif(
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
 
 
+def adopted_by_execute(plan: Path, base: Path) -> None:
+    """`execute --yes` of `plan`, its remotes and work under `base`; it
+    exits 0 and says `adoption verified`."""
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(base / "remotes"),
+                        "--work-dir", str(base / "work"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "adoption verified" in result.stdout, result.stdout
+
+
 @pytest.fixture(scope="module", params=[
     pytest.param(github(REMEDIED), id="the-remedy"),
     pytest.param(github(MINUS_TEXT), id="minus-text")])
@@ -675,12 +691,7 @@ def adopted(request, tmp_path_factory) -> Path:
     the source the finding's remedy was applied to, and one whose kept file
     says `-text`."""
     base = tmp_path_factory.mktemp("nested-attributes")
-    plan = adoption_plan(base, request.param, KEEP_GITHUB)
-    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
-                        "--local-remote-dir", str(base / "remotes"),
-                        "--work-dir", str(base / "work"))
-    assert result.returncode == 0, result.stderr + result.stdout
-    assert "adoption verified" in result.stdout, result.stdout
+    adopted_by_execute(adoption_plan(base, request.param, KEEP_GITHUB), base)
     return base / "Thing"
 
 
@@ -726,8 +737,4 @@ def test_a_renormalized_root_attributes_adopts(tmp_path):
     git("commit", "-qm", "Renormalize .gitattributes", cwd=source)
     plan = planned(source, tmp_path, {})
     assert findings(plan) == []
-    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
-                        "--local-remote-dir", str(tmp_path / "remotes"),
-                        "--work-dir", str(tmp_path / "work"))
-    assert result.returncode == 0, result.stderr + result.stdout
-    assert "adoption verified" in result.stdout, result.stdout
+    adopted_by_execute(plan, tmp_path)
