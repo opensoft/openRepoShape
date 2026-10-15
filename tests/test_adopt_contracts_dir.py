@@ -38,7 +38,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
+from conftest import (ADOPT, REPO, clone_just_pushed, git, make_source_repo,
                       run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -244,11 +244,10 @@ def adopt_with_legs_mounted_away(base: Path, *, by_hand: bool) -> dict:
                         "--work-dir", str(base / "work"))
     assert result.returncode == 0, result.stderr + result.stdout
     assert "adoption verified" in result.stdout, result.stdout
+    # `execute` has just pushed into `source`: read it through git, not
+    # through its files (#440, #554).
     clone = base / PROJECT
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         "-b", SPLIT_BRANCH, str(source), str(clone)],
-        capture_output=True, text=True, check=False)
+    proc = clone_just_pushed(source, clone, branch=SPLIT_BRANCH)
     assert proc.returncode == 0, proc.stderr
     makefile = subprocess.run(
         ["git", "show", f"{SPLIT_BRANCH}:Makefile"], cwd=str(source),
