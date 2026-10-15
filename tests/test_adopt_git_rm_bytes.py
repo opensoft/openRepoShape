@@ -66,6 +66,8 @@ NAIVE = "naïve.md"
 #: The byte 0xE9 where UTF-8 has none, as `Source.tree` keeps it: the
 #: surrogate U+DC00 plus the byte. A `drop` entry may hold one.
 NOT_UTF8 = "caf\udce9.txt"
+#: The source's front door, in every tree here.
+README = "README.md"
 
 #: What the C locale is: `PYTHONUTF8=0`, because the C locale turns Python's
 #: UTF-8 mode on by itself, and so does 3.15 everywhere.
@@ -159,7 +161,7 @@ MOVED = {"spec": [NFC_RESUME, NFD_CAFE, UMLAUT_DIR + "/"], "code": [CJK],
          "drop": [NAIVE, NOT_UTF8]}
 #: The paths the plan keeps in the root: each moved name's twin, and a file
 #: whose name starts with the moved directory's.
-KEPT = [NFD_RESUME, NFC_CAFE, UMLAUT_FILE, "README.md"]
+KEPT = [NFD_RESUME, NFC_CAFE, UMLAUT_FILE, README]
 
 
 def mounted_in_the_c_locale(tmp_path: Path, files: list,
@@ -201,20 +203,24 @@ def test_the_mount_hands_git_rm_each_path_as_the_bytes_the_tree_holds(
 def test_a_path_git_refuses_is_refused_as_the_command_reads(tmp_path):
     """`_git_rm`'s failure path (r527's review). A `git rm` git refuses
     raises `CommandFailed` as `run` raised it: naming the command as the
-    person reads it, the path as text and not the bytes git was handed, and
-    carrying git's own words, which `execute` prints after both legs exist.
+    person reads it (the path as text, not the bytes git was handed) and the
+    directory it ran in, and carrying git's own words, which `execute`
+    prints after both legs exist.
     On bfed143 the child raised `UnicodeEncodeError` before git ran. Naming
     the bytes command raised `TypeError`, not one of `LATE_FAILURES`, so the
     run would end in a traceback after both legs are pushed; and a refusal
     left unraised went on to mount the legs as if the path were gone."""
     missing = "missing-" + NFC_CAFE
     _, answer = mounted_in_the_c_locale(
-        tmp_path, ["README.md"], {"spec": [missing], "code": [], "drop": []})
+        tmp_path, [README], {"spec": [missing], "code": [], "drop": []})
     command = f"git --literal-pathspecs rm -r -q -- {missing}"
     assert answer.get("raised") == f"CommandFailed: {command}", answer
     told = answer["loudly"].splitlines()
     assert told[:2] == ["REFUSED mounting the legs. THE EXACT COMMAND WAS:",
                         f"    {command}"]
+    # Only the head of the line: the child spells the directory under ASCII,
+    # so what follows need not be this process's spelling of a temporary path.
+    assert told[2].startswith("    (in "), told
     assert f"fatal: pathspec '{missing}' did not match any files" in told
 
 
@@ -282,7 +288,7 @@ def test_a_source_with_names_outside_ascii_adopts_under_a_c_locale(
     is in its leg as the bytes the source holds, and every name kept in the
     root is in the split, beside its twin's absence."""
     c_locale_or_skip()
-    tree = {"README.md": "# Northwind\n", "docs/guide.md": "guide\n",
+    tree = {README: "# Northwind\n", "docs/guide.md": "guide\n",
             "src/app.py": "VALUE = 1\n", **{name: "x\n" for name in names}}
     source = make_source_repo(tmp_path / NORTHWIND, tree, edits=())
     plan = tmp_path / "adoption-plan.yaml"
