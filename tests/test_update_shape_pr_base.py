@@ -41,6 +41,16 @@ from test_update_shape import (CHANGED_SOURCE, PROJECT, UPSTREAM_FIX_LINE,
 UPDATE = REPO / "update-shape.py"
 
 
+def without_its_words(line: str) -> str:
+    """A printed `gh pr create` less the `--title <t> --body <b>` it ends on
+    (#535): each is checked to be there, and what they say is
+    `tests/test_update_shape_messages.py`'s. What is left is the part these
+    tests are about, the repository, the base and the head."""
+    assert " --title " in line and " --body " in line, line
+    assert "--fill" not in line, line
+    return line.partition(" --title ")[0]
+
+
 def project_with_an_upstream_fix(tmp_path_factory, subdir: str,
                                  *scaffold_args: str) -> dict:
     """A project at A, and an upstream that has since moved to B — the shape
@@ -156,8 +166,9 @@ def test_the_next_line_names_the_roots_tracking_branch_as_the_base(case,
     line = next_line_of(result.stdout)
     assert "gh pr create" in line
     assert line.count("--base") == 1, line
-    assert line.endswith(f"gh pr create --repo {ORG}/{PROJECT} --base "
-                         f"{case.base} --head {branch}"), line
+    assert without_its_words(line).endswith(
+        f"gh pr create --repo {ORG}/{PROJECT} --base {case.base} --head "
+        f"{branch}"), line
 
 
 def test_the_next_line_after_a_push_names_the_repository_not_a_placeholder(
@@ -170,8 +181,9 @@ def test_the_next_line_after_a_push_names_the_repository_not_a_placeholder(
     assert result.returncode == 0, result.stdout + result.stderr
     line = next_line_of(result.stdout)
     assert "<" not in line and ">" not in line, line
-    assert line == (f"NEXT  gh pr create --repo {ORG}/{PROJECT} --base "
-                    f"{case.base} --head {branch}"), line
+    assert without_its_words(line) == (
+        f"NEXT  gh pr create --repo {ORG}/{PROJECT} --base {case.base} "
+        f"--head {branch}"), line
 
 
 def test_the_pull_request_is_opened_against_the_base_the_next_line_names(
@@ -205,11 +217,19 @@ def test_the_pull_request_is_opened_against_the_base_the_next_line_names(
     assert opened_against == case.base
     assert opened_in == f"{ORG}/{PROJECT}"
     plain, branch = printed[()]
-    assert plain.endswith(f" && gh pr create --repo {opened_in} --base "
-                          f"{opened_against} --head {branch}"), plain
+    assert without_its_words(plain).endswith(
+        f" && gh pr create --repo {opened_in} --base {opened_against} "
+        f"--head {branch}"), plain
     pushed, branch = printed[("--push",)]
-    assert pushed == (f"NEXT  gh pr create --repo {opened_in} --base "
-                      f"{opened_against} --head {branch}"), pushed
+    assert without_its_words(pushed) == (
+        f"NEXT  gh pr create --repo {opened_in} --base {opened_against} "
+        f"--head {branch}"), pushed
+    # THE WORDS TOO (#535): what a person pastes opens the pull request with
+    # the title and the body `--pr` opens it with.
+    for line in (plain, pushed):
+        words = shlex.split(line)[-4:]
+        assert words == ["--title", command[command.index("--title") + 1],
+                         "--body", command[command.index("--body") + 1]], line
 
 
 @pytest.mark.parametrize("kind_name", ["PROJECT_KIND", "FAMILY_KIND"])
@@ -231,7 +251,8 @@ def test_each_kind_of_root_is_asked_in_its_own_manifest(
     update_shape.next_line(tmp_path, args, [], "0" * 40, [], kind)
     line = capsys.readouterr().out.strip()
     assert line.startswith("NEXT"), line
-    assert line.endswith(f"--base {base} --head shape/x"), line
+    assert without_its_words(line).endswith(
+        f"--base {base} --head shape/x"), line
 
 
 #: Manifests a family holder and a project can declare their repository in,
@@ -269,8 +290,9 @@ def test_the_repository_is_read_where_open_pull_request_reads_it(
         args = SimpleNamespace(branch="shape/x", push=push, pr=False)
         update_shape.next_line(tmp_path, args, [], "0" * 40, [], kind)
         line = capsys.readouterr().out.strip()
-        assert line.endswith(f"gh pr create --repo {repository} --base main "
-                             "--head shape/x"), line
+        assert without_its_words(line).endswith(
+            f"gh pr create --repo {repository} --base main --head shape/x"), \
+            line
         assert line.startswith("NEXT  gh pr create" if push else
                                "NEXT  git -C "), line
 
@@ -315,18 +337,20 @@ def test_a_manifest_naming_no_repository_refuses_pr_and_leaves_the_placeholder(
 
     args = SimpleNamespace(branch="shape/x", push=True, pr=False)
     update_shape.next_line(tmp_path, args, [], "0" * 40, [], kind)
-    assert capsys.readouterr().out.strip() == (
+    assert without_its_words(capsys.readouterr().out.strip()) == (
         "NEXT  gh pr create --repo <org>/<Project> --base main --head shape/x")
     args = SimpleNamespace(branch="shape/x", push=False, pr=False)
     update_shape.next_line(tmp_path, args, [], "0" * 40, [], kind)
-    assert capsys.readouterr().out.strip().endswith(
+    assert without_its_words(capsys.readouterr().out.strip()).endswith(
         " && gh pr create --base main --head shape/x")
     # The line a failed `--push` prints (#204) leaves `--repo` off too: a
     # placeholder would be one literal argument in a line quoted as an argv.
     args = SimpleNamespace(branch="shape/x", push=True, pr=False)
-    assert update_shape.pull_request_line(
-        tmp_path, args, "0" * 40, SimpleNamespace(repository="o/r"),
-        kind) == ["gh", "pr", "create", "--base", "main", "--head", "shape/x"]
+    create = update_shape.pull_request_line(
+        tmp_path, args, "0" * 40, SimpleNamespace(repository="o/r"), kind)
+    assert create[:7] == ["gh", "pr", "create", "--base", "main", "--head",
+                          "shape/x"], create
+    assert create[7] == "--title" and create[9] == "--body", create
 
 
 def test_nothing_in_the_next_line_names_a_base_when_the_pull_request_is_open(
@@ -356,9 +380,11 @@ def test_a_value_the_manifest_holds_is_quoted_for_the_shell_that_reads_the_line(
     update_shape.next_line(tmp_path, args, [], "0" * 40, [])
     line = capsys.readouterr().out.strip()
     command = line.partition(" && ")[2] if not push else line[len("NEXT  "):]
-    assert shlex.split(command) == [
+    words = shlex.split(command)
+    assert words[:9] == [
         "gh", "pr", "create", "--repo", "acme/It's here", "--base", "a&b",
         "--head", "shape/x"], line
+    assert words[9] == "--title" and words[11] == "--body", line
 
 
 FAMILY_SOURCE = "templates/family-root/scripts/validate-family.py"
@@ -403,8 +429,9 @@ def test_a_family_holder_is_asked_in_its_own_manifest_after_the_commit(
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"committed on {branch}" in result.stdout, result.stdout
     line = next_line_of(result.stdout)
-    assert line.endswith(f"gh pr create --repo {ORG}/{HOLDER} --base trunk "
-                         f"--head {branch}"), line
+    assert without_its_words(line).endswith(
+        f"gh pr create --repo {ORG}/{HOLDER} --base trunk --head {branch}"), \
+        line
     assert line.startswith("NEXT  git -C " if not flags else
                            "NEXT  gh pr create"), line
     assert git("status", "--porcelain", cwd=holder).stdout == ""
