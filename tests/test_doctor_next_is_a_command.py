@@ -70,10 +70,11 @@ from test_commit_trailers import LANE
 #: project or a holder made any other way would be a different project.
 from test_shape_doctor import (  # noqa: F401
     BREAKAGES, DOCTOR, DRIFT_TARGET, FAMILY_MEMBER, FAMILY_NAME,
-    GIT_IDENTITY, SHAPE_PIN, UPSTREAM_TARGET, behind_row, break_manifest,
-    break_the_pin, doctor, doctor_module, holder, not_forty_hex, pin_with,
-    project, recommit_a_good_pin, red_root, rows_of, scaffolded_here, stage,
-    standard, standard_ahead, standard_of_another_history,
+    GIT_IDENTITY, SCAFFOLD_WHY, SHAPE_PIN, UPSTREAM_TARGET, behind_row,
+    break_manifest, break_the_pin, doctor, doctor_module, holder,
+    not_forty_hex, pin_with, project, recommit_a_good_pin, red_root, rows_of,
+    scaffolded_here, stage, standard, standard_ahead,
+    standard_of_another_history,
 )
 #: The `manifest kinds` row's roots and its guard (#548), from the module
 #: that owns them: the row is that module's, and so is `rows_of`, which asks
@@ -512,6 +513,18 @@ def _every_fault(standard, project, holder, tmp_path):
     return _kinds(standard, project)
 
 
+def _a_repository_row(row_id):
+    """The builder of a `the way in` row for a git repository with no
+    `origin`, which is the adoption with `--org <your-org>` and the scaffold
+    beside it (#545)."""
+    def build(standard, project, holder, tmp_path):
+        here = tmp_path / "Loose"
+        here.mkdir()
+        git("init", "-q", "-b", "main", ".", cwd=here)
+        return rows_of(doctor(standard, here, "--json"))[row_id]
+    return build
+
+
 #: One fixture per NEXT #277 converted, by the builder and branch it reaches,
 #: and how the sentence that used to follow `   # ` on it now opens -- moved
 #: VERBATIM, less the `#`, so these are the words main, doctors A and B and
@@ -662,8 +675,6 @@ CASES = {
         _machine,
         "it names each missing prerequisite and offers to install it, on a "
         "typed yes"),
-    "check_the_way_in": (
-        _way_in, "without --yes; it asks"),
     "removal_next-committed": (
         _removal_next_committed,
         "takes contracts/project.yaml out of this root: commit that on a "
@@ -706,6 +717,16 @@ CASES = {
         "contracts/inventory.yaml, contracts/family.yaml, "
         "contracts/release-pin.yaml. Or register the kind "
         "contracts/inventory.yaml declares"),
+    # Its sentence is the scaffold rows' one now (#545): it opens with the
+    # placeholder to replace, and the words printed after `   # ` follow.
+    "check_the_way_in": (_way_in, SCAFFOLD_WHY),
+    # #545's, which were never a `   # ` tail; the property holds them to the
+    # same rule, and the placeholder is the one the scaffold line carries.
+    "check_the_way_in-adopt-no-origin": (
+        _a_repository_row("way-in"),
+        "replace <your-org> with the GitHub organisation to adopt under"),
+    "check_the_other_way_in": (
+        _a_repository_row("way-in-scaffold"), SCAFFOLD_WHY),
 }
 
 

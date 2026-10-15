@@ -28,8 +28,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, ORG, REPO, SCAFFOLD, WINDOWS_SKIP,
-                      git, run_script)
+from conftest import (ADOPT, ORG, REPO, SCAFFOLD, WINDOWS_SKIP,
+                      cloned_just_pushed, git, run_script)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -270,10 +270,7 @@ def test_canonical_paths_still_scaffold_and_a_clone_survives_the_work_dir(
         "a registration still points at the scaffold's work directory")
 
     (tmp_path / WORK).rename(tmp_path / "work.moved")
-    clone = tmp_path / "clone"
-    cloned = git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-                 str(assembly), str(clone), cwd=tmp_path, check=False)
-    assert cloned.returncode == 0, cloned.stderr
+    clone = cloned_just_pushed(assembly, tmp_path / "clone")
     for path in paths:
         assert any((clone / path).iterdir()), f"{path} was not checked out"
 
