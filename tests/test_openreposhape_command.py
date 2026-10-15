@@ -925,11 +925,12 @@ def test_the_fetched_setup_sh_lands_in_a_workdir_that_still_exists(offline_githu
                    + result.stdout + result.stderr)
     ran_in, forwarded = match.group(1), match.group(2).split()
     assert "--preflight" in forwarded, forwarded
+    ran_dir = native_path(ran_in)
     # The directory it was made in is still there, so the line after this
     # one reads a path this interpreter can open, and cannot pass on one it
     # cannot: `/tmp/...` read as a Windows path names no directory at all.
-    assert native_path(ran_in).parent.is_dir(), ran_in
-    assert not native_path(ran_in).exists(), (
+    assert ran_dir.parent.is_dir(), ran_in
+    assert not ran_dir.exists(), (
         f"{ran_in} outlived the command; the EXIT trap did not fire")
 
 
