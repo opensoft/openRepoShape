@@ -48,7 +48,7 @@ from conftest import FILE_PROTOCOL, cloned_just_pushed, git, rmtree, run_script
 #: the modules that own them rather than rebuilt: a holder made any other way
 #: would test a different holder.
 from test_family import (  # noqa: F401
-    FAMILY, NAME, ORG, SPARE, family, manifest,
+    FAMILY, NAME, ORG, SPARE, family, manifest, pushed_from_the_mount,
 )
 from test_family_add_refusals import (  # noqa: F401
     holder, offline, refusal, snapshot,
@@ -219,8 +219,10 @@ def test_bump_moves_the_gitlink_past_the_operators_excludes(holder, offline,
     """`bump` RIDES WITH THE ISSUE. It stages `[path, family.yaml]` through
     `_commit_one`, so under `members` it died at the same `git add` with the
     gitlink already tracked, and left both staged with no commit. The new
-    commit is made inside the holder's own mount, so the fixture's remote is
-    never pushed to."""
+    commit is made inside the holder's own mount and pushed from there to a
+    private remote the mount is pointed at (`pushed_from_the_mount`), since
+    `bump` refuses one no branch of the member's remote reaches (#613), so
+    the fixture's remote is never pushed to."""
     env = under(offline, tmp_path, RULES["members"])
     member = holder / "members" / "IRRS"
     (member / "MOVED.md").write_bytes(b"the member advanced\n")
@@ -228,6 +230,7 @@ def test_bump_moves_the_gitlink_past_the_operators_excludes(holder, offline,
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
         "Advance the member", cwd=member)
     moved = git("rev-parse", "HEAD", cwd=member).stdout.strip()
+    pushed_from_the_mount(member, moved)
     pinned = {r["project"]: r for r in manifest(holder)["members"]}["IRRS"]
     assert pinned["pin"]["commit"] != moved
     was = git("rev-parse", "HEAD", cwd=holder).stdout.strip()
