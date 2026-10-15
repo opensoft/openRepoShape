@@ -4,14 +4,13 @@ name: tests
 # clones them over the filesystem. It never calls `gh`, never touches the
 # network, and must never create a real repository.
 #
+# The suite runs on LINUX ONLY, on every trigger: a push to `main`, a pull
+# request and a manual run all use the one ubuntu job below. Brett Heap decided
+# on 2026-10-15, for the whole estate, to drop the macOS and Windows test jobs.
+#
 # The `package` job at the end is the one job that reaches PyPI, and it runs
 # no pytest: building the openreposhape wheel and installing it with pipx
 # need the build backend and git-filter-repo from there (#563).
-#
-# `push` to `main` is deliberate and LINUX-ONLY: a squash lands a tree no
-# pull-request run ever tested, and the ubuntu job alone is priced to catch
-# that (macOS bills at 10x, Windows at 2x, and a squash-interaction defect is
-# not an OS-specific one) — see #122.
 
 on:
   push:
@@ -19,8 +18,20 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A RUN IS CANCELLED ONLY BY A NEWER RUN IN ITS OWN GROUP: a newer push to the
+# same pull request, or a second dispatch on the same commit. A pull request's
+# group is its number. A `push` run on main has no number, and the old fallback
+# `github.ref` put every one of them in the one group `tests-refs/heads/main`,
+# so each landing cancelled the run on the main before it: on 2026-10-15 every
+# push run from #561 (7d9bec9) to #580 (dd3f23a) ended `cancelled` and nine PRs
+# landed with no Linux run over their combination (#592). `github.sha` gives a
+# push run a group of its own commit, so no later landing cancels it and each
+# landing keeps its own Linux result. `github.event_name` keeps a push run and
+# a dispatch apart, so a dispatch on main, which runs on whatever commit main
+# is at, never cancels that commit's push run; a second dispatch on the same
+# commit still replaces the first.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -116,192 +127,6 @@ jobs:
           .github/workflows/tests.yml
           templates/assembly-root/.github/workflows/validate.yml
           templates/family-root/.github/workflows/validate.yml
-
-  # THE SAME SUITE ON WINDOWS, because `setup-project.py` exists for a machine
-  # nobody here runs. A SECOND JOB rather than a matrix on the first one: that
-  # job downloads a linux-amd64 actionlint binary, which belongs on no Windows
-  # runner.
-  tests-windows:
-    runs-on: windows-latest
-    # SKIPPED on a push to main: a squash-interaction regression is not
-    # OS-specific, so the ubuntu job is the gate for that on `main` and these
-    # two OS jobs stay the pull-request gate instead — Windows bills at 2x
-    # the Linux rate, not a cost worth doubling for the same landing (#122).
-    # Still runs on `pull_request` and a manual `workflow_dispatch`.
-    if: github.event_name != 'push'
-    env:
-      # PER-INVOCATION GIT CONFIG, never `git config --global` — the same rule
-      # the identity step below follows, and the reason a lane mirroring these
-      # steps on a workstation cannot rewrite the operator's ~/.gitconfig.
-      #
-      # core.autocrlf=false: the shape's whole claim is that a scaffolded
-      # project's copies hash to the sha256 rows in its own
-      # `contracts/shape-pin.yaml`. Line-ending translation on checkout makes
-      # that false on this platform and only this platform, so the digests
-      # would stop meaning anything precisely where they are hardest to debug.
-      #
-      # core.longpaths=true: MAX_PATH is 260 characters, and the suite nests a
-      # temp directory, a clone, a submodule and that submodule's own git dir.
-      #
-      # PYTHONUTF8=1 (PEP 540): the ~70 `read_text()` calls in this suite pass
-      # no `encoding=`, so they take the locale's — cp1252 here — and the
-      # scaffolded files they read are full of the arrows and em dashes this
-      # repository is written in. UTF-8 mode is one variable instead of
-      # seventy edits.
-      PYTHONUTF8: '1'
-      GIT_CONFIG_COUNT: '2'
-      GIT_CONFIG_KEY_0: core.autocrlf
-      GIT_CONFIG_VALUE_0: 'false'
-      GIT_CONFIG_KEY_1: core.longpaths
-      GIT_CONFIG_VALUE_1: 'true'
-    steps:
-      # The SAME two commits the ubuntu job pins. Two jobs resolving two
-      # versions of the same action is the drift this repository spends a
-      # README section on. `fetch-depth: 0` for the reason that job gives —
-      # kept as a generally useful default now that #91 and #519's
-      # per-section hashes stopped the handbook's own staleness check from
-      # needing history at all.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
-        with:
-          python-version: '3.x'
-
-      # `python`, not `python3`. There is no `python3` on a Windows install —
-      # which is the entire fact `setup-project.py` exists for, and the reason
-      # a job that quietly said `python3` here would fail before it could
-      # prove anything.
-      - name: install the test runner
-        run: python -m pip install --disable-pip-version-check pytest==8.3.4
-
-      # git-filter-repo IS installed here now, at the ubuntu job's pin (#471).
-      # It is what `adopt-project.py` extracts a leg's history with, and the
-      # adoption suites SKIP without it. This job used to leave it out on
-      # purpose, as a job for the entry point and the materializer alone. But
-      # v1.0.0 says that adopt works end to end on Windows too, and while no
-      # Windows runner ever executed an adoption, that sentence was a claim:
-      # the same claim the macOS job's step below exists to stop making.
-      #
-      # ONE LINE: PowerShell is this runner's default shell, and the ubuntu
-      # job's `\` continuation is bash's, not PowerShell's.
-      - name: install git-filter-repo
-        run: python -m pip install --disable-pip-version-check git-filter-repo==2.47.0
-
-      # Per-invocation identity, never `git config --global`. PowerShell is the
-      # default shell on this runner, so the append is `>> $env:GITHUB_ENV`
-      # rather than the `{ echo ... } >> "$GITHUB_ENV"` block above.
-      - name: git identity for the scaffolded commits (env, not global config)
-        run: |
-          "GIT_AUTHOR_NAME=openRepoShape CI" >> $env:GITHUB_ENV
-          "GIT_AUTHOR_EMAIL=ci@openreposhape.invalid" >> $env:GITHUB_ENV
-          "GIT_COMMITTER_NAME=openRepoShape CI" >> $env:GITHUB_ENV
-          "GIT_COMMITTER_EMAIL=ci@openreposhape.invalid" >> $env:GITHUB_ENV
-
-      # THE WHOLE SUITE, not a Windows-shaped subset. A subset is a claim
-      # about which tests are platform-dependent, made by whoever wrote the
-      # subset; the suite itself already carries that claim, as the
-      # `WINDOWS_SKIP` marks in `tests/conftest.py`, next to the code they are
-      # about. Running everything is what keeps those marks honest — a test
-      # that starts needing bash gets noticed here.
-      #
-      # `--basetemp` puts pytest's temp root as near the drive root as a
-      # path the runner guarantees allows. The default (a profile path under
-      # `C:\Users\runneradmin\AppData\Local\Temp\`) is ~50 characters before
-      # the suite's own nesting starts, and MAX_PATH is 260. `runner.temp` is
-      # short — `D:\a\_temp` or `C:\a\_temp`, depending on the image — and it
-      # already exists; a bare drive letter is an assumption about which
-      # drives a future image has, made by a workflow that cannot check.
-      - name: tests
-        run: python -m pytest tests -q --basetemp=${{ runner.temp }}\t
-
-  # THE SAME SUITE ON macOS, because the BASH entry points are what a Mac runs
-  # — `setup.sh` and the `openRepoShape` command, whose suites the windows job
-  # skips — and until this job nothing here had ever run on one. A THIRD JOB
-  # rather than a matrix on the first: that job downloads a linux-amd64
-  # actionlint binary, which belongs on no other runner.
-  tests-macos:
-    runs-on: macos-latest
-    # SKIPPED on a push to main, for the reason the windows job gives: macOS
-    # bills at 10x the Linux rate, a squash-interaction regression is not
-    # OS-specific, and the ubuntu job is already the gate for that on `main`
-    # (#122). Still runs on `pull_request` and a manual `workflow_dispatch`.
-    if: github.event_name != 'push'
-    steps:
-      # The SAME two commits the other two jobs pin. Three jobs resolving
-      # three versions of one action is the drift this repository spends a
-      # README section on. `fetch-depth: 0` for the reason the ubuntu job
-      # gives — kept as a generally useful default now that #91 and #519's
-      # per-section hashes stopped the handbook's own staleness check from
-      # needing history at all.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
-        with:
-          python-version: '3.x'
-
-      # PINNED to the ubuntu job's version, for the reason that job gives: a
-      # run that resolves "latest" is a run whose result depends on the day it
-      # happened.
-      - name: install the test runner
-        run: python3 -m pip install --disable-pip-version-check pytest==8.3.4
-
-      # git-filter-repo IS installed here, as on the other two runners. The
-      # adoption suites SKIP without it, and `adopt-project.py` is run on a
-      # Mac by whoever adopts a repository from one — a claim that stays a
-      # claim while the only runner that extracts history is Linux. Same pin.
-      - name: install git-filter-repo
-        run: |
-          python3 -m pip install --disable-pip-version-check \
-              git-filter-repo==2.47.0
-
-      # Per-invocation identity, never `git config --global` — the ubuntu
-      # job's rule and the same block, because bash is this runner's default
-      # shell too.
-      - name: git identity for the scaffolded commits (env, not global config)
-        run: |
-          {
-            echo "GIT_AUTHOR_NAME=openRepoShape CI"
-            echo "GIT_AUTHOR_EMAIL=ci@openreposhape.invalid"
-            echo "GIT_COMMITTER_NAME=openRepoShape CI"
-            echo "GIT_COMMITTER_EMAIL=ci@openreposhape.invalid"
-          } >> "$GITHUB_ENV"
-
-      # THE ONE CLAIM THE SUITE CANNOT MAKE. The README tells a Mac reader
-      # that the stock `/bin/bash` — 3.2, the last GPLv2 release, and what
-      # Apple still ships — is enough for every bash file this standard ships.
-      # The suite runs them under whatever `bash` PATH resolves to on this
-      # runner, which is not necessarily that one, so name `/bin/bash`
-      # explicitly and PARSE each file with it: `-n` reads the whole file and
-      # executes none of it, so bash-4-only GRAMMAR (`${x,,}`, `${x^^}`, `|&`,
-      # `;;&`, `coproc`) is a syntax error here, and the README's sentence —
-      # which claims SYNTAX and nothing wider — stays true. A bash-4 BUILTIN
-      # is a different thing and `-n` does NOT catch it: `mapfile`, `declare
-      # -A` and `local -n` parse cleanly under any bash and fail only when
-      # run, which is what the suite's own runs of these files are for. ONE
-      # COMMAND PER FILE: `bash -n a b` parses `a` and hands `b` to it as $1,
-      # so a second file named on the same line is never read at all.
-      # `--version` prints what answered, because this job cannot assert on
-      # its own which bash `/bin/bash` is.
-      #
-      # `park` and `resume` were on this list from 2026-09-09 (#82) until the
-      # carve (#92); the step that parses them is opensoft/openRepoTools' now,
-      # for the reason this one exists — those two are what a stock Mac's bash
-      # 3.2 has to parse, and the repository that ships a file is the one that
-      # can say so.
-      #
-      # `install.sh` joined the list in v1.0.1 (#564): the one-line install,
-      # `curl … | bash` on a Mac, hands it to this same `/bin/bash`.
-      - name: /bin/bash parses every bash entry point
-        run: |
-          /bin/bash --version
-          /bin/bash -n setup.sh
-          /bin/bash -n openRepoShape
-          /bin/bash -n install.sh
-
-      - name: tests
-        run: python3 -m pytest tests -q
 
   # THE openreposhape PACKAGE, BUILT AND INSTALLED AS A PERSON INSTALLS IT
   # (#563). A JOB OF ITS OWN, AND NO PYTEST IN IT: the build backend

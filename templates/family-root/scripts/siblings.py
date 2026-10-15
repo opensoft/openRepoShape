@@ -23,14 +23,50 @@ The clone this command puts BESIDE the holder is where a human works — its own
 it afterwards with `family.py bump`. Neither copy is the other's mirror, and
 this command never touches the pinned one.
 
-WHAT IT DOES, per member row in `family.yaml`:
+WHAT IT DOES:
+
+  FIRST    THE PARENT-FOLDER CHECK, BEFORE ANYTHING IS CLONED (#543). When
+           the holder's parent directory is not named after the family, this
+           WARNS, prints the exact `mv` and STOPS, exit 1: nothing is cloned,
+           fetched or moved. A member cloned first would land in the wrong
+           folder, and the re-run after the move would clone it a second time
+           beside the moved holder. It MOVES NOTHING itself. Relocating a
+           checkout out from under somebody's shell, editor and agent lanes
+           breaks linked worktrees, whose `.git` files carry absolute paths,
+           and is the one act this standard refuses everywhere else: done by
+           surprise, with no hand on it. The doctor pattern, not a mover.
+
+           A LINK named after the family, beside the holder's (resolved)
+           parent directory and leading to it, passes the check: that is the
+           family folder reached through a link, and the members are cloned
+           into the directory it leads to.
+
+  then, per member row in `family.yaml`:
 
   ABSENT   `git clone --recurse-submodules` from the SAME url `make bootstrap`
            resolves — `.gitmodules` first, `family.yaml`'s `repository:` as
-           the fallback — with the same credential, resolved the same way, and
-           then the member's OWN `scripts/bootstrap.py`, which puts its legs
-           on their tracking branches AT their pins. The result is a working
-           clone on its branch, not a detached one.
+           the fallback — with the same credential, resolved the same way, ON
+           THE MEMBER'S TRACKING BRANCH, and then the member's OWN
+           `scripts/bootstrap.py`, which puts its legs on their tracking
+           branches AT their pins. The result is a working clone on its
+           branch, not a detached one.
+
+           THE TRACKING BRANCH IS THE ONE THE MEMBER DECLARES (#543): the
+           `tracking_branch:` of its own `project.yaml`, read in the PINNED
+           copy under `members/`, which is this holder's record of the member.
+           A plain clone checks out the remote's DEFAULT branch, and the two
+           differ when a member tracks another branch. A member whose pinned
+           copy is not checked out (`make bootstrap` checks it out), or that
+           declares none, or a value that is no branch name (`5`, a control
+           character), is cloned on its remote's default branch, as it
+           always was, and its line says so. Nothing else is read for it:
+           `.gitmodules` carries no `branch=`, and `family.yaml`'s
+           `tracking_branch:` is the HOLDER's branch, the one `family.py`
+           refuses to commit on.
+
+           `--no-local` (#461): a url that is a path on this machine is read
+           through git, as a remote is, and not copied file by file, so a
+           repack running in it cannot fail the clone half way (#440).
 
   PRESENT  `git fetch`, AND NOTHING ELSE. No checkout, no reset, no pull, no
            stash, no branch switch. Somebody is working in that clone — that
@@ -39,14 +75,6 @@ WHAT IT DOES, per member row in `family.yaml`:
            clone is first verified to BE that member (its `origin` names the
            row's repository and its own `project.yaml` id is the row's `id`);
            when it is not, that is reported and SKIPPED, never overwritten.
-
-  THEN     THE PARENT-FOLDER CHECK. When the holder's parent directory is not
-           named after the family, this WARNS and prints the exact `mv` — and
-           MOVES NOTHING. Relocating a checkout out from under somebody's
-           shell, editor and agent lanes breaks linked worktrees, whose `.git`
-           files carry absolute paths, and is the one act this standard
-           refuses everywhere else: done by surprise, with no hand on it. The
-           doctor pattern, not a mover.
 
 IDEMPOTENT. A second run is every member `present`, one `git fetch` each, and
 exit 0. That is what makes it safe to put in a handoff document.
@@ -86,8 +114,12 @@ IT CONFERS NOTHING, and neither does the layout. A folder is navigation.
 EXIT CODES
     0  every member is beside the holder; nothing to report. With `--make`:
        every member RAN and exited 0
-    1  a FINDING a human can act on: a sibling that is a DIFFERENT repository,
-       a clone that failed, a member's own bootstrap that went red. With
+    1  a FINDING a human can act on: a holder whose parent folder is not
+       named after the family, nor linked as it (nothing is cloned until
+       it is moved), a
+       sibling that is a DIFFERENT repository, a clone that failed (a
+       tracking branch its remote does not have included), a member's own
+       bootstrap that went red. With
        `--make`: any member that was skipped or whose verb exited non-zero —
        a `make resume` that skipped every member because nobody had run `make
        siblings` must never read as success
@@ -273,6 +305,48 @@ def clone_url(root: Path, row: dict, urls: dict[str, str]) -> tuple[str, str]:
     return f"https://github.com/{repository}.git", f"{MANIFEST} repository:"
 
 
+def tracking_branch(root: Path, row: dict) -> tuple[str | None, str]:
+    """`(the member's tracking branch, where it was read)`, or `(None, why
+    there is none)` — the branch a NEW working clone is checked out on.
+
+    THE MEMBER'S OWN DECLARATION, as this holder pins it (#543): the
+    `tracking_branch:` of `project.yaml` in the pinned copy under `members/`,
+    the file the member's own bootstrap reads for the same answer. It is
+    read from disk, as `validate-family.py` reads that copy's `id:`, and
+    only `load_yaml` is used to read it, a name every `repo_shape.py` a
+    holder may have kept carries. None, with the reason, when the copy is
+    not checked out or declares no branch: the clone then takes the remote's
+    default branch, as it always did, and says so.
+
+    A VALUE THAT IS NOT A BRANCH NAME IS NOT USED AS ONE, and is shown in its
+    `repr`: `5` or `[main]`, and a string holding a character that does not
+    print. An ESC or a newline would reach this command's output raw, where
+    the member's own bootstrap escapes the same field (#391); `repr` escapes
+    exactly what `isprintable` refuses, so the two agree with no import.
+    """
+    label = (str(row.get("path") or f"members/{row.get('project')}")
+             + "/project.yaml")
+    manifest = member_path(root, row) / "project.yaml"
+    if not manifest.is_file():
+        return None, (f"{label} is not checked out, so its tracking branch "
+                      "is not known here (`make bootstrap` checks it out)")
+    try:
+        data = load_yaml(manifest)
+    except (Refusal, OSError, ValueError):
+        return None, f"{label} could not be read"
+    branch = data.get("tracking_branch") if isinstance(data, dict) else None
+    if branch is None or branch == "":
+        return None, f"{label} declares no tracking_branch"
+    if not isinstance(branch, str) or not branch.strip():
+        return None, (f"{label} declares tracking_branch {branch!r}, which "
+                      "is not a branch name")
+    if not branch.isprintable():
+        return None, (f"{label} declares tracking_branch {branch!r}, which "
+                      "holds a character that does not print, so it is not "
+                      "used as a branch")
+    return branch, label
+
+
 # ---------------------------------------------------------------------------
 # git, with the credential the family already resolves
 # ---------------------------------------------------------------------------
@@ -445,14 +519,20 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
         return sibling
 
     if not present:
+        branch, where = tracking_branch(root, row)
+        on = (f"on {branch}, its tracking branch ({where})" if branch else
+              f"on its remote's default branch: {where}")
         if dry_run:
             sibling.state = "would clone"
-            print(f"  [{project}] would clone {url} ({source}) -> {target}")
+            print(f"  [{project}] would clone {url} ({source}) -> {target}, "
+                  f"{on}")
             return sibling
-        print(f"  [{project}] cloning {url} ({source})")
+        print(f"  [{project}] cloning {url} ({source}) {on}")
         sys.stdout.flush()
         proc = subprocess.run(
-            ["git", *prefix, "clone", "-q", "--recurse-submodules", "--",
+            ["git", *prefix, "clone", "-q", "--no-local",
+             "--recurse-submodules",
+             *([f"--branch={branch}"] if branch else []), "--",
              url, str(target)],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", check=False)
@@ -734,6 +814,51 @@ def family_folder_name(manifest: dict, root: Path) -> str:
     return str(manifest.get("name") or root.name)
 
 
+def same_directory(one: Path, two: Path) -> bool:
+    """`one` and `two` are one directory: the same path, or on THIS disk.
+
+    Equal paths first, which needs no disk, so a drive root can be asked
+    with a `PureWindowsPath` (whose equality already ignores case). Then the
+    disk's own answer, `os.path.samefile`, which is how `C:\\p\\InkRouter`
+    and `C:\\p\\inkrouter` are found to be one folder on a disk that ignores
+    case and two on one that does not.
+    """
+    if one == two:
+        return True
+    try:
+        return one.exists() and os.path.samefile(one, two)
+    except OSError:
+        return False
+
+
+def family_link(root: Path, family: str) -> Path | None:
+    """`<grandparent>/<Family>` when it is a LINK to the holder's parent
+    folder, or None: the family folder reached through a link (#543).
+
+    The holder's path is RESOLVED before it is asked about (`find_repo_root`
+    for `make siblings`, and `family.py siblings` runs this file standing in
+    the resolved holder), so `~/p/InkRouter`, a link to `~/p/real-x`, reads
+    as `real-x`. The holder is then reachable as `~/p/InkRouter/InkRouter`
+    and its members are cloned into `real-x`, the link's own target, so the
+    family layout holds through the link and the run goes on. A link named
+    `<Family>` that leads anywhere else is no family folder of this holder.
+
+    Only a LINK: a symbolic link (`os.path.islink`), or a Windows directory
+    junction (`os.path.isjunction`, Python 3.12 and later), the link Windows
+    makes without privilege and that `Path.resolve()` follows the same way.
+    Never a second spelling: on a disk that ignores case, `InkRouter` beside
+    `inkrouter` is one directory entry and no link, so it is the strict
+    test's case-only rename below.
+    """
+    folder = root.parent
+    link = folder.parent / family
+    junction = getattr(os.path, "isjunction", lambda _: False)
+    if ((os.path.islink(link) or junction(link))
+            and same_directory(link, folder)):
+        return link
+    return None
+
+
 def parent_folder_warning(root: Path, family: str) -> str | None:
     """The WARNING and the exact `mv`, or None when the layout is right.
 
@@ -742,36 +867,74 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
     editor and every agent lane standing in it, and would break linked
     worktrees, whose `.git` files carry ABSOLUTE paths. The warning plus the
     command gives the same outcome with the human's hand on it.
+
+    AND IT IS ASKED BEFORE ANYTHING IS CLONED (#543), which is why it says
+    nothing was. It used to come after the placement: every member was
+    cloned into the wrong folder first, and the re-run the warning asked for
+    cloned each one again beside the moved holder.
+
+    THE NAME TEST IS EXACT ON EVERY DISK, so the printed move has to run as
+    typed on every disk too (#543). Three shapes of it:
+    - `<parent>/<Family>` is the HOLDER ITSELF, because the parent is a
+      filesystem or drive root (`/`, `C:\\`): the holder is moved through a
+      staging name, as when `<parent>/<Family>` does not exist at all.
+    - `<parent>/<Family>` is THIS FOLDER under another case, on a disk that
+      ignores case (macOS, Windows): the FOLDER is renamed, through a
+      staging name, because a rename that changes only the case is a move
+      onto itself there. Linux, where the two are two folders, is unchanged.
+    - otherwise the holder moves into `<parent>/<Family>`, made if missing.
+
+    A LINK named `<Family>` beside this folder that leads to it passes the
+    check (`family_link`): it is the family folder, reached through a link.
+    One that leads elsewhere does not, and its move runs as typed: the
+    holder moves into the link's target, where the link then passes.
     """
     folder = root.parent
-    if folder.name == family:
+    if folder.name == family or family_link(root, family) is not None:
         return None
     lines = [
-        f"WARNING the holder's parent folder is {folder.name!r}, not "
-        f"{family!r}.",
+        f"WARNING the holder's parent folder is {folder.name or str(folder)!r}"
+        f", not {family!r}.",
         f"        {root} should sit in a plain folder named {family}, beside "
         "the members'",
         "        working clones — that is the layout `make siblings` places. "
-        "The siblings",
-        f"        go beside the holder either way, so they are in {folder}.",
+        "So",
+        "        NOTHING WAS CLONED: a member cloned now would land in "
+        f"{folder}, and",
+        "        the re-run after the move would clone it a second time, "
+        "beside the",
+        "        moved holder.",
         "",
-        "        NOTHING WAS MOVED. Relocating a checkout breaks an open "
-        "shell, an editor",
-        "        and any LINKED WORKTREE (its `.git` file carries an absolute "
-        "path), so it",
-        "        is yours to run, when nothing is standing in it, in a POSIX "
-        "shell (Git Bash",
-        "        on Windows):",
+        "        NOTHING WAS MOVED either. Relocating a checkout breaks an "
+        "open",
+        "        shell, an editor and any LINKED WORKTREE (its `.git` file "
+        "carries",
+        "        an absolute path), so it is yours to run, when nothing is "
+        "standing",
+        "        in it, in a POSIX shell (Git Bash on Windows):",
         "",
     ]
     wanted = folder.parent / family
-    if root.name == family and not wanted.exists():
+    if same_directory(wanted, root) or (root.name == family
+                                        and not wanted.exists()):
         # The common case: the holder was cloned straight into ~/projects, so
         # `<parent>/<Family>` IS the holder itself and the move needs a
-        # staging name — `mv A A/A` cannot be spelled in one command.
+        # staging name — `mv A A/A` cannot be spelled in one command. At a
+        # filesystem or drive root it is the holder even though it exists.
         staged = folder.parent / f"{family}.holder"
         steps = [["mv", root, staged], ["mkdir", "-p", wanted],
                  ["mv", staged, wanted / family]]
+    elif (folder.name.casefold() == family.casefold()
+          and not wanted.is_symlink() and same_directory(wanted, folder)):
+        # THIS FOLDER under another case, on a disk that ignores case: the
+        # folder is renamed, in two steps, and the holder stays inside it.
+        # Never a link: a link to this folder passed above (`family_link`),
+        # and a case-only alias is one directory entry, never a link. They
+        # differ by disk at one edge: a LINK spelled in another case
+        # (`inkrouter` to `real-x`) stops on Linux, with a staged move that
+        # runs, and passes as the family's link on a disk that ignores case.
+        staged = folder.parent / f"{family}.folder"
+        steps = [["mv", folder, staged], ["mv", staged, wanted]]
     else:
         steps = [["mkdir", "-p", wanted], ["mv", root, wanted / family]]
     # EVERY PATH QUOTED (#486): under `my work/` a bare `mv` moved nothing
@@ -786,7 +949,7 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
     lines += ["",
               "        Then re-run `make siblings` from the moved holder; the "
               "members are",
-              "        cloned beside it, in the folder."]
+              "        cloned beside it, in the folder, once."]
     return "\n".join(lines)
 
 
@@ -905,21 +1068,42 @@ def _report_placement(root: Path, siblings: list[Sibling],
 
 def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
                    dry_run: bool) -> int:
-    """THE PLACEMENT RUN: every member cloned or fetched beside the holder,
-    the layout table, the parent-folder warning, and the exit code.
+    """THE PLACEMENT RUN: the parent-folder check, then every member cloned
+    or fetched beside the holder, the layout table, and the exit code.
 
     Split from `main` for #137: once `_resolve_make_target` and
     `_load_family` are also lifted out of it, `main` is left with only the
     dispatch-or-placement choice.
+
+    THE FOLDER IS ASKED FIRST (#543). A holder whose parent folder is not
+    named after the family stops here, exit 1, before any `git` command
+    runs or any member is cloned, and `--dry-run` stops in the same words:
+    once the holder is moved, the run after it clones each member once, in
+    the right folder. Until the check passes, the header calls that folder
+    the PARENT folder, not the family's. Passed through a link named after
+    the family, it names the folder the clones go into, and the link.
     """
     family = family_folder_name(manifest, root)
+    warning = parent_folder_warning(root, family)
+    link = None if warning else family_link(root, family)
     print(f"siblings: {name} ({root}) — {len(rows)} member(s)")
-    print(f"  family folder   {root.parent}")
+    print(f"  {'parent' if warning else 'family'} folder   {root.parent}"
+          + (f"   (through the link {link})" if link else ""))
     print("  each member is cloned BESIDE the holder and stays PINNED inside "
           "it under")
     print("  members/ — the pinned copy is detached for bootstrap and "
           "validate, the")
     print("  sibling is where you work.")
+
+    if warning:
+        print()
+        sys.stdout.flush()          # so the warning lands where it belongs
+        print(warning, file=sys.stderr)
+        print(f"\nsiblings: stopped before cloning: the holder is not in a "
+              f"folder named {family}. Nothing was cloned, fetched or moved.",
+              file=sys.stderr)
+        sys.stderr.flush()
+        return 1
 
     prefix, source, token = git_prefix()
     urls = submodule_urls(root)
@@ -928,13 +1112,6 @@ def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
     siblings = _place_all_members(root, rows, urls, prefix, token, dry_run)
 
     _print_layout_table(root, siblings, rows)
-
-    warning = parent_folder_warning(root, family)
-    if warning:
-        print()
-        sys.stdout.flush()          # so the warning lands where it belongs
-        print(warning, file=sys.stderr)
-        sys.stderr.flush()
 
     return _report_placement(root, siblings, dry_run)
 

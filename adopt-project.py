@@ -24,7 +24,10 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            honestly call, every path holding one of the source's own
            submodules, and every path `execute` will not extract into a leg
            as it is named, carry `leg: null`, `review_required: true` and
-           the QUESTION to ask.
+           the QUESTION to ask. A question whose rule names a default
+           carries that default as its `leg:` instead, still
+           `review_required: true`: the source's own `single-repository.yaml`
+           record, `drop` (#528).
            A leg path over a path it keeps in the root itself is a NOTE,
            not a refusal: the answer is the person's to change. A
            `--pin <product>@<40 hex>` is read as `scaffold-project.py
@@ -71,8 +74,13 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            source, which the pull request is opened against, and the split
            branch one `execute` can make: none of its name where the split
            is pushed that the push cannot fast-forward, and none git cannot
-           hold beside it there or in the source. It prints what will happen
-           and changes nothing.
+           hold beside it there or in the source. Each pin's digest is
+           recomputed at its commit in the clone `plan` read it from, where
+           that clone is still on this machine, with no network: a partial
+           clone (`git clone --filter`), whose `git` would fetch what it
+           lacks, is not asked, and a NOTE names each pin it was not
+           rechecked for (#449). It prints what will happen and changes
+           nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three and then opens the split's
@@ -141,7 +149,9 @@ pull request no longer leaves it unset (#481), and both are said in ONE notice
 after the table, each with the commands that finish the job by hand; those
 commands are the way out: a re-run into fresh legs abandons the pushed pair
 for a second. A verification that fails outranks both, with exit 1 and no
-command to open the pull request or to set the topic.
+command to open the pull request or to set the topic; it says what the run
+already put in place, the pull request open for the failed split, which
+deleting the split branch closes, and the topic, which stays set (#523).
 """
 
 from __future__ import annotations
@@ -242,11 +252,15 @@ PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
 #: pin; `check` finds, and `execute` refuses before any leg exists, a pin the
 #: plan does not record whole, a name alone among them (an old plan, or an
 #: edit). The manifest lists each product with its owner stripped, as the
-#: file is named.
+#: file is named. Where the clone `plan` read a digest from is still on this
+#: machine, and is no partial clone, `check` and `execute` recompute the
+#: digest there with `plan`'s own reader (`pin_digest_from_source`), which
+#: in such a clone reads no network, and find a commit or a digest edited
+#: after `plan` read them (#449).
 from shape_materialize import (  # noqa: E402
     PIN_ARG_RE, declared_pin_products, declared_pin_values, neutral_pin_path,
-    one_printable_line, pin_collisions, pin_variable_collisions,
-    refuse_colliding_pins,
+    one_printable_line, pin_collisions, pin_digest_from_source,
+    pin_variable_collisions, refuse_colliding_pins,
 )
 from repo_shape import SHA256_RE, repo_basename  # noqa: E402
 
@@ -265,6 +279,14 @@ PIN_UNRECORDED = "plan-pin-unrecorded"
 PIN_MALFORMED = "plan-pin-malformed"
 PIN_COLLIDES = "plan-pin-collides"
 ROOT_HOLDS_PIN = "plan-root-holds-pin"
+#: And about a pin the clone `plan` read its digest from answers for
+#: otherwise, or cannot answer for at all, at the plan's commit (#449).
+PIN_DIGEST_MISMATCH = "plan-pin-digest-mismatch"
+PIN_SOURCE_UNREADABLE = "plan-pin-source-unreadable"
+#: How `declared_pin_values` records where it read a digest: from a clone on
+#: this machine, `--pin-source` as typed, or from the forge.
+LOCAL_CLONE_RE = re.compile(r"local-clone \((?P<path>.+)\)")
+GH_DIGEST_SOURCE = "gh-api-tree-recursive"
 
 #: The comment `plan` writes above `pins:`.
 PINS_COMMENT = (
@@ -528,6 +550,164 @@ def _pin_findings(plan: "Plan", tree: list) -> list[str]:
     (#275), and a path the root keeps where a pin is written, the shape's
     own among them (#524)."""
     return _read_pins(plan)[1] + _kept_pin_findings(plan, tree)
+
+
+# ---------------------------------------------------------------------------
+# A pin's digest, recomputed where `plan` read it (#449)
+# ---------------------------------------------------------------------------
+#
+# `plan` reads each pin's digest and records it beside the commit, and the
+# comment it writes above `pins:` says a commit or a digest edited there is one
+# nobody read. `check` held the two to the form `plan` writes them in and to
+# nothing else, so an edit of either -- a typo, a paste from another pin --
+# checked ok, `execute` wrote the pin file from it and said `adoption
+# verified`, and the root's own `validate-pins.py` then found
+# `neutral-pin-digest-mismatch` on its first run, after both legs existed.
+#
+# WHERE THE CLONE `plan` READ THE DIGEST FROM IS STILL HERE, the digest is
+# recomputed there at the plan's commit, by `plan`'s own reader, so the same
+# words answer for the same clone: a digest that differs is
+# `plan-pin-digest-mismatch`, and a clone that cannot answer for the commit
+# (it does not hold it, or the path is no clone any more) is
+# `plan-pin-source-unreadable`. The digest is a function of the commit, so a
+# clone that holds the commit recomputes the digest `plan` read, whichever
+# clone it is. A commit and a digest both moved to another commit are a pin
+# of that commit, and that is the pin `execute` writes.
+#
+# NOTHING ELSE IS ASKED. `check` and `execute` read no network for a pin, and
+# `execute --local-remote-dir` needs no `gh`, so a digest `gh api` read is
+# not read again, and a clone no longer at its path is not looked for. Nor is
+# a partial clone (`git clone --filter`) asked: `git` there fetches an object
+# the clone lacks from its promisor remote, a commit edited into the plan
+# among them, so whether it is one is read from its own config, which reads
+# no network (`_a_partial_clone`). Each such pin gets one NOTE saying its
+# digest was not rechecked here; the root's own `validate-pins.py` recomputes
+# it wherever it can read the product. A relative path is read from the
+# directory `check` or `execute` runs in, as `plan` read it from the one it
+# ran in, and every sentence naming one says where that is
+# (`_read_from_here`). Anything else at the path that cannot answer -- a
+# commit it lacks, a directory that is no clone, a file -- is
+# `plan-pin-source-unreadable`, as `validate-pins.py` finds a source it reads
+# that cannot answer. `check` and `execute` ask this through
+# `_entry_findings`, the one list.
+
+#: Why a pin's digest `gh api` read was not rechecked.
+NOT_RECHECKED_GH = "`plan` read it with `gh api`, and `check` reads no network"
+
+
+def _recorded_clone(how: str) -> str | None:
+    """The path of the clone a pin's `digest_source:` says `plan` read its
+    digest from, as `--pin-source` was typed, or None where it names none."""
+    clone = LOCAL_CLONE_RE.fullmatch(how)
+    return clone["path"] if clone else None
+
+
+def _read_from_here(clone: str) -> str:
+    """` (read from this directory as <absolute path>)` for a relative clone
+    path, which `check` and `execute` read from the directory they run in,
+    as `plan` read it from the one it ran in; nothing for an absolute one."""
+    if Path(clone).is_absolute():
+        return ""
+    return f" (read from this directory as {_shown(os.path.abspath(clone))})"
+
+
+def _a_partial_clone(clone: Path) -> bool:
+    """Whether `git` in `clone` fetches an object the clone lacks from a
+    promisor remote (`git clone --filter`): read from the clone's own
+    config, with no network. A path that is no clone is not one."""
+    try:
+        proc = subprocess.run(
+            ["git", "config", "--local", "--get-regexp",
+             r"^(extensions\.partialclone|remote\..*\.promisor)$"],
+            cwd=str(clone), capture_output=True, check=False)
+    except OSError:
+        return False
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def _why_not_rechecked(how: str) -> str | None:
+    """Why the digest `plan` read as `how` says cannot be recomputed here, or
+    None where the clone it names is still at its path and is no partial
+    clone. Only nothing there is gone, what `plan`'s reader calls "no such
+    directory": anything else at the path, a file or a directory that cannot
+    be entered among it, is asked, and the reader says why it cannot answer.
+    A partial clone is not asked, because `git` there would fetch what it
+    lacks over the network."""
+    clone = _recorded_clone(how)
+    if clone is None:
+        return (NOT_RECHECKED_GH if how == GH_DIGEST_SOURCE else
+                f"`digest_source: {_shown(how)}` names no clone `plan` read "
+                "it from")
+    try:
+        Path(clone).stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return (f"the clone `plan` read it from is not at {_shown(clone)}"
+                f"{_read_from_here(clone)}")
+    except OSError:
+        # There: `pin_digest_from_source` names why it cannot answer.
+        return None
+    if _a_partial_clone(Path(clone)):
+        return (f"the clone at {_shown(clone)}{_read_from_here(clone)} is a "
+                "partial clone (`git clone --filter`), whose `git` fetches "
+                "what it lacks over the network, and `check` reads no "
+                "network")
+    return None
+
+
+def _recomputed_pin_finding(said: str, values: dict) -> str | None:
+    """The FINDING for a pin whose digest the clone `plan` read it from,
+    still at its path, recomputes otherwise at the plan's commit or cannot
+    recompute there, with `plan`'s own reader; None where it recomputes."""
+    clone = _recorded_clone(values["PIN_DIGEST_SOURCE"])
+    repository, commit, recorded = (values["PIN_REPOSITORY"],
+                                    values["PIN_COMMIT"],
+                                    values["PIN_TREE_SHA256"])
+    try:
+        actual = pin_digest_from_source(Path(clone), commit, repository)
+    except Refusal as exc:
+        return (f"FINDING {PIN_SOURCE_UNREADABLE}: {said} records `commit: "
+                f"{commit}`, and the clone its `digest_source:` names"
+                f"{_read_from_here(clone)} cannot answer for it: "
+                f"{_shown(exc.detail)}. Either the commit was edited after "
+                "`plan` read it, or that path no longer holds the clone "
+                "`plan` read it in: run `check` where `plan` ran, or `git "
+                f"fetch` in that clone, or {_pin_fix(repository)}.")
+    if actual == recorded:
+        return None
+    return (f"FINDING {PIN_DIGEST_MISMATCH}: {said} records `commit: "
+            f"{commit}` and `tree_sha256: {recorded}`, and the clone `plan` "
+            f"read the digest from, {_shown(clone)}{_read_from_here(clone)}, "
+            f"recomputes {actual} at that commit: one of the two was edited "
+            "after `plan` read them, and the root's own `validate-pins.py` "
+            "would refuse the pin file `execute` writes from them "
+            f"(`neutral-pin-digest-mismatch`): {_pin_fix(repository)}.")
+
+
+def _pin_digest_findings(plan: "Plan") -> tuple[list[str], list[str]]:
+    """`(findings, notes)` for each pin `execute` would write: a FINDING for
+    a digest the clone `plan` read it from recomputes otherwise at the
+    plan's commit, or cannot recompute there; otherwise one NOTE for `check`
+    to print, that the digest recomputes there, or that it was not
+    rechecked here and why."""
+    findings: list[str] = []
+    notes: list[str] = []
+    for said, _, values in _read_pins(plan)[0]:
+        how = values["PIN_DIGEST_SOURCE"]
+        why = _why_not_rechecked(how)
+        found = None if why else _recomputed_pin_finding(said, values)
+        if why:
+            notes.append(f"NOTE {said}: digest NOT rechecked here: {why}. The "
+                         "root's own `validate-pins.py` recomputes it "
+                         "wherever it can read the product.")
+        elif found:
+            findings.append(found)
+        else:
+            clone = _recorded_clone(how)
+            notes.append(f"NOTE {said}: digest recomputes at "
+                         f"{values['PIN_COMMIT'][:12]} in the clone `plan` "
+                         f"read it from, {_shown(clone)}"
+                         f"{_read_from_here(clone)}.")
+    return findings, notes
 
 
 PLAN_KIND = "adoption-plan"
@@ -1320,7 +1500,15 @@ def _default_branch(path: Path) -> str:
 
 
 class Entry:
-    """One row of the plan: a path, the leg proposed for it, and why."""
+    """One row of the plan: a path, the leg proposed for it, and why.
+
+    `default` is the answer the entry's rule names for its question, or
+    None, and `review_required` is the verdict's: whether a question was
+    asked. The two part only in `with_its_default`, the one place a
+    question's `leg:` is filled in, which `cmd_plan` alone calls; `walk`
+    leaves every question's `leg` None, so the doctor, which walks a leg
+    with it, still reads one as a question (#528).
+    """
 
     def __init__(self, path: str, verdict: Verdict, files: int, size: int):
         self.path = path
@@ -1329,8 +1517,22 @@ class Entry:
         self.reason = verdict.reason
         self.confidence = verdict.confidence
         self.question = verdict.question
+        self.default = verdict.default
+        self.review_required = verdict.review_required
         self.files = files
         self.bytes = size
+
+    def with_its_default(self) -> "Entry":
+        """This question with its rule's default written in as its `leg:`,
+        still `review_required` and still carrying the question, the rule
+        and the reason, so a reader sees what was proposed and why."""
+        out = Entry(self.path, Verdict(None, self.rule, self.reason,
+                                       self.confidence), self.files,
+                    self.bytes)
+        out.question = self.question
+        out.default = self.default
+        out.leg = self.default
+        return out
 
     def write(self, lines: list[str]) -> None:
         lines.append(f"  - path: {y(self.path)}")
@@ -1340,7 +1542,7 @@ class Entry:
         emit(lines, "reason", self.reason, 4)
         emit(lines, "files", self.files, 4)
         emit(lines, "bytes", self.bytes, 4)
-        emit(lines, "review_required", self.leg is None, 4)
+        emit(lines, "review_required", self.review_required, 4)
         if self.question:
             emit(lines, "question", self.question, 4)
 
@@ -1376,6 +1578,61 @@ def walk(policy: PathPolicy, files: list[tuple[str, int]],
         else:
             entries.extend(walk(policy, children, directory))
     return sorted(entries, key=lambda e: e.path)
+
+
+#: The path policy's rule for the source's own staying-single record (#528).
+#: Its question and its default are the record's, so `plan` asks them only
+#: of a file that IS the record (`ask_about_a_record_only`).
+RECORD_RULE = "ambiguous-single-repository-record"
+
+
+def ask_about_a_record_only(policy: PathPolicy, entries: list[Entry],
+                            source: "Source") -> list[Entry]:
+    """`entries`, with a top-level `single-repository.yaml` that is no
+    record asked the question the rules below the record's ask (#528).
+
+    `kind:` DECIDES, NOT THE NAME, for the record's one reader, the Triad
+    advisory (`shape_advisory.read_record`). A file of that name declaring
+    `kind: release-config` silences nothing, and the same `plan` run said
+    so in a NOTE while the record's question told the person the file
+    records that the repository stays single, and its default would have
+    dropped it. So RECORD_RULE answers only a file that declares
+    `single-repository-record` in the commit being planned, read as the
+    advisory reads it there; any other is classified as if the policy held
+    no such rule, which for a top-level YAML file is the general question,
+    asked as before. A source with no entry RECORD_RULE answered is not
+    read at all.
+    """
+    if not any(entry.path == shape_advisory.RECORD_FILE
+               and entry.rule == RECORD_RULE for entry in entries):
+        return entries
+    state, _, _ = shape_advisory.read_record(
+        shape_advisory.Tree(source.path, source.commit))
+    if state == shape_advisory.RECORD_SILENCES:
+        return entries
+    return [Entry(entry.path,
+                  policy.classify_file(entry.path, skip=(RECORD_RULE,)),
+                  entry.files, entry.bytes)
+            if entry.path == shape_advisory.RECORD_FILE
+            and entry.rule == RECORD_RULE else entry
+            for entry in entries]
+
+
+def with_defaults(entries: list[Entry]) -> list[Entry]:
+    """`entries`, each question whose rule names a default answer written
+    with that default as its `leg:` (#528).
+
+    RULED BY BRETT HEAP ON 2026-10-12: a source's own `single-repository.yaml`
+    is asked drop or root, "the default answer is drop". So `plan` writes
+    `leg: drop`, and keeps `review_required: true`, the rule and the
+    question beside it: `check` passes it, and `execute` drops the path
+    unless a person writes `root`. A path with no default is untouched, as
+    is every question `ask_about_submodules` or `ask_about_refused_paths`
+    asked in place of a rule's, because those carry none: called after
+    them, this fills in only what a rule proposed and nothing replaced.
+    """
+    return [entry.with_its_default() if entry.leg is None and entry.default
+            else entry for entry in entries]
 
 
 def ask_about_submodules(policy: PathPolicy, entries: list[Entry],
@@ -1471,6 +1728,9 @@ def _asked_about(entry: Entry, held: list[str], asked: Verdict,
                      "own `leg:`. An entry added beside this one for a path "
                      "it covers is `plan-covered-twice`."
                      + _refused_replacements(own, held))
+    # NO DEFAULT, from either rule (#528): the question is the submodules',
+    # which no rule's default answers, and one carried here would be
+    # written in as the entry's `leg:` by `with_its_default`.
     out = Entry(entry.path, Verdict(None, asked.rule, asked.reason,
                                     asked.confidence), entry.files,
                 entry.bytes)
@@ -1574,6 +1834,8 @@ def _refused_as_named(entry: Entry, problem: str, held: bool) -> Entry:
               "stands: `root` would keep a submodule in the assembly root, "
               "which keeps none of the source's" if held else
               "`root` or `drop` is the only answer `execute` takes for it")
+    # NO DEFAULT (#528): the rule's was an answer to its own question, and
+    # this one is why the name cannot go into a leg, which a person answers.
     out = Entry(entry.path, Verdict(None, entry.rule, entry.reason,
                                     entry.confidence), entry.files,
                 entry.bytes)
@@ -1759,6 +2021,16 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
     of `tracking_branch:`, which `plan-tracking-branch-missing`'s
     remediation asks for, in `check`'s output and in the pull request's own
     body (#493's review, F3).
+
+    It is a review, and never "open the split as a pull request" (#523).
+    `plan` prints it and the split commit lists it under the FOLLOW-UPS this
+    commit does NOT do, which is also the pull request's body, while against
+    GitHub `execute` opens that pull request itself, and under
+    `--local-remote-dir` opens none. So it says what `execute` does in either
+    run, and calls the legs what they are: new repositories `execute` creates
+    and pushes before the split, extracted or, with no path, seeded from a
+    template. "Seeded", said of both, named an extracted leg by the word kept
+    for a template's.
     """
     out = cross_leg_references(source, entries, spec_path, code_path)
     if any(e.leg == "spec" and (e.path == "contracts/"
@@ -1775,10 +2047,11 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
             "owner rule cannot cross a repository boundary")
     out.extend(collisions)
     out.append(
-        "open the split as a pull request against the plan's "
-        "`tracking_branch`, the branch the assembly root and both legs track; "
-        f"the legs {names['spec']} and {names['code']} are seeded before it, "
-        "so review the root's diff and the two new repositories together")
+        f"review the root's diff together with {names['spec']} and "
+        f"{names['code']}, the two new repositories `execute` creates and "
+        "pushes before the split; against GitHub it opens the split's pull "
+        "request itself, whose base is the plan's `tracking_branch`, the "
+        "branch the assembly root and both legs track")
     return out
 
 
@@ -1837,6 +2110,8 @@ def render_plan(args, source: Source, entries: list[Entry], names: dict,
         "# human or an AI answers it by setting `leg:` to spec, code, root or",
         "# drop and adding one line of `resolution:` beside it. `check` then",
         "# has to pass, and `execute` REFUSES while any leg is still null.",
+        "# An entry whose rule names a default arrives with it as its `leg:`",
+        "# and `execute` takes it as written: confirm it or change it.",
         "",
         f"generated_on: {_dt.date.today().isoformat()}",
         f"tool: {SHAPE_REPOSITORY} adopt-project.py",
@@ -3358,7 +3633,16 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     for line in _tracking_branch_notes(args, source):
         print(line)
     unresolved = [e for e in entries if e.leg is None]
+    # A default is still a question (#528): it is printed with the question,
+    # before the paths `execute` refuses over, which stay last.
+    proposed = [e for e in entries if e.leg is not None and e.review_required]
     print(f"\nplan written to {out}")
+    if proposed:
+        print(f"{len(proposed)} path(s) carry their rule's default answer, "
+              "which `execute` takes as written unless it is changed:")
+        for entry in proposed:
+            print(f"  {_shown(entry.path)} (leg: {entry.leg})\n"
+                  f"      {entry.question}")
     if unresolved:
         print(f"{len(unresolved)} path(s) need a human or an AI to answer a "
               "question before `execute` will run:")
@@ -3393,7 +3677,18 @@ def cmd_plan(args) -> int:
     # or naming it as a spec directory, would be about nothing, and a leg it
     # alone fed is seeded -- which the plan records, as `check` will say of
     # the plan as written. A source with no such path plans as it did.
-    ruled = walk(policy, [(path, size) for path, _, _, size in tree])
+    #
+    # A `single-repository.yaml` that declares no record is asked as any
+    # other top-level data file is, before anything reads the entries
+    # (#528). The default a rule names is written into an entry last, after
+    # both re-asks: `ask_about_refused_paths` passes over a path answered
+    # `drop`, so a default written in first would be taken for a person's
+    # answer there. What the rules imply is read without it, and it changes
+    # none of what is read from them, because `drop` puts the path in no leg
+    # and keeps nothing in the root.
+    ruled = ask_about_a_record_only(
+        policy, walk(policy, [(path, size) for path, _, _, size in tree]),
+        source)
     implied = ask_about_refused_paths(ruled, tree)
     materialized = _predict_collisions(
         implied, attributes_link=any(path == ATTRIBUTES and mode == SYMLINK_MODE
@@ -3401,8 +3696,8 @@ def cmd_plan(args) -> int:
     follow_ups = follow_ups_for(source, implied, names, args.spec_path,
                                 args.code_path, materialized)
     seeded = seeded_legs(assigned_paths(implied))
-    entries = ask_about_refused_paths(
-        ask_about_submodules(policy, ruled, tree), tree)
+    entries = with_defaults(ask_about_refused_paths(
+        ask_about_submodules(policy, ruled, tree), tree))
     out = Path(args.out)
     write_lf(out, render_plan(args, source, entries, names, pins, follow_ups,
                               seeded))
@@ -5316,9 +5611,11 @@ def _entry_findings(plan: Plan, source: Source,
     """Every FINDING `check` prints about the plan's ENTRIES, in its order,
     what it prints once after them, and the NOTEs it prints beside them:
     each entry's path, then coverage, then each entry's `leg:`, the two
-    mount paths and what the root keeps where the shape writes, then each
-    value `execute` would write into the project's YAML for its loader to
-    read back as something else (#181), then the source's own submodules,
+    mount paths and what the root keeps where the shape writes, the pins,
+    then each pin's digest the clone `plan` read it from recomputes
+    otherwise (#449), then each value `execute` would write into the
+    project's YAML for its loader to read back as something else (#181),
+    then the source's own submodules,
     then each symlink the plan keeps in the root that a shape file cannot
     be written through (#178, #183), then each value `execute` writes into
     a file that no file can hold (#255), then what the project's own
@@ -5399,6 +5696,10 @@ def _entry_findings(plan: Plan, source: Source,
                                       for e in plan.entries],
                                      [path for path, _, _, _ in tree])
                 + _leg_findings(plan, tree))
+    # Beside the pins' other findings, which `_leg_findings` lists last: a
+    # digest the clone `plan` read it from recomputes otherwise (#449).
+    digest_findings, pin_notes = _pin_digest_findings(plan)
+    findings += digest_findings
     (split, split_remediation), (moved, moved_remediation), notes = \
         _submodule_findings(plan, source, tree, local_remote_dir)
     unwritable_findings, unwritable_remediation = _value_findings(plan)
@@ -5425,7 +5726,7 @@ def _entry_findings(plan: Plan, source: Source,
             + ([MANIFEST_MISREAD_REMEDIATION] if misread else [])
             + split_remediation + unwritable_remediation + value_remediation
             + tracking_remediation + moved_remediation + field_remediation,
-            notes)
+            pin_notes + notes)
 
 
 # ---------------------------------------------------------------------------
@@ -5818,20 +6119,18 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     # Each pin `execute` writes, as the plan records it (#273): a pin it
-    # cannot write is a finding, printed after this. NOT READ AGAIN, by
-    # design: `check` and `execute` read no network for a pin, so a commit
-    # or a digest edited into the plan is written as it stands, and the
-    # root's own gate is what recomputes it (#273's review, S3).
+    # cannot write is a finding, printed after this. Whether its digest was
+    # recomputed is said once per pin with the NOTEs `_entry_findings`
+    # returns: it recomputes, or it was not rechecked here, where the clone
+    # `plan` read it from is gone or partial or `gh api` read it, because
+    # `check` and `execute` read no network for a pin (#273's review, S3;
+    # #449).
     recorded = _recorded_pins(plan)
     for product, values in recorded.items():
         print(f"  write {neutral_pin_path(product)}: "
               f"{values['PIN_REPOSITORY']} @ {values['PIN_COMMIT'][:12]} tree "
               f"{values['PIN_TREE_SHA256'][:12]}… "
               f"({_shown(values['PIN_DIGEST_SOURCE'])})")
-    if recorded:
-        print("  each pin as `plan` read it, not read again here: the root's "
-              "own `validate-pins.py` recomputes its digest wherever it can "
-              "read the product")
     print("  the source is never deleted, never renamed, never force-pushed")
     print(_topics_line(topic, local))
     for item in _plan_follow_ups(plan):
@@ -6769,29 +7068,31 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
 
 
 #: The adoption's own ruleset hint (#177). `RULESET_HINT` is the scaffold's,
-#: and it stays the scaffold's word for word. ITS SECOND EXIT IS NOT OFFERED
-#: HERE, because it cannot finish an adoption (#188 N2). It pushed the leg to
-#: a seed branch and opened a pull request against the tracking branch, but
-#: the leg is a repository this run created and its first push was the one
-#: refused, so there is no tracking branch for that pull request to target;
-#: and even a merged one would resume nothing, since the rest of the adoption
-#: (the other leg, the split) is made only by a re-run, into new legs. So an
-#: adoption names its one exit, a re-run by somebody holding the bypass right,
-#: and the notice printed after this hint (`_nothing_rolled_back`) names what
-#: that re-run must clear first. The notice also says to fix what failed
-#: before the re-run, and under such a ruleset the bypass IS that fix: the
-#: hint says so last, or "fixed", read alone, would invite a change to the
-#: ruleset this hint forbids (#188's re-verification, R4).
+#: and it stays the scaffold's word for word. A SEED BRANCH AND A PULL
+#: REQUEST ARE NAMED ONLY AS WHAT CANNOT FINISH AN ADOPTION (#188 N2). That
+#: route pushed the leg to a seed branch and opened a pull request against the
+#: tracking branch, but the leg is a repository this run created and its first
+#: push was the one refused, so there is no tracking branch for that pull
+#: request to target; and even a merged one would resume nothing, since the
+#: rest of the adoption (the other leg, the split) is made only by a re-run,
+#: into new legs. Nor is it "the scaffold's other exit", as this hint called
+#: it until #523: #506 took it out of the scaffold's hint too, which names it
+#: only as what cannot finish a scaffold. So an adoption names its one exit, a
+#: re-run by somebody holding the bypass right, and the notice printed after
+#: this hint (`_nothing_rolled_back`) names what that re-run must clear
+#: first. The notice also says to fix what failed before the re-run, and
+#: under such a ruleset the bypass IS that fix: the hint says so last, or
+#: "fixed", read alone, would invite a change to the ruleset this hint
+#: forbids (#188's re-verification, R4).
 ADOPT_RULESET_HINT = """
 If the organisation applies a ruleset requiring changes to arrive by pull
 request, a direct push to the default branch is refused BY DESIGN and must not
 be worked around. An adoption has ONE legitimate exit: have an operator
 holding the bypass right re-run it, once what the notice below names is
-cleared. The scaffold's other exit, a seed branch and a pull request, cannot
-finish an adoption: {repo} has no {tracking} for that pull request to target,
-and nothing would run the rest of this adoption after it was merged. Under
-such a ruleset, that bypass is the fix the notice below asks for, never a
-change to the ruleset.
+cleared. A seed branch and a pull request cannot finish an adoption:
+{repo} has no {tracking} for that pull request to target, and nothing would
+run the rest of this adoption after it was merged. Under such a ruleset, that
+bypass is the fix the notice below asks for, never a change to the ruleset.
 """
 
 #: What a step that runs once a leg repository exists reports as a REFUSAL,
@@ -7945,14 +8246,19 @@ def _open_the_pull_request(repositories: dict, names: dict, tracking: str,
 
 
 def _finish_by_hand(passed: bool, refused: list[str] | None, topic: str,
-                    unset: list[str]) -> None:
+                    unset: list[str], *, opened: str | None = None,
+                    carried: list[str] | None = None) -> None:
     """What a refused `gh pr create` and a topic that would not set leave to
     do, said ONCE, after the table, when `execute` knows whether the split it
     pushed is the one the plan asked for (#304, #481).
 
     `refused` is the `gh pr create` that `gh` refused, as
-    `_pull_request_command` built it, and None when the pull request is open;
-    `unset` names each repository `_set_the_topic` could not give `topic`.
+    `_pull_request_command` built it, and None when the pull request is open
+    or none was tried (`--local-remote-dir`); `unset` names each repository
+    `_set_the_topic` could not give `topic`. `opened` is the repository the
+    split's pull request IS open on, None where none is, and `carried` each
+    repository that has the topic: what a failed verification leaves in
+    place, and says (#523).
 
     A split that PASSED verification gets the commands that finish the job:
     a `gh repo edit` for each repository left without the topic, then the
@@ -7969,6 +8275,19 @@ def _finish_by_hand(passed: bool, refused: list[str] | None, topic: str,
     the exact command that was tried, and a person who sees only that, with
     findings under it, may paste it. No topic is offered there either: the
     way out is the verification's, and the re-run it names sets the topic.
+
+    WHAT IT LEAVES IN PLACE IS SAID TOO (#523). `execute` sets the topic and
+    opens the pull request BEFORE it verifies, so against GitHub a split that
+    failed has its pull request open on the source and the topic on every
+    repository that took it, and the way out said neither: it said NOTHING
+    was deleted from the source, which is true, and AGENTS.md said the source
+    was untouched, which is not. So the open pull request is named as one
+    for a split that failed, with what closes it, the deletion of its branch
+    the way out already names; and the topic as staying set: the re-run sets
+    it again on the root and on the legs it makes, and a leg the person
+    keeps, re-running into fresh leg repositories rather than deleting it,
+    keeps the topic too (#582's review).
+
     Stdout is flushed first. The table is on it and a pipe holds it in a
     block buffer, so without the flush this would come before the table it
     depends on in a merged log; a stdout that is closed, `| head` and gone,
@@ -7976,9 +8295,21 @@ def _finish_by_hand(passed: bool, refused: list[str] | None, topic: str,
     """
     _flush_stdout()
     if not passed:
+        said = []
         if refused is not None:
-            print("No pull request was opened, and none should be: the split "
-                  "above did not pass verification.", file=sys.stderr)
+            said.append("No pull request was opened, and none should be: the "
+                        "split above did not pass verification.")
+        elif opened is not None:
+            said.append(f"A pull request for that branch IS open on {opened}, "
+                        "for a split that did not pass verification: "
+                        "deleting the branch, as above, closes it.")
+        if carried:
+            said.append(f"The topic {topic} stays set on "
+                        f"{_and_listed(carried)}: the re-run sets it again "
+                        "on the root and the legs it makes, and a leg left "
+                        "behind keeps it.")
+        if said:
+            print(" ".join(said), file=sys.stderr)
         return
     topics = "".join(f"\n    gh repo edit {repository} --add-topic {topic}"
                      for repository in unset)
@@ -8410,13 +8741,17 @@ def cmd_execute(args) -> int:
     # to know before finishing either by hand is whether the split is right
     # (#304), so what is left is said once, after the table.
     unset: list[str] = []
+    carried: list[str] = []
     refused: list[str] | None = None
+    opened: str | None = None
     if not local:
         carried = _set_the_topic(repositories, topic)
         unset = [repositories[role] for role in TOPIC_ROLES
                  if repositories[role] not in carried]
-        if not _open_the_pull_request(repositories, names, tracking, branch,
-                                      message):
+        if _open_the_pull_request(repositories, names, tracking, branch,
+                                  message):
+            opened = repositories["assembly"]
+        else:
             refused = _pull_request_command(repositories, names, tracking,
                                             branch, message)
 
@@ -8426,9 +8761,13 @@ def cmd_execute(args) -> int:
                        urls=urls, branch=branch)
     if not verified and refused is None:
         # Where the shape's Makefile and bootstrap script WENT, as the
-        # materializer reports it, and not a second look at the tree (#480).
-        _next_steps(names, collisions)
-    _finish_by_hand(not verified, refused, topic, unset)
+        # materializer reports it, and not a second look at the tree (#480);
+        # under `--local-remote-dir` no pull request is opened, so NEXT names
+        # the split's branch, and the repository it is pushed to (#523).
+        _next_steps(names, collisions,
+                    (branch, urls["assembly"]) if local else None)
+    _finish_by_hand(not verified, refused, topic, unset, opened=opened,
+                    carried=carried)
     if verified:
         # A verification mismatch outranks a refused pull request and a
         # missing topic.
@@ -8943,10 +9282,25 @@ def _left_by_the_split(source: Source, urls: dict, names: dict,
 SHAPE_MAKEFILE = "Makefile"
 
 
-def _next_steps(names: dict, collisions: list) -> None:
+def _next_steps(names: dict, collisions: list,
+                split: tuple[str, str] | None = None) -> None:
     """What a person does once the split is verified AND its pull request is
-    open. Not said where there is none to review: after a refused `gh pr
-    create`, the command to open it is the next step (#304).
+    open, or none was tried. Not said after a refused `gh pr create`: there
+    the command to open it is the next step (#304).
+
+    `split` is `(branch, url)`, the split's branch and the repository it is
+    pushed to, where no pull request was tried: under `--local-remote-dir`,
+    where that repository is the source itself. NEXT said "review the pull
+    request" there as well, over none (#523, N2), and named a clone of the
+    default branch, where the split is not. There it names the split on its
+    branch, and a clone of that branch from that repository, each value
+    quoted for `sh` as `_branch_deletion` quotes it, so the line pastes as
+    printed. The clone carries `FILE_PROTOCOL`: the split's `.gitmodules`
+    names each leg by its plain path under `--local-remote-dir`, and git
+    clones a submodule over the `file` transport only where it is told to,
+    so without it both leg clones die `transport 'file' not allowed`, as
+    pasting the line did in #582's review. Without `split`, the block is
+    what it was, byte for byte.
 
     `collisions` is each `(intended, actual)` the materializer wrote beside a
     file the source kept: where the shape's files WENT, and not a second
@@ -8969,9 +9323,18 @@ def _next_steps(names: dict, collisions: list) -> None:
     bootstrap = ("" if script else
                  "\n    python3 scripts/bootstrap.py" if makefile else
                  "\n    make bootstrap")
-    print(f"\nNEXT: review the pull request on {names['assembly']}, then\n"
-          f"    git clone --recurse-submodules <{names['assembly']} url>"
-          f"{bootstrap}")
+    if split is None:
+        review = f"the pull request on {names['assembly']}"
+        clone = ("git clone --recurse-submodules "
+                 f"<{names['assembly']} url>")
+    else:
+        branch, url = split
+        review = (f"the split on its branch in {names['assembly']} (no pull "
+                  "request is opened under --local-remote-dir)")
+        clone = " ".join(["git", *FILE_PROTOCOL, "clone",
+                          "--recurse-submodules", "-b", shlex.quote(branch),
+                          shlex.quote(url)])
+    print(f"\nNEXT: review {review}, then\n    {clone}{bootstrap}")
     if script:
         kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
                 if path in aside]
