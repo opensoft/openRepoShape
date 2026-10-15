@@ -129,7 +129,9 @@ install command). Seven steps, in order, and step 4 is the one you must not skip
 ```
 
 2. **You resolve the questions, in writing, in the plan.** Each unresolved
-   entry carries a `question:`. Set `leg:` to `spec`, `code`, `root` or `drop`
+   entry carries a `question:`; so does one whose `leg:` is its rule's default,
+   which `execute` takes as written (`drop` for a `single-repository.yaml`
+   record). Set `leg:` to `spec`, `code`, `root` or `drop`
    AND add a `resolution:` line saying why — read the repository to answer it
    (does the specification cite `examples/golden-run/`, or do the tests?). An
    answer with no reason beside it is a guess that will be read as a finding.
@@ -405,13 +407,13 @@ python3 scripts/family.py siblings --family-root <path>
    `members/<Project>` inside the holder is pinned and DETACHED, for
    `bootstrap` and `validate`; the sibling is where the human works.
    **What it never does, and neither do you:** it MOVES NOTHING — when the
-   parent folder is not named after the family it warns and prints an `mv`,
-   and running that `mv` yourself relocates a checkout out from under a
-   shell, an editor and every agent lane, and breaks any linked worktree
-   (its `.git` file carries an absolute path). An existing clone gets only
-   `git fetch` — no checkout, no reset, no pull — because somebody works in
-   there; one of a different repository is reported and skipped, and the
-   exit is the human's hand, not an overwrite.
+   parent folder is not named after the family (nor linked as it) it clones
+   nothing, prints an `mv` and exits 1 (`make`: 2), and running that `mv`
+   relocates a checkout out from under a shell, an editor and every agent lane,
+   and breaks any linked worktree (its `.git` file carries an absolute path). An
+   existing clone gets only `git fetch` — no checkout, no reset, no pull —
+   because somebody works in there; one of a different repository is reported
+   and skipped, and the exit is the human's hand, not an overwrite.
 6. `update-shape.py` updates a family root exactly as it updates a project,
    with the same four refusals, and mirrors into `family.yaml`. An existing
    holder receives `scripts/siblings.py` that way: `check` reports it as
