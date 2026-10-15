@@ -155,11 +155,14 @@ def load_without_bytecode(path: Path, name: str):
     return module
 
 
-#: `load_without_bytecode`'s counterpart for a CHILD process (#544). `family.py
-#: siblings` runs the standard's `templates/family-root/scripts/siblings.py`
-#: through `runpy`, and that file imports `bootstrap` from beside it, so
-#: without this in the child's environment the import writes
-#: `__pycache__/bootstrap.*.pyc` into the template tree.
+#: `load_without_bytecode`'s counterpart for a CHILD process (#544). A child
+#: that imports a file under `templates/` writes `__pycache__` beside it
+#: unless this is in its environment. `family.py siblings` used to run the
+#: template's `scripts/siblings.py` through `runpy`, importing `bootstrap`
+#: from the template tree; since #543 it runs the holder's own
+#: `scripts/siblings.py` in a child process standing in the holder, so its
+#: imports come from the holder's copy. Kept on those calls so a return to
+#: an in-process run cannot write into the templates unseen.
 NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
 
 
@@ -714,6 +717,29 @@ def refused_before_any_leg(adopter, monkeypatch: pytest.MonkeyPatch,
     assert "no leg repository was created" in refusal.remediation
     assert not remotes.exists()
     return refusal
+
+
+#: A file the shape's pin names, which `a_hook_that_unstages` takes out of
+#: the split commit in the tests that need a verification to fail.
+PINNED_COPY = "scripts/validate-pins.py"
+
+
+def a_hook_that_unstages(hooks: Path, path: str = PINNED_COPY) -> Path:
+    """`hooks`, holding a `pre-commit` hook that takes `path` out of the
+    index before every commit, and nothing else: a commit without `path` is
+    left as it is (`--ignore-unmatch`). Pointed at by `core.hooksPath`, it
+    leaves `execute`'s split commit without a file the shape's pin names, so
+    the verification fails, after both legs are pushed. The plan answer that
+    stood for that failure until #524, the source's own
+    `contracts/shape-pin.yaml` kept in the root, is refused before any leg
+    now. LF, because `sh` reads it on every platform."""
+    hooks.mkdir(parents=True, exist_ok=True)
+    hook = hooks / "pre-commit"
+    with hook.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write("#!/bin/sh\n"
+                     f"exec git rm -q --cached --ignore-unmatch -- {path}\n")
+    hook.chmod(0o755)
+    return hooks
 
 
 # --- the `gh` guard (#296) ---------------------------------------------------
