@@ -192,21 +192,28 @@ class PathPolicy:
 
     # -- one path -----------------------------------------------------------
 
-    def rule_for(self, path: str) -> dict | None:
+    def rule_for(self, path: str, skip=()) -> dict | None:
         """The FIRST rule whose globs match, or None.
 
         A rule written as `foo/**` also matches the bare directory `foo`,
         because a policy that classified every file under a directory but not
         the directory itself would descend into it for no reason.
+
+        A rule whose id is in `skip` is passed over, as if the policy did not
+        hold it. `adopt-project.py plan` passes the record's rule over for a
+        file that has the record's name and declares another `kind:`, which
+        is then asked what the rules below that one ask (#528).
         """
         for rule, compiled in self.rules:
+            if rule["id"] in skip:
+                continue
             for pattern, regex in compiled:
                 if regex.match(path) or pattern == f"{path}/**":
                     return rule
         return None
 
-    def classify_file(self, path: str) -> Verdict:
-        rule = self.rule_for(path)
+    def classify_file(self, path: str, skip=()) -> Verdict:
+        rule = self.rule_for(path, skip)
         if rule is not None:
             return Verdict(rule["leg"], str(rule["id"]), rule.get("reason", ""),
                            "high", rule.get("question"), rule.get("default"))

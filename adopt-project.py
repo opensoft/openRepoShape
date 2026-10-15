@@ -1362,6 +1362,44 @@ def walk(policy: PathPolicy, files: list[tuple[str, int]],
     return sorted(entries, key=lambda e: e.path)
 
 
+#: The path policy's rule for the source's own staying-single record (#528).
+#: Its question and its default are the record's, so `plan` asks them only
+#: of a file that IS the record (`ask_about_a_record_only`).
+RECORD_RULE = "ambiguous-single-repository-record"
+
+
+def ask_about_a_record_only(policy: PathPolicy, entries: list[Entry],
+                            source: "Source") -> list[Entry]:
+    """`entries`, with a top-level `single-repository.yaml` that is no
+    record asked the question the rules below the record's ask (#528).
+
+    `kind:` DECIDES, NOT THE NAME, for the record's one reader, the Triad
+    advisory (`shape_advisory.read_record`). A file of that name declaring
+    `kind: release-config` silences nothing, and the same `plan` run said
+    so in a NOTE while the record's question told the person the file
+    records that the repository stays single, and its default would have
+    dropped it. So RECORD_RULE answers only a file that declares
+    `single-repository-record` in the commit being planned, read as the
+    advisory reads it there; any other is classified as if the policy held
+    no such rule, which for a top-level YAML file is the general question,
+    asked as before. A source with no entry RECORD_RULE answered is not
+    read at all.
+    """
+    if not any(entry.path == shape_advisory.RECORD_FILE
+               and entry.rule == RECORD_RULE for entry in entries):
+        return entries
+    state, _, _ = shape_advisory.read_record(
+        shape_advisory.Tree(source.path, source.commit))
+    if state == shape_advisory.RECORD_SILENCES:
+        return entries
+    return [Entry(entry.path,
+                  policy.classify_file(entry.path, skip=(RECORD_RULE,)),
+                  entry.files, entry.bytes)
+            if entry.path == shape_advisory.RECORD_FILE
+            and entry.rule == RECORD_RULE else entry
+            for entry in entries]
+
+
 def with_defaults(entries: list[Entry]) -> list[Entry]:
     """`entries`, each question whose rule names a default answer written
     with that default as its `leg:` (#528).
@@ -3387,13 +3425,17 @@ def cmd_plan(args) -> int:
     # alone fed is seeded -- which the plan records, as `check` will say of
     # the plan as written. A source with no such path plans as it did.
     #
-    # The default a rule names is written into an entry last, after both
-    # re-asks (#528): `ask_about_refused_paths` passes over a path answered
+    # A `single-repository.yaml` that declares no record is asked as any
+    # other top-level data file is, before anything reads the entries
+    # (#528). The default a rule names is written into an entry last, after
+    # both re-asks: `ask_about_refused_paths` passes over a path answered
     # `drop`, so a default written in first would be taken for a person's
     # answer there. What the rules imply is read without it, and it changes
     # none of what is read from them, because `drop` puts the path in no leg
     # and keeps nothing in the root.
-    ruled = walk(policy, [(path, size) for path, _, _, size in tree])
+    ruled = ask_about_a_record_only(
+        policy, walk(policy, [(path, size) for path, _, _, size in tree]),
+        source)
     implied = ask_about_refused_paths(ruled, tree)
     materialized = _predict_collisions(
         implied, attributes_link=any(path == ATTRIBUTES and mode == SYMLINK_MODE

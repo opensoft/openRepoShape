@@ -17,7 +17,8 @@ the file and asks drop or root, and "the default answer is drop". That is
 and the question beside it; `check` passes it, and `execute` drops the file
 unless a person writes `root`. The verdict keeps `leg` None, so the doctor,
 which walks a leg with the same `walk`, still reads a leg's copy as a
-question.
+question. And `kind:` decides, not the name: a file of that name that is no
+record at the commit `plan` reads is asked the general question.
 """
 
 from __future__ import annotations
@@ -55,6 +56,13 @@ RECORD = ("schema_version: 1\nkind: single-repository-record\n"
 TREE = {"src/app.py": "print(1)\n", "docs/spec.md": "# Spec\n",
         "README.md": "# Thing\n", RECORD_FILE: RECORD,
         "release.yaml": "name: release\n"}
+#: Files named as the record is that are no record: `kind:` decides, as it
+#: does for the advisory, and each of these silences nothing there.
+NOT_A_RECORD = {
+    "another kind": "schema_version: 1\nkind: release-config\n",
+    "not a mapping": "- a\n- b\n",
+    "does not parse": "kind: [\n",
+}
 
 
 @pytest.fixture(scope="module")
@@ -91,11 +99,13 @@ def one_rule_policy(**rule) -> PathPolicy:
 
 # --- the rule ---------------------------------------------------------------
 
-def test_the_rule_names_the_file_the_advisory_reads():
-    """One name in two places: the rule asks about the file the advisory is
-    the only reader of, so a rename there is caught here."""
+def test_the_rule_names_the_file_the_advisory_reads(adopter):
+    """One name in three places: the rule asks about the file the advisory
+    is the only reader of, and `plan` asks the record's question of a record
+    only by that rule's id, so a rename in either is caught here."""
     rules = {rule["id"]: rule for rule, _ in PathPolicy.load(POLICY).rules}
     assert rules[RULE]["paths"] == [RECORD_FILE] == ["single-repository.yaml"]
+    assert adopter.RECORD_RULE == RULE
 
 
 def test_the_rule_comes_before_the_general_question():
@@ -139,6 +149,9 @@ def test_every_other_top_level_data_file_is_asked_as_before():
         assert verdict.default is None, name
         assert "(spec)" in verdict.question and "(root)" in verdict.question
     assert policy.classify_file("config/single-repository.yaml").rule != RULE
+    passed_over = policy.classify_file(RECORD_FILE, skip=(RULE,))
+    assert passed_over.rule == GENERAL
+    assert passed_over.default is None
 
 
 # --- a default the classifier takes, and one it refuses -----------------------
@@ -224,6 +237,54 @@ def test_both_answers_the_question_offers_check_ok(source, tmp_path, leg):
     plan = planned(source, tmp_path, {"release.yaml": "spec",
                                       RECORD_FILE: leg})
     assert findings(plan) == []
+
+
+# --- `kind:` decides, not the name ---------------------------------------------
+
+@pytest.mark.parametrize("body", list(NOT_A_RECORD.values()),
+                         ids=list(NOT_A_RECORD))
+def test_a_file_of_that_name_that_is_no_record_is_asked_as_before(
+        tmp_path, body):
+    """No record, no record's question and no default: the general one,
+    with `leg: null`, which `check` finds unanswered."""
+    here = make_source_repo(tmp_path / "Thing",
+                            tree={**TREE, RECORD_FILE: body}, edits=())
+    plan = planned(here, tmp_path, {"release.yaml": "spec"})
+    entry = entry_of(plan, RECORD_FILE)
+    general = PathPolicy.load(POLICY).classify_file("release.yaml")
+    assert entry["rule"] == GENERAL
+    assert entry["leg"] is None
+    assert entry["review_required"] is True
+    assert entry["question"] == general.question
+    assert entry["reason"] == general.reason
+    (code, detail), = findings(plan)
+    assert code == "plan-unresolved"
+    assert detail.startswith(f"`{RECORD_FILE}` still has `leg: null`.")
+
+
+def test_a_record_that_leaves_a_field_out_is_still_the_record(tmp_path):
+    """The advisory's own reading: `kind:` decides, and a missing field is
+    a note there, not a reason to stop being the record."""
+    partial = "schema_version: 1\nkind: single-repository-record\n"
+    here = make_source_repo(tmp_path / "Thing",
+                            tree={**TREE, RECORD_FILE: partial}, edits=())
+    out = tmp_path / "adoption-plan.yaml"
+    assert write_plan(here, out).returncode == 0
+    entry = entry_of(out, RECORD_FILE)
+    assert (entry["rule"], entry["leg"]) == (RULE, "drop")
+
+
+def test_the_commit_plan_reads_decides_and_not_the_working_tree(tmp_path):
+    """A record written over a committed non-record, and not committed, is
+    not in the repository being split, as the advisory says of it."""
+    here = make_source_repo(
+        tmp_path / "Thing",
+        tree={**TREE, RECORD_FILE: NOT_A_RECORD["another kind"]}, edits=())
+    (here / RECORD_FILE).write_bytes(RECORD.encode())
+    out = tmp_path / "adoption-plan.yaml"
+    assert write_plan(here, out).returncode == 0
+    entry = entry_of(out, RECORD_FILE)
+    assert (entry["rule"], entry["leg"]) == (GENERAL, None)
 
 
 # --- a question asked in place of the rule's carries no default ----------------
