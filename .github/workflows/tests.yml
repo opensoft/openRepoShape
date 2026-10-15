@@ -363,8 +363,13 @@ jobs:
                   print(f"{name} = HEAD:{source}")
           EOF
 
-      # pipx AS A PERSON RUNS IT, into directories of this job's own, so the
-      # runner's own pipx and its apps are left alone, and with the 3.9 above.
+      # pipx AS A PERSON RUNS IT, into directories of this job's own, and ON
+      # THE 3.9 ABOVE. Not the runner's own pipx with `--python`: that pipx
+      # runs on the image's Python and shares ONE pip with every environment
+      # it makes, a pip that no longer runs on 3.9 (`dataclass(slots=True)`,
+      # this job's first run, 2026-10-15). So pipx itself runs on 3.9, at
+      # 1.11.1, the newest release that installs there, and its shared pip
+      # is then one that 3.9 runs.
       - name: install the wheel with pipx
         run: |
           set -euo pipefail
@@ -374,9 +379,9 @@ jobs:
           } >> "$GITHUB_ENV"
           export PIPX_HOME="$RUNNER_TEMP/pipx/home"
           export PIPX_BIN_DIR="$RUNNER_TEMP/pipx/bin"
-          pipx --version
-          pipx install --python "$(command -v python)" \
-              "$RUNNER_TEMP"/dist-a/*.whl
+          python -m pip install --disable-pip-version-check pipx==1.11.1
+          python -m pipx --version
+          python -m pipx install "$RUNNER_TEMP"/dist-a/*.whl
           "$PIPX_HOME/venvs/openreposhape/bin/python" --version
           ls -l "$PIPX_BIN_DIR"
 
