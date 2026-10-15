@@ -137,17 +137,14 @@ py setup-project.py <Project> --org <your-org>
 ```
 
 `python setup-project.py <Project> --org <your-org>` is the same command on a
-machine with no `py`: Python from the Microsoft Store installs `python` and no
-launcher at all.
-
+machine with no `py`: Microsoft Store Python installs `python`, no launcher.
 Two commands rather than one pipe, on purpose. Windows PowerShell 5.1 — still
 the default shell on a stock install — re-encodes piped text as ASCII by
 default (that is its `$OutputEncoding`), and writes UTF-16 when `>` redirects
 to a file, so no byte above 0x7F survives either route and a script sent down
-one is not the script that arrives; and a script arriving on stdin has an
-exhausted stdin, so it cannot ask for the one `yes` before three repositories
-exist — it refuses instead. Downloading the file first leaves stdin attached
-to the terminal you are typing at.
+one is not the script that arrives; and a script arriving on stdin leaves it
+exhausted, so it cannot ask for the one `yes` before three repositories exist
+and refuses. Downloading the file first leaves stdin on your terminal.
 
 `setup-project.py` is the flow itself, and `setup.sh` a shim over it: the same
 preflight, the same naming check, the same plan, the same one `yes`, the same
@@ -155,7 +152,10 @@ self-bootstrap outside a checkout. It never needs `make` and never looks for a
 `python3` — it runs the interpreter that started it. That two-liner IS the
 Windows way in; the `openRepoShape` command in step 3 below is a macOS, Linux
 and WSL2 convenience with no Windows twin, because on Windows there is nothing
-to install.
+to install. Printed commands are quoted for a POSIX shell, so paste them into
+Git Bash. Only `shape-doctor.py`'s lines, `setup-project.py`'s family lines
+and `family.py`'s `NEXT`, `switch -c`, `add` and `git rm -r --cached` lines
+are quoted for PowerShell, on Windows.
 
 </details>
 
