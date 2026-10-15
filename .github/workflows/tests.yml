@@ -131,14 +131,16 @@ jobs:
   # THE openreposhape PACKAGE, BUILT AND INSTALLED AS A PERSON INSTALLS IT
   # (#563). A JOB OF ITS OWN, AND NO PYTEST IN IT: the build backend
   # `pyproject.toml` pins (hatchling) and git-filter-repo, the package's one
-  # dependency, both come from PyPI, and the suite in the three jobs above
+  # dependency, both come from PyPI, and the suite in the `tests` job above
   # never touches the network. What can be checked offline is checked there,
-  # on all three runners (`tests/test_openreposhape_package.py`); this job is
-  # what only a real build and a real pipx can say.
+  # on Linux like the rest of the suite since #597
+  # (`tests/test_openreposhape_package.py`); this job is what only a real
+  # build and a real pipx can say.
   #
   # UBUNTU, ON THE OLDEST PYTHON THE PACKAGE SUPPORTS, 3.9. The wheel is pure
   # Python, one file for every system; the release workflow (#563's next
-  # pull request) installs it on all three before it uploads anything.
+  # pull request) installs it on Linux, macOS and Windows before it uploads
+  # anything.
   package:
     runs-on: ubuntu-latest
     steps:
