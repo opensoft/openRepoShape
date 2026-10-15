@@ -1021,6 +1021,133 @@ def assert_a_taken_clone_path_is_refused(run, tmp_path: Path,
     assert after == before, f"{taken} was changed by a run that refused"
 
 
+#: THE PERSON'S OWN TERMINAL, IN A TEST (#492). The one-liner reads its yes
+#: from the CONTROLLING terminal when its stdin is the pipe the script came
+#: down, so a test that says it asks has to give the run one: a
+#: pseudo-terminal, made the controlling terminal of a session of the run's
+#: own. `subprocess` hands a child file descriptors and nothing more, so
+#: `_CONTROLLING`, run first by this interpreter, claims the terminal on its
+#: stdin (`TIOCSCTTY`) and then becomes the command. POSIX only: Windows has
+#: no controlling terminal to give, and its way in is the downloaded file.
+PTY_SKIP = pytest.mark.skipif(
+    os.name == "nt",
+    reason="a controlling terminal is POSIX; on Windows the way in is the "
+           "downloaded setup-project.py, and there is no /dev/tty to ask on")
+
+_CONTROLLING = ("import fcntl, os, sys, termios; "
+                "fcntl.ioctl(0, termios.TIOCSCTTY, 0); "
+                "os.execvp(sys.argv[1], sys.argv[1:])")
+
+#: The same terminal, the command run in a BACKGROUND process group of it: a
+#: piped run, `cat setup.sh | timeout N bash -s -- ...`, typed in a shell
+#: (GNU `timeout` puts its command in a group of its own), or any runner that
+#: backgrounds a job sharing the terminal. `_CONTROLLING_IN_THE_BACKGROUND`
+#: stays the session's leader and its foreground group, and the command is a
+#: child in a group of its own, so a read of the terminal from it stops on
+#: SIGTTIN. A stopped command is killed and shows as a status of 128 + the
+#: signal, so a run that waits where it should have refused fails at once and
+#: leaves nothing stopped behind it.
+_CONTROLLING_IN_THE_BACKGROUND = """
+import fcntl, os, signal, sys, termios
+fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+child = os.fork()
+if child == 0:
+    os.setpgid(0, 0)
+    os.execvp(sys.argv[1], sys.argv[1:])
+status = os.waitpid(child, os.WUNTRACED)[1]
+if os.WIFSTOPPED(status):
+    os.killpg(child, signal.SIGKILL)
+    sys.exit(128 + os.WSTOPSIG(status))
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status)
+         else 128 + os.WTERMSIG(status))
+"""
+
+
+def run_in_a_terminal(argv: list, *, cwd: Path, env: dict, answers=(),
+                      prompt="Type yes to continue:",
+                      timeout: float = 180, raw: bool = False,
+                      background: bool = False) -> tuple:
+    """`argv` run as a person runs it in their own terminal: a
+    pseudo-terminal is its controlling terminal and its stdin, stdout and
+    stderr, so a pipe inside `argv` (`cat setup.sh | bash -s -- ...`) is the
+    only thing that is not the terminal. Each of `answers` is typed once the
+    screen shows its prompt after the answer before it - `prompt` is one
+    prompt for every answer, or one per answer, in order - `"EOF"` as Ctrl-D,
+    and nothing is typed anywhere else.
+
+    Returns `(exit status, the screen, how many answers were typed)`, with
+    the terminal's `\\r\\n` read as `\\n`. A run still going after `timeout`
+    seconds is killed and FAILS the test with its screen: a run waiting on a
+    prompt nobody answers is the defect this exists to show. Reading stops
+    once the run has exited and its output is drained, so a detached child
+    still holding the terminal cannot keep the test waiting.
+
+    `raw` puts the terminal in RAW mode before the run starts, as an
+    assistant's full-screen interface leaves the pane it owns: nothing is
+    echoed and the Enter key sends a carriage return, so a read for the end
+    of a line never ends. `background` runs the command in a background
+    process group of the terminal, not its foreground one.
+    """
+    master, slave = os.openpty()
+    if raw:
+        import tty  # POSIX only, like the pty itself
+        tty.setraw(slave)
+    try:
+        proc = subprocess.Popen([sys.executable, "-c",
+                                 _CONTROLLING_IN_THE_BACKGROUND if background
+                                 else _CONTROLLING, *argv],
+                                cwd=str(cwd), env=env, stdin=slave,
+                                stdout=slave, stderr=slave,
+                                start_new_session=True)
+    finally:
+        os.close(slave)
+    prompts = ([prompt] * len(answers) if isinstance(prompt, str)
+               else list(prompt))
+    screen, typed, since = b"", 0, 0
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise AssertionError(
+                    f"still running after {timeout}s, waiting on its "
+                    "terminal:\n" + screen.decode("utf-8", "replace"))
+            if not select.select([master], [], [], min(left, 1.0))[0]:
+                if proc.poll() is not None:
+                    break
+                continue
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:  # EIO: the last holder of the terminal is gone
+                break
+            if not chunk:
+                break
+            screen += chunk
+            if typed < len(answers) and \
+                    prompts[typed].encode("utf-8") in screen[since:]:
+                answer = answers[typed]
+                os.write(master, b"\x04" if answer == "EOF"
+                         else answer.encode("utf-8"))
+                typed, since = typed + 1, len(screen)
+        status = proc.wait(timeout=max(deadline - time.monotonic(), 1.0))
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+        os.close(master)
+    return (status, screen.decode("utf-8", "replace").replace("\r\n", "\n"),
+            typed)
+
+
+def spelled(path) -> str:
+    """`path` as `adopt-project.py` names one in a finding, a refusal or the
+    late-failure notice (#212): between backticks, with a backslash or a
+    backtick escaped. A path a test builds is otherwise printable, which
+    `_spelled` writes as it is; a Windows path keeps its separators, each
+    one escaped."""
+    return "`" + str(path).replace("\\", "\\\\").replace("`", "\\`") + "`"
+
+
 # --- setup's paste lines, its step checks and the upstream guard (#538) ------
 #
 # ONE READING, TWO ENTRY POINTS, as for #498 above: each helper takes the
@@ -1286,130 +1413,3 @@ def assert_an_upstream_origin_in_any_case_needs_an_org(run,
     assert "you are running from the upstream checkout" in result.stderr, (
         result.stderr)
     assert not (tmp_path / "remotes").exists()
-
-
-#: THE PERSON'S OWN TERMINAL, IN A TEST (#492). The one-liner reads its yes
-#: from the CONTROLLING terminal when its stdin is the pipe the script came
-#: down, so a test that says it asks has to give the run one: a
-#: pseudo-terminal, made the controlling terminal of a session of the run's
-#: own. `subprocess` hands a child file descriptors and nothing more, so
-#: `_CONTROLLING`, run first by this interpreter, claims the terminal on its
-#: stdin (`TIOCSCTTY`) and then becomes the command. POSIX only: Windows has
-#: no controlling terminal to give, and its way in is the downloaded file.
-PTY_SKIP = pytest.mark.skipif(
-    os.name == "nt",
-    reason="a controlling terminal is POSIX; on Windows the way in is the "
-           "downloaded setup-project.py, and there is no /dev/tty to ask on")
-
-_CONTROLLING = ("import fcntl, os, sys, termios; "
-                "fcntl.ioctl(0, termios.TIOCSCTTY, 0); "
-                "os.execvp(sys.argv[1], sys.argv[1:])")
-
-#: The same terminal, the command run in a BACKGROUND process group of it: a
-#: piped run, `cat setup.sh | timeout N bash -s -- ...`, typed in a shell
-#: (GNU `timeout` puts its command in a group of its own), or any runner that
-#: backgrounds a job sharing the terminal. `_CONTROLLING_IN_THE_BACKGROUND`
-#: stays the session's leader and its foreground group, and the command is a
-#: child in a group of its own, so a read of the terminal from it stops on
-#: SIGTTIN. A stopped command is killed and shows as a status of 128 + the
-#: signal, so a run that waits where it should have refused fails at once and
-#: leaves nothing stopped behind it.
-_CONTROLLING_IN_THE_BACKGROUND = """
-import fcntl, os, signal, sys, termios
-fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-child = os.fork()
-if child == 0:
-    os.setpgid(0, 0)
-    os.execvp(sys.argv[1], sys.argv[1:])
-status = os.waitpid(child, os.WUNTRACED)[1]
-if os.WIFSTOPPED(status):
-    os.killpg(child, signal.SIGKILL)
-    sys.exit(128 + os.WSTOPSIG(status))
-sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status)
-         else 128 + os.WTERMSIG(status))
-"""
-
-
-def run_in_a_terminal(argv: list, *, cwd: Path, env: dict, answers=(),
-                      prompt="Type yes to continue:",
-                      timeout: float = 180, raw: bool = False,
-                      background: bool = False) -> tuple:
-    """`argv` run as a person runs it in their own terminal: a
-    pseudo-terminal is its controlling terminal and its stdin, stdout and
-    stderr, so a pipe inside `argv` (`cat setup.sh | bash -s -- ...`) is the
-    only thing that is not the terminal. Each of `answers` is typed once the
-    screen shows its prompt after the answer before it - `prompt` is one
-    prompt for every answer, or one per answer, in order - `"EOF"` as Ctrl-D,
-    and nothing is typed anywhere else.
-
-    Returns `(exit status, the screen, how many answers were typed)`, with
-    the terminal's `\\r\\n` read as `\\n`. A run still going after `timeout`
-    seconds is killed and FAILS the test with its screen: a run waiting on a
-    prompt nobody answers is the defect this exists to show. Reading stops
-    once the run has exited and its output is drained, so a detached child
-    still holding the terminal cannot keep the test waiting.
-
-    `raw` puts the terminal in RAW mode before the run starts, as an
-    assistant's full-screen interface leaves the pane it owns: nothing is
-    echoed and the Enter key sends a carriage return, so a read for the end
-    of a line never ends. `background` runs the command in a background
-    process group of the terminal, not its foreground one.
-    """
-    master, slave = os.openpty()
-    if raw:
-        import tty  # POSIX only, like the pty itself
-        tty.setraw(slave)
-    try:
-        proc = subprocess.Popen([sys.executable, "-c",
-                                 _CONTROLLING_IN_THE_BACKGROUND if background
-                                 else _CONTROLLING, *argv],
-                                cwd=str(cwd), env=env, stdin=slave,
-                                stdout=slave, stderr=slave,
-                                start_new_session=True)
-    finally:
-        os.close(slave)
-    prompts = ([prompt] * len(answers) if isinstance(prompt, str)
-               else list(prompt))
-    screen, typed, since = b"", 0, 0
-    deadline = time.monotonic() + timeout
-    try:
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise AssertionError(
-                    f"still running after {timeout}s, waiting on its "
-                    "terminal:\n" + screen.decode("utf-8", "replace"))
-            if not select.select([master], [], [], min(left, 1.0))[0]:
-                if proc.poll() is not None:
-                    break
-                continue
-            try:
-                chunk = os.read(master, 4096)
-            except OSError:  # EIO: the last holder of the terminal is gone
-                break
-            if not chunk:
-                break
-            screen += chunk
-            if typed < len(answers) and \
-                    prompts[typed].encode("utf-8") in screen[since:]:
-                answer = answers[typed]
-                os.write(master, b"\x04" if answer == "EOF"
-                         else answer.encode("utf-8"))
-                typed, since = typed + 1, len(screen)
-        status = proc.wait(timeout=max(deadline - time.monotonic(), 1.0))
-    finally:
-        if proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGKILL)
-            proc.wait()
-        os.close(master)
-    return (status, screen.decode("utf-8", "replace").replace("\r\n", "\n"),
-            typed)
-
-
-def spelled(path) -> str:
-    """`path` as `adopt-project.py` names one in a finding, a refusal or the
-    late-failure notice (#212): between backticks, with a backslash or a
-    backtick escaped. A path a test builds is otherwise printable, which
-    `_spelled` writes as it is; a Windows path keeps its separators, each
-    one escaped."""
-    return "`" + str(path).replace("\\", "\\\\").replace("`", "\\`") + "`"

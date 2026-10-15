@@ -421,6 +421,41 @@ def test_a_taken_clone_path_is_refused_before_anything(tmp_path, kind):
     assert_a_taken_clone_path_is_refused(run_setup, tmp_path, kind)
 
 
+def test_no_test_here_depends_on_gh_being_authenticated():
+    """Every invocation either stops before the preflight or runs offline.
+
+    The ones that stop early are the help (`--help`, `-h`) and two
+    argument-parsing refusals (an unknown flag, a bad `--visibility`). Every
+    `run_setup` runs THIS checkout's `setup.sh` from inside THIS checkout,
+    where the shim hands all of them to `setup-project.py`, which answers
+    them before it looks at the machine. From anywhere ELSE, which only the
+    self-bootstrap section below reaches (through `run_bare_setup`, never
+    scanned here), the shim answers the help itself before any clone (#341),
+    and the two refusals are made by the CLONED `setup-project.py`.
+    Everything else must pass `--local-remote-dir`, or it reaches `gh auth
+    status` and passes only on a laptop that happens to be logged in — which
+    is exactly how the first version of this file went green locally and red
+    in CI.
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+    early = ("--help", '"-h"', "--wat", '"secret"')
+    for match in re.finditer(r"(?<!def )run_setup\(", source):
+        start = match.end()
+        depth, index = 1, start
+        while depth:
+            if source[index] == "(":
+                depth += 1
+            elif source[index] == ")":
+                depth -= 1
+            index += 1
+        call = source[start:index - 1]
+        if any(marker in call for marker in early):
+            continue
+        assert "--local-remote-dir" in call, (
+            "this run_setup call reaches the gh preflight and will fail "
+            f"wherever gh is not authenticated:\n    {' '.join(call.split())}")
+
+
 # --- #538, through the shim: each is `conftest`'s helper of that name -------
 
 def test_the_closing_cd_names_the_clone_as_one_word(tmp_path):
@@ -459,41 +494,6 @@ def test_the_upstream_org_is_refused_in_any_case(tmp_path, org):
 
 def test_an_upstream_origin_in_any_case_needs_an_org(tmp_path):
     assert_an_upstream_origin_in_any_case_needs_an_org(run_setup, tmp_path)
-
-
-def test_no_test_here_depends_on_gh_being_authenticated():
-    """Every invocation either stops before the preflight or runs offline.
-
-    The ones that stop early are the help (`--help`, `-h`) and two
-    argument-parsing refusals (an unknown flag, a bad `--visibility`). Every
-    `run_setup` runs THIS checkout's `setup.sh` from inside THIS checkout,
-    where the shim hands all of them to `setup-project.py`, which answers
-    them before it looks at the machine. From anywhere ELSE, which only the
-    self-bootstrap section below reaches (through `run_bare_setup`, never
-    scanned here), the shim answers the help itself before any clone (#341),
-    and the two refusals are made by the CLONED `setup-project.py`.
-    Everything else must pass `--local-remote-dir`, or it reaches `gh auth
-    status` and passes only on a laptop that happens to be logged in — which
-    is exactly how the first version of this file went green locally and red
-    in CI.
-    """
-    source = Path(__file__).read_text(encoding="utf-8")
-    early = ("--help", '"-h"', "--wat", '"secret"')
-    for match in re.finditer(r"(?<!def )run_setup\(", source):
-        start = match.end()
-        depth, index = 1, start
-        while depth:
-            if source[index] == "(":
-                depth += 1
-            elif source[index] == ")":
-                depth -= 1
-            index += 1
-        call = source[start:index - 1]
-        if any(marker in call for marker in early):
-            continue
-        assert "--local-remote-dir" in call, (
-            "this run_setup call reaches the gh preflight and will fail "
-            f"wherever gh is not authenticated:\n    {' '.join(call.split())}")
 
 
 # --- self-bootstrap ---------------------------------------------------------

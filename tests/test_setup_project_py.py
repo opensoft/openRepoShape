@@ -492,46 +492,6 @@ def test_a_taken_clone_path_is_refused_before_anything(tmp_path, kind):
     assert_a_taken_clone_path_is_refused(run_entry, tmp_path, kind)
 
 
-# --- #538, on an interpreter alone: each is `conftest`'s helper of that name -
-
-def test_the_closing_cd_names_the_clone_as_one_word(tmp_path):
-    assert_the_closing_cd_is_one_word(run_entry, tmp_path)
-
-
-def test_the_backstop_is_finished_by_hand_as_printed(tmp_path):
-    assert_the_backstop_is_finished_by_hand_as_printed(run_entry, tmp_path)
-
-
-def test_the_scaffold_leaves_its_next_steps_to_setup(setup_run):
-    assert_the_scaffold_leaves_its_next_steps_to_setup(setup_run["result"])
-
-
-@pytest.mark.parametrize("where", FILE_ABOVE_THE_CLONE)
-def test_a_file_above_the_clone_path_is_refused(tmp_path, where):
-    assert_a_file_above_the_clone_path_is_refused(run_entry, tmp_path, where)
-
-
-@pytest.mark.parametrize("spelling,yes", DRY_RUNS)
-def test_a_dry_run_passed_through_ends_at_the_plan(tmp_path, spelling, yes):
-    assert_a_dry_run_passed_through_ends_at_the_plan(run_entry, tmp_path,
-                                                     spelling, yes)
-
-
-@pytest.mark.parametrize("how", DECLARATIONS)
-def test_the_naming_check_hears_what_is_passed_through(tmp_path, how):
-    assert_the_naming_check_hears_what_is_passed_through(run_entry, tmp_path,
-                                                         how)
-
-
-@pytest.mark.parametrize("org", UPSTREAM_CASINGS)
-def test_the_upstream_org_is_refused_in_any_case(tmp_path, org):
-    assert_the_upstream_org_is_refused_in_any_case(run_entry, tmp_path, org)
-
-
-def test_an_upstream_origin_in_any_case_needs_an_org(tmp_path):
-    assert_an_upstream_origin_in_any_case_needs_an_org(run_entry, tmp_path)
-
-
 def test_anything_but_yes_refuses_and_creates_nothing(monkeypatch, tmp_path):
     """The one `yes` is EXACT: `no`, `y`, `Yes` and an empty line all refuse.
 
@@ -2144,6 +2104,46 @@ def test_each_passed_flag_is_spelled_as_the_scaffold_takes_it():
         if len(shortest) > 3:
             assert [o for o in options if o.startswith(shortest[:-1])] != [
                 flag], flag
+
+
+# --- #538, on an interpreter alone: each is `conftest`'s helper of that name -
+
+def test_the_closing_cd_names_the_clone_as_one_word(tmp_path):
+    assert_the_closing_cd_is_one_word(run_entry, tmp_path)
+
+
+def test_the_backstop_is_finished_by_hand_as_printed(tmp_path):
+    assert_the_backstop_is_finished_by_hand_as_printed(run_entry, tmp_path)
+
+
+def test_the_scaffold_leaves_its_next_steps_to_setup(setup_run):
+    assert_the_scaffold_leaves_its_next_steps_to_setup(setup_run["result"])
+
+
+@pytest.mark.parametrize("where", FILE_ABOVE_THE_CLONE)
+def test_a_file_above_the_clone_path_is_refused(tmp_path, where):
+    assert_a_file_above_the_clone_path_is_refused(run_entry, tmp_path, where)
+
+
+@pytest.mark.parametrize("spelling,yes", DRY_RUNS)
+def test_a_dry_run_passed_through_ends_at_the_plan(tmp_path, spelling, yes):
+    assert_a_dry_run_passed_through_ends_at_the_plan(run_entry, tmp_path,
+                                                     spelling, yes)
+
+
+@pytest.mark.parametrize("how", DECLARATIONS)
+def test_the_naming_check_hears_what_is_passed_through(tmp_path, how):
+    assert_the_naming_check_hears_what_is_passed_through(run_entry, tmp_path,
+                                                         how)
+
+
+@pytest.mark.parametrize("org", UPSTREAM_CASINGS)
+def test_the_upstream_org_is_refused_in_any_case(tmp_path, org):
+    assert_the_upstream_org_is_refused_in_any_case(run_entry, tmp_path, org)
+
+
+def test_an_upstream_origin_in_any_case_needs_an_org(tmp_path):
+    assert_an_upstream_origin_in_any_case_needs_an_org(run_entry, tmp_path)
 
 
 # --- setup.sh is a shim, not a second flag list -----------------------------
