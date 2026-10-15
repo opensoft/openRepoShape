@@ -1068,7 +1068,11 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     if args.work_dir is not None:
         return None, args.work_dir.expanduser().resolve() / family
     into = (args.into or Path.cwd()).expanduser().resolve()
-    if into.name == family and (into / family / MANIFEST).is_file():
+    # `os.path.isfile`, which answers False for a holder this user cannot
+    # search: `Path.is_file()` raised `PermissionError` there, a traceback
+    # before the question about the holder (`_refuse_a_taken_holder`) that
+    # names it (#609's rule: a refusal by name, never a traceback).
+    if into.name == family and os.path.isfile(into / family / MANIFEST):
         raise Refusal(
             "family-holder-already-here",
             f"{into} is already the {family} family folder and its holder "
@@ -1251,6 +1255,12 @@ def _landing_folder(folder: Path | None, holder: Path) -> tuple[Path, str]:
     return folder, "the family folder"
 
 
+def _landing_flag(folder: Path | None) -> str:
+    """The flag the person landed `init` by: `--work-dir` where there is no
+    family folder, `--into` otherwise."""
+    return "--work-dir" if folder is None else "--into"
+
+
 def _refuse_a_taken_holder(folder: Path | None, holder: Path) -> None:
     """`family-target-exists`: something already stands where the holder
     goes, a folder that holds anything or, since #609, a file, which
@@ -1267,7 +1277,7 @@ def _refuse_a_taken_holder(folder: Path | None, holder: Path) -> None:
                 "Remediation: choose another --into (or an empty "
                 "--work-dir); if that IS the holder, it is already a family "
                 "and `family.py add` is what grows it. There is no --force.",
-                "--work-dir" if folder is None else "--into"))
+                _landing_flag(folder)))
 
 
 def _refuse_unmakeable_landing(args, folder: Path | None, holder: Path,
@@ -1285,7 +1295,8 @@ def _refuse_unmakeable_landing(args, folder: Path | None, holder: Path,
     the system's words.
     """
     landing, named = _landing_folder(folder, holder)
-    refuse_unmakeable_folder(FOLDER_REFUSAL, named, landing)
+    refuse_unmakeable_folder(FOLDER_REFUSAL, named, landing,
+                             _landing_flag(folder))
     _refuse_a_taken_holder(folder, holder)
     if local:
         refuse_unmakeable_folder(FOLDER_REFUSAL, "--local-remote-dir",

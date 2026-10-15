@@ -1359,17 +1359,36 @@ def folder_cannot_be_made(path: Path) -> str | None:
     return None
 
 
-def refuse_unmakeable_folder(refusal: str, named: str, path: Path) -> None:
+def _unwritable_remediation(choose: str) -> str:
+    """What a refusal of a folder this user cannot write in says to do, for
+    a folder to make and for a working tree alike: give this user write and
+    search permission on it, or choose another folder by the flag `choose`.
+    """
+    return ("Remediation: nothing was created, and `--dry-run` refuses the "
+            "same. Give this user write and search permission on that "
+            f"folder, or choose another {choose}, and run this again.")
+
+
+def refuse_unmakeable_folder(refusal: str, named: str, path: Path,
+                             choose: str | None = None) -> None:
     """Raise `Refusal(refusal)` when `folder_cannot_be_made(path)` says why.
 
     `refusal` is the caller's own code (`scaffold-folder-cannot-be-made`)
     and `named` how the person met the folder (`--work-dir`, `the family
     folder`), so each tool refuses in its own voice. Asked by the dry run
-    and the real run alike, before anything is made."""
+    and the real run alike, before anything is made.
+
+    A FOLDER THIS USER CANNOT WRITE IN (`CANNOT_WRITE_IN`, the folder itself
+    or one above it) is not told to "move what stands in the way aside": it
+    is told what `_unwritable_remediation` says, naming the flag `choose`,
+    which is `named` unless it is no flag (`the family folder`, met by
+    `--into`). Every other answer keeps `FOLDER_REMEDIATION`."""
     why = folder_cannot_be_made(path)
     if why:
-        raise Refusal(refusal, f"{named} {path} cannot be made: {why}",
-                      FOLDER_REMEDIATION)
+        raise Refusal(
+            refusal, f"{named} {path} cannot be made: {why}",
+            _unwritable_remediation(choose or named)
+            if why.endswith(CANNOT_WRITE_IN) else FOLDER_REMEDIATION)
 
 
 def make_folder(refusal: str, named: str, path: Path) -> None:
@@ -1431,9 +1450,7 @@ def target_remediation(why: str, holds: str, choose: str) -> str:
     `choose`, the flag the person met it by."""
     if why != CANNOT_WRITE_IN:
         return holds
-    return ("Remediation: nothing was created, and `--dry-run` refuses the "
-            "same. Give this user write and search permission on that "
-            f"folder, or choose another {choose}, and run this again.")
+    return _unwritable_remediation(choose)
 
 
 # ---------------------------------------------------------------------------

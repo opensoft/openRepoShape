@@ -21,6 +21,10 @@ WHAT WAS WRONG, three lines of #459's review of #573:
   made the remotes and then died with a `PermissionError` traceback.
 - L2-67 (#461's review of #622). Two tests spelled POSIX `strerror` text;
   `mkdir_says` asks the system for its own words.
+- rv622r's two problems with the L2-60 change: `init` with `--into` named for
+  the family raised `PermissionError` for a holder with no search bit before
+  any question was asked, and a folder that is only unwritable was told to
+  "move what stands in the way aside".
 
 THE CURE. One question, asked by both runs before anything is made: every
 folder the run makes (`shape_materialize.folder_cannot_be_made`), each
@@ -315,10 +319,116 @@ def test_a_folder_that_cannot_be_written_in_is_refused_by_both_runs(
     run = (scaffold_in(tmp_path, "ro/wd") if tool == "scaffold"
            else init_in(tmp_path, "--work-dir", "ro/wd"))
     folder = SCAFFOLD_FOLDER if tool == "scaffold" else FAMILY_FOLDER
-    assert_both_runs_refuse(
+    real = assert_both_runs_refuse(
         tmp_path, run,
         f"{folder}: --work-dir {at(tmp_path, 'ro/wd')} cannot be made: "
         f"{unwritable.resolve()} is a folder this user cannot write in")
+    assert remediation_line(real) == unwritable_remediation("--work-dir")
+
+
+#: Where a folder a run makes can be one this user cannot write in, as `(the
+#: folder the test makes empty and unwritable, how a run lands, the REFUSED
+#: line both runs end on, the flag the remediation names)`: one row per
+#: flag, in each tool that has it.
+CANNOT_WRITE_TEXT = "is a folder this user cannot write in"
+UNWRITABLE_FOLDER_AT = {
+    "scaffold-work-dir": (
+        "wd", lambda t: scaffold_in(t),
+        lambda t: f"{SCAFFOLD_FOLDER}: --work-dir {at(t, 'wd')} cannot be "
+                  f"made: {at(t, 'wd')} {CANNOT_WRITE_TEXT}", "--work-dir"),
+    "scaffold-local-remote-dir": (
+        "r", lambda t: scaffold_in(t),
+        lambda t: f"{SCAFFOLD_FOLDER}: --local-remote-dir {at(t, 'r')} "
+                  f"cannot be made: {at(t, 'r')} {CANNOT_WRITE_TEXT}",
+        "--local-remote-dir"),
+    "family-into": (
+        "into/Orbit", lambda t: init_in(t),
+        lambda t: f"{FAMILY_FOLDER}: the family folder {at(t, 'into/Orbit')} "
+                  f"cannot be made: {at(t, 'into/Orbit')} "
+                  f"{CANNOT_WRITE_TEXT}", "--into"),
+    "family-work-dir": (
+        "wd", lambda t: init_in(t, "--work-dir", "wd"),
+        lambda t: f"{FAMILY_FOLDER}: --work-dir {at(t, 'wd')} cannot be "
+                  f"made: {at(t, 'wd')} {CANNOT_WRITE_TEXT}", "--work-dir"),
+    "family-local-remote-dir": (
+        "r", lambda t: init_in(t),
+        lambda t: f"{FAMILY_FOLDER}: --local-remote-dir {at(t, 'r')} cannot "
+                  f"be made: {at(t, 'r')} {CANNOT_WRITE_TEXT}",
+        "--local-remote-dir"),
+}
+
+#: What every OTHER refusal of a folder says to do, as it always said it.
+FOLDER_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "Move what stands in the way aside, or pass a path where a folder can be "
+    "made. There is no --force.")
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real-run"])
+@pytest.mark.parametrize("case", list(UNWRITABLE_FOLDER_AT))
+def test_an_unwritable_folder_a_run_makes_is_told_what_fits(
+        tmp_path, unwritable_folder, case, dry_run):
+    """rv622r's nit: an existing EMPTY `--work-dir`, `--local-remote-dir` or
+    family folder whose only fault is its permissions was told to "move what
+    stands in the way aside", nothing standing in the way. Each flag, in each
+    tool, now says to give this user write and search permission or to
+    choose another folder by that flag, and the run makes nothing."""
+    put, lands, said, flag = UNWRITABLE_FOLDER_AT[case]
+    unwritable_folder(put, CANNOT_WRITE["no-w"])
+    scratch_env(tmp_path)
+    before = snapshot(tmp_path)
+    result = lands(tmp_path)(dry_run=dry_run)
+    assert_refused(result, said(tmp_path))
+    assert remediation_line(result) == unwritable_remediation(flag)
+    assert snapshot(tmp_path) == before, "the run made something"
+
+
+@pytest.mark.parametrize("tool, case", [
+    ("scaffold", "work-dir-is-a-file"),
+    ("scaffold", "local-remote-dir-is-a-file"),
+    ("scaffold", "a-folder-above-the-work-dir-is-a-file"),
+    ("scaffold", "a-folder-above-the-remote-dir-is-a-file"),
+    ("family", "family-folder-is-a-file"),
+    ("family", "into-is-a-file"),
+    ("family", "work-dir-is-a-file"),
+    ("family", "local-remote-dir-is-a-file")])
+def test_a_folder_a_file_stands_in_keeps_its_remediation(
+        tmp_path, tool, case):
+    """Every other refusal of a folder says what it always said: a file at
+    the folder or above it is told to be moved aside, which is true of it."""
+    if tool == "scaffold":
+        put, (work, remotes), said = SCAFFOLD_CASES[case]
+        run = scaffold_in(tmp_path, work, remotes)
+    else:
+        put, landing, said = FAMILY_CASES[case]
+        run = init_in(tmp_path, *landing)
+    touch(tmp_path / put)
+    real = assert_both_runs_refuse(tmp_path, run, said(tmp_path))
+    assert remediation_line(real) == FOLDER_REMEDIATION
+
+
+def test_the_folder_remediation_is_chosen_by_what_stands_in_the_way(
+        tmp_path, monkeypatch):
+    """`refuse_unmakeable_folder`: the permissions sentence for an answer
+    that ends `CANNOT_WRITE_IN` (the folder or one above it), naming `choose`
+    or, with none, `named`; `FOLDER_REMEDIATION` for any other."""
+    ask = shape_materialize.refuse_unmakeable_folder
+    for why, remediation in (
+            (f"/x {shape_materialize.CANNOT_WRITE_IN}",
+             unwritable_remediation("--flag")),
+            ("/x is a file, not a folder", FOLDER_REMEDIATION),
+            ("/x cannot be used as a folder: No such file or directory",
+             FOLDER_REMEDIATION)):
+        monkeypatch.setattr(shape_materialize, "folder_cannot_be_made",
+                            lambda path, why=why: why)
+        with pytest.raises(Refusal) as refused:
+            ask("x-code", "--named", tmp_path, "--flag")
+        assert refused.value.remediation == remediation
+    monkeypatch.setattr(shape_materialize, "folder_cannot_be_made",
+                        lambda path: f"/x {shape_materialize.CANNOT_WRITE_IN}")
+    with pytest.raises(Refusal) as refused:
+        ask("x-code", "--named", tmp_path)
+    assert refused.value.remediation == unwritable_remediation("--named")
 
 
 # --- L2-60: an EMPTY working tree this user cannot write in ------------------
@@ -394,6 +504,28 @@ def test_an_unwritable_holder_under_work_dir_says_to_choose_another_work_dir(
                            "already exists and is a folder this user cannot "
                            "write in")
     assert remediation_line(result) == unwritable_remediation("--work-dir")
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real-run"])
+@pytest.mark.parametrize("how", list(CANNOT_WRITE))
+def test_an_unwritable_holder_in_the_family_folder_one_stands_in_is_refused(
+        tmp_path, unwritable_folder, how, dry_run):
+    """rv622r's problem 1: with `--into` named for the family, `Orbit/Orbit`
+    is the holder, and `_landing` asked `(into / family / MANIFEST).is_file()`
+    of it. For a holder with no search bit that raised `PermissionError`, a
+    traceback from both runs before any question was asked; with the search
+    bit it was refused by name. Both are refused by name now, and nothing is
+    made."""
+    tree = unwritable_folder("Orbit/Orbit", CANNOT_WRITE[how])
+    scratch_env(tmp_path)
+    before = snapshot(tmp_path)
+    result = init_in(tmp_path, "--into", "Orbit")(dry_run=dry_run)
+    assert_refused(result, f"REFUSED family-target-exists: {tree.resolve()} "
+                           "already exists and is a folder this user cannot "
+                           "write in")
+    assert remediation_line(result) == unwritable_remediation("--into")
+    assert snapshot(tmp_path) == before, "the run made something"
+    assert not list(tmp_path.rglob("*.git")), "a remote was made"
 
 
 @pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real-run"])
