@@ -110,6 +110,8 @@ MOUNTS = [
     pytest.param("a/b/spec", "a/b/code", "../spec", id="two-segments-shared"),
     pytest.param("legs/spec", "legsX/code", "../../legs/spec",
                  id="prefix-of-the-text-not-of-a-segment"),
+    pytest.param("legsX/spec", "legs/code", "../../legsX/spec",
+                 id="a-segment-that-extends-the-other"),
 ]
 
 
