@@ -23,11 +23,14 @@
 #      the command it places; the command then stays on it.
 #   3. GIT-FILTER-REPO, which `adopt-project.py` needs and nothing else does:
 #      said when it is there; installed with `pipx` when pipx is there and it
-#      is not; otherwise the one command that installs it, printed.
-#   4. THE INSTALLED COMMAND'S `--preflight`, LAST, and its verdict.
+#      is not, or with `uv` when uv is there and pipx is not (#595);
+#      otherwise the one command that installs it, printed.
+#   4. THE INSTALLED COMMAND'S `--preflight`, LAST, and its verdict, then the
+#      two readinesses: `adoption:` and `done:` (#595).
 #
 # install.sh ITSELF NEVER RUNS sudo, AND INSTALLS NOTHING BUT THESE TWO: the
-# command and, through pipx, git-filter-repo. The preflight it ends with
+# command and, through the pipx or uv already there, git-filter-repo. It
+# never installs pipx, uv or a system package. The preflight it ends with
 # offers what is missing, each behind a typed `yes` at the person's own
 # terminal, exactly as `openRepoShape --preflight` always has, and some of
 # those offers are `sudo` commands: that is the preflight's, asked first.
@@ -41,6 +44,9 @@
 #      release found, a fetch that failed, or a file that is not the command.
 # git-filter-repo never changes it: only adopting needs it, and
 # `adopt-project.py` refuses with its own install command where it is missing.
+# What it changes is the summary (#595): `adoption:` says whether it is there
+# and, where it is not, the command to run next, and `done:` says the machine
+# is ready only when it is, and "ready to scaffold, not yet to adopt" when not.
 #
 # EVERYTHING RUNS FROM `main`, CALLED ON THE LAST LINE, INSIDE BRACES. Under
 # `curl … | bash` bash reads this script from the pipe as it goes, so a
@@ -68,6 +74,12 @@ WORKDIR=""
 FOUND=""
 FAULT=""
 
+#: What step 3 found, for the summary `main` ends with (#595): 1 when
+#: `adopt-project.py` will find git-filter-repo, and what the `adoption:`
+#: line says, which names the command to run next where it will not.
+ADOPTION_READY=0
+ADOPTION=""
+
 say() { printf '%s\n' "$*"; }
 die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
 
@@ -81,15 +93,18 @@ install.sh: install openRepoShape, pinned to a release.
 
 With no <version> it installs the newest release. It fetches that release's
 `openRepoShape`, installs it into ~/.local/bin pinned to the release tag,
-installs git-filter-repo with pipx when pipx is there and git-filter-repo is
-not (or prints the command that installs it), and ends with `openRepoShape
---preflight`. install.sh itself never runs sudo; the preflight it ends with
-offers what is missing, each behind a typed `yes` at your terminal. Run the
-same line again to upgrade.
+installs git-filter-repo with pipx, or with uv where there is no pipx, when
+git-filter-repo is not there (or prints the command that installs it), and
+ends with `openRepoShape --preflight` and two lines: `adoption:`, whether
+git-filter-repo is there, and `done:`. install.sh itself never runs sudo and
+never installs pipx or uv; the preflight it ends with offers what is missing,
+each behind a typed `yes` at your terminal. Run the same line again to
+upgrade.
 
 Exit 0: installed, pinned, and the preflight passed. 1: installed, but the
 preflight did not pass, or the command does not stay on the release tag. 2:
-refused, and nothing was installed.
+refused, and nothing was installed. git-filter-repo, which only adopting
+needs, never changes it.
 
   $OPENREPOSHAPE_REPO       owner/name to install from (default opensoft/openRepoShape)
   $OPENREPOSHAPE_BIN_DIR    where the command goes      (default ~/.local/bin)
@@ -216,60 +231,91 @@ looks_like_the_launcher() {
 	return 1
 }
 
-# THE ONE COMMAND THAT INSTALLS IT HERE, for a machine with no pipx, PRINTED
-# AND NEVER RUN, in POSIX shell: Homebrew's where `brew` is; where `apt-get`
-# is, pipx from apt and then git-filter-repo through it, because Debian 12
-# and Ubuntu 23.04 on refuse `pip install --user` into the system Python
-# (externally-managed-environment); and otherwise pip, under whichever Python
-# name this machine has. Always at the version CI runs, except brew's.
+# THE ONE COMMAND THAT INSTALLS IT HERE, for a machine with neither pipx nor
+# uv, PRINTED AND NEVER RUN, in POSIX shell. Never `pip install --user`:
+# Debian 12, Ubuntu 23.04 and Arch, among others, mark the system Python
+# externally managed (PEP 668) and refuse it (#595). Homebrew's where `brew`
+# is; otherwise pipx from the system's own package manager, which takes
+# `sudo` and is the person's to type, and git-filter-repo through it; and
+# where there is no package manager this knows, uv, which installs without
+# one. Always at the version CI runs, except brew's.
 filter_repo_command() {
-	local candidate
 	if command -v brew >/dev/null 2>&1; then
 		printf '%s' "brew install git-filter-repo"
-		return 0
-	fi
-	if command -v apt-get >/dev/null 2>&1; then
+	elif command -v apt-get >/dev/null 2>&1; then
 		printf '%s' "sudo apt-get install -y pipx && pipx install $FILTER_REPO_PIN"
-		return 0
+	elif command -v dnf >/dev/null 2>&1; then
+		printf '%s' "sudo dnf install -y pipx && pipx install $FILTER_REPO_PIN"
+	elif command -v pacman >/dev/null 2>&1; then
+		printf '%s' "sudo pacman -S --needed python-pipx && pipx install $FILTER_REPO_PIN"
+	else
+		printf '%s' "uv tool install $FILTER_REPO_PIN  # once uv is installed: https://docs.astral.sh/uv/getting-started/installation/"
 	fi
-	for candidate in python3 python; do
-		if command -v "$candidate" >/dev/null 2>&1; then
-			printf '%s' "$candidate -m pip install --user $FILTER_REPO_PIN"
-			return 0
-		fi
-	done
-	printf '%s' "python3 -m pip install --user $FILTER_REPO_PIN"
+}
+
+adoption_ready() {
+	ADOPTION_READY=1
+	ADOPTION="git-filter-repo is installed, which adopt-project.py needs beyond what the preflight checks."
+}
+
+adoption_not_ready() {
+	ADOPTION_READY=0
+	ADOPTION="NOT READY: adopt-project.py needs git-filter-repo, and $1. Before adopting a repository, run: $2"
+}
+
+# ONE INSTALL, WITH THE pipx OR uv ALREADY HERE, into an environment of its
+# own and at the version CI runs. Installed is not yet found: either tool puts
+# the command in a directory of its own (`~/.local/bin` by default) that this
+# shell may not have on PATH, and `adopt-project.py` looks on PATH, so the
+# install is checked by looking where it will. `$1` names the tool, `$2` is
+# what puts its directory on PATH, and the rest is the install.
+filter_repo_install() {
+	local tool="$1" ensure="$2" status=0
+	shift 2
+	say "git-filter-repo: not installed; installing it with $tool, because adopt-project.py needs it: $*"
+	"$@" || status=$?
+	if [ "$status" -ne 0 ]; then
+		say "git-filter-repo: $tool could not install it (exit $status). Before adopting a repository, install it: $*"
+		adoption_not_ready "$tool could not install it (exit $status)" "$*"
+	elif command -v git-filter-repo >/dev/null 2>&1; then
+		say "git-filter-repo: installed with $tool"
+		adoption_ready
+	else
+		say "git-filter-repo: installed with $tool, into a directory that is not on PATH yet: run \`$ensure\` and open a new shell"
+		adoption_not_ready "$tool installed it into a directory that is not on PATH yet" "$ensure, then open a new shell"
+	fi
 }
 
 filter_repo_step() {
-	local found status=0
+	local found
 	if found="$(command -v git-filter-repo 2>/dev/null)" && [ -n "$found" ]; then
 		say "git-filter-repo: already installed ($found)"
+		adoption_ready
 		return 0
 	fi
 	if command -v git >/dev/null 2>&1 &&
 		git filter-repo --version >/dev/null 2>&1; then
 		say "git-filter-repo: already installed (git filter-repo --version answers)"
+		adoption_ready
 		return 0
 	fi
 	if command -v pipx >/dev/null 2>&1; then
-		say "git-filter-repo: not installed; installing it with pipx, because adopt-project.py needs it: pipx install $FILTER_REPO_PIN"
-		pipx install "$FILTER_REPO_PIN" || status=$?
-		if [ "$status" -ne 0 ]; then
-			say "git-filter-repo: pipx could not install it (exit $status). Before adopting a repository, install it: pipx install $FILTER_REPO_PIN"
-		elif command -v git-filter-repo >/dev/null 2>&1; then
-			say "git-filter-repo: installed with pipx"
-		else
-			say "git-filter-repo: installed with pipx, into a directory that is not on PATH yet: run \`pipx ensurepath\` and open a new shell"
-		fi
+		filter_repo_install pipx "pipx ensurepath" pipx install "$FILTER_REPO_PIN"
 		return 0
 	fi
-	say "git-filter-repo: not installed, and there is no pipx to install it with. Only adopt-project.py needs it; before adopting a repository, run:"
-	say "    $(filter_repo_command)"
+	if command -v uv >/dev/null 2>&1; then
+		filter_repo_install uv "uv tool update-shell" uv tool install "$FILTER_REPO_PIN"
+		return 0
+	fi
+	found="$(filter_repo_command)"
+	say "git-filter-repo: not installed, and there is neither pipx nor uv to install it with. Only adopt-project.py needs it; before adopting a repository, run:"
+	say "    $found"
+	adoption_not_ready "it is not installed" "$found"
 }
 
 main() {
 	local version="" asked launcher_url bin_dir target shown status=0 pinned=1
+	local machine="this machine is ready"
 
 	# NOTHING A CHILD READS IS THIS SCRIPT. Piped, stdin is the pipe the
 	# script came down; a terminal stays a terminal, which is where the
@@ -379,6 +425,16 @@ main() {
 		OPENREPOSHAPE_REF="$version" "${BASH:-bash}" "$target" --preflight || status=$?
 	fi
 
+	# THE TWO READINESSES, LAST (#595). The preflight checks what scaffolding
+	# and the doctor need, and its verdict is the exit status below.
+	# git-filter-repo is needed to adopt and for nothing else, so it never
+	# changes the exit status: `adoption:` says where it stands, with the
+	# command to run next where it is missing, and `done:` says "ready" only
+	# when it is there as well.
+	say "adoption: $ADOPTION"
+	[ "$ADOPTION_READY" -eq 1 ] ||
+		machine="this machine is ready to scaffold, not yet to adopt"
+
 	# EXIT 1 IS THE PREFLIGHT'S "not ready", which names what is missing; any
 	# other status is a run that did not get that far (setup.sh could not be
 	# fetched, or there is no Python to run it), and its REFUSED line says so.
@@ -394,10 +450,10 @@ main() {
 		;;
 	esac
 	if [ "$pinned" -eq 0 ]; then
-		say "done: openRepoShape $version is installed at $target and this machine is ready, but the command does not stay on $version (see above)."
+		say "done: openRepoShape $version is installed at $target and $machine, but the command does not stay on $version (see above)."
 		exit 1
 	fi
-	say "done: openRepoShape $version is installed at $target, pinned to the release tag, and this machine is ready. Run the same line again to upgrade to the newest release."
+	say "done: openRepoShape $version is installed at $target, pinned to the release tag, and $machine. Run the same line again to upgrade to the newest release."
 	exit 0
 }
 

@@ -463,7 +463,8 @@ def pipx_failing(net):
 
 def no_pipx(net):
     (net.path / "pipx").unlink()
-    return f"    python3 -m pip install --user {FILTER_REPO}"
+    return f"    uv tool install {FILTER_REPO}  # once uv is installed: " \
+        "https://docs.astral.sh/uv/getting-started/installation/"
 
 
 def no_pipx_but_brew(net):
@@ -487,11 +488,13 @@ def test_git_filter_repo_is_said_installed_or_printed(net, arrange):
 
     PRESENT, on `$PATH` or as `git filter-repo`: said, and pipx is never
     run. NOT PRESENT AND PIPX IS THERE: said first, then `pipx install` at
-    CI's version, then what came of it. NEITHER: the one command for this
-    machine, printed and never run: brew's where brew is, pipx from apt where
-    apt-get is (Debian 12 and Ubuntu 23.04 on refuse `pip install --user`),
-    and pip otherwise. Nothing runs `sudo` or `apt-get`. None changes the
-    exit status, and the step sits between the install and the preflight.
+    CI's version, then what came of it. NEITHER PIPX NOR uv: the one command
+    for this machine, printed and never run: brew's where brew is, pipx from
+    apt where apt-get is (Debian 12 and Ubuntu 23.04 on refuse `pip install
+    --user`), and uv's otherwise, never pip's (#595; uv, dnf, pacman and the
+    summary are `tests/test_install_sh_filter_repo.py`'s). Nothing runs
+    `sudo` or `apt-get`. None changes the exit status, and the step sits
+    between the install and the preflight.
     """
     expected = arrange(net)
     result = net.run()
@@ -511,9 +514,9 @@ def test_git_filter_repo_is_said_installed_or_printed(net, arrange):
         assert ran_pipx == [], net.calls()
     if arrange in (no_pipx, no_pipx_but_brew, no_pipx_but_apt):
         assert lines[lines.index(expected) - 1] == (
-            "git-filter-repo: not installed, and there is no pipx to install "
-            "it with. Only adopt-project.py needs it; before adopting a "
-            "repository, run:")
+            "git-filter-repo: not installed, and there is neither pipx nor uv "
+            "to install it with. Only adopt-project.py needs it; before "
+            "adopting a repository, run:")
     assert lines.index(expected) < lines.index(
         f"preflight: {net.bin}/openRepoShape --preflight")
     assert not any(call.split()[0] in ("apt-get", "brew", "sudo")
