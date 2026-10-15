@@ -42,7 +42,7 @@ import sys
 
 import pytest
 
-from conftest import FILE_PROTOCOL, ORG, REPO, git, run_script
+from conftest import ORG, REPO, cloned_just_pushed, git, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import file_sha256, load_yaml  # noqa: E402
@@ -186,12 +186,8 @@ def standard(tmp_path_factory) -> dict:
         *SCAFFOLD_ARGS, "--local-remote-dir", str(base / "remotes"),
         "--work-dir", str(base / "work"))
     assert result.returncode == 0, result.stderr + result.stdout
-    clone = base / "clone" / PROJECT
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         str(base / "remotes" / f"{PROJECT}.git"), str(clone)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    clone = cloned_just_pushed(base / "remotes" / f"{PROJECT}.git",
+                               base / "clone" / PROJECT)
 
     created = run_script(
         upstream / "scripts" / "family.py", "init", "--org", FAMILY,

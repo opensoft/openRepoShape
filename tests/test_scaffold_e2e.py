@@ -12,10 +12,11 @@ import re
 import shlex
 import subprocess
 
-from conftest import (FILE_PROTOCOL, ORG, PROJECT, REPO, SCAFFOLD,
-                      WINDOWS_SKIP, assert_read_through_git, git, run_script)
+from conftest import (ORG, PROJECT, REPO, SCAFFOLD, WINDOWS_SKIP,
+                      assert_read_through_git, cloned_just_pushed, git,
+                      run_script)
 
-from conftest import indented_commands, pasted, read_through_git
+from conftest import FILE_PROTOCOL, indented_commands, pasted, read_through_git
 
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
@@ -328,12 +329,8 @@ def test_the_legs_are_submodules_at_the_declared_paths(project):
 
 def test_a_recursive_clone_leaves_the_legs_detached(scaffolded, tmp_path):
     """The submodule tax bootstrap exists to pay, demonstrated."""
-    target = tmp_path / "fresh"
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         str(scaffolded["remotes"] / f"{PROJECT}.git"), str(target)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    target = cloned_just_pushed(scaffolded["remotes"] / f"{PROJECT}.git",
+                                tmp_path / "fresh")
     head = git("rev-parse", "--abbrev-ref", "HEAD", cwd=target / "spec").stdout
     assert head.strip() == "HEAD", "expected a detached HEAD before bootstrap"
 
@@ -927,12 +924,7 @@ PINNED_SAMPLE = ("Makefile", "scripts/validate-pins.py",
 
 def clone_with_autocrlf(source, target):
     """A clone made the way Git for Windows' default makes one."""
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, *AUTOCRLF, "clone", "-q",
-         "--recurse-submodules", str(source), str(target)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
-    return target
+    return cloned_just_pushed(source, target, config=AUTOCRLF)
 
 
 def test_the_scaffolded_root_says_what_its_bytes_are(project, monkeypatch):
@@ -983,12 +975,8 @@ def test_without_the_attributes_file_the_same_clone_goes_red(scaffolded, tmp_pat
     the file above stops. Without this assertion the green test could be green
     because `core.autocrlf` did nothing at all.
     """
-    plain = tmp_path / "plain"
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         str(scaffolded["remotes"] / f"{PROJECT}.git"), str(plain)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    plain = cloned_just_pushed(scaffolded["remotes"] / f"{PROJECT}.git",
+                               tmp_path / "plain")
     git("rm", "-q", "--", ".gitattributes", cwd=plain)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
         "Drop the attributes file", "--", ".gitattributes", cwd=plain)

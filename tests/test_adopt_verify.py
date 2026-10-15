@@ -30,8 +30,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
-                      resolve, run_script, write_plan)
+from conftest import (ADOPT, FILE_PROTOCOL, REPO, clone_just_pushed, git,
+                      make_source_repo, resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from shape_materialize import SHAPE_REPOSITORY  # noqa: E402
@@ -341,9 +341,7 @@ SPLIT_BRANCH = "adopt/three-repo-shape"
 def clone_the_split(source: Path, tmp_path: Path):
     """`git clone --recurse-submodules` of the split branch into
     `tmp_path/clone`: what the NEXT lines tell the human to run."""
-    return git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
-               SPLIT_BRANCH, str(source), str(tmp_path / "clone"),
-               cwd=tmp_path, check=False)
+    return clone_just_pushed(source, tmp_path / "clone", SPLIT_BRANCH)
 
 
 @needs_filter_repo

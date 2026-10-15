@@ -43,7 +43,8 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import (FILE_PROTOCOL, REPO, WINDOWS_SKIP,
-                      assert_read_through_git, clone_just_pushed, git, rmtree,
+                      assert_read_through_git, clone_just_pushed,
+                      cloned_just_pushed, git, load_without_bytecode, rmtree,
                       run_script)
 from gh_guard import PROBES as GH_PROBES
 
@@ -476,16 +477,10 @@ def siblings():
     scripts = REPO / "templates" / "family-root" / "scripts"
     saved_path, saved_module = list(sys.path), sys.modules.get("bootstrap")
     try:
-        spec = importlib.util.spec_from_file_location(
-            "doctor_family_bootstrap", scripts / "bootstrap.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        sys.modules["bootstrap"] = module
-        spec = importlib.util.spec_from_file_location(
-            "doctor_family_siblings", scripts / "siblings.py")
-        loaded = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(loaded)
-        yield loaded
+        sys.modules["bootstrap"] = load_without_bytecode(
+            scripts / "bootstrap.py", "doctor_family_bootstrap")
+        yield load_without_bytecode(scripts / "siblings.py",
+                                    "doctor_family_siblings")
     finally:
         sys.path[:] = saved_path
         if saved_module is None:
@@ -3080,15 +3075,17 @@ def member_beside(holder: dict, tmp_path: Path) -> tuple[Path, Path]:
     itself refuses to answer any question about (`fatal: not a git
     repository`). It passed only because the row asked nothing of origin
     (#146). `git clone` from the url the holder mounts the member from is
-    both a real clone and the exact thing `siblings.py` does.
+    both a real clone and the exact thing `siblings.py` does, but for the
+    one flag of #544: the member's remote was just pushed, so the clone is
+    read through git (`cloned_just_pushed`) and not through its files.
     """
     base = tmp_path / "fam"
     base.mkdir()
     root = base / FAMILY_NAME
     shutil.copytree(holder["root"], root, symlinks=True)
     remote = holder["base"] / "remotes" / f"{FAMILY_MEMBER}.git"
-    git("clone", "-q", str(remote), str(base / FAMILY_MEMBER), cwd=base)
-    return root, base / FAMILY_MEMBER
+    return root, cloned_just_pushed(remote, base / FAMILY_MEMBER,
+                                    recurse=False)
 
 
 def test_a_real_working_clone_beside_the_holder_is_counted(standard, holder,

@@ -5906,6 +5906,68 @@ def check_what_is_here(ctx: Context) -> Row:
 #: at. Absent is not a finding -- it is needed to ADOPT and for nothing else.
 ADOPTION_TOOL = "git-filter-repo"
 
+#: The mark the preflight puts on a check that failed. `setup-project.py`'s
+#: `CROSS`, spelled again here because that file is run, never imported.
+PREFLIGHT_FAILED = "[!!]"
+#: How the preflight's closing line opens: `this machine is not ready yet (see
+#: above).`, which it prints with the same mark as the checks it points at.
+PREFLIGHT_VERDICT = "this machine is not ready yet"
+
+
+def preflight_failures(whole: str) -> list[str]:
+    """What the preflight found NOT READY, as the lines it printed (#549).
+
+    THE ROW USED TO QUOTE THE CHILD'S LAST LINE, which is that closing
+    verdict -- `this machine is not ready yet (see above).` -- and above it
+    the doctor shows nothing: the preflight's lines are kept only in `--json`
+    (`detail.report`). A reader of the table got a pointer at output that was
+    never printed. The lines it points at are the `[!!]` ones, one per check
+    that failed, in the order the preflight made them; each is returned
+    without its mark and flattened by `ascii_text`, as `detail.report` is.
+
+    THE VERDICT IS NOT ONE OF THEM, though it carries the same mark: it is
+    the child summarising its own failures, so it is dropped here and a
+    machine that failed two checks says two things. Nothing in
+    `setup-project.py` had to change for this: the mark was already the one
+    thing a line of the report is read by (`check_machine` reads `[ok]` and
+    `[??]` by theirs). An empty list is a child that exited non-zero without
+    saying which check failed -- a crash, an interpreter that would not
+    start -- and the caller falls back to the one line `run_validator` quoted.
+    """
+    failed: list[str] = []
+    for line in whole.splitlines():
+        text = line.strip()
+        if not text.startswith(PREFLIGHT_FAILED):
+            continue
+        said = ascii_text(text[len(PREFLIGHT_FAILED):].strip())
+        if said and not is_preflight_verdict(said):
+            failed.append(said)
+    return failed
+
+
+def is_preflight_verdict(line: str) -> bool:
+    """Whether `line` is the preflight's closing verdict, `[!!]` mark on it
+    or not -- the one line of its report that summarises the checks above it
+    instead of being one of them (#549)."""
+    return line.strip().removeprefix(PREFLIGHT_FAILED).strip().startswith(
+        PREFLIGHT_VERDICT)
+
+
+def first_sentence(line: str) -> str:
+    """`line` up to its first full stop that ends a sentence: one followed by
+    white space or by the end. `3.9` ends nothing; `gh is not installed.
+    Install it: ...` says `gh is not installed`.
+
+    A FAILED CHECK'S LINE IS THE FACT, THEN THE PREFLIGHT'S OWN REMEDY FOR
+    SOMEBODY RUNNING THE SCAFFOLD (#549, review): `Run: gh auth login`, or
+    `re-run with --local-remote-dir <dir>`. This command refuses that flag,
+    and `setup-project.py --preflight --local-remote-dir <dir>` then says the
+    machine is ready, which is false for this row. The row's NEXT is its one
+    remedy, so the reason keeps only what is not ready and
+    `detail.not_ready` keeps the whole line."""
+    stop = re.search(r"\.(?:\s|$)", line)
+    return line[:stop.start()] if stop else line
+
 
 def check_machine(ctx: Context) -> Row:
     """Can this machine run the fixes the rows above name?
@@ -5929,6 +5991,14 @@ def check_machine(ctx: Context) -> Row:
     with no `gh` cannot open the pull request a fix needs, which is worth
     saying and is not this repository being non-compliant. So the row reports
     and never changes the verdict.
+
+    WHEN IT IS NOT READY THE REASON NAMES WHAT IS NOT (#549): the first
+    sentence (`first_sentence`) of each of the preflight's own `[!!]` check
+    lines (`preflight_failures`), `; `-joined, and the whole lines in
+    `detail.not_ready`. It used to quote the child's last line, a verdict that
+    points "above" at output this table does not show, and the first version
+    of this change quoted the lines whole, remedies and all, beside a NEXT
+    that is the one command.
     """
     entry = ctx.shape / "setup-project.py"
     adoption = shutil.which(ADOPTION_TOOL)
@@ -5947,14 +6017,25 @@ def check_machine(ctx: Context) -> Row:
     marks = [ascii_text(line.strip()) for line in whole.splitlines()
              if line.strip().startswith(("[ok]", "[!!]", "[??]"))]
     detail["report"] = marks
+    # WHAT IS NOT READY, in the preflight's own words (#549): its `[!!]`
+    # lines, whole in `detail`, and the first sentence of each in the reason.
+    # `quoted` is the child's last line and, for a machine that is not ready,
+    # that is its verdict pointing "above" at lines this table does not print
+    # -- so it is the fallback for a child that said nothing better, and never
+    # the verdict itself.
+    failures = preflight_failures(whole) if code != 0 else []
+    detail["not_ready"] = failures
     ready = "this machine is ready" if code == 0 else \
         "this machine is missing something the fixes above may need"
-    extra = ("" if adoption else
-             f"; {ADOPTION_TOOL} is not on PATH, which only `adopt-project.py`"
-             " needs")
-    reason = f"{ready} (setup-project.py --preflight, exit {code}){extra}"
-    if code != 0 and quoted:
-        reason += f": {quoted}"
+    reason = f"{ready} (setup-project.py --preflight, exit {code})"
+    said = "; ".join(first_sentence(line) for line in failures)
+    if not said and code != 0 and not is_preflight_verdict(quoted):
+        said = quoted
+    if said:
+        reason += f": {said}"
+    if not adoption:
+        reason += (f"; {ADOPTION_TOOL} is not on PATH, which only "
+                   "`adopt-project.py` needs")
     if code == 0:
         return Row("machine", "machine", NA, reason, None, detail)
     return Row("machine", "machine", NA, reason,
