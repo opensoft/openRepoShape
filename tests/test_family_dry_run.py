@@ -57,7 +57,7 @@ from test_commit_trailers import TRAILERS, trailers_of
 #: would test a different holder.
 from test_family import (  # noqa: F401
     FAMILY, ORG, SPARE, family, family_module, manifest, nothing_to_do_line,
-    validate,
+    pushed_from_the_mount, validate,
 )
 from test_family_add_excludes import empty_holder  # noqa: F401
 #: The pinned project and the name its renamed copy is added under (#330).
@@ -201,10 +201,18 @@ def printed_row(stdout: str) -> list[str]:
     return row
 
 
-def commit_in_mount(root: Path, env: dict, change) -> str:
+def commit_in_mount(root: Path, env: dict, change, *,
+                    push: bool = True) -> str:
     """A commit in `MEMBER`'s mount that `change(mount)` makes, and the mount
-    put back at the commit the holder pins: the new commit is in the member's
-    objects and nowhere else, and the holder is clean. Returns its sha."""
+    put back at the commit the holder pins, with the holder clean. Returns
+    its sha.
+
+    PUSHED unless `push` is False (#613): `bump --to` refuses a commit no
+    branch of the member's remote reaches, `member-to-local-only`, as
+    `bump-leg.py` refuses its twin, so a commit a test bumps to goes first to
+    a branch of the private remote `pushed_from_the_mount` points the mount
+    at. With `push=False` it is in the member's objects and nowhere else,
+    the state #613 refuses."""
     mount = root / "members" / MEMBER
     pinned = raw(mount, env, "rev-parse", "HEAD").stdout.decode().strip()
     change(mount)
@@ -212,6 +220,8 @@ def commit_in_mount(root: Path, env: dict, change) -> str:
     raw(mount, env, "commit", "-q", "-m", "A commit only this mount has")
     made = raw(mount, env, "rev-parse", "HEAD").stdout.decode().strip()
     raw(mount, env, "checkout", "-q", pinned)
+    if push:
+        pushed_from_the_mount(mount, made)
     assert raw(root, env, "status", "--porcelain=v1", "-z").stdout == b"", (
         "premise: the holder is clean")
     return made
