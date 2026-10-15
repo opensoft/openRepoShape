@@ -53,8 +53,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, ORG, REPO, SCAFFOLD, WINDOWS_SKIP, git,
-                      run_script)
+from conftest import (ORG, REPO, SCAFFOLD, WINDOWS_SKIP, cloned_just_pushed,
+                      git, run_script)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -456,11 +456,8 @@ def test_what_is_typed_is_what_the_project_holds_and_bootstrap_agrees(
     result = scaffold(tmp_path, f"--tracking-branch={branch}",
                       f"--id={project_id}", work=True)
     assert result.returncode == 0, result.stderr + result.stdout
-    clone = tmp_path / "Atlas"
-    cloned = git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-                 str(tmp_path / REMOTES / "Atlas.git"), str(clone),
-                 cwd=tmp_path, check=False)
-    assert cloned.returncode == 0, cloned.stderr
+    clone = cloned_just_pushed(tmp_path / REMOTES / "Atlas.git",
+                               tmp_path / "Atlas")
     manifest = load_yaml(clone / "project.yaml")
     assert manifest["id"] == project_id
     assert manifest["tracking_branch"] == branch

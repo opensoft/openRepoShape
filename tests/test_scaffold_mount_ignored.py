@@ -64,7 +64,7 @@ from typing import NamedTuple
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, ORG, SCAFFOLD, git, run_script)
+from conftest import (ORG, SCAFFOLD, cloned_just_pushed, git, run_script)
 from test_scaffold_ignored_shape_files import excluding, git_under
 
 PROJECT = "Northwind"
@@ -241,9 +241,7 @@ def clone_and_check(root: Path, env: dict, tmp_path: Path, *mounts: str):
     its tracking branch AT the pin, so it fails where a gitlink and a pin
     disagree and `validate-pins.py` had not looked at the checkout.
     """
-    clone = tmp_path / PROJECT
-    git_under(env, *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-              str(root), str(clone), cwd=tmp_path)
+    clone = cloned_just_pushed(root, tmp_path / PROJECT, env=env)
     for path in mounts:
         assert any((clone / path).iterdir()), f"{path} was not checked out"
     for validator, ok in (("validate-manifest.py", "manifest ok"),
