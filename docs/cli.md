@@ -112,7 +112,8 @@ usage: setup-project.py [<Project>] [options] [-- <extra scaffold flags>]
 Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
-Anything after `--` is passed straight through to scaffold-project.py.
+Anything after `--` is passed straight through to scaffold-project.py. A
+`--dry-run` there ends this run at the plan, creating nothing.
 ```
 
 ### `openRepoShape`
@@ -151,10 +152,22 @@ opensoft/openRepoTools', and its own installer places them:
   curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRepoTools | bash -s -- --install
 
   $OPENREPOSHAPE_REPO       owner/name to fetch from (default opensoft/openRepoShape)
-  $OPENREPOSHAPE_REF        the ref to fetch it at   (default main)
+  $OPENREPOSHAPE_REF        the ref to fetch it at   (default: the ref --install
+                            recorded, else main)
   $OPENREPOSHAPE_ORG        the organisation, when --org is not given
   $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
+  $OPENREPOSHAPE_RECORD_REF 1: --install records $OPENREPOSHAPE_REF (below)
+
+`--install` RECORDS A REF ONLY WHEN ASKED: with $OPENREPOSHAPE_RECORD_REF=1
+it writes $OPENREPOSHAPE_REF to `openRepoShape.ref` beside the command it
+places, which is what the one-line installer (install.sh) does with the
+release tag it installs. The installed command then stays on that ref: it
+fetches setup.sh at it, setup.sh clones the standard at it (`--shape-ref`),
+and `--doctor` checks its clone out at it. $OPENREPOSHAPE_REF set for one run
+still wins, and `--version` prints the ref in force. A command re-installing
+itself keeps its own record; any other install records nothing, removes a
+record already there, and follows main.
 
 `--doctor [<path>] [--json] [--placement-plan <file>]` runs `shape-doctor.py`
 over <path> (default `.`) and prints one row per check and ONE verdict:
@@ -234,7 +247,8 @@ usage: setup-project.py [<Project>] [options] [-- <extra scaffold flags>]
 Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
-Anything after `--` is passed straight through to scaffold-project.py.
+Anything after `--` is passed straight through to scaffold-project.py. A
+`--dry-run` there ends this run at the plan, creating nothing.
 ```
 
 ### `scaffold-project.py`
@@ -254,6 +268,7 @@ usage: scaffold-project.py [-h] --org ORG --project PROJECT [--id ID]
                            [--pin openProduct@COMMIT]
                            [--referent-chain openLayer,openProduct]
                            [--pin-source PIN_SOURCE] [--work-dir WORK_DIR]
+                           [--no-next-steps]
 
 Create a project's three repositories in the shape this standard describes.
 
@@ -346,9 +361,18 @@ options:
   --pin-source PIN_SOURCE
                         a local clone to compute --pin digests from, instead
                         of reading the forge with `gh api` (the TEST path; no
-                        network)
+                        network). The pin file says only that the digest was
+                        read from `local-clone`, never the path. Given with no
+                        --pin and no --referent-chain to read it, it is
+                        refused as `pin-source-unused`; an empty value is
+                        refused as `pin-source-no-path`, and `.` means this
+                        directory.
   --work-dir WORK_DIR   where the working trees are built (default: a
                         temporary directory)
+  --no-next-steps       leave out the closing NEXT STEPS (the clone, the cd
+                        and `make bootstrap`): setup-project.py passes it,
+                        because it runs those steps itself next. `Working
+                        trees are at` still prints.
 ```
 
 ### `adopt-project.py`
@@ -473,7 +497,13 @@ options:
   --pin-source PIN_SOURCE
                         a local clone to compute --pin digests from, instead
                         of reading the forge with `gh api` (the TEST path; no
-                        network)
+                        network). The plan records the path, so that `check`
+                        recomputes each digest there; a path that is not one
+                        printable line is refused as `adopt-unwritable-value`.
+                        The pin file says only `local-clone`, never the path.
+                        Given with no --pin to read it, the flag is refused as
+                        `pin-source-unused`; an empty value is refused as
+                        `pin-source-no-path`, and `.` means this directory.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's
@@ -901,11 +931,19 @@ options:
                         or of a leg's naming.referent_chain: under --project),
                         and then that reading wins even over a directory
                         spelled like the whole value (./PATH reads that
-                        directory); any other value is a bare PATH, which
-                        applies to whichever link has no more specific answer.
-                        Repeatable; a value no link used is noted.
+                        directory); any other value is a bare PATH: the tree
+                        of the chain's FIRST link (the pin the project holds),
+                        read when that link has no more specific answer, and
+                        never a later link's, which needs its own
+                        PRODUCT=PATH, its SHAPE_PIN_SOURCE_<PRODUCT> or a
+                        checkout beside the project. When the chains read here
+                        begin at two different links, a bare PATH is read for
+                        neither. A value that names no path (PRODUCT=, or
+                        empty) is refused. Repeatable; a value no link used is
+                        noted. Every link is tried against PRODUCT=PATH,
                         SHAPE_PIN_SOURCE_<PRODUCT> and a checkout beside the
-                        project are tried too. A link no source answers for is
+                        project, in that order, and a bare PATH last, for the
+                        first link alone. A link no source answers for is
                         declared-unverified, and a source that cannot be read
                         is named with the system's reason: both are warnings
                         and not findings, an explicit source included.
