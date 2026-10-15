@@ -306,8 +306,9 @@ def test_a_leg_somebody_else_made_is_refused(tmp_path):
 #: A `gh` that knows the repositories `FAKE_GH_REPOS` names
 #: (`org/name=VISIBILITY,...`), each at that visibility and EMPTY unless
 #: `FAKE_GH_FULL` names it too (`org/name,...`), when its commit listing has
-#: one commit; it answers `repo create` and `repo edit` with success, and
-#: logs every call.
+#: one commit; it answers `repo create` and `repo edit` with success, answers
+#: `api orgs/<org>` with `FAKE_GH_PLAN` when that is set (the Free-plan hint
+#: asks it for `.plan.name`), and logs every call.
 FAKE_GH = textwrap.dedent("""\
     #!/usr/bin/env python3
     import json
@@ -318,7 +319,7 @@ FAKE_GH = textwrap.dedent("""\
     with open(os.environ["FAKE_GH_LOG"], "a", encoding="utf-8") as f:
         f.write(" ".join(argv) + "\\n")
     KNOWN = dict(pair.split("=") for pair in
-                 os.environ["FAKE_GH_REPOS"].split(","))
+                 os.environ["FAKE_GH_REPOS"].split(",") if pair)
     FULL = os.environ.get("FAKE_GH_FULL", "").split(",")
 
     if argv[:2] == ["repo", "view"]:
@@ -333,6 +334,9 @@ FAKE_GH = textwrap.dedent("""\
         if "visibility" in fields:
             out["visibility"] = KNOWN[repo]
         print(json.dumps(out))
+    elif (argv[:1] == ["api"] and argv[1].startswith("orgs/")
+          and "FAKE_GH_PLAN" in os.environ):
+        print(os.environ["FAKE_GH_PLAN"])
     elif argv[:1] == ["api"] and argv[1].split("/commits")[0][6:] in KNOWN:
         print('[{"sha": "0"}]' if argv[1].split("/commits")[0][6:] in FULL
               else "[]")
@@ -344,10 +348,12 @@ FAKE_GH = textwrap.dedent("""\
     """)
 
 
-def fake_gh(tmp_path, repos: dict, full=()) -> tuple[dict, Path]:
+def fake_gh(tmp_path, repos: dict, full=(),
+            plan: str | None = None) -> tuple[dict, Path]:
     """`FAKE_GH` first on PATH, knowing `repos` (`{name: VISIBILITY}`, each
-    under `ORG`) and holding commits in each of `full`: the environment for
-    the run, and the log of every call. Nothing it answers reaches GitHub."""
+    under `ORG`) and holding commits in each of `full`, and naming `plan` as
+    the organisation's GitHub plan when one is given: the environment for the
+    run, and the log of every call. Nothing it answers reaches GitHub."""
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir()
     gh = fakebin / "gh"
@@ -355,11 +361,14 @@ def fake_gh(tmp_path, repos: dict, full=()) -> tuple[dict, Path]:
     gh.chmod(gh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     log = tmp_path / "gh.log"
     log.write_text("", encoding="utf-8")
-    return {"PATH": f"{fakebin}{os.pathsep}{os.environ.get('PATH', '')}",
-            "FAKE_GH_LOG": str(log),
-            "FAKE_GH_REPOS": ",".join(f"{ORG}/{name}={visibility}"
-                                      for name, visibility in repos.items()),
-            "FAKE_GH_FULL": ",".join(f"{ORG}/{name}" for name in full)}, log
+    env = {"PATH": f"{fakebin}{os.pathsep}{os.environ.get('PATH', '')}",
+           "FAKE_GH_LOG": str(log),
+           "FAKE_GH_REPOS": ",".join(f"{ORG}/{name}={visibility}"
+                                     for name, visibility in repos.items()),
+           "FAKE_GH_FULL": ",".join(f"{ORG}/{name}" for name in full)}
+    if plan is not None:
+        env["FAKE_GH_PLAN"] = plan
+    return env, log
 
 
 def on_github(tmp_path, *extra: str, env: dict, cwd: Path | None = None):
@@ -456,6 +465,73 @@ def test_the_visibility_text_follows_each_leg_as_it_stands(
     assert len(notes) == len([line for line in said if "a way to read" in line
                               ]), notes
     assert "two new legs" not in printed
+
+
+#: The Free-plan hint's subject is the root, where the `validate` workflow
+#: runs. On the Free plan an organisation secret reaches only a public
+#: repository, so the hint is true when the root is private or internal and
+#: false when it is public, whatever a leg is. `None` is no hint; otherwise
+#: the legs it names, as `FREE_PLAN_HINT` puts them before " private, so".
+BOTH_LEGS = f"{SPEC_REPO} and {CODE_REPO} are"
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("repos,flags,plan,named", [
+    # A public run that creates the root and reuses a private code leg: the
+    # root is public, so its workflow is given the organisation's secrets.
+    ({f"{PROJECT}-code": "PRIVATE"}, ("--visibility", "public"), "free", None),
+    # The same with the root reused, public on GitHub.
+    ({PROJECT: "PUBLIC", f"{PROJECT}-code": "PRIVATE"},
+     ("--visibility", "public"), "free", None),
+    # A public root reused with no flag: the run, and the leg it creates,
+    # inherit public, and both reused legs are private.
+    ({PROJECT: "PUBLIC", f"{PROJECT}-spec": "PRIVATE",
+      f"{PROJECT}-code": "PRIVATE"}, (), "free", None),
+    # The run's flag is not the root: `--visibility private` over a root that
+    # is public on GitHub, and the root is what has the workflow.
+    ({PROJECT: "PUBLIC", f"{PROJECT}-spec": "PRIVATE",
+      f"{PROJECT}-code": "PRIVATE"}, ("--visibility", "private"), "free",
+     None),
+    # And the other way: a public run over a root that is private on GitHub.
+    ({PROJECT: "PRIVATE", f"{PROJECT}-code": "PRIVATE"},
+     ("--visibility", "public"), "free", f"{CODE_REPO} is"),
+    # An internal root is closed too, and its run creates the spec leg
+    # internal.
+    ({PROJECT: "INTERNAL", f"{PROJECT}-code": "PRIVATE"}, (), "free",
+     BOTH_LEGS),
+    # Controls: a private root with both legs private, reused and created
+    # new, says it as it always did; and a paid plan says nothing.
+    ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PRIVATE",
+      f"{PROJECT}-code": "PRIVATE"}, (), "free", BOTH_LEGS),
+    ({}, (), "free", BOTH_LEGS),
+    ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PRIVATE",
+      f"{PROJECT}-code": "PRIVATE"}, (), "team", None),
+], ids=["public-run-new-root", "public-root-reused",
+        "public-root-inherited", "private-flag-over-public-root",
+        "public-flag-over-private-root", "internal-root",
+        "private-root-reused-legs", "private-run-new-repositories",
+        "paid-plan"])
+def test_the_free_plan_hint_goes_by_the_root_as_it_stands(
+        tmp_path, repos, flags, plan, named):
+    """#542. `_private_leg_note` printed the Free-plan hint whenever a leg was
+    private or internal, so a public root that reused a private leg was told
+    its organisation secrets "resolve to EMPTY inside the workflow", which on
+    the Free plan holds only of a private one. The per-leg NOTE is printed
+    in every case a leg is closed, since a public root still needs a
+    credential to read a private leg; the hint only when the root, as it
+    stands, is private or internal: GitHub's for a reused root, else the
+    run's."""
+    env, _log = fake_gh(tmp_path, repos, plan=plan)
+    result = on_github(tmp_path, "--reuse-empty-repo", *flags, env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+    printed = result.stdout + result.stderr
+    assert "a way to read" in printed, printed
+    if named is None:
+        assert "resolve to EMPTY" not in printed, printed
+    else:
+        assert f"NOTE {ORG} is on the GitHub FREE plan" in printed, printed
+        assert f"{named} private, so org-level" in printed, printed
+        assert printed.count("resolve to EMPTY") == 1, printed
 
 
 # --- a leg that gh sees and git cannot read (#542) --------------------------

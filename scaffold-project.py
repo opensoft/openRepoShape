@@ -1104,23 +1104,29 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
     name is not one of the things it needs. A reused one (`reused`, from
     `_reusable_remotes`) is not created, and keeps the visibility it has.
 
-    Returns each LEG's visibility as it now stands, for `_private_leg_note`
-    (#542): the run's for a leg created here, and for a reused one what
-    `_reused_leg_visibility` read of it.
+    Returns each repository's visibility as it now stands, by role, for
+    `_private_leg_note` (#542): the run's for one created here, and for a
+    reused one what GitHub says of it. A reused leg's is what
+    `_reused_leg_visibility` read, with its WARNING. The reused ROOT's is read
+    here without one, because `_leg_visibility` has already said where the
+    run's flag disagrees with it.
     """
     display = values["PROJECT_NAME"]
     project_id = values["PROJECT_ID"]
-    legs: dict[str, str] = {}
+    standing: dict[str, str] = {}
     print("\ncreating remotes")
     for role in ("spec", "code", "assembly"):
-        if role != "assembly":
-            legs[role] = args.visibility
+        standing[role] = args.visibility
         if role in reused:
             print(f"  reused {repositories[role]} (already there, "
                   + ("zero commits)" if reused[role] is None else
                      f"holding this scaffold's seed {reused[role][:12]})"))
-            if role != "assembly" and not local:
-                legs[role] = _reused_leg_visibility(args, repositories[role])
+            if not local and role == "assembly":
+                standing[role] = (remote_visibility(repositories[role])
+                                  or args.visibility)
+            elif not local:
+                standing[role] = _reused_leg_visibility(args,
+                                                        repositories[role])
             continue
         if local:
             run(["git", "init", "-q", "--bare", "-b", args.tracking_branch,
@@ -1135,7 +1141,7 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
             run(["gh", "repo", "create", repositories[role],
                  f"--{args.visibility}", "--description", description])
             print(f"  gh    {repositories[role]} ({args.visibility})")
-    return legs
+    return standing
 
 
 def _reused_leg_visibility(args, repository: str) -> str:
@@ -1159,38 +1165,48 @@ def _reused_leg_visibility(args, repository: str) -> str:
 
 
 def _private_leg_note(args, repositories: dict, local: bool,
-                      legs: dict) -> None:
+                      standing: dict) -> None:
     """(k′) A private or internal leg is unreadable to the `validate`
     workflow's default GITHUB_TOKEN — the defect on the first real adoption
     (MedxSoft/MedxEHR #7). Printed once, after both legs exist, rather than
     per-leg. Split out of `_scaffold` for #138.
 
-    EACH LEG AS IT STANDS (#542). `legs` is each leg's visibility from
-    `_create_remotes`: the run's for a leg it created, GitHub's for one it
+    EACH LEG AS IT STANDS (#542). `standing` is each repository's visibility
+    from `_create_remotes`: the run's for one it created, GitHub's for one it
     reused. The note went by the run's visibility alone, so a re-run that
     reused a public leg under a private run called that leg private beside
     the WARNING that it is reused and is public, and a public run that
     reused private legs said nothing about them. It names each leg that is
     private or internal, at its own visibility, and is not printed when
     both are public. Two legs at one visibility read as they always did.
+
+    THE FREE-PLAN HINT GOES BY THE ROOT (#542). The `validate` workflow runs
+    in the assembly root, and it is there that an organisation secret is not
+    delivered to a private repository on the Free plan. So the hint is
+    printed only when the root, as it stands, is private or internal: a
+    public root, new or reused, receives the organisation's secrets, and a
+    hint that they "resolve to EMPTY" is false of it however private a leg
+    is. The per-leg NOTE above stays, since a public root still needs a
+    credential to read a private leg.
     """
     closed = [role for role in ("spec", "code")
-              if legs[role] in ("private", "internal")]
+              if standing[role] in ("private", "internal")]
     if not local and closed:
         both = len(closed) == 2
         who = " and ".join(repositories[role] for role in closed)
         are = "are" if both else "is"
-        stated = (f"{repositories['spec']} is {legs['spec']} and "
-                  f"{repositories['code']} is {legs['code']}"
-                  if both and legs["spec"] != legs["code"]
-                  else f"{who} {are} {legs[closed[0]]}")
+        stated = (f"{repositories['spec']} is {standing['spec']} and "
+                  f"{repositories['code']} is {standing['code']}"
+                  if both and standing["spec"] != standing["code"]
+                  else f"{who} {are} {standing[closed[0]]}")
         them, which = ("them", "the legs") if both else ("it", "that leg")
         print(f"NOTE {stated}: give {repositories['assembly']} a way to "
               f"read {them} — a GitHub App (SHAPE_LEGS_APP_ID + "
               "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
               f"PAT (contents:read on {which}, fallback) — or the `validate` "
               f"check cannot check {them} out.")
-        hint = free_plan_secret_hint(
+        root_is_closed = standing["assembly"] in ("private", "internal")
+        hint = root_is_closed and free_plan_secret_hint(
             args.org, repositories["assembly"], f"{who} {are}")
         if hint:
             print(hint)
@@ -1600,8 +1616,8 @@ def _scaffold(args) -> int:
                                args.reuse_empty_repo, values,
                                args.tracking_branch)
 
-    legs = _create_remotes(args, values, repositories, urls, local, reused)
-    _private_leg_note(args, repositories, local, legs)
+    standing = _create_remotes(args, values, repositories, urls, local, reused)
+    _private_leg_note(args, repositories, local, standing)
 
     leg_values = _seed_legs(args, values, names, repositories, urls, work_root,
                             reused)
