@@ -1709,9 +1709,11 @@ def spec_leg_from_code_leg(spec_path: str, code_path: str) -> str:
     follow-up and by `execute` before it mounts a leg: `/` between
     segments, and no segment empty, `.` or `..`. So the segments are
     compared as text, and nothing is resolved against a disk. Two segments
-    that differ only in case are two segments here, which climbs one level
-    more than a disk that folds case needs and still leads to the same
-    directory.
+    that differ only in case are two segments here, and the comparison stops
+    at the first of them: the path climbs one level more than a disk that
+    folds case needs for every segment from there to the end of what such a
+    disk would call shared (`A/B/spec` beside `a/b/code` climbs two more,
+    and so does `A/b/spec`), and still leads to the same directory.
     """
     spec, code = spec_path.split("/"), code_path.split("/")
     shared = 0
