@@ -52,16 +52,23 @@ say() { printf '%s\n' "$*"; }
 set_mode() {
 	[ "$MODE" = "run" ] || [ "$MODE" = "$1" ] ||
 		die "--$MODE and --$1 are two different runs; pass one.
-    --install places this command, --doctor reads a repository and writes nothing."
+    --install places this command; --doctor reads a repository and writes
+    nothing into it but a --placement-plan <file> you name."
 	MODE="$1"
 }
 die() { printf '\nREFUSED: %s\n' "$1" >&2; exit "${2:-2}"; }
 
+# THE DOCTOR'S DESCRIPTION SITS ON A LINE OF ITS OWN, IN THE SAME COLUMN
+# (#546). Its full form outgrew that column when #500 added the two flags,
+# and the description went with it; argparse puts help under an option too
+# long for the column in just this way. The form itself stays one line, the
+# one the refusal under `--doctor` prints.
 usage() {
 	cat <<'USAGE'
 openRepoShape --install            install (or update) this command into ~/.local/bin
 openRepoShape --preflight          check this MACHINE and stop; creates nothing
 openRepoShape --doctor [<path>] [--json] [--placement-plan <file>]
+                                   diagnose a REPOSITORY against this standard
 openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]
 openRepoShape --help | --version
 
@@ -107,7 +114,7 @@ ran this from, even inside the repository), and moves nothing.
 
 Run beside a checkout of the standard, it uses that one. Run from anywhere
 else, it clones the standard into a temporary directory first and KEEPS it,
-because its NEXT lines name files in it. The report's last line names
+for the NEXT lines that name files in it. The report's last line names
 that directory, which is safe to delete once you are done with those
 commands; under `--json` that line goes to stderr, so stdout stays one JSON
 object.
@@ -482,12 +489,19 @@ run_doctor() {
 	# 9808aec, SHOULD-1). Whether the clone is kept does not change, only
 	# what the line claims about it.
 	#
+	# AND "THAT NAMES IT", NEVER "RUNS FROM IT" (#546). Not every NEXT needs
+	# the clone: a `pins` row's, where the project carries its own validator,
+	# runs that copy and names no file in here. And "runs from it" read as
+	# "cd into it", where the `placement` row's relative `--placement-plan
+	# placement-plan.yaml` would write the plan inside the directory this
+	# same line calls safe to delete.
+	#
 	# IT NAMES THE DIRECTORY AND HANDS OUT NO `rm`. Every other line here
 	# that reads like a command is one to run; an agent told to run what the
 	# report names would delete the clone before the commands it holds ran.
 	if [ "$cloned" -eq 1 ]; then
 		trap - EXIT
-		kept="the standard this run used is kept at $WORKDIR, and any NEXT command above runs from it; it is safe to delete once you are done with them."
+		kept="the standard this run used is kept at $WORKDIR, for any NEXT command above that names it; it is safe to delete once you are done with them."
 		if [ "$DOCTOR_JSON" -eq 1 ]; then
 			say "$kept" >&2
 		else
@@ -513,9 +527,14 @@ while [ $# -gt 0 ]; do
 	# would otherwise be taken for the <Project> a scaffold run names. A
 	# word beginning with a dash is NOT the path -- it is a flag, and the
 	# two below are the only ones this mode takes.
+	#
+	# ONE PATH, HOWEVER MANY `--doctor`s (#546). A path after a second
+	# `--doctor` used to replace the first one silently; now it is left for
+	# the positional case below, which takes it for a second path, and the
+	# doctor refuses that as it refuses `--doctor . Atlas`.
 	--doctor)
 		set_mode doctor; shift
-		if [ $# -gt 0 ]; then
+		if [ $# -gt 0 ] && [ "$DOCTOR_PATH_GIVEN" -eq 0 ]; then
 			case "$1" in
 			-*) ;;
 			*) DOCTOR_PATH="$1"; DOCTOR_PATH_GIVEN=1; shift ;;
@@ -537,12 +556,19 @@ while [ $# -gt 0 ]; do
 	# The separate word is refused when it begins with `-`, as argparse
 	# refuses it, so `--placement-plan --json` is not a plan written to a
 	# file called `--json`; the `=` form is the way to name such a file.
+	#
+	# ONE PLAN PER RUN, AND A SECOND IS A REFUSAL, NEVER LAST-WINS (#546).
+	# Both used to reach `shape-doctor.py`, whose argparse kept the last, so
+	# `--placement-plan a.yaml --placement-plan b.yaml` wrote b.yaml alone
+	# and said nothing about a.yaml. The doctor writes one plan; a person who
+	# named two meant one of them, as with two modes or two paths above.
 	--json | --placement-plan | --placement-plan=*)
 		if [ "$MODE" != "doctor" ]; then
 			PASSTHROUGH+=("$1"); shift
 		elif [ "$1" = "--json" ]; then
 			DOCTOR_ARGS+=(--json); DOCTOR_JSON=1; shift
 		else
+			PLAN_BEFORE="$PLAN_FILE"
 			case "$1" in
 			--placement-plan=*) PLAN_FILE="${1#--placement-plan=}"; shift ;;
 			*)
@@ -555,6 +581,8 @@ while [ $# -gt 0 ]; do
 			esac
 			[ -n "$PLAN_FILE" ] ||
 				die "--placement-plan needs the file to write the plan to: --placement-plan <file>, or --placement-plan=<file> for a name that begins with '-'."
+			[ -z "$PLAN_BEFORE" ] ||
+				die "two placement plans, '$PLAN_BEFORE' and '$PLAN_FILE'. --doctor writes one: pass --placement-plan once."
 			DOCTOR_ARGS+=("--placement-plan=$PLAN_FILE")
 		fi
 		;;
@@ -602,7 +630,7 @@ if [ "$MODE" = "doctor" ]; then
 	# here too until #500, while the mode was one path wide; they are
 	# `shape-doctor.py`'s own, and are handed on above.
 	[ -z "$PROJECT" ] && [ -z "$ORG" ] && [ ${#PASSTHROUGH[@]} -eq 0 ] ||
-		die "--doctor takes a path, --json and --placement-plan <file>, and nothing else; it reads a repository and writes nothing into it.
+		die "--doctor takes a path, --json and --placement-plan <file>, and nothing else; it reads a repository and writes nothing into it but that <file>.
     openRepoShape --doctor [<path>] [--json] [--placement-plan <file>]
     To scaffold, drop --doctor. To check this machine, run: openRepoShape --preflight"
 	set +e
