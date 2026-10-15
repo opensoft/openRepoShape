@@ -360,11 +360,13 @@ try:
     #: string half of the one question that rule cannot finish on its own --
     #: which spelling names a path on a disk -- and `same_repository_here`
     #: below is this file's half, because the symlink is on THIS machine
-    #: (#157).
+    #: (#157). `url_repository` is the one reading of an `origin` that
+    #: `adopt-project.py plan` takes `--org` from, imported here for the same
+    #: reason, in place of a copy of `plan`'s regex (`origin_org`, #521).
     from repo_shape import (  # noqa: E402
         COMMIT_RE, NamingPolicy, PYTHON, Refusal, accepts_role, git_out,
         load_yaml, recorded_gitlink, redacted, remote_local_path,
-        resolved_remote, same_repository,
+        resolved_remote, same_repository, url_repository,
     )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
@@ -701,6 +703,19 @@ def quote_arg(value, platform: str | None = None, *,
     itself is still this function's alone -- one place that knows the
     apostrophe is doubled, rather than a second copy of the rule beside the
     one that needs it.
+
+    A WORD THAT BEGINS WITH `=` IS QUOTED IN `sh`'S DIALECT (#532). zsh, the
+    login shell macOS ships, expands a bare `=word` to the path of the
+    command `word` (its EQUALS option, on by default): `zsh -f -c 'echo =ls'`
+    prints `/usr/bin/ls`, and `=x` stops the line with `x not found`. bash
+    and dash read it as itself, and `=` anywhere but the front is itself to
+    every shell, so only a leading one is quoted. It stood in
+    `UNQUOTED_POSIX` as an ordinary character, and reached a line only as a
+    value that starts with one (a branch named `=x`), which is the gap #460
+    named. `repo_shape.shell_quoted` quotes it already (#486, #507), and
+    `tests/test_family_printed_quoting.py` holds the two quoters to one
+    answer. PowerShell's dialect is NOT changed: it expands no `=word`, so
+    `UNQUOTED_NT` keeps its bare `=`, as in any other place in a word.
     """
     # ASCII first, so the alphabet check and the quoting below it both see
     # what `Row.__init__` will (Copilot, PR #102); see the docstring above.
@@ -708,9 +723,9 @@ def quote_arg(value, platform: str | None = None, *,
     windows = (os.name if platform is None else platform) == "nt"
     # `.fullmatch`, not `.match`: a pattern ending in `$` still matches just
     # before a trailing newline, so `.match` alone would call "Atlas\n" bare
-    # (Copilot, PR #102).
+    # (Copilot, PR #102). And a leading `=` is never bare for `sh` (#532).
     if not always and (UNQUOTED_NT if windows else UNQUOTED_POSIX).fullmatch(
-            text):
+            text) and (windows or not text.startswith("=")):
         return text
     if windows:
         # PowerShell's verbatim string: nothing inside is expanded, and the
@@ -6959,10 +6974,24 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     rows = detail["members"]
     on_a_branch = detail["on_a_branch"]
     siblings_absent = detail["without_working_clone"]
+    # WHAT `make siblings` DOES WITH A STRANGER IS CONDITIONAL, AND THE WORDS
+    # SAY ON WHAT (#605). Since #578 it asks about the holder's parent folder
+    # before it looks at any member, so it calls this directory WRONG ORIGIN
+    # only from a holder in a folder named after its repository (or in one a
+    # link of that name beside it leads to; the words keep to the shorter,
+    # plainer case); from anywhere else it clones nothing and never reaches
+    # the directory. THE REPOSITORY'S NAME, NOT THE FAMILY'S `name:`: the
+    # rule takes the basename of the holder's `repository:`, and `name:` is a
+    # display name that may differ (`family_folder_name`, measured on a
+    # holder made with `--family Quill --name QuillWorks`). The rule lives in
+    # the holder's pinned `scripts/siblings.py` and is not copied here, where
+    # a copy would drift: the words name the condition, and `make siblings`
+    # itself prints the exact `mv` when it does not hold.
     strangers = [f"{entry['project']}: {ctx.root.parent / entry['project']} "
                  f"is a clone of {entry['other_origin']}, not of "
                  f"{entry['mounted_from']}, so it is not counted as its "
-                 "working clone (`make siblings` calls the same directory "
+                 "working clone (`make siblings`, from a holder in a folder "
+                 "named after its repository, calls the same directory "
                  "WRONG ORIGIN and leaves it exactly as it is)"
                  for entry in rows if entry["other_origin"]]
     if problems:
@@ -7133,11 +7162,27 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     if strangers:
         note += "; " + "; ".join(strangers)
     if siblings_absent:
+        # THE NOTE SAYS WHEN `make siblings` PLACES THEM, NOT THAT IT DOES
+        # (#605). Since #578 it asks about the holder's parent folder before
+        # it clones anything: from one named after the holder's REPOSITORY
+        # (its `repository:`'s basename, not the family's display `name:`,
+        # which `family.py init --name` may make another string), or reached
+        # through a link of that name BESIDE it (`family_link` looks only at
+        # `<grandparent>/<name>`), it places the working clones; from
+        # anywhere else it clones nothing, prints the exact `mv` and exits 1.
+        # The rule is the holder's own, in its pinned `scripts/siblings.py`,
+        # and is not tested here -- a second copy would drift -- so the words
+        # are the same whichever folder this holder is in.
         return Row("members", "members", OK,
                    f"{note}; no working clone beside the holder for "
                    + ", ".join(siblings_absent)
-                   + " (`make siblings` places them; the pinned copy under "
-                     f"{members_dir}/ is detached by design)", None, detail)
+                   + " (`make siblings` places them when the holder is in a "
+                     "folder named after its repository, or in one a link "
+                     "of that name beside it leads to; with the holder "
+                     "anywhere else it clones nothing and prints the `mv` "
+                     "that moves it into such a folder; the pinned copy "
+                     f"under {members_dir}/ is detached by design)", None,
+                   detail)
     return Row("members", "members", OK,
                f"{note}, each with a working clone beside the holder", None,
                detail)
@@ -7323,15 +7368,6 @@ def repo_local_origin_name(root: Path) -> str | None:
     return origin_name(root) if (root / ".git").exists() else None
 
 
-#: The `org/repo` pair `adopt-project.py`'s `_remote_repository` reads off the
-#: end of an `origin` URL, byte for byte: the text after the last two
-#: separators, less a `.git`. It is COPIED, not imported -- `adopt-project.py`
-#: is a script with a hyphen in its name, not a module this file may load --
-#: and `tests/test_shape_doctor.py` runs both over the same URLs, so a change
-#: to one that the other does not follow is a red test.
-_ORIGIN_REPOSITORY_RE = re.compile(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$")
-
-
 def origin_org(root: Path) -> str | None:
     """The organisation `adopt-project.py plan` would read off `root`'s own
     `origin`, or None where it reads none (#545).
@@ -7343,10 +7379,18 @@ def origin_org(root: Path) -> str | None:
     not UTF-8 (git keeps a URL as the bytes it was given, and `plan` reads
     it strictly, so it is no origin there, as `origin_name` and
     `shape_advisory.repository_names` already say of it, #385); or its URL
-    ends in no `org/repo` -- a bare `repo.git`, a Windows path with no `/` in
-    it, a trailing slash. The first is the case #545 was filed for. The
-    other two are the same refusal on the same line, so the line is built
-    from the same reading rather than from "has an origin".
+    ends in no `org/repo` -- a bare `repo.git` -- or is a path in any
+    spelling, which names no repository (#521). The first is the case #545
+    was filed for. The other two are the same refusal on the same line, so
+    the line is built from the same reading rather than from "has an
+    origin".
+
+    THE SAME READING, NOT A COPY OF IT (#521). The pair is
+    `repo_shape.url_repository`, which `adopt-project.py` reads the source's
+    `origin` with too. This file kept a copy of `plan`'s regex, held to it
+    by a test, and when `plan` came to read a url ending `/` and to read no
+    path, the copy would have sent a person whose `origin` is
+    `/srv/git/acme/Atlas.git` to a line `plan` refuses `adopt-no-org`.
 
     ONLY WHEN `root` CARRIES ITS OWN `.git`, for `repo_local_origin_name`'s
     reason: `git remote get-url origin` walks UP to the nearest ancestor
@@ -7358,8 +7402,8 @@ def origin_org(root: Path) -> str | None:
         url = git_out(["remote", "get-url", "origin"], cwd=root)
     except (Refusal, OSError, UnicodeDecodeError):
         return None
-    pair = _ORIGIN_REPOSITORY_RE.search(url)
-    return pair.group(1).split("/")[0] if pair else None
+    pair = url_repository(url)
+    return pair.split("/")[0] if pair else None
 
 
 def check_not_a_root_naming(ctx: Context) -> Row:
@@ -7767,7 +7811,8 @@ def check_the_way_in(ctx: Context) -> Row:
     THE ADOPTION LINE NAMES THE ORGANISATION WHEN IT CANNOT BE READ (#545).
     `adopt-project.py plan` takes `--org` from the source's `origin`, so a
     repository with no `origin` -- or one whose URL names no `org/repo`, or
-    is not UTF-8 -- pasted this line and was refused `adopt-no-org`, exit 2.
+    is not UTF-8, or is a path -- pasted this line and was refused
+    `adopt-no-org`, exit 2.
     `origin_org` asks the question `plan` asks, and where it has no answer
     the line ends `--org <your-org>`, the placeholder this report already
     prints on the scaffold line (`ORG_PLACEHOLDER`). It is a value the

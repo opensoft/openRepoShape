@@ -24,7 +24,10 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            honestly call, every path holding one of the source's own
            submodules, and every path `execute` will not extract into a leg
            as it is named, carry `leg: null`, `review_required: true` and
-           the QUESTION to ask.
+           the QUESTION to ask. A question whose rule names a default
+           carries that default as its `leg:` instead, still
+           `review_required: true`: the source's own `single-repository.yaml`
+           record, `drop` (#528).
            A leg path over a path it keeps in the root itself is a NOTE,
            not a refusal: the answer is the person's to change. A
            `--pin <product>@<40 hex>` is read as `scaffold-project.py
@@ -37,7 +40,11 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `execute` refuses a plan edited to name another
            (`plan-not-the-source`): in place, the source IS the assembly
            root, and its own name is renamed first, on GitHub, never
-           retyped (#499).
+           retyped (#499). An `origin` that is a url names the
+           `org/repo` it ends in, with or without a trailing `/`; one that
+           is a path, in any separator, names none, and `plan` says it
+           compared nothing (#521). An organisation read from the url and
+           refused is named by where it came from (#427).
   check    validates a plan against the source: each entry path bound for
            a leg one `execute` will extract, no symlink in the source with
            an empty target (Linux cannot make one, so a clone there checks
@@ -146,7 +153,9 @@ pull request no longer leaves it unset (#481), and both are said in ONE notice
 after the table, each with the commands that finish the job by hand; those
 commands are the way out: a re-run into fresh legs abandons the pushed pair
 for a second. A verification that fails outranks both, with exit 1 and no
-command to open the pull request or to set the topic.
+command to open the pull request or to set the topic; it says what the run
+already put in place, the pull request open for the failed split, which
+deleting the split branch closes, and the topic, which stays set (#523).
 """
 
 from __future__ import annotations
@@ -177,9 +186,10 @@ from repo_shape import (  # noqa: E402
     tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    ADOPT_MAKEFILE_BLOCK, PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS,
+    PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS,
     TEMPLATED, TOO_MANY_SYMLINKS, CommandFailed, Materialized,
-    assembly_root_paths, collision_follow_up, copy_tree, default_reference,
+    adopt_makefile_block, assembly_root_paths, collision_follow_up, copy_tree,
+    default_reference,
     election_date, env_commit, escape_what_stdout_cannot_encode,
     git_init_commit, materialize_assembly_root, naming_block, render, run,
     template_files, write_lf,
@@ -252,13 +262,23 @@ PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
 #: machine, and is no partial clone, `check` and `execute` recompute the
 #: digest there with `plan`'s own reader (`pin_digest_from_source`), which
 #: in such a clone reads no network, and find a commit or a digest edited
-#: after `plan` read them (#449).
+#: after `plan` read them (#449). So the plan, a file on this machine that
+#: nothing commits, records where that clone is, `local-clone (<path>)`
+#: (`_as_planned`); the pin file `execute` commits says only how the digest
+#: was read, `local-clone` or `gh-api-tree-recursive`, and never where
+#: (`_recorded_pins`, #540).
 from shape_materialize import (  # noqa: E402
-    PIN_ARG_RE, declared_pin_products, declared_pin_values, neutral_pin_path,
-    one_printable_line, pin_collisions, pin_digest_from_source,
-    pin_variable_collisions, refuse_colliding_pins,
+    DIGEST_FROM_CLONE, DIGEST_FROM_GH, PIN_ARG_RE, declared_pin_products,
+    declared_pin_values, neutral_pin_path, one_printable_line,
+    pin_collisions, pin_digest_from_source, pin_source_path,
+    pin_variable_collisions, refuse_an_unread_pin_source,
+    refuse_colliding_pins,
 )
+#: How `plan`'s refusals of a `--pin-source` begin their remediation.
+PLAN_NOT_WRITTEN = "no plan was written."
 from repo_shape import SHA256_RE, repo_basename  # noqa: E402
+# One reading of an `origin`, shared with `shape-doctor.py` (#521).
+from repo_shape import origin_is_a_path, url_repository  # noqa: E402
 
 #: The keys `plan` records for each pin, in the order it writes them, and the
 #: value of `contracts/neutral-product-pin.yaml` each one fills.
@@ -279,7 +299,7 @@ ROOT_HOLDS_PIN = "plan-root-holds-pin"
 #: otherwise, or cannot answer for at all, at the plan's commit (#449).
 PIN_DIGEST_MISMATCH = "plan-pin-digest-mismatch"
 PIN_SOURCE_UNREADABLE = "plan-pin-source-unreadable"
-#: How `declared_pin_values` records where it read a digest: from a clone on
+#: How `plan` records where it read a digest (`_as_planned`): from a clone on
 #: this machine, `--pin-source` as typed, or from the forge.
 LOCAL_CLONE_RE = re.compile(r"local-clone \((?P<path>.+)\)")
 GH_DIGEST_SOURCE = "gh-api-tree-recursive"
@@ -337,7 +357,20 @@ def _pin_row_problem(row: dict) -> tuple[str, str] | None:
     Each value is held to what `plan` writes there: the commit to
     `COMMIT_RE`, the repository and the commit together to the scaffold's own
     `PIN_ARG_RE`, owner-qualified, with the product its name, the digest to
-    `SHA256_RE`, and the digest's source to one printable line."""
+    `SHA256_RE`, and the digest's source to `_a_digest_source`.
+
+    THE DIGEST'S SOURCE IS ONE OF THREE SPELLINGS (#540). It was held to one
+    printable line, and `execute` wrote it into the root's pin file as it
+    stood, so `plan`'s `local-clone (<the --pin-source path>)` committed the
+    directory a clone sat in on the machine that planned, and a hand edit
+    could commit any line at all. The plan still records the path, because
+    `check` recomputes the digest in that clone (#449), but the field is
+    now held to a closed set, and `execute` writes the pin file's from it
+    (`_digest_source_written`): `gh-api-tree-recursive` as it is, and
+    `local-clone` for both `local-clone` and `local-clone (<path>)`. So no
+    value of the plan's reaches the committed file but those two words, and
+    any other is `plan-pin-malformed`, with the `plan` that records the pin
+    whole."""
     missing = [key for key, _ in PIN_FIELDS if row.get(key) in (None, "")]
     unrecorded = [key for key in PIN_RECORDED if key in missing]
     if unrecorded or missing:
@@ -365,10 +398,38 @@ def _pin_row_problem(row: dict) -> tuple[str, str] | None:
     if not SHA256_RE.match(digest):
         return PIN_MALFORMED, (f"records `tree_sha256: {digest!r}`, which is "
                                "not 64 hex")
-    if not one_printable_line(how):
-        return PIN_MALFORMED, (f"records `digest_source: {how!r}`, which is "
-                               "not one printable line")
+    if not _a_digest_source(how):
+        return PIN_MALFORMED, (
+            f"records `digest_source: {how!r}`, and `plan` records "
+            f"`{DIGEST_FROM_GH}`, or `{DIGEST_FROM_CLONE} (<the clone's "
+            "path>)` on one printable line, and nothing else")
     return None
+
+
+def _a_digest_source(how: str) -> bool:
+    """Whether a pin's `digest_source:` is one `check` passes (#540): one
+    of the two words the pin file says, `gh-api-tree-recursive` and
+    `local-clone`, or `local-clone (<path>)` as `LOCAL_CLONE_RE` reads it,
+    the clone `check` recomputes the digest in (#449).
+
+    THE PATH IS HELD TO ONE PRINTABLE LINE, as the whole field was before
+    #540, and as `plan` holds `--pin-source` before it records it
+    (`_refuse_an_unrecordable_pin_source`). `LOCAL_CLONE_RE` takes any
+    character but a line break, a NUL among them, and the plan's reader
+    makes one of the escape `\\x00`; `Path.stat` raises `ValueError` on
+    such a path, where `_why_not_rechecked` waits for an `OSError`."""
+    if how in (DIGEST_FROM_CLONE, DIGEST_FROM_GH):
+        return True
+    return (LOCAL_CLONE_RE.fullmatch(how) is not None
+            and one_printable_line(how))
+
+
+def _digest_source_written(how: str) -> str:
+    """What the pin file `execute` commits says for a `digest_source:`
+    `check` passed (`_a_digest_source`): how the digest was read, and never
+    where (#540). `check`'s `write` line and `plan`'s `pin` line say the
+    same, so neither prints a clone's path as what is written."""
+    return DIGEST_FROM_CLONE if LOCAL_CLONE_RE.fullmatch(how) else how
 
 
 def _pin_fix(name=None) -> str:
@@ -458,9 +519,14 @@ def _declared_pins(plan: "Plan") -> list[str]:
 
 def _recorded_pins(plan: "Plan") -> dict[str, dict[str, str]]:
     """`{product: PIN_* values}` for the materializer, as
-    `declared_pin_values` hands it the scaffold's. Read only after `execute`
-    has refused every finding `_read_pins` makes."""
-    return {product: values for _, product, values in _read_pins(plan)[0]}
+    `declared_pin_values` hands it the scaffold's: the digest's source as
+    the pin file says it, `local-clone` and no clone's path
+    (`_digest_source_written`, #540). Read only after `execute` has refused
+    every finding `_read_pins` makes. `check`'s `write` line prints these
+    values, so it says what is written."""
+    return {product: {**values, "PIN_DIGEST_SOURCE": _digest_source_written(
+                values["PIN_DIGEST_SOURCE"])}
+            for _, product, values in _read_pins(plan)[0]}
 
 
 def _pin_files(plan: "Plan") -> list[tuple[str, str | None]]:
@@ -1457,8 +1523,18 @@ class Source:
 
 
 def _remote_repository(path: Path) -> str | None:
-    """The `org/repo` the source's `origin` URL ends in; None when it has
-    no origin, or one that ends in no such pair.
+    """The `org/repo` the source's `origin` names (`url_repository`, the one
+    reading `shape-doctor.py` shares); None when it has no origin, or one
+    that names no such pair: a path names none (#521)."""
+    url = _origin_url(path)
+    return None if url is None else url_repository(url)
+
+
+def _origin_url(path: Path) -> str | None:
+    """The source's `origin` as git hands it to a fetch, `git remote get-url
+    origin`: its first url, with any `url.<base>.insteadOf` applied. None
+    when it has none. THE ONE READ of it, so that what `plan` compares and
+    what it says it did not compare are one url (#521).
 
     NOR DOES A URL THAT IS NOT UTF-8 NAME ONE (#292). git keeps the URL as
     the bytes it was given: a clone of a directory named in a code page that
@@ -1470,11 +1546,9 @@ def _remote_repository(path: Path) -> str | None:
     source by its path.
     """
     try:
-        url = git_out(["remote", "get-url", "origin"], cwd=path)
+        return git_out(["remote", "get-url", "origin"], cwd=path)
     except (Refusal, UnicodeDecodeError):
         return None
-    match = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$", url)
-    return match.group(1) if match else None
 
 
 def _default_branch(path: Path) -> str:
@@ -1496,7 +1570,15 @@ def _default_branch(path: Path) -> str:
 
 
 class Entry:
-    """One row of the plan: a path, the leg proposed for it, and why."""
+    """One row of the plan: a path, the leg proposed for it, and why.
+
+    `default` is the answer the entry's rule names for its question, or
+    None, and `review_required` is the verdict's: whether a question was
+    asked. The two part only in `with_its_default`, the one place a
+    question's `leg:` is filled in, which `cmd_plan` alone calls; `walk`
+    leaves every question's `leg` None, so the doctor, which walks a leg
+    with it, still reads one as a question (#528).
+    """
 
     def __init__(self, path: str, verdict: Verdict, files: int, size: int):
         self.path = path
@@ -1505,8 +1587,22 @@ class Entry:
         self.reason = verdict.reason
         self.confidence = verdict.confidence
         self.question = verdict.question
+        self.default = verdict.default
+        self.review_required = verdict.review_required
         self.files = files
         self.bytes = size
+
+    def with_its_default(self) -> "Entry":
+        """This question with its rule's default written in as its `leg:`,
+        still `review_required` and still carrying the question, the rule
+        and the reason, so a reader sees what was proposed and why."""
+        out = Entry(self.path, Verdict(None, self.rule, self.reason,
+                                       self.confidence), self.files,
+                    self.bytes)
+        out.question = self.question
+        out.default = self.default
+        out.leg = self.default
+        return out
 
     def write(self, lines: list[str]) -> None:
         lines.append(f"  - path: {y(self.path)}")
@@ -1516,7 +1612,7 @@ class Entry:
         emit(lines, "reason", self.reason, 4)
         emit(lines, "files", self.files, 4)
         emit(lines, "bytes", self.bytes, 4)
-        emit(lines, "review_required", self.leg is None, 4)
+        emit(lines, "review_required", self.review_required, 4)
         if self.question:
             emit(lines, "question", self.question, 4)
 
@@ -1552,6 +1648,61 @@ def walk(policy: PathPolicy, files: list[tuple[str, int]],
         else:
             entries.extend(walk(policy, children, directory))
     return sorted(entries, key=lambda e: e.path)
+
+
+#: The path policy's rule for the source's own staying-single record (#528).
+#: Its question and its default are the record's, so `plan` asks them only
+#: of a file that IS the record (`ask_about_a_record_only`).
+RECORD_RULE = "ambiguous-single-repository-record"
+
+
+def ask_about_a_record_only(policy: PathPolicy, entries: list[Entry],
+                            source: "Source") -> list[Entry]:
+    """`entries`, with a top-level `single-repository.yaml` that is no
+    record asked the question the rules below the record's ask (#528).
+
+    `kind:` DECIDES, NOT THE NAME, for the record's one reader, the Triad
+    advisory (`shape_advisory.read_record`). A file of that name declaring
+    `kind: release-config` silences nothing, and the same `plan` run said
+    so in a NOTE while the record's question told the person the file
+    records that the repository stays single, and its default would have
+    dropped it. So RECORD_RULE answers only a file that declares
+    `single-repository-record` in the commit being planned, read as the
+    advisory reads it there; any other is classified as if the policy held
+    no such rule, which for a top-level YAML file is the general question,
+    asked as before. A source with no entry RECORD_RULE answered is not
+    read at all.
+    """
+    if not any(entry.path == shape_advisory.RECORD_FILE
+               and entry.rule == RECORD_RULE for entry in entries):
+        return entries
+    state, _, _ = shape_advisory.read_record(
+        shape_advisory.Tree(source.path, source.commit))
+    if state == shape_advisory.RECORD_SILENCES:
+        return entries
+    return [Entry(entry.path,
+                  policy.classify_file(entry.path, skip=(RECORD_RULE,)),
+                  entry.files, entry.bytes)
+            if entry.path == shape_advisory.RECORD_FILE
+            and entry.rule == RECORD_RULE else entry
+            for entry in entries]
+
+
+def with_defaults(entries: list[Entry]) -> list[Entry]:
+    """`entries`, each question whose rule names a default answer written
+    with that default as its `leg:` (#528).
+
+    RULED BY BRETT HEAP ON 2026-10-12: a source's own `single-repository.yaml`
+    is asked drop or root, "the default answer is drop". So `plan` writes
+    `leg: drop`, and keeps `review_required: true`, the rule and the
+    question beside it: `check` passes it, and `execute` drops the path
+    unless a person writes `root`. A path with no default is untouched, as
+    is every question `ask_about_submodules` or `ask_about_refused_paths`
+    asked in place of a rule's, because those carry none: called after
+    them, this fills in only what a rule proposed and nothing replaced.
+    """
+    return [entry.with_its_default() if entry.leg is None and entry.default
+            else entry for entry in entries]
 
 
 def ask_about_submodules(policy: PathPolicy, entries: list[Entry],
@@ -1647,6 +1798,9 @@ def _asked_about(entry: Entry, held: list[str], asked: Verdict,
                      "own `leg:`. An entry added beside this one for a path "
                      "it covers is `plan-covered-twice`."
                      + _refused_replacements(own, held))
+    # NO DEFAULT, from either rule (#528): the question is the submodules',
+    # which no rule's default answers, and one carried here would be
+    # written in as the entry's `leg:` by `with_its_default`.
     out = Entry(entry.path, Verdict(None, asked.rule, asked.reason,
                                     asked.confidence), entry.files,
                 entry.bytes)
@@ -1750,6 +1904,8 @@ def _refused_as_named(entry: Entry, problem: str, held: bool) -> Entry:
               "stands: `root` would keep a submodule in the assembly root, "
               "which keeps none of the source's" if held else
               "`root` or `drop` is the only answer `execute` takes for it")
+    # NO DEFAULT (#528): the rule's was an answer to its own question, and
+    # this one is why the name cannot go into a leg, which a person answers.
     out = Entry(entry.path, Verdict(None, entry.rule, entry.reason,
                                     entry.confidence), entry.files,
                 entry.bytes)
@@ -1896,17 +2052,48 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
         # DOES read it under twenty of them is how a follow-up list stops
         # being read at all.
         hits.sort(key=lambda h: ("fixture" in h or h.startswith("tests/"), h))
+        across = spec_leg_from_code_leg(spec_path, code_path)
         for hit in hits[:8]:
             shown = "".join(map(_spelled_character, hit))
             out.append(
                 f"{code_path}/{shown} names `{named}`, which moves to the "
                 f"spec leg: it must read across the assembly root — "
-                f"`../{spec_path}/{named}` relative to `{code_path}/` — or "
+                f"`{across}/{named}` relative to `{code_path}/` — or "
                 "take the path from the environment")
         if len(hits) > 8:
             out.append(f"… and {len(hits) - 8} more file(s) under the code leg "
                        f"naming `{named}`")
     return out
+
+
+def spec_leg_from_code_leg(spec_path: str, code_path: str) -> str:
+    """The spec leg's mount, `spec_path`, as a path relative to the code
+    leg's, `code_path`: `../spec` for the defaults, `../spec` for
+    `legs/spec` beside `legs/code`, and `../../spec` for `spec` beside
+    `impl/code`.
+
+    ONE `..` PER SEGMENT OF THE CODE LEG'S PATH BELOW WHAT THE TWO SHARE
+    (#522, auA-13). The follow-up wrote `../<spec_path>`, which is right only
+    while the code leg sits in the root: with `--spec-path legs/spec
+    --code-path legs/code` it said `../legs/spec/contracts/` "relative to
+    `legs/code/`", a path that leads to `legs/legs/spec`.
+
+    Both are canonical mount paths, asked by `plan` before it writes a
+    follow-up and by `execute` before it mounts a leg: `/` between
+    segments, and no segment empty, `.` or `..`. So the segments are
+    compared as text, and nothing is resolved against a disk. Two segments
+    that differ only in case are two segments here, and the comparison stops
+    at the first of them: the path climbs one level more than a disk that
+    folds case needs for every segment from there to the end of what such a
+    disk would call shared (`A/B/spec` beside `a/b/code` climbs two more,
+    and so does `A/b/spec`), and still leads to the same directory.
+    """
+    spec, code = spec_path.split("/"), code_path.split("/")
+    shared = 0
+    while (shared < min(len(spec), len(code))
+           and spec[shared] == code[shared]):
+        shared += 1
+    return "/".join([".."] * (len(code) - shared) + spec[shared:])
 
 
 def _search_by_hand(named: str, why: str) -> str:
@@ -1935,15 +2122,34 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
     of `tracking_branch:`, which `plan-tracking-branch-missing`'s
     remediation asks for, in `check`'s output and in the pull request's own
     body (#493's review, F3).
+
+    It is a review, and never "open the split as a pull request" (#523).
+    `plan` prints it and the split commit lists it under the FOLLOW-UPS this
+    commit does NOT do, which is also the pull request's body, while against
+    GitHub `execute` opens that pull request itself, and under
+    `--local-remote-dir` opens none. So it says what `execute` does in either
+    run, and calls the legs what they are: new repositories `execute` creates
+    and pushes before the split, extracted or, with no path, seeded from a
+    template. "Seeded", said of both, named an extracted leg by the word kept
+    for a template's.
+
+    The Makefile follow-up names the key too, for the spec leg's mount: it
+    names `legs.spec_path` and no path. `execute` renders the Makefile's block
+    from the plan's CURRENT `legs.spec_path`, and `MOUNT_REMEDIATION` and
+    `plan-leg-path-collides` both ask for a hand edit of it, so a path named
+    here went on naming the old mount in the split commit's message, the
+    pull request's own body, while the Makefile in that commit named the new
+    one (#522's review, F1).
     """
     out = cross_leg_references(source, entries, spec_path, code_path)
     if any(e.leg == "spec" and (e.path == "contracts/"
                                 or e.path.startswith("contracts/"))
            for e in entries):
         out.append(
-            f"the root Makefile wires `CONTRACTS_DIR ?= $(CURDIR)/{spec_path}/"
-            "contracts` and exports it, so the code leg's tooling takes the "
-            "path from the environment instead of assuming it sits beside it")
+            "the root Makefile wires `CONTRACTS_DIR` to the `contracts/` of "
+            "the spec leg, where the plan's `legs.spec_path` mounts it, and "
+            "exports it, so the code leg's tooling takes the path from the "
+            "environment instead of assuming it sits beside it")
     if any(e.path in ("CODEOWNERS", ".github/CODEOWNERS") for e in entries):
         out.append(
             "CODEOWNERS in the assembly root now names paths that live in the "
@@ -1951,10 +2157,11 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
             "owner rule cannot cross a repository boundary")
     out.extend(collisions)
     out.append(
-        "open the split as a pull request against the plan's "
-        "`tracking_branch`, the branch the assembly root and both legs track; "
-        f"the legs {names['spec']} and {names['code']} are seeded before it, "
-        "so review the root's diff and the two new repositories together")
+        f"review the root's diff together with {names['spec']} and "
+        f"{names['code']}, the two new repositories `execute` creates and "
+        "pushes before the split; against GitHub it opens the split's pull "
+        "request itself, whose base is the plan's `tracking_branch`, the "
+        "branch the assembly root and both legs track")
     return out
 
 
@@ -2013,6 +2220,8 @@ def render_plan(args, source: Source, entries: list[Entry], names: dict,
         "# human or an AI answers it by setting `leg:` to spec, code, root or",
         "# drop and adding one line of `resolution:` beside it. `check` then",
         "# has to pass, and `execute` REFUSES while any leg is still null.",
+        "# An entry whose rule names a default arrives with it as its `leg:`",
+        "# and `execute` takes it as written: confirm it or change it.",
         "",
         f"generated_on: {_dt.date.today().isoformat()}",
         f"tool: {SHAPE_REPOSITORY} adopt-project.py",
@@ -3103,25 +3312,15 @@ def _checked_plan_inputs(args, source: Source,
         raise Refusal("adopt-bad-id",
                       f"--id {args.id!r} must match {PROJECT_ID_RE.pattern}",
                       "Remediation: pass an explicit lowercase --id.")
-    # NO ORG IS `adopt-no-org`, asked before `checked_value` (#292). The `-`
-    # that once stood in for a missing one reached `checked_value` first,
-    # which refused `--org is '-'`, a value nobody passed; this refusal was
-    # never reached. A source with no `origin`, one whose URL is not UTF-8,
-    # and one whose URL ends in no `org/repo` (`_remote_repository`) all name
-    # no org, and the refusal says each of the three: it is asked of a source
-    # that HAS an origin as often as of one that has none.
-    args.org = args.org or (source.repository or "/").split("/")[0]
-    if not args.org:
-        raise Refusal(
-            "adopt-no-org", "the source's `origin` names no organisation "
-            "this tool can read: it has none, its URL is not UTF-8, or its "
-            "URL ends in no `org/repo`",
-            "Remediation: pass --org <org>.")
-    args.org = checked_value("--org", args.org)
+    # The organisation, given or read from the source's `origin`, and named
+    # by which of the two it is should it be refused (#292, #427).
+    org_given = bool(args.org)
+    args.org = _planned_org(args.org, source)
     # IN PLACE, THE SOURCE'S OWN NAME (#499), as soon as both halves are
     # known and before any pin's digest is read: `execute` acts on the
     # repository `--org` and `--project` name, so they must be the source.
-    _refuse_another_repository(args, source, naming, set(products))
+    _refuse_another_repository(args, source, naming, set(products),
+                               org_given)
     args.elected_on = args.elected_on or _dt.date.today().isoformat()
     # Read before the plan is written, whether or not it is what chooses the
     # reference: a date the tools cannot parse would reach `execute` as a
@@ -3145,10 +3344,8 @@ def _checked_plan_inputs(args, source: Source,
                       "named again, retyped; when `--elected-by` is not "
                       "given, `plan` reads `git config user.name`, so pass "
                       "the flag or correct that. " + WRITTEN_AS_TEXT)
-    if args.pin and args.pin_source is not None:
-        _refuse_an_unrecordable_pin_source(args.pin_source, products)
     names = _names(args.project)
-    pins = declared_pin_values(args)
+    pins = _as_planned(declared_pin_values(args), args.pin_source)
     _check_names(naming, names, set(pins), source)
     # LAST here, over every value as the plan will record it: `execute`
     # writes them into the project's own YAML. The project's own validator
@@ -3162,6 +3359,60 @@ def _checked_plan_inputs(args, source: Source,
                                         naming)
     _refuse_misread_values(args, flags_given, pins, source, planned, naming)
     return names, pins
+
+
+def _org_read_from(source: Source) -> str:
+    """Where `plan` read the organisation it records when `--org` is not
+    given (#427): the `org/repo` it cloned as `--source`, or the source's
+    `origin` (`Source.repository`)."""
+    return "`--source`" if source.cloned else "the source's `origin`"
+
+
+def _planned_org(org: str | None, source: Source) -> str:
+    """The organisation the plan records: `--org`, or, where it is not
+    given, the one the source names (`_org_read_from`); held to
+    `checked_value` either way, which hands back the text.
+
+    NO ORG IS `adopt-no-org`, asked before `checked_value` (#292). The `-`
+    that once stood in for a missing one reached `checked_value` first,
+    which refused `--org is '-'`, a value nobody passed; this refusal was
+    never reached. A source with no `origin`, one whose URL is not UTF-8 or
+    ends in no `org/repo`, and one whose `origin` is a path, which names no
+    repository (`url_repository`, #521), all name no org, and the refusal
+    says each: it is asked of a source that HAS an origin as often as of one
+    that has none.
+
+    AN ORGANISATION `plan` READ IS NAMED BY WHERE IT CAME FROM (#427). A url
+    can end in any text -- `caf%C3%A9`, `-evil`, a space -- and
+    `checked_value` refused it as `--org is 'café'`, a flag nobody passed,
+    with a remedy about a leading `-` and a character class. It is `--org
+    (not given, so the organisation of the source's `origin`)`, as
+    `--elected-by` is named when `git config user.name` filled it in, and
+    the remedy says first to pass `--org`. The refusal and its exit code
+    stay: `plan` never puts such a value on a command line.
+    """
+    if org:
+        return checked_value("--org", org)
+    read = (source.repository or "/").split("/")[0]
+    if not read:
+        raise Refusal(
+            "adopt-no-org", "the source's `origin` names no organisation "
+            "this tool can read: it has none, its URL is not UTF-8 or ends "
+            "in no `org/repo`, or it is a path, which names no repository on "
+            "GitHub",
+            "Remediation: pass --org <org>.")
+    where = _org_read_from(source)
+    try:
+        return checked_value(
+            f"--org (not given, so the organisation of {where})", read)
+    except Refusal as exc:
+        said = (exc.remediation.partition("Remediation: ")[2]
+                or exc.remediation)
+        raise Refusal(
+            exc.code, exc.detail,
+            "Remediation: pass --org <org>; without it, `plan` reads the "
+            f"organisation from {where}. {said[:1].upper()}{said[1:]}"
+        ) from exc
 
 
 def _refuse_misread_values(args, given: set, pins: dict, source: Source,
@@ -3180,41 +3431,59 @@ def _refuse_misread_values(args, given: set, pins: dict, source: Source,
                       f"{MANIFEST_MISREAD_REMEDIATION} No plan was written.")
 
 
-def _refuse_an_unrecordable_pin_source(source: Path, products) -> None:
+def _refuse_an_unrecordable_pin_source(source: Path) -> None:
     """`--pin-source` is a path `plan` can record, or this refuses it as
-    `adopt-unwritable-value`, before any digest is read and before a plan
-    is written.
+    `adopt-unwritable-value`, before anything is made, before any digest is
+    read and before a plan is written: `cmd_plan` asks it straight after
+    `refuse_an_unread_pin_source`, for it needs the flags alone, so no work
+    directory, git process or `gh repo clone` has come first.
 
-    `plan` records the path in each pin's `digest_source:`, `execute`
-    writes that into the pin file as it stands, and `check` holds it to
-    `one_printable_line` (`_pin_row_problem`). A path holding a line break,
-    an ESC or a byte that is not UTF-8 was planned, exit 0, and printed raw
-    in `plan`'s report -- the line break split it -- and `check` then found
-    `plan-pin-malformed` and said to re-run the `plan` that wrote it. So
-    `plan` asks `check`'s question of the value it would record, and says
-    why in #270's words (`unwritable_reason`) where they name it; the one
-    thing `check` refuses that they do not is an invisible formatting
+    `plan` records the path in each pin's `digest_source:` in the plan, so
+    that `check` can recompute the digest in that clone (#449), and `check`
+    holds it to `one_printable_line` (`_a_digest_source`). A path holding a
+    line break, an ESC or a byte that is not UTF-8 was planned, exit 0, and
+    printed raw in `plan`'s report -- the line break split it -- and `check`
+    then found `plan-pin-malformed` and said to re-run the `plan` that wrote
+    it. So `plan` asks `check`'s question of the value it would record, and
+    says why in #270's words (`unwritable_reason`) where they name it; the
+    one thing `check` refuses that they do not is an invisible formatting
     character, a zero-width joiner among them. The `local-clone (` and `)`
-    that `declared_pin_values` puts around the path are printable, so the
-    path alone decides.
+    that `_as_planned` puts around the path are printable, so the path alone
+    decides.
+
+    THE PIN FILE NEVER HOLDS THE PATH (#540): `execute` writes `local-clone`
+    there, so this is about the plan alone, and the scaffold, which records
+    no path, scaffolds from such a clone (#450).
     """
     text = str(source)
     if one_printable_line(text):
         return
     reason = (unwritable_reason(text)
               or "it holds an invisible formatting character")
-    files = ", ".join(f"`{neutral_pin_path(product)}`"
-                      for product in products)
     raise Refusal(
         "adopt-unwritable-value",
         f"--pin-source is {text!r}, which `plan` records in each pin's "
-        f"`digest_source:` and `execute` writes into {files}, and {reason}.",
+        "`digest_source:` in the plan, for `check` to recompute the digest "
+        f"in that clone, and {reason}.",
         "Remediation: no plan was written. Point --pin-source at a clone "
         "whose path is one line of printable UTF-8 text, or drop "
         "--pin-source and let `gh api` read the forge. `check` refuses a "
         "`digest_source:` that is not one printable line as "
-        "`plan-pin-malformed`, because `execute` writes it into the pin file "
-        "as it stands.")
+        "`plan-pin-malformed`.")
+
+
+def _as_planned(pins: dict, pin_source: Path | None) -> dict:
+    """`declared_pin_values`'s pins as `plan` records them: a digest read
+    from a `--pin-source` clone records where, `local-clone (<the path as
+    typed>)`, so that `check` and `execute` recompute it in that clone
+    (#449). `declared_pin_values` says `local-clone` alone, as the pin file
+    does (#540): the plan is a file on this machine, which nothing commits,
+    and the pin file is the one written from it (`_recorded_pins`)."""
+    if pin_source is None:
+        return pins
+    where = f"{DIGEST_FROM_CLONE} ({pin_source})"
+    return {product: {**values, "PIN_DIGEST_SOURCE": where}
+            for product, values in pins.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -3512,13 +3781,14 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
     # Each pin as the scaffold's plan prints it: what is pinned, at which
     # commit and digest, the file `execute` writes, and how the digest was
-    # read (#273), that last `_shown`, as every path this report prints is.
+    # read (#273), as that file will say it: `local-clone`, and not the
+    # clone's path, which the plan records beside it for `check` (#540).
     for product, values in (pins or {}).items():
         print(f"pin        {values['PIN_REPOSITORY']} @ "
               f"{values['PIN_COMMIT'][:12]} tree "
               f"{values['PIN_TREE_SHA256'][:12]}… -> "
               f"{neutral_pin_path(product)} "
-              f"({_shown(values['PIN_DIGEST_SOURCE'])})")
+              f"({_digest_source_written(values['PIN_DIGEST_SOURCE'])})")
     _print_triad_advisory(source.path, source.commit)
     _print_entries(entries)
     _print_summary(entries)
@@ -3533,8 +3803,19 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
         print(line)
     for line in _tracking_branch_notes(args, source):
         print(line)
+    for line in _path_origin_notes(args, source):
+        print(line)
     unresolved = [e for e in entries if e.leg is None]
+    # A default is still a question (#528): it is printed with the question,
+    # before the paths `execute` refuses over, which stay last.
+    proposed = [e for e in entries if e.leg is not None and e.review_required]
     print(f"\nplan written to {out}")
+    if proposed:
+        print(f"{len(proposed)} path(s) carry their rule's default answer, "
+              "which `execute` takes as written unless it is changed:")
+        for entry in proposed:
+            print(f"  {_shown(entry.path)} (leg: {entry.leg})\n"
+                  f"      {entry.question}")
     if unresolved:
         print(f"{len(unresolved)} path(s) need a human or an AI to answer a "
               "question before `execute` will run:")
@@ -3543,6 +3824,22 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
 
 
 def cmd_plan(args) -> int:
+    # A `--pin-source` that names no path, `''`, which as a `Path` is the
+    # directory this runs in, one no `--pin` will read, and one `plan` cannot
+    # record, are refused FIRST, in this order (#451, #450): it names the
+    # clone a pin's digest is read from, and with no `--pin` it changed
+    # nothing and was never even asked about. They need the flags alone, so
+    # they are asked before anything exists and before any process starts.
+    # Asked in `_checked_plan_inputs`, the second came after `_work_root` had
+    # made the work directory, which stayed behind, and after `Source.open`
+    # had run git in the source or `gh repo clone` for an `org/repo` one
+    # (rv540 F2), and so did the third (rv540c's item 1).
+    args.pin_source = pin_source_path(args.pin_source,
+                                      nothing_made=PLAN_NOT_WRITTEN)
+    refuse_an_unread_pin_source(args.pin_source, args.pin,
+                                nothing_made=PLAN_NOT_WRITTEN)
+    if args.pin and args.pin_source is not None:
+        _refuse_an_unrecordable_pin_source(args.pin_source)
     work_root = _work_root(args)
     source = Source.open(args.source, work_root)
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
@@ -3569,7 +3866,18 @@ def cmd_plan(args) -> int:
     # or naming it as a spec directory, would be about nothing, and a leg it
     # alone fed is seeded -- which the plan records, as `check` will say of
     # the plan as written. A source with no such path plans as it did.
-    ruled = walk(policy, [(path, size) for path, _, _, size in tree])
+    #
+    # A `single-repository.yaml` that declares no record is asked as any
+    # other top-level data file is, before anything reads the entries
+    # (#528). The default a rule names is written into an entry last, after
+    # both re-asks: `ask_about_refused_paths` passes over a path answered
+    # `drop`, so a default written in first would be taken for a person's
+    # answer there. What the rules imply is read without it, and it changes
+    # none of what is read from them, because `drop` puts the path in no leg
+    # and keeps nothing in the root.
+    ruled = ask_about_a_record_only(
+        policy, walk(policy, [(path, size) for path, _, _, size in tree]),
+        source)
     implied = ask_about_refused_paths(ruled, tree)
     materialized = _predict_collisions(
         implied, attributes_link=any(path == ATTRIBUTES and mode == SYMLINK_MODE
@@ -3577,8 +3885,8 @@ def cmd_plan(args) -> int:
     follow_ups = follow_ups_for(source, implied, names, args.spec_path,
                                 args.code_path, materialized)
     seeded = seeded_legs(assigned_paths(implied))
-    entries = ask_about_refused_paths(
-        ask_about_submodules(policy, ruled, tree), tree)
+    entries = with_defaults(ask_about_refused_paths(
+        ask_about_submodules(policy, ruled, tree), tree))
     out = Path(args.out)
     write_lf(out, render_plan(args, source, entries, names, pins, follow_ups,
                               seeded))
@@ -5520,7 +5828,9 @@ def _entry_findings(plan: Plan, source: Source,
     disk by each command when it runs (#183): whether anything is at the
     place outside the assembly it leads to, a climb above the root from its
     own work directory; and whether `git` there checks it out as a symlink at
-    all, or as a plain file the shape's copy goes beside.
+    all, or as a plain file the shape's copy goes beside. The second is asked
+    too of a symlink ABOVE a shape path that a finding names, which then
+    says the clone holds it as a file (#531).
 
     `_leg_findings` is handed the TREE, because the paths the plan keeps in
     the root are read out of it (#172, #191): without it a mount path at, or
@@ -5999,7 +6309,9 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
           f"legs{mounted}")
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
-    # Each pin `execute` writes, as the plan records it (#273): a pin it
+    # Each pin `execute` writes, as the plan records it (#273) and as the
+    # pin file will say it: `local-clone`, and not the clone's path the
+    # plan records beside it (`_recorded_pins`, #540). A pin it
     # cannot write is a finding, printed after this. Whether its digest was
     # recomputed is said once per pin with the NOTEs `_entry_findings`
     # returns: it recomputes, or it was not rechecked here, where the clone
@@ -6055,11 +6367,15 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 # shape writes is a plain file in the clone, which `place` finds there and
 # writes the copy beside, so nothing about where that link leads is refused
 # (B-OFF of #183's re-verify); a link ABOVE one is `execute`'s
-# `adopt-symlinks-off`, since nothing can be written beneath a file. A
-# target is absolute as this machine's `open()` reads it: `C:/x`, a drive
-# letter's path, is a place on this disk only on Windows. On Linux and macOS
-# it is a relative path, into a directory named `C:`, and it is followed as
-# one, as `open()` and the materializer follow it there.
+# `adopt-symlinks-off`, since nothing can be written beneath a file. A link
+# ABOVE one that `check` reports anyway, for where it would lead on a disk
+# that holds symlinks, is named there as that file too, as
+# `adopt-symlinks-off` names it, and not by where it leads (L1-J3 of #183's
+# re-verify, #531): no target makes the file a directory. A target is
+# absolute as this machine's `open()` reads it: `C:/x`, a drive letter's
+# path, is a place on this disk only on Windows. On Linux and macOS it is a
+# relative path, into a directory named `C:`, and it is followed as one, as
+# `open()` and the materializer follow it there.
 #
 # EACH DECLARED PIN'S FILE IS ONE OF THOSE PATHS (#273). `execute` hands the
 # materializer `_recorded_pins`, and `place` writes each
@@ -6158,7 +6474,9 @@ class _PlannedRoot:
     and nothing else in `.git`. Where `git` checks a symlink out as a plain
     file, a symlink AT a path the shape writes is that file, wherever it
     leads: `probe` asks this command's work directory, and only for a link
-    a walk cannot follow (`_a_file_here`).
+    a walk cannot follow (`_a_file_here`). The walk itself still follows a
+    symlink ABOVE a path the shape writes: `_root_symlink_findings` asks the
+    same `probe` of one it reports (`_a_file_above`, #531).
     `walks` adds what the shape itself writes, path by path, as `place` does,
     so `CLAUDE.md -> AGENTS.md` finds the `AGENTS.md` the shape wrote first.
     The paths are those of the pins the plan declares too (`pins`), each
@@ -6304,9 +6622,9 @@ class _PlannedRoot:
         false, Git for Windows' default), `place` finds that file there and
         writes the shape's copy beside it, whatever the link leads to, as on
         `main` (B-OFF of #183's re-verify). A link the walk meets first
-        ABOVE its path is `execute`'s `adopt-symlinks-off`. The disk is
-        asked only for a link the walk could not follow, so a plan with none
-        makes no probe."""
+        ABOVE its path is `execute`'s `adopt-symlinks-off`, or, where `check`
+        reports it, `_a_file_above`'s. The disk is asked only for a link the
+        walk could not follow, so a plan with none makes no probe."""
         return (bool(walk.links)
                 and walk.links[0][0].casefold() == walk.path.casefold()
                 and not self.probe.symlinks())
@@ -6649,6 +6967,15 @@ def _root_symlink_findings(plan: Plan, source: Source,
     `plan-empty-symlink` names every such symlink in the source, first in
     `_entry_findings`' list, with the fix in the source, so it is not said
     again here, wherever in the walk's chain that symlink is.
+
+    Where `git` checks a symlink out as a plain file, the link a reported
+    walk meets first ABOVE its path is that file in the clone, and the
+    finding says so, as `adopt-symlinks-off` does, in place of where the
+    link leads (`_a_file_above`, L1-J3 of #183's re-verify, #531). It is
+    still the one finding for that link, in the same place in the list, and
+    a link the walk follows into something the root keeps is still no
+    finding of this check's: `execute` refuses it after this list, as
+    `adopt-symlinks-off`.
     """
     findings: list[str] = []
     if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
@@ -6663,17 +6990,46 @@ def _root_symlink_findings(plan: Plan, source: Source,
                 continue
             seen.add(walk.links[0][0])
             findings.append(_root_symlink_finding(
-                walk, why, _CASE_ASIDE if fold else ""))
+                walk, why, _CASE_ASIDE if fold else "",
+                as_a_file=_a_file_above(walk, probe)))
     return findings
 
 
-def _root_symlink_finding(walk: _Walk, why: str, aside: str) -> str:
+def _a_file_above(walk: _Walk, probe: _SymlinkProbe) -> bool:
+    """Whether the clone holds the symlink `walk` meets first, ABOVE its own
+    path, as a plain file: where `git` checks a symlink out as one
+    (`core.symlinks` false, Git for Windows' default), nothing is written
+    beneath it, wherever it leads (#531). `_PlannedRoot._a_file_here`'s
+    question, of a link above the path rather than at it, and asked of the
+    same `probe`. The disk is asked only for a link `check` reports, so a
+    plan with none still makes no probe."""
+    return (bool(walk.links)
+            and walk.links[0][0].casefold() != walk.path.casefold()
+            and not probe.symlinks())
+
+
+def _root_symlink_finding(walk: _Walk, why: str, aside: str, *,
+                          as_a_file: bool = False) -> str:
     """The line `check` prints for a symlink `walk` cannot be written
     through, and what to do. A walk that stopped at a symlink with an empty
-    target never comes here: that symlink is #303's `plan-empty-symlink`."""
+    target never comes here: that symlink is #303's `plan-empty-symlink`.
+
+    `as_a_file` (`_a_file_above`): the clone holds the link as a plain file.
+    That is the reason then, in `adopt-symlinks-off`'s words, and not `why`,
+    which is the reason on a disk that holds symlinks; and the fix is in the
+    plan, because on that disk no target the link is given makes it a
+    directory, and "change where it points" led on to `adopt-symlinks-off`
+    (#531)."""
     link, target = walk.links[0]
     fix = (f"Send {_spelled(link)} to a leg or `drop` it, or change where it "
            "points in the source and re-run `plan`.")
+    if as_a_file:
+        why = ("`git` here checks a symlink out as a plain file "
+               "(`core.symlinks` is false), so the assembly's clone would "
+               f"hold {_spelled(link)} as a file, wherever it points, and "
+               "nothing can be written beneath a file")
+        fix = (f"Send {_spelled(link)} to a leg or `drop` it in the plan, "
+               "and run `check` again.")
     return (f"FINDING {ROOT_SYMLINK}: the plan keeps {_spelled(link)} in the "
             f"root, a symlink to {_spelled(target)}, and "
             f"{_spelled(walk.path)}, a path the shape writes, runs through "
@@ -6724,6 +7080,7 @@ class _SymlinkProbe:
                 # user cannot write (J4 of #183's re-verify). Taken as a disk
                 # that holds symlinks, `check` prints the finding it printed
                 # before B-OFF for a link AT a path that a walk cannot follow,
+                # and the finding of such a disk for a link ABOVE one (#531),
                 # beside `adopt-work-dir-unwritable` (#524), and
                 # `_refuse_what_check_finds` refuses with it, where both
                 # would otherwise end in a traceback. `execute` itself
@@ -6744,8 +7101,11 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
     directory where a file is. It used to die there in a traceback after
     both legs were pushed. A symlink AT a shape path is unaffected: as a
     file it is still taken, and the shape's copy goes beside it, as `check`
-    counts it too (`_PlannedRoot._a_file_here`). The probe is made only when
-    a plan needs it, so an adoption with no such link runs exactly as before.
+    counts it too (`_PlannedRoot._a_file_here`). A link ABOVE one that
+    `check` reports is refused before this, by `_refuse_what_check_finds`,
+    whose line says the same of the file (`_a_file_above`, #531); this
+    refuses the rest, which `check` passes. The probe is made only when a
+    plan needs it, so an adoption with no such link runs exactly as before.
     """
     tree = source.tree()
     if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
@@ -6949,29 +7309,31 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
 
 
 #: The adoption's own ruleset hint (#177). `RULESET_HINT` is the scaffold's,
-#: and it stays the scaffold's word for word. ITS SECOND EXIT IS NOT OFFERED
-#: HERE, because it cannot finish an adoption (#188 N2). It pushed the leg to
-#: a seed branch and opened a pull request against the tracking branch, but
-#: the leg is a repository this run created and its first push was the one
-#: refused, so there is no tracking branch for that pull request to target;
-#: and even a merged one would resume nothing, since the rest of the adoption
-#: (the other leg, the split) is made only by a re-run, into new legs. So an
-#: adoption names its one exit, a re-run by somebody holding the bypass right,
-#: and the notice printed after this hint (`_nothing_rolled_back`) names what
-#: that re-run must clear first. The notice also says to fix what failed
-#: before the re-run, and under such a ruleset the bypass IS that fix: the
-#: hint says so last, or "fixed", read alone, would invite a change to the
-#: ruleset this hint forbids (#188's re-verification, R4).
+#: and it stays the scaffold's word for word. A SEED BRANCH AND A PULL
+#: REQUEST ARE NAMED ONLY AS WHAT CANNOT FINISH AN ADOPTION (#188 N2). That
+#: route pushed the leg to a seed branch and opened a pull request against the
+#: tracking branch, but the leg is a repository this run created and its first
+#: push was the one refused, so there is no tracking branch for that pull
+#: request to target; and even a merged one would resume nothing, since the
+#: rest of the adoption (the other leg, the split) is made only by a re-run,
+#: into new legs. Nor is it "the scaffold's other exit", as this hint called
+#: it until #523: #506 took it out of the scaffold's hint too, which names it
+#: only as what cannot finish a scaffold. So an adoption names its one exit, a
+#: re-run by somebody holding the bypass right, and the notice printed after
+#: this hint (`_nothing_rolled_back`) names what that re-run must clear
+#: first. The notice also says to fix what failed before the re-run, and
+#: under such a ruleset the bypass IS that fix: the hint says so last, or
+#: "fixed", read alone, would invite a change to the ruleset this hint
+#: forbids (#188's re-verification, R4).
 ADOPT_RULESET_HINT = """
 If the organisation applies a ruleset requiring changes to arrive by pull
 request, a direct push to the default branch is refused BY DESIGN and must not
 be worked around. An adoption has ONE legitimate exit: have an operator
 holding the bypass right re-run it, once what the notice below names is
-cleared. The scaffold's other exit, a seed branch and a pull request, cannot
-finish an adoption: {repo} has no {tracking} for that pull request to target,
-and nothing would run the rest of this adoption after it was merged. Under
-such a ruleset, that bypass is the fix the notice below asks for, never a
-change to the ruleset.
+cleared. A seed branch and a pull request cannot finish an adoption:
+{repo} has no {tracking} for that pull request to target, and nothing would
+run the rest of this adoption after it was merged. Under such a ruleset, that
+bypass is the fix the notice below asks for, never a change to the ruleset.
 """
 
 #: What a step that runs once a leg repository exists reports as a REFUSAL,
@@ -8192,14 +8554,19 @@ def _open_the_pull_request(repositories: dict, names: dict, tracking: str,
 
 
 def _finish_by_hand(passed: bool, refused: list[str] | None, topic: str,
-                    unset: list[str]) -> None:
+                    unset: list[str], *, opened: str | None = None,
+                    carried: list[str] | None = None) -> None:
     """What a refused `gh pr create` and a topic that would not set leave to
     do, said ONCE, after the table, when `execute` knows whether the split it
     pushed is the one the plan asked for (#304, #481).
 
     `refused` is the `gh pr create` that `gh` refused, as
-    `_pull_request_command` built it, and None when the pull request is open;
-    `unset` names each repository `_set_the_topic` could not give `topic`.
+    `_pull_request_command` built it, and None when the pull request is open
+    or none was tried (`--local-remote-dir`); `unset` names each repository
+    `_set_the_topic` could not give `topic`. `opened` is the repository the
+    split's pull request IS open on, None where none is, and `carried` each
+    repository that has the topic: what a failed verification leaves in
+    place, and says (#523).
 
     A split that PASSED verification gets the commands that finish the job:
     a `gh repo edit` for each repository left without the topic, then the
@@ -8216,6 +8583,19 @@ def _finish_by_hand(passed: bool, refused: list[str] | None, topic: str,
     the exact command that was tried, and a person who sees only that, with
     findings under it, may paste it. No topic is offered there either: the
     way out is the verification's, and the re-run it names sets the topic.
+
+    WHAT IT LEAVES IN PLACE IS SAID TOO (#523). `execute` sets the topic and
+    opens the pull request BEFORE it verifies, so against GitHub a split that
+    failed has its pull request open on the source and the topic on every
+    repository that took it, and the way out said neither: it said NOTHING
+    was deleted from the source, which is true, and AGENTS.md said the source
+    was untouched, which is not. So the open pull request is named as one
+    for a split that failed, with what closes it, the deletion of its branch
+    the way out already names; and the topic as staying set: the re-run sets
+    it again on the root and on the legs it makes, and a leg the person
+    keeps, re-running into fresh leg repositories rather than deleting it,
+    keeps the topic too (#582's review).
+
     Stdout is flushed first. The table is on it and a pipe holds it in a
     block buffer, so without the flush this would come before the table it
     depends on in a merged log; a stdout that is closed, `| head` and gone,
@@ -8223,9 +8603,21 @@ def _finish_by_hand(passed: bool, refused: list[str] | None, topic: str,
     """
     _flush_stdout()
     if not passed:
+        said = []
         if refused is not None:
-            print("No pull request was opened, and none should be: the split "
-                  "above did not pass verification.", file=sys.stderr)
+            said.append("No pull request was opened, and none should be: the "
+                        "split above did not pass verification.")
+        elif opened is not None:
+            said.append(f"A pull request for that branch IS open on {opened}, "
+                        "for a split that did not pass verification: "
+                        "deleting the branch, as above, closes it.")
+        if carried:
+            said.append(f"The topic {topic} stays set on "
+                        f"{_and_listed(carried)}: the re-run sets it again "
+                        "on the root and the legs it makes, and a leg left "
+                        "behind keeps it.")
+        if said:
+            print(" ".join(said), file=sys.stderr)
         return
     topics = "".join(f"\n    gh repo edit {repository} --add-topic {topic}"
                      for repository in unset)
@@ -8512,8 +8904,10 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
         step = "committing the split"
         # The plan's submodule answers outlive the plan only here (#189).
         # An empty record appends nothing, so a source with no submodule
-        # gets the manifest it always got.
-        append = {"Makefile": ADOPT_MAKEFILE_BLOCK}
+        # gets the manifest it always got. The Makefile's block names the
+        # spec leg where this plan mounts it (#522), and a default plan gets
+        # the block it always got.
+        append = {"Makefile": adopt_makefile_block(spec_path, code_path)}
         record = submodule_record(plan.entries, source.tree(),
                                   source.commit)
         if record:
@@ -8657,13 +9051,17 @@ def cmd_execute(args) -> int:
     # to know before finishing either by hand is whether the split is right
     # (#304), so what is left is said once, after the table.
     unset: list[str] = []
+    carried: list[str] = []
     refused: list[str] | None = None
+    opened: str | None = None
     if not local:
         carried = _set_the_topic(repositories, topic)
         unset = [repositories[role] for role in TOPIC_ROLES
                  if repositories[role] not in carried]
-        if not _open_the_pull_request(repositories, names, tracking, branch,
-                                      message):
+        if _open_the_pull_request(repositories, names, tracking, branch,
+                                  message):
+            opened = repositories["assembly"]
+        else:
             refused = _pull_request_command(repositories, names, tracking,
                                             branch, message)
 
@@ -8673,9 +9071,13 @@ def cmd_execute(args) -> int:
                        urls=urls, branch=branch)
     if not verified and refused is None:
         # Where the shape's Makefile and bootstrap script WENT, as the
-        # materializer reports it, and not a second look at the tree (#480).
-        _next_steps(names, collisions)
-    _finish_by_hand(not verified, refused, topic, unset)
+        # materializer reports it, and not a second look at the tree (#480);
+        # under `--local-remote-dir` no pull request is opened, so NEXT names
+        # the split's branch, and the repository it is pushed to (#523).
+        _next_steps(names, collisions,
+                    (branch, urls["assembly"]) if local else None)
+    _finish_by_hand(not verified, refused, topic, unset, opened=opened,
+                    carried=carried)
     if verified:
         # A verification mismatch outranks a refused pull request and a
         # missing topic.
@@ -9190,10 +9592,25 @@ def _left_by_the_split(source: Source, urls: dict, names: dict,
 SHAPE_MAKEFILE = "Makefile"
 
 
-def _next_steps(names: dict, collisions: list) -> None:
+def _next_steps(names: dict, collisions: list,
+                split: tuple[str, str] | None = None) -> None:
     """What a person does once the split is verified AND its pull request is
-    open. Not said where there is none to review: after a refused `gh pr
-    create`, the command to open it is the next step (#304).
+    open, or none was tried. Not said after a refused `gh pr create`: there
+    the command to open it is the next step (#304).
+
+    `split` is `(branch, url)`, the split's branch and the repository it is
+    pushed to, where no pull request was tried: under `--local-remote-dir`,
+    where that repository is the source itself. NEXT said "review the pull
+    request" there as well, over none (#523, N2), and named a clone of the
+    default branch, where the split is not. There it names the split on its
+    branch, and a clone of that branch from that repository, each value
+    quoted for `sh` as `_branch_deletion` quotes it, so the line pastes as
+    printed. The clone carries `FILE_PROTOCOL`: the split's `.gitmodules`
+    names each leg by its plain path under `--local-remote-dir`, and git
+    clones a submodule over the `file` transport only where it is told to,
+    so without it both leg clones die `transport 'file' not allowed`, as
+    pasting the line did in #582's review. Without `split`, the block is
+    what it was, byte for byte.
 
     `collisions` is each `(intended, actual)` the materializer wrote beside a
     file the source kept: where the shape's files WENT, and not a second
@@ -9216,9 +9633,18 @@ def _next_steps(names: dict, collisions: list) -> None:
     bootstrap = ("" if script else
                  "\n    python3 scripts/bootstrap.py" if makefile else
                  "\n    make bootstrap")
-    print(f"\nNEXT: review the pull request on {names['assembly']}, then\n"
-          f"    git clone --recurse-submodules <{names['assembly']} url>"
-          f"{bootstrap}")
+    if split is None:
+        review = f"the pull request on {names['assembly']}"
+        clone = ("git clone --recurse-submodules "
+                 f"<{names['assembly']} url>")
+    else:
+        branch, url = split
+        review = (f"the split on its branch in {names['assembly']} (no pull "
+                  "request is opened under --local-remote-dir)")
+        clone = " ".join(["git", *FILE_PROTOCOL, "clone",
+                          "--recurse-submodules", "-b", shlex.quote(branch),
+                          shlex.quote(url)])
+    print(f"\nNEXT: review {review}, then\n    {clone}{bootstrap}")
     if script:
         kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
                 if path in aside]
@@ -9640,14 +10066,13 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
     names a repository and `names` are made from its name (#499). The
     assembly root's name is then not the person's to retype: a refusal of it
     says that the source cannot be adopted in place under that name, and
-    that renaming it comes first (`_rename_first`; at that path, where its
-    `origin` is one, `_origin_path`), never that `--project` takes one
-    CamelCase token. A leg's name is the plan's own to edit, and keeps the
-    remediation it had.
+    that renaming it on GitHub comes first (`_rename_first`), never that
+    `--project` takes one CamelCase token. A leg's name is the plan's own to
+    edit, and keeps the remediation it had.
     """
     for role, name in names.items():
         found = policy.classify(name, role, pins)
-        renamed = (_rename_first(source.repository, path=_origin_path(source))
+        renamed = (_rename_first(source.repository)
                    if role == "assembly" and source is not None
                    and source.repository is not None else None)
         if found is None:
@@ -9707,20 +10132,20 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
 # (`_plan_org`). A source that names no repository (no `origin`, or one that
 # ends in no `org/repo`) is asked nothing, as before.
 #
-# AN `origin` THAT IS A PATH NAMES ITS LAST TWO DIRECTORIES, as `plan` has
-# read it for `--org` all along, and is compared like any other: a clone of
-# `/srv/git/acme/Atlas.git` is `acme/Atlas`. A clone of `/srv/clones/Atlas.git`
-# is then `clones/Atlas`, no repository on GitHub, so the remediation
-# says where the name was read from (`_origin_path`) before it offers one,
-# and never offers a directory's name as an organisation without saying so.
+# AN `origin` THAT IS A PATH NAMES NO REPOSITORY (#521), in any separator
+# (`url_repository`). It was read as its last two directories, so a clone of
+# `/srv/clones/Atlas.git` was `clones/Atlas` and the right `--org` was refused,
+# while the same path written with backslashes named nothing and was not
+# compared. A path is a directory on this machine and says nothing of the
+# repository on GitHub that `execute` acts on, so nothing is compared with it,
+# and `plan` says so in a NOTE naming that repository (`_path_origin_notes`).
 #
 # AND A NAME THE POLICY REFUSES IS RENAMED FIRST, NOT RETYPED. Where the
 # source's own name is one the naming policy refuses (`billing-service`), it
 # cannot be adopted in place under that name, and no `--project` changes
 # that: whether to rename the repository is a human's decision, made first on
-# GitHub, or at the path an `origin` that is one names, and `plan` runs again
-# after it. So these refusals say that, and `_check_names` says it in place of
-# its hint to retype `--project`.
+# GitHub, and `plan` runs again after it. So these refusals say that, and
+# `_check_names` says it in place of its hint to retype `--project`.
 
 #: `plan`'s refusal of an `--org` and a `--project` that name another
 #: repository than the source's (#499).
@@ -9735,46 +10160,54 @@ def _is_the_source(repository: str, org: str, name: str) -> bool:
     return f"{org}/{name}".casefold() == repository.casefold()
 
 
-def _rename_first(repository: str, said: str = "",
-                  path: str | None = None) -> str:
+def _rename_first(repository: str, said: str = "") -> str:
     """The remediation where the source's own name is one the naming policy
     refuses: it cannot be adopted in place under that name, and renaming it
     is a human's decision that comes first (#499). `said` is what the
     refusal says before that, a sentence or none. THE ONE TEXT of it.
 
-    `path` is the source's `origin` where that is a filesystem path
-    (`_origin_path`). The repository is then the one at that path, which
-    names none on GitHub by itself, so it is renamed there, or the adoption
-    is planned from a clone of the repository on GitHub instead: `gh repo
-    rename` renames a repository on GitHub, and sending the person to it
-    contradicted the sentence that a path names none there (#513's review,
-    NIT-3)."""
-    where = (
-        "on GitHub (`gh repo rename`); then run `plan` again against the "
-        "renamed repository (`--source <org>/<new name>`, or a clone whose "
-        "`origin` names it)" if path is None else
-        f"where it is kept, and its `origin` is the path {_spelled(path)}, "
-        "not a repository on GitHub: rename the repository at that path, or "
-        "plan instead from a clone of the repository on GitHub, whose "
-        "`origin` names it there; then run `plan` again against the renamed "
-        "repository")
+    ON GITHUB, ALWAYS. The source names a repository only by a url or an
+    `org/repo` (`url_repository`), so the repository renamed is one on
+    GitHub. A path `origin` once named its last two directories, and this
+    then said to rename the repository at that path (#513's review, NIT-3);
+    it names none since #521, and nothing here is said of one."""
     return (f"Remediation: {said}{_shown(repository)} cannot be adopted in "
             "place under that name: an in-place adoption keeps the source's "
             "own name, and `--project` cannot rename it. Whether to rename "
-            f"it is a human's decision, made first {where}, with its new "
-            "name as `--project`.")
+            "it is a human's decision, made first on GitHub (`gh repo "
+            "rename`); then run `plan` again against the renamed repository "
+            "(`--source <org>/<new name>`, or a clone whose `origin` names "
+            "it), with its new name as `--project`.")
 
 
 def _origin_path(source: Source) -> str | None:
-    """The source's `origin` where `source.repository` was read from it and
-    it is a filesystem PATH (`remote_is_a_path`), not a url (#499): the
-    repository is then its last two directories, which name no repository
-    on GitHub by themselves, and an `--org` read from them may be none. None
-    for an `org/repo` source, which names its repository itself."""
-    if source.cloned or source.repository is None:
+    """The source's `origin` where it is a filesystem PATH
+    (`origin_is_a_path`), which names no repository (`url_repository`,
+    #521); None for a source `plan` cloned from an `org/repo`, and for an
+    `origin` that is a url, or none. Read as `source.repository` was read
+    (`_origin_url`)."""
+    if source.cloned:
         return None
-    url = _config_value(source.path, "remote.origin.url")
-    return url if url is not None and remote_is_a_path(url) else None
+    url = _origin_url(source.path)
+    return url if url is not None and origin_is_a_path(url) else None
+
+
+def _path_origin_notes(args, source: Source) -> list[str]:
+    """What `plan` says where the source's `origin` is a path (#521): that
+    `--org` and `--project` were not compared with it, and the repository
+    `execute` acts on without `--local-remote-dir`, which only the person can
+    say is the source. A NOTE, not a refusal: the plan names the repository
+    the person gave it, as for a source with no `origin`."""
+    path = _origin_path(source)
+    if path is None:
+        return []
+    return [f"\nNOTE the source's `origin` is the path {_spelled(path)}, "
+            "which names no repository on GitHub, so `--org` and `--project` "
+            "were not compared with it.",
+            "     `execute` without `--local-remote-dir` pushes the split to "
+            f"{args.org}/{args.project}, opens its pull request there and "
+            "sets its topic on it, so that must be the source's own "
+            "repository on GitHub."]
 
 
 def _own_name_remediation(source: Source, naming: NamingPolicy,
@@ -9782,22 +10215,14 @@ def _own_name_remediation(source: Source, naming: NamingPolicy,
     """What `adopt-not-the-source` and `plan-not-the-source` say to do:
     `plan` again under the source's own name, or, where the naming policy
     refuses that name, `_rename_first`. `done` is what the refusing command
-    left as it was, said first; then, where the name was read from a path
-    (`_origin_path`), that it was, so that a directory's name is never
-    offered as an organisation without saying where it came from."""
+    left as it was, said first."""
     repository = str(source.repository)
     org, _, name = repository.partition("/")
-    path = _origin_path(source)
-    if path is not None:
-        done += (f"The source's repository, {_shown(repository)}, is read "
-                 "from the last two directories of its `origin`, the path "
-                 f"{_spelled(path)}, and names no repository on GitHub by "
-                 "itself. ")
     try:
         _check_names(naming, _names(name), pins)
     except Refusal as exc:
         return _rename_first(repository, f"{done}The source's own name is no "
-                             f"remedy either: {exc.detail}. ", path)
+                             f"remedy either: {exc.detail}. ")
     return (f"Remediation: {done}Run `plan` again with `--project "
             f"{_shown(name)} --org {_shown(org)}`, the source's own name, "
             "which `plan` writes into the plan's `org:`, `project:` and "
@@ -9807,19 +10232,24 @@ def _own_name_remediation(source: Source, naming: NamingPolicy,
 
 
 def _refuse_another_repository(args, source: Source, naming: NamingPolicy,
-                               pins: set[str]) -> None:
+                               pins: set[str], org_given: bool = True) -> None:
     """`plan` refuses an `--org` and a `--project` that name another
     repository than the one the source names, as `adopt-not-the-source`,
-    before anything is written (#499). `args.org` is settled: given, or read
-    from the source."""
+    before anything is written (#499). `args.org` is settled: given, or,
+    where `org_given` is false, read from the source, and then named by
+    where it came from, not as a flag nobody passed (#427)."""
     repository = source.repository
     if repository is None or _is_the_source(repository, args.org,
                                             args.project):
         return
+    named = (f"--org {args.org} and --project {args.project} name"
+             if org_given else
+             f"--project {args.project}, with the organisation of "
+             f"{_org_read_from(source)} (`--org` not given), names")
     raise Refusal(
         NOT_THE_SOURCE,
-        f"--org {args.org} and --project {args.project} name "
-        f"{args.org}/{args.project}, and the source is {_shown(repository)}: "
+        f"{named} {args.org}/{args.project}, and the source is "
+        f"{_shown(repository)}: "
         "an in-place adoption keeps the source's own name, and `execute` "
         "pushes the split to the repository they name, opens its pull "
         "request there and sets its topic on it",
@@ -10019,10 +10449,20 @@ def main(argv: list[str] | None = None) -> int:
                            "repository's own --org). Name the owner in --pin "
                            "itself (owner/openProduct@<sha>) to override it "
                            "for one pin.")
-    plan.add_argument("--pin-source", type=Path, default=None,
+    # TEXT, not `type=Path`: `Path("")` is `.`, so an empty value could not
+    # be told from a typed `.` once parsed (`pin_source_path`).
+    plan.add_argument("--pin-source", default=None,
                       help="a local clone to compute --pin digests from, "
                            "instead of reading the forge with `gh api` (the "
-                           "TEST path; no network)")
+                           "TEST path; no network). The plan records the "
+                           "path, so that `check` recomputes each digest "
+                           "there; a path that is not one printable line is "
+                           "refused as `adopt-unwritable-value`. The pin "
+                           "file says only `local-clone`, never the path. "
+                           "Given with no --pin to read it, the flag is "
+                           "refused as `pin-source-unused`; an empty value "
+                           "is refused as `pin-source-no-path`, and `.` "
+                           "means this directory.")
     plan.add_argument("--allow-empty-leg", action="append", default=[],
                       choices=EXTRACTED_LEGS,
                       help="record in the plan that this leg having NO path "

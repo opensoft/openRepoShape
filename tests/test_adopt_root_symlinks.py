@@ -38,8 +38,10 @@ The groups of tests:
   shape would write beneath, because the assembly's clone holds it as a file.
   A link AT a path the shape writes is then that file, which `place` writes
   the copy beside, so neither `check` nor `execute` refuses it, wherever it
-  leads (B-OFF). The tests of a link `check` follows tell `git` to check a
-  symlink out as one, since Git for Windows' own default is a file.
+  leads (B-OFF). A link ABOVE one that `check` reports says it is that file
+  there, not where it leads (#531). The tests of a link `check` follows tell
+  `git` to check a symlink out as one, since Git for Windows' own default is
+  a file.
 - The materializer's own refusals, for a caller that skipped `check`.
 
 The end-to-end tests at the bottom need `git filter-repo` and a disk that
@@ -352,13 +354,15 @@ def ticked(path: str) -> str:
 
 
 def finding(link: str, target: str, shape_path: str, why: str,
-            aside: str = "") -> str:
-    """The line `check` prints, and `execute`'s refusal carries."""
+            aside: str = "", *, fix: str = "") -> str:
+    """The line `check` prints, and `execute`'s refusal carries. `fix` is
+    its last sentence where that is not the one for a disk that holds
+    symlinks."""
+    fix = fix or (f"Send {ticked(link)} to a leg or `drop` it, or change "
+                  "where it points in the source and re-run `plan`.")
     return (f"{FINDING}the plan keeps {ticked(link)} in the root, a symlink "
             f"to {ticked(target)}, and {ticked(shape_path)}, a path the shape "
-            f"writes, runs through it{aside}, but {why}. Send {ticked(link)} "
-            "to a leg or `drop` it, or change where it points in the source "
-            "and re-run `plan`.")
+            f"writes, runs through it{aside}, but {why}. {fix}")
 
 
 def leads(link: str, here: str, which: str) -> str:
@@ -599,7 +603,8 @@ def test_check_reports_the_link_and_execute_refuses_it_before_any_leg(
     refused_alike(adopter, tmp_path, plan, finding(*expected))
 
 
-def test_a_link_into_a_submodule_kept_in_the_root_is_reported(tmp_path):
+def test_a_link_into_a_submodule_kept_in_the_root_is_reported(
+        links_as_links, tmp_path):
     """A gitlink is a directory in a checkout, holding another repository:
     a link into it is not a link into `a file`."""
     _, plan = planned(tmp_path, {}, {GITHUB: "vendor/lib/ci"},
@@ -612,7 +617,7 @@ def test_a_link_into_a_submodule_kept_in_the_root_is_reported(tmp_path):
 
 
 def test_one_finding_per_link_however_many_shape_paths_run_through_it(
-        tmp_path):
+        links_as_links, tmp_path):
     """`contracts -> /srv` carries four shape paths; the finding names the
     first one the materializer writes."""
     _, plan = planned(tmp_path, {}, {CONTRACTS: "/srv"},
@@ -671,7 +676,8 @@ SPELLED = [
 
 
 @pytest.mark.parametrize(("raw", "spelled"), SPELLED)
-def test_a_target_that_is_not_plain_text_is_spelled(tmp_path, raw, spelled):
+def test_a_target_that_is_not_plain_text_is_spelled(links_as_links, tmp_path,
+                                                    raw, spelled):
     """As #166's findings spell a path: between backticks, a byte that is
     not UTF-8 as `\\udcff`, the plan's own spelling of it (#329), and a
     newline as `\\n`, so the finding is one line that reads one way."""
@@ -1284,10 +1290,16 @@ def test_execute_refuses_a_link_it_would_check_out_as_a_file(
         adopter, no_filter_repo_probe, tmp_path, monkeypatch):
     """The assembly's clone would hold `.github` as a plain file, and the
     materializer died there with NotADirectoryError after both legs were
-    pushed. It is refused before them, and the probe leaves nothing."""
+    pushed. It is refused before them, and the probe leaves nothing.
+    `check` passes the plan, as #183 left it: the walk follows `.github`
+    into the `ci/` the root keeps, so no finding of `check`'s comes first,
+    and the refusal is `execute`'s own, after that list (#531 changes what a
+    finding says, not that order)."""
     _, plan = github_to_ci(tmp_path)
     for key, value in SYMLINKS_OFF.items():
         monkeypatch.setenv(key, value)
+    checked = check(plan)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
     refusal = refused_by(adopter, execute_args(tmp_path, plan))
     assert refusal.code == SYMLINKS_OFF_CODE
     work = (tmp_path / WORK).resolve()
@@ -1414,17 +1426,93 @@ def test_with_symlinks_off_a_link_at_a_path_is_a_file_passed_by_both(
     assert list(work.iterdir()) == []
 
 
-def test_with_symlinks_off_a_link_above_a_path_is_still_followed(
-        tmp_path, monkeypatch):
-    """Only a link AT a path the shape writes is the file a checkout without
-    symlinks makes of it (`_a_file_here`). A link the shape writes BENEATH
-    is still followed by `check`, and its finding stands."""
-    _, plan = planned(tmp_path, {}, {GITHUB: OUTSIDE_CI}, {GITHUB: ROOT})
+#: Why a link a path the shape writes runs BENEATH cannot be written
+#: through where `git` checks a symlink out as a plain file (#531): `{}` is
+#: the link. `adopt-symlinks-off`'s reason, as `check` says it.
+HELD_AS_A_FILE = ("`git` here checks a symlink out as a plain file "
+                  "(`core.symlinks` is false), so the assembly's clone would "
+                  "hold {} as a file, wherever it points, and nothing can be "
+                  "written beneath a file")
+
+
+def as_a_file(link: str, target: str, shape_path: str,
+              aside: str = "") -> str:
+    """The line `check` prints, and `execute`'s refusal carries, for a link
+    the shape writes beneath, where `git` checks it out as a plain file: no
+    target it is given changes that there, so the fix is in the plan."""
+    return finding(link, target, shape_path,
+                   HELD_AS_A_FILE.format(ticked(link)), aside,
+                   fix=f"Send {ticked(link)} to a leg or `drop` it in the "
+                       "plan, and run `check` again.")
+
+
+#: L1-J3's source: `scripts -> tools/deep`, whose scripts would run from
+#: two directories down, where a disk holds symlinks.
+TOOLS_DEEP = "tools/deep"
+SCRIPTS_DEEP = ({"tools/deep/run.sh": ECHO}, {SCRIPTS: TOOLS_DEEP},
+                {TOOLS_DIR: ROOT, SCRIPTS: ROOT})
+
+#: `(*PLANNED, (link, target, shape path[, aside]))`: links `check` reports
+#: where a disk holds symlinks, each ABOVE the first path the shape writes
+#: through it. Each is L1-J3's question: the clone holds the link as a file.
+ABOVE_AS_A_FILE = [
+    pytest.param(*SCRIPTS_DEEP, (SCRIPTS, TOOLS_DEEP, VALIDATE_PINS),
+                 id="L1-J3-scripts-two-directories-down"),
+    pytest.param({}, {GITHUB: OUTSIDE_CI}, {GITHUB: ROOT},
+                 (GITHUB, OUTSIDE_CI, WORKFLOW), id="D6-a-relative-link-out"),
+    pytest.param(LINK_TO_GH, {GITHUB: TOOLING_GH},
+                 {"tooling/": CODE, GITHUB: ROOT},
+                 (GITHUB, TOOLING_GH, WORKFLOW),
+                 id="D5-into-a-path-sent-to-a-leg"),
+    pytest.param({}, {CONTRACTS: "/srv"}, {CONTRACTS: ROOT},
+                 (CONTRACTS, "/srv", "contracts/spec-pin.yaml"),
+                 id="one-finding-for-four-paths"),
+    pytest.param({}, {SHAPE_DIR: "."}, {SHAPE_DIR: ROOT},
+                 (SHAPE_DIR, ".", SHAPE_README),
+                 id="the-collision-directory-is-the-root"),
+    pytest.param({}, {GITHUB_TWIN: OUTSIDE_CI}, {GITHUB_TWIN: ROOT},
+                 (GITHUB_TWIN, OUTSIDE_CI, WORKFLOW, CASE_ASIDE),
+                 id="a-case-twin-above-a-shape-path"),
+]
+
+
+@pytest.mark.parametrize((*PLANNED, "expected"), ABOVE_AS_A_FILE)
+def test_with_symlinks_off_a_link_above_a_path_is_named_as_a_file(
+        adopter, no_filter_repo_probe, tmp_path, monkeypatch, files, links,
+        legs, expected):
+    """L1-J3 of #183's re-verify (#531). Where `git` checks a symlink out as
+    a plain file, a link the shape writes BENEATH is that file in the
+    assembly's clone, and nothing can be written beneath a file, wherever
+    the link leads. `check`'s one finding for it said where it led, and
+    sent the person to change that, which leads on to `execute`'s
+    `adopt-symlinks-off` there. Now it says what `adopt-symlinks-off` says,
+    with a fix that works on that disk, and `execute` refuses with the same
+    line, word for word, before any leg."""
+    _, plan = planned(tmp_path, files, links, legs)
     links_as_files(monkeypatch)
-    checked = check(plan)
-    assert checked.returncode == 1, checked.stderr + checked.stdout
-    assert symlink_findings(checked) == [
-        finding(GITHUB, OUTSIDE_CI, WORKFLOW, climbs(GITHUB))]
+    refused_alike(adopter, tmp_path, plan, as_a_file(*expected))
+
+
+@pytest.mark.parametrize("leg", [CODE, "drop"])
+def test_with_symlinks_off_the_fix_the_finding_gives_works_there(
+        adopter, tmp_path, monkeypatch, leg):
+    """L1-J3's finding sent the person to change where `scripts` points,
+    and on that disk no target helps. The fix it gives now works there:
+    `scripts` answered as it says, `check` passes, and so do `execute`'s
+    list of `check`'s findings and its own probe for a link the shape
+    writes beneath."""
+    links_as_files(monkeypatch)
+    files, links, legs = SCRIPTS_DEEP
+    _, kept = planned(tmp_path / ROOT, files, links, legs)
+    said = symlink_findings(check(kept))
+    assert said == [as_a_file(SCRIPTS, TOOLS_DEEP, VALIDATE_PINS)]
+    answered = tmp_path / leg
+    _, plan = planned(answered, files, links, {**legs, SCRIPTS: leg})
+    passed_alike(adopter, answered, plan)
+    loaded = adopter.Plan.load(plan)
+    work = answered / WORK
+    assert adopter._refuse_symlinks_checked_out_as_files(
+        loaded, loaded.open_source(None, work), work) is None
 
 
 def git_reads_symlinks_as(directory: Path) -> str:

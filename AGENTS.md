@@ -25,13 +25,13 @@ types `yes` at its prompt; you never answer it for them. No terminal: section 2.
 **Never answer an install prompt.** The preflight asks `Type yes to continue:`
 for each thing it offers to run — an install, `gh auth login`, `gh auth
 setup-git`. The human types it; you never install software or log in for them.
+The one-line install (`install.sh`) is theirs to run: relay it, never run it.
 
 **Never pass `--allow-upstream-org` on your own initiative.** It guards only
-`--org opensoft` itself — scaffolding into opensoft's own namespace, the
-upstream owner of openRepoShape. If setup.sh refuses because the organisation
-you were given resolves to opensoft, STOP and relay what it said; the fix is
-almost always an explicit `--org <their-org>`. Pass `--allow-upstream-org`
-only if the human asks for it in those words.
+`--org opensoft`, the namespace of openRepoShape's upstream owner. If setup.sh
+refuses because the organisation you were given resolves to opensoft, STOP and
+relay what it said; the fix is almost always an explicit `--org <their-org>`.
+Pass `--allow-upstream-org` only if the human asks for it in those words.
 
 **Never bypass an organisation ruleset.** A ruleset that refuses a direct push
 to `main` is doing its job; the exit is in the tool's own failure message (for
@@ -129,24 +129,29 @@ install command). Seven steps, in order, and step 4 is the one you must not skip
 ```
 
 2. **You resolve the questions, in writing, in the plan.** Each unresolved
-   entry carries a `question:`. Set `leg:` to `spec`, `code`, `root` or `drop`
+   entry carries a `question:`; so does one whose `leg:` is its rule's default,
+   which `execute` takes as written (`drop` for a `single-repository.yaml`
+   record). Set `leg:` to `spec`, `code`, `root` or `drop`
    AND add a `resolution:` line saying why — read the repository to answer it
    (does the specification cite `examples/golden-run/`, or do the tests?). An
-   answer with no reason beside it is a guess that will be read as a finding.
-   Never delete an entry to make the question go away: `check` refuses a path
-   that no entry covers, and it is right to.
+   answer with no reason is a guess, and `check` passes it: the human reads the
+   reasons at step 4. Never delete an entry to make the question go away:
+   `check` refuses a path that no entry covers, and it is right to.
 4. **Show the human the plan and the follow-ups and let them say yes.** The
    follow-ups are code changes the split MAKES NECESSARY — the harness that
    reads `contracts/` from beside it will read it across the root mount — and
-   `execute` does not make them. Do not pass `--yes` on your own initiative;
-   it is the human's word, not your convenience.
+   `execute` does not make them; it opens the split's pull request itself,
+   because these organisations are pull-request only. Never suggest a direct
+   push to the default branch, and never `--admin`. Do not pass `--yes` on your
+   own initiative; it is the human's word, not your convenience.
 7. **Read the verification table back to them.** It accounts for every source
    path at the source commit, by blob sha (a kept root `.gitattributes` as the
    source's bytes plus the line-ending block the split appends), in exactly one
    of {spec leg, code leg, root tree} or as `drop`. If it exits non-zero, STOP
    and relay it, and take the way out THAT exit prints. Exit 1, a failed
-   verification: the source is untouched — nothing is deleted, `main` is where
-   it was, the split is on a branch — so fix the plan, delete the split branch,
+   verification: nothing is deleted and `main` is where it was, but the split
+   branch is pushed and, on GitHub, its pull request may be open and the topic
+   set — so fix the plan, delete the split branch (closing that pull request),
    and re-run into fresh legs and a fresh `--work-dir`, or none. Exit 2 saying
    `IS pushed` (GitHub only: `gh pr create` or the topic refused) comes after
    both legs and the split are pushed and verified: finish with the command it
@@ -156,9 +161,6 @@ install command). Seven steps, in order, and step 4 is the one you must not skip
 the split's `project.yaml`, under `submodules:` — per submodule a leg keeps,
 its `path`, `leg`, `resolution:` and `source_commit`. It confers nothing,
 nothing rewrites it, and the doctor holds each submodule to it.
-
-`execute` opens a pull request, because these organisations are pull-request
-only. Never suggest a direct push to the default branch, and never `--admin`.
 
 ### Adopting a repository that has NO code yet (or no spec)
 

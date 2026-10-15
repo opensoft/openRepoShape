@@ -19,7 +19,8 @@ plan edited to name another (`plan-not-the-source`). Where the source's own
 name is one the naming policy refuses, every one of those refusals says that
 it cannot be adopted in place under that name and that renaming it on GitHub
 comes first, and none says to retype `--project`. A source that names no
-repository is asked nothing, as before.
+repository is asked nothing, as before; an `origin` that is a path names none
+since #521 (`tests/test_adopt_origin_repository.py`).
 
 Nothing here reaches GitHub or runs `gh`: each source's `origin` is an
 `https://github.com/` URL that nothing fetches, `plan` and `check` read it
@@ -54,17 +55,6 @@ RENAME_FIRST = (
     "rename`); then run `plan` again against the renamed repository "
     "(`--source <org>/<new name>`, or a clone whose `origin` names it), with "
     "its new name as `--project`.")
-#: What they say instead where the source's `origin` is a PATH (#513's
-#: review, NIT-3): the repository it names is at that path, not on GitHub,
-#: so `gh repo rename` is not the way to rename it. `{}` is the path.
-RENAME_AT_THE_PATH = (
-    "cannot be adopted in place under that name: an in-place adoption keeps "
-    "the source's own name, and `--project` cannot rename it. Whether to "
-    "rename it is a human's decision, made first where it is kept, and its "
-    "`origin` is the path `{}`, not a repository on GitHub: rename the "
-    "repository at that path, or plan instead from a clone of the repository "
-    "on GitHub, whose `origin` names it there; then run `plan` again against "
-    "the renamed repository, with its new name as `--project`.")
 #: A source small enough that `plan` asks no question.
 TREE = {"README.md": "# here\n", "src/app.py": "print(1)\n",
         "specs/001/spec.md": "# Spec\n"}
@@ -72,6 +62,9 @@ PLAN = "adoption-plan.yaml"
 WHY = ("an in-place adoption keeps the source's own name, and `execute` "
        "pushes the split to the repository they name, opens its pull request "
        "there and sets its topic on it")
+#: How the refusal names an organisation nobody passed (#427).
+OF_ORIGIN = ("with the organisation of the source's `origin` (`--org` not "
+             "given)")
 
 
 @pytest.fixture(scope="module")
@@ -127,12 +120,13 @@ def findings(stderr: str) -> list[str]:
 
 @pytest.mark.parametrize("repository, flags, named, own", [
     # The issue's own: the hint `plan` gave for the source's name, followed.
+    # No `--org`: it is the source's, and named so, not as a flag (#427).
     ("acme/billing-service", ("--project", "BillingService"),
-     "--org acme and --project BillingService name acme/BillingService",
+     f"--project BillingService, {OF_ORIGIN}, names acme/BillingService",
      None),
     # A typo of a name the policy accepts.
     ("acme/Atlas", ("--project", "Atlsa"),
-     "--org acme and --project Atlsa name acme/Atlsa", "Atlas"),
+     f"--project Atlsa, {OF_ORIGIN}, names acme/Atlsa", "Atlas"),
     # The right name in another organisation.
     ("acme/Atlas", ("--project", "Atlas", "--org", "acme-labs"),
      "--org acme-labs and --project Atlas name acme-labs/Atlas", "Atlas"),
@@ -154,8 +148,9 @@ def test_plan_refuses_a_name_that_is_not_the_sources(tmp_path, repository,
     assert remediation.startswith("Remediation: no plan was written. "), \
         remediation
     if own:
-        # An `origin` that is a url: nothing said of where the name came
-        # from, which `test_a_name_read_from_a_path_says_so` is about.
+        # The source's own name, straight after what was done: a url
+        # names its repository, and only a url's or `--source`'s is
+        # compared (#521).
         assert remediation.startswith(
             "Remediation: no plan was written. Run `plan` again with "
             f"`--project {own} --org acme`, the source's own name"), \
@@ -225,69 +220,6 @@ def test_a_source_that_names_no_repository_is_asked_nothing(tmp_path,
     assert load_yaml(tmp_path / PLAN)["source"]["repository"] is None
 
 
-def test_a_name_read_from_a_path_says_so(tmp_path):
-    """An `origin` that is a path names its last two directories, as `plan`
-    reads `--org` from it, and is compared like any other: `mirrors/Northwind`
-    is not `acme/Northwind`. The refusal says the name was read from that
-    path before it offers `--org mirrors`, a directory's name, and a plan in
-    that name is the source's. The path is written with `/`, which git keeps
-    as it is given on every platform."""
-    source = source_of(tmp_path, None)
-    origin = (tmp_path / "mirrors" / "Northwind.git").as_posix()
-    git("remote", "add", "origin", origin, cwd=source)
-
-    refused = plan(tmp_path, source, "--project", "Northwind", "--org",
-                   "acme")
-
-    assert refused.returncode == 2, refused.stdout + refused.stderr
-    detail, remediation = refused.stderr.splitlines()[:2]
-    assert detail.startswith(
-        f"REFUSED {NOT_THE_SOURCE}: --org acme and --project Northwind name "
-        "acme/Northwind, and the source is mirrors/Northwind: "), detail
-    assert remediation.startswith(
-        "Remediation: no plan was written. The source's repository, "
-        "mirrors/Northwind, is read from the last two directories of its "
-        f"`origin`, the path `{origin}`, and names no repository on GitHub "
-        "by itself. Run `plan` again with `--project Northwind --org "
-        "mirrors`"), remediation
-    assert not (tmp_path / PLAN).exists()
-    written = plan(tmp_path, source, "--project", "Northwind", "--org",
-                   "mirrors")
-    assert written.returncode == 0, written.stdout + written.stderr
-
-
-@pytest.mark.parametrize("flags, code", [
-    # Another name: `adopt-not-the-source`, whose remediation has said the
-    # path names no repository on GitHub before it says to rename.
-    (("--project", "BillingService", "--org", "acme"), NOT_THE_SOURCE),
-    # The source's own name, which the policy refuses: `_check_names`.
-    (("--project", "billing-service"), "naming-unclassified"),
-], ids=["another-name", "its-own-name"])
-def test_a_name_read_from_a_path_is_renamed_at_that_path(tmp_path, flags,
-                                                        code):
-    """#513's review, NIT-3: a source whose `origin` is the path
-    `.../clones/billing-service.git` names `clones/billing-service`, which the
-    naming policy refuses. Its rename-first remediation said the path names
-    no repository on GitHub, then sent the person to `gh repo rename` on
-    GitHub. It says to rename the repository at that path, or to plan from a
-    clone of the one on GitHub, and never `gh repo rename`."""
-    source = source_of(tmp_path, None)
-    origin = (tmp_path / "clones" / "billing-service.git").as_posix()
-    git("remote", "add", "origin", origin, cwd=source)
-
-    refused = plan(tmp_path, source, *flags)
-
-    assert refused.returncode == 2, refused.stdout + refused.stderr
-    detail, remediation = refused.stderr.splitlines()[:2]
-    assert detail.startswith(f"REFUSED {code}: "), detail
-    assert remediation.endswith(
-        f"clones/billing-service {RENAME_AT_THE_PATH.format(origin)}"), \
-        remediation
-    assert "gh repo rename" not in refused.stderr
-    assert RETYPE not in refused.stderr
-    assert not (tmp_path / PLAN).exists()
-
-
 def test_an_org_repo_source_is_the_repository_it_names(adopter, tmp_path,
                                                        monkeypatch, capsys):
     """`--source acme/Atlas` names the repository it clones, and is compared
@@ -311,8 +243,9 @@ def test_an_org_repo_source_is_the_repository_it_names(adopter, tmp_path,
     assert code == 2
     err = capsys.readouterr().err
     assert err.startswith(
-        f"REFUSED {NOT_THE_SOURCE}: --org acme and --project Atlsa name "
-        "acme/Atlsa, and the source is acme/Atlas: "), err
+        f"REFUSED {NOT_THE_SOURCE}: --project Atlsa, with the organisation of "
+        "`--source` (`--org` not given), names acme/Atlsa, and the source is "
+        "acme/Atlas: "), err
     assert not (tmp_path / PLAN).exists()
 
 
