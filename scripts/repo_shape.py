@@ -1374,14 +1374,28 @@ class Classification(tuple):
 
 
 def _pinned_basenames(declared_pins) -> set[str]:
-    """The repositories a manifest's `neutral_product_pins:` name, casefolded.
+    """The products a manifest's `neutral_product_pins:` name, each keyed by
+    `pin_product_key`.
 
-    Casefolded because every comparison made against them — a referent
+    Folded because every comparison made against them — a referent
     template's output, a chain's first link — is written in whatever case its
-    own file chose, and a pin is a fact about WHICH repository, not about how
+    own file chose, and a pin is a fact about WHICH product, not about how
     it was typed.
+
+    ONE IDENTITY FOR A PRODUCT (#444). Every reader of a chain — this, the
+    referent and link compares below, `resolve_link_source`'s keyed lookup,
+    `link_pins_from_trees`' table and the naming validator's `--link-source`
+    table — keys a name by `pin_product_key`, the pin file's own fold, which
+    `validate-pins.py` reads by. They used `casefold()`, so `openß` and
+    `openss`, two pin files, were one link: a holder whose tree declares
+    `openss` verified a chain that says `openß`, a project pinning `openss`
+    verified a chain beginning at `openß`, `--link-source openss=` answered
+    for `openß`, and a chain naming both was refused as a cycle. Over ASCII
+    the two folds make the same groups, and `lower()` only ever splits one
+    that `casefold()` makes, so no name GitHub, `--pin` or the naming policy
+    can spell answers differently.
     """
-    return {repo_basename(str(pin)).casefold()
+    return {pin_product_key(repo_basename(str(pin)))
             for pin in (declared_pins or ()) if pin}
 
 
@@ -1397,8 +1411,9 @@ def _chain_links(referent_chain) -> list[str]:
 
 
 def _referent_in(referents, wanted) -> str | None:
-    """The first of `referents` whose casefolded name is one of `wanted`."""
-    return next((r for r in referents if r.casefold() in wanted), None)
+    """The first of `referents` whose `pin_product_key` is one of `wanted`
+    (#444: the pin file's fold, as `_pinned_basenames` says)."""
+    return next((r for r in referents if pin_product_key(r) in wanted), None)
 
 
 def _link_declarations(link_pins) -> dict[str, set[str]]:
@@ -1408,9 +1423,9 @@ def _link_declarations(link_pins) -> dict[str, set[str]]:
     broken-link message quotes what the other tree actually says. A link whose
     tree could not be read is ABSENT rather than empty: the two mean opposite
     things — unverified, and declaring nothing at all — and the caller reads
-    the difference.
+    the difference. Each link is keyed by `pin_product_key` (#444).
     """
-    return {str(link).casefold():
+    return {pin_product_key(str(link)):
             {repo_basename(str(pin)) for pin in (pins_of or ()) if pin}
             for link, pins_of in (link_pins or {}).items()
             if pins_of is not None}
@@ -1429,6 +1444,10 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     A `LinkPins` carries, beside the links that answered, why a tree that WAS
     reached could not: a warning for such a link says so, where a plain
     mapping's says the tree is not reachable (#338).
+
+    A holder's tree and the next link are matched by `pin_product_key`
+    (#444): a tree declaring `openss` does not declare `openß`, whose pin
+    file is another.
     """
     available = _link_declarations(link_pins)
     unreadable = getattr(link_pins, "unreadable", None) or {}
@@ -1438,8 +1457,8 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     # that variable: it would be read for both (#275).
     shared = pin_source_env_shared(chain)
     for holder, held in zip(chain, chain[1:]):
-        declared = available.get(holder.casefold())
-        why = unreadable.get(holder.casefold())
+        declared = available.get(pin_product_key(holder))
+        why = unreadable.get(pin_product_key(holder))
         if declared is None and why is not None:
             # A source REACHED this tree and could not read a declaration out
             # of it, so "not reachable here" would be untrue (#338).
@@ -1462,7 +1481,8 @@ def _chain_link_findings(chain, link_pins) -> tuple:
                 f"{holder}=<path> would let it be read). The recorded "
                 "chain still classifies.")
             continue
-        if held.casefold() not in {pin.casefold() for pin in declared}:
+        if pin_product_key(held) not in {pin_product_key(pin)
+                                         for pin in declared}:
             return (f"{holder} declares "
                     + (", ".join(sorted(declared)) if declared else "no "
                        "neutral-product pin at all")
@@ -1769,7 +1789,7 @@ class NamingPolicy:
         problem = self._chain_shape_problem(name, chain, pins, referents)
         if problem is not None:
             return broken(problem)
-        final = _referent_in(referents, {chain[-1].casefold()})
+        final = _referent_in(referents, {pin_product_key(chain[-1])})
         contradiction, warnings, unverified = _chain_link_findings(chain,
                                                                    link_pins)
         if contradiction is not None:
@@ -1792,19 +1812,23 @@ class NamingPolicy:
         have. Each answer becomes the `detail` of a `broken` resolution, which
         is where the reader is told WHICH link broke rather than merely that
         one did.
+
+        A link is one product by `pin_product_key` (#444), so `openß` and
+        `openss` in one chain are two links and not a repeat, and a chain
+        beginning at `openß` does not begin at a pin on `openss`.
         """
         max_length = int(self.chain_rule().get("max_length") or CHAIN_MAX_LENGTH)
         if len(chain) > max_length:
             return (f"it names {len(chain)} links and the policy admits "
                     f"at most {max_length}")
-        seen = [link.casefold() for link in chain]
+        seen = [pin_product_key(link) for link in chain]
         if len(set(seen)) != len(seen):
             return "it repeats a link, so it is a cycle rather than a chain"
-        if chain[0].casefold() not in pins:
+        if pin_product_key(chain[0]) not in pins:
             return (f"it begins at {chain[0]}, which is not in this "
                     "project's `neutral_product_pins:` — the first "
                     "entry is the pin this project actually holds")
-        if _referent_in(referents, {chain[-1].casefold()}) is None:
+        if _referent_in(referents, {pin_product_key(chain[-1])}) is None:
             return (f"it ends at {chain[-1]}, but {name} would need "
                     + " or ".join(referents))
         return None
@@ -2787,7 +2811,9 @@ def resolve_link_source(product: str, root: Path | None = None,
                         ) -> tuple[Path | None, str | None]:
     """Where `product`'s own manifest can be read, if anywhere at all.
 
-      1. `--link-source <product>=<path>` (case-insensitive on the name)
+      1. `--link-source <product>=<path>`, `keyed_sources` keyed by
+         `pin_product_key` (#444): case-insensitive on the name, as its pin
+         file is, so `openss=` answers for `openss` and never for `openß`
       2. `SHAPE_PIN_SOURCE_<PRODUCT>` in the environment
       3. a checkout sitting BESIDE this project (`../openXdox`)
       4. a bare `--link-source <path>` with no `product=` prefix, which is
@@ -2810,7 +2836,7 @@ def resolve_link_source(product: str, root: Path | None = None,
     which product it holds is not read for either (#275).
     """
     candidates: list[tuple[str, Path, str]] = []
-    keyed = (keyed_sources or {}).get(product.casefold())
+    keyed = (keyed_sources or {}).get(pin_product_key(product))
     if keyed is not None:
         candidates.append(("keyed", Path(keyed),
                            f"--link-source {product}=..."))
@@ -2836,8 +2862,9 @@ def resolve_link_source(product: str, root: Path | None = None,
 class LinkPins(dict):
     """`link_pins_from_trees`'s answer for a caller that asks it to say why:
     the same `{link: the pins ITS manifest declares}`, equal to a plain one,
-    with `unreadable` beside it, `{link casefolded: why}` for each link whose
-    source REACHED a manifest that could not be read as a declaration (#338).
+    with `unreadable` beside it, `{pin_product_key(link): why}` for each link
+    whose source REACHED a manifest that could not be read as a declaration
+    (#338, #444).
 
     A link in `unreadable` is absent from the mapping, as one that is not on
     the disk is. What differs is the warning `_chain_link_findings` writes for
@@ -2891,6 +2918,11 @@ def link_pins_from_trees(links, root: Path | None = None,
     openYdox, not openInk", and a chain that holds was broken. A later link
     is read through rules 1 to 3 of `resolve_link_source`, or is
     declared-unverified.
+
+    THE TABLE IS KEYED BY `pin_product_key` (#444), the key the variable
+    guard above already asks by. It was `casefold()`, so `openß` and
+    `openss`, each with its own tree, shared one entry and the later tree
+    answered for both.
     """
     found: dict[str, set] = {}
     unreadable: dict[str, str] = {}
@@ -2911,9 +2943,9 @@ def link_pins_from_trees(links, root: Path | None = None,
         if pins is None:
             rule, how, _path, _answered = asked[-1]
             asked[-1] = (rule, how, path, why)
-            unreadable[name.casefold()] = why
+            unreadable[pin_product_key(name)] = why
             continue
-        found[name.casefold()] = pins
+        found[pin_product_key(name)] = pins
     return LinkPins(found, unreadable) if with_reasons else found
 
 

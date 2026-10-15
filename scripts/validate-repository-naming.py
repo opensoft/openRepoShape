@@ -101,7 +101,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, LINK_SOURCE_ABSENT, LINK_SOURCE_NO_MANIFEST,
     UNAMBIGUOUS_FORMS, Classification, NamingPolicy, Refusal,
-    link_pins_from_trees, load_yaml, repo_basename,
+    link_pins_from_trees, load_yaml, pin_product_key, repo_basename,
 )
 
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
@@ -136,12 +136,13 @@ class LinkSources:
     that a source keyed to a link `a` that no chain names, which no lookup
     ever asked for — the link stayed declared-unverified, exit 0, under a
     WARNING suggesting the very `--link-source` the person had passed. So the
-    text before the first `=` is a LINK only when it casefolds to a link of a
+    text before the first `=` is a LINK only when it names a link of a
     referent chain this run reads (`--referent-chain`'s, or a leg's
-    `naming.referent_chain:` under `--project`), the casefold the lookup
-    uses, and any other value is a bare PATH, whole. A link's name wins even
-    where a directory is spelled like the whole value: the reading is decided
-    by the chains and never by the disk, and `./` asks for the directory.
+    `naming.referent_chain:` under `--project`) by `pin_product_key`, the key
+    the lookup uses, and any other value is a bare PATH, whole. A link's name
+    wins even where a directory is spelled like the whole value: the reading
+    is decided by the chains and never by the disk, and `./` asks for the
+    directory.
     That is `validate-pins.py`'s reading of `--pin-source` (#295), with a
     chain link where that file has a declared pin, so the two copied tools
     read `[PRODUCT=]PATH` one way.
@@ -169,6 +170,13 @@ class LinkSources:
     `Path("")`, which is `.`: run from a project root it read the project's
     own manifest as openXdox's, and a chain that holds was broken. That and
     an empty bare value are in `no_path`, and `no_path_refusal` says so.
+
+    EVERY LINK IS KEYED BY `pin_product_key` (#444), the pin file's own fold,
+    as `repo_shape.py`'s chain readers key it. With `casefold()` here,
+    `openß` and `openss` were one link: `--link-source openss=` answered for
+    `openß`, two values for the pair replaced each other, and two chains
+    beginning at them counted one first link, so a bare PATH was read as both
+    products' trees.
     """
 
     def __init__(self, values: list[str], links, firsts=()) -> None:
@@ -177,18 +185,19 @@ class LinkSources:
         names: dict[str, str] = {}
         for link in links:
             name = repo_basename(str(link))
-            if name and name.casefold() not in names:
-                names[name.casefold()] = name
+            if name and pin_product_key(name) not in names:
+                names[pin_product_key(name)] = name
                 self.links.append(name)
-        #: `{casefolded: first spelling}` of the first link of every chain a
-        #: name here reads (#441). `link_pins` adds a chain's first link as it
-        #: reads it, which matters only for names read from stdin: they come
-        #: when no other name does, all with `--referent-chain`.
+        #: `{pin_product_key: first spelling}` of the first link of every
+        #: chain a name here reads (#441). `link_pins` adds a chain's first
+        #: link as it reads it, which matters only for names read from stdin:
+        #: they come when no other name does, all with `--referent-chain`.
         self.firsts: dict[str, str] = {}
         for link in firsts:
             name = repo_basename(str(link))
-            self.firsts.setdefault(name.casefold(), name)
-        #: `{link casefolded: (typed, path)}`, the last value given wins.
+            self.firsts.setdefault(pin_product_key(name), name)
+        #: `{pin_product_key(link): (typed, path)}`, the last value given
+        #: wins.
         self.keyed: dict[str, tuple[str, Path]] = {}
         #: `(typed, path)` of the last bare value, if any.
         self.bare: tuple[str, Path] | None = None
@@ -199,11 +208,11 @@ class LinkSources:
         self.replaced: dict[str, str] = {}
         for typed in values:
             key, sep, path = typed.partition("=")
-            link = names.get(key.casefold()) if sep else None
+            link = names.get(pin_product_key(key)) if sep else None
             self.reading[typed] = link
             if link is not None:
-                earlier = self.keyed.get(link.casefold())
-                self.keyed[link.casefold()] = (typed, Path(path))
+                earlier = self.keyed.get(pin_product_key(link))
+                self.keyed[pin_product_key(link)] = (typed, Path(path))
             else:
                 earlier = self.bare
                 self.bare = (typed, Path(typed))
@@ -215,7 +224,7 @@ class LinkSources:
         self.no_path: list[str] = [
             typed for typed, link in self.reading.items()
             if not (typed.partition("=")[2] if link is not None else typed)]
-        #: The links some name's lookup asked about, casefolded.
+        #: The links some name's lookup asked about, by `pin_product_key`.
         self.asked: set[str] = set()
         #: The values a link read: each the answer for one link (#441).
         self.used: set[str] = set()
@@ -241,7 +250,7 @@ class LinkSources:
             return {}
         if len(target.chain) > 1:
             first = repo_basename(str(target.chain[0]))
-            self.firsts.setdefault(first.casefold(), first)
+            self.firsts.setdefault(pin_product_key(first), first)
         tried: dict = {}
         found = link_pins_from_trees(
             target.chain, target.root,
@@ -252,12 +261,12 @@ class LinkSources:
         # (`_chain_link_findings`): a source asked only for the chain's end
         # decided nothing, and saying it answered, or failed to, would be a
         # report about a question nobody asked.
-        holders = {repo_basename(str(link)).casefold()
+        holders = {pin_product_key(repo_basename(str(link)))
                    for link in target.chain[:-1]}
         for link, asked in tried.items():
-            if link.casefold() not in holders:
+            if pin_product_key(link) not in holders:
                 continue
-            self.asked.add(link.casefold())
+            self.asked.add(pin_product_key(link))
             for rule, how, path, why in asked:
                 self._record(link, rule, how, path, why)
         return found
@@ -279,7 +288,7 @@ class LinkSources:
         still could not answer, since one that is absent, or holds no
         manifest, is the ordinary case."""
         if rule in ("keyed", "bare"):
-            typed = (self.keyed[link.casefold()] if rule == "keyed"
+            typed = (self.keyed[pin_product_key(link)] if rule == "keyed"
                      else self.bare)[0]
             if why is None:
                 self.used.add(typed)
