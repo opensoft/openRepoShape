@@ -43,7 +43,20 @@ SHIPPED = [
     REPO / "templates" / "family-root" / "scripts" / "validate-family.py",
     REPO / "templates" / "family-root" / "scripts" / "bootstrap.py",
     REPO / "templates" / "family-root" / "scripts" / "siblings.py",
+    REPO / "src" / "openreposhape" / "__init__.py",
+    REPO / "src" / "openreposhape" / "__main__.py",
+    REPO / "src" / "openreposhape" / "_release.py",
+    REPO / "src" / "openreposhape" / "cli.py",
+    REPO / "src" / "openreposhape" / "standard.py",
 ]
+#: THE openreposhape PACKAGE joins them on 2026-10-15 (#563), every module of
+#: it, and `test_the_package_is_every_module_shipped` below holds the list to
+#: the directory. pipx installs it with one dependency, git-filter-repo, which
+#: it never imports: it only puts that program on its children's PATH. A
+#: package that imported anything else would make the second way in need
+#: more than the first, and the first is python3 and git alone. Its modules
+#: import each other relatively, which the walk above does not count.
+#:
 #: `bootstrap` joins them on 2026-09-09 (#76): the holder's `siblings.py`
 #: imports the credential resolution and the member rows from the
 #: `bootstrap.py` beside it rather than defining either a second time, and the
@@ -106,6 +119,14 @@ def test_shipped_code_imports_only_the_standard_library(path):
 def test_every_shipped_script_compiles():
     for path in SHIPPED:
         compile(path.read_text(encoding="utf-8"), str(path), "exec")
+
+
+def test_the_package_is_every_module_shipped():
+    """Every module of `src/openreposhape/` is in `SHIPPED`, so a module
+    added to the package is held to the standard library like the rest."""
+    package = REPO / "src" / "openreposhape"
+    assert sorted(package.glob("*.py")) == sorted(
+        path for path in SHIPPED if path.parent == package)
 
 
 @pytest.mark.parametrize("template", ["assembly-root", "family-root"])
@@ -1473,8 +1494,10 @@ OPENREPOTOOLS_INSTALL = (
 
 #: Every file that carries it. The shim is where a person meets it, README.md
 #: is where they look it up, and `docs/handbook.html` is the README's designed
-#: reading - a page a reader copies from as readily as either.
-OPENREPOTOOLS_INSTALL_IN = ["openRepoShape", "README.md", "docs/handbook.html"]
+#: reading - a page a reader copies from as readily as either. The package's
+#: `openRepoShape` prints it in its usage, as the shim does (#563).
+OPENREPOTOOLS_INSTALL_IN = ["openRepoShape", "README.md", "docs/handbook.html",
+                            "src/openreposhape/cli.py"]
 
 
 @pytest.mark.parametrize("name", OPENREPOTOOLS_INSTALL_IN)
