@@ -1475,6 +1475,21 @@ def test_setup_project_py_is_pure_ascii(name):
         f"`grep -nP '[^\\x00-\\x7F]' {name}`")
 
 
+@pytest.mark.parametrize(
+    "path", sorted((REPO / "src" / "openreposhape").glob("*.py")),
+    ids=lambda p: p.name)
+def test_the_package_is_pure_ascii(path):
+    """The openreposhape package (#563), held to `setup-project.py`'s rule
+    for the same reason: its `openRepoShape` prints its usage and every
+    refusal to whatever console the command was typed in, and on a stock
+    Windows that is PowerShell 5.1's. Its wheel carries `setup-project.py`
+    as well, which the test above already holds."""
+    name = path.relative_to(REPO).as_posix()
+    assert path.read_bytes().isascii(), (
+        f"{name} must be pure ASCII; find the offending line with "
+        f"`grep -nP '[^\\x00-\\x7F]' {name}`")
+
+
 #: THE ONE LINE THAT INSTALLS THE COMMANDS THIS REPOSITORY NO LONGER SHIPS
 #: (#92). `park` and `resume` moved to opensoft/openRepoTools, and what is
 #: left here is a pointer at its installer: printed by `openRepoShape
