@@ -650,11 +650,20 @@ def test_a_plan_that_seeds_both_legs_is_not_asked_about_the_extraction(
 
 
 def with_origin(source: Path, bare: Path) -> None:
-    """`bare` as the source's `origin`, fetched: its branches are the
-    source's remote-tracking branches, and its path ends in
-    `testorg/Northwind.git`, which `plan` reads as the source's repository."""
-    git("remote", "add", "origin", bare.as_posix(), cwd=source)
-    git(*FILE_PROTOCOL, "fetch", "-q", "origin", cwd=source)
+    """`testorg/Northwind` on GitHub as the source's `origin`, which `plan`
+    reads as the source's repository, and `bare`, its stand-in, fetched
+    (`fetched`): its branches are the source's remote-tracking branches. Not
+    `bare`'s own path as the `origin`: a path names no repository (#521)."""
+    git("remote", "add", "origin", f"https://github.com/{ORG}/{PROJECT}.git",
+        cwd=source)
+    fetched(source, bare)
+
+
+def fetched(source: Path, bare: Path, *flags: str) -> None:
+    """`git fetch <flags> origin` in `source`, from `bare` by its path, into
+    the refs a fetch of `origin` keeps: nothing here reaches GitHub."""
+    git(*FILE_PROTOCOL, "fetch", "-q", *flags, bare.as_posix(),
+        "+refs/heads/*:refs/remotes/origin/*", cwd=source)
 
 
 def test_check_reads_github_as_the_sources_origin_last_fetched_it(
@@ -710,7 +719,7 @@ def test_a_branch_gone_from_github_leaves_check_once_the_source_prunes(
     assert [code for code, _ in findings(plan)] == [BRANCH_EXISTS]
     git("update-ref", "-d", f"refs/heads/{SPLIT_BRANCH}", cwd=bare)
     assert [code for code, _ in findings(plan)] == [BRANCH_EXISTS]
-    git(*FILE_PROTOCOL, "fetch", "-q", "--prune", "origin", cwd=source)
+    fetched(source, bare, "--prune")
     assert findings(plan) == []
     assert ("once `git fetch --prune origin` in the source finds it gone "
             "there") in adopter.SPLIT_BRANCH_REMEDIATION
