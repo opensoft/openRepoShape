@@ -50,9 +50,9 @@ STAMP = REPO / "src" / "openreposhape" / "_release.py"
 #: Each upload job, and the one environment it deploys to.
 UPLOADS = {"testpypi": "testpypi", "pypi": "pypi"}
 
-#: The gate this repository lands by: `tests.yml`'s one job since #597,
-#: which runs on every trigger. Named here, never read from a run, so a
-#: job that goes missing is a refusal and not a smaller gate.
+#: The gate this repository lands by: `tests`, which `tests.yml` runs on
+#: every trigger since #597. Named here, never read from a run, so a job
+#: that goes missing is a refusal and not a smaller gate.
 GATE = ("tests",)
 
 #: The guard on both upload jobs: a `v*` tag, nothing else.
@@ -238,8 +238,9 @@ def test_the_build_refuses_a_tag_that_is_not_the_annotated_v_version_at_this_com
 
 
 def test_the_build_refuses_a_commit_without_a_passing_tests_job(workflow):
-    """RV599, MUST 1 and MUST 2: the `tests` job, and it alone since #597,
-    must have passed in a `push` or `workflow_dispatch` run of `tests.yml`
+    """RV599, MUST 1 and MUST 2: the gate requires the `tests` job alone,
+    which `tests.yml` runs on every trigger since #597. It must have passed
+    in a `push` or `workflow_dispatch` run of `tests.yml`
     whose head is the commit (a `pull_request` run tests a merge, another
     tree), read from that run's own jobs, never from the commit's check
     runs, which an Actions token can create. The gate names the job; it is
@@ -320,10 +321,17 @@ def a_job(when: str = "2026-10-15T17:00:00Z", conclusion: str = "success",
      {1: [a_job("2026-10-15T17:00:00Z", "failure")],
       2: [a_job("2026-10-15T18:00:00Z")]}, 0,
      "tests: success at 2026-10-15T18:00:00Z"),
+    ([a_run(1)], {1: [a_job(conclusion="cancelled")]}, 1,
+     "`tests`'s newest run on " + GATE_SHA + " ended cancelled"),
+    ([a_run(1), a_run(2, "workflow_dispatch")],
+     {1: [a_job("2026-10-15T17:00:00Z", "cancelled")],
+      2: [a_job("2026-10-15T18:00:00Z")]}, 0,
+     "tests: success at 2026-10-15T18:00:00Z"),
 ], ids=["a-push-run-passed", "a-dispatch-run-passed", "a-pull-request-run-alone",
         "a-run-of-another-head", "a-run-of-another-workflow", "skipped",
         "no-tests-job", "still-in-progress", "older-success-newer-failure",
-        "older-failure-newer-success"])
+        "older-failure-newer-success", "a-landing-cancelled-the-push-run",
+        "a-dispatch-after-a-cancelled-push-run"])
 def test_the_gate_decides_from_the_runs_jobs(workflow, tmp_path, runs, jobs,
                                             code, says):
     """RV599, SHOULD 6: the gate's own script under a `gh` that answers as
@@ -350,9 +358,15 @@ def test_the_gate_decides_from_the_runs_jobs(workflow, tmp_path, runs, jobs,
         check=False, env={**os.environ, "GH_LOG": str(log), "GH_DATA": str(data),
                           "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                           "GITHUB_REPOSITORY": "opensoft/openRepoShape",
-                          "GITHUB_SHA": GATE_SHA})
+                          "GITHUB_SHA": GATE_SHA, "VERSION": "1.1.0"})
     assert done.returncode == code, done.stdout + done.stderr
     assert says in done.stdout + done.stderr
+    if "has not run" in says or " ended " in says:
+        # RV599, SHOULD 7: a refusal names the dispatch that answers it.
+        for remedy in ("`gh workflow run tests.yml --ref <branch>`",
+                       "`gh workflow run tests.yml --ref v1.1.0`",
+                       "`--ref main` tests main's current head"):
+            assert remedy in done.stdout + done.stderr, remedy
     counted = [run["id"] for run in runs
                if run["event"] in ("push", "workflow_dispatch")
                and run["head_sha"] == GATE_SHA
