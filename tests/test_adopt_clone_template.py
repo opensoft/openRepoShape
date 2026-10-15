@@ -61,8 +61,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
-                      resolve, run_script, write_plan)
+from conftest import (ADOPT, FILE_PROTOCOL, REPO, cloned_just_pushed, git,
+                      make_source_repo, resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from shape_materialize import SHAPE_REPOSITORY  # noqa: E402
@@ -339,10 +339,8 @@ def test_a_clean_recursive_clone_succeeds_and_the_projects_validators_pass(
     not contain` the planted commit (exit 128). `bootstrap.py` is the last of
     the validators: it places each leg AT its pin, so it fails where a gitlink
     and a pin disagree."""
-    clone = tmp_path / PROJECT
-    git_under(adopted.clean, *FILE_PROTOCOL, "clone", "-q",
-              "--recurse-submodules", "-b", BRANCH, str(adopted.source),
-              str(clone), cwd=tmp_path)
+    clone = cloned_just_pushed(adopted.source, tmp_path / PROJECT, BRANCH,
+                               env=adopted.clean)
     for role in ROLES:
         assert git_under(adopted.clean, "rev-parse", "HEAD", cwd=clone / role) \
             == pushed_tip(adopted.remotes, role)

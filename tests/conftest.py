@@ -25,6 +25,7 @@ fast.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import select
@@ -36,6 +37,7 @@ import subprocess
 import sys
 import time
 from argparse import Namespace
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -65,7 +67,9 @@ FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 
 
 def clone_just_pushed(remote: Path, dest: Path,
-                      branch: str | None = None
+                      branch: str | None = None, *, recurse: bool = True,
+                      bare: bool = False, config: Sequence[str] = (),
+                      env: Mapping[str, str] | None = None
                       ) -> subprocess.CompletedProcess:
     """`git clone --recurse-submodules` of a bare remote a scaffold has JUST
     pushed into, READ THROUGH GIT AND NOT THROUGH ITS FILES (#440).
@@ -90,18 +94,76 @@ def clone_just_pushed(remote: Path, dest: Path,
     branch into the SOURCE, a plain repository, which is then `remote`.
     The two legs it pushed into `--local-remote-dir` are read by the
     rewrite only while that directory sits under `remote`'s parent.
+
+    The keywords are for the tests whose subject is the clone itself or the
+    environment it is made in (#544). `recurse=False` is a plain `git clone`,
+    which leaves a submodule's mount empty; `bare` is a bare copy of the
+    remote, with no submodules to read; `config` is more `-c` arguments for
+    the one command (`["-c", "core.autocrlf=true"]`); and `env` is variables
+    laid over this process's own, as `git_under` and `raw` lay them. The
+    output is decoded as UTF-8 whatever the platform's code page: a refusal
+    names a path, and a project's name can be any text.
     """
+    remote = Path(remote)
     remotes = remote.parent.resolve()
     uri = remotes.as_uri().rstrip("/") + "/"
     prefixes = dict.fromkeys([os.path.join(str(remotes), ""),
                               remotes.as_posix().rstrip("/") + "/"])
     rewrites = [arg for prefix in prefixes
                 for arg in ("-c", f"url.{uri}.insteadOf={prefix}")]
+    if bare:
+        mode = ["--bare"]
+    else:
+        mode = ["--recurse-submodules"] if recurse else []
     return subprocess.run(
-        ["git", *FILE_PROTOCOL, *rewrites, "clone", "-q", "--no-local",
-         *(["-b", branch] if branch else []),
-         "--recurse-submodules", str(remote), str(dest)],
-        capture_output=True, text=True, check=False)
+        ["git", *FILE_PROTOCOL, *config, *rewrites, "clone", "-q",
+         "--no-local", *(["-b", branch] if branch else []), *mode,
+         str(remote), str(dest)],
+        capture_output=True, encoding="utf-8", errors="replace", check=False,
+        env=None if env is None else {**os.environ, **env})
+
+
+def cloned_just_pushed(remote: Path, dest: Path, branch: str | None = None,
+                       **options) -> Path:
+    """`clone_just_pushed`, failing the test where the clone fails; `dest`.
+    `options` are the ones `clone_just_pushed` takes."""
+    cloned = clone_just_pushed(remote, dest, branch, **options)
+    assert cloned.returncode == 0, (f"git clone of {remote} failed:\n"
+                                    f"{cloned.stderr}{cloned.stdout}")
+    return Path(dest)
+
+
+def load_without_bytecode(path: Path, name: str):
+    """`path` run as a module called `name`, and no bytecode written for it
+    (#544; it is `load()` of `test_bootstrap_spelling.py`, #456, moved here).
+
+    `SourceFileLoader` caches what it compiles in a `__pycache__` beside the
+    source, and these sources are the TEMPLATES: a tree other tests read file
+    by file as text (`test_scaffold_leg_path_collisions.py` does, and a `.pyc`
+    is not UTF-8), and a tree a materializer walks. `.gitignore` hides the
+    stray, so `git status` never says it is there. The flag is process-wide, so
+    it is restored; it also covers the `repo_shape` a root imports as it runs.
+    """
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    wrote_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = wrote_bytecode
+    return module
+
+
+#: `load_without_bytecode`'s counterpart for a CHILD process (#544). A child
+#: that imports a file under `templates/` writes `__pycache__` beside it
+#: unless this is in its environment. `family.py siblings` used to run the
+#: template's `scripts/siblings.py` through `runpy`, importing `bootstrap`
+#: from the template tree; since #543 it runs the holder's own
+#: `scripts/siblings.py` in a child process standing in the holder, so its
+#: imports come from the holder's copy. Kept on those calls so a return to
+#: an in-process run cannot write into the templates unseen.
+NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
 
 
 #: THE DEFAULT IDENTITY `git()` GIVES GIT (#279). A commit needs an author and
@@ -396,8 +458,7 @@ def scaffolded(tmp_path_factory) -> dict:
     )
     assert result.returncode == 0, result.stderr + result.stdout
     clones.mkdir()
-    proc = clone_just_pushed(remotes / f"{PROJECT}.git", clones / PROJECT)
-    assert proc.returncode == 0, proc.stderr
+    cloned_just_pushed(remotes / f"{PROJECT}.git", clones / PROJECT)
     return {
         "base": base, "remotes": remotes, "work": work,
         "clone": clones / PROJECT, "stdout": result.stdout,
