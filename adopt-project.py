@@ -3047,6 +3047,24 @@ def _refuse_a_tracking_branch_the_remote_lacks(urls: dict, tracking: str,
         REMOTE_LACKS_REMEDIATION + (LOCAL_REMOTE_LACKS if local else ""))
 
 
+def _refuse_bad_id(project_id: str, project: str, passed: bool) -> None:
+    """`plan`'s refusal of an id the project's validators would not take
+    (`PROJECT_ID_RE`), in the words of where it came from. A `--id` the person
+    passed is named as the flag they typed, with the value as typed. One
+    `plan` derived from `--project` (lowercased, `FLAG_DEFAULTS`) is named as
+    derived, the way `_flag_named` names the tracking branch and the elector
+    it fills in (#529): `--id 'north_wind' must match` named a flag nobody
+    had passed (#601). The finding's code is the same for both."""
+    if PROJECT_ID_RE.match(project_id):
+        return
+    pattern = PROJECT_ID_RE.pattern
+    what = (f"--id {project_id!r} must match {pattern}" if passed
+            else f"the id derived from --project {project!r} (--id was not "
+                 f"given) is {project_id!r}, which must match {pattern}")
+    raise Refusal("adopt-bad-id", what,
+                  "Remediation: pass an explicit lowercase --id.")
+
+
 def _checked_plan_inputs(args, source: Source,
                          naming: NamingPolicy) -> tuple[dict, list]:
     """Every value the plan will RECORD, defaulted and checked before one of
@@ -3097,11 +3115,11 @@ def _checked_plan_inputs(args, source: Source,
                       _leg_collision_remediation(products))
     args.spec_path = checked_value(*spec)
     args.code_path = checked_value(*code)
+    # Whether `--id` was passed is read BEFORE it is filled in: a refusal of
+    # the id names where it came from (#601).
+    id_passed = "id" in flags_given
     args.id = args.id or args.project.lower()
-    if not PROJECT_ID_RE.match(args.id):
-        raise Refusal("adopt-bad-id",
-                      f"--id {args.id!r} must match {PROJECT_ID_RE.pattern}",
-                      "Remediation: pass an explicit lowercase --id.")
+    _refuse_bad_id(args.id, args.project, id_passed)
     # NO ORG IS `adopt-no-org`, asked before `checked_value` (#292). The `-`
     # that once stood in for a missing one reached `checked_value` first,
     # which refused `--org is '-'`, a value nobody passed; this refusal was
