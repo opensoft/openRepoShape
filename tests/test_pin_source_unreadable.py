@@ -297,16 +297,19 @@ def test_the_source_is_printed_escaped_and_never_raised_on(
     name: the refusal is never a `UnicodeEncodeError` in its place. The
     second row is a name that is not UTF-8 (POSIX only: a Windows command
     line has no such byte), read with `surrogateescape`, so it prints as
-    the surrogate it was read as. `adopt-project.py plan` refused that name
-    as a value it could not record (#273's review, N2) while it recorded
-    the path; it records none since #540, so it is read, and refused, as
-    the scaffold refuses it."""
+    the surrogate it was read as. `adopt-project.py plan` records the path
+    in the plan, which cannot hold that byte, so it refuses the name as a
+    value it cannot record before it reads any digest (#273's review, N2),
+    and spells it the same way."""
     typed = str(tmp_path / name)
     result = run(kind, tmp_path, adoptable, typed, env=env)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "Traceback" not in result.stderr, result.stderr
     assert spelled in result.stderr, result.stderr
-    assert "REFUSED pin-source-unreadable: " in result.stderr
+    code = ("adopt-unwritable-value"
+            if kind == "adopt-plan" and "\udcff" in name
+            else "pin-source-unreadable")
+    assert f"REFUSED {code}: " in result.stderr
     assert made(kind, tmp_path) == []
 
 
@@ -356,17 +359,22 @@ def assert_one_refusal_of_the_tools(result: subprocess.CompletedProcess,
 @pytest.mark.parametrize("name", CONTROL_NAMES)
 def test_a_source_holding_a_control_character_is_named_spelled(
         kind, name, tmp_path, adoptable):
-    """Through every way in, in one refusal, `pin-source-unreadable`.
-    `adopt-project.py plan` refused such a path before it read a digest, as
-    a value it could not record (#273's review, N2); it records no path
-    since #540, so it reads this one and says what the scaffold says."""
+    """Through every way in. The scaffold refuses it as
+    `pin-source-unreadable`; `adopt-project.py plan` refuses it before any
+    digest is read, as a value it cannot record (#273's review, N2), and
+    names it the same way."""
     typed = str(tmp_path / name)
     result = run(kind, tmp_path, adoptable, typed)
     assert_one_refusal_of_the_tools(result, typed)
-    assert result.stderr == (
-        f"REFUSED pin-source-unreadable: {typed!r} could not answer for "
-        f"opensoft/openGlass @ {COMMIT}: {NO_SUCH_DIRECTORY}\n"
-        f"{REMEDIATION}\n")
+    if kind == "adopt-plan":
+        assert result.stderr.startswith(
+            f"REFUSED adopt-unwritable-value: --pin-source is {typed!r}, "), \
+            result.stderr
+    else:
+        assert result.stderr == (
+            f"REFUSED pin-source-unreadable: {typed!r} could not answer for "
+            f"opensoft/openGlass @ {COMMIT}: {NO_SUCH_DIRECTORY}\n"
+            f"{REMEDIATION}\n")
     assert made(kind, tmp_path) == []
 
 
@@ -432,7 +440,7 @@ def test_a_source_that_answers_is_read_as_before(kind, spelling, tmp_path,
         pin = load_yaml(tmp_path / "plan.yaml")["pins"][0]
         assert pin["commit"] == commit
         assert pin["tree_sha256"] == digest
-        assert pin["digest_source"] == "local-clone"
+        assert pin["digest_source"] == f"local-clone ({typed})"
     else:
         assert f"tree {digest[:12]}" in result.stdout, result.stdout
         assert " (local-clone)\n" in result.stdout, result.stdout
@@ -604,9 +612,10 @@ def skip_where_no_file_name_is_not_utf_8(directory: Path) -> None:
 def test_the_pin_file_says_how_the_digest_was_read_and_not_where(
         name, tmp_path, adoptable, glass):
     """A real scaffold from a clone at each path: exit 0, the plan's `pin`
-    line ending `(local-clone)`, and the pin file the root commits, read
-    from git, holding `digest_source: local-clone` and no byte of the
-    clone's directory."""
+    line ending `(local-clone)`, the pin file the root commits, read from
+    git, holding `digest_source: local-clone`, and no commit of the three
+    repositories holding a byte of the clone's directory (`git log -p
+    --all`, read as bytes)."""
     product, commit = glass
     if "\udcff" in name:
         skip_where_no_file_name_is_not_utf_8(tmp_path)
@@ -626,3 +635,10 @@ def test_the_pin_file_says_how_the_digest_was_read_and_not_where(
     assert os.fsencode(str(clones)) not in blob, blob
     assert parse_yaml(blob.decode("utf-8"))["digest_source"] == "local-clone"
     assert b"\ndigest_source: local-clone\n" in blob, blob
+    repositories = sorted((tmp_path / "remotes").glob("*.git"))
+    assert len(repositories) == 3, repositories
+    for repository in repositories:
+        history = subprocess.run(["git", "log", "-p", "--all"],
+                                 cwd=repository, capture_output=True,
+                                 check=True).stdout
+        assert os.fsencode(str(clones)) not in history, repository

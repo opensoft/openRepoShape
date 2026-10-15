@@ -1009,7 +1009,7 @@ def a_whole_pin(product: str) -> str:
             f"    repository: opensoft/{product}\n"
             f'    commit: "{"a" * 40}"\n'
             f'    tree_sha256: "{"b" * 64}"\n'
-            '    digest_source: "local-clone"\n')
+            f'    digest_source: "local-clone ({product})"\n')
 
 
 #: What `check` and `execute` still take, by test id: the key, the block

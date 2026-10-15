@@ -483,11 +483,13 @@ options:
   --pin-source PIN_SOURCE
                         a local clone to compute --pin digests from, instead
                         of reading the forge with `gh api` (the TEST path; no
-                        network). The plan and the pin file say only that the
-                        digest was read from `local-clone`, never the path.
-                        Given with no --pin to read it, the flag is refused as
-                        `pin-source-unused`; an empty value is refused as
-                        `pin-source-no-path`, and `.` means this directory.
+                        network). The plan records the path, which must be one
+                        printable line, so that `check` recomputes each digest
+                        there; the pin file says only `local-clone`, never the
+                        path. Given with no --pin to read it, the flag is
+                        refused as `pin-source-unused`; an empty value is
+                        refused as `pin-source-no-path`, and `.` means this
+                        directory.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's

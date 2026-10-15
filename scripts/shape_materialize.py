@@ -2639,6 +2639,10 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
     byte that is not UTF-8, after all three repositories existed. What the
     field is for is which of the two ways the digest was read, so that is
     what it says; the refusals above still name the path the run was given.
+    `adopt-project.py plan` records the path in its plan beside these
+    values, `local-clone (<path>)`, so that `check` recomputes the digest in
+    that clone (#449): the plan is a file on that machine, which nothing
+    commits, and `execute` writes the pin file's field as this says it.
     """
     pins: dict[str, dict[str, str]] = {}
     for raw in args.pin:

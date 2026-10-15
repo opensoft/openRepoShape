@@ -256,12 +256,17 @@ PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
 #: machine, and is no partial clone, `check` and `execute` recompute the
 #: digest there with `plan`'s own reader (`pin_digest_from_source`), which
 #: in such a clone reads no network, and find a commit or a digest edited
-#: after `plan` read them (#449).
+#: after `plan` read them (#449). So the plan, a file on this machine that
+#: nothing commits, records where that clone is, `local-clone (<path>)`
+#: (`_as_planned`); the pin file `execute` commits says only how the digest
+#: was read, `local-clone` or `gh-api-tree-recursive`, and never where
+#: (`_recorded_pins`, #540).
 from shape_materialize import (  # noqa: E402
     DIGEST_FROM_CLONE, DIGEST_FROM_GH, PIN_ARG_RE, declared_pin_products,
-    declared_pin_values, neutral_pin_path, pin_collisions,
-    pin_digest_from_source, pin_source_path, pin_variable_collisions,
-    refuse_an_unread_pin_source, refuse_colliding_pins,
+    declared_pin_values, neutral_pin_path, one_printable_line,
+    pin_collisions, pin_digest_from_source, pin_source_path,
+    pin_variable_collisions, refuse_an_unread_pin_source,
+    refuse_colliding_pins,
 )
 #: How `plan`'s refusals of a `--pin-source` begin their remediation.
 PLAN_NOT_WRITTEN = "no plan was written."
@@ -286,7 +291,7 @@ ROOT_HOLDS_PIN = "plan-root-holds-pin"
 #: otherwise, or cannot answer for at all, at the plan's commit (#449).
 PIN_DIGEST_MISMATCH = "plan-pin-digest-mismatch"
 PIN_SOURCE_UNREADABLE = "plan-pin-source-unreadable"
-#: How `declared_pin_values` records where it read a digest: from a clone on
+#: How `plan` records where it read a digest (`_as_planned`): from a clone on
 #: this machine, `--pin-source` as typed, or from the forge.
 LOCAL_CLONE_RE = re.compile(r"local-clone \((?P<path>.+)\)")
 GH_DIGEST_SOURCE = "gh-api-tree-recursive"
@@ -344,16 +349,20 @@ def _pin_row_problem(row: dict) -> tuple[str, str] | None:
     Each value is held to what `plan` writes there: the commit to
     `COMMIT_RE`, the repository and the commit together to the scaffold's own
     `PIN_ARG_RE`, owner-qualified, with the product its name, the digest to
-    `SHA256_RE`, and the digest's source to `DIGEST_FROM_CLONE` or
-    `DIGEST_FROM_GH`.
+    `SHA256_RE`, and the digest's source to `_a_digest_source`.
 
-    THE DIGEST'S SOURCE IS ONE OF THE TWO WORDS `plan` WRITES (#540). It was
-    held to one printable line, so a plan from a `plan` before #540, which
-    recorded `local-clone (<the --pin-source path>)`, or a hand edit, passed
-    `check`, and `execute` committed that path into the root's pin file, the
-    directory a clone sat in on the machine that planned. `execute` writes
-    the field as the plan holds it, so a value `plan` never writes is
-    `plan-pin-malformed`, with the `plan` that records the pin whole."""
+    THE DIGEST'S SOURCE IS ONE OF THREE SPELLINGS (#540). It was held to one
+    printable line, and `execute` wrote it into the root's pin file as it
+    stood, so `plan`'s `local-clone (<the --pin-source path>)` committed the
+    directory a clone sat in on the machine that planned, and a hand edit
+    could commit any line at all. The plan still records the path, because
+    `check` recomputes the digest in that clone (#449), but the field is
+    now held to a closed set, and `execute` writes the pin file's from it
+    (`_digest_source_written`): `gh-api-tree-recursive` as it is, and
+    `local-clone` for both `local-clone` and `local-clone (<path>)`. So no
+    value of the plan's reaches the committed file but those two words, and
+    any other is `plan-pin-malformed`, with the `plan` that records the pin
+    whole."""
     missing = [key for key, _ in PIN_FIELDS if row.get(key) in (None, "")]
     unrecorded = [key for key in PIN_RECORDED if key in missing]
     if unrecorded or missing:
@@ -381,12 +390,38 @@ def _pin_row_problem(row: dict) -> tuple[str, str] | None:
     if not SHA256_RE.match(digest):
         return PIN_MALFORMED, (f"records `tree_sha256: {digest!r}`, which is "
                                "not 64 hex")
-    if how not in (DIGEST_FROM_CLONE, DIGEST_FROM_GH):
+    if not _a_digest_source(how):
         return PIN_MALFORMED, (
-            f"records `digest_source: {how!r}`, and `plan` records only how "
-            f"it read the digest, `{DIGEST_FROM_CLONE}` or "
-            f"`{DIGEST_FROM_GH}`, and never where")
+            f"records `digest_source: {how!r}`, and `plan` records "
+            f"`{DIGEST_FROM_GH}`, or `{DIGEST_FROM_CLONE} (<the clone's "
+            "path>)` on one printable line, and nothing else")
     return None
+
+
+def _a_digest_source(how: str) -> bool:
+    """Whether a pin's `digest_source:` is one `check` passes (#540): one
+    of the two words the pin file says, `gh-api-tree-recursive` and
+    `local-clone`, or `local-clone (<path>)` as `LOCAL_CLONE_RE` reads it,
+    the clone `check` recomputes the digest in (#449).
+
+    THE PATH IS HELD TO ONE PRINTABLE LINE, as the whole field was before
+    #540, and as `plan` holds `--pin-source` before it records it
+    (`_refuse_an_unrecordable_pin_source`). `LOCAL_CLONE_RE` takes any
+    character but a line break, a NUL among them, and the plan's reader
+    makes one of the escape `\\x00`; `Path.stat` raises `ValueError` on
+    such a path, where `_why_not_rechecked` waits for an `OSError`."""
+    if how in (DIGEST_FROM_CLONE, DIGEST_FROM_GH):
+        return True
+    return (LOCAL_CLONE_RE.fullmatch(how) is not None
+            and one_printable_line(how))
+
+
+def _digest_source_written(how: str) -> str:
+    """What the pin file `execute` commits says for a `digest_source:`
+    `check` passed (`_a_digest_source`): how the digest was read, and never
+    where (#540). `check`'s `write` line and `plan`'s `pin` line say the
+    same, so neither prints a clone's path as what is written."""
+    return DIGEST_FROM_CLONE if LOCAL_CLONE_RE.fullmatch(how) else how
 
 
 def _pin_fix(name=None) -> str:
@@ -476,9 +511,14 @@ def _declared_pins(plan: "Plan") -> list[str]:
 
 def _recorded_pins(plan: "Plan") -> dict[str, dict[str, str]]:
     """`{product: PIN_* values}` for the materializer, as
-    `declared_pin_values` hands it the scaffold's. Read only after `execute`
-    has refused every finding `_read_pins` makes."""
-    return {product: values for _, product, values in _read_pins(plan)[0]}
+    `declared_pin_values` hands it the scaffold's: the digest's source as
+    the pin file says it, `local-clone` and no clone's path
+    (`_digest_source_written`, #540). Read only after `execute` has refused
+    every finding `_read_pins` makes. `check`'s `write` line prints these
+    values, so it says what is written."""
+    return {product: {**values, "PIN_DIGEST_SOURCE": _digest_source_written(
+                values["PIN_DIGEST_SOURCE"])}
+            for _, product, values in _read_pins(plan)[0]}
 
 
 def _pin_files(plan: "Plan") -> list[tuple[str, str | None]]:
@@ -3258,8 +3298,10 @@ def _checked_plan_inputs(args, source: Source,
                       "named again, retyped; when `--elected-by` is not "
                       "given, `plan` reads `git config user.name`, so pass "
                       "the flag or correct that. " + WRITTEN_AS_TEXT)
+    if args.pin and args.pin_source is not None:
+        _refuse_an_unrecordable_pin_source(args.pin_source)
     names = _names(args.project)
-    pins = declared_pin_values(args)
+    pins = _as_planned(declared_pin_values(args), args.pin_source)
     _check_names(naming, names, set(pins), source)
     # LAST here, over every value as the plan will record it: `execute`
     # writes them into the project's own YAML. The project's own validator
@@ -3289,6 +3331,59 @@ def _refuse_misread_values(args, given: set, pins: dict, source: Source,
         raise Refusal("adopt-manifest-misread",
                       " ".join(f"{problem}." for problem in misread),
                       f"{MANIFEST_MISREAD_REMEDIATION} No plan was written.")
+
+
+def _refuse_an_unrecordable_pin_source(source: Path) -> None:
+    """`--pin-source` is a path `plan` can record, or this refuses it as
+    `adopt-unwritable-value`, before any digest is read and before a plan
+    is written.
+
+    `plan` records the path in each pin's `digest_source:` in the plan, so
+    that `check` can recompute the digest in that clone (#449), and `check`
+    holds it to `one_printable_line` (`_a_digest_source`). A path holding a
+    line break, an ESC or a byte that is not UTF-8 was planned, exit 0, and
+    printed raw in `plan`'s report -- the line break split it -- and `check`
+    then found `plan-pin-malformed` and said to re-run the `plan` that wrote
+    it. So `plan` asks `check`'s question of the value it would record, and
+    says why in #270's words (`unwritable_reason`) where they name it; the
+    one thing `check` refuses that they do not is an invisible formatting
+    character, a zero-width joiner among them. The `local-clone (` and `)`
+    that `_as_planned` puts around the path are printable, so the path alone
+    decides.
+
+    THE PIN FILE NEVER HOLDS THE PATH (#540): `execute` writes `local-clone`
+    there, so this is about the plan alone, and the scaffold, which records
+    no path, scaffolds from such a clone (#450).
+    """
+    text = str(source)
+    if one_printable_line(text):
+        return
+    reason = (unwritable_reason(text)
+              or "it holds an invisible formatting character")
+    raise Refusal(
+        "adopt-unwritable-value",
+        f"--pin-source is {text!r}, which `plan` records in each pin's "
+        "`digest_source:` in the plan, for `check` to recompute the digest "
+        f"in that clone, and {reason}.",
+        "Remediation: no plan was written. Point --pin-source at a clone "
+        "whose path is one line of printable UTF-8 text, or drop "
+        "--pin-source and let `gh api` read the forge. `check` refuses a "
+        "`digest_source:` that is not one printable line as "
+        "`plan-pin-malformed`.")
+
+
+def _as_planned(pins: dict, pin_source: Path | None) -> dict:
+    """`declared_pin_values`'s pins as `plan` records them: a digest read
+    from a `--pin-source` clone records where, `local-clone (<the path as
+    typed>)`, so that `check` and `execute` recompute it in that clone
+    (#449). `declared_pin_values` says `local-clone` alone, as the pin file
+    does (#540): the plan is a file on this machine, which nothing commits,
+    and the pin file is the one written from it (`_recorded_pins`)."""
+    if pin_source is None:
+        return pins
+    where = f"{DIGEST_FROM_CLONE} ({pin_source})"
+    return {product: {**values, "PIN_DIGEST_SOURCE": where}
+            for product, values in pins.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -3586,13 +3681,14 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
     # Each pin as the scaffold's plan prints it: what is pinned, at which
     # commit and digest, the file `execute` writes, and how the digest was
-    # read (#273), that last `_shown`, as every path this report prints is.
+    # read (#273), as that file will say it: `local-clone`, and not the
+    # clone's path, which the plan records beside it for `check` (#540).
     for product, values in (pins or {}).items():
         print(f"pin        {values['PIN_REPOSITORY']} @ "
               f"{values['PIN_COMMIT'][:12]} tree "
               f"{values['PIN_TREE_SHA256'][:12]}… -> "
               f"{neutral_pin_path(product)} "
-              f"({_shown(values['PIN_DIGEST_SOURCE'])})")
+              f"({_digest_source_written(values['PIN_DIGEST_SOURCE'])})")
     _print_triad_advisory(source.path, source.commit)
     _print_entries(entries)
     _print_summary(entries)
@@ -6107,7 +6203,9 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
           f"legs{mounted}")
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
-    # Each pin `execute` writes, as the plan records it (#273): a pin it
+    # Each pin `execute` writes, as the plan records it (#273) and as the
+    # pin file will say it: `local-clone`, and not the clone's path the
+    # plan records beside it (`_recorded_pins`, #540). A pin it
     # cannot write is a finding, printed after this. Whether its digest was
     # recomputed is said once per pin with the NOTEs `_entry_findings`
     # returns: it recomputes, or it was not rechecked here, where the clone
@@ -10129,13 +10227,14 @@ def main(argv: list[str] | None = None) -> int:
     plan.add_argument("--pin-source", default=None,
                       help="a local clone to compute --pin digests from, "
                            "instead of reading the forge with `gh api` (the "
-                           "TEST path; no network). The plan and the pin "
-                           "file say only that the digest was read from "
-                           "`local-clone`, never the path. Given with no "
-                           "--pin to read it, the flag is refused as "
-                           "`pin-source-unused`; an empty value is refused "
-                           "as `pin-source-no-path`, and `.` means this "
-                           "directory.")
+                           "TEST path; no network). The plan records the "
+                           "path, which must be one printable line, so that "
+                           "`check` recomputes each digest there; the pin "
+                           "file says only `local-clone`, never the path. "
+                           "Given with no --pin to read it, the flag is "
+                           "refused as `pin-source-unused`; an empty value "
+                           "is refused as `pin-source-no-path`, and `.` "
+                           "means this directory.")
     plan.add_argument("--allow-empty-leg", action="append", default=[],
                       choices=EXTRACTED_LEGS,
                       help="record in the plan that this leg having NO path "
