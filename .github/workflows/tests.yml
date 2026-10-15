@@ -4,7 +4,7 @@ name: tests
 # clones them over the filesystem. It never calls `gh`, never touches the
 # network, and must never create a real repository.
 #
-# The suite runs on LINUX ONLY, on every trigger: a push to `main`, a pull
+# The FULL suite runs on LINUX ONLY, on every trigger: a push to `main`, a pull
 # request and a manual run all use the one ubuntu job below. Brett Heap decided
 # on 2026-10-15, for the whole estate, to drop the macOS and Windows test jobs.
 # One exception, on Brett Heap's word at 2026-10-15T18:20:35Z,
@@ -125,11 +125,11 @@ jobs:
   # TWO SUITES, NOT THE WHOLE SUITE. #597 dropped the Windows job for the
   # whole estate, and this job is the one exception made to it (see the
   # header), so it runs what README's sentence claims and nothing more:
-  # about three minutes, beside the ubuntu job and not after it. No
-  # git-filter-repo, because these suites never reach a real one (the install
-  # suite fakes it and pipx, and the launcher's machine report gets a fake on
-  # the PATH it builds), and no actionlint, which the ubuntu job runs on this
-  # file.
+  # about a minute and a half (86 s on the first run, 50 s of it pytest),
+  # beside the ubuntu job and not after it. No git-filter-repo, because
+  # these suites never reach a real one (the install suite fakes it and
+  # pipx, and the launcher's machine report gets a fake on the PATH it
+  # builds), and no actionlint, which the ubuntu job runs on this file.
   #
   # THE BASH IS GIT'S OWN `usr\bin\bash.exe`, which `tests/conftest.py`
   # (`BASH`) finds from `git --exec-path` and never by name: a bare `bash`
