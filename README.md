@@ -231,19 +231,14 @@ three repositories are created and the push fails.
 curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash
 ```
 
-`install.sh` is attached to every release, so that line installs the newest:
-it reads which one that is from github.com's `releases/latest` redirect (no
-`gh`, no login), installs that release's command PINNED to it, installs
-`git-filter-repo` with `pipx` when `pipx` is there and it is not, or prints
-the one command that would, and ends with `openRepoShape --preflight`. It
-never runs `sudo`. `| bash -s -- v1.0.1` installs a named release instead.
-Exit 0 is installed and ready, 1 installed but the preflight or the pin needs
-you, 2 nothing installed. Run the same line again to upgrade.
-
-**Pinned** means the command stays on its release while main moves on:
-`--install` records the ref in `openRepoShape.ref` beside the command, and the
-command fetches `setup.sh`, clones the standard and runs `--doctor` at it.
-`$OPENREPOSHAPE_REF` overrides it for one run; `--version` prints the ref.
+`install.sh` is attached to every release and installs the newest, with no `gh`
+and no login. Its command is PINNED to the release tag, recorded in
+`openRepoShape.ref` beside it: `setup.sh` and the standard are fetched at that
+tag, not at main. It installs `git-filter-repo` with `pipx` where it can, or
+prints the command, and ends with `openRepoShape --preflight`. `install.sh`
+itself never runs `sudo`; the preflight it ends with offers what is missing,
+each behind a typed `yes` at your terminal. `| bash -s -- v1.0.1` names a
+release; the same line again upgrades.
 
 By hand, the same command at main, which records no ref and follows main:
 
@@ -400,8 +395,7 @@ records as whose act the election was, and it defaults to the `gh` login.
 
 #### Install the command
 
-Two ways in, the short one first. Install `openRepoShape` as a command, the
-newest release and pinned to it, as step 3 above does:
+Two ways in, the short one first. Install the command as step 3 above does:
 
 ```sh
 curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash

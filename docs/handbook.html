@@ -488,8 +488,8 @@
           <div class="code" data-lang="sh"><pre><code>curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash
 openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
           <p class="sub">That first line installs ONE command into <code>~/.local/bin</code>: the
-          newest release, pinned to it, with <code>git-filter-repo</code> where <code>pipx</code> can
-          install it, and it ends with <code>openRepoShape --preflight</code>. The
+          newest release, pinned to its tag, with <code>git-filter-repo</code> where <code>pipx</code>
+          can install it, and it ends with <code>openRepoShape --preflight</code>. The
           estate verbs <code>park</code> and <code>resume</code>, for <a href="#park">carrying
           in-flight work</a> to another workstation, are
           <a href="https://github.com/opensoft/openRepoTools">opensoft/openRepoTools</a>&rsquo; and have a one-liner of
@@ -756,21 +756,15 @@ sudo dnf install gh</code></pre></div>
             <h3 data-platform="wsl">Install the <code>openRepoShape</code> command, once, inside WSL</h3>
             <h3 data-platform="win">Fetch the flow, in the directory the new project should land in</h3>
             <div data-platform="linux mac wsl" class="code" data-lang="sh"><pre><code>curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash</code></pre></div>
-            <p data-platform="linux mac wsl"><code>install.sh</code> is attached to every release, so
-            that line installs the newest: it reads which one that is from github.com&rsquo;s
-            <code>releases/latest</code> redirect (no <code>gh</code>, no login), installs that
-            release&rsquo;s command PINNED to it, installs <code>git-filter-repo</code> with
-            <code>pipx</code> when <code>pipx</code> is there and it is not, or prints the one command
-            that would, and ends with <code>openRepoShape --preflight</code>. It never runs
-            <code>sudo</code>. <code>| bash -s -- v1.0.1</code> installs a named release instead. Exit
-            0 is installed and ready, 1 installed but the preflight or the pin needs you, 2 nothing
-            installed. Run the same line again to upgrade.</p>
-            <p data-platform="linux mac wsl"><strong>Pinned</strong> means the command stays on its
-            release while main moves on: <code>--install</code> records the ref in
-            <code>openRepoShape.ref</code> beside the command, and the command fetches
-            <code>setup.sh</code>, clones the standard and runs <code>--doctor</code> at it.
-            <code>$OPENREPOSHAPE_REF</code> overrides it for one run; <code>--version</code> prints the
-            ref.</p>
+            <p data-platform="linux mac wsl"><code>install.sh</code> is attached to every release and
+            installs the newest, with no <code>gh</code> and no login. Its command is PINNED to the
+            release tag, recorded in <code>openRepoShape.ref</code> beside it: <code>setup.sh</code>
+            and the standard are fetched at that tag, not at main. It installs
+            <code>git-filter-repo</code> with <code>pipx</code> where it can, or prints the command,
+            and ends with <code>openRepoShape --preflight</code>. <code>install.sh</code> itself never
+            runs <code>sudo</code>; the preflight it ends with offers what is missing, each behind a
+            typed <code>yes</code> at your terminal. <code>| bash -s -- v1.0.1</code> names a
+            release; the same line again upgrades.</p>
             <p data-platform="linux mac" class="sub">By hand, the same command at main, which records no ref and follows main:</p>
             <div data-platform="linux mac" class="code" data-lang="sh"><pre><code>gh api repos/opensoft/openRepoShape/contents/openRepoShape \
     -H 'Accept: application/vnd.github.raw' | bash -s -- --install</code></pre></div>
@@ -1818,7 +1812,8 @@ resume InkRouter                # on workstation B, and the estate is back</code
         <li><strong>Never answer an install prompt.</strong> The preflight asks
         <code>Type yes to continue:</code> for each thing it offers to run &mdash; an install,
         <code>gh auth login</code>, <code>gh auth setup-git</code>. The human types it; you never
-        install software or log in for them.</li>
+        install software or log in for them. The one-line install (<code>install.sh</code>) is
+        theirs to run: relay it, never run it.</li>
         <li><strong>Never pass <code>--allow-upstream-org</code> on your own initiative.</strong> If
         setup.sh refuses because the organisation you were given resolves to opensoft, STOP and relay
         what it said; the fix is almost always an explicit <code>--org &lt;their-org&gt;</code>.</li>
@@ -1906,10 +1901,11 @@ resume InkRouter                # on workstation B, and the estate is back</code
       <code>merged-away</code> verdict, whose row <code>apply</code> drops, added (#502); the
       line-ending block an adoption appends to a root <code>.gitattributes</code> the source keeps,
       and its verification as the source&rsquo;s bytes plus that block, added (#471); the one-line
-      install, <code>install.sh</code>, which installs the newest release pinned to it, and the
-      command&rsquo;s <code>openRepoShape.ref</code> record, added (#564) &mdash; a page
+      install, <code>install.sh</code>, which installs the newest release pinned to its tag, the
+      command&rsquo;s <code>openRepoShape.ref</code> record, and the assistant&rsquo;s rule that the
+      line is the human&rsquo;s to run, added (#564) &mdash; a page
       cannot name the commit that contains it, and the blob below is the fact a test checks.
-      README.md blob 147b3cb5c1d91c96196d6cef09ba984cfa0f6576. Every command, flag, exit code
+      README.md blob 70ded88ce2ef4b0cd8faf4100d53fcd98d0da522. Every command, flag, exit code
       and file name on this page is quoted from that README and from AGENTS.md.</p>
     </footer>
   </main>

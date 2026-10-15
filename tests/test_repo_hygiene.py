@@ -1184,25 +1184,27 @@ def test_readme_is_short_enough_to_be_read():
     #   shim's answer there changed from a clone of the upstream to a few
     #   lines of its own, and a README that still promised the flag list
     #   would send a reader to a command that no longer prints it.
-    # 2026-10-14: 1422 -> 1450 — the one-line install, v1.0.1 (#564). Brett
+    # 2026-10-14: 1422 -> 1444 — the one-line install, v1.0.1 (#564). Brett
     #   Heap: "we need it to be more simple to install ... now and after, we
     #   need a simple install process". Step 3 of the quick start now LEADS
     #   with `curl -fsSL …/releases/latest/download/install.sh | bash`, and
-    #   the worked example's "Install the command" with the same line:
-    #   eleven lines for the two blocks and their lead-ins. Nine say what
-    #   that line does that the old two did not, because each is a thing a
-    #   reader would otherwise meet unannounced on their own machine: it
-    #   reads the newest release from a redirect with no `gh`, it installs
-    #   git-filter-repo with pipx or prints the command, it ends in the
-    #   preflight, it never runs `sudo`, how to name a release, and its three
-    #   exit statuses. Five say what PINNED means — the record beside the
-    #   command, what reads it, and the variable that overrides it — because
-    #   a command that quietly stops following main is a surprise to anyone
-    #   who expected it to. Two re-introduce the existing lines as the
-    #   by-hand way, at main, so neither is lost, and one is the Layout row
-    #   for `install.sh`.
-    assert len(lines) <= 1450, (
-        f"README.md is {len(lines)} lines; the cap is 1450")
+    #   the worked example's "Install the command" with the same line: ten
+    #   lines for the two blocks and the blank lines around them. Nine, step
+    #   3's paragraph and the blank after it, say what that line does that
+    #   the old two did not, each a thing a reader would otherwise meet
+    #   unannounced on their own machine: it needs no `gh` and no login, the
+    #   command is PINNED to the release tag, where that is recorded and what
+    #   it changes, it installs git-filter-repo with pipx or prints the
+    #   command, it ends in the preflight, `install.sh` itself never runs
+    #   `sudo` while each of the preflight's offers waits for a typed `yes`,
+    #   how to name a release and how to upgrade. Two re-introduce the
+    #   existing lines as the by-hand way, at main, so neither is lost, and
+    #   one is the Layout row for `install.sh`. The review on #577 folded a
+    #   separate "Pinned" paragraph into step 3's and left the exit statuses
+    #   to `install.sh --help` and the release notes, which took the raise
+    #   from 28 lines to 22.
+    assert len(lines) <= 1444, (
+        f"README.md is {len(lines)} lines; the cap is 1444")
 
 
 #: #476: what each document that carries the first rule says an assistant does

@@ -25,13 +25,13 @@ types `yes` at its prompt; you never answer it for them. No terminal: section 2.
 **Never answer an install prompt.** The preflight asks `Type yes to continue:`
 for each thing it offers to run — an install, `gh auth login`, `gh auth
 setup-git`. The human types it; you never install software or log in for them.
+The one-line install (`install.sh`) is theirs to run: relay it, never run it.
 
 **Never pass `--allow-upstream-org` on your own initiative.** It guards only
-`--org opensoft` itself — scaffolding into opensoft's own namespace, the
-upstream owner of openRepoShape. If setup.sh refuses because the organisation
-you were given resolves to opensoft, STOP and relay what it said; the fix is
-almost always an explicit `--org <their-org>`. Pass `--allow-upstream-org`
-only if the human asks for it in those words.
+`--org opensoft`, the namespace of openRepoShape's upstream owner. If setup.sh
+refuses because the organisation you were given resolves to opensoft, STOP and
+relay what it said; the fix is almost always an explicit `--org <their-org>`.
+Pass `--allow-upstream-org` only if the human asks for it in those words.
 
 **Never bypass an organisation ruleset.** A ruleset that refuses a direct push
 to `main` is doing its job; the exit is in the tool's own failure message (for
