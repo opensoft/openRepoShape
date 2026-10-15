@@ -85,6 +85,13 @@ VALIDATE_MANIFEST = "scripts/validate-manifest.py"
 #: What the refusal says only when no copy it names is one of the root's
 #: validators: those import what they need, and would go red.
 VALIDATORS_PASS = "though the validators, which never import it, pass"
+#: Each exit the remediation gives, in the words that name the lines it
+#: settles: the merge for a kept copy a `(kept) lacks` line names (#536),
+#: and the change for one a `(written) no longer defines` line names (#604).
+#: A refusal that holds both says "commit each".
+LACKS_EXIT = "so it defines every name its `(kept) lacks` line names"
+DROPS_EXIT = ("so it no longer takes any name its `(written) no longer "
+              "defines` line names")
 #: The file `added` names in the assembly root's copy lists.
 ADDED_CHECK = "scripts/kept-helper-check.py"
 BRANCH = "shape/update-kept-helper"
@@ -970,7 +977,7 @@ def test_a_handler_that_misses_a_missing_name_still_refuses(update_shape,
 @pytest.mark.parametrize("written, how", [
     pytest.param({"tools/bootstrap.py": imports("NEW")}, "upstream-changed",
                  id="an importer in another directory"),
-    pytest.param({"Makefile": imports("NEW")}, "upstream-changed",
+    pytest.param({"scripts/notes.txt": imports("NEW")}, "upstream-changed",
                  id="a written copy that is not .py"),
     pytest.param({BOOTSTRAP: imports("NEW")}, "unchanged",
                  id="an importer this run leaves alone"),
@@ -1068,7 +1075,8 @@ def test_keeping_a_copy_that_imports_a_name_the_run_drops_is_refused(
     remedy = result.stderr.split("Remediation:", 1)[1]
     assert (f"`git show {standard['dropped']}:templates/assembly-root/"
             f"{BOOTSTRAP}` for {BOOTSTRAP}") in remedy, remedy
-    assert "so it no longer takes that name" in remedy, remedy
+    assert DROPS_EXIT in remedy, remedy
+    assert LACKS_EXIT not in remedy, remedy
     assert "update-conflict" not in remedy, remedy
     assert VALIDATORS_PASS in result.stderr, (
         "bootstrap.py is none of the validators, and the refusal says so: "
@@ -1158,7 +1166,8 @@ def test_both_directions_in_one_run_are_one_refusal(dropping_standard,
     AND has `siblings.py` import a name only the upstream's `bootstrap.py`
     defines: the kept copy is the module of one line and the importer of
     the other. One refusal names both, sorted by module, says the
-    validators pass (none of the importers is `validate-family.py`), and
+    validators pass (none of the importers is `validate-family.py`), gives
+    each exit in the words of the lines it settles, with "commit each", and
     sends the `both` row to `update-conflict`'s merge."""
     checked = run_script(UPDATE, "check", "--root", str(importing_holder),
                          "--upstream", str(dropping_standard["upstream"]),
@@ -1176,6 +1185,9 @@ def test_both_directions_in_one_run_are_one_refusal(dropping_standard,
         dropped_line(BOOTSTRAP),
     ], result.stderr
     assert VALIDATORS_PASS in result.stderr, result.stderr
+    remedy = result.stderr.split("Remediation:", 1)[1]
+    for words in (LACKS_EXIT, DROPS_EXIT, ", commit each, and run this"):
+        assert words in remedy, remedy
     assert (f"{BOOTSTRAP} changed upstream too, so dropping the edit there "
             "is `update-conflict`'s merge by hand again") in result.stderr
 
@@ -1277,7 +1289,7 @@ def test_a_module_this_run_adds_takes_nothing_away(update_shape, tmp_path):
 @pytest.mark.parametrize("kept, writing", [
     pytest.param({"tools/bootstrap.py": TAKES_GONE}, "upstream-changed",
                  id="a kept importer in another directory"),
-    pytest.param({"Makefile": TAKES_GONE}, "upstream-changed",
+    pytest.param({"scripts/notes.txt": TAKES_GONE}, "upstream-changed",
                  id="a kept copy that is not .py"),
     pytest.param({BOOTSTRAP: TAKES_GONE}, "unchanged",
                  id="a module this run leaves alone"),
@@ -1317,10 +1329,46 @@ def test_both_directions_are_one_refusal_with_every_pair_sorted(
         f"    {REPO_SHAPE} (kept) lacks NEW, which {BOOTSTRAP} imports from "
         "it",
     ], refused.detail
-    for change in ("so it defines every name above",
-                   "so it no longer takes that name"):
-        assert change in refused.remediation, refused.remediation
+    for words in (LACKS_EXIT, DROPS_EXIT, ", commit each, and run this"):
+        assert words in refused.remediation, refused.remediation
     for path in (importer, REPO_SHAPE):
         assert f"`git show {'a' * 40}:{path}` for {path}" \
             in refused.remediation, refused.remediation
     assert (VALIDATORS_PASS in refused.detail) is said, refused.detail
+
+
+@pytest.mark.parametrize("kept, written, current, said, unsaid", [
+    pytest.param({REPO_SHAPE: b"OLD = 1\n"}, {BOOTSTRAP: imports("NEW")},
+                 None, LACKS_EXIT, DROPS_EXIT,
+                 id="a kept copy that lacks a name (#536)"),
+    pytest.param({BOOTSTRAP: TAKES_GONE}, {REPO_SHAPE: DROPS_GONE},
+                 {REPO_SHAPE: DEFINES_GONE}, DROPS_EXIT, LACKS_EXIT,
+                 id="a kept copy that imports a dropped name (#604)"),
+])
+def test_a_one_direction_refusal_gives_only_its_own_exit(
+        update_shape, tmp_path, kept, written, current, said, unsaid):
+    """A refusal that holds one kind of line gives that kind's exit alone:
+    the other's words would name lines it does not list."""
+    refused = refusal(update_shape, tmp_path, kept, written,
+                      state="locally-modified", current=current)
+    assert refused is not None, "the pair disagrees"
+    assert said in refused.remediation, refused.remediation
+    assert unsaid not in refused.remediation, refused.remediation
+
+
+def test_a_path_it_cannot_read_is_one_it_cannot_tell(update_shape, tmp_path,
+                                                     monkeypatch):
+    """`_names_defined` answers None for a path whose bytes cannot be read,
+    as it did before #604 split the parse out of it: a missing file, the
+    `ValueError` a path holding a NUL raises, and a `MemoryError`, raised
+    by a stand-in because no test can rely on running out of memory."""
+    assert update_shape._names_defined(tmp_path / "missing.py") is None
+    assert update_shape._names_defined(tmp_path / "a\x00b.py") is None
+    path = tmp_path / "repo_shape.py"
+    path.write_bytes(b"OLD = 1\n")
+
+    def too_big(*_args, **_kwargs):
+        raise MemoryError("too big to read")
+
+    monkeypatch.setattr(type(path), "read_bytes", too_big)
+    assert update_shape._names_defined(path) is None
