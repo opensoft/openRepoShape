@@ -975,23 +975,45 @@ def copy_in_the_way(target: Path, actual: str) -> str | None:
     return None
 
 
-#: Appended to the assembly root's Makefile by `adopt-project.py` ONLY. A
-#: scaffolded project's legs are empty, so nothing reads across them yet; an
-#: ADOPTED project's code leg holds tooling that used to read `contracts/`
-#: from beside it and now reads it from the other leg through the root.
-ADOPT_MAKEFILE_BLOCK = """
+def adopt_makefile_block(spec_path: str, code_path: str) -> str:
+    """What `adopt-project.py` appends to the assembly root's Makefile, and
+    nothing else does. A scaffolded project's legs are empty, so nothing reads
+    across them yet; an ADOPTED project's code leg holds tooling that used to
+    read `contracts/` from beside it and now reads it from the other leg
+    through the root.
+
+    RENDERED WITH THE PLAN'S MOUNT PATHS (#522). It was one constant naming
+    `spec/contracts`, so a project adopted with `--spec-path legs/spec`
+    exported a `CONTRACTS_DIR` that does not exist, while `plan`'s own
+    follow-up said the Makefile wires `$(CURDIR)/legs/spec/contracts`. The
+    block is the adoption's own append, made once by `execute` and digested
+    with the copy it is appended to (`_materialize` pins the bytes as
+    written), so the per-project text is written here and nowhere by hand.
+    A default adoption, `spec` and `code`, gets the bytes it always got
+    (`ADOPT_MAKEFILE_BLOCK`).
+
+    Both paths are `execute`'s checked mount paths: canonical, and in
+    `checked_value`'s alphabet, which holds no character make reads as
+    anything but itself (no `$`, `#`, space or line break).
+    """
+    return f"""
 # --- adopted project: reading ACROSS the legs -------------------------------
 # The spec leg owns `contracts/`; the code leg holds the tooling that reads
-# them. Mounted here, `spec/contracts` is one relative path from `code/`, so
+# them. Mounted here, `{spec_path}/contracts` is one relative path from `{code_path}/`, so
 # the root exports it once and the code leg takes it from the environment
 # rather than each script guessing at `../`.
-CONTRACTS_DIR ?= $(CURDIR)/spec/contracts
+CONTRACTS_DIR ?= $(CURDIR)/{spec_path}/contracts
 export CONTRACTS_DIR
 
 .PHONY: contracts-dir
 contracts-dir:
 \t@echo $(CONTRACTS_DIR)
 """
+
+
+#: The block a DEFAULT adoption appends, the legs at `spec` and `code`:
+#: byte for byte the block every adoption appended before #522.
+ADOPT_MAKEFILE_BLOCK = adopt_makefile_block("spec", "code")
 
 
 class CommandFailed(Exception):
