@@ -34,8 +34,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, ORG, PROJECT, REPO, SCAFFOLD,
-                      clear_ambient_pin_sources, git, run_script)
+from conftest import (ORG, PROJECT, REPO, SCAFFOLD,
+                      clear_ambient_pin_sources, cloned_just_pushed, git,
+                      run_script)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -193,10 +194,8 @@ def test_the_first_commits_hold_every_file_the_scaffold_wrote(
 def test_the_scaffold_bootstraps_under_the_same_excludes(excluded_scaffold,
                                                         tmp_path):
     env = excluded_scaffold.env
-    clone = tmp_path / PROJECT
-    git_under(env, *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-              str(excluded_scaffold.remotes / f"{PROJECT}.git"), str(clone),
-              cwd=tmp_path)
+    clone = cloned_just_pushed(excluded_scaffold.remotes / f"{PROJECT}.git",
+                               tmp_path / PROJECT, env=env)
     result = run_script(clone / "scripts" / "bootstrap.py", cwd=clone, env=env)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "bootstrap ok" in result.stdout
@@ -236,9 +235,8 @@ def test_every_file_the_holder_wrote_is_in_its_first_commit(excluded_family):
 def test_the_holder_bootstraps_under_the_same_excludes(excluded_family,
                                                       tmp_path):
     env = excluded_family.env
-    clone = tmp_path / HOLDER
-    git_under(env, "clone", "-q", str(excluded_family.bare), str(clone),
-              cwd=tmp_path)
+    clone = cloned_just_pushed(excluded_family.bare, tmp_path / HOLDER,
+                               recurse=False, env=env)
     result = run_script(clone / "scripts" / "bootstrap.py", cwd=clone, env=env)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "family bootstrap ok" in result.stdout

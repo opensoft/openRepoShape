@@ -43,10 +43,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, SCAFFOLD, SYNTHETIC_TREE,
-                      WINDOWS_SKIP, as_human, findings, git, make_source_repo,
-                      planned, refused_before_any_leg, resolve, rmtree,
-                      run_script)
+from conftest import (ADOPT, REPO, SCAFFOLD, SYNTHETIC_TREE, WINDOWS_SKIP,
+                      as_human, cloned_just_pushed, findings, git,
+                      make_source_repo, planned, refused_before_any_leg,
+                      resolve, rmtree, run_script)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -231,11 +231,7 @@ def adopted(request, tmp_path_factory, glass):
                           "--work-dir", str(base / "work"), env=env)
     clone = base / "clone" / PROJECT
     if executed.returncode == 0:
-        proc = subprocess.run(
-            ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-             "-b", BRANCH, str(source), str(clone)],
-            capture_output=True, check=False)
-        assert proc.returncode == 0, proc.stderr.decode(UTF8, "replace")
+        cloned_just_pushed(source, clone, BRANCH)
     return {"base": base, "source": source, "plan": plan, "env": env,
             "repository": repository, "commit": commit,
             "readable": readable, "planned": planned_run,
@@ -372,11 +368,7 @@ def adopted_as_text(request, tmp_path_factory):
                           "--work-dir", str(base / "work"), env=env)
     clone = base / "clone" / TEXT_PROJECT
     if executed.returncode == 0:
-        proc = subprocess.run(
-            ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-             "-b", BRANCH, str(source), str(clone)],
-            capture_output=True, check=False)
-        assert proc.returncode == 0, proc.stderr.decode(UTF8, "replace")
+        cloned_just_pushed(source, clone, BRANCH)
     return {"product": product, "spelled": spelled, "commit": commit,
             "readable": readable, "source": source, "plan": plan, "env": env,
             "checked": checked, "executed": executed, "clone": clone}

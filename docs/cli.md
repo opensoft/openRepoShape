@@ -653,7 +653,9 @@ options:
   --leg {spec,code}     which leg to advance, by the `role:` its own
                         project.yaml declares
   --to COMMIT           the 40-hex commit to move the gitlink, the pin and
-                        every workflow reference to, together
+                        every workflow reference to, together (an annotated
+                        tag's own 40-hex id is peeled to the commit it names,
+                        as `family.py add --at` peels one)
   --trailer "KEY: VALUE"
                         append this `<Key>: <value>` line to the commit this
                         writes; repeatable, kept in the order given

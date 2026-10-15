@@ -56,7 +56,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, ORG, PROJECT, REPO, SCAFFOLD, git,
+from conftest import (ORG, PROJECT, REPO, SCAFFOLD, cloned_just_pushed, git,
                       run_script)
 
 BUMP = REPO / "scripts" / "bump-leg.py"
@@ -144,9 +144,8 @@ def bootstrapped(tmp_path_factory) -> dict:
                       "2026-09-02", "--local-remote-dir", str(remotes),
                       "--work-dir", str(base / "work"))
     assert made.returncode == 0, made.stderr + made.stdout
-    clone = base / "clone" / PROJECT
-    git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-        str(remotes / f"{PROJECT}.git"), str(clone), cwd=base)
+    clone = cloned_just_pushed(remotes / f"{PROJECT}.git",
+                               base / "clone" / PROJECT)
     first = bootstrap(clone)
     assert first.returncode == 0, first.stderr + first.stdout
     assert head_ref(clone / "spec") == MAIN, first.stdout
@@ -172,9 +171,8 @@ def bumped(root: Path, remotes: Path, tmp_path: Path, branch: str,
     only that some branch of the remote contains the commit. With `touch`,
     the commit also adds a line at the end of that tracked file.
     """
-    work = tmp_path / "spec-work"
-    git("clone", "-q", str(remotes / f"{PROJECT}-spec.git"), str(work),
-        cwd=tmp_path)
+    work = cloned_just_pushed(remotes / f"{PROJECT}-spec.git",
+                              tmp_path / "spec-work")
     (work / ADDED).write_bytes(b"# a contract the leg gained\n")
     git("add", "--", ADDED, cwd=work)
     if touch is not None:
@@ -513,9 +511,8 @@ def leg_main_ahead(tmp_path_factory) -> dict:
                       "2026-09-02", "--local-remote-dir", str(remotes),
                       "--work-dir", str(base / "work"))
     assert made.returncode == 0, made.stderr + made.stdout
-    work = base / "spec-work"
-    git("clone", "-q", str(remotes / f"{PROJECT}-spec.git"), str(work),
-        cwd=base)
+    work = cloned_just_pushed(remotes / f"{PROJECT}-spec.git",
+                              base / "spec-work")
     (work / MOVED_ON).write_bytes(b"# the leg's main moved on\n")
     git("add", "--", MOVED_ON, cwd=work)
     git("commit", "-q", "-m", "The leg moves on past the pin", cwd=work)
@@ -528,10 +525,8 @@ def fresh(leg_main_ahead, tmp_path) -> Path:
     """`git clone --recurse-submodules` of the root, as AGENTS.md has a
     person run it, never bootstrapped: git made the spec leg's `main` at
     the remote's tip and left the leg detached at the pin."""
-    clone = tmp_path / PROJECT
-    git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-        str(leg_main_ahead["remotes"] / f"{PROJECT}.git"), str(clone),
-        cwd=tmp_path)
+    clone = cloned_just_pushed(leg_main_ahead["remotes"] / f"{PROJECT}.git",
+                               tmp_path / PROJECT)
     leg = clone / "spec"
     assert head_ref(leg) is None and rev(leg) == rev(clone, "HEAD:spec")
     assert rev(leg, MAIN) == leg_main_ahead["ahead"]
