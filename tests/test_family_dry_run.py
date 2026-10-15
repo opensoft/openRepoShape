@@ -431,8 +431,11 @@ def test_a_refusal_is_the_same_refusal_under_dry_run(
 
 def test_bump_dry_run_of_a_commit_the_member_does_not_have_exits_2(
         holder, offline, tmp_path):
-    """A `--to` the member's objects do not hold after the fetch is exit 2,
-    as the real run's checkout of it is, and neither prints a row."""
+    """A `--to` the member's objects do not hold after the fetch is exit 2
+    from both runs, and neither prints a row. The dry run's resolve and the
+    real run's checkout failed on it in git's words; both now refuse it
+    `member-to-unknown`, in the same words, saying to push it first, as
+    `test_family_bump_to_checks.py` holds it (#541)."""
     env = isolated(offline, tmp_path)
     missing = "deadbeef" * 5
     before = state(holder, env)
@@ -442,9 +445,9 @@ def test_bump_dry_run_of_a_commit_the_member_does_not_have_exits_2(
 
     assert dry.returncode == real.returncode == 2, dry.stdout + dry.stderr
     assert dry.stdout == real.stdout == ""
-    assert dry.stderr.startswith(
-        f"REFUSED resolving {missing[:12]} in members/{MEMBER}, where a real "
-        "bump checks it out.")
+    assert dry.stderr == real.stderr
+    assert refusal(dry.stderr)[0].startswith(
+        f"REFUSED member-to-unknown: --to {missing} ")
     assert_as_it_was(holder, env, before, BUMP_ORDER)
 
 

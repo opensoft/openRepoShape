@@ -210,13 +210,13 @@ checkout — answers ONE question about ONE repository: is it compliant with thi
 shape, and what is missing. Run it before you propose a change to a repository
 you did not scaffold, and again after any procedure above. It writes nothing
 into the repository and fetches nothing, so there is no confirmation to get and
-no `--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
-in each of them, which is where a repair mode will hang; nothing in it writes
-today. The one exception to "writes nothing" is `--placement-plan <file>`, which
-writes that file and nothing else — see 4. Installed, `openRepoShape --doctor`
-takes `--json` and `--placement-plan <file>` as well, and KEEPS its temporary
-clone of the standard, because the NEXT lines run from it: its last line names
-that directory, which is the human's to delete once those commands have run.
+no `--dry-run` to do first. The one exception to "writes nothing" is
+`--placement-plan <file>`, which writes that file and nothing else — see 4.
+The checks are a REGISTRY with an empty `fix` slot in each of them, which is
+where a repair mode will hang; nothing in it writes today. Installed,
+`openRepoShape --doctor` takes `--json` and `--placement-plan <file>` as well,
+and KEEPS its temporary clone of the standard for the NEXT lines that name it:
+its last line names that directory, the human's to delete once those have run.
 
 1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
    BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0, 1,
@@ -405,13 +405,13 @@ python3 scripts/family.py siblings --family-root <path>
    `members/<Project>` inside the holder is pinned and DETACHED, for
    `bootstrap` and `validate`; the sibling is where the human works.
    **What it never does, and neither do you:** it MOVES NOTHING — when the
-   parent folder is not named after the family it warns and prints an `mv`,
-   and running that `mv` yourself relocates a checkout out from under a
-   shell, an editor and every agent lane, and breaks any linked worktree
-   (its `.git` file carries an absolute path). An existing clone gets only
-   `git fetch` — no checkout, no reset, no pull — because somebody works in
-   there; one of a different repository is reported and skipped, and the
-   exit is the human's hand, not an overwrite.
+   parent folder is not named after the family (nor linked as it) it clones
+   nothing, prints an `mv` and exits 1 (`make`: 2), and running that `mv`
+   relocates a checkout out from under a shell, an editor and every agent lane,
+   and breaks any linked worktree (its `.git` file carries an absolute path). An
+   existing clone gets only `git fetch` — no checkout, no reset, no pull —
+   because somebody works in there; one of a different repository is reported
+   and skipped, and the exit is the human's hand, not an overwrite.
 6. `update-shape.py` updates a family root exactly as it updates a project,
    with the same four refusals, and mirrors into `family.yaml`. An existing
    holder receives `scripts/siblings.py` that way: `check` reports it as

@@ -70,11 +70,24 @@ from test_commit_trailers import LANE
 #: project or a holder made any other way would be a different project.
 from test_shape_doctor import (  # noqa: F401
     BREAKAGES, DOCTOR, DRIFT_TARGET, FAMILY_MEMBER, FAMILY_NAME,
-    GIT_IDENTITY, SHAPE_PIN, UPSTREAM_TARGET, behind_row, break_manifest,
-    break_the_pin, doctor, doctor_module, holder, not_forty_hex, pin_with,
-    project, recommit_a_good_pin, red_root, rows_of, scaffolded_here, stage,
-    standard, standard_ahead, standard_of_another_history,
+    GIT_IDENTITY, SCAFFOLD_WHY, SHAPE_PIN, UPSTREAM_TARGET, behind_row,
+    break_manifest, break_the_pin, doctor, doctor_module, holder,
+    not_forty_hex, pin_with, project, recommit_a_good_pin, red_root, rows_of,
+    scaffolded_here, stage, standard, standard_ahead,
+    standard_of_another_history,
 )
+#: The `manifest kinds` row's roots and its guard (#548), from the module
+#: that owns them: the row is that module's, and so is `rows_of`, which asks
+#: the guard of every row it reads.
+from test_shape_doctor import (
+    MISSPELT_KIND, READ_NOWHERE, assert_next_holds_no_prose, commit_all,
+    family_beside, give_a_kind, outside_single_quotes, plant_family_yaml,
+    write_inventory,
+)
+#: The lockstep remedy `validate-pins.py` prints under its refusals, and the
+#: one every `Refusal` carried before #370, from the module that spells it;
+#: importing `tests/test_shape_doctor.py` put `scripts/` on the path.
+from repo_shape import REMEDIATION
 #: Lane 2's ways to make a file under `contracts/` not load (#291), from the
 #: module that owns them: the `manifest kinds` row's NEXTs are #291's, so the
 #: roots are too.
@@ -438,13 +451,101 @@ def _way_in(standard, project, holder, tmp_path):
     return rows_of(doctor(standard, here, "--json"))["way-in"]
 
 
+def _kinds(standard, root):
+    return rows_of(doctor(standard, root, "--json"))["manifest-kinds"]
+
+
+def _read_nowhere(project: Path, case: str) -> str:
+    """One of #439's files, written into `project` and not committed; its
+    path."""
+    _where, rel, _kind, body, _read_at = READ_NOWHERE[case]
+    (project / rel).write_bytes(body)
+    return rel
+
+
+def _removal_next_committed(standard, project, holder, tmp_path):
+    # #439: a kind whose gate runs here, at a path it never reads, committed:
+    # the `git rm` of it (#548).
+    rel = _read_nowhere(project, "contracts-project-yaml")
+    commit_all(project, f"{rel}, which no gate reads")
+    return _kinds(standard, project)
+
+
+def _removal_next_loose(standard, project, holder, tmp_path):
+    # A kind nothing registers, never added: the `git status --ignored` that
+    # shows it, where the NEXT was "register the kind ..., or remove the
+    # file" (#548), and never the deletion no history can undo (review of
+    # PR #555).
+    write_inventory(project)
+    return _kinds(standard, project)
+
+
+def _removal_next_changed(standard, project, holder, tmp_path):
+    # #327's file, staged and never committed: the `git status` that shows
+    # the change git rm will not discard.
+    plant_family_yaml(project, holder)
+    git("add", "--", "contracts/family.yaml", cwd=project)
+    return _kinds(standard, project)
+
+
+def _taking_out_committed(standard, project, holder, tmp_path):
+    # The shape pin given a kind nothing registers, committed: no NEXT and a
+    # `why` naming a row that said `ok` (review of PR #555, round 2), now
+    # the `git log -p -1` that shows the commit.
+    give_a_kind(project, SHAPE_PIN, MISSPELT_KIND, True)
+    return _kinds(standard, project)
+
+
+def _taking_out_changed(standard, project, holder, tmp_path):
+    # The naming policy given a kind nothing registers, and not committed:
+    # the `git diff HEAD` that shows the change, never a NEXT taking it out.
+    naming = project / NAMING_COPY
+    naming.write_bytes(naming.read_bytes().replace(
+        b"kind: repository-naming-policy\n", b"kind: service-inventory\n"))
+    return _kinds(standard, project)
+
+
+def _family_beside(standard, project, holder, tmp_path):
+    # #211's file, whose NEXT held `family.py init` and `family.py add` in
+    # backticks: the `git rm` of it, and those two in the `why` (#548).
+    family_beside(project, holder)
+    return _kinds(standard, project)
+
+
+def _every_fault(standard, project, holder, tmp_path):
+    # Every fault that is a file to take out, at once and in every git state:
+    # #211's committed, an unregistered kind and #327's untracked, #439's
+    # staged. ONE command, where the NEXT was their sentences joined by `; `.
+    family_beside(project, holder)
+    write_inventory(project)
+    plant_family_yaml(project, holder)
+    git("add", "--", _read_nowhere(project, "a-pin-nothing-declares"),
+        cwd=project)
+    return _kinds(standard, project)
+
+
+def _a_repository_row(row_id):
+    """The builder of a `the way in` row for a git repository with no
+    `origin`, which is the adoption with `--org <your-org>` and the scaffold
+    beside it (#545)."""
+    def build(standard, project, holder, tmp_path):
+        here = tmp_path / "Loose"
+        here.mkdir()
+        git("init", "-q", "-b", "main", ".", cwd=here)
+        return rows_of(doctor(standard, here, "--json"))[row_id]
+    return build
+
+
 #: One fixture per NEXT #277 converted, by the builder and branch it reaches,
 #: and how the sentence that used to follow `   # ` on it now opens -- moved
 #: VERBATIM, less the `#`, so these are the words main, doctors A and B and
-#: lane 2's #237, #291 and #496 printed. Not the prose NEXTs
-#: `check_manifest_kinds` prints for a kind no gate here runs (#211, #327),
-#: and not a `Refusal.remediation` printed as one; its NEXT for a file that
-#: does not load (#291's `unreadable_next`) is here.
+#: lane 2's #237, #291 and #496 printed. The `manifest kinds` NEXTs #277
+#: left as prose (#211, #327) are here too since #548, by the git state the
+#: one command they print now reaches (`removal_next`), or, for a file a
+#: gate here reads, the read-only one that shows its kind line (`taking_out`,
+#: review of PR #555), with the sentence that now opens their `why`; a
+#: `Refusal.remediation` reaches no NEXT
+#: (`test_a_refusal_a_check_lets_out_has_no_next_and_keeps_its_remedy`).
 CASES = {
     "validator_row-neither-readable": (
         _validator_neither_readable,
@@ -589,8 +690,58 @@ CASES = {
         _machine,
         "it names each missing prerequisite and offers to install it, on a "
         "typed yes"),
-    "check_the_way_in": (
-        _way_in, "without --yes; it asks"),
+    "removal_next-committed": (
+        _removal_next_committed,
+        "takes contracts/project.yaml out of this root: commit that on a "
+        "branch and land it as a pull request. Never rename it onto a path a "
+        "gate here reads"),
+    "removal_next-loose": (
+        _removal_next_loose,
+        "shows contracts/inventory.yaml, which git does not track: no commit "
+        "holds it, so deleting it cannot be undone and is a person's act, "
+        "never this row's, with nothing to commit after. A person deletes it "
+        "with: git -C "),
+    "removal_next-changed": (
+        _removal_next_changed,
+        "shows the changes no commit holds in contracts/family.yaml, which "
+        "git rm will not discard: commit or drop them, and the next run "
+        "names the way out. Or move what contracts/family.yaml describes"),
+    "taking_out-committed": (
+        _taking_out_committed,
+        "shows the last commit that changed contracts/shape-pin.yaml. "
+        "contracts/shape-pin.yaml declares kind pinned_contract_manifes "
+        "where a gate here reads it as pinned_contract_manifest, and no gate "
+        "here checks the kind it declares, so this row is the one that says "
+        "so"),
+    "taking_out-changed": (
+        _taking_out_changed,
+        "shows the change to contracts/repository-naming.yaml that no commit "
+        "holds. contracts/repository-naming.yaml declares kind "
+        "service-inventory where a gate here reads it as "
+        "repository-naming-policy, and the manifest row's gate finds that "
+        "too"),
+    "check_manifest_kinds-family-beside": (
+        _family_beside,
+        "takes family.yaml out of this root: commit that on a branch and land "
+        "it as a pull request. Or move the membership family.yaml records to "
+        "a holder of its own (`family.py init`, then `family.py add` there)"),
+    "check_manifest_kinds-every-fault": (
+        _every_fault,
+        "takes family.yaml out of this root: commit that on a branch and land "
+        "it as a pull request. The next run names the way out for "
+        "contracts/inventory.yaml, contracts/family.yaml, "
+        "contracts/release-pin.yaml. Or register the kind "
+        "contracts/inventory.yaml declares"),
+    # Its sentence is the scaffold rows' one now (#545): it opens with the
+    # placeholder to replace, and the words printed after `   # ` follow.
+    "check_the_way_in": (_way_in, SCAFFOLD_WHY),
+    # #545's, which were never a `   # ` tail; the property holds them to the
+    # same rule, and the placeholder is the one the scaffold line carries.
+    "check_the_way_in-adopt-no-origin": (
+        _a_repository_row("way-in"),
+        "replace <your-org> with the GitHub organisation to adopt under"),
+    "check_the_other_way_in": (
+        _a_repository_row("way-in-scaffold"), SCAFFOLD_WHY),
 }
 
 
@@ -615,28 +766,6 @@ def unquoted_operators(command: str) -> list[str]:
 #: so it is one of them. `<` and `>` are not here: the way-in row's
 #: `<your-org>` is a placeholder the reader replaces, unquoted on purpose.
 LIVE_OPERATORS = ";&|()"
-
-
-def outside_single_quotes(command: str) -> str:
-    """`command` less what `sh` reads literally: single-quoted spans and the
-    character after a backslash. A `$(` left in it is run -- inside double
-    quotes as much as outside them -- which `shlex`'s tokens cannot show:
-    they read `"$(make)"` as the one word `$(make)`, exactly as they read
-    the quoted path `'$(make)'`, which runs nothing."""
-    kept, single, double, at = [], False, False, 0
-    while at < len(command):
-        char = command[at]
-        if single:
-            single = char != "'"
-        elif char == "\\":
-            at += 1
-        elif char == "'" and not double:
-            single = True
-        else:
-            double = double != (char == '"')
-            kept.append(char)
-        at += 1
-    return "".join(kept)
 
 
 def test_the_operator_readers_see_what_sh_runs_and_not_a_quoted_path():
@@ -857,6 +986,48 @@ def test_the_legs_next_pasted_into_an_interactive_zsh_runs_no_make(
         "here, or this test is proving nothing about the backticks")
 
 
+#: The `manifest kinds` NEXT for a `family.yaml` beside `project.yaml` before
+#: #548 (`FAMILY_BESIDE_FIX` at 5ed3e5de), spelled here because nothing
+#: prints it any more.
+FAMILY_BESIDE_NEXT_BEFORE_548 = (
+    "an assembly root is not a family holder: take family.yaml out of this "
+    "root, or move the membership to a holder of its own (`family.py init`, "
+    "then `family.py add` there), as the human decides -- never `family.py "
+    "add` here, which would mount the members inside a project")
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("zsh") is None, reason="needs zsh")
+def test_the_family_beside_next_pasted_into_zsh_runs_no_family_py(
+        standard, project, holder, tmp_path, monkeypatch):
+    """#548's own defect, pasted where a `family.py` first on `PATH` leaves a
+    marker. The NEXT now is the `git rm` that takes `family.yaml` out, and
+    leaves none; the line the doctor printed before #548, pasted the same
+    way, runs `family.py init` and `family.py add` out of its backticks and
+    leaves it, so this harness is shown to run a backtick."""
+    family_beside(project, holder)
+    row = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert row["status"] == "FINDING", row
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    marker = tmp_path / "MARKER"
+    (stub / "family.py").write_text(
+        f"#!/bin/sh\ntouch {shlex.quote(str(marker))}\n", encoding="utf-8")
+    (stub / "family.py").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stub}{os.pathsep}{os.environ['PATH']}")
+
+    status, transcript = paste_into_zsh(row["next"], project)
+    assert status == 0, transcript
+    assert not marker.exists(), transcript
+    assert git("ls-files", "--", "family.yaml", cwd=project).stdout == "", (
+        "the NEXT did not take family.yaml out", transcript)
+
+    paste_into_zsh(FAMILY_BESIDE_NEXT_BEFORE_548, project)
+    assert marker.exists(), (
+        "the line the doctor printed before #548 must run `family.py` here, "
+        "or this test is proving nothing about the backticks")
+
+
 # --- the report says the sentence, off the command's line -------------------
 
 def test_the_table_prints_why_on_its_own_line_under_next(standard, project,
@@ -910,6 +1081,69 @@ def test_a_cannot_answer_row_with_no_command_still_says_why(
     said = capsys.readouterr().err.splitlines()
     at = said.index("REFUSED shape-doctor-cannot-answer: it could not ask")
     assert said[at + 1:] == ["  Why: what to do instead"], said
+
+
+# --- a refusal's remedy reaches no NEXT, and the guard over the rows --------
+#
+# #408: a check that let a `Refusal` out became a FINDING whose NEXT was the
+# refusal's remedy, and a standard whose own path policy did not load an
+# `n/a` row whose NEXT was the same: prose a tool prints under its refusal,
+# `repo_shape.REMEDIATION` holding `git submodule update` and
+# `validate-pins.py` in backticks. #494 left both with no known reach; #548
+# makes it none.
+
+
+@pytest.mark.parametrize("remedy", ["none", "lockstep"])
+def test_a_refusal_a_check_lets_out_has_no_next_and_keeps_its_remedy(
+        standard, project, remedy):
+    """Both rows a refusal makes -- `run_checks`' FINDING for a check that
+    lets one out, `placement_policy`'s `n/a` for a path policy that does not
+    load -- have no NEXT, whatever the refusal carries. A remedy, where
+    there is one, is the row's `why`, less its `Remediation:` label, so what
+    it said is still printed, on a `WHY` line."""
+    module = doctor_module(standard)
+    carried = REMEDIATION if remedy == "lockstep" else ""
+
+    def refused(_ctx):
+        raise module.Refusal("probe-refused", "a check let this out", carried)
+
+    class Unloadable:
+        @staticmethod
+        def load(path):
+            raise module.Refusal("policy-refused", f"{path}: it does not load",
+                                 carried)
+
+    module.CHECKS = (module.Check("probe", "probe", (module.PROJECT,),
+                                  refused),)
+    ctx = module.Context(project.resolve())
+    [escaped] = module.run_checks(ctx)
+    ctx.adopt().PathPolicy = Unloadable
+    _adopt, _policy, unread = module.placement_policy(
+        ctx, standard / "contracts" / "path-classification.yaml")
+    expected = (REMEDIATION.removeprefix("Remediation: ")
+                if remedy == "lockstep" else None)
+    for row in (escaped.as_dict(), unread.as_dict()):
+        assert row["next"] is None, row
+        assert row["why"] == expected, row
+        assert_next_holds_no_prose(row)
+    assert escaped.status == module.FINDING, escaped.as_dict()
+
+
+def test_the_rows_guard_finds_a_backtick_or_a_remediation_in_a_next():
+    """`assert_next_holds_no_prose`, which `rows_of` asks of every row the
+    suite reads, shown to fail on each NEXT #548 and #408 were filed about
+    and on prose that opens with `Remediation:`, and to pass a row with no
+    NEXT and a command whose quoted path holds a backtick, which is a
+    character of the path -- in each spelling `quote_arg` has for an
+    apostrophe, `sh`'s `'\\''` and PowerShell's `''`."""
+    for line in (FAMILY_BESIDE_NEXT_BEFORE_548, REMEDIATION,
+                 "Remediation: run the gate again"):
+        with pytest.raises(AssertionError):
+            assert_next_holds_no_prose({"id": "before", "next": line})
+    for line in (None, "git -C '/w/it`s here' status",
+                 "git -C '/w/it'\\''s `here`' status",
+                 "git -C 'C:\\it''s `here`' status"):
+        assert_next_holds_no_prose({"id": "after", "next": line})
 
 
 # --- the guard: no tail comes back -------------------------------------------
