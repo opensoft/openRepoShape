@@ -843,14 +843,18 @@ def family_link(root: Path, family: str) -> Path | None:
     family layout holds through the link and the run goes on. A link named
     `<Family>` that leads anywhere else is no family folder of this holder.
 
-    Only a LINK, asked with `os.path.islink`, and never a second spelling:
-    on a disk that ignores case, `InkRouter` beside `inkrouter` is the same
-    directory entry and no link, so it is the strict test's case-only
-    rename below and never this.
+    Only a LINK: a symbolic link (`os.path.islink`), or a Windows directory
+    junction (`os.path.isjunction`, Python 3.12 and later), the link Windows
+    makes without privilege and that `Path.resolve()` follows the same way.
+    Never a second spelling: on a disk that ignores case, `InkRouter` beside
+    `inkrouter` is one directory entry and no link, so it is the strict
+    test's case-only rename below.
     """
     folder = root.parent
     link = folder.parent / family
-    if os.path.islink(link) and same_directory(link, folder):
+    junction = getattr(os.path, "isjunction", lambda _: False)
+    if ((os.path.islink(link) or junction(link))
+            and same_directory(link, folder)):
         return link
     return None
 
@@ -925,8 +929,10 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
         # THIS FOLDER under another case, on a disk that ignores case: the
         # folder is renamed, in two steps, and the holder stays inside it.
         # Never a link: a link to this folder passed above (`family_link`),
-        # and a case-only alias is one directory entry, never a link, so
-        # the two rules never meet.
+        # and a case-only alias is one directory entry, never a link. They
+        # differ by disk at one edge: a LINK spelled in another case
+        # (`inkrouter` to `real-x`) stops on Linux, with a staged move that
+        # runs, and passes as the family's link on a disk that ignores case.
         staged = folder.parent / f"{family}.folder"
         steps = [["mv", folder, staged], ["mv", staged, wanted]]
     else:

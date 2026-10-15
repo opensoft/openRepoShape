@@ -137,6 +137,21 @@ def stored(path) -> Path | None:
     return found
 
 
+def another_path_to(patched, alias: Path, folder: Path) -> None:
+    """`alias` exists and is the same directory as `folder`, as a disk with
+    a second path to that folder answers; every other path as it is."""
+    exists, samefile = Path.exists, os.path.samefile
+
+    def same(one, two) -> bool:
+        pair = {Path(one), Path(two)}
+        return pair == {alias, folder} if alias in pair else samefile(one,
+                                                                       two)
+
+    patched.setattr(Path, "exists",
+                    lambda self, **_: self == alias or exists(self))
+    patched.setattr(os.path, "samefile", same)
+
+
 def ignoring_case(patched) -> None:
     """`Path.exists` and `os.path.samefile` answering as macOS and Windows
     disks do, here on any system: a spelling in another case exists, and is
@@ -237,7 +252,8 @@ def test_the_dry_run_names_the_branch_it_would_clone_on(diverged, tmp_path):
      "holds a character that does not print, so it is not used as a branch"),
     (b"5", "5", "is not a branch name"),
     (b"[main]", "['main']", "is not a branch name"),
-], ids=["escape-sequence", "a-number", "a-list"])
+    (b'"  "', "'  '", "is not a branch name"),
+], ids=["escape-sequence", "a-number", "a-list", "blank"])
 def test_a_tracking_branch_that_is_no_branch_name_is_shown_and_not_used(
         diverged, tmp_path, declared, shown, why):
     """A value no branch can have is not handed to git and not printed raw:
@@ -399,9 +415,10 @@ def test_a_parent_folder_in_another_case_is_renamed_on_a_disk_that_ignores_it(
 @pytest.mark.parametrize("there", [
     "nothing",
     pytest.param("a folder", marks=pytest.mark.skipif(
-        os.name == "nt", reason="WindowsPath equality ignores case, so a "
-        "case-sensitive disk with a separate folder cannot be simulated "
-        "there; a Windows disk cannot hold the two folders anyway")),
+        os.name == "nt", reason="the simulation assumes Windows' default "
+        "path equality, which ignores case, so a separate folder whose name "
+        "differs only in case cannot be told apart there (an NTFS folder "
+        "made case-sensitive can hold one)")),
     "a link",
 ])
 def test_a_case_sensitive_disk_keeps_its_move(placement, monkeypatch,
@@ -541,6 +558,43 @@ def test_a_link_named_after_the_family_to_another_folder_is_not_accepted(
     assert moved.returncode == 0, moved.stdout + moved.stderr
 
 
+def test_a_family_folder_reached_through_a_windows_junction_passes(
+        placement, monkeypatch, tmp_path):
+    """A directory junction, the link Windows makes without privilege:
+    `os.path.islink` says no and `os.path.isjunction` (3.12) says yes, and
+    `Path.resolve()` follows it as it follows a link. It is the family
+    folder reached through a link. Simulated, so every system asks it."""
+    folder = tmp_path / "real-x"
+    root = folder / NAME
+    root.mkdir(parents=True)
+    junction = tmp_path / NAME
+    with monkeypatch.context() as patched:
+        another_path_to(patched, junction, folder)
+        patched.setattr(os.path, "islink", lambda path: False)
+        patched.setattr(os.path, "isjunction",
+                        lambda path: Path(path) == junction, raising=False)
+        found = placement.family_link(root, NAME)
+        warning = placement.parent_folder_warning(root, NAME)
+    assert found == junction
+    assert warning is None
+
+
+def test_a_folder_is_renamed_only_for_a_difference_of_case(
+        placement, monkeypatch, tmp_path):
+    """A second path to this folder under another NAME that is neither a
+    link nor a junction (a bind mount, say) is not answered by renaming the
+    folder: that rename is for a name that differs only in case."""
+    folder = tmp_path / "real-x"
+    root = folder / NAME
+    root.mkdir(parents=True)
+    alias = tmp_path / NAME
+    with monkeypatch.context() as patched:
+        another_path_to(patched, alias, folder)
+        warning = placement.parent_folder_warning(root, NAME)
+    assert ["mv", str(folder), str(tmp_path / f"{NAME}.folder")] \
+        not in move_commands(warning)
+
+
 # --- family.py siblings runs the holder's own copy ---------------------------
 
 
@@ -627,3 +681,21 @@ def test_init_with_a_work_dir_promises_no_family_folder(diverged):
             "nothing: it prints the `mv` that puts the holder in a folder "
             f"named {NAME}, and stops until it is there.") in flat(said)
     assert "in the family folder, on its tracking branch" not in flat(said)
+
+
+def test_init_with_a_work_dir_named_after_the_family_keeps_the_promise(
+        tmp_path):
+    """`--work-dir <t>/InkRouter` lands the holder at
+    `<t>/InkRouter/InkRouter`: a folder named after the family, where `make
+    siblings` runs to the end, so the NEXT STEPS promise the clones there."""
+    work = tmp_path / NAME
+    result = run_script(FAMILY, "init", "--org", NAME, "--family", NAME,
+                        "--created-by", "Test Human",
+                        "--created-on", "2026-10-15",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(work), cwd=tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"\nfamily folder  {work.resolve()}\n" in result.stdout
+    assert ("`make siblings` then puts each member's WORKING clone beside "
+            "the holder, in the family folder, on its tracking branch."
+            ) in flat(result.stdout)
