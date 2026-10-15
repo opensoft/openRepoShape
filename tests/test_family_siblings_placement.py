@@ -396,7 +396,14 @@ def test_a_parent_folder_in_another_case_is_renamed_on_a_disk_that_ignores_it(
                                            NAME) is None
 
 
-@pytest.mark.parametrize("there", ["nothing", "a folder", "a link"])
+@pytest.mark.parametrize("there", [
+    "nothing",
+    pytest.param("a folder", marks=pytest.mark.skipif(
+        os.name == "nt", reason="WindowsPath equality ignores case, so a "
+        "case-sensitive disk with a separate folder cannot be simulated "
+        "there; a Windows disk cannot hold the two folders anyway")),
+    "a link",
+])
 def test_a_case_sensitive_disk_keeps_its_move(placement, monkeypatch,
                                               tmp_path, there):
     """Linux, where `InkRouter` and `inkrouter` are two folders: with
