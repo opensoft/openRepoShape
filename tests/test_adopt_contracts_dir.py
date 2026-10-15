@@ -69,6 +69,16 @@ contracts-dir:
 \t@echo $(CONTRACTS_DIR)
 """
 
+#: The follow-up that says what the root Makefile does. It names the KEY the
+#: block is rendered from and no path: `execute` renders the block from the
+#: plan's CURRENT `legs.spec_path`, and the tool's own remediations ask for a
+#: hand edit of it after `plan` wrote this line (#522's review, F1).
+MAKEFILE_FOLLOW_UP = (
+    "the root Makefile wires `CONTRACTS_DIR` to the `contracts/` of the spec "
+    "leg, where the plan's `legs.spec_path` mounts it, and exports it, so the "
+    "code leg's tooling takes the path from the environment instead of "
+    "assuming it sits beside it")
+
 #: A source with nothing for the plan to ask about, no Makefile of its own
 #: (so the shape's, with the block, is the root's), and one code file that
 #: names `contracts/`, which the rules send to the spec leg.
@@ -189,9 +199,10 @@ def test_plan_names_the_read_across_from_where_the_code_leg_is(
         "the environment")
     assert posixpath.normpath(posixpath.join(
         code_path, f"{expected}/contracts/")) == f"{spec_path}/contracts"
-    # The Makefile follow-up and the block `execute` appends agree.
-    assert any(f"`CONTRACTS_DIR ?= $(CURDIR)/{spec_path}/contracts`" in item
-               for item in follow_ups), follow_ups
+    # The Makefile follow-up names the key, so it is the same line for every
+    # mount, and it names no path for a hand edit of the key to contradict.
+    assert follow_ups.count(MAKEFILE_FOLLOW_UP) == 1, follow_ups
+    assert not [item for item in follow_ups if "$(CURDIR)" in item]
 
 
 # --- `execute`, end to end --------------------------------------------------
@@ -199,15 +210,30 @@ def test_plan_names_the_read_across_from_where_the_code_leg_is(
 SPEC_PATH, CODE_PATH, ACROSS = "legs/spec", "impl/code", "../../legs/spec"
 
 
-@pytest.fixture(scope="module")
-def adopted(tmp_path_factory) -> dict:
-    """One real adoption with both legs mounted away from their defaults,
-    and a recursive clone of its split branch. Its own source: `execute`
-    pushes the split branch into the repository it adopts."""
-    base = tmp_path_factory.mktemp("contracts-dir-adopted")
+def adopt_with_legs_mounted_away(base: Path, *, by_hand: bool) -> dict:
+    """One real adoption with both legs mounted away from their defaults, at
+    SPEC_PATH and CODE_PATH, and a recursive clone of its split branch. Its
+    own source: `execute` pushes the split branch into the repository it
+    adopts.
+
+    `by_hand` plans with the DEFAULT paths and then edits `legs.spec_path` and
+    `legs.code_path` in the plan, as `MOUNT_REMEDIATION` and
+    `plan-leg-path-collides` ask a person to. Otherwise `plan` is given them.
+    """
     source = make_source_repo(base / "Thing", TREE, edits=EDITS)
     plan = base / "adoption-plan.yaml"
-    follow_ups = planned_follow_ups(source, plan, SPEC_PATH, CODE_PATH)
+    follow_ups = planned_follow_ups(
+        source, plan, *(("spec", "code") if by_hand else (SPEC_PATH, CODE_PATH)))
+    if by_hand:
+        text = plan.read_text(encoding="utf-8")
+        edited = (text.replace("  spec_path: spec\n",
+                               f"  spec_path: {SPEC_PATH}\n")
+                      .replace("  code_path: code\n",
+                               f"  code_path: {CODE_PATH}\n"))
+        assert (f"  spec_path: {SPEC_PATH}\n" in edited
+                and f"  code_path: {CODE_PATH}\n" in edited), text
+        with open(plan, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(edited)
     checked = run_script(ADOPT, "check", "--plan", str(plan))
     assert checked.returncode == 0, checked.stderr + checked.stdout
     result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
@@ -226,6 +252,20 @@ def adopted(tmp_path_factory) -> dict:
         capture_output=True, check=True).stdout
     return {"source": source, "clone": clone, "follow_ups": follow_ups,
             "makefile": makefile}
+
+
+@pytest.fixture(scope="module")
+def adopted(tmp_path_factory) -> dict:
+    """The adoption whose `plan` was given both mount paths."""
+    return adopt_with_legs_mounted_away(
+        tmp_path_factory.mktemp("contracts-dir-adopted"), by_hand=False)
+
+
+@pytest.fixture(scope="module")
+def adopted_by_hand(tmp_path_factory) -> dict:
+    """The adoption whose plan's mount paths were edited after `plan`."""
+    return adopt_with_legs_mounted_away(
+        tmp_path_factory.mktemp("contracts-dir-by-hand"), by_hand=True)
 
 
 @needs_filter_repo
@@ -285,3 +325,27 @@ def test_the_follow_ups_read_across_leads_to_the_contracts(adopted):
     assert target.resolve().is_file()
     assert target.resolve() == (adopted["clone"].joinpath(
         *SPEC_PATH.split("/"), "contracts", POLICY)).resolve()
+
+
+@needs_filter_repo
+def test_a_hand_edited_mount_leaves_the_follow_up_true_of_the_makefile(
+        adopted_by_hand):
+    """#522's review, F1. `plan` wrote the Makefile follow-up once, and the
+    split commit's message, which is also the pull request's body, holds it.
+    `execute` renders the Makefile in that same commit from the plan's mount
+    paths as they are NOW. After the hand edit the tool asks for, the message
+    still said `$(CURDIR)/spec/contracts` while the Makefile said
+    `$(CURDIR)/legs/spec/contracts`: the follow-up names the key, and so
+    cannot disagree with the Makefile about its value."""
+    message = " ".join(git(
+        "log", "-1", "--format=%B", SPLIT_BRANCH,
+        cwd=adopted_by_hand["source"]).stdout.split())
+    assert MAKEFILE_FOLLOW_UP in message
+    assert "$(CURDIR)" not in message
+    assert contracts_dir_line(adopted_by_hand["makefile"].decode("utf-8")) == (
+        f"CONTRACTS_DIR ?= $(CURDIR)/{SPEC_PATH}/contracts")
+    # The edited paths are where `execute` mounted the legs.
+    mounts = git("show", f"{SPLIT_BRANCH}:.gitmodules",
+                 cwd=adopted_by_hand["source"]).stdout
+    assert f"path = {SPEC_PATH}" in mounts
+    assert f"path = {CODE_PATH}" in mounts

@@ -1747,15 +1747,24 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
     of `tracking_branch:`, which `plan-tracking-branch-missing`'s
     remediation asks for, in `check`'s output and in the pull request's own
     body (#493's review, F3).
+
+    The Makefile follow-up does the same for the spec leg's mount: it names
+    `legs.spec_path` and no path. `execute` renders the Makefile's block
+    from the plan's CURRENT `legs.spec_path`, and `MOUNT_REMEDIATION` and
+    `plan-leg-path-collides` both ask for a hand edit of it, so a path named
+    here went on naming the old mount in the split commit's message, the
+    pull request's own body, while the Makefile in that commit named the new
+    one (#522's review, F1).
     """
     out = cross_leg_references(source, entries, spec_path, code_path)
     if any(e.leg == "spec" and (e.path == "contracts/"
                                 or e.path.startswith("contracts/"))
            for e in entries):
         out.append(
-            f"the root Makefile wires `CONTRACTS_DIR ?= $(CURDIR)/{spec_path}/"
-            "contracts` and exports it, so the code leg's tooling takes the "
-            "path from the environment instead of assuming it sits beside it")
+            "the root Makefile wires `CONTRACTS_DIR` to the `contracts/` of "
+            "the spec leg, where the plan's `legs.spec_path` mounts it, and "
+            "exports it, so the code leg's tooling takes the path from the "
+            "environment instead of assuming it sits beside it")
     if any(e.path in ("CODEOWNERS", ".github/CODEOWNERS") for e in entries):
         out.append(
             "CODEOWNERS in the assembly root now names paths that live in the "
