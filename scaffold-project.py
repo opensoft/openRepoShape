@@ -81,7 +81,7 @@ from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, link_pins_from_trees, repo_basename, tree_digest,
+    git_out, link_pins_from_trees, repo_basename, shell_line, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
@@ -350,6 +350,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-dir", type=Path, default=None,
                         help="where the working trees are built "
                              "(default: a temporary directory)")
+    parser.add_argument("--no-next-steps", action="store_true",
+                        help="leave out the closing NEXT STEPS (the clone, "
+                             "the cd and `make bootstrap`): setup-project.py "
+                             "passes it, because it runs those steps itself "
+                             "next. `Working trees are at` still prints.")
     args = parser.parse_args(argv)
 
     try:
@@ -1682,21 +1687,35 @@ def _scaffold(args) -> int:
         return 2
     _set_topics(repositories, topic, local)
 
-    print(f"""
+    if not args.no_next_steps:
+        print(f"""
 NEXT STEPS
 
-    git clone --recurse-submodules {urls['assembly']}
+    {_next_steps_clone(urls['assembly'], local)}
     cd {names['assembly']}
     make bootstrap
 
 `make bootstrap` puts each leg on `{args.tracking_branch}` AT its pinned commit,
 runs the naming, manifest and lockstep-pin validators, and prints the review
 authority a wallet register names for this project — or says that authority is
-not wallet-carried here, and continues.
-
-Working trees are at {work_root}
-""")
+not wallet-carried here, and continues.""")
+    print(f"\nWorking trees are at {work_root}\n")
     return 0
+
+
+def _next_steps_clone(url: str, local: bool) -> str:
+    """The NEXT STEPS clone, as a person pastes it into a POSIX shell.
+
+    UNDER `--local-remote-dir` IT CARRIES `-c protocol.file.allow=always`
+    (#538), as setup-project.py's own clone does: the legs are cloned from
+    the plain paths `.gitmodules` records, the file transport, which git
+    refuses a submodule by default since the 2022 advisories, so the line as
+    printed failed `transport 'file' not allowed`. The URL is a path there,
+    one word whatever folder it is in (`shell_line`, POSIX as #532 rules
+    for a printed command); a GitHub URL needs no quotes.
+    """
+    words = ["git", "-c", "protocol.file.allow=always"] if local else ["git"]
+    return shell_line([*words, "clone", "--recurse-submodules", url], "posix")
 
 
 if __name__ == "__main__":
