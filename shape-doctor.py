@@ -695,6 +695,19 @@ def quote_arg(value, platform: str | None = None, *,
     itself is still this function's alone -- one place that knows the
     apostrophe is doubled, rather than a second copy of the rule beside the
     one that needs it.
+
+    A WORD THAT BEGINS WITH `=` IS QUOTED IN `sh`'S DIALECT (#532). zsh, the
+    login shell macOS ships, expands a bare `=word` to the path of the
+    command `word` (its EQUALS option, on by default): `zsh -f -c 'echo =ls'`
+    prints `/usr/bin/ls`, and `=x` stops the line with `x not found`. bash
+    and dash read it as itself, and `=` anywhere but the front is itself to
+    every shell, so only a leading one is quoted. It stood in
+    `UNQUOTED_POSIX` as an ordinary character, and reached a line only as a
+    value that starts with one (a branch named `=x`), which is the gap #460
+    named. `repo_shape.shell_quoted` quotes it already (#486, #507), and
+    `tests/test_family_printed_quoting.py` holds the two quoters to one
+    answer. PowerShell's dialect is NOT changed: it expands no `=word`, so
+    `UNQUOTED_NT` keeps its bare `=`, as in any other place in a word.
     """
     # ASCII first, so the alphabet check and the quoting below it both see
     # what `Row.__init__` will (Copilot, PR #102); see the docstring above.
@@ -702,9 +715,9 @@ def quote_arg(value, platform: str | None = None, *,
     windows = (os.name if platform is None else platform) == "nt"
     # `.fullmatch`, not `.match`: a pattern ending in `$` still matches just
     # before a trailing newline, so `.match` alone would call "Atlas\n" bare
-    # (Copilot, PR #102).
+    # (Copilot, PR #102). And a leading `=` is never bare for `sh` (#532).
     if not always and (UNQUOTED_NT if windows else UNQUOTED_POSIX).fullmatch(
-            text):
+            text) and (windows or not text.startswith("=")):
         return text
     if windows:
         # PowerShell's verbatim string: nothing inside is expanded, and the
