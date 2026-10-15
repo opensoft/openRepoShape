@@ -146,15 +146,18 @@ def objects(root: Path) -> list[str]:
 
 
 def state(root: Path, env: dict, member: str = MEMBER) -> dict:
-    """Everything a dry run must leave exactly as it found it, as bytes."""
+    """Everything a dry run must leave exactly as it found it, as bytes,
+    `.gitmodules` None where the work tree has no file there."""
     mount = root / "members" / member
+    gitmodules = root / ".gitmodules"
     return {
         "objects": objects(root),
         "HEAD": raw(root, env, "rev-parse", "HEAD").stdout,
         "index": raw(root, env, "ls-files", "-s", "-z").stdout,
         "status": raw(root, env, "status", "--porcelain=v1", "-z").stdout,
         "family.yaml": (root / "family.yaml").read_bytes(),
-        ".gitmodules": (root / ".gitmodules").read_bytes(),
+        ".gitmodules": (gitmodules.read_bytes() if gitmodules.is_file()
+                        else None),
         ".git/config": (root / ".git" / "config").read_bytes(),
         "member HEAD": (raw(mount, env, "rev-parse", "HEAD").stdout
                         if mount.is_dir() else None),

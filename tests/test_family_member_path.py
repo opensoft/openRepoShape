@@ -101,11 +101,12 @@ def isolated(offline, tmp_path: Path) -> dict:
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.invalid"}
 
 
-def raw(root: Path, env: dict, *args: str,
-        check: bool = True) -> subprocess.CompletedProcess:
-    """`git` in `root` under `env`, its output as BYTES."""
+def raw(root: Path, env: dict, *args: str, check: bool = True,
+        stdin: bytes | None = None) -> subprocess.CompletedProcess:
+    """`git` in `root` under `env`, its output as BYTES, and `stdin`, bytes
+    too, on its standard input."""
     proc = subprocess.run(["git", *args], cwd=str(root), capture_output=True,
-                          check=False, env={**os.environ, **env})
+                          check=False, env={**os.environ, **env}, input=stdin)
     if check:
         assert proc.returncode == 0, (f"git {' '.join(args)} in {root}:\n"
                                       f"{proc.stderr!r}")

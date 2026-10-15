@@ -486,10 +486,11 @@ def test_a_name_another_submodule_has_is_refused_before_the_mount(
         f"gives {SPARE}'s mount",
         "Remediation: git names a submodule after its path, so that name is "
         "a member's. Give that submodule a name of its own, or take it out, "
-        "by hand, then re-run. Mounting over the name would rewrite its "
-        f"section to point at {SPARE} (git before 2.51), or mount {SPARE} "
-        "under another name this tool does not follow (git 2.51 and later, "
-        "with the `--force` this tool mounts with).")
+        "by hand, then `git add .gitmodules` and re-run. Mounting over the "
+        f"name would rewrite its section to point at {SPARE} (git before "
+        f"2.51), or mount {SPARE} under another name this tool does not "
+        "follow (git 2.51 and later, with the `--force` this tool mounts "
+        "with).")
     assert not (holder / MOUNT).exists()
     offline.assert_left_nothing()
 
