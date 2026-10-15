@@ -24,6 +24,15 @@ flag `setup-project.py` passes only when it is given (`--id`, `--name`,
 `--local-remote-dir`) is in neither: the printed lines show the default run, and
 so do the recorded ones.
 
+One flag is on the real run alone and is left out of the printed line ON
+PURPOSE: `--no-next-steps` (#538). `setup-project.py` runs the scaffold's
+closing block, the `git clone`, the `cd` and `make bootstrap`, itself as its
+step (7), so it tells the scaffold to leave that block out. By hand there is no
+step (7): the block IS the person's next work, so the documents' lines do not
+carry the flag. `what_setup_runs` asserts the flag is there, last, and that
+nothing else differs from the plan's arguments, then returns the real run
+without it.
+
 Nothing here starts a process, touches git or GitHub, or reads a terminal, so
 it holds on every platform; the printed commands are POSIX and are rendered
 with `shlex.quote`, which is what they are written in.
@@ -57,6 +66,10 @@ HANDBOOK_BLOCK = re.compile(
 
 SCAFFOLD_COMMAND = "python3 scaffold-project.py"
 
+#: What the real run carries and the printed line does not: see the module
+#: docstring.
+NO_NEXT_STEPS = "--no-next-steps"
+
 
 def scaffold_lines(block: str) -> list[str]:
     """The `scaffold-project.py` commands in a printed block, each as one line
@@ -70,10 +83,10 @@ def scaffold_lines(block: str) -> list[str]:
     return lines
 
 
-def what_setup_runs(monkeypatch, tmp_path: Path) -> list[str]:
-    """The two `scaffold-project.py` commands `setup-project.py` runs for the
-    documents' own values, as `python3 scaffold-project.py <arguments>` lines:
-    the plan first, then the real run."""
+def recorded_scaffold_runs(monkeypatch, tmp_path: Path) -> list[list[str]]:
+    """The argument vectors `setup-project.py` hands `run` for the plan and the
+    real run, for the documents' own values: the plan first, then the real run,
+    each exactly as built, interpreter and script included."""
     module = entry_point_module()
     ran: list[list[str]] = []
 
@@ -92,8 +105,31 @@ def what_setup_runs(monkeypatch, tmp_path: Path) -> list[str]:
     module.plan_and_confirm(opts, REPO, ORG, args, str(tmp_path / "Atlas"))
     module.scaffold(REPO, args)
     assert len(ran) == 2, ran
+    return ran
+
+
+def what_setup_runs(monkeypatch, tmp_path: Path) -> list[str]:
+    """The two `scaffold-project.py` commands `setup-project.py` runs for the
+    documents' own values, as `python3 scaffold-project.py <arguments>` lines:
+    the plan first, then the real run.
+
+    THE REAL RUN IS RETURNED WITHOUT `--no-next-steps` (#538), after it is
+    asserted to be there. setup's step (7) clones, `cd`s and bootstraps
+    itself, so it has the scaffold leave out the closing block that prints the
+    same three commands, which printed in the middle of setup read as work
+    left to the person. By hand there is no step (7) and that block is the
+    person's next work, so the documents' lines stay without the flag, and
+    this compares them with the run it would be the same as. The assertion
+    keeps the exception exact: the flag is last, and the real run is otherwise
+    the plan's arguments, so a flag added to one of the two alone still fails
+    here."""
+    plan, real = recorded_scaffold_runs(monkeypatch, tmp_path)
+    assert plan[-1] == "--dry-run", plan
+    assert real == [*plan[:-1], NO_NEXT_STEPS], (
+        "the real run is the plan's arguments and a final "
+        f"{NO_NEXT_STEPS}, nothing else:\n  {plan}\n  {real}")
     lines = []
-    for argv in ran:
+    for argv in (plan, real[:-1]):
         assert Path(argv[1]).name == "scaffold-project.py", argv
         lines.append(" ".join([SCAFFOLD_COMMAND,
                                *(shlex.quote(part) for part in argv[2:])]))
@@ -133,6 +169,9 @@ def test_the_handbook_prints_the_commands_setup_runs(monkeypatch, tmp_path):
 
 def test_setup_runs_the_plan_and_the_real_run_with_the_same_arguments(
         monkeypatch, tmp_path):
+    recorded = recorded_scaffold_runs(monkeypatch, tmp_path)
+    assert recorded[1][-1] == NO_NEXT_STEPS, recorded[1]
+    assert NO_NEXT_STEPS not in recorded[0], recorded[0]
     plan, real = what_setup_runs(monkeypatch, tmp_path)
     assert plan == real + " --dry-run"
     assert "--visibility private" in real and "--elected-by 'Your Name'" in real
