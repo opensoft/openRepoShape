@@ -27,9 +27,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, FILE_PROTOCOL, GITLINK, GITMODULES, as_human, \
-    exported_in_a_clone, findings, git, in_the_history, link, \
-    make_source_repo, planned, put_gitmodules, refused_before_any_leg, \
+from conftest import ADOPT, GITLINK, GITMODULES, as_human, \
+    cloned_just_pushed, exported_in_a_clone, findings, git, in_the_history, \
+    link, make_source_repo, planned, put_gitmodules, refused_before_any_leg, \
     run_script
 
 needs_filter_repo = pytest.mark.skipif(
@@ -454,10 +454,7 @@ def test_a_refused_value_git_never_reads_adopts_and_clones(tmp_path, where):
     adopted = execute_in(plan, tmp_path)
     assert adopted.returncode == 0, adopted.stderr + adopted.stdout
     assert "adoption verified" in adopted.stdout
-    clone = tmp_path / "clone"
-    cloned = git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
-                 "adopt/three-repo-shape", str(source), str(clone),
-                 cwd=tmp_path, check=False)
-    assert cloned.returncode == 0, cloned.stderr
+    clone = cloned_just_pushed(source, tmp_path / "clone",
+                               "adopt/three-repo-shape")
     assert (clone / "code" / GITMODULES).read_bytes() \
         == with_line("update = bogus").encode()

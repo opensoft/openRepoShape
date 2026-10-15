@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
+from conftest import (ADOPT, REPO, cloned_just_pushed, git, make_source_repo,
                       resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -64,13 +64,8 @@ def adopted(tmp_path_factory) -> dict:
 @pytest.fixture
 def adopted_clone(adopted, tmp_path):
     """A recursive clone of the source at the split branch."""
-    target = tmp_path / PROJECT
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         "-b", "adopt/three-repo-shape", str(adopted["source"]), str(target)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
-    return target
+    return cloned_just_pushed(adopted["source"], tmp_path / PROJECT,
+                              "adopt/three-repo-shape")
 
 
 # --- what execute refuses --------------------------------------------------
@@ -125,10 +120,8 @@ def test_both_legs_exist_with_more_than_one_commit(adopted):
 def test_a_files_history_is_followable_inside_its_leg(adopted, tmp_path):
     """The point of `git filter-repo`: the commits that made a file come with
     it. The specification was edited in a second commit; the leg has both."""
-    clone = tmp_path / "spec-leg"
-    subprocess.run(["git", "clone", "-q",
-                    str(adopted["remotes"] / f"{PROJECT}-spec.git"),
-                    str(clone)], check=True)
+    clone = cloned_just_pushed(adopted["remotes"] / f"{PROJECT}-spec.git",
+                               tmp_path / "spec-leg")
     log = git("log", "--oneline", "--", "specs/001-feature/spec.md",
               cwd=clone).stdout.splitlines()
     assert len(log) == 2, f"expected two commits for the spec file, got {log}"
@@ -142,10 +135,8 @@ def test_a_files_history_is_followable_inside_its_leg(adopted, tmp_path):
 def test_the_legs_keep_the_paths_they_had_in_the_source(adopted, tmp_path):
     """Paths are NOT flattened: `scripts/validate.py` stays there, which is
     what makes `../spec/contracts` from `code/` the correct read-across."""
-    clone = tmp_path / "code-leg"
-    subprocess.run(["git", "clone", "-q",
-                    str(adopted["remotes"] / f"{PROJECT}-code.git"),
-                    str(clone)], check=True)
+    clone = cloned_just_pushed(adopted["remotes"] / f"{PROJECT}-code.git",
+                               tmp_path / "code-leg")
     assert (clone / "src" / "app" / "main.py").is_file()
     assert (clone / "tests" / "test_main.py").is_file()
     assert not (clone / "specs").exists()
