@@ -3022,6 +3022,389 @@ def _nothing_to_do(rows: list[Row], pinned: str, target: str,
             and pinned == target and not taking)
 
 
+def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
+                                      taking: list[Addition], accepted: set,
+                                      target: str, kind: Kind) -> None:
+    """`update-accept-local-missing-name` (#536): a copy this run writes
+    imports a name from a module `--accept-local` keeps, and the kept bytes
+    do not define it.
+
+    THE VALIDATORS CANNOT SEE IT, AND NOTHING ELSE RUNS THAT COPY. Since
+    #456 moved `spelled` and `escape_unencodable_stdout` into
+    `scripts/repo_shape.py`, both roots' `bootstrap.py` import them from
+    it. A project that keeps its own edit of `repo_shape.py` (`both`, or
+    `locally-modified`, accepted) while this run copies the new
+    `bootstrap.py` got a re-pin its validators passed, a `check` that then
+    read every row `unchanged`, and an `ImportError` from the first `make
+    bootstrap` or `bootstrap.py --help`, in a project whose CI never runs
+    bootstrap. #507 took the one other live case out of `siblings.py` by
+    not importing the new name there; this is the general guard. It is
+    asked after `update-conflict`, `update-local-drift` and
+    `update-rewrite-symlink`, so every `both` or `locally-modified` row left
+    is one `--accept-local` named, and before `confirm`: nothing has been
+    written, so nothing is rolled back, and nobody is asked for a yes to a
+    run that would leave a copy that cannot start.
+
+    UNLESS THE COPY IS ONE OF THE VALIDATORS. `kind.validators` are what
+    `_refuse_red_validators` runs after the writes, so a validator that
+    imports a name the kept copy lacks goes red there, and the run is
+    rolled back. This still refuses it first, before the yes and before a
+    byte is written, but says the validators pass only when no copy it
+    names is one of them: a clause that is false of one copy in the list
+    is false.
+
+    WHAT IS ASKED, AND OF WHAT. The importers are the copies this run
+    WRITES, read from the bytes it is about to write: each
+    `upstream-changed` row and each `--add` file whose path ends `.py`. A
+    row the run leaves alone is not asked about: an edit that already broke
+    an untouched importer is the project's doing, not this run's. A module
+    is resolved the way every shipped importer resolves it, its own
+    directory first on `sys.path`: `from M import ...` in `<dir>/<file>.py`
+    is the copy at `<dir>/M.py`, a dotted `M` naming that path's
+    subdirectories. So the same code covers `repo_shape.py` today, and any
+    helper kept beside its importer later, a holder's `bootstrap.py` under
+    its `siblings.py` among them. A module that resolves to no kept copy is
+    not asked about. `_names_imported` reads what a copy takes, and
+    `_names_defined` what a kept copy binds.
+
+    WHAT IT CANNOT TELL, IT DOES NOT REFUSE. A star import, or `import M`
+    and an attribute, names nothing this can read; nor does a copy, kept or
+    written, whose bytes Python could not parse either; nor a kept copy
+    with a star import or a module `__getattr__` of its own. There the
+    validators answer after the writes, as they did before #536, and roll
+    back a kept copy that cannot import. A name bound by `:=`, a `match`
+    capture, `type X =` or a `global` declared in a function is read as
+    defined (`_bound_at` says what it reads as a binding). A name bound only
+    through `globals()`, `setattr` on the module or `exec` reads as
+    missing, and is refused; one bound and then deleted (`NAME = 1`, then
+    `del NAME`) reads as defined, so that copy's `ImportError` is still its
+    first run's to meet.
+    """
+    kept = {row.path: row for row in rows
+            if row.state in (BOTH, LOCALLY_MODIFIED) and row.path in accepted}
+    if not kept:
+        return
+    lacking = _kept_copies_lacking(root, rows, taking, kept)
+    if not lacking:
+        return
+    helpers = sorted({helper for helper, _, _ in lacking})
+    upstreams = "; ".join(f"`git show {target}:{kept[helper].source}` for "
+                          f"{helper}" for helper in helpers)
+    both = [helper for helper in helpers if kept[helper].state == BOTH]
+    validated = any(path in kind.validators for _, path, _ in lacking)
+    raise Refusal(
+        "update-accept-local-missing-name",
+        "--accept-local keeps this project's own bytes of a module that a "
+        "copy this run writes imports from, and those bytes lack a name the "
+        "copy imports, so the copy would stop on an ImportError the first "
+        "time it runs"
+        + ("" if validated else
+           ", though the validators, which never import it, pass")
+        + ":\n"
+        + "\n".join(f"    {helper} (kept) lacks {', '.join(names)}, which "
+                    f"{path} imports from it"
+                    for helper, path, names in lacking),
+        "Remediation: whether the project keeps its edit is the human's "
+        "decision, and a kept copy must still define what the copies "
+        "written beside it import. Either merge the upstream's version into "
+        "the kept copy by hand, so it defines every name above, commit it, "
+        "and run this again with the same --accept-local; or drop the edit, "
+        "so the upstream's copy is taken: write the upstream's bytes over "
+        "it, commit that, and run this again without --accept-local on that "
+        f"path. In a shape clone the upstream's bytes are {upstreams}."
+        + (f" {', '.join(both)} changed upstream too, so dropping the edit "
+           "there is `update-conflict`'s merge by hand again, settled on the "
+           "upstream's side." if both else "")
+        + " Nothing was written.")
+
+
+def _kept_copies_lacking(root: Path, rows: list[Row], taking: list[Addition],
+                         kept: dict) -> list[tuple[str, str, list[str]]]:
+    """`(kept copy, written copy, [the names it lacks])` for each written
+    `.py` copy that imports from a kept one, sorted (#536). Split out of
+    `_refuse_kept_copies_missing_names`, which says what is asked of what;
+    each kept copy is read once, however many copies import from it.
+    """
+    written = sorted(
+        [(row.path, row.target_bytes) for row in rows
+         if row.state == UPSTREAM_CHANGED]
+        + [(add.path, add.target_bytes) for add in taking],
+        key=lambda pair: pair[0])
+    imports = [(path, module, names) for path, data in written
+               if path.endswith(".py") and data is not None
+               for module, names in sorted(_names_imported(data).items())]
+    defined: dict[str, set[str] | None] = {}
+    lacking: list[tuple[str, str, list[str]]] = []
+    for path, module, names in imports:
+        helper = _module_beside(path, module)
+        if helper not in kept:
+            continue
+        if helper not in defined:
+            defined[helper] = _names_defined(root / helper)
+        known = defined[helper]
+        missing = sorted(names - known) if known is not None else []
+        if missing:
+            lacking.append((helper, path, missing))
+    return sorted(lacking)
+
+
+def _module_beside(path: str, module: str) -> str:
+    """The pinned path `from <module> import ...` reaches from the copy at
+    `path` (#536): the importer's own directory first on `sys.path`, as
+    every shipped importer puts it, so `scripts/bootstrap.py`'s `repo_shape`
+    is `scripts/repo_shape.py`. Pin paths are spelled with `/` on every
+    platform, so this is string arithmetic and never `os.path`, which would
+    join with `\\` on Windows and match no row.
+    """
+    directory = path.rpartition("/")[0]
+    relative = module.replace(".", "/") + ".py"
+    return f"{directory}/{relative}" if directory else relative
+
+
+#: What `ast.parse` raises over bytes Python could not parse either (#536):
+#: a `SyntaxError`, which is also what a source that does not decode under
+#: its own encoding (UTF-8, or the one a coding cookie names) raises when it
+#: is parsed from bytes; the `ValueError` a null byte raises before 3.11 (a
+#: `SyntaxError` from then on); and the `RecursionError` or `MemoryError`
+#: CPython gives a source nested too deep to build. Each is "cannot tell",
+#: and never a traceback.
+UNPARSABLE = (SyntaxError, ValueError, RecursionError, MemoryError)
+#: What opens a scope of its own (#536): a name bound in its body is that
+#: scope's, never the module's, and the code in it runs later or elsewhere.
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+#: Syntax an older `ast` has no class for, because no source it parses can
+#: spell it: `type X = ...` (3.12) and the `match` captures (3.10). An empty
+#: tuple matches nothing.
+_TYPE_ALIASES = tuple(getattr(ast, name) for name in ("TypeAlias",)
+                      if hasattr(ast, name))
+_CAPTURES = tuple(getattr(ast, name)
+                  for name in ("MatchAs", "MatchStar", "MatchMapping")
+                  if hasattr(ast, name))
+#: What a `from ... import` can stand in, directly or nested: a statement,
+#: a `try`'s handler, or a `match`'s case. An expression holds none.
+_BLOCKS = (ast.stmt, ast.excepthandler) + tuple(
+    getattr(ast, name) for name in ("match_case",) if hasattr(ast, name))
+
+
+def _names_imported(data: bytes) -> dict[str, set[str]]:
+    """`{module: the names a copy takes from it}` for every absolute
+    `from <module> import <name>` in the copy's bytes (#536), function-level
+    ones included: those fail when the function runs, which is still a
+    copy that cannot do its job. Parsed from the BYTES, as Python's own
+    import reads a source, so a BOM or a coding cookie means what it means
+    to Python. Empty for bytes Python could not parse either: the
+    validators answer for those, as before.
+
+    A STAR IMPORT NAMES NOTHING, so it adds no name, and an `import <module>`
+    is not read: which attributes it uses is not something `ast` says.
+
+    A NAME THE COPY ITSELF ANSWERS FOR IS NOT TAKEN. Nothing inside an `if
+    TYPE_CHECKING:` body is, since it never runs. Inside the body of a
+    `try` that catches the `ImportError` a missing name raises
+    (`_catches_import_error`), a name is still taken unless the first
+    handler that catches it binds that same local name itself, its `as`
+    name else the name, as `_bound_at` reads a binding: that is the copy's
+    own fallback, and the copy starts. A handler that exits, re-raises or
+    passes binds nothing, and the copy stops there or on a `NameError`
+    later, which is the failure this refusal exists to say first. Only the
+    import's own scope is guarded: a `def`, `class` or `lambda` inside the
+    `try` runs later or elsewhere, outside its handler. A fallback bound
+    before the `try` rather than in the handler is not read, and that
+    import is taken; a handler with a star import of its own may bind any
+    name, and answers every one.
+    """
+    try:
+        module = ast.parse(data)
+    except UNPARSABLE:
+        return {}
+    imported: dict[str, set[str]] = {}
+    for node, answered in _imports_with_fallbacks(module):
+        if node.level or not node.module or "*" in answered:
+            continue
+        names = {alias.name for alias in node.names if alias.name != "*"
+                 and (alias.asname or alias.name) not in answered}
+        if names:
+            imported.setdefault(node.module, set()).update(names)
+    return imported
+
+
+def _imports_with_fallbacks(module: ast.Module):
+    """Each `from ... import` in `module` that can run, with the names its
+    own fallback binds (#536): what the first `ImportError` handler of the
+    innermost `try` around it, in its own scope, binds, since that handler
+    is the one that catches it. Empty outside any such `try`.
+    """
+    pending = [(statement, frozenset()) for statement in module.body]
+    while pending:
+        node, answered = pending.pop()
+        if isinstance(node, ast.ImportFrom):
+            yield node, answered
+        pending.extend(_blocks_inside(node, answered))
+
+
+def _blocks_inside(node: ast.AST, answered: frozenset) -> list:
+    """The clauses directly inside `node`, each with the names a fallback
+    answers there: `_fallback_in` for `node`'s own `body`, and what `node`
+    found for the rest, since a `try`'s handlers, `else` and `finally` are
+    outside its own guard. An `if TYPE_CHECKING:` body is not entered.
+    """
+    if isinstance(node, ast.If) and _is_type_checking(node.test):
+        return [(clause, answered) for clause in node.orelse]
+    inside = _fallback_in(node, answered)
+    return [(clause, inside if field == "body" else answered)
+            for field, value in ast.iter_fields(node)
+            if isinstance(value, list)
+            for clause in value if isinstance(clause, _BLOCKS)]
+
+
+def _fallback_in(node: ast.AST, answered: frozenset) -> frozenset:
+    """What an import in `node`'s own `body` finds answered: nothing in a
+    scope of its own; in a `try` with a handler that catches `ImportError`,
+    what the first such handler binds; else what `node` found itself.
+    """
+    if isinstance(node, _SCOPES):
+        return frozenset()
+    handler = next((clause for clause in getattr(node, "handlers", ())
+                    if _catches_import_error(clause)), None)
+    return answered if handler is None else frozenset(_bound_at(handler.body))
+
+
+def _catches_import_error(handler: ast.ExceptHandler) -> bool:
+    """Does this `except` clause catch the `ImportError` a missing name
+    raises? A bare one does, and so does one naming `ImportError` or a
+    class above it, alone or in a tuple. `ModuleNotFoundError` does not: a
+    missing NAME is a plain `ImportError`."""
+    if handler.type is None:
+        return True
+    caught = (handler.type.elts if isinstance(handler.type, ast.Tuple)
+              else [handler.type])
+    return any(isinstance(name, ast.Name)
+               and name.id in ("ImportError", "Exception", "BaseException")
+               for name in caught)
+
+
+def _is_type_checking(test: ast.expr) -> bool:
+    """`if TYPE_CHECKING:` or `if typing.TYPE_CHECKING:`, false at run time."""
+    return ((isinstance(test, ast.Name) and test.id == "TYPE_CHECKING")
+            or (isinstance(test, ast.Attribute)
+                and test.attr == "TYPE_CHECKING"))
+
+
+def _names_defined(path: Path) -> set[str] | None:
+    """Every name the kept copy at `path` binds at module scope (#536), as
+    `_bound_at` reads a binding, or None when it cannot tell.
+
+    PARSED FROM THE BYTES, as Python's own import reads them, so a BOM or a
+    coding cookie means what it means to Python. A kept copy is the
+    project's own file, which a Windows editor, or PowerShell 5.1's
+    `Set-Content -Encoding UTF8`, starts with a BOM; decoded to text first,
+    that BOM was a character no parser takes, a copy Python imports read as
+    one this could not, and #536's own `ImportError` went unrefused.
+
+    NONE, AND SO NO REFUSAL, where those rules cannot answer: bytes Python
+    could not parse either, which the validators will meet when they import
+    the copy; a star import, which binds names this does not know; and a
+    module `__getattr__`, which answers for any name it likes.
+    """
+    try:
+        module = ast.parse(path.read_bytes())
+    except (OSError, *UNPARSABLE):
+        return None
+    names = _bound_at(module.body)
+    return None if names & {"*", "__getattr__"} else names
+
+
+def _bound_at(statements: list) -> set[str]:
+    """Every name `statements` bind in the scope they run in (#536): at a
+    kept copy's module scope, what `from <module> import <name>` finds
+    there (`_names_defined`); in a `try`'s handler, the copy's own fallback
+    (`_names_imported`).
+
+    READ: a `def`, an `async def` or a `class`; a target of `=`, of an
+    annotated `=` (an annotation alone binds nothing), of an augmented one
+    or of `:=` (in a comprehension too, which binds it in the scope around
+    the comprehension), unpacking included; a `for` target and a `with ...
+    as`; an `import` (its `as` name, else the first part of a dotted one)
+    and a `from ... import` alias, a star import read as `*`; a `type X =`
+    alias (3.12); a `match` capture, `case X`, `[*X]` or `{**X}`; and a
+    `global X` declared in a function or class defined there, read as bound
+    because calling it may bind it, and what this cannot rule out it does
+    not refuse. All of it inside `if`, `try` (its handlers, `else` and
+    `finally`), `with`, `for`, `while` and `match`, which run where they
+    stand, and never inside a function, class or lambda body, which bind
+    names of their own scope.
+
+    NOT READ: a name bound through `globals()`, `setattr` on the module or
+    `exec`, which reads as missing; and `del`, so a name bound and then
+    deleted reads as bound.
+    """
+    return {name for node in _same_scope(statements)
+            for name in _names_bound(node)}
+
+
+def _same_scope(statements: list):
+    """Every node under `statements` that runs in their own scope. A `def`,
+    `class` or `lambda` is yielded, since its name is bound there, and not
+    entered.
+    """
+    pending = list(statements)
+    while pending:
+        node = pending.pop()
+        yield node
+        if not isinstance(node, _SCOPES):
+            pending.extend(ast.iter_child_nodes(node))
+
+
+def _names_bound(node: ast.AST) -> set[str]:
+    """The names `node` itself binds in the scope it runs in (`_bound_at`).
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                         ast.ClassDef)):
+        return {node.name} | {name for inner in ast.walk(node)
+                              if isinstance(inner, ast.Global)
+                              for name in inner.names}
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return {alias.asname or alias.name.split(".")[0]
+                for alias in node.names}
+    if isinstance(node, _CAPTURES):
+        captured = getattr(node, "name", None) or getattr(node, "rest", None)
+        return {captured} if captured else set()
+    return {name for target in _targets(node)
+            for name in _bound_names(target)}
+
+
+def _targets(node: ast.AST) -> list:
+    """The assignment targets `node` binds through, each as
+    `_bound_names` reads one: none for anything else.
+    """
+    if isinstance(node, ast.Assign):
+        return node.targets
+    if isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor,
+                         ast.NamedExpr)):
+        return [node.target]
+    if isinstance(node, ast.AnnAssign):
+        return [node.target] if node.value is not None else []
+    if isinstance(node, ast.withitem):
+        return [node.optional_vars] if node.optional_vars is not None else []
+    if isinstance(node, _TYPE_ALIASES):
+        return [node.name]
+    return []
+
+
+def _bound_names(target: ast.expr) -> set[str]:
+    """The names an assignment target binds: a name, or each name in an
+    unpacking (`a, (b, *c) = ...`). An attribute or a subscript binds none.
+    """
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return {name for element in target.elts
+                for name in _bound_names(element)}
+    return set()
+
+
 def _write_copies(root: Path, rows: list[Row], taking: list[Addition],
                   ledger: Rollback) -> list[Row]:
     """Write every byte this run copies, and say what happened to each row.
@@ -3260,6 +3643,8 @@ def cmd_apply(args) -> int:
         _refuse_local_drift(rows, accepted)
         if args.branch:
             _refuse_writes_through_a_link(root, rows, kind, args.branch)
+        _refuse_kept_copies_missing_names(root, rows, taking, accepted,
+                                          target, kind)
         confirm(args, rows, taking, target)
         target_tree = upstream.tree_sha256(target)
         # READ BEFORE THE COPIES, REWRITTEN AFTER THE PIN. `.gitattributes`

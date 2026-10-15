@@ -34,7 +34,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
-from conftest import REPO
+from conftest import REPO, load_without_bytecode
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
@@ -80,16 +80,10 @@ def siblings():
     scripts = REPO / "templates" / "family-root" / "scripts"
     saved_path, saved_module = list(sys.path), sys.modules.get("bootstrap")
     try:
-        spec = importlib.util.spec_from_file_location(
-            "family_root_bootstrap", scripts / "bootstrap.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        sys.modules["bootstrap"] = module
-        spec = importlib.util.spec_from_file_location(
-            "family_root_siblings", scripts / "siblings.py")
-        loaded = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(loaded)
-        yield loaded
+        sys.modules["bootstrap"] = load_without_bytecode(
+            scripts / "bootstrap.py", "family_root_bootstrap")
+        yield load_without_bytecode(scripts / "siblings.py",
+                                    "family_root_siblings")
     finally:
         sys.path[:] = saved_path
         if saved_module is None:

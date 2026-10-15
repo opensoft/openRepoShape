@@ -48,7 +48,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
-from conftest import FILE_PROTOCOL, REPO, git, run_script
+from conftest import FILE_PROTOCOL, REPO, cloned_just_pushed, git, run_script
 from test_commit_trailers import LANE
 from test_shape_doctor import (  # noqa: F401
     DOCTOR, DRIFT_TARGET, GIT_IDENTITY, PROJECT, doctor, doctor_module,
@@ -74,11 +74,9 @@ def advance(scaffolded_here, tmp_path_factory, role: str,
     """A new commit on a branch of a leg's remote, as a merged pull request
     leaves one, adding `relative` (a path the `placement` row puts in that
     leg); its sha."""
-    work = tmp_path_factory.mktemp(f"{role}-advance") / f"{PROJECT}-{role}"
-    remote = scaffolded_here["base"] / "remotes" / f"{PROJECT}-{role}.git"
-    proc = subprocess.run(["git", "clone", "-q", str(remote), str(work)],
-                          capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    work = cloned_just_pushed(
+        scaffolded_here["base"] / "remotes" / f"{PROJECT}-{role}.git",
+        tmp_path_factory.mktemp(f"{role}-advance") / f"{PROJECT}-{role}")
     (work / relative).parent.mkdir(parents=True, exist_ok=True)
     (work / relative).write_text("# R478\n", encoding="utf-8")
     git("add", "--", relative, cwd=work)
