@@ -138,6 +138,21 @@ from shape_materialize import (  # noqa: E402
 CHAIN_LINK_FORM = "neutral-product"
 
 
+def _gh_not_found(question: str, exc: FileNotFoundError) -> Refusal:
+    """NO `gh` ON PATH IS `gh-not-found` (#537), as `pin_digest_from_gh` names
+    it, and not a `FileNotFoundError` traceback. Each `gh` read this file makes
+    before it creates anything refuses with this one, in these words, where
+    `question` is what could not be asked."""
+    return Refusal(
+        "gh-not-found",
+        f"the `gh` CLI is not on PATH, so {question} cannot be asked: {exc}",
+        "Remediation: put `gh` on PATH, logged in (`gh auth login`), and "
+        "run this again: the real run creates the three repositories "
+        "with `gh repo create`. `openRepoShape --preflight` names each "
+        "missing prerequisite and offers to install it, on a typed "
+        "yes.")
+
+
 def remote_is_empty(repository: str) -> bool | None:
     """Does `<org>/<repo>` exist on GitHub with ZERO commits?
 
@@ -146,9 +161,9 @@ def remote_is_empty(repository: str) -> bool | None:
     with 409 and the words "Git Repository is empty", which is the only
     reliable signal — `size: 0` is also what a repository of small files says.
 
-    NO `gh` ON PATH IS `gh-not-found` (#537), as `pin_digest_from_gh` names
-    it, and not a `FileNotFoundError` traceback: `--dry-run` asks this
-    question too now, and before that a dry run needed no `gh` at all.
+    NO `gh` ON PATH IS `gh-not-found` (#537), and not a `FileNotFoundError`
+    traceback: `--dry-run` asks this question too now, and before that a dry
+    run needed no `gh` at all.
     """
     try:
         probe = subprocess.run(
@@ -156,15 +171,8 @@ def remote_is_empty(repository: str) -> bool | None:
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", check=False)
     except FileNotFoundError as exc:
-        raise Refusal(
-            "gh-not-found",
-            f"the `gh` CLI is not on PATH, so whether {repository} already "
-            f"exists on GitHub cannot be asked: {exc}",
-            "Remediation: put `gh` on PATH, logged in (`gh auth login`), and "
-            "run this again: the real run creates the three repositories "
-            "with `gh repo create`. `openRepoShape --preflight` names each "
-            "missing prerequisite and offers to install it, on a typed "
-            "yes.") from exc
+        raise _gh_not_found(
+            f"whether {repository} already exists on GitHub", exc) from exc
     if probe.returncode != 0:
         return None
     commits = subprocess.run(
@@ -192,11 +200,21 @@ def remote_visibility(repository: str) -> str | None:
     lowercased, or None if it cannot be read — the repository does not exist,
     or `gh` cannot see it. Never called for a `--local-remote-dir` repository:
     a bare repository on disk has no visibility at all.
+
+    NO `gh` ON PATH IS `gh-not-found` (#537), as `remote_is_empty`'s is, and
+    not a `FileNotFoundError` traceback: `--reuse-empty-repo` reads the root's
+    visibility (`_leg_visibility`) BEFORE it asks `remote_is_empty` whether the
+    three repositories exist, in a dry run and a real one alike, so the refusal
+    has to come from here too or the run never reaches the one that has it.
     """
-    proc = subprocess.run(
-        ["gh", "repo", "view", repository, "--json", "visibility"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        check=False)
+    try:
+        proc = subprocess.run(
+            ["gh", "repo", "view", repository, "--json", "visibility"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except FileNotFoundError as exc:
+        raise _gh_not_found(
+            f"what visibility {repository} has on GitHub", exc) from exc
     if proc.returncode != 0:
         return None
     try:

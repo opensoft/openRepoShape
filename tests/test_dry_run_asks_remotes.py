@@ -408,12 +408,16 @@ def without_gh(monkeypatch) -> list:
     return asked
 
 
-@pytest.mark.parametrize("tool", ["family", "scaffold"])
-def test_a_dry_run_with_no_gh_is_refused_by_name(tmp_path, monkeypatch,
-                                                 capsys, tool):
-    """The dry run asks `gh` now, and a machine with none on PATH gets
-    `gh-not-found`, as a `--pin` read names it, and not a traceback; the
-    real run asks the same question and gets the same refusal."""
+def no_gh_run(tmp_path: Path, tool: str, reuse_empty_repo: bool):
+    """A tool run with no `gh` on PATH, as `(module, argv, refusal, first)`:
+    the tool as a module, its arguments (the caller adds `--dry-run` or not),
+    the sentence its refusal opens with, and the one `gh` argv it asks before
+    it is refused.
+
+    The scaffold with `--reuse-empty-repo` reads the root's VISIBILITY before
+    it asks whether the repositories exist (`_leg_visibility`, then
+    `_reusable_remotes`), so it is refused at that read, in other words; every
+    other run is refused at `gh repo view --json name`."""
     if tool == "family":
         module = load("dry_run_family", FAMILY)
         argv = ["init", "--org", ORG, "--family", HOLDER, "--created-by",
@@ -425,13 +429,56 @@ def test_a_dry_run_with_no_gh_is_refused_by_name(tmp_path, monkeypatch,
                 "Test Human", "--elected-on", "2026-09-02",
                 "--work-dir", str(tmp_path / "work")]
         repository = f"{ORG}/{PROJECT}"
+    if reuse_empty_repo:
+        argv.append("--reuse-empty-repo")
+    reads_visibility = tool == "scaffold" and reuse_empty_repo
+    question = (f"what visibility {repository} has on GitHub"
+                if reads_visibility
+                else f"whether {repository} already exists on GitHub")
+    refusal = (f"REFUSED gh-not-found: the `gh` CLI is not on PATH, so "
+               f"{question} cannot be asked: ")
+    first = ["gh", "repo", "view", repository, "--json",
+             "visibility" if reads_visibility else "name"]
+    return module, argv, refusal, first
+
+
+REUSE_EMPTY_REPO = pytest.mark.parametrize(
+    "reuse_empty_repo", [False, True], ids=["fresh", "reuse-empty-repo"])
+
+
+@REUSE_EMPTY_REPO
+@pytest.mark.parametrize("tool", ["family", "scaffold"])
+def test_a_dry_run_with_no_gh_is_refused_by_name(tmp_path, monkeypatch,
+                                                 capsys, tool,
+                                                 reuse_empty_repo):
+    """The dry run asks `gh` now, and a machine with none on PATH gets
+    `gh-not-found`, as a `--pin` read names it, and not a traceback; with and
+    without `--reuse-empty-repo`, which the scaffold answers from a different
+    `gh` read than it does without it."""
+    module, argv, refusal, first = no_gh_run(tmp_path, tool, reuse_empty_repo)
     asked = without_gh(monkeypatch)
     assert module.main([*argv, "--dry-run"]) == 2
     captured = capsys.readouterr()
-    assert (f"REFUSED gh-not-found: the `gh` CLI is not on PATH, so whether "
-            f"{repository} already exists on GitHub cannot be asked: "
-            in captured.err), captured.err
+    assert refusal in captured.err, captured.err
     assert "put `gh` on PATH, logged in" in captured.err
     assert DRY_RUN_DONE not in captured.out
-    assert asked == [["gh", "repo", "view", repository, "--json", "name"]]
+    assert asked == [first]
     assert not (tmp_path / "work").exists()
+
+
+@REUSE_EMPTY_REPO
+@pytest.mark.parametrize("tool", ["family", "scaffold"])
+def test_a_real_run_with_no_gh_is_refused_in_the_dry_runs_words(
+        tmp_path, monkeypatch, capsys, tool, reuse_empty_repo):
+    """The real run asks the same question first and gets the same refusal:
+    `gh-not-found`, in the dry run's own words, after the one `gh` read it
+    shares with the dry run and before any `gh repo create`; not a
+    `FileNotFoundError` traceback, which `--reuse-empty-repo` gave the
+    scaffold before the visibility read refused by name."""
+    module, argv, refusal, first = no_gh_run(tmp_path, tool, reuse_empty_repo)
+    asked = without_gh(monkeypatch)
+    assert module.main(argv) == 2
+    captured = capsys.readouterr()
+    assert refusal in captured.err, captured.err
+    assert "put `gh` on PATH, logged in" in captured.err
+    assert asked == [first]
