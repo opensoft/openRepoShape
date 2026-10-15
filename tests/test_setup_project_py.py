@@ -43,7 +43,8 @@ from conftest import PTY_SKIP, run_in_a_terminal
 from conftest import (DISCARD_IT, DISCARD_IT_IF_UNUSED, KEEP_IT,
                       TAKEN_CLONE_PATHS,
                       assert_a_rehearsals_clone_stops_the_real_run,
-                      assert_a_taken_clone_path_is_refused)
+                      assert_a_taken_clone_path_is_refused,
+                      assert_the_plan_refuses_a_remote_that_exists)
 
 SETUP_PROJECT = REPO / "setup-project.py"
 SETUP_SH = REPO / "setup.sh"
@@ -478,6 +479,12 @@ def test_a_taken_clone_path_is_refused_before_anything(tmp_path, kind):
     """#498, on an interpreter alone: `conftest.assert_a_taken_clone_path_
     is_refused`."""
     assert_a_taken_clone_path_is_refused(run_entry, tmp_path, kind)
+
+
+def test_the_plan_refuses_a_remote_that_exists_before_the_yes(tmp_path):
+    """#537, on an interpreter alone: `conftest.assert_the_plan_refuses_a_
+    remote_that_exists`."""
+    assert_the_plan_refuses_a_remote_that_exists(run_entry, tmp_path)
 
 
 def test_anything_but_yes_refuses_and_creates_nothing(monkeypatch, tmp_path):
