@@ -132,7 +132,7 @@ def adopter():
 #: `core.eol` say. `crlf` is the old spelling of `text`, read only where
 #: `text` is unspecified. Each row was checked against real checkouts with
 #: git 2.43: as configured, with `core.autocrlf=true` and with
-#: `core.eol=crlf` (r530's review found three rows backwards).
+#: `core.eol=crlf` (#530's review found three rows backwards).
 CHECKOUTS = [
     "unspecified set lf => kept",
     "unspecified auto lf => kept",
@@ -331,7 +331,7 @@ def test_a_file_that_alone_keeps_the_copy_lf_is_not_named(tmp_path):
     """`.github/.gitattributes` says `* text=auto`, which changes what git
     says of the copy but, alone over the root's rule, leaves it LF: the
     copy's CRLF is the deeper `* eol=crlf`'s, which alone is named, and
-    whose line alone keeps the copy LF (r530's F3)."""
+    whose line alone keeps the copy LF (#530's review, F3)."""
     files = {**github(TEXT_AUTO), WORKFLOWS_ATTRIBUTES: ALL_CRLF}
     found = findings(adoption_plan(tmp_path, files, KEEP_BOTH))
     assert [detail.split("`")[1] for _, detail in found] == [
@@ -427,7 +427,7 @@ def global_attr_tree(tmp_path: Path) -> dict:
                  id="attr-tree-in-the-command-scope")])
 def test_no_tree_this_machine_names_steers_the_question(tmp_path, where):
     """`GIT_ATTR_SOURCE` and `attr.tree` make git read attributes from a
-    tree instead of the work tree the question is written into (r530's
+    tree instead of the work tree the question is written into (#530's review,
     checklist item 2). With git 2.43, `GIT_ATTR_SOURCE=HEAD` failed there,
     an empty repository, so `check` printed `REFUSED git-failed`; and the
     empty tree, named by either, made git read no rule at all, which
