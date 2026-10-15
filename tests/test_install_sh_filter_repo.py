@@ -11,14 +11,19 @@ The next `adopt-project.py execute` refused for the want of it.
 WHAT IS TRUE NOW, each held below:
 
 * git-filter-repo is installed with the pipx that is already here, or with
-  the uv that is already here when there is no pipx, at the version CI runs;
-  installed means found on `$PATH` afterwards, and a directory that is not on
-  it yet is named with the tool's own way to put it there;
-* with neither, the command printed is never `pip install --user`: Homebrew's,
-  pipx from apt, dnf or pacman, or uv's own installer page, and nothing is run;
+  the uv that is already here when there is no pipx, at the version CI runs:
+  one attempt, with one tool. Installed means found on `$PATH` afterwards,
+  and a directory that is not on it yet is named with the tool's own way to
+  put it there;
+* with neither, the command printed is never `pip install --user`: brew's,
+  pipx from apt or dnf, Arch's own package, or uv's once uv is installed, and
+  nothing is run;
 * the run ends with two readinesses, `adoption:` and then `done:`, which says
   "ready" only when git-filter-repo is there and "ready to scaffold, not yet
-  to adopt" when it is not, with the next command on the line above;
+  to adopt" when it is not, with the next step on the line above;
+* every next step names its command so that it pastes and runs as printed
+  (the review on #598): this file pastes it into bash, every program it
+  names a logging fake, and holds the calls it makes;
 * git-filter-repo never changes the exit status, which stays the preflight's
   and the pin's: it is needed to adopt and for nothing else.
 
@@ -26,13 +31,14 @@ THE FAKES ARE `tests/test_install_sh.py`'s `Net`, whose `pipx` places a
 `git-filter-repo` where `net.json` says, and whose other names log the call
 and exit 0. This file adds one program, `INSTALLERS`, behind `uv`: `uv tool
 install` places a `git-filter-repo` where `uv_installs_into` says, or fails
-when it names nowhere. Every case also has `sudo`, `python3`, `python`,
-`pip` and `pip3` on `$PATH`, so a run that asked any of them for anything is
-in `calls.log`, and none may be.
+with `uv_exit` (1 by default) when it names nowhere. Every case also has
+`sudo`, `python3`, `python`, `pip` and `pip3` on `$PATH`, so a run that asked
+any of them for anything is in `calls.log`, and none may be.
 """
 
 from __future__ import annotations
 
+import re
 import shlex
 import sys
 
@@ -47,8 +53,8 @@ pytestmark = test_install_sh.pytestmark
 
 #: `uv`, as `install.sh` asks it: `uv tool install` places a `git-filter-repo`
 #: launcher where `uv_installs_into` names, with `\n` line ends whatever the
-#: platform, or fails as a resolver or a network would. Logged first, into the
-#: same `calls.log` as every other fake.
+#: platform, or fails as a resolver or a network would, with `uv_exit`.
+#: Logged first, into the same `calls.log` as every other fake.
 INSTALLERS = r'''
 import json
 import sys
@@ -64,8 +70,8 @@ if ARGS[:2] == ["tool", "install"] and NET.get("uv_installs_into"):
     placed.write_bytes(b"#!/bin/sh\nexit 0\n")
     placed.chmod(0o755)
     sys.exit(0)
-sys.stderr.write("fake uv: could not install " + " ".join(ARGS) + "\n")
-sys.exit(1)
+sys.stderr.write("fake uv: could not run " + " ".join(ARGS) + "\n")
+sys.exit(NET.get("uv_exit", 1))
 '''
 
 #: Every way to reach pip, and `sudo`: on `$PATH` in every case, logging,
@@ -74,6 +80,9 @@ PIP_AND_SUDO = ("sudo", "python3", "python", "pip", "pip3")
 #: Those, and the package managers the printed commands name, each on `$PATH`
 #: in its own case: nothing here may run any of them.
 NEVER_RUN = (*PIP_AND_SUDO, "apt-get", "dnf", "pacman", "brew")
+#: Every program a printed next step names: each a logging fake on `$PATH`
+#: while this file pastes that step.
+NAMED = ("sudo", "pipx", "uv", "brew", "apt-get", "dnf", "pacman")
 
 UV_PAGE = "https://docs.astral.sh/uv/getting-started/installation/"
 
@@ -90,9 +99,10 @@ DONE_SCAFFOLD_ONLY = (", pinned to the release tag, and this machine is ready "
 
 
 def not_ready(why: str, then: str) -> str:
-    """The `adoption:` line where git-filter-repo is not found."""
+    """The `adoption:` line where git-filter-repo is not found: `why`, and
+    `then`, what to do before adopting."""
     return ("adoption: NOT READY: adopt-project.py needs git-filter-repo, and "
-            f"{why}. Before adopting a repository, run: {then}")
+            f"{why}. Before adopting a repository, {then}")
 
 
 def installing(tool: str, command: str) -> str:
@@ -100,16 +110,32 @@ def installing(tool: str, command: str) -> str:
             f"because adopt-project.py needs it: {command}")
 
 
+def could_not(tool: str, status: int, command: str) -> str:
+    return (f"git-filter-repo: {tool} could not install it (exit {status}). "
+            f"Before adopting a repository, install it: {command}")
+
+
+def off_path(tool: str, ensure: str) -> str:
+    return (f"git-filter-repo: installed with {tool}, into a directory that "
+            f"is not on PATH yet: run `{ensure}` and open a new shell")
+
+
+#: How step 3 opens where there is neither installer; what follows it is the
+#: case's own `run:`, or uv's page first.
 NEITHER = ("git-filter-repo: not installed, and there is neither pipx nor uv "
            "to install it with. Only adopt-project.py needs it; before "
-           "adopting a repository, run:")
+           "adopting a repository, ")
 
 PIPX = f"pipx install {FILTER_REPO}"
 UV = f"uv tool install {FILTER_REPO}"
-#: What is printed where there is neither installer nor a package manager
-#: `install.sh` knows: uv's, because uv installs without one.
-UV_FIRST = f"{UV}  # once uv is installed: {UV_PAGE}"
-PACMAN = f"sudo pacman -S --needed python-pipx && {PIPX}"
+#: What comes before uv's command where there is neither installer nor a
+#: package manager `install.sh` knows: uv itself, from its own page.
+UV_FIRST = f"install uv ({UV_PAGE}), then run:"
+PACMAN = "sudo pacman -S --needed git-filter-repo"
+
+
+def apt_or_dnf(manager: str) -> str:
+    return f"sudo {manager} install -y pipx && {PIPX} && pipx ensurepath"
 
 
 def uv(net: Net) -> None:
@@ -132,28 +158,30 @@ def elsewhere(net: Net) -> str:
 # --- the cases: what is on the machine, and what the run must say ------------
 #
 # Each takes a `Net` with `curl` and `gh` and nothing else answerable, puts
-# what its case needs on it, and returns the lines step 3 prints (each the
-# start of a line, in order), the installers it runs, and the `adoption:` line.
+# what its case needs on it, and returns four things: the lines step 3 prints
+# (each the start of a line, in order), the installers it runs, the
+# `adoption:` line, and the calls its next step makes when pasted (None where
+# there is no next step).
 
 def existing(net):
     """Already on PATH: said, and neither installer, both there, is run."""
     net.fake("pipx")
     uv(net)
     net.fake("git-filter-repo")
-    return ["git-filter-repo: already installed ("], [], READY
+    return ["git-filter-repo: already installed ("], [], READY, None
 
 
 def existing_as_git_subcommand(net):
     net.fake("git")
     net.config["git_filter_repo"] = True
     return ["git-filter-repo: already installed (git filter-repo --version "
-            "answers)"], [], READY
+            "answers)"], [], READY, None
 
 
 def pipx_only(net):
     net.fake("pipx")
     return [installing("pipx", PIPX),
-            "git-filter-repo: installed with pipx"], [PIPX], READY
+            "git-filter-repo: installed with pipx"], [PIPX], READY, None
 
 
 def uv_only(net):
@@ -161,7 +189,7 @@ def uv_only(net):
     uv(net)
     net.config["uv_installs_into"] = str(net.path)
     return [installing("uv", UV), "git-filter-repo: installed with uv"], \
-        [UV], READY
+        [UV], READY, None
 
 
 def pipx_and_uv(net):
@@ -170,66 +198,80 @@ def pipx_and_uv(net):
     uv(net)
     net.config["uv_installs_into"] = str(net.path)
     return [installing("pipx", PIPX),
-            "git-filter-repo: installed with pipx"], [PIPX], READY
+            "git-filter-repo: installed with pipx"], [PIPX], READY, None
 
 
 def pipx_failing(net):
     net.fake("pipx")
     net.config["pipx_installs_into"] = None
-    return [installing("pipx", PIPX),
-            "git-filter-repo: pipx could not install it (exit 1). Before "
-            f"adopting a repository, install it: {PIPX}"], [PIPX], \
-        not_ready("pipx could not install it (exit 1)", PIPX)
+    return [installing("pipx", PIPX), could_not("pipx", 1, PIPX)], [PIPX], \
+        not_ready("pipx could not install it (exit 1)", f"run: {PIPX}"), \
+        [PIPX]
+
+
+def pipx_failing_uv_there(net):
+    """One attempt, with one tool: pipx fails, and the uv beside it, which
+    would have installed it, is not asked."""
+    net.fake("pipx")
+    net.config["pipx_installs_into"] = None
+    uv(net)
+    net.config["uv_installs_into"] = str(net.path)
+    return [installing("pipx", PIPX), could_not("pipx", 1, PIPX)], [PIPX], \
+        not_ready("pipx could not install it (exit 1)", f"run: {PIPX}"), \
+        [PIPX]
 
 
 def uv_failing(net):
+    """uv's own exit status, 2 here, is the one said."""
     uv(net)
-    return [installing("uv", UV),
-            "git-filter-repo: uv could not install it (exit 1). Before "
-            f"adopting a repository, install it: {UV}"], [UV], \
-        not_ready("uv could not install it (exit 1)", UV)
+    net.config["uv_exit"] = 2
+    return [installing("uv", UV), could_not("uv", 2, UV)], [UV], \
+        not_ready("uv could not install it (exit 2)", f"run: {UV}"), [UV]
 
 
 def pipx_off_path(net):
     net.fake("pipx")
     net.config["pipx_installs_into"] = elsewhere(net)
-    return [installing("pipx", PIPX),
-            "git-filter-repo: installed with pipx, into a directory that is "
-            "not on PATH yet: run `pipx ensurepath` and open a new shell"], \
+    return [installing("pipx", PIPX), off_path("pipx", "pipx ensurepath")], \
         [PIPX], not_ready("pipx installed it into a directory that is not on "
-                          "PATH yet", "pipx ensurepath, then open a new shell")
+                          "PATH yet", "run `pipx ensurepath`, then open a new "
+                          "shell"), ["pipx ensurepath"]
 
 
 def uv_off_path(net):
     uv(net)
     net.config["uv_installs_into"] = elsewhere(net)
-    return [installing("uv", UV),
-            "git-filter-repo: installed with uv, into a directory that is not "
-            "on PATH yet: run `uv tool update-shell` and open a new shell"], \
+    return [installing("uv", UV), off_path("uv", "uv tool update-shell")], \
         [UV], not_ready("uv installed it into a directory that is not on "
-                        "PATH yet", "uv tool update-shell, then open a new "
-                        "shell")
+                        "PATH yet", "run `uv tool update-shell`, then open a "
+                        "new shell"), ["uv tool update-shell"]
 
 
-def neither(manager, command):
-    """Neither installer, and `manager` the one package manager on PATH."""
+def neither(manager, command, pasted, first="run:"):
+    """Neither installer, and `manager` the one package manager on PATH:
+    `command` printed after `first`, making `pasted` when pasted."""
     def arrange(net):
         if manager:
             net.fake(manager)
-        return [NEITHER, f"    {command}"], [], \
-            not_ready("it is not installed", command)
+        return [f"{NEITHER}{first}", f"    {command}"], [], \
+            not_ready("it is not installed", f"{first} {command}"), pasted
     arrange.__name__ = f"neither_{manager or 'and_no_package_manager'}"
     return arrange
 
 
+NEITHER_ANYWHERE = neither("", UV, [UV], UV_FIRST)
+
 CASES = [
     existing, existing_as_git_subcommand, pipx_only, uv_only, pipx_and_uv,
-    pipx_failing, uv_failing, pipx_off_path, uv_off_path,
-    neither("", UV_FIRST),
-    neither("brew", "brew install git-filter-repo"),
-    neither("apt-get", f"sudo apt-get install -y pipx && {PIPX}"),
-    neither("dnf", f"sudo dnf install -y pipx && {PIPX}"),
-    neither("pacman", PACMAN),
+    pipx_failing, pipx_failing_uv_there, uv_failing, pipx_off_path,
+    uv_off_path, NEITHER_ANYWHERE,
+    neither("brew", "brew install git-filter-repo",
+            ["brew install git-filter-repo"]),
+    neither("apt-get", apt_or_dnf("apt-get"),
+            ["sudo apt-get install -y pipx", PIPX, "pipx ensurepath"]),
+    neither("dnf", apt_or_dnf("dnf"),
+            ["sudo dnf install -y pipx", PIPX, "pipx ensurepath"]),
+    neither("pacman", PACMAN, [PACMAN]),
 ]
 
 
@@ -254,9 +296,28 @@ def starts_in_order(lines, starts):
     return at
 
 
+def next_command(adoption: str) -> str:
+    """The command an `adoption: NOT READY` line says to run, as a person
+    copies it: between the backticks of ``run `…` ``, or after `run: ` to
+    the end of the line."""
+    ticked = re.search(r"run `([^`]+)`", adoption)
+    return ticked.group(1) if ticked else adoption.split("run: ", 1)[1]
+
+
+def paste(net: Net, command: str) -> list:
+    """The calls `command` makes, pasted into bash on the run's `$PATH` with
+    every program in `NAMED` a logging fake there."""
+    for name in NAMED:
+        if not (net.path / name).exists():
+            net.fake(name)
+    before = len(net.calls())
+    net.run(script=command + "\n")
+    return net.calls()[before:]
+
+
 @pytest.mark.parametrize("arrange", CASES, ids=lambda case: case.__name__)
 def test_git_filter_repo_and_the_two_readinesses(tmp_path, arrange):
-    """Every acceptance case of #595, held to the same five things.
+    """Every acceptance case of #595, held to the same six things.
 
     Step 3 says what it found and what it did, before the preflight. The
     installers run are exactly the case's: pipx where it is there, uv where
@@ -264,10 +325,13 @@ def test_git_filter_repo_and_the_two_readinesses(tmp_path, arrange):
     CI's version, and nothing in `NEVER_RUN` at all. No line names `pip
     install` or `--user`. The run ends `adoption:` then `done:`, both after
     the preflight, and the `done:` line says "ready" only when the
-    `adoption:` line does. And the exit status is 0 in every case, because
-    the preflight passed: git-filter-repo is not needed to scaffold.
+    `adoption:` line does. The exit status is 0 in every case, because the
+    preflight passed: git-filter-repo is not needed to scaffold. And the
+    next step's command, copied off the `adoption:` line and pasted, makes
+    exactly the calls it names, with no `#` to become an argument in a shell
+    that does not read comments (an interactive zsh, by default).
     """
-    net, steps, ran, adoption = arranged(tmp_path, arrange)
+    net, steps, ran, adoption, pasted = arranged(tmp_path, arrange)
     result = net.run()
     assert result.returncode == 0, result.stdout + result.stderr
     net.installed(result)
@@ -291,15 +355,20 @@ def test_git_filter_repo_and_the_two_readinesses(tmp_path, arrange):
     assert lines[-1].endswith(done), result.stdout
     assert lines.index(adoption) > at[-1]
 
+    if pasted is not None:
+        command = next_command(adoption)
+        assert "#" not in command, command
+        assert paste(net, command) == pasted
 
-@pytest.mark.parametrize("arrange", [existing, neither("", UV_FIRST)],
+
+@pytest.mark.parametrize("arrange", [existing, NEITHER_ANYWHERE],
                          ids=["git-filter-repo-there", "git-filter-repo-not"])
 def test_a_preflight_that_fails_is_its_own_verdict_either_way(
         tmp_path, arrange):
     """The two readinesses are two: a preflight that did not pass exits 1
     with git-filter-repo there or not, and the `adoption:` line still says
     which, above the `done:` line that says the preflight did not pass."""
-    net, _, _, adoption = arranged(tmp_path, arrange)
+    net, _, _, adoption, _ = arranged(tmp_path, arrange)
     net.config["preflight_exit"] = 1
     result = net.run()
     assert result.returncode == 1, result.stdout + result.stderr
@@ -326,7 +395,8 @@ def test_a_command_that_does_not_stay_on_the_release_says_both_readinesses(
     """The `done:` line for a release that records no ref carries the
     machine's readiness too, and says "ready to scaffold, not yet to adopt"
     where git-filter-repo is missing; the exit status is the pin's, 1."""
-    net, _, _, adoption = arranged(tmp_path, neither("pacman", PACMAN))
+    net, _, _, adoption, _ = arranged(tmp_path,
+                                      neither("pacman", PACMAN, [PACMAN]))
     old = net.root / "unpinned-openRepoShape"
     old.write_bytes(UNPINNED.encode("utf-8"))
     net.serve(RELEASE, launcher=old)
@@ -337,4 +407,3 @@ def test_a_command_that_does_not_stay_on_the_release_says_both_readinesses(
     assert lines[-1].endswith(
         " and this machine is ready to scaffold, not yet to adopt, but the "
         f"command does not stay on {RELEASE} (see above)."), result.stdout
-

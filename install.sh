@@ -66,6 +66,10 @@ REPO="${OPENREPOSHAPE_REPO:-opensoft/openRepoShape}"
 #: installs is what the adoption suites ran against.
 FILTER_REPO_PIN="git-filter-repo==2.47.0"
 
+#: Where uv says how to install uv itself, named for a machine with neither
+#: pipx nor uv and no package manager `filter_repo_command` knows (#595).
+UV_INSTALL_PAGE="https://docs.astral.sh/uv/getting-started/installation/"
+
 WORKDIR=""
 
 #: What `latest_from_redirect` and `latest_from_gh` found, and when they did
@@ -232,24 +236,33 @@ looks_like_the_launcher() {
 }
 
 # THE ONE COMMAND THAT INSTALLS IT HERE, for a machine with neither pipx nor
-# uv, PRINTED AND NEVER RUN, in POSIX shell. Never `pip install --user`:
-# Debian 12, Ubuntu 23.04 and Arch, among others, mark the system Python
-# externally managed (PEP 668) and refuse it (#595). Homebrew's where `brew`
-# is; otherwise pipx from the system's own package manager, which takes
-# `sudo` and is the person's to type, and git-filter-repo through it; and
-# where there is no package manager this knows, uv, which installs without
-# one. Always at the version CI runs, except brew's.
+# uv, PRINTED AND NEVER RUN, in POSIX shell, and nothing but the command, so
+# it pastes and runs as printed in any shell (#595, the review on #598: an
+# interactive zsh hands a `# comment` to the command as arguments). Never
+# `pip install --user`: Debian 12, Ubuntu 23.04 and Arch, among others, mark
+# the system Python externally managed (PEP 668) and refuse it.
+#
+#   * brew's, where `brew` is;
+#   * pipx from apt or dnf, which takes `sudo` and is the person's to type,
+#     then git-filter-repo through it at the version CI runs, then `pipx
+#     ensurepath`, which exits 0 whether or not it had a directory to add;
+#   * Arch's own package where `pacman` is, which lands on PATH in one step.
+#     pacman cannot pin a version: Arch's `extra` holds 2.47.0, CI's, as of
+#     2026-10-15;
+#   * and with no package manager this knows, uv's, once uv itself is
+#     installed, which the caller says first: the one command here that
+#     needs a tool that is not on this machine.
 filter_repo_command() {
 	if command -v brew >/dev/null 2>&1; then
 		printf '%s' "brew install git-filter-repo"
 	elif command -v apt-get >/dev/null 2>&1; then
-		printf '%s' "sudo apt-get install -y pipx && pipx install $FILTER_REPO_PIN"
+		printf '%s' "sudo apt-get install -y pipx && pipx install $FILTER_REPO_PIN && pipx ensurepath"
 	elif command -v dnf >/dev/null 2>&1; then
-		printf '%s' "sudo dnf install -y pipx && pipx install $FILTER_REPO_PIN"
+		printf '%s' "sudo dnf install -y pipx && pipx install $FILTER_REPO_PIN && pipx ensurepath"
 	elif command -v pacman >/dev/null 2>&1; then
-		printf '%s' "sudo pacman -S --needed python-pipx && pipx install $FILTER_REPO_PIN"
+		printf '%s' "sudo pacman -S --needed git-filter-repo"
 	else
-		printf '%s' "uv tool install $FILTER_REPO_PIN  # once uv is installed: https://docs.astral.sh/uv/getting-started/installation/"
+		printf '%s' "uv tool install $FILTER_REPO_PIN"
 	fi
 }
 
@@ -258,9 +271,12 @@ adoption_ready() {
 	ADOPTION="git-filter-repo is installed, which adopt-project.py needs beyond what the preflight checks."
 }
 
+# `$1` says why it is not ready, and `$2` what to do first, in the caller's
+# own words: a command comes after `run: `, at the end of the line, or between
+# backticks, so it pastes as printed.
 adoption_not_ready() {
 	ADOPTION_READY=0
-	ADOPTION="NOT READY: adopt-project.py needs git-filter-repo, and $1. Before adopting a repository, run: $2"
+	ADOPTION="NOT READY: adopt-project.py needs git-filter-repo, and $1. Before adopting a repository, $2"
 }
 
 # ONE INSTALL, WITH THE pipx OR uv ALREADY HERE, into an environment of its
@@ -276,18 +292,18 @@ filter_repo_install() {
 	"$@" || status=$?
 	if [ "$status" -ne 0 ]; then
 		say "git-filter-repo: $tool could not install it (exit $status). Before adopting a repository, install it: $*"
-		adoption_not_ready "$tool could not install it (exit $status)" "$*"
+		adoption_not_ready "$tool could not install it (exit $status)" "run: $*"
 	elif command -v git-filter-repo >/dev/null 2>&1; then
 		say "git-filter-repo: installed with $tool"
 		adoption_ready
 	else
 		say "git-filter-repo: installed with $tool, into a directory that is not on PATH yet: run \`$ensure\` and open a new shell"
-		adoption_not_ready "$tool installed it into a directory that is not on PATH yet" "$ensure, then open a new shell"
+		adoption_not_ready "$tool installed it into a directory that is not on PATH yet" "run \`$ensure\`, then open a new shell"
 	fi
 }
 
 filter_repo_step() {
-	local found
+	local found how="run:"
 	if found="$(command -v git-filter-repo 2>/dev/null)" && [ -n "$found" ]; then
 		say "git-filter-repo: already installed ($found)"
 		adoption_ready
@@ -308,9 +324,12 @@ filter_repo_step() {
 		return 0
 	fi
 	found="$(filter_repo_command)"
-	say "git-filter-repo: not installed, and there is neither pipx nor uv to install it with. Only adopt-project.py needs it; before adopting a repository, run:"
+	case "$found" in
+	"uv "*) how="install uv ($UV_INSTALL_PAGE), then run:" ;;
+	esac
+	say "git-filter-repo: not installed, and there is neither pipx nor uv to install it with. Only adopt-project.py needs it; before adopting a repository, $how"
 	say "    $found"
-	adoption_not_ready "it is not installed" "$found"
+	adoption_not_ready "it is not installed" "$how $found"
 }
 
 main() {

@@ -463,8 +463,7 @@ def pipx_failing(net):
 
 def no_pipx(net):
     (net.path / "pipx").unlink()
-    return f"    uv tool install {FILTER_REPO}  # once uv is installed: " \
-        "https://docs.astral.sh/uv/getting-started/installation/"
+    return f"    uv tool install {FILTER_REPO}"
 
 
 def no_pipx_but_brew(net):
@@ -477,7 +476,8 @@ def no_pipx_but_brew(net):
 def no_pipx_but_apt(net):
     no_pipx(net)
     net.fake("apt-get")
-    return f"    sudo apt-get install -y pipx && pipx install {FILTER_REPO}"
+    return f"    sudo apt-get install -y pipx && pipx install {FILTER_REPO} " \
+        "&& pipx ensurepath"
 
 
 @pytest.mark.parametrize("arrange", [
@@ -513,10 +513,10 @@ def test_git_filter_repo_is_said_installed_or_printed(net, arrange):
     else:
         assert ran_pipx == [], net.calls()
     if arrange in (no_pipx, no_pipx_but_brew, no_pipx_but_apt):
-        assert lines[lines.index(expected) - 1] == (
+        assert lines[lines.index(expected) - 1].startswith(
             "git-filter-repo: not installed, and there is neither pipx nor uv "
             "to install it with. Only adopt-project.py needs it; before "
-            "adopting a repository, run:")
+            "adopting a repository, ")
     assert lines.index(expected) < lines.index(
         f"preflight: {net.bin}/openRepoShape --preflight")
     assert not any(call.split()[0] in ("apt-get", "brew", "sudo")
