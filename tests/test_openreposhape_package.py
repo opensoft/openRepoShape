@@ -676,7 +676,8 @@ def test_the_variable_overrides_the_stamp_for_one_run(tmp_path,
 def test_a_ref_that_is_a_tag_and_a_branch_is_the_tag(tmp_path):
     """A name that is a tag AND a branch is the tag, which is what `git
     checkout` in a fresh clone makes of it; an annotated tag is read through
-    to its commit (`^{}`), never taken for one."""
+    to its commit (`^{}`), never taken for one, by its short name and by
+    its full `refs/tags/` name alike."""
     standard = make_standard(tmp_path / "both")
     commits = standard.commits
     git("branch", PINNED, commits[OTHER], cwd=standard.bare)
@@ -684,7 +685,8 @@ def test_a_ref_that_is_a_tag_and_a_branch_is_the_tag(tmp_path):
         cwd=standard.bare)
     git("branch", "annotated", commits["main"], cwd=standard.bare)
     site = installed_copy(tmp_path / "package", standard.stamp())
-    for ref, at in ((PINNED, PINNED), ("annotated", OTHER)):
+    for ref, at in ((PINNED, PINNED), ("annotated", OTHER),
+                    ("refs/tags/annotated", OTHER)):
         result = stamped_run(tmp_path, standard, ["--doctor", "."],
                              site=site, env={"OPENREPOSHAPE_REF": ref})
         assert result.returncode == 0, result.stdout + result.stderr

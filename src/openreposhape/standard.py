@@ -414,11 +414,11 @@ def remote_commit(url: str, repo: str, ref: str, env: dict) -> str:
     A TAG FIRST, then a branch, then the name as given (`HEAD`, or a full
     `refs/...`): `git checkout <name>` in a fresh clone resolves it in that
     order, and the two must not disagree. An annotated tag is read through
-    to its commit (`^{}`), and that line is asked for BY NAME: `git
-    ls-remote` given a name prints a tag's peeled line only when a pattern
-    names it too, and the tag's own line names a tag object, not a commit.
-    (A ref here is letters, digits, `.`, `_`, `/` and `-`, so neither
-    pattern holds a wildcard.)
+    to its commit (`^{}`), named short or in full (`refs/tags/<tag>`), and
+    that line is asked for BY NAME: `git ls-remote` given a name prints a
+    tag's peeled line only when a pattern names it too, and the tag's own
+    line names a tag object, not a commit. (A ref here is letters, digits,
+    `.`, `_`, `/` and `-`, so neither pattern holds a wildcard.)
     """
     proc = git(["ls-remote", "--", url, ref, f"{ref}^{{}}"], env)
     if proc.returncode != 0:
@@ -432,7 +432,7 @@ def remote_commit(url: str, repo: str, ref: str, env: dict) -> str:
         sha, _, name = line.partition("\t")
         found[name.strip()] = sha.strip().lower()
     for name in (f"refs/tags/{ref}^{{}}", f"refs/tags/{ref}",
-                 f"refs/heads/{ref}", ref):
+                 f"refs/heads/{ref}", f"{ref}^{{}}", ref):
         if COMMIT_RE.fullmatch(found.get(name, "")):
             return found[name]
     return ""
