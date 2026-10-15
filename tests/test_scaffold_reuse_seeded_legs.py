@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import http.server
 import importlib.util
+import json
 import os
 import re
 import stat
@@ -308,7 +309,10 @@ def test_a_leg_somebody_else_made_is_refused(tmp_path):
 #: `FAKE_GH_FULL` names it too (`org/name,...`), when its commit listing has
 #: one commit; it answers `repo create` and `repo edit` with success, answers
 #: `api orgs/<org>` with `FAKE_GH_PLAN` when that is set (the Free-plan hint
-#: asks it for `.plan.name`), and logs every call.
+#: asks it for `.plan.name`), answers `repo view` of each repository that
+#: `FAKE_GH_VIEW_ERRORS` (JSON, `{"org/name": "stderr text"}`) names with that
+#: text and exit 1, known or not (a 401, where an unknown one is not-found),
+#: and logs every call.
 FAKE_GH = textwrap.dedent("""\
     #!/usr/bin/env python3
     import json
@@ -321,9 +325,13 @@ FAKE_GH = textwrap.dedent("""\
     KNOWN = dict(pair.split("=") for pair in
                  os.environ["FAKE_GH_REPOS"].split(",") if pair)
     FULL = os.environ.get("FAKE_GH_FULL", "").split(",")
+    ERRORS = json.loads(os.environ.get("FAKE_GH_VIEW_ERRORS", "{}"))
 
     if argv[:2] == ["repo", "view"]:
         repo = argv[2]
+        if repo in ERRORS:
+            print(ERRORS[repo], file=sys.stderr)
+            sys.exit(1)
         if repo not in KNOWN:
             print("GraphQL: Could not resolve to a Repository", file=sys.stderr)
             sys.exit(1)
@@ -348,12 +356,14 @@ FAKE_GH = textwrap.dedent("""\
     """)
 
 
-def fake_gh(tmp_path, repos: dict, full=(),
-            plan: str | None = None) -> tuple[dict, Path]:
+def fake_gh(tmp_path, repos: dict, full=(), plan: str | None = None,
+            view_errors: dict | None = None) -> tuple[dict, Path]:
     """`FAKE_GH` first on PATH, knowing `repos` (`{name: VISIBILITY}`, each
-    under `ORG`) and holding commits in each of `full`, and naming `plan` as
-    the organisation's GitHub plan when one is given: the environment for the
-    run, and the log of every call. Nothing it answers reaches GitHub."""
+    under `ORG`) and holding commits in each of `full`, naming `plan` as the
+    organisation's GitHub plan when one is given, and failing `repo view` of
+    each name in `view_errors` (`{name: stderr text}`, each under `ORG`) with
+    that text: the environment for the run, and the log of every call.
+    Nothing it answers reaches GitHub."""
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir()
     gh = fakebin / "gh"
@@ -368,6 +378,9 @@ def fake_gh(tmp_path, repos: dict, full=(),
            "FAKE_GH_FULL": ",".join(f"{ORG}/{name}" for name in full)}
     if plan is not None:
         env["FAKE_GH_PLAN"] = plan
+    if view_errors:
+        env["FAKE_GH_VIEW_ERRORS"] = json.dumps(
+            {f"{ORG}/{name}": text for name, text in view_errors.items()})
     return env, log
 
 
@@ -504,7 +517,8 @@ LEG_SUBJECTS = (f"{SPEC_REPO} is", f"{CODE_REPO} is",
     ({PROJECT: "INTERNAL", f"{PROJECT}-code": "PRIVATE"}, (), "free",
      ROOT_IS),
     # Controls: a private root with both legs private, reused and created
-    # new, says it as it always did; and a paid plan says nothing.
+    # new, gets the hint as before, with the root as its subject (#602 moved
+    # only that); and a paid plan says nothing.
     ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PRIVATE",
       f"{PROJECT}-code": "PRIVATE"}, (), "free", ROOT_IS),
     ({}, (), "free", ROOT_IS),

@@ -60,6 +60,12 @@ UNREAD = (f"NOTE this run could not read {ROOT}'s visibility from GitHub, "
           "is on the GitHub Free plan:")
 LOOK = f"`gh repo view {ROOT} --json visibility` says which it is."
 VIEW_ROOT = f"repo view {ROOT} --json visibility"
+#: What `gh` says, on stderr and with exit 1, when its token is refused: an
+#: answer of another kind than the not-found one the stub gives a repository
+#: it does not know (`GraphQL: Could not resolve to a Repository`).
+BAD_CREDENTIALS = (
+    "HTTP 401: Bad credentials (https://api.github.com/graphql)\n"
+    "Try authenticating with:  gh auth login")
 
 
 @pytest.fixture(scope="module")
@@ -73,12 +79,14 @@ def adopter():
 
 def create_the_legs(adopter, monkeypatch, capsys, tmp_path, repos: dict, *,
                     plan: str | None = "free", visibility: str = "private",
-                    local: bool = False) -> tuple[str, list]:
+                    local: bool = False,
+                    view_errors: dict | None = None) -> tuple[str, list]:
     """`_create_leg_remotes` for `NAMES` under `ORG`, as `cmd_execute` calls
-    it, with the stub `gh` knowing `repos` (`{name: VISIBILITY}`) and naming
-    `plan` as the organisation's plan. Returns what it printed and the `gh`
-    calls it made, each as its arguments joined by spaces."""
-    env, log = fake_gh(tmp_path, repos, plan=plan)
+    it, with the stub `gh` knowing `repos` (`{name: VISIBILITY}`), naming
+    `plan` as the organisation's plan and failing `repo view` of each name in
+    `view_errors` (`{name: stderr text}`). Returns what it printed and the
+    `gh` calls it made, each as its arguments joined by spaces."""
+    env, log = fake_gh(tmp_path, repos, plan=plan, view_errors=view_errors)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     if local:
@@ -136,16 +144,26 @@ def test_a_closed_root_gets_the_hint_naming_the_root(
 
 
 @WINDOWS_SKIP
+@pytest.mark.parametrize("repos, errors", [
+    ({}, None),
+    ({NORTHWIND: "PRIVATE"}, {NORTHWIND: BAD_CREDENTIALS}),
+], ids=["not-found", "http-401"])
 def test_a_root_whose_visibility_cannot_be_read_is_named_not_guessed(
-        adopter, monkeypatch, capsys, tmp_path):
-    """`gh repo view` of the root fails (the stub does not know it, as gh
-    does not a repository it cannot see). Taking it as private would print a
-    hint that is false of a public root; taking it as public would hide one
-    that is true of a private root. The run says which question it could
-    not answer, what the hint would say, and how to answer it, and prints
-    the hint itself for no root. On main the hint was printed, naming the
-    legs, on the plan's visibility alone."""
-    out, calls = create_the_legs(adopter, monkeypatch, capsys, tmp_path, {})
+        adopter, monkeypatch, capsys, tmp_path, repos, errors):
+    """`gh repo view` of the root fails, by either answer `gh` gives. The
+    stub does not know the root (`not-found`, as `gh` says of a repository it
+    cannot see), or knows it, private, and answers `HTTP 401: Bad credentials`
+    (`http-401`: the token was refused, so a private root's true hint is the
+    one hidden). Only the first is gh's word for absent, and neither is
+    read as a visibility. Taking the root as private would print a hint that
+    is false of a public root; taking it as public would hide one that is
+    true of a private root. The run says which question it could not answer,
+    what the hint would say, and how to answer it, and prints the hint
+    itself for no root, and it does not stop: both legs exist by now. On
+    main the hint was printed, naming the legs, on the plan's visibility
+    alone."""
+    out, calls = create_the_legs(adopter, monkeypatch, capsys, tmp_path,
+                                 repos, view_errors=errors)
     assert LEG_NOTE in out, out
     assert UNREAD in out, out
     assert LOOK in out, out
