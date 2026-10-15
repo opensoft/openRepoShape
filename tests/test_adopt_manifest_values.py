@@ -406,6 +406,27 @@ def test_the_flags_and_the_plan_keys_name_the_same_values(adopter):
     assert mapped - {"PROJECT_NAME"} <= set(adopter.MANIFEST_FLAGS)
 
 
+def test_a_value_plan_filled_in_is_named_by_where_it_came_from(adopter):
+    """#529: the three values `plan` fills in when its flag is not given are
+    named by the default, in the words `_flag_fields` and the unwritable-value
+    path use, and no other value is renamed. Two of the three (the id, the
+    tracking branch) are refused before the validator is asked, so this is
+    where their names are held."""
+    defaults = {"ELECTED_BY": "`git config user.name`",
+                "PROJECT_ID": "--project lowercased",
+                "TRACKING_BRANCH": "the source's default branch"}
+    typed = adopter._manifest_flag_names(set(adopter.FLAG_DEFAULTS))
+    filled = adopter._manifest_flag_names(set())
+    assert filled == {
+        placeholder: (f"{flag} (not given, so {defaults[placeholder]})"
+                      if placeholder in defaults else flag)
+        for placeholder, flag in typed.items()}
+    assert filled["ELECTED_BY"] == ("--elected-by (not given, so "
+                                    "`git config user.name`)")
+    assert adopter._manifest_flag_names({"elected_by"})["ELECTED_BY"] == (
+        "--elected-by")
+
+
 # --- the question is asked with no git at all -------------------------------
 #
 # The manifest is rendered here to be ASKED ABOUT and never written: the
@@ -479,8 +500,7 @@ def test_the_question_runs_no_process_at_all(adopter, world, monkeypatch):
     monkeypatch.setattr(os, "system", no_process)
     assert adopter._manifest_values(good, naming) is not None
     assert adopter._manifest_findings(good) == ([], [])
-    assert adopter._manifest_findings(good, misreads_elsewhere=True) == (
-        [], [])
+    assert adopter._misread_findings(good) == []
     (finding,), remediation = adopter._manifest_findings(refused)
     assert "visibility is 'secret'" in finding
     assert remediation
@@ -672,21 +692,24 @@ def test_a_bad_leg_path_is_one_finding_in_the_words_of_its_own_rule(world,
 
 
 @pytest.mark.parametrize("old, new", [
-    ("visibility: private", "visibility: [secret]"),
     ('elected_on: "2026-09-02"', "elected_on: 20260902"),
     ("id: northwind", "id: 007"),
 ])
 def test_a_value_the_reader_reads_as_another_kind_is_not_this_questions(
         world, old, new):
-    """`id: 007` is the number 7, `elected_on: 20260902` another number and
-    `visibility: [secret]` a list: what the template would write is `str` of
-    what was read, which the plan never said, so a finding about it would
-    echo text nobody typed. That is a misread and is judged as one; the
-    validator is asked about the values the plan holds as text, and as no
-    value at all."""
+    """`id: 007` is the number 7 and `elected_on: 20260902` another number:
+    what the template would write is `str` of what was read, which the plan
+    never said. The date is #294's one finding (`said_of`), and the
+    validator is not asked about it. The id is no finding at all: since
+    #259 the template writes it `id: "7"`, which the validator accepts, and
+    #181's misread rule, which asks that line, has nothing to say of it, so
+    `execute` writes `7` for a plan that says `007`, as on main. A
+    visibility read as a list is the validator's finding, named as read
+    (tests/test_adopt_plan_yaml_quoting.py, `NOT_TEXT_INVALID`)."""
     plan = edited(world, old, new)
     result = run_script(ADOPT, "check", "--plan", str(plan))
     assert FINDING not in result.stderr, result.stderr
+    assert "plan-manifest-misread" not in result.stderr, result.stderr
 
 
 # --- a text value the template once wrote bare: judged once, not twice ------
@@ -806,44 +829,44 @@ def test_a_text_value_the_validator_refuses_is_one_finding_on_this_rule_alone(
 def test_a_text_value_the_template_now_holds_is_no_finding_either_way(
         adopter, world, old, new):
     """The validator accepts it, and the reader reads it back, so it is no
-    finding on this rule alone, and none where a misread rule judges the rest
-    (`misreads_elsewhere`)."""
+    finding of the validator's; and #181's misread rule, asked after it,
+    names nothing either, because the line `execute` writes for it is quoted
+    (#259) and reads back as typed."""
     plan = adopter.Plan.load(edited(world, old, new))
     assert adopter._manifest_findings(plan) == ([], [])
-    assert adopter._manifest_findings(plan, misreads_elsewhere=True) == (
-        [], [])
+    assert adopter._misread_findings(plan) == []
 
 
 @pytest.mark.parametrize("old, new, named", TEXT_THE_VALIDATOR_REFUSES)
 def test_where_a_misread_rule_judges_the_rest_the_validator_still_answers(
         adopter, world, old, new, named):
-    """`misreads_elsewhere` leaves out only what the project's reader would
-    misread, for a list that holds a misread rule's finding about it (#181's
-    `plan-manifest-misread`). While the template wrote these bare that was
-    each of them, and the validator was not asked again. It quotes them now
-    (#259): the reader reads each back as typed, no misread rule refuses it,
-    and the validator's finding, in words about the text, is the one with or
-    without such a rule in the list. A date `election_date` refuses is #294's
-    one finding either way, and the validator is not asked about it."""
+    """The validator is asked first, and a value it refuses is its alone:
+    #181's misread rule, in the same list, says nothing of it (rv181f's G1).
+    Since #259 the template quotes each of these, so the reader reads each
+    back as typed, and the misread rule has nothing to say of it anyway. The
+    validator's finding, in words about the text, is the one. A date
+    `election_date` refuses is #294's one finding, and the validator is not
+    asked about it."""
     plan = adopter.Plan.load(edited(world, old, new))
-    shared = adopter._manifest_findings(plan, misreads_elsewhere=True)
-    assert shared == adopter._manifest_findings(plan)
+    assert adopter._misread_findings(plan) == []
+    findings, remediation = adopter._manifest_findings(plan)
     if said_of(new)[0] != FINDING:
-        assert shared == ([], [])
-        shared = adopter._plan_field_findings(plan)
-    (finding,), remediation = shared
+        assert (findings, remediation) == ([], [])
+        findings, remediation = adopter._plan_field_findings(plan)
+    (finding,) = findings
     assert finding.startswith(said_of(new)[0])
     assert named in finding
     assert remediation
 
 
-def test_a_value_that_is_not_a_misread_is_still_asked_where_one_judges_the_rest(
+def test_every_value_is_asked_and_the_misread_rule_leaves_each_it_refuses(
         adopter, world):
-    """Only what the reader misreads is left out. `visibility: secret` is text
-    to the reader and the validator refuses it, so it is still a finding, and
-    so is a blank `elected_by`. `id: "007"` beside them was a misread while the
-    template wrote `id:` bare; quoted (#259) it is the id `007`, and no finding
-    on either list."""
+    """Every value is asked. `visibility: secret` is text to the reader and
+    the validator refuses it, and so does a blank `elected_by`. `id: "007"`
+    beside them was the number 7 to the reader while the template wrote
+    `id:` bare, and the validator refused it as that; quoted (#259) it is the
+    id `007`, which it accepts. #181's misread rule names none of the
+    three."""
     text = world["text"].replace("id: northwind", 'id: "007"')
     text = text.replace("visibility: private", "visibility: secret")
     text = text.replace('elected_by: "Test Human"', 'elected_by: " "')
@@ -851,32 +874,32 @@ def test_a_value_that_is_not_a_misread_is_still_asked_where_one_judges_the_rest(
     with path.open("w", encoding=UTF8, newline="\n") as handle:
         handle.write(text)
     plan = adopter.Plan.load(path)
-    alone, _ = adopter._manifest_findings(plan)
-    shared, _ = adopter._manifest_findings(plan, misreads_elsewhere=True)
-    assert len(alone) == 2, alone
-    assert shared == alone
-    assert any("visibility is 'secret'" in f for f in shared)
-    assert any("elected_by is ' '" in f for f in shared)
-    assert not any("manifest-id" in f for f in alone)
+    findings, _ = adopter._manifest_findings(plan)
+    assert len(findings) == 2, findings
+    assert any("visibility is 'secret'" in f for f in findings)
+    assert any("elected_by is ' '" in f for f in findings)
+    assert not any("manifest-id" in f for f in findings)
+    assert adopter._misread_findings(plan) == []
 
 
 @pytest.mark.parametrize("old, new, named", TEXT_THE_VALIDATOR_REFUSES)
 def test_a_text_value_the_validator_refuses_is_one_finding_in_the_list_check_prints(
         adopter, world, old, new, named):
     """NOT ZERO AND NOT TWO, whatever rules the list holds. This rule alone,
-    `_entry_findings` does not pass `misreads_elsewhere`, and the validator's
-    finding is the one (#294's, for a date `election_date` refuses, which the
-    validator is then not asked about). A misread rule in the list as well
-    (#181) reads the template, which writes these values quoted (#259), so it
-    has nothing to say of them; one that said something would be the pair two
-    rules each make of one value, and this test fails on a merge that has
-    it."""
+    the validator's finding is the one (#294's, for a date `election_date`
+    refuses, which the validator is then not asked about). With #181 in the
+    list as well, the validator is asked first and #181 leaves to it every
+    value it refuses, or this is the pair the two rules each make of one
+    value: this test fails on a merge that has not. Since #259 the template
+    quotes these values, so #181's rule, which asks the line `execute`
+    writes, has nothing to say of them either."""
     plan = adopter.Plan.load(edited(world, old, new))
     source = plan.open_source(str(world["source"]), world["tmp"] / "read")
     findings, _, _ = adopter._entry_findings(plan, source)
     value = new.split(": ", 1)[1].strip('"')
     about = [f for f in findings if value in f]
     assert len(about) == 1, findings
+    assert about[0].startswith(said_of(new)[0]), findings
 
 
 @pytest.mark.parametrize("old, new", TEXT_THE_TEMPLATE_NOW_HOLDS)

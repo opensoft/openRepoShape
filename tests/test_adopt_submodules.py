@@ -19,8 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
-                      resolve, run_script, write_plan)
+from conftest import (ADOPT, FILE_PROTOCOL, REPO, clone_just_pushed,
+                      cloned_just_pushed, git, make_source_repo, resolve,
+                      run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml, parse_yaml  # noqa: E402
@@ -85,9 +86,8 @@ def test_adopt_moves_existing_gitmodules_with_its_dependency(tmp_path,
                    "--work-dir", str(tmp_path / "work"))
     assert result.returncode == 0, result.stderr + result.stdout
 
-    clone = tmp_path / "assembly"
-    git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
-        "adopt/three-repo-shape", str(source), str(clone), cwd=tmp_path)
+    clone = cloned_just_pushed(source, tmp_path / "assembly",
+                               "adopt/three-repo-shape")
     leg = clone / dependency_leg
     assert git("rev-parse", "HEAD:.gitmodules", cwd=leg).stdout.strip() \
         == original_modules
@@ -1614,9 +1614,8 @@ def execute_in(plan: Path, base: Path):
 def clone_the_split(source: Path, tmp_path: Path):
     """`git clone --recurse-submodules` of the branch `execute` pushed the
     split to, into `tmp_path/clone`: what a person runs next."""
-    return git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
-               "adopt/three-repo-shape", str(source), str(tmp_path / "clone"),
-               cwd=tmp_path, check=False)
+    return clone_just_pushed(source, tmp_path / "clone",
+                             "adopt/three-repo-shape")
 
 
 def source_state(source: Path) -> list[str]:

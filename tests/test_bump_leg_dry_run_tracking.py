@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import PROJECT, git
+from conftest import PROJECT, cloned_just_pushed, git
 from test_bump_leg import branched, bump, reference_both_legs
 from test_bump_leg_rollback import assert_nothing_changed, snapshot
 from test_commit_trailers import TRAILERS
@@ -54,13 +54,10 @@ PASTE_AFTER = "Create one first with: "
 @pytest.fixture(scope="module")
 def advanced(scaffolded, tmp_path_factory) -> str:
     """A real new commit on the spec leg's bare remote; returns its sha."""
-    work = (tmp_path_factory.mktemp("spec-advance-dry-run-tracking")
-            / f"{PROJECT}-spec")
-    proc = subprocess.run(
-        ["git", "clone", "-q",
-         str(scaffolded["remotes"] / f"{PROJECT}-spec.git"), str(work)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    work = cloned_just_pushed(
+        scaffolded["remotes"] / f"{PROJECT}-spec.git",
+        tmp_path_factory.mktemp("spec-advance-dry-run-tracking")
+        / f"{PROJECT}-spec")
     (work / "DRY-RUN-TRACKING.md").write_text("# a contract gained\n")
     git("add", "--", "DRY-RUN-TRACKING.md", cwd=work)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",

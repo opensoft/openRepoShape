@@ -53,8 +53,13 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            a directory it writes into, `.github`, `contracts` or `scripts`,
            the source's own `project.yaml`, where it writes its manifest,
            or the source's own path at a copy it writes under `shape/`, in
-           any case), the source's own submodules kept on one leg with
-           their `.gitmodules`, registered there and never in the root, each
+           any case), every value `execute` writes into the project's YAML
+           (`id`, the branch, the leg paths, the pins, the election record)
+           one its loader reads back as that same text, which `null`, `true`
+           and `2026` are not where a line is written bare (since #259 and
+           #514 no line `execute` writes them into is) (#181), and
+           the source's own submodules kept on one leg with their
+           `.gitmodules`, registered there and never in the root, each
            relative url naming the same repository from the leg as from the
            source, no symlink kept in the root that the shape would write
            one of its files, or that file's copy under `shape/`, through
@@ -144,6 +149,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as _dt
+import itertools
 import os
 import re
 import shlex
@@ -165,21 +171,23 @@ from repo_shape import (  # noqa: E402
     tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    ADOPT_MAKEFILE_BLOCK, SHAPE_REPOSITORY,
-    SYMLINK_HOPS, TOO_MANY_SYMLINKS, CommandFailed, Materialized,
-    assembly_root_paths,
-    collision_follow_up, copy_tree, default_reference, election_date,
-    env_commit, escape_what_stdout_cannot_encode, git_init_commit,
-    materialize_assembly_root, naming_block, run, template_files, write_lf,
+    ADOPT_MAKEFILE_BLOCK, PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS,
+    TEMPLATED, TOO_MANY_SYMLINKS, CommandFailed, Materialized,
+    assembly_root_paths, collision_follow_up, copy_tree, default_reference,
+    election_date, env_commit, escape_what_stdout_cannot_encode,
+    git_init_commit, materialize_assembly_root, naming_block, render, run,
+    template_files, write_lf,
     write_paths_listing,
 )
 # The leg-path rule (#179) is `scaffold-project.py`'s as much as adopt's, so it
 # is imported as one unit and not listed among the materializer's names above.
-# `leg_path_problem` is not called here: `tests/test_adopt_leg_paths.py` asks
-# it through this module, as it did when the rule was defined in it, which is
-# what shows the move changed no behaviour.
+# `tests/test_adopt_leg_paths.py` asks `leg_path_problem` through this module,
+# as it did when the rule was defined in it, which is what shows the move
+# changed no behaviour; `_plan_fields` asks it too, and `_the_loader_made`
+# names a list or a mapping the loader read in `NOT_TEXT_KINDS`'s words, the
+# two kinds it has no words of its own for (#181).
 from shape_materialize import (  # noqa: E402
-    WINDOWS_ABSOLUTE_RE, leg_path_problem, leg_path_problems,
+    NOT_TEXT_KINDS, WINDOWS_ABSOLUTE_RE, leg_path_problem, leg_path_problems,
     refuse_bad_leg_paths as _refuse_bad_leg_paths,
 )
 import shape_advisory  # noqa: E402
@@ -199,12 +207,15 @@ from shape_materialize import (  # noqa: E402
 # into its manifest, and whether a repository's name can be a directory's:
 # asked of the plan's values by `plan`, `check` and `execute` (#261).
 from shape_materialize import (  # noqa: E402
-    MANIFEST_INVALID_REMEDIATION, manifest_value_problems,
-    misread_placeholders, refuse_manifest_values, refuse_unstorable_names,
+    MANIFEST_INVALID_REMEDIATION, manifest_judged, manifest_value_problems,
+    refuse_manifest_values, refuse_unstorable_names,
 )
 # Whether a value this tool writes into a file is text a file can hold
 # (#255), asked beside `one_printable_line`, the trailer's question.
 from shape_materialize import unwritable_reason  # noqa: E402
+# Whether git creates a tracking branch as it is written (#283), asked only
+# of one the project's loader misreads (`_a_branch_git_creates`, #181).
+from shape_materialize import branch_problem  # noqa: E402
 # The shape's bootstrap script, which its `make bootstrap` runs: where it
 # went beside one the source kept decides what NEXT can name (#480).
 from shape_materialize import BOOTSTRAP  # noqa: E402
@@ -555,16 +566,60 @@ FILTER_REPO_HINT = (
 # reader gives back unchanged, and `check` can name it (#199);
 # `tests/test_adopt_plan_escapes.py` proves that round trip for every code
 # point to U+02FF and a sample above it, and for a seeded sample of strings
-# of them, not only for the strings a plan happens to hold; not for a bare
-# YAML keyword (`null`, `true`, `false`), which `y` writes unquoted and the
-# reader takes as None or a bool, #181's to fix. Everything it emits is
-# read back by `check`, and `tests/test_adopt_plan.py` round-trips a plan
-# through both, which is what keeps the writer and the reader honest about
-# each other.
+# of them, not only for the strings a plan happens to hold. A string is
+# written plain only where that reader gives the same string back, and `y`
+# asks the reader rather than a list of words, so a bare YAML keyword the
+# reader takes as None or a bool (`null`, `True`) is quoted as well (#181);
+# `tests/test_adopt_plan_yaml_quoting.py` proves that through the reader
+# too. Everything it emits is read back by `check`, and
+# `tests/test_adopt_plan.py` round-trips a plan through both, which is what
+# keeps the writer and the reader honest about each other.
 
 #: Ends at `\Z`, not `$`: `$` also matches before a FINAL newline, and wrote a
 #: file named `Icon\n` bare, over two lines of the plan (#199).
 _PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*\Z")
+
+
+def loader_reading(line: str):
+    """What the loader makes of the one value on `line`: `key: <value>` or
+    `- <value>`, as a plan or a project's YAML spells it.
+
+    THE ONE QUESTION, asked by the plan writer (`_reads_back_as_text`) and by
+    the gate on what `execute` writes into the project (`manifest_misreads`),
+    of the one loader both are read with: `repo_shape`, which every assembly
+    root carries a copy of for its `bootstrap.py` and validators. The answer
+    is the value under the key, or the one item, as that loader reads it; a
+    line it will not read gives back the `YamlError` it raised, which is no
+    string at all.
+    """
+    try:
+        parsed = parse_yaml(line + "\n")
+    except YamlError as exc:
+        return exc
+    held = list(parsed.values()) if isinstance(parsed, dict) else parsed
+    return held[0] if isinstance(held, list) and len(held) == 1 else parsed
+
+
+def _reads_back_as_text(text: str) -> bool:
+    """Does the plan's own loader take `text`, written plain, back as `text`?
+
+    ASKED OF THE LOADER, NEVER OF A LIST OF WORDS (#181). `null`, `Null`,
+    `true` and `False` were written bare, so `plan --spec-path null` wrote
+    `spec_path: null`, which loads as "no value" and mounted the leg at the
+    default `spec`, and `--tracking-branch true` came back as a boolean. A
+    second, hand-kept list of the words `repo_shape._scalar` treats as
+    keywords is a list that goes stale the day that reader learns another one
+    (it reads no `yes`, `on` or `.inf` today, and a list copied from YAML 1.1
+    would quote them for nothing), so the candidate is round-tripped instead
+    and whatever the loader reads as something else gets quoted.
+
+    BOTH PLACES A VALUE IS WRITTEN are asked: after `key: `, and as a `- `
+    item, which the reader splits differently (`- a:` is a one-key mapping,
+    `k: a:` is not). A line the reader refuses is a value it does not read
+    back.
+    """
+    return all(loader_reading(f"{place}{text}") == text
+               for place in ("k: ", "- "))
 
 
 def y(value) -> str:
@@ -577,7 +632,7 @@ def y(value) -> str:
     if isinstance(value, float):
         return f"{value:.4f}"
     text = str(value)
-    if text and _PLAIN_RE.match(text) and not text.endswith(":"):
+    if text and _PLAIN_RE.match(text) and _reads_back_as_text(text):
         return text
     return double_quoted(text)
 
@@ -1835,7 +1890,11 @@ def _plan_leg_path(plan: Plan, role: str):
     A key the plan does not carry is the default, the role's own name, as
     `execute` has always read it. An EXPLICIT empty value is not a missing
     one: it comes back as it stands and is refused, where it used to be read
-    quietly as the default -- a value nobody chose.
+    quietly as the default -- a value nobody chose. So is an explicit NULL
+    (`spec_path: null`, `~`, or the key with nothing after it), which comes
+    back as None (#181): before `y` quoted keywords, `plan --spec-path null`
+    wrote exactly that, the plan's own follow-ups said `null/contracts`, and
+    `check` passed it as a mount at `spec`.
 
     `legs:` is read only when it is a mapping. The doctor's PLACEMENT plan
     (`shape-doctor.py --placement-plan`) writes `legs:` as a LIST of the
@@ -1846,8 +1905,8 @@ def _plan_leg_path(plan: Plan, role: str):
     a key the plan does not carry.
     """
     legs = plan.legs
-    value = legs.get(f"{role}_path") if isinstance(legs, dict) else None
-    return role if value is None else value
+    key = f"{role}_path"
+    return legs[key] if isinstance(legs, dict) and key in legs else role
 
 
 def _plan_leg_paths(plan: Plan) -> tuple[tuple, tuple]:
@@ -2064,6 +2123,516 @@ def _kept_collision_notes(args, entries: list, tree: list) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# What `execute` writes into the project is read back as written (#181)
+# ---------------------------------------------------------------------------
+#
+# `y` makes the PLAN say what was typed. `execute` then puts the same values
+# into the assembly root's templates, and `project.yaml` and the leg pins
+# carried most of them bare: `id: {{PROJECT_ID}}`, `path: {{SPEC_PATH}}`,
+# `tracking_branch: {{TRACKING_BRANCH}}`. So once the plan kept `null` as the
+# text it was, `--spec-path null` ended `adoption verified` and the first
+# bootstrap failed on `path is None`, `--id true` on `id is True`, and
+# `--tracking-branch true` pushed the legs on `true` while bootstrap put them
+# on a local `True` with no upstream. `2026`, `1.5` and `~` already did the
+# same on `main` (#187's review).
+#
+# THE TEMPLATES QUOTE THOSE LINES NOW (#259), and `render` spells a value
+# between a YAML template's double quotes with `double_quoted`, which reads
+# back as typed: on them the question below finds nothing. Since #514
+# (main's e6fbd748) `_neutral_product_pins` quotes an item of the manifest's
+# `neutral_product_pins:` list the reader would misread, so a pin's product
+# reads back too, and on the shipped templates nothing is left to refuse.
+#
+# SO THE GATE STAYS, AND REFUSES. `plan` (before the plan is written),
+# `check` (a FINDING) and `execute` (through `_entry_findings`, before any
+# leg exists) ask the ONE question below and refuse a value the project's
+# loader would read back as anything but that same text, on whatever line
+# `execute` writes it into: any line a template, or `_template_table`,
+# writes bare tomorrow, with no edit here.
+#
+# THE LOADER DECIDES, AND THE TEMPLATE SAYS WHERE. Each value is put into
+# every line of a templated YAML file that carries its placeholder, exactly
+# as `execute` would put it there, and `loader_reading` -- the question `y`
+# asks -- reads that line back. No list of words, and no list of which
+# placeholders are quoted: `elected_by: "{{ELECTED_BY}}"` is asked as the
+# line `render` writes, the value spelled by `double_quoted` (#284), so
+# `Null` and `CORP\tom` both read back there, as they do after
+# `tracking_branch:` since #259, and as `- "Null"` in the pins' list since
+# #514; a bare `- Null` there would not.
+
+#: The assembly root's templated files that are YAML: what the project's own
+#: loader reads back out of the split commit. The materializer's list, so a
+#: templated YAML file added there is asked about here without an edit.
+ASSEMBLY_TEMPLATE = SHAPE_ROOT / "templates" / "assembly-root"
+TEMPLATED_YAML = tuple(rel for rel in TEMPLATED if rel.endswith(".yaml"))
+#: The plan's keys for the election record, as `_template_values` reads them
+#: out of the plan and as the tables below ask about them: one spelling.
+ELECTED_BY_KEY = "elected_by"
+ELECTED_ON_KEY = "elected_on"
+REFERENCE_KEY = "reference"
+#: The two other plan keys `_execute_gets_to_write` asks about by name.
+TRACKING_KEY = "tracking_branch"
+VISIBILITY_KEY = "visibility"
+#: The placeholder `execute` writes the project's id through, and the one it
+#: writes the pins' list through.
+ID_PLACEHOLDER = "PROJECT_ID"
+PINS_PLACEHOLDER = "NEUTRAL_PRODUCT_PINS"
+
+#: Each plan value `execute` writes into those files, by its key in the plan
+#: (and `plan`'s flag of the same name, dashed) and the `_template_values`
+#: placeholder that carries it. The id is asked about apart from these,
+#: because `execute` derives it when the plan has none; the leg paths are
+#: `legs.` keys; the pins are a list.
+MANIFEST_FIELDS = {TRACKING_KEY: "TRACKING_BRANCH",
+                   VISIBILITY_KEY: "VISIBILITY", ELECTED_BY_KEY: "ELECTED_BY",
+                   ELECTED_ON_KEY: "ELECTED_ON", REFERENCE_KEY: "REFERENCE"}
+LEG_PATH_PLACEHOLDERS = {"spec": "SPEC_PATH", "code": "CODE_PATH"}
+#: How `plan` fills a flag nobody passed: a sentence about the value it fills
+#: in names where it came from (`_flag_named`), as `checked_value` names the
+#: tracking branch (#479), and never as a flag the person did not type. #181's
+#: misread rule asks only about a value the loader can read as something else,
+#: and no elector is one: the manifest writes it between double quotes, which
+#: `render` spells with `double_quoted` (#284). The validator's rule (#261)
+#: asks about every value, so an elector `git config user.name` leaves empty
+#: is named by where it came from as well (#529).
+FLAG_DEFAULTS = {"id": "--project lowercased",
+                 TRACKING_KEY: "the source's default branch",
+                 ELECTED_BY_KEY: "`git config user.name`"}
+#: How a sentence names the id `execute` derives when the plan sets none:
+#: when it has no `id:`, or an `id:` with no value (`null`, `~` or nothing,
+#: as `main`'s `plan --id null` wrote it), which `Plan.get` reads alike.
+DERIVED_ID = "id (not set in the plan, so legs.assembly lowercased)"
+#: How a sentence names one of a plan's `pins:`: the key holds a list of
+#: pins, each a mapping since #273, and what `execute` writes into the
+#: manifest's list for one is its product.
+PIN_IN_PLAN = "the product of a pin in pins"
+#: And how `plan` names the same value: the product of a `--pin` it read
+#: (`product@<40 hex>`), which is not the whole of what was typed.
+PIN_FLAG_PRODUCT = "the product of a --pin"
+#: What a sentence calls a character a terminal shows as something else, or
+#: not at all, which `_worded` names instead of printing.
+CHARACTER_NAMES = {"\t": "a tab", "\n": "a line break",
+                   "\r": "a carriage return"}
+#: How a sentence joins the last of the things it names, spelled once.
+AND = " and "
+
+MANIFEST_MISREAD_REMEDIATION = (
+    "Remediation: choose another value for each one named. `execute` writes "
+    "these values into the project's own YAML files as they stand, and the "
+    "loader the project's own `bootstrap.py` and validators read those files "
+    "with would take each one named here as something else: "
+    "the run would still end `adoption verified`, and the project would then "
+    "be bootstrapped and validated against what was read instead. Quoting it "
+    "in the plan does not help, because the plan is not what is misread.")
+
+
+def _written(placeholder: str, value: str) -> list[tuple[str, str]]:
+    """`(file, line)` for each line of a templated YAML file that carries
+    `{{placeholder}}`: with `value` in its place, as `execute` writes it, and
+    without its indent, which says nothing about how the value is read.
+
+    AS `execute` WRITES IT is what the materializer's own `render` makes of
+    the line, asked here as the loader is asked, so no copy of its rules can
+    go stale. Between a YAML template's double quotes, `"{{ELECTED_BY}}"`,
+    `render` spells the value with `double_quoted`, which the loader reads
+    back as typed (#284), and it puts each value in once, never searching
+    it again (#260). A copy of those rules in two steps, the second run over
+    the first's output, asked `--elected-by '"{{ELECTED_BY}}"'` about a line
+    `execute` never writes, and refused it. Every file here is `.yaml`,
+    which is what makes `render` take the quoted step.
+    """
+    token = "{{" + placeholder + "}}"
+    lines = [(rel, line.strip())
+             for rel in TEMPLATED_YAML
+             for line in (ASSEMBLY_TEMPLATE / rel).read_text(
+                 encoding="utf-8").splitlines()
+             if token in line]
+    return [(rel, render(line, {**_as_they_stand(line), placeholder: value},
+                         rel))
+            for rel, line in lines]
+
+
+def _as_they_stand(line: str) -> dict[str, str]:
+    """A `render` table that gives each placeholder on `line` back as its own
+    token. Bare, the token is written as it was; between quotes,
+    `double_quoted` spells `{{KEY}}` as `"{{KEY}}"`, as it was. So the line
+    `_written` asks about differs from the template's by one value only."""
+    return {token[2:-2]: token for token in PLACEHOLDER_RE.findall(line)}
+
+
+def _field(what: str, placeholder: str, value) -> tuple[str, object, list]:
+    """`(what, value, written)` for a value `_template_values` writes as
+    `str(value)`. `value` is kept as it was read: out of a plan it need not
+    be text (`tracking_branch: 007` is read as 7), and a sentence about it
+    says what was read, never `str` of it, which the plan does not say."""
+    return what, value, _written(placeholder, str(value))
+
+
+def _pin_field(what: str, plan: "Plan", product: str,
+               naming: NamingPolicy) -> tuple[str, object, list]:
+    """`(what, product, written)` for one pin `execute` writes: `written`
+    holds the line it writes for the pin's product in the manifest's
+    `neutral_product_pins:` list, without the item's indent.
+
+    ASKED OF `_template_table`, THE TABLE `execute` WRITES THAT LIST FROM,
+    and never of a copy of how it spells an item: the table
+    `_manifest_values` builds from `plan` with this one pin (`execute`'s
+    `_template_values` is the same table), put into the template's line by
+    `render` (`_written`). Since #514 (main's e6fbd748) `_template_table`
+    quotes an item the reader would misread, so this asks the quoted line
+    and the gate passes it, with no edit here; written bare again, the line
+    is refused. No line where the
+    table cannot be built (`_manifest_values` is None), which `plan` and
+    `check` report in their own words. Since #273 a product is `parse_pin`'s,
+    or a `pins:` entry `_read_pins` accepts, which both hold to
+    `PIN_ARG_RE`'s alphabet: it holds no whitespace, and the line loses only
+    its indent."""
+    # The pin by its product alone, as an old plan's entry names it:
+    # `_manifest_values` reads only the products (`Plan.pins`).
+    alone = Plan(plan.path, {**plan.data, "pins": [product]})
+    table = _manifest_values(alone, naming)
+    if table is None:
+        return what, product, []
+    return what, product, [
+        (f"{rel}'s neutral_product_pins", item.strip())
+        for rel, written in _written(PINS_PLACEHOLDER,
+                                     table[PINS_PLACEHOLDER])
+        for item in written.splitlines()[1:]]
+
+
+def _the_loader_made(reading) -> str:
+    """What the loader made of a value, in words: a scalar as it was READ,
+    with its kind (`the number 7`, for a line or a plan that says `007`),
+    and a list or a mapping by its kind alone."""
+    if isinstance(reading, YamlError):
+        return f"nothing: it refuses the line ({reading})"
+    if reading is None:
+        return "no value at all"
+    if isinstance(reading, bool):
+        # In the words `y` writes it into a plan, which are YAML's own.
+        return "the boolean " + y(reading)
+    if isinstance(reading, (int, float)):
+        return f"the number {reading!r}"
+    if isinstance(reading, str):
+        return f"the text {_worded(reading)}"
+    return NOT_TEXT_KINDS.get(type(reading), "something that is not text")
+
+
+def _character_name(char: str) -> str:
+    return CHARACTER_NAMES.get(char, f"the character U+{ord(char):04X}")
+
+
+def _worded(text: str) -> str:
+    """`text` as a sentence shows it: between backticks as it is typed, with
+    each character a terminal shows as something else named outside them,
+    in order; `""` when it is empty.
+
+    NOT `repr`, and not `_spelled`, which spells a path so that it reads one
+    way only: both show the tab the loader makes of `"CORP\\tom"` as `\\t`,
+    the two characters the person typed, and show what they typed with its
+    backslash doubled, so each looks like the other. Named, the tab is
+    plainly a tab.
+    """
+    parts: list[str] = []
+    for printable, chars in itertools.groupby(text, str.isprintable):
+        if printable:
+            parts.append(f"`{''.join(chars)}`")
+        else:
+            parts += map(_character_name, chars)
+    return ", then ".join(parts) or '""'
+
+
+def _named(what: str, value) -> tuple[str, str]:
+    """`(subject, text)` for a sentence about `value`: who and what it is,
+    and the text the loader does not read back.
+
+    A value read out of a plan that is not text is named by what its loader
+    READ, with its kind: `str` of it is not what the plan says
+    (`tracking_branch: 007` is read as 7, and `TRUE` as true), so the text is
+    then the one `execute` writes, named as such.
+    """
+    if isinstance(value, str):
+        return f"{what} is {_worded(value)}", "that text"
+    return (f"{what} was read out of the plan as {_the_loader_made(value)}",
+            f"the text {_worded(str(value))}")
+
+
+def _line_shown(line: str) -> str:
+    """`line` as a sentence quotes it: in backticks, or as Python spells it
+    when it holds a character a terminal shows as something else (a line
+    break, a tab), so that one FINDING stays one line. Not `_shown`, which
+    is #199's spelling of a PATH in the plan report, with no backticks."""
+    return f"`{line}`" if line.isprintable() else repr(line)
+
+
+def manifest_misreads(fields) -> list[str]:
+    """A sentence for each `(what, value, written)` whose value, written as
+    `str(value)`, the project's loader does not read back out of every line
+    in `written`; `[]` when it does for all of them.
+
+    `what` is how the caller names the value -- `--tracking-branch` to
+    `plan`, `tracking_branch` read out of a plan -- so the sentence points at
+    the thing the person has in front of them.
+    """
+    problems = []
+    for what, value, written in fields:
+        text = str(value)
+        wrong = [(rel, line, loader_reading(line)) for rel, line in written]
+        wrong = [row for row in wrong if row[2] != text]
+        if wrong:
+            where = AND.join(f"into {rel} as {_line_shown(line)}"
+                             for rel, line, _ in wrong)
+            subject, expected = _named(what, value)
+            problems.append(
+                f"{subject}, which `execute` writes {where}, where the "
+                "project's own YAML loader reads it back as "
+                f"{_the_loader_made(wrong[0][2])} and not as {expected}: "
+                "choose another value")
+    return problems
+
+
+def _flag_named(key: str, given: set) -> str:
+    """`key`'s flag as a sentence names it: `--elected-by` when the person
+    passed it (`key` is in `given`), and, where `plan` fills the flag in by
+    itself (`FLAG_DEFAULTS`) and nobody passed it, where the value came from:
+    `--elected-by (not given, so `git config user.name`)`. A refusal of a
+    value `plan` chose must not point at a flag nobody typed (#529)."""
+    spelled = "--" + key.replace("_", "-")
+    if key in FLAG_DEFAULTS and key not in given:
+        spelled += f" (not given, so {FLAG_DEFAULTS[key]})"
+    return spelled
+
+
+def _flag_fields(args, given: set, pins: dict, source: Source,
+                 planned: "Plan", naming: NamingPolicy) -> list[tuple]:
+    """`plan`'s values as it is about to record them, each named by its flag,
+    and by where `plan` took it from when `given` says it was not passed.
+    `pins` is `declared_pin_values`' `{product: PIN_* values}`: the product
+    is what `execute` writes into the manifest's list (#273), asked of the
+    table `execute` writes it from, built from `planned`, the plan `plan` is
+    about to write (`_flag_plan`, `_pin_field`).
+
+    Less a tracking branch the loader misreads that `execute` never writes
+    in some mode (`_a_branch_execute_writes`): one git will not create, which
+    is then no branch of the source, or one `execute` does not push the
+    legs to in every mode; `execute` refuses each before any leg exists
+    (#479). `plan` records either, and notes one that is no branch of the
+    source."""
+    def flag(key: str) -> str:
+        return _flag_named(key, given)
+
+    fields = [_field(flag("id"), ID_PLACEHOLDER, args.id)]
+    fields += [_field(flag(key), placeholder, getattr(args, key))
+               for key, placeholder in MANIFEST_FIELDS.items()
+               if key != TRACKING_KEY
+               or _a_branch_execute_writes(source, flag(key),
+                                           getattr(args, key))]
+    fields += [_field(f"--{role}-path", placeholder,
+                      getattr(args, f"{role}_path"))
+               for role, placeholder in LEG_PATH_PLACEHOLDERS.items()]
+    return fields + [_pin_field(PIN_FLAG_PRODUCT, planned, product, naming)
+                     for product in pins]
+
+
+def _id_field(plan: Plan) -> tuple:
+    """The id as `execute` writes it, named for where it comes from: the
+    plan's `id:` as its loader read it, or `legs.assembly` lowercased when
+    the plan sets none (`DERIVED_ID`). `Plan.project_id` raises the
+    `Refusal` of an id it refuses, which is reported on its own account."""
+    project_id = plan.project_id
+    set_id = plan.get("id")
+    if set_id is None:
+        return _field(DERIVED_ID, ID_PLACEHOLDER, project_id)
+    return _field("id", ID_PLACEHOLDER, set_id)
+
+
+#: The plan values `execute` hands to `git` before it writes anything:
+#: `_checked_plan_values` checks each with `checked_value`, and refuses one it
+#: refuses (`unsafe-value`) before `_refuse_what_check_finds` asks the gate.
+GIT_ARGUMENT_KEYS = (TRACKING_KEY,)
+
+
+def _execute_gets_to_write(key: str, value) -> bool:
+    """Does `execute` get as far as writing `value` into the project, in
+    EVERY mode it runs in? `check` is not told which one it will be.
+
+    Not for a `git` argument `checked_value` refuses: `_checked_plan_values`
+    refuses it as `unsafe-value` before any leg exists, so a sentence saying
+    `execute` writes it, and that the run would end `adoption verified`,
+    would be false (rv181f's F2).
+
+    Nor for a visibility that is not one of `VISIBILITY_CHOICES`, text or
+    not. In gh mode, `execute`'s default, `_create_leg_remotes` hands it to
+    `gh repo create` as `--<visibility>` before anything is written, and gh
+    creates a repository with no other (rv181f's F2b), so such a sentence
+    would be false there. The project's own validator refuses each such
+    visibility as the loader reads it (`secret`, `"true"`, `true`,
+    `[secret]`), and since #259 quotes the template's `visibility:`, a text
+    the loader read there as no value (`"null"`, `""`, `"~"`) or as one of
+    the three (`"'private'"`) is that text, which it refuses too: `check`
+    names each in the validator's words (`manifest-visibility`, #261,
+    `_manifest_findings`), and `execute` refuses the plan before anything
+    exists, in either mode. None of the three choices is misread.
+
+    Nor for any other value no file can hold (`unwritable_reason`): `check`
+    names it as `plan-unwritable-value`, and `execute` refuses a plan
+    holding it before any leg exists (#255), so one wrong value is one
+    finding, and none says the run gets further.
+
+    Nor for a tracking branch the loader misreads that git will not create
+    (`_a_branch_git_creates`)."""
+    if key == VISIBILITY_KEY:
+        return str(value) in VISIBILITY_CHOICES
+    if key not in GIT_ARGUMENT_KEYS:
+        return unwritable_reason(str(value)) is None
+    try:
+        checked_value(key, value)
+    except Refusal:
+        return False
+    return _a_branch_git_creates(key, value)
+
+
+def _a_branch_git_creates(what: str, value) -> bool:
+    """False for a tracking branch the project's loader misreads that git
+    will not create (`branch_problem`, #283): `~`, which the loader reads as
+    no value where it is written bare. No source has such a branch, so
+    `check` finds it `plan-tracking-branch-missing` and `execute` refuses it
+    before any leg exists (#479); before #479 `execute` handed it to `git
+    init -b` and died there. Either way a sentence saying `execute` writes
+    the branch, and that the run would still end `adoption verified`, would
+    be false (rv181f's H1). Since #259 the template quotes the branch, which
+    reads `~` back, so on the templates shipped this asks git nothing.
+
+    Git is asked ONLY about a branch the loader misreads. One it reads back
+    is no concern of this rule's, and a plan whose values all read back
+    starts no process."""
+    field = _field(what, MANIFEST_FIELDS[TRACKING_KEY], value)
+    return not manifest_misreads([field]) or branch_problem(what, value) is None
+
+
+def _a_branch_execute_writes(source: Source, what: str, value) -> bool:
+    """`_a_branch_git_creates`, asked where the source is in hand (`plan`,
+    and `check` and `execute` through `_entry_findings`): False also for a
+    tracking branch the loader misreads that `execute` does not push the
+    legs to in every mode (`_pushed_in_every_mode`, #479), and refuses
+    before any leg exists. As git is, the source is asked ONLY about a
+    branch the loader misreads, so one that reads back starts no process."""
+    field = _field(what, MANIFEST_FIELDS[TRACKING_KEY], value)
+    return not manifest_misreads([field]) or (
+        branch_problem(what, value) is None
+        and _pushed_in_every_mode(source, str(value)))
+
+
+def _pushed_in_every_mode(source: Source, tracking: str) -> bool:
+    """Does `execute` push the legs to `tracking`, and write it into the
+    project, in EVERY mode it runs in, as the source knows its branches?
+    `check` is not told which mode it will be (#479).
+
+    In gh mode, `execute`'s default, the split goes to the repository the
+    source is a clone of. `check` reads that repository's branches from the
+    clone (`_tracking_branch_problem`) and finds a branch it lacks as
+    `plan-tracking-branch-missing`, which `execute` refuses before any leg
+    exists. Under `--local-remote-dir` the split is pushed back into the
+    source itself, and `execute` refuses a branch that is not one of the
+    source's OWN before any leg exists, one only its remote `origin` has
+    among them (`_refuse_a_tracking_branch_the_remote_lacks`). So a sentence
+    saying `execute` writes the branch, and that the run would still end
+    `adoption verified`, is true only of a branch both modes have.
+
+    What GitHub has NOW is `execute`'s to ask (`git ls-remote`, before any
+    leg): `check` asks nothing of the network, as #479 has it, and reads
+    what the clone remembers. The source's own branches are asked as
+    `execute --local-remote-dir` asks them, of the source as a remote
+    (`_branches_at`); one that cannot be listed is no branch `execute`
+    pushes to there."""
+    if _tracking_branch_problem(source, TRACKING_KEY, tracking) is not None:
+        return False
+    try:
+        return tracking in _branches_at(str(source.path), source.path)
+    except (CommandFailed, OSError):
+        return False
+
+
+def _plan_fields(plan: Plan) -> list[tuple[str, tuple]]:
+    """A plan's values as its loader read them, each named by its key in the
+    plan, with the lines `_template_values` would write them into: `(the
+    placeholder that carries it, the field)`, so that `_misread_findings`
+    can leave to the project's own validator a value it judges.
+
+    A key the plan does not carry is left out: `execute` fills it with a
+    default of this tool's own (`main`, `private`, today's date), and none of
+    those is misread. So is a value `execute` never gets as far as writing
+    (`_execute_gets_to_write`): it refuses it first, as `unsafe-value` or as
+    #255's `plan-unwritable-value`, or `gh` or `git` does. A leg path is asked about
+    only when it is text with no `plan-bad-leg-path` of its own, so one
+    wrong value is one finding. An id `Plan.project_id` refuses, or a
+    refused leg name it is derived from, is refused on its own account by
+    `check` and `execute` alike.
+    """
+    fields: list[tuple[str, tuple]] = []
+    try:
+        fields.append((ID_PLACEHOLDER, _id_field(plan)))
+    except Refusal:
+        pass
+    fields += [(placeholder, _field(key, placeholder, plan.get(key)))
+               for key, placeholder in MANIFEST_FIELDS.items()
+               if plan.get(key) is not None
+               and _execute_gets_to_write(key, plan.get(key))]
+    for (what, value), placeholder in zip(_plan_leg_paths(plan),
+                                          LEG_PATH_PLACEHOLDERS.values()):
+        if isinstance(value, str) and leg_path_problem(what, value) is None:
+            fields.append((placeholder, _field(what, placeholder, value)))
+    # Each pin `execute` writes, by the product it lists in the manifest
+    # (`_template_table`), less one no file can hold, which is #255's
+    # finding alone. None at all where the plan's `pins:` has a finding of
+    # its own (`_read_pins`, #273): `execute` refuses such a plan before any
+    # leg exists, and one wrong pin is one finding. A product given twice is
+    # one such finding (`plan-pin-collides`), so each is asked about once.
+    recorded, pin_findings = _read_pins(plan)
+    naming = NamingPolicy.load(NAMING_POLICY)
+    return fields + [(PINS_PLACEHOLDER,
+                      _pin_field(PIN_IN_PLAN, plan, product, naming))
+                     for _, product, _ in ([] if pin_findings else recorded)
+                     if _execute_gets_to_write("pins", product)]
+
+
+def _misread_findings(plan: Plan, unwritten=()) -> list[str]:
+    """`check`'s FINDING for each plan value the project's loader would
+    misread (#181) and the project's own validator would NOT refuse as the
+    loader reads it, of the values `execute` writes in every mode
+    (`_execute_gets_to_write`). `unwritten` names the placeholders of values
+    the caller knows `execute` does not write in every mode, by a question
+    only it can ask, of the source: the tracking branch
+    (`_a_branch_execute_writes`, #479).
+
+    THE VALIDATOR IS ASKED FIRST, as `check` asks it (`_manifest_findings`,
+    the same `ignore`), and a value it makes a finding about is its alone,
+    as on main, and not also this (while the template wrote `id:` bare,
+    `id: "007"` was `manifest-id: id is 7` alone). Where it refuses the
+    whole file (as a pin `? x` did while the pins' list was written bare,
+    before #514) or makes a
+    finding about no one value, no value can be said to
+    pass it, so every value is its, as on main (rv181f's G1, G2); and where
+    it is asked about no manifest (`_manifest_values` is None, as for an
+    `elected_on:` `election_date` refuses, #294's finding), this rule names
+    no value either.
+    That is what makes this rule's remediation true of every value it
+    follows: `execute` writes it as it stands, and the run would still end
+    `adoption verified`. A leg path is this rule's wherever a template
+    writes it bare (none has since #259): `check` leaves the validator's
+    leg-path codes to `_leg_findings` (`LEG_PATH_CODES`), and `execute`
+    writes it."""
+    judged = _validator_judged(plan)
+    if judged is None:
+        return []
+    left = judged | frozenset(unwritten)
+    return [f"FINDING plan-manifest-misread: {problem}."
+            for placeholder, field in _plan_fields(plan)
+            if placeholder not in left
+            for problem in manifest_misreads([field])]
+
+
+# ---------------------------------------------------------------------------
 # The tracking branch is a branch of the source (#479)
 # ---------------------------------------------------------------------------
 #
@@ -2273,6 +2842,10 @@ def _checked_plan_inputs(args, source: Source,
     refused an unparseable `--elected-on` would send a reader looking in the
     wrong place for the line that was wrong.
     """
+    # Which of the flags `plan` fills in by itself were passed: a value it
+    # filled in is named by where it came from, should it be refused below.
+    # Not `given`, which #479 binds below to whether `--tracking-branch` was.
+    flags_given = {key for key in FLAG_DEFAULTS if getattr(args, key)}
     args.project = checked_value("--project", args.project)
     # THE SOURCE'S OWN BRANCH, UNLESS ONE IS NAMED (#479): the branch `plan`
     # reads the source at is the one its pull request can be opened against.
@@ -2280,8 +2853,7 @@ def _checked_plan_inputs(args, source: Source,
     # `--elected-by` is below, and not as a flag the person never passed.
     given = args.tracking_branch is not None
     args.tracking_branch = checked_value(
-        "--tracking-branch" if given else
-        "--tracking-branch (not given, so the source's default branch)",
+        _flag_named(TRACKING_KEY, {TRACKING_KEY} if given else set()),
         args.tracking_branch if given else source.branch)
     # The ONE question first -- spelling, Git's and Windows's names, then the
     # alphabet `checked_value` allows -- so `spec/` is refused here with the
@@ -2341,8 +2913,7 @@ def _checked_plan_inputs(args, source: Source,
     args.reference = args.reference or default_reference(args.elected_on)
     # A value `plan` filled in by itself is named by where it came from, as
     # #181 names one, and not as a flag the person never passed.
-    elector = ("--elected-by" if args.elected_by else
-               "--elected-by (not given, so `git config user.name`)")
+    elector = _flag_named(ELECTED_BY_KEY, flags_given)
     args.elected_by = args.elected_by or _elector()
     # Before the plan is written, in the words `check` would use (#255): a
     # value `execute` writes into a file must be text one can hold. The
@@ -2362,7 +2933,34 @@ def _checked_plan_inputs(args, source: Source,
     names = _names(args.project)
     pins = declared_pin_values(args)
     _check_names(naming, names, set(pins), source)
+    # LAST here, over every value as the plan will record it: `execute`
+    # writes them into the project's own YAML. The project's own validator
+    # is asked FIRST (#261): a value it refuses is refused in its words
+    # alone, as on main (rv181f's G1). Then one its loader would read as
+    # something else that the validator accepts is refused before the plan
+    # exists (#181); since #259 and #514 that is only a value on a line
+    # written bare, so every value that refusal names is one `execute` would
+    # write and end `adoption verified` with, as its remediation says.
+    planned = _refuse_unholdable_values(args, flags_given, names, pins,
+                                        naming)
+    _refuse_misread_values(args, flags_given, pins, source, planned, naming)
     return names, pins
+
+
+def _refuse_misread_values(args, given: set, pins: dict, source: Source,
+                           planned: "Plan", naming: NamingPolicy) -> None:
+    """`plan`'s refusal, before the plan exists, of each value it is about
+    to record that the project's loader would read back as something else
+    (#181), named as `_flag_fields` names it. Asked after the project's own
+    validator (`_refuse_unholdable_values`), whose refusal is the one a
+    value it refuses gets. Apart from `_checked_plan_inputs`, which #479's
+    default made as complex as Sonar allows."""
+    misread = manifest_misreads(
+        _flag_fields(args, given, pins, source, planned, naming))
+    if misread:
+        raise Refusal("adopt-manifest-misread",
+                      " ".join(f"{problem}." for problem in misread),
+                      f"{MANIFEST_MISREAD_REMEDIATION} No plan was written.")
 
 
 def _refuse_an_unrecordable_pin_source(source: Path, products) -> None:
@@ -2422,31 +3020,41 @@ def _refuse_an_unrecordable_pin_source(source: Path, products) -> None:
 # template ships, through `shape_materialize.manifest_value_problems`, which
 # loads that validator rather than copying a rule of it. The table is built by
 # `_template_table`, which `execute`'s `_template_values` also calls, so it is
-# the one `execute` renders from. Only the validator's question is asked here:
-# whether the project's YAML reader reads a value back as the text it is --
-# `--id true`, `--tracking-branch 007` -- is #181's, and the scaffold asks
-# both.
+# the one `execute` renders from. Only the validator's question is asked here,
+# and it is asked FIRST: a value it refuses is its alone. Whether the
+# project's YAML reader reads back as the text it is a value the validator
+# accepts -- since #259 and #514, only one on a line written bare -- is
+# #181's, asked after (`_misread_findings`), and the scaffold asks both.
 
-#: How `plan` names each value the manifest records: the flag a person typed.
-MANIFEST_FLAGS = {
-    "PROJECT_ID": "--id", "ELECTED_BY": "--elected-by",
-    "ELECTED_ON": "--elected-on", "REFERENCE": "--reference",
-    "VISIBILITY": "--visibility", "TRACKING_BRANCH": "--tracking-branch",
-    "ORG": "--org",
+#: How `check` and `execute` name each value the manifest records: its key
+#: in the plan. The id's placeholder and `MANIFEST_FIELDS` are #181's, so
+#: that each placeholder and each key is spelled once; the organisation is a
+#: value only the validator is asked about.
+MANIFEST_PLAN_KEYS = {
+    ID_PLACEHOLDER: "id",
+    **{placeholder: key for key, placeholder in MANIFEST_FIELDS.items()},
+    "ORG": "org",
 }
+
+
+def _manifest_flag_names(given: set) -> dict[str, str]:
+    """How `plan` names each value the manifest records: by the flag that
+    gives it, as `_flag_fields` spells #181's, and a value `plan` filled in
+    when its flag is not in `given` by where it came from (`_flag_named`,
+    #529), so the validator's sentence never points at a flag nobody typed."""
+    return {placeholder: _flag_named(key, given)
+            for placeholder, key in MANIFEST_PLAN_KEYS.items()}
+
+
+#: And the same names when the person typed every flag: the key, dashed. No
+#: production code asks for this table any more (`_refuse_unholdable_values`
+#: asks `_manifest_flag_names` for the flags given); the tests pin it.
+MANIFEST_FLAGS = _manifest_flag_names(set(FLAG_DEFAULTS))
 
 #: The validator's findings about a leg's mount path, which `check` already
 #: reports as `plan-bad-leg-path` and `plan-leg-path-collides` from the same
 #: list (`_leg_findings`): said once, in the words of the rule that judges it.
 LEG_PATH_CODES = ("manifest-leg-path", "manifest-leg-path-collision")
-
-#: And how `check` and `execute` name the same value: its key in the plan.
-MANIFEST_PLAN_KEYS = {
-    "PROJECT_ID": "id", "ELECTED_BY": "elected_by",
-    "ELECTED_ON": "elected_on", "REFERENCE": "reference",
-    "VISIBILITY": "visibility", "TRACKING_BRANCH": "tracking_branch",
-    "ORG": "org",
-}
 
 
 def _flag_plan(args, names: dict, pins: dict) -> "Plan":
@@ -2541,40 +3149,29 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
         _VALIDATION_SHAPE_COMMIT, _VALIDATION_SHAPE_DIGEST, pins, naming)
 
 
-def _manifest_findings(plan: Plan, misreads_elsewhere: bool = False
-                       ) -> tuple[list[str], list[str]]:
+def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
     """What the project's own validator would refuse of this plan's values,
     as `check` prints them (one FINDING each), and what it prints once after
     them. `[]` and `[]` when it would pass, or when the plan's names, or its
     date, are refused in their own words (`_manifest_values`).
 
-    `misreads_elsewhere` is for a caller whose list ALSO holds a misread
-    rule's finding for each value the project's reader reads back as another
-    type (`elected_on: "20261011"`, `visibility: "true"`, `id: "007"`: text in
-    the plan, a number or a boolean to the reader once the template writes it
-    bare), so that such a value is judged once and not twice. It is False
-    wherever nothing else asks that question, so that this rule alone still
-    refuses the value, with the validator's finding as the only one. Who is
-    left out is the reader's answer (`shape_materialize.manifest_misreads`,
-    the rule the scaffold applies) and not a list.
+    EVERY VALUE IS ASKED, ONE THE PLAN'S READER READ AS NOT TEXT INCLUDED,
+    and one #181's misread rule would also call misread: a value this rule
+    refuses is this rule's alone, and the misread rule leaves it here
+    (`_misread_findings`, rv181f's G1). So `visibility: true` is this
+    rule's, as `visibility: secret` is, and one wrong value is one
+    finding. (`elected_on: 20260902` is #294's, and this rule is not asked
+    about it: `_manifest_values`.) A value read as not text is named by
+    what was read (`_named_as_read`), because the sentence goes on to
+    quote `str` of it, the text `execute` would write and not what the
+    plan says.
     """
     naming = NamingPolicy.load(NAMING_POLICY)
     values = _manifest_values(plan, naming)
     if values is None:
         return [], []
-    # A value the plan's reader read as a number, a boolean or a collection is
-    # a MISREAD (`id: 007` is 7), and what the template would then write is
-    # `str` of what was read, which the plan never said: it is not asked about
-    # here, in words that would echo that text.
-    not_text = tuple(
-        placeholder for placeholder, key in MANIFEST_PLAN_KEYS.items()
-        if plan.get(key) is not None
-        and not isinstance(plan.get(key), str))
-    if misreads_elsewhere:
-        not_text += misread_placeholders(values, MANIFEST_PLAN_KEYS)
-    problems = manifest_value_problems(values, naming, MANIFEST_PLAN_KEYS,
-                                       misreads=False, ignore=LEG_PATH_CODES,
-                                       not_text=not_text)
+    problems = manifest_value_problems(values, naming, _named_as_read(plan),
+                                       misreads=False, ignore=LEG_PATH_CODES)
     if not problems:
         return [], []
     return ([f"FINDING plan-manifest-invalid: {sentence}"
@@ -2585,19 +3182,53 @@ def _manifest_findings(plan: Plan, misreads_elsewhere: bool = False
              "a value the validator accepts."])
 
 
-def _refuse_unholdable_values(args, names: dict, pins: dict,
-                              naming: NamingPolicy) -> None:
+def _validator_judged(plan: Plan) -> frozenset[str] | None:
+    """The placeholders whose value the project's own validator makes a
+    finding about, asked as `_manifest_findings` asks it; None where no
+    value can be said to pass it (`manifest_judged`), or where the plan's
+    names are refused in their own words and there is no manifest to ask
+    about (`_manifest_values`)."""
+    naming = NamingPolicy.load(NAMING_POLICY)
+    values = _manifest_values(plan, naming)
+    if values is None:
+        return None
+    return manifest_judged(values, naming, ignore=LEG_PATH_CODES)
+
+
+def _named_as_read(plan: Plan) -> dict[str, str]:
+    """How a sentence of the validator's names each value: by its key in the
+    plan, and a value the plan's reader read as something that is not text
+    by what was read too (review181's N2), as in `visibility, read out of
+    the plan as the boolean true, is 'True'`. A value the plan holds as
+    text, or as no value at all, is named by its key alone."""
+    named = {}
+    for placeholder, key in MANIFEST_PLAN_KEYS.items():
+        value = plan.get(key)
+        named[placeholder] = (
+            key if value is None or isinstance(value, str) else
+            f"{key}, read out of the plan as {_the_loader_made(value)},")
+    return named
+
+
+def _refuse_unholdable_values(args, given: set, names: dict, pins: dict,
+                              naming: NamingPolicy) -> "Plan":
     """`plan` refuses, before it writes a file, what `check` would find in the
     plan it is about to write (#261): the three repository names it derives,
     held to `checked_value` as `check` holds `legs:` (a `--project` of 251 to
     255 characters planned, then `check` refused `legs.spec`), and the
-    manifest's values, through the one question `check` asks of them."""
+    manifest's values, through the one question `check` asks of them. It
+    returns that plan, built once (`_flag_plan`), for #181's question to ask
+    of the same values (`_refuse_misread_values`). `given` says which flags
+    the person passed: a value `plan` filled in by itself, an elector
+    `git config user.name` left empty, is named by where it came from
+    (#529)."""
     plan = _flag_plan(args, names, pins)
     values = _manifest_values(plan, naming)
     if values is not None:
         refuse_manifest_values(
-            "adopt", values, naming, MANIFEST_FLAGS,
+            "adopt", values, naming, _manifest_flag_names(given),
             "No plan was written.", misreads=False)
+    return plan
 
 
 def _print_triad_advisory(path: Path, commit: str | None = None) -> None:
@@ -2700,8 +3331,8 @@ def cmd_plan(args) -> int:
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
     naming = NamingPolicy.load(NAMING_POLICY)
 
+    # The project's own validator is asked inside, before #181's question.
     names, pins = _checked_plan_inputs(args, source, naming)
-    _refuse_unholdable_values(args, names, pins, naming)
 
     tree = source.tree()
     # WHAT THE RULES IMPLY is read from `walk`'s entries, BEFORE
@@ -4643,16 +5274,17 @@ def _entry_findings(plan: Plan, source: Source,
     """Every FINDING `check` prints about the plan's ENTRIES, in its order,
     what it prints once after them, and the NOTEs it prints beside them:
     each entry's path, then coverage, then each entry's `leg:`, the two
-    mount paths and what the root keeps where the shape writes, then the
-    source's own submodules, then each symlink the plan keeps in the root
-    that a shape file cannot be written through (#178, #183), then each
-    value `execute` writes into a file that no file can hold (#255), then
-    what the project's own `validate-manifest.py` would refuse of the
-    values `execute` writes into its manifest (#261), then a tracking
-    branch that is no branch of the source (#479), then each relative url
-    of a kept submodule that names another repository from its leg
-    (#190), and last each plan value `execute` reads late and
-    `_plan_field_findings` asks about (#293, #294).
+    mount paths and what the root keeps where the shape writes, then each
+    value `execute` would write into the project's YAML for its loader to
+    read back as something else (#181), then the source's own submodules,
+    then each symlink the plan keeps in the root that a shape file cannot
+    be written through (#178, #183), then each value `execute` writes into
+    a file that no file can hold (#255), then what the project's own
+    `validate-manifest.py` would refuse of the values `execute` writes into
+    its manifest (#261), then a tracking branch that is no branch of the
+    source (#479), then each relative url of a kept submodule that names
+    another repository from its leg (#190), and last each plan value
+    `execute` reads late and `_plan_field_findings` asks about (#293, #294).
 
     ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
     #168 and #166 each added findings to `check` and a refusal to `execute`
@@ -4697,6 +5329,26 @@ def _entry_findings(plan: Plan, source: Source,
     plan values `execute` reads late (#293, #294): an `elected_on:` that
     `election_date` refuses is said there in the plan key's own words, and
     `_manifest_values` does not ask the validator about it as well.
+
+    A VALUE THE VALIDATOR REFUSES IS THE VALIDATOR'S ALONE (rv181f's G1,
+    G2). The validator is asked about every value (`_manifest_findings`),
+    and #181's `plan-manifest-misread` names a value only where the loader
+    misreads it, the validator makes no finding about what the loader
+    reads, and `execute` gets to write it in every mode
+    (`_execute_gets_to_write`, `_misread_findings`). A manifest the
+    validator's own reader refuses, or a finding of its about no one value,
+    leaves every value to it. So the two never both name one value, and every
+    value #181 names is one `execute` writes as it stands, with the run
+    still ending `adoption verified`, as its remediation says.
+    Where `_manifest_values` asks the validator about no manifest at all,
+    as for an `elected_on:` `election_date` refuses, #181 names no value
+    either (`_validator_judged`): the date is one finding, `_plan_field_findings`'s
+    (#293, #294).
+    In the same way a tracking branch that is no branch of the source is
+    `plan-tracking-branch-missing` alone (#479), and one only the source's
+    remote `origin` has, which `execute --local-remote-dir` refuses, is
+    named by neither (`_a_branch_execute_writes`); and a pin is named only
+    where the plan's `pins:` has no finding of #273's (`_plan_fields`).
     """
     tree = source.tree()
     unsafe, unsafe_remediation = _source_path_findings(plan, tree)
@@ -4712,12 +5364,26 @@ def _entry_findings(plan: Plan, source: Source,
     field_findings, field_remediation = _plan_field_findings(plan)
     tracking_findings, tracking_remediation = _tracking_branch_findings(
         plan, source)
-    return (findings + split + _root_symlink_findings(plan, source, tree)
+    # Asked after the validator, whose judgement it follows, and of the
+    # tracking branch only where `execute` pushes the legs to it in every
+    # mode (`_a_branch_execute_writes`, #479), so that a branch the source
+    # lacks is `plan-tracking-branch-missing` alone; listed where it always
+    # was, after the mount paths. A plan with no `tracking_branch:` gets
+    # `main`, which is never misread.
+    tracking = plan.get(TRACKING_KEY)
+    misread = _misread_findings(
+        plan, () if tracking is None
+        or _a_branch_execute_writes(source, TRACKING_KEY, str(tracking))
+        else (MANIFEST_FIELDS[TRACKING_KEY],))
+    return (findings + misread + split
+            + _root_symlink_findings(plan, source, tree)
             + unwritable_findings + value_findings + tracking_findings
             + moved + field_findings,
-            unsafe_remediation + split_remediation + unwritable_remediation
-            + value_remediation + tracking_remediation + moved_remediation
-            + field_remediation, notes)
+            unsafe_remediation
+            + ([MANIFEST_MISREAD_REMEDIATION] if misread else [])
+            + split_remediation + unwritable_remediation + value_remediation
+            + tracking_remediation + moved_remediation + field_remediation,
+            notes)
 
 
 # ---------------------------------------------------------------------------
@@ -5098,11 +5764,15 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     for role in seeded:
         print(f"  SEED the {role} leg from {SEED_TEMPLATE[role]}/ — no path is "
               "assigned to it")
+    # A leg path that is not text is a FINDING of its own, and its Python
+    # spelling (`None/`, `True/`) names no directory a leg would be mounted at.
+    mounts = [_plan_leg_path(plan, role) for role in EXTRACTED_LEGS]
+    mounted = (f" at {_shown(mounts[0])}/ and {_shown(mounts[1])}/"
+               if all(isinstance(mount, str) for mount in mounts) else "")
     print(f"  ONE split commit on branch "
           f"{_shown(str(plan.get('adopt_branch', ADOPT_BRANCH)))} "
-          f"of {names['assembly']}: `git rm -r` those paths, mount the legs at "
-          f"{_shown(str(_plan_leg_path(plan, 'spec')))}/ and "
-          f"{_shown(str(_plan_leg_path(plan, 'code')))}/")
+          f"of {names['assembly']}: `git rm -r` those paths, mount the "
+          f"legs{mounted}")
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     # Each pin `execute` writes, as the plan records it (#273): a pin it
@@ -6848,8 +7518,7 @@ def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
     code_path = checked_value(*code_leg)
     branch = checked_value("adopt_branch", plan.get("adopt_branch",
                                                     ADOPT_BRANCH))
-    tracking = checked_value("tracking_branch",
-                             plan.get("tracking_branch", "main"))
+    tracking = checked_value(TRACKING_KEY, plan.get(TRACKING_KEY, "main"))
     return spec_path, code_path, branch, tracking
 
 
@@ -7057,9 +7726,9 @@ def _refuse_unconsented_seeding(args, plan: Plan, seeded: list) -> None:
         raise Refusal(
             "adopt-empty-leg-unconsented",
             "no path is assigned to the "
-            + " and ".join(f"{role} leg" for role in unconsented)
+            + AND.join(f"{role} leg" for role in unconsented)
             + ", so it would be SEEDED from "
-            + " and ".join(f"{SEED_TEMPLATE[role]}/" for role in unconsented)
+            + AND.join(f"{SEED_TEMPLATE[role]}/" for role in unconsented)
             + " instead of extracted, and no `--allow-empty-leg` says that is "
             "intended",
             "Remediation: a repository that genuinely has no "
@@ -7698,10 +8367,10 @@ SPLIT_MESSAGE = "the split commit's message"
 
 #: Each plan value `_template_values` substitutes as it stands, by its key,
 #: and where it lands. `pins` and `follow_ups` are lists, asked item by item.
-WRITTEN_PLAN_VALUES = {"elected_by": ROOT_MANIFEST_AND_README,
-                       "elected_on": ROOT_MANIFEST_AND_README,
-                       "reference": ROOT_MANIFEST_AND_README,
-                       "visibility": ROOT_MANIFEST}
+WRITTEN_PLAN_VALUES = {ELECTED_BY_KEY: ROOT_MANIFEST_AND_README,
+                       ELECTED_ON_KEY: ROOT_MANIFEST_AND_README,
+                       REFERENCE_KEY: ROOT_MANIFEST_AND_README,
+                       VISIBILITY_KEY: ROOT_MANIFEST}
 
 #: Why such a value must be text, said after every refusal of one.
 WRITTEN_AS_TEXT = (
@@ -7810,15 +8479,16 @@ def _neutral_product_pins(pins) -> str:
 
     EACH ENTRY IS SPELLED AS `y` SPELLS THE PLAN'S `product:`. Of the names
     `--pin` takes, `y` writes bare only one that begins with a letter, `_`
-    or `.`, so `openGlass` is the line it always was and `007` is `"007"`.
-    Where the reader would not read that bare spelling back as the same
-    text, which is `true`, `null` and the other keywords `y` leaves bare
-    (#181), the entry is double-quoted all the same. The reader is asked, as
+    or `.` and that the reader reads back as the same text, after `key: `
+    and as a `- ` item alike (#181), so `openGlass` is the line it always
+    was, `007` is `"007"`, and `true` and `null` are `"true"` and `"null"`.
+    The reader is asked once more of the entry as this list holds it, as
     `family.py` asks it of a member's id (#259), rather than a list of its
-    words. Such a name reaches here only from a plan edited by hand, because
-    `check` refuses the bare `product: true` that `plan` writes. The list is
-    a block placeholder, so `render` writes it as it stands, and nothing
-    else quotes it.
+    words, and an entry it would not read back as the same text is
+    double-quoted all the same. Such a name reaches here from `plan` as
+    well as from a plan edited by hand: `plan` records it quoted, and
+    `check` passes it. The list is a block placeholder, so `render` writes
+    it as it stands, and nothing else quotes it.
     """
     if not pins:
         return "[]"
@@ -7862,7 +8532,7 @@ def _template_table(plan: Plan, names, repositories, urls, spec_path,
     handed, running nothing: no `git`, no `gh`."""
     project = names["assembly"]
     project_id = plan.project_id
-    elected_on = str(plan.get("elected_on", _dt.date.today().isoformat()))
+    elected_on = str(plan.get(ELECTED_ON_KEY, _dt.date.today().isoformat()))
     # `.get(role, "")` because this table is built BEFORE the legs exist, so
     # that a SEEDED leg's template can be rendered from it. The four values
     # are filled in by the caller as soon as each leg has a commit, and the
@@ -7879,9 +8549,9 @@ def _template_table(plan: Plan, names, repositories, urls, spec_path,
         # older than this rule — is resolved from ITS OWN `elected_on`, not
         # from the day `execute` happens to run. The plan carries the human's
         # act; the calendar of the machine running the split does not.
-        "REFERENCE": str(plan.get("reference")
+        "REFERENCE": str(plan.get(REFERENCE_KEY)
                          or default_reference(elected_on)),
-        "ELECTED_BY": str(plan.get("elected_by", "")),
+        "ELECTED_BY": str(plan.get(ELECTED_BY_KEY, "")),
         "ELECTED_ON": elected_on,
         "TRACKING_BRANCH": tracking,
         "SPEC_PATH": spec_path,
@@ -8905,7 +9575,8 @@ def _leg_path_help(leg: str, default: str) -> str:
     them: `plan` writes a plan for it, or refuses it under a clause or a code
     another change adds, and this text is true either way. So it says nothing
     of what `plan` ACCEPTS, because `plan` takes some values and does not
-    mount them where they were given (`null` is mounted at the default, #181).
+    mount them where they were given (before #181, `null` was mounted at
+    the default).
     """
     return (
         f"where the {leg} leg is mounted, as a path in the assembly root "
