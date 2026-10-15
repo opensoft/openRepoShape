@@ -102,10 +102,10 @@ is on no `PATH` by default, and its installer finishes by printing the line that
 puts it there — run that line, or the next shell cannot find `brew`. Then `brew
 install gh`, and `brew install git-filter-repo` only if you are ADOPTING an
 existing repository rather than scaffolding a new one. The stock `/bin/bash` is
-3.2 and is enough: `setup.sh`, `install.sh` and the `openRepoShape` command use
-no syntax newer than that, and CI runs the whole suite on `macos-latest`,
-parsing all three there with `/bin/bash` itself. That the login shell is zsh
-changes nothing — all three entry points are run under `bash` explicitly.
+3.2 and is enough: `setup.sh`, `install.sh` and the `openRepoShape` command are
+written to use no syntax newer than that, though CI runs on Linux only and no
+run of it checks them against bash 3.2. That the login shell is zsh changes
+nothing — all three entry points are run under `bash` explicitly.
 
 </details>
 
