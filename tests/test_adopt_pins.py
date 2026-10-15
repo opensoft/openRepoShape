@@ -153,7 +153,7 @@ def plan_with(source: Path, out: Path, *pins: str, extra: tuple = (),
 
 def pin_entry(product: str = "openGlass",
               repository: str = "opensoft/openGlass", commit: str = "",
-              digest: str = "", source: str = "local-clone (openGlass)",
+              digest: str = "", source: str = "local-clone",
               omit: tuple = ()) -> str:
     """One `pins:` mapping as `plan` writes it, its keys in `plan`'s order,
     with each key in `omit` left out."""
@@ -846,23 +846,34 @@ def test_a_pin_source_no_pin_reads_is_refused(source_repo, tmp_path, gh_env,
     assert gh_calls(gh_env) == ""
 
 
-def test_check_spells_a_recorded_source_that_is_not_printable(
+def test_check_finds_a_recorded_source_that_names_a_path(
         source_repo, tmp_path, glass, gh_env):
     """A plan `plan` wrote before #540, or one edited since, can still hold
-    a path in `digest_source:`. One that is one printable line for `check`
-    and still not `str.isprintable` -- a no-break space -- passes, and
-    `check`'s `write` line spells it, as every other path either report
-    prints (`_shown`)."""
+    a path in `digest_source:`. `check` held the field to one printable
+    line, so it passed such a plan and printed the path in its `write`
+    line, and `execute` committed the path into the pin file (rv540 F1).
+    The field is held to the two words `plan` writes, so `check` finds the
+    path `plan-pin-malformed`, spelled where it is not `str.isprintable` (a
+    no-break space), as every value a finding names is, with the `plan`
+    that records the pin whole; `execute` refuses it before any leg exists
+    (`source-old-plan` in the table below)."""
     path, commit, _ = glass
     plan = planned(source_repo, tmp_path, PLANNED)
     with_pins(plan, "pins:\n" + pin_entry(
         commit=commit, digest=tree_digest(path, commit),
         source="local-clone (open\\u00a0Glass)"))
     checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
-    assert checked.returncode == 0, checked.stdout + checked.stderr
-    assert f"tree {tree_digest(path, commit)[:12]}… (`local-clone " \
-        "(open\\xa0Glass)`)\n" in checked.stdout, checked.stdout
-    assert " " not in checked.stdout
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    found = [line for line in checked.stderr.splitlines()
+             if line.startswith("FINDING ")]
+    assert len(found) == 1, checked.stderr
+    assert found[0].startswith(
+        "FINDING plan-pin-malformed: `pins:` entry 1 ('openGlass') records "
+        "`digest_source: 'local-clone (open\\xa0Glass)'`, "
+        f"{HOW_NOT_WHERE}. `execute` writes the pin file from the commit and "
+        "the digest `plan` records, and nothing else: re-run `plan` with "
+        "`--pin opensoft/openGlass@<40 hex commit>`"), found[0]
+    assert "\u00a0" not in checked.stdout + checked.stderr
     assert gh_calls(gh_env) == ""
 
 
@@ -934,12 +945,21 @@ def unrecorded(glass) -> dict:
     }
 
 
+#: How `check` ends its finding on a `digest_source:` that `plan` never
+#: writes (#540).
+HOW_NOT_WHERE = ("and `plan` records only how it read the digest, "
+                 "`local-clone` or `gh-api-tree-recursive`, and never where")
+
+
 def malformed(glass) -> dict:
     """Each `pins:` value `plan` never writes: not a list, not a pin, or a
     pin whose values are not of the form `plan` records them in."""
     path, commit, _ = glass
     digest = tree_digest(path, commit)
     entry = "`pins:` entry 1 ('openGlass') records"
+    # `as_posix`, so that a Windows path's backslashes are no escapes in the
+    # plan's double-quoted value.
+    old = f"local-clone ({path.as_posix()})"
     return {
         "not-a-list": ("pins: openGlass\n",
                        "`pins:` is 'openGlass', not a list of pins"),
@@ -970,15 +990,21 @@ def malformed(glass) -> dict:
                                   commit=commit, digest=digest,
                                   source="local-clone (/x\\nforged: y)"),
                               f"{entry} `digest_source: 'local-clone "
-                              "(/x\\nforged: y)'`, which is not one "
-                              "printable line"),
+                              f"(/x\\nforged: y)'`, {HOW_NOT_WHERE}"),
+        # What `plan` recorded before #540: the `--pin-source` path, which
+        # `execute` committed into the pin file (rv540 F1). One printable
+        # line, so `check` passed it.
+        "source-old-plan": ("pins:\n" + pin_entry(
+                                commit=commit, digest=digest, source=old),
+                            f"{entry} `digest_source: {old!r}`, "
+                            f"{HOW_NOT_WHERE}"),
         # Unquoted, the reader reads a number: `not text`, and never a
         # `TypeError` out of `COMMIT_RE` (N3).
         "a-number-commit": ("pins:\n  - product: openGlass\n"
                             "    repository: opensoft/openGlass\n"
                             "    commit: 1234567\n"
                             f'    tree_sha256: "{digest}"\n'
-                            '    digest_source: "local-clone (openGlass)"\n',
+                            '    digest_source: "local-clone"\n',
                             f"{entry} `commit: 1234567`, which is not text"),
     }
 
@@ -1035,7 +1061,7 @@ CASE_IDS = [("plan-pin-unrecorded", name) for name in (
 CASE_IDS += [("plan-pin-malformed", name) for name in (
     "not-a-list", "a-number", "short-commit", "short-digest",
     "another-product", "no-owner", "no-source", "source-line-break",
-    "a-number-commit")]
+    "source-old-plan", "a-number-commit")]
 CASE_IDS += [("plan-pin-collides", name)
              for name in ("case-pair", "shape", "variable-pair")]
 
@@ -1165,7 +1191,7 @@ def test_an_upper_cased_hand_edit_is_written_lower_cased(adopter, source_repo,
     checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert (f"  write {PIN_FILE}: opensoft/openGlass @ {commit[:12]} tree "
-            f"{digest[:12]}… (local-clone (openGlass))") in checked.stdout
+            f"{digest[:12]}… (local-clone)") in checked.stdout
     recorded = adopter._recorded_pins(adopter.Plan.load(plan))
     assert recorded["openGlass"]["PIN_COMMIT"] == commit
     assert recorded["openGlass"]["PIN_TREE_SHA256"] == digest

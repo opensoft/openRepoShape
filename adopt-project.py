@@ -244,9 +244,10 @@ PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
 #: edit). The manifest lists each product with its owner stripped, as the
 #: file is named.
 from shape_materialize import (  # noqa: E402
-    PIN_ARG_RE, declared_pin_products, declared_pin_values, neutral_pin_path,
-    one_printable_line, pin_collisions, pin_variable_collisions,
-    refuse_an_unread_pin_source, refuse_colliding_pins,
+    DIGEST_FROM_CLONE, DIGEST_FROM_GH, PIN_ARG_RE, declared_pin_products,
+    declared_pin_values, neutral_pin_path, pin_collisions,
+    pin_variable_collisions, refuse_an_unread_pin_source,
+    refuse_colliding_pins,
 )
 from repo_shape import SHA256_RE, repo_basename  # noqa: E402
 
@@ -317,7 +318,16 @@ def _pin_row_problem(row: dict) -> tuple[str, str] | None:
     Each value is held to what `plan` writes there: the commit to
     `COMMIT_RE`, the repository and the commit together to the scaffold's own
     `PIN_ARG_RE`, owner-qualified, with the product its name, the digest to
-    `SHA256_RE`, and the digest's source to one printable line."""
+    `SHA256_RE`, and the digest's source to `DIGEST_FROM_CLONE` or
+    `DIGEST_FROM_GH`.
+
+    THE DIGEST'S SOURCE IS ONE OF THE TWO WORDS `plan` WRITES (#540). It was
+    held to one printable line, so a plan from a `plan` before #540, which
+    recorded `local-clone (<the --pin-source path>)`, or a hand edit, passed
+    `check`, and `execute` committed that path into the root's pin file, the
+    directory a clone sat in on the machine that planned. `execute` writes
+    the field as the plan holds it, so a value `plan` never writes is
+    `plan-pin-malformed`, with the `plan` that records the pin whole."""
     missing = [key for key, _ in PIN_FIELDS if row.get(key) in (None, "")]
     unrecorded = [key for key in PIN_RECORDED if key in missing]
     if unrecorded or missing:
@@ -345,9 +355,11 @@ def _pin_row_problem(row: dict) -> tuple[str, str] | None:
     if not SHA256_RE.match(digest):
         return PIN_MALFORMED, (f"records `tree_sha256: {digest!r}`, which is "
                                "not 64 hex")
-    if not one_printable_line(how):
-        return PIN_MALFORMED, (f"records `digest_source: {how!r}`, which is "
-                               "not one printable line")
+    if how not in (DIGEST_FROM_CLONE, DIGEST_FROM_GH):
+        return PIN_MALFORMED, (
+            f"records `digest_source: {how!r}`, and `plan` records only how "
+            f"it read the digest, `{DIGEST_FROM_CLONE}` or "
+            f"`{DIGEST_FROM_GH}`, and never where")
     return None
 
 

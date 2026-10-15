@@ -811,7 +811,7 @@ def pin_row(product: str, commit: bool = True) -> str:
              f"    repository: opensoft/{product}",
              f"    commit: \"{'0123456789abcdef' * 2}01234567\"",
              f"    tree_sha256: \"{'0123456789abcdef' * 4}\"",
-             f"    digest_source: \"local-clone ({product})\""]
+             "    digest_source: \"local-clone\""]
     return "\n".join(lines if commit else lines[:2] + lines[3:]) + "\n"
 
 
