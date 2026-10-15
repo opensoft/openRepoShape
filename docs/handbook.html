@@ -778,7 +778,7 @@ sudo dnf install gh</code></pre></div>
             and the standard are fetched at that tag, not at main. It installs
             <code>git-filter-repo</code> with <code>pipx</code>, or <code>uv</code>, where it can, or
             prints the command, runs <code>openRepoShape --preflight</code>, and says last if the
-            machine is ready to adopt or only to scaffold. <code>install.sh</code> never runs
+            machine is ready to adopt or only to scaffold. <code>install.sh</code> itself never runs
             <code>sudo</code>; the preflight offers what is missing, each behind a typed
             <code>yes</code> at your terminal. <code>| bash -s -- v1.0.1</code> names a release; the
             same line again upgrades.</p>
