@@ -152,10 +152,9 @@ install command). Seven steps, in order, and step 4 is the one you must not skip
    both legs and the split are pushed and verified: finish with the command it
    prints and never re-run into fresh legs, which abandons that pair.
 
-`execute` also records the plan's answers about the source's submodules in
-the split's `project.yaml`, under `submodules:` — per submodule a leg keeps,
-its `path`, `leg`, `resolution:` and `source_commit`. It confers nothing,
-nothing rewrites it, and the doctor holds each submodule to it.
+`execute` also records the plan's answers in the split's `project.yaml`, under
+`submodules:` (per submodule a leg keeps) and `answered_paths:` (per other path
+the policy asked about). They confer nothing, and no command rewrites them.
 
 `execute` opens a pull request, because these organisations are pull-request
 only. Never suggest a direct push to the default branch, and never `--admin`.
@@ -248,10 +247,11 @@ that directory, which is the human's to delete once those commands have run.
    `review_required: true` is a question the policy is ASKING, not a defect
    found: answering it on their behalf puts a fact in their tree that nobody
    decided. The plan is `kind: placement-plan` and is not an adoption plan;
-   never hand one to `adopt-project.py`, which refuses it by name. A
-   submodule is judged by the adoption's `submodules:` record, not a rule
-   (`rule: null`, `confidence: recorded`), and is a `note` where no row names
-   it. One moved on purpose stays MISPLACED: its row is the human's to change.
+   never hand one to `adopt-project.py`, which refuses it by name. A submodule
+   is held to its `submodules:` row, not a rule (`rule: null`, `confidence:
+   recorded`); one no row names, or a row no leg holds, is a `note`. A move or
+   removal the human decided is recorded by editing its row by hand, in the
+   pull request that bumps the pins: that is not the edit 3 forbids.
 5. **`NOT A SHAPE ROOT` is a question for the human, not a task.** There is
    no `project.yaml` and no `family.yaml`. The two ways in are
    `adopt-project.py plan` (a repository that already exists, converted in

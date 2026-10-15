@@ -82,7 +82,9 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            are the two leg mounts, each at the commit pushed to its leg. The
            split's `project.yaml` records the leg each source submodule kept
            in a leg was answered into, under `submodules:`, for
-           `shape-doctor.py` to check it against.
+           `shape-doctor.py` to check it against, and under
+           `answered_paths:` the leg each entry covering a path the policy
+           asked about was answered into, so the doctor asks it no more.
 
 THE PLAN IS AN ARTIFACT A HUMAN OR AN AI EDITS. That is why it is YAML with
 reasons in it rather than a pipe between two processes: the classifier is
@@ -7995,6 +7997,95 @@ SUBMODULE_RECORD_PREAMBLE = (
     f"{SUBMODULE_RECORD}:",
 )
 
+#: The key `execute` appends after `submodules:` (#525): the plan's answer
+#: for each path the policy itself asked about. Read by the doctor by this
+#: name through the module it loads, and spelt once more by the project's
+#: own `validate-manifest.py`, as `SUBMODULE_RECORD` is.
+ANSWER_RECORD = "answered_paths"
+
+#: The comment above that block, for the same reader.
+ANSWER_RECORD_PREAMBLE = (
+    "",
+    "# THE PATHS THE ADOPTION'S POLICY ASKED ABOUT, and the leg each was",
+    "# ANSWERED into (#525). Written once, by `adopt-project.py execute`,",
+    "# from the adoption plan: one row per entry kept in a leg that covers a",
+    "# path `contracts/path-classification.yaml` could not call, its path",
+    "# inside that leg (a directory's with its `/`), the `resolution:` the",
+    "# plan gave it, and the source commit the plan was answered at.",
+    "# `shape-doctor.py` takes each row as the answer to the question it",
+    "# would ask again of that path in that leg. Like every field here, it",
+    "# confers nothing.",
+    f"{ANSWER_RECORD}:",
+)
+
+
+def _record_block(preamble: tuple, rows: list, entries: list,
+                  commit: str) -> str:
+    """`preamble` and one row per `(path, leg, entry)` of `rows`: the shape
+    both records take (#189, #525), or "" when there is no row.
+
+    The entry's `resolution:` travels with each row it covers, and every
+    path and reason is double-quoted, for the reasons `submodule_record`
+    gives.
+    """
+    if not rows:
+        return ""
+    resolutions = {str(e.get("path")): _resolution_text(e.get("resolution"))
+                   for e in entries}
+    lines = list(preamble)
+    for path, leg, entry in rows:
+        lines.append(f"  - path: {double_quoted(path)}")
+        lines.append(f"    leg: {leg}")
+        if resolutions.get(entry):
+            lines.append(
+                f"    resolution: {double_quoted(resolutions[entry])}")
+        lines.append(f'    source_commit: "{commit}"')
+    return "\n".join(lines) + "\n"
+
+
+def answered_path_record(policy: PathPolicy, entries: list, tree: list,
+                         commit: str) -> str:
+    """The `answered_paths:` block `execute` appends to `project.yaml` after
+    `submodules:`, or "" when the plan answered no question of the policy's
+    into a leg (#525).
+
+    WHY THE ANSWER IS WRITTEN DOWN. A path the policy cannot call --
+    `examples/` under `ambiguous-examples`, a directory whose extensions do
+    not agree -- is a question `plan` asks and a human answers in the plan,
+    which is committed nowhere. `shape-doctor.py` runs the same policy over
+    each leg after the split and, with no record, asks the same question
+    again on every run, of a path somebody already answered.
+
+    ONLY THE POLICY'S OWN QUESTIONS, RE-ASKED HERE. The policy's `walk` is
+    run again over the source's paths at the plan's commit, gitlinks left
+    out as the doctor leaves them out, and a row is written for each entry
+    the plan answers `spec` or `code` (read as `_answered_legs` reads it)
+    that covers a path the walk leaves `leg: null`. Not from the plan's own
+    `review_required:`, which is a file a person edits: an entry they split
+    by hand to answer one question two ways is still recorded, each half in
+    its own leg. An entry answered `root` or `drop` is in no leg, and the
+    doctor never asks of it. `.gitmodules` is left out: its question is
+    which leg owns the submodules it registers, and `submodules:` answers
+    that per submodule, which is the reading the doctor holds a leg's
+    `.gitmodules` to. And a question `plan` asks for a reason of its own --
+    a gitlink under the entry, a name `execute` will not extract -- is not
+    the policy's, and is recorded only where the policy asks one under it.
+
+    A SOURCE WITH NO SUCH ENTRY GETS "" and so the `project.yaml` it always
+    got, byte for byte.
+    """
+    gitlinks = {path for path, mode, _, _ in tree if mode == GITLINK_MODE}
+    files = [(path, size) for path, mode, _, size in tree
+             if path not in gitlinks]
+    asked = [entry.path for entry in walk(policy, files) if entry.leg is None]
+    questions = [path for path, _ in files if _covering(asked, path)]
+    answered = _answered_legs(entries, questions)
+    kept = sorted({entry: leg for leg, entry in answered.values()
+                   if leg in EXTRACTED_LEGS and entry != GITMODULES}.items())
+    return _record_block(ANSWER_RECORD_PREAMBLE,
+                         [(entry, leg, entry) for entry, leg in kept],
+                         entries, commit)
+
 
 def submodule_record(entries: list, tree: list, commit: str) -> str:
     """The `submodules:` block `execute` appends to `project.yaml`, or ""
@@ -8039,19 +8130,7 @@ def submodule_record(entries: list, tree: list, commit: str) -> str:
     """
     gitlinks = [path for path, mode, _, _ in tree if mode == GITLINK_MODE]
     kept = _kept_in_a_leg(_answered_legs(entries, gitlinks), gitlinks)
-    if not kept:
-        return ""
-    resolutions = {str(e.get("path")): _resolution_text(e.get("resolution"))
-                   for e in entries}
-    lines = list(SUBMODULE_RECORD_PREAMBLE)
-    for path, leg, entry in kept:
-        lines.append(f"  - path: {double_quoted(path)}")
-        lines.append(f"    leg: {leg}")
-        if resolutions.get(entry):
-            lines.append(
-                f"    resolution: {double_quoted(resolutions[entry])}")
-        lines.append(f'    source_commit: "{commit}"')
-    return "\n".join(lines) + "\n"
+    return _record_block(SUBMODULE_RECORD_PREAMBLE, kept, entries, commit)
 
 
 def _resolution_text(resolution) -> str | None:
@@ -8071,8 +8150,8 @@ def _resolution_text(resolution) -> str | None:
 def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                       names: dict, urls: dict, values: dict, work_root: Path,
                       paths_for: dict, seeded: list, spec_path: str,
-                      code_path: str, branch: str,
-                      leg_commits: dict) -> tuple[str, str, list] | None:
+                      code_path: str, branch: str, leg_commits: dict,
+                      answers: str = "") -> tuple[str, str, list] | None:
     """(c) ONE split commit on a branch of the source, pushed.
 
     Returns `(split_commit, message, collisions)` — the message travels on
@@ -8138,6 +8217,10 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                                   source.commit)
         if record:
             append["project.yaml"] = record
+        # And the plan's answers to the policy's own questions, after it
+        # (#525): `answered_path_record`, read before any leg existed.
+        if answers:
+            append["project.yaml"] = append.get("project.yaml", "") + answers
         # Each declared pin's file, `contracts/<product>-pin.yaml`, is
         # written by the materializer as the scaffold's is, from the
         # values the plan records (#273); `_refuse_what_check_finds` has
@@ -8241,6 +8324,13 @@ def cmd_execute(args) -> int:
                               code_path, tracking, {}, {},
                               shape_commit, pins, naming)
 
+    # The plan's answers to the policy's own questions (#525), worked out
+    # here, before anything exists: the policy is this standard's file, the
+    # one the doctor will ask, and one that does not load refuses now and
+    # not after both legs are pushed. "" for a plan that answered none.
+    answers = answered_path_record(PathPolicy.load(PATH_POLICY),
+                                   plan.entries, source.tree(), source.commit)
+
     # ---- (a) the two legs' remotes ----------------------------------------
     _create_leg_remotes(plan, names, repositories, urls, tracking, local,
                         work_root, source=source)
@@ -8262,7 +8352,7 @@ def cmd_execute(args) -> int:
     assembly = work_root / names["assembly"]
     split = _commit_the_split(plan, source, assembly, names, urls, values,
                               work_root, paths_for, seeded, spec_path,
-                              code_path, branch, leg_commits)
+                              code_path, branch, leg_commits, answers)
     if split is None:
         return 2
     split_commit, message, collisions = split
