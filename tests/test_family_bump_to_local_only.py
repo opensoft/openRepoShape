@@ -25,6 +25,11 @@ fetch fails, both runs answer from the remote-tracking refs the mount
 already has, so a commit those refs contain is pinned and one they do not is
 refused with a sentence saying the refs may be stale.
 
+TWO EDGES FROM #625'S REVIEW. A commit only a second remote's branch holds is
+refused too: the question is asked of `origin` alone. And a pin `add --at`
+made from a tag whose commit is on no branch cannot be named by `bump --to`
+again until that commit is pushed to a branch; that is accepted as ruled.
+
 The family, the holder, the offline environment and "changes nothing" are
 `test_family_dry_run.py`'s, imported rather than rebuilt. The fixture's own
 remotes are only ever read: a commit a test pushes goes to a private bare
@@ -37,45 +42,57 @@ from pathlib import Path
 
 import pytest
 
+from conftest import git, run_script
 #: The family fixture and its names, from the module that owns them.
 from test_family import (  # noqa: F401
-    ORG, family, manifest, pushed_from_the_mount, validate,
+    FAMILY, ORG, SPARE, family, manifest, nothing_to_do_line,
+    pushed_from_the_mount, validate,
 )
-from test_family_add_refusals import holder, offline, refusal  # noqa: F401
+#: The holder, the offline environment and its `add`, and a copy of the
+#: spare member's remote with an annotated tag on it.
+from test_family_add_refusals import (  # noqa: F401
+    holder, offline, refusal, tagged_remote,
+)
 #: Both runs over one holder, refused alike with nothing moved; an annotated
 #: tag, and an object's id as git resolves it.
 from test_family_bump_to_a_tag import annotated, both_runs, oid
 #: "Changes nothing", asked as bytes in the order a bump would write.
-from test_family_dry_run import bump, commit_in_mount, isolated, pinned_at
+from test_family_dry_run import (
+    bump, commit_in_mount, isolated, pinned_at, state,
+)
 from test_family_member_path import MEMBER, raw
 
 PATH = f"members/{MEMBER}"
 REPOSITORY = f"{ORG}/{MEMBER}"
 
-#: The line both runs print first when the member's fetch fails.
+#: The line both runs print first when the member's fetch fails: since #613
+#: it says both halves of the rule the commit is then held to.
 FETCH_FAILED = (f"  note: could not fetch {PATH} from its origin; the commit "
-                "must already be in its object store")
+                "must already be in its object store and on a branch of its "
+                "remote as last fetched")
 
 
-def local_only(to: str, commit: str = "", *,
-               fetched: bool = True) -> tuple[str, str]:
+def local_only(to: str, commit: str = "", *, fetched: bool = True,
+               project: str = MEMBER) -> tuple[str, str]:
     """The two lines `bump --to <to>` is refused with when the commit it
     names, `commit` (`to` itself unless an annotated tag was peeled), is in
     the mount's objects and no branch of the member's remote reaches it;
-    `fetched` False when the member's fetch failed."""
+    `fetched` False when the member's fetch failed. `project` is the member
+    bumped, `MEMBER` unless a test bumps another."""
     commit = commit or to
+    path, repository = f"members/{project}", f"{ORG}/{project}"
     named = (f"--to {to}" if commit == to else
              f"--to {to} is an annotated tag, and the commit it names, "
              f"{commit},")
     stale = ("" if fetched else
-             f" The fetch of {PATH} FAILED, as the note above says, so this "
+             f" The fetch of {path} FAILED, as the note above says, so this "
              "was answered from stale remote-tracking refs: fix the network "
              "or the credential and run it again before believing it.")
     return (
         f"REFUSED member-to-local-only: {named} is in the member's own object "
-        f"store, in {PATH}, but is reachable from no branch of {REPOSITORY}",
-        f"Remediation: push it to a branch of {REPOSITORY} and run the same "
-        f"command again; the commonest such commit was made inside {PATH} and "
+        f"store, in {path}, but is reachable from no branch of {repository}",
+        f"Remediation: push it to a branch of {repository} and run the same "
+        f"command again; the commonest such commit was made inside {path} and "
         "never pushed. A pin the rest of the world cannot fetch is a family "
         "the rest of the world cannot bootstrap." + stale)
 
@@ -185,6 +202,83 @@ def test_a_tree_or_a_blob_only_the_mount_holds_keeps_its_own_words(
         f"{REPOSITORY}, not a commit")
 
 
+def test_a_commit_only_another_remotes_branch_holds_is_refused(
+        holder, offline, tmp_path):
+    """THE RULING NAMES `origin` (#625's review, F1). A commit pushed only to
+    a second remote of the mount, a fork, is on a remote-tracking branch,
+    `refs/remotes/fork/forked`, and on no branch of the member's own remote,
+    the one the holder's recursive clone fetches from: pinned, it breaks
+    that clone with `not our ref`. Both runs refuse it
+    `member-to-local-only`, in the same two lines, since the question is
+    asked of `refs/remotes/origin/` alone, as `bump-leg.py` asks it."""
+    env = isolated(offline, tmp_path)
+    mount = holder / PATH
+    made = made_in_the_mount(holder, env, "FORK.md")
+    fork = tmp_path / "fork.git"
+    raw(tmp_path, env, "init", "-q", "--bare", str(fork))
+    raw(mount, env, "remote", "add", "fork", str(fork))
+    raw(mount, env, "push", "-q", "fork", f"{made}:refs/heads/forked")
+    assert raw(mount, env, "for-each-ref", "--contains", made,
+               "refs/remotes/fork/").stdout != b"", (
+        "premise: a remote-tracking branch of the fork contains it")
+    assert raw(mount, env, "for-each-ref", "--contains", made,
+               "refs/remotes/origin/").stdout == b"", (
+        "premise: no branch of the member's own remote does")
+
+    stderr = both_runs(holder, env, made)
+
+    assert refusal(stderr) == local_only(made)
+    offline.assert_left_nothing()
+
+
+def test_a_pin_add_at_made_from_a_tag_alone_is_refused_until_pushed(
+        family, holder, offline, tmp_path):
+    """D1 OF #625'S REVIEW, ACCEPTED AS RULED. A release commit on no branch
+    of the member's remote, with only its annotated tag pushed: `add --at
+    <the tag's id>` pins that commit, and the mount holds it, because its
+    clone brought every tag. `bump --to` the very commit pinned said
+    `nothing to do` before #613; now both runs refuse it
+    `member-to-local-only`, with nothing moved, since no branch of the
+    remote reaches it. The refusal's own way out works: once the commit is
+    pushed to a branch of the member, the same command says `nothing to
+    do`, exit 1."""
+    env = isolated(offline, tmp_path)
+    remotes, at = tagged_remote(family, tmp_path, "main")
+    bare = remotes / f"{SPARE}.git"
+    release = git("rev-parse", "main", cwd=bare).stdout.strip()
+    git("update-ref", "refs/heads/main", "main~1", cwd=bare)
+    assert git("for-each-ref", "--contains", release, "refs/heads/",
+               cwd=bare).stdout == "", "premise: only the tag reaches it"
+    added = offline.add(holder, SPARE, "--at", at, remotes=remotes)
+    assert added.returncode == 0, added.stdout + added.stderr
+    row = {r["project"]: r for r in manifest(holder)["members"]}[SPARE]
+    assert row["pin"]["commit"] == release, "premise: add --at pinned it"
+    mount = holder / "members" / SPARE
+    assert raw(mount, env, "cat-file", "-t", release).stdout.strip() == \
+        b"commit", "premise: the mount holds it, through its clone's tags"
+
+    def bump_the_pin(*extra: str):
+        return run_script(FAMILY, "bump", "--family-root", str(holder),
+                          "--member", SPARE, "--to", release, *extra,
+                          env=env)
+
+    before = state(holder, env, SPARE)
+    dry, real = bump_the_pin("--dry-run"), bump_the_pin()
+
+    assert state(holder, env, SPARE) == before, "nothing moved"
+    assert dry.returncode == real.returncode == 2, real.stdout + real.stderr
+    assert dry.stdout == real.stdout == ""
+    assert dry.stderr == real.stderr
+    assert refusal(real.stderr) == local_only(release, project=SPARE)
+
+    raw(mount, env, "push", "-q", "origin", f"{release}:refs/heads/release")
+    again = bump_the_pin()
+
+    assert again.returncode == 1, again.stdout + again.stderr
+    assert nothing_to_do_line(SPARE, release) in again.stdout
+    offline.assert_left_nothing()
+
+
 def test_offline_a_commit_the_remote_tracking_refs_hold_is_pinned(
         holder, offline, tmp_path):
     """OFFLINE, ANSWERED FROM THE REFS THE MOUNT HAS. A commit pushed while
@@ -196,7 +290,7 @@ def test_offline_a_commit_the_remote_tracking_refs_hold_is_pinned(
     made = commit_in_mount(
         holder, env,
         lambda mount: (mount / "PUSHED.md").write_bytes(b"pushed, then "
-                                                       b"offline\n"))
+                                                        b"offline\n"))
     assert raw(holder / PATH, env, "for-each-ref", "--contains", made,
                "refs/remotes/origin/").stdout != b"", (
         "premise: the push left a remote-tracking ref that contains it")

@@ -4661,9 +4661,9 @@ def _on_a_remote_branch(member: Path, commit: str) -> bool:
                     cwd=member))
 
 
-def _checked_on_a_remote_branch(member: Path, path: str, repository,
-                                typed: str, commit: str,
-                                fetched: bool) -> str:
+def _checked_on_a_remote_branch(member: Path, path: str,
+                                repository: str | None, typed: str,
+                                commit: str, fetched: bool) -> str:
     """`commit`, the commit `--to` (`typed`) names, when a branch of the
     member's remote reaches it, or the refusal `member-to-local-only` (#613),
     which `_checked_to_names_a_commit` says why it makes. `typed` is not
@@ -4766,6 +4766,15 @@ def _checked_to_names_a_commit(member: Path, path: str, row: dict,
     `bump-leg-commit-local-only`, and fetching every tag would write refs the
     person's member did not have, which is a new act; reachability from a
     tag is not the question either tool asks.
+
+    SO A PIN `add --at` MADE FROM SUCH A TAG cannot be named by `bump --to`
+    again: its clone brought the tag, so the mount holds the commit, and a
+    re-run that said `nothing to do`, or `validate-family.py`'s own repair
+    of a digest that does not recompute, is `member-to-local-only` too.
+    Accepted as ruled (D2, option 1; D1 of #625's review, option (a)):
+    pushing the commit to a branch of the member lets the same command
+    through, and `bump-leg.py` refuses its twin alike. Exempting a `--to`
+    equal to the row's own pin would need a new ruling.
     """
     repository = row.get("repository")
     try:
@@ -5081,7 +5090,8 @@ def cmd_bump(args) -> int:
     except CommandFailed:
         fetched = False
         print(f"  note: could not fetch {path} from its origin; the commit "
-              "must already be in its object store", file=sys.stderr)
+              "must already be in its object store and on a branch of its "
+              "remote as last fetched", file=sys.stderr)
     # WHAT `--to` NAMES IS ASKED OF THE FETCHED OBJECTS (#405, #541), before
     # the dry run leaves and before the checkout. From here on `commit` is
     # the one it returns, in both runs: an annotated tag's own id is peeled
