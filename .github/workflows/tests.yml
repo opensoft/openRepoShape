@@ -369,7 +369,8 @@ jobs:
       # it makes, a pip that no longer runs on 3.9 (`dataclass(slots=True)`,
       # this job's first run, 2026-10-15). So pipx itself runs on 3.9, at
       # 1.11.1, the newest release that installs there, and its shared pip
-      # is then one that 3.9 runs.
+      # is then one that 3.9 runs. Wheels only (`--only-binary :all:`), so
+      # installing pipx runs no package's setup script.
       - name: install the wheel with pipx
         run: |
           set -euo pipefail
@@ -379,7 +380,8 @@ jobs:
           } >> "$GITHUB_ENV"
           export PIPX_HOME="$RUNNER_TEMP/pipx/home"
           export PIPX_BIN_DIR="$RUNNER_TEMP/pipx/bin"
-          python -m pip install --disable-pip-version-check pipx==1.11.1
+          python -m pip install --disable-pip-version-check \
+              --only-binary :all: pipx==1.11.1
           python -m pipx --version
           python -m pipx install "$RUNNER_TEMP"/dist-a/*.whl
           "$PIPX_HOME/venvs/openreposhape/bin/python" --version
