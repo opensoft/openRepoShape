@@ -16,12 +16,11 @@ repositories on disk and the source is a repository in a temporary directory.
 from __future__ import annotations
 
 import shutil
-import subprocess
 import sys
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
+from conftest import (ADOPT, REPO, cloned_just_pushed, git, make_source_repo,
                       resolve, run_script, write_plan)
 from test_scaffold_ignored_shape_files import excluding, ignored, tracked_under
 
@@ -96,13 +95,8 @@ def adopted(tmp_path_factory) -> dict:
 
 @pytest.fixture
 def adopted_clone(adopted, tmp_path):
-    target = tmp_path / PROJECT
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         "-b", "adopt/three-repo-shape", str(adopted["source"]), str(target)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
-    return target
+    return cloned_just_pushed(adopted["source"], tmp_path / PROJECT,
+                              "adopt/three-repo-shape")
 
 
 # --- the plan records it ----------------------------------------------------
@@ -191,10 +185,8 @@ def test_the_consent_may_be_given_on_execute_itself(tmp_path):
 # --- the seeded leg ---------------------------------------------------------
 
 def test_the_seeded_leg_is_one_commit_of_the_template(adopted, tmp_path):
-    clone = tmp_path / "code-leg"
-    subprocess.run(["git", "clone", "-q",
-                    str(adopted["remotes"] / f"{PROJECT}-code.git"),
-                    str(clone)], check=True)
+    clone = cloned_just_pushed(adopted["remotes"] / f"{PROJECT}-code.git",
+                               tmp_path / "code-leg")
     assert int(git("rev-list", "--count", "HEAD", cwd=clone).stdout) == 1
     assert (clone / "README.md").is_file()
     assert (clone / "src" / ".gitkeep").is_file()
@@ -243,10 +235,8 @@ def test_the_seeded_leg_keeps_its_template_files_under_the_operators_excludes(
 
 
 def test_the_spec_leg_still_carries_the_history(adopted, tmp_path):
-    clone = tmp_path / "spec-leg"
-    subprocess.run(["git", "clone", "-q",
-                    str(adopted["remotes"] / f"{PROJECT}-spec.git"),
-                    str(clone)], check=True)
+    clone = cloned_just_pushed(adopted["remotes"] / f"{PROJECT}-spec.git",
+                               tmp_path / "spec-leg")
     assert int(git("rev-list", "--count", "HEAD", cwd=clone).stdout) > 1
     assert (clone / "specs" / "001-render" / "spec.md").is_file()
     assert "Source Human" in git("log", "--format=%an", cwd=clone).stdout

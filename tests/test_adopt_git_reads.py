@@ -229,6 +229,69 @@ def test_plan_refuses_a_user_name_that_is_not_utf8(tmp_path):
     assert not (tmp_path / PLAN_FILE).exists()
 
 
+def no_user_name(base: Path, how: str) -> dict:
+    """The environment of a person whose `git config user.name` gives
+    `_elector` nothing. `unset`: no config file names one, `GIT_CONFIG_GLOBAL`
+    and `GIT_CONFIG_SYSTEM` (git 2.32) standing in for an empty `~/.gitconfig`
+    and system file, and `HOME` a directory of its own. `empty`: the setting
+    is there and holds no text, in command scope (`command_scope`), which
+    outranks this checkout's own config as the files do not. Skipped where
+    git still answers a name."""
+    blank = base / "gitconfig-blank"
+    blank.write_text("", encoding="utf-8")
+    home = base / "home"
+    home.mkdir()
+    extra = {"GIT_CONFIG_GLOBAL": str(blank), "GIT_CONFIG_SYSTEM": str(blank),
+             "HOME": str(home)}
+    if how == "empty":
+        extra.update(command_scope("user.name", b""))
+    read = asked("user.name", {**os.environ, **extra})
+    if read:
+        pytest.skip(f"`git config user.name` here still answers {read!r}")
+    return extra
+
+
+#: What `plan` says of an elector it took from `git config user.name`, which
+#: gave it nothing (#529): the name the unwritable-value path gives the same
+#: default, `--elected-by (not given, so `git config user.name`)`, and not
+#: `--elected-by is ''`, which names a flag nobody passed.
+NO_ELECTOR = (b"REFUSED adopt-manifest-invalid: --elected-by (not given, so "
+              b"`git config user.name`) is '', which the project's own "
+              b"validate-manifest.py refuses: manifest-elected-by: "
+              b"elected_by is empty.")
+
+
+@pytest.mark.parametrize(
+    "how", ["unset", pytest.param("empty", marks=posix_only)])
+def test_plan_names_the_empty_default_it_took_for_the_elector(tmp_path, how):
+    """#529. With no `--elected-by` and no `git config user.name`, `plan` was
+    refused `adopt-manifest-invalid: --elected-by is ''`, naming a flag the
+    person never passed; only the unwritable-value path said the value was
+    not given. Now it names the default it fell back to, as that path does,
+    and the code, the exit status and the validator's own words are as they
+    were: the refusal is still the validator's, and no plan is written."""
+    extra = no_user_name(tmp_path, how)
+    source = make_source_repo(tmp_path / "Thing")
+    refused = by_git_config(tmp_path, source, extra)
+    assert_no_traceback_and_no_leg(tmp_path, {"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert NO_ELECTOR in refused.stderr, said(refused)
+    assert b"--elected-by is ''" not in refused.stderr, said(refused)
+    assert b"No plan was written." in refused.stderr, said(refused)
+    assert not (tmp_path / PLAN_FILE).exists()
+
+
+def test_plan_records_the_elector_given_where_user_name_is_unset(tmp_path):
+    """Control: `--elected-by` given, `git config user.name` is not asked,
+    and nothing is refused for its being empty."""
+    extra = no_user_name(tmp_path, "unset")
+    source = make_source_repo(tmp_path / "Thing")
+    done = by_git_config(tmp_path, source, extra, "--elected-by", "Test Human")
+    assert_no_traceback({"plan": done})
+    assert done.returncode == 0, said(done)
+    assert load_yaml(tmp_path / PLAN_FILE)["elected_by"] == "Test Human"
+
+
 @pytest.mark.parametrize("name", [b"Jose", "José".encode("utf-8")],
                          ids=["ascii", "utf8"])
 def test_plan_records_a_user_name_that_is_utf8(tmp_path, name):

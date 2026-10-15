@@ -38,7 +38,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FILE_PROTOCOL, git, run_script
+from conftest import FILE_PROTOCOL, cloned_just_pushed, git, run_script
 from test_shape_doctor import (  # noqa: F401
     FAMILY_NAME, PROJECT, doctor, doctor_module, holder, powershell_tokens,
     project, rows_of, scaffolded_here, standard, verdict_line,
@@ -122,9 +122,8 @@ def assert_compliant_with_no_merge_row(standard: Path, root: Path) -> None:
 def spec_commits_on_branches(remotes: Path, tmp_path: Path) -> tuple:
     """Two commits on the spec leg's remote, siblings of its pin, each on a
     branch of its own, so a merge of two bumps conflicts on the gitlink."""
-    work = tmp_path / "spec-work"
-    git(*FILE_PROTOCOL, "clone", "-q", str(remotes / f"{PROJECT}-spec.git"),
-        str(work), cwd=tmp_path)
+    work = cloned_just_pushed(remotes / f"{PROJECT}-spec.git",
+                              tmp_path / "spec-work")
     base = git("rev-parse", "HEAD", cwd=work).stdout.strip()
     made = []
     for side in ("a", "b"):

@@ -151,6 +151,11 @@ from repo_shape import (  # noqa: E402
     checked_value, die, file_sha256, git_out, load_yaml, parse_yaml,
     tree_digest,
 )
+# The reader's own rule for where a comment starts, by its private name on
+# purpose: `shape_materialize` imports it the same way and says why (#380). A
+# block header is found with it, so a trailing comment is one here wherever it
+# is one to the reader (#437).
+from repo_shape import _strip_comment  # noqa: E402
 from shape_materialize import (  # noqa: E402
     ATTRIBUTES, COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
@@ -159,6 +164,13 @@ from shape_materialize import (  # noqa: E402
     inherited_child_environment, lane_trailer_argument, readme_shape_lines,
     is_nested_key, readme_trailing_shape_line, rewrite_fault, run,
     trailer_line, with_scalar,
+)
+# What the branch question is asked with (#431): the one helper that asks git
+# with no repository in play, and the two words for a git that could not
+# answer. Private and imported on purpose, as `_strip_comment` is above: a
+# second copy of the question is how two tools come to judge one name apart.
+from shape_materialize import (  # noqa: E402
+    BRANCH_CONTROL, BRANCH_UNCHECKED_REMEDIATION, _ask_git_branch,
 )
 # Where a root keeps its shape pin. The materializer that writes it names it
 # once; this module spells the path by that name and never by a literal (#290).
@@ -436,6 +448,10 @@ class Row:
         self.path = path
         self.recorded = (recorded or "").lower()
         self.source: str | None = None
+        #: The commit `source` is read at: the run's target, set where the
+        #: source is, so a remedy can name `git show <target>:<source>` whole
+        #: (#535).
+        self.target: str | None = None
         self.state = UNCHANGED
         self.detail = ""
         self.target_bytes: bytes | None = None
@@ -678,6 +694,7 @@ def _classify_row(root: Path, row: Row, upstream: Upstream, pinned: str,
         return
     source = source_for(row.path, upstream, target, kind)
     row.source = source
+    row.target = target
     if source is None:
         row.state = UNMAPPED
         row.detail = ("no file in the upstream tree corresponds to this "
@@ -726,7 +743,12 @@ def _row_verdict(row: Row, source: str, here: bytes,
         return
     if locally_modified and upstream_changed:
         row.state = BOTH
-        row.detail = "edited here AND upstream since the pin"
+        # THE UPSTREAM'S FILE IS NAMED (#535): the remedy sends the person to
+        # read its bytes, and a copy's path in the root is not its path in the
+        # standard (`scripts/validate-manifest.py` is
+        # `templates/assembly-root/scripts/validate-manifest.py`).
+        row.detail = ("edited here AND upstream since the pin "
+                      f"(upstream's file: {source})")
         # Precomputed the same way `locally-modified` precomputes it,
         # below: IF `--accept-local` later names this path, `cmd_apply`
         # must re-pin from what is on disk NOW, not from whatever was
@@ -1339,6 +1361,24 @@ def resolve_additions(rows: list[Row], additions: list[Addition],
 # ---------------------------------------------------------------------------
 
 
+def _is_block_header(line: str, key: str) -> bool:
+    """Is `line` the column-0 header `<key>:` of a block, a trailing
+    `# comment` aside? Asked the reader's way, `_strip_comment`, so a
+    comment that a quoted scalar holds is not one, and the `#` a comment
+    starts at is one only after a space or a tab (#437). A header indented
+    at all is not this one: the reader's own top-level keys start at 0."""
+    return _strip_comment(line) == f"{key}:"
+
+
+def _header_as_it_was(line: str) -> str:
+    """`line`, a block header, with its comment and the spacing in front of
+    it kept (#437). A header with no comment loses trailing whitespace, as
+    `shape_materialize.with_scalar` says of its own lines."""
+    body = _strip_comment(line)
+    tail = line[len(body):]
+    return body + (tail if tail.strip() else "")
+
+
 def rewrite_shape_pin(text: str, commit: str, tree: str,
                       rows: list[Row]) -> str:
     """`commit:`, `digests.tree_sha256:` and the whole `files:` block.
@@ -1359,6 +1399,18 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
     four spaces was refused as hand-edited and a comment was dropped. The
     `files:` block below them is still written whole, as before.
 
+    THE `files:` HEADER IS FOUND WITH THE READER'S RULE FOR A COMMENT (#437):
+    at column 0, once the reader's own `_strip_comment` has dropped a
+    trailing `# comment`. It was `line.rstrip() == "files:"`, so a header
+    that carried a comment, which the reader and both validators accept, was
+    counted as no `files` line and refused as `update-pin-unrecognised`,
+    after `check` had sent the person to this `apply`. That is ALL this
+    claims: a header spelled with a quoted key or a space before the colon
+    is read as the key by the reader and is not found here, as before. The
+    header is written back AS THE LINE WAS, comment and the spacing in front
+    of it included, like the two lines above; only the rows under it are
+    written whole.
+
     WHAT IS RETURNED HAS BEEN READ BACK, as `rewrite_manifest`'s is
     (`shape_materialize.rewrite_fault`): a layout this line rewrite cannot
     carry is refused HERE as this tool's failure, before any byte is written.
@@ -1375,9 +1427,9 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
             seen["tree"] += 1
             out.append(with_scalar(line, "tree_sha256", tree))
             continue
-        if line.rstrip() == "files:":
+        if _is_block_header(line, "files"):
             seen["files"] += 1
-            out.append("files:")
+            out.append(_header_as_it_was(line))
             for row in rows:
                 out.append(f"  - path: {row.path}")
                 out.append(f'    sha256: "{row.digest}"')
@@ -1496,12 +1548,38 @@ def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
     next top-level key — or at the end of the file, which is the `shape:`
     block a scaffold writes last. No `shape:` block at all is the one
     refusal, raised here because there is nothing to return.
+
+    THE HEADER IS FOUND WITH THE READER'S RULE FOR A COMMENT (#437): at
+    column 0, once `_strip_comment` has dropped a trailing `# comment`. It
+    was `line.rstrip() == "shape:"`, so `shape:  # mirrors the pin`, which
+    both validators accept, was refused as having NO `shape:` block, and the
+    remedy, "add it", would have given the manifest a second `shape:` key.
+    That is ALL this claims: a quoted key or a space before the colon is
+    read as the key by the reader and is not found here, as before. The
+    header line itself is never rewritten, so its comment stays.
+
+    A HEADER THAT APPEARS TWICE IS REFUSED BY NAME (review of PR #558). The
+    reader keeps the last block, so a rewrite of the first would move a pin
+    nobody reads. That was left to `rewrite_fault`'s read-back, whose words
+    blame this tool's line rewrite, which is false of a key written twice.
+    And where the first header carries a comment, the exact match skipped it
+    and rewrote the last block, which is what the reader reads, so such a
+    manifest went through; this finder sees the first header, and would
+    have refused it in those same false words.
     """
-    start = None
-    for index, line in enumerate(lines):
-        if line.rstrip() == "shape:":
-            start = index
-            break
+    starts = [index for index, line in enumerate(lines)
+              if _is_block_header(line, "shape")]
+    if len(starts) > 1:
+        raise Refusal(
+            "update-manifest-unrecognised",
+            f"{kind.manifest} holds the `shape:` key twice, at lines "
+            + " and ".join(str(index + 1) for index in starts[:2])
+            + ", where exactly one was expected: the reader keeps the last "
+              "block, so this tool will not guess which of them is the "
+              "manifest's",
+            "Remediation: delete the extra `shape:` block by hand (the "
+            "validators read the last one) and run the same command again.")
+    start = starts[0] if starts else None
     if start is None:
         raise Refusal(
             "update-manifest-no-shape",
@@ -2151,6 +2229,25 @@ def checked_branch(value: str) -> str:
     put to `git check-ref-format --branch`, which is the authority on what a
     branch name is: it is asked, not copied. A spelling it would expand
     rather than echo is refused too: `apply` names the branch it creates.
+
+    GIT IS ASKED WITH NO REPOSITORY IN PLAY (#431), through
+    `shape_materialize._ask_git_branch`, the one helper that asks it so for
+    the scaffold and the family holder too. Asked in the operator's own
+    directory, `--branch` set up whatever repository surrounded it and died
+    where git could not open it (a `.git` file naming a gitdir that is gone,
+    a `.git/config` that does not parse, a directory removed under the
+    shell), and the refusal below read that failure as the name's fault. A
+    repository it did open lent `@{-1}` its own reflog. `--root` names the
+    repository `apply` works on and has nothing to do with where the person
+    stands, so the answer is the same from every directory.
+
+    A GIT THAT COULD NOT ANSWER IS NOT THE NAME'S FAULT. When git refuses the
+    name it is asked about `BRANCH_CONTROL`, a name every git creates, as
+    `shape_materialize._branch_verdict` does: a git that refuses that too
+    judged nothing, and the refusal says the name "could not be checked"
+    and sends the person to git (`BRANCH_UNCHECKED_REMEDIATION`), not to
+    another name. The code, the `--branch '<name>' ` opening of the detail
+    and `BRANCH_REMEDIATION` for a name git judged are unchanged.
     """
     if not BRANCH_RE.fullmatch(value):
         raise Refusal(
@@ -2160,23 +2257,49 @@ def checked_branch(value: str) -> str:
             "digit and hold only letters, digits and `. _ / @ + -`",
             BRANCH_REMEDIATION)
     try:
-        verdict = subprocess.run(["git", "check-ref-format", "--branch", value],
-                                 capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace",
-                                 check=False)
-    except OSError as exc:
-        raise Refusal(
-            "update-branch-invalid",
-            f"--branch {value!r} could not be checked: `git check-ref-format "
-            f"--branch` could not be run ({exc})", BRANCH_REMEDIATION) from exc
-    if verdict.returncode != 0 or verdict.stdout.strip() != value:
-        said = (verdict.stderr or verdict.stdout).strip()
+        answer = _ask_git_branch(value)
+    except CommandFailed as exc:
+        said = f" ({exc.output})" if exc.output else ""
+        if _git_cannot_answer_for_any_name():
+            raise Refusal(
+                "update-branch-invalid",
+                f"--branch {value!r} could not be checked: `git "
+                f"check-ref-format --branch` fails for `{BRANCH_CONTROL}` "
+                f"too, so git could not answer{said}",
+                BRANCH_UNCHECKED_REMEDIATION) from exc
         raise Refusal(
             "update-branch-invalid",
             f"--branch {value!r} is not a branch name git will create: `git "
-            "check-ref-format --branch` refuses it"
-            + (f" ({said})" if said else ""), BRANCH_REMEDIATION)
+            f"check-ref-format --branch` refuses it{said}",
+            BRANCH_REMEDIATION) from exc
+    except OSError as exc:
+        # `git` is missing, or no empty directory could be made to ask it
+        # from: the answer is not git's, and the fault is not the name's.
+        raise Refusal(
+            "update-branch-invalid",
+            f"--branch {value!r} could not be checked: `git check-ref-format "
+            f"--branch` could not be run ({exc})",
+            BRANCH_UNCHECKED_REMEDIATION) from exc
+    if answer != value:
+        raise Refusal(
+            "update-branch-invalid",
+            f"--branch {value!r} is not a branch name git will create: `git "
+            f"check-ref-format --branch` reads it as {answer!r}, not as "
+            "written", BRANCH_REMEDIATION)
     return value
+
+
+def _git_cannot_answer_for_any_name() -> bool:
+    """Does `git check-ref-format --branch` fail for `BRANCH_CONTROL`, a name
+    every git creates as a branch? Git's words are localised, so they are
+    never read: a git that refuses this one too could not answer (a
+    malformed global config, say), and the name it was first asked about was
+    never judged (#431)."""
+    try:
+        _ask_git_branch(BRANCH_CONTROL)
+    except (CommandFailed, OSError):
+        return True
+    return False
 
 
 def branch_exists(root: Path, branch: str) -> bool:
@@ -2245,7 +2368,8 @@ def pull_request_repository(manifest: dict | None,
 def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
                      upstream: Upstream, count: int, kind: Kind,
                      added: list[str] = (), trailers: list[str] = (), *,
-                     ledger: Rollback, dropped: list[str] = ()) -> None:
+                     ledger: Rollback, dropped: list[str] = (),
+                     accepted: list[str] = ()) -> None:
     """A branch and ONE commit, with EXPLICIT PATHSPECS.
 
     `git commit -- <paths>` commits the working-tree state of exactly those
@@ -2300,6 +2424,14 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     writes its own commit message can be told any other way. Passed none, the
     message is exactly the one this function has always written; see
     `shape_materialize.commit_trailers` for the two ways git is asked.
+
+    THE MESSAGE CLAIMS "NOT HAND-EDITED" ONLY OF WHAT WAS RE-COPIED (#535).
+    `accepted` are the paths `--accept-local` kept as the project holds them,
+    which the run did not copy and whose pin rows it recomputed from the
+    project's own bytes: the sentence it ended on, "the copies are not
+    hand-edited", was false of exactly those files, in a history nobody
+    rewrites. It now says it of the copies re-copied from the upstream, and a
+    run with `accepted` names them in a paragraph of their own.
     """
     checked_value("--branch", branch)
     manifest = load_yaml(root / kind.manifest)
@@ -2345,13 +2477,14 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     # an unexplained edit to a document the project owns (#148).
     prose = (f", and {README}'s `Shape:` line now names it too"
              if README in paths else "")
+    kept = f"{accepted_local_said(accepted)}\n\n" if accepted else ""
     message = (
         f"Re-sync the shape copies to {upstream.repository} @ {target[:12]}\n\n"
         f"{count} copied file(s) re-copied from the upstream{gained}; "
         f"contracts/shape-pin.yaml and {kind.manifest}'s `shape:` block now "
-        f"record {target}{prose}.\n\nWritten by update-shape.py; the copies "
-        f"are not hand-edited and the digests are recomputed, not "
-        f"adjusted.\n")
+        f"record {target}{prose}.\n\n{kept}Written by update-shape.py; the "
+        f"copies re-copied from the upstream are not hand-edited and the "
+        f"digests are recomputed, not adjusted.\n")
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape update"),
                           ("GIT_COMMITTER_NAME", "openRepoShape update"),
@@ -2910,14 +3043,37 @@ def _refuse_conflicts(rows: list[Row], accepted: set) -> None:
             conflict_remediation(conflicts))
 
 
-#: What `update-conflict` tells a row it can name a merge for: `both`, and
-#: the two states that cannot be compared. The words it always printed, so a
-#: refusal naming no `copy-missing` row reads exactly as it did.
-MERGE_BY_HAND = (
-    "merge each one by hand (the upstream bytes are `git show "
-    "<target>:<source path>` in a shape clone), commit it, then re-run this "
-    "with --accept-local on that path so the row is recomputed from what "
-    "you merged.")
+def merge_by_hand(rows: list[Row]) -> str:
+    """What `update-conflict` tells the rows it can name a merge for: `both`,
+    and the two states that cannot be compared. The words it always printed,
+    with the upstream's bytes NAMED where there are some to name (#535).
+
+    The remedy said `git show <target>:<source path>` and nothing in the
+    refusal or in `check` said what either was. A `both` row holds both, so
+    the command is spelled whole: the full target commit, which `git show`
+    reads in a shape clone, and the path the standard keeps the file at,
+    which is not the path in the root (`scripts/validate-manifest.py` is
+    `templates/assembly-root/scripts/validate-manifest.py`). One row is the
+    sentence it always was with its two placeholders filled; several are one
+    command each, by the path in the root they are for. A row that is not
+    `both` is named no command, because none reads: `unmapped` has no
+    upstream file, and an `upstream-removed` one is gone at the target, where
+    `git show` would fail.
+    """
+    shows = [(row.path, f"git show {row.target}:{row.source}")
+             for row in rows
+             if row.state == BOTH and row.source and row.target]
+    if len(shows) == 1:
+        where = f" (the upstream bytes are `{shows[0][1]}` in a shape clone)"
+    elif shows:
+        where = (" (the upstream bytes, in a shape clone: "
+                 + "; ".join(f"`{command}` for {path}"
+                             for path, command in shows) + ")")
+    else:
+        where = ""
+    return (f"merge each one by hand{where}, commit it, then re-run this "
+            "with --accept-local on that path so the row is recomputed from "
+            "what you merged.")
 
 
 def conflict_remediation(conflicts: list[Row]) -> str:
@@ -2945,12 +3101,14 @@ def conflict_remediation(conflicts: list[Row]) -> str:
     row. The sentence says so, because a person who removed the copy
     without the merge reads it here.
 
-    The other three states keep `MERGE_BY_HAND`, after it where a
-    `copy-missing` row is named too.
+    The other three states keep `merge_by_hand`'s sentence, after it where a
+    `copy-missing` row is named too, naming each `both` row's upstream file
+    (#535).
     """
     missing = [row.path for row in conflicts if row.state == COPY_MISSING]
+    others = [row for row in conflicts if row.state != COPY_MISSING]
     if not missing:
-        return f"Remediation: {MERGE_BY_HAND}"
+        return f"Remediation: {merge_by_hand(conflicts)}"
     verb = "is" if len(missing) == 1 else "are"
     said = (f"Remediation: {', '.join(missing)} {verb} pinned and gone from "
             "the root, so --accept-local has no bytes to keep, and this "
@@ -2963,8 +3121,8 @@ def conflict_remediation(conflicts: list[Row]) -> str:
             "copy merged into the file it collided with is not refused: "
             "with that file at the root, `check` reports it merged-away and "
             "`apply` drops its row.")
-    if len(missing) < len(conflicts):
-        said += f" For the others, {MERGE_BY_HAND}"
+    if others:
+        said += f" For the others, {merge_by_hand(others)}"
     return said
 
 
@@ -3020,6 +3178,389 @@ def _nothing_to_do(rows: list[Row], pinned: str, target: str,
     """
     return (all(row.state == UNCHANGED for row in rows)
             and pinned == target and not taking)
+
+
+def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
+                                      taking: list[Addition], accepted: set,
+                                      target: str, kind: Kind) -> None:
+    """`update-accept-local-missing-name` (#536): a copy this run writes
+    imports a name from a module `--accept-local` keeps, and the kept bytes
+    do not define it.
+
+    THE VALIDATORS CANNOT SEE IT, AND NOTHING ELSE RUNS THAT COPY. Since
+    #456 moved `spelled` and `escape_unencodable_stdout` into
+    `scripts/repo_shape.py`, both roots' `bootstrap.py` import them from
+    it. A project that keeps its own edit of `repo_shape.py` (`both`, or
+    `locally-modified`, accepted) while this run copies the new
+    `bootstrap.py` got a re-pin its validators passed, a `check` that then
+    read every row `unchanged`, and an `ImportError` from the first `make
+    bootstrap` or `bootstrap.py --help`, in a project whose CI never runs
+    bootstrap. #507 took the one other live case out of `siblings.py` by
+    not importing the new name there; this is the general guard. It is
+    asked after `update-conflict`, `update-local-drift` and
+    `update-rewrite-symlink`, so every `both` or `locally-modified` row left
+    is one `--accept-local` named, and before `confirm`: nothing has been
+    written, so nothing is rolled back, and nobody is asked for a yes to a
+    run that would leave a copy that cannot start.
+
+    UNLESS THE COPY IS ONE OF THE VALIDATORS. `kind.validators` are what
+    `_refuse_red_validators` runs after the writes, so a validator that
+    imports a name the kept copy lacks goes red there, and the run is
+    rolled back. This still refuses it first, before the yes and before a
+    byte is written, but says the validators pass only when no copy it
+    names is one of them: a clause that is false of one copy in the list
+    is false.
+
+    WHAT IS ASKED, AND OF WHAT. The importers are the copies this run
+    WRITES, read from the bytes it is about to write: each
+    `upstream-changed` row and each `--add` file whose path ends `.py`. A
+    row the run leaves alone is not asked about: an edit that already broke
+    an untouched importer is the project's doing, not this run's. A module
+    is resolved the way every shipped importer resolves it, its own
+    directory first on `sys.path`: `from M import ...` in `<dir>/<file>.py`
+    is the copy at `<dir>/M.py`, a dotted `M` naming that path's
+    subdirectories. So the same code covers `repo_shape.py` today, and any
+    helper kept beside its importer later, a holder's `bootstrap.py` under
+    its `siblings.py` among them. A module that resolves to no kept copy is
+    not asked about. `_names_imported` reads what a copy takes, and
+    `_names_defined` what a kept copy binds.
+
+    WHAT IT CANNOT TELL, IT DOES NOT REFUSE. A star import, or `import M`
+    and an attribute, names nothing this can read; nor does a copy, kept or
+    written, whose bytes Python could not parse either; nor a kept copy
+    with a star import or a module `__getattr__` of its own. There the
+    validators answer after the writes, as they did before #536, and roll
+    back a kept copy that cannot import. A name bound by `:=`, a `match`
+    capture, `type X =` or a `global` declared in a function is read as
+    defined (`_bound_at` says what it reads as a binding). A name bound only
+    through `globals()`, `setattr` on the module or `exec` reads as
+    missing, and is refused; one bound and then deleted (`NAME = 1`, then
+    `del NAME`) reads as defined, so that copy's `ImportError` is still its
+    first run's to meet.
+    """
+    kept = {row.path: row for row in rows
+            if row.state in (BOTH, LOCALLY_MODIFIED) and row.path in accepted}
+    if not kept:
+        return
+    lacking = _kept_copies_lacking(root, rows, taking, kept)
+    if not lacking:
+        return
+    helpers = sorted({helper for helper, _, _ in lacking})
+    upstreams = "; ".join(f"`git show {target}:{kept[helper].source}` for "
+                          f"{helper}" for helper in helpers)
+    both = [helper for helper in helpers if kept[helper].state == BOTH]
+    validated = any(path in kind.validators for _, path, _ in lacking)
+    raise Refusal(
+        "update-accept-local-missing-name",
+        "--accept-local keeps this project's own bytes of a module that a "
+        "copy this run writes imports from, and those bytes lack a name the "
+        "copy imports, so the copy would stop on an ImportError the first "
+        "time it runs"
+        + ("" if validated else
+           ", though the validators, which never import it, pass")
+        + ":\n"
+        + "\n".join(f"    {helper} (kept) lacks {', '.join(names)}, which "
+                    f"{path} imports from it"
+                    for helper, path, names in lacking),
+        "Remediation: whether the project keeps its edit is the human's "
+        "decision, and a kept copy must still define what the copies "
+        "written beside it import. Either merge the upstream's version into "
+        "the kept copy by hand, so it defines every name above, commit it, "
+        "and run this again with the same --accept-local; or drop the edit, "
+        "so the upstream's copy is taken: write the upstream's bytes over "
+        "it, commit that, and run this again without --accept-local on that "
+        f"path. In a shape clone the upstream's bytes are {upstreams}."
+        + (f" {', '.join(both)} changed upstream too, so dropping the edit "
+           "there is `update-conflict`'s merge by hand again, settled on the "
+           "upstream's side." if both else "")
+        + " Nothing was written.")
+
+
+def _kept_copies_lacking(root: Path, rows: list[Row], taking: list[Addition],
+                         kept: dict) -> list[tuple[str, str, list[str]]]:
+    """`(kept copy, written copy, [the names it lacks])` for each written
+    `.py` copy that imports from a kept one, sorted (#536). Split out of
+    `_refuse_kept_copies_missing_names`, which says what is asked of what;
+    each kept copy is read once, however many copies import from it.
+    """
+    written = sorted(
+        [(row.path, row.target_bytes) for row in rows
+         if row.state == UPSTREAM_CHANGED]
+        + [(add.path, add.target_bytes) for add in taking],
+        key=lambda pair: pair[0])
+    imports = [(path, module, names) for path, data in written
+               if path.endswith(".py") and data is not None
+               for module, names in sorted(_names_imported(data).items())]
+    defined: dict[str, set[str] | None] = {}
+    lacking: list[tuple[str, str, list[str]]] = []
+    for path, module, names in imports:
+        helper = _module_beside(path, module)
+        if helper not in kept:
+            continue
+        if helper not in defined:
+            defined[helper] = _names_defined(root / helper)
+        known = defined[helper]
+        missing = sorted(names - known) if known is not None else []
+        if missing:
+            lacking.append((helper, path, missing))
+    return sorted(lacking)
+
+
+def _module_beside(path: str, module: str) -> str:
+    """The pinned path `from <module> import ...` reaches from the copy at
+    `path` (#536): the importer's own directory first on `sys.path`, as
+    every shipped importer puts it, so `scripts/bootstrap.py`'s `repo_shape`
+    is `scripts/repo_shape.py`. Pin paths are spelled with `/` on every
+    platform, so this is string arithmetic and never `os.path`, which would
+    join with `\\` on Windows and match no row.
+    """
+    directory = path.rpartition("/")[0]
+    relative = module.replace(".", "/") + ".py"
+    return f"{directory}/{relative}" if directory else relative
+
+
+#: What `ast.parse` raises over bytes Python could not parse either (#536):
+#: a `SyntaxError`, which is also what a source that does not decode under
+#: its own encoding (UTF-8, or the one a coding cookie names) raises when it
+#: is parsed from bytes; the `ValueError` a null byte raises before 3.11 (a
+#: `SyntaxError` from then on); and the `RecursionError` or `MemoryError`
+#: CPython gives a source nested too deep to build. Each is "cannot tell",
+#: and never a traceback.
+UNPARSABLE = (SyntaxError, ValueError, RecursionError, MemoryError)
+#: What opens a scope of its own (#536): a name bound in its body is that
+#: scope's, never the module's, and the code in it runs later or elsewhere.
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+#: Syntax an older `ast` has no class for, because no source it parses can
+#: spell it: `type X = ...` (3.12) and the `match` captures (3.10). An empty
+#: tuple matches nothing.
+_TYPE_ALIASES = tuple(getattr(ast, name) for name in ("TypeAlias",)
+                      if hasattr(ast, name))
+_CAPTURES = tuple(getattr(ast, name)
+                  for name in ("MatchAs", "MatchStar", "MatchMapping")
+                  if hasattr(ast, name))
+#: What a `from ... import` can stand in, directly or nested: a statement,
+#: a `try`'s handler, or a `match`'s case. An expression holds none.
+_BLOCKS = (ast.stmt, ast.excepthandler) + tuple(
+    getattr(ast, name) for name in ("match_case",) if hasattr(ast, name))
+
+
+def _names_imported(data: bytes) -> dict[str, set[str]]:
+    """`{module: the names a copy takes from it}` for every absolute
+    `from <module> import <name>` in the copy's bytes (#536), function-level
+    ones included: those fail when the function runs, which is still a
+    copy that cannot do its job. Parsed from the BYTES, as Python's own
+    import reads a source, so a BOM or a coding cookie means what it means
+    to Python. Empty for bytes Python could not parse either: the
+    validators answer for those, as before.
+
+    A STAR IMPORT NAMES NOTHING, so it adds no name, and an `import <module>`
+    is not read: which attributes it uses is not something `ast` says.
+
+    A NAME THE COPY ITSELF ANSWERS FOR IS NOT TAKEN. Nothing inside an `if
+    TYPE_CHECKING:` body is, since it never runs. Inside the body of a
+    `try` that catches the `ImportError` a missing name raises
+    (`_catches_import_error`), a name is still taken unless the first
+    handler that catches it binds that same local name itself, its `as`
+    name else the name, as `_bound_at` reads a binding: that is the copy's
+    own fallback, and the copy starts. A handler that exits, re-raises or
+    passes binds nothing, and the copy stops there or on a `NameError`
+    later, which is the failure this refusal exists to say first. Only the
+    import's own scope is guarded: a `def`, `class` or `lambda` inside the
+    `try` runs later or elsewhere, outside its handler. A fallback bound
+    before the `try` rather than in the handler is not read, and that
+    import is taken; a handler with a star import of its own may bind any
+    name, and answers every one.
+    """
+    try:
+        module = ast.parse(data)
+    except UNPARSABLE:
+        return {}
+    imported: dict[str, set[str]] = {}
+    for node, answered in _imports_with_fallbacks(module):
+        if node.level or not node.module or "*" in answered:
+            continue
+        names = {alias.name for alias in node.names if alias.name != "*"
+                 and (alias.asname or alias.name) not in answered}
+        if names:
+            imported.setdefault(node.module, set()).update(names)
+    return imported
+
+
+def _imports_with_fallbacks(module: ast.Module):
+    """Each `from ... import` in `module` that can run, with the names its
+    own fallback binds (#536): what the first `ImportError` handler of the
+    innermost `try` around it, in its own scope, binds, since that handler
+    is the one that catches it. Empty outside any such `try`.
+    """
+    pending = [(statement, frozenset()) for statement in module.body]
+    while pending:
+        node, answered = pending.pop()
+        if isinstance(node, ast.ImportFrom):
+            yield node, answered
+        pending.extend(_blocks_inside(node, answered))
+
+
+def _blocks_inside(node: ast.AST, answered: frozenset) -> list:
+    """The clauses directly inside `node`, each with the names a fallback
+    answers there: `_fallback_in` for `node`'s own `body`, and what `node`
+    found for the rest, since a `try`'s handlers, `else` and `finally` are
+    outside its own guard. An `if TYPE_CHECKING:` body is not entered.
+    """
+    if isinstance(node, ast.If) and _is_type_checking(node.test):
+        return [(clause, answered) for clause in node.orelse]
+    inside = _fallback_in(node, answered)
+    return [(clause, inside if field == "body" else answered)
+            for field, value in ast.iter_fields(node)
+            if isinstance(value, list)
+            for clause in value if isinstance(clause, _BLOCKS)]
+
+
+def _fallback_in(node: ast.AST, answered: frozenset) -> frozenset:
+    """What an import in `node`'s own `body` finds answered: nothing in a
+    scope of its own; in a `try` with a handler that catches `ImportError`,
+    what the first such handler binds; else what `node` found itself.
+    """
+    if isinstance(node, _SCOPES):
+        return frozenset()
+    handler = next((clause for clause in getattr(node, "handlers", ())
+                    if _catches_import_error(clause)), None)
+    return answered if handler is None else frozenset(_bound_at(handler.body))
+
+
+def _catches_import_error(handler: ast.ExceptHandler) -> bool:
+    """Does this `except` clause catch the `ImportError` a missing name
+    raises? A bare one does, and so does one naming `ImportError` or a
+    class above it, alone or in a tuple. `ModuleNotFoundError` does not: a
+    missing NAME is a plain `ImportError`."""
+    if handler.type is None:
+        return True
+    caught = (handler.type.elts if isinstance(handler.type, ast.Tuple)
+              else [handler.type])
+    return any(isinstance(name, ast.Name)
+               and name.id in ("ImportError", "Exception", "BaseException")
+               for name in caught)
+
+
+def _is_type_checking(test: ast.expr) -> bool:
+    """`if TYPE_CHECKING:` or `if typing.TYPE_CHECKING:`, false at run time."""
+    return ((isinstance(test, ast.Name) and test.id == "TYPE_CHECKING")
+            or (isinstance(test, ast.Attribute)
+                and test.attr == "TYPE_CHECKING"))
+
+
+def _names_defined(path: Path) -> set[str] | None:
+    """Every name the kept copy at `path` binds at module scope (#536), as
+    `_bound_at` reads a binding, or None when it cannot tell.
+
+    PARSED FROM THE BYTES, as Python's own import reads them, so a BOM or a
+    coding cookie means what it means to Python. A kept copy is the
+    project's own file, which a Windows editor, or PowerShell 5.1's
+    `Set-Content -Encoding UTF8`, starts with a BOM; decoded to text first,
+    that BOM was a character no parser takes, a copy Python imports read as
+    one this could not, and #536's own `ImportError` went unrefused.
+
+    NONE, AND SO NO REFUSAL, where those rules cannot answer: bytes Python
+    could not parse either, which the validators will meet when they import
+    the copy; a star import, which binds names this does not know; and a
+    module `__getattr__`, which answers for any name it likes.
+    """
+    try:
+        module = ast.parse(path.read_bytes())
+    except (OSError, *UNPARSABLE):
+        return None
+    names = _bound_at(module.body)
+    return None if names & {"*", "__getattr__"} else names
+
+
+def _bound_at(statements: list) -> set[str]:
+    """Every name `statements` bind in the scope they run in (#536): at a
+    kept copy's module scope, what `from <module> import <name>` finds
+    there (`_names_defined`); in a `try`'s handler, the copy's own fallback
+    (`_names_imported`).
+
+    READ: a `def`, an `async def` or a `class`; a target of `=`, of an
+    annotated `=` (an annotation alone binds nothing), of an augmented one
+    or of `:=` (in a comprehension too, which binds it in the scope around
+    the comprehension), unpacking included; a `for` target and a `with ...
+    as`; an `import` (its `as` name, else the first part of a dotted one)
+    and a `from ... import` alias, a star import read as `*`; a `type X =`
+    alias (3.12); a `match` capture, `case X`, `[*X]` or `{**X}`; and a
+    `global X` declared in a function or class defined there, read as bound
+    because calling it may bind it, and what this cannot rule out it does
+    not refuse. All of it inside `if`, `try` (its handlers, `else` and
+    `finally`), `with`, `for`, `while` and `match`, which run where they
+    stand, and never inside a function, class or lambda body, which bind
+    names of their own scope.
+
+    NOT READ: a name bound through `globals()`, `setattr` on the module or
+    `exec`, which reads as missing; and `del`, so a name bound and then
+    deleted reads as bound.
+    """
+    return {name for node in _same_scope(statements)
+            for name in _names_bound(node)}
+
+
+def _same_scope(statements: list):
+    """Every node under `statements` that runs in their own scope. A `def`,
+    `class` or `lambda` is yielded, since its name is bound there, and not
+    entered.
+    """
+    pending = list(statements)
+    while pending:
+        node = pending.pop()
+        yield node
+        if not isinstance(node, _SCOPES):
+            pending.extend(ast.iter_child_nodes(node))
+
+
+def _names_bound(node: ast.AST) -> set[str]:
+    """The names `node` itself binds in the scope it runs in (`_bound_at`).
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                         ast.ClassDef)):
+        return {node.name} | {name for inner in ast.walk(node)
+                              if isinstance(inner, ast.Global)
+                              for name in inner.names}
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return {alias.asname or alias.name.split(".")[0]
+                for alias in node.names}
+    if isinstance(node, _CAPTURES):
+        captured = getattr(node, "name", None) or getattr(node, "rest", None)
+        return {captured} if captured else set()
+    return {name for target in _targets(node)
+            for name in _bound_names(target)}
+
+
+def _targets(node: ast.AST) -> list:
+    """The assignment targets `node` binds through, each as
+    `_bound_names` reads one: none for anything else.
+    """
+    if isinstance(node, ast.Assign):
+        return node.targets
+    if isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor,
+                         ast.NamedExpr)):
+        return [node.target]
+    if isinstance(node, ast.AnnAssign):
+        return [node.target] if node.value is not None else []
+    if isinstance(node, ast.withitem):
+        return [node.optional_vars] if node.optional_vars is not None else []
+    if isinstance(node, _TYPE_ALIASES):
+        return [node.name]
+    return []
+
+
+def _bound_names(target: ast.expr) -> set[str]:
+    """The names an assignment target binds: a name, or each name in an
+    unpacking (`a, (b, *c) = ...`). An attribute or a subscript binds none.
+    """
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return {name for element in target.elts
+                for name in _bound_names(element)}
+    return set()
 
 
 def _write_copies(root: Path, rows: list[Row], taking: list[Addition],
@@ -3194,13 +3735,27 @@ def _refuse_red_validators(root: Path, kind: Kind) -> None:
             "somebody else's pull request.")
 
 
+def _accepted_local(rows: list[Row]) -> list[str]:
+    """The paths `--accept-local` kept as the project holds them: the rows
+    still `locally-modified` or `both` when the writes are done, since a row
+    in either state that nobody accepted was refused before the first one
+    (#535). Sorted, so a message names them in an order that does not move.
+    `already-at-target` is not one: the project's bytes ARE the standard's
+    there."""
+    return sorted(row.path for row in rows
+                  if row.state in (LOCALLY_MODIFIED, BOTH))
+
+
 def _land(root: Path, args, paths: list[str], added: list[str], target: str,
           upstream: Upstream, kind: Kind, count: int,
-          ledger: Rollback, dropped: list[str] = ()) -> None:
+          ledger: Rollback, dropped: list[str] = (),
+          accepted: list[str] = ()) -> None:
     """The three optional acts after a clean rewrite — commit, push, open a
     pull request — each done only because a flag asked for it. Split out of
     `cmd_apply` for #133. `dropped` names the merged-away rows the re-pin
-    left out (#502), for the commit message.
+    left out (#502), for the commit message; `accepted` the paths
+    `--accept-local` kept as the project holds them (#535), which neither the
+    commit message nor the pull request's body may call "not hand-edited".
 
     Nested the way the flags are: `--push` and `--pr` have nothing to act on
     without `--branch`, which `main` refuses before this is ever reached.
@@ -3216,11 +3771,17 @@ def _land(root: Path, args, paths: list[str], added: list[str], target: str,
     """
     if not args.branch:
         return
-    create = (pull_request_line(root, args, target, upstream, kind)
+    # THE WORDS `--pr` OPENS WITH, kept for `next_line`, which runs after this
+    # and prints the same title and body in the `gh pr create` it hands a
+    # person (#535): it is not given the upstream or the accepted paths, and
+    # `cmd_apply`'s call to it does not change.
+    args.pull_request_words = pull_request_words(upstream.repository, target,
+                                                 kind.manifest, accepted)
+    create = (pull_request_line(root, args, target, upstream, kind, accepted)
               if args.push or args.pr else [])
     commit_on_branch(root, args.branch, paths, target, upstream,
                      count, kind, added, args.trailer, ledger=ledger,
-                     dropped=dropped)
+                     dropped=dropped, accepted=accepted)
     print(f"\n  committed on {args.branch}: " + ", ".join(paths))
     if args.push:
         push_branch(root, args, create)
@@ -3260,6 +3821,8 @@ def cmd_apply(args) -> int:
         _refuse_local_drift(rows, accepted)
         if args.branch:
             _refuse_writes_through_a_link(root, rows, kind, args.branch)
+        _refuse_kept_copies_missing_names(root, rows, taking, accepted,
+                                          target, kind)
         confirm(args, rows, taking, target)
         target_tree = upstream.tree_sha256(target)
         # READ BEFORE THE COPIES, REWRITTEN AFTER THE PIN. `.gitattributes`
@@ -3285,7 +3848,7 @@ def cmd_apply(args) -> int:
         # as re-copied nor asked about as a copy the commit leaves out.
         dropped = [row.path for row in rows if row.state == MERGED_AWAY]
         _land(root, args, paths, added, target, upstream, kind, len(copied),
-              ledger, dropped)
+              ledger, dropped, accepted=_accepted_local(rows))
         print()
         next_line(root, args, paths, target, added, kind,
                   pinned_paths=[row.path for row in rows
@@ -3747,6 +4310,42 @@ def _pull_requests(answer: str) -> "list[tuple[str, str]] | None":
             for pull in pulls]
 
 
+def _accepted_in_the_pin(root: Path, upstream: Upstream, target: str,
+                         kind: Kind) -> list[str]:
+    """The pinned copies a run that has already committed kept as the
+    project holds them, read back out of the pin it wrote (#535).
+
+    A ROW IS ONE WHEN IT IS TWO THINGS. Its recorded digest is not that of
+    the upstream's file at `target`, so the project's bytes are what the pin
+    names there; and it is not the digest the tracking branch's pin already
+    held for it, so THIS RUN moved it. Without the second, an in-place
+    adoption's `Makefile`, whose row has always recorded the file with the
+    adoption's block appended, would be reported as kept by a flag nobody
+    passed. Where the tracking branch's pin cannot be read (a clone that has
+    never seen `origin/<tracking>`) there is nothing to tell the two apart,
+    and the answer is none: a body that names too few paths is incomplete,
+    one that names a path nobody accepted is false. Sorted, as
+    `_accepted_local` is.
+    """
+    base = tracking_branch_of(load_yaml(root / kind.manifest))
+    landed = _git_answer(root, ["show", f"refs/remotes/origin/{base}:"
+                                f"{SHAPE_PIN}"])
+    try:
+        held = {str(row["path"]): str(row["sha256"]).lower()
+                for row in parse_yaml(landed or "")["files"]}
+    except (YamlError, KeyError, TypeError):
+        return []
+    _, rows = read_pin(root)
+    kept = []
+    for row in rows:
+        source = source_for(row.path, upstream, target, kind)
+        blob = upstream.blob(target, source) if source else None
+        if (blob is not None and file_bytes_sha256(blob) != row.recorded
+                and held.get(row.path, row.recorded) != row.recorded):
+            kept.append(row.path)
+    return sorted(kept)
+
+
 def _finish_landing(root: Path, args, upstream: Upstream, target: str,
                     kind: Kind) -> int:
     """The re-run `_awaits_its_pull_request` recognised: nothing to write,
@@ -3759,13 +4358,20 @@ def _finish_landing(root: Path, args, upstream: Upstream, target: str,
     pushed again under `--push` (a no-op when origin has it) and handed to
     `open_pull_request` with the same `gh pr create` the first run built.
     Every failure on the way is `landing_failed`'s, named by its own step.
+
+    THE BODY NAMES WHAT `--accept-local` KEPT, AS THE FIRST RUN'S DID (#535,
+    review of PR #558). This run has no rows that say so, and the flag is not
+    repeated by "the same command" necessarily, so the committed pin is
+    asked (`_accepted_in_the_pin`).
     """
     branch = args.branch
     print(f"nothing to write: every copied file matches {upstream.repository}"
           f" @ {target[:12]}, which the pin on {branch} already names; "
           f"--pr asked for {branch}'s pull request")
     repository, _ = pull_request_target(root, kind)
-    create = pull_request_line(root, args, target, upstream, kind)
+    create = pull_request_line(root, args, target, upstream, kind,
+                               _accepted_in_the_pin(root, upstream, target,
+                                                    kind))
     listing = ["gh", "pr", "list", "--repo", repository, "--head", branch,
                "--state", "all", "--json", "state,url"]
     asking = f"asking gh for {branch}'s pull request"
@@ -3809,35 +4415,80 @@ def pull_request_target(root: Path, kind: Kind) -> tuple[str, str]:
     return repository, base
 
 
+def accepted_local_said(accepted: list[str]) -> str:
+    """The sentence that names what `--accept-local` kept, for the commit
+    message and the pull request's body alike (#535): neither may say a copy
+    was not hand-edited of a file the run re-pinned FROM THE PROJECT'S OWN
+    BYTES, which is what the flag does."""
+    many = len(accepted) > 1
+    each = "each" if many else "it"
+    return (f"{', '.join(accepted)} {'were' if many else 'was'} not "
+            f"re-copied: `--accept-local` kept {each} as the project holds "
+            f"it, so the pin's row for {each} records a digest of the "
+            "project's own bytes, not of the upstream's file.")
+
+
+def pull_request_words(repository: str, target: str, manifest: str,
+                       accepted: list[str] = ()) -> tuple[str, str]:
+    """`(title, body)` of the pull request that lands `--branch`: what
+    `--pr` opens it with, and what the `gh pr create` the plain `--branch`
+    NEXT line hands a person carries (#535). ONE PLACE, so the two cannot
+    say different things.
+
+    THE BODY NAMES THE MANIFEST THIS ROOT HAS (#535, review of PR #558):
+    `project.yaml` for a project and `family.yaml` for a holder, as the
+    commit message names `kind.manifest`. It said `project.yaml` of both.
+
+    "NOT HAND-EDITED" IS CLAIMED OF THE COPIES RE-COPIED FROM THE UPSTREAM
+    ONLY, as the commit message claims it: the body said "No copy was
+    hand-edited" of every file, which `--accept-local` makes false of the
+    paths it kept, and they are named here when there are any.
+
+    NOR DOES IT SAY ANY COPY WAS RE-COPIED. The opening clause said "the
+    copied shape files were re-copied from the upstream" in every state,
+    which is false for a run whose only change is a row `--accept-local`
+    kept. What the body says of the files is the sentence after it, which is
+    true of none, one or many. A count, as the commit message gives, is left
+    out on purpose: a re-run that only opens the missing pull request does
+    not know it, and opens the very command the first run tried
+    (`_finish_landing`), which the tests hold it to.
+    """
+    title = f"Re-sync the shape copies to {repository} @ {target[:12]}"
+    body = ("Written by openRepoShape's `update-shape.py`: "
+            f"`contracts/shape-pin.yaml` and `{manifest}` re-pinned onto "
+            f"{target}. No copy re-copied from the upstream was hand-edited "
+            "and every digest was recomputed."
+            + (f" {accepted_local_said(accepted)}" if accepted else ""))
+    return title, body
+
+
 def pull_request_line(root: Path, args, target: str, upstream: Upstream,
-                      kind: Kind) -> list[str]:
+                      kind: Kind, accepted: list[str] = ()) -> list[str]:
     """The `gh pr create` that lands `--branch` (#204): under `--pr` the one
     `--pr` runs, title and body included, so the NEXT line a failure prints
-    is that same command; without it, the bare form the plain `--branch`
-    NEXT line prints (#209): `--repo` the manifest's repository, then
-    `--base`/`--head` against this root's own tracking branch.
+    is that same command; without it, the form the plain `--branch` NEXT
+    line prints (#209): `--repo` the manifest's repository, then
+    `--base`/`--head` against this root's own tracking branch, and the same
+    `--title` and `--body` (#535: a bare line has gh ask for them, which a
+    shell with no terminal cannot answer, and `--fill` would read commits
+    from wherever the line is pasted).
 
     WITHOUT `--pr` A MANIFEST NAMING NO REPOSITORY LEAVES `--repo` OFF rather
     than refusing: nothing is opened, so nothing is wrong yet, and the
     `<org>/<Project>` placeholder `next_line` prints would be one literal
     argument in a line quoted to be pasted as an argv."""
+    title, body = pull_request_words(upstream.repository, target,
+                                     kind.manifest, accepted)
     if not args.pr:
         manifest = load_yaml(root / kind.manifest)
         repository, _ = pull_request_repository(manifest, kind)
         where = ["--repo", repository] if repository else []
         return ["gh", "pr", "create", *where, "--base",
-                tracking_branch_of(manifest), "--head", args.branch]
+                tracking_branch_of(manifest), "--head", args.branch,
+                "--title", title, "--body", body]
     repository, base = pull_request_target(root, kind)
     return ["gh", "pr", "create", "--repo", repository, "--base", base,
-            "--head", args.branch, "--title",
-            f"Re-sync the shape copies to {upstream.repository} @ "
-            f"{target[:12]}",
-            "--body",
-            "Written by openRepoShape's `update-shape.py`: the copied "
-            "shape files were re-copied from the upstream and "
-            "`contracts/shape-pin.yaml` and `project.yaml` re-pinned onto "
-            f"{target}. No copy was hand-edited and every digest was "
-            "recomputed."]
+            "--head", args.branch, "--title", title, "--body", body]
 
 
 def open_pull_request(root: Path, args, create: list[str]) -> None:
@@ -3871,10 +4522,26 @@ def _unwritten_changes(root: Path, paths: list[str],
     the one it always printed.
     """
     rest = [path for path in pinned_paths if path not in paths]
-    if not rest or _git_answer(root, ["rev-parse", "--verify", "--quiet",
-                                      "HEAD"]) is None:
+    if not rest or not _has_head(root):
         return []
     return _not_what_head_commits(root, rest)
+
+
+def _same_as_head(root: Path, paths: list[str]) -> bool:
+    """Does `git diff --quiet HEAD` find nothing among `paths`: no content,
+    and no file mode, that HEAD does not commit? `--literal-pathspecs`, as
+    the commit line is printed (#202). An answer git does not give is "no",
+    which is what a root with no HEAD gets: nothing there to be the same as
+    (#535)."""
+    return _git_answer(root, ["--literal-pathspecs", "diff", "--quiet",
+                              "HEAD", "--", *paths]) is not None
+
+
+def _has_head(root: Path) -> bool:
+    """Does `root` have a commit HEAD names? A root with none has nothing for
+    a commit line to be compared with (#436, #535)."""
+    return _git_answer(root, ["rev-parse", "--verify", "--quiet",
+                              "HEAD"]) is not None
 
 
 def next_line(root: Path, args, paths: list[str], target: str,
@@ -3903,8 +4570,20 @@ def next_line(root: Path, args, paths: list[str], target: str,
         # `shlex.quote` leaves alone, so this prints the bytes it always
         # printed; it is quoted so that widening that alphabet one day cannot
         # reopen a line that has a whole argument to itself.
+        #
+        # WITH A TITLE AND A BODY (#535). Bare, the line has `gh` prompt for
+        # both, and in a shell with no terminal the pasted line stops there
+        # (gh's behaviour without one was not run: a real `gh pr create` is
+        # never run here). `--fill` is not the answer: it reads the commits of
+        # wherever the line is pasted, and `check`'s NEXT sends people to
+        # paste from the standard's checkout. The words are `--pr`'s, which
+        # `_land` kept on `args`; a caller that did not come through it is
+        # given the standard's own repository to name.
+        title, body = getattr(args, "pull_request_words", None) or \
+            pull_request_words(SHAPE_REPOSITORY, target, kind.manifest)
         create = (f"gh pr create{where} --base {base} --head "
-                  f"{shlex.quote(args.branch)}")
+                  f"{shlex.quote(args.branch)} --title {shlex.quote(title)} "
+                  f"--body {shlex.quote(body)}")
         if args.push:
             print(f"NEXT  {create}")
         else:
@@ -3930,6 +4609,25 @@ def next_line(root: Path, args, paths: list[str], target: str,
               "bytes it does not carry. Commit those changes with them if "
               "this re-pin is to carry them, or put both back to HEAD's "
               "bytes and run apply again")
+        return
+    # NOTHING TO COMMIT IS NOT A COMMIT LINE (#535). An `apply` that moved the
+    # pin back to what HEAD commits writes copies, a pin and a manifest that
+    # are HEAD's bytes again, and the line below, pasted, is git's "nothing to
+    # commit". Asked of the paths THIS RUN WROTE, which is the commit's whole
+    # content: an `--add` file is not in HEAD, so a run that added one still
+    # gets its line.
+    #
+    # BY BYTES AND BY MODE (review of PR #558). `_not_what_head_commits`
+    # compares blobs, so a pinned script that `apply` left executable or
+    # not, where HEAD commits the other, would read "nothing to commit" over
+    # a change git does commit. `_same_as_head` asks `git diff --quiet HEAD`,
+    # which counts a mode change, and which is answered only where HEAD names
+    # a commit: a root with none has nothing to compare with, and prints the
+    # line it always printed.
+    if _same_as_head(root, paths) and not _not_what_head_commits(root, paths):
+        print("NEXT  nothing to commit: the working tree now holds what HEAD "
+              f"commits at {', '.join(paths)}, so this run left no change to "
+              "record")
         return
     # A `git add` for the ADDITIONS only. A hint that a human pastes has to
     # work when they paste it, and `git commit -- <path>` refuses a path git
