@@ -2627,10 +2627,14 @@ def pin_reads_at(ctx: Context, rev: str, pin: str = SHAPE_PIN) -> bool:
     return pin_at(ctx, rev, pin) is not None
 
 
-def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN):
+def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN,
+           whole: bool = False):
     """What the pin `rev` holds reads as, by `read_pin`'s own checks (#237),
     or None where it does not read: for the shape pin the paths its
     `files:` rows name, never empty, and for any other file the mapping.
+    `whole` asks for the shape pin as `check_pin` hands it back, `(the pin,
+    its rows)`, which is how `taken_with_the_pin` reads the commit each
+    side of a merge names through the same checks (#547).
 
     READ BEFORE IT IS NAMED: a NEXT that puts back a pin out of history
     must name one that reads. Rolling back to a pin that is broken too
@@ -2671,10 +2675,10 @@ def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN):
         data = us.parse_yaml(text)
         if pin != SHAPE_PIN:
             return data if isinstance(data, dict) else None
-        _pin, rows = us.check_pin(data, f"{rev}:{SHAPE_PIN}", ctx.root)
+        read, rows = us.check_pin(data, f"{rev}:{SHAPE_PIN}", ctx.root)
     except (Refusal, us.YamlError, ValueError):
         return None
-    return [row.path for row in rows]
+    return (read, rows) if whole else [row.path for row in rows]
 
 
 def pin_restore(ctx: Context, detail: dict | None = None,
@@ -2690,27 +2694,41 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     these that applies decides, as `detail["restore"]`:
 
       unmerged     a merge left the pin conflicted. `checkout --ours`, or
-                   `--theirs` where only that side holds a pin, of THE PIN
-                   ALONE, which only a tool writes, so one side taken whole
-                   is one tool's output.
-                   A copy is never named with it (#485), though a merge of
-                   two `update-shape.py apply` runs conflicts in the two
-                   together: a copy can hold an edit of the project, kept by
-                   `apply --accept-local` on one side, and taken whole the
-                   other side's copy dropped it, the hunks git merged
-                   cleanly with it, and the doctor then said COMPLIANT. The
-                   copies are the files the taken side's pin has `files:`
-                   rows for, their collision copies included -- those rows
-                   and not this standard's copy lists, since a file the pin
-                   has no row for is not a shape copy, though the lists
-                   name its path (review of PR #358). Where one of them is
-                   conflicted the `why` says a person merges it by hand,
-                   keeping the hunks git merged, as a copy conflicted on its
-                   own is merged, and that `update-shape.py apply
-                   --accept-local` on a copy merged unlike the pin re-pins
-                   it from the merge. The `shape currency` row never names
-                   it (#501), and the `apply` it names is refused and asks
-                   for it: `update-local-drift` where `check` calls the
+                   `--theirs` where only that side holds a pin, of THE PIN,
+                   which only a tool writes, so one side taken whole is one
+                   tool's output, and of no copy but one PROVED to be tool
+                   output on both sides (#547).
+                   A copy either side may have edited is never named with it
+                   (#485), though a merge of two `update-shape.py apply`
+                   runs conflicts in the two together: a copy can hold an
+                   edit of the project, kept by `apply --accept-local` on one
+                   side, and taken whole the other side's copy dropped it,
+                   the hunks git merged cleanly with it, and the doctor then
+                   said COMPLIANT. The copies are the files the taken side's
+                   pin has `files:` rows for, their collision copies
+                   included -- those rows and not this standard's copy
+                   lists, since a file the pin has no row for is not a shape
+                   copy, though the lists name its path (review of PR #358).
+                   PROVE AND TAKE (Brett Heap, 2026-10-14T23:54:30Z, #547):
+                   a conflicted copy whose two stages are each, byte for
+                   byte, the standard's own file at the commit THAT side's
+                   pin names holds no edit of the project on either side.
+                   It is pure tool output, so the command names it beside
+                   the pin and takes it whole, and the `why` says so;
+                   `taken_with_the_pin` makes the proof, and
+                   `detail["taken_with_the_pin"]` lists what it proved.
+                   Every other conflicted copy is still a person's: one side
+                   that differs, a side's pin naming a commit the checkout
+                   this doctor runs from does not hold, a path the standard
+                   does not have at that commit, a read that fails. Where
+                   one of them is conflicted the `why` says a person merges
+                   it by hand, keeping the hunks git merged, as a copy
+                   conflicted on its own is merged, and that
+                   `update-shape.py apply --accept-local` on a copy merged
+                   unlike the pin re-pins it from the merge. The `shape
+                   currency` row never names it (#501), and the `apply` it
+                   names is refused and asks for it: `update-local-drift`
+                   where `check` calls the
                    copy `locally-modified`, as it does with the update
                    side's pin taken, and `update-conflict` where it calls
                    it `both`, as it does with the person's side's pin
@@ -2741,7 +2759,12 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    commit>~1`, the pin as it was before it. The history is
                    walked newest first, and the commit named is the first
                    whose parent holds a pin that reads, so two commits in a
-                   row that each broke it are reached past.
+                   row that each broke it are reached past. A leg pin put
+                   back that names another commit than the root's gitlink
+                   for that leg -- the slip was in the bump's own commit,
+                   whose parent holds the OLD pin -- is still the one to put
+                   back, and the `why` says what comes after it:
+                   `gitlink_left_behind` (#547).
       none         nothing above: no history, a root commit, no git, a walk
                    that meets a parent holding no pin, or goes
                    `PIN_HISTORY_DEPTH` commits back, before a pin that reads.
@@ -2828,18 +2851,32 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                     f"{what} whole" if b"3" in pin_stages and side == "--ours"
                     else f"only that side of the merge holds a {what}. Take "
                     "it whole")
-            lines, copies = [], []
+            lines, copies, taken = [], [], []
             if pin == SHAPE_PIN:
                 lines = sorted(name for name in (kind.manifest, us.README)
                                if name in stages)
                 copies = sorted(name for name in set(
                     pin_at(ctx, f":{stage.decode()}") or ())
                     if name in stages)
+                taken = taken_with_the_pin(ctx, kind, copies)
+                copies = [name for name in copies if name not in taken]
             then, after = ", then finish", ""
+            said = []
+            if taken:
+                if detail is not None:
+                    detail["taken_with_the_pin"] = taken
+                said.append(
+                    f"{' and '.join(taken)} "
+                    + ("are" if len(taken) > 1 else "is")
+                    + " conflicted too and taken whole with the pin: each "
+                    "side holds " + ("them" if len(taken) > 1 else "it")
+                    + " byte for byte as the standard wrote "
+                    + ("them" if len(taken) > 1 else "it") + " at the "
+                    "commit that side's pin names, so neither side holds an "
+                    "edit of the project")
             if lines or copies:
                 if detail is not None:
                     detail["left_for_a_person"] = sorted(lines + copies)
-                said = []
                 if lines:
                     said.append(
                         f"{' and '.join(lines)} "
@@ -2868,9 +2905,11 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                              "check calls it both, as update-conflict, and "
                              "either refusal asks for --accept-local on that "
                              "path")
+            if said:
                 then = ". " + ". ".join(said) + ". Then finish"
             return "unmerged", (
                 f"{git_c} checkout {side} -- {quote_arg(pin)}"
+                + "".join(f" {quote_arg(name)}" for name in taken)
             ), (f"{note} and never a hand-merged {what}{then} the merge as "
                 f"git says and run this doctor again{after}")
     elif pin_reads_at(ctx, "HEAD", pin):
@@ -2919,8 +2958,121 @@ def pin_restore(ctx: Context, detail: dict | None = None,
             f"{git_c} checkout {quote_arg(before)} -- {quote_arg(pin)}"
         ), (f"the {what} as it was before {breaking[:12]}, the commit that "
             f"broke it, and the newest {what} in its history that reads. "
-            f"Commit that rather than editing the {what}")
+            f"Commit that rather than editing the {what}"
+            + gitlink_left_behind(ctx, before, pin))
     return "none", None, None
+
+
+def taken_with_the_pin(ctx: Context, kind, copies: list) -> list:
+    """Which of `copies`, conflicted beside the shape pin, `pin_restore`
+    takes whole with it: those PROVED to be pure tool output on both sides
+    of the merge, in `copies`' order (#547).
+
+    PROVE AND TAKE, Brett Heap's ruling on #460's L2-8 (2026-10-14T23:54:30Z).
+    Before #496 one NEXT took every conflicted copy whole with the pin,
+    right for a copy nobody edited and wrong for one kept by `apply
+    --accept-local`. Since #496 (#485) every one went to a person, the
+    copies two `apply` runs to different targets wrote included, and a hand
+    merge that kept both sides of a hunk, then `--accept-local`, pinned a
+    stale line as the project's own edit, so every later upgrade of that
+    copy was a `both`. A side is proved unedited where its stage is, byte
+    for byte, the standard's own file at the commit THAT side's pin names:
+    its own `files:` rows and `commit:`, read by `pin_at` through the
+    checks `read_pin` makes. Where both sides are, the copy is one tool's
+    output either way, and the side the restore takes is the copy that
+    matches the pin it keeps.
+
+    THE STANDARD'S FILE IS `update-shape.py`'s, by its `source_for`, so a
+    pinned path maps to the file `check` compares it with, a collision copy
+    under `shape/` included. And it comes from the checkout this doctor
+    runs from, as AGENTS.md says to run it, read by `git show`: nothing is
+    fetched or cloned.
+
+    ANYTHING NOT PROVED STAYS THE HAND MERGE, as before: a stage that
+    differs or is missing, a side's pin that does not read or has no row
+    for the copy, a commit that checkout does not hold, a path the standard
+    does not have at that commit, a read that fails. None of those is a
+    guess this makes.
+    """
+    us = ctx.update_shape()
+    standard = us.Upstream(ctx.shape, str(ctx.shape))
+    sides = []
+    for number in ("2", "3"):
+        read = pin_at(ctx, f":{number}", whole=True)
+        if read is None:
+            return []
+        held, rows = read
+        sides.append((number, str(held["commit"]).lower(),
+                      {row.path for row in rows}))
+    return [copy for copy in copies
+            if all(as_the_standard_wrote_it(ctx, us, kind, standard, copy,
+                                            *side) for side in sides)]
+
+
+def as_the_standard_wrote_it(ctx: Context, us, kind, standard, copy: str,
+                             number: str, commit: str, rows: set) -> bool:
+    """Whether index stage `number` holds `copy` byte for byte as the
+    standard wrote it at `commit`, the commit that side's pin names, whose
+    `files:` rows are `rows` (#547). False wherever any of it cannot be
+    read: `taken_with_the_pin` takes nothing it has not proved."""
+    if copy not in rows:
+        return False
+    held = git_answer(["cat-file", "blob", f":{number}:./{copy}"], ctx.root,
+                      binary=True)
+    if held is None:
+        return False
+    try:
+        source = us.source_for(copy, standard, commit, kind)
+        wrote = standard.blob(commit, source) if source else None
+    except (OSError, ValueError):
+        return False
+    return wrote is not None and wrote == held
+
+
+def gitlink_left_behind(ctx: Context, rev: str, pin: str) -> str:
+    """What the `why` adds where `pin_restore` puts back a LEG pin out of
+    history, from `rev`, that names another commit than the root's gitlink
+    for that leg; otherwise nothing (#547, #460's L2-9).
+
+    THE BUMP'S OWN COMMIT. `bump-leg.py --to X` moves the gitlink, the pin
+    and every workflow reference in one commit; amend a slip into that
+    commit's pin and the commit before it holds the pin for the OLD leg
+    commit. Putting that pin back is still right, since it is the newest
+    one that reads, but once it is committed the doctor says DRIFTED, the
+    gitlink at X and the pin at the old commit. `with_gitlink_repairs`
+    then names the closing step, a `bump-leg.py` line, in the `pins` row's
+    reason, and a `bump-leg.py` run before the pin is committed is refused
+    `bump-leg-root-dirty`. So the sentence says commit it, then run that
+    line, and the NEXT stays the one command it was (#548's rule: every
+    addition goes in `why`).
+
+    THE GITLINK THE `pins` ROW READS, `recorded_gitlink` -- the index
+    first, then HEAD -- since that row is the one the sentence sends the
+    reader to: in a tree whose index holds what HEAD does, HEAD's gitlink.
+    Nothing is said where either commit cannot be read, or for the shape
+    pin, which has no gitlink.
+    """
+    if pin == SHAPE_PIN:
+        return ""
+    for leg in ctx.legs():
+        role = str(leg.get("role") or "")
+        path = str(leg.get("path") or "")
+        if not role or not path or pin != f"contracts/{role}-pin.yaml":
+            continue
+        commit = str((pin_at(ctx, rev, pin) or {}).get("commit")
+                     or "").lower()
+        try:
+            gitlink = recorded_gitlink(ctx.root, path)
+        except (OSError, ValueError):
+            return ""
+        if not COMMIT_RE.match(commit) or not gitlink or gitlink == commit:
+            return ""
+        return (f". That pin names {commit[:12]} and the root's gitlink for "
+                f"{path} is {gitlink[:12]}, so commit it, then run the "
+                f"bump-leg.py line the pins row names for {path}: --to the "
+                f"gitlink's {gitlink[:12]} keeps the move, and --to the "
+                f"pin's {commit[:12]} undoes it")
+    return ""
 
 
 def declared_pins(ctx: Context) -> set:
@@ -3082,7 +3234,10 @@ def unreadable_next(ctx: Context, unreadable: list,
     person. That copy's case is `unmerged`, the one it has once the pin
     reads, and not `project`, and `detail` gets the `left_for_a_person`
     the `shape currency` row's has, so both rows say the same of the same
-    command.
+    command. A copy that command takes whole with the pin, proved tool
+    output on both sides (#547), is `unmerged` too, and `detail` gets the
+    `taken_with_the_pin` that row's has: the command overwrites it, and
+    `project` would say git was not asked about a file the NEXT puts back.
     """
     restore: dict[str, str] = {}
     #: `(command, why)` for each file with a command, in the row's order.
@@ -3097,11 +3252,14 @@ def unreadable_next(ctx: Context, unreadable: list,
         else:
             restore[rel] = "project"
     left = held.get("left_for_a_person", [])
-    for rel in left:
+    taken = held.get("taken_with_the_pin", [])
+    for rel in left + taken:
         if restore.get(rel) == "project":
             restore[rel] = "unmerged"
     if left and detail is not None:
         detail["left_for_a_person"] = left
+    if taken and detail is not None:
+        detail["taken_with_the_pin"] = taken
     command, why = (commands.get(SHAPE_PIN)
                     or next(iter(commands.values()), (None, None)))
     if command is None:
