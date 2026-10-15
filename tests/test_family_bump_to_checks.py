@@ -277,7 +277,8 @@ def test_a_commit_missing_after_a_failed_fetch_is_not_called_unpushed(
 
     lines = stderr.splitlines()
     assert lines[0] == (f"  note: could not fetch {PATH} from its origin; "
-                        "the commit must already be in its object store")
+                        "the commit must already be in its object store and "
+                        "on a branch of its remote as last fetched")
     assert refusal("\n".join(lines[1:])) == (
         f"REFUSED member-to-unknown: --to {missing} is not a commit {PATH} "
         "holds, and its fetch from its origin failed, so whether a branch of "
