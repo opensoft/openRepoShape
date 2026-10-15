@@ -77,8 +77,11 @@ row: they are this project's own content, and yours to edit.
 A contract the code READS but does not OWN lives in the SPEC leg. That was
 ruled and measured on the MedxEHR conversion: `contracts/` moved to the spec
 leg, and the code leg's tooling now takes `CONTRACTS_DIR` from the environment
-— the root Makefile exports `$(CURDIR)/spec/contracts` once — rather than each
-script guessing at `../`.
+rather than each script guessing at `../`. Where this root was ADOPTED, its
+Makefile exports `CONTRACTS_DIR` once, as the `contracts/` of the spec leg at
+the path `project.yaml` mounts it, and `make contracts-dir` prints it. A
+SCAFFOLDED root's Makefile exports none: its legs start empty, so nothing
+reads across them yet.
 
 ## The five commands
 

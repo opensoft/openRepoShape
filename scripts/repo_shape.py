@@ -1429,9 +1429,15 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     A `LinkPins` carries, beside the links that answered, why a tree that WAS
     reached could not: a warning for such a link says so, where a plain
     mapping's says the tree is not reachable (#338).
+
+    A tree that is not reachable is offered the sources that would let it be
+    read: the caller's own, where its `LinkPins` has `remedies` for the link
+    (the scaffold's, #610), and otherwise the naming validator's, which
+    reads a checkout beside the project and takes `--link-source`.
     """
     available = _link_declarations(link_pins)
     unreadable = getattr(link_pins, "unreadable", None) or {}
+    remedies = getattr(link_pins, "remedies", None) or {}
     warnings: list[str] = []
     unverified: list[str] = []
     # A link whose variable another link of the chain shares is never offered
@@ -1452,15 +1458,17 @@ def _chain_link_findings(chain, link_pins) -> tuple:
             continue
         if declared is None:
             unverified.append(holder)
-            alone = pin_product_key(holder) not in shared
-            offered = (f"a sibling checkout, {pin_source_env_name(holder)}, or"
-                       if alone else "a sibling checkout or")
+            remedy = remedies.get(holder.casefold())
+            if remedy is None:
+                variable = ("" if pin_product_key(holder) in shared
+                            else f", {pin_source_env_name(holder)},")
+                remedy = (f"a sibling checkout{variable} or --link-source "
+                          f"{holder}=<path> would let it be read")
             warnings.append(
                 f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
                 f"is a fact in {holder}'s own tree, which is not "
-                f"reachable here ({offered} --link-source "
-                f"{holder}=<path> would let it be read). The recorded "
-                "chain still classifies.")
+                f"reachable here ({remedy}). The recorded chain still "
+                "classifies.")
             continue
         if held.casefold() not in {pin.casefold() for pin in declared}:
             return (f"{holder} declares "
@@ -2697,6 +2705,22 @@ def _os_reason(exc: BaseException) -> str:
     return getattr(exc, "strerror", None) or str(exc)
 
 
+def shown_path(path) -> str:
+    """A path as a line about it names it: as it is, unless a character in
+    it is not printable (`str.isprintable`), and then as Python's `repr`
+    spells it -- `\\x1b`, `\\n`, `\\r`, and `\\udcff` for a byte that is not
+    UTF-8, as `sys.argv` keeps one (#610).
+
+    THE SPELLING `pin-source-unreadable` GIVES A `--pin-source` (#339):
+    `shape_materialize.shown_source` is this function. Printed raw, an ESC
+    in a path reached the terminal, and a line break or a carriage return
+    began a line of the path's choosing. A printable path is named byte for
+    byte as it always was.
+    """
+    text = str(path)
+    return text if text.isprintable() else repr(text)
+
+
 def link_manifest_lookup(path) -> tuple[Path | None, str | None]:
     """`(manifest, None)` where `path` can answer as a link's tree, else
     `(None, why)`. `<dir>` -> `<dir>/project.yaml`; a file is taken as the
@@ -2749,32 +2773,39 @@ def link_declarations(manifest_path, key: str = CHAIN_LINK_DECLARED_BY
     iterating it as one read `openDox` as the characters `D`, `e`, `n`, `o`,
     `p`, `x` and ended the run in a `TypeError` for `5` (#338). An absent or
     empty `key`, and a blank entry in the list, declare nothing, as ever.
+
+    THE MANIFEST'S PATH IN `why` IS `shown_path`'S (#610). It is the
+    scaffold's `--pin-source`, or a `--link-source`, with `/project.yaml`
+    after it, and the scaffold prints `why` in its `declared-unverified`
+    WARNING: a `--pin-source` holding an ESC put a raw `\\x1b[31m` on
+    stderr. A printable path is the bytes it always was.
     """
     path, why = link_manifest_lookup(manifest_path)
     if path is None:
         return None, why
+    named = shown_path(path)
     try:
         data = load_yaml(path)
     except Refusal as exc:
         cause = exc.__cause__
         if isinstance(cause, OSError):
-            return None, f"{path}: {_os_reason(cause)}"
-        return None, exc.detail
+            return None, f"{named}: {_os_reason(cause)}"
+        return None, exc.detail.replace(str(path), named)
     except (YamlError, OSError, UnicodeDecodeError) as exc:
-        return None, f"{path}: {exc}"
+        return None, f"{named}: {exc}"
     if not isinstance(data, dict):
-        return None, f"{path}: not a mapping"
+        return None, f"{named}: not a mapping"
     declared = data.get(key)
     if declared is None:
         return set(), None
     if not isinstance(declared, list):
-        return None, f"{path}: {key} is not a list"
+        return None, f"{named}: {key} is not a list"
     pins: set[str] = set()
     for pin in declared:
         if pin is None or pin == "":
             continue
         if not isinstance(pin, str):
-            return None, f"{path}: {key} holds an entry that is not text"
+            return None, f"{named}: {key} holds an entry that is not text"
         pins.add(repo_basename(pin))
     return pins, None
 
@@ -2844,11 +2875,22 @@ class LinkPins(dict):
     it, which names the reason instead of saying the tree is "not reachable
     here". Only a caller that asks for one gets one, so every other
     reader's warning is exactly the text it always was.
+
+    `remedies`, `{link casefolded: what would let its tree be read}`, is the
+    sources a caller that reads OTHER sources than the naming validator's
+    has to offer for a tree that is not reachable (#610). That warning
+    offers "a sibling checkout, SHAPE_PIN_SOURCE_<LINK>, or --link-source
+    <link>=<path>", and the scaffold reads no sibling checkout and has no
+    `--link-source`, so it names its own here. A link with no entry, and
+    every link for a caller that gives none, gets the naming validator's
+    words, as ever.
     """
 
-    def __init__(self, found=(), unreadable: dict | None = None) -> None:
+    def __init__(self, found=(), unreadable: dict | None = None,
+                 remedies: dict | None = None) -> None:
         super().__init__(found)
         self.unreadable: dict[str, str] = dict(unreadable or {})
+        self.remedies: dict[str, str] = dict(remedies or {})
 
 
 def link_pins_from_trees(links, root: Path | None = None,
@@ -2856,7 +2898,8 @@ def link_pins_from_trees(links, root: Path | None = None,
                          default_source=None,
                          key: str = CHAIN_LINK_DECLARED_BY, *,
                          tried: dict | None = None,
-                         with_reasons: bool = False) -> dict[str, set]:
+                         with_reasons: bool = False,
+                         remedies: dict | None = None) -> dict[str, set]:
     """`{link: the pins ITS manifest declares}` for the links that answered.
 
     A link whose tree is not on the disk is simply ABSENT from the mapping,
@@ -2873,6 +2916,11 @@ def link_pins_from_trees(links, root: Path | None = None,
     link a source reached and could not read, so that the caller that has no
     line of its own for it (the scaffold) can have the warning say so. It is
     off for the callers that print the reason themselves, and for the rest.
+
+    `remedies` returns a `LinkPins` too, carrying them: what would let each
+    link's tree be read, in the caller's own sources, for the warning about
+    a tree that is not reachable (#610). Given without `with_reasons`, the
+    `LinkPins` remembers no reason, as the plain mapping does not.
 
     A link whose `SHAPE_PIN_SOURCE_<PRODUCT>` another of `links` names too is
     not read through it (#275): one tree would answer for two links, and a
@@ -2914,7 +2962,9 @@ def link_pins_from_trees(links, root: Path | None = None,
             unreadable[name.casefold()] = why
             continue
         found[name.casefold()] = pins
-    return LinkPins(found, unreadable) if with_reasons else found
+    if not (with_reasons or remedies):
+        return found
+    return LinkPins(found, unreadable if with_reasons else None, remedies)
 
 
 def find_repo_root(start: Path) -> Path:

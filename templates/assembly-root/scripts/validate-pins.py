@@ -795,6 +795,19 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
         report.note(f"{rel}: {len(files)} copied shape file(s) match their digests")
 
 
+def _shown(typed: str) -> str:
+    """A `--pin-source` value as a note names it: as typed, unless a
+    character in it is not printable (`str.isprintable`), and then as
+    Python's `repr` spells it, `'x\\x1b[31mRED'` (#610). It is the spelling
+    the scaffold's `pin-source-unreadable` gives a `--pin-source`
+    (`repo_shape.shown_path`), written here rather than imported: a root
+    whose `scripts/repo_shape.py` is older than this file has no such name,
+    and this gate would end in an `ImportError` before it checked a pin.
+    Printed raw, an ESC in the value reached the terminal as the control it
+    is."""
+    return typed if typed.isprintable() else repr(typed)
+
+
 class PinSources:
     """Every `--pin-source` value AS TYPED, read against the neutral-product
     pins `project.yaml` declares, and which of them a pin actually read.
@@ -869,12 +882,13 @@ class PinSources:
         """The sentence saying a value holding `=` was read as a bare PATH,
         or `""` — what a person who meant `PRODUCT=PATH` and mistyped the
         product needs told, since nothing else in the run names it. Nothing
-        when no pin is declared: the note has already said so."""
+        when no pin is declared: the note has already said so. The key is
+        spelled as `_shown` spells the value (#610)."""
         if typed is None or self.reading.get(typed) is not None \
                 or "=" not in typed or not self.declared:
             return ""
         key = typed.partition("=")[0]
-        what = f"`{key}` is not" if key else "nothing before its `=` is"
+        what = f"`{_shown(key)}` is not" if key else "nothing before its `=` is"
         return (f"It was read as a PATH: {what} a declared neutral-product "
                 f"pin (declared: {', '.join(self.declared)}).")
 
@@ -1221,13 +1235,16 @@ def _note_unused_pin_sources(sources: PinSources, report: Report) -> None:
     recomputed, nothing is declared, or every pin had a more specific
     answer. A value holding `=` that was read as a PATH says so, because
     that is the mistyped key's only trace in the run.
+
+    "As typed" is `_shown`'s (#610): a value that is not printable, and the
+    later value that replaced it, are named as `repr` spells them.
     """
     for typed, product in sources.reading.items():
         if typed in sources.used:
             continue
         later = sources.replaced.get(typed)
         if later is not None:
-            why = f"the later `--pin-source {later}` replaced it"
+            why = f"the later `--pin-source {_shown(later)}` replaced it"
         elif product is not None:
             why = f"{product}'s digest was not recomputed from any source"
         elif not sources.declared:
@@ -1237,7 +1254,7 @@ def _note_unused_pin_sources(sources: PinSources, report: Report) -> None:
                    "--pin-source, SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout "
                    "beside this assembly root) or was not recomputed")
         report.unused(" ".join(filter(None, (
-            f"--pin-source {typed}: not used — {why}.",
+            f"--pin-source {_shown(typed)}: not used — {why}.",
             sources.read_as_path(typed)))))
 
 

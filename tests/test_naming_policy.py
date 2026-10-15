@@ -1988,19 +1988,25 @@ def test_scaffold_says_a_pin_source_whose_manifest_cannot_be_read_was_reached(
     assert "--dry-run: nothing was created." in result.stdout
 
 
-def test_scaffold_keeps_its_old_warning_for_a_pin_source_with_no_manifest(
+def test_scaffold_offers_its_own_sources_for_a_pin_source_with_no_manifest(
         tmp_path):
     """A `--pin-source` clone that holds no `project.yaml` is the ordinary
-    absence, as it always was, and its warning is the bytes it always was:
-    the scaffold changes only for a tree it reached and could not READ."""
+    absence, as it always was: the tree is "not reachable here", never
+    "reached". What would let it be read is the scaffold's own (#610). It
+    offered "a sibling checkout, SHAPE_PIN_SOURCE_OPENXDOX, or --link-source
+    openXdox=<path>", the naming validator's three, and the scaffold has no
+    `--link-source` and reads no sibling checkout. It reads the variable,
+    and, for the first link, its `--pin-source`."""
     result, _manifest = _scaffold_with_link_tree(tmp_path, None)
     assert result.returncode == 0, result.stderr + result.stdout
     assert ("WARNING declared-unverified: openXdox declaring a pin on openInk "
-            "is a fact in openXdox's own tree, which is not reachable here (a "
-            "sibling checkout, SHAPE_PIN_SOURCE_OPENXDOX, or --link-source "
-            "openXdox=<path> would let it be read). The recorded chain still "
-            "classifies.\n") in result.stderr, result.stderr
+            "is a fact in openXdox's own tree, which is not reachable here "
+            "(SHAPE_PIN_SOURCE_OPENXDOX, or a --pin-source clone of openXdox "
+            "that holds its project.yaml, would let it be read). The recorded "
+            "chain still classifies.\n") in result.stderr, result.stderr
     assert "was reached" not in result.stderr
+    assert "--link-source" not in result.stderr
+    assert "sibling checkout" not in result.stderr
 
 
 def test_the_naming_validator_keeps_its_own_two_lines_for_a_tree_it_reached(

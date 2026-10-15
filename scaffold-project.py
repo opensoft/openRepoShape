@@ -83,6 +83,11 @@ from repo_shape import (  # noqa: E402
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
     git_out, link_pins_from_trees, repo_basename, shell_line, tree_digest,
 )
+# The variable a chain link's tree is read through, and which links share
+# one, for the sources the scaffold offers a link it could not read (#610).
+from repo_shape import (  # noqa: E402
+    pin_product_key, pin_source_env_name, pin_source_env_shared,
+)
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
     copy_tree, default_reference, descendant_note, election_date, env_commit,
@@ -910,13 +915,54 @@ def _declaration(args) -> tuple[dict, set, tuple, dict]:
     too, and the warning says that tree could not be READ, with why, rather
     than that it "is not reachable here" (#338): the scaffold prints no other
     line about a source, so `with_reasons` is asked for here.
+
+    A tree that is not reachable is offered the sources THIS TOOL reads
+    (`_link_remedies`, #610), never the naming validator's.
     """
     pins = declared_pin_values(args)
     declared_pins: set[str] = set(pins)
     chain = referent_chain_links(args.referent_chain)
-    link_pins = link_pins_from_trees(chain, None, {}, args.pin_source,
-                                     with_reasons=True) if chain else {}
+    link_pins = link_pins_from_trees(
+        chain, None, {}, args.pin_source, with_reasons=True,
+        remedies=_link_remedies(chain)) if chain else {}
     return pins, declared_pins, chain, link_pins
+
+
+def _link_remedies(chain: tuple) -> dict[str, str]:
+    """What would let each chain link's own tree be read, in the scaffold's
+    own sources: `{link casefolded: the words}` for the `declared-unverified`
+    WARNING about a tree that is not reachable (#610).
+
+    That warning offered "a sibling checkout, SHAPE_PIN_SOURCE_<LINK>, or
+    --link-source <link>=<path>": the naming validator's three, and two of
+    them the scaffold does not have. It has no `--link-source`, and it reads
+    no checkout beside anything (`link_pins_from_trees(chain, None, ...)`).
+    It reads `SHAPE_PIN_SOURCE_<LINK>` for every link, unless another link
+    of the chain shares the variable (#275), and its `--pin-source` for the
+    FIRST link alone (#441), the pinned product's clone. A later link that
+    shares its variable has neither, which only a hand-written chain can
+    hold, and the warning says so.
+    """
+    links = [repo_basename(link) for link in chain]
+    shared = pin_source_env_shared(links)
+    remedies: dict[str, str] = {}
+    for index, link in enumerate(links[:-1]):
+        sources = ([] if pin_product_key(link) in shared
+                   else [pin_source_env_name(link)])
+        if not index:
+            sources.append(f"a --pin-source clone of {link} that holds its "
+                           "project.yaml")
+        if not sources:
+            remedies[link.casefold()] = (
+                "the scaffold reads no source for it: "
+                f"{pin_source_env_name(link)} is another link's too, and "
+                "--pin-source is the first link's tree alone")
+        elif len(sources) == 1:
+            remedies[link.casefold()] = f"{sources[0]} would let it be read"
+        else:
+            remedies[link.casefold()] = (f"{sources[0]}, or {sources[1]}, "
+                                         "would let it be read")
+    return remedies
 
 
 def _check_referent_chain(policy, assembly_name: str, declared_pins: set,

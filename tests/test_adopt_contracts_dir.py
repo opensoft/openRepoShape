@@ -302,6 +302,28 @@ def test_make_contracts_dir_prints_a_directory_that_exists(adopted):
 
 
 @needs_filter_repo
+def test_the_pinned_agent_file_is_true_of_the_adopted_makefile(adopted):
+    """L2-33 (#610). The adopted root's pinned `AGENTS-shape.md` said "the
+    root Makefile exports `$(CURDIR)/spec/contracts` once", while this
+    root's Makefile exports `$(CURDIR)/legs/spec/contracts`. It names no
+    path now: the `contracts/` of the spec leg at the path `project.yaml`
+    mounts it, and that is the path the Makefile exports."""
+    said = " ".join((adopted["clone"] / "AGENTS-shape.md").read_text(
+        encoding="utf-8").split())
+    assert "$(CURDIR)" not in said
+    assert "spec/contracts" not in said
+    assert ("Where this root was ADOPTED, its Makefile exports "
+            "`CONTRACTS_DIR` once, as the `contracts/` of the spec leg at "
+            "the path `project.yaml` mounts it, and `make contracts-dir` "
+            "prints it.") in said
+    (mounted,) = [str(leg["path"]) for leg in load_yaml(
+        adopted["clone"] / "project.yaml")["legs"] if leg["role"] == "spec"]
+    assert mounted == SPEC_PATH
+    assert contracts_dir_line(adopted["makefile"].decode("utf-8")) == (
+        f"CONTRACTS_DIR ?= $(CURDIR)/{mounted}/contracts")
+
+
+@needs_filter_repo
 def test_the_pin_digests_the_rendered_makefile(adopted):
     """The block is the adoption's own append, so the shape pin records the
     Makefile as written, block included, and the project's own pin

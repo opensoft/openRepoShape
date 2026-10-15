@@ -97,12 +97,38 @@ DEFAULT_MEMBERS_DIR = "members"
 #: `ls-tree` spell its mode.
 GITLINK_MODE = b"160000"
 
-LOCKSTEP = (
-    "THE LOCKSTEP RULE: a member's gitlink and its `members[].pin.commit` in "
-    "`family.yaml` are ONE invariant. `scripts/family.py bump --member "
-    "<Project> --to <commit>` moves both in one commit; moving one alone is "
-    "what this refuses."
-)
+
+def _lockstep(root: Path, project: str | None = None,
+              member_id: str | None = None) -> str:
+    """THE LOCKSTEP RULE, with the `bump` that keeps it, for this holder.
+
+    THE `bump` IT NAMED COULD NOT RUN (#610). The rule said `scripts/
+    family.py bump --member <Project> --to <commit>`, with no `--family-root`,
+    which `bump` requires, and no branch, though since #487 a real `bump`
+    refuses the holder's tracking branch, where a person stands after
+    `init`. So it names this holder by its path, as `member-gitlink-absent`'s
+    `add` does, and the `git -C <holder> switch -c family/bump-<member>` that
+    makes a branch first, as #539's `_switch_line` gives `add` and `remove`.
+
+    `project` is the member a finding is about, its `--member`; the branch
+    word is its row's `id:`, or the project where the row records none, as
+    `family.py bump` suggests its own (which adds the commit's first twelve,
+    unknown here: the `--to` is the person's to choose). The closing count
+    names no member, since more than one may be out of step, and says
+    `PROJECT_PLACEHOLDER` in both places, as `_switch_line` does.
+    """
+    member = (PROJECT_PLACEHOLDER if project is None
+              else shlex.quote(project))
+    word = None if project is None else (member_id or project)
+    return (
+        "THE LOCKSTEP RULE: a member's gitlink and its `members[].pin.commit` "
+        f"in `{MANIFEST}` are ONE invariant. From a checkout of openRepoShape, "
+        f"`{PYTHON} scripts/family.py bump --family-root "
+        f"{shlex.quote(str(root))} --member {member} --to <commit>` moves both "
+        "in one commit, on a branch other than the holder's tracking branch, "
+        f"which it refuses (`{_switch_line(root, 'bump', word)}` makes one); "
+        "moving one alone is what this refuses.")
+
 
 #: The findings THE LOCKSTEP RULE is about (#539): a member's gitlink and its
 #: pin out of step, and the pin's digest of the commit they name. The closing
@@ -381,7 +407,7 @@ def _pin_commit(pin: dict, project: str, report: Report) -> str:
 
 
 def _check_member_gitlink(root: Path, path: str, commit: str, project: str,
-                          report: Report) -> None:
+                          report: Report, rule: str) -> None:
     """The submodule gitlink this repository records at `path`, against the
     pin — THE LOCKSTEP RULE. Split from `_check_member` for #137. Raises
     `Refusal` when there is no gitlink at all: a row naming a member this
@@ -409,13 +435,13 @@ def _check_member_gitlink(root: Path, path: str, commit: str, project: str,
         report.finding(
             "member-gitlink-mismatch",
             f"{path}: gitlink {gitlink} != {MANIFEST} pin {commit}\n  "
-            + LOCKSTEP)
+            + rule)
     else:
         report.note(f"{path}: gitlink == pin {commit[:12]}")
 
 
 def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
-                       project: str, report: Report) -> None:
+                       project: str, report: Report, rule: str) -> None:
     """Is `member`'s own object store readable at `commit`, and does its
     digest match the pin? Split from `_check_member` for #137 — the two
     questions were already one comment block ("the digest and the identity")
@@ -462,7 +488,7 @@ def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
                 f"{project}: pin.tree_sha256 {recorded}\n"
                 f"       recomputed at {commit[:12]} {actual}\n"
                 "  The gitlink and the pin may agree on a commit whose bytes "
-                f"are not the bytes the pin was written against.\n  {LOCKSTEP}")
+                f"are not the bytes the pin was written against.\n  {rule}")
         else:
             report.note(f"{path}: tree digest recomputes ({recorded[:12]}…)")
 
@@ -499,14 +525,16 @@ def _check_member(root: Path, row: dict, seen: dict, report: Report) -> None:
         return
 
     # ---- the gitlink -------------------------------------------------------
+    # THE LOCKSTEP RULE each finding below ends at names this member (#610).
+    rule = _lockstep(root, project, str(row.get("id") or project))
     with _git_runs(f"the gitlink recorded at {path} could not be read"):
-        _check_member_gitlink(root, path, commit, project, report)
+        _check_member_gitlink(root, path, commit, project, report, rule)
 
     # ---- the digest and the identity --------------------------------------
     member = root / path
     with _git_runs(f"{project}'s pinned commit and its tree digest could not "
                    f"be read in {path}"):
-        _check_member_tree(member, pin, path, commit, project, report)
+        _check_member_tree(member, pin, path, commit, project, report, rule)
     _check_member_identity(member, row, project, report)
 
 
@@ -1236,14 +1264,16 @@ def _check_members(root: Path, members: list, no_members: bool,
                     "wrong")
 
 
-def _run_checks(args: argparse.Namespace, report: Report) -> tuple[dict, list]:
+def _run_checks(args: argparse.Namespace,
+                report: Report) -> tuple[Path, dict, list]:
     """Everything `main` used to run inside its own single `try`.
 
     Split from `main` for #137: lifting this whole body out from under
     `main`'s `try` removes a level of nesting from every branch inside it,
     which is where most of `main`'s cognitive complexity was. Raises
-    `Refusal` exactly as `main` always caught it; returns `(manifest,
-    members)`, which `main` still needs afterward for the final summary line.
+    `Refusal` exactly as `main` always caught it; returns `(root, manifest,
+    members)`, which `main` still needs afterward for the final summary
+    line, whose THE LOCKSTEP RULE names the holder (#610).
     """
     root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
     manifest_path = root / MANIFEST
@@ -1276,7 +1306,7 @@ def _run_checks(args: argparse.Namespace, report: Report) -> tuple[dict, list]:
     _check_members(root, members, args.no_members, report)
     if not args.pins:
         _check_shape_pin(root, manifest, report)
-    return manifest, members
+    return root, manifest, members
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1307,7 +1337,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report = Report()
     try:
-        manifest, members = _run_checks(args, report)
+        root, manifest, members = _run_checks(args, report)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -1323,7 +1353,7 @@ def main(argv: list[str] | None = None) -> int:
         # alone.
         rule = any(code in LOCKSTEP_CODES for code in report.codes)
         print(f"\n{len(report.findings)} finding(s) in {MANIFEST}."
-              + (f" {LOCKSTEP}" if rule else ""), file=sys.stderr)
+              + (f" {_lockstep(root)}" if rule else ""), file=sys.stderr)
         return 1
     print(f"family ok: {manifest.get('name')} ({manifest.get('id')}), "
           f"{len(members)} member(s)")
