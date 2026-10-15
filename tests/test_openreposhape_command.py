@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -34,7 +35,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, WINDOWS_SKIP, git
+from conftest import BASH, BASH_SKIP, REPO, bash_path, git, native_path
 
 COMMAND = REPO / "openRepoShape"
 SETUP = REPO / "setup.sh"
@@ -74,14 +75,16 @@ USAGE_LINES = (
 #: about a different line.
 USAGE_SCAFFOLD = USAGE_LINES[3]
 
-#: Same two reasons as `test_setup_sh.py`: no bash, or a Windows runner where
-#: bash.exe exists and the `python3` the fetched `setup.sh` calls does not.
-#: The command is a macOS/Linux/WSL2 convenience and has no Windows twin —
-#: there the way in is `py setup-project.py`, which needs no command to fetch
-#: it because it IS the file you downloaded.
-pytestmark = [pytest.mark.skipif(shutil.which("bash") is None,
-                                 reason="openRepoShape is a bash script"),
-              WINDOWS_SKIP]
+#: Every run is `BASH`: the `bash` on PATH, or on Windows Git Bash, with the
+#: PATH Git Bash makes (`git_bash_session`), every path spelled the way Git
+#: Bash spells it (`bash_path`) and every script a test writes for it given
+#: `\n` line ends (`write_script`) (#585). A `bash -s` run names `BASH` as
+#: its `executable` and keeps `bash` as its argv[0], so `$0` is the word
+#: `bash`, as a pipe into it gives. The suite wore `WINDOWS_SKIP` until
+#: then, and the command its one-line install places was said to work in
+#: Git Bash with nothing having run it there. PowerShell still has no twin:
+#: there the way in is `py setup-project.py`, the file you downloaded.
+pytestmark = [BASH_SKIP, pytest.mark.usefixtures("git_bash_session")]
 
 
 def command_env(home: Path | None = None, env: dict | None = None,
@@ -102,7 +105,7 @@ def command_env(home: Path | None = None, env: dict | None = None,
                  "OPENREPOSHAPE_RECORD_REF"):
         environ.pop(name, None)
     if setup_sh is not None:
-        environ["OPENREPOSHAPE_SETUP_SH"] = str(setup_sh)
+        environ["OPENREPOSHAPE_SETUP_SH"] = bash_path(setup_sh)
     environ.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     environ.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
     environ.setdefault("GIT_COMMITTER_NAME", "openRepoShape tests")
@@ -127,10 +130,43 @@ def run_cmd(*args: str, home: Path | None = None, env: dict | None = None,
     `command` is this checkout's file unless a test names an INSTALLED copy,
     which is how the record `--install` leaves beside one is read (#564).
     """
-    return subprocess.run(["bash", str(command), *args], capture_output=True,
-                          text=True, check=False, input="",
-                          env=command_env(home, env, setup_sh),
+    return subprocess.run([BASH, bash_path(command), *args],
+                          capture_output=True, text=True, check=False,
+                          input="", env=command_env(home, env, setup_sh),
                           start_new_session=True)
+
+
+def write_script(path: Path, text: str) -> None:
+    """A script some bash will read, written with `\\n` line ends everywhere:
+    `write_text` writes `\\r\\n` on Windows (#585)."""
+    path.write_bytes(text.encode("utf-8"))
+
+
+def assert_a_command(path: Path) -> None:
+    """`--install` placed a command: mode 755, or under Git Bash, which
+    keeps no mode bits (its drives are mounted `noacl`, so `chmod` changes
+    nothing there), one bash's own `-x` says it will run (#585)."""
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o755, path
+        return
+    probe = subprocess.run([BASH, "-c", 'test -x "$1"', "-", bash_path(path)],
+                           capture_output=True, check=False)
+    assert probe.returncode == 0, f"bash will not run {path}"
+
+
+def put_on_path(directory: Path, name: str, real: str) -> None:
+    """`directory/name` runs the program at `real`, for a `$PATH` a test
+    builds out of these and nothing else: a symlink, or on Windows a
+    `#!/bin/sh` script that execs it (#585). A symlink there needs an
+    elevated runner or Developer Mode, a copy of a Git Bash program cannot
+    find the DLL it loads from its own directory, and `/bin/sh` is found
+    through Git Bash's own mounts with nothing on `$PATH`."""
+    link = directory / name
+    if os.name != "nt":
+        link.symlink_to(real)
+        return
+    write_script(link, "#!/bin/sh\nexec %s \"$@\"\n"
+                 % shlex.quote(bash_path(real)))
 
 
 # --- what it says about itself ---------------------------------------------
@@ -208,7 +244,7 @@ def test_install_writes_an_executable_copy(tmp_path):
     for name in INSTALLED:
         target = tmp_path / ".local" / "bin" / name
         assert target.is_file(), result.stdout + f" (missing {name})"
-        assert stat.S_IMODE(target.stat().st_mode) == 0o755, name
+        assert_a_command(target)
         assert target.read_bytes() == (REPO / name).read_bytes(), name
         assert f"{name}: installed at" in result.stdout
     assert f"openRepoShape: {len(INSTALLED)} of {len(INSTALLED)} placed" \
@@ -278,8 +314,9 @@ def test_install_points_at_openrepotools(tmp_path):
     log = tmp_path / "requests.log"
     served = fake_github(tmp_path, INSTALLED, log=log)
     result = subprocess.run(
-        ["bash", "-s", "--", "--install"], capture_output=True, text=True,
-        check=False, input=COMMAND.read_text(encoding="utf-8"),
+        ["bash", "-s", "--", "--install"], executable=BASH,
+        capture_output=True, text=True, check=False,
+        input=COMMAND.read_text(encoding="utf-8"),
         cwd=str(tmp_path),
         env=command_env(home=tmp_path, setup_sh=None,
                         env={**served,
@@ -305,7 +342,8 @@ def test_install_points_at_openrepotools(tmp_path):
 
 def test_install_says_how_to_put_it_on_path(tmp_path):
     result = run_cmd("--install", home=tmp_path)
-    assert f'export PATH="{tmp_path}/.local/bin:$PATH"' in result.stdout
+    assert f'export PATH="{bash_path(tmp_path)}/.local/bin:$PATH"' \
+        in result.stdout
 
 
 def test_install_from_a_file_never_calls_gh(tmp_path):
@@ -326,12 +364,11 @@ def test_install_from_a_file_never_calls_gh(tmp_path):
     # QUOTED for the reason `fake_github`'s log is: an unquoted path with a
     # space in it makes the redirection land somewhere else, and a witness
     # nobody can find is a test that passes without guarding.
-    (shim / "gh").write_text(
-        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\nexit 1\n",
-        encoding="utf-8")
+    write_script(shim / "gh",
+                 f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\nexit 1\n")
     (shim / "gh").chmod(0o755)
     result = run_cmd("--install", home=tmp_path,
-                     env={"PATH": f"{shim}:{os.environ['PATH']}"})
+                     env={"PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"})
     assert result.returncode == 0, result.stderr
     called = log.read_text(encoding="utf-8").split("\n")[:-1] \
         if log.exists() else []
@@ -436,8 +473,9 @@ def test_a_bare_run_fetches_nothing(tmp_path):
     log = tmp_path / "calls.log"
     served = fake_github(tmp_path, INSTALLED, log=log)
     result = subprocess.run(
-        ["bash", str(COMMAND)], capture_output=True, text=True, check=False,
-        input="", env=command_env(home=tmp_path, setup_sh=None, env=served))
+        [BASH, bash_path(COMMAND)], capture_output=True, text=True,
+        check=False, input="",
+        env=command_env(home=tmp_path, setup_sh=None, env=served))
     assert result.returncode == 1, result.stdout + result.stderr
     assert USAGE_LINES[0] in result.stdout
     assert not log.exists(), (
@@ -497,24 +535,25 @@ def machine_path(tmp_path, present, logged_in=True) -> dict:
     for name in INSTALL_NEEDS:
         real = shutil.which(name)
         assert real, f"this machine has no {name}, which --install needs"
-        link = binaries / name
-        if not link.exists():
-            link.symlink_to(real)
+        if not (binaries / name).exists():
+            put_on_path(binaries, name, real)
     for name in present:
         script = binaries / name
         if name == "gh":
-            script.write_text(
+            write_script(
+                script,
                 "#!/bin/sh\n"
                 f"printf 'gh %s\\n' \"$*\" >> '{log}'\n"
                 'case "$*" in "auth status") exit '
                 f'{0 if logged_in else 1};; esac\n'
-                "exit 1\n", encoding="utf-8")
+                "exit 1\n")
         else:
-            script.write_text(
+            write_script(
+                script,
                 "#!/bin/sh\n"
                 f"printf '{name} %s\\n' \"$*\" >> '{log}'\n"
                 f"printf 'fake {name} was EXECUTED by a read-only report\\n' >&2\n"
-                "exit 1\n", encoding="utf-8")
+                "exit 1\n")
         script.chmod(0o755)
     return {"PATH": str(binaries), "_log": str(log)}
 
@@ -527,7 +566,7 @@ def install_with_machine(tmp_path, present, logged_in=True):
     # The bash by ABSOLUTE path: `subprocess` resolves a bare argv[0] against
     # the CHILD's PATH, and this one holds no bash on purpose.
     result = subprocess.run(
-        [shutil.which("bash"), str(COMMAND), "--install"],
+        [BASH, bash_path(COMMAND), "--install"],
         capture_output=True, text=True, check=False, input="",
         env=command_env(home=tmp_path, setup_sh=None,
                         env={**env, "OPENREPOSHAPE_BIN_DIR": str(bin_dir)}))
@@ -630,11 +669,11 @@ def test_a_ref_the_doctor_would_check_out_is_validated(ref, tmp_path):
     any clone does.
     """
     result = subprocess.run(
-        ["bash", "-s", "--", "--doctor", str(tmp_path)],
+        ["bash", "-s", "--", "--doctor", str(tmp_path)], executable=BASH,
         capture_output=True, text=True, check=False,
         input=COMMAND.read_text(encoding="utf-8"), cwd=str(tmp_path),
         env=command_env(home=tmp_path, setup_sh=None,
-                        env={"OPENREPOSHAPE_REPO": str(REPO),
+                        env={"OPENREPOSHAPE_REPO": bash_path(REPO),
                              "OPENREPOSHAPE_REF": ref}))
     assert result.returncode == 2, result.stdout + result.stderr
     assert "OPENREPOSHAPE_REF" in result.stderr
@@ -671,11 +710,11 @@ def test_a_checkout_without_the_doctor_refuses_by_name(tmp_path):
     subprocess.run(["git", "push", "-q", "origin", "main"], cwd=str(seed),
                    capture_output=True, check=True)
     result = subprocess.run(
-        ["bash", "-s", "--", "--doctor", str(tmp_path)],
+        ["bash", "-s", "--", "--doctor", str(tmp_path)], executable=BASH,
         capture_output=True, text=True, check=False,
         input=COMMAND.read_text(encoding="utf-8"), cwd=str(tmp_path),
         env=command_env(home=tmp_path, setup_sh=None,
-                        env={"OPENREPOSHAPE_REPO": str(bare),
+                        env={"OPENREPOSHAPE_REPO": bash_path(bare),
                              "TMPDIR": str(temporary)}))
     assert result.returncode == 2, result.stdout + result.stderr
     assert "has no shape-doctor.py" in result.stderr
@@ -813,7 +852,7 @@ def fake_github(tmp_path, served_names, log: Path | None = None) -> dict:
     """
     served = tmp_path / "served"
     served.mkdir(exist_ok=True)
-    (served / "setup.sh").write_text(STUB_SETUP_SH, encoding="utf-8")
+    write_script(served / "setup.sh", STUB_SETUP_SH)
     for name in served_names:
         (served / name).write_bytes((REPO / name).read_bytes())
 
@@ -831,20 +870,22 @@ def fake_github(tmp_path, served_names, log: Path | None = None) -> dict:
         return "" if log is None else \
             f'printf \'{program} %s\\n\' "$*" >> \'{log}\'\n'
 
-    (fake / "gh").write_text(
+    write_script(
+        fake / "gh",
         "#!/bin/sh\n"
         + logging("gh") +
         'case "$*" in\n'
         + routes +
         "esac\n"
         'printf \'fake gh: unexpected call: %s\\n\' "$*" >&2\n'
-        "exit 1\n", encoding="utf-8")
+        "exit 1\n")
     (fake / "gh").chmod(0o755)
-    (fake / "curl").write_text(
+    write_script(
+        fake / "curl",
         "#!/bin/sh\n"
         + logging("curl") +
         "printf 'fake curl: no test here may reach the network\\n' >&2\n"
-        "exit 1\n", encoding="utf-8")
+        "exit 1\n")
     (fake / "curl").chmod(0o755)
     return {"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"}
 
@@ -884,7 +925,7 @@ def test_the_fetched_setup_sh_lands_in_a_workdir_that_still_exists(offline_githu
                    + result.stdout + result.stderr)
     ran_in, forwarded = match.group(1), match.group(2).split()
     assert "--preflight" in forwarded, forwarded
-    assert not Path(ran_in).exists(), (
+    assert not native_path(ran_in).exists(), (
         f"{ran_in} outlived the command; the EXIT trap did not fire")
 
 
@@ -915,8 +956,9 @@ def test_a_failed_fetch_replaces_nothing(tmp_path):
                                   encoding="utf-8")
     withheld = fake_github(tmp_path, [])
     result = subprocess.run(
-        ["bash", "-s", "--", "--install"], capture_output=True, text=True,
-        check=False, input=COMMAND.read_text(encoding="utf-8"),
+        ["bash", "-s", "--", "--install"], executable=BASH,
+        capture_output=True, text=True, check=False,
+        input=COMMAND.read_text(encoding="utf-8"),
         cwd=str(tmp_path),
         env=command_env(home=tmp_path, setup_sh=None,
                         env={**withheld,
@@ -963,10 +1005,9 @@ def test_all_or_none_still_holds_at_more_than_one_installable(tmp_path):
     source = COMMAND.read_text(encoding="utf-8")
     assert "\nINSTALLABLES=(openRepoShape)\n" in source, (
         "the array this test lengthens has moved or been reshaped")
-    shim.write_text(
-        source.replace("\nINSTALLABLES=(openRepoShape)\n",
-                       "\nINSTALLABLES=(openRepoShape witness)\n", 1),
-        encoding="utf-8")
+    write_script(
+        shim, source.replace("\nINSTALLABLES=(openRepoShape)\n",
+                             "\nINSTALLABLES=(openRepoShape witness)\n", 1))
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -974,8 +1015,8 @@ def test_all_or_none_still_holds_at_more_than_one_installable(tmp_path):
                                            encoding="utf-8")
     withheld = fake_github(tmp_path, ["openRepoShape"])
     result = subprocess.run(
-        ["bash", str(shim), "--install"], capture_output=True, text=True,
-        check=False, input="",
+        [BASH, bash_path(shim), "--install"], capture_output=True,
+        text=True, check=False, input="",
         env=command_env(home=tmp_path, setup_sh=None,
                         env={**withheld,
                              "OPENREPOSHAPE_BIN_DIR": str(bin_dir)}))
@@ -1007,8 +1048,9 @@ def test_install_from_stdin_fetches_itself_into_a_live_workdir(offline_github,
     """
     bin_dir = tmp_path / "bin"
     result = subprocess.run(
-        ["bash", "-s", "--", "--install"], capture_output=True, text=True,
-        check=False, input=COMMAND.read_text(encoding="utf-8"),
+        ["bash", "-s", "--", "--install"], executable=BASH,
+        capture_output=True, text=True, check=False,
+        input=COMMAND.read_text(encoding="utf-8"),
         # cwd: `bash -s` leaves $BASH_SOURCE unset, so the command's $SELF is
         # the literal `bash`, and `[ -f "$SELF" ]` must be false for the
         # fetching branch to be the one under test. A directory holding
@@ -1023,7 +1065,7 @@ def test_install_from_stdin_fetches_itself_into_a_live_workdir(offline_github,
     for name in INSTALLED:
         target = bin_dir / name
         assert target.is_file(), result.stdout + result.stderr + f" ({name})"
-        assert stat.S_IMODE(target.stat().st_mode) == 0o755, name
+        assert_a_command(target)
         assert target.read_bytes() == (REPO / name).read_bytes(), name
         assert f"{name}: installed at" in result.stdout
 
@@ -1044,7 +1086,7 @@ def install_at(tmp_path, ref=None, command=COMMAND, opt_in=True):
     it (`$OPENREPOSHAPE_RECORD_REF=1`) unless `opt_in` is false; the result,
     and the path of the command it places."""
     bin_dir = tmp_path / "bin"
-    env = {"OPENREPOSHAPE_BIN_DIR": str(bin_dir)}
+    env = {"OPENREPOSHAPE_BIN_DIR": bash_path(bin_dir)}
     if ref is not None:
         env["OPENREPOSHAPE_REF"] = ref
         if opt_in:
@@ -1084,9 +1126,9 @@ def test_install_records_the_ref_beside_a_command_it_leaves_unchanged(
     assert installed.read_bytes() == COMMAND.read_bytes(), (
         "the command must stay byte for byte the file it was installed from")
     assert result.stdout.splitlines()[:3] == [
-        f"openRepoShape: installed at {installed}",
-        f"openRepoShape: pinned to {PINNED}, recorded in {record}",
-        f"openRepoShape: 1 of 1 placed in {installed.parent}"]
+        f"openRepoShape: installed at {bash_path(installed)}",
+        f"openRepoShape: pinned to {PINNED}, recorded in {bash_path(record)}",
+        f"openRepoShape: 1 of 1 placed in {bash_path(installed.parent)}"]
     assert version_of(installed) == \
         f"openRepoShape (opensoft/openRepoShape @ {PINNED})"
     assert version_of(installed, {"OPENREPOSHAPE_REF": OTHER}) == \
@@ -1118,13 +1160,14 @@ def test_installing_again_keeps_moves_or_drops_the_record(tmp_path):
     same, installed = install_at(tmp_path, PINNED)
     record = record_of(installed)
     assert same.returncode == 0, same.stderr
-    assert f"openRepoShape: already pinned to {PINNED} in {record} " \
+    assert f"openRepoShape: already pinned to {PINNED} in " \
+        f"{bash_path(record)} " \
         "(unchanged)" in same.stdout
     assert same.stdout.count("(unchanged)") == 2, same.stdout
 
     newer, _ = install_at(tmp_path, "v10.0.0")
     assert f"openRepoShape: pinned to v10.0.0 (was {PINNED}), recorded in " \
-        f"{record}" in newer.stdout
+        f"{bash_path(record)}" in newer.stdout
     itself, _ = install_at(tmp_path, command=installed)
     assert "openRepoShape: already pinned to v10.0.0" in itself.stdout
     assert record.read_text(encoding="utf-8") == "v10.0.0\n"
@@ -1166,7 +1209,7 @@ def test_a_record_that_is_not_a_ref_is_refused_by_name(tmp_path, text, shown):
     record_of(installed).write_bytes(text)
     result = run_cmd("--version", command=installed)
     assert result.returncode == 2, result.stdout + result.stderr
-    assert f"the ref recorded in {record_of(installed)} {shown}" \
+    assert f"the ref recorded in {bash_path(record_of(installed))} {shown}" \
         in result.stderr
     assert "Run the installer again to record a release, or delete that " \
         "file to follow main." in result.stderr
@@ -1227,6 +1270,29 @@ def test_a_link_to_the_installed_command_reads_its_record(tmp_path, links):
         f"openRepoShape (opensoft/openRepoShape @ {PINNED})"
 
 
+@pytest.mark.parametrize("msys", [None, "winsymlinks:nativestrict"],
+                         ids=["ln-default", "ln-nativestrict"])
+def test_a_link_made_with_ln_s_reads_the_record_and_a_copy_follows_main(
+        tmp_path, msys):
+    """`ln -s` IN GIT BASH MAKES A COPY unless `$MSYS` says
+    `winsymlinks:nativestrict` (#585), which makes a Windows symlink. A copy
+    has no record beside it, so it follows main and `--version` says so;
+    a link, made anywhere else or with that setting, reads the record of
+    the command it leads to. `$MSYS` means nothing off Windows."""
+    _result, installed = install_at(tmp_path, PINNED)
+    link = tmp_path / "ors"
+    env = dict(os.environ, **({"MSYS": msys} if msys else {}))
+    made = subprocess.run([BASH, "-c", 'ln -s "$1" "$2"', "-",
+                           bash_path(installed), bash_path(link)],
+                          capture_output=True, text=True, check=False,
+                          env=env)
+    assert made.returncode == 0, made.stderr
+    copied = os.name == "nt" and msys is None
+    assert link.is_symlink() is not copied
+    assert version_of(link) == "openRepoShape (opensoft/openRepoShape @ " \
+        f"{'main' if copied else PINNED})"
+
+
 def test_a_record_that_is_a_directory_is_refused_in_the_usual_form(tmp_path):
     """Not a raw bash error, by every run that reads it and by an install
     that would write or remove it, which places nothing."""
@@ -1237,7 +1303,8 @@ def test_a_record_that_is_a_directory_is_refused_in_the_usual_form(tmp_path):
     for result in (run_cmd("--version", command=installed),
                    install_at(tmp_path, PINNED)[0]):
         assert result.returncode == 2, result.stdout + result.stderr
-        assert result.stderr.startswith(f"\nREFUSED: {record} is not a file")
+        assert result.stderr.startswith(
+            f"\nREFUSED: {bash_path(record)} is not a file")
         assert "Is a directory" not in result.stderr
     assert installed.read_bytes() == COMMAND.read_bytes()
 
@@ -1260,7 +1327,7 @@ def test_setup_sh_clones_the_standard_at_the_ref_in_force(
     clones the standard at the same ref, not at main."""
     _result, installed = install_at(tmp_path, recorded)
     stub = tmp_path / "setup.sh"
-    stub.write_text(STUB_SETUP_SH, encoding="utf-8")
+    write_script(stub, STUB_SETUP_SH)
     result = run_cmd("--preflight", command=installed, setup_sh=stub,
                      env=None if variable is None
                      else {"OPENREPOSHAPE_REF": variable})
@@ -1312,7 +1379,7 @@ def test_the_doctor_checks_its_clone_out_at_the_ref_in_force(
     _result, installed = install_at(tmp_path, recorded)
     temporary = tmp_path / "tmp"
     temporary.mkdir()
-    env = {"OPENREPOSHAPE_REPO": str(standard_at_three_refs(tmp_path)),
+    env = {"OPENREPOSHAPE_REPO": bash_path(standard_at_three_refs(tmp_path)),
            "TMPDIR": str(temporary)}
     if variable is not None:
         env["OPENREPOSHAPE_REF"] = variable

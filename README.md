@@ -153,16 +153,16 @@ to the terminal you are typing at.
 preflight, the same naming check, the same plan, the same one `yes`, the same
 self-bootstrap outside a checkout. It never needs `make` and never looks for a
 `python3` — it runs the interpreter that started it. That two-liner IS the
-Windows way in; the `openRepoShape` command in step 3 below is a macOS, Linux
-and WSL2 convenience with no Windows twin, because on Windows there is nothing
-to install.
+Windows way in from PowerShell, which has no twin of the `openRepoShape`
+command in step 3 below. In Git Bash, the bash that Git for Windows installs,
+the one-line install and that command are supported, and CI tests them there.
 
 </details>
 
 <details>
 <summary><b>Windows via WSL2</b></summary>
 
-**Windows via WSL2** is still how you run the bash entry points: `wsl
+**Windows via WSL2** runs every bash entry point in Linux itself: `wsl
 --install` from an administrator PowerShell, reboot, open the Ubuntu app, and
 run the four steps below INSIDE the WSL shell.
 

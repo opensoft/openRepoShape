@@ -472,7 +472,7 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
 
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
 
@@ -493,7 +493,7 @@
           several of them is held together by convention or by nothing. This repository is the
           convention, as data and as running code.</p>
 
-          <h4>The fastest path &mdash; macOS, Linux, WSL2</h4>
+          <h4>The fastest path &mdash; macOS, Linux, WSL2, Git Bash</h4>
           <div class="code" data-lang="sh"><pre><code>curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash
 openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
           <p class="sub">That first line installs ONE command into <code>~/.local/bin</code>: the
@@ -503,8 +503,8 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
           in-flight work</a> to another workstation, are
           <a href="https://github.com/opensoft/openRepoTools">opensoft/openRepoTools</a>&rsquo; and have a one-liner of
           their own.</p>
-          <p class="sub">On Windows without WSL2 the way in is two PowerShell commands instead,
-          because on Windows there is nothing to install &mdash; see <a href="#start">Start
+          <p class="sub">In PowerShell, without WSL2 or Git Bash, the way in is two commands
+          instead, because there is nothing to install &mdash; see <a href="#start">Start
           here</a>.</p>
         </div>
 
@@ -609,7 +609,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -720,9 +720,9 @@ sudo dnf install gh</code></pre></div>
           <code>winget install --id GitHub.cli -e</code> for <code>gh</code> and, only under
           <code>py setup-project.py --preflight</code>, <code>winget install --id Git.Git -e</code>
           for <code>git</code>: a run refuses a missing <code>git</code> before its preflight starts.
-          There is no <code>openRepoShape</code> command to install here: that two-liner IS the
-          Windows way in, and the <code>openRepoShape</code> command is a macOS, Linux and WSL2
-          convenience with no Windows twin, because on Windows there is nothing to install.</p>
+          There is no <code>openRepoShape</code> command to install in PowerShell: that two-liner
+          IS the Windows way in there. In Git Bash, the bash that Git for Windows installs, the
+          one-line install and the <code>openRepoShape</code> command are supported, and CI tests them there.</p>
         </div>
 
       </div>
@@ -731,7 +731,7 @@ sudo dnf install gh</code></pre></div>
       <div class="panel" role="tabpanel" id="panel-wsl" aria-labelledby="tab-wsl" tabindex="0">
         <div class="stack">
           <h4>What this machine needs</h4>
-          <p>WSL2 is still how you run the bash entry points: <code>wsl --install</code> from an
+          <p>WSL2 runs every bash entry point in Linux itself: <code>wsl --install</code> from an
           administrator PowerShell, reboot, open the Ubuntu app, and run the steps INSIDE the WSL
           shell.</p>
           <div class="code" data-lang="powershell"><pre><code>wsl --install</code></pre></div>
@@ -1037,7 +1037,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1072,7 +1072,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
 
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
 
@@ -1130,7 +1130,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
 
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
 
@@ -1366,7 +1366,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1663,7 +1663,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 

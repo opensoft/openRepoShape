@@ -194,6 +194,16 @@ jobs:
           "GIT_COMMITTER_NAME=openRepoShape CI" >> $env:GITHUB_ENV
           "GIT_COMMITTER_EMAIL=ci@openreposhape.invalid" >> $env:GITHUB_ENV
 
+      # GIT BASH, OR THIS JOB FAILS HERE (#585). The suites of `openRepoShape`
+      # and `install.sh` run under Git for Windows' own bash, which
+      # `tests/conftest.py` finds beside the git on PATH (`BASH`), never as
+      # the `bash` PATH names first: on this image that can be System32's
+      # WSL launcher. Where it finds none they SKIP, and a skip here would
+      # make README's Git Bash sentence a claim again, so this step refuses
+      # first and prints the bash the suite will run.
+      - name: Git Bash is the bash the launcher and installer suites run
+        run: python -c "import sys; sys.path.insert(0, 'tests'); from conftest import BASH; print(BASH); sys.exit(BASH is None)"
+
       # THE WHOLE SUITE, not a Windows-shaped subset. A subset is a claim
       # about which tests are platform-dependent, made by whoever wrote the
       # subset; the suite itself already carries that claim, as the
@@ -212,8 +222,9 @@ jobs:
         run: python -m pytest tests -q --basetemp=${{ runner.temp }}\t
 
   # THE SAME SUITE ON macOS, because the BASH entry points are what a Mac runs
-  # — `setup.sh` and the `openRepoShape` command, whose suites the windows job
-  # skips — and until this job nothing here had ever run on one. A THIRD JOB
+  # — `setup.sh`, whose suite the windows job skips, and the `openRepoShape`
+  # command, which it runs only under Git Bash (#585) — and until this job
+  # nothing here had ever run on one. A THIRD JOB
   # rather than a matrix on the first: that job downloads a linux-amd64
   # actionlint binary, which belongs on no other runner.
   tests-macos:
