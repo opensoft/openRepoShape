@@ -846,6 +846,46 @@ def test_a_pin_source_no_pin_reads_is_refused(source_repo, tmp_path, gh_env,
     assert gh_calls(gh_env) == ""
 
 
+@pytest.mark.parametrize("source, work_dir", [
+    pytest.param("org/repo", False, id="org-repo"),
+    pytest.param("local", False, id="local"),
+    pytest.param("local", True, id="local-work-dir"),
+])
+def test_an_unread_pin_source_is_refused_before_anything_exists(
+        source_repo, tmp_path, gh_env, source, work_dir):
+    """`pin-source-unused` needs the flags alone, so `plan` asks it first,
+    before anything exists and before any process starts, as the scaffold
+    does (#451). It was asked after `_work_root` and `Source.open` (rv540
+    F2): an `openreposhape-adopt-*` directory was made and left behind, or
+    the `--work-dir`; git ran in a local source; and an `org/repo` source
+    was `gh repo clone`d, whose own refusal came instead. Here the
+    temporary directory is a fresh one, `GIT_TRACE` names a file any git
+    process would write, and the `gh` stub logs every call."""
+    temp, trace, work = (tmp_path / "tmp", tmp_path / "git-trace.log",
+                         tmp_path / "work")
+    temp.mkdir()
+    out = tmp_path / "plan.yaml"
+    result = run_script(
+        ADOPT, "plan",
+        "--source", "testorg/Thing" if source == "org/repo" else str(
+            source_repo),
+        "--project", PROJECT, "--org", ORG, "--elected-by", "Test Human",
+        "--elected-on", "2026-09-02", "--out", str(out),
+        "--pin-source", str(tmp_path / "no-such-clone"),
+        *(("--work-dir", str(work)) if work_dir else ()),
+        cwd=tmp_path,
+        env={**gh_env, "TMPDIR": str(temp), "GIT_TRACE": str(trace)})
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith("REFUSED pin-source-unused: "), \
+        result.stderr
+    assert result.stdout == ""
+    assert list(temp.iterdir()) == []
+    assert not work.exists()
+    assert not trace.exists()
+    assert not out.exists()
+    assert gh_calls(gh_env) == ""
+
+
 def test_check_finds_a_recorded_source_that_names_a_path(
         source_repo, tmp_path, glass, gh_env):
     """A plan `plan` wrote before #540, or one edited since, can still hold

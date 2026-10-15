@@ -2869,11 +2869,6 @@ def _checked_plan_inputs(args, source: Source,
     # miscount one written over the shape's or listed twice. A name with no
     # `@<commit>` is `parse_pin`'s `pin-malformed`. No digest is read yet.
     args.pin_owner = checked_value("--pin-owner", args.pin_owner)
-    # A `--pin-source` no `--pin` will read is refused, in the scaffold's
-    # words (#451): it names the clone a pin's digest is read from, and with
-    # no `--pin` it changed nothing and was never even asked about.
-    refuse_an_unread_pin_source(args.pin_source, args.pin,
-                                nothing_made="no plan was written.")
     refuse_colliding_pins(args.pin, args.pin_owner, "adopt-pin-collides")
     products = list(declared_pin_products(args))
     # Then the paths the shape writes, which are known before any plan is
@@ -3280,6 +3275,16 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
 
 
 def cmd_plan(args) -> int:
+    # A `--pin-source` no `--pin` will read is refused FIRST, in the
+    # scaffold's words (#451): it names the clone a pin's digest is read
+    # from, and with no `--pin` it changed nothing and was never even asked
+    # about. It needs the flags alone, so it is asked before anything exists
+    # and before any process starts. Asked in `_checked_plan_inputs`, it
+    # came after `_work_root` had made the work directory, which stayed
+    # behind, and after `Source.open` had run git in the source or `gh repo
+    # clone` for an `org/repo` one (rv540 F2).
+    refuse_an_unread_pin_source(args.pin_source, args.pin,
+                                nothing_made="no plan was written.")
     work_root = _work_root(args)
     source = Source.open(args.source, work_root)
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
