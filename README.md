@@ -137,25 +137,25 @@ py setup-project.py <Project> --org <your-org>
 ```
 
 `python setup-project.py <Project> --org <your-org>` is the same command on a
-machine with no `py`: Python from the Microsoft Store installs `python` and no
-launcher at all.
-
+machine with no `py`: Microsoft Store Python installs `python`, no launcher.
 Two commands rather than one pipe, on purpose. Windows PowerShell 5.1 — still
 the default shell on a stock install — re-encodes piped text as ASCII by
 default (that is its `$OutputEncoding`), and writes UTF-16 when `>` redirects
 to a file, so no byte above 0x7F survives either route and a script sent down
-one is not the script that arrives; and a script arriving on stdin has an
-exhausted stdin, so it cannot ask for the one `yes` before three repositories
-exist — it refuses instead. Downloading the file first leaves stdin attached
-to the terminal you are typing at.
+one is not the script that arrives; and a script arriving on stdin leaves it
+exhausted, so it cannot ask for the one `yes` before three repositories exist
+and refuses. Downloading the file first leaves stdin on your terminal.
 
 `setup-project.py` is the flow itself, and `setup.sh` a shim over it: the same
 preflight, the same naming check, the same plan, the same one `yes`, the same
 self-bootstrap outside a checkout. It never needs `make` and never looks for a
 `python3` — it runs the interpreter that started it. That two-liner IS the
-Windows way in from PowerShell, which has no twin of the `openRepoShape`
-command in step 3 below. Git Bash runs that command and step 3's one line,
-tested in CI but for a typed `yes`, which its preflight cannot take there.
+Windows way in from PowerShell, which has no twin of step 3's `openRepoShape`
+command. Git Bash runs that command and step 3's one line, tested in CI but for
+a typed `yes`, which its preflight cannot take there. Printed commands are
+quoted for a POSIX shell, so paste them into Git Bash. Only `shape-doctor.py`'s
+lines, `setup-project.py`'s family lines and `family.py`'s `NEXT`, `switch -c`,
+`add` and `git rm -r --cached` lines are quoted for PowerShell, on Windows.
 
 </details>
 
@@ -707,15 +707,15 @@ is an addition, and `MedxChart` answers exactly as it did on 2026-09-02.
 Each link past the first is a declaration in ANOTHER tree — `openXdox` declaring
 `neutral_product_pins: [openDox]` — and it is read where that tree happens to be
 on the disk: `--link-source PRODUCT=<path>`, `SHAPE_PIN_SOURCE_<PRODUCT>`, a
-checkout beside the root, then a bare `--link-source <path>`: the same lookup
-order `validate-pins.py` uses below for the same checkout. A link no tree
-answers for is reported `declared-unverified` — a warning, never a finding, and
-the name still classifies — because the recorded declaration is the offline fact
-and the tree is the stronger check, available or not. A link that IS readable
-and declares something else BREAKS the chain: the residual assembly-root reading
-wins, the overlap is recorded, and the message names the link that broke.
-`LedgerxWallet` -> `openXwallet` -> `openWallet` is the same shape, and
-`openWallet` need not exist anywhere for that to be the answer.
+checkout beside the root, then a bare `--link-source <path>`, for the first
+link's tree only: the order `validate-pins.py` uses below for the same checkout.
+A link no tree answers for is reported `declared-unverified` — a warning, never
+a finding, and the name still classifies — because the recorded declaration is
+the offline fact and the tree is the stronger check, available or not. A link
+that IS readable and declares something else BREAKS the chain: the residual
+assembly-root reading wins, the overlap is recorded, and the message names the
+link that broke. `LedgerxWallet` -> `openXwallet` -> `openWallet` is the same
+shape, and `openWallet` need not exist anywhere for that to be the answer.
 
 **`validate-pins.py` rechecks the referent too, not only the declaration.**
 Each `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`

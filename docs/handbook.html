@@ -472,9 +472,9 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 34723d9ae3d5e64cde648576855ce706589ffc0d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 278a19479524fe8aae292daaca84492902b140ed -->
 
-      <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
+      <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -609,7 +609,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 34723d9ae3d5e64cde648576855ce706589ffc0d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 278a19479524fe8aae292daaca84492902b140ed -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -724,7 +724,12 @@ sudo dnf install gh</code></pre></div>
           IS the Windows way in there. Git Bash, the bash that Git for Windows installs, runs the
           <code>openRepoShape</code> command and the one-line install, and CI tests both there, but
           for a typed <code>yes</code>: CI has no terminal, and in Git Bash the preflight that the
-          one-line install ends with cannot take one, so none of its offers can be accepted there.</p>
+          one-line install ends with cannot take one, so none of its offers can be accepted there.
+          Printed commands are quoted for a POSIX shell, so paste them into Git Bash. Only
+          <code>shape-doctor.py</code>&rsquo;s lines, <code>setup-project.py</code>&rsquo;s family
+          lines and <code>family.py</code>&rsquo;s <code>NEXT</code>, <code>switch -c</code>,
+          <code>add</code> and <code>git rm -r --cached</code> lines are quoted for PowerShell, on
+          Windows.</p>
         </div>
 
       </div>
@@ -1040,7 +1045,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 34723d9ae3d5e64cde648576855ce706589ffc0d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 278a19479524fe8aae292daaca84492902b140ed -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1075,9 +1080,9 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 34723d9ae3d5e64cde648576855ce706589ffc0d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 278a19479524fe8aae292daaca84492902b140ed -->
 
-      <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
+      <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Reading private legs in CI</h2>
@@ -1133,9 +1138,9 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 34723d9ae3d5e64cde648576855ce706589ffc0d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 278a19479524fe8aae292daaca84492902b140ed -->
 
-      <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
+      <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
       <p class="eyebrow">Reference</p>
       <h2>The three legs, and naming</h2>
@@ -1369,7 +1374,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 34723d9ae3d5e64cde648576855ce706589ffc0d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 278a19479524fe8aae292daaca84492902b140ed -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1666,7 +1671,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 34723d9ae3d5e64cde648576855ce706589ffc0d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 278a19479524fe8aae292daaca84492902b140ed -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 
