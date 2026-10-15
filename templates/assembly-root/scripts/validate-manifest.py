@@ -99,8 +99,18 @@ def _declared_pins(manifest: dict) -> set[str]:
     set — never folded into it. Reading the record as a declaration would let
     a `naming:` block assert its own descent, which is a claim promoting
     itself to a referent: exactly the move the 2026-09-02 ruling forbids.
+
+    A VALUE THAT IS NOT A LIST DECLARES NOTHING (#443), as `_recorded_chain`
+    reads a chain that is not one, and `_neutral_product_pins_type_finding`
+    reports it. `_findings` asks this first, so iterating `5`, `true` or
+    `1.5` ended the run in a `TypeError` before that finding could print, and
+    a scalar `openXdox` was read as the pins `X`, `d`, `e`, `n`, `o`, `p`,
+    `x` for every leg's classification.
     """
-    return {str(pin) for pin in (manifest.get("neutral_product_pins") or []) if pin}
+    declared = manifest.get("neutral_product_pins")
+    if not isinstance(declared, list):
+        return set()
+    return {str(pin) for pin in declared if pin}
 
 
 def _recorded_chain(naming: dict) -> tuple:

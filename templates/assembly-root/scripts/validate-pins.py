@@ -1205,8 +1205,24 @@ def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
     whether `a=b/openGlass` is keyed to a product or a bare path depends on
     the pins this manifest declares (#295); each one no pin used is noted
     once every pin has been checked.
+
+    A VALUE THAT IS NOT A LIST IS A FINDING AND DECLARES NOTHING (#443),
+    asked before `PinSources` reads it, in `validate-manifest.py`'s words for
+    the same field (`manifest-neutral-product-pins`). Iterated as it stood,
+    `5`, `true` or `1.5` ended this validator in a `TypeError`, and a scalar
+    `openXdox` (or a mapping) was read one character (or key) at a time, so
+    the run refused `neutral-pin-missing` for a pin on `'o'`, a name nobody
+    wrote. Absent or null declares no pin, as ever; `0`, `false` and `''`,
+    which `or []` read as an empty list, are the finding too.
     """
-    products = manifest.get("neutral_product_pins") or []
+    products = manifest.get("neutral_product_pins")
+    if products is not None and not isinstance(products, list):
+        report.finding(
+            "manifest-neutral-product-pins",
+            f"neutral_product_pins is {products!r}, expected a list of "
+            "neutral product names")
+    if not isinstance(products, list):
+        products = []
     sources = PinSources(pin_source_values, products)
     _report_pin_source_collisions(products, report)
     shared = frozenset(pin_source_env_shared(products))
