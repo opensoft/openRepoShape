@@ -1502,6 +1502,90 @@ def test_the_openrepotools_install_line_is_the_same_everywhere(name):
         f"    {OPENREPOTOOLS_INSTALL}")
 
 
+#: Where each document describes `openRepoShape --doctor`: the file, the
+#: line its passage begins with, what ends it, and whether it describes the
+#: installed form's kept clone. `docs/cli.md` has two: the doctor's purpose in
+#: its table (scripts/render-cli-reference.py's `TOOLS`) and the command's own
+#: `--help`.
+DOCTOR_PASSAGES = [
+    pytest.param("README.md", "### Is this repository compliant?", "\n## ",
+                 True, id="README.md"),
+    pytest.param("AGENTS.md", "## Checking a repository's compliance",
+                 "\n## ", True, id="AGENTS.md"),
+    pytest.param("docs/handbook.html", '<section id="doctor">', "</section>",
+                 True, id="docs/handbook.html"),
+    pytest.param("docs/cli.md", "### `openRepoShape`", "\n### ", True,
+                 id="docs/cli.md-help"),
+    pytest.param("docs/cli.md", "| [`shape-doctor.py`]", "\n", False,
+                 id="docs/cli.md-purpose"),
+]
+
+#: In any case: a sentence, or a table cell, can begin with it.
+WRITES_NOTHING = re.compile(r"(?i)\bwrites nothing\b")
+
+
+def writes_nothing_unexcepted(paragraph: str) -> list:
+    """The sentences of `paragraph` that say the doctor writes nothing with
+    no exception: neither the sentence itself nor the one right after it
+    names `--placement-plan` as what it does write. AGENTS.md says the
+    exception in a sentence of its own, 'The one exception to "writes
+    nothing" is `--placement-plan <file>`', so the next sentence counts when
+    it says "writes nothing" too, and a mere mention of the flag further on
+    does not."""
+    # A sentence also ends at `.)`, `."` or `.**`: the stop inside a bracket,
+    # a quotation or bold text.
+    sentences = re.split(r"(?<=[.!?])\s+|(?<=[.!?][)\"'*])\s+"
+                         r"|(?<=[.!?][)\"'*]{2})\s+", paragraph)
+
+    def excepted(sentence: str) -> bool:
+        return bool(WRITES_NOTHING.search(sentence)) \
+            and "--placement-plan" in sentence
+
+    return [sentence for here, sentence in enumerate(sentences)
+            if WRITES_NOTHING.search(sentence) and not excepted(sentence)
+            and not excepted((sentences[here + 1:] or [""])[0])]
+
+
+@pytest.mark.parametrize(("name", "begins", "ends", "keeps"),
+                         DOCTOR_PASSAGES)
+def test_the_doctor_says_what_it_writes_and_why_it_keeps_its_clone(
+        name, begins, ends, keeps):
+    """Two things every description of the doctor said that it does not do
+    (#546).
+
+    "It writes nothing into the repository" left out the one file it writes:
+    the `--placement-plan <file>` you name, at the path you give, so a
+    relative one typed inside the repository lands there. A sentence that
+    says the doctor writes nothing carries that exception, or is followed at
+    once by the sentence that does.
+
+    And the installed form KEEPS its clone of the standard "because its NEXT
+    lines run from it". A `pins` row's NEXT can name no file in it, and "run
+    from it" reads as "cd into it", where the `placement` row's relative
+    `--placement-plan placement-plan.yaml` writes the plan into the directory
+    the same sentence calls safe to delete. It is kept for the NEXT lines that
+    name it, and every passage about the installed form says so.
+    """
+    text = (REPO / name).read_text(encoding="utf-8")
+    start = text.index(begins)
+    passage = text[start:text.find(ends, start + len(begins))]
+    problems, kept = [], 0
+    for paragraph in re.split(r"\n\s*\n|</p>", passage):
+        said = " ".join(re.sub(r"<[^>]+>", "", paragraph).split())
+        problems += [f"says the doctor writes nothing, and not that it writes "
+                     f"the --placement-plan file you name: {sentence}"
+                     for sentence in writes_nothing_unexcepted(said)]
+        if "KEEPS" in said:
+            kept += 1
+            if not re.search(r"for the NEXT lines (?:that name|naming)\b", said) \
+                    or re.search(r"NEXT (?:lines?|commands?) runs? from", said):
+                problems.append("gives a reason for the kept clone other than "
+                                f"the NEXT lines that name it: {said}")
+    assert kept or not keeps, (
+        f"{name} no longer says that the installed doctor KEEPS its clone")
+    assert not problems, f"{name}:\n" + "\n".join(problems)
+
+
 def test_nothing_here_installs_park_or_resume():
     """The carve, asserted rather than remembered (#92).
 
