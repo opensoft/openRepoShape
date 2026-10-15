@@ -1222,8 +1222,8 @@ def test_no_trailer_leaves_the_commit_carrying_none(root,
     assert result.returncode == 0, result.stderr + result.stdout
     assert trailers_of(root) == []
     assert message_of(root).endswith(
-        "the copies are not hand-edited and the digests are recomputed, not "
-        "adjusted.\n")
+        "the copies re-copied from the upstream are not hand-edited and the "
+        "digests are recomputed, not adjusted.\n")
     assert "Lane:" not in message_of(root)
 
 
