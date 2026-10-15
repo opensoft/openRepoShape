@@ -31,6 +31,7 @@ so there the record stays empty whatever happens). The end-to-end tests need
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import json
 import os
@@ -780,6 +781,22 @@ POSIX_NAMES = pytest.mark.skipif(
 UNREAD = "unreadclone"
 
 
+def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
+    """Skip, as `POSIX_NAMES` skips on Windows, on a filesystem that refuses
+    a file name that is not UTF-8: macOS answers EILSEQ ("Illegal byte
+    sequence"), so no clone can sit at such a path there. Asked of a
+    directory made under `directory`; any other error is the test's own."""
+    probe = directory / "probe\udcff"
+    try:
+        probe.mkdir()
+    except OSError as exc:
+        if exc.errno != errno.EILSEQ:
+            raise
+        pytest.skip("needs a file name that is not UTF-8, which this "
+                    "filesystem refuses (EILSEQ)")
+    probe.rmdir()
+
+
 @pytest.mark.parametrize("name", [
     pytest.param(f"{UNREAD}\x1bx", id="esc", marks=POSIX_NAMES),
     pytest.param(f"{UNREAD}\nx", id="lf", marks=POSIX_NAMES),
@@ -798,6 +815,8 @@ def test_a_clone_is_read_wherever_it_is_and_its_path_is_not_recorded(
     file from, or in the report, whose `pin` line says how the digest was
     read and nothing more; so nothing of it reaches the terminal raw."""
     path, commit, _ = glass
+    if "\udcff" in name:
+        skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     clone = tmp_path / name
     shutil.copytree(path, clone, symlinks=True)
     out = tmp_path / "plan.yaml"
