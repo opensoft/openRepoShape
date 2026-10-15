@@ -509,6 +509,60 @@ def test_a_referent_chain_reads_the_pin_source(kind, tmp_path, adoptable):
     assert made(kind, tmp_path) == []
 
 
+# --- a `--pin-source` that names no path is `pin-source-no-path` -------------
+#
+# `--pin-source ''` was `Path("")`, which is `.`: the directory the tool ran
+# in was read as the clone, so a run from inside a clone pinned that clone's
+# digest, exit 0, and with no `--pin` the refusal named `.`, a path nobody
+# typed. #442 refuses an empty value in the naming gate and in the root's
+# `validate-pins.py`; the two tools that make a project refuse it in the
+# same words, before anything exists. A typed `.` still means this directory.
+
+#: What each tool says of `--pin-source ''`, its remediation begun in the
+#: tool's own words.
+NO_PATH = ("REFUSED pin-source-no-path: `--pin-source ''` names no path. An "
+           "empty path would be read as the directory this runs in.\n"
+           "Remediation: {made} Give the clone's path (`--pin-source "
+           "<path>`), or `.` to mean this directory.\n")
+MADE = {"scaffold": "nothing was created, and `--dry-run` refuses the same.",
+        "adopt": "no plan was written."}
+
+
+@pytest.mark.parametrize("kind", RUNS)
+@pytest.mark.parametrize("pinned", [True, False], ids=["a-pin", "no-pin"])
+def test_a_pin_source_that_names_no_path_is_pin_source_no_path(
+        kind, pinned, tmp_path, adoptable, glass):
+    """Each run is made from inside a clone that answers for the pin, so an
+    empty value read as `.` would be read: exit 2, the one refusal, nothing
+    on stdout and nothing made, `--dry-run` alike. With no `--pin` it is
+    this refusal too, and not `pin-source-unused` naming `.`."""
+    product, commit = glass
+    result = run(kind, tmp_path, adoptable, "",
+                 commit=commit if pinned else None, cwd=product)
+    assert result.returncode == 2, result.stdout + result.stderr
+    tool = kind.split("-", 1)[0]
+    assert result.stderr == NO_PATH.format(made=MADE[tool]), result.stderr
+    assert result.stdout == ""
+    assert made(kind, tmp_path) == []
+
+
+@pytest.mark.parametrize("kind", ["scaffold-dry-run", "adopt-plan"])
+def test_a_typed_dot_is_still_the_directory_the_tool_runs_in(
+        kind, tmp_path, adoptable, glass):
+    """The control: `.`, typed, is read as the directory the tool runs in,
+    as it always was, so the digest is that clone's."""
+    product, commit = glass
+    digest = tree_digest(product, commit)
+    result = run(kind, tmp_path, adoptable, ".", commit=commit, cwd=product)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "pin-source-no-path" not in result.stdout + result.stderr
+    if kind == "adopt-plan":
+        pin = load_yaml(tmp_path / "plan.yaml")["pins"][0]
+        assert pin["tree_sha256"] == digest
+    else:
+        assert f"tree {digest[:12]}" in result.stdout, result.stdout
+
+
 # --- a source that answers is not recorded (#540, #450) ----------------------
 #
 # The pin file's `digest_source:` was `local-clone (<the path as typed>)`: an

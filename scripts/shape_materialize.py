@@ -2671,6 +2671,37 @@ def declared_pin_products(args) -> dict[str, None]:
     return dict.fromkeys(parse_pin(raw, args.pin_owner)[0] for raw in args.pin)
 
 
+def pin_source_path(typed: str | None, *, nothing_made: str) -> Path | None:
+    """`--pin-source` as the `Path` both tools read, or None when it was not
+    given; a value that names no path is `pin-source-no-path`.
+
+    AN EMPTY VALUE WAS THE DIRECTORY THE TOOL RAN IN. `Path("")` is
+    `Path(".")`, so `--pin-source ''` read the current directory as the
+    clone: the digest came from wherever the command was run, or
+    `pin-source-unreadable` blamed `.`, a path nobody typed. #442 refuses
+    an empty value in the naming gate (`link-source-no-path`) and in the
+    root's `validate-pins.py` (`pin-source-no-path`); the two tools that
+    make a project refuse it in the same words. A typed `.` still means
+    the current directory.
+
+    So both tools take the flag as TEXT and ask here, before anything
+    exists and before any process starts, the scaffold's `--dry-run` alike:
+    once `argparse` has made a `Path` of it, an empty value and a typed `.`
+    are one. `nothing_made` begins the remediation in the tool's own words,
+    as it does for `refuse_an_unread_pin_source`.
+    """
+    if typed is None:
+        return None
+    if not str(typed):
+        raise Refusal(
+            "pin-source-no-path",
+            "`--pin-source ''` names no path. An empty path would be read as "
+            "the directory this runs in.",
+            f"Remediation: {nothing_made} Give the clone's path "
+            "(`--pin-source <path>`), or `.` to mean this directory.")
+    return Path(typed)
+
+
 def refuse_an_unread_pin_source(pin_source, pins, chain=None, *,
                                 nothing_made: str) -> None:
     """`--pin-source` is read by this run, or this refuses it as

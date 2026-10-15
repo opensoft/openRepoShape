@@ -246,9 +246,11 @@ PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
 from shape_materialize import (  # noqa: E402
     DIGEST_FROM_CLONE, DIGEST_FROM_GH, PIN_ARG_RE, declared_pin_products,
     declared_pin_values, neutral_pin_path, pin_collisions,
-    pin_variable_collisions, refuse_an_unread_pin_source,
+    pin_source_path, pin_variable_collisions, refuse_an_unread_pin_source,
     refuse_colliding_pins,
 )
+#: How `plan`'s refusals of a `--pin-source` begin their remediation.
+PLAN_NOT_WRITTEN = "no plan was written."
 from repo_shape import SHA256_RE, repo_basename  # noqa: E402
 
 #: The keys `plan` records for each pin, in the order it writes them, and the
@@ -3275,16 +3277,20 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
 
 
 def cmd_plan(args) -> int:
-    # A `--pin-source` no `--pin` will read is refused FIRST, in the
-    # scaffold's words (#451): it names the clone a pin's digest is read
-    # from, and with no `--pin` it changed nothing and was never even asked
-    # about. It needs the flags alone, so it is asked before anything exists
-    # and before any process starts. Asked in `_checked_plan_inputs`, it
-    # came after `_work_root` had made the work directory, which stayed
-    # behind, and after `Source.open` had run git in the source or `gh repo
-    # clone` for an `org/repo` one (rv540 F2).
+    # A `--pin-source` that names no path, `''`, which as a `Path` is the
+    # directory this runs in, and then one no `--pin` will read, are refused
+    # FIRST, in the scaffold's words (#451): it names the clone a pin's
+    # digest is read from, and with no `--pin` it changed nothing and was
+    # never even asked about. They need the flags alone, so they are asked
+    # before anything exists and before any process starts. Asked in
+    # `_checked_plan_inputs`, the second came after `_work_root` had made
+    # the work directory, which stayed behind, and after `Source.open` had
+    # run git in the source or `gh repo clone` for an `org/repo` one (rv540
+    # F2).
+    args.pin_source = pin_source_path(args.pin_source,
+                                      nothing_made=PLAN_NOT_WRITTEN)
     refuse_an_unread_pin_source(args.pin_source, args.pin,
-                                nothing_made="no plan was written.")
+                                nothing_made=PLAN_NOT_WRITTEN)
     work_root = _work_root(args)
     source = Source.open(args.source, work_root)
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
@@ -9620,14 +9626,18 @@ def main(argv: list[str] | None = None) -> int:
                            "repository's own --org). Name the owner in --pin "
                            "itself (owner/openProduct@<sha>) to override it "
                            "for one pin.")
-    plan.add_argument("--pin-source", type=Path, default=None,
+    # TEXT, not `type=Path`: `Path("")` is `.`, so an empty value could not
+    # be told from a typed `.` once parsed (`pin_source_path`).
+    plan.add_argument("--pin-source", default=None,
                       help="a local clone to compute --pin digests from, "
                            "instead of reading the forge with `gh api` (the "
                            "TEST path; no network). The plan and the pin "
                            "file say only that the digest was read from "
                            "`local-clone`, never the path. Given with no "
                            "--pin to read it, the flag is refused as "
-                           "`pin-source-unused`.")
+                           "`pin-source-unused`; an empty value is refused "
+                           "as `pin-source-no-path`, and `.` means this "
+                           "directory.")
     plan.add_argument("--allow-empty-leg", action="append", default=[],
                       choices=EXTRACTED_LEGS,
                       help="record in the plan that this leg having NO path "

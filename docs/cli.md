@@ -342,7 +342,9 @@ options:
                         network). The pin file says only that the digest was
                         read from `local-clone`, never the path. Given with no
                         --pin and no --referent-chain to read it, it is
-                        refused as `pin-source-unused`.
+                        refused as `pin-source-unused`; an empty value is
+                        refused as `pin-source-no-path`, and `.` means this
+                        directory.
   --work-dir WORK_DIR   where the working trees are built (default: a
                         temporary directory)
 ```
@@ -472,7 +474,8 @@ options:
                         network). The plan and the pin file say only that the
                         digest was read from `local-clone`, never the path.
                         Given with no --pin to read it, the flag is refused as
-                        `pin-source-unused`.
+                        `pin-source-unused`; an empty value is refused as
+                        `pin-source-no-path`, and `.` means this directory.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's
