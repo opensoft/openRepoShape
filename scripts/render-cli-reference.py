@@ -143,7 +143,8 @@ CHECKOUT_TOOLS = [
          "them. It never merges."),
     Tool("shape-doctor.py", "python", "python3 shape-doctor.py",
          "Answers ONE question about ONE repository: is it compliant with "
-         "this shape, and what is missing. Writes nothing."),
+         "this shape, and what is missing. Writes nothing but a "
+         "`--placement-plan` file you name."),
     Tool("bootstrap", "python", "python3 bootstrap",
          "Runs this standard's canonical bootstrap against a project that was "
          "never scaffolded, so a repository that elected nothing still has "
