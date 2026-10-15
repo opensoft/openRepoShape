@@ -424,8 +424,12 @@ def test_every_other_pins_row_is_the_gates_own(standard, project, code):
     assert "gitlink_repairs" not in row["detail"], row["detail"]
     assert "bump-leg" not in row["reason"], row["reason"]
     gate = run_script(root / "scripts" / "validate-pins.py", cwd=root)
-    named = "scripts/bump-leg.py" in gate.stdout + gate.stderr
-    assert named == (code in GATE_NAMES_THE_LINE), gate.stderr
+    said = gate.stdout + gate.stderr
+    if code in GATE_NAMES_THE_LINE:
+        assert "scripts/bump-leg.py" in said, gate.stderr
+    else:
+        # The old strength: not even the file's name, in any spelling.
+        assert "bump-leg.py" not in said, gate.stderr
 
 
 # --- named only where a line can commit -------------------------------------
