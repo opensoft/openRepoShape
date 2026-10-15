@@ -23,8 +23,9 @@ to `CreateProcessW` as UTF-16 and no locale codec is involved, and macOS
 always encodes a file name as UTF-8. Each test asks a child interpreter
 what its filesystem encoding is under `LC_ALL=C PYTHONUTF8=0` and skips
 where that is UTF-8, as `test_git_output_decoding.py` does: there is no
-locale there to reproduce the failure in. Every name below is created with
-bytes, so nothing here depends on how `Path.write_text` ends a line.
+locale there to reproduce the failure in. Only names are compared, as the
+bytes git records, so nothing here depends on how `Path.write_text` ends a
+line.
 """
 
 from __future__ import annotations
@@ -127,7 +128,9 @@ def c_locale_or_skip() -> dict:
 #: in the work directory in argv[3], for the plan paths in argv[4]. Every
 #: argument is ASCII: the two directories travel as the hex of their bytes,
 #: and the paths as JSON, which spells each character and each surrogate as
-#: an escape. It prints one line of ASCII JSON.
+#: an escape. It prints one line of ASCII JSON: what `_mount_the_legs`
+#: raised, if anything, and for a `CommandFailed` the block `execute` prints
+#: of it after both legs exist (`loudly`).
 MOUNT_IN_THE_C_LOCALE = r"""
 import importlib.util, json, os, sys
 from pathlib import Path
@@ -146,6 +149,8 @@ try:
                             json.loads(sys.argv[4]), "spec", "code")
 except Exception as exc:
     answer["raised"] = type(exc).__name__ + ": " + str(exc)
+    if isinstance(exc, adopter.CommandFailed):
+        answer["loudly"] = exc.loudly("mounting the legs")
 print(json.dumps(answer))
 """
 
@@ -157,16 +162,13 @@ MOVED = {"spec": [NFC_RESUME, NFD_CAFE, UMLAUT_DIR + "/"], "code": [CJK],
 KEPT = [NFD_RESUME, NFC_CAFE, UMLAUT_FILE, "README.md"]
 
 
-def test_the_mount_hands_git_rm_each_path_as_the_bytes_the_tree_holds(
-        tmp_path):
-    """On bfed143 the child raised `UnicodeEncodeError` at the first `git
-    rm` of a name outside ASCII. Now every moved and dropped path is gone
-    from the assembly's index, byte for byte, and each twin kept in the
-    root is still there: no other path was removed."""
+def mounted_in_the_c_locale(tmp_path: Path, files: list,
+                            moved: dict) -> tuple[Path, dict]:
+    """`(assembly, answer)`: an assembly holding `files`, beside its two
+    legs in a work directory, and what the child said of `_mount_the_legs`
+    for the plan paths `moved`, run under the C locale."""
     env = c_locale_or_skip()
     work = tmp_path / "work"
-    files = [NFC_RESUME, NFD_CAFE, CJK, NAIVE, NOT_UTF8,
-             f"{UMLAUT_DIR}/a.md", f"{UMLAUT_DIR}/b.md", *KEPT]
     assembly = make_source_repo(work / NORTHWIND,
                                 {name: "x\n" for name in files}, edits=())
     for role in ("spec", "code"):
@@ -175,14 +177,45 @@ def test_the_mount_hands_git_rm_each_path_as_the_bytes_the_tree_holds(
     child = subprocess.run(
         [sys.executable, "-c", MOUNT_IN_THE_C_LOCALE,
          os.fsencode(ADOPT).hex(), os.fsencode(assembly).hex(),
-         os.fsencode(work).hex(), json.dumps(MOVED)],
+         os.fsencode(work).hex(), json.dumps(moved)],
         capture_output=True, env=env, stdin=subprocess.DEVNULL, check=False)
     stderr = child.stderr.decode(UTF8, "replace")
     assert child.returncode == 0, f"the child died:\n{stderr}"
-    answer = json.loads(child.stdout.decode("ascii"))
+    return assembly, json.loads(child.stdout.decode("ascii"))
+
+
+def test_the_mount_hands_git_rm_each_path_as_the_bytes_the_tree_holds(
+        tmp_path):
+    """On bfed143 the child raised `UnicodeEncodeError` at the first `git
+    rm` of a name outside ASCII. Now every moved and dropped path is gone
+    from the assembly's index, byte for byte, and each twin kept in the
+    root is still there: no other path was removed."""
+    files = [NFC_RESUME, NFD_CAFE, CJK, NAIVE, NOT_UTF8,
+             f"{UMLAUT_DIR}/a.md", f"{UMLAUT_DIR}/b.md", *KEPT]
+    assembly, answer = mounted_in_the_c_locale(tmp_path, files, MOVED)
     assert "raised" not in answer, answer
     assert listed(assembly, "ls-files", "-z") == {
         tree_bytes(name) for name in [*KEPT, ".gitmodules", "spec", "code"]}
+
+
+def test_a_path_git_refuses_is_refused_as_the_command_reads(tmp_path):
+    """`_git_rm`'s failure path (r527's review). A `git rm` git refuses
+    raises `CommandFailed` as `run` raised it: naming the command as the
+    person reads it, the path as text and not the bytes git was handed, and
+    carrying git's own words, which `execute` prints after both legs exist.
+    On bfed143 the child raised `UnicodeEncodeError` before git ran. Naming
+    the bytes command raised `TypeError`, not one of `LATE_FAILURES`, so the
+    run would end in a traceback after both legs are pushed; and a refusal
+    left unraised went on to mount the legs as if the path were gone."""
+    missing = "missing-" + NFC_CAFE
+    _, answer = mounted_in_the_c_locale(
+        tmp_path, ["README.md"], {"spec": [missing], "code": [], "drop": []})
+    command = f"git --literal-pathspecs rm -r -q -- {missing}"
+    assert answer.get("raised") == f"CommandFailed: {command}", answer
+    told = answer["loudly"].splitlines()
+    assert told[:2] == ["REFUSED mounting the legs. THE EXACT COMMAND WAS:",
+                        f"    {command}"]
+    assert f"fatal: pathspec '{missing}' did not match any files" in told
 
 
 # --- the whole adoption, from the command line ------------------------------
