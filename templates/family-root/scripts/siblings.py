@@ -52,7 +52,8 @@ WHAT IT DOES:
            A plain clone checks out the remote's DEFAULT branch, and the two
            differ when a member tracks another branch. A member whose pinned
            copy is not checked out (`make bootstrap` checks it out), or that
-           declares none, is cloned on its remote's default branch, as it
+           declares none, or a value that is no branch name (`5`, a control
+           character), is cloned on its remote's default branch, as it
            always was, and its line says so. Nothing else is read for it:
            `.gitmodules` carries no `branch=`, and `family.yaml`'s
            `tracking_branch:` is the HOLDER's branch, the one `family.py`
@@ -310,6 +311,12 @@ def tracking_branch(root: Path, row: dict) -> tuple[str | None, str]:
     holder may have kept carries. None, with the reason, when the copy is
     not checked out or declares no branch: the clone then takes the remote's
     default branch, as it always did, and says so.
+
+    A VALUE THAT IS NOT A BRANCH NAME IS NOT USED AS ONE, and is shown in its
+    `repr`: `5` or `[main]`, and a string holding a character that does not
+    print. An ESC or a newline would reach this command's output raw, where
+    the member's own bootstrap escapes the same field (#391); `repr` escapes
+    exactly what `isprintable` refuses, so the two agree with no import.
     """
     label = (str(row.get("path") or f"members/{row.get('project')}")
              + "/project.yaml")
@@ -322,8 +329,15 @@ def tracking_branch(root: Path, row: dict) -> tuple[str | None, str]:
     except (Refusal, OSError, ValueError):
         return None, f"{label} could not be read"
     branch = data.get("tracking_branch") if isinstance(data, dict) else None
-    if not isinstance(branch, str) or not branch.strip():
+    if branch is None or branch == "":
         return None, f"{label} declares no tracking_branch"
+    if not isinstance(branch, str) or not branch.strip():
+        return None, (f"{label} declares tracking_branch {branch!r}, which "
+                      "is not a branch name")
+    if not branch.isprintable():
+        return None, (f"{label} declares tracking_branch {branch!r}, which "
+                      "holds a character that does not print, so it is not "
+                      "used as a branch")
     return branch, label
 
 
@@ -794,6 +808,23 @@ def family_folder_name(manifest: dict, root: Path) -> str:
     return str(manifest.get("name") or root.name)
 
 
+def same_directory(one: Path, two: Path) -> bool:
+    """`one` and `two` are one directory: the same path, or on THIS disk.
+
+    Equal paths first, which needs no disk, so a drive root can be asked
+    with a `PureWindowsPath` (whose equality already ignores case). Then the
+    disk's own answer, `os.path.samefile`, which is how `C:\\p\\InkRouter`
+    and `C:\\p\\inkrouter` are found to be one folder on a disk that ignores
+    case and two on one that does not.
+    """
+    if one == two:
+        return True
+    try:
+        return one.exists() and os.path.samefile(one, two)
+    except OSError:
+        return False
+
+
 def parent_folder_warning(root: Path, family: str) -> str | None:
     """The WARNING and the exact `mv`, or None when the layout is right.
 
@@ -807,13 +838,27 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
     nothing was. It used to come after the placement: every member was
     cloned into the wrong folder first, and the re-run the warning asked for
     cloned each one again beside the moved holder.
+
+    THE NAME TEST IS EXACT ON EVERY DISK, so the printed move has to run as
+    typed on every disk too (#543). Three shapes of it:
+    - `<parent>/<Family>` is the HOLDER ITSELF, because the parent is a
+      filesystem or drive root (`/`, `C:\\`): the holder is moved through a
+      staging name, as when `<parent>/<Family>` does not exist at all.
+    - `<parent>/<Family>` is THIS FOLDER under another case, on a disk that
+      ignores case (macOS, Windows): the FOLDER is renamed, through a
+      staging name, because a rename that changes only the case is a move
+      onto itself there. Linux, where the two are two folders, is unchanged.
+    - otherwise the holder moves into `<parent>/<Family>`, made if missing.
+    A LINK named `<Family>` onto this folder is never renamed through: the
+    holder's path is resolved before this is asked, so a family folder
+    reached through a link is a question #543 leaves as it was.
     """
     folder = root.parent
     if folder.name == family:
         return None
     lines = [
-        f"WARNING the holder's parent folder is {folder.name!r}, not "
-        f"{family!r}.",
+        f"WARNING the holder's parent folder is {folder.name or str(folder)!r}"
+        f", not {family!r}.",
         f"        {root} should sit in a plain folder named {family}, beside "
         "the members'",
         "        working clones — that is the layout `make siblings` places. "
@@ -834,13 +879,21 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
         "",
     ]
     wanted = folder.parent / family
-    if root.name == family and not wanted.exists():
+    if same_directory(wanted, root) or (root.name == family
+                                        and not wanted.exists()):
         # The common case: the holder was cloned straight into ~/projects, so
         # `<parent>/<Family>` IS the holder itself and the move needs a
-        # staging name — `mv A A/A` cannot be spelled in one command.
+        # staging name — `mv A A/A` cannot be spelled in one command. At a
+        # filesystem or drive root it is the holder even though it exists.
         staged = folder.parent / f"{family}.holder"
         steps = [["mv", root, staged], ["mkdir", "-p", wanted],
                  ["mv", staged, wanted / family]]
+    elif (folder.name.casefold() == family.casefold()
+          and not wanted.is_symlink() and same_directory(wanted, folder)):
+        # THIS FOLDER under another case, on a disk that ignores case: the
+        # folder is renamed, in two steps, and the holder stays inside it.
+        staged = folder.parent / f"{family}.folder"
+        steps = [["mv", folder, staged], ["mv", staged, wanted]]
     else:
         steps = [["mkdir", "-p", wanted], ["mv", root, wanted / family]]
     # EVERY PATH QUOTED (#486): under `my work/` a bare `mv` moved nothing
@@ -982,21 +1035,22 @@ def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
     dispatch-or-placement choice.
 
     THE FOLDER IS ASKED FIRST (#543). A holder whose parent folder is not
-    named after the family stops here, exit 1, before any credential is
-    resolved or any member cloned, and `--dry-run` stops in the same words:
+    named after the family stops here, exit 1, before any `git` command
+    runs or any member is cloned, and `--dry-run` stops in the same words:
     once the holder is moved, the run after it clones each member once, in
-    the right folder.
+    the right folder. Until the check passes, the header calls that folder
+    the PARENT folder, not the family's.
     """
     family = family_folder_name(manifest, root)
+    warning = parent_folder_warning(root, family)
     print(f"siblings: {name} ({root}) — {len(rows)} member(s)")
-    print(f"  family folder   {root.parent}")
+    print(f"  {'parent' if warning else 'family'} folder   {root.parent}")
     print("  each member is cloned BESIDE the holder and stays PINNED inside "
           "it under")
     print("  members/ — the pinned copy is detached for bootstrap and "
           "validate, the")
     print("  sibling is where you work.")
 
-    warning = parent_folder_warning(root, family)
     if warning:
         print()
         sys.stdout.flush()          # so the warning lands where it belongs

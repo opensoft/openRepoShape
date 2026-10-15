@@ -94,10 +94,10 @@ holder (`../<Project>`). Two copies of every member is correct and intended —
 this family follows it. What it will NOT do, and you must not do either:
 
 * **It moves nothing.** When the parent folder is not named after the family
-  it WARNS, prints the exact `mv` for a human to run and stops, exit 1,
-  before it clones anything. Do not run that `mv` on your own initiative:
-  relocating a checkout breaks an open shell, an editor and any LINKED
-  WORKTREE, whose `.git` file carries an absolute path.
+  it WARNS, prints the exact `mv` for a human to run and stops, exit 1
+  (`make`: 2), before it clones anything. Do not run that `mv` on your own
+  initiative: relocating a checkout breaks an open shell, an editor and any
+  LINKED WORKTREE, whose `.git` file carries an absolute path.
 * **It never touches an existing clone beyond `git fetch`.** No checkout, no
   reset, no pull, no stash, no branch switch — somebody is working in there.
   A directory that is a clone of a different repository is reported and

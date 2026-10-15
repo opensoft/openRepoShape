@@ -29,6 +29,13 @@ THE SAME FAMILY AS `test_family.py` (its module fixture, this module's own
 instance), with one change made once: IRSS's remote's default branch is moved
 off `main`, the branch IRSS tracks, so a clone that took the default branch
 is visibly on the wrong one. Each test works on its own copy of the holder.
+
+The review round (#543) adds: the child process keeps family.py's escaped
+stdout (#214); `init --work-dir` no longer promises a `make siblings` that
+stops; the printed move runs as typed on a disk that ignores case and at a
+filesystem or drive root, each simulated in this process so all three
+systems ask the same question; a `tracking_branch:` that is no branch name is
+shown escaped and not used; and the stop comes before any `git` command.
 """
 
 from __future__ import annotations
@@ -36,11 +43,13 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
-from pathlib import Path
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
-from conftest import REPO, git, run_script
+from conftest import REPO, git, load_without_bytecode, run_script
 #: The family fixture, its names and the `make siblings` runner, imported
 #: from the module that owns them.
 from test_family import (  # noqa: F401
@@ -93,6 +102,51 @@ def move_commands(stderr: str) -> list[list[str]]:
 
 def flat(text: str) -> str:
     return " ".join(text.split())
+
+
+@pytest.fixture
+def placement(monkeypatch):
+    """The TEMPLATE's `siblings.py` in this process, for its move arithmetic.
+
+    `load_without_bytecode`, so nothing is written under `templates/`; its
+    `bootstrap` import is answered by the template's own `bootstrap.py`, the
+    copy beside it in a holder. `sys.path`, which the file extends, and
+    `sys.modules` are put back when the test ends."""
+    scripts = REPO / "templates" / "family-root" / "scripts"
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setitem(sys.modules, "bootstrap", load_without_bytecode(
+        scripts / "bootstrap.py", "placement_family_bootstrap"))
+    return load_without_bytecode(scripts / "siblings.py",
+                                 "placement_family_siblings")
+
+
+def stored(path) -> Path | None:
+    """`path` as a disk that ignores case finds it, each part matched to a
+    name in its folder whatever its case; None when a part is missing."""
+    path = Path(os.path.abspath(path))
+    found = Path(path.anchor)
+    for part in path.parts[1:]:
+        try:
+            names = os.listdir(found)
+        except OSError:
+            return None
+        match = [name for name in names if name.casefold() == part.casefold()]
+        if not match:
+            return None
+        found = found / match[0]
+    return found
+
+
+def ignoring_case(patched) -> None:
+    """`Path.exists` and `os.path.samefile` answering as macOS and Windows
+    disks do, here on any system: a spelling in another case exists, and is
+    the same file."""
+    samefile = os.path.samefile
+    patched.setattr(Path, "exists",
+                    lambda self, **_: stored(self) is not None)
+    patched.setattr(os.path, "samefile", lambda one, two: (
+        None not in (stored(one), stored(two))
+        and samefile(stored(one), stored(two))))
 
 
 # --- the tracking branch -----------------------------------------------------
@@ -170,11 +224,40 @@ def test_the_dry_run_names_the_branch_it_would_clone_on(diverged, tmp_path):
     holder = holder_in(diverged, tmp_path / NAME)
     result = siblings(holder, "--dry-run")
     assert result.returncode == 0, result.stdout + result.stderr
+    assert f"\n  family folder   {holder.parent}\n" in result.stdout
     said = clone_line(result.stdout, "IRSS")
     assert "would clone" in said
     assert said.endswith(
         ", on main, its tracking branch (members/IRSS/project.yaml)")
     assert not (holder.parent / "IRSS").exists()
+
+
+@pytest.mark.parametrize("declared, shown, why", [
+    (b'"\\x1b[2Jcleared"', r"'\x1b[2Jcleared'",
+     "holds a character that does not print, so it is not used as a branch"),
+    (b"5", "5", "is not a branch name"),
+    (b"[main]", "['main']", "is not a branch name"),
+], ids=["escape-sequence", "a-number", "a-list"])
+def test_a_tracking_branch_that_is_no_branch_name_is_shown_and_not_used(
+        diverged, tmp_path, declared, shown, why):
+    """A value no branch can have is not handed to git and not printed raw:
+    an ESC sequence would clear the screen of whoever reads the output, a
+    number or a list is not a name at all. Each is shown as `repr` shows it,
+    and the clone keeps the remote's default branch."""
+    holder = holder_in(diverged, tmp_path / NAME)
+    manifest = holder / "members" / "IRSS" / "project.yaml"
+    before = manifest.read_bytes()
+    after = before.replace(b'tracking_branch: "main"',
+                           b"tracking_branch: " + declared)
+    assert after != before
+    manifest.write_bytes(after)
+
+    result = siblings(holder, "--dry-run")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "\x1b" not in result.stdout
+    assert clone_line(result.stdout, "IRSS").endswith(
+        ", on its remote's default branch: members/IRSS/project.yaml "
+        f"declares tracking_branch {shown}, which {why}")
 
 
 def test_a_sibling_is_read_through_git_and_shares_no_file_with_its_remote(
@@ -253,7 +336,8 @@ def test_a_misplaced_holder_clones_nothing_and_the_moved_one_clones_once(
 def test_a_misplaced_holders_dry_run_stops_in_the_same_words(diverged,
                                                             tmp_path):
     """A dry run asks what the real run asks: it stops at the folder, exit
-    1, and names no member it would clone."""
+    1, and names no member it would clone. Its header calls that folder the
+    PARENT folder: the warning below it says it is not the family's."""
     wrong = tmp_path / "somewhere-else"
     holder = holder_in(diverged, wrong)
     result = siblings(holder, "--dry-run")
@@ -261,6 +345,118 @@ def test_a_misplaced_holders_dry_run_stops_in_the_same_words(diverged,
     assert "would clone" not in result.stdout
     assert "NOTHING WAS CLONED" in result.stderr
     assert sorted(os.listdir(wrong)) == [NAME]
+    assert f"\n  parent folder   {wrong}\n" in result.stdout
+    assert "family folder" not in result.stdout
+
+
+def test_a_misplaced_holder_stops_before_any_git_command_runs(diverged,
+                                                             tmp_path):
+    """The stop asks nothing of git: no `.gitmodules` read, no credential
+    used, no member cloned. `GIT_TRACE` names a file every `git` the run
+    starts writes to, so the file is absent after the stop; a `git` run with
+    the same variable writes it, so the probe is shown to work here."""
+    holder = holder_in(diverged, tmp_path / "somewhere-else")
+    trace = tmp_path / "git-trace.log"
+    result = siblings(holder, env={"GIT_TRACE": str(trace)})
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "stopped before cloning" in result.stderr
+    assert not trace.exists(), trace.read_text(encoding="utf-8")
+    control = tmp_path / "git-trace-control.log"
+    subprocess.run(["git", "--version"], capture_output=True, check=True,
+                   env={**os.environ, "GIT_TRACE": str(control)})
+    assert control.is_file()
+
+
+# --- the printed move runs as typed on every disk ----------------------------
+
+
+def test_a_parent_folder_in_another_case_is_renamed_on_a_disk_that_ignores_it(
+        placement, monkeypatch, tmp_path):
+    """macOS and Windows: the holder sits in `inkrouter/`, and `InkRouter`
+    "exists" because it IS that folder. The exact name test stops the run
+    on every disk, so the remedy renames the FOLDER through a staging name,
+    which a disk that ignores case can do and a one-step rename onto itself
+    cannot. The moves, done as written, leave the holder where the next run
+    finds no warning."""
+    folder = tmp_path / NAME.lower()
+    root = folder / NAME
+    root.mkdir(parents=True)
+    with monkeypatch.context() as patched:
+        ignoring_case(patched)
+        warning = placement.parent_folder_warning(root, NAME)
+    staged = tmp_path / f"{NAME}.folder"
+    commands = move_commands(warning)
+    assert commands == [["mv", str(folder), str(staged)],
+                        ["mv", str(staged), str(tmp_path / NAME)]]
+
+    for _, source, target in commands:
+        os.rename(source, target)
+    assert sorted(os.listdir(tmp_path)) == [NAME]
+    assert placement.parent_folder_warning(tmp_path / NAME / NAME,
+                                           NAME) is None
+
+
+@pytest.mark.parametrize("there", ["nothing", "a folder", "a link"])
+def test_a_case_sensitive_disk_keeps_its_move(placement, monkeypatch,
+                                              tmp_path, there):
+    """Linux, where `InkRouter` and `inkrouter` are two folders: with
+    nothing at `InkRouter`, the holder moves there through a staging name;
+    with a folder of its own there, the holder moves into it, as it always
+    did. A LINK named `InkRouter` onto this folder is never renamed through:
+    a family folder reached through a link is resolved first, a question
+    #543 leaves as it was."""
+    folder = tmp_path / NAME.lower()
+    root = folder / NAME
+    root.mkdir(parents=True)
+    wanted = tmp_path / NAME
+    exists, samefile = Path.exists, os.path.samefile
+
+    def same(one, two) -> bool:
+        pair = {Path(one), Path(two)}
+        if wanted in pair:
+            return there == "a link" and pair == {wanted, folder}
+        return samefile(one, two)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "exists", lambda self, **_: (
+            there != "nothing" if self == wanted else exists(self)))
+        patched.setattr(Path, "is_symlink", lambda self: (
+            self == wanted and there == "a link"))
+        patched.setattr(os.path, "samefile", same)
+        commands = move_commands(placement.parent_folder_warning(root, NAME))
+    staged = tmp_path / f"{NAME}.holder"
+    expected = {
+        "nothing": [["mv", str(root), str(staged)],
+                    ["mkdir", "-p", str(wanted)],
+                    ["mv", str(staged), str(wanted / NAME)]],
+        "a folder": [["mkdir", "-p", str(wanted)],
+                     ["mv", str(root), str(wanted / NAME)]],
+    }
+    if there in expected:
+        assert commands == expected[there]
+    else:
+        assert ["mv", str(folder), str(tmp_path / f"{NAME}.folder")] \
+            not in commands
+
+
+@pytest.mark.parametrize("root", [
+    PurePosixPath(f"/{NAME}"),
+    PureWindowsPath(f"C:\\{NAME}"),
+    PureWindowsPath(f"C:\\{NAME.lower()}"),
+], ids=["filesystem-root", "drive-root", "drive-root-other-case"])
+def test_a_holder_at_a_filesystem_or_drive_root_moves_through_a_staging_name(
+        placement, root):
+    """`/InkRouter` or `C:\\InkRouter`: the parent is the root, whose name is
+    empty, so `<root>/InkRouter` is the holder itself and `mv X X/X` cannot
+    run. The holder moves through a staging name. Asked of the paths alone,
+    which `PurePosixPath` and `PureWindowsPath` spell as each system does."""
+    warning = placement.parent_folder_warning(root, NAME)
+    assert f"parent folder is {str(root.parent)!r}, not {NAME!r}" in warning
+    staged = root.parent / f"{NAME}.holder"
+    wanted = root.parent / NAME
+    assert move_commands(warning) == [
+        ["mv", str(root), str(staged)], ["mkdir", "-p", str(wanted)],
+        ["mv", str(staged), str(wanted / NAME)]]
 
 
 # --- family.py siblings runs the holder's own copy ---------------------------
@@ -316,3 +512,36 @@ def test_family_py_siblings_refuses_a_holder_without_its_own_copy(
     assert head in said
     assert f" --root {shlex.quote(str(holder))}`" in said
     assert flat(tail) in said
+
+
+def test_family_py_siblings_escapes_what_its_stdout_cannot_encode(
+        diverged, tmp_path):
+    """#214, kept across the child process: family.py escapes what its
+    stdout cannot hold, and the holder's copy it now runs in a process of its
+    own writes into that same stdout, so it is told the same encoding and a
+    handler that cannot raise. An ASCII stdout gets `\\u2014` for the em dash
+    of the first line, and the run goes on."""
+    holder = holder_in(diverged, tmp_path / NAME)
+    result = run_script(FAMILY, "siblings", "--family-root", str(holder),
+                        "--dry-run", env={**ALLOW_FILE_PROTOCOL,
+                                          "PYTHONIOENCODING": "ascii"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "UnicodeEncodeError" not in result.stderr
+    assert f"({holder}) \\u2014 2 member(s)" in result.stdout
+
+
+# --- init --work-dir makes no family folder ----------------------------------
+
+
+def test_init_with_a_work_dir_promises_no_family_folder(diverged):
+    """`--work-dir <dir>` puts the holder at `<dir>/<Family>` and makes no
+    family folder; `<dir>` is not named after the family, so `make
+    siblings` there clones nothing. The NEXT STEPS say that, and no longer
+    that it puts each member's working clone in the family folder."""
+    said = diverged["init"].stdout
+    work = (diverged["base"] / "fam").resolve()
+    assert f"\nfamily folder  none: {work} is not named {NAME}\n" in said
+    assert ("--work-dir made no family folder, so `make siblings` clones "
+            "nothing: it prints the `mv` that puts the holder in a folder "
+            f"named {NAME}, and stops until it is there.") in flat(said)
+    assert "in the family folder, on its tracking branch" not in flat(said)

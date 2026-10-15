@@ -142,8 +142,8 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     FAMILY_RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, env_commit, escape_what_stdout_cannot_encode,
-    force_stage, materialize_family_root, refuse_bad_branch, run,
-    stage_written, trailer_line, write_lf,
+    force_stage, inherited_child_environment, materialize_family_root,
+    refuse_bad_branch, run, stage_written, trailer_line, write_lf,
 )
 # What `init` asks of the holder's own reader and validator before it creates
 # anything (#307), imported as its own unit and not added to the lists above.
@@ -1321,8 +1321,24 @@ def _print_next_steps(args, work: Path, folder: Path | None) -> None:
     ONE COMMAND A LINE, `cd` apart from `make siblings`: Windows PowerShell
     5.1, the shell `setup-project.py` documents, rejects `&&` between two
     statements, and these lines are quoted for the shell of the host (#486).
+
+    `--work-dir` makes no family folder, and `make siblings` stops before it
+    clones anything in a holder whose parent folder is not named after the
+    family (#543), so there the block says so instead of promising clones.
     """
     switch = shell_line(["git", "-C", work, "switch", "-c"])
+    beside = ("`make siblings` then puts each member's WORKING clone\n"
+              "beside the holder, in the family folder, on its tracking "
+              "branch.")
+    where = f"family folder  {folder if folder is not None else work.parent}"
+    if folder is None and work.parent.name != work.name:
+        # --work-dir MAKES NO FAMILY FOLDER, and `make siblings` clones
+        # nothing until the holder sits in one (#543), so none is promised.
+        beside = ("--work-dir made no family folder, so `make siblings`\n"
+                  "clones nothing: it prints the `mv` that puts the holder "
+                  f"in a folder\nnamed {work.name}, and stops until it is "
+                  "there.")
+        where = f"family folder  none: {work.parent} is not named {work.name}"
     print(f"""
 NEXT STEPS
 
@@ -1334,15 +1350,14 @@ NEXT STEPS
 `add` mounts the member at {MEMBERS_DIR}/<Project>, records its pin, and
 writes ONE commit on that branch: it refuses {args.tracking_branch}, the
 holder's tracking branch. Push the branch as its NEXT line says and land it
-as a pull request. `make siblings` then puts each member's WORKING clone
-beside the holder, in the family folder, on its tracking branch.
+as a pull request. {beside}
 
 TWO COPIES OF EVERY MEMBER, on purpose: pinned and DETACHED inside the holder
 under {MEMBERS_DIR}/ (what `make bootstrap` and `make validate` read), and a
 working clone BESIDE the holder — that second one is where you work, and
 `family.py bump` is how the family follows it.
 
-family folder  {folder if folder is not None else work.parent}
+{where}
 holder         {work}
 """)
 
@@ -4732,12 +4747,17 @@ def cmd_siblings(args) -> int:
             "holder's history rather than with --add.")
     # STANDING IN THE HOLDER, AS MAKE STANDS THERE, so every word of the
     # command is a constant and none is a value from this command line: the
-    # holder is the directory it runs in, and `--root .` names it.
+    # holder is the directory it runs in, and `--root .` names it. The child
+    # writes into this stdout but takes its encoding from its environment,
+    # not from the `reconfigure` `main()` did (#214): told this stdout's own
+    # encoding and a handler that cannot raise, it escapes what the stream
+    # cannot hold, as the in-process run did, instead of dying on an em dash.
     sys.stdout.flush()
     return subprocess.run(
         [sys.executable or PYTHON, SIBLINGS_SCRIPT, "--root", ".",
          *(["--dry-run"] if args.dry_run else [])],
-        cwd=str(root), check=False).returncode
+        cwd=str(root), check=False,
+        env=inherited_child_environment()).returncode
 
 
 # ---------------------------------------------------------------------------
