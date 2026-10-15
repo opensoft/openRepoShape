@@ -61,6 +61,9 @@ FROM_THE_LOCAL_LEGS = (
     "it from GitHub's:")
 #: Both platforms' answer for a url that names a drive.
 ON_WINDOWS = os.name == "nt"
+#: Where the tests' `insteadOf` sends a path, and the url the guard is
+#: tried on: ssh, which a stub `GIT_SSH_COMMAND` stands in for.
+MIRRORS = "ssh://git@example.invalid/mirrors/"
 
 
 def unasked_note(*items: str) -> str:
@@ -86,6 +89,19 @@ def an_absolute_url(base: Path, as_a_file_url: bool) -> str:
     """NOWHERE under `base`, as a path or as the `file://` url naming it."""
     target = base / NOWHERE
     return target.as_uri() if as_a_file_url else target.as_posix()
+
+
+def a_recording_ssh(base: Path, monkeypatch) -> Path:
+    """`GIT_SSH_COMMAND` set to a stub that records being started and exits
+    1, so no ssh is ever reached; the file it records in, under `base`, is
+    returned and does not exist yet."""
+    started = base / "ssh-started"
+    stub = base / "ssh_stub.py"
+    stub.write_text(f"open({started.as_posix()!r}, 'w').close()\n"
+                    "raise SystemExit(1)\n", encoding="utf-8")
+    python = Path(sys.executable).as_posix()
+    monkeypatch.setenv("GIT_SSH_COMMAND", f'"{python}" "{stub.as_posix()}"')
+    return started
 
 
 def put_the_dependency_at(target: Path, base: Path) -> None:
@@ -243,18 +259,12 @@ def test_a_path_this_machine_rewrites_to_a_network_is_not_asked(
     disk is named in the NOTE with where it goes, and never asked: the `ssh`
     git would start for it is a stub that records being started, and it
     never is."""
-    started = tmp_path / "ssh-started"
-    stub = tmp_path / "ssh_stub.py"
-    stub.write_text(f"open({started.as_posix()!r}, 'w').close()\n"
-                    "raise SystemExit(1)\n", encoding="utf-8")
+    started = a_recording_ssh(tmp_path, monkeypatch)
     moved = f"{(tmp_path / 'moved').as_posix()}/"
-    mirrors = "ssh://git@example.invalid/mirrors/"
     config = tmp_path / "gitconfig"
-    config.write_text(f'[url "{mirrors}"]\n\tinsteadOf = {moved}\n',
+    config.write_text(f'[url "{MIRRORS}"]\n\tinsteadOf = {moved}\n',
                       encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
-    python = Path(sys.executable).as_posix()
-    monkeypatch.setenv("GIT_SSH_COMMAND", f'"{python}" "{stub.as_posix()}"')
     url = f"{moved}dep.git"
     result = check(planned(source_with(tmp_path, url), tmp_path))
     passes(result)
@@ -264,6 +274,22 @@ def test_a_path_this_machine_rewrites_to_a_network_is_not_asked(
         f"`{url}` of `{DEPENDENCY}`, which git here rewrites to "
         "`ssh://***@example.invalid/mirrors/dep.git`")]
     assert not started.exists(), "git started ssh for a url nobody may ask"
+
+
+def test_git_is_held_to_the_disk_when_it_asks(adopter, tmp_path, monkeypatch):
+    """`git ls-remote` asks under `GIT_ALLOW_PROTOCOL=file`, so a url that
+    `_on_this_disk` were wrong about still reaches no network: with that
+    judgement forced for an `ssh://` url, git itself refuses the transport,
+    the answer is what git said, and the `ssh` git would start is never
+    started. No global config rewrites the url on the way."""
+    started = a_recording_ssh(tmp_path, monkeypatch)
+    empty = tmp_path / "gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setattr(adopter, "_on_this_disk", lambda _url: True)
+    [(_, said)] = adopter._answers([f"{MIRRORS}dep.git"])
+    assert said is not None
+    assert not started.exists(), "git started ssh for a url on a network"
 
 
 @pytest.mark.parametrize("url, on_this_disk", [
@@ -278,11 +304,19 @@ def test_a_path_this_machine_rewrites_to_a_network_is_not_asked(
     ("git@github.com:testorg/dependency.git", False),
     ("ssh://git@github.com:22/testorg/dependency.git", False),
     ("file://mirror-host/srv/dependency.git", False),
+    # Two separators begin a share on another machine on Windows, reached
+    # over the network with the asker's credentials, and on POSIX `\\`
+    # begins a name relative to the clone: asked on neither.
+    ("\\\\fileserver\\git\\dependency.git", False),
+    ("//fileserver/git/dependency.git", False),
+    ("file:////fileserver/git/dependency.git", False),
     # Relative to wherever the clone is made, which nobody knows yet.
     ("dependency", False),
 ], ids=["path", "file-url", "drive", "drive-backslash", "drive-file-url",
-        "https", "scp", "ssh", "file-url-with-a-host", "bare-name"])
+        "https", "scp", "ssh", "file-url-with-a-host", "unc", "unc-slash",
+        "unc-file-url", "bare-name"])
 def test_only_a_repository_on_this_disk_is_asked(adopter, url, on_this_disk):
     """The urls `check` and `execute` ask: an absolute path or a `file://`
-    url with no host, as git on THIS machine opens one."""
+    url with no host, as git on THIS machine opens one, and never a UNC
+    path."""
     assert adopter._on_this_disk(url) is on_this_disk

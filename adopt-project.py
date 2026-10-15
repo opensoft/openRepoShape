@@ -4610,10 +4610,16 @@ def _on_this_disk(url: str) -> bool:
     (`remote_local_path`). A drive only on Windows, where git reads `C:/` as
     a drive; everywhere else it reads `C:` as the scp host `C`, which only a
     network can answer. A path relative to wherever the clone is made, such
-    as `dependency`, is not one: nobody knows yet where that is."""
+    as `dependency`, is not one: nobody knows yet where that is. Nor, on any
+    platform, is a path that starts with two separators, which
+    `remote_local_path` spells `//server/share` for `\\\\server\\share`,
+    `//server/share` and `file:////server/share` alike: Windows opens it as
+    a share on another machine, over the network, with the credentials of
+    whoever asks, and on POSIX `\\\\server` is a name relative to the
+    clone."""
     path = remote_local_path(url)
-    return path is not None and (os.name == "nt"
-                                 or DRIVE_RE.match(path) is None)
+    return path is not None and not path.startswith("//") and (
+        os.name == "nt" or DRIVE_RE.match(path) is None)
 
 
 def _answers(urls: list[str]) -> list[tuple[str, str | None]]:
