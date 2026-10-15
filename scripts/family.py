@@ -86,16 +86,21 @@ the commit that clone resolved, for the `id:` and the digest the row records,
 and prints that row, the gitlink, the `.gitmodules` section, the registration
 and the directory the mount would make, and the trailers its commit would end
 with; it never runs `git submodule add` and writes nothing of the holder's.
+`init --dry-run` asks whether `<org>/<Family>` already exists, with the
+question the real run asks before it creates the holder (#537): `gh repo
+view` and the commit listing, or the bare repository with
+`--local-remote-dir`. It refuses `family-remote-exists` as the real run does,
+and makes no folder, remote or repository.
 
 WHAT ONLY THE WRITE ITSELF CAN ANSWER IS NOT ASKED. A member whose local
 changes `git checkout` would refuse to overwrite gets exit 0 and a row from
-`bump --dry-run`, and exit 2 from the real `bump`'s checkout; an unmerged
-`.gitmodules` is refused by the real `remove`'s `git rm` and not by its dry
-run; a `.gitmodules` the index or HEAD holds and the work tree does not is
+`bump --dry-run`, and exit 2 from the real `bump`'s checkout; a
+`.gitmodules` the index or HEAD holds and the work tree does not is
 refused by the real `add`'s `git submodule add`, and its dry run exits 0 with
-a note that says so; and a held `index.lock` is refused by the real `remove`
-before it unmounts anything (#365) and not by its dry run, because a lock is
-a fact about the moment, not about the holder. Each is git's own refusal or
+a note that says so (but for one a sparse checkout leaves out, below); and a
+held `index.lock` is refused by the real `remove` before it unmounts anything
+(#365) and not by its dry run, because a lock is a fact about the moment, not
+about the holder. Each is git's own refusal or
 one made before the first write, and a real run puts back what it wrote
 first. A `project.yaml` that is a symbolic link is read through the link
 by a real `add`'s mount and by nothing before it, so `add --dry-run` leaves
@@ -113,6 +118,26 @@ says the checkout is not back. `remove` also refuses, under `--dry-run` as
 well, a `.gitmodules` that gives the member's path to more than one
 submodule (#360): `git rm` takes out the section of the one git finds for
 that path, and its commit used to keep the others.
+
+`remove` AND `add` COMMIT ONLY THEIR OWN CHANGE TO `.gitmodules` (#407). Each
+commits the file as git leaves it in the work tree, so the work tree's copy
+must be the one the index holds. `remove` refuses, before any git command that
+writes and under `--dry-run` alike, a `.gitmodules` the index or HEAD holds
+and the work tree does not have: `git rm` edits only one it has, and the
+commit took the file out of HEAD and every other member's section with it,
+with exit 0. Both verbs refuse, as early, a work tree's copy that is not the
+index's: changed and not staged, unmerged, one whose deletion is staged, an
+edit the index's assume-unchanged mark hides from git, an untracked file where
+neither the index nor HEAD holds one, and a file a sparse checkout leaves out:
+one the index marks skip-worktree, which `add` refuses on disk or not, as `git
+submodule add` cannot stage it, and `remove` where it is missing or is not the
+index's copy. `add` committed such a change beside the member's section;
+`remove`'s `git rm` refused some of them only after `git submodule deinit` had
+emptied the member. A change somebody has STAGED is theirs and goes into the
+commit, which is what the remediations of #300 and #360 rely on. `add` leaves
+a `.gitmodules` the work tree lacks to `git submodule add`, which refuses it,
+as said above, but for one a sparse checkout leaves out, where the restore its
+dry run's note prints would not work.
 """
 
 from __future__ import annotations
@@ -170,13 +195,17 @@ FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 #: git does, so one fault has one name and one remedy. `repo_shape`'s
 #: `git-failed` was all `add` said before, under the lockstep remedy of an
 #: assembly root's legs. A SECOND SPELLING, not an import: the validator is
-#: the holder's copy. `tests/test_refusal_default_remediation.py` runs both
-#: over one file and fails when they differ.
+#: the holder's copy. ONE STEP MORE than the validator's: `add` commits the
+#: file and refuses a copy nobody has staged (#407), so the mended file is
+#: staged, `git add .gitmodules`, before the run again, where the gate reads
+#: the work tree's copy and needs no stage.
+#: `tests/test_refusal_default_remediation.py` runs both over one file and
+#: fails when they differ in anything else.
 GITMODULES_UNREADABLE = (
     "Remediation: git cannot read it either, so none of this holder's "
     "submodules can be cloned from it as it stands. Mend the file by hand "
-    f"(`git config -f {GITMODULES} --list` says where it breaks), then run "
-    "this again.")
+    f"(`git config -f {GITMODULES} --list` says where it breaks), then `git "
+    f"add {GITMODULES}` and run this again.")
 
 #: What `git symbolic-ref HEAD` prints before a branch's name: the one
 #: spelling `_holder_branch` and `_member_head` strip to read a HEAD back as
@@ -842,10 +871,25 @@ def _remote_is_empty(repository: str) -> bool | None:
     does not exist. GitHub answers a commit listing for an empty repository
     with 409 and the words "Git Repository is empty", which is the only
     reliable signal — `size: 0` is also what a repository of small files says.
+
+    NO `gh` ON PATH IS `gh-not-found` (#537), as `pin_digest_from_gh` names
+    it, and not a `FileNotFoundError` traceback: `init --dry-run` asks this
+    question too now, and before that a dry run needed no `gh` at all.
     """
-    probe = subprocess.run(["gh", "repo", "view", repository, "--json", "name"],
-                           capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", check=False)
+    try:
+        probe = subprocess.run(
+            ["gh", "repo", "view", repository, "--json", "name"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except FileNotFoundError as exc:
+        raise Refusal(
+            "gh-not-found",
+            f"the `gh` CLI is not on PATH, so whether {repository} already "
+            f"exists on GitHub cannot be asked: {exc}",
+            "Remediation: put `gh` on PATH, logged in (`gh auth login`), and "
+            "run this again: the real run creates the holder with `gh repo "
+            "create`. `openRepoShape --preflight` names each missing "
+            "prerequisite and offers to install it, on a typed yes.") from exc
     if probe.returncode != 0:
         return None
     commits = subprocess.run(
@@ -1736,6 +1780,13 @@ def cmd_init(args) -> int:
     _print_init_plan(values, repository, url, shape_commit, shape_tree,
                      folder, holder, local, topic, args.reuse_empty_repo)
     if args.dry_run:
+        # THE DRY RUN ASKS WHETHER THE HOLDER'S REMOTE EXISTS (#537), with
+        # the real run's own question, `_checked_reuse`, and refuses what it
+        # refuses: `family-remote-exists` used to come only from the real
+        # run, after `_prepare_landing_dir` had made the family folder. It
+        # READS, a `gh repo view` and a commit listing, or the bare
+        # repository on disk with `--local-remote-dir`, and creates nothing.
+        _checked_reuse(args.reuse_empty_repo, local, url, repository)
         print("\n--dry-run: nothing was created.")
         return 0
 
@@ -2064,10 +2115,11 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
             f"at {other}, and that is the name git gives {project}'s mount",
             "Remediation: git names a submodule after its path, so that name "
             "is a member's. Give that submodule a name of its own, or take it "
-            "out, by hand, then re-run. Mounting over the name would rewrite "
-            f"its section to point at {project} (git before 2.51), or mount "
-            f"{project} under another name this tool does not follow (git "
-            "2.51 and later, with the `--force` this tool mounts with).")
+            f"out, by hand, then `git add {GITMODULES}` and re-run. Mounting "
+            f"over the name would rewrite its section to point at {project} "
+            f"(git before 2.51), or mount {project} under another name this "
+            "tool does not follow (git 2.51 and later, with the `--force` "
+            "this tool mounts with).")
     ghosts = [(name, url, keys) for name, (at, url, keys) in sections.items()
               if at == path and name != path]
     if ghosts:
@@ -2158,6 +2210,11 @@ def _checked_add_target(family: Family, repository: str, project: str,
     # Everything the mount's `--force` would otherwise let past git, but the
     # cached store, which is asked below (#242).
     _checked_mount_path(family.root, project, path)
+    # Then a work tree's `.gitmodules` that is not the index's copy (#407):
+    # `git submodule add` writes the member's section into it and stages all
+    # of it, so a change nobody staged went into the commit too. Asked after
+    # the mount path's refusals, which name what they find in the same file.
+    _checked_gitmodules_as_staged(family.root, "add")
     # `git rm` deliberately leaves a removed submodule's OBJECT STORE behind,
     # so a member that was removed and is being added back trips `git
     # submodule add` with an error about a git directory found locally. That
@@ -2896,7 +2953,9 @@ def _add_dry_run(family: Family, repository: str, project: str, path: str,
     is in the working tree`) before it writes anything, and the real run
     exits 2 there. Only git can say that sentence, so the dry run says what
     will happen in a `note` and how to put the file back, and exits 0, as
-    `bump --dry-run` does for the checkout's own refusal.
+    `bump --dry-run` does for the checkout's own refusal. A file a sparse
+    checkout leaves out never gets here: `_checked_add_target` refuses it
+    first (`gitmodules-sparse`, #407), since that restore would not work.
     """
     scratch = Path(tempfile.mkdtemp(prefix="openreposhape-member-"))
     try:
@@ -4560,6 +4619,221 @@ def _sections_giving(root: Path, path: str
             for name in giving]
 
 
+def _gitmodules_in_index(root: Path) -> list[tuple[str, str, int]]:
+    """`(tag, blob, stage)` of every record the holder's index holds for
+    `.gitmodules`, as `git ls-files -s -v -z` lists them (#407). `tag` is
+    git's `-v` letter for the entry: `S` where it is marked skip-worktree,
+    and a lower-case letter where it is marked assume-unchanged. `stage` is
+    0 for a merged entry and 1, 2 or 3 for an unmerged one. The whole index,
+    with no pathspec, as `_index_records` reads it, and nothing is written.
+    """
+    listed = git_out(["ls-files", "-s", "-v", "-z"], cwd=root, binary=True)
+    found = []
+    for record in listed.split(b"\0"):
+        meta, _, name = record.partition(b"\t")
+        if name == GITMODULES.encode():
+            tag, _, blob, stage = meta.decode("ascii").split()
+            found.append((tag, blob, int(stage)))
+    return found
+
+
+def _stages_as(root: Path, blob: str) -> bool:
+    """Whether git would stage the work tree's `.gitmodules` as `blob`: a
+    regular file, not a link, whose bytes `git hash-object` reads as that
+    blob through the file's own attributes, which is how `git add` reads
+    them. Without `-w` it writes nothing."""
+    if not stat.S_ISREG(os.lstat(root / GITMODULES).st_mode):
+        return False
+    hashed = _git_bytes(["hash-object", f"--path={GITMODULES}", "--",
+                         GITMODULES], root)
+    return hashed.decode("ascii").strip() == blob
+
+
+def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
+    """`gitmodules-missing`, `gitmodules-unstaged` and `gitmodules-sparse`
+    (#407): `verb` refuses, before any git command that writes and under
+    `--dry-run` alike, a work tree's `.gitmodules` that is not the copy the
+    index holds.
+
+    `remove` and `add` commit the file as git leaves it in the work tree:
+    `git rm` and `git submodule add` edit the work tree's copy, and
+    `_commit_one` stages what is there. So a change to it nobody staged went
+    into the commit. With no file in the work tree, `git rm` edited nothing
+    and `remove` committed the deletion, taking every other member's section
+    out of HEAD, with exit 0, while the holder it ran in still looked whole:
+    its git config kept their registrations and its gate passed. Once that
+    commit was pushed, a recursive clone left each of those members empty.
+    `add` committed an unstaged edit to another member's section beside the
+    new one, and the whole of an untracked file in a holder with no
+    `.gitmodules` yet.
+
+    WHAT THE INDEX HOLDS IS THE PERSON'S AND GOES IN: the remediations of
+    #300 and #360 have them edit the file and `git add` it before running
+    the verb again. What is refused is a work tree's copy that is not the
+    index's:
+    - none (`gitmodules-missing`, `remove` only). Its restore is the one git
+      takes in that state: an unmerged entry with both sides' copies is
+      written back with `--merge`, one with only one side's with `--ours` or
+      `--theirs`, and one with neither with `checkout-index --stage=1`.
+    - as `gitmodules-unstaged`: one git lists as modified; one the index
+      holds unmerged; one whose deletion is staged while HEAD has it; one
+      the index marks assume-unchanged, which git does not compare, whose
+      content `git add` would not stage as the index's blob (`_stages_as`);
+      and an untracked one, which neither the index nor HEAD holds.
+    - as `gitmodules-sparse`: one the index marks skip-worktree, as a sparse
+      checkout that leaves the file out does. git neither compares that copy
+      nor stages it (`git add` refuses a path outside the sparse checkout,
+      and `git checkout -- .gitmodules` matches nothing), so `git
+      sparse-checkout disable` is the restore that works as typed. `add`
+      refuses it on disk or not, since `git submodule add` cannot stage it;
+      `remove` refuses it where it is missing or is not the index's copy,
+      and commits a clean one on disk rightly, as it did before #407.
+
+    "Modified" is git's own answer, `git ls-files -m`, which writes nothing:
+    the comparison `git status` lists a file as modified by, and the one
+    `git rm` refuses an unstaged change to the file with (`please stage your
+    changes to .gitmodules`). So a copy that differs from the index only in
+    its line endings is refused here as `git rm` refuses it, and the refusal
+    says so where `git add` would stage the index's own blob from it. With
+    neither the index, HEAD nor the work tree holding a `.gitmodules`,
+    nothing is asked.
+
+    `add` LEAVES A MISSING FILE TO GIT. `git submodule add` refuses to write
+    a `.gitmodules` the work tree lacks while the index or HEAD holds one,
+    before it writes anything, and `add --dry-run` names that refusal in a
+    note (`_add_dry_run`). A sparse checkout's is refused here first, where
+    the restore that note prints would not work.
+    """
+    records = _gitmodules_in_index(root)
+    stages = {stage for _, _, stage in records}
+    tag, blob = next(((tag, blob) for tag, blob, stage in records
+                      if stage == 0), ("", ""))
+    in_head = _head_oid(root, GITMODULES) is not None
+    on_disk = os.path.lexists(root / GITMODULES)
+    if not stages and not in_head:
+        if not on_disk:
+            return
+        raise _unstaged(
+            verb, f"the work tree has a {GITMODULES} that neither the index "
+            "nor HEAD holds: it is untracked, and nobody has staged it",
+            "whether it belongs in the holder is a person's to say. To keep "
+            f"it, stage it, `git add -f {GITMODULES}` (`-f`, since an "
+            "operator's excludes may match it), and commit it on its own "
+            "first if the command's commit should carry only its own change; "
+            "to leave it out, move it out of the holder. Then")
+    # `add` cannot stage a skip-worktree `.gitmodules` at all; `remove`
+    # commits a clean one on disk rightly, as it did before #407.
+    if tag.upper() == "S" and (verb == "add" or not on_disk
+                               or not _stages_as(root, blob)):
+        raise Refusal(
+            "gitmodules-sparse",
+            f"the index marks {GITMODULES} skip-worktree, as a sparse "
+            "checkout that leaves it out does, so git neither compares the "
+            "work tree's copy with the index's nor stages it, and "
+            f"`{verb}` edits {GITMODULES} and commits it as the work tree "
+            "has it. No git command that writes was run and nothing was "
+            "written.",
+            "Remediation: bring it back into the work tree as git compares "
+            "and stages it, `git sparse-checkout disable`, which brings back "
+            "every path the sparse checkout leaves out and leaves a copy "
+            "already there as it is, and run the same command again.")
+    staged = 0 in stages
+    unmerged = bool(stages - {0})
+    if not on_disk:
+        if verb == "add":
+            return
+        if unmerged:
+            held = ("the index holds one unmerged"
+                    + (" and HEAD holds one" if in_head else ""))
+            # The restore git takes in each of these (`git checkout --merge`
+            # needs both sides' copies, `--ours` and `--theirs` one each).
+            if {2, 3} <= stages:
+                put_back = ("write the conflicted file back, `git checkout "
+                            f"--merge -- {GITMODULES}`, resolve it and stage "
+                            "the result")
+            elif 2 in stages:
+                put_back = ("the other side deleted it, so put back this "
+                            "side's copy, `git checkout --ours -- "
+                            f"{GITMODULES}`, stage it")
+            elif 3 in stages:
+                put_back = ("this side deleted it, so put back the other "
+                            "side's copy, `git checkout --theirs -- "
+                            f"{GITMODULES}`, stage it")
+            else:
+                put_back = ("both sides deleted it, so put back the copy they "
+                            "started from, `git checkout-index -f --stage=1 "
+                            f"-- {GITMODULES}`, stage it")
+            put_back += f", `git add {GITMODULES}`"
+        elif staged:
+            held = ("the index and HEAD each hold one" if in_head else
+                    "the index holds one")
+            put_back = ("put back the index's copy, `git checkout -- "
+                        f"{GITMODULES}`")
+        else:
+            held = "HEAD holds one and its deletion is staged"
+            put_back = ("put back HEAD's copy, in the index and the work "
+                        f"tree, `git checkout HEAD -- {GITMODULES}`")
+        raise Refusal(
+            "gitmodules-missing",
+            f"{GITMODULES} is not in the work tree, though {held}. `git rm` "
+            f"edits only a {GITMODULES} the work tree has, and `remove` "
+            f"commits {GITMODULES} as the work tree has it: committed as it "
+            f"stands, {GITMODULES} would leave HEAD, and every other "
+            "member's section with it, so that a recursive clone of the "
+            "holder leaves each of them empty. No git command that writes "
+            "was run and nothing was written.",
+            f"Remediation: {put_back}, and run the same command again.")
+    keep_or_drop = (
+        "which change to keep is a person's to say. To commit the work "
+        "tree's copy, changes and all, {stage}; to drop its changes, put back "
+        f"the index's copy, `git checkout -- {GITMODULES}`. Then")
+    if unmerged:
+        said = f"{GITMODULES} is unmerged in the index"
+        remedy = ("resolve the conflict in it and stage the result, `git add "
+                  f"{GITMODULES}`, then")
+    elif not staged:
+        said = (f"the work tree has a {GITMODULES} and the index does not: "
+                "its deletion is staged")
+        remedy = ("which copy to keep is a person's to say. To keep the work "
+                  f"tree's, stage it, `git add {GITMODULES}`; to put back "
+                  "HEAD's, in the index and the work tree, `git checkout HEAD "
+                  f"-- {GITMODULES}`. Then")
+    elif GITMODULES.encode() in _git_bytes(["ls-files", "-m", "-z"],
+                                           root).split(b"\0"):
+        said = (f"the work tree's {GITMODULES} is not the copy the index "
+                "holds: git lists it as modified, a change nobody has staged"
+                + (", though `git add` would stage the index's own content "
+                   "from it: the difference may be its line endings alone"
+                   if _stages_as(root, blob) else ""))
+        remedy = keep_or_drop.format(
+            stage=f"stage it first, `git add {GITMODULES}`")
+    elif tag.islower() and not _stages_as(root, blob):
+        said = (f"the work tree's {GITMODULES} is not the copy the index "
+                "holds, a change nobody has staged, and git does not list it "
+                "as modified: the index marks it assume-unchanged, so git "
+                "does not compare it")
+        remedy = keep_or_drop.format(
+            stage="take the mark off and stage it first, `git update-index "
+            f"--no-assume-unchanged -- {GITMODULES}` and `git add "
+            f"{GITMODULES}`")
+    else:
+        return
+    raise _unstaged(verb, said, remedy)
+
+
+def _unstaged(verb: str, said: str, remedy: str) -> Refusal:
+    """`gitmodules-unstaged`, around what is said of the work tree's copy
+    and the remedy that leads into "run the same command again"."""
+    return Refusal(
+        "gitmodules-unstaged",
+        f"{said}. `{verb}` edits the work tree's copy and commits "
+        f"{GITMODULES} with its own change in it, so the work tree's copy "
+        "must be the one the index holds: a change nobody has staged is not "
+        "this command's to commit. No git command that writes was run and "
+        "nothing was written.",
+        f"Remediation: {remedy} run the same command again.")
+
+
 def _checked_one_section(root: Path, project: str, path: str) -> None:
     """`member-path-registered-twice`: `remove` refuses, before any git
     command that writes and under `--dry-run` alike, a `.gitmodules` that
@@ -4719,6 +4993,16 @@ def _remove_dry_run(family: Family, row: dict, path: str,
     the directory `deinit -f` empties and `git rm` deletes, uncommitted work
     in the member included. The member's object store is not removed, by
     either run, so it is not on the list.
+
+    THE NAME `deinit` DROPS IS THE ONE READ HERE (#407, the review's N9).
+    `deinit` reads `.gitmodules` from the work tree, else the index's copy,
+    else HEAD's; `git rm` and `_gitmodules_names` read the work tree's
+    alone. With the work tree's file deleted, the dry run printed no
+    registration while `deinit` dropped one. `cmd_remove` now refuses that
+    state, and a work tree's copy that is not the index's, before this runs
+    (`_checked_gitmodules_as_staged`). So by here the work tree's file is the
+    index's copy, or none of the work tree, the index and HEAD holds one, and
+    `deinit` reads what this reads.
     """
     project = str(row["project"])
     root = family.root
@@ -4789,6 +5073,11 @@ def cmd_remove(args) -> int:
     # call: `path: members/*` unmounted every member under one commit naming
     # one, and `path: .` removed the holder's own files.
     path = _member_path(project, row)
+    # A `.gitmodules` the work tree lacks, or has not as the index has it,
+    # is refused first (#407): the commit would take it out of HEAD, or
+    # carry a change nobody staged. Where the index holds a copy, every
+    # reading of the work tree's file after this one reads that copy.
+    _checked_gitmodules_as_staged(family.root, "remove")
     # A `.gitmodules` that gives the path to a second submodule is refused
     # here, before any git command that writes (#360), so the dry run makes
     # the same refusal, as it makes every one above.
@@ -4956,7 +5245,13 @@ def build_parser() -> argparse.ArgumentParser:
                            "<work-dir>/<Family> and make no family folder at "
                            "all. Mutually exclusive with --into.")
     init.add_argument("--no-push", action="store_true")
-    init.add_argument("--dry-run", action="store_true")
+    init.add_argument("--dry-run", action="store_true",
+                      help="print the plan and ask, as the real run does, "
+                           "whether <org>/<Family> already exists (`gh repo "
+                           "view` and its commit listing; with "
+                           "--local-remote-dir, the bare repository), "
+                           "refusing what it refuses; make no folder, "
+                           "remote or repository")
     init.set_defaults(func=cmd_init)
 
     add = subparsers.add_parser(
