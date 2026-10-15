@@ -14,19 +14,21 @@ the two upload jobs can mint an identity token, each in its own
 environment and on a `v*` tag alone; every action is pinned by a full
 commit; the build refuses a tag that is not `v<version>`, annotated, at the
 run's commit, a commit on neither main nor its release branch, and a commit
-whose own tree has not passed `tests`, `tests-macos` and `tests-windows`;
-and every tool the release installs comes from a hash lock, by digest.
+whose own tree has not passed the `tests` job; and every tool the release
+installs comes from a hash lock, by digest.
 RV599's mutations each fail one of them: a condition or an early exit
 added to a step, a check dropped from one upload job, a credential kept, a
-`PIP_*` index added. Three steps run as scripts here: the stamp, the wheel
+`PIP_*` index added. Four steps run as scripts here: the stamp, the wheel
 check over a wheel made from HEAD's own blobs, and the main-or-release-
-branch check under a `gh` that answers as the forge does.
+branch check and the `tests` gate, each under a `gh` that answers as the
+forge does.
 """
 
 from __future__ import annotations
 
 import importlib
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -48,8 +50,10 @@ STAMP = REPO / "src" / "openreposhape" / "_release.py"
 #: Each upload job, and the one environment it deploys to.
 UPLOADS = {"testpypi": "testpypi", "pypi": "pypi"}
 
-#: The three-OS gate this repository lands by: `tests.yml`'s three jobs.
-GATE = ("tests", "tests-macos", "tests-windows")
+#: The gate this repository lands by: `tests.yml`'s one job since #597,
+#: which runs on every trigger. Named here, never read from a run, so a
+#: job that goes missing is a refusal and not a smaller gate.
+GATE = ("tests",)
 
 #: The guard on both upload jobs: a `v*` tag, nothing else.
 ON_A_V_TAG = "startsWith(github.ref, 'refs/tags/v')"
@@ -233,19 +237,22 @@ def test_the_build_refuses_a_tag_that_is_not_the_annotated_v_version_at_this_com
         assert '[ "$commit" != "$GITHUB_SHA" ]' in again
 
 
-def test_the_build_refuses_a_commit_without_the_three_os_checks(workflow):
-    """RV599, MUST 1: `tests`, `tests-macos` and `tests-windows` must have
-    passed in a `push` or `workflow_dispatch` run of `tests.yml` whose head
-    is the commit (a `pull_request` run tests a merge, another tree), read
-    from that run's own jobs, never from the commit's check runs, which an
-    Actions token can create. The three are `tests.yml`'s jobs, and none
-    renames itself, so a job's name is its id."""
+def test_the_build_refuses_a_commit_without_a_passing_tests_job(workflow):
+    """RV599, MUST 1 and MUST 2: the `tests` job, and it alone since #597,
+    must have passed in a `push` or `workflow_dispatch` run of `tests.yml`
+    whose head is the commit (a `pull_request` run tests a merge, another
+    tree), read from that run's own jobs, never from the commit's check
+    runs, which an Actions token can create. The gate names the job; it is
+    a job of `tests.yml` and does not rename itself, so its name is its
+    id."""
     build = workflow["jobs"]["build"]
     assert "checks" not in build["permissions"]
     assert build["permissions"]["actions"] == "read"
-    script = heredoc(named_step(workflow, "build", "the commit carries")["run"])
-    gate = ", ".join(f'"{name}"' for name in GATE)
-    assert f'gate, workflow = ({gate}), ".github/workflows/tests.yml"' in script
+    step = named_step(workflow, "build", "the commit carries")
+    assert step["name"] == "the commit carries a passing tests job"
+    script = heredoc(step["run"])
+    assert GATE == ("tests",)
+    assert 'gate, workflow = ("tests",), ".github/workflows/tests.yml"' in script
     assert ('if run.get("path") == workflow and run.get("head_sha") == sha\n'
             '        and run.get("event") in ("push", "workflow_dispatch")]'
             in script)
@@ -257,6 +264,103 @@ def test_the_build_refuses_a_commit_without_the_three_os_checks(workflow):
     for name in GATE:
         assert name in tests["jobs"], name
         assert "name" not in tests["jobs"][name], name
+
+
+#: A `gh` that answers the gate's two reads from a JSON file, as the forge
+#: does through `--jq '.<key>[]'`, one object per line: the commit's runs
+#: for `actions/runs?head_sha=`, and a run's jobs for `actions/runs/<id>/
+#: jobs`. Each call is logged.
+RUNS_GH = """\
+import json, os, re, sys
+args = sys.argv[1:]
+with open(os.environ["GH_LOG"], "a", encoding="utf-8") as log:
+    log.write(" ".join(args) + "\\n")
+path = next(arg for arg in args if arg.startswith("repos/"))
+with open(os.environ["GH_DATA"], encoding="utf-8") as handle:
+    data = json.load(handle)
+found = re.search(r"/actions/runs/([0-9]+)/jobs", path)
+for row in data["jobs"].get(found.group(1), []) if found else data["runs"]:
+    print(json.dumps(row))
+"""
+
+#: The commit every gate case is about.
+GATE_SHA = "c" * 40
+
+
+def a_run(number: int, event: str = "push", head_sha: str = GATE_SHA,
+          path: str = ".github/workflows/tests.yml") -> dict:
+    return {"id": number, "event": event, "head_sha": head_sha, "path": path}
+
+
+def a_job(when: str = "2026-10-15T17:00:00Z", conclusion: str = "success",
+          status: str = "completed", name: str = "tests") -> dict:
+    return {"name": name, "status": status, "conclusion": conclusion,
+            "completed_at": when if status == "completed" else None,
+            "html_url": f"https://github.invalid/job/{name}/{when}"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the step runs on ubuntu; this "
+                    "runs it under a `gh` started by its shebang")
+@pytest.mark.parametrize("runs, jobs, code, says", [
+    ([a_run(1)], {1: [a_job()]}, 0, "tests: success at 2026-10-15T17:00:00Z"),
+    ([a_run(1, "workflow_dispatch")], {1: [a_job()]}, 0, "tests: success"),
+    ([a_run(1, "pull_request")], {1: [a_job()]}, 1, "`tests` has not run"),
+    ([a_run(1, head_sha="d" * 40)], {1: [a_job()]}, 1, "`tests` has not run"),
+    ([a_run(1, path=".github/workflows/other.yml")], {1: [a_job()]}, 1,
+     "`tests` has not run"),
+    ([a_run(1)], {1: [a_job(conclusion="skipped")]}, 1, "`tests` has not run"),
+    ([a_run(1)], {1: [a_job(name="lint")]}, 1, "`tests` has not run"),
+    ([a_run(1)], {1: [a_job(status="in_progress", conclusion=None)]}, 1,
+     "`tests` is in_progress"),
+    ([a_run(1), a_run(2, "workflow_dispatch")],
+     {1: [a_job("2026-10-15T17:00:00Z")],
+      2: [a_job("2026-10-15T18:00:00Z", "failure")]}, 1,
+     "`tests`'s newest run on " + GATE_SHA + " ended failure"),
+    ([a_run(1), a_run(2, "workflow_dispatch")],
+     {1: [a_job("2026-10-15T17:00:00Z", "failure")],
+      2: [a_job("2026-10-15T18:00:00Z")]}, 0,
+     "tests: success at 2026-10-15T18:00:00Z"),
+], ids=["a-push-run-passed", "a-dispatch-run-passed", "a-pull-request-run-alone",
+        "a-run-of-another-head", "a-run-of-another-workflow", "skipped",
+        "no-tests-job", "still-in-progress", "older-success-newer-failure",
+        "older-failure-newer-success"])
+def test_the_gate_decides_from_the_runs_jobs(workflow, tmp_path, runs, jobs,
+                                            code, says):
+    """RV599, SHOULD 6: the gate's own script under a `gh` that answers as
+    the forge does. Only a push or dispatch run of tests.yml at the commit
+    counts, and only its jobs are read; a job still running refuses; and
+    the newest finished `tests` decides, whichever way the older went."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(f"#!{sys.executable}\n" + RUNS_GH,
+                                encoding="utf-8")
+    (bin_dir / "gh").chmod(0o755)
+    data = tmp_path / "forge.json"
+    data.write_text(json.dumps({"runs": runs, "jobs": {str(k): v for k, v
+                                                       in jobs.items()}}),
+                    encoding="utf-8")
+    log = tmp_path / "gh.log"
+    log.write_text("", encoding="utf-8")
+    script = tmp_path / "gate.py"
+    script.write_text(heredoc(named_step(workflow, "build",
+                                         "the commit carries")["run"]),
+                      encoding="utf-8")
+    done = subprocess.run(
+        [sys.executable, "-I", str(script)], capture_output=True, text=True,
+        check=False, env={**os.environ, "GH_LOG": str(log), "GH_DATA": str(data),
+                          "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                          "GITHUB_REPOSITORY": "opensoft/openRepoShape",
+                          "GITHUB_SHA": GATE_SHA})
+    assert done.returncode == code, done.stdout + done.stderr
+    assert says in done.stdout + done.stderr
+    counted = [run["id"] for run in runs
+               if run["event"] in ("push", "workflow_dispatch")
+               and run["head_sha"] == GATE_SHA
+               and run["path"] == ".github/workflows/tests.yml"]
+    asked = [int(found) for found in re.findall(
+        r"/actions/runs/([0-9]+)/jobs\?filter=all", log.read_text(
+            encoding="utf-8"))]
+    assert asked == counted
 
 
 def test_the_digest_is_the_checkouts_own_and_the_forges(workflow):
