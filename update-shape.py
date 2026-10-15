@@ -72,7 +72,12 @@ recording an identity, so this tool never records one it cannot justify:
     puts back the copies, the pin, the README line, the index and the
     branch, and the refusal names the step that failed and lists what it
     put back. A re-run then finds the tree it found the first time, rather
-    than an uncommitted re-pin it would read as already done.
+    than an uncommitted re-pin it would read as already done. What the
+    rollback itself cannot put back — a file that will not take its old
+    bytes, an `--add` file that will not go, a path a link has reached
+    since the write, which it never writes through — it names with the line
+    that finishes it by hand, and it goes on to the rest: the refusal that
+    started it is still the one reported (#428).
   * Nothing is written THROUGH A SYMLINK (#239, #286). A rewrite opens the
     file where it stands, so a pinned copy, `contracts/shape-pin.yaml` or
     the manifest kept as a link — or under a directory link — would have the
@@ -81,7 +86,15 @@ recording an identity, so this tool never records one it cannot justify:
     `check` calls such a copy `copy-is-link` and `apply` refuses it; both
     refuse a linked pin or manifest. Each refusal is `update-rewrite-symlink`,
     before anything is written, as `--add` refuses a link at a path it would
-    create as `update-add-symlink`.
+    create as `update-add-symlink`. Nor through a HARD LINK (#422): a file
+    with a second name — outside the root, or in a `cp -al` snapshot of it
+    — is the same bytes under both, so a rewrite in place would change the
+    other name too, which no pin covers and git does not record. `apply`
+    refuses each file it would rewrite that has one — a copy it copies, the
+    pin, the manifest, a `.gitattributes` whose block `--add` extends — as
+    `update-rewrite-hardlink`, before anything is written, and `check` says
+    so first in a `REFUSAL AHEAD` line; the row keeps its verdict, since the
+    copy holds the right bytes. A hard-linked `README.md` is kept, as ever.
 
 ONLY THE PIN'S OWN ROWS ARE CONSIDERED. The set of shape files is read from
 `contracts/shape-pin.yaml`, never re-derived from this repository's copy
@@ -151,6 +164,11 @@ from repo_shape import (  # noqa: E402
     checked_value, die, file_sha256, git_out, load_yaml, parse_yaml,
     tree_digest,
 )
+# The reader's own rule for where a comment starts, by its private name on
+# purpose: `shape_materialize` imports it the same way and says why (#380). A
+# block header is found with it, so a trailing comment is one here wherever it
+# is one to the reader (#437).
+from repo_shape import _strip_comment  # noqa: E402
 from shape_materialize import (  # noqa: E402
     ATTRIBUTES, COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
@@ -159,6 +177,13 @@ from shape_materialize import (  # noqa: E402
     inherited_child_environment, lane_trailer_argument, readme_shape_lines,
     is_nested_key, readme_trailing_shape_line, rewrite_fault, run,
     trailer_line, with_scalar,
+)
+# What the branch question is asked with (#431): the one helper that asks git
+# with no repository in play, and the two words for a git that could not
+# answer. Private and imported on purpose, as `_strip_comment` is above: a
+# second copy of the question is how two tools come to judge one name apart.
+from shape_materialize import (  # noqa: E402
+    BRANCH_CONTROL, BRANCH_UNCHECKED_REMEDIATION, _ask_git_branch,
 )
 # Where a root keeps its shape pin. The materializer that writes it names it
 # once; this module spells the path by that name and never by a literal (#290).
@@ -436,6 +461,10 @@ class Row:
         self.path = path
         self.recorded = (recorded or "").lower()
         self.source: str | None = None
+        #: The commit `source` is read at: the run's target, set where the
+        #: source is, so a remedy can name `git show <target>:<source>` whole
+        #: (#535).
+        self.target: str | None = None
         self.state = UNCHANGED
         self.detail = ""
         self.target_bytes: bytes | None = None
@@ -678,6 +707,7 @@ def _classify_row(root: Path, row: Row, upstream: Upstream, pinned: str,
         return
     source = source_for(row.path, upstream, target, kind)
     row.source = source
+    row.target = target
     if source is None:
         row.state = UNMAPPED
         row.detail = ("no file in the upstream tree corresponds to this "
@@ -726,7 +756,12 @@ def _row_verdict(row: Row, source: str, here: bytes,
         return
     if locally_modified and upstream_changed:
         row.state = BOTH
-        row.detail = "edited here AND upstream since the pin"
+        # THE UPSTREAM'S FILE IS NAMED (#535): the remedy sends the person to
+        # read its bytes, and a copy's path in the root is not its path in the
+        # standard (`scripts/validate-manifest.py` is
+        # `templates/assembly-root/scripts/validate-manifest.py`).
+        row.detail = ("edited here AND upstream since the pin "
+                      f"(upstream's file: {source})")
         # Precomputed the same way `locally-modified` precomputes it,
         # below: IF `--accept-local` later names this path, `cmd_apply`
         # must re-pin from what is on disk NOW, not from whatever was
@@ -1142,8 +1177,8 @@ def link_refusal(path: str, link: tuple[str, str]) -> Refusal:
     a pinned copy, or the pin, kept as a link was still rewritten through
     it; `rewrite_link_refusal` now refuses those, so the sentence is true of
     every write `apply` makes. It says SYMLINK, not "link": a HARD link is
-    another name for the same bytes, which `Rollback.write` still writes
-    through everywhere but the README.
+    another name for the same bytes, refused in words of its own
+    (`update-rewrite-hardlink`, #422).
     """
     name = link[0]
     return Refusal(
@@ -1339,6 +1374,24 @@ def resolve_additions(rows: list[Row], additions: list[Addition],
 # ---------------------------------------------------------------------------
 
 
+def _is_block_header(line: str, key: str) -> bool:
+    """Is `line` the column-0 header `<key>:` of a block, a trailing
+    `# comment` aside? Asked the reader's way, `_strip_comment`, so a
+    comment that a quoted scalar holds is not one, and the `#` a comment
+    starts at is one only after a space or a tab (#437). A header indented
+    at all is not this one: the reader's own top-level keys start at 0."""
+    return _strip_comment(line) == f"{key}:"
+
+
+def _header_as_it_was(line: str) -> str:
+    """`line`, a block header, with its comment and the spacing in front of
+    it kept (#437). A header with no comment loses trailing whitespace, as
+    `shape_materialize.with_scalar` says of its own lines."""
+    body = _strip_comment(line)
+    tail = line[len(body):]
+    return body + (tail if tail.strip() else "")
+
+
 def rewrite_shape_pin(text: str, commit: str, tree: str,
                       rows: list[Row]) -> str:
     """`commit:`, `digests.tree_sha256:` and the whole `files:` block.
@@ -1359,6 +1412,18 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
     four spaces was refused as hand-edited and a comment was dropped. The
     `files:` block below them is still written whole, as before.
 
+    THE `files:` HEADER IS FOUND WITH THE READER'S RULE FOR A COMMENT (#437):
+    at column 0, once the reader's own `_strip_comment` has dropped a
+    trailing `# comment`. It was `line.rstrip() == "files:"`, so a header
+    that carried a comment, which the reader and both validators accept, was
+    counted as no `files` line and refused as `update-pin-unrecognised`,
+    after `check` had sent the person to this `apply`. That is ALL this
+    claims: a header spelled with a quoted key or a space before the colon
+    is read as the key by the reader and is not found here, as before. The
+    header is written back AS THE LINE WAS, comment and the spacing in front
+    of it included, like the two lines above; only the rows under it are
+    written whole.
+
     WHAT IS RETURNED HAS BEEN READ BACK, as `rewrite_manifest`'s is
     (`shape_materialize.rewrite_fault`): a layout this line rewrite cannot
     carry is refused HERE as this tool's failure, before any byte is written.
@@ -1375,9 +1440,9 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
             seen["tree"] += 1
             out.append(with_scalar(line, "tree_sha256", tree))
             continue
-        if line.rstrip() == "files:":
+        if _is_block_header(line, "files"):
             seen["files"] += 1
-            out.append("files:")
+            out.append(_header_as_it_was(line))
             for row in rows:
                 out.append(f"  - path: {row.path}")
                 out.append(f'    sha256: "{row.digest}"')
@@ -1496,12 +1561,38 @@ def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
     next top-level key — or at the end of the file, which is the `shape:`
     block a scaffold writes last. No `shape:` block at all is the one
     refusal, raised here because there is nothing to return.
+
+    THE HEADER IS FOUND WITH THE READER'S RULE FOR A COMMENT (#437): at
+    column 0, once `_strip_comment` has dropped a trailing `# comment`. It
+    was `line.rstrip() == "shape:"`, so `shape:  # mirrors the pin`, which
+    both validators accept, was refused as having NO `shape:` block, and the
+    remedy, "add it", would have given the manifest a second `shape:` key.
+    That is ALL this claims: a quoted key or a space before the colon is
+    read as the key by the reader and is not found here, as before. The
+    header line itself is never rewritten, so its comment stays.
+
+    A HEADER THAT APPEARS TWICE IS REFUSED BY NAME (review of PR #558). The
+    reader keeps the last block, so a rewrite of the first would move a pin
+    nobody reads. That was left to `rewrite_fault`'s read-back, whose words
+    blame this tool's line rewrite, which is false of a key written twice.
+    And where the first header carries a comment, the exact match skipped it
+    and rewrote the last block, which is what the reader reads, so such a
+    manifest went through; this finder sees the first header, and would
+    have refused it in those same false words.
     """
-    start = None
-    for index, line in enumerate(lines):
-        if line.rstrip() == "shape:":
-            start = index
-            break
+    starts = [index for index, line in enumerate(lines)
+              if _is_block_header(line, "shape")]
+    if len(starts) > 1:
+        raise Refusal(
+            "update-manifest-unrecognised",
+            f"{kind.manifest} holds the `shape:` key twice, at lines "
+            + " and ".join(str(index + 1) for index in starts[:2])
+            + ", where exactly one was expected: the reader keeps the last "
+              "block, so this tool will not guess which of them is the "
+              "manifest's",
+            "Remediation: delete the extra `shape:` block by hand (the "
+            "validators read the last one) and run the same command again.")
+    start = starts[0] if starts else None
     if start is None:
         raise Refusal(
             "update-manifest-no-shape",
@@ -1699,18 +1790,18 @@ class ReadmeShapeLine:
             return README_ABSENT
         try:
             if self.path.stat().st_nlink > 1:
-                # ANOTHER NAME FOR THESE SAME BYTES, and this tool writes
-                # THROUGH a name: `Rollback.write` opens the path and
-                # overwrites the inode, the way it does for every copied
-                # file, and the undo writes back the same way. A rewrite here
-                # would therefore change whatever else that inode is called —
-                # a file outside the root, that no `check` showed and no pin
-                # covers — while git records only `README.md` (Copilot,
-                # PR #152). Replacing the inode instead (a temp file and
-                # `os.replace`) would make this the one write in the command
-                # the ledger cannot undo: the other name would keep the old
-                # bytes and the link would be broken, and breaking a link is
-                # not something a rollback puts back.
+                # ANOTHER NAME FOR THESE SAME BYTES. `Rollback.write`
+                # overwrites a file where it stands, so a rewrite here would
+                # change whatever else that inode is called — a file outside
+                # the root, that no `check` showed and no pin covers — while
+                # git records only `README.md` (Copilot, PR #152). For every
+                # other file the ledger REFUSES such a write now (#422); the
+                # README is KEPT instead, and said, because refusing the
+                # re-pin over prose is no answer. Replacing the inode (a
+                # temp file and `os.replace`) would make this the one write
+                # in the command the ledger cannot undo: the other name
+                # would keep the old bytes and the link would be broken, and
+                # breaking a link is not something a rollback puts back.
                 return README_HARDLINK
             self.text = self.path.read_bytes().decode("utf-8")
         except UnicodeDecodeError:
@@ -2033,6 +2124,7 @@ def cmd_check(args) -> int:
         if conflicts:
             print("REFUSAL AHEAD: `apply` will refuse while these are "
                   "unresolved — " + ", ".join(row.path for row in conflicts))
+        _say_hard_links_ahead(root, rows)
         # NOT AN --add `apply` WOULD REFUSE (#285): a path under a file the
         # root keeps is reported above, with why, but a flag to paste that
         # is known to fail is the tool handing a human a wrong answer.
@@ -2151,6 +2243,25 @@ def checked_branch(value: str) -> str:
     put to `git check-ref-format --branch`, which is the authority on what a
     branch name is: it is asked, not copied. A spelling it would expand
     rather than echo is refused too: `apply` names the branch it creates.
+
+    GIT IS ASKED WITH NO REPOSITORY IN PLAY (#431), through
+    `shape_materialize._ask_git_branch`, the one helper that asks it so for
+    the scaffold and the family holder too. Asked in the operator's own
+    directory, `--branch` set up whatever repository surrounded it and died
+    where git could not open it (a `.git` file naming a gitdir that is gone,
+    a `.git/config` that does not parse, a directory removed under the
+    shell), and the refusal below read that failure as the name's fault. A
+    repository it did open lent `@{-1}` its own reflog. `--root` names the
+    repository `apply` works on and has nothing to do with where the person
+    stands, so the answer is the same from every directory.
+
+    A GIT THAT COULD NOT ANSWER IS NOT THE NAME'S FAULT. When git refuses the
+    name it is asked about `BRANCH_CONTROL`, a name every git creates, as
+    `shape_materialize._branch_verdict` does: a git that refuses that too
+    judged nothing, and the refusal says the name "could not be checked"
+    and sends the person to git (`BRANCH_UNCHECKED_REMEDIATION`), not to
+    another name. The code, the `--branch '<name>' ` opening of the detail
+    and `BRANCH_REMEDIATION` for a name git judged are unchanged.
     """
     if not BRANCH_RE.fullmatch(value):
         raise Refusal(
@@ -2160,23 +2271,49 @@ def checked_branch(value: str) -> str:
             "digit and hold only letters, digits and `. _ / @ + -`",
             BRANCH_REMEDIATION)
     try:
-        verdict = subprocess.run(["git", "check-ref-format", "--branch", value],
-                                 capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace",
-                                 check=False)
-    except OSError as exc:
-        raise Refusal(
-            "update-branch-invalid",
-            f"--branch {value!r} could not be checked: `git check-ref-format "
-            f"--branch` could not be run ({exc})", BRANCH_REMEDIATION) from exc
-    if verdict.returncode != 0 or verdict.stdout.strip() != value:
-        said = (verdict.stderr or verdict.stdout).strip()
+        answer = _ask_git_branch(value)
+    except CommandFailed as exc:
+        said = f" ({exc.output})" if exc.output else ""
+        if _git_cannot_answer_for_any_name():
+            raise Refusal(
+                "update-branch-invalid",
+                f"--branch {value!r} could not be checked: `git "
+                f"check-ref-format --branch` fails for `{BRANCH_CONTROL}` "
+                f"too, so git could not answer{said}",
+                BRANCH_UNCHECKED_REMEDIATION) from exc
         raise Refusal(
             "update-branch-invalid",
             f"--branch {value!r} is not a branch name git will create: `git "
-            "check-ref-format --branch` refuses it"
-            + (f" ({said})" if said else ""), BRANCH_REMEDIATION)
+            f"check-ref-format --branch` refuses it{said}",
+            BRANCH_REMEDIATION) from exc
+    except OSError as exc:
+        # `git` is missing, or no empty directory could be made to ask it
+        # from: the answer is not git's, and the fault is not the name's.
+        raise Refusal(
+            "update-branch-invalid",
+            f"--branch {value!r} could not be checked: `git check-ref-format "
+            f"--branch` could not be run ({exc})",
+            BRANCH_UNCHECKED_REMEDIATION) from exc
+    if answer != value:
+        raise Refusal(
+            "update-branch-invalid",
+            f"--branch {value!r} is not a branch name git will create: `git "
+            f"check-ref-format --branch` reads it as {answer!r}, not as "
+            "written", BRANCH_REMEDIATION)
     return value
+
+
+def _git_cannot_answer_for_any_name() -> bool:
+    """Does `git check-ref-format --branch` fail for `BRANCH_CONTROL`, a name
+    every git creates as a branch? Git's words are localised, so they are
+    never read: a git that refuses this one too could not answer (a
+    malformed global config, say), and the name it was first asked about was
+    never judged (#431)."""
+    try:
+        _ask_git_branch(BRANCH_CONTROL)
+    except (CommandFailed, OSError):
+        return True
+    return False
 
 
 def branch_exists(root: Path, branch: str) -> bool:
@@ -2245,7 +2382,8 @@ def pull_request_repository(manifest: dict | None,
 def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
                      upstream: Upstream, count: int, kind: Kind,
                      added: list[str] = (), trailers: list[str] = (), *,
-                     ledger: Rollback, dropped: list[str] = ()) -> None:
+                     ledger: Rollback, dropped: list[str] = (),
+                     accepted: list[str] = ()) -> None:
     """A branch and ONE commit, with EXPLICIT PATHSPECS.
 
     `git commit -- <paths>` commits the working-tree state of exactly those
@@ -2300,6 +2438,14 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     writes its own commit message can be told any other way. Passed none, the
     message is exactly the one this function has always written; see
     `shape_materialize.commit_trailers` for the two ways git is asked.
+
+    THE MESSAGE CLAIMS "NOT HAND-EDITED" ONLY OF WHAT WAS RE-COPIED (#535).
+    `accepted` are the paths `--accept-local` kept as the project holds them,
+    which the run did not copy and whose pin rows it recomputed from the
+    project's own bytes: the sentence it ended on, "the copies are not
+    hand-edited", was false of exactly those files, in a history nobody
+    rewrites. It now says it of the copies re-copied from the upstream, and a
+    run with `accepted` names them in a paragraph of their own.
     """
     checked_value("--branch", branch)
     manifest = load_yaml(root / kind.manifest)
@@ -2345,13 +2491,14 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
     # an unexplained edit to a document the project owns (#148).
     prose = (f", and {README}'s `Shape:` line now names it too"
              if README in paths else "")
+    kept = f"{accepted_local_said(accepted)}\n\n" if accepted else ""
     message = (
         f"Re-sync the shape copies to {upstream.repository} @ {target[:12]}\n\n"
         f"{count} copied file(s) re-copied from the upstream{gained}; "
         f"contracts/shape-pin.yaml and {kind.manifest}'s `shape:` block now "
-        f"record {target}{prose}.\n\nWritten by update-shape.py; the copies "
-        f"are not hand-edited and the digests are recomputed, not "
-        f"adjusted.\n")
+        f"record {target}{prose}.\n\n{kept}Written by update-shape.py; the "
+        f"copies re-copied from the upstream are not hand-edited and the "
+        f"digests are recomputed, not adjusted.\n")
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape update"),
                           ("GIT_COMMITTER_NAME", "openRepoShape update"),
@@ -2443,11 +2590,29 @@ class Rollback:
         was written before it. What the walk cannot see is a link that
         arrives in the instant between it and the open, as
         `write_added` cannot see one that arrives above its path.
+
+        NOR THROUGH A HARD LINK (#422). `r+b` overwrites the bytes where they
+        are, and a file with a second name — anywhere on this filesystem, a
+        `cp -al` snapshot of the whole root included — is the same bytes
+        under both, so that other name would change too: a file no `check`
+        showed and no pin covers, while git records only this one. `apply`
+        refuses every such file before `confirm` waits
+        (`_refuse_hard_linked_rewrites`); this asks the same question,
+        `hard_links`, after the symlink walk and before anything is read or
+        recorded, for a name that arrived while it waited, and the same
+        refusal arm puts back what was written before it. NOT BY REPLACE,
+        which is the other way to write and the one the README's own guard
+        rejects: a new file moved in with `os.replace` leaves the other name
+        holding the old bytes and the link broken, and a broken link is not
+        something `undo` can put back.
         """
         rel = self._name(path)
         link = symlink_on_the_way(self.root, rel)
         if link is not None:
             raise rewrite_link_refusal([(rel, link)], arrived=True)
+        names = hard_links(path)
+        if names:
+            raise hard_link_refusal(self.root, [(rel, names)], arrived=True)
         with path.open("r+b") as handle:
             self.written.setdefault(path, handle.read())
             handle.seek(0)
@@ -2594,13 +2759,23 @@ class Rollback:
         something nobody here wrote is in it, and removing that is not a
         rollback.
 
-        THE GIT HALF NEVER RAISES OVER THE REFUSAL, which is the rule
-        `bump-leg.py`'s own rollback states: what it cannot put back is
-        NAMED, with the command that finishes it by hand, and the failure
-        that started the rollback is still the one reported. And each git
-        undo is judged by READING THE STATE AFTERWARDS rather than by git's
-        exit code — a `post-checkout` hook's exit status is `git checkout`'s
-        own, so a switch that happened can still exit non-zero.
+        NEITHER HALF RAISES OVER THE REFUSAL (#428), which is the rule
+        `bump-leg.py`'s own rollback states (#253): what it cannot put back
+        is NAMED, with the command that finishes it by hand, and the failure
+        that started the rollback is still the one reported. The git half
+        always kept it. The byte half wrote each file back with a bare
+        `write_bytes` and took away what `--add` made with a bare `rmdir` or
+        `unlink`, so one file that would not take its old bytes — a
+        permission a validator took away, a full disk, a lock — escaped
+        `_rolled_back` and `main` as a traceback, exit 1, the refusal that
+        started it surviving only as the exception's context, and no path
+        after it was tried: a pin put back under a manifest left re-pinned,
+        the lockstep break this ledger exists to prevent. So every restore
+        and every removal is attempted, each under its own handler, and each
+        one that fails is listed with its line (`_restore`, `_remove`). And
+        each git undo is judged by READING THE STATE AFTERWARDS rather than
+        by git's exit code — a `post-checkout` hook's exit status is `git
+        checkout`'s own, so a switch that happened can still exit non-zero.
         """
         if self.landed or not (self.written or self.created or self.branch
                                or self.staged):
@@ -2610,22 +2785,253 @@ class Rollback:
         self._undo_index(done, left)
         self._undo_branch(done, left)
         for path, original in self.written.items():
-            path.write_bytes(original)
-            done.append(f"restored  {self._name(path)}")
+            self._restore(path, original, done, left)
+        stuck: list[Path] = []
         for path in reversed(self.created):
+            self._remove(path, stuck, done, left)
+        return self._said(done, left)
+
+    def _restore(self, path: Path, original: bytes, done: list[str],
+                 left: list[str]) -> None:
+        """`path` given back `original`, the bytes it held before this run
+        first wrote it, or listed under `left` with the line that does it
+        by hand (#428).
+
+        WRITTEN ONLY OVER A FILE THAT NO LONGER HOLDS THEM, as `bump-leg.py`
+        restores its own (`_restore_file`, #253): a file that holds what it
+        held is back, and a write it never needed must not list it as left
+        because that write would have failed. One that cannot even be READ
+        is written all the same.
+
+        NEVER THROUGH A LINK THAT ARRIVED AFTER THE WRITE (review of PR
+        #560). `write` walked the path for a symlink and counted its names
+        before it wrote, but the project's own validators run between that
+        write and this one, and so can anything else on the machine: a
+        validator that moved `project.yaml` out of the root and linked it
+        back had the old bytes written at the link's end, outside the root,
+        under "the tree is exactly as it was" over a root holding a link.
+        So the same two questions are asked again here first, and a path
+        either one answers is not written at all: it is listed under `left`,
+        with what stands there and the line that puts the bytes back once
+        it is a plain file of its own again.
+        """
+        name = self._name(path)
+        link = symlink_on_the_way(self.root, name)
+        names = hard_links(path) if link is None else 0
+        if link is not None or names:
+            left.append(f"file      {name} was not put back: "
+                        + self._linked_by_hand(path, name, original, link,
+                                               names))
+            return
+        try:
+            held = path.read_bytes()
+        except OSError:
+            held = None
+        try:
+            if held != original:
+                path.write_bytes(original)
+        except OSError as exc:
+            where, command = self._restore_by_hand(path, name, original)
+            # "MAKE IT WRITABLE" IS SAID OF A FILE THAT IS THERE (review of
+            # PR #560, round 2). A directory a validator deleted took the
+            # file with it, and a file that is not there cannot be made
+            # writable: the line is then the command alone, which creates it.
+            how = (f"{where}, so make it writable, then: {command}"
+                   if os.path.lexists(path) else f"{where}, then: {command}")
+            left.append(f"file      {name} was not put back "
+                        f"({exc.strerror or exc}); "
+                        + (how if command else where))
+            return
+        done.append(f"restored  {name}")
+
+    def _linked_by_hand(self, path: Path, name: str, original: bytes,
+                        link: tuple[str, str] | None, names: int) -> str:
+        """The rest of `_restore`'s `left` line for a path it would not
+        write: what arrived there, and how the bytes go back by hand.
+
+        A SYMLINK is the operator's, or whoever made it, so the line never
+        removes it: the bytes go back once it is not a link, which is the
+        same exit `update-rewrite-symlink` gives before a write. One ABOVE
+        the path is a directory moved out of the root and linked back, and
+        is said as that: once it is this root's own directory again, since
+        a command run over a link merely removed has no directory to write
+        into (probed in the round-2 review). A SECOND
+        NAME is broken from this side first, with the line
+        `update-rewrite-hardlink` prints (`_copy_over_itself`), so the
+        other name keeps the bytes it holds: a `cat-file` redirect writes
+        in place, and would change it too.
+        """
+        where, command = self._restore_by_hand(path, name, original)
+        if link is not None:
+            said = (f"since this run wrote it, {link_said(name, link)}, and "
+                    "this run never writes through one")
+            # A link ABOVE the path is a directory that is no longer this
+            # root's own (review of PR #560, round 2): "is not a link" read
+            # as "remove it", and with the link gone and nothing in its
+            # place the command fails, "Directory nonexistent".
+            again = (f"{link[0]} is not a link" if link[0] == name else
+                     f"{link[0]} is this root's own directory again")
+            fix = (f"{where}, so once {again}: {command}"
+                   if command else where)
+        else:
+            said = (f"since this run wrote it, it has gained another name "
+                    f"on this filesystem ({names} names), and a write in "
+                    "place would change that file too")
+            fix = (f"{where}, so replace it with a copy of itself first: "
+                   f"{_copy_over_itself(path)}, then: {command}"
+                   if command else where)
+        return f"{said}; {fix}"
+
+    def _restore_by_hand(self, path: Path, name: str,
+                         original: bytes) -> tuple[str, str]:
+        """Where `original` is to be had, and the command that writes it at
+        `path` by hand, once whatever stopped the write is cleared; or, when
+        it is nowhere, the sentence saying so and no command.
+
+        HEAD'S, WHERE `git checkout HEAD -- <path>` WOULD WRITE EXACTLY THOSE
+        BYTES AND CHANGE NOTHING ELSE (`_head_restores`). That is not a
+        given, and it was measured: a `--branch` run over a clean tree holds
+        HEAD's bytes at every path it writes, but an `apply` without
+        `--branch` writes over whatever the tree holds — after an earlier
+        `apply` left uncommitted, not one of the copy, the pin and the
+        manifest was HEAD's — and even `--branch` takes a working-tree file
+        whose CRLF `hash-object` normalises away (`_not_what_head_commits`),
+        which a checkout would then write back as LF. AND ONLY WHERE THE
+        DIRECTORY TAKES A NEW FILE (review of PR #560): a checkout unlinks
+        the path and creates it again, which a directory nobody may write
+        into refuses however writable the file is made, while a redirect
+        writes into the file where it stands. The directory asked is the
+        NEAREST ONE THAT EXISTS (`_nearest_directory`): a validator that
+        deleted `contracts/` left none to ask at the path's own parent, and
+        git makes the missing ones, so the question is whether what is
+        there takes them (round 2 of the review).
+
+        ELSE FROM THE OBJECT STORE. The bytes are written into this
+        repository with `git hash-object -w --stdin` — on stdin, so no
+        filter touches them — and `git cat-file blob <id>`, redirected to
+        the file's own path, writes back exactly those bytes. The object is
+        referenced by nothing, so a `git gc` prunes it, two weeks on by
+        default: long enough for a line meant to be run now. A directory
+        that is gone is made first, `mkdir -p <directory> && ...`, which
+        keeps it one pasteable command. Where git will not store them
+        either, the line says so, and that the bytes are
+        nowhere this run can point at.
+        """
+        if (os.access(self._nearest_directory(path.parent), os.W_OK)
+                and self._head_restores(name, original)):
+            return ("it held HEAD's bytes",
+                    _by_hand(self.root, "--literal-pathspecs", "checkout",
+                             "HEAD", "--", name))
+        kept = self._kept(original)
+        if kept:
+            # A redirect creates the file and never the directory above it,
+            # so a directory a validator deleted is made first, in the same
+            # command (round 2 of the review): "Directory nonexistent".
+            make = ("" if os.path.isdir(path.parent) else
+                    "mkdir -p " + shlex.quote(str(path.parent)) + " && ")
+            return (f"its bytes before this run are kept as blob "
+                    f"{kept[:12]} in this repository",
+                    make + _by_hand(self.root, "cat-file", "blob", kept)
+                    + " > " + shlex.quote(str(path)))
+        return ("and git would not keep its bytes before this run either, "
+                "so they are nowhere this run can point at: only a copy of "
+                f"{name} made before it can put it back", "")
+
+    @staticmethod
+    def _nearest_directory(directory: Path) -> Path:
+        """`directory` when it is one, else the nearest directory above it
+        that is: the one `git checkout` would have to write into to make
+        what is missing. `os.path.isdir`, which answers False rather than
+        raising for a path it may not look at."""
+        while not os.path.isdir(directory) and directory != directory.parent:
+            directory = directory.parent
+        return directory
+
+    def _head_restores(self, name: str, original: bytes) -> bool:
+        """Would `git checkout HEAD -- <name>` write exactly `original` and
+        leave the index as it is? Three answers from git, any one missing a
+        no: HEAD commits a blob at `name`; the index holds that same blob
+        there, so the checkout, which writes the index too, changes nothing
+        in it (the hazard `Rollback.stage` names); and that blob as a
+        checkout writes it — `cat-file --filters`, smudge and line-ending
+        conversion included — is `original`, byte for byte."""
+        head = _head_blob(self.root, name)
+        staged = _git_answer(self.root, ["rev-parse", "--verify", "--quiet",
+                                         f":0:{name}"])
+        if not head or (staged or "").strip() != head:
+            return False
+        proc = _git_quietly(["git", "cat-file", "--filters", f"HEAD:{name}"],
+                            self.root)
+        return (proc is not None and proc.returncode == 0
+                and proc.stdout == original)
+
+    def _kept(self, original: bytes) -> str:
+        """The id of `original`, written into this repository's objects as
+        BYTES on stdin, or "" when git will not store it."""
+        proc = _git_quietly(["git", "hash-object", "-w", "--stdin"],
+                            self.root, original)
+        if proc is None or proc.returncode != 0:
+            return ""
+        kept = proc.stdout.decode("ascii", "replace").strip()
+        return (kept if re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", kept)
+                else "")
+
+    def _remove(self, path: Path, stuck: list[Path], done: list[str],
+                left: list[str]) -> None:
+        """What `write_added` made at `path` — an `--add` file, or a
+        directory made to hold one — taken away, or listed under `left`
+        with the POSIX line that does it by hand (#428).
+
+        `stuck` collects what could not be taken away. A directory still
+        holding one of those is listed as left after it, with its own line,
+        never as kept for "something this run did not write": what is in it
+        is this run's own file. A path is a directory here when
+        `write_added` made it to hold another path it made, which is what
+        names the line's verb when even asking what stands there fails.
+
+        NOTHING IS REMOVED AT OR THROUGH A SYMLINK that arrived after the
+        write (review of PR #560), for `_restore`'s reason: unlinking one at
+        the path deletes the operator's link (#239 measured that), and
+        removing under one deletes at its end. It is listed instead.
+        """
+        name = self._name(path)
+        directory = any(path in made.parents for made in self.created)
+        link = symlink_on_the_way(self.root, name)
+        if link is not None:
+            stuck.append(path)
+            what = (f"directory {name}/, made to hold an --add file,"
+                    if directory else f"file      {name}, written by --add,")
+            left.append(f"{what} was not removed: since this run wrote it, "
+                        f"{link_said(name, link)}, and this run never "
+                        "removes at or through a link it did not make; "
+                        "what it leads to is yours to judge")
+            return
+        try:
             if path.is_dir():
-                if any(path.iterdir()):
-                    done.append(f"kept      {self._name(path)}/ (made to hold "
-                                "an --add file, and something this run did "
-                                "not write is in it now)")
-                    continue
-                path.rmdir()
-                done.append(f"removed   {self._name(path)}/ (made to hold an "
-                            "--add file)")
+                if not any(path.iterdir()):
+                    path.rmdir()
+                    done.append(f"removed   {name}/ (made to hold an --add "
+                                "file)")
+                elif any(path in kept.parents for kept in stuck):
+                    stuck.append(path)
+                    left.append(f"directory {name}/, made to hold an --add "
+                                "file, still holds the one above; once that "
+                                "is gone: "
+                                + shlex.join(["rmdir", "--", str(path)]))
+                else:
+                    done.append(f"kept      {name}/ (made to hold an --add "
+                                "file, and something this run did not "
+                                "write is in it now)")
             elif path.exists():
                 path.unlink()
-                done.append(f"removed   {self._name(path)} (written by --add)")
-        return self._said(done, left)
+                done.append(f"removed   {name} (written by --add)")
+        except OSError as exc:
+            stuck.append(path)
+            what, verb = ((f"directory {name}/, made to hold an --add file,",
+                           "rmdir") if directory else
+                          (f"file      {name}, written by --add,", "rm"))
+            left.append(f"{what} was not removed ({exc.strerror or exc}): "
+                        + shlex.join([verb, "--", str(path)]))
 
     def _name(self, path: Path) -> str:
         try:
@@ -2735,12 +3141,16 @@ class Rollback:
 
     @staticmethod
     def _said(done: list[str], left: list[str]) -> str:
-        """The block a refusal prints under its own first line."""
+        """The block a refusal prints under its own first line. A rollback
+        that put nothing back says `nothing` there, rather than run its
+        heading straight into the list of what is left (#428): every restore
+        can fail, on a disk that filled, now that one failing no longer
+        stops the rest."""
         lines = (["ROLLED BACK IN PART: the tree is NOT as it was. Put back:"]
                  if left else
                  ["ROLLED BACK: every byte this command wrote has been put "
                   "back, and the tree is exactly as it was:"])
-        lines += [f"    {line}" for line in done]
+        lines += [f"    {line}" for line in done] or ["    nothing"]
         if left:
             lines.append("  NOT put back — finish these by hand:")
             lines += [f"    {line}" for line in left]
@@ -2880,6 +3290,166 @@ def _refuse_linked_copies(rows: list[Row]) -> None:
         raise rewrite_link_refusal(linked)
 
 
+def hard_links(path: Path) -> int:
+    """How many names `path` has on this filesystem when it is a REGULAR
+    FILE with more than one — a hard link — and 0 otherwise: one name, not
+    a regular file, or nothing `lstat` can read (#422).
+
+    THE ONE QUESTION, AND EVERY CALLER ASKS THIS ONE: `check`'s `REFUSAL
+    AHEAD` line and `apply`'s refusal before `confirm`, both through
+    `hard_linked_rewrites`, and `Rollback.write` at the write itself.
+    `lstat`, so a symlink at the path is never followed to the count of
+    the file it leads to: it is not a regular file here, and it is #286's,
+    refused before this is asked. NTFS fills `st_nlink` as POSIX does,
+    which is how the README's own guard (`ReadmeShapeLine`) already reads
+    it on every platform.
+    """
+    try:
+        info = os.lstat(path)
+    except (OSError, ValueError):
+        return 0
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink < 2:
+        return 0
+    return info.st_nlink
+
+
+def hard_linked_rewrites(root: Path, rows: list[Row], kind: Kind,
+                         taking: list[Addition] = ()
+                         ) -> list[tuple[str, int]]:
+    """Every file `apply` will rewrite IN PLACE that has another name on
+    this filesystem, as `(path, names)`, in the order it writes them (#422).
+
+    What `apply` rewrites is what is asked about: each copy it copies (an
+    `upstream-changed` row), `contracts/shape-pin.yaml` and the manifest,
+    which every run that writes at all rewrites, and the root's own
+    `.gitattributes` when the `--add` files in `taking` would extend its
+    line-ending block (#511) — asked of `extend_eol_block` as
+    `_extend_the_eol_block` asks it, without writing. `check` passes no
+    `taking`: it has no `--add` to know about.
+
+    NOT `README.md`. Its reader already keeps a hard-linked README and says
+    so (`README_HARDLINK`), which is the answer for prose this standard does
+    not own; refusing the whole re-pin over it would take that answer away.
+    Nor a row `apply` keeps, re-pins from its own bytes or drops: nothing
+    is written at its path.
+    """
+    paths = [row.path for row in rows if row.state == UPSTREAM_CHANGED]
+    attributes = root / ATTRIBUTES
+    if taking and hard_links(attributes):
+        try:
+            before = attributes.read_bytes()
+        except OSError:
+            before = None
+        after = (extend_eol_block(before, [add.path for add in taking])
+                 if before is not None else None)
+        if after is not None and after != before:
+            paths.append(ATTRIBUTES)
+    paths += [SHAPE_PIN, kind.manifest]
+    linked = []
+    for path in dict.fromkeys(paths):
+        names = hard_links(root / path)
+        if names:
+            linked.append((path, names))
+    return linked
+
+
+def hard_link_refusal(root: Path, linked: list[tuple[str, int]],
+                      arrived: bool = False) -> Refusal:
+    """`update-rewrite-hardlink`: a file `apply` rewrites in place has
+    another name on this filesystem (#422). `linked` is `[(path, names)]`,
+    `names` being `hard_links`' count for `path`.
+
+    `update-rewrite-symlink`'s twin, for a second NAME rather than a link,
+    and raised the same two ways: before `confirm`, by
+    `_refuse_hard_linked_rewrites`, for every such file at once; and, with
+    `arrived`, by `Rollback.write` for a name that arrived while `confirm`
+    waited. One path is one line, several are a list, as there.
+
+    THE REMEDY BREAKS THE LINK FROM THIS SIDE. A copy of the file put in
+    its place — the same bytes, as a new file — leaves the other name
+    holding its own, and git sees no change at the path, so there is
+    nothing to commit before the same command is run again. Each line is
+    quoted for a POSIX shell, as `_by_hand`'s are, and `cp -p` keeps the
+    mode, so a validator that was executable stays so.
+    """
+    many = len(linked) > 1
+    sentences = (["It had no other name when this run looked: one arrived "
+                  "while `apply` ran, after this run had decided what to "
+                  "write."] if arrived else [])
+    sentences.append(
+        "A rewrite in place changes the bytes under every name they have, "
+        "so it would change "
+        + ("those other files" if many else "that other file")
+        + " too — outside this root, or in a snapshot of it — which no "
+        "`check` showed, no pin covers and git does not record. This "
+        "command never writes through a hard link")
+    if many:
+        detail = ("`apply` would rewrite these files in place, but each has "
+                  "another name on this filesystem:\n"
+                  + "\n".join(f"    {path}: {names} names"
+                              for path, names in linked)
+                  + "".join(f"\n  {sentence}" for sentence in sentences))
+    else:
+        path, names = linked[0]
+        detail = " ".join([f"`apply` would rewrite {path} in place, but it "
+                           f"has {names} names on this filesystem.",
+                           *sentences])
+    return Refusal(
+        "update-rewrite-hardlink", detail,
+        "Remediation: replace " + ("each file" if many else "the file")
+        + " with a copy of itself — the same bytes as a new file at the "
+        "same path, so the other name keeps its own — then run this "
+        "command again. git sees no change there, so there is nothing to "
+        "commit:" + "".join(f"\n    {_copy_over_itself(root / path)}"
+                            for path, _ in linked))
+
+
+def _copy_over_itself(path: Path) -> str:
+    """The POSIX line that puts a copy of `path` in its place: the same
+    bytes as a new file, so a second name keeps its own (#422). `cp -p`
+    keeps the mode, so a validator that was executable stays so; the
+    copy is moved over the name, never the name written through."""
+    here = str(path)
+    copy = f"{here}.update-shape-copy"
+    return (shlex.join(["cp", "-p", "--", here, copy]) + " && "
+            + shlex.join(["mv", "-f", "--", copy, here]))
+
+
+def _refuse_hard_linked_rewrites(root: Path, rows: list[Row], kind: Kind,
+                                 taking: list[Addition]) -> None:
+    """`update-rewrite-hardlink` for every file this run will rewrite that
+    has another name, before `confirm` and before any write (#422).
+
+    ASKED RIGHT AFTER `update-rewrite-symlink`'s copies, and before
+    `update-conflict` and `update-local-drift`: like a link, a second name
+    is no merge and no local edit, so neither remedy is its answer.
+    """
+    linked = hard_linked_rewrites(root, rows, kind, taking)
+    if linked:
+        raise hard_link_refusal(root, linked)
+
+
+def _say_hard_links_ahead(root: Path, rows: list[Row]) -> None:
+    """`check`'s `REFUSAL AHEAD` line for the files `apply` would refuse to
+    rewrite because each has another name (#422): the copies it would
+    copy, the pin and the manifest. The manifest is the one `root_kind`
+    reads from the tree, as `prepare` read it.
+
+    A LINE, NEVER A ROW STATE. A hard-linked copy holds the right bytes, so
+    it is not drift, and a state of its own — or `copy-is-link`'s — would
+    have the doctor's `shape currency` row call the project DRIFTED over
+    nothing wrong in its tree. Every row keeps its verdict, and the doctor,
+    which reads the rows, reads what it always read.
+    """
+    linked = hard_linked_rewrites(root, rows, root_kind(root))
+    if linked:
+        print("REFUSAL AHEAD: `apply` will refuse to rewrite these in place "
+              "while each has another name on this filesystem (a hard "
+              "link; replace it with a copy of itself) — "
+              + ", ".join(f"{path} ({names} names)"
+                          for path, names in linked))
+
+
 def _refuse_conflicts(rows: list[Row], accepted: set) -> None:
     """The `update-conflict` refusal, split out of `cmd_apply` for #133.
 
@@ -2910,14 +3480,37 @@ def _refuse_conflicts(rows: list[Row], accepted: set) -> None:
             conflict_remediation(conflicts))
 
 
-#: What `update-conflict` tells a row it can name a merge for: `both`, and
-#: the two states that cannot be compared. The words it always printed, so a
-#: refusal naming no `copy-missing` row reads exactly as it did.
-MERGE_BY_HAND = (
-    "merge each one by hand (the upstream bytes are `git show "
-    "<target>:<source path>` in a shape clone), commit it, then re-run this "
-    "with --accept-local on that path so the row is recomputed from what "
-    "you merged.")
+def merge_by_hand(rows: list[Row]) -> str:
+    """What `update-conflict` tells the rows it can name a merge for: `both`,
+    and the two states that cannot be compared. The words it always printed,
+    with the upstream's bytes NAMED where there are some to name (#535).
+
+    The remedy said `git show <target>:<source path>` and nothing in the
+    refusal or in `check` said what either was. A `both` row holds both, so
+    the command is spelled whole: the full target commit, which `git show`
+    reads in a shape clone, and the path the standard keeps the file at,
+    which is not the path in the root (`scripts/validate-manifest.py` is
+    `templates/assembly-root/scripts/validate-manifest.py`). One row is the
+    sentence it always was with its two placeholders filled; several are one
+    command each, by the path in the root they are for. A row that is not
+    `both` is named no command, because none reads: `unmapped` has no
+    upstream file, and an `upstream-removed` one is gone at the target, where
+    `git show` would fail.
+    """
+    shows = [(row.path, f"git show {row.target}:{row.source}")
+             for row in rows
+             if row.state == BOTH and row.source and row.target]
+    if len(shows) == 1:
+        where = f" (the upstream bytes are `{shows[0][1]}` in a shape clone)"
+    elif shows:
+        where = (" (the upstream bytes, in a shape clone: "
+                 + "; ".join(f"`{command}` for {path}"
+                             for path, command in shows) + ")")
+    else:
+        where = ""
+    return (f"merge each one by hand{where}, commit it, then re-run this "
+            "with --accept-local on that path so the row is recomputed from "
+            "what you merged.")
 
 
 def conflict_remediation(conflicts: list[Row]) -> str:
@@ -2945,12 +3538,14 @@ def conflict_remediation(conflicts: list[Row]) -> str:
     row. The sentence says so, because a person who removed the copy
     without the merge reads it here.
 
-    The other three states keep `MERGE_BY_HAND`, after it where a
-    `copy-missing` row is named too.
+    The other three states keep `merge_by_hand`'s sentence, after it where a
+    `copy-missing` row is named too, naming each `both` row's upstream file
+    (#535).
     """
     missing = [row.path for row in conflicts if row.state == COPY_MISSING]
+    others = [row for row in conflicts if row.state != COPY_MISSING]
     if not missing:
-        return f"Remediation: {MERGE_BY_HAND}"
+        return f"Remediation: {merge_by_hand(conflicts)}"
     verb = "is" if len(missing) == 1 else "are"
     said = (f"Remediation: {', '.join(missing)} {verb} pinned and gone from "
             "the root, so --accept-local has no bytes to keep, and this "
@@ -2963,8 +3558,8 @@ def conflict_remediation(conflicts: list[Row]) -> str:
             "copy merged into the file it collided with is not refused: "
             "with that file at the root, `check` reports it merged-away and "
             "`apply` drops its row.")
-    if len(missing) < len(conflicts):
-        said += f" For the others, {MERGE_BY_HAND}"
+    if others:
+        said += f" For the others, {merge_by_hand(others)}"
     return said
 
 
@@ -3020,6 +3615,389 @@ def _nothing_to_do(rows: list[Row], pinned: str, target: str,
     """
     return (all(row.state == UNCHANGED for row in rows)
             and pinned == target and not taking)
+
+
+def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
+                                      taking: list[Addition], accepted: set,
+                                      target: str, kind: Kind) -> None:
+    """`update-accept-local-missing-name` (#536): a copy this run writes
+    imports a name from a module `--accept-local` keeps, and the kept bytes
+    do not define it.
+
+    THE VALIDATORS CANNOT SEE IT, AND NOTHING ELSE RUNS THAT COPY. Since
+    #456 moved `spelled` and `escape_unencodable_stdout` into
+    `scripts/repo_shape.py`, both roots' `bootstrap.py` import them from
+    it. A project that keeps its own edit of `repo_shape.py` (`both`, or
+    `locally-modified`, accepted) while this run copies the new
+    `bootstrap.py` got a re-pin its validators passed, a `check` that then
+    read every row `unchanged`, and an `ImportError` from the first `make
+    bootstrap` or `bootstrap.py --help`, in a project whose CI never runs
+    bootstrap. #507 took the one other live case out of `siblings.py` by
+    not importing the new name there; this is the general guard. It is
+    asked after `update-conflict`, `update-local-drift` and
+    `update-rewrite-symlink`, so every `both` or `locally-modified` row left
+    is one `--accept-local` named, and before `confirm`: nothing has been
+    written, so nothing is rolled back, and nobody is asked for a yes to a
+    run that would leave a copy that cannot start.
+
+    UNLESS THE COPY IS ONE OF THE VALIDATORS. `kind.validators` are what
+    `_refuse_red_validators` runs after the writes, so a validator that
+    imports a name the kept copy lacks goes red there, and the run is
+    rolled back. This still refuses it first, before the yes and before a
+    byte is written, but says the validators pass only when no copy it
+    names is one of them: a clause that is false of one copy in the list
+    is false.
+
+    WHAT IS ASKED, AND OF WHAT. The importers are the copies this run
+    WRITES, read from the bytes it is about to write: each
+    `upstream-changed` row and each `--add` file whose path ends `.py`. A
+    row the run leaves alone is not asked about: an edit that already broke
+    an untouched importer is the project's doing, not this run's. A module
+    is resolved the way every shipped importer resolves it, its own
+    directory first on `sys.path`: `from M import ...` in `<dir>/<file>.py`
+    is the copy at `<dir>/M.py`, a dotted `M` naming that path's
+    subdirectories. So the same code covers `repo_shape.py` today, and any
+    helper kept beside its importer later, a holder's `bootstrap.py` under
+    its `siblings.py` among them. A module that resolves to no kept copy is
+    not asked about. `_names_imported` reads what a copy takes, and
+    `_names_defined` what a kept copy binds.
+
+    WHAT IT CANNOT TELL, IT DOES NOT REFUSE. A star import, or `import M`
+    and an attribute, names nothing this can read; nor does a copy, kept or
+    written, whose bytes Python could not parse either; nor a kept copy
+    with a star import or a module `__getattr__` of its own. There the
+    validators answer after the writes, as they did before #536, and roll
+    back a kept copy that cannot import. A name bound by `:=`, a `match`
+    capture, `type X =` or a `global` declared in a function is read as
+    defined (`_bound_at` says what it reads as a binding). A name bound only
+    through `globals()`, `setattr` on the module or `exec` reads as
+    missing, and is refused; one bound and then deleted (`NAME = 1`, then
+    `del NAME`) reads as defined, so that copy's `ImportError` is still its
+    first run's to meet.
+    """
+    kept = {row.path: row for row in rows
+            if row.state in (BOTH, LOCALLY_MODIFIED) and row.path in accepted}
+    if not kept:
+        return
+    lacking = _kept_copies_lacking(root, rows, taking, kept)
+    if not lacking:
+        return
+    helpers = sorted({helper for helper, _, _ in lacking})
+    upstreams = "; ".join(f"`git show {target}:{kept[helper].source}` for "
+                          f"{helper}" for helper in helpers)
+    both = [helper for helper in helpers if kept[helper].state == BOTH]
+    validated = any(path in kind.validators for _, path, _ in lacking)
+    raise Refusal(
+        "update-accept-local-missing-name",
+        "--accept-local keeps this project's own bytes of a module that a "
+        "copy this run writes imports from, and those bytes lack a name the "
+        "copy imports, so the copy would stop on an ImportError the first "
+        "time it runs"
+        + ("" if validated else
+           ", though the validators, which never import it, pass")
+        + ":\n"
+        + "\n".join(f"    {helper} (kept) lacks {', '.join(names)}, which "
+                    f"{path} imports from it"
+                    for helper, path, names in lacking),
+        "Remediation: whether the project keeps its edit is the human's "
+        "decision, and a kept copy must still define what the copies "
+        "written beside it import. Either merge the upstream's version into "
+        "the kept copy by hand, so it defines every name above, commit it, "
+        "and run this again with the same --accept-local; or drop the edit, "
+        "so the upstream's copy is taken: write the upstream's bytes over "
+        "it, commit that, and run this again without --accept-local on that "
+        f"path. In a shape clone the upstream's bytes are {upstreams}."
+        + (f" {', '.join(both)} changed upstream too, so dropping the edit "
+           "there is `update-conflict`'s merge by hand again, settled on the "
+           "upstream's side." if both else "")
+        + " Nothing was written.")
+
+
+def _kept_copies_lacking(root: Path, rows: list[Row], taking: list[Addition],
+                         kept: dict) -> list[tuple[str, str, list[str]]]:
+    """`(kept copy, written copy, [the names it lacks])` for each written
+    `.py` copy that imports from a kept one, sorted (#536). Split out of
+    `_refuse_kept_copies_missing_names`, which says what is asked of what;
+    each kept copy is read once, however many copies import from it.
+    """
+    written = sorted(
+        [(row.path, row.target_bytes) for row in rows
+         if row.state == UPSTREAM_CHANGED]
+        + [(add.path, add.target_bytes) for add in taking],
+        key=lambda pair: pair[0])
+    imports = [(path, module, names) for path, data in written
+               if path.endswith(".py") and data is not None
+               for module, names in sorted(_names_imported(data).items())]
+    defined: dict[str, set[str] | None] = {}
+    lacking: list[tuple[str, str, list[str]]] = []
+    for path, module, names in imports:
+        helper = _module_beside(path, module)
+        if helper not in kept:
+            continue
+        if helper not in defined:
+            defined[helper] = _names_defined(root / helper)
+        known = defined[helper]
+        missing = sorted(names - known) if known is not None else []
+        if missing:
+            lacking.append((helper, path, missing))
+    return sorted(lacking)
+
+
+def _module_beside(path: str, module: str) -> str:
+    """The pinned path `from <module> import ...` reaches from the copy at
+    `path` (#536): the importer's own directory first on `sys.path`, as
+    every shipped importer puts it, so `scripts/bootstrap.py`'s `repo_shape`
+    is `scripts/repo_shape.py`. Pin paths are spelled with `/` on every
+    platform, so this is string arithmetic and never `os.path`, which would
+    join with `\\` on Windows and match no row.
+    """
+    directory = path.rpartition("/")[0]
+    relative = module.replace(".", "/") + ".py"
+    return f"{directory}/{relative}" if directory else relative
+
+
+#: What `ast.parse` raises over bytes Python could not parse either (#536):
+#: a `SyntaxError`, which is also what a source that does not decode under
+#: its own encoding (UTF-8, or the one a coding cookie names) raises when it
+#: is parsed from bytes; the `ValueError` a null byte raises before 3.11 (a
+#: `SyntaxError` from then on); and the `RecursionError` or `MemoryError`
+#: CPython gives a source nested too deep to build. Each is "cannot tell",
+#: and never a traceback.
+UNPARSABLE = (SyntaxError, ValueError, RecursionError, MemoryError)
+#: What opens a scope of its own (#536): a name bound in its body is that
+#: scope's, never the module's, and the code in it runs later or elsewhere.
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+#: Syntax an older `ast` has no class for, because no source it parses can
+#: spell it: `type X = ...` (3.12) and the `match` captures (3.10). An empty
+#: tuple matches nothing.
+_TYPE_ALIASES = tuple(getattr(ast, name) for name in ("TypeAlias",)
+                      if hasattr(ast, name))
+_CAPTURES = tuple(getattr(ast, name)
+                  for name in ("MatchAs", "MatchStar", "MatchMapping")
+                  if hasattr(ast, name))
+#: What a `from ... import` can stand in, directly or nested: a statement,
+#: a `try`'s handler, or a `match`'s case. An expression holds none.
+_BLOCKS = (ast.stmt, ast.excepthandler) + tuple(
+    getattr(ast, name) for name in ("match_case",) if hasattr(ast, name))
+
+
+def _names_imported(data: bytes) -> dict[str, set[str]]:
+    """`{module: the names a copy takes from it}` for every absolute
+    `from <module> import <name>` in the copy's bytes (#536), function-level
+    ones included: those fail when the function runs, which is still a
+    copy that cannot do its job. Parsed from the BYTES, as Python's own
+    import reads a source, so a BOM or a coding cookie means what it means
+    to Python. Empty for bytes Python could not parse either: the
+    validators answer for those, as before.
+
+    A STAR IMPORT NAMES NOTHING, so it adds no name, and an `import <module>`
+    is not read: which attributes it uses is not something `ast` says.
+
+    A NAME THE COPY ITSELF ANSWERS FOR IS NOT TAKEN. Nothing inside an `if
+    TYPE_CHECKING:` body is, since it never runs. Inside the body of a
+    `try` that catches the `ImportError` a missing name raises
+    (`_catches_import_error`), a name is still taken unless the first
+    handler that catches it binds that same local name itself, its `as`
+    name else the name, as `_bound_at` reads a binding: that is the copy's
+    own fallback, and the copy starts. A handler that exits, re-raises or
+    passes binds nothing, and the copy stops there or on a `NameError`
+    later, which is the failure this refusal exists to say first. Only the
+    import's own scope is guarded: a `def`, `class` or `lambda` inside the
+    `try` runs later or elsewhere, outside its handler. A fallback bound
+    before the `try` rather than in the handler is not read, and that
+    import is taken; a handler with a star import of its own may bind any
+    name, and answers every one.
+    """
+    try:
+        module = ast.parse(data)
+    except UNPARSABLE:
+        return {}
+    imported: dict[str, set[str]] = {}
+    for node, answered in _imports_with_fallbacks(module):
+        if node.level or not node.module or "*" in answered:
+            continue
+        names = {alias.name for alias in node.names if alias.name != "*"
+                 and (alias.asname or alias.name) not in answered}
+        if names:
+            imported.setdefault(node.module, set()).update(names)
+    return imported
+
+
+def _imports_with_fallbacks(module: ast.Module):
+    """Each `from ... import` in `module` that can run, with the names its
+    own fallback binds (#536): what the first `ImportError` handler of the
+    innermost `try` around it, in its own scope, binds, since that handler
+    is the one that catches it. Empty outside any such `try`.
+    """
+    pending = [(statement, frozenset()) for statement in module.body]
+    while pending:
+        node, answered = pending.pop()
+        if isinstance(node, ast.ImportFrom):
+            yield node, answered
+        pending.extend(_blocks_inside(node, answered))
+
+
+def _blocks_inside(node: ast.AST, answered: frozenset) -> list:
+    """The clauses directly inside `node`, each with the names a fallback
+    answers there: `_fallback_in` for `node`'s own `body`, and what `node`
+    found for the rest, since a `try`'s handlers, `else` and `finally` are
+    outside its own guard. An `if TYPE_CHECKING:` body is not entered.
+    """
+    if isinstance(node, ast.If) and _is_type_checking(node.test):
+        return [(clause, answered) for clause in node.orelse]
+    inside = _fallback_in(node, answered)
+    return [(clause, inside if field == "body" else answered)
+            for field, value in ast.iter_fields(node)
+            if isinstance(value, list)
+            for clause in value if isinstance(clause, _BLOCKS)]
+
+
+def _fallback_in(node: ast.AST, answered: frozenset) -> frozenset:
+    """What an import in `node`'s own `body` finds answered: nothing in a
+    scope of its own; in a `try` with a handler that catches `ImportError`,
+    what the first such handler binds; else what `node` found itself.
+    """
+    if isinstance(node, _SCOPES):
+        return frozenset()
+    handler = next((clause for clause in getattr(node, "handlers", ())
+                    if _catches_import_error(clause)), None)
+    return answered if handler is None else frozenset(_bound_at(handler.body))
+
+
+def _catches_import_error(handler: ast.ExceptHandler) -> bool:
+    """Does this `except` clause catch the `ImportError` a missing name
+    raises? A bare one does, and so does one naming `ImportError` or a
+    class above it, alone or in a tuple. `ModuleNotFoundError` does not: a
+    missing NAME is a plain `ImportError`."""
+    if handler.type is None:
+        return True
+    caught = (handler.type.elts if isinstance(handler.type, ast.Tuple)
+              else [handler.type])
+    return any(isinstance(name, ast.Name)
+               and name.id in ("ImportError", "Exception", "BaseException")
+               for name in caught)
+
+
+def _is_type_checking(test: ast.expr) -> bool:
+    """`if TYPE_CHECKING:` or `if typing.TYPE_CHECKING:`, false at run time."""
+    return ((isinstance(test, ast.Name) and test.id == "TYPE_CHECKING")
+            or (isinstance(test, ast.Attribute)
+                and test.attr == "TYPE_CHECKING"))
+
+
+def _names_defined(path: Path) -> set[str] | None:
+    """Every name the kept copy at `path` binds at module scope (#536), as
+    `_bound_at` reads a binding, or None when it cannot tell.
+
+    PARSED FROM THE BYTES, as Python's own import reads them, so a BOM or a
+    coding cookie means what it means to Python. A kept copy is the
+    project's own file, which a Windows editor, or PowerShell 5.1's
+    `Set-Content -Encoding UTF8`, starts with a BOM; decoded to text first,
+    that BOM was a character no parser takes, a copy Python imports read as
+    one this could not, and #536's own `ImportError` went unrefused.
+
+    NONE, AND SO NO REFUSAL, where those rules cannot answer: bytes Python
+    could not parse either, which the validators will meet when they import
+    the copy; a star import, which binds names this does not know; and a
+    module `__getattr__`, which answers for any name it likes.
+    """
+    try:
+        module = ast.parse(path.read_bytes())
+    except (OSError, *UNPARSABLE):
+        return None
+    names = _bound_at(module.body)
+    return None if names & {"*", "__getattr__"} else names
+
+
+def _bound_at(statements: list) -> set[str]:
+    """Every name `statements` bind in the scope they run in (#536): at a
+    kept copy's module scope, what `from <module> import <name>` finds
+    there (`_names_defined`); in a `try`'s handler, the copy's own fallback
+    (`_names_imported`).
+
+    READ: a `def`, an `async def` or a `class`; a target of `=`, of an
+    annotated `=` (an annotation alone binds nothing), of an augmented one
+    or of `:=` (in a comprehension too, which binds it in the scope around
+    the comprehension), unpacking included; a `for` target and a `with ...
+    as`; an `import` (its `as` name, else the first part of a dotted one)
+    and a `from ... import` alias, a star import read as `*`; a `type X =`
+    alias (3.12); a `match` capture, `case X`, `[*X]` or `{**X}`; and a
+    `global X` declared in a function or class defined there, read as bound
+    because calling it may bind it, and what this cannot rule out it does
+    not refuse. All of it inside `if`, `try` (its handlers, `else` and
+    `finally`), `with`, `for`, `while` and `match`, which run where they
+    stand, and never inside a function, class or lambda body, which bind
+    names of their own scope.
+
+    NOT READ: a name bound through `globals()`, `setattr` on the module or
+    `exec`, which reads as missing; and `del`, so a name bound and then
+    deleted reads as bound.
+    """
+    return {name for node in _same_scope(statements)
+            for name in _names_bound(node)}
+
+
+def _same_scope(statements: list):
+    """Every node under `statements` that runs in their own scope. A `def`,
+    `class` or `lambda` is yielded, since its name is bound there, and not
+    entered.
+    """
+    pending = list(statements)
+    while pending:
+        node = pending.pop()
+        yield node
+        if not isinstance(node, _SCOPES):
+            pending.extend(ast.iter_child_nodes(node))
+
+
+def _names_bound(node: ast.AST) -> set[str]:
+    """The names `node` itself binds in the scope it runs in (`_bound_at`).
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                         ast.ClassDef)):
+        return {node.name} | {name for inner in ast.walk(node)
+                              if isinstance(inner, ast.Global)
+                              for name in inner.names}
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return {alias.asname or alias.name.split(".")[0]
+                for alias in node.names}
+    if isinstance(node, _CAPTURES):
+        captured = getattr(node, "name", None) or getattr(node, "rest", None)
+        return {captured} if captured else set()
+    return {name for target in _targets(node)
+            for name in _bound_names(target)}
+
+
+def _targets(node: ast.AST) -> list:
+    """The assignment targets `node` binds through, each as
+    `_bound_names` reads one: none for anything else.
+    """
+    if isinstance(node, ast.Assign):
+        return node.targets
+    if isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor,
+                         ast.NamedExpr)):
+        return [node.target]
+    if isinstance(node, ast.AnnAssign):
+        return [node.target] if node.value is not None else []
+    if isinstance(node, ast.withitem):
+        return [node.optional_vars] if node.optional_vars is not None else []
+    if isinstance(node, _TYPE_ALIASES):
+        return [node.name]
+    return []
+
+
+def _bound_names(target: ast.expr) -> set[str]:
+    """The names an assignment target binds: a name, or each name in an
+    unpacking (`a, (b, *c) = ...`). An attribute or a subscript binds none.
+    """
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return {name for element in target.elts
+                for name in _bound_names(element)}
+    return set()
 
 
 def _write_copies(root: Path, rows: list[Row], taking: list[Addition],
@@ -3194,13 +4172,27 @@ def _refuse_red_validators(root: Path, kind: Kind) -> None:
             "somebody else's pull request.")
 
 
+def _accepted_local(rows: list[Row]) -> list[str]:
+    """The paths `--accept-local` kept as the project holds them: the rows
+    still `locally-modified` or `both` when the writes are done, since a row
+    in either state that nobody accepted was refused before the first one
+    (#535). Sorted, so a message names them in an order that does not move.
+    `already-at-target` is not one: the project's bytes ARE the standard's
+    there."""
+    return sorted(row.path for row in rows
+                  if row.state in (LOCALLY_MODIFIED, BOTH))
+
+
 def _land(root: Path, args, paths: list[str], added: list[str], target: str,
           upstream: Upstream, kind: Kind, count: int,
-          ledger: Rollback, dropped: list[str] = ()) -> None:
+          ledger: Rollback, dropped: list[str] = (),
+          accepted: list[str] = ()) -> None:
     """The three optional acts after a clean rewrite — commit, push, open a
     pull request — each done only because a flag asked for it. Split out of
     `cmd_apply` for #133. `dropped` names the merged-away rows the re-pin
-    left out (#502), for the commit message.
+    left out (#502), for the commit message; `accepted` the paths
+    `--accept-local` kept as the project holds them (#535), which neither the
+    commit message nor the pull request's body may call "not hand-edited".
 
     Nested the way the flags are: `--push` and `--pr` have nothing to act on
     without `--branch`, which `main` refuses before this is ever reached.
@@ -3216,11 +4208,17 @@ def _land(root: Path, args, paths: list[str], added: list[str], target: str,
     """
     if not args.branch:
         return
-    create = (pull_request_line(root, args, target, upstream, kind)
+    # THE WORDS `--pr` OPENS WITH, kept for `next_line`, which runs after this
+    # and prints the same title and body in the `gh pr create` it hands a
+    # person (#535): it is not given the upstream or the accepted paths, and
+    # `cmd_apply`'s call to it does not change.
+    args.pull_request_words = pull_request_words(upstream.repository, target,
+                                                 kind.manifest, accepted)
+    create = (pull_request_line(root, args, target, upstream, kind, accepted)
               if args.push or args.pr else [])
     commit_on_branch(root, args.branch, paths, target, upstream,
                      count, kind, added, args.trailer, ledger=ledger,
-                     dropped=dropped)
+                     dropped=dropped, accepted=accepted)
     print(f"\n  committed on {args.branch}: " + ", ".join(paths))
     if args.push:
         push_branch(root, args, create)
@@ -3256,10 +4254,13 @@ def cmd_apply(args) -> int:
                   "already names")
             return 0
         _refuse_linked_copies(rows)
+        _refuse_hard_linked_rewrites(root, rows, kind, taking)
         _refuse_conflicts(rows, accepted)
         _refuse_local_drift(rows, accepted)
         if args.branch:
             _refuse_writes_through_a_link(root, rows, kind, args.branch)
+        _refuse_kept_copies_missing_names(root, rows, taking, accepted,
+                                          target, kind)
         confirm(args, rows, taking, target)
         target_tree = upstream.tree_sha256(target)
         # READ BEFORE THE COPIES, REWRITTEN AFTER THE PIN. `.gitattributes`
@@ -3285,7 +4286,7 @@ def cmd_apply(args) -> int:
         # as re-copied nor asked about as a copy the commit leaves out.
         dropped = [row.path for row in rows if row.state == MERGED_AWAY]
         _land(root, args, paths, added, target, upstream, kind, len(copied),
-              ledger, dropped)
+              ledger, dropped, accepted=_accepted_local(rows))
         print()
         next_line(root, args, paths, target, added, kind,
                   pinned_paths=[row.path for row in rows
@@ -3747,6 +4748,42 @@ def _pull_requests(answer: str) -> "list[tuple[str, str]] | None":
             for pull in pulls]
 
 
+def _accepted_in_the_pin(root: Path, upstream: Upstream, target: str,
+                         kind: Kind) -> list[str]:
+    """The pinned copies a run that has already committed kept as the
+    project holds them, read back out of the pin it wrote (#535).
+
+    A ROW IS ONE WHEN IT IS TWO THINGS. Its recorded digest is not that of
+    the upstream's file at `target`, so the project's bytes are what the pin
+    names there; and it is not the digest the tracking branch's pin already
+    held for it, so THIS RUN moved it. Without the second, an in-place
+    adoption's `Makefile`, whose row has always recorded the file with the
+    adoption's block appended, would be reported as kept by a flag nobody
+    passed. Where the tracking branch's pin cannot be read (a clone that has
+    never seen `origin/<tracking>`) there is nothing to tell the two apart,
+    and the answer is none: a body that names too few paths is incomplete,
+    one that names a path nobody accepted is false. Sorted, as
+    `_accepted_local` is.
+    """
+    base = tracking_branch_of(load_yaml(root / kind.manifest))
+    landed = _git_answer(root, ["show", f"refs/remotes/origin/{base}:"
+                                f"{SHAPE_PIN}"])
+    try:
+        held = {str(row["path"]): str(row["sha256"]).lower()
+                for row in parse_yaml(landed or "")["files"]}
+    except (YamlError, KeyError, TypeError):
+        return []
+    _, rows = read_pin(root)
+    kept = []
+    for row in rows:
+        source = source_for(row.path, upstream, target, kind)
+        blob = upstream.blob(target, source) if source else None
+        if (blob is not None and file_bytes_sha256(blob) != row.recorded
+                and held.get(row.path, row.recorded) != row.recorded):
+            kept.append(row.path)
+    return sorted(kept)
+
+
 def _finish_landing(root: Path, args, upstream: Upstream, target: str,
                     kind: Kind) -> int:
     """The re-run `_awaits_its_pull_request` recognised: nothing to write,
@@ -3759,13 +4796,20 @@ def _finish_landing(root: Path, args, upstream: Upstream, target: str,
     pushed again under `--push` (a no-op when origin has it) and handed to
     `open_pull_request` with the same `gh pr create` the first run built.
     Every failure on the way is `landing_failed`'s, named by its own step.
+
+    THE BODY NAMES WHAT `--accept-local` KEPT, AS THE FIRST RUN'S DID (#535,
+    review of PR #558). This run has no rows that say so, and the flag is not
+    repeated by "the same command" necessarily, so the committed pin is
+    asked (`_accepted_in_the_pin`).
     """
     branch = args.branch
     print(f"nothing to write: every copied file matches {upstream.repository}"
           f" @ {target[:12]}, which the pin on {branch} already names; "
           f"--pr asked for {branch}'s pull request")
     repository, _ = pull_request_target(root, kind)
-    create = pull_request_line(root, args, target, upstream, kind)
+    create = pull_request_line(root, args, target, upstream, kind,
+                               _accepted_in_the_pin(root, upstream, target,
+                                                    kind))
     listing = ["gh", "pr", "list", "--repo", repository, "--head", branch,
                "--state", "all", "--json", "state,url"]
     asking = f"asking gh for {branch}'s pull request"
@@ -3809,35 +4853,80 @@ def pull_request_target(root: Path, kind: Kind) -> tuple[str, str]:
     return repository, base
 
 
+def accepted_local_said(accepted: list[str]) -> str:
+    """The sentence that names what `--accept-local` kept, for the commit
+    message and the pull request's body alike (#535): neither may say a copy
+    was not hand-edited of a file the run re-pinned FROM THE PROJECT'S OWN
+    BYTES, which is what the flag does."""
+    many = len(accepted) > 1
+    each = "each" if many else "it"
+    return (f"{', '.join(accepted)} {'were' if many else 'was'} not "
+            f"re-copied: `--accept-local` kept {each} as the project holds "
+            f"it, so the pin's row for {each} records a digest of the "
+            "project's own bytes, not of the upstream's file.")
+
+
+def pull_request_words(repository: str, target: str, manifest: str,
+                       accepted: list[str] = ()) -> tuple[str, str]:
+    """`(title, body)` of the pull request that lands `--branch`: what
+    `--pr` opens it with, and what the `gh pr create` the plain `--branch`
+    NEXT line hands a person carries (#535). ONE PLACE, so the two cannot
+    say different things.
+
+    THE BODY NAMES THE MANIFEST THIS ROOT HAS (#535, review of PR #558):
+    `project.yaml` for a project and `family.yaml` for a holder, as the
+    commit message names `kind.manifest`. It said `project.yaml` of both.
+
+    "NOT HAND-EDITED" IS CLAIMED OF THE COPIES RE-COPIED FROM THE UPSTREAM
+    ONLY, as the commit message claims it: the body said "No copy was
+    hand-edited" of every file, which `--accept-local` makes false of the
+    paths it kept, and they are named here when there are any.
+
+    NOR DOES IT SAY ANY COPY WAS RE-COPIED. The opening clause said "the
+    copied shape files were re-copied from the upstream" in every state,
+    which is false for a run whose only change is a row `--accept-local`
+    kept. What the body says of the files is the sentence after it, which is
+    true of none, one or many. A count, as the commit message gives, is left
+    out on purpose: a re-run that only opens the missing pull request does
+    not know it, and opens the very command the first run tried
+    (`_finish_landing`), which the tests hold it to.
+    """
+    title = f"Re-sync the shape copies to {repository} @ {target[:12]}"
+    body = ("Written by openRepoShape's `update-shape.py`: "
+            f"`contracts/shape-pin.yaml` and `{manifest}` re-pinned onto "
+            f"{target}. No copy re-copied from the upstream was hand-edited "
+            "and every digest was recomputed."
+            + (f" {accepted_local_said(accepted)}" if accepted else ""))
+    return title, body
+
+
 def pull_request_line(root: Path, args, target: str, upstream: Upstream,
-                      kind: Kind) -> list[str]:
+                      kind: Kind, accepted: list[str] = ()) -> list[str]:
     """The `gh pr create` that lands `--branch` (#204): under `--pr` the one
     `--pr` runs, title and body included, so the NEXT line a failure prints
-    is that same command; without it, the bare form the plain `--branch`
-    NEXT line prints (#209): `--repo` the manifest's repository, then
-    `--base`/`--head` against this root's own tracking branch.
+    is that same command; without it, the form the plain `--branch` NEXT
+    line prints (#209): `--repo` the manifest's repository, then
+    `--base`/`--head` against this root's own tracking branch, and the same
+    `--title` and `--body` (#535: a bare line has gh ask for them, which a
+    shell with no terminal cannot answer, and `--fill` would read commits
+    from wherever the line is pasted).
 
     WITHOUT `--pr` A MANIFEST NAMING NO REPOSITORY LEAVES `--repo` OFF rather
     than refusing: nothing is opened, so nothing is wrong yet, and the
     `<org>/<Project>` placeholder `next_line` prints would be one literal
     argument in a line quoted to be pasted as an argv."""
+    title, body = pull_request_words(upstream.repository, target,
+                                     kind.manifest, accepted)
     if not args.pr:
         manifest = load_yaml(root / kind.manifest)
         repository, _ = pull_request_repository(manifest, kind)
         where = ["--repo", repository] if repository else []
         return ["gh", "pr", "create", *where, "--base",
-                tracking_branch_of(manifest), "--head", args.branch]
+                tracking_branch_of(manifest), "--head", args.branch,
+                "--title", title, "--body", body]
     repository, base = pull_request_target(root, kind)
     return ["gh", "pr", "create", "--repo", repository, "--base", base,
-            "--head", args.branch, "--title",
-            f"Re-sync the shape copies to {upstream.repository} @ "
-            f"{target[:12]}",
-            "--body",
-            "Written by openRepoShape's `update-shape.py`: the copied "
-            "shape files were re-copied from the upstream and "
-            "`contracts/shape-pin.yaml` and `project.yaml` re-pinned onto "
-            f"{target}. No copy was hand-edited and every digest was "
-            "recomputed."]
+            "--head", args.branch, "--title", title, "--body", body]
 
 
 def open_pull_request(root: Path, args, create: list[str]) -> None:
@@ -3871,10 +4960,26 @@ def _unwritten_changes(root: Path, paths: list[str],
     the one it always printed.
     """
     rest = [path for path in pinned_paths if path not in paths]
-    if not rest or _git_answer(root, ["rev-parse", "--verify", "--quiet",
-                                      "HEAD"]) is None:
+    if not rest or not _has_head(root):
         return []
     return _not_what_head_commits(root, rest)
+
+
+def _same_as_head(root: Path, paths: list[str]) -> bool:
+    """Does `git diff --quiet HEAD` find nothing among `paths`: no content,
+    and no file mode, that HEAD does not commit? `--literal-pathspecs`, as
+    the commit line is printed (#202). An answer git does not give is "no",
+    which is what a root with no HEAD gets: nothing there to be the same as
+    (#535)."""
+    return _git_answer(root, ["--literal-pathspecs", "diff", "--quiet",
+                              "HEAD", "--", *paths]) is not None
+
+
+def _has_head(root: Path) -> bool:
+    """Does `root` have a commit HEAD names? A root with none has nothing for
+    a commit line to be compared with (#436, #535)."""
+    return _git_answer(root, ["rev-parse", "--verify", "--quiet",
+                              "HEAD"]) is not None
 
 
 def next_line(root: Path, args, paths: list[str], target: str,
@@ -3903,8 +5008,20 @@ def next_line(root: Path, args, paths: list[str], target: str,
         # `shlex.quote` leaves alone, so this prints the bytes it always
         # printed; it is quoted so that widening that alphabet one day cannot
         # reopen a line that has a whole argument to itself.
+        #
+        # WITH A TITLE AND A BODY (#535). Bare, the line has `gh` prompt for
+        # both, and in a shell with no terminal the pasted line stops there
+        # (gh's behaviour without one was not run: a real `gh pr create` is
+        # never run here). `--fill` is not the answer: it reads the commits of
+        # wherever the line is pasted, and `check`'s NEXT sends people to
+        # paste from the standard's checkout. The words are `--pr`'s, which
+        # `_land` kept on `args`; a caller that did not come through it is
+        # given the standard's own repository to name.
+        title, body = getattr(args, "pull_request_words", None) or \
+            pull_request_words(SHAPE_REPOSITORY, target, kind.manifest)
         create = (f"gh pr create{where} --base {base} --head "
-                  f"{shlex.quote(args.branch)}")
+                  f"{shlex.quote(args.branch)} --title {shlex.quote(title)} "
+                  f"--body {shlex.quote(body)}")
         if args.push:
             print(f"NEXT  {create}")
         else:
@@ -3930,6 +5047,25 @@ def next_line(root: Path, args, paths: list[str], target: str,
               "bytes it does not carry. Commit those changes with them if "
               "this re-pin is to carry them, or put both back to HEAD's "
               "bytes and run apply again")
+        return
+    # NOTHING TO COMMIT IS NOT A COMMIT LINE (#535). An `apply` that moved the
+    # pin back to what HEAD commits writes copies, a pin and a manifest that
+    # are HEAD's bytes again, and the line below, pasted, is git's "nothing to
+    # commit". Asked of the paths THIS RUN WROTE, which is the commit's whole
+    # content: an `--add` file is not in HEAD, so a run that added one still
+    # gets its line.
+    #
+    # BY BYTES AND BY MODE (review of PR #558). `_not_what_head_commits`
+    # compares blobs, so a pinned script that `apply` left executable or
+    # not, where HEAD commits the other, would read "nothing to commit" over
+    # a change git does commit. `_same_as_head` asks `git diff --quiet HEAD`,
+    # which counts a mode change, and which is answered only where HEAD names
+    # a commit: a root with none has nothing to compare with, and prints the
+    # line it always printed.
+    if _same_as_head(root, paths) and not _not_what_head_commits(root, paths):
+        print("NEXT  nothing to commit: the working tree now holds what HEAD "
+              f"commits at {', '.join(paths)}, so this run left no change to "
+              "record")
         return
     # A `git add` for the ADDITIONS only. A hint that a human pastes has to
     # work when they paste it, and `git commit -- <path>` refuses a path git
