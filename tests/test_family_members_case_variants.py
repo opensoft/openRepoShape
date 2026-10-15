@@ -701,11 +701,61 @@ def variant_in_members(root: Path) -> None:
     (root / "members" / SPARE.lower() / "x").write_bytes(b"x\n")
 
 
+def linked_members(root: Path) -> None:
+    """`members/` gone, and a LINK `Members` to a directory outside the
+    holder: a disk that folds case resolves `members` through it, and it is
+    still never `members/` itself, but a link, named and moved."""
+    if os.name == "nt":
+        pytest.skip("a symlink needs a privilege Windows runners do not grant")
+    shutil.rmtree(root / "members")
+    (root.parent / "elsewhere").mkdir()
+    os.symlink(root.parent / "elsewhere", root / "Members",
+               target_is_directory=True)
+
+
+def every_index_remedy(root: Path) -> None:
+    """`members/` renamed, and three entries under `Members/` committed: a
+    gitlink `X` with its directory on disk, renamed; a file `README` where
+    the disk holds a directory, taken out of the index, which HEAD holds, so
+    the removal is committed too; and `docs/a`, which a sparse checkout
+    keeps off disk, renamed with `--sparse` by the entry itself."""
+    renamed_members(root)
+    (root / "Members" / "README").mkdir()
+    (root / "Members" / "README" / "inner").write_bytes(b"x\n")
+    (root / "Members" / "X").mkdir()
+    plant(root, "100644", "Members/README")
+    plant(root, "160000", "Members/X")
+    plant(root, "100644", "Members/docs/a")
+    git("update-index", "--skip-worktree", "--", "Members/docs/a", cwd=root)
+    git("commit", "-qm", "Entries under Members/", cwd=root)
+
+
+def gitlink_over_a_human_members(root: Path) -> None:
+    """`members/` gone, a human's `Members/notes.txt`, and a gitlink
+    `Members` in the index: what is under that entry is the index's to
+    name, never a second time on disk."""
+    shutil.rmtree(root / "members")
+    (root / "Members").mkdir()
+    (root / "Members" / "notes.txt").write_bytes(b"our own notes\n")
+    plant(root, "160000", "Members")
+
+
 IN_MEMBERS_README = DIR_VARIANT + "in the index: `Members/README` (a file)"
 IN_MEMBERS_IRQS = (MOUNT_VARIANT + f"in the index: `Members/{SPARE}/README` "
                    "(a file)")
 UNDER_MEMBERS_IRQS = f"on disk and untracked: `Members/{SPARE.lower()}` (a " \
                      "directory)"
+MOVED_BACK_TOO = "; on disk and untracked: `Members` (a directory)"
+LINKED = (DIR_VARIANT + "on disk and untracked: `Members` (a symlink)",
+          remedy_of(move("Members")))
+EVERY_INDEX = (DIR_VARIANT + "in the index: `Members/README` (a file), "
+               "`Members/X` (a submodule), `Members/docs/a` (a file)")
+EVERY_INDEX_REMEDY = index_part(
+    rename=["Members/X"], sparse=["Members/docs/a"],
+    unstage=["Members/README"], commit="both")
+IRQS_FILE = MOUNT_VARIANT + f"in the index: `Members/{SPARE}` (a file)"
+IRQS_FILE_REMEDY = index_part(rename=[f"Members/{SPARE}"], commit="the rename")
+GITLINK_MEMBERS = DIR_VARIANT + "in the index: `Members` (a submodule)"
 
 #: `{layout: (how it is made, Linux's answer, the folding disk's answer)}`,
 #: each answer the refusal's two lines, None where the check passes, and
@@ -767,6 +817,21 @@ LAYOUTS = {
          "(a directory)", remedy_of(move(f"members/{SPARE.lower()}"))),
         (MOUNT_VARIANT + f"on disk and untracked: `members/{SPARE.lower()}` "
          "(a directory)", remedy_of(move(f"members/{SPARE.lower()}")))),
+    "a link Members, no members/": (linked_members, LINKED, LINKED),
+    "and every remedy the index takes": (
+        every_index_remedy,
+        (EVERY_INDEX + MOVED_BACK_TOO,
+         remedy_of(EVERY_INDEX_REMEDY, MOVE_BACK)),
+        (EVERY_INDEX, remedy_of(EVERY_INDEX_REMEDY))),
+    "and a file Members/IRQS in the index and on disk": (
+        with_file(f"Members/{SPARE}", staged=True),
+        (IRQS_FILE + MOVED_BACK_TOO, remedy_of(IRQS_FILE_REMEDY, MOVE_BACK)),
+        (IRQS_FILE, remedy_of(IRQS_FILE_REMEDY))),
+    "a gitlink Members over a human's Members/": (
+        gitlink_over_a_human_members,
+        (GITLINK_MEMBERS, remedy_of(index_part(rename=["Members"],
+                                               commit="the rename"))),
+        (GITLINK_MEMBERS, remedy_of(index_part(unstage=["Members"])))),
 }
 
 
@@ -799,6 +864,43 @@ def test_each_disk_answers_for_the_directory_it_holds(
     with pytest.raises(family_module.Refusal) as caught:
         family_module._checked_mount_path(holder, SPARE, MOUNT)
     assert tuple(str(caught.value).splitlines()) == said
+
+
+#: `_disk_spellings` over a listing handed in, as `(the listing, the
+#: spelling that is members/ on that disk, the gitlinks the index holds,
+#: what is named and how)`. Every entry listed holds a `.git`.
+MOVED_BACK = {
+    "once, though two spellings hold checkouts": (
+        {"MEMBERS": ["IRRS"], "Members": ["IRSS"]}, None,
+        {"members/IRRS", "members/IRSS"},
+        [("MEMBERS", "mv back"), ("Members/IRSS", "mv")]),
+    "never where members/ is on disk": (
+        {"Members": ["IRRS"], "members": []}, "members", {"members/IRRS"},
+        [("Members/IRRS", "mv")]),
+    "never for a .git no gitlink names": (
+        {"Members": ["notes"]}, None, {"members/IRRS"},
+        [("Members/notes", "mv")]),
+}
+
+
+@pytest.mark.parametrize("case", list(MOVED_BACK))
+def test_only_a_spelling_that_is_members_renamed_is_moved_back(
+        family_module, monkeypatch, tmp_path, case):
+    """THE MOVE BACK (Codex's P2) is for ONE spelling, where no `members/`
+    is on disk, holding a checkout whose gitlink the index holds under
+    `members/`. Two spellings side by side exist only on a disk that does
+    not fold case, and no test makes them, so the listing is handed in and
+    nothing is read from a disk."""
+    listing, canon, gitlinks, named = MOVED_BACK[case]
+    monkeypatch.setattr(os.path, "lexists",
+                        lambda path: Path(path).name == ".git")
+    monkeypatch.setattr(family_module, "_disk_kind",
+                        lambda path: "a directory")
+    found = family_module._disk_spellings(
+        tmp_path, {name: ("a directory", entries)
+                   for name, entries in listing.items()},
+        SPARE, canon, gitlinks)
+    assert [(path, remedy) for path, _, remedy in found] == named
 
 
 def test_the_printed_git_mv_leaves_the_members_where_they_are(
