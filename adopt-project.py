@@ -2010,7 +2010,10 @@ def cross_leg_references(source: "Source",
     file is named as the code leg holds it and the directory as the spec leg
     does: both are paths in the SOURCE, which no edit of the plan moves. The
     Makefile follow-up (#522's review, F1) and the tracking branch's (#493's
-    review, F3) are written the same way.
+    review, F3) are written the same way. The path from the code leg to the
+    spec leg's `contracts/`, which a person has then to work out from the two
+    mounts, is printed next to the CURRENT mounts by the two sentences that
+    name them (`contracts_from_code_leg`, #600's review, F1).
 
     EVERY NAME IS A NAME (#216). Both inputs are source paths, and git reads
     each as something else unless told not to. A spec directory passed bare
@@ -2076,6 +2079,76 @@ def cross_leg_references(source: "Source",
     return out
 
 
+def spec_leg_from_code_leg(spec_path: str, code_path: str) -> str:
+    """The spec leg's mount, `spec_path`, as a path relative to the code
+    leg's, `code_path`: `../spec` for the defaults, `../spec` for
+    `legs/spec` beside `legs/code`, and `../../spec` for `spec` beside
+    `impl/code`.
+
+    ONE `..` PER SEGMENT OF THE CODE LEG'S PATH BELOW WHAT THE TWO SHARE
+    (#522, auA-13). The follow-up wrote `../<spec_path>`, which is right only
+    while the code leg sits in the root: with `--spec-path legs/spec
+    --code-path legs/code` it said `../legs/spec/contracts/` "relative to
+    `legs/code/`", a path that leads to `legs/legs/spec`.
+
+    It is asked of the plan's CURRENT mounts, when a sentence that prints
+    them is rendered, and never of the two a plan was written with (#600's
+    review, F1): `contracts_from_code_leg` below.
+
+    Both are canonical mount paths, asked by `plan` before it writes a
+    follow-up and by `execute` before it mounts a leg: `/` between
+    segments, and no segment empty, `.` or `..`. So the segments are
+    compared as text, and nothing is resolved against a disk. Two segments
+    that differ only in case are two segments here, and the comparison stops
+    at the first of them: the path climbs one level more than a disk that
+    folds case needs for every segment from there to the end of what such a
+    disk would call shared (`A/B/spec` beside `a/b/code` climbs two more,
+    and so does `A/b/spec`), and still leads to the same directory.
+    """
+    spec, code = spec_path.split("/"), code_path.split("/")
+    shared = 0
+    while (shared < min(len(spec), len(code))
+           and spec[shared] == code[shared]):
+        shared += 1
+    return "/".join([".."] * (len(code) - shared) + spec[shared:])
+
+
+def contracts_from_code_leg(spec_path, code_path, spec_leg_paths) -> str:
+    """What the two sentences that print the plan's CURRENT mounts end with
+    when the spec leg holds `contracts/`: ", so from the code leg the spec
+    leg's `contracts/` is `../spec/contracts/`", or "" when there is nothing
+    true to say (#600's review, F1).
+
+    THE READ-ACROSS FOLLOW-UP NAMES `legs.code_path` AND `legs.spec_path` AND
+    NO PATH, so no hand edit of either can contradict it, and it leaves the
+    path itself to the two mounts printed beside it. That path is the one
+    #522's review (auA-13) showed a person gets wrong for nested legs by
+    hand, and `CONTRACTS_DIR` is the root Makefile's alone. So it is printed
+    where the mounts are, computed from the values the surface itself prints:
+    `check`'s `mount the legs at X/ and Y/`, from the plan as it stands, and
+    the split message's `mounted back here at X/ and Y/`, from the mounts
+    `execute` made. It is never stored in `follow_ups:`, so it cannot go stale
+    between a hand edit and the next `check`, and it needs no `git grep`.
+
+    NOTHING, in three cases. No path of the spec leg is `contracts/` or lies
+    under it, so there is no `contracts/` to lead to (the Makefile follow-up's
+    own condition). A mount is not text, or the two are not mount paths
+    `execute` accepts, or they overlap or differ only in case: `check` says
+    so as a finding, and a path computed from two strings that are not two
+    mounts leads nowhere. `spec_leg_paths` are the paths the plan assigns to
+    the spec leg, as `_leg_paths` reads them.
+    """
+    if not any(path == "contracts/" or path.startswith("contracts/")
+               for path in spec_leg_paths):
+        return ""
+    if leg_path_problems(("legs.spec_path", spec_path),
+                         ("legs.code_path", code_path)):
+        return ""
+    across = spec_leg_from_code_leg(spec_path, code_path)
+    return (", so from the code leg the spec leg's `contracts/` is "
+            f"`{across}/contracts/`")
+
+
 def _search_by_hand(named: str, why: str) -> str:
     """The follow-up for a spec directory git did not search for: the
     reason, and what to look for instead."""
@@ -2121,6 +2194,9 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
     one (#522's review, F1). So does the read-across line that
     `cross_leg_references` writes, for both mounts, and this function takes
     no mount path: no value of either key can reach a line it writes (#600).
+    The path from the code leg to the spec leg's `contracts/` is printed
+    beside the CURRENT mounts instead, where `check` and the split message
+    name them (`contracts_from_code_leg`).
     """
     out = cross_leg_references(source, entries)
     if any(e.leg == "spec" and (e.path == "contracts/"
@@ -6283,10 +6359,14 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     mounts = [_plan_leg_path(plan, role) for role in EXTRACTED_LEGS]
     mounted = (f" at {_shown(mounts[0])}/ and {_shown(mounts[1])}/"
                if all(isinstance(mount, str) for mount in mounts) else "")
+    # Beside the mounts, the path the read-across follow-up leaves to them,
+    # from the mounts as the plan stands (#600's review, F1).
+    across = contracts_from_code_leg(mounts[0], mounts[1],
+                                     _leg_paths(plan)["spec"])
     print(f"  ONE split commit on branch "
           f"{_shown(str(plan.get('adopt_branch', ADOPT_BRANCH)))} "
           f"of {names['assembly']}: `git rm -r` those paths, mount the "
-          f"legs{mounted}")
+          f"legs{mounted}{across}")
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     # Each pin `execute` writes, as the plan records it (#273) and as the
@@ -9269,7 +9349,8 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
         "are NEW repositories extracted with `git filter-repo`, so every "
         "moved file keeps the commits that made it. Nothing was deleted: what "
         "leaves this tree arrives in a leg at the same path, mounted back "
-        f"here at {spec_path}/ and {code_path}/.",
+        f"here at {spec_path}/ and {code_path}/"
+        f"{contracts_from_code_leg(spec_path, code_path, paths_for['spec'])}.",
         "",
         f"MOVED TO THE SPEC LEG ({names['spec']} @ {leg_commits['spec'][:12]}):",
     ]
