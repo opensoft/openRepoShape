@@ -19,10 +19,11 @@ and runs a reader on it. On the code before #290 each one is a traceback,
 except `files: abc`, which is a finding per character or a refusal that names
 the wrong thing.
 
-The doctor's VERDICT for a root pin `read_pin` refuses is #237's business
-(PR #267 moves it from CANNOT ANSWER, exit 3, to INVALID, exit 1), so the
-doctor's cases assert the ROW and that a verdict was printed at all, never
-which one.
+The doctor's VERDICT for a root pin `read_pin` refuses is INVALID, exit 1
+(#237, moved there by #267 from CANNOT ANSWER, exit 3, which is the failure
+this checkout has when it cannot ask, and not a statement about the pin). The
+doctor's cases assert that exit, that verdict and the ROW, so a doctor that
+answered CANNOT ANSWER for `files: abc` would fail here.
 
 NOTHING HERE REACHES A NETWORK: the scaffold and the holder use
 `--local-remote-dir`, and `read_pin` refuses before `--upstream` is opened.
@@ -65,11 +66,6 @@ NOT_A_LIST = [
     pytest.param("1.5", "1.5", id="files-1.5"),
     pytest.param("abc", "'abc'", id="files-abc"),
 ]
-
-#: Every verdict the doctor's text report can end on.
-VERDICT = re.compile(r"^(COMPLIANT|DRIFTED|MISPLACED|INVALID|NOT A SHAPE ROOT"
-                     r"|CANNOT ANSWER)\b")
-
 
 def commit_files(root, files_text: str, message: str) -> None:
     """Replace the pin's `files:` rows by `files_text` and commit it.
@@ -146,10 +142,12 @@ def assert_one_shape_pin_row_finding(result, shown: str) -> None:
 
 
 def assert_shape_currency_row(result, shown: str) -> dict:
-    """The doctor printed a report, and its shape-currency row names the
-    refusal `read_pin` raised for the pin."""
+    """The doctor printed an INVALID report, exit 1, and its shape-currency
+    row names the refusal `read_pin` raised for the pin."""
     no_traceback(result)
-    assert result.returncode in (1, 3), result.stdout + result.stderr
+    assert result.returncode == 1, result.stdout + result.stderr
+    verdict = json.loads(result.stdout)["verdict"]
+    assert verdict.startswith("INVALID"), verdict
     rows = rows_of(result)
     row = rows["shape-currency"]
     assert row["status"] == "FINDING", row
@@ -259,9 +257,9 @@ def test_the_doctor_reports_it_in_the_shape_currency_row(project, value,
     plain = run_script(DOCTOR, "--root", str(project))
     no_traceback(plain)
     assert f"`files:` is {shown}, not a list" in plain.stdout, plain.stdout
+    assert plain.returncode == 1, plain.stdout + plain.stderr
     last = [line for line in plain.stdout.splitlines() if line.strip()][-1]
-    assert VERDICT.match(last), plain.stdout
-    assert not last.startswith("COMPLIANT"), last
+    assert last.startswith("INVALID"), plain.stdout
 
 
 @pytest.mark.parametrize("value, shown", NOT_A_LIST)

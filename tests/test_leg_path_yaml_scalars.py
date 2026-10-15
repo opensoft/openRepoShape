@@ -47,7 +47,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, ORG, REPO, SCAFFOLD, git,
+from conftest import (ADOPT, ORG, REPO, SCAFFOLD, cloned_just_pushed, git,
                       make_source_repo, resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -519,11 +519,8 @@ def test_a_lookalike_scaffolds_clones_and_bootstraps(tmp_path):
                         "--local-remote-dir", str(tmp_path / REMOTES),
                         "--work-dir", str(tmp_path / WORK))
     assert result.returncode == 0, result.stderr + result.stdout
-    clone = tmp_path / "clone"
-    cloned = git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-                 str(tmp_path / REMOTES / "Northwind.git"), str(clone),
-                 cwd=tmp_path, check=False)
-    assert cloned.returncode == 0, cloned.stderr
+    clone = cloned_just_pushed(tmp_path / REMOTES / "Northwind.git",
+                               tmp_path / "clone")
     manifest = load_yaml(clone / "project.yaml")
     assert [leg["path"] for leg in manifest["legs"]] == [".", spec_path,
                                                          code_path]

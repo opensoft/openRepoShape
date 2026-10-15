@@ -60,8 +60,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, clear_ambient_pin_sources,
-                      git, make_source_repo, run_script, write_plan)
+from conftest import (ADOPT, REPO, clear_ambient_pin_sources,
+                      cloned_just_pushed, git, make_source_repo, run_script,
+                      write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from shape_materialize import (  # noqa: E402
@@ -1828,9 +1829,7 @@ def split_modes(source: Path) -> dict:
 
 def bootstraps(source: Path, base: Path) -> None:
     """A recursive clone of the split, and its bootstrap, exit 0."""
-    clone = base / PROJECT
-    git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b", BRANCH,
-        str(source), str(clone), cwd=base)
+    clone = cloned_just_pushed(source, base / PROJECT, BRANCH)
     booted = run_script(clone / SCRIPTS / "bootstrap.py", cwd=clone)
     assert booted.returncode == 0, booted.stderr + booted.stdout
 
