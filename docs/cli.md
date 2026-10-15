@@ -112,7 +112,8 @@ usage: setup-project.py [<Project>] [options] [-- <extra scaffold flags>]
 Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
-Anything after `--` is passed straight through to scaffold-project.py.
+Anything after `--` is passed straight through to scaffold-project.py. A
+`--dry-run` there ends this run at the plan, creating nothing.
 ```
 
 ### `openRepoShape`
@@ -246,7 +247,8 @@ usage: setup-project.py [<Project>] [options] [-- <extra scaffold flags>]
 Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
-Anything after `--` is passed straight through to scaffold-project.py.
+Anything after `--` is passed straight through to scaffold-project.py. A
+`--dry-run` there ends this run at the plan, creating nothing.
 ```
 
 ### `scaffold-project.py`
@@ -266,6 +268,7 @@ usage: scaffold-project.py [-h] --org ORG --project PROJECT [--id ID]
                            [--pin openProduct@COMMIT]
                            [--referent-chain openLayer,openProduct]
                            [--pin-source PIN_SOURCE] [--work-dir WORK_DIR]
+                           [--no-next-steps]
 
 Create a project's three repositories in the shape this standard describes.
 
@@ -359,6 +362,10 @@ options:
                         network)
   --work-dir WORK_DIR   where the working trees are built (default: a
                         temporary directory)
+  --no-next-steps       leave out the closing NEXT STEPS (the clone, the cd
+                        and `make bootstrap`): setup-project.py passes it,
+                        because it runs those steps itself next. `Working
+                        trees are at` still prints.
 ```
 
 ### `adopt-project.py`

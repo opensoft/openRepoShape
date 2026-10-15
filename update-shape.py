@@ -1939,9 +1939,14 @@ def accept_local_exit(path: str) -> str:
     A DISPLAY-ONLY ADDITION, not folded into `row.detail` itself: the same
     field also renders inside `apply`'s `update-conflict` refusal, whose
     wording an unaccepted `both` must keep exactly as it was.
+
+    THE PATH IS QUOTED (#532), though nothing pastes it for the person: it is
+    the flag they type next, and a path with a space is one argument only
+    when it is quoted, as the NEXT's every word is.
     """
     return (f". Merge it by hand, commit it, then `apply --accept-local "
-            f"{path}` so the row is recomputed from what you merged")
+            f"{shlex.quote(path)}` so the row is recomputed from what you "
+            "merged")
 
 
 def keep_local_exits(path: str) -> str:
@@ -1954,11 +1959,12 @@ def keep_local_exits(path: str) -> str:
     and the refusal that asks the human never fired. Brett Heap ruled on
     2026-10-13, "Stop pre-filling it": the NEXT leaves the flag out, and the
     row's detail may still name it, as `accept_local_exit` does for `both`.
-    Display only, for the reason that function gives.
+    Display only, for the reason that function gives, and QUOTED like it
+    (#532).
     """
     return (". Whether the project keeps the edit is the human's decision: "
             "revert it, carry it upstream, or, on their word, `apply "
-            f"--accept-local {path}`")
+            f"--accept-local {shlex.quote(path)}`")
 
 
 def report(root: Path, upstream: Upstream, pinned: str, target: str,
@@ -2133,11 +2139,14 @@ def cmd_check(args) -> int:
             # Spelled out, but deliberately NOT folded into the NEXT command:
             # a file the standard has added lands in a project because a human
             # named it, and a command line that names it for them is the tool
-            # deciding.
+            # deciding. Each path is QUOTED (#532): `--add notes/shape
+            # notes.md` pasted as printed reaches `apply` as `--add
+            # notes/shape` and an argument argparse refuses.
             print("ADDED UPSTREAM: the standard has gained these since this "
                   "pin, and `apply` writes none of them unless it is told to, "
                   "one path at a time — "
-                  + " ".join(f"--add {add.path}" for add in offered))
+                  + " ".join(f"--add {shlex.quote(add.path)}"
+                             for add in offered))
         # QUOTED WHOLE, THE LANE'S TRAILER INCLUDED, AND NEVER AN
         # `--accept-local` (#501): see `apply_command`.
         print("NEXT  " + apply_command(root, upstream.label, target))
@@ -2467,10 +2476,12 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
                 "update-branch-exists",
                 f"--branch {branch} already exists and is not the current "
                 f"branch ({checked_out})",
-                "Remediation: check out that branch first — `git -C "
-                f"{root} checkout {branch}` — if that is where the hand "
-                "merge AGENTS.md describes was already committed, or pass "
-                "a different --branch to create a new one.")
+                # THE ROOT IS QUOTED (#532), by `_by_hand`: bare, a root under
+                # `my projects/` pasted as `git -C .../my`, exit 128.
+                "Remediation: check out that branch first — "
+                f"`{_by_hand(root, 'checkout', branch)}` — if that is where "
+                "the hand merge AGENTS.md describes was already committed, "
+                "or pass a different --branch to create a new one.")
         ledger.step = f"creating the branch {branch}"
         ledger.new_branch(branch)
     if added:
@@ -3569,6 +3580,8 @@ def _refuse_local_drift(rows: list[Row], accepted: set) -> None:
     """
     unaccepted = [row for row in rows
                   if row.state == LOCALLY_MODIFIED and row.path not in accepted]
+    # Each `--accept-local` path is QUOTED (#532), so the flag a person types
+    # next carries a path with a space whole.
     if unaccepted:
         raise Refusal(
             "update-local-drift",
@@ -3579,7 +3592,8 @@ def _refuse_local_drift(rows: list[Row], accepted: set) -> None:
               "which is the fork recorded as the standard.",
             "Remediation: revert each edit, or carry it upstream, or — "
             "having decided the project keeps it — re-run with "
-            + " ".join(f"--accept-local {row.path}" for row in unaccepted))
+            + " ".join(f"--accept-local {shlex.quote(row.path)}"
+                       for row in unaccepted))
 
 
 def _note_untaken_additions(additions: list[Addition],
@@ -3592,11 +3606,13 @@ def _note_untaken_additions(additions: list[Addition],
     the human which files the standard has gained and what to pass to take
     one. An addition the root already HAS a file at is silent here for the
     reason `Addition` gives, and one under a file the root keeps says what
-    is in the way rather than name an `--add` that is refused (#285).
+    is in the way rather than name an `--add` that is refused (#285). The
+    path it tells a person to pass is QUOTED (#532).
     """
     for add in additions:
         if not add.present and add not in taking:
-            take = (f"pass --add {add.path}" if add.blocked is None else
+            take = (f"pass --add {shlex.quote(add.path)}"
+                    if add.blocked is None else
                     f"{add.blocked} in this root is not a directory, so "
                     f"--add refuses it until {add.blocked} is moved")
             dead = f" ({add.left_dead})" if add.left_dead else ""
