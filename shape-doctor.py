@@ -383,11 +383,13 @@ try:
     #: string half of the one question that rule cannot finish on its own --
     #: which spelling names a path on a disk -- and `same_repository_here`
     #: below is this file's half, because the symlink is on THIS machine
-    #: (#157).
+    #: (#157). `url_repository` is the one reading of an `origin` that
+    #: `adopt-project.py plan` takes `--org` from, imported here for the same
+    #: reason, in place of a copy of `plan`'s regex (`origin_org`, #521).
     from repo_shape import (  # noqa: E402
         COMMIT_RE, NamingPolicy, PYTHON, Refusal, accepts_role, git_out,
         load_yaml, recorded_gitlink, redacted, remote_local_path,
-        resolved_remote, same_repository,
+        resolved_remote, same_repository, url_repository,
     )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
@@ -749,6 +751,19 @@ def quote_arg(value, platform: str | None = None, *,
     itself is still this function's alone -- one place that knows the
     apostrophe is doubled, rather than a second copy of the rule beside the
     one that needs it.
+
+    A WORD THAT BEGINS WITH `=` IS QUOTED IN `sh`'S DIALECT (#532). zsh, the
+    login shell macOS ships, expands a bare `=word` to the path of the
+    command `word` (its EQUALS option, on by default): `zsh -f -c 'echo =ls'`
+    prints `/usr/bin/ls`, and `=x` stops the line with `x not found`. bash
+    and dash read it as itself, and `=` anywhere but the front is itself to
+    every shell, so only a leading one is quoted. It stood in
+    `UNQUOTED_POSIX` as an ordinary character, and reached a line only as a
+    value that starts with one (a branch named `=x`), which is the gap #460
+    named. `repo_shape.shell_quoted` quotes it already (#486, #507), and
+    `tests/test_family_printed_quoting.py` holds the two quoters to one
+    answer. PowerShell's dialect is NOT changed: it expands no `=word`, so
+    `UNQUOTED_NT` keeps its bare `=`, as in any other place in a word.
     """
     # ASCII first, so the alphabet check and the quoting below it both see
     # what `Row.__init__` will (Copilot, PR #102); see the docstring above.
@@ -756,9 +771,9 @@ def quote_arg(value, platform: str | None = None, *,
     windows = (os.name if platform is None else platform) == "nt"
     # `.fullmatch`, not `.match`: a pattern ending in `$` still matches just
     # before a trailing newline, so `.match` alone would call "Atlas\n" bare
-    # (Copilot, PR #102).
+    # (Copilot, PR #102). And a leading `=` is never bare for `sh` (#532).
     if not always and (UNQUOTED_NT if windows else UNQUOTED_POSIX).fullmatch(
-            text):
+            text) and (windows or not text.startswith("=")):
         return text
     if windows:
         # PowerShell's verbatim string: nothing inside is expanded, and the
@@ -3264,10 +3279,14 @@ def pin_reads_at(ctx: Context, rev: str, pin: str = SHAPE_PIN) -> bool:
     return pin_at(ctx, rev, pin) is not None
 
 
-def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN):
+def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN,
+           whole: bool = False):
     """What the pin `rev` holds reads as, by `read_pin`'s own checks (#237),
     or None where it does not read: for the shape pin the paths its
     `files:` rows name, never empty, and for any other file the mapping.
+    `whole` asks for the shape pin as `check_pin` hands it back, `(the pin,
+    its rows)`, which is how `taken_with_the_pin` reads the commit each
+    side of a merge names through the same checks (#547).
 
     READ BEFORE IT IS NAMED: a NEXT that puts back a pin out of history
     must name one that reads. Rolling back to a pin that is broken too
@@ -3308,10 +3327,10 @@ def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN):
         data = us.parse_yaml(text)
         if pin != SHAPE_PIN:
             return data if isinstance(data, dict) else None
-        _pin, rows = us.check_pin(data, f"{rev}:{SHAPE_PIN}", ctx.root)
+        read, rows = us.check_pin(data, f"{rev}:{SHAPE_PIN}", ctx.root)
     except (Refusal, us.YamlError, ValueError):
         return None
-    return [row.path for row in rows]
+    return (read, rows) if whole else [row.path for row in rows]
 
 
 def pin_restore(ctx: Context, detail: dict | None = None,
@@ -3327,27 +3346,44 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     these that applies decides, as `detail["restore"]`:
 
       unmerged     a merge left the pin conflicted. `checkout --ours`, or
-                   `--theirs` where only that side holds a pin, of THE PIN
-                   ALONE, which only a tool writes, so one side taken whole
-                   is one tool's output.
-                   A copy is never named with it (#485), though a merge of
-                   two `update-shape.py apply` runs conflicts in the two
-                   together: a copy can hold an edit of the project, kept by
-                   `apply --accept-local` on one side, and taken whole the
-                   other side's copy dropped it, the hunks git merged
-                   cleanly with it, and the doctor then said COMPLIANT. The
-                   copies are the files the taken side's pin has `files:`
-                   rows for, their collision copies included -- those rows
-                   and not this standard's copy lists, since a file the pin
-                   has no row for is not a shape copy, though the lists
-                   name its path (review of PR #358). Where one of them is
-                   conflicted the `why` says a person merges it by hand,
-                   keeping the hunks git merged, as a copy conflicted on its
-                   own is merged, and that `update-shape.py apply
-                   --accept-local` on a copy merged unlike the pin re-pins
-                   it from the merge. The `shape currency` row never names
-                   it (#501), and the `apply` it names is refused and asks
-                   for it: `update-local-drift` where `check` calls the
+                   `--theirs` where only that side holds a pin, of THE PIN,
+                   which only a tool writes, so one side taken whole is one
+                   tool's output, and of no copy but one PROVED to be tool
+                   output on both sides (#547).
+                   A copy either side may have edited is never named with it
+                   (#485), though a merge of two `update-shape.py apply`
+                   runs conflicts in the two together: a copy can hold an
+                   edit of the project, kept by `apply --accept-local` on one
+                   side, and taken whole the other side's copy dropped it,
+                   the hunks git merged cleanly with it, and the doctor then
+                   said COMPLIANT. The copies are the files the taken side's
+                   pin has `files:` rows for, their collision copies
+                   included -- those rows and not this standard's copy
+                   lists, since a file the pin has no row for is not a shape
+                   copy, though the lists name its path (review of PR #358).
+                   PROVE AND TAKE (Brett Heap, 2026-10-14T23:54:30Z, #547):
+                   a conflicted copy whose two stages are each, byte for
+                   byte, the standard's own file at the commit THAT side's
+                   pin names, in one mode, holds no edit of the project on
+                   either side. It is pure tool output, so the command
+                   names it beside the pin and takes it whole, and the
+                   `why` says so; `taken_with_the_pin` makes the proof, and
+                   `detail["taken_with_the_pin"]` lists what it proved.
+                   Every other conflicted copy is still a person's: one side
+                   that differs, a mode the two sides disagree on, a side's
+                   pin naming a commit the checkout this doctor runs from
+                   does not hold, a path the standard does not have at that
+                   commit, a read that fails. So is every copy where that
+                   checkout is a partial clone, where a read can fetch, and
+                   the `why` says so (`partial_clone`). Where
+                   one of them is conflicted the `why` says a person merges
+                   it by hand, keeping the hunks git merged, as a copy
+                   conflicted on its own is merged, and that
+                   `update-shape.py apply --accept-local` on a copy merged
+                   unlike the pin re-pins it from the merge. The `shape
+                   currency` row never names it (#501), and the `apply` it
+                   names is refused and asks for it: `update-local-drift`
+                   where `check` calls the
                    copy `locally-modified`, as it does with the update
                    side's pin taken, and `update-conflict` where it calls
                    it `both`, as it does with the person's side's pin
@@ -3378,7 +3414,12 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    commit>~1`, the pin as it was before it. The history is
                    walked newest first, and the commit named is the first
                    whose parent holds a pin that reads, so two commits in a
-                   row that each broke it are reached past.
+                   row that each broke it are reached past. A leg pin put
+                   back that names another commit than the root's gitlink
+                   for that leg -- the slip was in the bump's own commit,
+                   whose parent holds the OLD pin -- is still the one to put
+                   back, and the `why` says what comes after it:
+                   `gitlink_left_behind` (#547).
       none         nothing above: no history, a root commit, no git, a walk
                    that meets a parent holding no pin, or goes
                    `PIN_HISTORY_DEPTH` commits back, before a pin that reads.
@@ -3448,15 +3489,16 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     if xy in UNMERGED_STATUS:
         us = ctx.update_shape()
         kind = us.root_kind(root)
-        # `<mode> SP <object> SP <stage> TAB <path>`, one record per stage.
-        stages: dict[str, set] = {}
+        # `<mode> SP <object> SP <stage> TAB <path>`, one record per stage:
+        # `{path: {stage: mode}}`, the mode kept for `taken_with_the_pin`.
+        stages: dict[str, dict] = {}
         listing = git_answer(["ls-files", "-u", "-z"], root, binary=True)
         for record in (listing or b"").split(b"\0"):
             meta, _tab, path = record.partition(b"\t")
             if path:
-                stages.setdefault(path.decode("utf-8", "replace"),
-                                  set()).add(meta.rsplit(b" ", 1)[-1])
-        pin_stages = stages.get(pin, set())
+                stages.setdefault(path.decode("utf-8", "replace"), {})[
+                    meta.rsplit(b" ", 1)[-1]] = meta.split(b" ", 1)[0]
+        pin_stages = stages.get(pin, {})
         side, stage = (("--ours", b"2") if b"2" in pin_stages else
                        ("--theirs", b"3") if b"3" in pin_stages else
                        (None, None))
@@ -3465,18 +3507,35 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                     f"{what} whole" if b"3" in pin_stages and side == "--ours"
                     else f"only that side of the merge holds a {what}. Take "
                     "it whole")
-            lines, copies = [], []
+            lines, copies, taken, partial = [], [], [], False
             if pin == SHAPE_PIN:
                 lines = sorted(name for name in (kind.manifest, us.README)
                                if name in stages)
                 copies = sorted(name for name in set(
                     pin_at(ctx, f":{stage.decode()}") or ())
                     if name in stages)
+                # A read of a partial clone can fetch: prove nothing there.
+                partial = bool(copies) and partial_clone(ctx.shape)
+                if not partial:
+                    taken = taken_with_the_pin(ctx, kind, copies, stages)
+                copies = [name for name in copies if name not in taken]
             then, after = ", then finish", ""
+            said = []
+            if taken:
+                if detail is not None:
+                    detail["taken_with_the_pin"] = taken
+                said.append(
+                    f"{' and '.join(taken)} "
+                    + ("are" if len(taken) > 1 else "is")
+                    + " conflicted too and taken whole with the pin: each "
+                    "side holds " + ("them" if len(taken) > 1 else "it")
+                    + " byte for byte as the standard wrote "
+                    + ("them" if len(taken) > 1 else "it") + " at the "
+                    "commit that side's pin names, so neither side holds an "
+                    "edit of the project")
             if lines or copies:
                 if detail is not None:
                     detail["left_for_a_person"] = sorted(lines + copies)
-                said = []
                 if lines:
                     said.append(
                         f"{' and '.join(lines)} "
@@ -3495,6 +3554,8 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                         "taken whole: a person merges "
                         + ("each" if len(copies) > 1 else "it")
                         + " by hand, keeping the hunks git merged")
+                    if partial:
+                        said.append(PARTIAL_CLONE_WHY)
                     after = (". Where a copy as merged differs from the pin, "
                              "update-shape.py apply --accept-local on that "
                              "copy re-pins it from the merge. The shape "
@@ -3505,9 +3566,11 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                              "check calls it both, as update-conflict, and "
                              "either refusal asks for --accept-local on that "
                              "path")
+            if said:
                 then = ". " + ". ".join(said) + ". Then finish"
             return "unmerged", (
                 f"{git_c} checkout {side} -- {quote_arg(pin)}"
+                + "".join(f" {quote_arg(name)}" for name in taken)
             ), (f"{note} and never a hand-merged {what}{then} the merge as "
                 f"git says and run this doctor again{after}")
     elif pin_reads_at(ctx, "HEAD", pin):
@@ -3556,8 +3619,170 @@ def pin_restore(ctx: Context, detail: dict | None = None,
             f"{git_c} checkout {quote_arg(before)} -- {quote_arg(pin)}"
         ), (f"the {what} as it was before {breaking[:12]}, the commit that "
             f"broke it, and the newest {what} in its history that reads. "
-            f"Commit that rather than editing the {what}")
+            f"Commit that rather than editing the {what}"
+            + gitlink_left_behind(ctx, before, pin))
     return "none", None, None
+
+
+def taken_with_the_pin(ctx: Context, kind, copies: list,
+                       stages: dict) -> list:
+    """Which of `copies`, conflicted beside the shape pin, `pin_restore`
+    takes whole with it: those PROVED to be pure tool output on both sides
+    of the merge, in `copies`' order (#547). `stages` is `{path: {stage:
+    mode}}`, as `pin_restore` reads `ls-files -u`.
+
+    PROVE AND TAKE, Brett Heap's ruling on #460's L2-8 (2026-10-14T23:54:30Z).
+    Before #496 one NEXT took every conflicted copy whole with the pin,
+    right for a copy nobody edited and wrong for one kept by `apply
+    --accept-local`. Since #496 (#485) every one went to a person, the
+    copies two `apply` runs to different targets wrote included, and a hand
+    merge that kept both sides of a hunk, then `--accept-local`, pinned a
+    stale line as the project's own edit, so every later upgrade of that
+    copy was a `both`. A side is proved unedited where its stage is, byte
+    for byte, the standard's own file at the commit THAT side's pin names:
+    its own `files:` rows and `commit:`, read by `pin_at` through the
+    checks `read_pin` makes. Where both sides are, the copy is one tool's
+    output either way, and the side the restore takes is the copy that
+    matches the pin it keeps.
+
+    THE MODE IS PART OF THE COPY (review of PR #586). The bytes say nothing
+    of the executable bit, and a project that changed it on one side holds
+    an edit no byte compare sees: taken whole, `--ours` dropped the other
+    side's mode, and the `why` said neither side held an edit. So the two
+    stages must hold one regular-file mode, `one_regular_mode`, and the
+    restore then keeps the mode both sides hold.
+
+    THE STANDARD'S FILE IS `update-shape.py`'s, by its `source_for`, so a
+    pinned path maps to the file `check` compares it with, a collision copy
+    under `shape/` included. And it comes from the checkout this doctor
+    runs from, as AGENTS.md says to run it, read by `git show`: nothing is
+    fetched or cloned. `pin_restore` never asks this of a checkout that is a
+    partial clone (`partial_clone`), where a read fetches what it lacks.
+
+    ANYTHING NOT PROVED STAYS THE HAND MERGE, as before: a stage that
+    differs or is missing, a mode the two sides disagree on, a side's pin
+    that does not read or has no row for the copy, a commit that checkout
+    does not hold, a path the standard does not have at that commit, a read
+    that fails, a checkout that is a partial clone. None of those is a
+    guess this makes.
+    """
+    if not copies:
+        return []
+    us = ctx.update_shape()
+    standard = us.Upstream(ctx.shape, str(ctx.shape))
+    sides = []
+    for number in ("2", "3"):
+        read = pin_at(ctx, f":{number}", whole=True)
+        if read is None:
+            return []
+        held, rows = read
+        sides.append((number, str(held["commit"]).lower(),
+                      {row.path for row in rows}))
+    return [copy for copy in copies
+            if one_regular_mode(stages.get(copy, {}))
+            and all(as_the_standard_wrote_it(ctx, us, kind, standard, copy,
+                                            *side) for side in sides)]
+
+
+#: The modes `ls-files -u` gives a regular file's stage, executable or not.
+REGULAR_FILE_MODES = (b"100644", b"100755")
+
+
+def one_regular_mode(held: dict) -> bool:
+    """Whether the stages the two sides of a merge hold for a copy agree on
+    ONE regular-file mode (#547, review of PR #586). `held` is that copy's
+    `{stage: mode}`. A side with no stage is not a mode it disagrees on:
+    `as_the_standard_wrote_it` finds no stage to read and proves nothing."""
+    modes = {held[number] for number in (b"2", b"3") if number in held}
+    return len(modes) == 1 and modes <= set(REGULAR_FILE_MODES)
+
+
+#: What the `why` adds where `pin_restore` proved no copy, because the
+#: checkout of the standard is a partial clone (#547).
+PARTIAL_CLONE_WHY = (
+    "The checkout of the standard this doctor runs from is a partial clone, "
+    "which fetches what it lacks on a read, so nothing was read from it to "
+    "prove a copy unedited")
+
+
+def partial_clone(shape: Path) -> bool:
+    """Whether the checkout of the standard at `shape` is a partial clone:
+    its config names a promisor remote or a partial-clone filter (#547).
+
+    A READ THERE CAN FETCH. `git show` of a blob a `--filter` clone left
+    out asks its promisor remote for it, and Brett Heap's ruling for
+    `taken_with_the_pin` is never to fetch, clone or touch the network. So
+    `pin_restore` proves no copy there and every one stays the hand merge.
+    The config is only read, which fetches nothing and writes nothing.
+    """
+    return bool(git_answer(["config", "--get-regexp", r"^(extensions\."
+                            r"partialclone|remote\..*\.promisor)$"], shape))
+
+
+def as_the_standard_wrote_it(ctx: Context, us, kind, standard, copy: str,
+                             number: str, commit: str, rows: set) -> bool:
+    """Whether index stage `number` holds `copy` byte for byte as the
+    standard wrote it at `commit`, the commit that side's pin names, whose
+    `files:` rows are `rows` (#547). False wherever any of it cannot be
+    read: `taken_with_the_pin` takes nothing it has not proved."""
+    if copy not in rows:
+        return False
+    held = git_answer(["cat-file", "blob", f":{number}:./{copy}"], ctx.root,
+                      binary=True)
+    if held is None:
+        return False
+    try:
+        source = us.source_for(copy, standard, commit, kind)
+        wrote = standard.blob(commit, source) if source else None
+    except (OSError, ValueError):
+        return False
+    return wrote is not None and wrote == held
+
+
+def gitlink_left_behind(ctx: Context, rev: str, pin: str) -> str:
+    """What the `why` adds where `pin_restore` puts back a LEG pin out of
+    history, from `rev`, that names another commit than the root's gitlink
+    for that leg; otherwise nothing (#547, #460's L2-9).
+
+    THE BUMP'S OWN COMMIT. `bump-leg.py --to X` moves the gitlink, the pin
+    and every workflow reference in one commit; amend a slip into that
+    commit's pin and the commit before it holds the pin for the OLD leg
+    commit. Putting that pin back is still right, since it is the newest
+    one that reads, but once it is committed the doctor says DRIFTED, the
+    gitlink at X and the pin at the old commit. `with_gitlink_repairs`
+    then names the closing step, a `bump-leg.py` line, in the `pins` row's
+    reason, and a `bump-leg.py` run before the pin is committed is refused
+    `bump-leg-root-dirty`. So the sentence says commit it, then run that
+    line, and the NEXT stays the one command it was (#548's rule: every
+    addition goes in `why`).
+
+    THE GITLINK THE `pins` ROW READS, `recorded_gitlink` -- the index
+    first, then HEAD -- since that row is the one the sentence sends the
+    reader to: in a tree whose index holds what HEAD does, HEAD's gitlink.
+    Nothing is said where either commit cannot be read, or for the shape
+    pin, which has no gitlink.
+    """
+    if pin == SHAPE_PIN:
+        return ""
+    for leg in ctx.legs():
+        role = str(leg.get("role") or "")
+        path = str(leg.get("path") or "")
+        if not role or not path or pin != f"contracts/{role}-pin.yaml":
+            continue
+        commit = str((pin_at(ctx, rev, pin) or {}).get("commit")
+                     or "").lower()
+        try:
+            gitlink = recorded_gitlink(ctx.root, path)
+        except (OSError, ValueError):
+            return ""
+        if not COMMIT_RE.match(commit) or not gitlink or gitlink == commit:
+            return ""
+        return (f". That pin names {commit[:12]} and the root's gitlink for "
+                f"{path} is {gitlink[:12]}, so commit it, then run the "
+                f"bump-leg.py line the pins row names for {path}: --to the "
+                f"gitlink's {gitlink[:12]} keeps the move, and --to the "
+                f"pin's {commit[:12]} undoes it")
+    return ""
 
 
 def declared_pins(ctx: Context) -> set:
@@ -3719,7 +3944,10 @@ def unreadable_next(ctx: Context, unreadable: list,
     person. That copy's case is `unmerged`, the one it has once the pin
     reads, and not `project`, and `detail` gets the `left_for_a_person`
     the `shape currency` row's has, so both rows say the same of the same
-    command.
+    command. A copy that command takes whole with the pin, proved tool
+    output on both sides (#547), is `unmerged` too, and `detail` gets the
+    `taken_with_the_pin` that row's has: the command overwrites it, and
+    `project` would say git was not asked about a file the NEXT puts back.
     """
     restore: dict[str, str] = {}
     #: `(command, why)` for each file with a command, in the row's order.
@@ -3734,11 +3962,14 @@ def unreadable_next(ctx: Context, unreadable: list,
         else:
             restore[rel] = "project"
     left = held.get("left_for_a_person", [])
-    for rel in left:
+    taken = held.get("taken_with_the_pin", [])
+    for rel in left + taken:
         if restore.get(rel) == "project":
             restore[rel] = "unmerged"
     if left and detail is not None:
         detail["left_for_a_person"] = left
+    if taken and detail is not None:
+        detail["taken_with_the_pin"] = taken
     command, why = (commands.get(SHAPE_PIN)
                     or next(iter(commands.values()), (None, None)))
     if command is None:
@@ -7009,10 +7240,24 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     rows = detail["members"]
     on_a_branch = detail["on_a_branch"]
     siblings_absent = detail["without_working_clone"]
+    # WHAT `make siblings` DOES WITH A STRANGER IS CONDITIONAL, AND THE WORDS
+    # SAY ON WHAT (#605). Since #578 it asks about the holder's parent folder
+    # before it looks at any member, so it calls this directory WRONG ORIGIN
+    # only from a holder in a folder named after its repository (or in one a
+    # link of that name beside it leads to; the words keep to the shorter,
+    # plainer case); from anywhere else it clones nothing and never reaches
+    # the directory. THE REPOSITORY'S NAME, NOT THE FAMILY'S `name:`: the
+    # rule takes the basename of the holder's `repository:`, and `name:` is a
+    # display name that may differ (`family_folder_name`, measured on a
+    # holder made with `--family Quill --name QuillWorks`). The rule lives in
+    # the holder's pinned `scripts/siblings.py` and is not copied here, where
+    # a copy would drift: the words name the condition, and `make siblings`
+    # itself prints the exact `mv` when it does not hold.
     strangers = [f"{entry['project']}: {ctx.root.parent / entry['project']} "
                  f"is a clone of {entry['other_origin']}, not of "
                  f"{entry['mounted_from']}, so it is not counted as its "
-                 "working clone (`make siblings` calls the same directory "
+                 "working clone (`make siblings`, from a holder in a folder "
+                 "named after its repository, calls the same directory "
                  "WRONG ORIGIN and leaves it exactly as it is)"
                  for entry in rows if entry["other_origin"]]
     if problems:
@@ -7183,11 +7428,27 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     if strangers:
         note += "; " + "; ".join(strangers)
     if siblings_absent:
+        # THE NOTE SAYS WHEN `make siblings` PLACES THEM, NOT THAT IT DOES
+        # (#605). Since #578 it asks about the holder's parent folder before
+        # it clones anything: from one named after the holder's REPOSITORY
+        # (its `repository:`'s basename, not the family's display `name:`,
+        # which `family.py init --name` may make another string), or reached
+        # through a link of that name BESIDE it (`family_link` looks only at
+        # `<grandparent>/<name>`), it places the working clones; from
+        # anywhere else it clones nothing, prints the exact `mv` and exits 1.
+        # The rule is the holder's own, in its pinned `scripts/siblings.py`,
+        # and is not tested here -- a second copy would drift -- so the words
+        # are the same whichever folder this holder is in.
         return Row("members", "members", OK,
                    f"{note}; no working clone beside the holder for "
                    + ", ".join(siblings_absent)
-                   + " (`make siblings` places them; the pinned copy under "
-                     f"{members_dir}/ is detached by design)", None, detail)
+                   + " (`make siblings` places them when the holder is in a "
+                     "folder named after its repository, or in one a link "
+                     "of that name beside it leads to; with the holder "
+                     "anywhere else it clones nothing and prints the `mv` "
+                     "that moves it into such a folder; the pinned copy "
+                     f"under {members_dir}/ is detached by design)", None,
+                   detail)
     return Row("members", "members", OK,
                f"{note}, each with a working clone beside the holder", None,
                detail)
@@ -7373,15 +7634,6 @@ def repo_local_origin_name(root: Path) -> str | None:
     return origin_name(root) if (root / ".git").exists() else None
 
 
-#: The `org/repo` pair `adopt-project.py`'s `_remote_repository` reads off the
-#: end of an `origin` URL, byte for byte: the text after the last two
-#: separators, less a `.git`. It is COPIED, not imported -- `adopt-project.py`
-#: is a script with a hyphen in its name, not a module this file may load --
-#: and `tests/test_shape_doctor.py` runs both over the same URLs, so a change
-#: to one that the other does not follow is a red test.
-_ORIGIN_REPOSITORY_RE = re.compile(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$")
-
-
 def origin_org(root: Path) -> str | None:
     """The organisation `adopt-project.py plan` would read off `root`'s own
     `origin`, or None where it reads none (#545).
@@ -7393,10 +7645,18 @@ def origin_org(root: Path) -> str | None:
     not UTF-8 (git keeps a URL as the bytes it was given, and `plan` reads
     it strictly, so it is no origin there, as `origin_name` and
     `shape_advisory.repository_names` already say of it, #385); or its URL
-    ends in no `org/repo` -- a bare `repo.git`, a Windows path with no `/` in
-    it, a trailing slash. The first is the case #545 was filed for. The
-    other two are the same refusal on the same line, so the line is built
-    from the same reading rather than from "has an origin".
+    ends in no `org/repo` -- a bare `repo.git` -- or is a path in any
+    spelling, which names no repository (#521). The first is the case #545
+    was filed for. The other two are the same refusal on the same line, so
+    the line is built from the same reading rather than from "has an
+    origin".
+
+    THE SAME READING, NOT A COPY OF IT (#521). The pair is
+    `repo_shape.url_repository`, which `adopt-project.py` reads the source's
+    `origin` with too. This file kept a copy of `plan`'s regex, held to it
+    by a test, and when `plan` came to read a url ending `/` and to read no
+    path, the copy would have sent a person whose `origin` is
+    `/srv/git/acme/Atlas.git` to a line `plan` refuses `adopt-no-org`.
 
     ONLY WHEN `root` CARRIES ITS OWN `.git`, for `repo_local_origin_name`'s
     reason: `git remote get-url origin` walks UP to the nearest ancestor
@@ -7408,8 +7668,8 @@ def origin_org(root: Path) -> str | None:
         url = git_out(["remote", "get-url", "origin"], cwd=root)
     except (Refusal, OSError, UnicodeDecodeError):
         return None
-    pair = _ORIGIN_REPOSITORY_RE.search(url)
-    return pair.group(1).split("/")[0] if pair else None
+    pair = url_repository(url)
+    return pair.split("/")[0] if pair else None
 
 
 def check_not_a_root_naming(ctx: Context) -> Row:
@@ -7817,7 +8077,8 @@ def check_the_way_in(ctx: Context) -> Row:
     THE ADOPTION LINE NAMES THE ORGANISATION WHEN IT CANNOT BE READ (#545).
     `adopt-project.py plan` takes `--org` from the source's `origin`, so a
     repository with no `origin` -- or one whose URL names no `org/repo`, or
-    is not UTF-8 -- pasted this line and was refused `adopt-no-org`, exit 2.
+    is not UTF-8, or is a path -- pasted this line and was refused
+    `adopt-no-org`, exit 2.
     `origin_org` asks the question `plan` asks, and where it has no answer
     the line ends `--org <your-org>`, the placeholder this report already
     prints on the scaffold line (`ORG_PLACEHOLDER`). It is a value the

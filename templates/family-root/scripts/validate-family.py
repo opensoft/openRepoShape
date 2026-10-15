@@ -104,14 +104,52 @@ LOCKSTEP = (
     "what this refuses."
 )
 
+#: The findings THE LOCKSTEP RULE is about (#539): a member's gitlink and its
+#: pin out of step, and the pin's digest of the commit they name. The closing
+#: count ends at the rule only where one of them was found.
+LOCKSTEP_CODES = frozenset({"member-gitlink-mismatch",
+                            "member-digest-mismatch"})
+
+#: A branch-name word as `family.py` suggests one (#487, its
+#: `BRANCH_WORD_RE`): dot-separated words of lowercase letters, digits, `_`
+#: and `-`, and no trailing `.lock`. Anything else is said as `member`.
+BRANCH_WORD_RE = re.compile(r"[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+)*")
+
+#: What a remedy says where it cannot name the member's project, a gitlink
+#: whose path gives none: ONE placeholder for the one value, in the branch
+#: and in `--member` alike (#539).
+PROJECT_PLACEHOLDER = "<Project>"
+
+
+def _switch_line(root: Path, verb: str, name: str | None) -> str:
+    """`git -C <holder> switch -c family/<verb>-<member>`: the branch
+    `family.py add`, `bump` and `remove` refuse to commit without, since a
+    holder's tracking branch is refused (`family-on-tracking-branch`, #487),
+    spelled as `family.py` suggests it and the holder's docs show it (#539).
+    `name` is the member's row `id:` for `remove` and its project for
+    `add`, lowercased; None says `PROJECT_PLACEHOLDER`, the one the
+    `--member` beside it says. POSIX-quoted, as every other line this file
+    prints is."""
+    if name is None:
+        return (f"git -C {shlex.quote(str(root))} switch -c "
+                f"family/{verb}-{PROJECT_PLACEHOLDER}")
+    word = name.lower()
+    if not BRANCH_WORD_RE.fullmatch(word) or word.endswith(".lock"):
+        word = "member"
+    return shlex.join(["git", "-C", str(root), "switch", "-c",
+                       f"family/{verb}-{word}"])
+
 
 class Report:
     def __init__(self) -> None:
         self.findings: list[str] = []
         self.notes: list[str] = []
+        #: Each finding's code, in step with `findings` (#539).
+        self.codes: list[str] = []
 
     def finding(self, code: str, detail: str) -> None:
         self.findings.append(f"FINDING {code}: {detail}")
+        self.codes.append(code)
 
     def note(self, text: str) -> None:
         self.notes.append(f"  ok  {text}")
@@ -347,7 +385,11 @@ def _check_member_gitlink(root: Path, path: str, commit: str, project: str,
     """The submodule gitlink this repository records at `path`, against the
     pin — THE LOCKSTEP RULE. Split from `_check_member` for #137. Raises
     `Refusal` when there is no gitlink at all: a row naming a member this
-    repository does not record as a submodule."""
+    repository does not record as a submodule. Its remedy is two lines, the
+    `git switch -c` that `add` needs first (#539) and the `add`, from a
+    checkout of openRepoShape and naming this holder by its path, as the
+    holder's other remedies do: `--family-root .` named the checkout the
+    line runs from."""
     gitlink = recorded_gitlink(root, path)
     if gitlink is None:
         raise Refusal(
@@ -355,9 +397,14 @@ def _check_member_gitlink(root: Path, path: str, commit: str, project: str,
             f"no gitlink (mode 160000) recorded at {path!r}. {project} is "
             f"named in {MANIFEST} but this repository does not record it as a "
             "submodule.",
-            f"Remediation: `{PYTHON} scripts/family.py add --family-root . "
-            f"--member <org>/{project}` mounts and pins it in one commit; a "
-            "row with no submodule is a claim about a tree that is not here.")
+            "Remediation: from a checkout of openRepoShape, the second "
+            "command below mounts and pins it in one commit, on a branch "
+            "other than the holder's tracking branch, which it refuses, so "
+            "the first makes one; a row with no submodule is a claim about a "
+            "tree that is not here.\n"
+            f"    {_switch_line(root, 'add', project)}\n"
+            f"    {PYTHON} scripts/family.py add --family-root "
+            f"{shlex.quote(str(root))} --member <org>/{shlex.quote(project)}")
     if gitlink != commit:
         report.finding(
             "member-gitlink-mismatch",
@@ -707,7 +754,9 @@ def _check_member_ids_unique(root: Path, members: list,
     run a private family's CI falls back to when its members cannot be
     checked out. The remediation is runnable as printed: openRepoShape's
     `scripts/family.py` from a checkout of the standard, this holder's own
-    path, and the later row's own spelling, which `remove` matches exactly.
+    path, and the later row's own spelling, which `remove` matches exactly;
+    and before it the `git switch -c` that `remove` needs on a holder that
+    stands on its tracking branch, which it refuses (#487, #539).
     """
     ids: dict[str, str] = {}
     projects: set[str] = set()
@@ -729,7 +778,10 @@ def _check_member_ids_unique(root: Path, members: list,
             "member-duplicate-id",
             f"{project} and {first} both record id {member_id!r}: one "
             "project is pinned twice. A family pins each project once. From "
-            f"a checkout of openRepoShape, `{PYTHON} scripts/family.py remove "
+            "a checkout of openRepoShape, and on a branch other than the "
+            "holder's tracking branch, which `remove` refuses "
+            f"(`{_switch_line(root, 'remove', member_id)}` makes one), "
+            f"`{PYTHON} scripts/family.py remove "
             f"--family-root {shlex.quote(str(root))} --member "
             f"{shlex.quote(project)}` takes the later row, {project}, out; "
             f"name {first} there instead to keep {project}.")
@@ -1030,6 +1082,9 @@ def _check_gitlinks_named(root: Path, gitlinks: dict[str, str],
     (`member-path-taken`). `add` then names the object store `git rm` leaves
     in `.git/modules`, if it is still there. `--member` is quoted as the
     paths are, its project alone: `<org>` is the operator's to fill in.
+    A BRANCH FIRST (#539): `add` refuses the holder's tracking branch
+    (#487), so the first of the three lines is the `git switch -c` that
+    makes the branch `add` suggests.
     """
     holds = set(gitlinks)
     for path, commit in sorted(gitlinks.items()):
@@ -1055,17 +1110,20 @@ def _check_gitlinks_named(root: Path, gitlinks: dict[str, str],
                 f"that:\n    git rm --cached -- {shlex.quote(path)}")
             continue
         parts = path.split("/")
-        member = (shlex.quote(parts[1]) if len(parts) == 2 and parts[1]
-                  else "<Project>")
+        project = parts[1] if len(parts) == 2 and parts[1] else None
+        member = (PROJECT_PLACEHOLDER if project is None
+                  else shlex.quote(project))
         report.finding(
             "member-gitlink-unnamed",
-            f"{said} {RESTORE_ROW} If it was mounted by hand, take it out "
-            "with the first command below, which refuses while its checkout "
-            f"holds changes and takes its {GITMODULES} section out too, then "
-            "mount it with the second, from a checkout of openRepoShape: "
-            "family.py add writes its row and its gitlink in one commit, and "
-            "names the object store git rm leaves under .git/modules if one "
-            "is still there.\n"
+            f"{said} {RESTORE_ROW} If it was mounted by hand, make a branch "
+            "with the first command below, since family.py add refuses the "
+            "holder's tracking branch, take it out with the second, which "
+            f"refuses while its checkout holds changes and takes its "
+            f"{GITMODULES} section out too, then mount it with the third, "
+            "from a checkout of openRepoShape: family.py add writes its row "
+            "and its gitlink in one commit, and names the object store git "
+            "rm leaves under .git/modules if one is still there.\n"
+            f"    {_switch_line(root, 'add', project)}\n"
             f"    git rm -- {shlex.quote(path)}\n"
             f"    {PYTHON} scripts/family.py add --family-root "
             f"{shlex.quote(str(root))} --member <org>/{member}")
@@ -1260,8 +1318,12 @@ def main(argv: list[str] | None = None) -> int:
     for finding in report.findings:
         print(finding, file=sys.stderr)
     if report.findings:
-        print(f"\n{len(report.findings)} finding(s) in {MANIFEST}. {LOCKSTEP}",
-              file=sys.stderr)
+        # THE LOCKSTEP RULE ONLY WHERE IT APPLIES (#539): a lone
+        # `shape-copy-drift` or `member-duplicate-id` is no gitlink moved
+        # alone.
+        rule = any(code in LOCKSTEP_CODES for code in report.codes)
+        print(f"\n{len(report.findings)} finding(s) in {MANIFEST}."
+              + (f" {LOCKSTEP}" if rule else ""), file=sys.stderr)
         return 1
     print(f"family ok: {manifest.get('name')} ({manifest.get('id')}), "
           f"{len(members)} member(s)")
