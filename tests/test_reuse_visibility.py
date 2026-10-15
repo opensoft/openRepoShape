@@ -108,7 +108,10 @@ def test_an_internal_reused_root_is_inherited_by_the_legs(tmp_path):
                         env=env)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "already internal on GitHub" in result.stdout
-    assert "the two new legs inherit that visibility" in result.stdout
+    # Printed before `_reusable_remotes` asks which legs exist, so it counts
+    # no legs: a re-run may reuse one or both (#542).
+    assert ("a leg this run creates inherits that visibility, and a leg it "
+            "reuses keeps its own") in result.stdout
 
     log = log_path.read_text()
     assert f"repo create {ORG}/{PROJECT}-spec --internal" in log

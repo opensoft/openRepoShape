@@ -34,7 +34,7 @@ one today, and the generator refuses to write this file if one ever appears.
 | [`scaffold-project.py`](#scaffold-projectpy) | Creates the three repositories and writes the pins. What the front door calls once the human has said yes. |
 | [`adopt-project.py`](#adopt-projectpy) | Converts an EXISTING repository into the shape, in place, keeping its name and its history. |
 | [`update-shape.py`](#update-shapepy) | Re-copies a project's shape files from this standard and re-pins them. It never merges. |
-| [`shape-doctor.py`](#shape-doctorpy) | Answers ONE question about ONE repository: is it compliant with this shape, and what is missing. Writes nothing. |
+| [`shape-doctor.py`](#shape-doctorpy) | Answers ONE question about ONE repository: is it compliant with this shape, and what is missing. Writes nothing but a `--placement-plan` file you name. |
 | [`bootstrap`](#bootstrap) | Runs this standard's canonical bootstrap against a project that was never scaffolded, so a repository that elected nothing still has the command. |
 | [`scripts/bump-leg.py`](#scriptsbump-legpy) | Advances ONE leg's pin — the gitlink, `contracts/<role>-pin.yaml` and every workflow `@<sha>` — in one lockstep commit. |
 | [`scripts/family.py`](#scriptsfamilypy) | Creates a FAMILY holder and maintains its member pins. |
@@ -123,6 +123,7 @@ Anything after `--` is passed straight through to scaffold-project.py.
 openRepoShape --install            install (or update) this command into ~/.local/bin
 openRepoShape --preflight          check this MACHINE and stop; creates nothing
 openRepoShape --doctor [<path>] [--json] [--placement-plan <file>]
+                                   diagnose a REPOSITORY against this standard
 openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]
 openRepoShape --help | --version
 
@@ -168,7 +169,7 @@ ran this from, even inside the repository), and moves nothing.
 
 Run beside a checkout of the standard, it uses that one. Run from anywhere
 else, it clones the standard into a temporary directory first and KEEPS it,
-because its NEXT lines name files in it. The report's last line names
+for the NEXT lines that name files in it. The report's last line names
 that directory, which is safe to delete once you are done with those
 commands; under `--json` that line goes to stderr, so stdout stays one JSON
 object.
@@ -765,7 +766,8 @@ options:
   --member ORG/PROJECT  the member's ASSEMBLY ROOT, `<org>/<Project>` — never
                         a leg
   --at COMMIT           pin this 40-hex commit instead of the member's current
-                        tip
+                        tip (an annotated tag's own 40-hex id is peeled to the
+                        commit it names)
   --local-remote-dir LOCAL_REMOTE_DIR
                         resolve the member to a bare repository here instead
                         of github.com (the TEST path)
@@ -798,7 +800,8 @@ options:
   --family-root FAMILY_ROOT
   --member PROJECT
   --to COMMIT           the 40-hex commit to move the gitlink and the pin to,
-                        together
+                        together (an annotated tag's own 40-hex id is peeled
+                        to the commit it names, as `add --at` peels one)
   --trailer "KEY: VALUE"
                         append this `<Key>: <value>` line to the commit this
                         writes; repeatable, kept in the order given

@@ -1101,16 +1101,21 @@ def check_program(args: list[str]) -> None:
                 "command line.")
 
 
-def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
+def run(args: list[str], cwd: Path | None = None, capture: bool = True,
+        env: dict | None = None) -> str:
     check_program(args)
     # UTF-8, whatever the locale: git writes a path as UTF-8, and the locale's
     # codec (ASCII under a POSIX `C` locale, the ANSI code page on Windows)
     # raises `UnicodeDecodeError` out of `subprocess.run` on one it cannot
     # read -- before `CommandFailed` exists, so the person gets a traceback
     # where `REFUSED <step>` and the ruleset hint belong (#217).
+    # `env` names variables set OVER the caller's environment for this one
+    # command, never instead of it: `scaffold-project.py`'s leg probe turns
+    # git's terminal prompt off this way (#542).
     proc = subprocess.run(args, cwd=str(cwd) if cwd else None,
                           capture_output=capture, text=True,
-                          encoding="utf-8", errors="replace", check=False)
+                          encoding="utf-8", errors="replace", check=False,
+                          env={**os.environ, **env} if env else None)
     if proc.returncode != 0:
         raise CommandFailed(args, cwd, proc.returncode,
                             (proc.stderr or "") + (proc.stdout or ""))
