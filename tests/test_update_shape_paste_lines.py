@@ -385,8 +385,8 @@ def test_a_path_that_needs_no_quoting_prints_as_it_always_did(update_shape,
     assert capsys.readouterr().out == (
         "  note     scripts/new-check.py is new upstream; not added; "
         "pass --add scripts/new-check.py\n")
+    rows = [local_edit(update_shape, path)]
     with pytest.raises(Refusal) as raised:
-        update_shape._refuse_local_drift([local_edit(update_shape, path)],
-                                         set())
+        update_shape._refuse_local_drift(rows, set())
     assert raised.value.remediation.endswith(
         "re-run with --accept-local scripts/new-check.py")

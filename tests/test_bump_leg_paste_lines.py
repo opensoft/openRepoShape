@@ -7,7 +7,9 @@ both of its refusals, and the real run ended on `NEXT  git -C <root> push -u
 origin <branch>`, each with `str(root)` concatenated in. Under `sp ace/` the
 line pasted as `git -C .../sp` and an argument nobody wrote, under `it's/` it
 was a quotation nothing closes, and under `d$x/` the shell expanded `$x`
-before git saw it. Only #484's dry-run hint had been quoted, with `shlex`.
+before git saw it. Only #484's dry-run hint had been quoted, with `shlex`. The fourth is the
+`git -C <leg> status` that `_restore_leg_if_moved`'s `LegNotAsFound` tells a
+person to read: the leg's path is a root's, and it was bare too.
 
 THE CLAIM IS MADE THE WAY A SHELL WOULD CHECK IT. Each printed line is read
 back by `shlex.split`, the word-splitting a POSIX shell performs, and must
@@ -38,7 +40,11 @@ from pathlib import Path
 import pytest
 
 from conftest import PROJECT, WINDOWS_SKIP, cloned_just_pushed, git
-from test_bump_leg import WORKING_BRANCH, branched, bump
+# A fixture is used by being named in this module's namespace, which is what
+# the import of `bump_leg_module` is for.
+from test_bump_leg import (  # noqa: F401
+    WORKING_BRANCH, branched, bump, bump_leg_module,
+)
 
 #: Where the advanced spec commit is pushed. Not another module's branch: the
 #: bare remotes are session-scoped, and a second, different commit pushed to
@@ -316,3 +322,87 @@ def test_pasting_the_closing_next_pushes_the_commit_the_run_made(
     assert pasted.returncode == 0, pasted.stderr + pasted.stdout
     assert git("rev-parse", f"refs/heads/{WORKING_BRANCH}",
                cwd=remote).stdout.strip() == committed
+
+
+@pytest.mark.parametrize("branch", ["bump/it's", "wip$x", "fix/a;b"])
+def test_the_closing_next_carries_the_branch_whole(make_root, scaffolded,
+                                                   advanced, branch):
+    """The BRANCH is a word of the line too, and git accepts an apostrophe, a
+    `$` and a `;` in one: bare, the last word of the line would be a
+    quotation nothing closes, an expansion, or the end of the command."""
+    root, _ = make_root("sp ace")
+    branched(root, branch)
+    result = bump(root, scaffolded, advanced)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+    line = next_line(result.stdout)
+    assert words(line) == ["git", "-C", str(root.resolve()), "push", "-u",
+                           "origin", branch]
+    assert words(line)[-1] == branch
+    assert line == shlex.join(["git", "-C", str(root.resolve()), "push", "-u",
+                               "origin", branch])
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("branch", ["bump/it's", "wip$x", "fix/a;b"])
+def test_pasting_the_closing_next_pushes_a_branch_with_a_quote_in_its_name(
+        make_root, scaffolded, advanced, branch):
+    """THE LINE, RUN: the branch that lands in the root's remote is the one
+    the root stood on, whatever it is called."""
+    root, remote = make_root("it's")
+    branched(root, branch)
+    result = bump(root, scaffolded, advanced)
+    assert result.returncode == 0, result.stderr + result.stdout
+    committed = git("rev-parse", "HEAD", cwd=root).stdout.strip()
+
+    pasted = paste(next_line(result.stdout), root.parent)
+    assert pasted.returncode == 0, pasted.stderr + pasted.stdout
+    assert git("rev-parse", f"refs/heads/{branch}",
+               cwd=remote).stdout.strip() == committed
+
+
+# --- the status line of a leg that is not as it was found --------------------
+
+
+def status_remedy(message: str) -> str:
+    """The command between the backticks after `Read`, in
+    `LegNotAsFound`'s message."""
+    found = re.search(r"Read `(.*)` before anything else", message)
+    assert found, message
+    return found.group(1)
+
+
+@pytest.mark.parametrize("name", ROOTS)
+def test_the_status_line_of_a_leg_not_as_found_is_one_command(
+        make_root, bump_leg_module, name):
+    """`_restore_leg_if_moved` reads the leg's `git status` against what it
+    was before the bump and, where it differs, sends the person to read it.
+    The leg's path is a root's: `git -C <leg> status` pasted bare under `sp
+    ace/` was `git -C .../sp` and an argument nobody wrote."""
+    root, _ = make_root(name)
+    leg = root.resolve() / "spec"
+    placement = bump_leg_module.leg_placement(leg)
+    was = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
+
+    with pytest.raises(bump_leg_module.LegNotAsFound) as raised:
+        bump_leg_module._restore_leg_if_moved(leg, placement, was,
+                                              b"not its status")
+    line = status_remedy(str(raised.value))
+    assert words(line) == ["git", "-C", str(leg), "status"]
+    assert line == shlex.join(["git", "-C", str(leg), "status"])
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("name", ROOTS)
+def test_pasting_the_status_line_reads_that_leg(make_root, bump_leg_module,
+                                                name):
+    root, _ = make_root(name)
+    leg = root.resolve() / "spec"
+    was = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
+    with pytest.raises(bump_leg_module.LegNotAsFound) as raised:
+        bump_leg_module._restore_leg_if_moved(
+            leg, bump_leg_module.leg_placement(leg), was, b"not its status")
+
+    pasted = paste(status_remedy(str(raised.value)), root.parent)
+    assert pasted.returncode == 0, pasted.stderr + pasted.stdout
+    assert pasted.stderr == ""

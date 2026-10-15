@@ -1377,10 +1377,12 @@ def _restore_leg_if_moved(submodule: Path, placement: str | None,
                         cwd=submodule).lower() == was.lower()):
         restore_leg(submodule, placement, was)
     if _leg_status(submodule) != status:
+        # QUOTED (#532): the leg's path is a root's, and a person pastes it.
+        where = shlex.join(["git", "-C", str(submodule), "status"])
         raise LegNotAsFound(
             "its `git status` no longer reads as it did before the bump, "
             "which is what a checkout cut off part way leaves behind. Read "
-            f"`git -C {submodule} status` before anything else, and remove "
+            f"`{where}` before anything else, and remove "
             "only what you did not put there yourself.")
 
 

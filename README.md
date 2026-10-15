@@ -138,7 +138,6 @@ py setup-project.py <Project> --org <your-org>
 
 `python setup-project.py <Project> --org <your-org>` is the same command on a
 machine with no `py`: Microsoft Store Python installs `python`, no launcher.
-
 Two commands rather than one pipe, on purpose. Windows PowerShell 5.1 — still
 the default shell on a stock install — re-encodes piped text as ASCII by
 default (that is its `$OutputEncoding`), and writes UTF-16 when `>` redirects
@@ -154,8 +153,9 @@ self-bootstrap outside a checkout. It never needs `make` and never looks for a
 Windows way in; the `openRepoShape` command in step 3 below is a macOS, Linux
 and WSL2 convenience with no Windows twin, because on Windows there is nothing
 to install. Printed commands are quoted for a POSIX shell, so paste them into
-Git Bash or WSL2. Only `shape-doctor.py`'s lines, `family.py`'s `NEXT` lines
-and `setup-project.py`'s family lines are quoted for PowerShell, on Windows.
+Git Bash. Only `shape-doctor.py`'s lines, `setup-project.py`'s family lines
+and `family.py`'s `NEXT`, `switch -c`, `add` and `git rm -r --cached` lines
+are quoted for PowerShell, on Windows.
 
 </details>
 
