@@ -102,10 +102,10 @@ is on no `PATH` by default, and its installer finishes by printing the line that
 puts it there — run that line, or the next shell cannot find `brew`. Then `brew
 install gh`, and `brew install git-filter-repo` only if you are ADOPTING an
 existing repository rather than scaffolding a new one. The stock `/bin/bash` is
-3.2 and is enough: `setup.sh` and the `openRepoShape` command use no syntax
-newer than that, and CI runs the whole suite on `macos-latest`, parsing both
-there with `/bin/bash` itself. That the login shell is zsh changes nothing —
-both entry points are run under `bash` explicitly.
+3.2 and is enough: `setup.sh` and the `openRepoShape` command are written to use
+no syntax newer than that, though CI runs on Linux only and no run of it checks
+them against bash 3.2. That the login shell is zsh changes nothing — both entry
+points are run under `bash` explicitly.
 
 </details>
 
@@ -1114,11 +1114,11 @@ openRepoShape --doctor                 # the repository you are standing in
 ./shape-doctor.py --root ../MedxEHR --json
 ```
 
-It **writes nothing into the repository and fetches nothing from it**, and it
-reimplements nothing: each row is a check this file documents. It compares
-against the checkout it is RUN FROM, so the verdict is offline. Installed, it
-clones the standard into a temporary directory and KEEPS it, because its NEXT
-lines run from there: its last line names it, safe to delete after they run.
+It **writes nothing into the repository but a `--placement-plan` file you name,
+and fetches nothing from it**, and it reimplements nothing: each row is a check
+this file documents. It compares against the checkout it is RUN FROM, so the
+verdict is offline. Installed, it KEEPS its temporary clone of the standard for
+the NEXT lines naming it: its last line names it, safe to delete after they run.
 
 For an assembly root the rows are **naming** (this standard's own
 `contracts/repository-naming.yaml`), **manifest** and **pins** (the project's
