@@ -472,7 +472,7 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 26629e7a6f84909034e588ccc3baed55ed4aa905 -->
 
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
 
@@ -609,7 +609,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 26629e7a6f84909034e588ccc3baed55ed4aa905 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -721,8 +721,10 @@ sudo dnf install gh</code></pre></div>
           <code>py setup-project.py --preflight</code>, <code>winget install --id Git.Git -e</code>
           for <code>git</code>: a run refuses a missing <code>git</code> before its preflight starts.
           There is no <code>openRepoShape</code> command to install in PowerShell: that two-liner
-          IS the Windows way in there. In Git Bash, the bash that Git for Windows installs, the
-          one-line install and the <code>openRepoShape</code> command are supported, and CI tests them there.</p>
+          IS the Windows way in there. Git Bash, the bash that Git for Windows installs, runs the
+          <code>openRepoShape</code> command and the one-line install, and CI tests both there, but
+          for a typed <code>yes</code>: CI has no terminal, and in Git Bash the preflight that the
+          one-line install ends with cannot take one, so none of its offers can be accepted there.</p>
         </div>
 
       </div>
@@ -965,7 +967,8 @@ sudo dnf install gh</code></pre></div>
           <code>yes</code>, at the same prompt: <code>Type yes to continue:</code>. <code>install.sh</code>
           asks nothing before its own two acts, because running it is your act: it places the
           command and installs <code>git-filter-repo</code> with <code>pipx</code> where it can, and itself
-          never runs <code>sudo</code>. The preflight it ends with asks before each offer, as above.</li>
+          never runs <code>sudo</code>. The preflight it ends with asks before each offer, as above;
+          in Git Bash it can take no <code>yes</code>, so it installs nothing.</li>
           <li><code>--yes</code> skips the scaffold question only. It does not answer an install
           offer, <code>gh auth login</code> or <code>gh auth setup-git</code>.</li>
           <li>With no terminal attached there is no offer at all.</li>
@@ -1037,7 +1040,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 26629e7a6f84909034e588ccc3baed55ed4aa905 -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1072,7 +1075,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 26629e7a6f84909034e588ccc3baed55ed4aa905 -->
 
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
 
@@ -1130,7 +1133,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 26629e7a6f84909034e588ccc3baed55ed4aa905 -->
 
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
 
@@ -1366,7 +1369,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 26629e7a6f84909034e588ccc3baed55ed4aa905 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1663,7 +1666,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob aff4aef6d9a5ab50db55cbd835ea4516ff08da24 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 26629e7a6f84909034e588ccc3baed55ed4aa905 -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 

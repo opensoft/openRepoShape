@@ -196,9 +196,11 @@ jobs:
 
       # GIT BASH, OR THIS JOB FAILS HERE (#585). The suites of `openRepoShape`
       # and `install.sh` run under Git for Windows' own bash, which
-      # `tests/conftest.py` finds beside the git on PATH (`BASH`), never as
-      # the `bash` PATH names first: on this image that can be System32's
-      # WSL launcher. Where it finds none they SKIP, and a skip here would
+      # `tests/conftest.py` finds beside the git on PATH (`BASH`), never by
+      # name: a bare `bash` runs System32's WSL launcher, which CreateProcess
+      # searches before PATH, and the `bash` PATH names first on this image,
+      # `Git\bin\bash.exe`, puts Git's real `curl` ahead of the suites'
+      # fake. Where it finds none they SKIP, and a skip here would
       # make README's Git Bash sentence a claim again, so this step refuses
       # first and prints the bash the suite will run.
       - name: Git Bash is the bash the launcher and installer suites run

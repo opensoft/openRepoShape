@@ -154,8 +154,8 @@ preflight, the same naming check, the same plan, the same one `yes`, the same
 self-bootstrap outside a checkout. It never needs `make` and never looks for a
 `python3` — it runs the interpreter that started it. That two-liner IS the
 Windows way in from PowerShell, which has no twin of the `openRepoShape`
-command in step 3 below. In Git Bash, the bash that Git for Windows installs,
-the one-line install and that command are supported, and CI tests them there.
+command in step 3 below. Git Bash runs that command and step 3's one line,
+tested in CI but for a typed `yes`, which its preflight cannot take there.
 
 </details>
 
@@ -237,8 +237,8 @@ and no login. Its command is PINNED to the release tag, recorded in
 tag, not at main. It installs `git-filter-repo` with `pipx` where it can, or
 prints the command, and ends with `openRepoShape --preflight`. `install.sh`
 itself never runs `sudo`; the preflight it ends with offers what is missing,
-each behind a typed `yes` at your terminal. `| bash -s -- v1.0.1` names a
-release; the same line again upgrades.
+each behind a typed `yes` at your terminal; in Git Bash it can take none.
+`| bash -s -- v1.0.1` names a release; the same line again upgrades.
 
 By hand, the same command at main, which records no ref and follows main:
 

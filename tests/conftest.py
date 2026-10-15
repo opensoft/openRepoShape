@@ -310,10 +310,13 @@ def git_bash_session(monkeypatch):
     """
     if GIT_FOR_WINDOWS is None:
         return
+    # Git for Windows on ARM64 ships `clangarm64` where x64 has `mingw64`.
+    msystem = "clangarm64" if (GIT_FOR_WINDOWS / "clangarm64").is_dir() \
+        else "mingw64"
     monkeypatch.setenv("PATH", os.pathsep.join([
-        str(GIT_FOR_WINDOWS / "mingw64" / "bin"),
+        str(GIT_FOR_WINDOWS / msystem / "bin"),
         str(GIT_FOR_WINDOWS / "usr" / "bin"), os.environ.get("PATH", "")]))
-    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    monkeypatch.setenv("MSYSTEM", msystem.upper())
 
 
 def rmtree(path: Path) -> None:

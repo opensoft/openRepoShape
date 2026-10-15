@@ -925,6 +925,10 @@ def test_the_fetched_setup_sh_lands_in_a_workdir_that_still_exists(offline_githu
                    + result.stdout + result.stderr)
     ran_in, forwarded = match.group(1), match.group(2).split()
     assert "--preflight" in forwarded, forwarded
+    # The directory it was made in is still there, so the line after this
+    # one reads a path this interpreter can open, and cannot pass on one it
+    # cannot: `/tmp/...` read as a Windows path names no directory at all.
+    assert native_path(ran_in).parent.is_dir(), ran_in
     assert not native_path(ran_in).exists(), (
         f"{ran_in} outlived the command; the EXIT trap did not fire")
 
@@ -1278,10 +1282,16 @@ def test_a_link_made_with_ln_s_reads_the_record_and_a_copy_follows_main(
     `winsymlinks:nativestrict` (#585), which makes a Windows symlink. A copy
     has no record beside it, so it follows main and `--version` says so;
     a link, made anywhere else or with that setting, reads the record of
-    the command it leads to. `$MSYS` means nothing off Windows."""
+    the command it leads to. `$MSYS` means nothing off Windows. A `$MSYS`
+    of the caller's own is dropped first, so the default is the default;
+    the setting, like every symlink test here, needs Windows' right to make
+    a symlink (Developer Mode, or an elevated shell)."""
     _result, installed = install_at(tmp_path, PINNED)
     link = tmp_path / "ors"
-    env = dict(os.environ, **({"MSYS": msys} if msys else {}))
+    env = {name: value for name, value in os.environ.items()
+           if name != "MSYS"}
+    if msys:
+        env["MSYS"] = msys
     made = subprocess.run([BASH, "-c", 'ln -s "$1" "$2"', "-",
                            bash_path(installed), bash_path(link)],
                           capture_output=True, text=True, check=False,
