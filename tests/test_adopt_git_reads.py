@@ -47,17 +47,22 @@ from repo_shape import load_yaml  # noqa: E402
 #: and no UTF-8.
 LATIN1_NAME = b"Jos\xe9"
 #: An origin URL holding that byte, as a clone of a directory named `café`
-#: in Latin-1 has one; and the same URL in ASCII, which ends in an
-#: `org/repo` the tool reads.
+#: in Latin-1 has one.
 NOT_UTF8_URL = b"../caf\xe9/repo.git"
-ASCII_URL = b"../cafe/repo.git"
+#: The byte in a url, and the same url in ASCII, which ends in an `org/repo`
+#: the tool reads. Urls, because a path names no repository in any spelling
+#: since #521: the pair differs in the byte alone.
+NOT_UTF8_SCP = b"git@example.invalid:caf\xe9/repo.git"
+ASCII_URL = b"git@example.invalid:cafe/repo.git"
 
-#: Said of all three sources that name no org: one with no origin, one whose
-#: origin URL is not UTF-8, and one whose URL ends in no `org/repo`. The
-#: sentence was "the source has no `origin`", which is false of the last two.
+#: Said of all the sources that name no org: one with no origin, one whose
+#: origin URL is not UTF-8 or ends in no `org/repo`, and, since #521, one
+#: whose origin is a path. The sentence was "the source has no `origin`",
+#: which is false of all but the first.
 NO_ORG = (b"REFUSED adopt-no-org: the source's `origin` names no "
           b"organisation this tool can read: it has none, its URL is not "
-          b"UTF-8, or its URL ends in no `org/repo`\n"
+          b"UTF-8 or ends in no `org/repo`, or it is a path, which names no "
+          b"repository on GitHub\n"
           b"Remediation: pass --org <org>.\n")
 #: An origin URL that is UTF-8 and ends in no `org/repo` at all.
 NO_PAIR_URL = b"repo.git"
@@ -325,16 +330,17 @@ def test_elected_by_given_adopts_under_a_user_name_that_is_not_utf8(
 # --- `git remote get-url origin` ----------------------------------------------
 
 @pytest.mark.parametrize("url, repository",
-                         [(NOT_UTF8_URL, None), (ASCII_URL, "cafe/repo")],
-                         ids=["not-utf8", "ascii"])
+                         [(NOT_UTF8_URL, None), (NOT_UTF8_SCP, None),
+                          (ASCII_URL, "cafe/repo")],
+                         ids=["not-utf8", "not-utf8-url", "ascii"])
 def test_plan_reads_an_origin_that_is_not_utf8_as_none(tmp_path, url,
                                                        repository):
     """The issue's last row, with --org: on the base `plan` ended in a
     `UnicodeDecodeError` traceback from `_remote_repository`, exit 1, and
     wrote no plan. Now it plans, and records no repository. The ASCII URL
-    is the control: its `org/repo` is read, so the None is the byte's, and
-    the plan is written in that name, which `plan` refuses any other for
-    (#499)."""
+    is the control: its `org/repo` is read, so the None of the url beside it
+    is the byte's, and the plan is written in that name, which `plan`
+    refuses any other for (#499)."""
     source = with_origin(make_source_repo(tmp_path / "Thing"), url)
     done = planned(tmp_path, source, "--org", "cafe", "--project", "repo")
     assert_no_traceback({"plan": done})

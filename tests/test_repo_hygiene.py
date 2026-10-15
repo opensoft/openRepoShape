@@ -68,12 +68,13 @@ LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
                  "shape_advisory", "conftest", "bootstrap"}
 
 #: The bash scripts a person runs BEFORE they have a checkout, or with no
-#: checkout in sight at all: the front door itself and the command that
-#: fetches it. `park` and `resume` were here from #82 until the carve (#92)
-#: and are opensoft/openRepoTools' now, held to these same rules by that
-#: repository's own copy of this test. Every one is a shipped executable and
-#: is held to the same shebang, mode bit and `set -euo pipefail` rule.
-SHIPPED_BASH = ["setup.sh", "openRepoShape"]
+#: checkout in sight at all: the front door itself, the command that
+#: fetches it, and the one-line installer that places that command pinned to
+#: a release (#564). `park` and `resume` were here from #82 until the carve
+#: (#92) and are opensoft/openRepoTools' now, held to these same rules by
+#: that repository's own copy of this test. Every one is a shipped executable
+#: and is held to the same shebang, mode bit and `set -euo pipefail` rule.
+SHIPPED_BASH = ["setup.sh", "openRepoShape", "install.sh"]
 
 #: The entry point a person runs BEFORE they have a checkout on a machine with
 #: no bash: the same front door, on an interpreter alone. Held to the same
@@ -1408,7 +1409,7 @@ def test_shipped_bash_is_executable_and_fails_loudly(name):
 @WINDOWS_SKIP
 @pytest.mark.parametrize("name", SHIPPED_BASH)
 def test_shipped_bash_parses_under_bash(name):
-    """`bash -n` on the two shipped bash scripts, everywhere there is a bash.
+    """`bash -n` on the shipped bash scripts, everywhere there is a bash.
 
     SKIPPED ON WINDOWS, AND `shutil.which` IS NOT ENOUGH TO SEE WHY. The
     `bash` a stock Windows install puts on PATH is
@@ -1500,6 +1501,27 @@ def test_the_openrepotools_install_line_is_the_same_everywhere(name):
     assert OPENREPOTOOLS_INSTALL in text, (
         f"{name} must carry openRepoTools' install line byte for byte:\n"
         f"    {OPENREPOTOOLS_INSTALL}")
+
+
+#: THE ONE LINE THAT INSTALLS THIS STANDARD (#564), and every file that
+#: carries it: the installer it fetches, the command it installs (in its
+#: header), the README and its designed reading, and the release notes that
+#: introduced it. Pasted by people who cannot check it, like the two lines
+#: above, so the copies are held byte for byte. `releases/latest/download/`
+#: is what makes it the NEWEST release's `install.sh` every time.
+ONE_LINE_INSTALL = (
+    "curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/"
+    "download/install.sh | bash")
+ONE_LINE_INSTALL_IN = ["install.sh", "openRepoShape", "README.md",
+                       "docs/handbook.html", "docs/release-notes/v1.0.1.md"]
+
+
+@pytest.mark.parametrize("name", ONE_LINE_INSTALL_IN)
+def test_the_one_line_install_is_the_same_everywhere(name):
+    text = (REPO / name).read_text(encoding="utf-8")
+    assert ONE_LINE_INSTALL in text, (
+        f"{name} must carry the one-line install byte for byte:\n"
+        f"    {ONE_LINE_INSTALL}")
 
 
 #: Where each document describes `openRepoShape --doctor`: the file, the
