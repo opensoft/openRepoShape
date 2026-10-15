@@ -267,8 +267,9 @@ def test_the_remediation_lists_the_materializers_paths(scaffold, no_process,
 
 @pytest.mark.parametrize("value", CLEAR)
 def test_a_path_that_overlaps_nothing_the_scaffold_writes_plans(
-        scaffold, capsys, value):
-    code = scaffold.main([*BASE_ARGS, "--dry-run", "--spec-path", value])
+        scaffold, capsys, tmp_path, value):
+    code = scaffold.main([*BASE_ARGS, "--dry-run", "--spec-path", value,
+                          "--local-remote-dir", str(tmp_path / "remotes")])
     out, err = capsys.readouterr()
     assert code == 0, out + err
     assert REFUSED not in err

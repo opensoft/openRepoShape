@@ -112,11 +112,10 @@ ADOPT_TEXT = """If the organisation applies a ruleset requiring changes to arriv
 request, a direct push to the default branch is refused BY DESIGN and must not
 be worked around. An adoption has ONE legitimate exit: have an operator
 holding the bypass right re-run it, once what the notice below names is
-cleared. The scaffold's other exit, a seed branch and a pull request, cannot
-finish an adoption: @REPO@ has no @BRANCH@ for that pull request to target,
-and nothing would run the rest of this adoption after it was merged. Under
-such a ruleset, that bypass is the fix the notice below asks for, never a
-change to the ruleset."""
+cleared. A seed branch and a pull request cannot finish an adoption:
+@REPO@ has no @BRANCH@ for that pull request to target, and nothing would
+run the rest of this adoption after it was merged. Under such a ruleset, that
+bypass is the fix the notice below asks for, never a change to the ruleset."""
 
 #: Each constant, the name a tool prints it by, and its literal.
 HINTS = {
@@ -162,6 +161,9 @@ def test_each_hint_for_another_branch_changes_that_branch_and_nothing_else(
     assert "gh pr create" not in printed
     assert "push -u" not in printed
     assert "Two legitimate exits" not in printed
+    # Nor as "the scaffold's other exit": #506 took that exit out of the
+    # scaffold's hint, and the adoption's went on calling it one (#523).
+    assert "other exit" not in printed
 
 
 def test_the_scaffold_and_the_family_re_run_with_the_flag_and_adoption_not():
