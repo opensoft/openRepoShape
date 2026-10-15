@@ -102,10 +102,10 @@ is on no `PATH` by default, and its installer finishes by printing the line that
 puts it there — run that line, or the next shell cannot find `brew`. Then `brew
 install gh`, and `brew install git-filter-repo` only if you are ADOPTING an
 existing repository rather than scaffolding a new one. The stock `/bin/bash` is
-3.2 and is enough: `setup.sh` and the `openRepoShape` command are written to use
-no syntax newer than that, though CI runs on Linux only and no run of it checks
-them against bash 3.2. That the login shell is zsh changes nothing — both entry
-points are run under `bash` explicitly.
+3.2 and is enough: `setup.sh`, `install.sh` and the `openRepoShape` command are
+written to use no syntax newer than that, though CI runs on Linux only and no
+run of it checks them against bash 3.2. That the login shell is zsh changes
+nothing — all three entry points are run under `bash` explicitly.
 
 </details>
 
@@ -174,14 +174,14 @@ run the four steps below INSIDE the WSL shell.
 > opens with a preflight that names what is missing and, for `gh`, its login and
 > its credential helper, prints the command for THIS machine and asks once —
 > `Type yes to continue:`, the same words it asks everything else with — then
-> runs it and carries on. Nothing is installed without that typed `yes`; `--yes`
-> does not answer it, and with no terminal attached there is no offer at all.
-> Homebrew is the one install never run for you: on a Mac without `brew` the
-> preflight names <https://brew.sh> and stops there. To check a machine and
-> stop, creating nothing, run `openRepoShape --preflight` — `py setup-project.py
-> --preflight` on Windows — which exits 0 when everything is present and 1 when
-> it is not (`openRepoShape --preflight` exits 2 when `git` or a Python 3.9 or
-> newer is missing).
+> runs it and carries on. The preflight installs nothing without that typed
+> `yes`; `--yes` does not answer it, and with no terminal attached there is no
+> offer at all. Homebrew is the one install never run for you: on a Mac without
+> `brew` the preflight names <https://brew.sh> and stops there. To check a
+> machine and stop, creating nothing, run `openRepoShape --preflight` —
+> `py setup-project.py --preflight` on Windows — which exits 0 when everything
+> is present and 1 when it is not (`openRepoShape --preflight` exits 2 when
+> `git` or a Python 3.9 or newer is missing).
 
 **1. Install the GitHub CLI**, `gh`. The official instructions are at
 <https://cli.github.com/> (and <https://github.com/cli/cli#installation>):
@@ -225,7 +225,22 @@ offer to configure git's credential helper, or run `gh auth setup-git`: the
 first commits go up with a plain `git push` over HTTPS, and without it the
 three repositories are created and the push fails.
 
-**3. Install the `openRepoShape` command**, once:
+**3. Install the `openRepoShape` command**, once, in one line:
+
+```sh
+curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash
+```
+
+`install.sh` is attached to every release and installs the newest, with no `gh`
+and no login. Its command is PINNED to the release tag, recorded in
+`openRepoShape.ref` beside it: `setup.sh` and the standard are fetched at that
+tag, not at main. It installs `git-filter-repo` with `pipx` where it can, or
+prints the command, and ends with `openRepoShape --preflight`. `install.sh`
+itself never runs `sudo`; the preflight it ends with offers what is missing,
+each behind a typed `yes` at your terminal. `| bash -s -- v1.0.1` names a
+release; the same line again upgrades.
+
+By hand, the same command at main, which records no ref and follows main:
 
 ```sh
 gh api repos/opensoft/openRepoShape/contents/openRepoShape \
@@ -239,7 +254,7 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRep
     | bash -s -- --install
 ```
 
-It installs ONE command into `~/.local/bin`, idempotently — a second run
+Each way installs ONE command into `~/.local/bin`, idempotently — a second run
 prints `unchanged` — and prints the `export PATH=…` line if that directory is
 not on `PATH`. The estate verbs `park` and `resume`, for [carrying in-flight
 work](#carrying-in-flight-work-to-another-workstation), are
@@ -380,7 +395,13 @@ records as whose act the election was, and it defaults to the `gh` login.
 
 #### Install the command
 
-Two ways in, the short one first. Install `openRepoShape` as a command:
+Two ways in, the short one first. Install the command as step 3 above does:
+
+```sh
+curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash
+```
+
+or by hand, at main, through the API:
 
 ```sh
 gh api repos/opensoft/openRepoShape/contents/openRepoShape \
@@ -1394,6 +1415,7 @@ scripts/path_classify.py          the classifier over the path policy
 scripts/shape_materialize.py      the ONE materializer, used by both tools
 scripts/validate-repository-naming.py
 openRepoShape                     installs itself as a command; runs setup.sh
+install.sh                        the one-line install: a release, pinned
 setup.sh                          the shim: find an interpreter, hand over
 setup-project.py                  THE FLOW, and the Windows way in (no bash there)
 scaffold-project.py               creates the three repositories and the pins
