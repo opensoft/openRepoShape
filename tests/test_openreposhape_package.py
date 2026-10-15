@@ -334,7 +334,8 @@ def test_the_committed_stamp_is_unstamped():
         "VERSION": "0.0.0", "TAG": "", "COMMIT": "", "DIGEST": ""}
 
 
-def test_pyproject_takes_its_version_from_the_stamp_and_names_five_commands():
+def test_pyproject_takes_its_version_from_the_stamp_and_names_five_commands(
+        monkeypatch):
     """The version is written once, in the stamp; the one dependency is the
     git-filter-repo CI runs and install.sh installs; the wheel is the
     package plus `setup-project.py` beside its modules; and each of the five
@@ -343,7 +344,8 @@ def test_pyproject_takes_its_version_from_the_stamp_and_names_five_commands():
     data = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
     project = data["project"]
     assert project["name"] == "openreposhape"
-    assert project["dynamic"] == ["version"] and "version" not in project
+    assert project["dynamic"] == ["version"]
+    assert "version" not in project
     assert project["requires-python"] == ">=3.9"
     assert project["dependencies"] == ["git-filter-repo==2.47.0"]
     assert 'FILTER_REPO_PIN="git-filter-repo==2.47.0"' in \
@@ -358,7 +360,8 @@ def test_pyproject_takes_its_version_from_the_stamp_and_names_five_commands():
                       r"(?P<version>.+?)\2",
                       (PACKAGE / "_release.py").read_text(encoding="utf-8"),
                       re.M)
-    assert found and found.group("version") == "0.0.0"
+    assert found is not None
+    assert found.group("version") == "0.0.0"
     wheel = hatch["build"]["targets"]["wheel"]
     assert wheel["packages"] == ["src/openreposhape"]
     assert wheel["force-include"] == {
@@ -367,17 +370,11 @@ def test_pyproject_takes_its_version_from_the_stamp_and_names_five_commands():
     assert sorted(scripts) == ["adopt-project", "openRepoShape",
                                "scaffold-project", "shape-doctor",
                                "update-shape"]
-    sys.path.insert(0, str(SOURCE))
-    wrote_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
-    try:
-        for name, target in scripts.items():
-            module, _, function = target.partition(":")
-            assert module == "openreposhape.cli", name
-            assert callable(getattr(importlib.import_module(module),
-                                    function)), name
-    finally:
-        sys.dont_write_bytecode = wrote_bytecode
-        sys.path.remove(str(SOURCE))
+    cli = package_module("cli", monkeypatch)
+    for name, target in scripts.items():
+        module, _, function = target.partition(":")
+        assert module == "openreposhape.cli", name
+        assert callable(getattr(cli, function)), name
 
 
 def test_a_stamp_that_names_part_of_a_release_is_refused(tmp_path):
@@ -479,7 +476,8 @@ def test_a_ref_is_checked_before_anything_is_cloned(cmd, tmp_path, ref):
     assert "$OPENREPOSHAPE_REF" in result.stderr
     assert "git checkout" in result.stderr
     assert "clone" not in said(result)
-    assert "a" * 256 not in result.stderr and "forged" not in result.stderr
+    assert "a" * 256 not in result.stderr
+    assert "forged" not in result.stderr
 
 
 def test_a_standard_with_no_doctor_is_refused_by_name(cmd, tmp_path):
@@ -786,16 +784,13 @@ def test_with_no_git_a_run_that_needs_the_standard_is_refused(tmp_path):
 
 # --- git-filter-repo, for every child -------------------------------------------------
 
-def package_module(name: str):
+def package_module(name: str, monkeypatch):
     """`openreposhape.<name>` from this checkout's `src/`, imported in this
-    process with no bytecode written."""
-    sys.path.insert(0, str(SOURCE))
-    wrote_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
-    try:
-        return importlib.import_module(f"openreposhape.{name}")
-    finally:
-        sys.dont_write_bytecode = wrote_bytecode
-        sys.path.remove(str(SOURCE))
+    process with no bytecode written; `sys.path` and the bytecode flag are
+    put back when the test ends."""
+    monkeypatch.syspath_prepend(str(SOURCE))
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    return importlib.import_module(f"openreposhape.{name}")
 
 
 def fake_filter_repo(directory: Path) -> Path:
@@ -815,7 +810,7 @@ def test_children_get_the_scripts_directory_first_when_it_holds_filter_repo(
         tmp_path, monkeypatch):
     """First on PATH when a `git-filter-repo` is there, and PATH untouched
     when none is."""
-    standard = package_module("standard")
+    standard = package_module("standard", monkeypatch)
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     monkeypatch.setattr(standard.sysconfig, "get_path",
@@ -829,7 +824,7 @@ def test_children_get_the_scripts_directory_first_when_it_holds_filter_repo(
 
 
 def test_a_child_finds_the_git_filter_repo_of_the_packages_environment(
-        tmp_path, shape_standard):
+        tmp_path, shape_standard, monkeypatch):
     """THE PIPX CASE, END TO END: the package runs in an environment of its
     own whose scripts directory holds `git-filter-repo` and is on nobody's
     PATH. The tool it starts finds that one, first on its PATH; and before
@@ -839,7 +834,7 @@ def test_a_child_finds_the_git_filter_repo_of_the_packages_environment(
                    check=True, capture_output=True)
     python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     scripts = python.parent
-    standard = package_module("standard")
+    standard = package_module("standard", monkeypatch)
     elsewhere = [entry for entry in os.environ["PATH"].split(os.pathsep)
                  if entry and not standard.filter_repo_in(entry)]
     site = installed_copy(tmp_path / "package", shape_standard.stamp())

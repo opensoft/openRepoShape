@@ -232,6 +232,11 @@ def value_of(args: list, at: int, flag: str) -> str:
     return args[at + 1]
 
 
+#: The doctor's plan flag, in its two spellings.
+PLAN_FLAG = "--placement-plan"
+PLAN_EQUALS = PLAN_FLAG + "="
+
+
 def take_placement_plan(run: Run, args: list, at: int) -> int:
     """`--placement-plan <file>` or `--placement-plan=<file>` after
     `--doctor`; the index after what it took. The separate word is refused
@@ -239,8 +244,8 @@ def take_placement_plan(run: Run, args: list, at: int) -> int:
     refusal, never last-wins (#546)."""
     before = run.plan_file
     arg = args[at]
-    if arg.startswith("--placement-plan="):
-        run.plan_file = arg[len("--placement-plan="):]
+    if arg.startswith(PLAN_EQUALS):
+        run.plan_file = arg[len(PLAN_EQUALS):]
         at += 1
     else:
         run.plan_file = args[at + 1] if at + 1 < len(args) else ""
@@ -251,15 +256,96 @@ def take_placement_plan(run: Run, args: list, at: int) -> int:
             at += 1
     if not run.plan_file:
         raise Refusal(
-            "--placement-plan needs the file to write the plan to: "
-            "--placement-plan <file>, or --placement-plan=<file> for a name "
-            "that begins with '-'.")
+            f"{PLAN_FLAG} needs the file to write the plan to: {PLAN_FLAG} "
+            f"<file>, or {PLAN_EQUALS}<file> for a name that begins with "
+            "'-'.")
     if before:
         raise Refusal(f"two placement plans, '{before}' and "
                       f"'{run.plan_file}'. --doctor writes one: pass "
-                      "--placement-plan once.")
-    run.doctor_args.append(f"--placement-plan={run.plan_file}")
+                      f"{PLAN_FLAG} once.")
+    run.doctor_args.append(PLAN_EQUALS + run.plan_file)
     return at
+
+
+def take_doctor(run: Run, args: list, at: int) -> int:
+    """`--doctor [<path>]`: the optional path is eaten here, because it would
+    otherwise be taken for a <Project>; a word beginning with a dash is a
+    flag, not the path. ONE path, however many `--doctor`s (#546)."""
+    set_mode(run, "doctor")
+    at += 1
+    if (at < len(args) and not run.doctor_path_given
+            and not args[at].startswith("-")):
+        run.doctor_path, run.doctor_path_given = args[at], True
+        at += 1
+    return at
+
+
+def take_doctor_flag(run: Run, args: list, at: int) -> int:
+    """THE DOCTOR'S TWO FLAGS, ONLY AFTER `--doctor` (#500); anywhere else a
+    lone flag for setup-project.py, which refuses both."""
+    arg = args[at]
+    if run.mode != "doctor":
+        run.passthrough.append(arg)
+        return at + 1
+    if arg == "--json":
+        run.doctor_args.append(arg)
+        run.doctor_json = True
+        return at + 1
+    return take_placement_plan(run, args, at)
+
+
+def take_value(run: Run, args: list, at: int) -> int:
+    """A flag and its value: `--org` and `--project` are this command's, and
+    every other one in `VALUE_FLAGS` travels on, `--shape-ref` noted too."""
+    arg = args[at]
+    value = value_of(args, at, arg)
+    if arg in ("--org", "--project"):
+        setattr(run, arg[2:], value)
+    else:
+        run.passthrough += [arg, value]
+        if arg == "--shape-ref":
+            run.shape_ref = value
+    return at + 2
+
+
+def take_word(run: Run, arg: str) -> None:
+    """A word that is no flag: after `--doctor` and its flags the one path it
+    has not had, and otherwise the one <Project>."""
+    if run.mode == "doctor" and not run.doctor_path_given:
+        run.doctor_path, run.doctor_path_given = arg, True
+    elif run.project:
+        raise Refusal(f"two project names, '{run.project}' and '{arg}'. "
+                      "One positional <Project>, then flags.")
+    else:
+        run.project = arg
+
+
+def take(run: Run, args: list, at: int) -> int:
+    """The argument at `at`, taken; the index of the next one."""
+    arg = args[at]
+    if arg == "--install":
+        set_mode(run, "install")
+        return at + 1
+    if arg == "--doctor":
+        return take_doctor(run, args, at)
+    if arg in ("--json", PLAN_FLAG) or arg.startswith(PLAN_EQUALS):
+        return take_doctor_flag(run, args, at)
+    if arg == "--preflight":
+        # NAMED for the flag it sets: `--preflight` creates nothing, so the
+        # organisation and the <Project> are not asked for.
+        run.preflight = True
+        run.passthrough.append(arg)
+        return at + 1
+    if arg in ("--org", "--project") or arg in VALUE_FLAGS:
+        return take_value(run, args, at)
+    if arg == "--":
+        run.passthrough += ["--", *args[at + 1:]]
+        return len(args)
+    if arg.startswith("-"):
+        run.passthrough.append(arg)
+        return at + 1
+    take_word(run, arg)
+    return at + 1
 
 
 def parse(args: list) -> tuple:
@@ -269,73 +355,15 @@ def parse(args: list) -> tuple:
     run = Run()
     at = 0
     while at < len(args):
-        arg = args[at]
-        if arg in ("-h", "--help"):
+        if args[at] in ("-h", "--help"):
             return "help", run
-        if arg == "--version":
+        if args[at] == "--version":
             return "version", run
-        if arg == "--install":
-            set_mode(run, "install")
-            at += 1
-        elif arg == "--doctor":
-            # `--doctor [<path>]`: the optional path is eaten here, because
-            # it would otherwise be taken for a <Project>; a word beginning
-            # with a dash is a flag, not the path. ONE path, however many
-            # `--doctor`s (#546).
-            set_mode(run, "doctor")
-            at += 1
-            if (at < len(args) and not run.doctor_path_given
-                    and not args[at].startswith("-")):
-                run.doctor_path, run.doctor_path_given = args[at], True
-                at += 1
-        elif arg in ("--json", "--placement-plan") \
-                or arg.startswith("--placement-plan="):
-            # THE DOCTOR'S TWO FLAGS ONLY AFTER `--doctor` (#500); anywhere
-            # else a lone flag for setup-project.py, which refuses both.
-            if run.mode != "doctor":
-                run.passthrough.append(arg)
-                at += 1
-            elif arg == "--json":
-                run.doctor_args.append("--json")
-                run.doctor_json = True
-                at += 1
-            else:
-                at = take_placement_plan(run, args, at)
-        elif arg == "--preflight":
-            # NAMED for the flag it sets: `--preflight` creates nothing, so
-            # the organisation and the <Project> are not asked for.
-            run.preflight = True
-            run.passthrough.append(arg)
-            at += 1
-        elif arg in ("--org", "--project"):
-            setattr(run, arg[2:], value_of(args, at, arg))
-            at += 2
-        elif arg in VALUE_FLAGS:
-            value = value_of(args, at, arg)
-            run.passthrough += [arg, value]
-            if arg == "--shape-ref":
-                run.shape_ref = value
-            at += 2
-        elif arg == "--":
-            run.passthrough += ["--", *args[at + 1:]]
-            break
-        elif arg.startswith("-"):
-            run.passthrough.append(arg)
-            at += 1
-        elif run.mode == "doctor" and not run.doctor_path_given:
-            # After `--doctor` and its flags, the one path it has not had.
-            run.doctor_path, run.doctor_path_given = arg, True
-            at += 1
-        elif run.project:
-            raise Refusal(f"two project names, '{run.project}' and '{arg}'. "
-                          "One positional <Project>, then flags.")
-        else:
-            run.project = arg
-            at += 1
+        at = take(run, args, at)
     return "run", run
 
 
-def version() -> int:
+def print_version() -> None:
     """WHICH BYTES A RUN WOULD USE: the version, the tag, the commit, the
     digest and the clone, with no network and no clone made. The ref in
     force is in the first line's `(<repo> @ <ref>)`, as the launcher puts
@@ -349,7 +377,7 @@ def version() -> int:
             "of the standard, not a release")
         say(f"  checkout  {beside}: this package sits in it, so every run "
             "uses it as it stands and clones nothing")
-        return 0
+        return
     repo = standard.repository()
     standard.clone_url(repo)
     wanted = standard.target(stamp)
@@ -377,7 +405,6 @@ def version() -> int:
     else:
         say(f"  checkout  {cache}{os.sep}<commit>, one clone per commit, "
             "kept")
-    return 0
 
 
 def say_the_standard(std: standard.Standard) -> None:
@@ -461,25 +488,49 @@ def forwarded(run: Run) -> list:
     return args + run.passthrough
 
 
+def doctor_alone(run: Run) -> None:
+    """ONE PATH AND THE DOCTOR'S TWO FLAGS, NOTHING ELSE: every other
+    argument is about a run that CREATES something."""
+    if run.project or run.org or run.passthrough:
+        raise Refusal(
+            f"--doctor takes a path, --json and {PLAN_FLAG} <file>, and "
+            "nothing else; it reads a repository and writes nothing into it "
+            "but that <file>.\n"
+            f"    openRepoShape --doctor [<path>] [--json] [{PLAN_FLAG} "
+            "<file>]\n"
+            "    To scaffold, drop --doctor. To check this machine, run: "
+            "openRepoShape --preflight")
+
+
+def settle_the_names(run: Run) -> None:
+    """NEVER a default organisation: a wrong one creates three repositories
+    in somebody else's namespace. The flag, else `$OPENREPOSHAPE_ORG`, else
+    the terminal; and a <Project> setup-project.py can ask for only where a
+    terminal is attached."""
+    run.org = run.org or os.environ.get("OPENREPOSHAPE_ORG", "")
+    if not run.org and terminal_attached():
+        try:
+            run.org = input("organisation to scaffold into: ").strip()
+        except EOFError:
+            run.org = ""
+    if not run.org:
+        raise Refusal("no organisation to scaffold into. Re-run with "
+                      "--org <your-org>, or set $OPENREPOSHAPE_ORG.")
+    if not run.project and not terminal_attached():
+        sys.stderr.write(USAGE)
+        raise Refusal("no <Project> given, and no terminal to ask on.")
+
+
 def main_openreposhape(args: list) -> int:
     action, run = parse(args)
     if action == "help":
         sys.stdout.write(USAGE)
         return 0
     if action == "version":
-        return version()
+        print_version()
+        return 0
     if run.mode == "doctor":
-        # ONE PATH AND THE DOCTOR'S TWO FLAGS, NOTHING ELSE: every other
-        # argument is about a run that CREATES something.
-        if run.project or run.org or run.passthrough:
-            raise Refusal(
-                "--doctor takes a path, --json and --placement-plan <file>, "
-                "and nothing else; it reads a repository and writes nothing "
-                "into it but that <file>.\n"
-                "    openRepoShape --doctor [<path>] [--json] "
-                "[--placement-plan <file>]\n"
-                "    To scaffold, drop --doctor. To check this machine, run: "
-                "openRepoShape --preflight")
+        doctor_alone(run)
         return doctor(run)
     if run.mode == "install":
         raise Refusal(INSTALL_REFUSED)
@@ -489,20 +540,7 @@ def main_openreposhape(args: list) -> int:
         sys.stdout.write(USAGE)
         return 1
     if not run.preflight:
-        # NEVER a default organisation: a wrong one creates three
-        # repositories in somebody else's namespace.
-        run.org = run.org or os.environ.get("OPENREPOSHAPE_ORG", "")
-        if not run.org and terminal_attached():
-            try:
-                run.org = input("organisation to scaffold into: ").strip()
-            except EOFError:
-                run.org = ""
-        if not run.org:
-            raise Refusal("no organisation to scaffold into. Re-run with "
-                          "--org <your-org>, or set $OPENREPOSHAPE_ORG.")
-        if not run.project and not terminal_attached():
-            sys.stderr.write(USAGE)
-            raise Refusal("no <Project> given, and no terminal to ask on.")
+        settle_the_names(run)
     return scaffold(run)
 
 

@@ -76,10 +76,16 @@ REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
 #: owner/name on github.com.
 DRIVE_RE = re.compile(r"[A-Za-z]:[\\/]")
 
+#: The entry point the preflight and a scaffold run, and the two names a
+#: ref can come by besides the stamp.
+SETUP_ENTRY = "setup-project.py"
+REF_VARIABLE = "$OPENREPOSHAPE_REF"
+REF_FLAG = "--shape-ref"
+
 #: What makes a directory a checkout of this standard for the BESIDE rule:
 #: the three tools a run reaches for and the naming policy `setup-project.py`
 #: itself asks for (`is_shape_checkout`).
-CHECKOUT_MARKERS = ("setup-project.py", "scaffold-project.py",
+CHECKOUT_MARKERS = (SETUP_ENTRY, "scaffold-project.py",
                     "shape-doctor.py", "contracts/repository-naming.yaml")
 
 #: The way out of every refusal about a cached clone. The cache is this
@@ -214,7 +220,7 @@ def ref_fault(ref: str, what: str) -> str:
     return ""
 
 
-def checked_ref(ref: str, what: str = "$OPENREPOSHAPE_REF") -> str:
+def checked_ref(ref: str, what: str = REF_VARIABLE) -> str:
     """`ref`, or a refusal saying what is wrong with it."""
     fault = ref_fault(ref, what)
     if fault:
@@ -237,7 +243,7 @@ class Target:
 
     @property
     def overridden(self) -> bool:
-        return self.source in ("--shape-ref", "$OPENREPOSHAPE_REF")
+        return self.source in (REF_FLAG, REF_VARIABLE)
 
 
 def target(stamp: Stamp, typed_ref: str = "") -> Target:
@@ -246,9 +252,9 @@ def target(stamp: Stamp, typed_ref: str = "") -> Target:
     last and wins), `$OPENREPOSHAPE_REF` set for this run, the stamped
     commit, and with none of those main. Each named ref is checked here,
     before anything reaches git."""
-    for ref, source in ((typed_ref, "--shape-ref"),
+    for ref, source in ((typed_ref, REF_FLAG),
                         (os.environ.get("OPENREPOSHAPE_REF", ""),
-                         "$OPENREPOSHAPE_REF")):
+                         REF_VARIABLE)):
         if ref:
             checked_ref(ref, source)
             commit = ref.lower() if ANY_CASE_COMMIT_RE.fullmatch(ref) else ""
@@ -389,12 +395,12 @@ def preflight_entry() -> Path:
     """The `setup-project.py` `--preflight` runs: the copy the wheel carries
     beside this file, byte for byte the release's own, or in a checkout the
     one at its root. Either way no git is needed to reach it."""
-    packaged = Path(__file__).resolve().parent / "setup-project.py"
+    packaged = Path(__file__).resolve().parent / SETUP_ENTRY
     if packaged.is_file():
         return packaged
     beside = beside_checkout()
     if beside is not None:
-        return beside / "setup-project.py"
+        return beside / SETUP_ENTRY
     raise Refusal("this package carries no setup-project.py, so there is no "
                   "preflight to run. The install is incomplete: pipx install "
                   "--force openreposhape")
