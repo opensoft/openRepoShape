@@ -3640,6 +3640,88 @@ def test_a_sibling_with_this_members_id_but_another_origin_is_not_counted(
         "COMPLIANT"
 
 
+# --- #605: what `make siblings` does, and on what condition ----------------
+#
+# Since #578 `scripts/siblings.py` asks about the holder's parent folder
+# before it looks at any member. The `members` row names the command and
+# that condition in STATIC words, and does not test the folder itself: the
+# rule is the holder's own, and a second copy of it here would drift.
+
+#: What the `no working clone` note ends with, spelt out here and not
+#: imported from the doctor: a test that read the wording back from the thing
+#: under test would pass whatever it said.
+PLACES_NOTE = (
+    "(`make siblings` places them when the holder is in a folder named after "
+    "its repository, or in one a link of that name beside it leads to; with "
+    "the holder anywhere else it clones nothing and prints the `mv` that "
+    "moves it into such a folder; the pinned copy under members/ is "
+    "detached by design)")
+
+#: The same for a directory beside the holder that is a clone of another
+#: repository.
+STRANGER_NOTE = (
+    "so it is not counted as its working clone (`make siblings`, from a "
+    "holder in a folder named after its repository, calls the same "
+    "directory WRONG ORIGIN and leaves it exactly as it is)")
+
+
+@pytest.mark.parametrize("in_family_folder", [False, True],
+                         ids=["any-other-folder", "the-family-folder"])
+def test_the_no_working_clone_note_says_when_make_siblings_places_them(
+        standard, holder, tmp_path, in_family_folder):
+    """THE NOTE IS TRUE OF EVERY HOLDER, so it says WHEN, not that. After
+    #578, from a holder whose parent folder is neither named after its
+    repository nor reached through a link of that name beside it, `make
+    siblings` places nothing (`NOTHING WAS CLONED`, exit 1), and a note that
+    said `places them` unconditionally told that holder a thing its next
+    command would not do.
+
+    ITS REPOSITORY, NOT THE FAMILY'S NAME: `siblings.py::family_folder_name`
+    is the basename of the holder's `repository:`, and `name:` is a display
+    name (`family.py init --name`) that may differ, so a note that said "the
+    family" sent that reader to the one folder `make siblings` refuses.
+
+    THE SAME BYTES IN BOTH FOLDERS, which is the point: the row states the
+    condition and the command that prints the `mv`, and never tests the
+    folder (that is the holder's `siblings.py`'s rule, not a second copy of
+    it here).
+    """
+    base = tmp_path / "fam"
+    folder = base / FAMILY_NAME if in_family_folder else base
+    folder.mkdir(parents=True)
+    root = folder / FAMILY_NAME
+    shutil.copytree(holder["root"], root, symlinks=True)
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    assert row["status"] == "ok", row
+    assert row["detail"]["without_working_clone"] == [FAMILY_MEMBER], row
+    assert row["reason"].endswith(
+        f"; no working clone beside the holder for {FAMILY_MEMBER} "
+        + PLACES_NOTE), row["reason"]
+    assert "`make siblings` places them;" not in row["reason"], row["reason"]
+
+
+def test_the_stranger_note_says_from_which_folder_make_siblings_calls_it(
+        standard, holder, tmp_path):
+    """The other sentence the row says of `make siblings`: that it calls a
+    clone of another repository `WRONG ORIGIN` and leaves it as it is. After
+    #578 it asks about the holder's parent folder first and stops before it
+    looks at any member, so the sentence holds from a holder in a folder
+    named after its repository (not the family's display `name:`) and says
+    so."""
+    root, sibling = member_beside(holder, tmp_path)
+    elsewhere = str(holder["base"] / "remotes" / f"{FAMILY_NAME}.git")
+    git("remote", "set-url", "origin", elsewhere, cwd=sibling)
+    row = rows_of(doctor(standard, root, "--json"))["members"]
+    assert row["detail"]["members"][0]["other_origin"] is not None, row
+    assert STRANGER_NOTE in row["reason"], row["reason"]
+    assert "(`make siblings` calls the same directory" not in row["reason"]
+    # It is said before the absence it explains, and the green note follows
+    # it on the same row.
+    assert PLACES_NOTE in row["reason"], row["reason"]
+    assert row["reason"].index(STRANGER_NOTE) < row["reason"].index(
+        PLACES_NOTE), row["reason"]
+
+
 def test_a_sibling_at_the_right_origin_with_another_id_is_not_the_member(
         standard, holder, tmp_path):
     """The `WRONG PROJECT` half, which was already asked and stays asked: a
