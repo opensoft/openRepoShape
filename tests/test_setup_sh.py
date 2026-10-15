@@ -47,7 +47,9 @@ from conftest import (DECLARATIONS, DRY_RUNS, FILE_ABOVE_THE_CLONE,
 from conftest import (CHAIN_LINK_TREES,
                       assert_a_parent_nobody_can_write_in_is_refused,
                       assert_a_plan_that_never_printed_could_not_be_produced,
-                      assert_step_four_reads_a_chain_as_the_plan_does)
+                      assert_step_four_reads_a_chain_as_the_plan_does,
+                      assert_a_chain_of_one_link_has_no_source_to_note,
+                      assert_an_empty_pin_source_is_the_plans_to_refuse)
 
 SETUP = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
@@ -521,6 +523,14 @@ def test_a_plan_that_never_printed_could_not_be_produced(tmp_path):
 @pytest.mark.parametrize("how", CHAIN_LINK_TREES)
 def test_step_four_reads_a_chain_as_the_plan_does(tmp_path, how):
     assert_step_four_reads_a_chain_as_the_plan_does(run_setup, tmp_path, how)
+
+
+def test_an_empty_pin_source_is_the_plans_to_refuse(tmp_path):
+    assert_an_empty_pin_source_is_the_plans_to_refuse(run_setup, tmp_path)
+
+
+def test_a_chain_of_one_link_has_no_source_to_note(tmp_path):
+    assert_a_chain_of_one_link_has_no_source_to_note(run_setup, tmp_path)
 
 
 # --- self-bootstrap ---------------------------------------------------------

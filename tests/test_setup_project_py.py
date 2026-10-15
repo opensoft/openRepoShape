@@ -22,6 +22,7 @@ that skip is honest.
 from __future__ import annotations
 
 import ast
+import errno
 import importlib.util
 import ntpath
 import os
@@ -63,7 +64,9 @@ from conftest import (DECLARATIONS, DRY_RUNS, FILE_ABOVE_THE_CLONE,
 from conftest import (CHAIN_LINK_TREES, DRIVE_WAY_OUT, WRITE_IT,
                       assert_a_parent_nobody_can_write_in_is_refused,
                       assert_a_plan_that_never_printed_could_not_be_produced,
-                      assert_step_four_reads_a_chain_as_the_plan_does)
+                      assert_step_four_reads_a_chain_as_the_plan_does,
+                      assert_a_chain_of_one_link_has_no_source_to_note,
+                      assert_an_empty_pin_source_is_the_plans_to_refuse)
 
 SETUP_PROJECT = REPO / "setup-project.py"
 SETUP_SH = REPO / "setup.sh"
@@ -512,16 +515,18 @@ A_PRINTED_PLAN = ("project      Sample (sample)   topic xf-project-sample\n"
                   "topics       skipped for local remotes\n")
 
 
-def a_refused_plan(monkeypatch, tmp_path, code, asked):
+def a_refused_plan(monkeypatch, tmp_path, code, asked, again=None):
     """`plan_and_confirm` with the scaffold's plan exiting `code`, and `asked`
-    the stdout a second, captured run of that same plan gives: the refusal it
-    raises and every call it made, as `(argv, capture)`."""
+    the stdout a second, captured run of that same plan gives, which exits
+    `again` (`code`, unless it is given: the two runs need not agree): the
+    refusal it raises and every call it made, as `(argv, cwd, capture)`."""
     module = entry_point_module()
     calls = []
 
     def run(argv, cwd=None, capture=False):
-        calls.append((list(argv), capture))
-        return subprocess.CompletedProcess(argv, code,
+        calls.append((list(argv), cwd, capture))
+        exits = again if again is not None and len(calls) > 1 else code
+        return subprocess.CompletedProcess(argv, exits,
                                            asked if capture else None, None)
 
     monkeypatch.setattr(module, "run", run)
@@ -543,20 +548,29 @@ def test_a_plan_that_printed_and_was_refused_is_said_to_be_refused(
     refusal, calls = a_refused_plan(monkeypatch, tmp_path, 2, A_PRINTED_PLAN)
     assert str(refusal) == "the plan was refused (see above)."
     assert refusal.code == 2
-    [(first, first_captured), (again, again_captured)] = calls
-    assert first_captured is False and again_captured is True
-    assert again == first and first[-1] == "--dry-run", calls
+    [(first, first_cwd, first_captured),
+     (again, again_cwd, again_captured)] = calls
+    assert first_captured is False
+    assert again_captured is True
+    assert again == first
+    assert first[-1] == "--dry-run", calls
+    # Both are asked from the shape checkout: a relative `--pin-source` or
+    # `--work-dir` means what it means to the first run.
+    assert first_cwd == REPO
+    assert again_cwd == REPO
 
 
 @pytest.mark.parametrize("shown", [
     "", "NOTE demoorg/Sample is already private.\n",
-    "  [ok] project      Sample (sample)\n", "a project      Sample\n"])
+    "  [ok] project      Sample (sample)\n", "a project      Sample\n",
+    "projects of the family were read\n"])
 def test_a_plan_that_never_printed_could_not_be_produced(monkeypatch, tmp_path,
                                                          shown):
     """#608, L2-37: the old words stay for a plan that was not printed. The
     plan's own first line, at the start of a line, is what says it was; a
-    line that only holds those words, or a NOTE the scaffold prints before
-    the plan, is not."""
+    line that only holds those words, one that starts with the word and not
+    its column of spaces, or a NOTE the scaffold prints before the plan, is
+    not."""
     refusal, calls = a_refused_plan(monkeypatch, tmp_path, 2, shown)
     assert str(refusal) == "the plan could not be produced (see above)."
     assert refusal.code == 2
@@ -572,6 +586,42 @@ def test_a_plan_whose_scaffold_was_killed_is_not_asked_again(monkeypatch,
     assert str(refusal) == "the plan could not be produced (see above)."
     assert refusal.code == 130
     assert len(calls) == 1, calls
+
+
+#: What step (5) says when the plan stopped the first time and did not the
+#: second: it names neither a plan above nor a refusal, because it cannot know
+#: what the first run printed, and it says what to do.
+PLAN_STOPPED_ONCE = ("the scaffold stopped at the plan (see above). Asked a "
+                     "second time it did not stop, so the refusal did not "
+                     "happen again: run setup again.")
+
+
+@pytest.mark.parametrize("asked", [A_PRINTED_PLAN, ""])
+def test_a_plan_refused_once_and_not_again_says_to_run_setup_again(
+        monkeypatch, tmp_path, asked):
+    """#608, rv608 on #623: the words follow the second run, which the person
+    never sees, so they are only as good as its agreeing with the first. A
+    passing gh or network failure before the plan, or a remote made between
+    the two runs, makes the first run refuse and the second print the plan and
+    exit 0; "the plan was refused (see above)" then pointed at a plan that was
+    not there. A second run that exits 0 refused nothing, whatever it
+    printed, so the person is told it did not happen again and to run setup
+    again. The exit code stays the first run's: that is the refusal."""
+    refusal, calls = a_refused_plan(monkeypatch, tmp_path, 2, asked, again=0)
+    assert str(refusal) == PLAN_STOPPED_ONCE
+    assert refusal.code == 2
+    assert len(calls) == 2, calls
+
+
+def test_a_plan_refused_twice_is_not_told_to_run_again(monkeypatch, tmp_path):
+    """The counterpart: a second run that refuses too, with the plan or
+    without it, keeps the two wordings it had, so the new sentence is for a
+    refusal that did not repeat and no other."""
+    printed, _ = a_refused_plan(monkeypatch, tmp_path, 2, A_PRINTED_PLAN,
+                                again=1)
+    assert str(printed) == "the plan was refused (see above)."
+    never, _ = a_refused_plan(monkeypatch, tmp_path, 2, "", again=1)
+    assert str(never) == "the plan could not be produced (see above)."
 
 
 def test_a_plan_that_was_produced_is_run_once(monkeypatch, tmp_path):
@@ -2204,6 +2254,37 @@ def test_the_write_probe_is_made_in_the_nearest_folder_and_taken_away(
     assert list(base.iterdir()) == []
 
 
+def test_a_probe_folder_that_will_not_go_is_no_reason_to_refuse(
+        monkeypatch, tmp_path, capsys):
+    """#608, rv608 on #623: the refusal is for a folder that could not be MADE.
+    Taking the probe away again is best-effort: where a handle on the new
+    folder (an indexer, an antivirus, on Windows) makes `rmdir` fail after
+    the folder was made, the parent is still one the person can write in, so
+    the clone path is not refused for it, and the folder left behind is named
+    rather than lost."""
+    module = entry_point_module()
+    real_rmdir = os.rmdir
+
+    def held(path, *args, **kwargs):
+        if ".openreposhape-write-probe-" in os.path.basename(str(path)):
+            raise OSError(errno.EBUSY, "Device or resource busy")
+        return real_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rmdir", held)
+    base = tmp_path / "base"
+    base.mkdir()
+    assert module.refuse_a_taken_clone_path(str(base / "Sample"),
+                                            "Sample") is None
+    [left] = list(base.iterdir())
+    real_rmdir(str(left))
+    said = capsys.readouterr()
+    assert said.out == "", said.out
+    assert str(left) in said.err, said.err
+    assert "could not be taken away again" in said.err, said.err
+    assert "Device or resource busy" in said.err, said.err
+    assert "cannot write in" not in said.err, said.err
+
+
 def test_the_drive_is_what_the_os_path_module_splits_off(monkeypatch):
     """#608: `drive_of` is `os.path.splitdrive`'s drive, which a POSIX host
     never has, so the Windows module is put in its place for the three calls:
@@ -2305,6 +2386,55 @@ def test_a_dry_run_is_read_as_the_scaffold_reads_one(passthrough, dry):
      ["--referent-chain=openXdox,openDox", "--link-source=./openXdox=layer"]),
     (["--referent-chain", "openXdox,openDox", "--pin-source", "a/b=c"],
      ["--referent-chain=openXdox,openDox", "--link-source=a/b=c"]),
+    # ...and where `=` follows a Windows separator or a drive, the text before
+    # it cannot be a link's name, so nothing is added: `[^/\\:=]` holds each.
+    (["--referent-chain", "openXdox,openDox", "--pin-source", "a\\b=c"],
+     ["--referent-chain=openXdox,openDox", "--link-source=a\\b=c"]),
+    (["--referent-chain", "openXdox,openDox", "--pin-source", "C:x=y"],
+     ["--referent-chain=openXdox,openDox", "--link-source=C:x=y"]),
+    (["--referent-chain", "openXdox,openDox", "--pin-source",
+      "C:\\src\\openXdox=layer"],
+     ["--referent-chain=openXdox,openDox",
+      "--link-source=C:\\src\\openXdox=layer"]),
+    # An EMPTY value is `.`: the scaffold's `Path('')` is `.`, which the
+    # naming check, run in the same folder, reads as the same directory, where
+    # `--link-source=` is refused as `link-source-no-path` for a flag the
+    # person never typed (#576 on main). The LAST value is the one that
+    # counts, empty or not, and a blank one is not an empty one.
+    (["--referent-chain", "openXdox,openDox", "--pin-source", ""],
+     ["--referent-chain=openXdox,openDox", "--link-source=."]),
+    (["--referent-chain", "openXdox,openDox", "--pin-source="],
+     ["--referent-chain=openXdox,openDox", "--link-source=."]),
+    (["--referent-chain", "openXdox,openDox", "--pin-source", "src",
+      "--pin-source", ""],
+     ["--referent-chain=openXdox,openDox", "--link-source=."]),
+    (["--referent-chain", "openXdox,openDox", "--pin-source", "",
+      "--pin-source", "src"],
+     ["--referent-chain=openXdox,openDox", "--link-source=src"]),
+    (["--referent-chain", "openXdox,openDox", "--pin-source", " "],
+     ["--referent-chain=openXdox,openDox", "--link-source= "]),
+    (["--pin-source", ""], []),
+    # The naming check reads a source for a chain's holders, and a chain of
+    # one link has none: it says `NOTE --link-source ...: not used`, which the
+    # plan never prints for the same chain. So a source goes with a chain of
+    # TWO links at least, counted as the scaffold counts them (stripped,
+    # blanks dropped), and the chain is passed either way.
+    (["--referent-chain", "openDox", "--pin-source", "src"],
+     ["--referent-chain=openDox"]),
+    (["--referent-chain", "openDox, ", "--pin-source", "src"],
+     ["--referent-chain=openDox, "]),
+    (["--referent-chain", " , openDox ,", "--pin-source=src"],
+     ["--referent-chain= , openDox ,"]),
+    (["--referent-chain", "openXdox, ,openDox", "--pin-source", "src"],
+     ["--referent-chain=openXdox, ,openDox", "--link-source=src"]),
+    # A repeated `--referent-chain` keeps its last, and so does the source's
+    # reading of whether there is a chain to read it for.
+    (["--referent-chain", "openXdox,openDox", "--referent-chain", " , ",
+      "--pin-source", "src"],
+     ["--referent-chain= , "]),
+    (["--referent-chain", " , ", "--referent-chain", "openXdox,openDox",
+      "--pin-source", "src"],
+     ["--referent-chain=openXdox,openDox", "--link-source=src"]),
     # L2-27 (#608): `--pin` followed by a flag has no value.
     (["--pin", "--referent-chain", "x"], ["--referent-chain=x"]),
     (["--pin", "--pin", f"openGlass@{A_COMMIT}"], ["--pins=openGlass"])])
@@ -2402,6 +2532,14 @@ def test_a_plan_that_never_printed_could_not_be_produced_end_to_end(tmp_path):
 @pytest.mark.parametrize("how", CHAIN_LINK_TREES)
 def test_step_four_reads_a_chain_as_the_plan_does(tmp_path, how):
     assert_step_four_reads_a_chain_as_the_plan_does(run_entry, tmp_path, how)
+
+
+def test_an_empty_pin_source_is_the_plans_to_refuse(tmp_path):
+    assert_an_empty_pin_source_is_the_plans_to_refuse(run_entry, tmp_path)
+
+
+def test_a_chain_of_one_link_has_no_source_to_note(tmp_path):
+    assert_a_chain_of_one_link_has_no_source_to_note(run_entry, tmp_path)
 
 
 @pytest.mark.parametrize("org", UPSTREAM_CASINGS)

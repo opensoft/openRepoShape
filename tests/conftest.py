@@ -1615,3 +1615,56 @@ def assert_step_four_reads_a_chain_as_the_plan_does(run, tmp_path: Path,
         assert (f"{product} declares {declares}, not openDox"
                 in step_four + result.stderr)
     assert not (tmp_path / "remotes").exists()
+
+
+def assert_an_empty_pin_source_is_the_plans_to_refuse(run,
+                                                      tmp_path: Path) -> None:
+    """`--pin-source ''` is the scaffold's `Path('')`, which is `.`, so step
+    (4) passes the naming check `.` and lets the plan say what it makes of it
+    (#608, rv608 on #623). On the merge of #608 with #576 step (4) passed
+    `--link-source=`, which the naming check now refuses as
+    `link-source-no-path`, naming a flag the person never typed, and the run
+    ended there with exit 1 where the plan refuses the same value with exit
+    2."""
+    result = run("--project", "codexDox", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--pin", "openXdox@" + "0123456789abcdef" * 2
+                 + "01234567", "--referent-chain", "openXdox,openDox",
+                 "--pin-source", "")
+    assert "link-source-no-path" not in result.stderr + result.stdout, (
+        result.stderr + result.stdout)
+    assert "do not satisfy the naming policy" not in result.stderr
+    assert "(5) the plan" in result.stdout, result.stdout
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "REFUSED pin-source-unreadable:" in result.stderr, result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+def assert_a_chain_of_one_link_has_no_source_to_note(run,
+                                                     tmp_path: Path) -> None:
+    """A chain of ONE link, which the plan accepts, has no holder whose
+    declaration a source could answer, so step (4) is not given the
+    `--pin-source` as a `--link-source`: the naming check would say `NOTE
+    --link-source ...: not used`, which the plan never prints for that chain
+    (#608, rv608 on #623)."""
+    source = tmp_path / "product"
+    source.mkdir()
+    git("init", "-q", "-b", "main", cwd=source)
+    (source / "README.md").write_bytes(b"# a neutral product\n")
+    git("add", "README.md", cwd=source)
+    git("commit", "-q", "-m", "seed", cwd=source)
+    commit = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    result = run("--project", "codexDox", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--pin", f"openDox@{commit}",
+                 "--referent-chain", "openDox", "--pin-source", str(source))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert_refuses_for_want_of_a_terminal(result.stderr)
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert "codexDox: domain-descendant" in step_four, step_four
+    assert "NOTE --link-source" not in step_four + result.stderr, (
+        step_four + result.stderr)
+    assert not (tmp_path / "remotes").exists()

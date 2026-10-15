@@ -1907,7 +1907,8 @@ def refuse_a_parent_nobody_can_write_in(clone: str) -> None:
     root alike - `os.access` says what the mode bits say, and on Windows
     nothing about a folder at all. It leaves the disk as it found it; the
     folder carries a name of its own so a person who finds one after a
-    killed run knows whose it was.
+    killed run knows whose it was. Only the making is the question: the
+    taking away is best-effort, and says where the folder is when it fails.
 
     A FILE standing there is `refuse_a_file_above`'s, which runs first and
     has said so, so what is found here is a folder. NOTHING FOUND AT ALL,
@@ -1925,14 +1926,26 @@ def refuse_a_parent_nobody_can_write_in(clone: str) -> None:
                else "Not even the top of the path is there", clone,
                DRIVE_WAY_OUT))
     try:
-        os.rmdir(tempfile.mkdtemp(prefix=".openreposhape-write-probe-",
-                                  dir=above))
+        probe = tempfile.mkdtemp(prefix=".openreposhape-write-probe-",
+                                 dir=above)
     except OSError as exc:
         die("%s is a folder you cannot write in (%s), and this project would "
             "be cloned inside it, at %s, so the run stops here and nothing "
             "was created. %s"
             % (above, exc.strerror or exc.__class__.__name__, clone,
                WRITE_IT))
+    # TAKING IT AWAY IS BEST-EFFORT. The refusal above is for a folder that
+    # could not be MADE; one that was made says the person can write here,
+    # and a failing `rmdir` (on Windows an indexer or an antivirus can hold a
+    # handle on a new folder for a moment) is no reason to say they cannot.
+    # The folder left behind is named instead, empty and the person's to
+    # delete.
+    try:
+        os.rmdir(probe)
+    except OSError as exc:
+        warn("%s, the folder made in %s to try it, could not be taken away "
+             "again (%s); it is empty, and yours to delete."
+             % (probe, above, exc.strerror or exc.__class__.__name__))
 
 
 # ---------------------------------------------------------------------------
@@ -2006,7 +2019,17 @@ def as_a_bare_link_source(path: str) -> str:
     is a link of the chain, so `openXdox=layer`, which the scaffold reads as
     the one path it is, would be read as `layer` for `openXdox`. A path that
     starts `<word>=` is spelled `./<word>=`; one with a separator or a drive
-    before its first `=` cannot be a link's name, and stays as it is."""
+    before its first `=` cannot be a link's name, and stays as it is.
+
+    AN EMPTY PATH IS `.`, which is what the scaffold's `Path('')` is. The
+    validator refuses `--link-source=` as `link-source-no-path` (#576), for a
+    flag the person never typed, and ends step (4) with exit 1 where the plan
+    refuses the same value its own way, with exit 2. `.` is the folder the
+    scaffold reads it as - the validator runs in the same folder, the shape
+    checkout - so step (4) and the plan describe the same source. A BLANK
+    path is not empty: the scaffold reads `Path(' ')`, so it goes as it is."""
+    if not path:
+        return "."
     return "./" + path if re.match(r"[^/\\:=]+=", path) else path
 
 
@@ -2033,17 +2056,18 @@ def naming_declarations(passthrough: list) -> list:
     `[declared-unverified]` and a WARNING that the link's tree was not
     reachable there, and one the tree broke showed no break at all. The LAST
     `--pin-source`, as the scaffold's `Path` keeps its last, goes as a bare
-    `--link-source` - and only WITH a chain, because the scaffold reads the
-    tree for its links alone and a source no link used is a NOTE the plan
-    never prints.
+    `--link-source` - and only WITH a chain of two links at least: the
+    scaffold reads the tree for the links alone, a chain of one link has no
+    holder whose declaration a source could answer, and a source no link
+    used is a NOTE the plan never prints.
     """
     products = [name for name in (
         pin.strip().split("@", 1)[0].rsplit("/", 1)[-1]
         for pin in passed_values(passthrough, "--pin")) if name]
     chains = passed_values(passthrough, "--referent-chain")
     sources = passed_values(passthrough, "--pin-source")
-    has_links = bool(chains) and any(
-        link.strip() for link in chains[-1].split(","))
+    has_links = bool(chains) and sum(
+        1 for link in chains[-1].split(",") if link.strip()) > 1
     return ((["--pins=" + ",".join(products)] if products else [])
             + (["--referent-chain=" + chains[-1]] if chains else [])
             + (["--link-source=" + as_a_bare_link_source(sources[-1])]
@@ -2136,11 +2160,22 @@ def scaffold_args(opts: Options, org: str) -> list:
 #: thing `_print_plan` prints, and nothing printed before it begins so.
 PLAN_STARTS = "project      "
 
+#: What step (5) says when the plan did not go through (#608, L2-37): a plan
+#: the scaffold printed and then refused, a plan it never printed, and a plan
+#: that stopped the first time and not the second. The last names no plan, and
+#: no refusal, because the second run is all it has seen.
+PLAN_REFUSED = "the plan was refused (see above)."
+PLAN_NOT_PRODUCED = "the plan could not be produced (see above)."
+PLAN_STOPPED_ONCE = ("the scaffold stopped at the plan (see above). Asked a "
+                     "second time it did not stop, so the refusal did not "
+                     "happen again: run setup again.")
 
-def plan_was_printed(shape_root: Path, plan: list,
-                     planned: subprocess.CompletedProcess) -> bool:
-    """Whether the scaffold's `--dry-run`, `plan`, printed its plan before it
-    refused (#608, L2-37).
+
+def why_the_plan_did_not_go_through(shape_root: Path, plan: list,
+                                    planned: subprocess.CompletedProcess
+                                    ) -> str:
+    """What step (5) says of a scaffold `--dry-run`, `plan`, that exited
+    nonzero (#608, L2-37).
 
     Since #573 the dry run prints the plan and THEN asks whether the remotes
     exist, so a refusal can come either side of the plan, and "the plan could
@@ -2153,12 +2188,24 @@ def plan_was_printed(shape_root: Path, plan: list,
     would put each of them behind the child's buffering and its output
     encoding, on every platform, to word one refusal. A child killed by a
     signal refused nothing, and is not asked.
+
+    THE SECOND RUN IS NOT THE ONE THE PERSON SAW. The words describe what it
+    printed, and what is above is the first run's. A passing gh or network
+    failure before the plan, or a remote made between the two runs, makes the
+    first refuse and the second print the plan and exit 0: it refused
+    nothing, and neither "refused" nor "could not be produced" is known to be
+    true of what is above. So a second run that exits 0 gets its own words,
+    that the refusal did not happen again, and the person runs setup again.
     """
     if planned.returncode < 0:
-        return False
+        return PLAN_NOT_PRODUCED
     again = run(plan, cwd=shape_root, capture=True)
-    return any(line.startswith(PLAN_STARTS)
-               for line in (again.stdout or "").splitlines())
+    if again.returncode == 0:
+        return PLAN_STOPPED_ONCE
+    if any(line.startswith(PLAN_STARTS)
+           for line in (again.stdout or "").splitlines()):
+        return PLAN_REFUSED
+    return PLAN_NOT_PRODUCED
 
 
 def plan_and_confirm(opts: Options, shape_root: Path, org: str,
@@ -2172,11 +2219,9 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
     plan = [PYTHON, str(shape_root / SCAFFOLD), *args, "--dry-run"]
     planned = run(plan, cwd=shape_root)
     if planned.returncode != 0:
-        raise Refusal(
-            "the plan was refused (see above)."
-            if plan_was_printed(shape_root, plan, planned)
-            else "the plan could not be produced (see above).",
-            shell_status(planned.returncode))
+        raise Refusal(why_the_plan_did_not_go_through(shape_root, plan,
+                                                      planned),
+                      shell_status(planned.returncode))
 
     # THE ONE THING THE RUN WRITES ON THIS DISK IS IN THE PLAN TOO (#498).
     # The scaffold's plan names the three repositories; the clone path - set
