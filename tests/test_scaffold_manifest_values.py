@@ -53,8 +53,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, ORG, REPO, SCAFFOLD, WINDOWS_SKIP, git,
-                      run_script)
+from conftest import (ORG, REPO, SCAFFOLD, WINDOWS_SKIP, cloned_just_pushed,
+                      git, run_script, scaffold_dry_run_on_github)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -456,11 +456,8 @@ def test_what_is_typed_is_what_the_project_holds_and_bootstrap_agrees(
     result = scaffold(tmp_path, f"--tracking-branch={branch}",
                       f"--id={project_id}", work=True)
     assert result.returncode == 0, result.stderr + result.stdout
-    clone = tmp_path / "Atlas"
-    cloned = git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-                 str(tmp_path / REMOTES / "Atlas.git"), str(clone),
-                 cwd=tmp_path, check=False)
-    assert cloned.returncode == 0, cloned.stderr
+    clone = cloned_just_pushed(tmp_path / REMOTES / "Atlas.git",
+                               tmp_path / "Atlas")
     manifest = load_yaml(clone / "project.yaml")
     assert manifest["id"] == project_id
     assert manifest["tracking_branch"] == branch
@@ -629,14 +626,19 @@ def test_a_project_whose_work_directory_name_is_too_long_is_refused_too(
         assert not (tmp_path / WORK).exists()
 
 
-def test_the_longest_name_a_disk_keeps_is_still_accepted(tmp_path):
+def test_the_longest_name_a_disk_keeps_is_still_accepted(tmp_path, monkeypatch,
+                                                         capsys):
     """246 characters is `<project>-spec.git` at exactly 255 bytes. A dry run
-    only: a real tree this deep is a Windows path the OS will not open."""
+    only: a real tree this deep is a Windows path the OS will not open.
+    Without `--local-remote-dir` the dry run asks GitHub whether the three
+    exist (#537), so that half runs in process and asks a stand-in."""
     result = scaffold(tmp_path, "--project", "N" * 246, "--dry-run")
     assert result.returncode == 0, result.stderr + result.stdout
-    without_remotes = scaffold(tmp_path, "--project", "N" * 250, "--dry-run",
-                               local=False)
-    assert without_remotes.returncode == 0, without_remotes.stderr
+    code, _out, err, asked = scaffold_dry_run_on_github(
+        monkeypatch, capsys, *IDENTITY, "--project", "N" * 250)
+    assert code == 0, err
+    assert asked == [f"{ORG}/{'N' * 250}{tail}" for tail in
+                     ("", "-spec", "-code")]
 
 
 def test_the_name_rule_is_the_same_bytes_the_tools_make():

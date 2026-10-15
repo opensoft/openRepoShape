@@ -49,7 +49,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import git, run_script
+from conftest import cloned_just_pushed, git, run_script
 #: The family fixture, its names and the offline environment, imported from
 #: the modules that own them rather than rebuilt: a holder made any other way
 #: would test a different holder.
@@ -101,11 +101,12 @@ def isolated(offline, tmp_path: Path) -> dict:
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.invalid"}
 
 
-def raw(root: Path, env: dict, *args: str,
-        check: bool = True) -> subprocess.CompletedProcess:
-    """`git` in `root` under `env`, its output as BYTES."""
+def raw(root: Path, env: dict, *args: str, check: bool = True,
+        stdin: bytes | None = None) -> subprocess.CompletedProcess:
+    """`git` in `root` under `env`, its output as BYTES, and `stdin`, bytes
+    too, on its standard input."""
     proc = subprocess.run(["git", *args], cwd=str(root), capture_output=True,
-                          check=False, env={**os.environ, **env})
+                          check=False, env={**os.environ, **env}, input=stdin)
     if check:
         assert proc.returncode == 0, (f"git {' '.join(args)} in {root}:\n"
                                       f"{proc.stderr!r}")
@@ -254,8 +255,8 @@ def test_bump_refuses_a_row_naming_a_directory_that_is_really_there(
     as a gitlink of its own. The refusal comes before all of that: the clone
     stays where it was."""
     env = isolated(offline, tmp_path)
-    git("clone", "-q", str(family["remotes"] / f"{MEMBER}.git"), GLOB,
-        cwd=holder)
+    cloned_just_pushed(family["remotes"] / f"{MEMBER}.git", holder / GLOB,
+                       recurse=False)
     star = holder / "members" / "*"
     assert (star / ".git").exists(), "premise: the literal checkout is there"
     tip = raw(star, env, "rev-parse", "HEAD").stdout

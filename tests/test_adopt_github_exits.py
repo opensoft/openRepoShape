@@ -58,8 +58,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, WINDOWS_SKIP, git, make_source_repo,
-                      run_script, write_plan)
+from conftest import (ADOPT, REPO, WINDOWS_SKIP, a_hook_that_unstages, git,
+                      make_source_repo, run_script, write_plan)
+from test_adopt_tracking_branch import OPEN_THE_SPLIT, PULL_REQUEST_FOLLOW_UP
 
 #: `execute` REQUIRES `git filter-repo`; without it the runs below are
 #: skipped, as every `execute` test in this suite is.
@@ -75,18 +76,12 @@ SPLIT_BRANCH = "adopt/three-repo-shape"
 #: the plan as written.
 SOURCE_TREE = {"README.md": "# Northwind\n", "src/app.py": "print(1)\n",
                "docs/spec.md": "# Spec\n"}
-#: The same source with a `contracts/shape-pin.yaml` of its OWN, naming a file
-#: the plan sends to the code leg. `plan` sends `contracts/` to the spec leg,
-#: where the adoption verifies; kept in the root, as `KEEP_CONTRACTS` answers,
-#: it is the pin the first bootstrap would read, naming a file that is not
-#: there, and the verification fails (`adopt-shape-file-missing`). A REAL
-#: failure of `_verify`, with nothing in the tool replaced.
-FAILING_TREE = {**SOURCE_TREE, "contracts/shape-pin.yaml": (
-    "schema_version: 1\nkind: pinned_contract_manifest\nfiles:\n"
-    f"  - path: src/app.py\n    sha256: \"{'0' * 64}\"\n")}
-CONTRACTS_TO_SPEC = "  - path: contracts/\n    leg: spec\n"
-KEEP_CONTRACTS = ("  - path: contracts/\n    leg: root\n"
-                  "    resolution: \"kept beside the shape's own\"\n")
+# A failing verification is a REAL failure of `_verify`, with nothing in the
+# tool replaced: a `pre-commit` hook takes a file the shape's pin names out
+# of the split commit (`conftest.a_hook_that_unstages`, `github_run`'s
+# `failing`), and the verification fails (`adopt-shape-file-missing`). The
+# source's own `contracts/shape-pin.yaml` kept in the root stood for it until
+# #524, which refuses that plan before any leg exists.
 
 #: The heading of step 7, which the point runs from to the next blank line.
 STEP_7 = "7. **Read the verification table back to them.**"
@@ -106,6 +101,17 @@ SPLIT_IS_PUSHED = (
 #: verification: the refusal above names the exact command that was tried.
 NOT_BY_HAND = ("No pull request was opened, and none should be: the split "
                "above did not pass verification.")
+#: What a failed verification says of what the run put in place on GitHub
+#: BEFORE it verified (#523, auA-12): the pull request it opened, which the
+#: branch deletion the way out names closes, and the topic, on each
+#: repository that took it.
+STILL_OPEN = (f"A pull request for that branch IS open on {ORG}/{NORTHWIND}, "
+              "for a split that did not pass verification: deleting the "
+              "branch, as above, closes it.")
+TOPIC_STAYS = (f"The topic {TOPIC} stays set on {ORG}/{NORTHWIND}, "
+               f"{ORG}/{NORTHWIND}-spec and {ORG}/{NORTHWIND}-code: the "
+               "re-run sets it again on the root and the legs it makes, and "
+               "a leg left behind keeps it.")
 VERIFIED = "adoption verified: every source path is in exactly one place"
 FINDING = "FINDING adopt-shape-file-missing:"
 #: What `_verify` used to say after every pass, whether or not a pull request
@@ -208,20 +214,20 @@ def step_7() -> str:
 
 
 def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
-               keep_contracts: bool = False, merge_stderr: bool = False,
+               failing: bool = False, merge_stderr: bool = False,
                stdout_closed: bool = False, branch: str = "main",
                plan_flags: tuple = (), before_plan=None):
     """Plan a small source and `execute` it in GitHub mode, with a `gh` that
     refuses `refuses`. Returns `(result, github)`: the run, and the directory
     that stands for github.com, with `testorg/<name>.git` in it.
 
-    `keep_contracts` answers the plan so that the source's own pin stays in
-    the root, which fails the verification. `merge_stderr` runs with both
-    streams in one pipe, as a person redirecting a log has them: stdout is
-    then block-buffered, and the order the lines arrive in is the order the
-    tool flushed them. `stdout_closed` gives the run a stdout whose reading end
-    is already closed, as `| head` leaves it once `head` has quit, so that
-    `result.stdout` is None. `branch` is the source's own (default) branch,
+    `failing` gives git the hook that takes a file the shape's pin names
+    out of the split commit, which fails the verification. `merge_stderr`
+    runs with both streams in one pipe, as a person redirecting a log has
+    them: stdout is then block-buffered, and the order the lines arrive in
+    is the order the tool flushed them. `stdout_closed` gives the run a
+    stdout whose reading end is already closed, as `| head` leaves it once
+    `head` has quit, so that `result.stdout` is None. `branch` is the source's own (default) branch,
     and `plan_flags` go to `plan` after the ones `write_plan` passes.
     `before_plan`, when given, is called with the source and the directory
     that stands for github.com once the assembly is there, before `plan`."""
@@ -242,8 +248,12 @@ def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
     shim.write_text(GH_SHIM, encoding="utf-8")
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
     config = tmp_path / "gitconfig"
+    hooks = (a_hook_that_unstages(tmp_path / "commit-hooks") if failing
+             else None)
     config.write_text(f'[url "{github.as_posix()}/"]\n'
-                      "\tinsteadOf = https://github.com/\n", encoding="utf-8")
+                      "\tinsteadOf = https://github.com/\n"
+                      + (f"[core]\n\thooksPath = {hooks.as_posix()}\n"
+                         if hooks else ""), encoding="utf-8")
     # The operator's `gh` must not be reachable from here: no token it would
     # accept, no config to read a login from, and (where it can be done
     # without losing `git`) no directory that holds one on PATH.
@@ -253,12 +263,6 @@ def github_run(tmp_path: Path, refuses: str, tree: dict = SOURCE_TREE,
     plan = tmp_path / "adoption-plan.yaml"
     written = write_plan(source, plan, extra=plan_flags)
     assert written.returncode == 0, written.stderr + written.stdout
-    if keep_contracts:
-        answered = plan.read_text(encoding="utf-8")
-        assert CONTRACTS_TO_SPEC in answered, answered
-        with plan.open("w", encoding="utf-8", newline="\n") as handle:
-            handle.write(answered.replace(CONTRACTS_TO_SPEC, KEEP_CONTRACTS,
-                                          1))
     stdout = subprocess.PIPE
     if stdout_closed:
         read_end, stdout = os.pipe()
@@ -367,6 +371,20 @@ def test_step_7_keys_its_advice_to_the_exit_and_not_to_non_zero():
     # The order is the reading order: the failed verification first, and the
     # exit-2 case read AS the exception to it, not under it.
     assert said.index("Exit 1") < said.index("Exit 2 saying"), said
+
+
+def test_step_7_says_what_a_failed_verification_leaves_on_github():
+    """Exit 1 said "the source is untouched". Against GitHub `execute` sets
+    the topic and opens the pull request BEFORE it verifies, so a failed
+    verification leaves the pull request open on the source and the topic
+    set, unless `gh` refused them, and deleting the split branch, as the way
+    out says, closes that pull request (#523, auA-12)."""
+    said = step_7()
+    assert "untouched" not in said, said
+    assert ("Exit 1, a failed verification: nothing is deleted and `main` is "
+            "where it was, but the split branch is pushed and, on GitHub, its "
+            "pull request may be open and the topic set") in said, said
+    assert "delete the split branch (closing that pull request)" in said, said
 
 
 def test_the_modules_exit_codes_paragraph_names_the_exits_after_the_push(
@@ -493,6 +511,14 @@ def test_the_command_printed_for_a_refused_pull_request_is_the_one_refused(
                      f"{NORTHWIND}-spec and {NORTHWIND}-code"), title
     assert body.split("\n", 1)[0] == title, body
     assert "MOVED TO THE CODE LEG" in body and "\n" in body, body
+    # The body lists the FOLLOW-UPS the split does not do, and the last is a
+    # review of the pull request this run opens itself, never one telling
+    # the reviewer to open it, or calling the extracted legs seeded (#523).
+    follow_ups = body.split("FOLLOW-UPS, which this commit does NOT do:\n",
+                            1)[1]
+    assert follow_ups.endswith(f"  - {PULL_REQUEST_FOLLOW_UP}\n"), follow_ups
+    assert OPEN_THE_SPLIT not in body, body
+    assert "seeded" not in follow_ups, follow_ups
 
 
 @WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
@@ -525,7 +551,7 @@ def test_a_failed_verification_outranks_a_refused_pull_request(tmp_path):
     the split. The topic's way out is the verification's too: the re-run it
     names sets the topic (#481)."""
     result, github = github_run(tmp_path, "pr create|repo edit",
-                                tree=FAILING_TREE, keep_contracts=True)
+                                failing=True)
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert FINDING in result.stderr, result.stderr
@@ -548,11 +574,44 @@ def test_a_failed_verification_outranks_a_refused_pull_request(tmp_path):
 
 @WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
 @needs_filter_repo
+@pytest.mark.parametrize("refuses, said", [
+    pytest.param("never", (STILL_OPEN, TOPIC_STAYS), id="both-in-place"),
+    pytest.param("pr create", (NOT_BY_HAND, TOPIC_STAYS), id="topic-only"),
+    pytest.param("repo edit", (STILL_OPEN,), id="pull-request-only"),
+])
+def test_a_failed_verification_says_what_it_left_in_place(tmp_path, refuses,
+                                                          said):
+    """The split fails the verification after `execute` has set the topic
+    and opened the pull request, whichever of the two `gh` took. The way out
+    said NOTHING was deleted from the source, which is true, and nothing of
+    the pull request open for the failed split, or of the topic (#523,
+    auA-12). The last thing the run says now names each one it left, after
+    the command that deletes the split branch, which closes the pull
+    request; and still no command to open one or to set the topic, and no
+    NEXT. Both refused is
+    `test_a_failed_verification_outranks_a_refused_pull_request`."""
+    result, github = github_run(tmp_path, refuses, failing=True)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert FINDING in result.stderr, result.stderr
+    assert result.stderr.rstrip("\n").rsplit("\n", 1)[1] == " ".join(said), \
+        result.stderr
+    assert result.stderr.index(f"--delete {SPLIT_BRANCH}") \
+        < result.stderr.index(said[0]), result.stderr
+    assert (github / "opened").exists() is (STILL_OPEN in said)
+    for unsaid in ("Open the pull request by hand", "Set the topic by hand",
+                   "IS pushed", NEXT, VERIFIED):
+        assert unsaid not in result.stderr + result.stdout, unsaid
+    assert_pushed(github)
+
+
+@WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
+@needs_filter_repo
 def test_the_same_source_verifies_when_gh_opens_the_pull_request(tmp_path):
-    """The control for the test above: it is the plan's answer that fails the
-    verification, not the refused pull request. Sent to the spec leg, as
-    `plan` sends it, the pin verifies and the run is exit 0."""
-    result, github = github_run(tmp_path, "never", tree=FAILING_TREE)
+    """The control for the test above: it is the split the hook leaves that
+    fails the verification, not the refused pull request. Without the hook,
+    the same source verifies and the run is exit 0."""
+    result, github = github_run(tmp_path, "never")
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert VERIFIED in result.stdout, result.stdout

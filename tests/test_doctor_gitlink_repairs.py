@@ -48,7 +48,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
-from conftest import FILE_PROTOCOL, REPO, git, run_script
+from conftest import FILE_PROTOCOL, REPO, cloned_just_pushed, git, run_script
 from test_commit_trailers import LANE
 from test_shape_doctor import (  # noqa: F401
     DOCTOR, DRIFT_TARGET, GIT_IDENTITY, PROJECT, doctor, doctor_module,
@@ -74,11 +74,9 @@ def advance(scaffolded_here, tmp_path_factory, role: str,
     """A new commit on a branch of a leg's remote, as a merged pull request
     leaves one, adding `relative` (a path the `placement` row puts in that
     leg); its sha."""
-    work = tmp_path_factory.mktemp(f"{role}-advance") / f"{PROJECT}-{role}"
-    remote = scaffolded_here["base"] / "remotes" / f"{PROJECT}-{role}.git"
-    proc = subprocess.run(["git", "clone", "-q", str(remote), str(work)],
-                          capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    work = cloned_just_pushed(
+        scaffolded_here["base"] / "remotes" / f"{PROJECT}-{role}.git",
+        tmp_path_factory.mktemp(f"{role}-advance") / f"{PROJECT}-{role}")
     (work / relative).parent.mkdir(parents=True, exist_ok=True)
     (work / relative).write_text("# R478\n", encoding="utf-8")
     git("add", "--", relative, cwd=work)
@@ -403,12 +401,19 @@ OTHER_FINDINGS = {
     "pin-submodule-uninitialized": (refused_with_the_gitlink_moved, 2),
 }
 
+#: The two of those whose finding, alone, names its own `bump-leg.py` line
+#: in the gate's report (#539): the gate's, below its finding's first line,
+#: which is all the row quotes, so the row is still the gate's own.
+GATE_NAMES_THE_LINE = {"pin-digest-mismatch", "pin-workflow-ref-mismatch"}
+
 
 @pytest.mark.parametrize("code", sorted(OTHER_FINDINGS))
 def test_every_other_pins_row_is_the_gates_own(standard, project, code):
     """Byte for byte the row the gate alone makes, with no repair named:
     four findings a gitlink at its pin can have, and a refusal over a
-    gitlink that is not."""
+    gitlink that is not. The gate names a `bump-leg.py` line for a lone
+    digest and a lone workflow reference, and for nothing else here
+    (#539, `tests/test_validate_pins_lockstep_lines.py`)."""
     root = project.resolve()
     make, exit_code = OTHER_FINDINGS[code]
     make(root)
@@ -419,7 +424,12 @@ def test_every_other_pins_row_is_the_gates_own(standard, project, code):
     assert "gitlink_repairs" not in row["detail"], row["detail"]
     assert "bump-leg" not in row["reason"], row["reason"]
     gate = run_script(root / "scripts" / "validate-pins.py", cwd=root)
-    assert "bump-leg.py" not in gate.stdout + gate.stderr
+    said = gate.stdout + gate.stderr
+    if code in GATE_NAMES_THE_LINE:
+        assert "scripts/bump-leg.py" in said, gate.stderr
+    else:
+        # The old strength: not even the file's name, in any spelling.
+        assert "bump-leg.py" not in said, gate.stderr
 
 
 # --- named only where a line can commit -------------------------------------

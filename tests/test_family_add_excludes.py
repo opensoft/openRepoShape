@@ -43,7 +43,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FILE_PROTOCOL, git, rmtree, run_script
+from conftest import FILE_PROTOCOL, cloned_just_pushed, git, rmtree, run_script
 #: The family fixture, its names and the offline environment, imported from
 #: the modules that own them rather than rebuilt: a holder made any other way
 #: would test a different holder.
@@ -149,10 +149,7 @@ def recursive_clone(root: Path, tmp_path: Path) -> Path:
     git_under(env, "init", "-q", "--bare", "-b", "main", str(bare),
               cwd=tmp_path)
     git_under(env, "push", "-q", str(bare), "HEAD:refs/heads/main", cwd=root)
-    clone = tmp_path / "clone" / NAME
-    git_under(env, *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-              str(bare), str(clone), cwd=tmp_path)
-    return clone
+    return cloned_just_pushed(bare, tmp_path / "clone" / NAME, env=env)
 
 
 def refused_before_the_mount(result: subprocess.CompletedProcess, root: Path,
@@ -486,10 +483,11 @@ def test_a_name_another_submodule_has_is_refused_before_the_mount(
         f"gives {SPARE}'s mount",
         "Remediation: git names a submodule after its path, so that name is "
         "a member's. Give that submodule a name of its own, or take it out, "
-        "by hand, then re-run. Mounting over the name would rewrite its "
-        f"section to point at {SPARE} (git before 2.51), or mount {SPARE} "
-        "under another name this tool does not follow (git 2.51 and later, "
-        "with the `--force` this tool mounts with).")
+        "by hand, then `git add .gitmodules` and re-run. Mounting over the "
+        f"name would rewrite its section to point at {SPARE} (git before "
+        f"2.51), or mount {SPARE} under another name this tool does not "
+        "follow (git 2.51 and later, with the `--force` this tool mounts "
+        "with).")
     assert not (holder / MOUNT).exists()
     offline.assert_left_nothing()
 

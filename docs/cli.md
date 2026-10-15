@@ -34,7 +34,7 @@ one today, and the generator refuses to write this file if one ever appears.
 | [`scaffold-project.py`](#scaffold-projectpy) | Creates the three repositories and writes the pins. What the front door calls once the human has said yes. |
 | [`adopt-project.py`](#adopt-projectpy) | Converts an EXISTING repository into the shape, in place, keeping its name and its history. |
 | [`update-shape.py`](#update-shapepy) | Re-copies a project's shape files from this standard and re-pins them. It never merges. |
-| [`shape-doctor.py`](#shape-doctorpy) | Answers ONE question about ONE repository: is it compliant with this shape, and what is missing. Writes nothing. |
+| [`shape-doctor.py`](#shape-doctorpy) | Answers ONE question about ONE repository: is it compliant with this shape, and what is missing. Writes nothing but a `--placement-plan` file you name. |
 | [`bootstrap`](#bootstrap) | Runs this standard's canonical bootstrap against a project that was never scaffolded, so a repository that elected nothing still has the command. |
 | [`scripts/bump-leg.py`](#scriptsbump-legpy) | Advances ONE leg's pin — the gitlink, `contracts/<role>-pin.yaml` and every workflow `@<sha>` — in one lockstep commit. |
 | [`scripts/family.py`](#scriptsfamilypy) | Creates a FAMILY holder and maintains its member pins. |
@@ -112,7 +112,8 @@ usage: setup-project.py [<Project>] [options] [-- <extra scaffold flags>]
 Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
-Anything after `--` is passed straight through to scaffold-project.py.
+Anything after `--` is passed straight through to scaffold-project.py. A
+`--dry-run` there ends this run at the plan, creating nothing.
 ```
 
 ### `openRepoShape`
@@ -123,6 +124,7 @@ Anything after `--` is passed straight through to scaffold-project.py.
 openRepoShape --install            install (or update) this command into ~/.local/bin
 openRepoShape --preflight          check this MACHINE and stop; creates nothing
 openRepoShape --doctor [<path>] [--json] [--placement-plan <file>]
+                                   diagnose a REPOSITORY against this standard
 openRepoShape <Project> [--org <org>] [setup-project.py options] [-- <scaffold flags>]
 openRepoShape --help | --version
 
@@ -150,10 +152,22 @@ opensoft/openRepoTools', and its own installer places them:
   curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRepoTools | bash -s -- --install
 
   $OPENREPOSHAPE_REPO       owner/name to fetch from (default opensoft/openRepoShape)
-  $OPENREPOSHAPE_REF        the ref to fetch it at   (default main)
+  $OPENREPOSHAPE_REF        the ref to fetch it at   (default: the ref --install
+                            recorded, else main)
   $OPENREPOSHAPE_ORG        the organisation, when --org is not given
   $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
+  $OPENREPOSHAPE_RECORD_REF 1: --install records $OPENREPOSHAPE_REF (below)
+
+`--install` RECORDS A REF ONLY WHEN ASKED: with $OPENREPOSHAPE_RECORD_REF=1
+it writes $OPENREPOSHAPE_REF to `openRepoShape.ref` beside the command it
+places, which is what the one-line installer (install.sh) does with the
+release tag it installs. The installed command then stays on that ref: it
+fetches setup.sh at it, setup.sh clones the standard at it (`--shape-ref`),
+and `--doctor` checks its clone out at it. $OPENREPOSHAPE_REF set for one run
+still wins, and `--version` prints the ref in force. A command re-installing
+itself keeps its own record; any other install records nothing, removes a
+record already there, and follows main.
 
 `--doctor [<path>] [--json] [--placement-plan <file>]` runs `shape-doctor.py`
 over <path> (default `.`) and prints one row per check and ONE verdict:
@@ -168,7 +182,7 @@ ran this from, even inside the repository), and moves nothing.
 
 Run beside a checkout of the standard, it uses that one. Run from anywhere
 else, it clones the standard into a temporary directory first and KEEPS it,
-because its NEXT lines name files in it. The report's last line names
+for the NEXT lines that name files in it. The report's last line names
 that directory, which is safe to delete once you are done with those
 commands; under `--json` that line goes to stderr, so stdout stays one JSON
 object.
@@ -233,7 +247,8 @@ usage: setup-project.py [<Project>] [options] [-- <extra scaffold flags>]
 Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
-Anything after `--` is passed straight through to scaffold-project.py.
+Anything after `--` is passed straight through to scaffold-project.py. A
+`--dry-run` there ends this run at the plan, creating nothing.
 ```
 
 ### `scaffold-project.py`
@@ -253,6 +268,7 @@ usage: scaffold-project.py [-h] --org ORG --project PROJECT [--id ID]
                            [--pin openProduct@COMMIT]
                            [--referent-chain openLayer,openProduct]
                            [--pin-source PIN_SOURCE] [--work-dir WORK_DIR]
+                           [--no-next-steps]
 
 Create a project's three repositories in the shape this standard describes.
 
@@ -304,7 +320,11 @@ options:
                         or lies inside a FILE the shape writes into the root
                         is refused before anything is created: `project.yaml`
                         is one, and `contracts` holds several.
-  --dry-run
+  --dry-run             print the plan and ask, as the real run does, whether
+                        each of the three repositories already exists (`gh
+                        repo view` and its commit listing, or the bare
+                        repositories with --local-remote-dir), refusing what
+                        it refuses; create no remote and push nothing
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
                         repo create` (the TEST path; no network)
@@ -339,9 +359,18 @@ options:
   --pin-source PIN_SOURCE
                         a local clone to compute --pin digests from, instead
                         of reading the forge with `gh api` (the TEST path; no
-                        network)
+                        network). The pin file says only that the digest was
+                        read from `local-clone`, never the path. Given with no
+                        --pin and no --referent-chain to read it, it is
+                        refused as `pin-source-unused`; an empty value is
+                        refused as `pin-source-no-path`, and `.` means this
+                        directory.
   --work-dir WORK_DIR   where the working trees are built (default: a
                         temporary directory)
+  --no-next-steps       leave out the closing NEXT STEPS (the clone, the cd
+                        and `make bootstrap`): setup-project.py passes it,
+                        because it runs those steps itself next. `Working
+                        trees are at` still prints.
 ```
 
 ### `adopt-project.py`
@@ -466,7 +495,13 @@ options:
   --pin-source PIN_SOURCE
                         a local clone to compute --pin digests from, instead
                         of reading the forge with `gh api` (the TEST path; no
-                        network)
+                        network). The plan records the path, so that `check`
+                        recomputes each digest there; a path that is not one
+                        printable line is refused as `adopt-unwritable-value`.
+                        The pin file says only `local-clone`, never the path.
+                        Given with no --pin to read it, the flag is refused as
+                        `pin-source-unused`; an empty value is refused as
+                        `pin-source-no-path`, and `.` means this directory.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's
@@ -647,7 +682,9 @@ options:
   --leg {spec,code}     which leg to advance, by the `role:` its own
                         project.yaml declares
   --to COMMIT           the 40-hex commit to move the gitlink, the pin and
-                        every workflow reference to, together
+                        every workflow reference to, together (an annotated
+                        tag's own 40-hex id is peeled to the commit it names,
+                        as `family.py add --at` peels one)
   --trailer "KEY: VALUE"
                         append this `<Key>: <value>` line to the commit this
                         writes; repeatable, kept in the order given
@@ -731,7 +768,11 @@ options:
                         and make no family folder at all. Mutually exclusive
                         with --into.
   --no-push
-  --dry-run
+  --dry-run             print the plan and ask, as the real run does, whether
+                        <org>/<Family> already exists (`gh repo view` and its
+                        commit listing; with --local-remote-dir, the bare
+                        repository), refusing what it refuses; make no folder,
+                        remote or repository
 ```
 
 #### `scripts/family.py add`
@@ -754,7 +795,8 @@ options:
   --member ORG/PROJECT  the member's ASSEMBLY ROOT, `<org>/<Project>` — never
                         a leg
   --at COMMIT           pin this 40-hex commit instead of the member's current
-                        tip
+                        tip (an annotated tag's own 40-hex id is peeled to the
+                        commit it names)
   --local-remote-dir LOCAL_REMOTE_DIR
                         resolve the member to a bare repository here instead
                         of github.com (the TEST path)
@@ -787,7 +829,8 @@ options:
   --family-root FAMILY_ROOT
   --member PROJECT
   --to COMMIT           the 40-hex commit to move the gitlink and the pin to,
-                        together
+                        together (an annotated tag's own 40-hex id is peeled
+                        to the commit it names, as `add --at` peels one)
   --trailer "KEY: VALUE"
                         append this `<Key>: <value>` line to the commit this
                         writes; repeatable, kept in the order given
@@ -884,11 +927,19 @@ options:
                         or of a leg's naming.referent_chain: under --project),
                         and then that reading wins even over a directory
                         spelled like the whole value (./PATH reads that
-                        directory); any other value is a bare PATH, which
-                        applies to whichever link has no more specific answer.
-                        Repeatable; a value no link used is noted.
+                        directory); any other value is a bare PATH: the tree
+                        of the chain's FIRST link (the pin the project holds),
+                        read when that link has no more specific answer, and
+                        never a later link's, which needs its own
+                        PRODUCT=PATH, its SHAPE_PIN_SOURCE_<PRODUCT> or a
+                        checkout beside the project. When the chains read here
+                        begin at two different links, a bare PATH is read for
+                        neither. A value that names no path (PRODUCT=, or
+                        empty) is refused. Repeatable; a value no link used is
+                        noted. Every link is tried against PRODUCT=PATH,
                         SHAPE_PIN_SOURCE_<PRODUCT> and a checkout beside the
-                        project are tried too. A link no source answers for is
+                        project, in that order, and a bare PATH last, for the
+                        first link alone. A link no source answers for is
                         declared-unverified, and a source that cannot be read
                         is named with the system's reason: both are warnings
                         and not findings, an explicit source included.

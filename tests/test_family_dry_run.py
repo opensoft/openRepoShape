@@ -49,7 +49,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import git, run_script
+from conftest import cloned_just_pushed, git, run_script
 #: The trailer lines a lane's run lands, from the file that owns them.
 from test_commit_trailers import TRAILERS, trailers_of
 #: The family fixture, its names and the offline environment, imported from
@@ -146,15 +146,18 @@ def objects(root: Path) -> list[str]:
 
 
 def state(root: Path, env: dict, member: str = MEMBER) -> dict:
-    """Everything a dry run must leave exactly as it found it, as bytes."""
+    """Everything a dry run must leave exactly as it found it, as bytes,
+    `.gitmodules` None where the work tree has no file there."""
     mount = root / "members" / member
+    gitmodules = root / ".gitmodules"
     return {
         "objects": objects(root),
         "HEAD": raw(root, env, "rev-parse", "HEAD").stdout,
         "index": raw(root, env, "ls-files", "-s", "-z").stdout,
         "status": raw(root, env, "status", "--porcelain=v1", "-z").stdout,
         "family.yaml": (root / "family.yaml").read_bytes(),
-        ".gitmodules": (root / ".gitmodules").read_bytes(),
+        ".gitmodules": (gitmodules.read_bytes() if gitmodules.is_file()
+                        else None),
         ".git/config": (root / ".git" / "config").read_bytes(),
         "member HEAD": (raw(mount, env, "rev-parse", "HEAD").stdout
                         if mount.is_dir() else None),
@@ -431,8 +434,11 @@ def test_a_refusal_is_the_same_refusal_under_dry_run(
 
 def test_bump_dry_run_of_a_commit_the_member_does_not_have_exits_2(
         holder, offline, tmp_path):
-    """A `--to` the member's objects do not hold after the fetch is exit 2,
-    as the real run's checkout of it is, and neither prints a row."""
+    """A `--to` the member's objects do not hold after the fetch is exit 2
+    from both runs, and neither prints a row. The dry run's resolve and the
+    real run's checkout failed on it in git's words; both now refuse it
+    `member-to-unknown`, in the same words, saying to push it first, as
+    `test_family_bump_to_checks.py` holds it (#541)."""
     env = isolated(offline, tmp_path)
     missing = "deadbeef" * 5
     before = state(holder, env)
@@ -442,9 +448,9 @@ def test_bump_dry_run_of_a_commit_the_member_does_not_have_exits_2(
 
     assert dry.returncode == real.returncode == 2, dry.stdout + dry.stderr
     assert dry.stdout == real.stdout == ""
-    assert dry.stderr.startswith(
-        f"REFUSED resolving {missing[:12]} in members/{MEMBER}, where a real "
-        "bump checks it out.")
+    assert dry.stderr == real.stderr
+    assert refusal(dry.stderr)[0].startswith(
+        f"REFUSED member-to-unknown: --to {missing} ")
     assert_as_it_was(holder, env, before, BUMP_ORDER)
 
 
@@ -1046,8 +1052,7 @@ def a_renamed_copy_of_a_member(root: Path) -> Path:
                  f"submodule.members/{PINNED}.url", cwd=root).stdout.strip()
     remotes = root.parent / "renamed-remotes"
     remotes.mkdir()
-    git("clone", "-q", "--bare", source, str(remotes / f"{RENAMED}.git"),
-        cwd=root.parent)
+    cloned_just_pushed(Path(source), remotes / f"{RENAMED}.git", bare=True)
     return remotes
 
 

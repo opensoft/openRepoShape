@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import PROJECT, git
+from conftest import PROJECT, cloned_just_pushed, git
 from test_bump_leg import branched, bump, reference_both_legs
 from test_bump_leg_rollback import assert_nothing_changed, snapshot
 from test_commit_trailers import TRAILERS
@@ -54,13 +54,10 @@ PASTE_AFTER = "Create one first with: "
 @pytest.fixture(scope="module")
 def advanced(scaffolded, tmp_path_factory) -> str:
     """A real new commit on the spec leg's bare remote; returns its sha."""
-    work = (tmp_path_factory.mktemp("spec-advance-dry-run-tracking")
-            / f"{PROJECT}-spec")
-    proc = subprocess.run(
-        ["git", "clone", "-q",
-         str(scaffolded["remotes"] / f"{PROJECT}-spec.git"), str(work)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    work = cloned_just_pushed(
+        scaffolded["remotes"] / f"{PROJECT}-spec.git",
+        tmp_path_factory.mktemp("spec-advance-dry-run-tracking")
+        / f"{PROJECT}-spec")
     (work / "DRY-RUN-TRACKING.md").write_text("# a contract gained\n")
     git("add", "--", "DRY-RUN-TRACKING.md", cwd=work)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
@@ -189,7 +186,9 @@ def test_the_real_run_on_the_tracking_branch_is_refused_byte_for_byte(
         project, scaffolded, advanced):
     """The refusal's every byte, spelled out, and nothing on stdout: this is
     the text the run had before #477, and a change to it is a change to what
-    a lane that scripts around it reads."""
+    a lane that scripts around it reads. The `switch -c` on its last line is
+    spelled as the dry run's hint is, by `shlex` (#532): a plain root prints
+    the bytes it always did, and one that needs quoting prints quoted."""
     root = project.resolve()
     before = snapshot(project)
 
@@ -201,8 +200,8 @@ def test_the_real_run_on_the_tracking_branch_is_refused_byte_for_byte(
         "project.yaml declares as this project's tracking branch\n"
         "Remediation: these organisations are pull-request only, so this "
         "will not make a commit whose only next step is a push to the "
-        f"default branch. Run:\n    git -C {root} switch -c "
-        f"bump/spec-{advanced[:12]}\nand re-run.\n")
+        f"default branch. Run:\n    {switch_command(project, advanced)}\n"
+        "and re-run.\n")
     assert_nothing_changed(project, before)
 
 

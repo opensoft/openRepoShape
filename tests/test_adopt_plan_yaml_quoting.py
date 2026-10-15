@@ -74,7 +74,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
+from conftest import (ADOPT, REPO, cloned_just_pushed, git, make_source_repo,
                       resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -1285,9 +1285,9 @@ def with_origin(tmp_path: Path, branch: str | None) -> Path:
     """A source whose remote `origin` has been fetched, `origin` holding
     `branch` beside `main` where one is given, and the source no branch of
     its own but `main`. `origin` is under `testorg/Northwind`, the
-    repository `plan` is given, because `plan` reads the source's
-    repository from its `origin`'s last two directories and refuses a plan
-    for another (#499)."""
+    repository `plan` is given, as #499 needed while `plan` read a path
+    `origin`'s last two directories as the source's repository; a path
+    names none since #521, and is compared with nothing."""
     seed = make_source_repo(tmp_path / TEST_ORG / PROJECT_NAME)
     if branch:
         holding(seed, TRACKING_KEY, branch)
@@ -2032,11 +2032,7 @@ def test_what_is_still_accepted_adopts_clones_and_bootstraps(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     assert "adoption verified" in result.stdout
 
-    clone = tmp_path / "clone"
-    cloned = git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
-                 SPLIT_BRANCH, str(source), str(clone), cwd=tmp_path,
-                 check=False)
-    assert cloned.returncode == 0, cloned.stderr
+    clone = cloned_just_pushed(source, tmp_path / "clone", SPLIT_BRANCH)
     bootstrapped = run_script(clone / "scripts/bootstrap.py", cwd=clone)
     assert bootstrapped.returncode == 0, (bootstrapped.stderr
                                           + bootstrapped.stdout)

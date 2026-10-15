@@ -11,14 +11,17 @@ pull-request ruleset.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
+from conftest import (ADOPT, REPO, cloned_just_pushed, git, make_source_repo,
                       resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -61,13 +64,8 @@ def adopted(tmp_path_factory) -> dict:
 @pytest.fixture
 def adopted_clone(adopted, tmp_path):
     """A recursive clone of the source at the split branch."""
-    target = tmp_path / PROJECT
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         "-b", "adopt/three-repo-shape", str(adopted["source"]), str(target)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
-    return target
+    return cloned_just_pushed(adopted["source"], tmp_path / PROJECT,
+                              "adopt/three-repo-shape")
 
 
 # --- what execute refuses --------------------------------------------------
@@ -122,10 +120,8 @@ def test_both_legs_exist_with_more_than_one_commit(adopted):
 def test_a_files_history_is_followable_inside_its_leg(adopted, tmp_path):
     """The point of `git filter-repo`: the commits that made a file come with
     it. The specification was edited in a second commit; the leg has both."""
-    clone = tmp_path / "spec-leg"
-    subprocess.run(["git", "clone", "-q",
-                    str(adopted["remotes"] / f"{PROJECT}-spec.git"),
-                    str(clone)], check=True)
+    clone = cloned_just_pushed(adopted["remotes"] / f"{PROJECT}-spec.git",
+                               tmp_path / "spec-leg")
     log = git("log", "--oneline", "--", "specs/001-feature/spec.md",
               cwd=clone).stdout.splitlines()
     assert len(log) == 2, f"expected two commits for the spec file, got {log}"
@@ -139,10 +135,8 @@ def test_a_files_history_is_followable_inside_its_leg(adopted, tmp_path):
 def test_the_legs_keep_the_paths_they_had_in_the_source(adopted, tmp_path):
     """Paths are NOT flattened: `scripts/validate.py` stays there, which is
     what makes `../spec/contracts` from `code/` the correct read-across."""
-    clone = tmp_path / "code-leg"
-    subprocess.run(["git", "clone", "-q",
-                    str(adopted["remotes"] / f"{PROJECT}-code.git"),
-                    str(clone)], check=True)
+    clone = cloned_just_pushed(adopted["remotes"] / f"{PROJECT}-code.git",
+                               tmp_path / "code-leg")
     assert (clone / "src" / "app" / "main.py").is_file()
     assert (clone / "tests" / "test_main.py").is_file()
     assert not (clone / "specs").exists()
@@ -221,27 +215,82 @@ def next_block(stdout: str) -> list[str]:
     return stdout.split("\nNEXT: ", 1)[1].splitlines()
 
 
+#: What the clone NEXT prints after `execute --local-remote-dir` must carry:
+#: the split's `.gitmodules` names each leg by a plain path, and git clones a
+#: submodule over the `file` transport only where it is told to (#582's
+#: review). A literal, so the test holds the tool to the words it prints.
+ALLOW_FILE = ["-c", "protocol.file.allow=always"]
+
+
+def local_next(source: Path) -> list[str]:
+    """NEXT's first two lines after `execute --local-remote-dir`, which opens
+    no pull request: the split on its branch, and the command that clones
+    that branch from `source`, where the split is pushed, as `execute` names
+    it (resolved, quoted for `sh`). They said "review the pull request", over
+    none, and cloned the default branch (#523, N2). The clone carries `-c
+    protocol.file.allow=always`: pasted without it, git refuses both leg
+    clones, `transport 'file' not allowed` (#582's review)."""
+    return [f"review the split on its branch in {PROJECT} (no pull request "
+            "is opened under --local-remote-dir), then",
+            "    git -c protocol.file.allow=always clone --recurse-submodules "
+            f"-b adopt/three-repo-shape {shlex.quote(str(source.resolve()))}"]
+
+
+def pasted(line: str, cwd: Path, remotes: Path) -> subprocess.CompletedProcess:
+    """A printed `git ... clone ...` line, run in `cwd` as a person pastes it,
+    with one change: the transport every test gives a clone of a remote just
+    pushed into (#440). A plain path is git's local clone, which copies the
+    object files one by one, and maintenance a push left running can pack
+    them away mid-copy (`failed to copy file`, on the macOS runner). So
+    `--no-local` reads the root through git, and each leg's plain path under
+    `remotes`, as `.gitmodules` records it (the directory resolved, in both
+    of a Windows path's spellings), is read as its `file://` URI. Every
+    printed argument is kept as printed, `-c protocol.file.allow=always`
+    among them; a URI is the `file` transport too, so a line without it is
+    refused here as it is refused pasted."""
+    argv = shlex.split(line)
+    resolved = remotes.resolve()
+    uri = resolved.as_uri().rstrip("/") + "/"
+    prefixes = dict.fromkeys([os.path.join(str(resolved), ""),
+                              resolved.as_posix().rstrip("/") + "/"])
+    at = argv.index("clone")
+    return subprocess.run(
+        [*argv[:at], *(arg for prefix in prefixes
+                       for arg in ("-c", f"url.{uri}.insteadOf={prefix}")),
+         "clone", "--no-local", *argv[at + 1:]],
+        cwd=str(cwd), capture_output=True, encoding="utf-8", errors="replace",
+        check=False)
+
+
 def test_next_names_the_bootstrap_a_root_with_its_own_makefile_can_run(
-        adopted, adopted_clone):
+        adopted, tmp_path):
     """The source kept its own Makefile, so the shape's is `shape/Makefile`
     until a person merges the two, and `make bootstrap` in the root exits 2
     (`No rule to make target 'bootstrap'`) (#480). The NEXT block names the
     command `make bootstrap` runs instead, a line says why, and that command,
-    run in a recursive clone of the split, exits 0. (It is run with the
-    interpreter running this test, which is what `python3` names here.)"""
+    run in the clone NEXT's own clone line makes, exits 0. (It is run with
+    the interpreter running this test, which is what `python3` names here.)
+
+    THE CLONE IS THE PRINTED ONE (#582's review): it is parsed and run as
+    printed, but for `pasted`'s transport, where it was a clone the test made
+    its own way and passed while the printed line, pasted, failed both leg
+    clones for want of `-c protocol.file.allow=always`."""
     said = next_block(adopted["stdout"])
-    assert said[:3] == [f"review the pull request on {PROJECT}, then",
-                        f"    git clone --recurse-submodules <{PROJECT} url>",
+    assert said[:3] == [*local_next(adopted["source"]),
                         "    python3 scripts/bootstrap.py"], said
     assert said[3].startswith("NOTE the root keeps its own Makefile and the "
                               "shape's is shape/Makefile, so `make bootstrap`")
+    assert shlex.split(said[1])[:3] == ["git", *ALLOW_FILE], said[1]
+    cloned = pasted(said[1], tmp_path, adopted["remotes"])
+    assert cloned.returncode == 0, cloned.stdout + cloned.stderr
+    clone = tmp_path / adopted["source"].name
     command = said[2].split()
-    ran = subprocess.run([sys.executable, *command[1:]], cwd=adopted_clone,
+    ran = subprocess.run([sys.executable, *command[1:]], cwd=clone,
                          capture_output=True, text=True, encoding="utf-8",
                          errors="replace", check=False)
     assert ran.returncode == 0, ran.stdout + ran.stderr
     if shutil.which("make"):
-        made = subprocess.run(["make", "bootstrap"], cwd=adopted_clone,
+        made = subprocess.run(["make", "bootstrap"], cwd=clone,
                               capture_output=True, text=True,
                               encoding="utf-8", errors="replace", check=False)
         assert made.returncode != 0, made.stdout + made.stderr
@@ -289,6 +338,29 @@ def test_next_keeps_make_bootstrap_where_the_shapes_makefile_is_the_roots(
         f"\nNEXT: review the pull request on {PROJECT}, then\n"
         f"    git clone --recurse-submodules <{PROJECT} url>\n"
         "    make bootstrap\n")
+
+
+def test_next_names_the_split_branch_where_no_pull_request_was_opened(
+        adopter, capsys):
+    """Given the split's branch and the repository it is pushed to, as
+    `execute --local-remote-dir` gives them, NEXT names no pull request and
+    clones that branch from that repository, each quoted for `sh`, with
+    `-c protocol.file.allow=always`, which the leg clones need; the rest of
+    the block is unchanged (#523, N2; #582's review)."""
+    adopter._next_steps({"assembly": PROJECT}, [],
+                        ("adopt/three repo", "/x/my source"))
+
+    out = capsys.readouterr().out
+    assert out == (
+        f"\nNEXT: review the split on its branch in {PROJECT} (no pull "
+        "request is opened under --local-remote-dir), then\n"
+        "    git -c protocol.file.allow=always clone --recurse-submodules "
+        "-b 'adopt/three repo' '/x/my source'\n"
+        "    make bootstrap\n")
+    assert "review the pull request" not in out
+    assert shlex.split(out.splitlines()[2]) == [
+        "git", *ALLOW_FILE, "clone", "--recurse-submodules", "-b",
+        "adopt/three repo", "/x/my source"]
 
 
 #: A source that keeps its own `scripts/bootstrap.py` in the root beside its
@@ -341,10 +413,8 @@ def test_next_names_no_bootstrap_where_the_roots_script_is_the_sources_own(
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert "  beside  shape/scripts/bootstrap.py " in result.stdout
-    assert next_block(result.stdout) == [
-        f"review the pull request on {PROJECT}, then",
-        f"    git clone --recurse-submodules <{PROJECT} url>",
-        BOTH_ASIDE], result.stdout
+    assert next_block(result.stdout) == [*local_next(source), BOTH_ASIDE], \
+        result.stdout
 
 
 def test_next_names_no_bootstrap_where_only_the_script_went_aside(

@@ -45,14 +45,14 @@ from __future__ import annotations
 import errno
 import io
 import os
+import shlex
 import stat
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import PROJECT, git
+from conftest import PROJECT, cloned_just_pushed, git
 # A fixture is used by being named in this module's namespace, which is what
 # the import of `bump_leg_module` is for.
 from test_bump_leg import (  # noqa: F401
@@ -73,12 +73,9 @@ NOT_COMPLETE = "THE ROLLBACK WAS NOT COMPLETE"
 @pytest.fixture(scope="module")
 def advanced(scaffolded, tmp_path_factory) -> str:
     """A real new commit on the spec leg's bare remote; returns its sha."""
-    work = tmp_path_factory.mktemp("spec-advance-rollback") / f"{PROJECT}-spec"
-    proc = subprocess.run(
-        ["git", "clone", "-q",
-         str(scaffolded["remotes"] / f"{PROJECT}-spec.git"), str(work)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    work = cloned_just_pushed(
+        scaffolded["remotes"] / f"{PROJECT}-spec.git",
+        tmp_path_factory.mktemp("spec-advance-rollback") / f"{PROJECT}-spec")
     (work / "ROLLBACK-CONTRACT.md").write_text("# a contract the leg gained\n")
     git("add", "--", "ROLLBACK-CONTRACT.md", cwd=work)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
@@ -467,7 +464,9 @@ def test_a_forward_checkout_that_left_files_in_the_leg_is_not_called_put_back(
     assert ROLLED_BACK not in err, "nothing says the tree is exactly as it was"
     assert "the checkout of spec/ could not be put back: its `git status`" \
         in err, "the step is named"
-    assert "spec status` before anything else" in err, err
+    where = shlex.join(["git", "-C", str((project / "spec").resolve()),
+                        "status"])
+    assert f"`{where}` before anything else" in err, err
     after = snapshot(project)
     for key in ("head", "pin", "workflows", "gitlink", "leg_head",
                 "leg_branch"):
