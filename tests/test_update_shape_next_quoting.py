@@ -49,6 +49,7 @@ from test_update_shape import (CHANGED, CHANGED_SOURCE, LOCAL, PROJECT,
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import PYTHON  # noqa: E402
+from shape_materialize import SHAPE_REPOSITORY  # noqa: E402
 
 UPDATE = REPO / "update-shape.py"
 PIN = "contracts/shape-pin.yaml"
@@ -156,6 +157,23 @@ def steps(argv: list[str]) -> list[list[str]]:
     return out
 
 
+#: The first words of the body of every pull request this tool opens or tells a
+#: person to open (#535). What the rest of it says is
+#: `tests/test_update_shape_messages.py`'s.
+BODY_OPENS = "Written by openRepoShape's `update-shape.py`: "
+
+
+def pr_words(project: dict) -> tuple[str, str]:
+    """`(title, body)` of the pull request for the run these tests make, spelled
+    out by hand: the line a person pastes carries both (#535), because a
+    `gh pr create` without them has `gh` prompt for them."""
+    return (f"Re-sync the shape copies to {SHAPE_REPOSITORY} @ "
+            f"{project['b'][:12]}",
+            BODY_OPENS + "`contracts/shape-pin.yaml` and `project.yaml` "
+            f"re-pinned onto {project['b']}. No copy re-copied from the "
+            "upstream was hand-edited and every digest was recomputed.")
+
+
 def check_run(project, root, *, lane: str = "", upstream=None):
     result = run_script(UPDATE, "check", "--root", str(root), "--upstream",
                         str(upstream or project["upstream"]),
@@ -241,10 +259,11 @@ def test_the_branch_next_line_is_one_argv(project, make_root, name):
     branch = "shape/next-quoting-branch"
     result = apply(root, project, "--branch", branch)
     assert result.returncode == 0, result.stdout + result.stderr
+    title, body = pr_words(project)
     assert argv_of(next_line_of(result.stdout)) == [
         "git", "-C", str(root.resolve()), "push", "-u", "origin", branch,
         "&&", "gh", "pr", "create", "--repo", f"{ORG}/{PROJECT}", "--base",
-        "main", "--head", branch]
+        "main", "--head", branch, "--title", title, "--body", body]
 
 
 def test_the_branch_and_push_next_line_is_one_argv(project, make_root):
@@ -255,9 +274,10 @@ def test_the_branch_and_push_next_line_is_one_argv(project, make_root):
     branch = "shape/next-quoting-pushed"
     result = apply(root, project, "--branch", branch, "--push")
     assert result.returncode == 0, result.stdout + result.stderr
+    title, body = pr_words(project)
     assert argv_of(next_line_of(result.stdout)) == [
         "gh", "pr", "create", "--repo", f"{ORG}/{PROJECT}", "--base", "main",
-        "--head", branch]
+        "--head", branch, "--title", title, "--body", body]
 
 
 @pytest.mark.parametrize("name", AWKWARD)
@@ -330,7 +350,9 @@ def test_the_branch_is_quoted_even_where_its_alphabet_makes_that_a_no_op(
            "bare; `_by_hand` says so of its own lines")
 def test_a_plain_root_prints_the_bytes_it_always_printed(project, make_root):
     """THE LINES BEFORE #325, spelled out by hand: for a root and an upstream
-    that need no quoting, not one byte of any of the three lines moved."""
+    that need no quoting, not one byte of any of the three lines moved. The
+    one change since is on purpose: the `gh pr create` the branch line ends
+    with carries `--title` and `--body` (#535), after everything it had."""
     root = make_root("plain")
     for path in (root.resolve(), project["upstream"].resolve()):
         assert shlex.quote(str(path)) == str(path), (
@@ -349,9 +371,11 @@ def test_a_plain_root_prints_the_bytes_it_always_printed(project, make_root):
     pushing = make_root("plain-too")
     branched = apply(pushing, project, "--branch", branch)
     assert branched.returncode == 0, branched.stdout + branched.stderr
+    title, body = pr_words(project)
     assert next_line_of(branched.stdout) == (
         f"NEXT  git -C {pushing.resolve()} push -u origin {branch} && "
-        f"gh pr create --repo {ORG}/{PROJECT} --base main --head {branch}")
+        f"gh pr create --repo {ORG}/{PROJECT} --base main --head {branch} "
+        f"--title {shlex.quote(title)} --body {shlex.quote(body)}")
 
     bare = make_root("plain-three")
     unbranched = apply(bare, project)
@@ -449,9 +473,10 @@ def test_the_branch_line_pushes_and_opens_when_it_is_pasted(project, make_root,
     pasted = paste(next_line_of(result.stdout), tmp_path, env)
 
     assert pasted.returncode == 0, pasted.stdout + pasted.stderr
+    title, body = pr_words(project)
     assert log.read_text(encoding="utf-8").split("\n")[:-1] == [
         "pr", "create", "--repo", f"{ORG}/{PROJECT}", "--base", "main",
-        "--head", branch]
+        "--head", branch, "--title", title, "--body", body]
     remote = git("config", "remote.origin.url", cwd=root).stdout.strip()
     assert git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}",
                cwd=Path(remote)).stdout.strip() == git(
