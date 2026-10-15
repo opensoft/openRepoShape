@@ -656,7 +656,8 @@ def test_a_command_that_is_a_symlink_is_refused_before_any_request(
     assert "pipx upgrade openreposhape" in said
     assert "pipx uninstall openreposhape" in said
     assert net.calls() == [], net.calls()
-    assert link.is_symlink() and link.readlink() == packaged
+    assert link.is_symlink()
+    assert link.readlink() == packaged
     if not dangling:
         assert packaged.read_bytes() == original
     assert sorted(path.name for path in net.bin.iterdir()) == \

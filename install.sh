@@ -306,7 +306,7 @@ main() {
 	# release named here may be older, so its refusal cannot be relied on.
 	bin_dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
 	target="$bin_dir/openRepoShape"
-	[ ! -L "$target" ] ||
+	[[ ! -L "$target" ]] ||
 		die "$target is a symbolic link, so nothing was installed: pipx places the openreposhape package's openRepoShape that way, and installing this one through the link would overwrite the package's command. Use one installer or the other:
     keep the package's command, and update it with: pipx upgrade openreposhape
     or remove the link (pipx uninstall openreposhape, or rm $target), then run this line again."
