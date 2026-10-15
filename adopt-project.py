@@ -252,7 +252,9 @@ from shape_materialize import (  # noqa: E402
     one_printable_line, pin_collisions, pin_variable_collisions,
     refuse_colliding_pins,
 )
-from repo_shape import REMOTE_SCHEME_RE, SHA256_RE, repo_basename  # noqa: E402
+from repo_shape import SHA256_RE, repo_basename  # noqa: E402
+# One reading of an `origin`, shared with `shape-doctor.py` (#521).
+from repo_shape import origin_is_a_path, url_repository  # noqa: E402
 
 #: The keys `plan` records for each pin, in the order it writes them, and the
 #: value of `contracts/neutral-product-pin.yaml` each one fills.
@@ -1244,10 +1246,11 @@ class Source:
 
 
 def _remote_repository(path: Path) -> str | None:
-    """The `org/repo` the source's `origin` names (`_url_repository`); None
-    when it has no origin, or one that names no such pair."""
+    """The `org/repo` the source's `origin` names (`url_repository`, the one
+    reading `shape-doctor.py` shares); None when it has no origin, or one
+    that names no such pair: a path names none (#521)."""
     url = _origin_url(path)
-    return None if url is None else _url_repository(url)
+    return None if url is None else url_repository(url)
 
 
 def _origin_url(path: Path) -> str | None:
@@ -1269,64 +1272,6 @@ def _origin_url(path: Path) -> str | None:
         return git_out(["remote", "get-url", "origin"], cwd=path)
     except (Refusal, UnicodeDecodeError):
         return None
-
-
-#: A `file://` url, which is a path on this machine written as a url (#521).
-FILE_URL_RE = re.compile(r"^file://", re.IGNORECASE)
-#: git's scp spelling with a bracketed host, `[::1]:org/repo.git`: the
-#: host's own colons are inside the brackets, and its path starts after `]:`.
-SCP_BRACKETED_HOST_RE = re.compile(r"^(?:[^@/]*@)?\[[^\]/]*\]:")
-
-
-def _origin_is_a_path(url: str) -> bool:
-    """Whether an `origin` is a FILESYSTEM PATH, which names no repository
-    (`_url_repository`): `remote_is_a_path`'s answer -- absolute or
-    relative, with `/` or `\\`, a drive or a share -- or a `file://` url."""
-    return remote_is_a_path(url) or FILE_URL_RE.match(url) is not None
-
-
-def _url_repository(url: str) -> str | None:
-    """`<org>/<repo>`: the last two segments of the path a url names, case
-    kept, however the url ends; None for a url whose path has fewer, and for
-    a filesystem PATH, however it is written (#521).
-
-    ONE READING, FOR EVERY SPELLING GIT TAKES. A url names its repository
-    with or without `.git` and with or without a trailing `/`:
-    `https://github.com/acme/Atlas/` and `.../Atlas.git/` named nothing to
-    the regex this replaced, whose `$` came after `[^/]+?`, so nothing was
-    compared and a mistyped `--project` planned with exit 0. The path of a
-    url is what follows its host: `<scheme>://<host>[:<port>]/`, git's scp
-    colon (`[user@]host:`), or `]:` after a bracketed host (`[::1]:`), whose
-    own colons are not that one.
-
-    A PATH NAMES NO REPOSITORY. It is a directory on this machine
-    (`_origin_is_a_path`), and says nothing of the repository on GitHub
-    that `execute` acts on without `--local-remote-dir`
-    (`https://github.com/<org>/<project>.git`). Read as its last two
-    directories, as the regex read it, a clone of `/srv/clones/Atlas.git`
-    was the repository `clones/Atlas`, and the right `--org` was refused
-    `adopt-not-the-source` and sent to `--org clones`, a directory's name;
-    written with backslashes, as Windows writes it, the same path named
-    nothing and was not compared. So no path is compared, in either
-    separator, and `plan` says so (`_path_origin_notes`); nor does one give
-    `plan` an organisation (`adopt-no-org`).
-    """
-    if _origin_is_a_path(url):
-        return None
-    scheme = REMOTE_SCHEME_RE.match(url)
-    bracketed = SCP_BRACKETED_HOST_RE.match(url)
-    if scheme:
-        path = url[scheme.end():].partition("/")[2]
-    elif bracketed:
-        path = url[bracketed.end():]
-    else:
-        path = url.partition(":")[2]
-    path = path.rstrip("/")
-    if path.endswith(".git"):
-        path = path[:-4]
-    above, _, name = path.rpartition("/")
-    org = above.rpartition("/")[2]
-    return f"{org}/{name}" if org and name else None
 
 
 def _default_branch(path: Path) -> str:
@@ -3023,7 +2968,7 @@ def _planned_org(org: str | None, source: Source) -> str:
     which refused `--org is '-'`, a value nobody passed; this refusal was
     never reached. A source with no `origin`, one whose URL is not UTF-8 or
     ends in no `org/repo`, and one whose `origin` is a path, which names no
-    repository (`_url_repository`, #521), all name no org, and the refusal
+    repository (`url_repository`, #521), all name no org, and the refusal
     says each: it is asked of a source that HAS an origin as often as of one
     that has none.
 
@@ -9464,7 +9409,7 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
 # ends in no `org/repo`) is asked nothing, as before.
 #
 # AN `origin` THAT IS A PATH NAMES NO REPOSITORY (#521), in any separator
-# (`_url_repository`). It was read as its last two directories, so a clone of
+# (`url_repository`). It was read as its last two directories, so a clone of
 # `/srv/clones/Atlas.git` was `clones/Atlas` and the right `--org` was refused,
 # while the same path written with backslashes named nothing and was not
 # compared. A path is a directory on this machine and says nothing of the
@@ -9498,7 +9443,7 @@ def _rename_first(repository: str, said: str = "") -> str:
     refusal says before that, a sentence or none. THE ONE TEXT of it.
 
     ON GITHUB, ALWAYS. The source names a repository only by a url or an
-    `org/repo` (`_url_repository`), so the repository renamed is one on
+    `org/repo` (`url_repository`), so the repository renamed is one on
     GitHub. A path `origin` once named its last two directories, and this
     then said to rename the repository at that path (#513's review, NIT-3);
     it names none since #521, and nothing here is said of one."""
@@ -9513,14 +9458,14 @@ def _rename_first(repository: str, said: str = "") -> str:
 
 def _origin_path(source: Source) -> str | None:
     """The source's `origin` where it is a filesystem PATH
-    (`_origin_is_a_path`), which names no repository (`_url_repository`,
+    (`origin_is_a_path`), which names no repository (`url_repository`,
     #521); None for a source `plan` cloned from an `org/repo`, and for an
     `origin` that is a url, or none. Read as `source.repository` was read
     (`_origin_url`)."""
     if source.cloned:
         return None
     url = _origin_url(source.path)
-    return url if url is not None and _origin_is_a_path(url) else None
+    return url if url is not None and origin_is_a_path(url) else None
 
 
 def _path_origin_notes(args, source: Source) -> list[str]:

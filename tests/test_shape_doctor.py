@@ -8468,17 +8468,21 @@ def an_origin_of(path: Path, url: str | bytes | None) -> Path:
 
 
 #: `(origin URL, the organisation `adopt-project.py plan` reads from it)`, for
-#: the spellings that matter: none at all (#545), an ordinary pair, and the
-#: two other ways `plan` reads none -- a URL ending in no `org/repo` and one
-#: that is not UTF-8 -- which refuse `adopt-no-org` as a missing origin does
-#: (`tests/test_adopt_git_reads.py`).
+#: the spellings that matter: none at all (#545), an ordinary pair, one
+#: ending `/`, which names its pair as the url without it does (#521), and
+#: the other ways `plan` reads none -- a URL ending in no `org/repo`, a path
+#: in any spelling, which names no repository (#521), and one that is not
+#: UTF-8 -- which refuse `adopt-no-org` as a missing origin does
+#: (`tests/test_adopt_git_reads.py`, `tests/test_adopt_origin_repository.py`).
 ORIGIN_ORGS = [
     pytest.param(None, None, id="no-origin"),
     pytest.param("git@github.com:opensoft/Atlas.git", "opensoft", id="scp"),
     pytest.param("https://github.com/opensoft/Atlas", "opensoft", id="https"),
     pytest.param("Atlas.git", None, id="no-pair"),
-    pytest.param("https://github.com/opensoft/Atlas/", None,
+    pytest.param("https://github.com/opensoft/Atlas/", "opensoft",
                  id="trailing-slash"),
+    pytest.param("/srv/git/opensoft/Atlas.git", None, id="posix-path"),
+    pytest.param("file:///srv/git/opensoft/Atlas.git", None, id="file-url"),
     pytest.param(r"D:\a\_work\1\s\Atlas.git", None, id="windows-path"),
     pytest.param(NOT_UTF8 + b"Atlas.git", None, id="not-utf8"),
 ]
@@ -8494,8 +8498,9 @@ def test_the_adoption_line_names_an_org_only_where_plan_reads_none(
     where `plan` reads one the line is what it always was.
 
     `ORIGIN_ORGS` IS NOT TRUSTED ON ITS OWN WORD: `origin_org` is
-    `adopt-project.py`'s `_remote_repository` read for its organisation, a
-    copy of its pattern, and the same repository is put to both.
+    `adopt-project.py`'s `_remote_repository` read for its organisation,
+    through the one reading both import (`repo_shape.url_repository`,
+    #521), and the same repository is put to both.
     """
     module = doctor_module(standard)
     here = an_origin_of(tmp_path / "Atlas", url)

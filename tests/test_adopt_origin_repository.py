@@ -41,6 +41,8 @@ from repo_shape import load_yaml
 from test_adopt_project_is_the_source import (  # noqa: F401 - a fixture
     NOT_THE_SOURCE, PLAN, RETYPE, WHY, adopter, check, plan, source_of)
 
+#: The remote every source here has, or is given.
+ORIGIN = "origin"
 #: The organisation, the source's own name, and a typo of it.
 ORG, OWN, TYPO = "acme", "Atlas", "Atlsa"
 #: The source's repository, as every url below names it.
@@ -69,7 +71,7 @@ ORG_FROM_ORIGIN = ("--org (not given, so the organisation of the source's "
 def with_origin(base, origin: str):
     """A one-commit source whose `origin` is `origin`, as it is written."""
     source = source_of(base, None)
-    git("remote", "add", "origin", origin, cwd=source)
+    git("remote", "add", ORIGIN, origin, cwd=source)
     return source
 
 
@@ -83,13 +85,13 @@ def planned(base, source, project: str, org: str | None = None):
 def read_as(adopter, source, origin: str) -> str | None:
     """What `_remote_repository` reads of `source` once its `origin` is
     `origin`."""
-    git("remote", "set-url", "origin", origin, cwd=source)
+    git("remote", "set-url", ORIGIN, origin, cwd=source)
     return adopter._remote_repository(source)
 
 
 # --- the reading -------------------------------------------------------------
 
-@pytest.mark.parametrize("origin", [
+@pytest.mark.parametrize("url", [
     f"https://github.com/{REPOSITORY}/",
     f"https://github.com/{REPOSITORY}.git/",
     f"https://github.com/{REPOSITORY}.git//",
@@ -100,11 +102,11 @@ def read_as(adopter, source, origin: str) -> str | None:
 ], ids=["https", "https-dot-git", "two-slashes", "ssh-port", "scp",
         "credentials-port", "bracketed-host"])
 def test_a_url_names_its_repository_however_it_ends(adopter, tmp_path,
-                                                    origin):
+                                                    url):
     """#521's third row: `$` came after `[^/]+?`, so a url ending `/` named
     nothing, and was not compared. It names what it names without the
     `/`."""
-    source = with_origin(tmp_path, origin)
+    source = with_origin(tmp_path, url)
 
     assert adopter._remote_repository(source) == REPOSITORY
 
@@ -179,16 +181,15 @@ def test_a_windows_path_origin_reads_alike_in_either_separator(
         written.stdout
 
 
-@pytest.mark.parametrize("origin", [f"https://github.com/{REPOSITORY}/",
-                                    f"https://github.com/{REPOSITORY}.git/"],
+@pytest.mark.parametrize("url", [f"https://github.com/{REPOSITORY}/",
+                                 f"https://github.com/{REPOSITORY}.git/"],
                          ids=["slash", "dot-git-slash"])
-def test_a_url_ending_in_a_slash_is_the_repository_it_names(tmp_path,
-                                                            origin):
+def test_a_url_ending_in_a_slash_is_the_repository_it_names(tmp_path, url):
     """#521's third row, through `plan`: `--project Atlsa --org acme`
     planned with exit 0. It is refused as `adopt-not-the-source`, naming
     `acme/Atlas`, and with no `--org` the organisation is `acme`, where it
     was `adopt-no-org`."""
-    source = with_origin(tmp_path, origin)
+    source = with_origin(tmp_path, url)
 
     refused = planned(tmp_path, source, TYPO, ORG)
     written = planned(tmp_path, source, OWN)
