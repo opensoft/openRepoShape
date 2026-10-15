@@ -18,33 +18,36 @@
 #      when the redirect names no release and `gh` is installed.
 #   2. THAT RELEASE'S `openRepoShape`, fetched into a temporary directory,
 #      checked to be the command, and installed by its own `--install` with
-#      `$OPENREPOSHAPE_REF` set to the release. `--install` records the ref
-#      beside the command it places, and the command then stays on it.
+#      `$OPENREPOSHAPE_REF` set to the release tag and
+#      `$OPENREPOSHAPE_RECORD_REF=1`, which asks it to record that tag beside
+#      the command it places; the command then stays on it.
 #   3. GIT-FILTER-REPO, which `adopt-project.py` needs and nothing else does:
 #      said when it is there; installed with `pipx` when pipx is there and it
 #      is not; otherwise the one command that installs it, printed.
 #   4. THE INSTALLED COMMAND'S `--preflight`, LAST, and its verdict.
 #
-# IT NEVER RUNS sudo AND INSTALLS NOTHING ELSE. The command and, through pipx,
-# git-filter-repo are the whole of what it installs. The preflight it ends
-# with offers what is missing behind a typed `yes`, at the person's own
-# terminal, exactly as `openRepoShape --preflight` always has.
+# install.sh ITSELF NEVER RUNS sudo, AND INSTALLS NOTHING BUT THESE TWO: the
+# command and, through pipx, git-filter-repo. The preflight it ends with
+# offers what is missing, each behind a typed `yes` at the person's own
+# terminal, exactly as `openRepoShape --preflight` always has, and some of
+# those offers are `sudo` commands: that is the preflight's, asked first.
 #
 # EXIT STATUS:
-#   0  installed, pinned to the release, and the preflight passed;
+#   0  installed, pinned to the release tag, and the preflight passed;
 #   1  installed, but the preflight did not pass, or the installed command
-#      does not stay on the release (one older than v1.0.1 cannot record
+#      does not stay on the release tag (one older than v1.0.1 cannot record
 #      it): the lines above say which;
 #   2  refused before anything was installed: a version that is not a ref, no
 #      release found, a fetch that failed, or a file that is not the command.
 # git-filter-repo never changes it: only adopting needs it, and
 # `adopt-project.py` refuses with its own install command where it is missing.
 #
-# EVERYTHING RUNS FROM `main`, CALLED ON THE LAST LINE. Under `curl … | bash`
-# bash reads this script from the pipe as it goes, so a download cut off
-# part-way would run whatever had arrived. Inside a function nothing runs
-# until the last line has arrived, and by then the pipe holds nothing a child
-# could read in its place.
+# EVERYTHING RUNS FROM `main`, CALLED ON THE LAST LINE, INSIDE BRACES. Under
+# `curl … | bash` bash reads this script from the pipe as it goes, so a
+# download cut off part-way would run whatever had arrived. Inside a function
+# nothing runs until the last line has arrived; the braces make that line one
+# command that bash parses whole, so a download cut inside it runs nothing
+# either; and by then the pipe holds nothing a child could read in its place.
 #
 # BASH 3.2, which is /bin/bash on every Mac: no `${x,,}`, no `declare -A`,
 # no `mapfile`; an empty array never meets `set -u`.
@@ -77,13 +80,15 @@ install.sh: install openRepoShape, pinned to a release.
   bash install.sh [<version>]
 
 With no <version> it installs the newest release. It fetches that release's
-`openRepoShape`, installs it into ~/.local/bin pinned to the release, installs
-git-filter-repo with pipx when pipx is there and git-filter-repo is not (or
-prints the command that installs it), and ends with `openRepoShape
---preflight`. It never runs sudo. Run the same line again to upgrade.
+`openRepoShape`, installs it into ~/.local/bin pinned to the release tag,
+installs git-filter-repo with pipx when pipx is there and git-filter-repo is
+not (or prints the command that installs it), and ends with `openRepoShape
+--preflight`. install.sh itself never runs sudo; the preflight it ends with
+offers what is missing, each behind a typed `yes` at your terminal. Run the
+same line again to upgrade.
 
 Exit 0: installed, pinned, and the preflight passed. 1: installed, but the
-preflight did not pass, or the command does not stay on the release. 2:
+preflight did not pass, or the command does not stay on the release tag. 2:
 refused, and nothing was installed.
 
   $OPENREPOSHAPE_REPO       owner/name to install from (default opensoft/openRepoShape)
@@ -131,7 +136,13 @@ checked_version() {
 # `location: …/releases/tag/<tag>`; a repository with no release yet answers
 # with `…/releases`, which names no tag and is no answer. The header name is
 # matched in any case (HTTP/2 sends it in lower case, HTTP/1.1 need not),
-# without `${x,,}`, which bash 3.2 does not have.
+# without `${x,,}`, which bash 3.2 does not have, and a relative location is
+# read the same way as a whole URL.
+#
+# EVERY curl HERE IS HTTPS ONLY, REDIRECTS INCLUDED, AT TLS 1.2 OR NEWER
+# (SonarCloud shell:S6506), with the flags written out on the curl line
+# itself, never gathered into an array, so a reader and the analyser both
+# see them there. `tests/test_install_sh.py` holds every curl line to it.
 latest_from_redirect() {
 	local url="$1" headers line value status=0
 	FOUND=""
@@ -139,7 +150,7 @@ latest_from_redirect() {
 		FAULT="curl is not installed"
 		return 1
 	}
-	headers="$(curl -fsSI "$url" 2>/dev/null)" || status=$?
+	headers="$(curl -fsSI --proto '=https' --proto-redir '=https' --tlsv1.2 "$url" 2>/dev/null)" || status=$?
 	if [ "$status" -ne 0 ]; then
 		FAULT="curl failed, exit $status"
 		return 1
@@ -205,13 +216,20 @@ looks_like_the_launcher() {
 	return 1
 }
 
-# THE ONE COMMAND THAT INSTALLS IT HERE, for a machine with no pipx. POSIX
-# shell, no sudo: Homebrew's where `brew` is, and otherwise pip, under
-# whichever Python name this machine has, at the version CI runs.
+# THE ONE COMMAND THAT INSTALLS IT HERE, for a machine with no pipx, PRINTED
+# AND NEVER RUN, in POSIX shell: Homebrew's where `brew` is; where `apt-get`
+# is, pipx from apt and then git-filter-repo through it, because Debian 12
+# and Ubuntu 23.04 on refuse `pip install --user` into the system Python
+# (externally-managed-environment); and otherwise pip, under whichever Python
+# name this machine has. Always at the version CI runs, except brew's.
 filter_repo_command() {
 	local candidate
 	if command -v brew >/dev/null 2>&1; then
 		printf '%s' "brew install git-filter-repo"
+		return 0
+	fi
+	if command -v apt-get >/dev/null 2>&1; then
+		printf '%s' "sudo apt-get install -y pipx && pipx install $FILTER_REPO_PIN"
 		return 0
 	fi
 	for candidate in python3 python; do
@@ -305,17 +323,27 @@ main() {
 		die "could not make a temporary directory under ${TMPDIR:-/tmp}. Set \$TMPDIR to a directory you can write to."
 	trap 'rm -rf -- "$WORKDIR"' EXIT
 	launcher_url="https://raw.githubusercontent.com/$REPO/$version/openRepoShape"
-	curl -fsSL "$launcher_url" -o "$WORKDIR/openRepoShape" || status=$?
-	[ "$status" -eq 0 ] && [ -s "$WORKDIR/openRepoShape" ] ||
-		die "could not fetch $launcher_url (curl exit $status), so nothing was installed. Is $version a release of $REPO? https://github.com/$REPO/releases"
+	curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 "$launcher_url" -o "$WORKDIR/openRepoShape" || status=$?
+	# WHICH FAILURE IT WAS DECIDES WHAT TO SAY. curl's exit 22 is the server
+	# answering with an error, which for a raw URL means no such file at that
+	# ref; anything else is curl getting no answer at all (DNS, a proxy, TLS,
+	# a timeout), where asking whether the release exists would send the
+	# person looking in the wrong place.
+	case "$status" in
+	0) [ -s "$WORKDIR/openRepoShape" ] ||
+		die "fetched $launcher_url, but it was empty, so nothing was installed." ;;
+	22) die "could not fetch $launcher_url: the server answered with an error (curl exit 22), so nothing was installed. Is $version a release of $REPO? https://github.com/$REPO/releases" ;;
+	*) die "could not fetch $launcher_url: curl got no answer (curl exit $status), so nothing was installed. Check this machine's network, DNS and proxy, then run the line again." ;;
+	esac
 	looks_like_the_launcher "$WORKDIR/openRepoShape" ||
 		die "$launcher_url is not the openRepoShape command (its first line is not #!/usr/bin/env bash, or it has no INSTALLABLES line), so nothing was installed."
 	say "fetch: $launcher_url"
 
 	bin_dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
 	target="$bin_dir/openRepoShape"
-	say "install: OPENREPOSHAPE_REF=$version openRepoShape --install"
-	OPENREPOSHAPE_REF="$version" "${BASH:-bash}" "$WORKDIR/openRepoShape" --install ||
+	say "install: OPENREPOSHAPE_REF=$version OPENREPOSHAPE_RECORD_REF=1 openRepoShape --install"
+	OPENREPOSHAPE_REF="$version" OPENREPOSHAPE_RECORD_REF=1 \
+		"${BASH:-bash}" "$WORKDIR/openRepoShape" --install ||
 		die "the $version openRepoShape's --install refused (exit $?); its own refusal above says why."
 
 	# THE PIN, CHECKED BY ASKING THE INSTALLED COMMAND, with the variable
@@ -326,36 +354,56 @@ main() {
 	*"@ $version)") ;;
 	*)
 		pinned=0
-		say "install: $target does not stay on $version: it says '${shown:-nothing}' to --version. A release older than v1.0.1 cannot record the ref it was installed at; export OPENREPOSHAPE_REF=$version to keep it there."
+		say "install: $target does not stay on $version: it says '${shown:-nothing}' to --version. A release older than v1.0.1 cannot record the tag it was installed at: install v1.0.1 or newer, or export OPENREPOSHAPE_REF=$version in your shell profile to keep it there."
 		;;
 	esac
 	if [ -n "${OPENREPOSHAPE_REF:-}" ] && [ "$OPENREPOSHAPE_REF" != "$version" ]; then
-		say "install: \$OPENREPOSHAPE_REF is set in this shell, and while it is, every run uses it instead of $version. Unset it to run $version."
+		say "install: \$OPENREPOSHAPE_REF is set in this shell, by your shell profile or by hand, and while it is, every run uses it instead of $version. Remove it from your shell profile to run $version."
 	fi
 
 	# 3. GIT-FILTER-REPO.
 	filter_repo_step
 
-	# 4. THE PREFLIGHT, LAST, THROUGH THE INSTALLED COMMAND AND ITS RECORD.
+	# 4. THE PREFLIGHT, LAST, THROUGH THE INSTALLED COMMAND AND ITS RECORD, so
+	# its setup.sh is the release's. Where the command did not record the tag,
+	# the tag is handed to this one run instead, so that a command which
+	# follows main is still not checked with main's setup.sh.
 	say "preflight: $target --preflight"
 	status=0
-	(
-		unset OPENREPOSHAPE_REF
-		"${BASH:-bash}" "$target" --preflight
-	) || status=$?
-
-	if [ "$status" -ne 0 ]; then
-		say "done: openRepoShape $version is installed at $target, but the preflight did not pass (exit $status); it names what is missing above."
-		exit 1
+	if [ "$pinned" -eq 1 ]; then
+		(
+			unset OPENREPOSHAPE_REF
+			"${BASH:-bash}" "$target" --preflight
+		) || status=$?
+	else
+		OPENREPOSHAPE_REF="$version" "${BASH:-bash}" "$target" --preflight || status=$?
 	fi
+
+	# EXIT 1 IS THE PREFLIGHT'S "not ready", which names what is missing; any
+	# other status is a run that did not get that far (setup.sh could not be
+	# fetched, or there is no Python to run it), and its REFUSED line says so.
+	case "$status" in
+	0) ;;
+	1)
+		say "done: openRepoShape $version is installed at $target, but the preflight did not pass (exit 1); it names what is missing above."
+		exit 1
+		;;
+	*)
+		say "done: openRepoShape $version is installed at $target, but the preflight did not run to the end (exit $status); the REFUSED line above says why."
+		exit 1
+		;;
+	esac
 	if [ "$pinned" -eq 0 ]; then
 		say "done: openRepoShape $version is installed at $target and this machine is ready, but the command does not stay on $version (see above)."
 		exit 1
 	fi
-	say "done: openRepoShape $version is installed at $target, and this machine is ready. Run the same line again to upgrade to the newest release."
+	say "done: openRepoShape $version is installed at $target, pinned to the release tag, and this machine is ready. Run the same line again to upgrade to the newest release."
 	exit 0
 }
 
 # `${1+"$@"}`, setup.sh's own spelling: no arguments is the one-line run, and
-# that has to survive `set -u` under every bash this has to run on.
-main ${1+"$@"}
+# that has to survive `set -u` under every bash this has to run on. In
+# BRACES, so the call is one compound command that bash reads to its closing
+# brace before running any of it: a download cut anywhere inside this line
+# is a syntax error, and runs nothing.
+{ main ${1+"$@"}; }

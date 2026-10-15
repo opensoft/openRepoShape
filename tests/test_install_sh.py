@@ -57,6 +57,11 @@ SLUG = "opensoft/openRepoShape"
 RELEASE = "v9.9.9"
 FILTER_REPO = "git-filter-repo==2.47.0"
 
+#: The flags every curl in the installer and the launcher carries, as the
+#: fakes log them once the shell has taken the quotes off (SonarCloud
+#: shell:S6506: HTTPS only, redirects included, TLS 1.2 or newer).
+HTTPS_ONLY = "--proto =https --proto-redir =https --tlsv1.2"
+
 
 def latest(slug: str = SLUG) -> str:
     return f"https://github.com/{slug}/releases/latest"
@@ -104,12 +109,16 @@ def launcher(directory, name):
 
 def curl():
     url = next((arg for arg in ARGS if arg.startswith("https://")), "")
+    if url in NET.get("unreachable", []):
+        sys.stderr.write("curl: (6) Could not resolve host\n")
+        return 6
     if "-fsSI" in ARGS:
         location = NET["redirects"].get(url)
         if location is None:
             return refuse("curl: (22) The requested URL returned error: 404")
-        sys.stdout.write("HTTP/2 302 \r\nlocation: %s\r\n"
-                         "content-length: 0\r\n\r\n" % location)
+        sys.stdout.write("HTTP/2 302 \r\n%s: %s\r\n"
+                         "content-length: 0\r\n\r\n"
+                         % (NET.get("location_header", "location"), location))
         return 0
     served = NET["files"].get(url)
     if served is None:
@@ -162,6 +171,7 @@ INSTALLABLES=(openRepoShape)
 case "$1" in
 --install) mkdir -p "$OPENREPOSHAPE_BIN_DIR" && cp "$0" "$OPENREPOSHAPE_BIN_DIR/openRepoShape" ;;
 --version) printf 'openRepoShape (%s @ %s)\\n' "$OPENREPOSHAPE_REPO" "${OPENREPOSHAPE_REF:-main}" ;;
+--preflight) printf 'old preflight at %s\\n' "${OPENREPOSHAPE_REF:-main}" ;;
 esac
 """
 
@@ -214,18 +224,21 @@ class Net:
         self.config["files"][raw("setup.sh", ref, slug)] = str(
             self.fake("setup.sh", served))
 
-    def run(self, *args: str, piped: bool = False,
-            env: dict | None = None) -> subprocess.CompletedProcess:
-        """`bash install.sh <args>`, or `… | bash -s -- <args>` when piped."""
+    def run(self, *args: str, piped: bool = False, env: dict | None = None,
+            script: str | None = None) -> subprocess.CompletedProcess:
+        """`bash install.sh <args>`, or `… | bash -s -- <args>` when piped;
+        `script` pipes that text in place of the installer's own."""
         (self.root / "net.json").write_text(json.dumps(self.config),
                                             encoding="utf-8")
         gh_config = self.tmp_path / "gh-config"
         gh_config.mkdir(exist_ok=True)
+        piped = piped or script is not None
         argv = [BASH, "-s", "--", *args] if piped \
             else [BASH, str(INSTALLER), *args]
         return subprocess.run(
             argv, capture_output=True, text=True, check=False,
-            input=INSTALLER.read_text(encoding="utf-8") if piped else "",
+            input=(script or INSTALLER.read_text(encoding="utf-8"))
+            if piped else "",
             cwd=str(self.tmp_path), start_new_session=True,
             env=command_env(home=self.tmp_path, setup_sh=None, env={
                 "PATH": str(self.path), "GH_TOKEN": "bogus",
@@ -283,22 +296,24 @@ def test_the_one_line_installs_the_newest_release_pinned_to_it(net):
     steps = [
         f"release: {RELEASE}, the newest release of {SLUG} ({latest()})",
         f"fetch: {raw('openRepoShape')}",
-        f"install: OPENREPOSHAPE_REF={RELEASE} openRepoShape --install",
+        f"install: OPENREPOSHAPE_REF={RELEASE} OPENREPOSHAPE_RECORD_REF=1 "
+        "openRepoShape --install",
         f"openRepoShape: pinned to {RELEASE}, recorded in {target}.ref",
         "git-filter-repo: ",
         f"preflight: {target} --preflight",
-        f"done: openRepoShape {RELEASE} is installed at {target}, and this "
-        "machine is ready. Run the same line again to upgrade to the newest "
-        "release.",
+        f"done: openRepoShape {RELEASE} is installed at {target}, pinned to "
+        "the release tag, and this machine is ready. Run the same line again "
+        "to upgrade to the newest release.",
     ]
     lines = result.stdout.splitlines()
     at = [next(i for i, line in enumerate(lines) if line.startswith(step))
           for step in steps]
     assert at == sorted(at), result.stdout
     calls = net.calls()
-    assert calls[0] == f"curl -fsSI {latest()}"
-    assert calls[1].startswith(f"curl -fsSL {raw('openRepoShape')} -o ")
-    assert f"curl -fsSL {raw('setup.sh')}" in calls
+    assert calls[0] == f"curl -fsSI {HTTPS_ONLY} {latest()}"
+    assert calls[1].startswith(
+        f"curl -fsSL {HTTPS_ONLY} {raw('openRepoShape')} -o ")
+    assert f"curl -fsSL {HTTPS_ONLY} {raw('setup.sh')}" in calls
     assert calls[-1] == preflight_call(), calls
     assert not any("releases/latest" in call for call in calls[1:]), calls
 
@@ -375,15 +390,30 @@ def test_a_version_that_is_not_a_ref_is_refused_before_any_request(
     net.refused(result)
     assert said in result.stderr
     assert net.calls() == []
-    assert "forged" not in result.stderr and "a" * 256 not in result.stderr
+    assert "forged" not in result.stderr
+    assert "a" * 256 not in result.stderr
 
 
 def test_a_failed_fetch_names_its_url_and_installs_nothing(net):
+    """An error from the server asks whether the release exists."""
     del net.config["files"][raw("openRepoShape")]
     result = net.run()
     net.refused(result)
-    assert f"could not fetch {raw('openRepoShape')} (curl exit 22), so " \
-        "nothing was installed" in result.stderr
+    assert f"could not fetch {raw('openRepoShape')}: the server answered " \
+        "with an error (curl exit 22), so nothing was installed. Is " \
+        f"{RELEASE} a release of {SLUG}?" in result.stderr
+
+
+def test_a_fetch_with_no_answer_points_at_the_network_not_the_release(net):
+    """No answer at all (DNS, a proxy, TLS) is not a question about the
+    release, and the refusal does not send anyone looking there."""
+    net.config["unreachable"] = [raw("openRepoShape")]
+    result = net.run()
+    net.refused(result)
+    assert f"could not fetch {raw('openRepoShape')}: curl got no answer " \
+        "(curl exit 6), so nothing was installed. Check this machine's " \
+        "network, DNS and proxy" in result.stderr
+    assert "a release of" not in result.stderr
 
 
 def test_a_page_that_is_not_the_command_is_refused(net):
@@ -439,20 +469,29 @@ def no_pipx(net):
 def no_pipx_but_brew(net):
     no_pipx(net)
     net.fake("brew")
+    net.fake("apt-get")
     return "    brew install git-filter-repo"
+
+
+def no_pipx_but_apt(net):
+    no_pipx(net)
+    net.fake("apt-get")
+    return f"    sudo apt-get install -y pipx && pipx install {FILTER_REPO}"
 
 
 @pytest.mark.parametrize("arrange", [
     present_on_path, answering_git, pipx_onto_path, pipx_off_path,
-    pipx_failing, no_pipx, no_pipx_but_brew])
+    pipx_failing, no_pipx, no_pipx_but_brew, no_pipx_but_apt])
 def test_git_filter_repo_is_said_installed_or_printed(net, arrange):
     """The three branches, and the ways each can end.
 
     PRESENT, on `$PATH` or as `git filter-repo`: said, and pipx is never
     run. NOT PRESENT AND PIPX IS THERE: said first, then `pipx install` at
     CI's version, then what came of it. NEITHER: the one command for this
-    machine, printed and never run. None changes the exit status, and the
-    step sits between the install and the preflight.
+    machine, printed and never run: brew's where brew is, pipx from apt where
+    apt-get is (Debian 12 and Ubuntu 23.04 on refuse `pip install --user`),
+    and pip otherwise. Nothing runs `sudo` or `apt-get`. None changes the
+    exit status, and the step sits between the install and the preflight.
     """
     expected = arrange(net)
     result = net.run()
@@ -470,26 +509,35 @@ def test_git_filter_repo_is_said_installed_or_printed(net, arrange):
             net.calls().index(preflight_call())
     else:
         assert ran_pipx == [], net.calls()
-    if arrange in (no_pipx, no_pipx_but_brew):
+    if arrange in (no_pipx, no_pipx_but_brew, no_pipx_but_apt):
         assert lines[lines.index(expected) - 1] == (
             "git-filter-repo: not installed, and there is no pipx to install "
             "it with. Only adopt-project.py needs it; before adopting a "
             "repository, run:")
     assert lines.index(expected) < lines.index(
         f"preflight: {net.bin}/openRepoShape --preflight")
+    assert not any(call.split()[0] in ("apt-get", "brew", "sudo")
+                   for call in net.calls()), net.calls()
 
 
 # --- the preflight, the exit status, and running it again --------------------
 
+@pytest.mark.parametrize("status, said", [
+    pytest.param(1, "but the preflight did not pass (exit 1); it names what "
+                 "is missing above.", id="not-ready"),
+    pytest.param(2, "but the preflight did not run to the end (exit 2); the "
+                 "REFUSED line above says why.", id="did-not-run"),
+])
 def test_a_preflight_that_does_not_pass_exits_one_with_the_command_placed(
-        net):
-    net.config["preflight_exit"] = 1
+        net, status, said):
+    """Exit 1 is the preflight's own "not ready", which names what is
+    missing; anything else stopped before it could say."""
+    net.config["preflight_exit"] = status
     result = net.run()
     assert result.returncode == 1, result.stdout + result.stderr
     net.installed(result)
     assert f"done: openRepoShape {RELEASE} is installed at " \
-        f"{net.bin}/openRepoShape, but the preflight did not pass (exit 1); " \
-        "it names what is missing above." in result.stdout
+        f"{net.bin}/openRepoShape, {said}" in result.stdout
 
 
 def test_a_variable_in_the_shell_is_named_and_the_preflight_runs_the_pin(net):
@@ -499,8 +547,9 @@ def test_a_variable_in_the_shell_is_named_and_the_preflight_runs_the_pin(net):
     result = net.run(env={"OPENREPOSHAPE_REF": "v0.0.1"})
     assert result.returncode == 0, result.stdout + result.stderr
     net.installed(result)
-    assert f"install: $OPENREPOSHAPE_REF is set in this shell, and while it " \
-        f"is, every run uses it instead of {RELEASE}. Unset it to run " \
+    assert "install: $OPENREPOSHAPE_REF is set in this shell, by your " \
+        "shell profile or by hand, and while it is, every run uses it " \
+        f"instead of {RELEASE}. Remove it from your shell profile to run " \
         f"{RELEASE}." in result.stdout
     assert net.calls()[-1] == preflight_call()
 
@@ -528,7 +577,9 @@ def test_the_same_line_again_changes_nothing_and_then_upgrades(net):
 
 def test_a_release_whose_command_records_no_ref_exits_one(net):
     """A release before v1.0.1 installs a command that follows main. The
-    installer asks the installed command, says so, and exits 1."""
+    installer asks the installed command, says so, and exits 1; and the
+    preflight it ends with is still handed the release's tag, so it is not
+    main's setup.sh that checks the machine."""
     old = net.root / "old-openRepoShape"
     old.write_text(OLD_LAUNCHER, encoding="utf-8")
     net.serve(RELEASE, launcher=old)
@@ -538,9 +589,84 @@ def test_a_release_whose_command_records_no_ref_exits_one(net):
     assert f"install: {net.bin}/openRepoShape does not stay on {RELEASE}: " \
         f"it says 'openRepoShape ({SLUG} @ main)' to --version." \
         in result.stdout
-    assert f"export OPENREPOSHAPE_REF={RELEASE}" in result.stdout
+    assert "A release older than v1.0.1 cannot record the tag it was " \
+        "installed at: install v1.0.1 or newer, or export " \
+        f"OPENREPOSHAPE_REF={RELEASE} in your shell profile to keep it " \
+        "there." in result.stdout
+    assert f"old preflight at {RELEASE}" in result.stdout.splitlines()
     assert result.stdout.splitlines()[-1].endswith(
         f"but the command does not stay on {RELEASE} (see above).")
+
+
+@pytest.mark.parametrize("header, location", [
+    pytest.param("Location", tag_page(RELEASE), id="upper-case"),
+    pytest.param("location", f"/{SLUG}/releases/tag/{RELEASE}",
+                 id="relative"),
+])
+def test_the_redirect_is_read_in_any_case_and_relative(net, header, location):
+    """HTTP/1.1 may send `Location:`, and a location may be relative; both
+    name the release the same way."""
+    net.config["location_header"] = header
+    net.config["redirects"][latest()] = location
+    result = net.run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    net.installed(result)
+    assert f"release: {RELEASE}, the newest release of {SLUG} ({latest()})" \
+        in result.stdout.splitlines()
+
+
+def test_openreposhape_bin_dir_is_where_the_command_and_its_record_go(net):
+    """The installer places, pins and preflights the command where the
+    launcher puts it, and leaves `~/.local/bin` alone."""
+    default = net.bin
+    net.bin = net.tmp_path / "elsewhere"
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": str(net.bin)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    net.installed(result)
+    assert f"preflight: {net.bin}/openRepoShape --preflight" \
+        in result.stdout.splitlines()
+    assert not default.exists()
+
+
+#: A curl that RUNS, in either script: tab-indented, alone or as the value
+#: of an assignment. Usage text and refusals carry curl lines too, indented
+#: with spaces, and are printed, never run.
+CURL_RUN = re.compile(r"\t+(\w+=\"\$\()?curl -fsS")
+
+
+@pytest.mark.parametrize("name", ["install.sh", "openRepoShape"])
+def test_every_curl_that_runs_is_https_only_redirects_included(name):
+    """SonarCloud shell:S6506, held here rather than found there: each curl
+    line refuses any protocol but HTTPS, for its redirects too, written out
+    on the line itself."""
+    runs = [line for line in (REPO / name).read_text(
+        encoding="utf-8").splitlines() if CURL_RUN.match(line)]
+    assert runs, f"{name} runs no curl; this guard has nothing to hold"
+    for line in runs:
+        assert "--proto '=https' --proto-redir '=https' --tlsv1.2" in line, (
+            f"{name}: a curl that is not HTTPS only:\n{line}")
+
+
+#: Where a download can stop in the last line. Right after the word `main`
+#: is the one the braces are for: unbraced, that line would run `main` with
+#: none of the arguments, and install the newest release where one was named.
+CUTS = [
+    pytest.param(lambda text: text[:text.rindex("{ main")], id="before-it"),
+    pytest.param(lambda text: text[:text.rindex(" ${1+")], id="after-main"),
+    pytest.param(lambda text: text[:text.rindex(" }")], id="before-the-brace"),
+]
+
+
+@pytest.mark.parametrize("cut", CUTS)
+def test_a_download_cut_off_in_the_last_line_runs_nothing(net, cut):
+    """Everything runs from `main`, called on the last line inside braces:
+    a script that stops anywhere in or before that line asks for nothing,
+    installs nothing and leaves nothing behind."""
+    result = net.run("v9.9.8",
+                     script=cut(INSTALLER.read_text(encoding="utf-8")))
+    assert net.calls() == []
+    assert result.stdout == ""
+    assert not net.bin.exists()
 
 
 # --- the repository it installs from ----------------------------------------
@@ -556,7 +682,8 @@ def test_openreposhape_repo_names_where_everything_comes_from(net):
     assert result.returncode == 0, result.stdout + result.stderr
     net.installed(result)
     assert all(SLUG not in call for call in net.calls()), net.calls()
-    assert f"curl -fsSL {raw('setup.sh', RELEASE, fork)}" in net.calls()
+    assert f"curl -fsSL {HTTPS_ONLY} {raw('setup.sh', RELEASE, fork)}" \
+        in net.calls()
 
 
 @pytest.mark.parametrize("value", [
@@ -593,4 +720,5 @@ def test_it_installs_the_git_filter_repo_ci_runs():
     ci = re.findall(r"git-filter-repo==[0-9.]+", (
         REPO / ".github" / "workflows" / "tests.yml").read_text(
         encoding="utf-8"))
-    assert ci and set(ci) == {pinned}, (pinned, ci)
+    assert ci, "tests.yml installs no git-filter-repo"
+    assert set(ci) == {pinned}, (pinned, ci)

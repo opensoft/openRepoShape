@@ -98,7 +98,8 @@ def command_env(home: Path | None = None, env: dict | None = None,
     """
     environ = dict(os.environ)
     for name in ("OPENREPOSHAPE_ORG", "OPENREPOSHAPE_REF", "OPENREPOSHAPE_REPO",
-                 "OPENREPOSHAPE_BIN_DIR", "OPENREPOSHAPE_SETUP_SH"):
+                 "OPENREPOSHAPE_BIN_DIR", "OPENREPOSHAPE_SETUP_SH",
+                 "OPENREPOSHAPE_RECORD_REF"):
         environ.pop(name, None)
     if setup_sh is not None:
         environ["OPENREPOSHAPE_SETUP_SH"] = str(setup_sh)
@@ -1018,14 +1019,17 @@ PINNED = "v9.9.9"
 OTHER = "other"
 
 
-def install_at(tmp_path, ref=None, command=COMMAND):
+def install_at(tmp_path, ref=None, command=COMMAND, opt_in=True):
     """`--install` from `command` into `<tmp_path>/bin`, with
-    `$OPENREPOSHAPE_REF` set to `ref` when one is given; the result, and the
-    path of the command it places."""
+    `$OPENREPOSHAPE_REF` set to `ref` when one is given, and asked to record
+    it (`$OPENREPOSHAPE_RECORD_REF=1`) unless `opt_in` is false; the result,
+    and the path of the command it places."""
     bin_dir = tmp_path / "bin"
     env = {"OPENREPOSHAPE_BIN_DIR": str(bin_dir)}
     if ref is not None:
         env["OPENREPOSHAPE_REF"] = ref
+        if opt_in:
+            env["OPENREPOSHAPE_RECORD_REF"] = "1"
     return (run_cmd("--install", home=tmp_path, env=env, command=command),
             bin_dir / "openRepoShape")
 
@@ -1147,10 +1151,76 @@ def test_a_record_that_is_not_a_ref_is_refused_by_name(tmp_path, text, shown):
         in result.stderr
     assert "Run the installer again to record a release, or delete that " \
         "file to follow main." in result.stderr
-    assert "forged" not in result.stderr and "a" * 256 not in result.stderr
+    assert "forged" not in result.stderr
+    assert "a" * 256 not in result.stderr
     assert result.stdout == ""
+    assert run_cmd("--help", command=installed).returncode == 0, (
+        "--help must answer past a broken record")
     assert version_of(installed, {"OPENREPOSHAPE_REF": OTHER}).endswith(
         f"@ {OTHER})")
+
+
+def test_a_ref_set_without_the_opt_in_is_never_recorded(tmp_path):
+    """`$OPENREPOSHAPE_REF` alone is not a request for a pin (the review on
+    #577). A script that sets it around `--install` for its own reasons
+    (workBenches sets one that names no ref, so that any fetch fails loudly)
+    gets the install it always got: the same bytes, no record, `main` in
+    `--version`, and no check of a value it never meant to be read. A record
+    already there is removed, exactly as by an install with no ref."""
+    install_at(tmp_path, PINNED)
+    result, installed = install_at(
+        tmp_path, "pinned-by-workBenches-no-fetch", opt_in=False)
+    assert result.returncode == 0, result.stderr
+    assert installed.read_bytes() == COMMAND.read_bytes()
+    assert not record_of(installed).exists()
+    assert f"no longer pinned to {PINNED}" in result.stdout
+    assert version_of(installed).endswith("@ main)")
+
+    again, _ = install_at(tmp_path, "bad..ref", opt_in=False)
+    assert again.returncode == 0, again.stderr
+    assert "pinned" not in again.stdout
+    assert not record_of(installed).exists()
+
+
+#: Links to the installed command from `<tmp>/links`: each pair is a link's
+#: name and what it points at, `None` meaning the command's absolute path,
+#: and the run goes through the LAST one.
+LINKS = [
+    pytest.param([("ors", "../bin/openRepoShape")], id="relative"),
+    pytest.param([("ors", None)], id="absolute"),
+    pytest.param([("ors", "../bin/openRepoShape"), ("again", "ors")],
+                 id="a-chain"),
+]
+
+
+@pytest.mark.parametrize("links", LINKS)
+def test_a_link_to_the_installed_command_reads_its_record(tmp_path, links):
+    """The record sits beside the FILE `--install` placed, so a symlink to
+    the command from another directory follows the link, or a chain of them,
+    to read it."""
+    _result, installed = install_at(tmp_path, PINNED)
+    directory = tmp_path / "links"
+    directory.mkdir()
+    for name, points_at in links:
+        (directory / name).symlink_to(points_at or installed)
+    through = directory / links[-1][0]
+    assert version_of(through) == \
+        f"openRepoShape (opensoft/openRepoShape @ {PINNED})"
+
+
+def test_a_record_that_is_a_directory_is_refused_in_the_usual_form(tmp_path):
+    """Not a raw bash error, by every run that reads it and by an install
+    that would write or remove it, which places nothing."""
+    _result, installed = install_at(tmp_path, PINNED)
+    record = record_of(installed)
+    record.unlink()
+    record.mkdir()
+    for result in (run_cmd("--version", command=installed),
+                   install_at(tmp_path, PINNED)[0]):
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert result.stderr.startswith(f"\nREFUSED: {record} is not a file")
+        assert "Is a directory" not in result.stderr
+    assert installed.read_bytes() == COMMAND.read_bytes()
 
 
 #: WHICH REF EACH LATER RUN USES: recorded at install, then overridden by the
