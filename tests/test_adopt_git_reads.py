@@ -47,17 +47,22 @@ from repo_shape import load_yaml  # noqa: E402
 #: and no UTF-8.
 LATIN1_NAME = b"Jos\xe9"
 #: An origin URL holding that byte, as a clone of a directory named `café`
-#: in Latin-1 has one; and the same URL in ASCII, which ends in an
-#: `org/repo` the tool reads.
+#: in Latin-1 has one.
 NOT_UTF8_URL = b"../caf\xe9/repo.git"
-ASCII_URL = b"../cafe/repo.git"
+#: The byte in a url, and the same url in ASCII, which ends in an `org/repo`
+#: the tool reads. Urls, because a path names no repository in any spelling
+#: since #521: the pair differs in the byte alone.
+NOT_UTF8_SCP = b"git@example.invalid:caf\xe9/repo.git"
+ASCII_URL = b"git@example.invalid:cafe/repo.git"
 
-#: Said of all three sources that name no org: one with no origin, one whose
-#: origin URL is not UTF-8, and one whose URL ends in no `org/repo`. The
-#: sentence was "the source has no `origin`", which is false of the last two.
+#: Said of all the sources that name no org: one with no origin, one whose
+#: origin URL is not UTF-8 or ends in no `org/repo`, and, since #521, one
+#: whose origin is a path. The sentence was "the source has no `origin`",
+#: which is false of all but the first.
 NO_ORG = (b"REFUSED adopt-no-org: the source's `origin` names no "
           b"organisation this tool can read: it has none, its URL is not "
-          b"UTF-8, or its URL ends in no `org/repo`\n"
+          b"UTF-8 or ends in no `org/repo`, or it is a path, which names no "
+          b"repository on GitHub\n"
           b"Remediation: pass --org <org>.\n")
 #: An origin URL that is UTF-8 and ends in no `org/repo` at all.
 NO_PAIR_URL = b"repo.git"
@@ -224,6 +229,69 @@ def test_plan_refuses_a_user_name_that_is_not_utf8(tmp_path):
     assert not (tmp_path / PLAN_FILE).exists()
 
 
+def no_user_name(base: Path, how: str) -> dict:
+    """The environment of a person whose `git config user.name` gives
+    `_elector` nothing. `unset`: no config file names one, `GIT_CONFIG_GLOBAL`
+    and `GIT_CONFIG_SYSTEM` (git 2.32) standing in for an empty `~/.gitconfig`
+    and system file, and `HOME` a directory of its own. `empty`: the setting
+    is there and holds no text, in command scope (`command_scope`), which
+    outranks this checkout's own config as the files do not. Skipped where
+    git still answers a name."""
+    blank = base / "gitconfig-blank"
+    blank.write_text("", encoding="utf-8")
+    home = base / "home"
+    home.mkdir()
+    extra = {"GIT_CONFIG_GLOBAL": str(blank), "GIT_CONFIG_SYSTEM": str(blank),
+             "HOME": str(home)}
+    if how == "empty":
+        extra.update(command_scope("user.name", b""))
+    read = asked("user.name", {**os.environ, **extra})
+    if read:
+        pytest.skip(f"`git config user.name` here still answers {read!r}")
+    return extra
+
+
+#: What `plan` says of an elector it took from `git config user.name`, which
+#: gave it nothing (#529): the name the unwritable-value path gives the same
+#: default, `--elected-by (not given, so `git config user.name`)`, and not
+#: `--elected-by is ''`, which names a flag nobody passed.
+NO_ELECTOR = (b"REFUSED adopt-manifest-invalid: --elected-by (not given, so "
+              b"`git config user.name`) is '', which the project's own "
+              b"validate-manifest.py refuses: manifest-elected-by: "
+              b"elected_by is empty.")
+
+
+@pytest.mark.parametrize(
+    "how", ["unset", pytest.param("empty", marks=posix_only)])
+def test_plan_names_the_empty_default_it_took_for_the_elector(tmp_path, how):
+    """#529. With no `--elected-by` and no `git config user.name`, `plan` was
+    refused `adopt-manifest-invalid: --elected-by is ''`, naming a flag the
+    person never passed; only the unwritable-value path said the value was
+    not given. Now it names the default it fell back to, as that path does,
+    and the code, the exit status and the validator's own words are as they
+    were: the refusal is still the validator's, and no plan is written."""
+    extra = no_user_name(tmp_path, how)
+    source = make_source_repo(tmp_path / "Thing")
+    refused = by_git_config(tmp_path, source, extra)
+    assert_no_traceback_and_no_leg(tmp_path, {"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert NO_ELECTOR in refused.stderr, said(refused)
+    assert b"--elected-by is ''" not in refused.stderr, said(refused)
+    assert b"No plan was written." in refused.stderr, said(refused)
+    assert not (tmp_path / PLAN_FILE).exists()
+
+
+def test_plan_records_the_elector_given_where_user_name_is_unset(tmp_path):
+    """Control: `--elected-by` given, `git config user.name` is not asked,
+    and nothing is refused for its being empty."""
+    extra = no_user_name(tmp_path, "unset")
+    source = make_source_repo(tmp_path / "Thing")
+    done = by_git_config(tmp_path, source, extra, "--elected-by", "Test Human")
+    assert_no_traceback({"plan": done})
+    assert done.returncode == 0, said(done)
+    assert load_yaml(tmp_path / PLAN_FILE)["elected_by"] == "Test Human"
+
+
 @pytest.mark.parametrize("name", [b"Jose", "José".encode("utf-8")],
                          ids=["ascii", "utf8"])
 def test_plan_records_a_user_name_that_is_utf8(tmp_path, name):
@@ -262,16 +330,17 @@ def test_elected_by_given_adopts_under_a_user_name_that_is_not_utf8(
 # --- `git remote get-url origin` ----------------------------------------------
 
 @pytest.mark.parametrize("url, repository",
-                         [(NOT_UTF8_URL, None), (ASCII_URL, "cafe/repo")],
-                         ids=["not-utf8", "ascii"])
+                         [(NOT_UTF8_URL, None), (NOT_UTF8_SCP, None),
+                          (ASCII_URL, "cafe/repo")],
+                         ids=["not-utf8", "not-utf8-url", "ascii"])
 def test_plan_reads_an_origin_that_is_not_utf8_as_none(tmp_path, url,
                                                        repository):
     """The issue's last row, with --org: on the base `plan` ended in a
     `UnicodeDecodeError` traceback from `_remote_repository`, exit 1, and
     wrote no plan. Now it plans, and records no repository. The ASCII URL
-    is the control: its `org/repo` is read, so the None is the byte's, and
-    the plan is written in that name, which `plan` refuses any other for
-    (#499)."""
+    is the control: its `org/repo` is read, so the None of the url beside it
+    is the byte's, and the plan is written in that name, which `plan`
+    refuses any other for (#499)."""
     source = with_origin(make_source_repo(tmp_path / "Thing"), url)
     done = planned(tmp_path, source, "--org", "cafe", "--project", "repo")
     assert_no_traceback({"plan": done})

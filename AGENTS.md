@@ -25,13 +25,13 @@ types `yes` at its prompt; you never answer it for them. No terminal: section 2.
 **Never answer an install prompt.** The preflight asks `Type yes to continue:`
 for each thing it offers to run — an install, `gh auth login`, `gh auth
 setup-git`. The human types it; you never install software or log in for them.
+The one-line install (`install.sh`) is theirs to run: relay it, never run it.
 
 **Never pass `--allow-upstream-org` on your own initiative.** It guards only
-`--org opensoft` itself — scaffolding into opensoft's own namespace, the
-upstream owner of openRepoShape. If setup.sh refuses because the organisation
-you were given resolves to opensoft, STOP and relay what it said; the fix is
-almost always an explicit `--org <their-org>`. Pass `--allow-upstream-org`
-only if the human asks for it in those words.
+`--org opensoft`, the namespace of openRepoShape's upstream owner. If setup.sh
+refuses because the organisation you were given resolves to opensoft, STOP and
+relay what it said; the fix is almost always an explicit `--org <their-org>`.
+Pass `--allow-upstream-org` only if the human asks for it in those words.
 
 **Never bypass an organisation ruleset.** A ruleset that refuses a direct push
 to `main` is doing its job; the exit is in the tool's own failure message (for
@@ -129,24 +129,29 @@ install command). Seven steps, in order, and step 4 is the one you must not skip
 ```
 
 2. **You resolve the questions, in writing, in the plan.** Each unresolved
-   entry carries a `question:`. Set `leg:` to `spec`, `code`, `root` or `drop`
+   entry carries a `question:`; so does one whose `leg:` is its rule's default,
+   which `execute` takes as written (`drop` for a `single-repository.yaml`
+   record). Set `leg:` to `spec`, `code`, `root` or `drop`
    AND add a `resolution:` line saying why — read the repository to answer it
    (does the specification cite `examples/golden-run/`, or do the tests?). An
-   answer with no reason beside it is a guess that will be read as a finding.
-   Never delete an entry to make the question go away: `check` refuses a path
-   that no entry covers, and it is right to.
+   answer with no reason is a guess, and `check` passes it: the human reads the
+   reasons at step 4. Never delete an entry to make the question go away:
+   `check` refuses a path that no entry covers, and it is right to.
 4. **Show the human the plan and the follow-ups and let them say yes.** The
    follow-ups are code changes the split MAKES NECESSARY — the harness that
    reads `contracts/` from beside it will read it across the root mount — and
-   `execute` does not make them. Do not pass `--yes` on your own initiative;
-   it is the human's word, not your convenience.
+   `execute` does not make them; it opens the split's pull request itself,
+   because these organisations are pull-request only. Never suggest a direct
+   push to the default branch, and never `--admin`. Do not pass `--yes` on your
+   own initiative; it is the human's word, not your convenience.
 7. **Read the verification table back to them.** It accounts for every source
    path at the source commit, by blob sha (a kept root `.gitattributes` as the
    source's bytes plus the line-ending block the split appends), in exactly one
    of {spec leg, code leg, root tree} or as `drop`. If it exits non-zero, STOP
    and relay it, and take the way out THAT exit prints. Exit 1, a failed
-   verification: the source is untouched — nothing is deleted, `main` is where
-   it was, the split is on a branch — so fix the plan, delete the split branch,
+   verification: nothing is deleted and `main` is where it was, but the split
+   branch is pushed and, on GitHub, its pull request may be open and the topic
+   set — so fix the plan, delete the split branch (closing that pull request),
    and re-run into fresh legs and a fresh `--work-dir`, or none. Exit 2 saying
    `IS pushed` (GitHub only: `gh pr create` or the topic refused) comes after
    both legs and the split are pushed and verified: finish with the command it
@@ -156,9 +161,6 @@ install command). Seven steps, in order, and step 4 is the one you must not skip
 the split's `project.yaml`, under `submodules:` — per submodule a leg keeps,
 its `path`, `leg`, `resolution:` and `source_commit`. It confers nothing,
 nothing rewrites it, and the doctor holds each submodule to it.
-
-`execute` opens a pull request, because these organisations are pull-request
-only. Never suggest a direct push to the default branch, and never `--admin`.
 
 ### Adopting a repository that has NO code yet (or no spec)
 
@@ -211,13 +213,13 @@ checkout — answers ONE question about ONE repository: is it compliant with thi
 shape, and what is missing. Run it before you propose a change to a repository
 you did not scaffold, and again after any procedure above. It writes nothing
 into the repository and fetches nothing, so there is no confirmation to get and
-no `--dry-run` to do first. The checks are a REGISTRY with an empty `fix` slot
-in each of them, which is where a repair mode will hang; nothing in it writes
-today. The one exception to "writes nothing" is `--placement-plan <file>`, which
-writes that file and nothing else — see 4. Installed, `openRepoShape --doctor`
-takes `--json` and `--placement-plan <file>` as well, and KEEPS its temporary
-clone of the standard, because the NEXT lines run from it: its last line names
-that directory, which is the human's to delete once those commands have run.
+no `--dry-run` to do first. The one exception to "writes nothing" is
+`--placement-plan <file>`, which writes that file and nothing else — see 4.
+The checks are a REGISTRY with an empty `fix` slot in each of them, which is
+where a repair mode will hang; nothing in it writes today. Installed,
+`openRepoShape --doctor` takes `--json` and `--placement-plan <file>` as well,
+and KEEPS its temporary clone of the standard for the NEXT lines that name it:
+its last line names that directory, the human's to delete once those have run.
 
 1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
    BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`, `NOT A SHAPE ROOT` — exits 0, 1,
@@ -405,13 +407,13 @@ python3 scripts/family.py siblings --family-root <path>
    `members/<Project>` inside the holder is pinned and DETACHED, for
    `bootstrap` and `validate`; the sibling is where the human works.
    **What it never does, and neither do you:** it MOVES NOTHING — when the
-   parent folder is not named after the family it warns and prints an `mv`,
-   and running that `mv` yourself relocates a checkout out from under a
-   shell, an editor and every agent lane, and breaks any linked worktree
-   (its `.git` file carries an absolute path). An existing clone gets only
-   `git fetch` — no checkout, no reset, no pull — because somebody works in
-   there; one of a different repository is reported and skipped, and the
-   exit is the human's hand, not an overwrite.
+   parent folder is not named after the family (nor linked as it) it clones
+   nothing, prints an `mv` and exits 1 (`make`: 2), and running that `mv`
+   relocates a checkout out from under a shell, an editor and every agent lane,
+   and breaks any linked worktree (its `.git` file carries an absolute path). An
+   existing clone gets only `git fetch` — no checkout, no reset, no pull —
+   because somebody works in there; one of a different repository is reported
+   and skipped, and the exit is the human's hand, not an overwrite.
 6. `update-shape.py` updates a family root exactly as it updates a project,
    with the same four refusals, and mirrors into `family.yaml`. An existing
    holder receives `scripts/siblings.py` that way: `check` reports it as

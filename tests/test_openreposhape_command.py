@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, WINDOWS_SKIP
+from conftest import REPO, WINDOWS_SKIP, git
 
 COMMAND = REPO / "openRepoShape"
 SETUP = REPO / "setup.sh"
@@ -98,7 +98,8 @@ def command_env(home: Path | None = None, env: dict | None = None,
     """
     environ = dict(os.environ)
     for name in ("OPENREPOSHAPE_ORG", "OPENREPOSHAPE_REF", "OPENREPOSHAPE_REPO",
-                 "OPENREPOSHAPE_BIN_DIR", "OPENREPOSHAPE_SETUP_SH"):
+                 "OPENREPOSHAPE_BIN_DIR", "OPENREPOSHAPE_SETUP_SH",
+                 "OPENREPOSHAPE_RECORD_REF"):
         environ.pop(name, None)
     if setup_sh is not None:
         environ["OPENREPOSHAPE_SETUP_SH"] = str(setup_sh)
@@ -113,7 +114,8 @@ def command_env(home: Path | None = None, env: dict | None = None,
 
 
 def run_cmd(*args: str, home: Path | None = None, env: dict | None = None,
-            setup_sh: Path | None = SETUP) -> subprocess.CompletedProcess:
+            setup_sh: Path | None = SETUP,
+            command: Path = COMMAND) -> subprocess.CompletedProcess:
     """The command, run from its file, with that environment.
 
     `input=""` means stdin is a pipe rather than a terminal, which is what the
@@ -121,8 +123,11 @@ def run_cmd(*args: str, home: Path | None = None, env: dict | None = None,
     controlling terminal either (#492): setup asks at that terminal when
     stdin is not one, and the terminal pytest was started from is nobody's
     answer.
+
+    `command` is this checkout's file unless a test names an INSTALLED copy,
+    which is how the record `--install` leaves beside one is read (#564).
     """
-    return subprocess.run(["bash", str(COMMAND), *args], capture_output=True,
+    return subprocess.run(["bash", str(command), *args], capture_output=True,
                           text=True, check=False, input="",
                           env=command_env(home, env, setup_sh),
                           start_new_session=True)
@@ -139,6 +144,21 @@ def test_help_prints_every_usage_line():
     lines = result.stdout.splitlines()
     for line in USAGE_LINES:
         assert line in lines, f"--help never printed:\n    {line}"
+
+
+def test_the_doctor_line_keeps_its_description_column():
+    """#500 gave the doctor's synopsis its two flags, and the full form
+    filled the column the other lines describe themselves in, so its
+    description went (#546). It is back, on the line under the form and in
+    that same column, where argparse puts the help of an option too long for
+    it; the form itself stays one line."""
+    lines = run_cmd("--help").stdout.splitlines()
+    column = USAGE_LINES[0].index("install (or update)")
+    assert USAGE_LINES[1].index("check this MACHINE") == column
+    doctor = lines.index(next(line for line in USAGE_LINES if "--doctor" in line))
+    assert lines[doctor + 1] == \
+        " " * column + "diagnose a REPOSITORY against this standard", (
+            lines[doctor:doctor + 2])
 
 
 def test_help_points_at_openrepotools():
@@ -591,6 +611,10 @@ def test_two_modes_is_a_refusal_not_last_wins(args, tmp_path):
                      env={"OPENREPOSHAPE_BIN_DIR": str(bin_dir)})
     assert result.returncode == 2, result.stdout + result.stderr
     assert "two different runs" in result.stderr
+    # "and writes nothing" was false of a `--placement-plan` typed inside the
+    # repository (#546): it says which one file the doctor does write.
+    assert "--doctor reads a repository and writes nothing into it but a " \
+        "--placement-plan <file> you name." in " ".join(result.stderr.split())
     assert not bin_dir.exists(), "a refused run placed a command anyway"
 
 
@@ -1002,3 +1026,297 @@ def test_install_from_stdin_fetches_itself_into_a_live_workdir(offline_github,
         assert stat.S_IMODE(target.stat().st_mode) == 0o755, name
         assert target.read_bytes() == (REPO / name).read_bytes(), name
         assert f"{name}: installed at" in result.stdout
+
+
+# --- the ref `--install` records, and the installed command runs (#564) -----
+
+#: A ref for an install to record. Nothing fetches it: every install below
+#: runs from this checkout's file, which copies its own bytes, and every run
+#: after it is offline. `OTHER` is what `$OPENREPOSHAPE_REF` names for one
+#: run, over the record.
+PINNED = "v9.9.9"
+OTHER = "other"
+
+
+def install_at(tmp_path, ref=None, command=COMMAND, opt_in=True):
+    """`--install` from `command` into `<tmp_path>/bin`, with
+    `$OPENREPOSHAPE_REF` set to `ref` when one is given, and asked to record
+    it (`$OPENREPOSHAPE_RECORD_REF=1`) unless `opt_in` is false; the result,
+    and the path of the command it places."""
+    bin_dir = tmp_path / "bin"
+    env = {"OPENREPOSHAPE_BIN_DIR": str(bin_dir)}
+    if ref is not None:
+        env["OPENREPOSHAPE_REF"] = ref
+        if opt_in:
+            env["OPENREPOSHAPE_RECORD_REF"] = "1"
+    return (run_cmd("--install", home=tmp_path, env=env, command=command),
+            bin_dir / "openRepoShape")
+
+
+def record_of(installed: Path) -> Path:
+    """Where `--install` records the ref of the command at `installed`."""
+    return installed.with_name(installed.name + ".ref")
+
+
+def version_of(installed: Path, env: dict | None = None) -> str:
+    result = run_cmd("--version", command=installed, env=env)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def test_install_records_the_ref_beside_a_command_it_leaves_unchanged(
+        tmp_path):
+    """THE RECORD IS A FILE BESIDE THE COMMAND, AND THE COMMAND IS THE FILE.
+
+    The placed bytes must still be the bytes it was installed from, because
+    everything that asks whether an installed command IS a release compares
+    bytes: this installer's own `(unchanged)` verdict, and a copy vendored
+    elsewhere and checked by sha256 against the release's own file. So the
+    ref goes in `openRepoShape.ref`, said on its own line between the
+    command's line and the count, and `--version` then names it with no
+    variable set, while the variable still wins for the one run it is set
+    for.
+    """
+    result, installed = install_at(tmp_path, PINNED)
+    assert result.returncode == 0, result.stderr
+    record = record_of(installed)
+    assert record.read_bytes() == f"{PINNED}\n".encode("ascii")
+    assert installed.read_bytes() == COMMAND.read_bytes(), (
+        "the command must stay byte for byte the file it was installed from")
+    assert result.stdout.splitlines()[:3] == [
+        f"openRepoShape: installed at {installed}",
+        f"openRepoShape: pinned to {PINNED}, recorded in {record}",
+        f"openRepoShape: 1 of 1 placed in {installed.parent}"]
+    assert version_of(installed) == \
+        f"openRepoShape (opensoft/openRepoShape @ {PINNED})"
+    assert version_of(installed, {"OPENREPOSHAPE_REF": OTHER}) == \
+        f"openRepoShape (opensoft/openRepoShape @ {OTHER})"
+
+
+def test_an_install_with_no_ref_records_nothing_and_follows_main(tmp_path):
+    """No ref at install time is the install as it always was: the same
+    lines, no record, and `main`, unnamed, in `--version`."""
+    result, installed = install_at(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert not record_of(installed).exists()
+    assert "pinned" not in result.stdout
+    assert version_of(installed) == \
+        "openRepoShape (opensoft/openRepoShape @ main)"
+
+
+def test_installing_again_keeps_moves_or_drops_the_record(tmp_path):
+    """Idempotent at the same ref, moved by a new one, dropped by none.
+
+    A second install at the same ref changes neither file and says so twice.
+    A newer ref replaces the record and names the one it replaced, which is
+    what an upgrade looks like. The installed command re-installing itself
+    with no variable set keeps ITS ref, because that is the ref it runs at.
+    And an install with no ref at all removes the record, so a command put
+    back at main follows main however it was installed before.
+    """
+    install_at(tmp_path, PINNED)
+    same, installed = install_at(tmp_path, PINNED)
+    record = record_of(installed)
+    assert same.returncode == 0, same.stderr
+    assert f"openRepoShape: already pinned to {PINNED} in {record} " \
+        "(unchanged)" in same.stdout
+    assert same.stdout.count("(unchanged)") == 2, same.stdout
+
+    newer, _ = install_at(tmp_path, "v10.0.0")
+    assert f"openRepoShape: pinned to v10.0.0 (was {PINNED}), recorded in " \
+        f"{record}" in newer.stdout
+    itself, _ = install_at(tmp_path, command=installed)
+    assert "openRepoShape: already pinned to v10.0.0" in itself.stdout
+    assert record.read_text(encoding="utf-8") == "v10.0.0\n"
+
+    dropped, _ = install_at(tmp_path)
+    assert dropped.returncode == 0, dropped.stderr
+    assert "openRepoShape: no longer pinned to v10.0.0; it follows main" \
+        in dropped.stdout
+    assert not record.exists()
+    assert version_of(installed).endswith("@ main)")
+
+
+def test_a_ref_that_is_not_one_is_refused_before_anything_is_placed(
+        tmp_path):
+    """The ref is about to be written down and read by every later run, so
+    it is checked first, the way the doctor checks it before a checkout."""
+    result, installed = install_at(tmp_path, "bad..ref")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "$OPENREPOSHAPE_REF is 'bad..ref'" in result.stderr
+    assert not installed.parent.exists(), "a refused install placed something"
+
+
+@pytest.mark.parametrize("text, shown", [
+    pytest.param(b"", "is empty", id="empty"),
+    pytest.param(b"-x\n", "is '-x'", id="an-option"),
+    pytest.param(b"v1..v2\n", "is 'v1..v2'", id="a-range"),
+    pytest.param(b"v1\nforged\n", "carries a control character",
+                 id="two-lines"),
+    pytest.param(b"a" * 256 + b"\n", "is 256 characters long",
+                 id="over-long"),
+])
+def test_a_record_that_is_not_a_ref_is_refused_by_name(tmp_path, text, shown):
+    """A record is a file on disk that every run reads, so it is checked
+    when it is read, before `--version` can print it, and the refusal names
+    the file and the two ways out. The control character and the over-long
+    value are refused without being echoed. `$OPENREPOSHAPE_REF`, set, is
+    the way past it for one run, because then the record is not read."""
+    _result, installed = install_at(tmp_path, PINNED)
+    record_of(installed).write_bytes(text)
+    result = run_cmd("--version", command=installed)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"the ref recorded in {record_of(installed)} {shown}" \
+        in result.stderr
+    assert "Run the installer again to record a release, or delete that " \
+        "file to follow main." in result.stderr
+    assert "forged" not in result.stderr
+    assert "a" * 256 not in result.stderr
+    assert result.stdout == ""
+    assert run_cmd("--help", command=installed).returncode == 0, (
+        "--help must answer past a broken record")
+    assert version_of(installed, {"OPENREPOSHAPE_REF": OTHER}).endswith(
+        f"@ {OTHER})")
+
+
+def test_a_ref_set_without_the_opt_in_is_never_recorded(tmp_path):
+    """`$OPENREPOSHAPE_REF` alone is not a request for a pin (the review on
+    #577). A script that sets it around `--install` for its own reasons
+    (workBenches sets one that names no ref, so that any fetch fails loudly)
+    gets the install it always got: the same bytes, no record, `main` in
+    `--version`, and no check of a value it never meant to be read. A record
+    already there is removed, exactly as by an install with no ref."""
+    install_at(tmp_path, PINNED)
+    result, installed = install_at(
+        tmp_path, "pinned-by-workBenches-no-fetch", opt_in=False)
+    assert result.returncode == 0, result.stderr
+    assert installed.read_bytes() == COMMAND.read_bytes()
+    assert not record_of(installed).exists()
+    assert f"no longer pinned to {PINNED}" in result.stdout
+    assert version_of(installed).endswith("@ main)")
+
+    again, _ = install_at(tmp_path, "bad..ref", opt_in=False)
+    assert again.returncode == 0, again.stderr
+    assert "pinned" not in again.stdout
+    assert not record_of(installed).exists()
+
+
+#: Links to the installed command from `<tmp>/links`: each pair is a link's
+#: name and what it points at, `None` meaning the command's absolute path,
+#: and the run goes through the LAST one.
+LINKS = [
+    pytest.param([("ors", "../bin/openRepoShape")], id="relative"),
+    pytest.param([("ors", None)], id="absolute"),
+    pytest.param([("ors", "../bin/openRepoShape"), ("again", "ors")],
+                 id="a-chain"),
+]
+
+
+@pytest.mark.parametrize("links", LINKS)
+def test_a_link_to_the_installed_command_reads_its_record(tmp_path, links):
+    """The record sits beside the FILE `--install` placed, so a symlink to
+    the command from another directory follows the link, or a chain of them,
+    to read it."""
+    _result, installed = install_at(tmp_path, PINNED)
+    directory = tmp_path / "links"
+    directory.mkdir()
+    for name, points_at in links:
+        (directory / name).symlink_to(points_at or installed)
+    through = directory / links[-1][0]
+    assert version_of(through) == \
+        f"openRepoShape (opensoft/openRepoShape @ {PINNED})"
+
+
+def test_a_record_that_is_a_directory_is_refused_in_the_usual_form(tmp_path):
+    """Not a raw bash error, by every run that reads it and by an install
+    that would write or remove it, which places nothing."""
+    _result, installed = install_at(tmp_path, PINNED)
+    record = record_of(installed)
+    record.unlink()
+    record.mkdir()
+    for result in (run_cmd("--version", command=installed),
+                   install_at(tmp_path, PINNED)[0]):
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert result.stderr.startswith(f"\nREFUSED: {record} is not a file")
+        assert "Is a directory" not in result.stderr
+    assert installed.read_bytes() == COMMAND.read_bytes()
+
+
+#: WHICH REF EACH LATER RUN USES: recorded at install, then overridden by the
+#: variable for one run, then neither. The third column is what the run must
+#: be handed; `None` is `main`, unnamed, which nothing is told.
+RECORDED_RUNS = [
+    pytest.param(PINNED, None, PINNED, id="the-record"),
+    pytest.param(PINNED, OTHER, OTHER, id="the-variable-over-the-record"),
+    pytest.param(None, None, None, id="no-record"),
+]
+
+
+@pytest.mark.parametrize("recorded, variable, expected", RECORDED_RUNS)
+def test_setup_sh_clones_the_standard_at_the_ref_in_force(
+        tmp_path, recorded, variable, expected):
+    """`--shape-ref` reaches setup.sh whenever a ref was NAMED, and the
+    record names one: the setup.sh this command fetched at that ref then
+    clones the standard at the same ref, not at main."""
+    _result, installed = install_at(tmp_path, recorded)
+    stub = tmp_path / "setup.sh"
+    stub.write_text(STUB_SETUP_SH, encoding="utf-8")
+    result = run_cmd("--preflight", command=installed, setup_sh=stub,
+                     env=None if variable is None
+                     else {"OPENREPOSHAPE_REF": variable})
+    assert result.returncode == 0, result.stdout + result.stderr
+    match = re.search(rf"{STUB_MARKER} in .+ args: (.*)", result.stdout)
+    assert match, result.stdout + result.stderr
+    forwarded = match.group(1).split()
+    if expected is None:
+        assert "--shape-ref" not in forwarded, forwarded
+    else:
+        at = forwarded.index("--shape-ref")
+        assert forwarded[at + 1] == expected, forwarded
+
+
+def standard_at_three_refs(tmp_path) -> Path:
+    """A bare repository whose `shape-doctor.py` says which ref it is.
+
+    Three commits: the `PINNED` tag, the `OTHER` branch and `main`, each
+    with a doctor that prints its own name and nothing else, so a run
+    reports which ref the command checked its clone out at.
+    """
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git("init", "-q", "-b", "main", cwd=seed)
+
+    def commit(name):
+        (seed / "shape-doctor.py").write_text(
+            f"print('STUB DOCTOR AT {name}')\n", encoding="utf-8")
+        git("add", "-A", cwd=seed)
+        git("commit", "-q", "-m", name, cwd=seed)
+
+    commit(PINNED)
+    git("tag", PINNED, cwd=seed)
+    git("switch", "-q", "-c", OTHER, cwd=seed)
+    commit(OTHER)
+    git("switch", "-q", "main", cwd=seed)
+    commit("main")
+    bare = tmp_path / "standard.git"
+    git("clone", "-q", "--bare", str(seed), str(bare), cwd=tmp_path)
+    return bare
+
+
+@pytest.mark.parametrize("recorded, variable, expected", RECORDED_RUNS)
+def test_the_doctor_checks_its_clone_out_at_the_ref_in_force(
+        tmp_path, recorded, variable, expected):
+    """The installed `--doctor` clones the standard, and checks the clone
+    out at the ref in force: the record, the variable over it, or neither,
+    which leaves the clone on its default branch."""
+    _result, installed = install_at(tmp_path, recorded)
+    temporary = tmp_path / "tmp"
+    temporary.mkdir()
+    env = {"OPENREPOSHAPE_REPO": str(standard_at_three_refs(tmp_path)),
+           "TMPDIR": str(temporary)}
+    if variable is not None:
+        env["OPENREPOSHAPE_REF"] = variable
+    result = run_cmd("--doctor", str(tmp_path), command=installed, env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"STUB DOCTOR AT {expected or 'main'}" in result.stdout, (
+        result.stdout + result.stderr)

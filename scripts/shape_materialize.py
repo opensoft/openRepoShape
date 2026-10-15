@@ -975,23 +975,45 @@ def copy_in_the_way(target: Path, actual: str) -> str | None:
     return None
 
 
-#: Appended to the assembly root's Makefile by `adopt-project.py` ONLY. A
-#: scaffolded project's legs are empty, so nothing reads across them yet; an
-#: ADOPTED project's code leg holds tooling that used to read `contracts/`
-#: from beside it and now reads it from the other leg through the root.
-ADOPT_MAKEFILE_BLOCK = """
+def adopt_makefile_block(spec_path: str, code_path: str) -> str:
+    """What `adopt-project.py` appends to the assembly root's Makefile, and
+    nothing else does. A scaffolded project's legs are empty, so nothing reads
+    across them yet; an ADOPTED project's code leg holds tooling that used to
+    read `contracts/` from beside it and now reads it from the other leg
+    through the root.
+
+    RENDERED WITH THE PLAN'S MOUNT PATHS (#522). It was one constant naming
+    `spec/contracts`, so a project adopted with `--spec-path legs/spec`
+    exported a `CONTRACTS_DIR` that does not exist, while `plan`'s own
+    follow-up said the Makefile wires `$(CURDIR)/legs/spec/contracts`. The
+    block is the adoption's own append, made once by `execute` and digested
+    with the copy it is appended to (`_materialize` pins the bytes as
+    written), so the per-project text is written here and nowhere by hand.
+    A default adoption, `spec` and `code`, gets the bytes it always got
+    (`ADOPT_MAKEFILE_BLOCK`).
+
+    Both paths are `execute`'s checked mount paths: canonical, and in
+    `checked_value`'s alphabet, which holds no character make reads as
+    anything but itself (no `$`, `#`, space or line break).
+    """
+    return f"""
 # --- adopted project: reading ACROSS the legs -------------------------------
 # The spec leg owns `contracts/`; the code leg holds the tooling that reads
-# them. Mounted here, `spec/contracts` is one relative path from `code/`, so
+# them. Mounted here, `{spec_path}/contracts` is one relative path from `{code_path}/`, so
 # the root exports it once and the code leg takes it from the environment
 # rather than each script guessing at `../`.
-CONTRACTS_DIR ?= $(CURDIR)/spec/contracts
+CONTRACTS_DIR ?= $(CURDIR)/{spec_path}/contracts
 export CONTRACTS_DIR
 
 .PHONY: contracts-dir
 contracts-dir:
 \t@echo $(CONTRACTS_DIR)
 """
+
+
+#: The block a DEFAULT adoption appends, the legs at `spec` and `code`:
+#: byte for byte the block every adoption appended before #522.
+ADOPT_MAKEFILE_BLOCK = adopt_makefile_block("spec", "code")
 
 
 class CommandFailed(Exception):
@@ -1101,16 +1123,21 @@ def check_program(args: list[str]) -> None:
                 "command line.")
 
 
-def run(args: list[str], cwd: Path | None = None, capture: bool = True) -> str:
+def run(args: list[str], cwd: Path | None = None, capture: bool = True,
+        env: dict | None = None) -> str:
     check_program(args)
     # UTF-8, whatever the locale: git writes a path as UTF-8, and the locale's
     # codec (ASCII under a POSIX `C` locale, the ANSI code page on Windows)
     # raises `UnicodeDecodeError` out of `subprocess.run` on one it cannot
     # read -- before `CommandFailed` exists, so the person gets a traceback
     # where `REFUSED <step>` and the ruleset hint belong (#217).
+    # `env` names variables set OVER the caller's environment for this one
+    # command, never instead of it: `scaffold-project.py`'s leg probe turns
+    # git's terminal prompt off this way (#542).
     proc = subprocess.run(args, cwd=str(cwd) if cwd else None,
                           capture_output=capture, text=True,
-                          encoding="utf-8", errors="replace", check=False)
+                          encoding="utf-8", errors="replace", check=False,
+                          env={**os.environ, **env} if env else None)
     if proc.returncode != 0:
         raise CommandFailed(args, cwd, proc.returncode,
                             (proc.stderr or "") + (proc.stdout or ""))
@@ -2606,6 +2633,12 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
     return digest.hexdigest()
 
 
+#: How a pin file says its digest was read (`digest_source:`): from a clone
+#: on this machine, or from the forge's own recursive tree listing.
+DIGEST_FROM_CLONE = "local-clone"
+DIGEST_FROM_GH = "gh-api-tree-recursive"
+
+
 def declared_pin_values(args) -> dict[str, dict[str, str]]:
     """The template values for every `--pin`, with its digest resolved.
 
@@ -2617,6 +2650,21 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
     are the same three flags in `scaffold-project.py` and in
     `adopt-project.py plan`, which records these values in the plan so that
     `check` and `execute` read no network for them (#273).
+
+    A CLONE IS RECORDED AS `local-clone`, AND ITS PATH IS NOT (#540). The
+    path went into the committed pin file's `digest_source:` as it was
+    typed, `local-clone (<path>)`, so an absolute `--pin-source` committed
+    the directory a clone sat in on the machine that ran the tool, which is
+    of no use to any other reader of the file. The path was also written
+    bare (#450): one holding a line break wrote a line of its own choosing
+    into the pin file, and the scaffold died in `write_lf` on one holding a
+    byte that is not UTF-8, after all three repositories existed. What the
+    field is for is which of the two ways the digest was read, so that is
+    what it says; the refusals above still name the path the run was given.
+    `adopt-project.py plan` records the path in its plan beside these
+    values, `local-clone (<path>)`, so that `check` recomputes the digest in
+    that clone (#449): the plan is a file on that machine, which nothing
+    commits, and `execute` writes the pin file's field as this says it.
     """
     pins: dict[str, dict[str, str]] = {}
     for raw in args.pin:
@@ -2624,10 +2672,10 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
         if args.pin_source is not None:
             digest = pin_digest_from_source(
                 _resolved_pin_source(args.pin_source), commit, repository)
-            digest_source = f"local-clone ({args.pin_source})"
+            digest_source = DIGEST_FROM_CLONE
         else:
             digest = pin_digest_from_gh(repository, commit)
-            digest_source = "gh-api-tree-recursive"
+            digest_source = DIGEST_FROM_GH
         pins[product] = {
             "PIN_PRODUCT": product,
             "PIN_REPOSITORY": repository,
@@ -2652,6 +2700,81 @@ def declared_pin_products(args) -> dict[str, None]:
     the same products, before it reads a digest (#273).
     """
     return dict.fromkeys(parse_pin(raw, args.pin_owner)[0] for raw in args.pin)
+
+
+def pin_source_path(typed: str | None, *, nothing_made: str) -> Path | None:
+    """`--pin-source` as the `Path` both tools read, or None when it was not
+    given; a value that names no path is `pin-source-no-path`.
+
+    AN EMPTY VALUE WAS THE DIRECTORY THE TOOL RAN IN. `Path("")` is
+    `Path(".")`, so `--pin-source ''` read the current directory as the
+    clone: the digest came from wherever the command was run, or
+    `pin-source-unreadable` blamed `.`, a path nobody typed. #442 refuses
+    an empty value in the naming gate (`link-source-no-path`) and in the
+    root's `validate-pins.py` (`pin-source-no-path`); the two tools that
+    make a project refuse it in the same words. A typed `.` still means
+    the current directory.
+
+    So both tools take the flag as TEXT and ask here, before anything
+    exists and before any process starts, the scaffold's `--dry-run` alike:
+    once `argparse` has made a `Path` of it, an empty value and a typed `.`
+    are one. `nothing_made` begins the remediation in the tool's own words,
+    as it does for `refuse_an_unread_pin_source`.
+    """
+    if typed is None:
+        return None
+    if not str(typed):
+        raise Refusal(
+            "pin-source-no-path",
+            "`--pin-source ''` names no path. An empty path would be read as "
+            "the directory this runs in.",
+            f"Remediation: {nothing_made} Give the clone's path "
+            "(`--pin-source <path>`), or `.` to mean this directory.")
+    return Path(typed)
+
+
+def refuse_an_unread_pin_source(pin_source, pins, chain=None, *,
+                                nothing_made: str) -> None:
+    """`--pin-source` is read by this run, or this refuses it as
+    `pin-source-unused` (#451): before anything exists and before any digest
+    is read, so the scaffold's `--dry-run` refuses it too and `plan` writes
+    no plan.
+
+    ITS READERS ARE `declared_pin_values`, which reads each `--pin`'s digest
+    there, and, in the scaffold, `link_pins_from_trees`, which reads the
+    first `--referent-chain` link's declaration there when nothing keyed
+    names that link's tree: a bare path is the first link's tree alone
+    (#441), never a later link's. With neither, nothing read it, so nothing
+    asked about it either: a path that does not exist was accepted,
+    `--dry-run` said `nothing was created.` and `plan` wrote its plan, each
+    exit 0 with no word that the flag had changed nothing. Typed meaning to
+    pin, with the `--pin` forgotten, it made a project that declares no
+    descent. The root's own `validate-pins.py` NOTES an unused
+    `--pin-source` of its own (#295), a check that is run again and again;
+    the two tools that make a project refuse one, before it is made, as
+    they refuse each other value they cannot use.
+
+    `pins` is the `--pin` list and `chain` the scaffold's `--referent-chain`
+    links, or `None` for a tool that takes no chain (`adopt-project.py
+    plan`), so the sentence names only flags the tool has. `nothing_made`
+    begins the remediation in the tool's own words. The path is never read
+    here, and is named as `shown_source` names it.
+    """
+    if pin_source is None or pins or chain:
+        return
+    if chain is None:
+        given, reads = "no --pin", "each --pin's digest is read from"
+    else:
+        given = "no --pin and no --referent-chain"
+        reads = ("each --pin's digest is read from, and the first "
+                 "--referent-chain link's declaration")
+    raise Refusal(
+        "pin-source-unused",
+        f"--pin-source {shown_source(pin_source)} was given with {given}, so "
+        f"nothing reads it: it names the clone {reads}.",
+        f"Remediation: {nothing_made} Add the --pin "
+        "<openProduct>@<40 hex commit> that clone was given for, or drop "
+        "--pin-source.")
 
 
 #: What every refused `--pin` is told to do. The file a pin is written at is

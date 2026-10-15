@@ -1,0 +1,15 @@
++5
+2026-10-14
+Five lines for two statements the README had wrong (#550, #429).
+One: the by-hand setup commands under "What setup.sh does" dry-ran the scaffold
+without the --visibility and --elected-by that setup-project.py's scaffold_args
+always passes, so the plan a reader ran could name a different elector than the
+real run wrote. The dry run now carries both, which takes a second line, as the
+real run's does (+1).
+Two: the refusals `update-shape.py apply --add` gives were listed as three, in
+prose, and the tool gives five, each with a code of its own. A reader who met
+`update-add-symlink` or `update-add-not-a-directory` found no sentence for it,
+and the list read as complete. The sentence now names all five with what each
+refuses and the code to search for, and it cannot be shorter than that: the five
+codes, in backticks and parentheses, are 138 characters on their own, and the
+two refusals it lacked add about as many again (+4).
