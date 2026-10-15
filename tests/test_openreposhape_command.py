@@ -379,7 +379,8 @@ def test_install_refuses_a_target_that_is_a_symlink(tmp_path, dangling):
         "command through it" in said, said
     assert "pipx upgrade openreposhape" in said
     assert "pipx uninstall openreposhape" in said
-    assert link.is_symlink() and os.readlink(link) == str(packaged)
+    assert link.is_symlink()
+    assert os.readlink(link) == str(packaged)
     if not dangling:
         assert packaged.read_bytes() == original
     assert not packaged.with_name("openRepoShape.ref").exists()
