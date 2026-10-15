@@ -8220,7 +8220,7 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
         # And the plan's answers to the policy's own questions, after it
         # (#525): `answered_path_record`, read before any leg existed.
         if answers:
-            append["project.yaml"] = append.get("project.yaml", "") + answers
+            append[SHAPE_MANIFEST] = append.get(SHAPE_MANIFEST, "") + answers
         # Each declared pin's file, `contracts/<product>-pin.yaml`, is
         # written by the materializer as the scaffold's is, from the
         # values the plan records (#273); `_refuse_what_check_finds` has

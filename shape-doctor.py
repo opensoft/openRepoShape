@@ -208,12 +208,12 @@ A PATH THE ADOPTION ANSWERED IS NOT ASKED AGAIN (#525). `execute` records the
 plan's answer to each question the policy itself asked -- `examples/` under
 `ambiguous-examples` -- under `answered_paths:`, one row per entry kept in a
 leg. A walked question whose every file one row answers into the leg it is
-in is settled: named in the row, in `--json` under `answered`, and no reason
-to keep the row off `ok`. A row naming the OTHER leg settles nothing and
-asserts nothing: the path stays the question it was, a `note`, and is never
-MISPLACED, because a record confers nothing and a file named like one the
-adoption put in the other repository is not that file. A row whose path no
-leg holds is silent, because it can only settle a question, never make a
+in is settled: named in the row, in `--json` under `answered_paths`, and no
+reason to keep the row off `ok`. A row naming the OTHER leg settles nothing
+and asserts nothing: the path stays the question it was, a `note`, and is
+never MISPLACED, because a record confers nothing and a file named like one
+the adoption put in the other repository is not that file. A row whose path
+no leg holds is silent, because it can only settle a question, never make a
 finding. And a leg's `.gitmodules` is answered by `submodules:` alone.
 
 A SUBMODULE MOVED OR REMOVED SINCE THE ADOPTION (#525). Its row is a
@@ -563,7 +563,7 @@ ANSWERED = "answered"
 THE_ANSWERS = "project.yaml's `answered_paths:`"
 #: The key under `detail`, and under `counts`, of the questions that record
 #: answered (#525); present only where it answered one.
-ANSWERED_PATHS = "answered"
+ANSWERED_PATHS = "answered_paths"
 #: The key that marks a `misplaced` submodule as one its recorded leg no
 #: longer holds (#525); present only on one.
 MOVED = "moved"
@@ -4225,7 +4225,7 @@ def unheld_clause(unheld: list) -> str:
                          f"{row[RECORDED_LEG]} leg)" for row in unheld])
     return (f"{THE_RECORD} records {len(unheld)} submodule(s) no leg holds "
             f"(#525): {named}; one removed on purpose has its row deleted by "
-            "hand, in the pull request that removed it")
+            "hand, in the pull request that bumps the pins")
 
 
 def classified(detail: dict, what: str) -> str:
@@ -4523,7 +4523,14 @@ def answered_questions(adopt, review: list, role: str, files: list,
     `.gitmodules` answered here: `submodules:` answers it, and only where it
     places every submodule the file registers (`gitmodules_the_record_
     answers`).
+
+    NO RECORD, NO SCAN (r525's F2). A project with no `answered_paths:` --
+    every one adopted before #525 -- returns its questions as they are,
+    which is what the loop below would return for them, without holding
+    each question against every file of its leg.
     """
+    if not answers:
+        return review, []
     rows = list(answers)
     still: list = []
     answered: list = []
@@ -5036,7 +5043,7 @@ def moved_and_unheld(per_leg: list, submodules: list, misplaced: list,
 
 def moved_alone(adopt, detail: dict) -> bool:
     """Is every path the row lists a submodule moved since the adoption, or
-    the `.gitmodules` of the leg it moved into (#525)?
+    the `.gitmodules` of a leg the move went into or emptied (#525)?
 
     THEN NO PLAN IS THE WAY OUT. The `--placement-plan` writes the paths to
     move, and these have moved: what is left is the row in `project.yaml`,
@@ -5044,24 +5051,30 @@ def moved_alone(adopt, detail: dict) -> bool:
     registers what moved in is the policy's question only because the row
     still names the other leg, so it goes with the move -- where every
     submodule that leg keeps is recorded there or moved in, and every name
-    in it could be read. Anything else in the wrong leg, or asked, keeps the
-    plan as the NEXT.
+    in it could be read. So does the `.gitmodules` a plain `git rm` leaves,
+    tracked and empty, in the leg a moved submodule LEFT, where that leg now
+    keeps no submodule at all (r525's F1). Anything else in the wrong leg,
+    or asked, keeps the plan as the NEXT.
     """
     misplaced = detail["misplaced"]
     if not misplaced or not all(row.get(MOVED) for row in misplaced):
         return False
     moved = {row["path"] for row in misplaced}
+    left = {row["classified_as"] for row in misplaced}
+    kept = detail.get("submodules") or []
     for question in detail["review_required"]:
         role = question["leg"]
         leg = next(entry for entry in detail["legs"] if entry["role"] == role)
+        went = any(path.startswith(f"{leg['path']}/") for path in moved)
+        emptied = role in left and not any(item["leg"] == role
+                                           for item in kept)
         if (question["path_in_leg"] != adopt.GITMODULES
                 or leg.get("unwritable")
-                or not any(path.startswith(f"{leg['path']}/")
-                           for path in moved)
+                or not (went or emptied)
                 or any(item["leg"] == role
                        and item["placement"] != SUBMODULE_RECORDED
                        and item["path"] not in moved
-                       for item in detail.get("submodules") or [])):
+                       for item in kept)):
             return False
     return True
 

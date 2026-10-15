@@ -69,6 +69,10 @@ GOLDEN = ("examples/golden/case.json", "examples/golden/case.expected.json")
 MOVED_CLAUSE = ("1 submodule(s) moved out of the leg project.yaml's "
                 "`submodules:` records for them, which no longer holds them "
                 "(#525): spec/vendor/rules (recorded in the code leg)")
+#: #189's own clause, for a submodule against its record that did not move.
+HELD_CLAUSE = ("1 submodule(s) sit in a leg other than the one project.yaml's "
+               "`submodules:` records for them (#189): spec/vendor/rules "
+               "(recorded in the code leg)")
 
 
 def record_answers(project: Path, *rows: tuple) -> None:
@@ -111,7 +115,8 @@ def test_an_answered_question_is_not_asked_again_in_its_leg(standard,
                                                            project):
     """`spec/examples/` is the policy's question; a row answering it `spec`
     settles it there. The row is `ok`, names where the answer came from,
-    and `--json` lists it under `answered`, never under `review_required`.
+    and `--json` lists it under `answered_paths`, never under
+    `review_required`.
     """
     golden_run(project)
     asked = placement(standard, project)[2]
@@ -124,8 +129,8 @@ def test_an_answered_question_is_not_asked_again_in_its_leg(standard,
     assert rows_of(result)["manifest"]["status"] == "ok"
     assert row["status"] == "ok", row
     assert row["detail"]["review_required"] == [], row["detail"]
-    assert row["detail"]["counts"]["answered"] == 1
-    [answered] = row["detail"]["answered"]
+    assert row["detail"]["counts"]["answered_paths"] == 1
+    [answered] = row["detail"]["answered_paths"]
     assert (answered["path"], answered["rule"], answered["recorded_leg"],
             answered["answered_by"], answered["resolution"],
             answered["review_required"]) == (
@@ -154,7 +159,7 @@ def test_an_answer_for_the_other_leg_leaves_the_question_asked(standard,
     assert row["detail"]["misplaced"] == []
     assert [item["path"] for item in row["detail"]["review_required"]] == [
         ASKED]
-    assert "answered" not in row["detail"], row["detail"]
+    assert "answered_paths" not in row["detail"], row["detail"]
 
 
 @pytest.mark.parametrize("rows, answered", [
@@ -193,7 +198,7 @@ def test_gitmodules_is_answered_by_the_submodule_record_alone(standard,
     row = placement(standard, project)[2]
     assert [item["path"] for item in row["detail"]["review_required"]] == [
         "code/.gitmodules"], row["detail"]
-    assert "answered" not in row["detail"], row["detail"]
+    assert "answered_paths" not in row["detail"], row["detail"]
 
 
 def test_an_answer_no_leg_holds_is_silent(standard, project):
@@ -221,18 +226,23 @@ def moved_rules(project: Path, *, gitmodules: bool = False) -> None:
     record_submodules(project, (RULES_PATH, "code", RULES_ANSWER))
 
 
-@pytest.mark.parametrize("gitmodules", [False, True],
-                         ids=["the-gitlink", "with-its-gitmodules"])
+@pytest.mark.parametrize("gitmodules, emptied", [
+    (False, False), (True, False), (True, True)],
+    ids=["the-gitlink", "with-its-gitmodules", "the-emptied-one-left"])
 def test_a_submodule_moved_in_both_legs_names_its_row_not_a_plan(
-        standard, project, gitmodules):
+        standard, project, gitmodules, emptied):
     """STILL MISPLACED, NO LONGER A PLAN. The record names the code leg,
     which holds no `vendor/rules`, and the spec leg holds it: the move is
     made, and the plan `--placement-plan` writes would be that move again.
     The row says it moved; its NEXT is this doctor again and its WHY gives
     both ways out, the row edited by hand or the move undone. The spec
     leg's `.gitmodules`, a question only because the row names the other
-    leg, goes with the move."""
+    leg, goes with the move. So does the code leg's, emptied and left
+    tracked, which is what a plain `git rm` of a leg's only submodule
+    leaves: that leg keeps no submodule at all now (r525's F1)."""
     moved_rules(project, gitmodules=gitmodules)
+    if emptied:
+        stage(project / "code", GITMODULES, "")
     result, verdict, row = placement(standard, project)
     assert result.returncode == 1, result.stdout + result.stderr
     assert verdict == "MISPLACED (1 path)"
@@ -275,6 +285,7 @@ def test_a_move_not_made_in_both_legs_keeps_the_plan(standard, project,
     assert [bool(item.get("moved")) for item in row["detail"]["misplaced"]
             ] == [moved], row["detail"]["misplaced"]
     assert (MOVED_CLAUSE in row["reason"]) == moved, row["reason"]
+    assert (HELD_CLAUSE in row["reason"]) != moved, row["reason"]
 
 
 def test_a_row_no_leg_holds_is_a_note(standard, project):
@@ -292,7 +303,7 @@ def test_a_row_no_leg_holds_is_a_note(standard, project):
     assert ("project.yaml's `submodules:` records 1 submodule(s) no leg "
             "holds (#525): vendor/rules (recorded in the code leg); one "
             "removed on purpose has its row deleted by hand, in the pull "
-            "request that removed it") in row["reason"], row["reason"]
+            "request that bumps the pins") in row["reason"], row["reason"]
     assert row["next"] is None, row
 
 
@@ -485,7 +496,7 @@ def test_execute_records_the_answer_and_the_doctor_asks_no_more(
     assert verdict == COMPLIANT
     assert row["status"] == "ok", row
     assert row["detail"]["review_required"] == [], row["detail"]
-    assert [item["path"] for item in row["detail"]["answered"]] == [
+    assert [item["path"] for item in row["detail"]["answered_paths"]] == [
         ASKED]
 
 
