@@ -40,7 +40,11 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `execute` refuses a plan edited to name another
            (`plan-not-the-source`): in place, the source IS the assembly
            root, and its own name is renamed first, on GitHub, never
-           retyped (#499).
+           retyped (#499). An `origin` that is a url names the
+           `org/repo` it ends in, with or without a trailing `/`; one that
+           is a path, in any separator, names none, and `plan` says it
+           compared nothing (#521). An organisation read from the url and
+           refused is named by where it came from (#427).
   check    validates a plan against the source: each entry path bound for
            a leg one `execute` will extract, no symlink in the source with
            an empty target (Linux cannot make one, so a clone there checks
@@ -263,6 +267,8 @@ from shape_materialize import (  # noqa: E402
     pin_variable_collisions, refuse_colliding_pins,
 )
 from repo_shape import SHA256_RE, repo_basename  # noqa: E402
+# One reading of an `origin`, shared with `shape-doctor.py` (#521).
+from repo_shape import origin_is_a_path, url_repository  # noqa: E402
 
 #: The keys `plan` records for each pin, in the order it writes them, and the
 #: value of `contracts/neutral-product-pin.yaml` each one fills.
@@ -1461,8 +1467,18 @@ class Source:
 
 
 def _remote_repository(path: Path) -> str | None:
-    """The `org/repo` the source's `origin` URL ends in; None when it has
-    no origin, or one that ends in no such pair.
+    """The `org/repo` the source's `origin` names (`url_repository`, the one
+    reading `shape-doctor.py` shares); None when it has no origin, or one
+    that names no such pair: a path names none (#521)."""
+    url = _origin_url(path)
+    return None if url is None else url_repository(url)
+
+
+def _origin_url(path: Path) -> str | None:
+    """The source's `origin` as git hands it to a fetch, `git remote get-url
+    origin`: its first url, with any `url.<base>.insteadOf` applied. None
+    when it has none. THE ONE READ of it, so that what `plan` compares and
+    what it says it did not compare are one url (#521).
 
     NOR DOES A URL THAT IS NOT UTF-8 NAME ONE (#292). git keeps the URL as
     the bytes it was given: a clone of a directory named in a code page that
@@ -1474,11 +1490,9 @@ def _remote_repository(path: Path) -> str | None:
     source by its path.
     """
     try:
-        url = git_out(["remote", "get-url", "origin"], cwd=path)
+        return git_out(["remote", "get-url", "origin"], cwd=path)
     except (Refusal, UnicodeDecodeError):
         return None
-    match = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$", url)
-    return match.group(1) if match else None
 
 
 def _default_branch(path: Path) -> str:
@@ -3202,25 +3216,15 @@ def _checked_plan_inputs(args, source: Source,
         raise Refusal("adopt-bad-id",
                       f"--id {args.id!r} must match {PROJECT_ID_RE.pattern}",
                       "Remediation: pass an explicit lowercase --id.")
-    # NO ORG IS `adopt-no-org`, asked before `checked_value` (#292). The `-`
-    # that once stood in for a missing one reached `checked_value` first,
-    # which refused `--org is '-'`, a value nobody passed; this refusal was
-    # never reached. A source with no `origin`, one whose URL is not UTF-8,
-    # and one whose URL ends in no `org/repo` (`_remote_repository`) all name
-    # no org, and the refusal says each of the three: it is asked of a source
-    # that HAS an origin as often as of one that has none.
-    args.org = args.org or (source.repository or "/").split("/")[0]
-    if not args.org:
-        raise Refusal(
-            "adopt-no-org", "the source's `origin` names no organisation "
-            "this tool can read: it has none, its URL is not UTF-8, or its "
-            "URL ends in no `org/repo`",
-            "Remediation: pass --org <org>.")
-    args.org = checked_value("--org", args.org)
+    # The organisation, given or read from the source's `origin`, and named
+    # by which of the two it is should it be refused (#292, #427).
+    org_given = bool(args.org)
+    args.org = _planned_org(args.org, source)
     # IN PLACE, THE SOURCE'S OWN NAME (#499), as soon as both halves are
     # known and before any pin's digest is read: `execute` acts on the
     # repository `--org` and `--project` name, so they must be the source.
-    _refuse_another_repository(args, source, naming, set(products))
+    _refuse_another_repository(args, source, naming, set(products),
+                               org_given)
     args.elected_on = args.elected_on or _dt.date.today().isoformat()
     # Read before the plan is written, whether or not it is what chooses the
     # reference: a date the tools cannot parse would reach `execute` as a
@@ -3261,6 +3265,60 @@ def _checked_plan_inputs(args, source: Source,
                                         naming)
     _refuse_misread_values(args, flags_given, pins, source, planned, naming)
     return names, pins
+
+
+def _org_read_from(source: Source) -> str:
+    """Where `plan` read the organisation it records when `--org` is not
+    given (#427): the `org/repo` it cloned as `--source`, or the source's
+    `origin` (`Source.repository`)."""
+    return "`--source`" if source.cloned else "the source's `origin`"
+
+
+def _planned_org(org: str | None, source: Source) -> str:
+    """The organisation the plan records: `--org`, or, where it is not
+    given, the one the source names (`_org_read_from`); held to
+    `checked_value` either way, which hands back the text.
+
+    NO ORG IS `adopt-no-org`, asked before `checked_value` (#292). The `-`
+    that once stood in for a missing one reached `checked_value` first,
+    which refused `--org is '-'`, a value nobody passed; this refusal was
+    never reached. A source with no `origin`, one whose URL is not UTF-8 or
+    ends in no `org/repo`, and one whose `origin` is a path, which names no
+    repository (`url_repository`, #521), all name no org, and the refusal
+    says each: it is asked of a source that HAS an origin as often as of one
+    that has none.
+
+    AN ORGANISATION `plan` READ IS NAMED BY WHERE IT CAME FROM (#427). A url
+    can end in any text -- `caf%C3%A9`, `-evil`, a space -- and
+    `checked_value` refused it as `--org is 'café'`, a flag nobody passed,
+    with a remedy about a leading `-` and a character class. It is `--org
+    (not given, so the organisation of the source's `origin`)`, as
+    `--elected-by` is named when `git config user.name` filled it in, and
+    the remedy says first to pass `--org`. The refusal and its exit code
+    stay: `plan` never puts such a value on a command line.
+    """
+    if org:
+        return checked_value("--org", org)
+    read = (source.repository or "/").split("/")[0]
+    if not read:
+        raise Refusal(
+            "adopt-no-org", "the source's `origin` names no organisation "
+            "this tool can read: it has none, its URL is not UTF-8 or ends "
+            "in no `org/repo`, or it is a path, which names no repository on "
+            "GitHub",
+            "Remediation: pass --org <org>.")
+    where = _org_read_from(source)
+    try:
+        return checked_value(
+            f"--org (not given, so the organisation of {where})", read)
+    except Refusal as exc:
+        said = (exc.remediation.partition("Remediation: ")[2]
+                or exc.remediation)
+        raise Refusal(
+            exc.code, exc.detail,
+            "Remediation: pass --org <org>; without it, `plan` reads the "
+            f"organisation from {where}. {said[:1].upper()}{said[1:]}"
+        ) from exc
 
 
 def _refuse_misread_values(args, given: set, pins: dict, source: Source,
@@ -3631,6 +3689,8 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     for line in _empty_symlink_notes(tree):
         print(line)
     for line in _tracking_branch_notes(args, source):
+        print(line)
+    for line in _path_origin_notes(args, source):
         print(line)
     unresolved = [e for e in entries if e.leg is None]
     # A default is still a question (#528): it is printed with the question,
@@ -5639,7 +5699,9 @@ def _entry_findings(plan: Plan, source: Source,
     disk by each command when it runs (#183): whether anything is at the
     place outside the assembly it leads to, a climb above the root from its
     own work directory; and whether `git` there checks it out as a symlink at
-    all, or as a plain file the shape's copy goes beside.
+    all, or as a plain file the shape's copy goes beside. The second is asked
+    too of a symlink ABOVE a shape path that a finding names, which then
+    says the clone holds it as a file (#531).
 
     `_leg_findings` is handed the TREE, because the paths the plan keeps in
     the root are read out of it (#172, #191): without it a mount path at, or
@@ -6174,11 +6236,15 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 # shape writes is a plain file in the clone, which `place` finds there and
 # writes the copy beside, so nothing about where that link leads is refused
 # (B-OFF of #183's re-verify); a link ABOVE one is `execute`'s
-# `adopt-symlinks-off`, since nothing can be written beneath a file. A
-# target is absolute as this machine's `open()` reads it: `C:/x`, a drive
-# letter's path, is a place on this disk only on Windows. On Linux and macOS
-# it is a relative path, into a directory named `C:`, and it is followed as
-# one, as `open()` and the materializer follow it there.
+# `adopt-symlinks-off`, since nothing can be written beneath a file. A link
+# ABOVE one that `check` reports anyway, for where it would lead on a disk
+# that holds symlinks, is named there as that file too, as
+# `adopt-symlinks-off` names it, and not by where it leads (L1-J3 of #183's
+# re-verify, #531): no target makes the file a directory. A target is
+# absolute as this machine's `open()` reads it: `C:/x`, a drive letter's
+# path, is a place on this disk only on Windows. On Linux and macOS it is a
+# relative path, into a directory named `C:`, and it is followed as one, as
+# `open()` and the materializer follow it there.
 #
 # EACH DECLARED PIN'S FILE IS ONE OF THOSE PATHS (#273). `execute` hands the
 # materializer `_recorded_pins`, and `place` writes each
@@ -6277,7 +6343,9 @@ class _PlannedRoot:
     and nothing else in `.git`. Where `git` checks a symlink out as a plain
     file, a symlink AT a path the shape writes is that file, wherever it
     leads: `probe` asks this command's work directory, and only for a link
-    a walk cannot follow (`_a_file_here`).
+    a walk cannot follow (`_a_file_here`). The walk itself still follows a
+    symlink ABOVE a path the shape writes: `_root_symlink_findings` asks the
+    same `probe` of one it reports (`_a_file_above`, #531).
     `walks` adds what the shape itself writes, path by path, as `place` does,
     so `CLAUDE.md -> AGENTS.md` finds the `AGENTS.md` the shape wrote first.
     The paths are those of the pins the plan declares too (`pins`), each
@@ -6423,9 +6491,9 @@ class _PlannedRoot:
         false, Git for Windows' default), `place` finds that file there and
         writes the shape's copy beside it, whatever the link leads to, as on
         `main` (B-OFF of #183's re-verify). A link the walk meets first
-        ABOVE its path is `execute`'s `adopt-symlinks-off`. The disk is
-        asked only for a link the walk could not follow, so a plan with none
-        makes no probe."""
+        ABOVE its path is `execute`'s `adopt-symlinks-off`, or, where `check`
+        reports it, `_a_file_above`'s. The disk is asked only for a link the
+        walk could not follow, so a plan with none makes no probe."""
         return (bool(walk.links)
                 and walk.links[0][0].casefold() == walk.path.casefold()
                 and not self.probe.symlinks())
@@ -6768,6 +6836,15 @@ def _root_symlink_findings(plan: Plan, source: Source,
     `plan-empty-symlink` names every such symlink in the source, first in
     `_entry_findings`' list, with the fix in the source, so it is not said
     again here, wherever in the walk's chain that symlink is.
+
+    Where `git` checks a symlink out as a plain file, the link a reported
+    walk meets first ABOVE its path is that file in the clone, and the
+    finding says so, as `adopt-symlinks-off` does, in place of where the
+    link leads (`_a_file_above`, L1-J3 of #183's re-verify, #531). It is
+    still the one finding for that link, in the same place in the list, and
+    a link the walk follows into something the root keeps is still no
+    finding of this check's: `execute` refuses it after this list, as
+    `adopt-symlinks-off`.
     """
     findings: list[str] = []
     if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
@@ -6782,17 +6859,46 @@ def _root_symlink_findings(plan: Plan, source: Source,
                 continue
             seen.add(walk.links[0][0])
             findings.append(_root_symlink_finding(
-                walk, why, _CASE_ASIDE if fold else ""))
+                walk, why, _CASE_ASIDE if fold else "",
+                as_a_file=_a_file_above(walk, probe)))
     return findings
 
 
-def _root_symlink_finding(walk: _Walk, why: str, aside: str) -> str:
+def _a_file_above(walk: _Walk, probe: _SymlinkProbe) -> bool:
+    """Whether the clone holds the symlink `walk` meets first, ABOVE its own
+    path, as a plain file: where `git` checks a symlink out as one
+    (`core.symlinks` false, Git for Windows' default), nothing is written
+    beneath it, wherever it leads (#531). `_PlannedRoot._a_file_here`'s
+    question, of a link above the path rather than at it, and asked of the
+    same `probe`. The disk is asked only for a link `check` reports, so a
+    plan with none still makes no probe."""
+    return (bool(walk.links)
+            and walk.links[0][0].casefold() != walk.path.casefold()
+            and not probe.symlinks())
+
+
+def _root_symlink_finding(walk: _Walk, why: str, aside: str, *,
+                          as_a_file: bool = False) -> str:
     """The line `check` prints for a symlink `walk` cannot be written
     through, and what to do. A walk that stopped at a symlink with an empty
-    target never comes here: that symlink is #303's `plan-empty-symlink`."""
+    target never comes here: that symlink is #303's `plan-empty-symlink`.
+
+    `as_a_file` (`_a_file_above`): the clone holds the link as a plain file.
+    That is the reason then, in `adopt-symlinks-off`'s words, and not `why`,
+    which is the reason on a disk that holds symlinks; and the fix is in the
+    plan, because on that disk no target the link is given makes it a
+    directory, and "change where it points" led on to `adopt-symlinks-off`
+    (#531)."""
     link, target = walk.links[0]
     fix = (f"Send {_spelled(link)} to a leg or `drop` it, or change where it "
            "points in the source and re-run `plan`.")
+    if as_a_file:
+        why = ("`git` here checks a symlink out as a plain file "
+               "(`core.symlinks` is false), so the assembly's clone would "
+               f"hold {_spelled(link)} as a file, wherever it points, and "
+               "nothing can be written beneath a file")
+        fix = (f"Send {_spelled(link)} to a leg or `drop` it in the plan, "
+               "and run `check` again.")
     return (f"FINDING {ROOT_SYMLINK}: the plan keeps {_spelled(link)} in the "
             f"root, a symlink to {_spelled(target)}, and "
             f"{_spelled(walk.path)}, a path the shape writes, runs through "
@@ -6843,6 +6949,7 @@ class _SymlinkProbe:
                 # user cannot write (J4 of #183's re-verify). Taken as a disk
                 # that holds symlinks, `check` prints the finding it printed
                 # before B-OFF for a link AT a path that a walk cannot follow,
+                # and the finding of such a disk for a link ABOVE one (#531),
                 # beside `adopt-work-dir-unwritable` (#524), and
                 # `_refuse_what_check_finds` refuses with it, where both
                 # would otherwise end in a traceback. `execute` itself
@@ -6863,8 +6970,11 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
     directory where a file is. It used to die there in a traceback after
     both legs were pushed. A symlink AT a shape path is unaffected: as a
     file it is still taken, and the shape's copy goes beside it, as `check`
-    counts it too (`_PlannedRoot._a_file_here`). The probe is made only when
-    a plan needs it, so an adoption with no such link runs exactly as before.
+    counts it too (`_PlannedRoot._a_file_here`). A link ABOVE one that
+    `check` reports is refused before this, by `_refuse_what_check_finds`,
+    whose line says the same of the file (`_a_file_above`, #531); this
+    refuses the rest, which `check` passes. The probe is made only when a
+    plan needs it, so an adoption with no such link runs exactly as before.
     """
     tree = source.tree()
     if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
@@ -9756,14 +9866,13 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
     names a repository and `names` are made from its name (#499). The
     assembly root's name is then not the person's to retype: a refusal of it
     says that the source cannot be adopted in place under that name, and
-    that renaming it comes first (`_rename_first`; at that path, where its
-    `origin` is one, `_origin_path`), never that `--project` takes one
-    CamelCase token. A leg's name is the plan's own to edit, and keeps the
-    remediation it had.
+    that renaming it on GitHub comes first (`_rename_first`), never that
+    `--project` takes one CamelCase token. A leg's name is the plan's own to
+    edit, and keeps the remediation it had.
     """
     for role, name in names.items():
         found = policy.classify(name, role, pins)
-        renamed = (_rename_first(source.repository, path=_origin_path(source))
+        renamed = (_rename_first(source.repository)
                    if role == "assembly" and source is not None
                    and source.repository is not None else None)
         if found is None:
@@ -9823,20 +9932,20 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
 # (`_plan_org`). A source that names no repository (no `origin`, or one that
 # ends in no `org/repo`) is asked nothing, as before.
 #
-# AN `origin` THAT IS A PATH NAMES ITS LAST TWO DIRECTORIES, as `plan` has
-# read it for `--org` all along, and is compared like any other: a clone of
-# `/srv/git/acme/Atlas.git` is `acme/Atlas`. A clone of `/srv/clones/Atlas.git`
-# is then `clones/Atlas`, no repository on GitHub, so the remediation
-# says where the name was read from (`_origin_path`) before it offers one,
-# and never offers a directory's name as an organisation without saying so.
+# AN `origin` THAT IS A PATH NAMES NO REPOSITORY (#521), in any separator
+# (`url_repository`). It was read as its last two directories, so a clone of
+# `/srv/clones/Atlas.git` was `clones/Atlas` and the right `--org` was refused,
+# while the same path written with backslashes named nothing and was not
+# compared. A path is a directory on this machine and says nothing of the
+# repository on GitHub that `execute` acts on, so nothing is compared with it,
+# and `plan` says so in a NOTE naming that repository (`_path_origin_notes`).
 #
 # AND A NAME THE POLICY REFUSES IS RENAMED FIRST, NOT RETYPED. Where the
 # source's own name is one the naming policy refuses (`billing-service`), it
 # cannot be adopted in place under that name, and no `--project` changes
 # that: whether to rename the repository is a human's decision, made first on
-# GitHub, or at the path an `origin` that is one names, and `plan` runs again
-# after it. So these refusals say that, and `_check_names` says it in place of
-# its hint to retype `--project`.
+# GitHub, and `plan` runs again after it. So these refusals say that, and
+# `_check_names` says it in place of its hint to retype `--project`.
 
 #: `plan`'s refusal of an `--org` and a `--project` that name another
 #: repository than the source's (#499).
@@ -9851,46 +9960,54 @@ def _is_the_source(repository: str, org: str, name: str) -> bool:
     return f"{org}/{name}".casefold() == repository.casefold()
 
 
-def _rename_first(repository: str, said: str = "",
-                  path: str | None = None) -> str:
+def _rename_first(repository: str, said: str = "") -> str:
     """The remediation where the source's own name is one the naming policy
     refuses: it cannot be adopted in place under that name, and renaming it
     is a human's decision that comes first (#499). `said` is what the
     refusal says before that, a sentence or none. THE ONE TEXT of it.
 
-    `path` is the source's `origin` where that is a filesystem path
-    (`_origin_path`). The repository is then the one at that path, which
-    names none on GitHub by itself, so it is renamed there, or the adoption
-    is planned from a clone of the repository on GitHub instead: `gh repo
-    rename` renames a repository on GitHub, and sending the person to it
-    contradicted the sentence that a path names none there (#513's review,
-    NIT-3)."""
-    where = (
-        "on GitHub (`gh repo rename`); then run `plan` again against the "
-        "renamed repository (`--source <org>/<new name>`, or a clone whose "
-        "`origin` names it)" if path is None else
-        f"where it is kept, and its `origin` is the path {_spelled(path)}, "
-        "not a repository on GitHub: rename the repository at that path, or "
-        "plan instead from a clone of the repository on GitHub, whose "
-        "`origin` names it there; then run `plan` again against the renamed "
-        "repository")
+    ON GITHUB, ALWAYS. The source names a repository only by a url or an
+    `org/repo` (`url_repository`), so the repository renamed is one on
+    GitHub. A path `origin` once named its last two directories, and this
+    then said to rename the repository at that path (#513's review, NIT-3);
+    it names none since #521, and nothing here is said of one."""
     return (f"Remediation: {said}{_shown(repository)} cannot be adopted in "
             "place under that name: an in-place adoption keeps the source's "
             "own name, and `--project` cannot rename it. Whether to rename "
-            f"it is a human's decision, made first {where}, with its new "
-            "name as `--project`.")
+            "it is a human's decision, made first on GitHub (`gh repo "
+            "rename`); then run `plan` again against the renamed repository "
+            "(`--source <org>/<new name>`, or a clone whose `origin` names "
+            "it), with its new name as `--project`.")
 
 
 def _origin_path(source: Source) -> str | None:
-    """The source's `origin` where `source.repository` was read from it and
-    it is a filesystem PATH (`remote_is_a_path`), not a url (#499): the
-    repository is then its last two directories, which name no repository
-    on GitHub by themselves, and an `--org` read from them may be none. None
-    for an `org/repo` source, which names its repository itself."""
-    if source.cloned or source.repository is None:
+    """The source's `origin` where it is a filesystem PATH
+    (`origin_is_a_path`), which names no repository (`url_repository`,
+    #521); None for a source `plan` cloned from an `org/repo`, and for an
+    `origin` that is a url, or none. Read as `source.repository` was read
+    (`_origin_url`)."""
+    if source.cloned:
         return None
-    url = _config_value(source.path, "remote.origin.url")
-    return url if url is not None and remote_is_a_path(url) else None
+    url = _origin_url(source.path)
+    return url if url is not None and origin_is_a_path(url) else None
+
+
+def _path_origin_notes(args, source: Source) -> list[str]:
+    """What `plan` says where the source's `origin` is a path (#521): that
+    `--org` and `--project` were not compared with it, and the repository
+    `execute` acts on without `--local-remote-dir`, which only the person can
+    say is the source. A NOTE, not a refusal: the plan names the repository
+    the person gave it, as for a source with no `origin`."""
+    path = _origin_path(source)
+    if path is None:
+        return []
+    return [f"\nNOTE the source's `origin` is the path {_spelled(path)}, "
+            "which names no repository on GitHub, so `--org` and `--project` "
+            "were not compared with it.",
+            "     `execute` without `--local-remote-dir` pushes the split to "
+            f"{args.org}/{args.project}, opens its pull request there and "
+            "sets its topic on it, so that must be the source's own "
+            "repository on GitHub."]
 
 
 def _own_name_remediation(source: Source, naming: NamingPolicy,
@@ -9898,22 +10015,14 @@ def _own_name_remediation(source: Source, naming: NamingPolicy,
     """What `adopt-not-the-source` and `plan-not-the-source` say to do:
     `plan` again under the source's own name, or, where the naming policy
     refuses that name, `_rename_first`. `done` is what the refusing command
-    left as it was, said first; then, where the name was read from a path
-    (`_origin_path`), that it was, so that a directory's name is never
-    offered as an organisation without saying where it came from."""
+    left as it was, said first."""
     repository = str(source.repository)
     org, _, name = repository.partition("/")
-    path = _origin_path(source)
-    if path is not None:
-        done += (f"The source's repository, {_shown(repository)}, is read "
-                 "from the last two directories of its `origin`, the path "
-                 f"{_spelled(path)}, and names no repository on GitHub by "
-                 "itself. ")
     try:
         _check_names(naming, _names(name), pins)
     except Refusal as exc:
         return _rename_first(repository, f"{done}The source's own name is no "
-                             f"remedy either: {exc.detail}. ", path)
+                             f"remedy either: {exc.detail}. ")
     return (f"Remediation: {done}Run `plan` again with `--project "
             f"{_shown(name)} --org {_shown(org)}`, the source's own name, "
             "which `plan` writes into the plan's `org:`, `project:` and "
@@ -9923,19 +10032,24 @@ def _own_name_remediation(source: Source, naming: NamingPolicy,
 
 
 def _refuse_another_repository(args, source: Source, naming: NamingPolicy,
-                               pins: set[str]) -> None:
+                               pins: set[str], org_given: bool = True) -> None:
     """`plan` refuses an `--org` and a `--project` that name another
     repository than the one the source names, as `adopt-not-the-source`,
-    before anything is written (#499). `args.org` is settled: given, or read
-    from the source."""
+    before anything is written (#499). `args.org` is settled: given, or,
+    where `org_given` is false, read from the source, and then named by
+    where it came from, not as a flag nobody passed (#427)."""
     repository = source.repository
     if repository is None or _is_the_source(repository, args.org,
                                             args.project):
         return
+    named = (f"--org {args.org} and --project {args.project} name"
+             if org_given else
+             f"--project {args.project}, with the organisation of "
+             f"{_org_read_from(source)} (`--org` not given), names")
     raise Refusal(
         NOT_THE_SOURCE,
-        f"--org {args.org} and --project {args.project} name "
-        f"{args.org}/{args.project}, and the source is {_shown(repository)}: "
+        f"{named} {args.org}/{args.project}, and the source is "
+        f"{_shown(repository)}: "
         "an in-place adoption keeps the source's own name, and `execute` "
         "pushes the split to the repository they name, opens its pull "
         "request there and sets its topic on it",
