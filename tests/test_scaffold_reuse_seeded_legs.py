@@ -471,8 +471,12 @@ def test_the_visibility_text_follows_each_leg_as_it_stands(
 #: runs. On the Free plan an organisation secret reaches only a public
 #: repository, so the hint is true when the root is private or internal and
 #: false when it is public, whatever a leg is. `None` is no hint; otherwise
-#: the legs it names, as `FREE_PLAN_HINT` puts them before " private, so".
-BOTH_LEGS = f"{SPEC_REPO} and {CODE_REPO} are"
+#: the repository it names as the reason, as `FREE_PLAN_HINT` puts it before
+#: " private, so": the root (#602), where it named the closed legs.
+ROOT_IS = f"{ORG}/{PROJECT} is"
+#: What the hint named as its reason before #602, which no row may print.
+LEG_SUBJECTS = (f"{SPEC_REPO} is", f"{CODE_REPO} is",
+                f"{SPEC_REPO} and {CODE_REPO} are")
 
 
 @WINDOWS_SKIP
@@ -494,16 +498,16 @@ BOTH_LEGS = f"{SPEC_REPO} and {CODE_REPO} are"
      None),
     # And the other way: a public run over a root that is private on GitHub.
     ({PROJECT: "PRIVATE", f"{PROJECT}-code": "PRIVATE"},
-     ("--visibility", "public"), "free", f"{CODE_REPO} is"),
+     ("--visibility", "public"), "free", ROOT_IS),
     # An internal root is closed too, and its run creates the spec leg
     # internal.
     ({PROJECT: "INTERNAL", f"{PROJECT}-code": "PRIVATE"}, (), "free",
-     BOTH_LEGS),
+     ROOT_IS),
     # Controls: a private root with both legs private, reused and created
     # new, says it as it always did; and a paid plan says nothing.
     ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PRIVATE",
-      f"{PROJECT}-code": "PRIVATE"}, (), "free", BOTH_LEGS),
-    ({}, (), "free", BOTH_LEGS),
+      f"{PROJECT}-code": "PRIVATE"}, (), "free", ROOT_IS),
+    ({}, (), "free", ROOT_IS),
     ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PRIVATE",
       f"{PROJECT}-code": "PRIVATE"}, (), "team", None),
 ], ids=["public-run-new-root", "public-root-reused",
@@ -520,7 +524,9 @@ def test_the_free_plan_hint_goes_by_the_root_as_it_stands(
     in every case a leg is closed, since a public root still needs a
     credential to read a private leg; the hint only when the root, as it
     stands, is private or internal: GitHub's for a reused root, else the
-    run's."""
+    run's. #602: and it names the root as the repository that is private,
+    where it named the closed legs, which are not why the secrets resolve to
+    EMPTY."""
     env, _log = fake_gh(tmp_path, repos, plan=plan)
     result = on_github(tmp_path, "--reuse-empty-repo", *flags, env=env)
     assert result.returncode == 0, result.stderr + result.stdout
@@ -532,6 +538,8 @@ def test_the_free_plan_hint_goes_by_the_root_as_it_stands(
         assert f"NOTE {ORG} is on the GitHub FREE plan" in printed, printed
         assert f"{named} private, so org-level" in printed, printed
         assert printed.count("resolve to EMPTY") == 1, printed
+    for subject in LEG_SUBJECTS:
+        assert f"{subject} private, so" not in printed, printed
 
 
 # --- a leg that gh sees and git cannot read (#542) --------------------------

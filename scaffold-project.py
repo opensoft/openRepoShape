@@ -1229,7 +1229,11 @@ def _private_leg_note(args, repositories: dict, local: bool,
     public root, new or reused, receives the organisation's secrets, and a
     hint that they "resolve to EMPTY" is false of it however private a leg
     is. The per-leg NOTE above stays, since a public root still needs a
-    credential to read a private leg.
+    credential to read a private leg. AND IT NAMES THE ROOT (#602): it said
+    the closed legs were private, so a public run over a reused private root
+    was told the secrets resolve to EMPTY because a leg is private, when the
+    reason is that the root is. `adopt-project.py` goes by its root the same
+    way.
     """
     closed = [role for role in ("spec", "code")
               if standing[role] in ("private", "internal")]
@@ -1249,7 +1253,8 @@ def _private_leg_note(args, repositories: dict, local: bool,
               f"check cannot check {them} out.")
         root_is_closed = standing["assembly"] in ("private", "internal")
         hint = root_is_closed and free_plan_secret_hint(
-            args.org, repositories["assembly"], f"{who} {are}")
+            args.org, repositories["assembly"],
+            f"{repositories['assembly']} is")
         if hint:
             print(hint)
 
