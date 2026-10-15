@@ -94,7 +94,10 @@ and for a FAMILY holder: `merge` likewise, `family` (its own
 `members` and `machine`. A directory that
 is NEITHER gets `naming` (what it is called, under the policy), `what is
 here`, `the way in` -- `adopt-project.py plan` for a repository that already
-exists, `setup.sh` for a new one -- and `machine`.
+exists, `setup.sh` for a new one -- and `machine`. A git repository is told
+of both: `the way in` is its adoption, with `--org <your-org>` where its
+`origin` names no organisation `plan` can read, and `the other way in` is the
+scaffold (#545); a directory that is not a repository gets the scaffold alone.
 
 A MANIFEST THAT IS THERE AND DOES NOT LOAD IS NOT AN ABSENT ONE (#205). A
 `project.yaml` with a merge conflict left in it, a tab, a construct the
@@ -5821,6 +5824,45 @@ def repo_local_origin_name(root: Path) -> str | None:
     return origin_name(root) if (root / ".git").exists() else None
 
 
+#: The `org/repo` pair `adopt-project.py`'s `_remote_repository` reads off the
+#: end of an `origin` URL, byte for byte: the text after the last two
+#: separators, less a `.git`. It is COPIED, not imported -- `adopt-project.py`
+#: is a script with a hyphen in its name, not a module this file may load --
+#: and `tests/test_shape_doctor.py` runs both over the same URLs, so a change
+#: to one that the other does not follow is a red test.
+_ORIGIN_REPOSITORY_RE = re.compile(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$")
+
+
+def origin_org(root: Path) -> str | None:
+    """The organisation `adopt-project.py plan` would read off `root`'s own
+    `origin`, or None where it reads none (#545).
+
+    `plan --source <path>` takes its `--org` from the source's `origin` and,
+    with none to take, refuses `adopt-no-org` and asks for the flag. It
+    reads none in THREE cases, and this is the one question the NEXT of
+    `the way in` needs answered: the repository has no `origin`; its URL is
+    not UTF-8 (git keeps a URL as the bytes it was given, and `plan` reads
+    it strictly, so it is no origin there, as `origin_name` and
+    `shape_advisory.repository_names` already say of it, #385); or its URL
+    ends in no `org/repo` -- a bare `repo.git`, a Windows path with no `/` in
+    it, a trailing slash. The first is the case #545 was filed for. The
+    other two are the same refusal on the same line, so the line is built
+    from the same reading rather than from "has an origin".
+
+    ONLY WHEN `root` CARRIES ITS OWN `.git`, for `repo_local_origin_name`'s
+    reason: `git remote get-url origin` walks UP to the nearest ancestor
+    repository, and an ancestor's organisation is not this directory's.
+    """
+    if not (root / ".git").exists():
+        return None
+    try:
+        url = git_out(["remote", "get-url", "origin"], cwd=root)
+    except (Refusal, OSError, UnicodeDecodeError):
+        return None
+    pair = _ORIGIN_REPOSITORY_RE.search(url)
+    return pair.group(1).split("/")[0] if pair else None
+
+
 def check_not_a_root_naming(ctx: Context) -> Row:
     """Classify what this directory is CALLED, under the naming policy.
 
@@ -6068,6 +6110,21 @@ def python_command(platform: str | None = None) -> str:
     return "python" if platform == "nt" else "python3"
 
 
+#: The one value a way-in command needs and this report cannot know, spelled
+#: the one way the handbook's scaffold commands and this file's own scaffold
+#: line have always spelled it. IT IS NOT QUOTED AND MUST NOT BE: it is a
+#: placeholder the reader replaces, not a value a command could take, and
+#: quoting it would tell them to type the angle brackets.
+ORG_PLACEHOLDER = "<your-org>"
+
+#: What both scaffold rows say about their one line (#545): the placeholder
+#: the line carries is the reader's to replace, and the scaffold asks before
+#: it creates anything. Said once, so the non-repository row and the second
+#: row of a repository cannot word it two ways.
+SCAFFOLD_WHY = (f"replace {ORG_PLACEHOLDER} with the GitHub organisation to "
+                "create it in; without --yes, it asks")
+
+
 def scaffold_command(shape: Path, project: str,
                      platform: str | None = None) -> str:
     # RAW, for `quote_arg`'s reason one function along: the paragraph below
@@ -6120,8 +6177,9 @@ def scaffold_command(shape: Path, project: str,
     if target == "nt":
         return (f"{python_command(platform)} "
                 f"{quote_arg(shape / 'setup-project.py', target)} "
-                f"--org <your-org> --project {quote_arg(project, target)}")
-    return (f"{quote_arg(shape / 'setup.sh', target)} --org <your-org> "
+                f"--org {ORG_PLACEHOLDER} --project "
+                f"{quote_arg(project, target)}")
+    return (f"{quote_arg(shape / 'setup.sh', target)} --org {ORG_PLACEHOLDER} "
             f"--project {quote_arg(project, target)}")
 
 
@@ -6191,6 +6249,24 @@ def check_the_way_in(ctx: Context) -> Row:
     person wants is a fact about their repository, not about this directory
     listing, so both are named and the human chooses.
 
+    A ROW CARRIES ONE NEXT, SO A GIT REPOSITORY GETS TWO ROWS (#545). This
+    one is the way a directory's own kind points at -- the adoption for a
+    repository, the scaffold for one that is not -- and `check_the_other_way_in`
+    is the second command a repository is told of, which `AGENTS.md` asks the
+    report to give ("Report the verdict and both commands"). A directory
+    that is not a repository has no adoption to offer and gets one row, as it
+    always did; a leg clone gets neither (below).
+
+    THE ADOPTION LINE NAMES THE ORGANISATION WHEN IT CANNOT BE READ (#545).
+    `adopt-project.py plan` takes `--org` from the source's `origin`, so a
+    repository with no `origin` -- or one whose URL names no `org/repo`, or
+    is not UTF-8 -- pasted this line and was refused `adopt-no-org`, exit 2.
+    `origin_org` asks the question `plan` asks, and where it has no answer
+    the line ends `--org <your-org>`, the placeholder this report already
+    prints on the scaffold line (`ORG_PLACEHOLDER`). It is a value the
+    reader supplies, so the row's `why` says to replace it; where `origin`
+    does name an organisation the line is unchanged, and carries none.
+
     THE SUGGESTED `--project` READS THE SAME IDENTITY THE `naming` ROW DOES:
     `origin`'s repository name where there is one, the directory's own name
     otherwise -- `check_not_a_root_naming`'s own docstring, "the name that
@@ -6210,10 +6286,8 @@ def check_the_way_in(ctx: Context) -> Row:
     """
     root = ctx.root
     is_repo = (root / ".git").exists()
-    identity = repo_local_origin_name(root) or root.name
-    policy = NamingPolicy.load(ctx.shape / "contracts" /
-                               "repository-naming.yaml")
-    project = project_token_for(identity, policy)
+    project = way_in_project(ctx)
+    org = origin_org(root)
     if is_repo and leg_clone(ctx):
         # A LEG IS NOT ADOPTED. Splitting a spec or code leg into two more
         # legs is the one adoption nobody wants, and offering it two rows
@@ -6229,20 +6303,69 @@ def check_the_way_in(ctx: Context) -> Row:
                f"plan --source {quote_arg(root)} --project "
                f"{quote_arg(project)}")
         why = None
+        if org is None:
+            # NOT QUOTED, for `ORG_PLACEHOLDER`'s reason.
+            fix += f" --org {ORG_PLACEHOLDER}"
+            why = (f"replace {ORG_PLACEHOLDER} with the GitHub organisation "
+                   "to adopt under: this repository's `origin` names none "
+                   "that `plan` can read")
         reason = ("this is a git repository with no shape manifest: it is "
                   "ADOPTED in place, keeping its name, identity and history")
     else:
-        # `<your-org>` IS NOT QUOTED and must not be: it is a placeholder
-        # the reader replaces, not a value this command knows. Quoting it
-        # would tell them to type the angle brackets.
         fix = scaffold_command(ctx.shape, project)
-        why = "without --yes; it asks"
+        why = SCAFFOLD_WHY
         reason = ("there is no repository here to adopt: a new project is "
                   "SCAFFOLDED, which creates three repositories and asks "
                   "first")
     return Row("way-in", "the way in", NA, reason, fix,
-               {"git_repository": is_repo, "suggested_project": project},
+               {"git_repository": is_repo, "suggested_project": project,
+                "origin_org": org},
                why=why)
+
+
+def way_in_project(ctx: Context) -> str:
+    """The `--project` both ways in are offered, from the one identity
+    `check_the_way_in` reads: `origin`'s repository name where `root`
+    carries its own `.git` and one, the directory's name otherwise."""
+    identity = repo_local_origin_name(ctx.root) or ctx.root.name
+    policy = NamingPolicy.load(ctx.shape / "contracts" /
+                               "repository-naming.yaml")
+    return project_token_for(identity, policy)
+
+
+#: Named once, as `LABEL_TRIAD_ADVISORY` below is: the row, the registry entry
+#: and the tests all print the same words.
+LABEL_OTHER_WAY_IN = "the other way in"
+
+
+def check_the_other_way_in(ctx: Context) -> Row | None:
+    """The scaffold, for a git repository that is also told of the adoption
+    (#545).
+
+    `check_the_way_in` carries one NEXT, and for a repository it is the
+    adoption. `AGENTS.md` says the two ways in are `adopt-project.py plan`
+    and `setup.sh` and that the report gives the verdict "and both commands":
+    which of them is wanted is a fact about the person's repository, and the
+    row that answered only the adoption chose for them. THE SAME LINE THE
+    NON-REPOSITORY ROW PRINTS, `scaffold_command`, for the same `--project`
+    -- the one identity `way_in_project` reads -- so the two rows cannot
+    name two projects.
+
+    SILENT WHERE THE FIRST ROW OFFERS NO ADOPTION: a directory that is not a
+    repository already has the scaffold as its one row, and a leg clone is
+    sent to its assembly root (`leg_clone`, asked as `check_the_way_in` asks
+    it). A row that repeated the scaffold there would be this report
+    printing the same line twice, or contradicting the Triad row above it.
+    """
+    if not (ctx.root / ".git").exists() or leg_clone(ctx):
+        return None
+    project = way_in_project(ctx)
+    return Row("way-in-scaffold", LABEL_OTHER_WAY_IN, NA,
+               "a NEW project is SCAFFOLDED instead of adopting this "
+               "repository: it creates three repositories and asks first",
+               scaffold_command(ctx.shape, project),
+               {"git_repository": True, "suggested_project": project},
+               why=SCAFFOLD_WHY)
 
 
 #: Named once, like `LABEL_MANIFEST_KINDS` above: this function's three
@@ -6541,6 +6664,10 @@ CHECKS = (
     Check("naming", "naming", (NOT_A_ROOT,), check_not_a_root_naming),
     Check("contents", "what is here", (NOT_A_ROOT,), check_what_is_here),
     Check("way-in", "the way in", (NOT_A_ROOT,), check_the_way_in),
+    # RIGHT AFTER IT: a git repository is told of the scaffold too (#545), and
+    # the two commands are read together. Silent for anything else.
+    Check("way-in-scaffold", LABEL_OTHER_WAY_IN, (NOT_A_ROOT,),
+          check_the_other_way_in),
     # AFTER EVERYTHING ABOUT THE REPOSITORY AND BEFORE THE MACHINE, and only
     # where there is no manifest at all. A family holder is never advised; an
     # assembly root whose manifest is short of a Triad is a broken root, which

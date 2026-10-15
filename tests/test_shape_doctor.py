@@ -64,9 +64,12 @@ from test_update_shape import rendered_shape_line
 #: An `origin` written as BYTES git hands back unchanged, and the start of a
 #: URL holding the byte 0xE9 (#385), from the file that owns the advisory's
 #: half of that issue, so the two halves write the same URL the same way.
-from test_shape_advisory import NOT_UTF8, with_origin
+from test_shape_advisory import NOT_UTF8, repository, with_origin
 
 DOCTOR = "shape-doctor.py"
+#: What both scaffold rows say beside their line (#545).
+SCAFFOLD_WHY = ("replace <your-org> with the GitHub organisation to create "
+                "it in; without --yes, it asks")
 ORG = "testorg"
 PROJECT = "Atlas"
 FAMILY_NAME = "InkRouter"
@@ -1305,8 +1308,8 @@ def test_an_empty_git_repository_is_not_a_shape_root(standard, tmp_path):
     # `triad-advisory` since #163: an empty repository has elected nothing
     # and recorded nothing, so it hears the Triad advisory -- an `advisory`
     # row that the verdict steps over, which the exit code above shows.
-    assert set(rows) == {"naming", "contents", "way-in", "triad-advisory",
-                         "machine"}
+    assert set(rows) == {"naming", "contents", "way-in", "way-in-scaffold",
+                         "triad-advisory", "machine"}
     assert rows["triad-advisory"]["status"] == "advisory"
     assert "placement" not in rows, (
         "there are no legs here and no manifest declaring any, so there is "
@@ -1338,8 +1341,8 @@ def test_a_root_named_like_an_option_still_gets_a_real_naming_verdict(
     rows = rows_of(result)
     # `triad-advisory` since #163, as for any repository that has not
     # elected the Triad; it does not touch the naming row this test is about.
-    assert set(rows) == {"naming", "contents", "way-in", "triad-advisory",
-                         "machine"}
+    assert set(rows) == {"naming", "contents", "way-in", "way-in-scaffold",
+                         "triad-advisory", "machine"}
     row = rows["naming"]
     # The real verdict -- unclassified -- not the false OK argparse's own
     # help action used to produce.
@@ -1409,9 +1412,12 @@ def test_a_directory_that_is_not_a_repository_says_scaffold(standard,
         rows["way-in"]["next"], rows["way-in"]["next"]
     assert "--org <your-org>" in rows["way-in"]["next"]
     # Said beside the command, never on it (#277).
-    assert "without --yes" in rows["way-in"]["why"]
+    assert rows["way-in"]["why"] == SCAFFOLD_WHY, rows["way-in"]
     assert rows["way-in"]["detail"]["git_repository"] is False
     assert "an ordinary directory" in rows["contents"]["reason"]
+    # THE SCAFFOLD IS NOT PRINTED TWICE: it is this row, and a directory
+    # with no repository has no adoption for a second row to sit beside (#545).
+    assert "way-in-scaffold" not in rows, sorted(rows)
 
 
 def test_a_manifest_declaring_the_wrong_kind_is_not_a_root(standard,
@@ -1452,7 +1458,8 @@ def test_a_manifest_declaring_the_wrong_kind_is_not_a_root(standard,
 PROJECT_ROWS = {"naming", "manifest", "pins", "manifest-kinds",
                 "shape-currency", "legs", "leg-shape-files", "placement",
                 "agent-files", "machine"}
-NOT_A_ROOT_ROWS = ("contents", "way-in", "triad-advisory")
+NOT_A_ROOT_ROWS = ("contents", "way-in", "way-in-scaffold",
+                    "triad-advisory")
 
 #: The rows that read what `project.yaml` DECLARES, which wait on the
 #: `manifest` row while it does not load rather than answering a question
@@ -8406,7 +8413,7 @@ def test_the_way_in_row_matches_the_host_platform_end_to_end(standard,
     scaffolds = module.check_the_way_in(module.Context(here))
     assert scaffolds.next_command == module.scaffold_command(
         module.SHAPE_ROOT, "Loose", os.name), scaffolds.next_command
-    assert scaffolds.why == "without --yes; it asks", scaffolds.why
+    assert scaffolds.why == SCAFFOLD_WHY, scaffolds.why
     # The other way in, from the same directory once it is a repository.
     git("init", "-q", "-b", "main", ".", cwd=here)
     adopts = module.check_the_way_in(module.Context(here))
@@ -8414,7 +8421,111 @@ def test_the_way_in_row_matches_the_host_platform_end_to_end(standard,
         f"{module.PYTHON} "
         f"{module.quote_arg(module.SHAPE_ROOT / 'adopt-project.py', os.name)} "
         f"plan --source {module.quote_arg(here, os.name)} "
-        f"--project {module.quote_arg('Loose', os.name)}"), adopts.next_command
+        f"--project {module.quote_arg('Loose', os.name)} "
+        # No `origin` here, so `plan` reads no organisation (#545).
+        "--org <your-org>"), adopts.next_command
+
+
+def test_a_git_repository_is_told_of_both_ways_in(standard, tmp_path):
+    """#545: AGENTS.md says to "report the verdict and both commands", and
+    the report named the adoption alone for a repository.
+
+    A row carries one NEXT, so the scaffold is the row after the adoption,
+    for the same `--project`, printed as the non-repository row prints it.
+    The verdict is untouched: both rows are `n/a`.
+    """
+    here = tmp_path / "Loose"
+    here.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=here)
+    result = doctor(standard, here, "--json")
+    assert result.returncode == 2, result.stdout + result.stderr
+    listed = json.loads(result.stdout)["rows"]
+    ids = [row["id"] for row in listed]
+    assert ids.index("way-in-scaffold") == ids.index("way-in") + 1, ids
+    rows = rows_of(result)
+    adopts, scaffolds = rows["way-in"], rows["way-in-scaffold"]
+    module = doctor_module(standard)
+    assert "adopt-project.py plan" in adopts["next"], adopts
+    assert scaffolds["label"] == "the other way in", scaffolds
+    assert scaffolds["status"] == "n/a", scaffolds
+    assert scaffolds["next"] == module.scaffold_command(
+        module.SHAPE_ROOT, "Loose"), scaffolds
+    assert scaffolds["why"] == SCAFFOLD_WHY, scaffolds
+    assert scaffolds["detail"]["suggested_project"] == "Loose", scaffolds
+
+    text = doctor(standard, here)
+    assert text.returncode == 2, text.stdout + text.stderr
+    assert adopts["next"] in text.stdout, text.stdout
+    assert scaffolds["next"] in text.stdout, text.stdout
+
+
+def an_origin_of(path: Path, url: str | bytes | None) -> Path:
+    """A repository at `path` whose `origin` is `url`: bytes through
+    `with_origin`, so one that is not UTF-8 reaches git as written."""
+    if isinstance(url, bytes):
+        return with_origin(repository(path), url)
+    return repository(path, origin=url)
+
+
+#: `(origin URL, the organisation `adopt-project.py plan` reads from it)`, for
+#: the spellings that matter: none at all (#545), an ordinary pair, and the
+#: two other ways `plan` reads none -- a URL ending in no `org/repo` and one
+#: that is not UTF-8 -- which refuse `adopt-no-org` as a missing origin does
+#: (`tests/test_adopt_git_reads.py`).
+ORIGIN_ORGS = [
+    pytest.param(None, None, id="no-origin"),
+    pytest.param("git@github.com:opensoft/Atlas.git", "opensoft", id="scp"),
+    pytest.param("https://github.com/opensoft/Atlas", "opensoft", id="https"),
+    pytest.param("Atlas.git", None, id="no-pair"),
+    pytest.param("https://github.com/opensoft/Atlas/", None,
+                 id="trailing-slash"),
+    pytest.param(r"D:\a\_work\1\s\Atlas.git", None, id="windows-path"),
+    pytest.param(NOT_UTF8 + b"Atlas.git", None, id="not-utf8"),
+]
+
+
+@pytest.mark.parametrize("url, org", ORIGIN_ORGS)
+def test_the_adoption_line_names_an_org_only_where_plan_reads_none(
+        standard, tmp_path, url, org):
+    """#545: pasted on a repository with no `origin`, the adoption line was
+    refused `adopt-no-org`, exit 2, and so was one whose origin names no
+    organisation `plan` can read. Where there is none the line ends in the
+    placeholder the scaffold line already prints, and says to replace it;
+    where `plan` reads one the line is what it always was.
+
+    `ORIGIN_ORGS` IS NOT TRUSTED ON ITS OWN WORD: `origin_org` is
+    `adopt-project.py`'s `_remote_repository` read for its organisation, a
+    copy of its pattern, and the same repository is put to both.
+    """
+    module = doctor_module(standard)
+    here = an_origin_of(tmp_path / "Atlas", url)
+    read = adoption_module(standard)._remote_repository(here)
+    assert (read or "/").split("/")[0] == (org or ""), read
+    assert module.origin_org(here) == org
+
+    row = module.check_the_way_in(module.Context(here))
+    assert row.detail["origin_org"] == org, row.detail
+    named = f"--org {module.ORG_PLACEHOLDER}"
+    assert row.next_command.endswith(named) is (org is None), row.next_command
+    assert (row.why is None) is (org is not None), row.why
+    if org is None:
+        assert "replace <your-org> with the GitHub organisation" in row.why
+
+
+def test_an_ancestors_origin_names_no_org_for_a_loose_directory(standard,
+                                                                 tmp_path):
+    """A directory with no `.git` of its own, inside a clone whose `origin`
+    names `opensoft`, has no origin of its own to read an organisation from:
+    `git remote get-url` would answer for the ancestor, as it does for the
+    name (`test_the_way_in_row_never_leaks_an_ancestor_repository_origin`).
+    """
+    module = doctor_module(standard)
+    parent = an_origin_of(tmp_path / "Parent",
+                          "git@github.com:opensoft/Parent.git")
+    loose = parent / "Loose"
+    loose.mkdir()
+    assert module.origin_org(parent) == "opensoft"
+    assert module.origin_org(loose) is None
 
 
 def test_the_way_in_row_emits_a_classifying_name_verbatim(standard, tmp_path):
