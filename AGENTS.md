@@ -407,13 +407,13 @@ python3 scripts/family.py siblings --family-root <path>
    `members/<Project>` inside the holder is pinned and DETACHED, for
    `bootstrap` and `validate`; the sibling is where the human works.
    **What it never does, and neither do you:** it MOVES NOTHING — when the
-   parent folder is not named after the family it warns and prints an `mv`,
-   and running that `mv` yourself relocates a checkout out from under a
-   shell, an editor and every agent lane, and breaks any linked worktree
-   (its `.git` file carries an absolute path). An existing clone gets only
-   `git fetch` — no checkout, no reset, no pull — because somebody works in
-   there; one of a different repository is reported and skipped, and the
-   exit is the human's hand, not an overwrite.
+   parent folder is not named after the family (nor linked as it) it clones
+   nothing, prints an `mv` and exits 1 (`make`: 2), and running that `mv`
+   relocates a checkout out from under a shell, an editor and every agent lane,
+   and breaks any linked worktree (its `.git` file carries an absolute path). An
+   existing clone gets only `git fetch` — no checkout, no reset, no pull —
+   because somebody works in there; one of a different repository is reported
+   and skipped, and the exit is the human's hand, not an overwrite.
 6. `update-shape.py` updates a family root exactly as it updates a project,
    with the same four refusals, and mirrors into `family.yaml`. An existing
    holder receives `scripts/siblings.py` that way: `check` reports it as
