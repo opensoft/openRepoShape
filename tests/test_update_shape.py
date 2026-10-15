@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, ORG, REPO, WINDOWS_SKIP, git,
+from conftest import (ORG, REPO, WINDOWS_SKIP, cloned_just_pushed, git,
                       run_script)
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
@@ -109,12 +109,8 @@ def scaffold_upstream_and_project(tmp_path_factory, subdir: str,
         "--work-dir", str(base / "work"), *scaffold_args)
     assert result.returncode == 0, result.stderr + result.stdout
 
-    clone = base / "clone" / PROJECT
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         str(base / "remotes" / f"{PROJECT}.git"), str(clone)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    clone = cloned_just_pushed(base / "remotes" / f"{PROJECT}.git",
+                               base / "clone" / PROJECT)
     return base, upstream, commit_a, clone
 
 
