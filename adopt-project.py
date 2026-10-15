@@ -24,7 +24,10 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            honestly call, every path holding one of the source's own
            submodules, and every path `execute` will not extract into a leg
            as it is named, carry `leg: null`, `review_required: true` and
-           the QUESTION to ask.
+           the QUESTION to ask. A question whose rule names a default
+           carries that default as its `leg:` instead, still
+           `review_required: true`: the source's own `single-repository.yaml`
+           record, `drop` (#528).
            A leg path over a path it keeps in the root itself is a NOTE,
            not a refusal: the answer is the person's to change. A
            `--pin <product>@<40 hex>` is read as `scaffold-project.py
@@ -1495,7 +1498,15 @@ def _default_branch(path: Path) -> str:
 
 
 class Entry:
-    """One row of the plan: a path, the leg proposed for it, and why."""
+    """One row of the plan: a path, the leg proposed for it, and why.
+
+    `default` is the answer the entry's rule names for its question, or
+    None, and `review_required` is the verdict's: whether a question was
+    asked. The two part only in `with_its_default`, the one place a
+    question's `leg:` is filled in, which `cmd_plan` alone calls; `walk`
+    leaves every question's `leg` None, so the doctor, which walks a leg
+    with it, still reads one as a question (#528).
+    """
 
     def __init__(self, path: str, verdict: Verdict, files: int, size: int):
         self.path = path
@@ -1504,8 +1515,22 @@ class Entry:
         self.reason = verdict.reason
         self.confidence = verdict.confidence
         self.question = verdict.question
+        self.default = verdict.default
+        self.review_required = verdict.review_required
         self.files = files
         self.bytes = size
+
+    def with_its_default(self) -> "Entry":
+        """This question with its rule's default written in as its `leg:`,
+        still `review_required` and still carrying the question, the rule
+        and the reason, so a reader sees what was proposed and why."""
+        out = Entry(self.path, Verdict(None, self.rule, self.reason,
+                                       self.confidence), self.files,
+                    self.bytes)
+        out.question = self.question
+        out.default = self.default
+        out.leg = self.default
+        return out
 
     def write(self, lines: list[str]) -> None:
         lines.append(f"  - path: {y(self.path)}")
@@ -1515,7 +1540,7 @@ class Entry:
         emit(lines, "reason", self.reason, 4)
         emit(lines, "files", self.files, 4)
         emit(lines, "bytes", self.bytes, 4)
-        emit(lines, "review_required", self.leg is None, 4)
+        emit(lines, "review_required", self.review_required, 4)
         if self.question:
             emit(lines, "question", self.question, 4)
 
@@ -1551,6 +1576,61 @@ def walk(policy: PathPolicy, files: list[tuple[str, int]],
         else:
             entries.extend(walk(policy, children, directory))
     return sorted(entries, key=lambda e: e.path)
+
+
+#: The path policy's rule for the source's own staying-single record (#528).
+#: Its question and its default are the record's, so `plan` asks them only
+#: of a file that IS the record (`ask_about_a_record_only`).
+RECORD_RULE = "ambiguous-single-repository-record"
+
+
+def ask_about_a_record_only(policy: PathPolicy, entries: list[Entry],
+                            source: "Source") -> list[Entry]:
+    """`entries`, with a top-level `single-repository.yaml` that is no
+    record asked the question the rules below the record's ask (#528).
+
+    `kind:` DECIDES, NOT THE NAME, for the record's one reader, the Triad
+    advisory (`shape_advisory.read_record`). A file of that name declaring
+    `kind: release-config` silences nothing, and the same `plan` run said
+    so in a NOTE while the record's question told the person the file
+    records that the repository stays single, and its default would have
+    dropped it. So RECORD_RULE answers only a file that declares
+    `single-repository-record` in the commit being planned, read as the
+    advisory reads it there; any other is classified as if the policy held
+    no such rule, which for a top-level YAML file is the general question,
+    asked as before. A source with no entry RECORD_RULE answered is not
+    read at all.
+    """
+    if not any(entry.path == shape_advisory.RECORD_FILE
+               and entry.rule == RECORD_RULE for entry in entries):
+        return entries
+    state, _, _ = shape_advisory.read_record(
+        shape_advisory.Tree(source.path, source.commit))
+    if state == shape_advisory.RECORD_SILENCES:
+        return entries
+    return [Entry(entry.path,
+                  policy.classify_file(entry.path, skip=(RECORD_RULE,)),
+                  entry.files, entry.bytes)
+            if entry.path == shape_advisory.RECORD_FILE
+            and entry.rule == RECORD_RULE else entry
+            for entry in entries]
+
+
+def with_defaults(entries: list[Entry]) -> list[Entry]:
+    """`entries`, each question whose rule names a default answer written
+    with that default as its `leg:` (#528).
+
+    RULED BY BRETT HEAP ON 2026-10-12: a source's own `single-repository.yaml`
+    is asked drop or root, "the default answer is drop". So `plan` writes
+    `leg: drop`, and keeps `review_required: true`, the rule and the
+    question beside it: `check` passes it, and `execute` drops the path
+    unless a person writes `root`. A path with no default is untouched, as
+    is every question `ask_about_submodules` or `ask_about_refused_paths`
+    asked in place of a rule's, because those carry none: called after
+    them, this fills in only what a rule proposed and nothing replaced.
+    """
+    return [entry.with_its_default() if entry.leg is None and entry.default
+            else entry for entry in entries]
 
 
 def ask_about_submodules(policy: PathPolicy, entries: list[Entry],
@@ -1646,6 +1726,9 @@ def _asked_about(entry: Entry, held: list[str], asked: Verdict,
                      "own `leg:`. An entry added beside this one for a path "
                      "it covers is `plan-covered-twice`."
                      + _refused_replacements(own, held))
+    # NO DEFAULT, from either rule (#528): the question is the submodules',
+    # which no rule's default answers, and one carried here would be
+    # written in as the entry's `leg:` by `with_its_default`.
     out = Entry(entry.path, Verdict(None, asked.rule, asked.reason,
                                     asked.confidence), entry.files,
                 entry.bytes)
@@ -1749,6 +1832,8 @@ def _refused_as_named(entry: Entry, problem: str, held: bool) -> Entry:
               "stands: `root` would keep a submodule in the assembly root, "
               "which keeps none of the source's" if held else
               "`root` or `drop` is the only answer `execute` takes for it")
+    # NO DEFAULT (#528): the rule's was an answer to its own question, and
+    # this one is why the name cannot go into a leg, which a person answers.
     out = Entry(entry.path, Verdict(None, entry.rule, entry.reason,
                                     entry.confidence), entry.files,
                 entry.bytes)
@@ -2012,6 +2097,8 @@ def render_plan(args, source: Source, entries: list[Entry], names: dict,
         "# human or an AI answers it by setting `leg:` to spec, code, root or",
         "# drop and adding one line of `resolution:` beside it. `check` then",
         "# has to pass, and `execute` REFUSES while any leg is still null.",
+        "# An entry whose rule names a default arrives with it as its `leg:`",
+        "# and `execute` takes it as written: confirm it or change it.",
         "",
         f"generated_on: {_dt.date.today().isoformat()}",
         f"tool: {SHAPE_REPOSITORY} adopt-project.py",
@@ -3533,7 +3620,16 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     for line in _tracking_branch_notes(args, source):
         print(line)
     unresolved = [e for e in entries if e.leg is None]
+    # A default is still a question (#528): it is printed with the question,
+    # before the paths `execute` refuses over, which stay last.
+    proposed = [e for e in entries if e.leg is not None and e.review_required]
     print(f"\nplan written to {out}")
+    if proposed:
+        print(f"{len(proposed)} path(s) carry their rule's default answer, "
+              "which `execute` takes as written unless it is changed:")
+        for entry in proposed:
+            print(f"  {_shown(entry.path)} (leg: {entry.leg})\n"
+                  f"      {entry.question}")
     if unresolved:
         print(f"{len(unresolved)} path(s) need a human or an AI to answer a "
               "question before `execute` will run:")
@@ -3568,7 +3664,18 @@ def cmd_plan(args) -> int:
     # or naming it as a spec directory, would be about nothing, and a leg it
     # alone fed is seeded -- which the plan records, as `check` will say of
     # the plan as written. A source with no such path plans as it did.
-    ruled = walk(policy, [(path, size) for path, _, _, size in tree])
+    #
+    # A `single-repository.yaml` that declares no record is asked as any
+    # other top-level data file is, before anything reads the entries
+    # (#528). The default a rule names is written into an entry last, after
+    # both re-asks: `ask_about_refused_paths` passes over a path answered
+    # `drop`, so a default written in first would be taken for a person's
+    # answer there. What the rules imply is read without it, and it changes
+    # none of what is read from them, because `drop` puts the path in no leg
+    # and keeps nothing in the root.
+    ruled = ask_about_a_record_only(
+        policy, walk(policy, [(path, size) for path, _, _, size in tree]),
+        source)
     implied = ask_about_refused_paths(ruled, tree)
     materialized = _predict_collisions(
         implied, attributes_link=any(path == ATTRIBUTES and mode == SYMLINK_MODE
@@ -3576,8 +3683,8 @@ def cmd_plan(args) -> int:
     follow_ups = follow_ups_for(source, implied, names, args.spec_path,
                                 args.code_path, materialized)
     seeded = seeded_legs(assigned_paths(implied))
-    entries = ask_about_refused_paths(
-        ask_about_submodules(policy, ruled, tree), tree)
+    entries = with_defaults(ask_about_refused_paths(
+        ask_about_submodules(policy, ruled, tree), tree))
     out = Path(args.out)
     write_lf(out, render_plan(args, source, entries, names, pins, follow_ups,
                               seeded))
