@@ -43,7 +43,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, git, run_script
+from conftest import NO_BYTECODE, REPO, git, run_script
 #: The family fixture and its names, imported from the module that owns them.
 from test_family import (  # noqa: F401
     FAMILY, NAME, ORG, SPARE, family, manifest, validate,
@@ -372,8 +372,8 @@ def test_the_siblings_mv_lines_paste_whole_and_move_the_holder(family,
     move the holder to `<tmp>/InkRouter/InkRouter`."""
     holder = copied_holder(family, tmp_path / folder)
     result = run_script(FAMILY, "siblings", "--family-root", str(holder),
-                        "--dry-run")
-    assert result.returncode == 0, result.stdout + result.stderr
+                        "--dry-run", env=NO_BYTECODE)
+    assert result.returncode == 1, result.stdout + result.stderr  # #543
     assert "NOTHING WAS MOVED" in result.stderr
     assert "in a POSIX shell (Git Bash" in result.stderr
     commands = [shlex.split(line) for line in result.stderr.splitlines()
@@ -434,7 +434,7 @@ def test_siblings_runs_beside_a_repo_shape_without_the_quoter(family,
     assert helped.stdout.startswith("usage: siblings.py"), helped.stdout
 
     warned = run_script(siblings, "--dry-run", cwd=holder)
-    assert warned.returncode == 0, warned.stdout + warned.stderr
+    assert warned.returncode == 1, warned.stdout + warned.stderr  # #543
     assert "NOTHING WAS MOVED" in warned.stderr, warned.stderr
     commands = [shlex.split(line) for line in warned.stderr.splitlines()
                 if line.startswith(" " * 12) and line.strip()[:3] in

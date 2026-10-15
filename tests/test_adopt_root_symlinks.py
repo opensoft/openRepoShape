@@ -60,8 +60,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, clear_ambient_pin_sources,
-                      git, make_source_repo, run_script, write_plan)
+from conftest import (ADOPT, REPO, clear_ambient_pin_sources,
+                      cloned_just_pushed, git, make_source_repo, run_script,
+                      write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from shape_materialize import (  # noqa: E402
@@ -1028,10 +1029,10 @@ def test_a_link_to_a_pins_file_finds_the_pin_place_wrote_first(
     under `shape/`, as it does for any path the root holds. The walk now
     says the same, where it said the link led to what is not in the source
     tree, and `check` prints no link finding for it. (The root's
-    `contracts/shape-pin.yaml` is then not the shape's pin, and `execute`'s
-    verification fails after both legs, as on `main` and as for a file the
-    source keeps there: a question of what the root keeps at the shape's
-    pin, not of where this link leads.)"""
+    `contracts/shape-pin.yaml` is then not the shape's pin: a question of
+    what the root keeps at the shape's pin, not of where this link leads,
+    which `plan-root-holds-pin` now answers before any leg, as it does for
+    a file the source keeps there, #524.)"""
     files, legs = REAL_CONTRACTS
     _, plan = planned(tmp_path, files, {SHAPE_PIN: PIN_NAME}, legs)
     declare(plan, A_PIN)
@@ -1828,9 +1829,7 @@ def split_modes(source: Path) -> dict:
 
 def bootstraps(source: Path, base: Path) -> None:
     """A recursive clone of the split, and its bootstrap, exit 0."""
-    clone = base / PROJECT
-    git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b", BRANCH,
-        str(source), str(clone), cwd=base)
+    clone = cloned_just_pushed(source, base / PROJECT, BRANCH)
     booted = run_script(clone / SCRIPTS / "bootstrap.py", cwd=clone)
     assert booted.returncode == 0, booted.stderr + booted.stdout
 

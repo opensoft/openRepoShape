@@ -43,7 +43,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FILE_PROTOCOL, git, rmtree, run_script
+from conftest import FILE_PROTOCOL, cloned_just_pushed, git, rmtree, run_script
 #: The family fixture, its names and the offline environment, imported from
 #: the modules that own them rather than rebuilt: a holder made any other way
 #: would test a different holder.
@@ -149,10 +149,7 @@ def recursive_clone(root: Path, tmp_path: Path) -> Path:
     git_under(env, "init", "-q", "--bare", "-b", "main", str(bare),
               cwd=tmp_path)
     git_under(env, "push", "-q", str(bare), "HEAD:refs/heads/main", cwd=root)
-    clone = tmp_path / "clone" / NAME
-    git_under(env, *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-              str(bare), str(clone), cwd=tmp_path)
-    return clone
+    return cloned_just_pushed(bare, tmp_path / "clone" / NAME, env=env)
 
 
 def refused_before_the_mount(result: subprocess.CompletedProcess, root: Path,

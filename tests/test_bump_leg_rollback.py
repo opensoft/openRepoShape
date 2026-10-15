@@ -46,13 +46,12 @@ import errno
 import io
 import os
 import stat
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import PROJECT, git
+from conftest import PROJECT, cloned_just_pushed, git
 # A fixture is used by being named in this module's namespace, which is what
 # the import of `bump_leg_module` is for.
 from test_bump_leg import (  # noqa: F401
@@ -73,12 +72,9 @@ NOT_COMPLETE = "THE ROLLBACK WAS NOT COMPLETE"
 @pytest.fixture(scope="module")
 def advanced(scaffolded, tmp_path_factory) -> str:
     """A real new commit on the spec leg's bare remote; returns its sha."""
-    work = tmp_path_factory.mktemp("spec-advance-rollback") / f"{PROJECT}-spec"
-    proc = subprocess.run(
-        ["git", "clone", "-q",
-         str(scaffolded["remotes"] / f"{PROJECT}-spec.git"), str(work)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    work = cloned_just_pushed(
+        scaffolded["remotes"] / f"{PROJECT}-spec.git",
+        tmp_path_factory.mktemp("spec-advance-rollback") / f"{PROJECT}-spec")
     (work / "ROLLBACK-CONTRACT.md").write_text("# a contract the leg gained\n")
     git("add", "--", "ROLLBACK-CONTRACT.md", cwd=work)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",

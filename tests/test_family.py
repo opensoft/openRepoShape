@@ -32,7 +32,8 @@ import sys
 
 import pytest
 
-from conftest import FILE_PROTOCOL, REPO, git, rmtree, run_script
+from conftest import (NO_BYTECODE, REPO, cloned_just_pushed, git, rmtree,
+                      run_script)
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
@@ -403,15 +404,24 @@ def test_init_plans_the_topic_and_skips_it_against_local_remotes(family):
     assert "gh repo edit" not in family["init"].stdout
 
 
-def test_init_dry_run_plans_the_gh_topic_command_for_a_real_org(tmp_path):
+def test_init_dry_run_plans_the_gh_topic_command_for_a_real_org(
+        tmp_path, monkeypatch, capsys):
     """No `--local-remote-dir`, so the plan is the REAL one — and a dry run
-    prints it before anything is created, so this needs no network either."""
-    result = run_script(FAMILY, "init", "--org", ORG, "--family", "Contoso",
+    prints it before anything is created. It also asks whether the holder
+    exists (#537), which against GitHub is `gh repo view`: asked in process
+    here, of a stand-in that says it does not, so no `gh` is run."""
+    module = family_module()
+    asked = []
+    monkeypatch.setattr(module, "_remote_is_empty",
+                        lambda repository: asked.append(repository))
+    code = module.main(["init", "--org", ORG, "--family", "Contoso",
                         "--created-by", "Test Human",
-                        "--work-dir", str(tmp_path / "work"), "--dry-run")
-    assert result.returncode == 0, result.stderr
+                        "--work-dir", str(tmp_path / "work"), "--dry-run"])
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
     assert "topics       gh repo edit --add-topic xf-project-contoso" \
-        in result.stdout
+        in captured.out
+    assert asked == [f"{ORG}/Contoso"]
     assert not (tmp_path / "work").exists()
 
 
@@ -1368,12 +1378,8 @@ def test_remove_refuses_a_member_that_is_not_there(holder):
 @pytest.fixture(scope="module")
 def bootstrapped(family, tmp_path_factory):
     """A fresh recursive clone of the family, bootstrapped."""
-    target = tmp_path_factory.mktemp("family-clone") / NAME
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         str(family["remotes"] / f"{NAME}.git"), str(target)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    target = cloned_just_pushed(family["remotes"] / f"{NAME}.git",
+                                tmp_path_factory.mktemp("family-clone") / NAME)
     result = run_script(target / "scripts" / "bootstrap.py", cwd=target,
                         env=ALLOW_FILE_PROTOCOL)
     return {"root": target, "result": result}
@@ -1400,12 +1406,8 @@ def test_bootstrap_degrades_when_a_member_cannot_be_fetched(family, tmp_path):
     """A missing credential is a DEGRADE, not a failure: without
     `protocol.file.allow` git refuses these local submodules exactly as it
     would refuse a private one with no token."""
-    target = tmp_path / NAME
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q",
-         str(family["remotes"] / f"{NAME}.git"), str(target)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    target = cloned_just_pushed(family["remotes"] / f"{NAME}.git",
+                                tmp_path / NAME, recurse=False)
     result = run_script(target / "scripts" / "bootstrap.py", cwd=target)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "FETCH INCOMPLETE" in result.stderr
@@ -1884,14 +1886,15 @@ def test_siblings_warns_about_the_parent_folder_and_moves_nothing(family,
     """THE DOCTOR PATTERN, NOT A MOVER (#76). The holder here sits under a
     folder that is not named after the family, which is what a hand-arranged
     workstation looks like — and the answer is a warning, the exact `mv`, and
-    nothing moved."""
+    nothing moved. Asked before anything is cloned, so it stops there, exit 1
+    (#543; `test_family_siblings_placement.py`)."""
     wrong = tmp_path / "somewhere-else"
     wrong.mkdir()
     holder = wrong / NAME
     shutil.copytree(family["root"], holder, symlinks=True)
 
     result = siblings(holder, "--dry-run")
-    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.returncode == 1, result.stderr + result.stdout
     assert "WARNING the holder's parent folder is 'somewhere-else', not " \
         "'InkRouter'." in result.stderr
     assert "NOTHING WAS MOVED" in result.stderr
@@ -1923,8 +1926,8 @@ def test_siblings_dry_run_clones_nothing(estate):
 def test_family_py_siblings_runs_the_holders_own_file(family, tmp_path):
     """ONE IMPLEMENTATION, TWO ENTRY POINTS (ruling 1b, 2026-09-09).
 
-    `family.py siblings` runs `templates/family-root/scripts/siblings.py`
-    through `runpy`, the way the root `bootstrap` shim runs the assembly
+    `family.py siblings` runs the holder's own `scripts/siblings.py` (#543),
+    the way the root `bootstrap` shim runs the assembly
     root's bootstrap — so a person with a checkout of the standard and a
     holder on disk gets the same run, and its exit code, without a second
     code path to keep in step. The proof is the layout table: byte for byte
@@ -1943,7 +1946,7 @@ def test_family_py_siblings_runs_the_holders_own_file(family, tmp_path):
     theirs = one("target", lambda holder: siblings(holder))
     ours = one("shim", lambda holder: run_script(
         FAMILY, "siblings", "--family-root", str(holder),
-        env=ALLOW_FILE_PROTOCOL))
+        env={**ALLOW_FILE_PROTOCOL, **NO_BYTECODE}))
 
     assert layout(ours["result"].stdout) == layout(theirs["result"].stdout)
     for project in MEMBERS:
