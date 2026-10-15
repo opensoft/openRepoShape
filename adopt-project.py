@@ -5724,7 +5724,9 @@ def _entry_findings(plan: Plan, source: Source,
     disk by each command when it runs (#183): whether anything is at the
     place outside the assembly it leads to, a climb above the root from its
     own work directory; and whether `git` there checks it out as a symlink at
-    all, or as a plain file the shape's copy goes beside.
+    all, or as a plain file the shape's copy goes beside. The second is asked
+    too of a symlink ABOVE a shape path that a finding names, which then
+    says the clone holds it as a file (#531).
 
     `_leg_findings` is handed the TREE, because the paths the plan keeps in
     the root are read out of it (#172, #191): without it a mount path at, or
@@ -6261,11 +6263,15 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 # shape writes is a plain file in the clone, which `place` finds there and
 # writes the copy beside, so nothing about where that link leads is refused
 # (B-OFF of #183's re-verify); a link ABOVE one is `execute`'s
-# `adopt-symlinks-off`, since nothing can be written beneath a file. A
-# target is absolute as this machine's `open()` reads it: `C:/x`, a drive
-# letter's path, is a place on this disk only on Windows. On Linux and macOS
-# it is a relative path, into a directory named `C:`, and it is followed as
-# one, as `open()` and the materializer follow it there.
+# `adopt-symlinks-off`, since nothing can be written beneath a file. A link
+# ABOVE one that `check` reports anyway, for where it would lead on a disk
+# that holds symlinks, is named there as that file too, as
+# `adopt-symlinks-off` names it, and not by where it leads (L1-J3 of #183's
+# re-verify, #531): no target makes the file a directory. A target is
+# absolute as this machine's `open()` reads it: `C:/x`, a drive letter's
+# path, is a place on this disk only on Windows. On Linux and macOS it is a
+# relative path, into a directory named `C:`, and it is followed as one, as
+# `open()` and the materializer follow it there.
 #
 # EACH DECLARED PIN'S FILE IS ONE OF THOSE PATHS (#273). `execute` hands the
 # materializer `_recorded_pins`, and `place` writes each
@@ -6364,7 +6370,9 @@ class _PlannedRoot:
     and nothing else in `.git`. Where `git` checks a symlink out as a plain
     file, a symlink AT a path the shape writes is that file, wherever it
     leads: `probe` asks this command's work directory, and only for a link
-    a walk cannot follow (`_a_file_here`).
+    a walk cannot follow (`_a_file_here`). The walk itself still follows a
+    symlink ABOVE a path the shape writes: `_root_symlink_findings` asks the
+    same `probe` of one it reports (`_a_file_above`, #531).
     `walks` adds what the shape itself writes, path by path, as `place` does,
     so `CLAUDE.md -> AGENTS.md` finds the `AGENTS.md` the shape wrote first.
     The paths are those of the pins the plan declares too (`pins`), each
@@ -6510,9 +6518,9 @@ class _PlannedRoot:
         false, Git for Windows' default), `place` finds that file there and
         writes the shape's copy beside it, whatever the link leads to, as on
         `main` (B-OFF of #183's re-verify). A link the walk meets first
-        ABOVE its path is `execute`'s `adopt-symlinks-off`. The disk is
-        asked only for a link the walk could not follow, so a plan with none
-        makes no probe."""
+        ABOVE its path is `execute`'s `adopt-symlinks-off`, or, where `check`
+        reports it, `_a_file_above`'s. The disk is asked only for a link the
+        walk could not follow, so a plan with none makes no probe."""
         return (bool(walk.links)
                 and walk.links[0][0].casefold() == walk.path.casefold()
                 and not self.probe.symlinks())
@@ -6855,6 +6863,15 @@ def _root_symlink_findings(plan: Plan, source: Source,
     `plan-empty-symlink` names every such symlink in the source, first in
     `_entry_findings`' list, with the fix in the source, so it is not said
     again here, wherever in the walk's chain that symlink is.
+
+    Where `git` checks a symlink out as a plain file, the link a reported
+    walk meets first ABOVE its path is that file in the clone, and the
+    finding says so, as `adopt-symlinks-off` does, in place of where the
+    link leads (`_a_file_above`, L1-J3 of #183's re-verify, #531). It is
+    still the one finding for that link, in the same place in the list, and
+    a link the walk follows into something the root keeps is still no
+    finding of this check's: `execute` refuses it after this list, as
+    `adopt-symlinks-off`.
     """
     findings: list[str] = []
     if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
@@ -6869,17 +6886,46 @@ def _root_symlink_findings(plan: Plan, source: Source,
                 continue
             seen.add(walk.links[0][0])
             findings.append(_root_symlink_finding(
-                walk, why, _CASE_ASIDE if fold else ""))
+                walk, why, _CASE_ASIDE if fold else "",
+                as_a_file=_a_file_above(walk, probe)))
     return findings
 
 
-def _root_symlink_finding(walk: _Walk, why: str, aside: str) -> str:
+def _a_file_above(walk: _Walk, probe: _SymlinkProbe) -> bool:
+    """Whether the clone holds the symlink `walk` meets first, ABOVE its own
+    path, as a plain file: where `git` checks a symlink out as one
+    (`core.symlinks` false, Git for Windows' default), nothing is written
+    beneath it, wherever it leads (#531). `_PlannedRoot._a_file_here`'s
+    question, of a link above the path rather than at it, and asked of the
+    same `probe`. The disk is asked only for a link `check` reports, so a
+    plan with none still makes no probe."""
+    return (bool(walk.links)
+            and walk.links[0][0].casefold() != walk.path.casefold()
+            and not probe.symlinks())
+
+
+def _root_symlink_finding(walk: _Walk, why: str, aside: str, *,
+                          as_a_file: bool = False) -> str:
     """The line `check` prints for a symlink `walk` cannot be written
     through, and what to do. A walk that stopped at a symlink with an empty
-    target never comes here: that symlink is #303's `plan-empty-symlink`."""
+    target never comes here: that symlink is #303's `plan-empty-symlink`.
+
+    `as_a_file` (`_a_file_above`): the clone holds the link as a plain file.
+    That is the reason then, in `adopt-symlinks-off`'s words, and not `why`,
+    which is the reason on a disk that holds symlinks; and the fix is in the
+    plan, because on that disk no target the link is given makes it a
+    directory, and "change where it points" led on to `adopt-symlinks-off`
+    (#531)."""
     link, target = walk.links[0]
     fix = (f"Send {_spelled(link)} to a leg or `drop` it, or change where it "
            "points in the source and re-run `plan`.")
+    if as_a_file:
+        why = ("`git` here checks a symlink out as a plain file "
+               "(`core.symlinks` is false), so the assembly's clone would "
+               f"hold {_spelled(link)} as a file, wherever it points, and "
+               "nothing can be written beneath a file")
+        fix = (f"Send {_spelled(link)} to a leg or `drop` it in the plan, "
+               "and run `check` again.")
     return (f"FINDING {ROOT_SYMLINK}: the plan keeps {_spelled(link)} in the "
             f"root, a symlink to {_spelled(target)}, and "
             f"{_spelled(walk.path)}, a path the shape writes, runs through "
@@ -6930,6 +6976,7 @@ class _SymlinkProbe:
                 # user cannot write (J4 of #183's re-verify). Taken as a disk
                 # that holds symlinks, `check` prints the finding it printed
                 # before B-OFF for a link AT a path that a walk cannot follow,
+                # and the finding of such a disk for a link ABOVE one (#531),
                 # beside `adopt-work-dir-unwritable` (#524), and
                 # `_refuse_what_check_finds` refuses with it, where both
                 # would otherwise end in a traceback. `execute` itself
@@ -6950,8 +6997,11 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
     directory where a file is. It used to die there in a traceback after
     both legs were pushed. A symlink AT a shape path is unaffected: as a
     file it is still taken, and the shape's copy goes beside it, as `check`
-    counts it too (`_PlannedRoot._a_file_here`). The probe is made only when
-    a plan needs it, so an adoption with no such link runs exactly as before.
+    counts it too (`_PlannedRoot._a_file_here`). A link ABOVE one that
+    `check` reports is refused before this, by `_refuse_what_check_finds`,
+    whose line says the same of the file (`_a_file_above`, #531); this
+    refuses the rest, which `check` passes. The probe is made only when a
+    plan needs it, so an adoption with no such link runs exactly as before.
     """
     tree = source.tree()
     if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
