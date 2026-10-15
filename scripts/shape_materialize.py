@@ -1305,6 +1305,11 @@ FOLDER_REMEDIATION = (
     "Move what stands in the way aside, or pass a path where a folder can be "
     "made. There is no --force.")
 
+#: What a folder this user cannot write in is called, by
+#: `folder_cannot_be_made` (a folder to make) and `target_in_the_way` (an
+#: empty working tree) alike.
+CANNOT_WRITE_IN = "is a folder this user cannot write in"
+
 #: Said when the real run's own `mkdir` fails, after the question said yes:
 #: the run has made folders by then, and no remote.
 MKDIR_REMEDIATION = (
@@ -1349,7 +1354,7 @@ def folder_cannot_be_made(path: Path) -> str | None:
         if why:
             return f"{here} {why}"
         if not os.access(here, os.W_OK | os.X_OK):
-            return f"{here} is a folder this user cannot write in"
+            return f"{here} {CANNOT_WRITE_IN}"
         return None
     return None
 
@@ -1390,7 +1395,15 @@ def target_in_the_way(target: Path) -> str | None:
     A FILE THERE was a `NotADirectoryError` out of `target.iterdir()` in
     the real run, after its dry run exited 0. It is said here, and so is a
     folder that holds anything, which both tools always refused, and one
-    this user cannot list."""
+    this user cannot list.
+
+    AN EMPTY FOLDER THIS USER CANNOT WRITE IN IS SAID TOO (L2-60), last: the
+    emptiness check passed it, the dry run exited 0, and the real run made
+    its remotes and then died in a `PermissionError` traceback at the first
+    file it wrote there. It asks the question `folder_cannot_be_made` asks
+    of a folder to make, `os.access(W_OK | X_OK)`: a folder with no `w`
+    takes no file and one with no `x` cannot be entered, and a folder that
+    holds something is still `is not empty`, whatever its mode."""
     if not os.path.lexists(target):
         return None
     why = _not_a_folder(target)
@@ -1401,6 +1414,8 @@ def target_in_the_way(target: Path) -> str | None:
             return "is not empty"
     except OSError as exc:
         return f"cannot be read: {exc.strerror or exc}"
+    if not os.access(target, os.W_OK | os.X_OK):
+        return CANNOT_WRITE_IN
     return None
 
 

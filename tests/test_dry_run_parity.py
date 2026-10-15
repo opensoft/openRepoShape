@@ -16,6 +16,11 @@ WHAT WAS WRONG, three lines of #459's review of #573:
   empty family folder.
 - L2-35. A real `init` made `<into>/<Family>/` before it asked whether the
   holder's remote exists, so a refusal left that folder empty behind it.
+- L2-60 (#459's review of #622). An EXISTING EMPTY working tree or holder this
+  user cannot write in was not asked: the dry run exited 0, and the real run
+  made the remotes and then died with a `PermissionError` traceback.
+- L2-67 (#461's review of #622). Two tests spelled POSIX `strerror` text;
+  `mkdir_says` asks the system for its own words.
 
 THE CURE. One question, asked by both runs before anything is made: every
 folder the run makes (`shape_materialize.folder_cannot_be_made`), each
@@ -59,6 +64,17 @@ def touch(path: Path) -> None:
     """A file at `path`, somebody's, made with every folder above it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"somebody's\n")
+
+
+def mkdir_says(path: Path) -> str:
+    """The system's own words for `path.mkdir(parents=True, exist_ok=True)`
+    failing, as `make_folder` quotes them: its `strerror`. POSIX says `File
+    exists` and `Not a directory`; Windows says `Cannot create a file when
+    that file already exists`. A test asks the system, and spells neither.
+    The call fails, so it makes nothing (L2-67)."""
+    with pytest.raises(OSError) as caught:
+        path.mkdir(parents=True, exist_ok=True)
+    return caught.value.strerror or str(caught.value)
 
 
 def snapshot(root: Path, leave_out=("ghbin", "gh.log")) -> dict:
@@ -253,18 +269,35 @@ def test_an_init_dry_run_refuses_what_its_real_run_refuses(tmp_path, case):
 
 
 @pytest.fixture
-def unwritable(tmp_path):
-    """`tmp_path/ro`, a folder this user can read and enter but not write
-    in, made writable again for pytest to delete. Skipped where nothing is
-    refused to this user (root) and on Windows, whose folders have no such
-    mode."""
+def unwritable_folder(tmp_path):
+    """A maker of folders this user cannot write in, where the test says:
+    `make(relative, mode, holding=None)` makes `tmp_path/relative` (every
+    folder above it writable), puts the file `holding` in it if told to,
+    sets `mode` and returns it. Each is made writable again for pytest to
+    delete. Skipped where nothing is refused to this user (root) and on
+    Windows, whose folders have no such mode."""
     if os.name == "nt" or os.geteuid() == 0:
         pytest.skip("a folder's mode refuses nothing to this user here")
-    folder = tmp_path / "ro"
-    folder.mkdir()
-    folder.chmod(0o555)
-    yield folder
-    folder.chmod(0o755)
+    made: list = []
+
+    def make(relative: str, mode: int, holding: str | None = None) -> Path:
+        folder = tmp_path / relative
+        folder.mkdir(parents=True)
+        if holding:
+            touch(folder / holding)
+        folder.chmod(mode)
+        made.append(folder)
+        return folder
+    yield make
+    for folder in made:
+        folder.chmod(0o755)
+
+
+@pytest.fixture
+def unwritable(unwritable_folder):
+    """`tmp_path/ro`, a folder this user can read and enter but not write
+    in."""
+    return unwritable_folder("ro", 0o555)
 
 
 @pytest.mark.parametrize("tool", ["scaffold", "family"])
@@ -280,6 +313,58 @@ def test_a_folder_that_cannot_be_written_in_is_refused_by_both_runs(
         tmp_path, run,
         f"{folder}: --work-dir {at(tmp_path, 'ro/wd')} cannot be made: "
         f"{unwritable.resolve()} is a folder this user cannot write in")
+
+
+# --- L2-60: an EMPTY working tree this user cannot write in ------------------
+
+#: A folder this user cannot write in, two ways: with no `w` (nothing may be
+#: made in it) and with no `x` (nothing may be entered, so nothing made in
+#: it either, though it still lists as empty). `os.access` is asked for
+#: both, and each mode kills the question that asks for only one.
+CANNOT_WRITE = {"no-w": 0o555, "no-x": 0o600}
+
+#: Where each tool writes a working tree, as `(the tree's path under the
+#: test's directory, how a run lands there, the code it refuses an occupied
+#: tree by)`.
+TREE_AT = {
+    "scaffold": ("wd/Atlas", scaffold_in, "scaffold-target-exists"),
+    "family": ("into/Orbit/Orbit", init_in, "family-target-exists"),
+}
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real-run"])
+@pytest.mark.parametrize("how", list(CANNOT_WRITE))
+@pytest.mark.parametrize("tool", list(TREE_AT))
+def test_an_empty_working_tree_this_user_cannot_write_in_is_refused_by_name(
+        tmp_path, unwritable_folder, tool, how, dry_run):
+    """L2-60, one run each: an existing EMPTY working tree (the scaffold's
+    root, `init`'s holder) that this user cannot write in is refused by name
+    before any remote is made, by the dry run and by the real run, which no
+    longer dies in a `PermissionError` traceback once the bare remote
+    exists. On main 396c0ff4 every dry run here exited 0, and every real
+    run made the bare remote and then raised."""
+    put, lands, code = TREE_AT[tool]
+    tree = unwritable_folder(put, CANNOT_WRITE[how])
+    scratch_env(tmp_path)
+    before = snapshot(tmp_path)
+    result = lands(tmp_path)(dry_run=dry_run)
+    assert_refused(result, f"REFUSED {code}: {tree.resolve()} already exists "
+                           "and is a folder this user cannot write in")
+    assert snapshot(tmp_path) == before, "the run made something"
+    assert not list(tmp_path.rglob("*.git")), "a remote was made"
+
+
+def test_a_working_tree_this_user_cannot_write_in_is_named_last(
+        unwritable_folder):
+    """`target_in_the_way`: an EMPTY folder this user cannot write in is
+    named, and a folder that holds anything is still `is not empty`
+    whatever its mode, the sentence both tools always gave."""
+    ask = shape_materialize.target_in_the_way
+    for how, mode in CANNOT_WRITE.items():
+        assert (ask(unwritable_folder(f"empty-{how}", mode))
+                == "is a folder this user cannot write in")
+        assert (ask(unwritable_folder(f"full-{how}", mode, holding="f"))
+                == "is not empty")
 
 
 # --- L2-35, and the scaffold's own: a refused real run leaves no folder -------
@@ -366,7 +451,8 @@ def test_a_folder_the_real_run_cannot_make_is_refused_not_raised(
                         lambda path: None)
     assert module.main(argv) == 2
     err = capsys.readouterr().err
-    assert (f"{said} {at(tmp_path, put)} cannot be made: File exists\n"
+    assert (f"{said} {at(tmp_path, put)} cannot be made: "
+            f"{mkdir_says(tmp_path / put)}\n"
             "Remediation: no remote was created.") in err, err
     assert not list(tmp_path.rglob("*.git"))
 
@@ -605,6 +691,7 @@ def test_make_folder_names_the_folder_and_the_system_s_reason(tmp_path):
                                       tmp_path / "f" / "g")
     assert refused.value.code == "x-code"
     assert refused.value.detail == (
-        f"--some-dir {tmp_path / 'f' / 'g'} cannot be made: Not a directory")
+        f"--some-dir {tmp_path / 'f' / 'g'} cannot be made: "
+        f"{mkdir_says(tmp_path / 'f' / 'g')}")
     shape_materialize.make_folder("x-code", "--d", tmp_path / "a" / "b")
     assert (tmp_path / "a" / "b").is_dir()
