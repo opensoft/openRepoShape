@@ -557,7 +557,8 @@ def test_the_two_git_commands_that_read_a_leg_ask_no_terminal(
     monkeypatch.setattr(module, "run", recording)
     theirs_at_one_commit(tmp_path)
     held = module.only_commit(str(bare(tmp_path, "spec")), tmp_path / "probe")
-    assert held is not None and held[0] == tip(tmp_path, "spec"), asked
+    assert held is not None, asked
+    assert held[0] == tip(tmp_path, "spec"), asked
     assert {verb: env for verb, env in asked
             if verb in ("ls-remote", "fetch")} == {
         "ls-remote": module.PROBE_ENV, "fetch": module.PROBE_ENV}, asked
