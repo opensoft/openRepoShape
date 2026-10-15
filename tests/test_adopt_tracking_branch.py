@@ -43,11 +43,21 @@ TREE = {"README.md": "# Northwind\n", "src/app.py": "print(1)\n",
         "docs/spec.md": "# Spec\n"}
 MISSING = "plan-tracking-branch-missing"
 REMEDIATION = "Remediation: set `tracking_branch:` in the plan"
-#: How the plan's last follow-up names the pull request's base: by the plan's
-#: key, never its value (#493's review, F3).
+#: The plan's last follow-up, whole, for the `Northwind` that `planned` adopts.
+#: It names the pull request's base by the plan's key, never its value
+#: (#493's review, F3). It is a review: `execute` opens that pull request
+#: itself against GitHub, so it is never "open the split as a pull request",
+#: and the legs it creates and pushes first are extracted, never "seeded"
+#: (#523, N1). `plan` writes it, `check` prints it, and the split commit and
+#: the pull request's body list it.
 PULL_REQUEST_FOLLOW_UP = (
-    "open the split as a pull request against the plan's `tracking_branch`, "
-    "the branch the assembly root and both legs track;")
+    "review the root's diff together with Northwind-spec and Northwind-code, "
+    "the two new repositories `execute` creates and pushes before the split; "
+    "against GitHub it opens the split's pull request itself, whose base is "
+    "the plan's `tracking_branch`, the branch the assembly root and both legs "
+    "track")
+#: What it said until #523, which no follow-up says now.
+OPEN_THE_SPLIT = "open the split as a pull request"
 
 
 def planned(tmp_path, source, *flags: str):
@@ -89,7 +99,10 @@ def test_plan_records_the_branch_it_reads_the_source_at(tmp_path):
     written = load_yaml(plan)
     assert written["source"]["default_branch"] == "master"
     assert written["tracking_branch"] == "master", written
-    assert written["follow_ups"][-1].startswith(PULL_REQUEST_FOLLOW_UP), \
+    assert written["follow_ups"][-1] == PULL_REQUEST_FOLLOW_UP, \
+        written["follow_ups"]
+    assert not [item for item in written["follow_ups"]
+                if OPEN_THE_SPLIT in item or "seeded" in item], \
         written["follow_ups"]
     assert MISSING not in result.stdout + result.stderr
 
@@ -118,9 +131,10 @@ def test_the_follow_up_names_no_branch_a_hand_edit_can_leave_behind(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     (said,) = [line for line in result.stdout.splitlines()
-               if "open the split as a pull request" in line]
-    assert said.startswith(f"  follow-up: {PULL_REQUEST_FOLLOW_UP}"), said
+               if "the plan's `tracking_branch`" in line]
+    assert said == f"  follow-up: {PULL_REQUEST_FOLLOW_UP}", said
     assert "develop" not in said and "master" not in said, said
+    assert OPEN_THE_SPLIT not in result.stdout, result.stdout
 
 
 def test_check_finds_a_tracking_branch_the_source_does_not_have(tmp_path):
