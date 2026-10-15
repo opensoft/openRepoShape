@@ -171,9 +171,10 @@ from repo_shape import (  # noqa: E402
     tree_digest,
 )
 from shape_materialize import (  # noqa: E402
-    PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS, adopt_makefile_block,
+    PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS,
     TEMPLATED, TOO_MANY_SYMLINKS, CommandFailed, Materialized,
-    assembly_root_paths, collision_follow_up, copy_tree, default_reference,
+    adopt_makefile_block, assembly_root_paths, collision_follow_up, copy_tree,
+    default_reference,
     election_date, env_commit, escape_what_stdout_cannot_encode,
     git_init_commit, materialize_assembly_root, naming_block, render, run,
     template_files, write_lf,
