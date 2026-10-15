@@ -1933,8 +1933,8 @@ def _spelled_character(char: str) -> str:
     return double_quoted(char)[1:-1]
 
 
-def cross_leg_references(source: "Source", entries: list["Entry"],
-                        spec_path: str, code_path: str) -> list[str]:
+def cross_leg_references(source: "Source",
+                        entries: list["Entry"]) -> list[str]:
     """Files that will move to the CODE leg and name a path in the SPEC leg.
 
     Found by asking git, not by guessing: `git grep -l` over the source commit,
@@ -1946,6 +1946,17 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
     the spec leg, and the code that reads them reads ACROSS the assembly root
     mount. The read is one relative path from the code leg — but only once
     somebody edits it, so the plan says which file and the human decides when.
+
+    IT NAMES THE TWO MOUNT KEYS, `legs.code_path` AND `legs.spec_path`, AND NO
+    PATH OF EITHER (#600), so it takes neither path. `plan` writes the list
+    once; `MOUNT_REMEDIATION` and `plan-leg-path-collides` ask a person to
+    change those keys afterwards; `check`, the split commit's message and the
+    pull request's body read the line back. It said `code/src/app/main.py` and
+    `../spec/contracts/` "relative to `code/`" for legs mounted elsewhere. The
+    file is named as the code leg holds it and the directory as the spec leg
+    does: both are paths in the SOURCE, which no edit of the plan moves. The
+    Makefile follow-up (#522's review, F1) and the tracking branch's (#493's
+    review, F3) are written the same way.
 
     EVERY NAME IS A NAME (#216). Both inputs are source paths, and git reads
     each as something else unless told not to. A spec directory passed bare
@@ -1997,48 +2008,18 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
         # DOES read it under twenty of them is how a follow-up list stops
         # being read at all.
         hits.sort(key=lambda h: ("fixture" in h or h.startswith("tests/"), h))
-        across = spec_leg_from_code_leg(spec_path, code_path)
         for hit in hits[:8]:
             shown = "".join(map(_spelled_character, hit))
             out.append(
-                f"{code_path}/{shown} names `{named}`, which moves to the "
-                f"spec leg: it must read across the assembly root — "
-                f"`{across}/{named}` relative to `{code_path}/` — or "
-                "take the path from the environment")
+                f"{shown} in the code leg names `{named}`, which moves to "
+                "the spec leg: it must read across the assembly root — from "
+                "the code leg, where the plan's `legs.code_path` mounts it, "
+                f"to `{named}` in the spec leg, where `legs.spec_path` "
+                "mounts it — or take the path from the environment")
         if len(hits) > 8:
             out.append(f"… and {len(hits) - 8} more file(s) under the code leg "
                        f"naming `{named}`")
     return out
-
-
-def spec_leg_from_code_leg(spec_path: str, code_path: str) -> str:
-    """The spec leg's mount, `spec_path`, as a path relative to the code
-    leg's, `code_path`: `../spec` for the defaults, `../spec` for
-    `legs/spec` beside `legs/code`, and `../../spec` for `spec` beside
-    `impl/code`.
-
-    ONE `..` PER SEGMENT OF THE CODE LEG'S PATH BELOW WHAT THE TWO SHARE
-    (#522, auA-13). The follow-up wrote `../<spec_path>`, which is right only
-    while the code leg sits in the root: with `--spec-path legs/spec
-    --code-path legs/code` it said `../legs/spec/contracts/` "relative to
-    `legs/code/`", a path that leads to `legs/legs/spec`.
-
-    Both are canonical mount paths, asked by `plan` before it writes a
-    follow-up and by `execute` before it mounts a leg: `/` between
-    segments, and no segment empty, `.` or `..`. So the segments are
-    compared as text, and nothing is resolved against a disk. Two segments
-    that differ only in case are two segments here, and the comparison stops
-    at the first of them: the path climbs one level more than a disk that
-    folds case needs for every segment from there to the end of what such a
-    disk would call shared (`A/B/spec` beside `a/b/code` climbs two more,
-    and so does `A/b/spec`), and still leads to the same directory.
-    """
-    spec, code = spec_path.split("/"), code_path.split("/")
-    shared = 0
-    while (shared < min(len(spec), len(code))
-           and spec[shared] == code[shared]):
-        shared += 1
-    return "/".join([".."] * (len(code) - shared) + spec[shared:])
 
 
 def _search_by_hand(named: str, why: str) -> str:
@@ -2051,7 +2032,6 @@ def _search_by_hand(named: str, why: str) -> str:
 
 
 def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
-                   spec_path: str, code_path: str,
                    collisions: list[str]) -> list[str]:
     """The code changes an in-place split MAKES NECESSARY, named in the plan.
 
@@ -2084,9 +2064,11 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
     `plan-leg-path-collides` both ask for a hand edit of it, so a path named
     here went on naming the old mount in the split commit's message, the
     pull request's own body, while the Makefile in that commit named the new
-    one (#522's review, F1).
+    one (#522's review, F1). So does the read-across line that
+    `cross_leg_references` writes, for both mounts, and this function takes
+    no mount path: no value of either key can reach a line it writes (#600).
     """
-    out = cross_leg_references(source, entries, spec_path, code_path)
+    out = cross_leg_references(source, entries)
     if any(e.leg == "spec" and (e.path == "contracts/"
                                 or e.path.startswith("contracts/"))
            for e in entries):
@@ -3794,8 +3776,7 @@ def cmd_plan(args) -> int:
     materialized = _predict_collisions(
         implied, attributes_link=any(path == ATTRIBUTES and mode == SYMLINK_MODE
                                      for path, mode, _, _ in tree))
-    follow_ups = follow_ups_for(source, implied, names, args.spec_path,
-                                args.code_path, materialized)
+    follow_ups = follow_ups_for(source, implied, names, materialized)
     seeded = seeded_legs(assigned_paths(implied))
     entries = with_defaults(ask_about_refused_paths(
         ask_about_submodules(policy, ruled, tree), tree))

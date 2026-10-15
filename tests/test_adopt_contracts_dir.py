@@ -13,12 +13,15 @@ the default:
     `../<spec path>/<dir>` "relative to `<code path>/`", one `..` whatever
     the code leg's depth: `--spec-path legs/spec --code-path legs/code`
     printed `../legs/spec/contracts/`, where `../spec/contracts/` is right
-    (auA-13 on #457).
+    (auA-13 on #457). #522 climbed once per segment; #600 then stopped
+    printing a path at all, because `plan` writes the line once and the
+    hand edit of `legs.spec_path` or `legs.code_path` that the tool asks for
+    left a path in it that no longer led anywhere: it names the two keys
+    (`tests/test_adopt_leg_keys.py`).
 
 The block is now rendered with the plan's mount paths, and a DEFAULT
-adoption gets the bytes it always got; the follow-up climbs once per segment
-of the code leg's path below what the two paths share. Each relative path is
-checked by where it LEADS, not only by how it is spelled.
+adoption gets the bytes it always got. The path is checked by where it
+LEADS, not only by how it is spelled.
 
 `plan` needs no `git filter-repo`; the end-to-end tests at the bottom do, and
 skip without it, as `tests/test_adopt_e2e.py` does. No network and no
@@ -29,8 +32,6 @@ keeps a `gh` guard first on PATH.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
-import posixpath
 import shutil
 import subprocess
 import sys
@@ -40,6 +41,7 @@ import pytest
 
 from conftest import (ADOPT, REPO, clone_just_pushed, git, make_source_repo,
                       run_script, write_plan)
+from test_adopt_literal_names import follow_up
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -95,34 +97,23 @@ EDITS = (("specs/001-feature/spec.md",
           "# The feature\n\nA second paragraph.\n",
           "Extend the specification"),)
 
-#: `(spec path, code path, the spec leg's mount relative to the code leg's)`.
+#: `(spec path, code path)`: the mounts a plan can be given, whatever their
+#: depth, what they share or how their segments are spelled.
 MOUNTS = [
-    pytest.param("spec", "code", "../spec", id="defaults"),
-    pytest.param("legs/spec", "legs/code", "../spec", id="siblings-in-legs"),
-    pytest.param("spec", "impl/code", "../../spec", id="code-nested"),
-    pytest.param("legs/spec", "code", "../legs/spec", id="spec-nested"),
-    pytest.param("legs/spec", "impl/code", "../../legs/spec",
-                 id="both-nested-apart"),
-    pytest.param("a/b/spec", "a/code", "../b/spec", id="one-segment-shared"),
-    pytest.param("spec", "a/b/c/code", "../../../../spec", id="code-deep"),
-    pytest.param("Legs/spec", "legs/code", "../../Legs/spec",
-                 id="case-differs"),
-    pytest.param("a/b/spec", "a/b/code", "../spec", id="two-segments-shared"),
-    pytest.param("legs/spec", "legsX/code", "../../legs/spec",
+    pytest.param("spec", "code", id="defaults"),
+    pytest.param("legs/spec", "legs/code", id="siblings-in-legs"),
+    pytest.param("spec", "impl/code", id="code-nested"),
+    pytest.param("legs/spec", "code", id="spec-nested"),
+    pytest.param("legs/spec", "impl/code", id="both-nested-apart"),
+    pytest.param("a/b/spec", "a/code", id="one-segment-shared"),
+    pytest.param("spec", "a/b/c/code", id="code-deep"),
+    pytest.param("Legs/spec", "legs/code", id="case-differs"),
+    pytest.param("a/b/spec", "a/b/code", id="two-segments-shared"),
+    pytest.param("legs/spec", "legsX/code",
                  id="prefix-of-the-text-not-of-a-segment"),
-    pytest.param("legsX/spec", "legs/code", "../../legsX/spec",
+    pytest.param("legsX/spec", "legs/code",
                  id="a-segment-that-extends-the-other"),
 ]
-
-
-@pytest.fixture(scope="module")
-def adopter():
-    """`adopt-project.py` loaded as a module, for its helpers."""
-    module_spec = importlib.util.spec_from_file_location(
-        "adopt_contracts_dir", ADOPT)
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
-    return module
 
 
 def contracts_dir_line(block: str) -> str:
@@ -162,15 +153,6 @@ def test_the_block_exports_the_spec_leg_where_the_plan_mounts_it(
 
 # --- the cross-leg follow-up ------------------------------------------------
 
-@pytest.mark.parametrize("spec_path, code_path, expected", MOUNTS)
-def test_the_spec_leg_is_named_relative_to_where_the_code_leg_is(
-        adopter, spec_path, code_path, expected):
-    across = adopter.spec_leg_from_code_leg(spec_path, code_path)
-    assert across == expected
-    # And it LEADS there: from the code leg, the path is the spec leg.
-    assert posixpath.normpath(posixpath.join(code_path, across)) == spec_path
-
-
 @pytest.fixture(scope="module")
 def source(tmp_path_factory) -> Path:
     """One source for every `plan` below; `plan` only reads it."""
@@ -187,23 +169,24 @@ def planned_follow_ups(source: Path, out: Path, spec_path: str,
     return [str(item) for item in load_yaml(out)["follow_ups"]]
 
 
-@pytest.mark.parametrize("spec_path, code_path, expected", MOUNTS)
-def test_plan_names_the_read_across_from_where_the_code_leg_is(
-        source, tmp_path, spec_path, code_path, expected):
-    """The follow-up for the code file that names `contracts/` gives the
-    path from the code leg's mount, and that path leads to the spec leg's
-    `contracts/`. The defaults print what they always printed."""
+@pytest.mark.parametrize("spec_path, code_path", MOUNTS)
+def test_plan_names_the_read_across_by_the_two_keys(
+        source, tmp_path, spec_path, code_path):
+    """The follow-up for the code file that names `contracts/` is the same
+    line for every mount: it says where the file is, in the code leg, and
+    names `legs.code_path` and `legs.spec_path` for the two mounts, with no
+    path of either. #522 printed the path from the code leg to the spec
+    leg's `contracts/`, and a hand edit of either key after `plan` left a
+    path in it that led nowhere (#600)."""
     follow_ups = planned_follow_ups(source, tmp_path / "plan.yaml",
                                     spec_path, code_path)
     (named,) = [item for item in follow_ups
-                if item.startswith(f"{code_path}/{READER} names ")]
-    assert named == (
-        f"{code_path}/{READER} names `contracts/`, which moves to the spec "
-        f"leg: it must read across the assembly root — `{expected}/"
-        f"contracts/` relative to `{code_path}/` — or take the path from "
-        "the environment")
-    assert posixpath.normpath(posixpath.join(
-        code_path, f"{expected}/contracts/")) == f"{spec_path}/contracts"
+                if f"{READER} in the code leg names " in item]
+    assert named == follow_up(READER, "contracts/")
+    assert "`legs.code_path`" in named and "`legs.spec_path`" in named
+    # Neither mount path, nor the path from one to the other, is in it.
+    assert f"{spec_path}/" not in named and f"{code_path}/" not in named
+    assert "../" not in named and " relative to " not in named
     # The Makefile follow-up names the key, so it is the same line for every
     # mount, and it names no path for a hand edit of the key to contradict.
     assert follow_ups.count(MAKEFILE_FOLLOW_UP) == 1, follow_ups
@@ -212,7 +195,7 @@ def test_plan_names_the_read_across_from_where_the_code_leg_is(
 
 # --- `execute`, end to end --------------------------------------------------
 
-SPEC_PATH, CODE_PATH, ACROSS = "legs/spec", "impl/code", "../../legs/spec"
+SPEC_PATH, CODE_PATH = "legs/spec", "impl/code"
 
 
 def adopt_with_legs_mounted_away(base: Path, *, by_hand: bool) -> dict:
@@ -227,7 +210,7 @@ def adopt_with_legs_mounted_away(base: Path, *, by_hand: bool) -> dict:
     """
     source = make_source_repo(base / "Thing", TREE, edits=EDITS)
     plan = base / "adoption-plan.yaml"
-    follow_ups = planned_follow_ups(
+    planned_follow_ups(
         source, plan, *(("spec", "code") if by_hand else (SPEC_PATH, CODE_PATH)))
     if by_hand:
         text = plan.read_text(encoding="utf-8")
@@ -254,8 +237,7 @@ def adopt_with_legs_mounted_away(base: Path, *, by_hand: bool) -> dict:
     makefile = subprocess.run(
         ["git", "show", f"{SPLIT_BRANCH}:Makefile"], cwd=str(source),
         capture_output=True, check=True).stdout
-    return {"source": source, "clone": clone, "follow_ups": follow_ups,
-            "makefile": makefile}
+    return {"source": source, "clone": clone, "makefile": makefile}
 
 
 @pytest.fixture(scope="module")
@@ -314,21 +296,6 @@ def test_the_pin_digests_the_rendered_makefile(adopted):
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         check=False)
     assert validated.returncode == 0, validated.stdout + validated.stderr
-
-
-@needs_filter_repo
-def test_the_follow_ups_read_across_leads_to_the_contracts(adopted):
-    """What the plan told the person to write in the code leg, followed from
-    the code leg of a recursive clone, reaches the spec leg's file."""
-    (named,) = [item for item in adopted["follow_ups"]
-                if item.startswith(f"{CODE_PATH}/{READER} names ")]
-    assert f"`{ACROSS}/contracts/` relative to `{CODE_PATH}/`" in named
-    code_leg = adopted["clone"].joinpath(*CODE_PATH.split("/"))
-    assert (code_leg / READER).is_file()
-    target = code_leg.joinpath(*ACROSS.split("/"), "contracts", POLICY)
-    assert target.resolve().is_file()
-    assert target.resolve() == (adopted["clone"].joinpath(
-        *SPEC_PATH.split("/"), "contracts", POLICY)).resolve()
 
 
 @needs_filter_repo
