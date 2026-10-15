@@ -26,9 +26,21 @@ name: release
 # Nothing is uploaded before them: the build job refuses every dispatch
 # until both environments exist and are limited so. Then, for each release:
 #   1. The release commit passes `tests` ON ITSELF, in a push or dispatch
-#      run of tests.yml. On main, the push run that landed it does that.
-#      On a `release/v<X.Y>` branch, which no push run tests, dispatch
-#      `gh workflow run tests.yml --ref release/v<X.Y>` and wait for it.
+#      run of tests.yml. On main, the push run that landed it does that
+#      when that run finished green; one that failed does not, nor one
+#      that a later landing cancelled (each landing cancelled the one
+#      before until #593). Otherwise, and always on a `release/v<X.Y>`
+#      branch, which no push run tests: BEFORE TAGGING, dispatch tests.yml
+#      on a branch that points at the release commit, and wait for it:
+#        git push origin <release-commit>:refs/heads/<branch>
+#        gh workflow run tests.yml --ref <branch> -R opensoft/openRepoShape
+#      A `release/v<X.Y>` branch serves while it is still at that commit.
+#      `--ref main` tests main's CURRENT head, not an older commit. If the
+#      tag is pushed already and this workflow's gate refused it, dispatch
+#      on the tag, `gh workflow run tests.yml --ref v<version>`, wait for
+#      it, then re-run the release run. (That a tag's dispatch runs at the
+#      tag's commit is GitHub's documented behaviour, not yet seen here; a
+#      branch at the commit is the proven route.)
 #   2. Tag that commit, annotated, and push the tag:
 #        git tag -a v<version> <release-commit> -m "openRepoShape v<version>"
 #        git push origin refs/tags/v<version>
@@ -336,10 +348,12 @@ jobs:
           PY
 
       # THE GATE THIS REPOSITORY LANDS BY, ON THIS COMMIT'S OWN TREE. Since
-      # #597, `.github/workflows/tests.yml` holds one job, `tests`, and runs
-      # it on every trigger. It must have passed in a run that tested THIS
-      # commit: a `push` or `workflow_dispatch` run whose head is the
-      # commit, so the push run that landed a commit on main counts. A
+      # #597, `.github/workflows/tests.yml` runs `tests` on every trigger.
+      # It must have passed in a run that tested THIS commit: a `push` or
+      # `workflow_dispatch` run whose head is the commit, so the push run
+      # that landed a commit on main counts when it finished green (a run a
+      # later landing cancelled does not; each refusal names the dispatch
+      # that answers it, as the header's step 1 does). A
       # `pull_request` run is not counted, because it reports the PR's head
       # but tests a merge of it with its base, another tree. The jobs are
       # read from each run itself (`actions/runs/<id>/jobs`), never from the
@@ -358,6 +372,11 @@ jobs:
 
           repo, sha = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_SHA"]
           gate, workflow = ("tests",), ".github/workflows/tests.yml"
+          remedy = (f"dispatch tests.yml on a branch that points at {sha} (`gh workflow run "
+                    "tests.yml --ref <branch>`), or on the tag once it is pushed (`gh workflow "
+                    f"run tests.yml --ref v{os.environ.get('VERSION', '<version>')}`), wait for "
+                    "it, then re-run this run; `--ref main` tests main's current head, not this "
+                    "commit")
 
 
           def rows(path, key):
@@ -382,13 +401,12 @@ jobs:
                   problems.append(f"`{name}` is {running[0]['status']} on {sha} "
                                   f"({running[0]['html_url']}); dispatch again once it ends")
               elif not ran:
-                  problems.append(f"`{name}` has not run on {sha}: dispatch tests.yml "
-                                  "at this commit and wait for it")
+                  problems.append(f"`{name}` has not run on {sha}: {remedy}")
               else:
                   newest = max(ran, key=lambda c: c["completed_at"])
                   if newest["conclusion"] != "success":
                       problems.append(f"`{name}`'s newest run on {sha} ended "
-                                      f"{newest['conclusion']} ({newest['html_url']})")
+                                      f"{newest['conclusion']} ({newest['html_url']}): {remedy}")
                   else:
                       print(f"{name}: success at {newest['completed_at']}, {newest['html_url']}")
           for problem in problems:
