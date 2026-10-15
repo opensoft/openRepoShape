@@ -7,8 +7,8 @@ name: release
 # #563"). Adapted from opensoft/openDox-code's release.yml at c94878be: its
 # dispatch, its environment and approval checks, and its digest checks on
 # each side of each upload. This one builds a wheel only, from `git archive`
-# of the tagged commit, and refuses a commit the three-OS gate has not
-# passed.
+# of the tagged commit, and refuses a commit whose own tree has not passed
+# the `tests` job this repository lands by.
 #
 # RELEASING TO PyPI. Brett Heap's own acts come first, once:
 #   - pypi.org: a pending trusted publisher for the project `openreposhape`,
@@ -25,10 +25,10 @@ name: release
 #     move or delete one (see ACCEPTED LIMITS below).
 # Nothing is uploaded before them: the build job refuses every dispatch
 # until both environments exist and are limited so. Then, for each release:
-#   1. The release commit passes `tests`, `tests-macos` and `tests-windows`
-#      ON ITSELF. A push to main runs `tests` alone (#122), so dispatch
-#      `gh workflow run tests.yml --ref <a branch at the release commit>`
-#      and wait for all three.
+#   1. The release commit passes `tests` ON ITSELF, in a push or dispatch
+#      run of tests.yml. On main, the push run that landed it does that.
+#      On a `release/v<X.Y>` branch, which no push run tests, dispatch
+#      `gh workflow run tests.yml --ref release/v<X.Y>` and wait for it.
 #   2. Tag that commit, annotated, and push the tag:
 #        git tag -a v<version> <release-commit> -m "openRepoShape v<version>"
 #        git push origin refs/tags/v<version>
@@ -335,19 +335,21 @@ jobs:
           sys.exit(1 if problems else 0)
           PY
 
-      # THE THREE-OS GATE THIS REPOSITORY LANDS BY, ON THIS COMMIT'S OWN TREE.
-      # `tests`, `tests-macos` and `tests-windows` must each have passed in a
-      # run of `.github/workflows/tests.yml` that tested THIS commit: a
-      # `push` or `workflow_dispatch` run whose head is the commit. A
+      # THE GATE THIS REPOSITORY LANDS BY, ON THIS COMMIT'S OWN TREE. Since
+      # #597, `.github/workflows/tests.yml` holds one job, `tests`, and runs
+      # it on every trigger. It must have passed in a run that tested THIS
+      # commit: a `push` or `workflow_dispatch` run whose head is the
+      # commit, so the push run that landed a commit on main counts. A
       # `pull_request` run is not counted, because it reports the PR's head
       # but tests a merge of it with its base, another tree. The jobs are
       # read from each run itself (`actions/runs/<id>/jobs`), never from the
       # commit's check runs, which anything holding an Actions token can
-      # create inside that run's check suite. Skipped jobs are passed over:
-      # a push to main skips the macOS and Windows jobs (#122), so a commit
-      # that only main's push run tested refuses here. Of the rest, none may
-      # still be running, and the newest to finish must have succeeded.
-      - name: the commit carries passing tests, tests-macos and tests-windows checks
+      # create inside that run's check suite. The gate NAMES the job it
+      # requires and never takes the set from what a run holds: a gate that
+      # adapts could not notice a job gone missing. Skipped jobs are passed
+      # over. Of the rest, none may still be running, and the newest to
+      # finish must have succeeded.
+      - name: the commit carries a passing tests job
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -355,7 +357,7 @@ jobs:
           import json, os, subprocess, sys
 
           repo, sha = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_SHA"]
-          gate, workflow = ("tests", "tests-macos", "tests-windows"), ".github/workflows/tests.yml"
+          gate, workflow = ("tests",), ".github/workflows/tests.yml"
 
 
           def rows(path, key):
@@ -380,8 +382,8 @@ jobs:
                   problems.append(f"`{name}` is {running[0]['status']} on {sha} "
                                   f"({running[0]['html_url']}); dispatch again once it ends")
               elif not ran:
-                  problems.append(f"`{name}` has not run on {sha}: dispatch tests.yml on a "
-                                  "branch at this commit and wait for all three jobs")
+                  problems.append(f"`{name}` has not run on {sha}: dispatch tests.yml "
+                                  "at this commit and wait for it")
               else:
                   newest = max(ran, key=lambda c: c["completed_at"])
                   if newest["conclusion"] != "success":
