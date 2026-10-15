@@ -97,6 +97,26 @@ LOCKSTEP = (
     "or the next pull request is red on somebody else's change."
 )
 
+#: The findings THE LOCKSTEP RULE is about (#539): the three facts it names,
+#: out of step, and the pin's digest of the commit they name. The rule ends
+#: each of them, and the closing count only where one of them was found: a
+#: lone `shape-copy-drift` is an edited copy, not a leg moved alone.
+LOCKSTEP_CODES = frozenset({"pin-gitlink-mismatch", "pin-digest-mismatch",
+                            "pin-workflow-ref-mismatch"})
+
+
+class Curable(NamedTuple):
+    """A `pin-digest-mismatch` or a `pin-workflow-ref-mismatch`, for
+    `_end_curable_findings` (#539): where it is in `findings`, the leg, the
+    commit its gitlink and its pin name, and a reference's own commit (None
+    for a digest)."""
+
+    index: int
+    role: object
+    path: str
+    commit: str
+    reference: str | None
+
 
 class Report:
     def __init__(self) -> None:
@@ -108,6 +128,9 @@ class Report:
         #: Each `pin-gitlink-mismatch`, as `(its index in findings, role,
         #: path, gitlink, pin commit)`, for `_end_gitlink_mismatches` (#478).
         self.mismatches: list[tuple[int, object, str, str, str]] = []
+        #: Each `pin-digest-mismatch` and `pin-workflow-ref-mismatch`, for
+        #: `_end_curable_findings` (#539).
+        self.curable: list[Curable] = []
 
     def finding(self, code: str, detail: str, leg=None) -> None:
         """`leg` is the role of the leg a `bump-leg.py` line moves when that
@@ -363,24 +386,74 @@ def _gitlink_repairs(root: Path, role, gitlink: str, commit: str) -> str:
     where the reader's checkout is, so the script is relative to one and the
     root, which it does know, is absolute and quoted.
     """
-    bump = (f"{PYTHON} scripts/bump-leg.py --root {shlex.quote(str(root))} "
+    return _two_repairs(root, role, "the first command keeps the gitlink's "
+                        "commit and the second the pin's", gitlink, commit)
+
+
+def _bump_command(root: Path, role) -> str:
+    """`bump-leg.py` for this root's leg `role`, up to its `--to` (#478)."""
+    return (f"{PYTHON} scripts/bump-leg.py --root {shlex.quote(str(root))} "
             f"--leg {shlex.quote(str(role))} --to")
+
+
+#: What a `bump-leg.py` line needs to commit, said once for every finding
+#: that names one (#478, #539).
+BUMP_COMMITS = ("on a branch other than the tracking branch, once this "
+                "validator and validate-manifest.py pass on its rewrite (it "
+                "rolls the bump back when either is red), and refuses a "
+                "commit no branch of the leg's remote contains")
+
+
+def _two_repairs(root: Path, role, choice: str, first: str,
+                 second: str) -> str:
+    """Two `bump-leg.py` lines for one leg, `--to` `first` and `--to`
+    `second`, and `choice`, saying what each keeps: which commit stays is
+    the person's call, so neither is chosen (#478, #539)."""
+    bump = _bump_command(root, role)
     return ("Which commit stays is the person's call. From a checkout of "
-            "openRepoShape, the first command keeps the gitlink's commit and "
-            "the second the pin's; run either with `--dry-run` first. Either "
-            "puts all three at it in one commit, on a branch other than the "
-            "tracking branch, once this validator and validate-manifest.py "
-            "pass on its rewrite (it rolls the bump back when either is red), "
-            "and refuses a commit no branch of the leg's remote contains, so "
-            f"push one made in the leg first:\n    {bump} {gitlink}\n"
-            f"    {bump} {commit}")
+            f"openRepoShape, {choice}; run either with `--dry-run` first. "
+            f"Either puts all three at it in one commit, {BUMP_COMMITS}, so "
+            f"push one made in the leg first:\n    {bump} {first}\n"
+            f"    {bump} {second}")
 
 
-def _gitlink_repairs_held_back(paths: list[str], others: list[str]) -> str:
+def _digest_repair(root: Path, role, commit: str) -> str:
+    """The one `bump-leg.py` line a lone `pin-digest-mismatch` ends on
+    (#539): `--to` the commit the gitlink and the pin already name, which
+    recomputes the digest from the leg's own objects and writes it into the
+    pin, the one fact it moves. Never a hand edit of the digest, which is
+    the drift this check exists to find."""
+    return ("From a checkout of openRepoShape, this recomputes the digest "
+            f"at {commit[:12]}, the commit the gitlink and the pin already "
+            "name, from the leg's own objects and writes it into the pin; "
+            "run it with `--dry-run` first. It commits "
+            f"{BUMP_COMMITS}, so push that commit from the leg first if no "
+            f"branch holds it:\n    {_bump_command(root, role)} {commit}")
+
+
+def _reference_repairs(root: Path, role, gitlink: str,
+                       reference: str) -> str:
+    """The two `bump-leg.py` lines a lone `pin-workflow-ref-mismatch` ends
+    on (#539), as `pin-gitlink-mismatch` ends on two (#478): a reference
+    edited by hand wants the first, which puts it back at the commit the
+    gitlink and the pin name, unless the edit was meant, and then the
+    second moves the gitlink and the pin to the reference's commit."""
+    return _two_repairs(
+        root, role, "the first command keeps the commit the gitlink and the "
+        "pin name and moves every reference to the leg's repository to it, "
+        "and the second moves the gitlink and the pin to this reference's",
+        gitlink, reference)
+
+
+def _gitlink_repairs_held_back(paths: list[str], others: list[str],
+                               lines: str = "the two bump-leg.py lines"
+                               ) -> str:
     """Why a `pin-gitlink-mismatch` names no command, and what comes first
     (#478): `bump-leg.py` runs this validator before it commits and rolls
     the bump back when it is red, so no single line commits while another
-    leg is off its pin or another finding stands."""
+    leg is off its pin or another finding stands. A `pin-digest-mismatch`
+    held back by another finding says the same, naming `lines`, the one
+    line it would end on (#539)."""
     what, first = [], []
     if others:
         what.append("this validator also reports " + ", ".join(others))
@@ -397,13 +470,20 @@ def _gitlink_repairs_held_back(paths: list[str], others: list[str]) -> str:
             + " and ".join(what) + ": bump-leg.py moves one leg and runs "
             "this validator before it commits, rolling the bump back when it "
             "is red. First " + ", and ".join(first) + "; this validator then "
-            "names the two bump-leg.py lines for "
+            f"names {lines} for "
             + ("the leg that is left." if len(paths) > 1 else "that leg."))
 
 
-def _end_gitlink_mismatches(root: Path, report: Report) -> None:
+def _has_own_gate(root: Path) -> bool:
+    """Whether `root` has a `scripts/validate-pins.py` of its own, the gate
+    `bump-leg.py` runs before it commits and skips when it is absent
+    (#478)."""
+    return os.path.isfile(root / "scripts" / "validate-pins.py")
+
+
+def _end_gitlink_mismatches(root: Path, report: Report) -> object:
     """What each `pin-gitlink-mismatch` ends on, once every check has run
-    (#478).
+    (#478). Returns the role of the leg whose two lines it named, or None.
 
     `bump-leg.py` RUNS THIS WHOLE VALIDATOR after its rewrite and before it
     commits, and rolls the bump back when it is red. So its two lines are
@@ -418,9 +498,8 @@ def _end_gitlink_mismatches(root: Path, report: Report) -> None:
     the finding ends at THE LOCKSTEP RULE, as it did before #478, and the
     root's own gate is the thing to put back first.
     """
-    if not report.mismatches \
-            or not os.path.isfile(root / "scripts" / "validate-pins.py"):
-        return
+    if not report.mismatches or not _has_own_gate(root):
+        return None
     roles = [role for _, role, _, _, _ in report.mismatches]
     others: list[str] = []
     for code, leg in report.cleared_by:
@@ -430,11 +509,78 @@ def _end_gitlink_mismatches(root: Path, report: Report) -> None:
         index, role, _, gitlink, commit = report.mismatches[0]
         report.findings[index] += "\n  " + _gitlink_repairs(root, role,
                                                             gitlink, commit)
-        return
+        return role
     why = _gitlink_repairs_held_back(
         [path for _, _, path, _, _ in report.mismatches], others)
     for index, *_ in report.mismatches:
         report.findings[index] += "\n  " + why
+    return None
+
+
+def _end_curable_findings(root: Path, report: Report, named) -> None:
+    """What each `pin-digest-mismatch` and `pin-workflow-ref-mismatch` ends
+    on, once every check has run (#539). `named` is the role of the leg
+    whose `pin-gitlink-mismatch` names its two lines, or None.
+
+    THEY ENDED AT THE LOCKSTEP RULE AND NAMED NO COMMAND, though
+    `bump-leg.py --to` the commit the gitlink and the pin name cures both:
+    it recomputes the pin's digest from the leg's own objects and moves
+    every workflow reference to the leg's repository, in one commit. So a
+    digest names that line, and a reference names it and the line `--to`
+    its own commit, since an edit to the reference may have been meant:
+    which commit stays is the person's call, as it is for a gitlink (#478).
+
+    ONLY WHERE A LINE CAN COMMIT, by `_end_gitlink_mismatches`' rule: the
+    root has this gate of its own, and every finding is the leg's own,
+    which a bump of it clears. Where another finding stands with them and
+    no other leg is out of step, the finding says to clear that first, in
+    the words a held-back `pin-gitlink-mismatch` uses. Where the leg's own
+    gitlink is off its pin, that finding's lines clear this one too, and
+    this says so where they are named. Where ANOTHER leg is out of step too,
+    no line can commit and the finding ends at THE LOCKSTEP RULE, as it did
+    before: no bump-leg.py line clears either leg's finding first, so there
+    is no first step this could name that the other's would not contradict.
+    """
+    if not report.curable or not _has_own_gate(root):
+        return
+    legs, untagged = _out_of_step(report)
+    off = {role for _, role, _, _, _ in report.mismatches}
+    for one in report.curable:
+        ending = _curable_ending(root, one, legs, untagged, off, named)
+        if ending:
+            report.findings[one.index] += "\n  " + ending
+
+
+def _out_of_step(report: Report) -> tuple[list, list[str]]:
+    """`(legs, codes)`: each leg a finding names as the one whose bump
+    clears it, and the code of each finding no bump clears, each once and
+    in the order found (#539)."""
+    legs: list = []
+    untagged: list[str] = []
+    for code, leg in report.cleared_by:
+        if leg is None and code not in untagged:
+            untagged.append(code)
+        elif leg is not None and leg not in legs:
+            legs.append(leg)
+    return legs, untagged
+
+
+def _curable_ending(root: Path, one: Curable, legs: list,
+                    untagged: list[str], off: set, named) -> str:
+    """What `_end_curable_findings` adds to the finding `one`, or `""`."""
+    if one.role in off:
+        return (f"Either bump-leg.py line under {one.path}'s "
+                "pin-gitlink-mismatch above clears this finding too."
+                if one.role == named else "")
+    if one.role is None or legs != [one.role]:
+        return ""
+    if untagged:
+        return _gitlink_repairs_held_back(
+            [one.path], untagged, "the bump-leg.py line"
+            if one.reference is None else "the two bump-leg.py lines")
+    if one.reference is None:
+        return _digest_repair(root, one.role, one.commit)
+    return _reference_repairs(root, one.role, one.commit, one.reference)
 
 
 def _check_gitlink_matches_pin(root: Path, role, path: str, commit: str,
@@ -519,6 +665,8 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
                 f"are not the bytes the pin was written against.\n  " + LOCKSTEP,
                 leg=role,
             )
+            report.curable.append(Curable(len(report.findings) - 1, role,
+                                          path, commit, None))
         else:
             report.note(f"{path}: tree digest recomputes ({recorded[:12]}…)")
 
@@ -542,6 +690,8 @@ def _check_workflow_refs_for_leg(refs, repository: str, path: str,
                 f"{gitlink} recorded at {path!r}\n  " + LOCKSTEP,
                 leg=role,
             )
+            report.curable.append(Curable(len(report.findings) - 1, role,
+                                          path, gitlink, wf_sha))
     if seen:
         report.note(f"{repository}: {seen} workflow @<sha> reference(s) "
                     f"agree with the gitlink")
@@ -1109,7 +1259,7 @@ def _run_all_checks(root: Path, report: Report,
         _check_leg(root, leg, report, refs)
     _check_shape_pin(root, manifest, report)
     _check_neutral_product_pins(root, manifest, report, pin_source_values)
-    _end_gitlink_mismatches(root, report)
+    _end_curable_findings(root, report, _end_gitlink_mismatches(root, report))
 
 
 def _emit_report(report: Report, quiet: bool) -> int:
@@ -1128,6 +1278,12 @@ def _emit_report(report: Report, quiet: bool) -> int:
     lives in `shape_materialize.py`, which no project carries, and this file
     imports nothing but `repo_shape`, so here such a byte prints as `\\udcXX`,
     as it already does on stderr.
+
+    THE COUNT ENDS AT THE LOCKSTEP RULE ONLY WHERE IT APPLIES (#539): where
+    one of `LOCKSTEP_CODES` was found. Every other finding names its own
+    exit, and a lone `shape-copy-drift`, an edited copy that `update-shape.py`
+    or a revert puts right, was followed by a rule about moving a gitlink, a
+    pin and the workflows together.
     """
     if getattr(sys.stdout, "errors", None) in ("strict", "surrogateescape"):
         try:
@@ -1140,7 +1296,9 @@ def _emit_report(report: Report, quiet: bool) -> int:
     for finding in report.findings:
         print(finding, file=sys.stderr)
     if report.findings:
-        print(f"\n{len(report.findings)} finding(s). " + LOCKSTEP, file=sys.stderr)
+        rule = any(code in LOCKSTEP_CODES for code, _ in report.cleared_by)
+        print(f"\n{len(report.findings)} finding(s)."
+              + (" " + LOCKSTEP if rule else ""), file=sys.stderr)
         return 1
     print("pins ok")
     return 0
