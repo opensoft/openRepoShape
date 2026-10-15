@@ -3302,8 +3302,6 @@ def _checked_plan_inputs(args, source: Source,
                       "named again, retyped; when `--elected-by` is not "
                       "given, `plan` reads `git config user.name`, so pass "
                       "the flag or correct that. " + WRITTEN_AS_TEXT)
-    if args.pin and args.pin_source is not None:
-        _refuse_an_unrecordable_pin_source(args.pin_source)
     names = _names(args.project)
     pins = _as_planned(declared_pin_values(args), args.pin_source)
     _check_names(naming, names, set(pins), source)
@@ -3393,8 +3391,10 @@ def _refuse_misread_values(args, given: set, pins: dict, source: Source,
 
 def _refuse_an_unrecordable_pin_source(source: Path) -> None:
     """`--pin-source` is a path `plan` can record, or this refuses it as
-    `adopt-unwritable-value`, before any digest is read and before a plan
-    is written.
+    `adopt-unwritable-value`, before anything is made, before any digest is
+    read and before a plan is written: `cmd_plan` asks it straight after
+    `refuse_an_unread_pin_source`, for it needs the flags alone, so no work
+    directory, git process or `gh repo clone` has come first.
 
     `plan` records the path in each pin's `digest_source:` in the plan, so
     that `check` can recompute the digest in that clone (#449), and `check`
@@ -3783,19 +3783,21 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
 
 def cmd_plan(args) -> int:
     # A `--pin-source` that names no path, `''`, which as a `Path` is the
-    # directory this runs in, and then one no `--pin` will read, are refused
-    # FIRST, in the scaffold's words (#451): it names the clone a pin's
-    # digest is read from, and with no `--pin` it changed nothing and was
-    # never even asked about. They need the flags alone, so they are asked
-    # before anything exists and before any process starts. Asked in
-    # `_checked_plan_inputs`, the second came after `_work_root` had made
-    # the work directory, which stayed behind, and after `Source.open` had
-    # run git in the source or `gh repo clone` for an `org/repo` one (rv540
-    # F2).
+    # directory this runs in, one no `--pin` will read, and one `plan` cannot
+    # record, are refused FIRST, in this order (#451, #450): it names the
+    # clone a pin's digest is read from, and with no `--pin` it changed
+    # nothing and was never even asked about. They need the flags alone, so
+    # they are asked before anything exists and before any process starts.
+    # Asked in `_checked_plan_inputs`, the second came after `_work_root` had
+    # made the work directory, which stayed behind, and after `Source.open`
+    # had run git in the source or `gh repo clone` for an `org/repo` one
+    # (rv540 F2), and so did the third (rv540c's item 1).
     args.pin_source = pin_source_path(args.pin_source,
                                       nothing_made=PLAN_NOT_WRITTEN)
     refuse_an_unread_pin_source(args.pin_source, args.pin,
                                 nothing_made=PLAN_NOT_WRITTEN)
+    if args.pin and args.pin_source is not None:
+        _refuse_an_unrecordable_pin_source(args.pin_source)
     work_root = _work_root(args)
     source = Source.open(args.source, work_root)
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
@@ -10342,8 +10344,9 @@ def main(argv: list[str] | None = None) -> int:
                       help="a local clone to compute --pin digests from, "
                            "instead of reading the forge with `gh api` (the "
                            "TEST path; no network). The plan records the "
-                           "path, which must be one printable line, so that "
-                           "`check` recomputes each digest there; the pin "
+                           "path, so that `check` recomputes each digest "
+                           "there; a path that is not one printable line is "
+                           "refused as `adopt-unwritable-value`. The pin "
                            "file says only `local-clone`, never the path. "
                            "Given with no --pin to read it, the flag is "
                            "refused as `pin-source-unused`; an empty value "
