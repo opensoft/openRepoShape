@@ -40,7 +40,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FILE_PROTOCOL, WINDOWS_SKIP, git, run_script
+from conftest import WINDOWS_SKIP, cloned_just_pushed, git, run_script
 from conftest import PTY_SKIP, REPO, run_in_a_terminal
 #: The neutral product's stand-in, from the module that scaffolds a declared
 #: descendant: a second way of building one would test a different one.
@@ -411,12 +411,8 @@ def descendant_run(standard, tmp_path_factory) -> dict:
         "--work-dir", str(base / "work"),
         env={"PATH": f"{quiet}{os.pathsep}{os.environ['PATH']}"})
     assert made.returncode == 0, made.stderr + made.stdout
-    clone = base / "clones" / "MedxGlass"
-    cloned = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         str(base / "remotes" / "MedxGlass.git"), str(clone)],
-        capture_output=True, text=True, check=False)
-    assert cloned.returncode == 0, cloned.stderr
+    clone = cloned_just_pushed(base / "remotes" / "MedxGlass.git",
+                               base / "clones" / "MedxGlass")
     assert not (clone.parent / PRODUCT).exists()
     bin_dir, calls = logging_gh(base / "doctor-gh")
     operators_config = str(base / "operators-gh-config")
