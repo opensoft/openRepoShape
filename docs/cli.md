@@ -150,10 +150,22 @@ opensoft/openRepoTools', and its own installer places them:
   curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRepoTools | bash -s -- --install
 
   $OPENREPOSHAPE_REPO       owner/name to fetch from (default opensoft/openRepoShape)
-  $OPENREPOSHAPE_REF        the ref to fetch it at   (default main)
+  $OPENREPOSHAPE_REF        the ref to fetch it at   (default: the ref --install
+                            recorded, else main)
   $OPENREPOSHAPE_ORG        the organisation, when --org is not given
   $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
+  $OPENREPOSHAPE_RECORD_REF 1: --install records $OPENREPOSHAPE_REF (below)
+
+`--install` RECORDS A REF ONLY WHEN ASKED: with $OPENREPOSHAPE_RECORD_REF=1
+it writes $OPENREPOSHAPE_REF to `openRepoShape.ref` beside the command it
+places, which is what the one-line installer (install.sh) does with the
+release tag it installs. The installed command then stays on that ref: it
+fetches setup.sh at it, setup.sh clones the standard at it (`--shape-ref`),
+and `--doctor` checks its clone out at it. $OPENREPOSHAPE_REF set for one run
+still wins, and `--version` prints the ref in force. A command re-installing
+itself keeps its own record; any other install records nothing, removes a
+record already there, and follows main.
 
 `--doctor [<path>] [--json] [--placement-plan <file>]` runs `shape-doctor.py`
 over <path> (default `.`) and prints one row per check and ONE verdict:

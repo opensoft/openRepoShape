@@ -66,12 +66,13 @@ LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
                  "shape_advisory", "conftest", "bootstrap"}
 
 #: The bash scripts a person runs BEFORE they have a checkout, or with no
-#: checkout in sight at all: the front door itself and the command that
-#: fetches it. `park` and `resume` were here from #82 until the carve (#92)
-#: and are opensoft/openRepoTools' now, held to these same rules by that
-#: repository's own copy of this test. Every one is a shipped executable and
-#: is held to the same shebang, mode bit and `set -euo pipefail` rule.
-SHIPPED_BASH = ["setup.sh", "openRepoShape"]
+#: checkout in sight at all: the front door itself, the command that
+#: fetches it, and the one-line installer that places that command pinned to
+#: a release (#564). `park` and `resume` were here from #82 until the carve
+#: (#92) and are opensoft/openRepoTools' now, held to these same rules by
+#: that repository's own copy of this test. Every one is a shipped executable
+#: and is held to the same shebang, mode bit and `set -euo pipefail` rule.
+SHIPPED_BASH = ["setup.sh", "openRepoShape", "install.sh"]
 
 #: The entry point a person runs BEFORE they have a checkout on a machine with
 #: no bash: the same front door, on an interpreter alone. Held to the same
@@ -1183,8 +1184,27 @@ def test_readme_is_short_enough_to_be_read():
     #   shim's answer there changed from a clone of the upstream to a few
     #   lines of its own, and a README that still promised the flag list
     #   would send a reader to a command that no longer prints it.
-    assert len(lines) <= 1422, (
-        f"README.md is {len(lines)} lines; the cap is 1422")
+    # 2026-10-14: 1422 -> 1444 — the one-line install, v1.0.1 (#564). Brett
+    #   Heap: "we need it to be more simple to install ... now and after, we
+    #   need a simple install process". Step 3 of the quick start now LEADS
+    #   with `curl -fsSL …/releases/latest/download/install.sh | bash`, and
+    #   the worked example's "Install the command" with the same line: ten
+    #   lines for the two blocks and the blank lines around them. Nine, step
+    #   3's paragraph and the blank after it, say what that line does that
+    #   the old two did not, each a thing a reader would otherwise meet
+    #   unannounced on their own machine: it needs no `gh` and no login, the
+    #   command is PINNED to the release tag, where that is recorded and what
+    #   it changes, it installs git-filter-repo with pipx or prints the
+    #   command, it ends in the preflight, `install.sh` itself never runs
+    #   `sudo` while each of the preflight's offers waits for a typed `yes`,
+    #   how to name a release and how to upgrade. Two re-introduce the
+    #   existing lines as the by-hand way, at main, so neither is lost, and
+    #   one is the Layout row for `install.sh`. The review on #577 folded a
+    #   separate "Pinned" paragraph into step 3's and left the exit statuses
+    #   to `install.sh --help` and the release notes, which took the raise
+    #   from 28 lines to 22.
+    assert len(lines) <= 1444, (
+        f"README.md is {len(lines)} lines; the cap is 1444")
 
 
 #: #476: what each document that carries the first rule says an assistant does
@@ -1247,7 +1267,7 @@ def test_shipped_bash_is_executable_and_fails_loudly(name):
 @WINDOWS_SKIP
 @pytest.mark.parametrize("name", SHIPPED_BASH)
 def test_shipped_bash_parses_under_bash(name):
-    """`bash -n` on the two shipped bash scripts, everywhere there is a bash.
+    """`bash -n` on the shipped bash scripts, everywhere there is a bash.
 
     SKIPPED ON WINDOWS, AND `shutil.which` IS NOT ENOUGH TO SEE WHY. The
     `bash` a stock Windows install puts on PATH is
@@ -1339,6 +1359,27 @@ def test_the_openrepotools_install_line_is_the_same_everywhere(name):
     assert OPENREPOTOOLS_INSTALL in text, (
         f"{name} must carry openRepoTools' install line byte for byte:\n"
         f"    {OPENREPOTOOLS_INSTALL}")
+
+
+#: THE ONE LINE THAT INSTALLS THIS STANDARD (#564), and every file that
+#: carries it: the installer it fetches, the command it installs (in its
+#: header), the README and its designed reading, and the release notes that
+#: introduced it. Pasted by people who cannot check it, like the two lines
+#: above, so the copies are held byte for byte. `releases/latest/download/`
+#: is what makes it the NEWEST release's `install.sh` every time.
+ONE_LINE_INSTALL = (
+    "curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/"
+    "download/install.sh | bash")
+ONE_LINE_INSTALL_IN = ["install.sh", "openRepoShape", "README.md",
+                       "docs/handbook.html", "docs/release-notes/v1.0.1.md"]
+
+
+@pytest.mark.parametrize("name", ONE_LINE_INSTALL_IN)
+def test_the_one_line_install_is_the_same_everywhere(name):
+    text = (REPO / name).read_text(encoding="utf-8")
+    assert ONE_LINE_INSTALL in text, (
+        f"{name} must carry the one-line install byte for byte:\n"
+        f"    {ONE_LINE_INSTALL}")
 
 
 def test_nothing_here_installs_park_or_resume():
