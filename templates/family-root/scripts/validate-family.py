@@ -115,6 +115,11 @@ LOCKSTEP_CODES = frozenset({"member-gitlink-mismatch",
 #: and `-`, and no trailing `.lock`. Anything else is said as `member`.
 BRANCH_WORD_RE = re.compile(r"[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+)*")
 
+#: What a remedy says where it cannot name the member's project, a gitlink
+#: whose path gives none: ONE placeholder for the one value, in the branch
+#: and in `--member` alike (#539).
+PROJECT_PLACEHOLDER = "<Project>"
+
 
 def _switch_line(root: Path, verb: str, name: str | None) -> str:
     """`git -C <holder> switch -c family/<verb>-<member>`: the branch
@@ -122,11 +127,12 @@ def _switch_line(root: Path, verb: str, name: str | None) -> str:
     holder's tracking branch is refused (`family-on-tracking-branch`, #487),
     spelled as `family.py` suggests it and the holder's docs show it (#539).
     `name` is the member's row `id:` for `remove` and its project for
-    `add`, lowercased; None is the docs' own `<project>`. POSIX-quoted, as
-    every other line this file prints is."""
+    `add`, lowercased; None says `PROJECT_PLACEHOLDER`, the one the
+    `--member` beside it says. POSIX-quoted, as every other line this file
+    prints is."""
     if name is None:
         return (f"git -C {shlex.quote(str(root))} switch -c "
-                f"family/{verb}-<project>")
+                f"family/{verb}-{PROJECT_PLACEHOLDER}")
     word = name.lower()
     if not BRANCH_WORD_RE.fullmatch(word) or word.endswith(".lock"):
         word = "member"
@@ -1105,7 +1111,8 @@ def _check_gitlinks_named(root: Path, gitlinks: dict[str, str],
             continue
         parts = path.split("/")
         project = parts[1] if len(parts) == 2 and parts[1] else None
-        member = "<Project>" if project is None else shlex.quote(project)
+        member = (PROJECT_PLACEHOLDER if project is None
+                  else shlex.quote(project))
         report.finding(
             "member-gitlink-unnamed",
             f"{said} {RESTORE_ROW} If it was mounted by hand, make a branch "

@@ -660,6 +660,25 @@ def test_the_add_remedy_quotes_the_member_it_names(family, holder, project,
     assert shlex.split(switch)[-1] == "family/add-member", switch
 
 
+def test_a_gitlink_that_names_no_project_says_one_placeholder_for_it(
+        family, holder):
+    """`members/deep/er` is two levels down, so no project is read from its
+    path, and the remedy cannot name one. The branch and `--member` beside
+    it stand for the one project, so they say it the one way, `<Project>`
+    (#539): `family/add-<project>` over `--member <org>/<Project>` was two
+    spellings for one value."""
+    _, tip = spare_commits(family)
+    stage_gitlink(holder, "members/deep/er", tip)
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1, result.stderr + result.stdout
+    (gitlink,) = findings(result)
+    switch, rm, add = commands(gitlink)
+    assert shlex.split(switch)[-1] == "family/add-<Project>", switch
+    assert shlex.split(add)[-1] == "<org>/<Project>", add
+    assert shlex.split(rm)[-1] == "members/deep/er", rm
+    assert "<project>" not in gitlink, gitlink
+
+
 # --- the remedy, run as printed, from a real mount ---------------------------
 
 def test_a_hand_mount_is_taken_out_and_added_back_as_printed(family, holder):
