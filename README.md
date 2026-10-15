@@ -707,15 +707,15 @@ is an addition, and `MedxChart` answers exactly as it did on 2026-09-02.
 Each link past the first is a declaration in ANOTHER tree — `openXdox` declaring
 `neutral_product_pins: [openDox]` — and it is read where that tree happens to be
 on the disk: `--link-source PRODUCT=<path>`, `SHAPE_PIN_SOURCE_<PRODUCT>`, a
-checkout beside the root, then a bare `--link-source <path>`: the same lookup
-order `validate-pins.py` uses below for the same checkout. A link no tree
-answers for is reported `declared-unverified` — a warning, never a finding, and
-the name still classifies — because the recorded declaration is the offline fact
-and the tree is the stronger check, available or not. A link that IS readable
-and declares something else BREAKS the chain: the residual assembly-root reading
-wins, the overlap is recorded, and the message names the link that broke.
-`LedgerxWallet` -> `openXwallet` -> `openWallet` is the same shape, and
-`openWallet` need not exist anywhere for that to be the answer.
+checkout beside the root, then a bare `--link-source <path>`, for the first
+link's tree only: the order `validate-pins.py` uses below for the same checkout.
+A link no tree answers for is reported `declared-unverified` — a warning, never
+a finding, and the name still classifies — because the recorded declaration is
+the offline fact and the tree is the stronger check, available or not. A link
+that IS readable and declares something else BREAKS the chain: the residual
+assembly-root reading wins, the overlap is recorded, and the message names the
+link that broke. `LedgerxWallet` -> `openXwallet` -> `openWallet` is the same
+shape, and `openWallet` need not exist anywhere for that to be the answer.
 
 **`validate-pins.py` rechecks the referent too, not only the declaration.**
 Each `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
