@@ -628,6 +628,42 @@ def test_openreposhape_bin_dir_is_where_the_command_and_its_record_go(net):
     assert not default.exists()
 
 
+@pytest.mark.parametrize("dangling", [False, True], ids=["live", "dangling"])
+def test_a_command_that_is_a_symlink_is_refused_before_any_request(
+        net, dangling):
+    """pipx places the openreposhape package's `openRepoShape` as a LINK
+    into the package's own environment, in this same directory (#563).
+
+    The command's `--install` would copy through it, so install.sh refuses
+    the target ITSELF, before it asks the network anything: the release it
+    installs may carry a command older than that command's own check. The
+    link stays as it was, the file it names keeps its bytes, and nothing is
+    left in `$TMPDIR`.
+    """
+    packaged = net.tmp_path / "pipx" / "venvs" / "openreposhape" / "bin" / \
+        "openRepoShape"
+    original = b"#!/usr/bin/env python3\n# the package's own command\n"
+    if not dangling:
+        packaged.parent.mkdir(parents=True)
+        packaged.write_bytes(original)
+    net.bin.mkdir(parents=True)
+    link = net.bin / "openRepoShape"
+    link.symlink_to(packaged)
+    result = net.run()
+    assert result.returncode == 2, result.stdout + result.stderr
+    said = " ".join(result.stderr.split())
+    assert f"{link} is a symbolic link, so nothing was installed" in said, said
+    assert "pipx upgrade openreposhape" in said
+    assert "pipx uninstall openreposhape" in said
+    assert net.calls() == [], net.calls()
+    assert link.is_symlink() and link.readlink() == packaged
+    if not dangling:
+        assert packaged.read_bytes() == original
+    assert sorted(path.name for path in net.bin.iterdir()) == \
+        ["openRepoShape"]
+    assert list(net.temporary.iterdir()) == []
+
+
 #: A curl that RUNS, in either script: tab-indented, alone or as the value
 #: of an assignment. Usage text and refusals carry curl lines too, indented
 #: with spaces, and are printed, never run.
