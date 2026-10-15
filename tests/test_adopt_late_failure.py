@@ -1132,12 +1132,13 @@ def test_a_closed_stdout_does_not_swallow_the_report(
 
 def test_a_refused_leg_push_offers_an_adoption_its_one_exit(
         adopter, monkeypatch, capsys, tmp_path):
-    """#188 N2. The scaffold's second exit, a seed branch and a pull request,
-    cannot finish an adoption: the leg is a repository this run created, its
-    first push is the one refused, so it has no `main` for that pull request
-    to target, and nothing resumes the adoption from a merged one. The hint
-    names the one exit, and no command for the other. A seeded leg, pushed
-    to a bare remote whose hook refuses `main` as a ruleset does."""
+    """#188 N2. A seed branch and a pull request, the scaffold's second exit
+    until #506 and never one here (#523), cannot finish an adoption: the leg
+    is a repository this run created, its first push is the one refused, so
+    it has no `main` for that pull request to target, and nothing resumes the
+    adoption from a merged one. The hint names the one exit, and no command
+    for that route. A seeded leg, pushed to a bare remote whose hook refuses
+    `main` as a ruleset does."""
     monkeypatch.setattr(adopter, COPY_TREE, seed_one_file)
     remote = tmp_path / REMOTES / f"{ASSEMBLY}-{SPEC}.git"
     git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)

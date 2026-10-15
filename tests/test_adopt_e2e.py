@@ -221,6 +221,16 @@ def next_block(stdout: str) -> list[str]:
     return stdout.split("\nNEXT: ", 1)[1].splitlines()
 
 
+#: NEXT's first two lines after `execute --local-remote-dir`, which opens no
+#: pull request: the split on its branch, and the clone of that branch, where
+#: the split is. They said "review the pull request", over none, and cloned
+#: the default branch (#523, N2).
+LOCAL_NEXT = [f"review the split on its branch in {PROJECT} (no pull request "
+              "is opened under --local-remote-dir), then",
+              "    git clone --recurse-submodules -b adopt/three-repo-shape "
+              f"<{PROJECT} url>"]
+
+
 def test_next_names_the_bootstrap_a_root_with_its_own_makefile_can_run(
         adopted, adopted_clone):
     """The source kept its own Makefile, so the shape's is `shape/Makefile`
@@ -230,9 +240,7 @@ def test_next_names_the_bootstrap_a_root_with_its_own_makefile_can_run(
     run in a recursive clone of the split, exits 0. (It is run with the
     interpreter running this test, which is what `python3` names here.)"""
     said = next_block(adopted["stdout"])
-    assert said[:3] == [f"review the pull request on {PROJECT}, then",
-                        f"    git clone --recurse-submodules <{PROJECT} url>",
-                        "    python3 scripts/bootstrap.py"], said
+    assert said[:3] == [*LOCAL_NEXT, "    python3 scripts/bootstrap.py"], said
     assert said[3].startswith("NOTE the root keeps its own Makefile and the "
                               "shape's is shape/Makefile, so `make bootstrap`")
     command = said[2].split()
@@ -291,6 +299,23 @@ def test_next_keeps_make_bootstrap_where_the_shapes_makefile_is_the_roots(
         "    make bootstrap\n")
 
 
+def test_next_names_the_split_branch_where_no_pull_request_was_opened(
+        adopter, capsys):
+    """Given the split's branch, as `execute --local-remote-dir` gives it,
+    NEXT names no pull request and clones that branch, quoted for `sh`; the
+    rest of the block is unchanged (#523, N2)."""
+    adopter._next_steps({"assembly": PROJECT}, [], "adopt/three repo")
+
+    out = capsys.readouterr().out
+    assert out == (
+        f"\nNEXT: review the split on its branch in {PROJECT} (no pull "
+        "request is opened under --local-remote-dir), then\n"
+        "    git clone --recurse-submodules -b 'adopt/three repo' "
+        f"<{PROJECT} url>\n"
+        "    make bootstrap\n")
+    assert "review the pull request" not in out
+
+
 #: A source that keeps its own `scripts/bootstrap.py` in the root beside its
 #: own Makefile. `scripts/` goes to the code leg unless the plan is answered
 #: otherwise, as `kept_scripts` answers it.
@@ -341,10 +366,8 @@ def test_next_names_no_bootstrap_where_the_roots_script_is_the_sources_own(
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert "  beside  shape/scripts/bootstrap.py " in result.stdout
-    assert next_block(result.stdout) == [
-        f"review the pull request on {PROJECT}, then",
-        f"    git clone --recurse-submodules <{PROJECT} url>",
-        BOTH_ASIDE], result.stdout
+    assert next_block(result.stdout) == [*LOCAL_NEXT, BOTH_ASIDE], \
+        result.stdout
 
 
 def test_next_names_no_bootstrap_where_only_the_script_went_aside(

@@ -60,6 +60,7 @@ import pytest
 
 from conftest import (ADOPT, REPO, WINDOWS_SKIP, git, make_source_repo,
                       run_script, write_plan)
+from test_adopt_tracking_branch import OPEN_THE_SPLIT, PULL_REQUEST_FOLLOW_UP
 
 #: `execute` REQUIRES `git filter-repo`; without it the runs below are
 #: skipped, as every `execute` test in this suite is.
@@ -106,6 +107,16 @@ SPLIT_IS_PUSHED = (
 #: verification: the refusal above names the exact command that was tried.
 NOT_BY_HAND = ("No pull request was opened, and none should be: the split "
                "above did not pass verification.")
+#: What a failed verification says of what the run put in place on GitHub
+#: BEFORE it verified (#523, auA-12): the pull request it opened, which the
+#: branch deletion the way out names closes, and the topic, on each
+#: repository that took it.
+STILL_OPEN = (f"A pull request for that branch IS open on {ORG}/{NORTHWIND}, "
+              "for a split that did not pass verification: deleting the "
+              "branch, as above, closes it.")
+TOPIC_STAYS = (f"The topic {TOPIC} stays set on {ORG}/{NORTHWIND}, "
+               f"{ORG}/{NORTHWIND}-spec and {ORG}/{NORTHWIND}-code; the "
+               "re-run sets it again.")
 VERIFIED = "adoption verified: every source path is in exactly one place"
 FINDING = "FINDING adopt-shape-file-missing:"
 #: What `_verify` used to say after every pass, whether or not a pull request
@@ -369,6 +380,23 @@ def test_step_7_keys_its_advice_to_the_exit_and_not_to_non_zero():
     assert said.index("Exit 1") < said.index("Exit 2 saying"), said
 
 
+def test_step_7_says_what_a_failed_verification_leaves_on_github():
+    """Exit 1 said "the source is untouched". Against GitHub `execute` sets
+    the topic and opens the pull request BEFORE it verifies, so a failed
+    verification leaves the pull request open on the source and the topic
+    set, unless `gh` refused them, and deleting the split branch, as the way
+    out says, closes that pull request (#523, auA-12)."""
+    said = step_7()
+    assert "untouched" not in said, said
+    assert ("Exit 1, a failed verification: nothing is deleted and `main` is "
+            "where it was, but the split branch is pushed and, on GitHub, its "
+            "pull request may be open and the topic set") in said, said
+    assert "delete the split branch (closing that pull request)" in said, said
+    # What the tool prints for it is what the step names.
+    assert "IS open" in STILL_OPEN and "closes it" in STILL_OPEN
+    assert "stays set" in TOPIC_STAYS
+
+
 def test_the_modules_exit_codes_paragraph_names_the_exits_after_the_push(
         adopter):
     """The EXIT CODES paragraph gave exit 2 one meaning, "the question could
@@ -493,6 +521,14 @@ def test_the_command_printed_for_a_refused_pull_request_is_the_one_refused(
                      f"{NORTHWIND}-spec and {NORTHWIND}-code"), title
     assert body.split("\n", 1)[0] == title, body
     assert "MOVED TO THE CODE LEG" in body and "\n" in body, body
+    # The body lists the FOLLOW-UPS the split does not do, and the last is a
+    # review of the pull request this run opens itself, never one telling
+    # the reviewer to open it, or calling the extracted legs seeded (#523).
+    follow_ups = body.split("FOLLOW-UPS, which this commit does NOT do:\n",
+                            1)[1]
+    assert follow_ups.endswith(f"  - {PULL_REQUEST_FOLLOW_UP}\n"), follow_ups
+    assert OPEN_THE_SPLIT not in body, body
+    assert "seeded" not in follow_ups, follow_ups
 
 
 @WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
@@ -543,6 +579,40 @@ def test_a_failed_verification_outranks_a_refused_pull_request(tmp_path):
     assert "VERIFICATION" in result.stdout, result.stdout
     # The legs and the branch exist, as the footer says, and no re-run into
     # fresh legs is pretended to be the same as a command by hand.
+    assert_pushed(github)
+
+
+@WINDOWS_SKIP  # the `gh` is a `#!` script, which Windows does not run
+@needs_filter_repo
+@pytest.mark.parametrize("refuses, said", [
+    pytest.param("never", (STILL_OPEN, TOPIC_STAYS), id="both-in-place"),
+    pytest.param("pr create", (NOT_BY_HAND, TOPIC_STAYS), id="topic-only"),
+    pytest.param("repo edit", (STILL_OPEN,), id="pull-request-only"),
+])
+def test_a_failed_verification_says_what_it_left_in_place(tmp_path, refuses,
+                                                          said):
+    """The split fails the verification after `execute` has set the topic
+    and opened the pull request, whichever of the two `gh` took. The way out
+    said NOTHING was deleted from the source, which is true, and nothing of
+    the pull request open for the failed split, or of the topic (#523,
+    auA-12). The last thing the run says now names each one it left, after
+    the command that deletes the split branch, which closes the pull
+    request; and still no command to open one or to set the topic, and no
+    NEXT. Both refused is
+    `test_a_failed_verification_outranks_a_refused_pull_request`."""
+    result, github = github_run(tmp_path, refuses, tree=FAILING_TREE,
+                                keep_contracts=True)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert FINDING in result.stderr, result.stderr
+    assert result.stderr.rstrip("\n").rsplit("\n", 1)[1] == " ".join(said), \
+        result.stderr
+    assert result.stderr.index(f"--delete {SPLIT_BRANCH}") \
+        < result.stderr.index(said[0]), result.stderr
+    assert (github / "opened").exists() is (STILL_OPEN in said)
+    for unsaid in ("Open the pull request by hand", "Set the topic by hand",
+                   "IS pushed", NEXT, VERIFIED):
+        assert unsaid not in result.stderr + result.stdout, unsaid
     assert_pushed(github)
 
 

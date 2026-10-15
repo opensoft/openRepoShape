@@ -141,7 +141,9 @@ pull request no longer leaves it unset (#481), and both are said in ONE notice
 after the table, each with the commands that finish the job by hand; those
 commands are the way out: a re-run into fresh legs abandons the pushed pair
 for a second. A verification that fails outranks both, with exit 1 and no
-command to open the pull request or to set the topic.
+command to open the pull request or to set the topic; it says what the run
+already put in place, the pull request open for the failed split, which
+deleting the split branch closes, and the topic, which stays set (#523).
 """
 
 from __future__ import annotations
@@ -1718,6 +1720,16 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
     of `tracking_branch:`, which `plan-tracking-branch-missing`'s
     remediation asks for, in `check`'s output and in the pull request's own
     body (#493's review, F3).
+
+    It is a review, and never "open the split as a pull request" (#523).
+    `plan` prints it and the split commit lists it under the FOLLOW-UPS this
+    commit does NOT do, which is also the pull request's body, while against
+    GitHub `execute` opens that pull request itself, and under
+    `--local-remote-dir` opens none. So it says what `execute` does in either
+    run, and calls the legs what they are: new repositories `execute` creates
+    and pushes before the split, extracted or, with no path, seeded from a
+    template. "Seeded", said of both, named an extracted leg by the word kept
+    for a template's.
     """
     out = cross_leg_references(source, entries, spec_path, code_path)
     if any(e.leg == "spec" and (e.path == "contracts/"
@@ -1734,10 +1746,11 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
             "owner rule cannot cross a repository boundary")
     out.extend(collisions)
     out.append(
-        "open the split as a pull request against the plan's "
-        "`tracking_branch`, the branch the assembly root and both legs track; "
-        f"the legs {names['spec']} and {names['code']} are seeded before it, "
-        "so review the root's diff and the two new repositories together")
+        f"review the root's diff together with {names['spec']} and "
+        f"{names['code']}, the two new repositories `execute` creates and "
+        "pushes before the split; against GitHub it opens the split's pull "
+        "request itself, whose base is the plan's `tracking_branch`, the "
+        "branch the assembly root and both legs track")
     return out
 
 
@@ -6684,29 +6697,31 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
 
 
 #: The adoption's own ruleset hint (#177). `RULESET_HINT` is the scaffold's,
-#: and it stays the scaffold's word for word. ITS SECOND EXIT IS NOT OFFERED
-#: HERE, because it cannot finish an adoption (#188 N2). It pushed the leg to
-#: a seed branch and opened a pull request against the tracking branch, but
-#: the leg is a repository this run created and its first push was the one
-#: refused, so there is no tracking branch for that pull request to target;
-#: and even a merged one would resume nothing, since the rest of the adoption
-#: (the other leg, the split) is made only by a re-run, into new legs. So an
-#: adoption names its one exit, a re-run by somebody holding the bypass right,
-#: and the notice printed after this hint (`_nothing_rolled_back`) names what
-#: that re-run must clear first. The notice also says to fix what failed
-#: before the re-run, and under such a ruleset the bypass IS that fix: the
-#: hint says so last, or "fixed", read alone, would invite a change to the
-#: ruleset this hint forbids (#188's re-verification, R4).
+#: and it stays the scaffold's word for word. A SEED BRANCH AND A PULL
+#: REQUEST ARE NAMED ONLY AS WHAT CANNOT FINISH AN ADOPTION (#188 N2). That
+#: route pushed the leg to a seed branch and opened a pull request against the
+#: tracking branch, but the leg is a repository this run created and its first
+#: push was the one refused, so there is no tracking branch for that pull
+#: request to target; and even a merged one would resume nothing, since the
+#: rest of the adoption (the other leg, the split) is made only by a re-run,
+#: into new legs. Nor is it "the scaffold's other exit", as this hint called
+#: it until #523: #506 took it out of the scaffold's hint too, which names it
+#: only as what cannot finish a scaffold. So an adoption names its one exit, a
+#: re-run by somebody holding the bypass right, and the notice printed after
+#: this hint (`_nothing_rolled_back`) names what that re-run must clear
+#: first. The notice also says to fix what failed before the re-run, and
+#: under such a ruleset the bypass IS that fix: the hint says so last, or
+#: "fixed", read alone, would invite a change to the ruleset this hint
+#: forbids (#188's re-verification, R4).
 ADOPT_RULESET_HINT = """
 If the organisation applies a ruleset requiring changes to arrive by pull
 request, a direct push to the default branch is refused BY DESIGN and must not
 be worked around. An adoption has ONE legitimate exit: have an operator
 holding the bypass right re-run it, once what the notice below names is
-cleared. The scaffold's other exit, a seed branch and a pull request, cannot
-finish an adoption: {repo} has no {tracking} for that pull request to target,
-and nothing would run the rest of this adoption after it was merged. Under
-such a ruleset, that bypass is the fix the notice below asks for, never a
-change to the ruleset.
+cleared. A seed branch and a pull request cannot finish an adoption:
+{repo} has no {tracking} for that pull request to target, and nothing would
+run the rest of this adoption after it was merged. Under such a ruleset, that
+bypass is the fix the notice below asks for, never a change to the ruleset.
 """
 
 #: What a step that runs once a leg repository exists reports as a REFUSAL,
@@ -7812,14 +7827,19 @@ def _open_the_pull_request(repositories: dict, names: dict, tracking: str,
 
 
 def _finish_by_hand(passed: bool, refused: list[str] | None, topic: str,
-                    unset: list[str]) -> None:
+                    unset: list[str], *, opened: str | None = None,
+                    carried: list[str] | None = None) -> None:
     """What a refused `gh pr create` and a topic that would not set leave to
     do, said ONCE, after the table, when `execute` knows whether the split it
     pushed is the one the plan asked for (#304, #481).
 
     `refused` is the `gh pr create` that `gh` refused, as
-    `_pull_request_command` built it, and None when the pull request is open;
-    `unset` names each repository `_set_the_topic` could not give `topic`.
+    `_pull_request_command` built it, and None when the pull request is open
+    or none was tried (`--local-remote-dir`); `unset` names each repository
+    `_set_the_topic` could not give `topic`. `opened` is the repository the
+    split's pull request IS open on, None where none is, and `carried` each
+    repository that has the topic: what a failed verification leaves in
+    place, and says (#523).
 
     A split that PASSED verification gets the commands that finish the job:
     a `gh repo edit` for each repository left without the topic, then the
@@ -7836,6 +7856,17 @@ def _finish_by_hand(passed: bool, refused: list[str] | None, topic: str,
     the exact command that was tried, and a person who sees only that, with
     findings under it, may paste it. No topic is offered there either: the
     way out is the verification's, and the re-run it names sets the topic.
+
+    WHAT IT LEAVES IN PLACE IS SAID TOO (#523). `execute` sets the topic and
+    opens the pull request BEFORE it verifies, so against GitHub a split that
+    failed has its pull request open on the source and the topic on every
+    repository that took it, and the way out said neither: it said NOTHING
+    was deleted from the source, which is true, and AGENTS.md said the source
+    was untouched, which is not. So the open pull request is named as one
+    for a split that failed, with what closes it, the deletion of its branch
+    the way out already names; and the topic as staying set, which the
+    re-run sets again.
+
     Stdout is flushed first. The table is on it and a pipe holds it in a
     block buffer, so without the flush this would come before the table it
     depends on in a merged log; a stdout that is closed, `| head` and gone,
@@ -7843,9 +7874,19 @@ def _finish_by_hand(passed: bool, refused: list[str] | None, topic: str,
     """
     _flush_stdout()
     if not passed:
+        said = []
         if refused is not None:
-            print("No pull request was opened, and none should be: the split "
-                  "above did not pass verification.", file=sys.stderr)
+            said.append("No pull request was opened, and none should be: the "
+                        "split above did not pass verification.")
+        elif opened is not None:
+            said.append(f"A pull request for that branch IS open on {opened}, "
+                        "for a split that did not pass verification: "
+                        "deleting the branch, as above, closes it.")
+        if carried:
+            said.append(f"The topic {topic} stays set on "
+                        f"{_and_listed(carried)}; the re-run sets it again.")
+        if said:
+            print(" ".join(said), file=sys.stderr)
         return
     topics = "".join(f"\n    gh repo edit {repository} --add-topic {topic}"
                      for repository in unset)
@@ -8275,13 +8316,17 @@ def cmd_execute(args) -> int:
     # to know before finishing either by hand is whether the split is right
     # (#304), so what is left is said once, after the table.
     unset: list[str] = []
+    carried: list[str] = []
     refused: list[str] | None = None
+    opened: str | None = None
     if not local:
         carried = _set_the_topic(repositories, topic)
         unset = [repositories[role] for role in TOPIC_ROLES
                  if repositories[role] not in carried]
-        if not _open_the_pull_request(repositories, names, tracking, branch,
-                                      message):
+        if _open_the_pull_request(repositories, names, tracking, branch,
+                                  message):
+            opened = repositories["assembly"]
+        else:
             refused = _pull_request_command(repositories, names, tracking,
                                             branch, message)
 
@@ -8291,9 +8336,12 @@ def cmd_execute(args) -> int:
                        urls=urls, branch=branch)
     if not verified and refused is None:
         # Where the shape's Makefile and bootstrap script WENT, as the
-        # materializer reports it, and not a second look at the tree (#480).
-        _next_steps(names, collisions)
-    _finish_by_hand(not verified, refused, topic, unset)
+        # materializer reports it, and not a second look at the tree (#480);
+        # under `--local-remote-dir` no pull request is opened, so NEXT names
+        # the split's branch instead (#523).
+        _next_steps(names, collisions, branch if local else None)
+    _finish_by_hand(not verified, refused, topic, unset, opened=opened,
+                    carried=carried)
     if verified:
         # A verification mismatch outranks a refused pull request and a
         # missing topic.
@@ -8808,10 +8856,18 @@ def _left_by_the_split(source: Source, urls: dict, names: dict,
 SHAPE_MAKEFILE = "Makefile"
 
 
-def _next_steps(names: dict, collisions: list) -> None:
+def _next_steps(names: dict, collisions: list,
+                branch: str | None = None) -> None:
     """What a person does once the split is verified AND its pull request is
-    open. Not said where there is none to review: after a refused `gh pr
-    create`, the command to open it is the next step (#304).
+    open, or none was tried. Not said after a refused `gh pr create`: there
+    the command to open it is the next step (#304).
+
+    `branch` is the split's branch where no pull request was tried, under
+    `--local-remote-dir`. NEXT said "review the pull request" there as well,
+    over none (#523, N2), and named a clone of the default branch, where the
+    split is not. There it names the split on its branch, and the clone of
+    that branch, quoted for `sh` as `_branch_deletion` quotes it. Without
+    one, the block is what it was, byte for byte.
 
     `collisions` is each `(intended, actual)` the materializer wrote beside a
     file the source kept: where the shape's files WENT, and not a second
@@ -8834,8 +8890,14 @@ def _next_steps(names: dict, collisions: list) -> None:
     bootstrap = ("" if script else
                  "\n    python3 scripts/bootstrap.py" if makefile else
                  "\n    make bootstrap")
-    print(f"\nNEXT: review the pull request on {names['assembly']}, then\n"
-          f"    git clone --recurse-submodules <{names['assembly']} url>"
+    if branch is None:
+        review, clone = f"the pull request on {names['assembly']}", ""
+    else:
+        review = (f"the split on its branch in {names['assembly']} (no pull "
+                  "request is opened under --local-remote-dir)")
+        clone = f"-b {shlex.quote(branch)} "
+    print(f"\nNEXT: review {review}, then\n"
+          f"    git clone --recurse-submodules {clone}<{names['assembly']} url>"
           f"{bootstrap}")
     if script:
         kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
