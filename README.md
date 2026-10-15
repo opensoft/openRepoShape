@@ -174,14 +174,14 @@ run the four steps below INSIDE the WSL shell.
 > opens with a preflight that names what is missing and, for `gh`, its login and
 > its credential helper, prints the command for THIS machine and asks once —
 > `Type yes to continue:`, the same words it asks everything else with — then
-> runs it and carries on. Nothing is installed without that typed `yes`; `--yes`
-> does not answer it, and with no terminal attached there is no offer at all.
-> Homebrew is the one install never run for you: on a Mac without `brew` the
-> preflight names <https://brew.sh> and stops there. To check a machine and
-> stop, creating nothing, run `openRepoShape --preflight` — `py setup-project.py
-> --preflight` on Windows — which exits 0 when everything is present and 1 when
-> it is not (`openRepoShape --preflight` exits 2 when `git` or a Python 3.9 or
-> newer is missing).
+> runs it and carries on. The preflight installs nothing without that typed
+> `yes`; `--yes` does not answer it, and with no terminal attached there is no
+> offer at all. Homebrew is the one install never run for you: on a Mac without
+> `brew` the preflight names <https://brew.sh> and stops there. To check a
+> machine and stop, creating nothing, run `openRepoShape --preflight` —
+> `py setup-project.py --preflight` on Windows — which exits 0 when everything
+> is present and 1 when it is not (`openRepoShape --preflight` exits 2 when
+> `git` or a Python 3.9 or newer is missing).
 
 **1. Install the GitHub CLI**, `gh`. The official instructions are at
 <https://cli.github.com/> (and <https://github.com/cli/cli#installation>):
