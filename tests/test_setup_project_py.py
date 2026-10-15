@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import ntpath
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 
 from pathlib import Path
 
@@ -57,6 +59,11 @@ from conftest import (DECLARATIONS, DRY_RUNS, FILE_ABOVE_THE_CLONE,
                       assert_the_naming_check_hears_what_is_passed_through,
                       assert_the_scaffold_leaves_its_next_steps_to_setup,
                       assert_the_upstream_org_is_refused_in_any_case)
+
+from conftest import (CHAIN_LINK_TREES, DRIVE_WAY_OUT, WRITE_IT,
+                      assert_a_parent_nobody_can_write_in_is_refused,
+                      assert_a_plan_that_never_printed_could_not_be_produced,
+                      assert_step_four_reads_a_chain_as_the_plan_does)
 
 SETUP_PROJECT = REPO / "setup-project.py"
 SETUP_SH = REPO / "setup.sh"
@@ -497,6 +504,92 @@ def test_the_plan_refuses_a_remote_that_exists_before_the_yes(tmp_path):
     """#537, on an interpreter alone: `conftest.assert_the_plan_refuses_a_
     remote_that_exists`."""
     assert_the_plan_refuses_a_remote_that_exists(run_entry, tmp_path)
+
+
+#: What the scaffold's plan starts with, and a few of the lines after it.
+A_PRINTED_PLAN = ("project      Sample (sample)   topic xf-project-sample\n"
+                  "triad        the Triad\n"
+                  "topics       skipped for local remotes\n")
+
+
+def a_refused_plan(monkeypatch, tmp_path, code, asked):
+    """`plan_and_confirm` with the scaffold's plan exiting `code`, and `asked`
+    the stdout a second, captured run of that same plan gives: the refusal it
+    raises and every call it made, as `(argv, capture)`."""
+    module = entry_point_module()
+    calls = []
+
+    def run(argv, cwd=None, capture=False):
+        calls.append((list(argv), capture))
+        return subprocess.CompletedProcess(argv, code,
+                                           asked if capture else None, None)
+
+    monkeypatch.setattr(module, "run", run)
+    opts = module.parse_args(["--project", "Sample", "--org", "demoorg"],
+                             str(tmp_path))
+    with pytest.raises(module.Refusal) as refused:
+        module.plan_and_confirm(opts, REPO, "demoorg", [],
+                                str(tmp_path / "Sample"))
+    return refused.value, calls
+
+
+def test_a_plan_that_printed_and_was_refused_is_said_to_be_refused(
+        monkeypatch, tmp_path):
+    """#608, L2-37: after #573 the scaffold's `--dry-run` prints the plan and
+    then refuses an existing remote, so "the plan could not be produced"
+    pointed at a plan that was right above it. Setup's own run inherits the
+    terminal, so it asks the question the scaffold asked once more, captured,
+    to learn whether the plan was there."""
+    refusal, calls = a_refused_plan(monkeypatch, tmp_path, 2, A_PRINTED_PLAN)
+    assert str(refusal) == "the plan was refused (see above)."
+    assert refusal.code == 2
+    [(first, first_captured), (again, again_captured)] = calls
+    assert first_captured is False and again_captured is True
+    assert again == first and first[-1] == "--dry-run", calls
+
+
+@pytest.mark.parametrize("shown", [
+    "", "NOTE demoorg/Sample is already private.\n",
+    "  [ok] project      Sample (sample)\n", "a project      Sample\n"])
+def test_a_plan_that_never_printed_could_not_be_produced(monkeypatch, tmp_path,
+                                                         shown):
+    """#608, L2-37: the old words stay for a plan that was not printed. The
+    plan's own first line, at the start of a line, is what says it was; a
+    line that only holds those words, or a NOTE the scaffold prints before
+    the plan, is not."""
+    refusal, calls = a_refused_plan(monkeypatch, tmp_path, 2, shown)
+    assert str(refusal) == "the plan could not be produced (see above)."
+    assert refusal.code == 2
+    assert len(calls) == 2, calls
+
+
+def test_a_plan_whose_scaffold_was_killed_is_not_asked_again(monkeypatch,
+                                                             tmp_path):
+    """A child killed by a signal (`-2`, Ctrl-C) is not refusing anything:
+    setup says what it said, with the exit status a shell reports (130), and
+    does not start the scaffold again to ask."""
+    refusal, calls = a_refused_plan(monkeypatch, tmp_path, -2, A_PRINTED_PLAN)
+    assert str(refusal) == "the plan could not be produced (see above)."
+    assert refusal.code == 130
+    assert len(calls) == 1, calls
+
+
+def test_a_plan_that_was_produced_is_run_once(monkeypatch, tmp_path):
+    """The second run is the refusal's alone: a plan that exits 0 is run once,
+    and its output is the terminal's, not captured."""
+    module = entry_point_module()
+    calls = []
+
+    def run(argv, cwd=None, capture=False):
+        calls.append(capture)
+        return subprocess.CompletedProcess(argv, 0, None, None)
+
+    monkeypatch.setattr(module, "run", run)
+    opts = module.parse_args(["--project", "Sample", "--org", "demoorg",
+                              "--yes"], str(tmp_path))
+    assert module.plan_and_confirm(opts, REPO, "demoorg", [],
+                                   str(tmp_path / "Sample")) is True
+    assert calls == [False]
 
 
 def test_anything_but_yes_refuses_and_creates_nothing(monkeypatch, tmp_path):
@@ -2058,6 +2151,100 @@ def test_what_stands_above_a_clone_path(tmp_path, case):
         % (blocker, expected, clone, KEEP_IT))
 
 
+@pytest.mark.parametrize("number,reason", [(13, "Permission denied"),
+                                           (30, "Read-only file system")])
+def test_a_parent_nobody_can_write_in_is_refused_by_name(monkeypatch, tmp_path,
+                                                         number, reason):
+    """#608, L2-26, on every platform and as every user: step (3) asks the
+    folder it finds above the clone for a folder of its own
+    (`tempfile.mkdtemp`), and what the system answers is the reason it gives.
+    `refuse_a_file_above` read only that what it found was a folder, so a
+    parent at mode 555, or on a read-only disk, passed and the three
+    repositories were created before step (7) said so."""
+    module = entry_point_module()
+
+    def refuses(*args, **kwargs):
+        raise OSError(number, reason)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", refuses)
+    clone = tmp_path / "work" / "Sample"
+    with pytest.raises(module.Refusal) as refused:
+        module.refuse_a_taken_clone_path(str(clone), "Sample")
+    assert refused.value.code == 2
+    assert str(refused.value) == (
+        "%s is a folder you cannot write in (%s), and this project would be "
+        "cloned inside it, at %s, so the run stops here and nothing was "
+        "created. %s" % (tmp_path, reason, clone, WRITE_IT))
+
+
+@pytest.mark.parametrize("depth", [0, 1, 2])
+def test_the_write_probe_is_made_in_the_nearest_folder_and_taken_away(
+        monkeypatch, tmp_path, depth):
+    """#608, L2-26: the folder the probe makes is made in the NEAREST folder
+    that exists - the clone's own parent when it is there, else the first one
+    above it - and is gone again, so a rehearsal leaves the disk as it found
+    it."""
+    module = entry_point_module()
+    made_in = []
+    real = tempfile.mkdtemp
+
+    def spy(*args, **kwargs):
+        made = real(*args, **kwargs)
+        made_in.append(made)
+        return made
+
+    monkeypatch.setattr(tempfile, "mkdtemp", spy)
+    base = tmp_path / "base"
+    base.mkdir()
+    clone = base.joinpath(*("below%d" % n for n in range(depth)), "Sample")
+    assert module.refuse_a_taken_clone_path(str(clone), "Sample") is None
+    [made] = made_in
+    assert Path(made).parent == base, made
+    assert not os.path.lexists(made), made
+    assert list(base.iterdir()) == []
+
+
+def test_the_drive_is_what_the_os_path_module_splits_off(monkeypatch):
+    """#608: `drive_of` is `os.path.splitdrive`'s drive, which a POSIX host
+    never has, so the Windows module is put in its place for the three calls:
+    a letter, a network share, and a path with neither."""
+    module = entry_point_module()
+    with monkeypatch.context() as windows:
+        windows.setattr(os, "path", ntpath)
+        found = [module.drive_of(path) for path in (
+            "C:\\work\\Sample", "\\\\server\\share\\work\\Sample",
+            "work\\Sample")]
+    assert found == ["C:", "\\\\server\\share", ""]
+
+
+@pytest.mark.parametrize("drive,said", [
+    ("Z:", "The drive Z: is not there"),
+    ("\\\\server\\share", "The drive \\\\server\\share is not there"),
+    ("", "Not even the top of the path is there")])
+def test_a_path_whose_drive_is_not_there_is_refused_by_name(
+        monkeypatch, tmp_path, drive, said):
+    """#608, L2-26: `nearest_entry` is None where not even the top of the
+    path is there, which on Windows is a drive that does not exist and on a
+    POSIX host cannot happen, so it is made to here, with the drive `drive_of`
+    names. On main that None passed (`refuse_a_file_above` left it "to the
+    clone"). Nothing is asked of the disk."""
+    module = entry_point_module()
+    monkeypatch.setattr(module, "nearest_entry", lambda path: None)
+    monkeypatch.setattr(module, "drive_of", lambda path: drive)
+
+    def asked(*args, **kwargs):
+        raise AssertionError("the disk was asked for a folder to probe in")
+
+    monkeypatch.setattr(tempfile, "mkdtemp", asked)
+    clone = str(tmp_path / "work" / "Sample")
+    with pytest.raises(module.Refusal) as refused:
+        module.refuse_a_taken_clone_path(clone, "Sample")
+    assert refused.value.code == 2
+    assert str(refused.value) == (
+        "%s, and this project would be cloned at %s, so the run stops here "
+        "and nothing was created. %s" % (said, clone, DRIVE_WAY_OUT))
+
+
 #: 40 hex, for a `--pin` nothing reads the digest of.
 A_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
@@ -2082,13 +2269,71 @@ def test_a_dry_run_is_read_as_the_scaffold_reads_one(passthrough, dry):
       "--referen", "x"], []),
     (["--pin", f"openGlass@{A_COMMIT}", "--",
       "--pin", f"openChart@{A_COMMIT}"], ["--pins=openGlass"]),
-    (["--pin"], []), (["--pin", f"@{A_COMMIT}"], [])])
+    (["--pin"], []), (["--pin", f"@{A_COMMIT}"], []),
+    # L2-25 (#608): a chain is verified from the tree `--pin-source` names, so
+    # that is passed as a bare `--link-source`: the last one, in any spelling
+    # the scaffold takes for the flag, and only where there is a chain (a
+    # source no link used is a NOTE the plan never prints).
+    (["--referent-chain", "openXdox,openDox", "--pin-source", "src"],
+     ["--referent-chain=openXdox,openDox", "--link-source=src"]),
+    (["--pin-source=a", "--referent-chain=openXdox,openDox", "--pin-s", "b",
+      "--pin-so=c"],
+     ["--referent-chain=openXdox,openDox", "--link-source=c"]),
+    (["--pin", f"openXdox@{A_COMMIT}", "--referent-chain", "openXdox,openDox",
+      "--pin-source", "/x/src"],
+     ["--pins=openXdox", "--referent-chain=openXdox,openDox",
+      "--link-source=/x/src"]),
+    (["--pin-source", "src"], []),
+    (["--referent-chain", " , ", "--pin-source", "src"],
+     ["--referent-chain= , "]),
+    (["--referent-chain", "openXdox,openDox", "--pin-", "x", "--pin-sourc"],
+     ["--referent-chain=openXdox,openDox"]),
+    (["--referent-chain", "openXdox,openDox", "--", "--pin-source", "src"],
+     ["--referent-chain=openXdox,openDox"]),
+    # ...as the scaffold's `Path` reads it: a value that starts with `-` is
+    # not given as the next word (argparse reads it as a flag), and is kept
+    # after an `=`. A value `PRODUCT=PATH` would be read as keyed by the
+    # naming check where the scaffold reads one path, so it is spelled `./`.
+    (["--referent-chain", "openXdox,openDox", "--pin-source", "--wat"],
+     ["--referent-chain=openXdox,openDox"]),
+    (["--referent-chain", "openXdox,openDox", "--pin-source"],
+     ["--referent-chain=openXdox,openDox"]),
+    (["--referent-chain", "openXdox,openDox", "--pin-source=-odd"],
+     ["--referent-chain=openXdox,openDox", "--link-source=-odd"]),
+    (["--referent-chain", "openXdox,openDox", "--pin-source",
+      "openXdox=layer"],
+     ["--referent-chain=openXdox,openDox", "--link-source=./openXdox=layer"]),
+    (["--referent-chain", "openXdox,openDox", "--pin-source", "a/b=c"],
+     ["--referent-chain=openXdox,openDox", "--link-source=a/b=c"]),
+    # L2-27 (#608): `--pin` followed by a flag has no value.
+    (["--pin", "--referent-chain", "x"], ["--referent-chain=x"]),
+    (["--pin", "--pin", f"openGlass@{A_COMMIT}"], ["--pins=openGlass"])])
 def test_the_declarations_are_read_as_the_scaffold_reads_them(passthrough,
                                                               declared):
     """#538: each `--pin`'s product, at its last `/` and before `@`; the
     last `--referent-chain`, in any spelling the scaffold takes for it; and
     nothing from a flag that only shares a prefix with one of them."""
     assert entry_point_module().naming_declarations(passthrough) == declared
+
+
+@pytest.mark.parametrize("passthrough,flag,values", [
+    # L2-27 (#608), the issue's own case and its counterpart.
+    (["--pin", "--referent-chain", "x"], "--pin", []),
+    (["--pin", "--referent-chain", "x"], "--referent-chain", ["x"]),
+    (["--pin", "-x", "--pin", "a@b"], "--pin", ["a@b"]),
+    (["--pin", "a@b", "--pin"], "--pin", ["a@b"]),
+    # The `=` spelling takes what follows it whatever it starts with, and the
+    # word after a flag that has its value is not read again as one.
+    (["--pin=-x"], "--pin", ["-x"]),
+    (["--pin=a", "--pin", "b", "c"], "--pin", ["a", "b"]),
+    (["--pin", "a", "--", "--pin", "b"], "--pin", ["a"])])
+def test_a_word_that_starts_with_a_dash_is_not_a_value(passthrough, flag,
+                                                       values):
+    """#608, L2-27: `passed_values` says a value never starts with `-` in the
+    second spelling, because argparse reads such a word as a flag; on main
+    `--pin --referent-chain x` gave `--pin` the value `--referent-chain`, and
+    step (4) was handed `--pins=--referent-chain`."""
+    assert entry_point_module().passed_values(passthrough, flag) == values
 
 
 def test_each_passed_flag_is_spelled_as_the_scaffold_takes_it():
@@ -2142,6 +2387,21 @@ def test_a_dry_run_passed_through_ends_at_the_plan(tmp_path, spelling, yes):
 def test_the_naming_check_hears_what_is_passed_through(tmp_path, how):
     assert_the_naming_check_hears_what_is_passed_through(run_entry, tmp_path,
                                                          how)
+
+
+# --- #608, on an interpreter alone: each is `conftest`'s helper of that name -
+
+def test_a_parent_nobody_can_write_in_is_refused(tmp_path):
+    assert_a_parent_nobody_can_write_in_is_refused(run_entry, tmp_path)
+
+
+def test_a_plan_that_never_printed_could_not_be_produced_end_to_end(tmp_path):
+    assert_a_plan_that_never_printed_could_not_be_produced(run_entry, tmp_path)
+
+
+@pytest.mark.parametrize("how", CHAIN_LINK_TREES)
+def test_step_four_reads_a_chain_as_the_plan_does(tmp_path, how):
+    assert_step_four_reads_a_chain_as_the_plan_does(run_entry, tmp_path, how)
 
 
 @pytest.mark.parametrize("org", UPSTREAM_CASINGS)
