@@ -176,7 +176,8 @@ USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold fla
 Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
-Anything after `--` is passed straight through to scaffold-project.py.
+Anything after `--` is passed straight through to scaffold-project.py. A
+`--dry-run` there ends this run at the plan, creating nothing.
 """
 
 
@@ -1222,11 +1223,22 @@ def _org_from_gh(opts: Options, origin_url: str) -> str:
     return (proc.stdout or "").strip() if proc.returncode == 0 else ""
 
 
+def is_upstream_org(org: str) -> bool:
+    """`org` is opensoft, in whatever case it was typed or recorded (#538).
+
+    GitHub reads an organisation's login in any case, so `--org OpenSoft`,
+    and an `origin` under `OpenSoft/`, name opensoft's own namespace. Every
+    upstream check below compared exactly, so those passed with no refusal,
+    and a person with create rights there scaffolded into it.
+    """
+    return org.casefold() == UPSTREAM_ORG.casefold()
+
+
 def _org_without_origin(opts: Options, origin_url: str) -> str:
     """No --org and no organisation parsed out of `origin`: ask, or refuse."""
     viewed = _org_from_gh(opts, origin_url)
     if viewed:
-        if viewed == UPSTREAM_ORG:
+        if is_upstream_org(viewed):
             die("you are running from the upstream checkout (%s); pass "
                 "--org <your-org>." % origin_url)
         ok("organisation %s (from `gh repo view` on the origin URL: %s; "
@@ -1245,7 +1257,7 @@ def _choose_org(opts: Options, origin_url: str, origin_org: str) -> str:
     # `origin` pointing at opensoft itself means this checkout IS the upstream
     # - there is no fork to inherit an organisation from, exactly like
     # self-bootstrap mode, so the fix is the same: pass --org.
-    if not opts.org and origin_org == UPSTREAM_ORG:
+    if not opts.org and is_upstream_org(origin_org):
         die("you are running from the upstream checkout (%s); pass --org "
             "<your-org>." % origin_url)
     if opts.org:
@@ -1281,14 +1293,22 @@ def _guard_upstream_org(opts: Options, org: str) -> None:
     records as the owner of all three legs, so a manifest reading
     `opensoft/Sample` is wrong regardless of whether any network call
     happened.
+
+    IN ANY CASE (#538): `is_upstream_org`. The refusal names the
+    organisation as it was typed, and says why another casing is still
+    opensoft's.
     """
-    if org == UPSTREAM_ORG and not opts.allow_upstream_org:
+    if is_upstream_org(org) and not opts.allow_upstream_org:
+        casing = ("" if org == UPSTREAM_ORG else
+                  " (GitHub reads an organisation's name in any case, so "
+                  "'%s' is '%s')" % (org, UPSTREAM_ORG))
         die("the organisation is '%s', which is the UPSTREAM owner of "
-            "openRepoShape itself, and scaffolding here would create three "
+            "openRepoShape itself%s, and scaffolding here would create three "
             "repositories in opensoft's own namespace.\n"
             "\n"
             "  Wrong guess?  re-run with --org <your-org>\n"
-            "  You meant it? re-run with --allow-upstream-org" % UPSTREAM_ORG)
+            "  You meant it? re-run with --allow-upstream-org"
+            % (org, casing))
 
 
 def resolve_org(opts: Options, invocation_dir: str) -> str:
@@ -1789,8 +1809,15 @@ def refuse_a_taken_clone_path(clone: str, project: str) -> None:
     The refusal says nothing was created, names the path, and says what is
     there where `what_stands_at` can tell. Step (7) keeps its own check, for
     a path that appears while the run is going.
+
+    AND WHAT STANDS ABOVE IT (#538). A FILE at `<into>/<Family>`, or at
+    `--into` itself, is a path the clone can never be made under, and
+    `lexists` reads `<file>/<Project>` as absent: on main this passed, all
+    three repositories were created, and step (7)'s `os.makedirs` ended the
+    run in a `FileExistsError` traceback. `refuse_a_file_above` asks it here.
     """
     if not os.path.lexists(clone):
+        refuse_a_file_above(clone)
         return
     what, way_out = what_stands_at(clone, project)
     die(" ".join(part for part in (
@@ -1799,15 +1826,150 @@ def refuse_a_taken_clone_path(clone: str, project: str) -> None:
         what, way_out) if part))
 
 
+def nearest_entry(path: str):
+    """`path`, or its nearest parent that anything stands at (`lexists`), or
+    None when not even the top of the path does - a Windows drive that is
+    not there."""
+    while not os.path.lexists(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            return None
+        path = parent
+    return path
+
+
+def what_blocks(path: str) -> str:
+    """What `path` is, when it is not a folder, as the refusal says it: a
+    symbolic link by its target where that prints as itself
+    (`CONTROL_RE`), as `what_stands_at` says one."""
+    if os.path.islink(path):
+        try:
+            target = os.readlink(path)
+        except OSError:
+            target = ""
+        if target and not CONTROL_RE.search(target):
+            return "a symbolic link to %s, which is not a folder" % target
+        return "a symbolic link that is not to a folder"
+    if os.path.isfile(path):
+        return "a file"
+    return "neither a folder nor a file"
+
+
+def refuse_a_file_above(clone: str) -> None:
+    """Refuse a clone path that something other than a folder stands above.
+
+    The folders above the clone are made in step (7), by `os.makedirs`, and
+    nothing exists yet: the first thing found on the way up from the clone's
+    parent must be a folder (`isdir`, so a link to one is one), or there is
+    nowhere to make them. Nothing found at all is the case before, and is
+    left to the clone.
+    """
+    above = nearest_entry(os.path.dirname(clone))
+    if above is None or os.path.isdir(above):
+        return
+    die("%s is %s, and this project would be cloned inside it, at %s, so the "
+        "run stops here and nothing was created. %s"
+        % (above, what_blocks(above), clone, KEEP_IT))
+
+
+# ---------------------------------------------------------------------------
+# what the passthrough tells the scaffold (#538)
+# ---------------------------------------------------------------------------
+
+#: THE SCAFFOLD FLAGS THIS FILE READS OUT OF ITS PASSTHROUGH, each with the
+#: shortest spelling the scaffold's argparse takes for it. argparse takes an
+#: unambiguous prefix of a long option as that option, so `--dry` is the
+#: scaffold's `--dry-run`; `--pin` has no shorter spelling, because
+#: `--pin-owner` and `--pin-source` share every one, and a prefix of
+#: `--referent-chain` shorter than `--referent` is one of `--reference`
+#: too. `tests/test_setup_project_py.py` holds each row to the
+#: scaffold's own `--help`. A word this reads that the scaffold finds
+#: ambiguous makes the scaffold's plan refuse, in step (5), before anything
+#: is created, so reading one too many is never a run the scaffold made.
+PASSED_FLAGS = {"--dry-run": "--d", "--pin": "--pin",
+                "--referent-chain": "--referent"}
+
+
+def scaffold_words(passthrough: list) -> list:
+    """The passthrough up to an inner `--`: every word after one is a
+    positional to argparse, never a flag, and the scaffold takes none."""
+    if "--" in passthrough:
+        return passthrough[:passthrough.index("--")]
+    return list(passthrough)
+
+
+def names_flag(word: str, flag: str) -> bool:
+    """`word` is the scaffold's `flag` (a `PASSED_FLAGS` key), alone or as
+    `flag=value`, in a spelling its argparse takes."""
+    given = word.split("=", 1)[0]
+    return len(given) >= len(PASSED_FLAGS[flag]) and flag.startswith(given)
+
+
+def passed_values(passthrough: list, flag: str) -> list:
+    """Every value the passthrough gives `flag`, in order: `flag=value`, or
+    the word after `flag`. A value never starts with `-` in the second
+    spelling, because argparse reads such a word as a flag, so a word this
+    takes as `flag` is never somebody's value."""
+    words = scaffold_words(passthrough)
+    values = []
+    for index, word in enumerate(words):
+        if not names_flag(word, flag):
+            continue
+        if "=" in word:
+            values.append(word.split("=", 1)[1])
+        elif index + 1 < len(words):
+            values.append(words[index + 1])
+    return values
+
+
+def passes_a_dry_run(passthrough: list) -> bool:
+    """`--dry-run` was passed through after `--` (#538).
+
+    The scaffold then creates nothing in step (6), and step (7) cloned three
+    repositories that did not exist and refused saying they WERE created.
+    `plan_and_confirm` ends the run at the plan instead.
+    """
+    return any(names_flag(word, "--dry-run")
+               for word in scaffold_words(passthrough))
+
+
+def naming_declarations(passthrough: list) -> list:
+    """The naming validator's arguments for what the passthrough declares
+    about the project (#538): the products of its `--pin`s, and its
+    `--referent-chain`.
+
+    A `<Domainx><Product>` name is a descendant only when the project pins
+    its referent, and the scaffold judges the names with the pins it is
+    given. Step (4) asked about the three names alone, so it reported `no
+    referent pin declared` for a project whose plan, a step later, called it
+    a domain descendant. Each product is read the way the scaffold's
+    `parse_pin` reads one: the name before `@`, at its last `/`. The LAST
+    chain, because a repeated flag that takes one value keeps its last.
+    Each is passed as `--flag=value`, so a value that starts with `-` stays
+    a value to the validator; one the scaffold refuses is refused at the
+    plan.
+    """
+    products = [name for name in (
+        pin.strip().split("@", 1)[0].rsplit("/", 1)[-1]
+        for pin in passed_values(passthrough, "--pin")) if name]
+    chains = passed_values(passthrough, "--referent-chain")
+    return ((["--pins=" + ",".join(products)] if products else [])
+            + (["--referent-chain=" + chains[-1]] if chains else []))
+
+
 # ---------------------------------------------------------------------------
 # 4. the names, before anything exists
 # ---------------------------------------------------------------------------
 
-def check_names(shape_root: Path, project: str, family: str = "") -> None:
+def check_names(shape_root: Path, project: str, family: str = "",
+                declared=()) -> None:
+    """The three names against the naming policy, with what the project
+    declares about itself (`naming_declarations`) as the scaffold will
+    judge them."""
     say("")
     say("(4) naming policy")
     proc = run([PYTHON,
-                str(shape_root / "scripts" / NAMING_VALIDATOR),
+                str(shape_root / "scripts" / NAMING_VALIDATOR), *declared,
                 "--explain", project, project + "-spec", project + "-code"],
                cwd=shape_root)
     if proc.returncode != 0:
@@ -1878,7 +2040,11 @@ def scaffold_args(opts: Options, org: str) -> list:
 
 
 def plan_and_confirm(opts: Options, shape_root: Path, org: str,
-                     args: list, clone: str) -> None:
+                     args: list, clone: str) -> bool:
+    """The plan, then the one question. False when the run ends at the plan
+    instead: a `--dry-run` passed through after `--` (`passes_a_dry_run`),
+    which asks nothing, `--yes` or not, because there is nothing to say yes
+    to."""
     say("")
     say("(5) the plan")
     planned = run([PYTHON, str(shape_root / SCAFFOLD), *args,
@@ -1899,8 +2065,13 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
     say("")
     say("clone into   %s" % clone)
 
+    if passes_a_dry_run(opts.passthrough):
+        say("")
+        say("--dry-run was passed through to the scaffold, so this run ends "
+            "at the plan above: nothing was created and nothing was cloned.")
+        return False
     if opts.assume_yes:
-        return
+        return True
     # THE QUESTION GOES TO THE PERSON'S TERMINAL, NEVER TO A PIPE (#492).
     # `curl ... | bash -s --` hands this file the rest of the script as its
     # stdin, so the yes is read from the controlling terminal instead
@@ -1927,6 +2098,7 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
     say("This will create THREE repositories in '%s'." % org)
     if ask("Type yes to continue: ") != "yes":
         die("not confirmed; nothing was created.", 1)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1934,9 +2106,13 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
 # ---------------------------------------------------------------------------
 
 def scaffold(shape_root: Path, args: list) -> None:
+    """The scaffold, for real, told `--no-next-steps` (#538): its closing
+    block is the `git clone`, `cd` and `make bootstrap` that step (7) runs
+    next, and printed here it read as work left to the person. Its `Working
+    trees are at` line still prints."""
     say("")
     say("(6) scaffold")
-    proc = run([PYTHON, str(shape_root / SCAFFOLD), *args],
+    proc = run([PYTHON, str(shape_root / SCAFFOLD), *args, "--no-next-steps"],
                cwd=shape_root)
     if proc.returncode != 0:
         raise Refusal("the scaffold failed (see above).",
@@ -1979,6 +2155,31 @@ def local_remotes_by_url(directory: str) -> list:
     return args
 
 
+def finish_by_hand(parent: str, assembly: str, project: str,
+                   local: bool) -> str:
+    """The lines that finish a run by hand once the three repositories
+    exist (#498): from the clone's parent, the recursive clone, then the
+    bootstrap.
+
+    EVERY PATH IS ONE WORD (#538), through `shell_word`, as the family lines
+    are (#486): under `--into "/home/a b"` the bare lines split at the space,
+    and under `--local-remote-dir` `<assembly>` is a path too. THE WORD IS
+    SPELLED FOR `sh` ON EVERY HOST (`posix=True`; #532 rules the printed
+    commands POSIX-only), so a Windows path reaches Git Bash whole. And THAT
+    clone carries `-c protocol.file.allow=always`, which setup's own clone
+    passes: the legs are cloned from the plain paths `.gitmodules` records,
+    the file transport, which git refuses a submodule without it. The project
+    name is a word already: step (4) held it to the naming policy.
+    """
+    clone = "git -c protocol.file.allow=always clone" if local else "git clone"
+    return ("    cd %s\n"
+            "    %s --recurse-submodules %s\n"
+            "    cd %s && %s %s"
+            % (shell_word(parent, posix=True), clone,
+               shell_word(assembly, posix=True), project, PYTHON_CMD,
+               BOOTSTRAP))
+
+
 def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
     # WHERE IT LANDS WAS DECIDED IN STEP (3), by `resolve_family`: `--into`
     # or, on the DEVELOPER PATH, the `..` of this checkout - a checkout's
@@ -1986,13 +2187,7 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
     # it, and self-bootstrap mode has no such neighbour and passes --into
     # instead. `--family` adds one level to it there and not here, so the
     # plan the person read and the clone that happens cannot disagree.
-    #
-    # `<into>/<Family>/` IS CREATED HERE AND NOWHERE EARLIER. A rehearsal
-    # that stops at the plan (no `--yes`, no terminal) must leave the disk
-    # exactly as it found it - a family folder made by a run that created
-    # nothing else would be litter the person did not ask for.
     parent = str(landing.directory)
-    os.makedirs(parent, exist_ok=True)
     clone = landing.clone_path(opts.project)
 
     if opts.local_mode:
@@ -2012,7 +2207,24 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
     # The three repositories now EXIST. Everything from here is recoverable by
     # hand, so a failure names the command that finishes the job rather than
     # leaving the person wondering what was created.
-    #
+    by_hand = finish_by_hand(parent, urls["assembly"], opts.project,
+                             opts.local_mode)
+
+    # `<into>/<Family>/` IS CREATED HERE AND NOWHERE EARLIER. A rehearsal
+    # that stops at the plan (no `--yes`, no terminal) must leave the disk
+    # exactly as it found it - a family folder made by a run that created
+    # nothing else would be litter the person did not ask for. Step (3)
+    # refused a file standing where it goes (#538); one that appeared since,
+    # or a folder this account cannot write, is a refusal with the way on,
+    # never a traceback after three repositories exist.
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as exc:
+        die("%s could not be made a folder (%s), so there is nowhere to "
+            "clone into. The three repositories WERE created. Make it one, "
+            "then finish by hand:\n%s"
+            % (parent, exc.strerror or exc.__class__.__name__, by_hand))
+
     # THE BACKSTOP (#498). `refuse_a_taken_clone_path` asked this in step (3),
     # before anything existed, so a path taken HERE appeared while the run
     # was going. `lexists` for the same reason it is there. The way out moves
@@ -2022,11 +2234,8 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
     if os.path.lexists(clone):
         die("%s already exists - it was not there when step (3) looked - so "
             "there is nowhere to clone into. The three repositories WERE "
-            "created. Move it aside, then finish by hand in %s:\n"
-            "    git clone --recurse-submodules %s\n"
-            "    cd %s && %s %s"
-            % (clone, parent, urls["assembly"], opts.project, PYTHON_CMD,
-               BOOTSTRAP))
+            "created. Move it aside, then finish by hand:\n%s"
+            % (clone, by_hand))
 
     say("")
     say("(7) clone and bootstrap")
@@ -2090,24 +2299,36 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
 # 8. hand over
 # ---------------------------------------------------------------------------
 
+#: A word `sh` reads as itself, needing no quotes: `scripts/repo_shape.py`'s
+#: `SHELL_BARE_POSIX`. A backslash is not in it, so a Windows path is quoted.
+SHELL_BARE_POSIX = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")
+
 #: A word this host's shell reads as itself, needing no quotes:
 #: `scripts/repo_shape.py`'s `SHELL_BARE_NT` on Windows, else its
 #: `SHELL_BARE_POSIX`. This file runs before any checkout of the standard
 #: exists, so it carries its own copy of the rule, and
 #: `tests/test_family_printed_quoting.py` holds the two to one answer.
 SHELL_BARE = re.compile(r"[A-Za-z0-9_./:%+=\\-]+" if os.name == "nt"
-                        else r"[A-Za-z0-9_./:@%+=,-]+")
+                        else SHELL_BARE_POSIX.pattern)
 
 
-def shell_word(value) -> str:
+def shell_word(value, posix: bool = False) -> str:
     """`value` as ONE word of a command pasted into this host's shell: bare
     where every character is itself to it, else in single quotes, doubled
     inside for PowerShell, closed-escaped-reopened for `sh` (#486). A
-    leading `=` is quoted too, which zsh would expand."""
+    leading `=` is quoted too, which zsh would expand.
+
+    `posix` spells it for `sh` on EVERY host, Windows too: Git Bash reads
+    the backslash of a bare `C:\\work` as an escape and an apostrophe doubled
+    for PowerShell as two quotes, and #532 rules the printed commands
+    POSIX-only. The lines #538 adds or changes pass it, as the scaffold's
+    NEXT STEPS clone does (`shell_line(..., "posix")`); the family lines
+    (`family_next_command`) are #532's and still take this host's dialect."""
     text = str(value)
-    if not text.startswith("=") and SHELL_BARE.fullmatch(text):
+    bare = SHELL_BARE_POSIX if posix else SHELL_BARE
+    if not text.startswith("=") and bare.fullmatch(text):
         return text
-    if os.name == "nt":
+    if os.name == "nt" and not posix:
         return "'" + re.sub("(['\u2018\u2019\u201a\u201b])", r"\1\1",
                             text) + "'"
     return "'" + text.replace("'", "'\\''") + "'"
@@ -2166,7 +2387,9 @@ def hand_over(project: str, clone: str, urls: dict, org: str,
     say("")
     say("Next:")
     say("")
-    say("    cd %s" % clone)
+    # ONE WORD (#538): a clone under `--into "/home/a b"` is a `cd` the
+    # shell would split.
+    say("    cd %s" % shell_word(clone, posix=True))
     say("    make validate          # naming, manifest, lockstep pins - what "
         "CI runs")
     # setup.sh's hand-over block, with ONE line added: this file runs where
@@ -2240,9 +2463,11 @@ def _main(argv, invocation_dir: str) -> int:
     landing = resolve_family(opts, shape_root)
     clone = landing.clone_path(opts.project)
     refuse_a_taken_clone_path(clone, opts.project)
-    check_names(shape_root, opts.project, opts.family)
+    check_names(shape_root, opts.project, opts.family,
+                naming_declarations(opts.passthrough))
     args = scaffold_args(opts, org)
-    plan_and_confirm(opts, shape_root, org, args, clone)
+    if not plan_and_confirm(opts, shape_root, org, args, clone):
+        return 0
     scaffold(shape_root, args)
     created = clone_and_bootstrap(opts, org, landing)
     hand_over(opts.project, created["clone"], created["urls"], org, landing)
