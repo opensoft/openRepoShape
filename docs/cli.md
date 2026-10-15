@@ -906,11 +906,19 @@ options:
                         or of a leg's naming.referent_chain: under --project),
                         and then that reading wins even over a directory
                         spelled like the whole value (./PATH reads that
-                        directory); any other value is a bare PATH, which
-                        applies to whichever link has no more specific answer.
-                        Repeatable; a value no link used is noted.
+                        directory); any other value is a bare PATH: the tree
+                        of the chain's FIRST link (the pin the project holds),
+                        read when that link has no more specific answer, and
+                        never a later link's, which needs its own
+                        PRODUCT=PATH, its SHAPE_PIN_SOURCE_<PRODUCT> or a
+                        checkout beside the project. When the chains read here
+                        begin at two different links, a bare PATH is read for
+                        neither. A value that names no path (PRODUCT=, or
+                        empty) is refused. Repeatable; a value no link used is
+                        noted. Every link is tried against PRODUCT=PATH,
                         SHAPE_PIN_SOURCE_<PRODUCT> and a checkout beside the
-                        project are tried too. A link no source answers for is
+                        project, in that order, and a bare PATH last, for the
+                        first link alone. A link no source answers for is
                         declared-unverified, and a source that cannot be read
                         is named with the system's reason: both are warnings
                         and not findings, an explicit source included.
