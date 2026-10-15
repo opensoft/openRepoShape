@@ -214,19 +214,28 @@ def _check_out(sub: Path, branch: str,
 
 def _move_and_check_out(sub: Path, branch: str,
                         pin: str) -> tuple[bool, bool, list[str] | None]:
-    """From HEAD DETACHED AT THE PIN: `branch -f <branch> <pin>`, then
-    `_check_out` of the branch, which is by then the commit already checked
-    out, so no file in the leg changes, a local edit included.
+    """From HEAD DETACHED AT THE PIN, or on ANOTHER BRANCH (#603, D1):
+    `branch -f <branch> <pin>`, then `_check_out` of the branch.
+
+    From the pin the branch is by then the commit already checked out, so
+    no file in the leg changes, a local edit included. From another branch
+    the checkout changes files, as `place_at_pin`'s does, and git refuses
+    it where a local change to a file that differs, or an untracked file, is
+    in the way: the branch has moved by then, and HEAD has not. It does not
+    refuse an IGNORED file at a path the pin tracks: git overwrites that,
+    as it does for `place_at_pin` and the on-branch `merge --ff-only`, and
+    it ends a merge in progress on the branch HEAD leaves (#458's to rule
+    on, #603).
 
     Returns whether the branch moved, whether HEAD is on it at the pin, and
     git's lines (`None` when both steps exited 0). The checkout runs only
     once `branch -f` has worked. A branch that moved is left at the pin when
     the checkout is refused, never put back: putting it back is a second
     ref write a stale lock refuses as well, and the next run finds the
-    branch at the pin and says again whether it could check it out. Not
-    `checkout -B`: git 2.43 resets a branch another worktree has checked
-    out with it, leaving that worktree's files behind its own HEAD, where
-    `branch -f` refuses.
+    branch at the pin, which is `place_at_pin`'s state, and says again
+    whether it could check it out. Not `checkout -B`: git 2.43 resets a
+    branch another worktree has checked out with it, leaving that
+    worktree's files behind its own HEAD, where `branch -f` refuses.
     """
     why = _git_says(["branch", "-f", branch, pin], sub)
     if why is not None:
@@ -276,6 +285,22 @@ def _place_of(current: str | None) -> str:
     return "on " + spelled(current.split("refs/heads/", 1)[-1])
 
 
+def _say_left(head: str | None, current: str, named: str) -> None:
+    """The line under `fast-forwarded` when the leg started on ANOTHER
+    branch, `current`, and is on the tracking branch `named` now (#603).
+
+    The person is told, since their next commit lands on `named`. P9
+    (`place_at_pin`) says nothing of the branch it leaves; that is #458's.
+    `head` is `None` for a branch with no commit yet, which has no commit to
+    keep, so it is said so. Its own function, so that `fast_forward_to_pin`
+    stays within Sonar's cognitive-complexity limit (S3776).
+    """
+    kept = ("a branch with no commit yet" if head is None
+            else "which keeps its commits")
+    print(f"          the leg was {_place_of(current)}, {kept}; it is on "
+          f"{named} now")
+
+
 def _say_keep(options: str = "the pin or the branch") -> None:
     """What to do about a checkout step (a) will not move, in the words
     both refusals of it share. Nothing moves."""
@@ -289,8 +314,9 @@ def _say_neither(label: str, state: str, head: str | None,
     """The checkout is not one a move starts from: `state` says what the
     branch is to the pin, and the line names where the leg stands instead.
     Nothing moves. A commit made on a leg detached off the pin is on no
-    branch, so checking the branch out would leave it only in the reflog,
-    and a leg on another branch is somebody's work."""
+    branch, so checking the branch out would leave it only in the reflog.
+    A leg on another branch is not said here (#603): that branch holds its
+    commits, so the leg is moved off it."""
     print(f"  {label}: {state}, and the checkout is at {_short(head)} "
           f"({_place_of(current)}), which is neither")
     _say_keep()
@@ -339,7 +365,7 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
     DETACHED at the new pin over the branch an earlier bootstrap placed at
     the old one. It used to stay detached, and the next commit made in the
     leg was on no branch. The branch is moved, and the leg put on it, from
-    exactly two checkouts:
+    exactly three checkouts:
 
     - HEAD on the branch itself: `merge --ff-only`, which moves the working
       tree too, and moves nothing when a local change to a file the move
@@ -350,22 +376,43 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
       not `--no-autostash`, which a git before 2.27 refuses as an unknown
       option; such a git has no autostash and ignores the key.
     - HEAD detached AT THE PIN: `_move_and_check_out`.
+    - HEAD on ANOTHER BRANCH, a `refs/heads/` ref that is not the tracking
+      branch (#603, D1 of its checklist triage): `_move_and_check_out`. The
+      other branch is not touched and keeps every commit made on it, so the
+      move loses no commit and that work is no reason to leave the leg
+      there. `place_at_pin` already checks the tracking branch out from
+      this checkout when it is AT the pin; leaving the leg for a branch
+      BEHIND the pin was a difference nobody could explain (#458). The
+      checkout changes files from here, so git can refuse it over a local
+      edit or an untracked file, and `_move_and_check_out` says what is
+      left then. A HEAD on a branch with no commit yet takes this path too,
+      as it does in `place_at_pin`. When the checkout is made, one line
+      under the `fast-forwarded` one says the leg left that branch, and
+      that it keeps its commits, since the next commit made in the leg is
+      on the tracking branch now. NO COMMIT IS LOST, BUT TWO THINGS ARE NOT
+      REFUSED, as in `place_at_pin`, in the missing-branch path and, for
+      the first, in the on-branch `merge --ff-only`: git overwrites an
+      IGNORED file at a path the pin tracks, and a merge in progress on the
+      other branch is ended, its `MERGE_HEAD` removed and its staged result
+      carried onto the tracking branch. Both are #458's to rule on.
 
-    ANY OTHER CHECKOUT IS LEFT WHERE IT IS. A commit made on the detached
-    leg after the bump is on no branch, and checking the branch out would
-    leave it only in the reflog; a leg on another branch is somebody's work.
-    Either is said, with what to do, and nothing moves.
+    A LEG DETACHED OFF THE PIN IS LEFT WHERE IT IS: a commit made on the
+    detached leg after the bump is on no branch, and checking the branch
+    out would leave it only in the reflog. That is said, with what to do,
+    and nothing moves.
 
     `label` is the leg as `checkout_tracking_branch` prints it, already
     spelled; the branch names and git's own lines are spelled here (#391).
     """
     named = spelled(branch)
     head, current = _head_of(sub)
+    other_branch = (current is not None and current.startswith("refs/heads/")
+                    and current != f"refs/heads/{branch}")
     if current == f"refs/heads/{branch}":
         why = _git_says(["-c", "merge.autostash=false", "merge", "--ff-only",
                          "-q", pin], sub)
         moved = placed = why is None
-    elif current is None and head == pin:
+    elif other_branch or (current is None and head == pin):
         moved, placed, why = _move_and_check_out(sub, branch, pin)
     else:
         _say_neither(label, f"branch {named} tip {_short(local)} is behind "
@@ -388,6 +435,8 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
                 "deliberately does NOT follow")
     print(f"  {label}: branch {named} fast-forwarded {_short(local)} -> "
           f"{_short(pin)}, the pin{note}")
+    if other_branch:
+        _say_left(head, current, named)
     _say_after(why)
 
 

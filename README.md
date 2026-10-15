@@ -102,10 +102,10 @@ is on no `PATH` by default, and its installer finishes by printing the line that
 puts it there — run that line, or the next shell cannot find `brew`. Then `brew
 install gh`, and `brew install git-filter-repo` only if you are ADOPTING an
 existing repository rather than scaffolding a new one. The stock `/bin/bash` is
-3.2 and is enough: `setup.sh` and the `openRepoShape` command are written to use
-no syntax newer than that, though CI runs on Linux only and no run of it checks
-them against bash 3.2. That the login shell is zsh changes nothing — both entry
-points are run under `bash` explicitly.
+3.2 and is enough: `setup.sh`, `install.sh` and the `openRepoShape` command are
+written to use no syntax newer than that, though CI runs on Linux only and no
+run of it checks them against bash 3.2. That the login shell is zsh changes
+nothing — all three entry points are run under `bash` explicitly.
 
 </details>
 
@@ -137,17 +137,14 @@ py setup-project.py <Project> --org <your-org>
 ```
 
 `python setup-project.py <Project> --org <your-org>` is the same command on a
-machine with no `py`: Python from the Microsoft Store installs `python` and no
-launcher at all.
-
+machine with no `py`: Microsoft Store Python installs `python`, no launcher.
 Two commands rather than one pipe, on purpose. Windows PowerShell 5.1 — still
 the default shell on a stock install — re-encodes piped text as ASCII by
 default (that is its `$OutputEncoding`), and writes UTF-16 when `>` redirects
 to a file, so no byte above 0x7F survives either route and a script sent down
-one is not the script that arrives; and a script arriving on stdin has an
-exhausted stdin, so it cannot ask for the one `yes` before three repositories
-exist — it refuses instead. Downloading the file first leaves stdin attached
-to the terminal you are typing at.
+one is not the script that arrives; and a script arriving on stdin leaves it
+exhausted, so it cannot ask for the one `yes` before three repositories exist
+and refuses. Downloading the file first leaves stdin on your terminal.
 
 `setup-project.py` is the flow itself, and `setup.sh` a shim over it: the same
 preflight, the same naming check, the same plan, the same one `yes`, the same
@@ -155,7 +152,10 @@ self-bootstrap outside a checkout. It never needs `make` and never looks for a
 `python3` — it runs the interpreter that started it. That two-liner IS the
 Windows way in; the `openRepoShape` command in step 3 below is a macOS, Linux
 and WSL2 convenience with no Windows twin, because on Windows there is nothing
-to install.
+to install. Printed commands are quoted for a POSIX shell, so paste them into
+Git Bash. Only `shape-doctor.py`'s lines, `setup-project.py`'s family lines
+and `family.py`'s `NEXT`, `switch -c`, `add` and `git rm -r --cached` lines
+are quoted for PowerShell, on Windows.
 
 </details>
 
@@ -174,14 +174,14 @@ run the four steps below INSIDE the WSL shell.
 > opens with a preflight that names what is missing and, for `gh`, its login and
 > its credential helper, prints the command for THIS machine and asks once —
 > `Type yes to continue:`, the same words it asks everything else with — then
-> runs it and carries on. Nothing is installed without that typed `yes`; `--yes`
-> does not answer it, and with no terminal attached there is no offer at all.
-> Homebrew is the one install never run for you: on a Mac without `brew` the
-> preflight names <https://brew.sh> and stops there. To check a machine and
-> stop, creating nothing, run `openRepoShape --preflight` — `py setup-project.py
-> --preflight` on Windows — which exits 0 when everything is present and 1 when
-> it is not (`openRepoShape --preflight` exits 2 when `git` or a Python 3.9 or
-> newer is missing).
+> runs it and carries on. The preflight installs nothing without that typed
+> `yes`; `--yes` does not answer it, and with no terminal attached there is no
+> offer at all. Homebrew is the one install never run for you: on a Mac without
+> `brew` the preflight names <https://brew.sh> and stops there. To check a
+> machine and stop, creating nothing, run `openRepoShape --preflight` —
+> `py setup-project.py --preflight` on Windows — which exits 0 when everything
+> is present and 1 when it is not (`openRepoShape --preflight` exits 2 when
+> `git` or a Python 3.9 or newer is missing).
 
 **1. Install the GitHub CLI**, `gh`. The official instructions are at
 <https://cli.github.com/> (and <https://github.com/cli/cli#installation>):
@@ -225,7 +225,22 @@ offer to configure git's credential helper, or run `gh auth setup-git`: the
 first commits go up with a plain `git push` over HTTPS, and without it the
 three repositories are created and the push fails.
 
-**3. Install the `openRepoShape` command**, once:
+**3. Install the `openRepoShape` command**, once, in one line:
+
+```sh
+curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash
+```
+
+`install.sh` is attached to every release and installs the newest, with no `gh`
+and no login. Its command is PINNED to the release tag, recorded in
+`openRepoShape.ref` beside it: `setup.sh` and the standard are fetched at that
+tag, not at main. It installs `git-filter-repo` with `pipx`, or `uv`, where it
+can, or prints the command, runs `openRepoShape --preflight`, and says last if
+the machine is ready to adopt or only to scaffold. `install.sh` never runs
+`sudo`; the preflight offers what is missing, each behind a typed `yes` at your
+terminal. `| bash -s -- v1.0.1` names a release; the same line again upgrades.
+
+By hand, the same command at main, which records no ref and follows main:
 
 ```sh
 gh api repos/opensoft/openRepoShape/contents/openRepoShape \
@@ -239,7 +254,7 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/openRep
     | bash -s -- --install
 ```
 
-It installs ONE command into `~/.local/bin`, idempotently — a second run
+Each way installs ONE command into `~/.local/bin`, idempotently — a second run
 prints `unchanged` — and prints the `export PATH=…` line if that directory is
 not on `PATH`. The estate verbs `park` and `resume`, for [carrying in-flight
 work](#carrying-in-flight-work-to-another-workstation), are
@@ -380,7 +395,13 @@ records as whose act the election was, and it defaults to the `gh` login.
 
 #### Install the command
 
-Two ways in, the short one first. Install `openRepoShape` as a command:
+Two ways in, the short one first. Install the command as step 3 above does:
+
+```sh
+curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash
+```
+
+or by hand, at main, through the API:
 
 ```sh
 gh api repos/opensoft/openRepoShape/contents/openRepoShape \
@@ -686,15 +707,15 @@ is an addition, and `MedxChart` answers exactly as it did on 2026-09-02.
 Each link past the first is a declaration in ANOTHER tree — `openXdox` declaring
 `neutral_product_pins: [openDox]` — and it is read where that tree happens to be
 on the disk: `--link-source PRODUCT=<path>`, `SHAPE_PIN_SOURCE_<PRODUCT>`, a
-checkout beside the root, then a bare `--link-source <path>`: the same lookup
-order `validate-pins.py` uses below for the same checkout. A link no tree
-answers for is reported `declared-unverified` — a warning, never a finding, and
-the name still classifies — because the recorded declaration is the offline fact
-and the tree is the stronger check, available or not. A link that IS readable
-and declares something else BREAKS the chain: the residual assembly-root reading
-wins, the overlap is recorded, and the message names the link that broke.
-`LedgerxWallet` -> `openXwallet` -> `openWallet` is the same shape, and
-`openWallet` need not exist anywhere for that to be the answer.
+checkout beside the root, then a bare `--link-source <path>`, for the first
+link's tree only: the order `validate-pins.py` uses below for the same checkout.
+A link no tree answers for is reported `declared-unverified` — a warning, never
+a finding, and the name still classifies — because the recorded declaration is
+the offline fact and the tree is the stronger check, available or not. A link
+that IS readable and declares something else BREAKS the chain: the residual
+assembly-root reading wins, the overlap is recorded, and the message names the
+link that broke. `LedgerxWallet` -> `openXwallet` -> `openWallet` is the same
+shape, and `openWallet` need not exist anywhere for that to be the answer.
 
 **`validate-pins.py` rechecks the referent too, not only the declaration.**
 Each `neutral_product_pins:` entry's `contracts/<product lowercased>-pin.yaml`
@@ -1394,6 +1415,7 @@ scripts/path_classify.py          the classifier over the path policy
 scripts/shape_materialize.py      the ONE materializer, used by both tools
 scripts/validate-repository-naming.py
 openRepoShape                     installs itself as a command; runs setup.sh
+install.sh                        the one-line install: a release, pinned
 setup.sh                          the shim: find an interpreter, hand over
 setup-project.py                  THE FLOW, and the Windows way in (no bash there)
 scaffold-project.py               creates the three repositories and the pins

@@ -81,7 +81,7 @@ from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, link_pins_from_trees, repo_basename, tree_digest,
+    git_out, link_pins_from_trees, repo_basename, shell_line, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
@@ -127,7 +127,8 @@ MANIFEST_FLAGS = {
 #: the same file; imported under the names this file has always called them
 #: by, so what it refuses, and in which words, is unchanged.
 from shape_materialize import (  # noqa: E402
-    declared_pin_products, declared_pin_values,
+    declared_pin_products, declared_pin_values, pin_source_path,
+    refuse_an_unread_pin_source,
     refuse_colliding_pins as _refuse_colliding_pins,
 )
 
@@ -343,13 +344,26 @@ def main(argv: list[str] | None = None) -> int:
                              "openXdox); the manifest RECORDS it, which is "
                              "what makes a descendant that pins a LAYER a "
                              "descendant (2026-09-05).")
-    parser.add_argument("--pin-source", type=Path, default=None,
+    # TEXT, not `type=Path`: `Path("")` is `.`, so an empty value could not
+    # be told from a typed `.` once parsed (`pin_source_path`).
+    parser.add_argument("--pin-source", default=None,
                         help="a local clone to compute --pin digests from, "
                              "instead of reading the forge with `gh api` (the "
-                             "TEST path; no network)")
+                             "TEST path; no network). The pin file says "
+                             "only that the digest was read from "
+                             "`local-clone`, never the path. Given with no "
+                             "--pin and no --referent-chain to read it, it "
+                             "is refused as `pin-source-unused`; an empty "
+                             "value is refused as `pin-source-no-path`, and "
+                             "`.` means this directory.")
     parser.add_argument("--work-dir", type=Path, default=None,
                         help="where the working trees are built "
                              "(default: a temporary directory)")
+    parser.add_argument("--no-next-steps", action="store_true",
+                        help="leave out the closing NEXT STEPS (the clone, "
+                             "the cd and `make bootstrap`): setup-project.py "
+                             "passes it, because it runs those steps itself "
+                             "next. `Working trees are at` still prints.")
     args = parser.parse_args(argv)
 
     try:
@@ -747,6 +761,11 @@ NAME_WRITTEN_INTO = (
     "the assembly root's `project.yaml` and `README.md`, each repository's "
     "`AGENTS.md` and each first commit's message")
 
+#: How a `pin-source-unused` refusal's remediation begins (#451), and a
+#: `pin-source-no-path` one's.
+UNREAD_PIN_SOURCE_MADE = ("nothing was created, and `--dry-run` refuses the "
+                          "same.")
+
 #: What every `scaffold-unwritable-value` is told to do (#282).
 UNWRITABLE_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. Pass "
@@ -880,9 +899,11 @@ def _declaration(args) -> tuple[dict, set, tuple, dict]:
     `codexDox` pins `openXdox` and reaches `openDox` through it; the chain is a
     DECLARATION, so it is checked by `_check_declared_names` below and written
     into the manifest rather than re-derived by every reader. A link is
-    verified against its own tree when `--pin-source` (or
-    `SHAPE_PIN_SOURCE_<PRODUCT>`) points at one, and is declared-unverified
-    otherwise — a warning, never a refusal, because the check is offline.
+    verified against its own tree when `SHAPE_PIN_SOURCE_<PRODUCT>` points
+    at one, or `--pin-source` for the FIRST link alone (#441: it is the
+    pinned product's checkout, never a later link's tree), and is
+    declared-unverified otherwise — a warning, never a refusal, because the
+    check is offline.
 
     A tree `--pin-source` reached whose declaration could not be read (a
     `neutral_product_pins:` that is not a list of names) is declared-unverified
@@ -1517,6 +1538,16 @@ def _scaffold(args) -> int:
     args.code_path = checked_value(*code_leg)
     args.org = checked_value("--org", args.org)
     args.pin_owner = checked_value("--pin-owner", args.pin_owner)
+    # A `--pin-source` THAT NAMES NO PATH, `''`, which as a `Path` is the
+    # directory this runs in, and then one NOTHING WILL READ (#451): no
+    # `--pin` reads a digest there and no `--referent-chain` link a
+    # declaration. Asked of the flags as typed, with no process started, so
+    # a dry run refuses them too.
+    args.pin_source = pin_source_path(args.pin_source,
+                                      nothing_made=UNREAD_PIN_SOURCE_MADE)
+    refuse_an_unread_pin_source(args.pin_source, args.pin,
+                                referent_chain_links(args.referent_chain),
+                                nothing_made=UNREAD_PIN_SOURCE_MADE)
     # EACH `--pin`'S FILE AGAINST THE SHAPE'S OWN AND AGAINST EACH OTHER, from
     # the arguments as typed (#241), and first: the leg-path question below
     # asks about every pin's file, and would miscount one written over the
@@ -1682,21 +1713,35 @@ def _scaffold(args) -> int:
         return 2
     _set_topics(repositories, topic, local)
 
-    print(f"""
+    if not args.no_next_steps:
+        print(f"""
 NEXT STEPS
 
-    git clone --recurse-submodules {urls['assembly']}
+    {_next_steps_clone(urls['assembly'], local)}
     cd {names['assembly']}
     make bootstrap
 
 `make bootstrap` puts each leg on `{args.tracking_branch}` AT its pinned commit,
 runs the naming, manifest and lockstep-pin validators, and prints the review
 authority a wallet register names for this project — or says that authority is
-not wallet-carried here, and continues.
-
-Working trees are at {work_root}
-""")
+not wallet-carried here, and continues.""")
+    print(f"\nWorking trees are at {work_root}\n")
     return 0
+
+
+def _next_steps_clone(url: str, local: bool) -> str:
+    """The NEXT STEPS clone, as a person pastes it into a POSIX shell.
+
+    UNDER `--local-remote-dir` IT CARRIES `-c protocol.file.allow=always`
+    (#538), as setup-project.py's own clone does: the legs are cloned from
+    the plain paths `.gitmodules` records, the file transport, which git
+    refuses a submodule by default since the 2022 advisories, so the line as
+    printed failed `transport 'file' not allowed`. The URL is a path there,
+    one word whatever folder it is in (`shell_line`, POSIX as #532 rules
+    for a printed command); a GitHub URL needs no quotes.
+    """
+    words = ["git", "-c", "protocol.file.allow=always"] if local else ["git"]
+    return shell_line([*words, "clone", "--recurse-submodules", url], "posix")
 
 
 if __name__ == "__main__":

@@ -54,13 +54,25 @@ source answers for is reported as `declared-unverified` and the name STILL
 classifies as a descendant: the check is offline, and a recorded declaration
 is the fact it reads.
 
+A BARE PATH IS THE FIRST LINK'S TREE AND NO OTHER'S (#441). A `--link-source`
+with no `PRODUCT=` is read for the chain's first link, the pin the project
+holds, when nothing more specific answers for it, and never for a later link:
+one tree cannot be two links' declarations, and reading `openXdox`'s
+`project.yaml` again as `openYdox`'s called a chain that holds broken. A later
+link needs its own `PRODUCT=PATH`, its variable or a checkout beside the
+project. While the chains read in one run begin at more than one link, a bare
+PATH is read for none of them. A value that names no path — `PRODUCT=`, or an
+empty one — is refused (#442): an empty path is the current directory, and
+`.` is how to mean that.
+
 EXIT CODES, the same three in every validator this standard ships:
     0  every name classified (and, with `--project`, every declared role and
        the topic agreed with the classification)
     1  a FINDING: at least one name matches no family, or a leg's declared role
        disagrees with the form of its name
     2  a REFUSAL: the question could not be asked at all — the policy file is
-       missing, unparsable, or not a naming policy
+       missing, unparsable, or not a naming policy, or a `--link-source`
+       names no path
 
 A chain link whose tree could not be read prints a WARNING and changes no exit
 code, deliberately: see `--link-source` below. A SOURCE that could not answer
@@ -144,9 +156,22 @@ class LinkSources:
     finding, and none ends the run: a link whose tree could not be read is a
     warning in this validator, deliberately, and an explicit source is no
     exception — the module docstring says why.
+
+    ONE VALUE, ONE LINK (#441). A keyed value is asked for its own link
+    alone. The bare PATH is asked for the FIRST link of a chain a name here
+    reads (`link_pins_from_trees` offers it to no later link), and only
+    while every such chain begins at that one link, so it is never counted
+    as the answer for two. `firsts` are those first links, found before any
+    chain is read (`_first_links_read`). A chain of one link has no holder,
+    reads no declaration, and so adds none.
+
+    A VALUE THAT NAMES NO PATH IS REFUSED (#442). `openXdox=` is
+    `Path("")`, which is `.`: run from a project root it read the project's
+    own manifest as openXdox's, and a chain that holds was broken. That and
+    an empty bare value are in `no_path`, and `no_path_refusal` says so.
     """
 
-    def __init__(self, values: list[str], links) -> None:
+    def __init__(self, values: list[str], links, firsts=()) -> None:
         #: Every link of every chain this run reads, in its first spelling.
         self.links: list[str] = []
         names: dict[str, str] = {}
@@ -155,6 +180,14 @@ class LinkSources:
             if name and name.casefold() not in names:
                 names[name.casefold()] = name
                 self.links.append(name)
+        #: `{casefolded: first spelling}` of the first link of every chain a
+        #: name here reads (#441). `link_pins` adds a chain's first link as it
+        #: reads it, which matters only for names read from stdin: they come
+        #: when no other name does, all with `--referent-chain`.
+        self.firsts: dict[str, str] = {}
+        for link in firsts:
+            name = repo_basename(str(link))
+            self.firsts.setdefault(name.casefold(), name)
         #: `{link casefolded: (typed, path)}`, the last value given wins.
         self.keyed: dict[str, tuple[str, Path]] = {}
         #: `(typed, path)` of the last bare value, if any.
@@ -177,9 +210,14 @@ class LinkSources:
             self.replaced.pop(typed, None)
             if earlier is not None and earlier[0] != typed:
                 self.replaced[earlier[0]] = typed
+        #: The values that name no path (#442), in the order given: a keyed
+        #: value with nothing after its `=`, and an empty bare one.
+        self.no_path: list[str] = [
+            typed for typed, link in self.reading.items()
+            if not (typed.partition("=")[2] if link is not None else typed)]
         #: The links some name's lookup asked about, casefolded.
         self.asked: set[str] = set()
-        #: The values a link read.
+        #: The values a link read: each the answer for one link (#441).
         self.used: set[str] = set()
         #: `{typed: (path, how, why, [links])}` for a value asked and never
         #: answering.
@@ -201,11 +239,14 @@ class LinkSources:
         if not policy.reads_link_declarations(target.name, target.pins,
                                               target.chain):
             return {}
+        if len(target.chain) > 1:
+            first = repo_basename(str(target.chain[0]))
+            self.firsts.setdefault(first.casefold(), first)
         tried: dict = {}
         found = link_pins_from_trees(
             target.chain, target.root,
             {key: path for key, (_typed, path) in self.keyed.items()},
-            self.bare[1] if self.bare is not None else None, tried=tried)
+            self._bare_path(), tried=tried)
         # ONLY A LINK THAT HOLDS A PIN COUNTS. The lookup asks for every link,
         # the last one too, but only a holder's own declaration is ever read
         # (`_chain_link_findings`): a source asked only for the chain's end
@@ -220,6 +261,15 @@ class LinkSources:
             for rule, how, path, why in asked:
                 self._record(link, rule, how, path, why)
         return found
+
+    def _bare_path(self) -> Path | None:
+        """The bare PATH for `link_pins_from_trees`, which asks it for a
+        chain's first link alone (#441), or None: none was given, or the
+        chains read here begin at more than one link, and one tree read as
+        two first links' would be the defect over again."""
+        if self.bare is None or len(self.firsts) > 1:
+            return None
+        return self.bare[1]
 
     def _record(self, link: str, rule: str, how: str, path: Path,
                 why: str | None) -> None:
@@ -287,12 +337,45 @@ class LinkSources:
                          f"answer for {', '.join(links)}: {why}")
         return lines
 
+    def no_path_refusal(self) -> str:
+        """The `REFUSED` line naming every value that names no path (#442),
+        each by the link it is keyed to, or `""` when there is none."""
+        if not self.no_path:
+            return ""
+        said = [f"`--link-source {typed}` names no path for "
+                f"{self.reading[typed]}" if typed
+                else "`--link-source ''` names no path"
+                for typed in self.no_path]
+        return ("REFUSED link-source-no-path: " + "; ".join(said)
+                + ". An empty path would be read as the directory this runs "
+                "in. Give the tree's path (`--link-source <link>=<path>`), "
+                "or `.` to mean this directory.")
+
+    def _not_asked_why(self) -> str:
+        """Why the bare PATH was never asked, where a chain link's own
+        declaration was read: it is a chain's first link's tree alone
+        (#441), and that link had a more specific source, or the chains read
+        here begin at more than one link. Where only first links are read,
+        the sentence is the one it always was."""
+        if len(self.firsts) > 1:
+            return ("a bare PATH is one first link's tree, and the chains "
+                    "read here begin at " + ", ".join(self.firsts.values())
+                    + ": name the link it is, as --link-source <link>=PATH")
+        sources = ("a more specific source (a keyed --link-source, "
+                   "SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout beside the "
+                   "project)")
+        if self.asked <= set(self.firsts):
+            return f"each link whose own declaration is read had {sources}"
+        return ("a bare PATH is the tree of a chain's first link alone, "
+                f"{', '.join(self.firsts.values())}, which had {sources}")
+
     def unused_lines(self) -> list[str]:
         """A NOTE for each value no lookup asked, named as typed, with why:
         a later value replaced it, no name reads its link's declaration, no
-        name records a chain, none reads a link's declaration, or every link
-        that is read had a more specific source. A value holding `=` that
-        was read as a PATH says so too."""
+        name records a chain, none reads a link's declaration, or the one
+        link a bare PATH answers for had a more specific source
+        (`_not_asked_why`). A value holding `=` that was read as a PATH says
+        so too."""
         lines = []
         for typed, link in self.reading.items():
             if typed in self.used or typed in self.unread:
@@ -308,10 +391,7 @@ class LinkSources:
                 why = ("no name classified here reads a chain link's own "
                        "declaration")
             else:
-                why = ("each link whose own declaration is read had a more "
-                       "specific source (a keyed --link-source, "
-                       "SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout beside the "
-                       "project)")
+                why = self._not_asked_why()
             lines.append(" ".join(filter(None, (
                 f"--link-source {typed}: not used — {why}.",
                 self.read_as_path(typed)))))
@@ -580,6 +660,14 @@ def _project_manifest(path: Path) -> dict:
     return data
 
 
+def _project_leg_chains(data: dict) -> list[tuple[str, tuple]]:
+    """`(name, the chain it records)` for each leg `_leg_target` makes a
+    target of, and no other."""
+    return [(repo_basename(str(leg["repository"])), _chain_from_leg(leg))
+            for leg in data.get("legs") or []
+            if isinstance(leg, dict) and "repository" in leg]
+
+
 def _project_chain_links(data: dict) -> list[str]:
     """Every link every leg's `naming.referent_chain:` records.
 
@@ -588,9 +676,27 @@ def _project_chain_links(data: dict) -> list[str]:
     name (#338), and the first leg is classified with the sources already
     read. The same legs `_leg_target` makes targets of, and no others.
     """
-    return [link for leg in data.get("legs") or []
-            if isinstance(leg, dict) and "repository" in leg
-            for link in _chain_from_leg(leg)]
+    return [link for _name, chain in _project_leg_chains(data)
+            for link in chain]
+
+
+def _first_links_read(policy: NamingPolicy, targets: list,
+                      data: dict | None) -> list[str]:
+    """The first link of every chain a name here READS, found before any is
+    read (#441): a bare `--link-source` is that link's tree, and only while
+    the chains begin at one link. A chain of one link has no holder, reads
+    no declaration, and so has no first link to count. The names on the
+    command line and the legs `_leg_target` makes targets of; names on stdin
+    come only when there are neither, all with `--referent-chain`, so they
+    cannot add a second."""
+    readers = [(target.name, target.pins, target.chain) for target in targets]
+    if data is not None:
+        pins = _pins_from_project(data)
+        readers.extend((name, pins, chain)
+                       for name, chain in _project_leg_chains(data))
+    return [chain[0] for name, pins, chain in readers
+            if len(chain) > 1
+            and policy.reads_link_declarations(name, pins, chain)]
 
 
 def _targets_from_project(policy: NamingPolicy, path: Path, data: dict,
@@ -751,11 +857,21 @@ def main(argv: list[str] | None = None) -> int:
                              "--project), and then that reading wins even "
                              "over a directory spelled like the whole value "
                              "(./PATH reads that directory); any other value "
-                             "is a bare PATH, which applies to whichever link "
-                             "has no more specific answer. Repeatable; a "
-                             "value no link used is noted. "
-                             "SHAPE_PIN_SOURCE_<PRODUCT> and a checkout "
-                             "beside the project are tried too. A link no "
+                             "is a bare PATH: the tree of the chain's FIRST "
+                             "link (the pin the project holds), read when "
+                             "that link has no more specific answer, and "
+                             "never a later link's, which needs its own "
+                             "PRODUCT=PATH, its SHAPE_PIN_SOURCE_<PRODUCT> "
+                             "or a checkout beside the project. When the "
+                             "chains read here begin at two different "
+                             "links, a bare PATH is read for neither. A "
+                             "value that names no path (PRODUCT=, or "
+                             "empty) is refused. Repeatable; a value no "
+                             "link used is noted. Every link is tried "
+                             "against PRODUCT=PATH, SHAPE_PIN_SOURCE_"
+                             "<PRODUCT> and a checkout beside the project, "
+                             "in that order, and a bare PATH last, for the "
+                             "first link alone. A link no "
                              "source answers for is declared-unverified, and "
                              "a source that cannot be read is named with the "
                              "system's reason: both are warnings and not "
@@ -788,10 +904,13 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 2
     # The `--link-source` values are READ here, once every chain this run
-    # reads is known and before any name is classified (#338).
+    # reads is known and before any name is classified (#338, #441).
     sources = LinkSources(args.link_source, [
         *cli_chain, *(_project_chain_links(data) if data is not None
-                      else ())])
+                      else ())], _first_links_read(policy, targets, data))
+    if sources.no_path:
+        print(sources.no_path_refusal(), file=sys.stderr)
+        return 2
     if data is not None:
         extra, findings = _targets_from_project(policy, args.project, data,
                                                 sources)

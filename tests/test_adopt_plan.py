@@ -219,6 +219,38 @@ def test_check_passes_once_every_question_is_answered(source_repo, tmp_path):
         in result.stdout
 
 
+def test_check_passes_an_answer_with_no_resolution_as_agents_md_says(
+        source_repo, tmp_path):
+    """AGENTS.md step 2 said an answer with no reason beside it "will be read
+    as a finding", and `check` says `plan ok` for one: it never reads
+    `resolution:`, which only `execute` copies, into a kept submodule's
+    record. Step 2 says so now, and who reads the reason: the human the plan
+    is shown to at step 4 (#523, N3). A `check` that starts asking for one
+    fails here, and so does the old sentence."""
+    out = tmp_path / "plan.yaml"
+    assert write_plan(source_repo, out).returncode == 0
+    text = out.read_text(encoding="utf-8")
+    for path, leg in (("examples/", "spec"), (".claude/", "root"),
+                      ("release.yaml", "root")):
+        unanswered = f"  - path: {path}\n    leg: null\n"
+        assert unanswered in text, text
+        text = text.replace(unanswered, f"  - path: {path}\n    leg: {leg}\n")
+    with out.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+
+    result = run_script(ADOPT, "check", "--plan", str(out))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "plan ok" in result.stdout, result.stdout
+    agents = (REPO / "AGENTS.md").read_text(encoding="utf-8")
+    step = " ".join(agents.split(
+        "2. **You resolve the questions, in writing, in the plan.**", 1)[1]
+        .split("\n4. ", 1)[0].split())
+    assert "read as a finding" not in step, step
+    assert ("An answer with no reason is a guess, and `check` passes it: the "
+            "human reads the reasons at step 4.") in step, step
+
+
 def test_check_plans_the_topic_on_all_three(source_repo, tmp_path):
     """`check` is where the human reads what will happen, and setting
     `xf-project-<id>` on the adopted root and both legs is part of it. It runs

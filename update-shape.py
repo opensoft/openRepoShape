@@ -156,6 +156,7 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
+from typing import NamedTuple
 
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
@@ -1939,9 +1940,14 @@ def accept_local_exit(path: str) -> str:
     A DISPLAY-ONLY ADDITION, not folded into `row.detail` itself: the same
     field also renders inside `apply`'s `update-conflict` refusal, whose
     wording an unaccepted `both` must keep exactly as it was.
+
+    THE PATH IS QUOTED (#532), though nothing pastes it for the person: it is
+    the flag they type next, and a path with a space is one argument only
+    when it is quoted, as the NEXT's every word is.
     """
     return (f". Merge it by hand, commit it, then `apply --accept-local "
-            f"{path}` so the row is recomputed from what you merged")
+            f"{shlex.quote(path)}` so the row is recomputed from what you "
+            "merged")
 
 
 def keep_local_exits(path: str) -> str:
@@ -1954,11 +1960,12 @@ def keep_local_exits(path: str) -> str:
     and the refusal that asks the human never fired. Brett Heap ruled on
     2026-10-13, "Stop pre-filling it": the NEXT leaves the flag out, and the
     row's detail may still name it, as `accept_local_exit` does for `both`.
-    Display only, for the reason that function gives.
+    Display only, for the reason that function gives, and QUOTED like it
+    (#532).
     """
     return (". Whether the project keeps the edit is the human's decision: "
             "revert it, carry it upstream, or, on their word, `apply "
-            f"--accept-local {path}`")
+            f"--accept-local {shlex.quote(path)}`")
 
 
 def report(root: Path, upstream: Upstream, pinned: str, target: str,
@@ -2133,11 +2140,14 @@ def cmd_check(args) -> int:
             # Spelled out, but deliberately NOT folded into the NEXT command:
             # a file the standard has added lands in a project because a human
             # named it, and a command line that names it for them is the tool
-            # deciding.
+            # deciding. Each path is QUOTED (#532): `--add notes/shape
+            # notes.md` pasted as printed reaches `apply` as `--add
+            # notes/shape` and an argument argparse refuses.
             print("ADDED UPSTREAM: the standard has gained these since this "
                   "pin, and `apply` writes none of them unless it is told to, "
                   "one path at a time — "
-                  + " ".join(f"--add {add.path}" for add in offered))
+                  + " ".join(f"--add {shlex.quote(add.path)}"
+                             for add in offered))
         # QUOTED WHOLE, THE LANE'S TRAILER INCLUDED, AND NEVER AN
         # `--accept-local` (#501): see `apply_command`.
         print("NEXT  " + apply_command(root, upstream.label, target))
@@ -2467,10 +2477,12 @@ def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
                 "update-branch-exists",
                 f"--branch {branch} already exists and is not the current "
                 f"branch ({checked_out})",
-                "Remediation: check out that branch first — `git -C "
-                f"{root} checkout {branch}` — if that is where the hand "
-                "merge AGENTS.md describes was already committed, or pass "
-                "a different --branch to create a new one.")
+                # THE ROOT IS QUOTED (#532), by `_by_hand`: bare, a root under
+                # `my projects/` pasted as `git -C .../my`, exit 128.
+                "Remediation: check out that branch first — "
+                f"`{_by_hand(root, 'checkout', branch)}` — if that is where "
+                "the hand merge AGENTS.md describes was already committed, "
+                "or pass a different --branch to create a new one.")
         ledger.step = f"creating the branch {branch}"
         ledger.new_branch(branch)
     if added:
@@ -3569,6 +3581,8 @@ def _refuse_local_drift(rows: list[Row], accepted: set) -> None:
     """
     unaccepted = [row for row in rows
                   if row.state == LOCALLY_MODIFIED and row.path not in accepted]
+    # Each `--accept-local` path is QUOTED (#532), so the flag a person types
+    # next carries a path with a space whole.
     if unaccepted:
         raise Refusal(
             "update-local-drift",
@@ -3579,7 +3593,8 @@ def _refuse_local_drift(rows: list[Row], accepted: set) -> None:
               "which is the fork recorded as the standard.",
             "Remediation: revert each edit, or carry it upstream, or — "
             "having decided the project keeps it — re-run with "
-            + " ".join(f"--accept-local {row.path}" for row in unaccepted))
+            + " ".join(f"--accept-local {shlex.quote(row.path)}"
+                       for row in unaccepted))
 
 
 def _note_untaken_additions(additions: list[Addition],
@@ -3592,11 +3607,13 @@ def _note_untaken_additions(additions: list[Addition],
     the human which files the standard has gained and what to pass to take
     one. An addition the root already HAS a file at is silent here for the
     reason `Addition` gives, and one under a file the root keeps says what
-    is in the way rather than name an `--add` that is refused (#285).
+    is in the way rather than name an `--add` that is refused (#285). The
+    path it tells a person to pass is QUOTED (#532).
     """
     for add in additions:
         if not add.present and add not in taking:
-            take = (f"pass --add {add.path}" if add.blocked is None else
+            take = (f"pass --add {shlex.quote(add.path)}"
+                    if add.blocked is None else
                     f"{add.blocked} in this root is not a directory, so "
                     f"--add refuses it until {add.blocked} is moved")
             dead = f" ({add.left_dead})" if add.left_dead else ""
@@ -3620,9 +3637,9 @@ def _nothing_to_do(rows: list[Row], pinned: str, target: str,
 def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
                                       taking: list[Addition], accepted: set,
                                       target: str, kind: Kind) -> None:
-    """`update-accept-local-missing-name` (#536): a copy this run writes
-    imports a name from a module `--accept-local` keeps, and the kept bytes
-    do not define it.
+    """`update-accept-local-missing-name` (#536, #604): a copy
+    `--accept-local` keeps and a copy this run writes beside it disagree on
+    a name. One imports it from the other, whose bytes do not define it.
 
     THE VALIDATORS CANNOT SEE IT, AND NOTHING ELSE RUNS THAT COPY. Since
     #456 moved `spelled` and `escape_unencodable_stdout` into
@@ -3640,96 +3657,114 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
     written, so nothing is rolled back, and nobody is asked for a yes to a
     run that would leave a copy that cannot start.
 
-    UNLESS THE COPY IS ONE OF THE VALIDATORS. `kind.validators` are what
+    UNLESS AN IMPORTER IS ONE OF THE VALIDATORS. `kind.validators` are what
     `_refuse_red_validators` runs after the writes, so a validator that
-    imports a name the kept copy lacks goes red there, and the run is
-    rolled back. This still refuses it first, before the yes and before a
-    byte is written, but says the validators pass only when no copy it
-    names is one of them: a clause that is false of one copy in the list
-    is false.
+    imports a name its module lacks, whether this run writes the validator
+    or keeps it, goes red there, and the run is rolled back. This still
+    refuses it first, before the yes and before a byte is written, but says
+    the validators pass only when no importer it names is one of them: a
+    clause that is false of one line in the list is false.
 
-    WHAT IS ASKED, AND OF WHAT. The importers are the copies this run
-    WRITES, read from the bytes it is about to write: each
-    `upstream-changed` row and each `--add` file whose path ends `.py`. A
-    row the run leaves alone is not asked about: an edit that already broke
-    an untouched importer is the project's doing, not this run's. A module
-    is resolved the way every shipped importer resolves it, its own
-    directory first on `sys.path`: `from M import ...` in `<dir>/<file>.py`
-    is the copy at `<dir>/M.py`, a dotted `M` naming that path's
-    subdirectories. So the same code covers `repo_shape.py` today, and any
-    helper kept beside its importer later, a holder's `bootstrap.py` under
-    its `siblings.py` among them. A module that resolves to no kept copy is
-    not asked about. `_names_imported` reads what a copy takes, and
-    `_names_defined` what a kept copy binds.
+    WHAT IS ASKED, AND OF WHAT: BOTH DIRECTIONS, between a KEPT copy, a
+    `both` or `locally-modified` row `--accept-local` named, read from its
+    bytes on disk, and a copy this run WRITES, read from the bytes it is
+    about to write: each `upstream-changed` row and each `--add` file.
 
-    WHAT IT CANNOT TELL, IT DOES NOT REFUSE. A star import, or `import M`
-    and an attribute, names nothing this can read; nor does a copy, kept or
-    written, whose bytes Python could not parse either; nor a kept copy
-    with a star import or a module `__getattr__` of its own. There the
-    validators answer after the writes, as they did before #536, and roll
-    back a kept copy that cannot import. A name bound by `:=`, a `match`
-    capture, `type X =` or a `global` declared in a function is read as
-    defined (`_bound_at` says what it reads as a binding). A name bound only
-    through `globals()`, `setattr` on the module or `exec` reads as
-    missing, and is refused; one bound and then deleted (`NAME = 1`, then
-    `del NAME`) reads as defined, so that copy's `ImportError` is still its
-    first run's to meet.
+      * A WRITTEN IMPORTER AND A KEPT MODULE (#536,
+        `_kept_copies_lacking`): each written `.py` copy's imports, against
+        what the kept bytes define.
+      * A KEPT IMPORTER AND A WRITTEN MODULE (#604,
+        `_kept_copies_importing_dropped`): each kept `.py` copy's imports,
+        against what the module's written bytes define. Upstream does drop
+        public names: cac6bb20 took `link_manifest_path` and
+        `declared_neutral_pins` out of `scripts/repo_shape.py`. A project
+        whose kept `bootstrap.py` imported a name dropped like that got
+        `pins ok`, `manifest ok`, and an `ImportError` from its next
+        `bootstrap.py --help`. Only what THIS RUN takes away is refused: a
+        name the module's bytes on disk define now and its written bytes do
+        not. A name the bytes on disk lack too already stops the kept copy
+        today, and a module with no file yet, an `--add` file, defines
+        nothing to take away.
+
+    A row the run leaves alone is not asked about, in either direction: an
+    edit that already broke an untouched importer is the project's doing,
+    not this run's. A module is resolved the way every shipped importer
+    resolves it, its own directory first on `sys.path`: `from M import ...`
+    in `<dir>/<file>.py` is the copy at `<dir>/M.py`, a dotted `M` naming
+    that path's subdirectories. So the same code covers `repo_shape.py`
+    today, and any helper kept or written beside its importer later, a
+    holder's `bootstrap.py` under its `siblings.py` among them. A module
+    that resolves to no copy on the other side is not asked about.
+    `_names_imported` reads what a copy takes, and `_names_defined` (a file)
+    or `_names_defined_in` (bytes) what a module binds.
+
+    WHAT IT CANNOT TELL, IT DOES NOT REFUSE, in either direction. A star
+    import, or `import M` and an attribute, names nothing this can read;
+    nor does an importer, kept or written, whose bytes Python could not
+    parse either; nor a module, in its kept bytes, its bytes on disk or the
+    bytes this run writes, that Python could not parse or that has a star
+    import or a module `__getattr__` of its own. There the validators
+    answer after the writes, as they did before #536, and roll the run back
+    where a validator is the copy that cannot import. A name bound by `:=`,
+    a `match` capture, `type X =` or a `global` declared in a function is
+    read as defined (`_bound_at` says what it reads as a binding). A name
+    bound only through `globals()`, `setattr` on the module or `exec` reads
+    as missing: refused where a kept module binds it that way (#536), or
+    where the written bytes do and the bytes on disk bound it plainly
+    (#604). One bound and then deleted (`NAME = 1`, then `del NAME`) reads
+    as defined, so that copy's `ImportError` is still its first run's to
+    meet.
     """
     kept = {row.path: row for row in rows
             if row.state in (BOTH, LOCALLY_MODIFIED) and row.path in accepted}
     if not kept:
         return
-    lacking = _kept_copies_lacking(root, rows, taking, kept)
-    if not lacking:
-        return
-    helpers = sorted({helper for helper, _, _ in lacking})
-    upstreams = "; ".join(f"`git show {target}:{kept[helper].source}` for "
-                          f"{helper}" for helper in helpers)
-    both = [helper for helper in helpers if kept[helper].state == BOTH]
-    validated = any(path in kind.validators for _, path, _ in lacking)
-    raise Refusal(
-        "update-accept-local-missing-name",
-        "--accept-local keeps this project's own bytes of a module that a "
-        "copy this run writes imports from, and those bytes lack a name the "
-        "copy imports, so the copy would stop on an ImportError the first "
-        "time it runs"
-        + ("" if validated else
-           ", though the validators, which never import it, pass")
-        + ":\n"
-        + "\n".join(f"    {helper} (kept) lacks {', '.join(names)}, which "
-                    f"{path} imports from it"
-                    for helper, path, names in lacking),
-        "Remediation: whether the project keeps its edit is the human's "
-        "decision, and a kept copy must still define what the copies "
-        "written beside it import. Either merge the upstream's version into "
-        "the kept copy by hand, so it defines every name above, commit it, "
-        "and run this again with the same --accept-local; or drop the edit, "
-        "so the upstream's copy is taken: write the upstream's bytes over "
-        "it, commit that, and run this again without --accept-local on that "
-        f"path. In a shape clone the upstream's bytes are {upstreams}."
-        + (f" {', '.join(both)} changed upstream too, so dropping the edit "
-           "there is `update-conflict`'s merge by hand again, settled on the "
-           "upstream's side." if both else "")
-        + " Nothing was written.")
+    written = _written_copies(rows, taking)
+    pairs = sorted(_kept_copies_lacking(root, written, kept)
+                   + _kept_copies_importing_dropped(root, written, kept))
+    if pairs:
+        raise _missing_name_refusal(pairs, kept, target, kind)
 
 
-def _kept_copies_lacking(root: Path, rows: list[Row], taking: list[Addition],
-                         kept: dict) -> list[tuple[str, str, list[str]]]:
-    """`(kept copy, written copy, [the names it lacks])` for each written
-    `.py` copy that imports from a kept one, sorted (#536). Split out of
-    `_refuse_kept_copies_missing_names`, which says what is asked of what;
-    each kept copy is read once, however many copies import from it.
+#: Which side of a pair `update-accept-local-missing-name` names is the
+#: MODULE (#604): the kept bytes lack a name a written copy imports (#536),
+#: or the written bytes drop one a kept copy imports.
+KEPT_MODULE = "kept"
+WRITTEN_MODULE = "written"
+
+
+class Disagreement(NamedTuple):
+    """One line of `update-accept-local-missing-name` (#536, #604):
+    `importer` imports `names` from `module`, and `side` says whether the
+    module is the kept copy (`KEPT_MODULE`) or the written one."""
+    module: str
+    importer: str
+    names: list
+    side: str
+
+
+def _written_copies(rows: list[Row],
+                    taking: list[Addition]) -> dict[str, bytes | None]:
+    """`{path: the bytes this run writes there}`: each `upstream-changed`
+    row's target bytes, and each `--add` file's (#536, #604).
     """
-    written = sorted(
-        [(row.path, row.target_bytes) for row in rows
-         if row.state == UPSTREAM_CHANGED]
-        + [(add.path, add.target_bytes) for add in taking],
-        key=lambda pair: pair[0])
-    imports = [(path, module, names) for path, data in written
+    written = {row.path: row.target_bytes for row in rows
+               if row.state == UPSTREAM_CHANGED}
+    written.update((add.path, add.target_bytes) for add in taking)
+    return written
+
+
+def _kept_copies_lacking(root: Path, written: dict, kept: dict) -> list:
+    """`(kept module, written copy, [the names it lacks], KEPT_MODULE)` for
+    each written `.py` copy that imports from a kept one (#536). Split out
+    of `_refuse_kept_copies_missing_names`, which says what is asked of
+    what; each kept copy is read once, however many copies import from it.
+    """
+    imports = [(path, module, names) for path, data in sorted(written.items())
                if path.endswith(".py") and data is not None
                for module, names in sorted(_names_imported(data).items())]
     defined: dict[str, set[str] | None] = {}
-    lacking: list[tuple[str, str, list[str]]] = []
+    lacking = []
     for path, module, names in imports:
         helper = _module_beside(path, module)
         if helper not in kept:
@@ -3739,8 +3774,142 @@ def _kept_copies_lacking(root: Path, rows: list[Row], taking: list[Addition],
         known = defined[helper]
         missing = sorted(names - known) if known is not None else []
         if missing:
-            lacking.append((helper, path, missing))
-    return sorted(lacking)
+            lacking.append(Disagreement(helper, path, missing, KEPT_MODULE))
+    return lacking
+
+
+def _kept_copies_importing_dropped(root: Path, written: dict,
+                                   kept: dict) -> list:
+    """`(written module, kept copy, [the names this run drops],
+    WRITTEN_MODULE)` for each kept `.py` copy that imports from a module
+    this run writes (#604): the reverse of `_kept_copies_lacking`, which
+    `_refuse_kept_copies_missing_names` says the why of. Each written
+    module is read once, however many kept copies import from it.
+    """
+    dropped: dict[str, set[str]] = {}
+    pairs = []
+    for path in sorted(kept):
+        for module, names in sorted(_imports_on_disk(root, path).items()):
+            beside = _module_beside(path, module)
+            if beside not in written:
+                continue
+            if beside not in dropped:
+                dropped[beside] = _names_dropped(root, beside,
+                                                 written[beside])
+            missing = sorted(names & dropped[beside])
+            if missing:
+                pairs.append(Disagreement(beside, path, missing,
+                                          WRITTEN_MODULE))
+    return pairs
+
+
+def _imports_on_disk(root: Path, path: str) -> dict[str, set[str]]:
+    """What the kept copy at `path` imports, read from its bytes on disk by
+    `_names_imported` (#604). Nothing for a copy that is not `.py`, or whose
+    bytes cannot be read: what this cannot tell, it does not refuse.
+    """
+    if not path.endswith(".py"):
+        return {}
+    try:
+        data = (root / path).read_bytes()
+    except OSError:
+        return {}
+    return _names_imported(data)
+
+
+def _names_dropped(root: Path, path: str, data: bytes | None) -> set[str]:
+    """The names the module at `path` defines now, in its bytes on disk,
+    and not in `data`, the bytes this run writes there (#604): what this
+    run takes away from it.
+
+    EMPTY WHERE EITHER SIDE CANNOT BE TOLD (`_names_defined`,
+    `_names_defined_in`): bytes Python could not parse, a star import, a
+    module `__getattr__`. And empty for a module with nothing on disk yet,
+    an `--add` file, which defines nothing this run could take away.
+    """
+    now = _names_defined(root / path)
+    after = _names_defined_in(data) if data is not None else None
+    if now is None or after is None:
+        return set()
+    return now - after
+
+
+def _missing_name_refusal(pairs: list, kept: dict, target: str,
+                          kind: Kind) -> Refusal:
+    """The one `update-accept-local-missing-name` refusal, one line per
+    pair, in either direction (#536, #604). Every sentence in it is true
+    of every line it lists, whichever side of the line is the kept copy;
+    the validators clause is said only where no importer named is one of
+    them, as `_refuse_kept_copies_missing_names` says why.
+    """
+    validated = any(pair.importer in kind.validators for pair in pairs)
+    return Refusal(
+        "update-accept-local-missing-name",
+        "--accept-local keeps this project's own bytes of a copy that "
+        "disagrees with a copy this run writes beside it: one of the two "
+        "imports a name from the other that the other's bytes do not "
+        "define, so the importer would stop on an ImportError the first "
+        "time it runs"
+        + ("" if validated else
+           ", though the validators, which never import it, pass")
+        + ":\n" + "\n".join(_missing_name_line(*pair) for pair in pairs),
+        _missing_name_remediation(pairs, kept, target))
+
+
+def _missing_name_line(module: str, importer: str, names: list[str],
+                       side: str) -> str:
+    """One pair's line: which copy is kept, which written, and the names.
+    """
+    said = ", ".join(names)
+    if side == KEPT_MODULE:
+        return (f"    {module} (kept) lacks {said}, which {importer} "
+                "imports from it")
+    return (f"    {module} (written) no longer defines {said}, which "
+            f"{importer} (kept) imports from it")
+
+
+def _missing_name_remediation(pairs: list, kept: dict, target: str) -> str:
+    """The human's two exits, for each kept copy the lines name (#536,
+    #604). Keeping the edit is the human's decision: change the kept copy
+    so it agrees, as the side it is on asks, commit each change, and run
+    again with the same `--accept-local`; or drop the edit, so the
+    upstream's copy is taken. Each change names the lines it settles, so
+    neither is read as settling the other's. `--accept-local` is named in
+    prose, and no NEXT line passes it.
+    """
+    named = sorted({pair.module if pair.side == KEPT_MODULE else pair.importer
+                    for pair in pairs})
+    upstreams = "; ".join(f"`git show {target}:{kept[path].source}` for "
+                          f"{path}" for path in named)
+    both = [path for path in named if kept[path].state == BOTH]
+    sides = {pair.side for pair in pairs}
+    changes = []
+    if KEPT_MODULE in sides:
+        changes.append("merge the upstream's version by hand into a kept "
+                       "copy that lacks a name, so it defines every name "
+                       "its `(kept) lacks` line names")
+    if WRITTEN_MODULE in sides:
+        changes.append("change a kept copy that imports a name the module "
+                       "written beside it no longer defines, so it no "
+                       "longer takes any name its `(written) no longer "
+                       "defines` line names")
+    return (
+        "Remediation: whether the project keeps its edit is the human's "
+        "decision, and a kept copy must still agree with the copies "
+        "written beside it on every name one imports from the other. "
+        "Either " + ", and ".join(changes) + ", commit each, and run this "
+        "again with the same --accept-local; or drop the edit, so the "
+        "upstream's copy is taken: write the upstream's bytes over it, "
+        "commit that, and run this again without --accept-local on that "
+        f"path. In a shape clone the upstream's bytes are {upstreams}"
+        + (", and for a kept copy that imports a name they show what the "
+           "upstream's own copy of that file imports instead"
+           if WRITTEN_MODULE in sides else "")
+        + "."
+        + (f" {', '.join(both)} changed upstream too, so dropping the edit "
+           "there is `update-conflict`'s merge by hand again, settled on the "
+           "upstream's side." if both else "")
+        + " Nothing was written.")
 
 
 def _module_beside(path: str, module: str) -> str:
@@ -3886,8 +4055,25 @@ def _is_type_checking(test: ast.expr) -> bool:
 
 
 def _names_defined(path: Path) -> set[str] | None:
-    """Every name the kept copy at `path` binds at module scope (#536), as
-    `_bound_at` reads a binding, or None when it cannot tell.
+    """Every name the copy at `path` binds at module scope (#536), as
+    `_names_defined_in` reads its bytes, or None when it cannot tell: also
+    where the bytes cannot be read, which for a module with no file yet, an
+    `--add` file, is a module that defines nothing to take away (#604).
+    Unreadable is what it was before the parse was split out: an `OSError`,
+    the `ValueError` of a path holding a NUL, or a `MemoryError`.
+    """
+    try:
+        data = path.read_bytes()
+    except (OSError, ValueError, MemoryError):
+        return None
+    return _names_defined_in(data)
+
+
+def _names_defined_in(data: bytes) -> set[str] | None:
+    """Every name a module's bytes bind at module scope, as `_bound_at`
+    reads a binding, or None when it cannot tell (#536). Split out of
+    `_names_defined` for #604, which reads a module from the bytes this run
+    is about to write there, under the same rules as a file on disk.
 
     PARSED FROM THE BYTES, as Python's own import reads them, so a BOM or a
     coding cookie means what it means to Python. A kept copy is the
@@ -3902,8 +4088,8 @@ def _names_defined(path: Path) -> set[str] | None:
     module `__getattr__`, which answers for any name it likes.
     """
     try:
-        module = ast.parse(path.read_bytes())
-    except (OSError, *UNPARSABLE):
+        module = ast.parse(data)
+    except UNPARSABLE:
         return None
     names = _bound_at(module.body)
     return None if names & {"*", "__getattr__"} else names

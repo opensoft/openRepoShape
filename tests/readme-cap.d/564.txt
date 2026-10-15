@@ -1,0 +1,21 @@
++22
+2026-10-15
+Twenty-two lines for the one-line install, v1.0.1 (#564), carried into main
+for v1.1.0 by Brett Heap's ruling 35. On release/v1.0 #577 raised the cap the
+old way, 1422 -> 1444, in the test; here the same lines are this file.
+Brett Heap: "we need it to be more simple to install ... now and after, we
+need a simple install process". Step 3 of the quick start now LEADS with
+`curl -fsSL …/releases/latest/download/install.sh | bash`, and the worked
+example's "Install the command" with the same line: ten lines for the two
+blocks and the blank lines around them (+10). Nine, step 3's paragraph and the
+blank after it, say what that line does that the old two did not, each a thing
+a reader would otherwise meet unannounced on their own machine: it needs no
+`gh` and no login, the command is PINNED to the release tag, where that is
+recorded and what it changes, it installs git-filter-repo with pipx or prints
+the command, it ends in the preflight, `install.sh` itself never runs `sudo`
+while each of the preflight's offers waits for a typed `yes`, how to name a
+release and how to upgrade (+9). Two re-introduce the existing lines as the
+by-hand way, at main, so neither is lost (+2), and one is the Layout row for
+`install.sh` (+1). The review on #577 folded a separate "Pinned" paragraph
+into step 3's and left the exit statuses to `install.sh --help` and the
+release notes, which took the raise from 28 lines to 22.

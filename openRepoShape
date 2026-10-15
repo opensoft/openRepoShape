@@ -3,7 +3,12 @@
 #
 # openRepoShape — the short way in: `openRepoShape Atlas --org <your-org>`.
 #
-# Install it once, from anywhere, with no checkout and no clone:
+# Install it once, from anywhere, with no checkout and no clone. The newest
+# release, pinned to its tag (`install.sh`, #564):
+#
+#   curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash
+#
+# Or this file at main, by hand, which follows main:
 #
 #   gh api repos/opensoft/openRepoShape/contents/openRepoShape \
 #       -H 'Accept: application/vnd.github.raw' | bash -s -- --install
@@ -28,8 +33,30 @@ set -euo pipefail
 # setup.sh reads the same variable as something to `git clone` — see
 # shape_clone_url below: one name, both uses.
 REPO="${OPENREPOSHAPE_REPO:-opensoft/openRepoShape}"
-REF="${OPENREPOSHAPE_REF:-main}"
 SELF="${BASH_SOURCE[0]:-$0}"
+
+# THE REF, AND WHETHER IT WAS NAMED (#564). A NAMED ref is one somebody
+# chose: setup.sh is told it (`--shape-ref`) and `--doctor` checks its clone
+# out at it, where an unnamed `main` leaves both to the default branch. Two
+# things name one, and the first wins: `$OPENREPOSHAPE_REF`, set for a run,
+# and the ref `--install` RECORDED beside this file (`<file>.ref`, read by
+# `read_recorded_ref` below, once `ref_fault` exists to check it). With
+# neither, it is `main`, unnamed, exactly as before there was a record.
+REF="${OPENREPOSHAPE_REF:-main}"
+REF_NAMED=0
+[ -z "${OPENREPOSHAPE_REF:-}" ] || REF_NAMED=1
+
+#: 1 when the ref in force came from the record, which is what lets a
+#: command re-installing itself keep it with no opt-in (see `record_ref`).
+REF_FROM_RECORD=0
+
+#: Why the record beside this file was refused, said once the arguments are
+#: read, so that `--help` still answers past a broken record.
+RECORD_FAULT=""
+
+#: The record's name is the command's own plus this, so the record of
+#: `~/.local/bin/openRepoShape` is `~/.local/bin/openRepoShape.ref`.
+RECORD_SUFFIX=".ref"
 
 PROJECT=""
 ORG=""
@@ -96,10 +123,22 @@ opensoft/openRepoTools', and its own installer places them:
   curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoTools/main/openRepoTools | bash -s -- --install
 
   $OPENREPOSHAPE_REPO       owner/name to fetch from (default opensoft/openRepoShape)
-  $OPENREPOSHAPE_REF        the ref to fetch it at   (default main)
+  $OPENREPOSHAPE_REF        the ref to fetch it at   (default: the ref --install
+                            recorded, else main)
   $OPENREPOSHAPE_ORG        the organisation, when --org is not given
   $OPENREPOSHAPE_BIN_DIR    where --install puts it  (default ~/.local/bin)
   $OPENREPOSHAPE_SETUP_SH   run this setup.sh on disk instead of fetching one
+  $OPENREPOSHAPE_RECORD_REF 1: --install records $OPENREPOSHAPE_REF (below)
+
+`--install` RECORDS A REF ONLY WHEN ASKED: with $OPENREPOSHAPE_RECORD_REF=1
+it writes $OPENREPOSHAPE_REF to `openRepoShape.ref` beside the command it
+places, which is what the one-line installer (install.sh) does with the
+release tag it installs. The installed command then stays on that ref: it
+fetches setup.sh at it, setup.sh clones the standard at it (`--shape-ref`),
+and `--doctor` checks its clone out at it. $OPENREPOSHAPE_REF set for one run
+still wins, and `--version` prints the ref in force. A command re-installing
+itself keeps its own record; any other install records nothing, removes a
+record already there, and follows main.
 
 `--doctor [<path>] [--json] [--placement-plan <file>]` runs `shape-doctor.py`
 over <path> (default `.`) and prints one row per check and ONE verdict:
@@ -168,6 +207,10 @@ workdir() {
 # curl is the fallback for a machine with no `gh`. Each attempt writes to a
 # file and is checked before its bytes are used, so a half-written first
 # attempt is never mistaken for a fetch.
+#
+# HTTPS ONLY, REDIRECTS INCLUDED, TLS 1.2 OR NEWER (#564, SonarCloud
+# shell:S6506): the flags are written out on the curl line itself, never
+# gathered into an array, so a reader and the analyser both see them there.
 fetch_from_repo() {
 	local path="$1" dest="$2"
 	if command -v gh >/dev/null 2>&1 &&
@@ -177,7 +220,8 @@ fetch_from_repo() {
 		return 0
 	fi
 	if command -v curl >/dev/null 2>&1 &&
-		curl -fsSL "https://raw.githubusercontent.com/$REPO/$REF/$path" \
+		curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+			"https://raw.githubusercontent.com/$REPO/$REF/$path" \
 			>"$dest" 2>/dev/null && [ -s "$dest" ]; then
 		return 0
 	fi
@@ -295,9 +339,67 @@ machine_report() {
 		say "  run: openRepoShape --preflight   (offers what is missing; each install asks first)"
 }
 
+# THE REF THIS INSTALL RAN AT, WRITTEN BESIDE THE COMMAND IT PLACED (#564).
+# Without it an installed command read `$OPENREPOSHAPE_REF` at every run and
+# fell back to `main`, so a command installed from a release fetched the next
+# day's main: the release it was installed from lasted until main moved.
+#
+# A FILE BESIDE THE COMMAND, NEVER AN EDIT TO IT. The placed command stays
+# byte for byte the file it was installed from, so `cmp` against the release's
+# own `openRepoShape` still says whether it IS that release: the `(unchanged)`
+# verdict `install_commands` gives, and any copy vendored and checked by
+# sha256 elsewhere, compare the command's bytes and never see the record. A
+# command copied away without its record follows `main` again, and says so in
+# `--version`.
+#
+# RECORDED ONLY WHEN ASKED (#564, the review on #577). `$OPENREPOSHAPE_REF`
+# alone records nothing, because a script that sets it around `--install`
+# for its own reasons is not asking for a pin: workBenches sets it to a value
+# that names no ref at all, to make any fetch fail loudly, and a record of
+# that would break every later run on every machine it installs to. So the
+# ref in force is written only when `$OPENREPOSHAPE_RECORD_REF` is 1, as the
+# one-line installer sets it, or when it came from the record beside the copy
+# being run, so a pinned command re-installing itself stays pinned. Any other
+# install is an install with no ref: it records nothing, and REMOVES a record
+# already there, which makes an install at main follow main however the
+# command was installed before. Every outcome is one line, and nothing to
+# record and no record is no line at all. The record's old value is echoed
+# only when it is a ref this command would accept, because a hand-edited
+# file is not this command's to print.
+record_ref() {
+	local record="$1" recording="$2" was=""
+	if [ -f "$record" ]; then
+		was="$(< "$record")" || was=""
+		[ -z "$(ref_fault "$was" "it")" ] || was="another ref"
+	fi
+	if [ "$recording" -eq 0 ]; then
+		[ -e "$record" ] || return 0
+		rm -f -- "$record"
+		say "openRepoShape: no longer pinned to ${was:-another ref}; it follows main, or \$OPENREPOSHAPE_REF where set (removed $record)"
+	elif [ "$was" = "$REF" ]; then
+		say "openRepoShape: already pinned to $REF in $record (unchanged)"
+	else
+		printf '%s\n' "$REF" >"$record"
+		say "openRepoShape: pinned to $REF${was:+ (was $was)}, recorded in $record"
+	fi
+}
+
 install_commands() {
 	local dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
-	local name target source verb placed=0
+	local name target source verb placed=0 recording=0 record
+	if [ "$REF_FROM_RECORD" -eq 1 ] ||
+		{ [ "$REF_NAMED" -eq 1 ] && [ "${OPENREPOSHAPE_RECORD_REF:-}" = 1 ]; }; then
+		recording=1
+	fi
+	# THE RECORD SITS BESIDE THE FILE, symlinks followed, as it is read.
+	record="$(resolved "$dir/openRepoShape")$RECORD_SUFFIX"
+	# BOTH CHECKED BEFORE ANYTHING IS COLLECTED OR PLACED: a ref about to be
+	# written down and read back by every later run, and a record path this
+	# install could neither write nor remove. A refusal after the copy would
+	# leave a new command beside an old record.
+	[ "$recording" -eq 0 ] || checked_ref "$REF"
+	[ ! -e "$record" ] || [ -f "$record" ] ||
+		die "$record is not a file, so this install could neither record its ref there nor remove it. Move it away, then run this again."
 	collect_commands
 	mkdir -p "$dir"
 	for name in "${INSTALLABLES[@]}"; do
@@ -314,6 +416,9 @@ install_commands() {
 		placed=$((placed + 1))
 		say "$name: $verb"
 	done
+	# The record belongs to the one command that reads it, and is written
+	# only once that command is in place.
+	record_ref "$record" "$recording"
 	# THE COUNT, out loud, and kept at one installable (#92): it costs a line
 	# and is what keeps $INSTALLABLES honest — a person reading N lines cannot
 	# tell whether an N+1th was meant to be there. The sentence that made
@@ -361,7 +466,8 @@ find_python() {
 
 # A CHECKOUT OF THE STANDARD, made the way `setup.sh` self-bootstraps one:
 # `git clone` of `shape_clone_url`, into the temporary directory `workdir`
-# owns, checked out at $OPENREPOSHAPE_REF when one was named. Sets $SHAPE_DIR.
+# owns, checked out at $REF when one was named: by $OPENREPOSHAPE_REF, or by
+# the record `--install` left beside this file (#564). Sets $SHAPE_DIR.
 #
 # WITHOUT `--depth 1`, WHICH IS THE ONE DEVIATION FROM setup.sh AND IS FORCED.
 # A shallow clone has exactly ONE commit, and the doctor's shape-currency row
@@ -385,7 +491,7 @@ shape_checkout() {
 		die "could not clone $REPO into a temporary directory, so there is no
     standard to check against. \`--doctor\` needs one: run it from a checkout
     of openRepoShape, or make the clone work."
-	if [ -n "${OPENREPOSHAPE_REF:-}" ]; then
+	if [ "$REF_NAMED" -eq 1 ]; then
 		checked_ref "$REF"
 		# `<ref> --`, never `-- <ref>`: a `--` BEFORE the argument makes git
 		# read it as a PATHSPEC and try to restore a file of that name from
@@ -404,17 +510,93 @@ shape_checkout() {
 # CHARACTER next, because a newline in it could forge a line of output before
 # this script has said a word; and only then the SHAPE, which is safe to echo
 # back because it has passed both.
-checked_ref() {
-	local ref="$1"
-	if [ "${#ref}" -gt 255 ]; then
-		die "\$OPENREPOSHAPE_REF is ${#ref} characters long; a branch, tag or commit this tool will pass to \`git checkout\` is at most 255 characters."
+#
+# WHOSE REF IT IS IS AN ARGUMENT (#564): `$OPENREPOSHAPE_REF` by default, or
+# the record `--install` wrote. `ref_fault` SAYS what is wrong and refuses
+# nothing, so the record can be checked as it is read and refused only once
+# the arguments are, after `--help` has had its chance; `checked_ref` is the
+# refusing spelling. An EMPTY ref is a fault too, which no caller could reach
+# before the record: an empty variable is no ref at all, while an empty file
+# is one.
+ref_fault() {
+	local ref="$1" what="$2"
+	if [ -z "$ref" ]; then
+		printf '%s' "$what is empty, which is not a branch, tag or commit this tool will pass to \`git checkout\`."
+	elif [ "${#ref}" -gt 255 ]; then
+		printf '%s' "$what is ${#ref} characters long; a branch, tag or commit this tool will pass to \`git checkout\` is at most 255 characters."
+	else
+		case "$ref" in
+		*[![:print:]]*) printf '%s' "$what carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
+		[!A-Za-z0-9]* | *..* | *.lock | *[!A-Za-z0-9._/-]*) printf '%s' "$what is '$ref', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
+		esac
 	fi
-	case "$ref" in
-	*[![:print:]]*) die "\$OPENREPOSHAPE_REF carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
-	esac
-	case "$ref" in
-	[!A-Za-z0-9]* | *..* | *.lock | *[!A-Za-z0-9._/-]*) die "\$OPENREPOSHAPE_REF is '$ref', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
-	esac
+}
+
+checked_ref() {
+	local fault
+	fault="$(ref_fault "$1" "${2:-\$OPENREPOSHAPE_REF}")"
+	[ -z "$fault" ] || die "$fault"
+}
+
+# A PATH WITH ITS SYMLINKS FOLLOWED (#564, the review on #577). The record
+# sits beside the FILE `--install` placed, so a link to the command from
+# anywhere else (`~/bin/openRepoShape -> ~/.local/bin/openRepoShape`) must
+# read the record there, not look for one beside the link. `readlink` with
+# no `-f`, which macOS before 12.3 lacks, one link at a time and at most 40
+# of them, the kernel's own limit, so a loop of links ends. Where `readlink`
+# fails or is missing the path is used as it is, which is where the record
+# was looked for before. Git Bash makes copies for `ln -s` unless told
+# otherwise, and a copy is no link.
+resolved() {
+	local path="$1" link hops=0
+	while [ -L "$path" ] && [ "$hops" -lt 40 ]; do
+		link="$(readlink -- "$path" 2>/dev/null)" && [ -n "$link" ] || break
+		case "$link" in
+		/*) path="$link" ;;
+		*) path="$(dirname -- "$path")/$link" ;;
+		esac
+		hops=$((hops + 1))
+	done
+	printf '%s' "$path"
+}
+
+# THE RECORD `--install` LEFT BESIDE THIS FILE, READ ONCE, BEFORE ANY RUN
+# (#564). Only when no `$OPENREPOSHAPE_REF` was set, which is what lets that
+# variable win for a run, and only beside a FILE: a script arriving on stdin
+# has no place of its own to have been installed at. CHECKED HERE, as it is
+# read, rather than where the ref is used: it is a file on disk that every run
+# reads, `--version` prints it, and a value nobody typed is not echoed until
+# it has passed. A record that fails is NOT refused here but kept in
+# `$RECORD_FAULT`, and `refuse_bad_record` refuses with it once the arguments
+# have been read: `--help` answers past a broken record, and every run that
+# would use the ref refuses, `--version` first. `$(< file)` is bash's own
+# read, so no `cat` is needed; a record that is not a readable FILE (a
+# directory, say) is a fault in the same words as the rest, never a raw bash
+# error.
+RECORD_WAY_OUT="Run the installer again to record a release, or delete that file to follow main."
+read_recorded_ref() {
+	local record text fault
+	[ "$REF_NAMED" -eq 0 ] && [ -f "$SELF" ] || return 0
+	record="$(resolved "$SELF")$RECORD_SUFFIX"
+	[ -e "$record" ] || return 0
+	if [ ! -f "$record" ] || [ ! -r "$record" ]; then
+		RECORD_FAULT="$record is not a file this command can read, so it cannot read the ref \`--install\` recorded there. Remove it, then run the installer again to record a release, or leave it removed to follow main."
+		return 0
+	fi
+	text="$(< "$record")"
+	fault="$(ref_fault "$text" "the ref recorded in $record")"
+	if [ -n "$fault" ]; then
+		RECORD_FAULT="$fault $RECORD_WAY_OUT"
+		return 0
+	fi
+	REF="$text"
+	REF_NAMED=1
+	REF_FROM_RECORD=1
+}
+read_recorded_ref
+
+refuse_bad_record() {
+	[ -z "$RECORD_FAULT" ] || die "$RECORD_FAULT"
 }
 
 # `--doctor`: RUN THE STANDARD'S OWN SCRIPT, never a reimplementation here.
@@ -515,7 +697,7 @@ run_doctor() {
 while [ $# -gt 0 ]; do
 	case "$1" in
 	-h | --help) usage; exit 0 ;;
-	--version) say "openRepoShape ($REPO @ $REF)"; exit 0 ;;
+	--version) refuse_bad_record; say "openRepoShape ($REPO @ $REF)"; exit 0 ;;
 	# TWO MODES IS A REFUSAL, NEVER LAST-WINS. `--doctor <path> --install`
 	# used to enter the install path and silently drop the diagnosis, and
 	# the other order dropped the install (Copilot, PR #96). Each of these
@@ -622,6 +804,10 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# A BROKEN RECORD IS REFUSED HERE, after `--help` has had its chance and
+# before any run that would use the ref it should have named (#564).
+refuse_bad_record
+
 if [ "$MODE" = "doctor" ]; then
 	# ONE PATH AND THE DOCTOR'S TWO FLAGS, NOTHING ELSE. Every other
 	# argument this command knows is about a run that CREATES something, and
@@ -699,7 +885,8 @@ ARGS=()
 [ -z "$PROJECT" ] || ARGS+=(--project "$PROJECT")
 # Fetched at $REF, so setup.sh self-bootstraps its checkout at $REF too:
 # otherwise the script that runs and the standard it clones are two commits.
-[ -z "${OPENREPOSHAPE_REF:-}" ] || ARGS+=(--shape-ref "$REF")
+# Whenever the ref was NAMED, by the variable or by the record (#564).
+[ "$REF_NAMED" -eq 0 ] || ARGS+=(--shape-ref "$REF")
 ARGS+=(${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"})
 
 # $OPENREPOSHAPE_SETUP_SH is the OFFLINE TEST PATH: a setup.sh already on disk
