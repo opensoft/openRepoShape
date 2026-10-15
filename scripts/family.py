@@ -4637,14 +4637,75 @@ def _print_trailers(trailers: list[str]) -> None:
         print("trailers     none")
 
 
+def _on_a_remote_branch(member: Path, commit: str) -> bool:
+    """Whether `commit` is reachable from one of the member's remote-tracking
+    branches, `refs/remotes/origin/*` (#613): the refs `bump`'s `git fetch
+    origin` has just updated, or, when that fetch failed, the ones the mount
+    already had.
+
+    THE QUESTION `bump-leg.py`'s `on_a_remote_branch` ASKS OF A LEG, in the
+    same git words, `for-each-ref --contains` over `refs/remotes/origin/`,
+    and under the same name. Written again here rather than called: that
+    file's name has a hyphen, so it is loaded only by path, which would run a
+    whole command-line tool's top level for one `git for-each-ref`, and no
+    module both tools import (`repo_shape`, `shape_materialize`) holds the
+    question. This file asks it here and nowhere else.
+
+    A FAILURE OF THE QUESTION ITSELF IS GIT'S, never an answer: `run` raises
+    it as `CommandFailed`, quoted as every failed git command in this file
+    is, exit 2, before anything is written. It is asked only of an id the
+    member holds as a commit, so `--contains` has an object to walk from.
+    """
+    return bool(run(["git", "for-each-ref", "--contains", commit,
+                     "--format=%(refname)", "refs/remotes/origin/"],
+                    cwd=member))
+
+
+def _checked_on_a_remote_branch(member: Path, path: str, repository,
+                                typed: str, commit: str,
+                                fetched: bool) -> str:
+    """`commit`, the commit `--to` (`typed`) names, when a branch of the
+    member's remote reaches it, or the refusal `member-to-local-only` (#613),
+    which `_checked_to_names_a_commit` says why it makes. `typed` is not
+    `commit` where an annotated tag was peeled: the refusal names both, since
+    the line saying what the tag names is printed only once this returns.
+
+    The words are `bump-leg.py`'s `bump-leg-commit-local-only`, said of a
+    member: where the commit is, what it is not reachable from, to push it to
+    a branch and run the same command again, and why. When the fetch failed
+    they end with its stale-refs sentence, adapted: the answer came from
+    remote-tracking refs the fetch did not refresh, so a commit pushed since
+    may be refused here, and the network or the credential is the thing to
+    fix before believing it.
+    """
+    if _on_a_remote_branch(member, commit):
+        return commit
+    named = (f"--to {commit}" if typed == commit else
+             f"--to {typed} is an annotated tag, and the commit it names, "
+             f"{commit},")
+    stale = ("" if fetched else
+             f" The fetch of {path} FAILED, as the note above says, so this "
+             "was answered from stale remote-tracking refs: fix the network "
+             "or the credential and run it again before believing it.")
+    raise Refusal(
+        "member-to-local-only",
+        f"{named} is in the member's own object store, in {path}, but is "
+        f"reachable from no branch of {repository}",
+        f"Remediation: push it to a branch of {repository} and run the same "
+        f"command again; the commonest such commit was made inside {path} and "
+        "never pushed. A pin the rest of the world cannot fetch is a family "
+        "the rest of the world cannot bootstrap." + stale)
+
+
 def _checked_to_names_a_commit(member: Path, path: str, row: dict,
                                commit: str, fetched: bool) -> str:
     """The COMMIT `--to` names in the member's objects: `--to` itself, or the
-    commit an annotated tag's own id names (#541), or the refusal saying why
-    there is none. `bump` and `bump --dry-run` both ask it, after the fetch
-    (`fetched` False when it failed) and before the dry run leaves or the
-    checkout, so the two runs go on with one commit or make one refusal,
-    and the holder is left byte for byte as it was.
+    commit an annotated tag's own id names (#541), a commit a branch of the
+    member's remote reaches (#613), or the refusal saying why there is none.
+    `bump` and `bump --dry-run` both ask it, after the fetch (`fetched` False
+    when it failed) and before the dry run leaves or the checkout, so the two
+    runs go on with one commit or make one refusal, and the holder is left
+    byte for byte as it was.
 
     AN ANNOTATED TAG'S OWN ID IS PEELED, as `add --at` peels one (Brett
     Heap, 2026-10-14, on #541). It is 40 hex, and it is what `git rev-parse
@@ -4672,15 +4733,39 @@ def _checked_to_names_a_commit(member: Path, path: str, row: dict,
     mount brings only what the member's remote has. When that fetch failed,
     the refusal says so and does not claim the remote lacks it.
 
-    A TAG WHOSE COMMIT IS ON NO BRANCH is refused `member-to-unknown` too,
-    and so is that commit, while `add --at` pins the same tag's id. The
-    fetch here brings every branch and, by git's own rule, only the tags
-    that point into the history those branches bring; `add`'s bare clone
-    brings every tag. A `git push origin v2` without the branch makes one,
-    and the refusal's push to a branch is what lets `bump` pin it. Left as
-    it is: `bump-leg.py` refuses its twin the same way, as
-    `bump-leg-commit-not-on-remote`, and fetching every tag would write refs
-    the person's member did not have, which is a new act.
+    A COMMIT THE MEMBER HOLDS THAT NO BRANCH OF ITS REMOTE REACHES is
+    refused `member-to-local-only` (#613: the triage's D2, option 1, which
+    Brett Heap approved at 2026-10-15T16:49:38Z). The object check alone,
+    `cat-file -t`, passed a commit made inside `members/<Project>` and never
+    pushed, because the object is in the mount's own store: `bump` pinned
+    it, exit 0, `validate-family.py` passed, and the holder could then be
+    bootstrapped nowhere else, since nobody else can fetch that commit.
+    `bump-leg.py` refuses its twin as `bump-leg-commit-local-only`, and the
+    question is its question (`_on_a_remote_branch`): REACHABILITY, NOT A
+    FETCH THAT EXITED 0, which proves nothing about one object. It is asked
+    after the peel, of the commit a tag names, which the refusal names, and
+    only of a commit: an id the member does not hold keeps
+    `member-to-unknown`, and a tree, a blob or a tag of either keeps its own
+    words. WHEN THE FETCH FAILED it is answered from the remote-tracking
+    refs the mount already has, as `bump-leg.py` answers it, and a bump is
+    never refused for being offline: a commit those refs contain is pinned,
+    after the note that the fetch failed, and one they do not is refused with
+    the sentence that says the answer came from stale refs.
+
+    A TAG WHOSE COMMIT IS ON NO BRANCH is refused too, and so is that
+    commit, while `add --at` pins the same tag's id. Where the mount does
+    not hold it, it is `member-to-unknown`: the fetch here brings every
+    branch and, by git's own rule, only the tags that point into the
+    history those branches bring, while `add`'s bare clone brings every tag,
+    and a `git push origin v2` without the branch makes one. Where the mount
+    does hold it, a tag made in the mount or one its own clone brought, it
+    is `member-to-local-only` (#613), naming the commit the tag names: no
+    branch of the remote reaches it. Either way the refusal's push to a
+    branch is what lets `bump` pin it. Left as it is: `bump-leg.py` refuses
+    its twins the same two ways, as `bump-leg-commit-not-on-remote` and
+    `bump-leg-commit-local-only`, and fetching every tag would write refs the
+    person's member did not have, which is a new act; reachability from a
+    tag is not the question either tool asks.
     """
     repository = row.get("repository")
     try:
@@ -4710,7 +4795,8 @@ def _checked_to_names_a_commit(member: Path, path: str, row: dict,
             "same command again. A pin the rest of the world cannot fetch is "
             "a family the rest of the world cannot bootstrap.")
     if kind == "commit":
-        return commit
+        return _checked_on_a_remote_branch(member, path, repository, commit,
+                                           commit, fetched)
     peeled, names = "", ""
     if kind == "tag":
         try:
@@ -4720,7 +4806,8 @@ def _checked_to_names_a_commit(member: Path, path: str, row: dict,
         except CommandFailed:
             peeled, names = "", ""
         if names == "commit":
-            return peeled
+            return _checked_on_a_remote_branch(member, path, repository,
+                                               commit, peeled, fetched)
     named = names if kind == "tag" else kind
     if named in ("tree", "blob"):
         raise _names_no_commit("member-to-not-a-commit", "--to", commit,
@@ -4741,7 +4828,8 @@ def _bump_dry_run(family: Family, row: dict, path: str, commit: str,
     THE REAL RUN'S QUESTIONS, IN ITS ORDER, ASKED OF THE MEMBER'S OBJECTS.
     `commit` is the one `_checked_to_names_a_commit` returned, which both
     runs asked after the fetch: an annotated tag's own id is already peeled,
-    and an id the member does not hold is already refused (#541). It is
+    an id the member does not hold is already refused (#541), and so is a
+    commit it holds that no branch of its remote reaches (#613). It is
     resolved as the checkout would take it (`^{commit}`, which is what `git
     checkout` accepts). The manifest is read by `_member_id_at`, its id is
     asked against the other rows by `_checked_bumped_id` as the real run
@@ -4894,7 +4982,8 @@ def _checked_bump_target(family: Family, row: dict, path: str,
     the rollback is even recorded, the two runs refuse at the same point in
     the same words, and the holder is byte for byte as it was. A `--to` the
     member's objects do not hold never gets here: `_checked_to_names_a_commit`
-    refused it after the fetch (#541). A symbolic link is left to the read
+    refused it after the fetch (#541), as it refused a commit no branch of
+    the member's remote reaches (#613). A symbolic link is left to the read
     through the checkout, as the dry run leaves it, and `_bump_and_pin` asks
     the id of that reading.
     """
