@@ -2106,10 +2106,14 @@ def test_the_shim_runs_the_script_beside_it_and_fetches_nothing(
 
 
 #: The sentence the installed doctor ends on when it has kept its clone
-#: (#500), cut where the directory's name begins and where it ends.
+#: (#500), cut where the directory's name begins and where it ends. It is
+#: kept for the NEXT lines that NAME it (#546): "any NEXT command above runs
+#: from it" was false of a `pins` row's, which can name no file in it, and
+#: read as "cd into it", where the `placement` row's relative plan would be
+#: written into the directory this line calls safe to delete.
 KEPT = "the standard this run used is kept at "
-KEPT_TAIL = (", and any NEXT command above runs from it; it is safe to delete "
-             "once you are done with them.")
+KEPT_TAIL = (", for any NEXT command above that names it; it is safe to "
+             "delete once you are done with them.")
 
 
 def kept_by(text: str) -> Path:
@@ -2288,24 +2292,29 @@ def test_the_installed_doctor_hands_on_json_and_keeps_stdout_one_object(
 
 @WINDOWS_SKIP
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-@pytest.mark.parametrize("args", [
+@pytest.mark.parametrize(("args", "inside"), [
     pytest.param(("--doctor", "{project}", "--placement-plan", "plan.yaml"),
-                 id="path-then-flag"),
+                 False, id="path-then-flag"),
     pytest.param(("--doctor", "--placement-plan=plan.yaml", "{project}"),
-                 id="flag-then-path"),
+                 False, id="flag-then-path"),
+    pytest.param(("--doctor", "--placement-plan", "plan.yaml"),
+                 True, id="standing-in-the-repository"),
 ])
 def test_the_installed_doctors_placement_plan_lands_where_you_stand(
-        args, standard, project, tmp_path):
+        args, inside, standard, project, tmp_path):
     """`--placement-plan <file>` reaches `shape-doctor.py` from the installed
     form (#500) -- it is the `placement` row's own NEXT, which the installed
     form refused -- and a RELATIVE `<file>` lands in the directory the
-    command was run from: not in the repository, and not in the kept clone.
+    command was run from: not in the kept clone, and in the repository only
+    when that is where you stand (#546), as with `openRepoShape --doctor
+    --placement-plan plan.yaml` typed there, the default path `.`.
 
-    The plan is the only thing written, as AGENTS.md's doctor section says;
-    the project's tree is compared file by file before and after.
+    The plan is the only thing written, as AGENTS.md's doctor section says,
+    and the doctor's own wording now says too: "writes nothing into it but"
+    that file. The project's tree is compared file by file before and after.
     """
-    here = tmp_path / "here"
-    here.mkdir()
+    here = project if inside else tmp_path / "here"
+    here.mkdir(exist_ok=True)
 
     def snapshot():
         return sorted(
@@ -2317,10 +2326,13 @@ def test_the_installed_doctors_placement_plan_lands_where_you_stand(
         standard, tmp_path,
         *[arg.format(project=project) for arg in args], cwd=here)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert [entry.name for entry in here.iterdir()] == ["plan.yaml"]
-    assert "kind: placement-plan" in (here / "plan.yaml").read_text(
-        encoding="utf-8")
+    plan = here / "plan.yaml"
+    assert "kind: placement-plan" in plan.read_text(encoding="utf-8")
     assert "placement plan written to plan.yaml" in result.stdout
+    if inside:
+        before = sorted(before + [("plan.yaml", plan.stat().st_size)])
+    else:
+        assert [entry.name for entry in here.iterdir()] == ["plan.yaml"]
     assert snapshot() == before
     assert not (kept_by(result.stdout) / "shape" / "plan.yaml").exists()
 
@@ -2351,19 +2363,41 @@ def test_a_refused_doctor_still_names_its_kept_clone_without_next_lines(
         [kept.resolve()]
 
 
+#: What `--doctor` says when it is handed something it does not take. Its
+#: last clause said "and writes nothing into it" until #546, which was false
+#: of a `--placement-plan <file>` named inside the repository.
+NOTHING_ELSE = ("--doctor takes a path, --json and --placement-plan <file>, "
+                "and nothing else; it reads a repository and writes nothing "
+                "into it but that <file>.")
+NO_PLAN_FILE = "--placement-plan needs the file"
+TWO_PLANS = ("two placement plans, 'a.yaml' and 'b.yaml'. --doctor writes "
+             "one: pass --placement-plan once.")
+
+
 @WINDOWS_SKIP
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-@pytest.mark.parametrize("args", [
-    pytest.param(("--doctor", "--org", "Foo"), id="a-scaffold-flag"),
-    pytest.param(("--doctor", ".", "Atlas"), id="a-second-path"),
-    pytest.param(("--json", "--doctor", "."), id="json-before-doctor"),
-    pytest.param(("--doctor", ".", "--placement-plan"), id="plan-no-file"),
-    pytest.param(("--doctor", ".", "--placement-plan="), id="plan-empty"),
+@pytest.mark.parametrize(("args", "refusal"), [
+    pytest.param(("--doctor", "--org", "Foo"), NOTHING_ELSE,
+                 id="a-scaffold-flag"),
+    pytest.param(("--doctor", ".", "Atlas"), NOTHING_ELSE, id="a-second-path"),
+    pytest.param(("--doctor", ".", "--doctor", "Atlas"), NOTHING_ELSE,
+                 id="a-second-path-after-a-second-doctor"),
+    pytest.param(("--json", "--doctor", "."), NOTHING_ELSE,
+                 id="json-before-doctor"),
+    pytest.param(("--doctor", ".", "--placement-plan"), NO_PLAN_FILE,
+                 id="plan-no-file"),
+    pytest.param(("--doctor", ".", "--placement-plan="), NO_PLAN_FILE,
+                 id="plan-empty"),
     pytest.param(("--doctor", ".", "--placement-plan", "--json"),
-                 id="plan-a-flag"),
+                 NO_PLAN_FILE, id="plan-a-flag"),
+    pytest.param(("--doctor", ".", "--placement-plan", "a.yaml",
+                  "--placement-plan", "b.yaml"), TWO_PLANS, id="two-plans"),
+    pytest.param(("--doctor", "--placement-plan=a.yaml", ".",
+                  "--placement-plan=b.yaml"), TWO_PLANS,
+                 id="two-plans-around-the-path"),
 ])
-def test_the_installed_doctor_refuses_before_it_clones(args, standard,
-                                                       tmp_path):
+def test_the_installed_doctor_refuses_before_it_clones(args, refusal,
+                                                       standard, tmp_path):
     """What `--doctor` does not take is still refused by name, exit 2,
     before anything is cloned (#500 hands on two flags, and only those).
 
@@ -2373,17 +2407,18 @@ def test_the_installed_doctor_refuses_before_it_clones(args, standard,
     with no file, an empty one, or a flag where the file goes is refused
     rather than handed to argparse or written to a file called `--json`.
     Nothing reaches stdout, `$TMPDIR` stays empty, and nothing is fetched.
+
+    AND A SECOND OF EITHER IS A REFUSAL, NEVER LAST-WINS (#546), as two
+    modes are. Two plans both reached `shape-doctor.py`, whose argparse kept
+    the last, so `b.yaml` was written and `a.yaml` silently was not; a path
+    after a second `--doctor` replaced the first. Neither file is written.
     """
     result = run_installed(standard, tmp_path, *args)
     assert result.returncode == 2, result.stdout + result.stderr
     assert result.stdout == ""
-    assert "REFUSED: " in result.stderr
-    if "--placement-plan" in " ".join(args):
-        assert "--placement-plan needs the file" in result.stderr
-    else:
-        assert "--doctor takes a path, --json and --placement-plan <file>, " \
-            "and nothing else" in result.stderr
+    assert "REFUSED: " + refusal in result.stderr
     assert list((tmp_path / "tmp").iterdir()) == []
+    assert not list(tmp_path.glob("*.yaml"))
     fetched_nothing(tmp_path, doctor_ran=False)
 
 
@@ -2395,8 +2430,7 @@ def test_the_shim_doctor_takes_a_path_and_nothing_else(standard, tmp_path):
         capture_output=True, text=True, check=False, input="",
         env=shim_env(tmp_path))
     assert result.returncode == 2, result.stdout + result.stderr
-    assert "--doctor takes a path, --json and --placement-plan <file>, and " \
-        "nothing else" in result.stderr
+    assert NOTHING_ELSE in result.stderr
     assert "openRepoShape --preflight" in result.stderr, (
         "the refusal must name the machine check, because `--doctor` meant "
         "that until 2026-09-10")
