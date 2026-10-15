@@ -72,7 +72,12 @@ recording an identity, so this tool never records one it cannot justify:
     puts back the copies, the pin, the README line, the index and the
     branch, and the refusal names the step that failed and lists what it
     put back. A re-run then finds the tree it found the first time, rather
-    than an uncommitted re-pin it would read as already done.
+    than an uncommitted re-pin it would read as already done. What the
+    rollback itself cannot put back — a file that will not take its old
+    bytes, an `--add` file that will not go, a path a link has reached
+    since the write, which it never writes through — it names with the line
+    that finishes it by hand, and it goes on to the rest: the refusal that
+    started it is still the one reported (#428).
   * Nothing is written THROUGH A SYMLINK (#239, #286). A rewrite opens the
     file where it stands, so a pinned copy, `contracts/shape-pin.yaml` or
     the manifest kept as a link — or under a directory link — would have the
@@ -81,7 +86,15 @@ recording an identity, so this tool never records one it cannot justify:
     `check` calls such a copy `copy-is-link` and `apply` refuses it; both
     refuse a linked pin or manifest. Each refusal is `update-rewrite-symlink`,
     before anything is written, as `--add` refuses a link at a path it would
-    create as `update-add-symlink`.
+    create as `update-add-symlink`. Nor through a HARD LINK (#422): a file
+    with a second name — outside the root, or in a `cp -al` snapshot of it
+    — is the same bytes under both, so a rewrite in place would change the
+    other name too, which no pin covers and git does not record. `apply`
+    refuses each file it would rewrite that has one — a copy it copies, the
+    pin, the manifest, a `.gitattributes` whose block `--add` extends — as
+    `update-rewrite-hardlink`, before anything is written, and `check` says
+    so first in a `REFUSAL AHEAD` line; the row keeps its verdict, since the
+    copy holds the right bytes. A hard-linked `README.md` is kept, as ever.
 
 ONLY THE PIN'S OWN ROWS ARE CONSIDERED. The set of shape files is read from
 `contracts/shape-pin.yaml`, never re-derived from this repository's copy
@@ -1164,8 +1177,8 @@ def link_refusal(path: str, link: tuple[str, str]) -> Refusal:
     a pinned copy, or the pin, kept as a link was still rewritten through
     it; `rewrite_link_refusal` now refuses those, so the sentence is true of
     every write `apply` makes. It says SYMLINK, not "link": a HARD link is
-    another name for the same bytes, which `Rollback.write` still writes
-    through everywhere but the README.
+    another name for the same bytes, refused in words of its own
+    (`update-rewrite-hardlink`, #422).
     """
     name = link[0]
     return Refusal(
@@ -1777,18 +1790,18 @@ class ReadmeShapeLine:
             return README_ABSENT
         try:
             if self.path.stat().st_nlink > 1:
-                # ANOTHER NAME FOR THESE SAME BYTES, and this tool writes
-                # THROUGH a name: `Rollback.write` opens the path and
-                # overwrites the inode, the way it does for every copied
-                # file, and the undo writes back the same way. A rewrite here
-                # would therefore change whatever else that inode is called —
-                # a file outside the root, that no `check` showed and no pin
-                # covers — while git records only `README.md` (Copilot,
-                # PR #152). Replacing the inode instead (a temp file and
-                # `os.replace`) would make this the one write in the command
-                # the ledger cannot undo: the other name would keep the old
-                # bytes and the link would be broken, and breaking a link is
-                # not something a rollback puts back.
+                # ANOTHER NAME FOR THESE SAME BYTES. `Rollback.write`
+                # overwrites a file where it stands, so a rewrite here would
+                # change whatever else that inode is called — a file outside
+                # the root, that no `check` showed and no pin covers — while
+                # git records only `README.md` (Copilot, PR #152). For every
+                # other file the ledger REFUSES such a write now (#422); the
+                # README is KEPT instead, and said, because refusing the
+                # re-pin over prose is no answer. Replacing the inode (a
+                # temp file and `os.replace`) would make this the one write
+                # in the command the ledger cannot undo: the other name
+                # would keep the old bytes and the link would be broken, and
+                # breaking a link is not something a rollback puts back.
                 return README_HARDLINK
             self.text = self.path.read_bytes().decode("utf-8")
         except UnicodeDecodeError:
@@ -2111,6 +2124,7 @@ def cmd_check(args) -> int:
         if conflicts:
             print("REFUSAL AHEAD: `apply` will refuse while these are "
                   "unresolved — " + ", ".join(row.path for row in conflicts))
+        _say_hard_links_ahead(root, rows)
         # NOT AN --add `apply` WOULD REFUSE (#285): a path under a file the
         # root keeps is reported above, with why, but a flag to paste that
         # is known to fail is the tool handing a human a wrong answer.
@@ -2576,11 +2590,29 @@ class Rollback:
         was written before it. What the walk cannot see is a link that
         arrives in the instant between it and the open, as
         `write_added` cannot see one that arrives above its path.
+
+        NOR THROUGH A HARD LINK (#422). `r+b` overwrites the bytes where they
+        are, and a file with a second name — anywhere on this filesystem, a
+        `cp -al` snapshot of the whole root included — is the same bytes
+        under both, so that other name would change too: a file no `check`
+        showed and no pin covers, while git records only this one. `apply`
+        refuses every such file before `confirm` waits
+        (`_refuse_hard_linked_rewrites`); this asks the same question,
+        `hard_links`, after the symlink walk and before anything is read or
+        recorded, for a name that arrived while it waited, and the same
+        refusal arm puts back what was written before it. NOT BY REPLACE,
+        which is the other way to write and the one the README's own guard
+        rejects: a new file moved in with `os.replace` leaves the other name
+        holding the old bytes and the link broken, and a broken link is not
+        something `undo` can put back.
         """
         rel = self._name(path)
         link = symlink_on_the_way(self.root, rel)
         if link is not None:
             raise rewrite_link_refusal([(rel, link)], arrived=True)
+        names = hard_links(path)
+        if names:
+            raise hard_link_refusal(self.root, [(rel, names)], arrived=True)
         with path.open("r+b") as handle:
             self.written.setdefault(path, handle.read())
             handle.seek(0)
@@ -2727,13 +2759,23 @@ class Rollback:
         something nobody here wrote is in it, and removing that is not a
         rollback.
 
-        THE GIT HALF NEVER RAISES OVER THE REFUSAL, which is the rule
-        `bump-leg.py`'s own rollback states: what it cannot put back is
-        NAMED, with the command that finishes it by hand, and the failure
-        that started the rollback is still the one reported. And each git
-        undo is judged by READING THE STATE AFTERWARDS rather than by git's
-        exit code — a `post-checkout` hook's exit status is `git checkout`'s
-        own, so a switch that happened can still exit non-zero.
+        NEITHER HALF RAISES OVER THE REFUSAL (#428), which is the rule
+        `bump-leg.py`'s own rollback states (#253): what it cannot put back
+        is NAMED, with the command that finishes it by hand, and the failure
+        that started the rollback is still the one reported. The git half
+        always kept it. The byte half wrote each file back with a bare
+        `write_bytes` and took away what `--add` made with a bare `rmdir` or
+        `unlink`, so one file that would not take its old bytes — a
+        permission a validator took away, a full disk, a lock — escaped
+        `_rolled_back` and `main` as a traceback, exit 1, the refusal that
+        started it surviving only as the exception's context, and no path
+        after it was tried: a pin put back under a manifest left re-pinned,
+        the lockstep break this ledger exists to prevent. So every restore
+        and every removal is attempted, each under its own handler, and each
+        one that fails is listed with its line (`_restore`, `_remove`). And
+        each git undo is judged by READING THE STATE AFTERWARDS rather than
+        by git's exit code — a `post-checkout` hook's exit status is `git
+        checkout`'s own, so a switch that happened can still exit non-zero.
         """
         if self.landed or not (self.written or self.created or self.branch
                                or self.staged):
@@ -2743,22 +2785,253 @@ class Rollback:
         self._undo_index(done, left)
         self._undo_branch(done, left)
         for path, original in self.written.items():
-            path.write_bytes(original)
-            done.append(f"restored  {self._name(path)}")
+            self._restore(path, original, done, left)
+        stuck: list[Path] = []
         for path in reversed(self.created):
+            self._remove(path, stuck, done, left)
+        return self._said(done, left)
+
+    def _restore(self, path: Path, original: bytes, done: list[str],
+                 left: list[str]) -> None:
+        """`path` given back `original`, the bytes it held before this run
+        first wrote it, or listed under `left` with the line that does it
+        by hand (#428).
+
+        WRITTEN ONLY OVER A FILE THAT NO LONGER HOLDS THEM, as `bump-leg.py`
+        restores its own (`_restore_file`, #253): a file that holds what it
+        held is back, and a write it never needed must not list it as left
+        because that write would have failed. One that cannot even be READ
+        is written all the same.
+
+        NEVER THROUGH A LINK THAT ARRIVED AFTER THE WRITE (review of PR
+        #560). `write` walked the path for a symlink and counted its names
+        before it wrote, but the project's own validators run between that
+        write and this one, and so can anything else on the machine: a
+        validator that moved `project.yaml` out of the root and linked it
+        back had the old bytes written at the link's end, outside the root,
+        under "the tree is exactly as it was" over a root holding a link.
+        So the same two questions are asked again here first, and a path
+        either one answers is not written at all: it is listed under `left`,
+        with what stands there and the line that puts the bytes back once
+        it is a plain file of its own again.
+        """
+        name = self._name(path)
+        link = symlink_on_the_way(self.root, name)
+        names = hard_links(path) if link is None else 0
+        if link is not None or names:
+            left.append(f"file      {name} was not put back: "
+                        + self._linked_by_hand(path, name, original, link,
+                                               names))
+            return
+        try:
+            held = path.read_bytes()
+        except OSError:
+            held = None
+        try:
+            if held != original:
+                path.write_bytes(original)
+        except OSError as exc:
+            where, command = self._restore_by_hand(path, name, original)
+            # "MAKE IT WRITABLE" IS SAID OF A FILE THAT IS THERE (review of
+            # PR #560, round 2). A directory a validator deleted took the
+            # file with it, and a file that is not there cannot be made
+            # writable: the line is then the command alone, which creates it.
+            how = (f"{where}, so make it writable, then: {command}"
+                   if os.path.lexists(path) else f"{where}, then: {command}")
+            left.append(f"file      {name} was not put back "
+                        f"({exc.strerror or exc}); "
+                        + (how if command else where))
+            return
+        done.append(f"restored  {name}")
+
+    def _linked_by_hand(self, path: Path, name: str, original: bytes,
+                        link: tuple[str, str] | None, names: int) -> str:
+        """The rest of `_restore`'s `left` line for a path it would not
+        write: what arrived there, and how the bytes go back by hand.
+
+        A SYMLINK is the operator's, or whoever made it, so the line never
+        removes it: the bytes go back once it is not a link, which is the
+        same exit `update-rewrite-symlink` gives before a write. One ABOVE
+        the path is a directory moved out of the root and linked back, and
+        is said as that: once it is this root's own directory again, since
+        a command run over a link merely removed has no directory to write
+        into (probed in the round-2 review). A SECOND
+        NAME is broken from this side first, with the line
+        `update-rewrite-hardlink` prints (`_copy_over_itself`), so the
+        other name keeps the bytes it holds: a `cat-file` redirect writes
+        in place, and would change it too.
+        """
+        where, command = self._restore_by_hand(path, name, original)
+        if link is not None:
+            said = (f"since this run wrote it, {link_said(name, link)}, and "
+                    "this run never writes through one")
+            # A link ABOVE the path is a directory that is no longer this
+            # root's own (review of PR #560, round 2): "is not a link" read
+            # as "remove it", and with the link gone and nothing in its
+            # place the command fails, "Directory nonexistent".
+            again = (f"{link[0]} is not a link" if link[0] == name else
+                     f"{link[0]} is this root's own directory again")
+            fix = (f"{where}, so once {again}: {command}"
+                   if command else where)
+        else:
+            said = (f"since this run wrote it, it has gained another name "
+                    f"on this filesystem ({names} names), and a write in "
+                    "place would change that file too")
+            fix = (f"{where}, so replace it with a copy of itself first: "
+                   f"{_copy_over_itself(path)}, then: {command}"
+                   if command else where)
+        return f"{said}; {fix}"
+
+    def _restore_by_hand(self, path: Path, name: str,
+                         original: bytes) -> tuple[str, str]:
+        """Where `original` is to be had, and the command that writes it at
+        `path` by hand, once whatever stopped the write is cleared; or, when
+        it is nowhere, the sentence saying so and no command.
+
+        HEAD'S, WHERE `git checkout HEAD -- <path>` WOULD WRITE EXACTLY THOSE
+        BYTES AND CHANGE NOTHING ELSE (`_head_restores`). That is not a
+        given, and it was measured: a `--branch` run over a clean tree holds
+        HEAD's bytes at every path it writes, but an `apply` without
+        `--branch` writes over whatever the tree holds — after an earlier
+        `apply` left uncommitted, not one of the copy, the pin and the
+        manifest was HEAD's — and even `--branch` takes a working-tree file
+        whose CRLF `hash-object` normalises away (`_not_what_head_commits`),
+        which a checkout would then write back as LF. AND ONLY WHERE THE
+        DIRECTORY TAKES A NEW FILE (review of PR #560): a checkout unlinks
+        the path and creates it again, which a directory nobody may write
+        into refuses however writable the file is made, while a redirect
+        writes into the file where it stands. The directory asked is the
+        NEAREST ONE THAT EXISTS (`_nearest_directory`): a validator that
+        deleted `contracts/` left none to ask at the path's own parent, and
+        git makes the missing ones, so the question is whether what is
+        there takes them (round 2 of the review).
+
+        ELSE FROM THE OBJECT STORE. The bytes are written into this
+        repository with `git hash-object -w --stdin` — on stdin, so no
+        filter touches them — and `git cat-file blob <id>`, redirected to
+        the file's own path, writes back exactly those bytes. The object is
+        referenced by nothing, so a `git gc` prunes it, two weeks on by
+        default: long enough for a line meant to be run now. A directory
+        that is gone is made first, `mkdir -p <directory> && ...`, which
+        keeps it one pasteable command. Where git will not store them
+        either, the line says so, and that the bytes are
+        nowhere this run can point at.
+        """
+        if (os.access(self._nearest_directory(path.parent), os.W_OK)
+                and self._head_restores(name, original)):
+            return ("it held HEAD's bytes",
+                    _by_hand(self.root, "--literal-pathspecs", "checkout",
+                             "HEAD", "--", name))
+        kept = self._kept(original)
+        if kept:
+            # A redirect creates the file and never the directory above it,
+            # so a directory a validator deleted is made first, in the same
+            # command (round 2 of the review): "Directory nonexistent".
+            make = ("" if os.path.isdir(path.parent) else
+                    "mkdir -p " + shlex.quote(str(path.parent)) + " && ")
+            return (f"its bytes before this run are kept as blob "
+                    f"{kept[:12]} in this repository",
+                    make + _by_hand(self.root, "cat-file", "blob", kept)
+                    + " > " + shlex.quote(str(path)))
+        return ("and git would not keep its bytes before this run either, "
+                "so they are nowhere this run can point at: only a copy of "
+                f"{name} made before it can put it back", "")
+
+    @staticmethod
+    def _nearest_directory(directory: Path) -> Path:
+        """`directory` when it is one, else the nearest directory above it
+        that is: the one `git checkout` would have to write into to make
+        what is missing. `os.path.isdir`, which answers False rather than
+        raising for a path it may not look at."""
+        while not os.path.isdir(directory) and directory != directory.parent:
+            directory = directory.parent
+        return directory
+
+    def _head_restores(self, name: str, original: bytes) -> bool:
+        """Would `git checkout HEAD -- <name>` write exactly `original` and
+        leave the index as it is? Three answers from git, any one missing a
+        no: HEAD commits a blob at `name`; the index holds that same blob
+        there, so the checkout, which writes the index too, changes nothing
+        in it (the hazard `Rollback.stage` names); and that blob as a
+        checkout writes it — `cat-file --filters`, smudge and line-ending
+        conversion included — is `original`, byte for byte."""
+        head = _head_blob(self.root, name)
+        staged = _git_answer(self.root, ["rev-parse", "--verify", "--quiet",
+                                         f":0:{name}"])
+        if not head or (staged or "").strip() != head:
+            return False
+        proc = _git_quietly(["git", "cat-file", "--filters", f"HEAD:{name}"],
+                            self.root)
+        return (proc is not None and proc.returncode == 0
+                and proc.stdout == original)
+
+    def _kept(self, original: bytes) -> str:
+        """The id of `original`, written into this repository's objects as
+        BYTES on stdin, or "" when git will not store it."""
+        proc = _git_quietly(["git", "hash-object", "-w", "--stdin"],
+                            self.root, original)
+        if proc is None or proc.returncode != 0:
+            return ""
+        kept = proc.stdout.decode("ascii", "replace").strip()
+        return (kept if re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", kept)
+                else "")
+
+    def _remove(self, path: Path, stuck: list[Path], done: list[str],
+                left: list[str]) -> None:
+        """What `write_added` made at `path` — an `--add` file, or a
+        directory made to hold one — taken away, or listed under `left`
+        with the POSIX line that does it by hand (#428).
+
+        `stuck` collects what could not be taken away. A directory still
+        holding one of those is listed as left after it, with its own line,
+        never as kept for "something this run did not write": what is in it
+        is this run's own file. A path is a directory here when
+        `write_added` made it to hold another path it made, which is what
+        names the line's verb when even asking what stands there fails.
+
+        NOTHING IS REMOVED AT OR THROUGH A SYMLINK that arrived after the
+        write (review of PR #560), for `_restore`'s reason: unlinking one at
+        the path deletes the operator's link (#239 measured that), and
+        removing under one deletes at its end. It is listed instead.
+        """
+        name = self._name(path)
+        directory = any(path in made.parents for made in self.created)
+        link = symlink_on_the_way(self.root, name)
+        if link is not None:
+            stuck.append(path)
+            what = (f"directory {name}/, made to hold an --add file,"
+                    if directory else f"file      {name}, written by --add,")
+            left.append(f"{what} was not removed: since this run wrote it, "
+                        f"{link_said(name, link)}, and this run never "
+                        "removes at or through a link it did not make; "
+                        "what it leads to is yours to judge")
+            return
+        try:
             if path.is_dir():
-                if any(path.iterdir()):
-                    done.append(f"kept      {self._name(path)}/ (made to hold "
-                                "an --add file, and something this run did "
-                                "not write is in it now)")
-                    continue
-                path.rmdir()
-                done.append(f"removed   {self._name(path)}/ (made to hold an "
-                            "--add file)")
+                if not any(path.iterdir()):
+                    path.rmdir()
+                    done.append(f"removed   {name}/ (made to hold an --add "
+                                "file)")
+                elif any(path in kept.parents for kept in stuck):
+                    stuck.append(path)
+                    left.append(f"directory {name}/, made to hold an --add "
+                                "file, still holds the one above; once that "
+                                "is gone: "
+                                + shlex.join(["rmdir", "--", str(path)]))
+                else:
+                    done.append(f"kept      {name}/ (made to hold an --add "
+                                "file, and something this run did not "
+                                "write is in it now)")
             elif path.exists():
                 path.unlink()
-                done.append(f"removed   {self._name(path)} (written by --add)")
-        return self._said(done, left)
+                done.append(f"removed   {name} (written by --add)")
+        except OSError as exc:
+            stuck.append(path)
+            what, verb = ((f"directory {name}/, made to hold an --add file,",
+                           "rmdir") if directory else
+                          (f"file      {name}, written by --add,", "rm"))
+            left.append(f"{what} was not removed ({exc.strerror or exc}): "
+                        + shlex.join([verb, "--", str(path)]))
 
     def _name(self, path: Path) -> str:
         try:
@@ -2868,12 +3141,16 @@ class Rollback:
 
     @staticmethod
     def _said(done: list[str], left: list[str]) -> str:
-        """The block a refusal prints under its own first line."""
+        """The block a refusal prints under its own first line. A rollback
+        that put nothing back says `nothing` there, rather than run its
+        heading straight into the list of what is left (#428): every restore
+        can fail, on a disk that filled, now that one failing no longer
+        stops the rest."""
         lines = (["ROLLED BACK IN PART: the tree is NOT as it was. Put back:"]
                  if left else
                  ["ROLLED BACK: every byte this command wrote has been put "
                   "back, and the tree is exactly as it was:"])
-        lines += [f"    {line}" for line in done]
+        lines += [f"    {line}" for line in done] or ["    nothing"]
         if left:
             lines.append("  NOT put back — finish these by hand:")
             lines += [f"    {line}" for line in left]
@@ -3011,6 +3288,166 @@ def _refuse_linked_copies(rows: list[Row]) -> None:
               if row.state == COPY_IS_LINK and row.link is not None]
     if linked:
         raise rewrite_link_refusal(linked)
+
+
+def hard_links(path: Path) -> int:
+    """How many names `path` has on this filesystem when it is a REGULAR
+    FILE with more than one — a hard link — and 0 otherwise: one name, not
+    a regular file, or nothing `lstat` can read (#422).
+
+    THE ONE QUESTION, AND EVERY CALLER ASKS THIS ONE: `check`'s `REFUSAL
+    AHEAD` line and `apply`'s refusal before `confirm`, both through
+    `hard_linked_rewrites`, and `Rollback.write` at the write itself.
+    `lstat`, so a symlink at the path is never followed to the count of
+    the file it leads to: it is not a regular file here, and it is #286's,
+    refused before this is asked. NTFS fills `st_nlink` as POSIX does,
+    which is how the README's own guard (`ReadmeShapeLine`) already reads
+    it on every platform.
+    """
+    try:
+        info = os.lstat(path)
+    except (OSError, ValueError):
+        return 0
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink < 2:
+        return 0
+    return info.st_nlink
+
+
+def hard_linked_rewrites(root: Path, rows: list[Row], kind: Kind,
+                         taking: list[Addition] = ()
+                         ) -> list[tuple[str, int]]:
+    """Every file `apply` will rewrite IN PLACE that has another name on
+    this filesystem, as `(path, names)`, in the order it writes them (#422).
+
+    What `apply` rewrites is what is asked about: each copy it copies (an
+    `upstream-changed` row), `contracts/shape-pin.yaml` and the manifest,
+    which every run that writes at all rewrites, and the root's own
+    `.gitattributes` when the `--add` files in `taking` would extend its
+    line-ending block (#511) — asked of `extend_eol_block` as
+    `_extend_the_eol_block` asks it, without writing. `check` passes no
+    `taking`: it has no `--add` to know about.
+
+    NOT `README.md`. Its reader already keeps a hard-linked README and says
+    so (`README_HARDLINK`), which is the answer for prose this standard does
+    not own; refusing the whole re-pin over it would take that answer away.
+    Nor a row `apply` keeps, re-pins from its own bytes or drops: nothing
+    is written at its path.
+    """
+    paths = [row.path for row in rows if row.state == UPSTREAM_CHANGED]
+    attributes = root / ATTRIBUTES
+    if taking and hard_links(attributes):
+        try:
+            before = attributes.read_bytes()
+        except OSError:
+            before = None
+        after = (extend_eol_block(before, [add.path for add in taking])
+                 if before is not None else None)
+        if after is not None and after != before:
+            paths.append(ATTRIBUTES)
+    paths += [SHAPE_PIN, kind.manifest]
+    linked = []
+    for path in dict.fromkeys(paths):
+        names = hard_links(root / path)
+        if names:
+            linked.append((path, names))
+    return linked
+
+
+def hard_link_refusal(root: Path, linked: list[tuple[str, int]],
+                      arrived: bool = False) -> Refusal:
+    """`update-rewrite-hardlink`: a file `apply` rewrites in place has
+    another name on this filesystem (#422). `linked` is `[(path, names)]`,
+    `names` being `hard_links`' count for `path`.
+
+    `update-rewrite-symlink`'s twin, for a second NAME rather than a link,
+    and raised the same two ways: before `confirm`, by
+    `_refuse_hard_linked_rewrites`, for every such file at once; and, with
+    `arrived`, by `Rollback.write` for a name that arrived while `confirm`
+    waited. One path is one line, several are a list, as there.
+
+    THE REMEDY BREAKS THE LINK FROM THIS SIDE. A copy of the file put in
+    its place — the same bytes, as a new file — leaves the other name
+    holding its own, and git sees no change at the path, so there is
+    nothing to commit before the same command is run again. Each line is
+    quoted for a POSIX shell, as `_by_hand`'s are, and `cp -p` keeps the
+    mode, so a validator that was executable stays so.
+    """
+    many = len(linked) > 1
+    sentences = (["It had no other name when this run looked: one arrived "
+                  "while `apply` ran, after this run had decided what to "
+                  "write."] if arrived else [])
+    sentences.append(
+        "A rewrite in place changes the bytes under every name they have, "
+        "so it would change "
+        + ("those other files" if many else "that other file")
+        + " too — outside this root, or in a snapshot of it — which no "
+        "`check` showed, no pin covers and git does not record. This "
+        "command never writes through a hard link")
+    if many:
+        detail = ("`apply` would rewrite these files in place, but each has "
+                  "another name on this filesystem:\n"
+                  + "\n".join(f"    {path}: {names} names"
+                              for path, names in linked)
+                  + "".join(f"\n  {sentence}" for sentence in sentences))
+    else:
+        path, names = linked[0]
+        detail = " ".join([f"`apply` would rewrite {path} in place, but it "
+                           f"has {names} names on this filesystem.",
+                           *sentences])
+    return Refusal(
+        "update-rewrite-hardlink", detail,
+        "Remediation: replace " + ("each file" if many else "the file")
+        + " with a copy of itself — the same bytes as a new file at the "
+        "same path, so the other name keeps its own — then run this "
+        "command again. git sees no change there, so there is nothing to "
+        "commit:" + "".join(f"\n    {_copy_over_itself(root / path)}"
+                            for path, _ in linked))
+
+
+def _copy_over_itself(path: Path) -> str:
+    """The POSIX line that puts a copy of `path` in its place: the same
+    bytes as a new file, so a second name keeps its own (#422). `cp -p`
+    keeps the mode, so a validator that was executable stays so; the
+    copy is moved over the name, never the name written through."""
+    here = str(path)
+    copy = f"{here}.update-shape-copy"
+    return (shlex.join(["cp", "-p", "--", here, copy]) + " && "
+            + shlex.join(["mv", "-f", "--", copy, here]))
+
+
+def _refuse_hard_linked_rewrites(root: Path, rows: list[Row], kind: Kind,
+                                 taking: list[Addition]) -> None:
+    """`update-rewrite-hardlink` for every file this run will rewrite that
+    has another name, before `confirm` and before any write (#422).
+
+    ASKED RIGHT AFTER `update-rewrite-symlink`'s copies, and before
+    `update-conflict` and `update-local-drift`: like a link, a second name
+    is no merge and no local edit, so neither remedy is its answer.
+    """
+    linked = hard_linked_rewrites(root, rows, kind, taking)
+    if linked:
+        raise hard_link_refusal(root, linked)
+
+
+def _say_hard_links_ahead(root: Path, rows: list[Row]) -> None:
+    """`check`'s `REFUSAL AHEAD` line for the files `apply` would refuse to
+    rewrite because each has another name (#422): the copies it would
+    copy, the pin and the manifest. The manifest is the one `root_kind`
+    reads from the tree, as `prepare` read it.
+
+    A LINE, NEVER A ROW STATE. A hard-linked copy holds the right bytes, so
+    it is not drift, and a state of its own — or `copy-is-link`'s — would
+    have the doctor's `shape currency` row call the project DRIFTED over
+    nothing wrong in its tree. Every row keeps its verdict, and the doctor,
+    which reads the rows, reads what it always read.
+    """
+    linked = hard_linked_rewrites(root, rows, root_kind(root))
+    if linked:
+        print("REFUSAL AHEAD: `apply` will refuse to rewrite these in place "
+              "while each has another name on this filesystem (a hard "
+              "link; replace it with a copy of itself) — "
+              + ", ".join(f"{path} ({names} names)"
+                          for path, names in linked))
 
 
 def _refuse_conflicts(rows: list[Row], accepted: set) -> None:
@@ -3817,6 +4254,7 @@ def cmd_apply(args) -> int:
                   "already names")
             return 0
         _refuse_linked_copies(rows)
+        _refuse_hard_linked_rewrites(root, rows, kind, taking)
         _refuse_conflicts(rows, accepted)
         _refuse_local_drift(rows, accepted)
         if args.branch:
