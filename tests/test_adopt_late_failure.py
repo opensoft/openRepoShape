@@ -48,8 +48,8 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from conftest import (ADOPT, REPO, git, make_source_repo, run_script,
-                      spelled, write_plan)
+from conftest import (ADOPT, PINNED_COPY, REPO, a_hook_that_unstages, git,
+                      make_source_repo, run_script, spelled, write_plan)
 
 SPEC, CODE = "spec", "code"
 LEGS = (SPEC, CODE)
@@ -99,21 +99,6 @@ PLAN_FLAG = "--plan"
 #: the plan as written.
 SMALL_TREE = {README: "# Thing\n", "src/app/util.py": "VALUE = 1\n",
               "specs/001-feature/tasks.md": "- [ ] one\n"}
-
-#: A source with a `contracts/shape-pin.yaml` of its OWN, naming a file the
-#: plan sends to the code leg. Kept in the root, it is what the first
-#: bootstrap would read, so the verification fails; sent to the spec leg, as
-#: `plan` sends it, the adoption verifies.
-OWN_PIN = ("schema_version: 1\nkind: pinned_contract_manifest\nfiles:\n"
-           + "".join(f"  - path: {path}\n    sha256: \"{'0' * 64}\"\n"
-                     for path in (README, "src/app/main.py")))
-OWN_PIN_TREE = {README: "# Thing\n", ".gitignore": "__pycache__/\n",
-                "specs/001-feature/spec.md": "# The feature\n",
-                "src/app/main.py": "import contracts_reader\n",
-                "contracts/shape-pin.yaml": OWN_PIN}
-CONTRACTS_TO_SPEC = "  - path: contracts/\n    leg: spec\n"
-CONTRACTS_KEPT = ("  - path: contracts/\n    leg: root\n"
-                  "    resolution: \"kept beside the shape's own\"\n")
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
@@ -193,6 +178,12 @@ def hooks_everywhere(tmp_path: Path, ref_pattern: str) -> dict:
     test meets it at the leg remotes and at the source alike."""
     hooks = tmp_path / "hooks"
     write_refusing_hook(hooks, ref_pattern)
+    return global_hooks(tmp_path, hooks)
+
+
+def global_hooks(tmp_path: Path, hooks: Path) -> dict:
+    """The environment whose git takes every repository's hooks from
+    `hooks`: a global `core.hooksPath`."""
     config = tmp_path / "gitconfig"
     config.write_text(f"[core]\n\thooksPath = {hooks.as_posix()}\n",
                       encoding=UTF8)
@@ -1640,28 +1631,32 @@ def test_a_failed_verification_is_flushed_and_its_way_out_runs(tmp_path):
     and the exit names the legs, the work directory and the branch with the
     command that deletes it.
 
-    Then the way out as the review of #188 followed it (F1): the plan fixed
-    and fresh legs, but the work directory and the branch kept. That re-run
-    is refused for the work directory first, before anything exists; its
-    way out, a new one, is refused for the branch; and that refusal's way
-    out, followed as written -- the deletion it prints, then `execute`
-    again -- ends in `adoption verified`."""
-    source = make_source_repo(tmp_path / SOURCE, tree=OWN_PIN_TREE,
-                              edits=())
+    Then the way out as the review of #188 followed it (F1): what failed
+    fixed and fresh legs, but the work directory and the branch kept. That
+    re-run is refused for the work directory first, before anything exists;
+    its way out, a new one, is refused for the branch; and that refusal's
+    way out, followed as written -- the deletion it prints, then `execute`
+    again -- ends in `adoption verified`.
+
+    What fails is a `pre-commit` hook that takes a file the shape's pin
+    names out of the split commit (`a_hook_that_unstages`), and the fix is
+    to run without it. The plan answer that stood for it until #524 -- the
+    source's own `contracts/shape-pin.yaml` kept in the root -- is refused
+    before any leg exists now."""
+    source = make_source_repo(tmp_path / SOURCE, tree=SMALL_TREE, edits=())
     plan = planned(tmp_path, source)
-    answered = plan.read_text(encoding=UTF8)
-    assert CONTRACTS_TO_SPEC in answered
-    plan.write_text(answered.replace(CONTRACTS_TO_SPEC, CONTRACTS_KEPT, 1),
-                    encoding=UTF8)
     checked = run_script(ADOPT, "check", PLAN_FLAG, str(plan))
     assert checked.returncode == 0, checked.stderr + checked.stdout
 
     failed = execute(plan, tmp_path / REMOTES, tmp_path / WORK,
+                     env=global_hooks(tmp_path, a_hook_that_unstages(
+                         tmp_path / "commit-hooks")),
                      merge_stderr=True)
 
     assert failed.returncode == 1, failed.stdout
     lines = failed.stdout.splitlines()
     finding = first_line(lines, "FINDING adopt-shape-file-missing")
+    assert f"`{PINNED_COPY}` is named by" in lines[finding]
     printed = [index for index, line in enumerate(lines)
                if line.startswith((BARE_LINE, "  spec", "  code", "  split",
                                    "  added"))]
@@ -1679,7 +1674,7 @@ def test_a_failed_verification_is_flushed_and_its_way_out_runs(tmp_path):
             f"{spelled(BRANCH)}") in failed.stdout
     delete = printed_command(failed.stdout, DELETE_COMMAND)
 
-    plan.write_text(answered, encoding=UTF8)
+    # Fixed: the runs below have no such hook.
     fresh_legs, new_work = tmp_path / "remotes 2", tmp_path / "work 2"
     kept = execute(plan, fresh_legs, tmp_path / WORK)
     assert kept.returncode == 2, kept.stderr + kept.stdout
