@@ -107,6 +107,9 @@ MOUNTS = [
     pytest.param("spec", "a/b/c/code", "../../../../spec", id="code-deep"),
     pytest.param("Legs/spec", "legs/code", "../../Legs/spec",
                  id="case-differs"),
+    pytest.param("a/b/spec", "a/b/code", "../spec", id="two-segments-shared"),
+    pytest.param("legs/spec", "legsX/code", "../../legs/spec",
+                 id="prefix-of-the-text-not-of-a-segment"),
 ]
 
 
