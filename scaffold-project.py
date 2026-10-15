@@ -57,7 +57,9 @@ one exception is `--reuse-empty-repo`, which reuses each of the three remotes
 while it has ZERO commits, and a leg whose one commit is the seed this
 scaffold pushes (#462): a reserved name, or what a run whose later push an
 organisation's ruleset refused left behind. It never deletes, rewrites or
-force-pushes a remote.
+force-pushes a remote. `--dry-run` asks the same question of the three
+remotes and refuses `scaffold-remote-exists` as the real run does (#537), so
+`setup-project.py` refuses at the plan, before it asks for the yes.
 
 EXIT CODES: 0 done · 1 nothing (dry run prints and exits 0) · 2 refusal.
 """
@@ -79,7 +81,7 @@ from repo_shape import (  # noqa: E402
     free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, link_pins_from_trees, repo_basename, tree_digest,
+    git_out, link_pins_from_trees, repo_basename, shell_line, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
@@ -125,7 +127,8 @@ MANIFEST_FLAGS = {
 #: the same file; imported under the names this file has always called them
 #: by, so what it refuses, and in which words, is unchanged.
 from shape_materialize import (  # noqa: E402
-    declared_pin_products, declared_pin_values,
+    declared_pin_products, declared_pin_values, pin_source_path,
+    refuse_an_unread_pin_source,
     refuse_colliding_pins as _refuse_colliding_pins,
 )
 
@@ -136,6 +139,21 @@ from shape_materialize import (  # noqa: E402
 CHAIN_LINK_FORM = "neutral-product"
 
 
+def _gh_not_found(question: str, exc: FileNotFoundError) -> Refusal:
+    """NO `gh` ON PATH IS `gh-not-found` (#537), as `pin_digest_from_gh` names
+    it, and not a `FileNotFoundError` traceback. Each `gh` read this file makes
+    before it creates anything refuses with this one, in these words, where
+    `question` is what could not be asked."""
+    return Refusal(
+        "gh-not-found",
+        f"the `gh` CLI is not on PATH, so {question} cannot be asked: {exc}",
+        "Remediation: put `gh` on PATH, logged in (`gh auth login`), and "
+        "run this again: the real run creates the three repositories "
+        "with `gh repo create`. `openRepoShape --preflight` names each "
+        "missing prerequisite and offers to install it, on a typed "
+        "yes.")
+
+
 def remote_is_empty(repository: str) -> bool | None:
     """Does `<org>/<repo>` exist on GitHub with ZERO commits?
 
@@ -143,10 +161,19 @@ def remote_is_empty(repository: str) -> bool | None:
     does not exist. GitHub answers a commit listing for an empty repository
     with 409 and the words "Git Repository is empty", which is the only
     reliable signal — `size: 0` is also what a repository of small files says.
+
+    NO `gh` ON PATH IS `gh-not-found` (#537), and not a `FileNotFoundError`
+    traceback: `--dry-run` asks this question too now, and before that a dry
+    run needed no `gh` at all.
     """
-    probe = subprocess.run(["gh", "repo", "view", repository, "--json", "name"],
-                           capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", check=False)
+    try:
+        probe = subprocess.run(
+            ["gh", "repo", "view", repository, "--json", "name"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except FileNotFoundError as exc:
+        raise _gh_not_found(
+            f"whether {repository} already exists on GitHub", exc) from exc
     if probe.returncode != 0:
         return None
     commits = subprocess.run(
@@ -174,11 +201,21 @@ def remote_visibility(repository: str) -> str | None:
     lowercased, or None if it cannot be read — the repository does not exist,
     or `gh` cannot see it. Never called for a `--local-remote-dir` repository:
     a bare repository on disk has no visibility at all.
+
+    NO `gh` ON PATH IS `gh-not-found` (#537), as `remote_is_empty`'s is, and
+    not a `FileNotFoundError` traceback: `--reuse-empty-repo` reads the root's
+    visibility (`_leg_visibility`) BEFORE it asks `remote_is_empty` whether the
+    three repositories exist, in a dry run and a real one alike, so the refusal
+    has to come from here too or the run never reaches the one that has it.
     """
-    proc = subprocess.run(
-        ["gh", "repo", "view", repository, "--json", "visibility"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        check=False)
+    try:
+        proc = subprocess.run(
+            ["gh", "repo", "view", repository, "--json", "visibility"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except FileNotFoundError as exc:
+        raise _gh_not_found(
+            f"what visibility {repository} has on GitHub", exc) from exc
     if proc.returncode != 0:
         return None
     try:
@@ -262,7 +299,13 @@ def main(argv: list[str] | None = None) -> int:
                              "writes into the root is refused before anything "
                              "is created: `project.yaml` is one, and "
                              "`contracts` holds several.")
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print the plan and ask, as the real run does, "
+                             "whether each of the three repositories already "
+                             "exists (`gh repo view` and its commit listing, "
+                             "or the bare repositories with "
+                             "--local-remote-dir), refusing what it refuses; "
+                             "create no remote and push nothing")
     parser.add_argument("--local-remote-dir", type=Path, default=None,
                         help="create bare repositories here instead of calling "
                              "`gh repo create` (the TEST path; no network)")
@@ -301,13 +344,26 @@ def main(argv: list[str] | None = None) -> int:
                              "openXdox); the manifest RECORDS it, which is "
                              "what makes a descendant that pins a LAYER a "
                              "descendant (2026-09-05).")
-    parser.add_argument("--pin-source", type=Path, default=None,
+    # TEXT, not `type=Path`: `Path("")` is `.`, so an empty value could not
+    # be told from a typed `.` once parsed (`pin_source_path`).
+    parser.add_argument("--pin-source", default=None,
                         help="a local clone to compute --pin digests from, "
                              "instead of reading the forge with `gh api` (the "
-                             "TEST path; no network)")
+                             "TEST path; no network). The pin file says "
+                             "only that the digest was read from "
+                             "`local-clone`, never the path. Given with no "
+                             "--pin and no --referent-chain to read it, it "
+                             "is refused as `pin-source-unused`; an empty "
+                             "value is refused as `pin-source-no-path`, and "
+                             "`.` means this directory.")
     parser.add_argument("--work-dir", type=Path, default=None,
                         help="where the working trees are built "
                              "(default: a temporary directory)")
+    parser.add_argument("--no-next-steps", action="store_true",
+                        help="leave out the closing NEXT STEPS (the clone, "
+                             "the cd and `make bootstrap`): setup-project.py "
+                             "passes it, because it runs those steps itself "
+                             "next. `Working trees are at` still prints.")
     args = parser.parse_args(argv)
 
     try:
@@ -345,6 +401,16 @@ def seed_tree(role: str, values: dict, tracking: str, scratch: Path) -> str:
     return run(["git", "write-tree"], cwd=work).lower()
 
 
+#: What the two git commands that read a leg for `only_commit` run with, over
+#: the caller's environment (#542): no terminal prompt. `gh` can see a leg
+#: that git cannot read -- `gh` is logged in and git has no credential for
+#: the host -- and git then asks the terminal for a username, so a re-run
+#: typed in one stopped there, waiting, before a word about the leg. With
+#: the prompt off, the credential git would ask a person for is a failure,
+#: which `_held_seed` reads as a leg git cannot read.
+PROBE_ENV = {"GIT_TERMINAL_PROMPT": "0"}
+
+
 def only_commit(url: str, scratch: Path) -> tuple[str, str] | None:
     """`(commit, tree)` when the repository at `url` holds exactly ONE commit
     and every ref it has names it, else None (#462).
@@ -356,16 +422,20 @@ def only_commit(url: str, scratch: Path) -> tuple[str, str] | None:
     no parent is the second half. So a repository somebody works in is told
     apart by its listing or by one commit, and is never cloned whole to be
     refused. The same question on disk and on GitHub: both are a git URL.
+    Both commands that reach `url` run under `PROBE_ENV`, and a `url` git
+    cannot read raises `CommandFailed` for `_held_seed` to answer (#542).
     """
     tips = {line.split()[0].lower()
-            for line in run(["git", "ls-remote", url]).splitlines()
+            for line in run(["git", "ls-remote", url],
+                            env=PROBE_ENV).splitlines()
             if line.strip()}
     if len(tips) != 1:
         return None
     commit = tips.pop()
     probe = scratch / "probe.git"
     run(["git", "init", "-q", "--bare", "--template=", str(probe)])
-    run(["git", "fetch", "-q", "--depth=1", url, commit], cwd=probe)
+    run(["git", "fetch", "-q", "--depth=1", url, commit], cwd=probe,
+        env=PROBE_ENV)
     if run(["git", "cat-file", "-t", commit], cwd=probe) != "commit":
         return None
     header = run(["git", "cat-file", "commit", commit],
@@ -377,9 +447,11 @@ def only_commit(url: str, scratch: Path) -> tuple[str, str] | None:
 
 
 def _held_seed(role: str, url: str, values: dict, tracking: str,
-               scratch: Path) -> str | None:
-    """The commit a leg that is not empty holds, when it is the ONLY one and
-    its tree is the one this run would seed the leg with (#462); else None.
+               scratch: Path) -> tuple[str | None, str | None]:
+    """`(commit, None)` when a leg that is not empty holds ONE commit and its
+    tree is the one this run would seed the leg with (#462); `(None, None)`
+    when it holds anything else; `(None, why)` when git cannot read it
+    (#542).
 
     That is a leg a run of this scaffold pushed before a later push was
     refused, by an organisation's ruleset or anything else, or one an
@@ -387,12 +459,41 @@ def _held_seed(role: str, url: str, values: dict, tracking: str,
     the re-run accepts on 2026-10-12, "Accept the scaffold's own seed". The
     commit's message, author and date are not asked: two runs never make
     the same commit, and they make the same tree.
+
+    A LEG GIT CANNOT READ holds nothing this run knows of (#542). "Empty" is
+    asked of `gh` (`remote_is_empty`), and `gh` sees a repository that git
+    cannot read when `gh` is logged in and git has no credential for the
+    host. `only_commit`'s `CommandFailed` reached `main` as the generic
+    `a git or gh command failed`, which named neither the leg nor a way on.
+    It is answered here instead, `why` being the command git refused and
+    what git said, and `_reusable_remotes` refuses the leg as
+    `scaffold-remote-exists`, as it refuses any leg with commits, saying that
+    git could not read it. Only `only_commit` is answered so: `seed_tree`
+    reads nothing remote, and a failure there is still `CommandFailed`.
     """
-    held = only_commit(url, scratch)
+    try:
+        held = only_commit(url, scratch)
+    except CommandFailed as exc:
+        return None, _unread_because(exc)
     if held is None:
-        return None
+        return None, None
     commit, tree = held
-    return commit if tree == seed_tree(role, values, tracking, scratch) else None
+    seeded = tree == seed_tree(role, values, tracking, scratch)
+    return (commit if seeded else None), None
+
+
+def _unread_because(failed: CommandFailed) -> str:
+    """Why git could not read a leg, in one line (#542): the command, its
+    exit and git's first `fatal:` line, or its last line when it printed no
+    `fatal:`. The rest of git's output is advice about its own command
+    ("Please make sure you have the correct access rights"), which the
+    refusal's remedy replaces."""
+    said = [line.strip() for line in failed.output.splitlines()
+            if line.strip()]
+    why = next((line for line in said if line.startswith("fatal:")),
+               said[-1] if said else "")
+    return (f"`{' '.join(failed.args_list)}` exited {failed.code}"
+            + (f": {why}" if why else ""))
 
 
 def _reusable_remotes(names: dict, urls: dict, repositories: dict,
@@ -420,7 +521,8 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
     itself. Any other leg with commits is still refused, and nothing here
     deletes, rewrites or force-pushes a remote. "Empty" is asked as it
     always was, of `remote_is_empty` or `local_remote_is_empty`; the seed is
-    asked only of a leg that is not empty.
+    asked only of a leg that is not empty, and a leg git cannot read is
+    refused as one with commits, saying so (#542).
     """
     reused: dict[str, str | None] = {}
     with tempfile.TemporaryDirectory(prefix="openreposhape-seed-") as scratch:
@@ -430,9 +532,9 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
                      else remote_is_empty(target))
             if empty is None:
                 continue
-            seed = (None if role == "assembly" or empty else
-                    _held_seed(role, urls[role], values, tracking,
-                               Path(scratch) / role))
+            seed, unread = ((None, None) if role == "assembly" or empty else
+                            _held_seed(role, urls[role], values, tracking,
+                                       Path(scratch) / role))
             if reuse_flag and (empty or seed):
                 reused[role] = seed
                 print(f"  reuse {target} " + (
@@ -444,19 +546,30 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
                 "scaffold-remote-exists",
                 f"{target} already exists" + ("" if local else " on GitHub")
                 + ("" if empty else " and has commits"),
-                _exists_remedy(role, empty, reuse_flag, seed is not None))
+                _exists_remedy(role, empty, reuse_flag, seed is not None,
+                               unread))
     return reused
 
 
 def _exists_remedy(role: str, empty: bool, reuse_flag: bool,
-                   seeded: bool = False) -> str:
+                   seeded: bool = False, unread: str | None = None) -> str:
     """The remedy line for a remote that is already there.
 
     Each situation answers to its own exit, and a refusal that named only
     one of them would send a human to the wrong one. `seeded` is a leg whose
-    one commit is this scaffold's seed (#462).
+    one commit is this scaffold's seed (#462), and `unread` says why git
+    could not read a leg that exists with commits, so whether it holds that
+    seed is not known (#542): its exit is git's access, then the same re-run.
     """
     if role != "assembly":
+        if unread:
+            return (f"Remediation: git could not read it ({unread}), so "
+                    "whether its one commit is the seed this scaffold pushes "
+                    "cannot be asked. Let git read it (on GitHub, `gh auth "
+                    "setup-git` gives git the login `gh` has), then re-run: "
+                    "with --reuse-empty-repo a leg whose one commit is that "
+                    "seed is reused, and a leg holding anything else is "
+                    "still refused. There is no --force.")
         if empty or seeded:
             return ("Remediation: "
                     + ("it has ZERO commits" if empty else
@@ -648,6 +761,11 @@ NAME_WRITTEN_INTO = (
     "the assembly root's `project.yaml` and `README.md`, each repository's "
     "`AGENTS.md` and each first commit's message")
 
+#: How a `pin-source-unused` refusal's remediation begins (#451), and a
+#: `pin-source-no-path` one's.
+UNREAD_PIN_SOURCE_MADE = ("nothing was created, and `--dry-run` refuses the "
+                          "same.")
+
 #: What every `scaffold-unwritable-value` is told to do (#282).
 UNWRITABLE_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. Pass "
@@ -781,9 +899,11 @@ def _declaration(args) -> tuple[dict, set, tuple, dict]:
     `codexDox` pins `openXdox` and reaches `openDox` through it; the chain is a
     DECLARATION, so it is checked by `_check_declared_names` below and written
     into the manifest rather than re-derived by every reader. A link is
-    verified against its own tree when `--pin-source` (or
-    `SHAPE_PIN_SOURCE_<PRODUCT>`) points at one, and is declared-unverified
-    otherwise — a warning, never a refusal, because the check is offline.
+    verified against its own tree when `SHAPE_PIN_SOURCE_<PRODUCT>` points
+    at one, or `--pin-source` for the FIRST link alone (#441: it is the
+    pinned product's checkout, never a later link's tree), and is
+    declared-unverified otherwise — a warning, never a refusal, because the
+    check is offline.
 
     A tree `--pin-source` reached whose declaration could not be read (a
     `neutral_product_pins:` that is not a list of names) is declared-unverified
@@ -902,15 +1022,23 @@ def _repository_urls(args, names: dict) -> tuple[bool, dict, dict]:
 
 
 def _leg_visibility(args, assembly_repository: str, local: bool) -> str:
-    """(h) The visibility the two NEW legs are created at: explicit, or
+    """(h) The visibility a leg this run CREATES is created at: explicit, or
     inherited from a reused empty root.
 
     Split out of `_scaffold` for #138. An organisation that created the
-    assembly root first (--reuse-empty-repo) generally wants the two NEW legs
-    to match what it already is, not the tool's own idea of a default. Reading
-    it costs one `gh repo view`, is skipped entirely for --local-remote-dir (a
-    bare repository on disk has no visibility at all) and for a fresh scaffold
-    with nothing to reuse.
+    assembly root first (--reuse-empty-repo) generally wants the legs this
+    run creates to match what it already is, not the tool's own idea of a
+    default. Reading it costs one `gh repo view`, is skipped entirely for
+    --local-remote-dir (a bare repository on disk has no visibility at all)
+    and for a fresh scaffold with nothing to reuse.
+
+    NEITHER LINE COUNTS THE LEGS (#542). Both are printed before the plan,
+    under `--dry-run` too, and which legs this run reuses is asked only
+    later, by `_reusable_remotes`. A re-run that reuses one leg creates one
+    and one that reuses both creates none, so "the two new legs" was wrong
+    there; each line now says what happens to a leg this run creates, and
+    that a reused leg keeps its own visibility, which `_reused_leg_visibility`
+    reads and warns about leg by leg.
     """
     reused_visibility = None
     if args.reuse_empty_repo and not local:
@@ -918,15 +1046,17 @@ def _leg_visibility(args, assembly_repository: str, local: bool) -> str:
     if args.visibility is None:
         if reused_visibility:
             print(f"NOTE {assembly_repository} is already {reused_visibility} "
-                  "on GitHub; the two new legs inherit that visibility (pass "
+                  "on GitHub; a leg this run creates inherits that "
+                  "visibility, and a leg it reuses keeps its own (pass "
                   "--visibility to choose one explicitly).")
         return reused_visibility or "private"
     if reused_visibility and reused_visibility != args.visibility:
         print(f"WARNING --visibility {args.visibility} disagrees with the "
               f"reused {assembly_repository}, which is {reused_visibility} "
-              "on GitHub. The two new legs are created "
+              "on GitHub. A leg this run creates is created "
               f"{args.visibility} because that is what you asked for, not "
-              "because it is what the assembly root already is.",
+              "because it is what the assembly root already is; a leg it "
+              "reuses keeps its own.",
               file=sys.stderr)
     return args.visibility
 
@@ -1028,7 +1158,7 @@ def _refuse_existing_trees(work_root: Path, names: dict) -> None:
 
 
 def _create_remotes(args, values: dict, repositories: dict, urls: dict,
-                    local: bool, reused: dict) -> None:
+                    local: bool, reused: dict) -> dict[str, str]:
     """(k) The three remotes, spec and code first so a failure costs the
     cheapest thing. Split out of `_scaffold` for #138.
 
@@ -1036,17 +1166,30 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
     `<org>/<name>` the forge knows it as, or by its clone URL, and the bare
     name is not one of the things it needs. A reused one (`reused`, from
     `_reusable_remotes`) is not created, and keeps the visibility it has.
+
+    Returns each repository's visibility as it now stands, by role, for
+    `_private_leg_note` (#542): the run's for one created here, and for a
+    reused one what GitHub says of it. A reused leg's is what
+    `_reused_leg_visibility` read, with its WARNING. The reused ROOT's is read
+    here without one, because `_leg_visibility` has already said where the
+    run's flag disagrees with it.
     """
     display = values["PROJECT_NAME"]
     project_id = values["PROJECT_ID"]
+    standing: dict[str, str] = {}
     print("\ncreating remotes")
     for role in ("spec", "code", "assembly"):
+        standing[role] = args.visibility
         if role in reused:
             print(f"  reused {repositories[role]} (already there, "
                   + ("zero commits)" if reused[role] is None else
                      f"holding this scaffold's seed {reused[role][:12]})"))
-            if role != "assembly" and not local:
-                _reused_leg_visibility(args, repositories[role])
+            if not local and role == "assembly":
+                standing[role] = (remote_visibility(repositories[role])
+                                  or args.visibility)
+            elif not local:
+                standing[role] = _reused_leg_visibility(args,
+                                                        repositories[role])
             continue
         if local:
             run(["git", "init", "-q", "--bare", "-b", args.tracking_branch,
@@ -1061,14 +1204,19 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
             run(["gh", "repo", "create", repositories[role],
                  f"--{args.visibility}", "--description", description])
             print(f"  gh    {repositories[role]} ({args.visibility})")
+    return standing
 
 
-def _reused_leg_visibility(args, repository: str) -> None:
+def _reused_leg_visibility(args, repository: str) -> str:
     """(k″) A reused leg keeps the visibility the run that created it gave it
     (#462), and a re-run whose visibility disagrees is told so, as
     `_leg_visibility` tells it about a reused root. Nothing here changes a
     repository's visibility. Never asked of a `--local-remote-dir` leg,
     which has none.
+
+    Returns the visibility GitHub reports for the leg, which is the one
+    `_private_leg_note` goes by (#542), or the run's when GitHub does not
+    say: the one value this run has for it then.
     """
     seen = remote_visibility(repository)
     if seen and seen != args.visibility:
@@ -1076,25 +1224,53 @@ def _reused_leg_visibility(args, repository: str) -> None:
               f"where this run's visibility is {args.visibility}. It keeps "
               "the visibility it has: this run changes no repository's "
               "visibility.", file=sys.stderr)
+    return seen or args.visibility
 
 
-def _private_leg_note(args, repositories: dict, local: bool) -> None:
+def _private_leg_note(args, repositories: dict, local: bool,
+                      standing: dict) -> None:
     """(k′) A private or internal leg is unreadable to the `validate`
     workflow's default GITHUB_TOKEN — the defect on the first real adoption
-    (MedxSoft/MedxEHR #7). Printed once, after both legs are known to have
-    been created at this visibility, rather than per-leg. Split out of
-    `_scaffold` for #138.
+    (MedxSoft/MedxEHR #7). Printed once, after both legs exist, rather than
+    per-leg. Split out of `_scaffold` for #138.
+
+    EACH LEG AS IT STANDS (#542). `standing` is each repository's visibility
+    from `_create_remotes`: the run's for one it created, GitHub's for one it
+    reused. The note went by the run's visibility alone, so a re-run that
+    reused a public leg under a private run called that leg private beside
+    the WARNING that it is reused and is public, and a public run that
+    reused private legs said nothing about them. It names each leg that is
+    private or internal, at its own visibility, and is not printed when
+    both are public. Two legs at one visibility read as they always did.
+
+    THE FREE-PLAN HINT GOES BY THE ROOT (#542). The `validate` workflow runs
+    in the assembly root, and it is there that an organisation secret is not
+    delivered to a private repository on the Free plan. So the hint is
+    printed only when the root, as it stands, is private or internal: a
+    public root, new or reused, receives the organisation's secrets, and a
+    hint that they "resolve to EMPTY" is false of it however private a leg
+    is. The per-leg NOTE above stays, since a public root still needs a
+    credential to read a private leg.
     """
-    if not local and args.visibility in ("private", "internal"):
-        print(f"NOTE {repositories['spec']} and {repositories['code']} are "
-              f"{args.visibility}: give {repositories['assembly']} a way to "
-              "read them — a GitHub App (SHAPE_LEGS_APP_ID + "
+    closed = [role for role in ("spec", "code")
+              if standing[role] in ("private", "internal")]
+    if not local and closed:
+        both = len(closed) == 2
+        who = " and ".join(repositories[role] for role in closed)
+        are = "are" if both else "is"
+        stated = (f"{repositories['spec']} is {standing['spec']} and "
+                  f"{repositories['code']} is {standing['code']}"
+                  if both and standing["spec"] != standing["code"]
+                  else f"{who} {are} {standing[closed[0]]}")
+        them, which = ("them", "the legs") if both else ("it", "that leg")
+        print(f"NOTE {stated}: give {repositories['assembly']} a way to "
+              f"read {them} — a GitHub App (SHAPE_LEGS_APP_ID + "
               "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
-              "PAT (contents:read on the legs, fallback) — or the `validate` "
-              "check cannot check them out.")
-        hint = free_plan_secret_hint(
-            args.org, repositories["assembly"],
-            f"{repositories['spec']} and {repositories['code']} are")
+              f"PAT (contents:read on {which}, fallback) — or the `validate` "
+              f"check cannot check {them} out.")
+        root_is_closed = standing["assembly"] in ("private", "internal")
+        hint = root_is_closed and free_plan_secret_hint(
+            args.org, repositories["assembly"], f"{who} {are}")
         if hint:
             print(hint)
 
@@ -1362,6 +1538,16 @@ def _scaffold(args) -> int:
     args.code_path = checked_value(*code_leg)
     args.org = checked_value("--org", args.org)
     args.pin_owner = checked_value("--pin-owner", args.pin_owner)
+    # A `--pin-source` THAT NAMES NO PATH, `''`, which as a `Path` is the
+    # directory this runs in, and then one NOTHING WILL READ (#451): no
+    # `--pin` reads a digest there and no `--referent-chain` link a
+    # declaration. Asked of the flags as typed, with no process started, so
+    # a dry run refuses them too.
+    args.pin_source = pin_source_path(args.pin_source,
+                                      nothing_made=UNREAD_PIN_SOURCE_MADE)
+    refuse_an_unread_pin_source(args.pin_source, args.pin,
+                                referent_chain_links(args.referent_chain),
+                                nothing_made=UNREAD_PIN_SOURCE_MADE)
     # EACH `--pin`'S FILE AGAINST THE SHAPE'S OWN AND AGAINST EACH OTHER, from
     # the arguments as typed (#241), and first: the leg-path question below
     # asks about every pin's file, and would miscount one written over the
@@ -1480,6 +1666,16 @@ def _scaffold(args) -> int:
     _print_plan(args, values, names, repositories, urls, local, policy,
                 declared_pins, chain, link_pins, pins)
     if args.dry_run:
+        # THE DRY RUN ASKS WHETHER THE REMOTES EXIST (#537), with the real
+        # run's own question, `_reusable_remotes`, and refuses what it
+        # refuses: `scaffold-remote-exists` used to come only from the real
+        # run, which `setup-project.py` starts after the yes. It READS: `gh
+        # repo view` and a commit listing, or the bare repositories on disk
+        # with `--local-remote-dir`, and for a leg that is not empty the one
+        # commit it holds, fetched into a temporary directory it deletes. It
+        # creates no remote and pushes nothing.
+        _reusable_remotes(names, urls, repositories, local,
+                          args.reuse_empty_repo, values, args.tracking_branch)
         print("\n--dry-run: nothing was created.")
         return 0
 
@@ -1503,8 +1699,8 @@ def _scaffold(args) -> int:
                                args.reuse_empty_repo, values,
                                args.tracking_branch)
 
-    _create_remotes(args, values, repositories, urls, local, reused)
-    _private_leg_note(args, repositories, local)
+    standing = _create_remotes(args, values, repositories, urls, local, reused)
+    _private_leg_note(args, repositories, local, standing)
 
     leg_values = _seed_legs(args, values, names, repositories, urls, work_root,
                             reused)
@@ -1517,21 +1713,35 @@ def _scaffold(args) -> int:
         return 2
     _set_topics(repositories, topic, local)
 
-    print(f"""
+    if not args.no_next_steps:
+        print(f"""
 NEXT STEPS
 
-    git clone --recurse-submodules {urls['assembly']}
+    {_next_steps_clone(urls['assembly'], local)}
     cd {names['assembly']}
     make bootstrap
 
 `make bootstrap` puts each leg on `{args.tracking_branch}` AT its pinned commit,
 runs the naming, manifest and lockstep-pin validators, and prints the review
 authority a wallet register names for this project — or says that authority is
-not wallet-carried here, and continues.
-
-Working trees are at {work_root}
-""")
+not wallet-carried here, and continues.""")
+    print(f"\nWorking trees are at {work_root}\n")
     return 0
+
+
+def _next_steps_clone(url: str, local: bool) -> str:
+    """The NEXT STEPS clone, as a person pastes it into a POSIX shell.
+
+    UNDER `--local-remote-dir` IT CARRIES `-c protocol.file.allow=always`
+    (#538), as setup-project.py's own clone does: the legs are cloned from
+    the plain paths `.gitmodules` records, the file transport, which git
+    refuses a submodule by default since the 2022 advisories, so the line as
+    printed failed `transport 'file' not allowed`. The URL is a path there,
+    one word whatever folder it is in (`shell_line`, POSIX as #532 rules
+    for a printed command); a GitHub URL needs no quotes.
+    """
+    words = ["git", "-c", "protocol.file.allow=always"] if local else ["git"]
+    return shell_line([*words, "clone", "--recurse-submodules", url], "posix")
 
 
 if __name__ == "__main__":

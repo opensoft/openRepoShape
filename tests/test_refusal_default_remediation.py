@@ -18,8 +18,10 @@ NOW `repo_shape` assumes no remedy, and a refusal with none prints its
 `REMEDIATION` under every refusal it makes that names no other, so its output
 is byte for byte what it was. `family.py add` names an unreadable
 `.gitmodules` as the holder's own gate does: `gitmodules-unreadable`, with
-the gate's remedy. `adopt-project.py`'s report of a late failure, which left
-the lockstep remedy off by comparing against it, leaves an absent one off too.
+the gate's remedy and one step more, the `git add .gitmodules` that `add`
+needs before it runs again (#407). `adopt-project.py`'s report of a late
+failure, which left the lockstep remedy off by comparing against it, leaves an
+absent one off too.
 
 The family runs are offline, as in `test_family_add_refusals.py`, whose
 fixtures they use: members in local bare repositories, and a `gh` that logs
@@ -59,6 +61,12 @@ LOCKSTEP_WORDS = ("validate-pins.py", "<leg>-pin.yaml", "git submodule update")
 #: A `.gitmodules` git refuses to read, as `test_family_add_refusals.py`
 #: writes one for the holder's validator.
 UNREADABLE_GITMODULES = b'[submodule "broken"\n'
+
+#: How the gate's remedy for that file ends, and how `add`'s does: `add`
+#: commits the file and refuses a copy nobody has staged (#407), so the
+#: mended file is staged first, where the gate reads the work tree's copy.
+RUN_AGAIN = " then run this again."
+STAGE_THEN_RUN_AGAIN = " then `git add .gitmodules` and run this again."
 
 
 def says_no_lockstep(text: str) -> None:
@@ -120,7 +128,9 @@ def test_add_names_an_unreadable_gitmodules_as_the_holders_gate_does(
         family, holder, offline, dry_run):
     """`add` over a `.gitmodules` git cannot read is refused as the holder's
     own `validate-family.py` refuses it: the same two lines, code and remedy,
-    where it was `git-failed` under an assembly root's lockstep remedy."""
+    where it was `git-failed` under an assembly root's lockstep remedy. The
+    remedy takes one step more, the stage `add` needs before it runs again
+    (#407), and differs in nothing else."""
     (holder / ".gitmodules").write_bytes(UNREADABLE_GITMODULES)
     # No `git status` to ask: git cannot read the file for that either.
     before = snapshot(holder, status=False)
@@ -130,7 +140,10 @@ def test_add_names_an_unreadable_gitmodules_as_the_holders_gate_does(
     gate = validate(holder, "--no-members")
     assert gate.returncode == 2, gate.stderr + gate.stdout
     assert gate.stderr.startswith("REFUSED gitmodules-unreadable: ")
-    assert added.stderr.splitlines() == gate.stderr.splitlines()
+    *said, remedy = gate.stderr.splitlines()
+    assert remedy.endswith(RUN_AGAIN), remedy
+    assert added.stderr.splitlines() == [
+        *said, remedy.replace(RUN_AGAIN, STAGE_THEN_RUN_AGAIN)]
     says_no_lockstep(added.stderr)
     assert snapshot(holder, status=False) == before
     offline.assert_left_nothing()
@@ -161,8 +174,9 @@ def test_add_says_which_copy_git_read_when_the_working_tree_has_none(
     assert lines[-1] == (
         "Remediation: git cannot read it either, so none of this holder's "
         "submodules can be cloned from it as it stands. Mend the file by hand "
-        "(`git config -f .gitmodules --list` says where it breaks), then run "
-        "this again. With no .gitmodules in the working tree, git read "
+        "(`git config -f .gitmodules --list` says where it breaks), then `git "
+        "add .gitmodules` and run this again. With no .gitmodules in the "
+        "working tree, git read "
         f"{'the index' if copy == 'index' else 'HEAD'}'s copy: put it back "
         f"first, {put_back}.")
     says_no_lockstep(added.stderr)

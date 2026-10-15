@@ -580,6 +580,7 @@ def test_the_dry_run_plans_a_pinned_neutral_product_root(tmp_path):
                         "--elected-on", "2026-09-05", "--dry-run",
                         "--pin", f"openDox@{commit}",
                         "--pin-source", str(product),
+                        "--local-remote-dir", str(tmp_path / "remotes"),
                         "--work-dir", str(tmp_path / "work"))
     assert result.returncode == 0, result.stderr + result.stdout
     for leg in ("Example/openXdox", "Example/openXdox-spec",

@@ -61,8 +61,8 @@ make resume      the same, with `make resume`
 ```
 
 `make bootstrap` puts each member's legs on their tracking branch AT their
-pinned commits, by running the member's own bootstrap rather than
-reimplementing it.
+pinned commits where that loses no commit, and says why where it does not, by
+running the member's own bootstrap rather than reimplementing it.
 
 `make park` and `make resume` carry the ESTATE'S IN-FLIGHT WORK to another
 workstation, one member at a time and through each member's own verb — the
@@ -93,10 +93,12 @@ holder (`../<Project>`). Two copies of every member is correct and intended —
 `validate`; the sibling is where a human works, and `family.py bump` is how
 this family follows it. What it will NOT do, and you must not do either:
 
-* **It moves nothing.** When the parent folder is not named after the family
-  it WARNS and prints the exact `mv` for a human to run. Do not run that `mv`
-  on your own initiative: relocating a checkout breaks an open shell, an
-  editor and any LINKED WORKTREE, whose `.git` file carries an absolute path.
+* **It moves nothing.** When the parent folder is not named after the family,
+  and no link of that name beside it leads to it, it WARNS, prints the exact
+  `mv` for a human to run and stops, exit 1 (`make`: 2), before it clones
+  anything. Do not run that `mv` on your own initiative: relocating a checkout
+  breaks an open shell, an editor and any LINKED WORKTREE, whose `.git` file
+  carries an absolute path.
 * **It never touches an existing clone beyond `git fetch`.** No checkout, no
   reset, no pull, no stash, no branch switch — somebody is working in there.
   A directory that is a clone of a different repository is reported and

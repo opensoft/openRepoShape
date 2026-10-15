@@ -223,12 +223,16 @@ def test_it_is_the_doctors_rule_on_any_ascii_value(doctor, platform):
     `quote_arg` flattens its value to ASCII first, because its report is
     pure ASCII, and is otherwise this function: the same two alphabets and
     the same two escapes. On an ASCII value the two must agree, but for a
-    leading `=`, which this function quotes and the doctor does not yet."""
-    values = [*ORDINARY, *(value for value in AWKWARD if value.isascii()),
+    leading `=` in PowerShell's dialect: this function quotes it in both,
+    because zsh expands a bare `=word`, and the doctor quotes it for `sh`
+    only (#532), because PowerShell expands nothing there."""
+    values = [*ORDINARY, *LEADING_EQUALS,
+              *(value for value in AWKWARD if value.isascii()),
               r"C:\work,old\Atlas", *EVERY_ASCII]
     differ = {value: (shell_quoted(value, platform),
                       doctor.quote_arg(value, platform))
-              for value in values if not value.startswith("=")
+              for value in values
+              if not (platform == "nt" and value.startswith("="))
               and shell_quoted(value, platform)
               != doctor.quote_arg(value, platform)}
     assert differ == {}
@@ -236,6 +240,53 @@ def test_it_is_the_doctors_rule_on_any_ascii_value(doctor, platform):
         quoted = shell_quoted(value, platform)
         reader = powershell_words if platform == "nt" else shlex.split
         assert reader(quoted) == [value], quoted
+
+
+@pytest.mark.parametrize("value", LEADING_EQUALS)
+def test_the_doctor_quotes_a_word_that_begins_with_equals_for_sh(doctor,
+                                                                value):
+    """#532. `quote_arg` left a leading `=` bare, so a NEXT line holding one
+    (a branch named `=x`) ran in zsh, macOS's login shell, with `=x` read as
+    the path of a command `x`. Quoted, `sh` reads the value that went in."""
+    quoted = doctor.quote_arg(value, "posix")
+    assert quoted == f"'{value}'"
+    assert shlex.split(quoted) == [value]
+
+
+@pytest.mark.parametrize("value", ["KEY=value", "--root=/srv/work", "a=",
+                                   "x==y"])
+def test_an_equals_sign_anywhere_but_the_front_stays_bare(doctor, value):
+    """Only a LEADING `=` is expanded, so the doctor's lines that carry
+    `KEY=value` words print as they always did."""
+    assert doctor.quote_arg(value, "posix") == value
+
+
+@pytest.mark.parametrize("value", LEADING_EQUALS)
+def test_the_doctors_powershell_dialect_leaves_a_leading_equals_alone(doctor,
+                                                                      value):
+    """PowerShell expands no `=word`, so the dialect that quotes for it has no
+    such gap and is not changed (#532): the doctor's lines on Windows print
+    as they did."""
+    assert doctor.quote_arg(value, "nt") == value
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a POSIX shell's own reading")
+@pytest.mark.parametrize("shell", ["sh", "bash", "zsh"])
+def test_a_real_shell_hands_back_each_word_the_doctor_quoted(doctor, shell):
+    """The shells themselves, where the host has them: each value, quoted by
+    the doctor for `sh`, comes back from `printf` byte for byte. `zsh -f` is
+    the one that matters here, and the one that expands a bare `=ls`."""
+    if shutil.which(shell) is None:
+        pytest.skip(f"no {shell} on this host")
+    values = [*LEADING_EQUALS, "KEY=value",
+              *(value for value in AWKWARD if value.isascii()),
+              *(chr(code) for code in range(0x21, 0x7f))]
+    line = "printf '%s\\0' " + " ".join(doctor.quote_arg(value, "posix")
+                                        for value in values)
+    argv = [shell, "-f", "-c", line] if shell == "zsh" else \
+        [shell, "-c", line]
+    printed = subprocess.run(argv, capture_output=True, check=True).stdout
+    assert printed.decode("utf-8").split("\0")[:-1] == values
 
 
 def test_the_two_alphabets_are_the_doctors(doctor):
@@ -373,7 +424,7 @@ def test_the_siblings_mv_lines_paste_whole_and_move_the_holder(family,
     holder = copied_holder(family, tmp_path / folder)
     result = run_script(FAMILY, "siblings", "--family-root", str(holder),
                         "--dry-run", env=NO_BYTECODE)
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode == 1, result.stdout + result.stderr  # #543
     assert "NOTHING WAS MOVED" in result.stderr
     assert "in a POSIX shell (Git Bash" in result.stderr
     commands = [shlex.split(line) for line in result.stderr.splitlines()
@@ -434,7 +485,7 @@ def test_siblings_runs_beside_a_repo_shape_without_the_quoter(family,
     assert helped.stdout.startswith("usage: siblings.py"), helped.stdout
 
     warned = run_script(siblings, "--dry-run", cwd=holder)
-    assert warned.returncode == 0, warned.stdout + warned.stderr
+    assert warned.returncode == 1, warned.stdout + warned.stderr  # #543
     assert "NOTHING WAS MOVED" in warned.stderr, warned.stderr
     commands = [shlex.split(line) for line in warned.stderr.splitlines()
                 if line.startswith(" " * 12) and line.strip()[:3] in

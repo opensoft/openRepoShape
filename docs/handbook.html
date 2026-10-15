@@ -472,9 +472,9 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
 
-      <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
+      <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -498,7 +498,8 @@
 openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
           <p class="sub">That first line installs ONE command into <code>~/.local/bin</code>: the
           newest release, pinned to its tag, with <code>git-filter-repo</code> where <code>pipx</code>
-          can install it, and it ends with <code>openRepoShape --preflight</code>. The
+          or <code>uv</code> can install it, and it ends with <code>openRepoShape --preflight</code>
+          and whether the machine is ready to adopt or only to scaffold. The
           estate verbs <code>park</code> and <code>resume</code>, for <a href="#park">carrying
           in-flight work</a> to another workstation, are
           <a href="https://github.com/opensoft/openRepoTools">opensoft/openRepoTools</a>&rsquo; and have a one-liner of
@@ -609,7 +610,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -688,10 +689,10 @@ sudo dnf install gh</code></pre></div>
           <p>Then <code>brew install git-filter-repo</code> only if you are ADOPTING an existing
           repository rather than scaffolding a new one.</p>
           <p>The stock <code>/bin/bash</code> is 3.2 and is enough: <code>setup.sh</code>,
-          <code>install.sh</code> and the <code>openRepoShape</code> command use no syntax newer than
-          that, and CI runs the whole suite on <code>macos-latest</code>, parsing all three there with
-          <code>/bin/bash</code> itself. That the login shell is zsh changes nothing &mdash; all three
-          entry points are run under <code>bash</code> explicitly.</p>
+          <code>install.sh</code> and the <code>openRepoShape</code> command are written to use no
+          syntax newer than that, though CI runs on Linux only and no run of it checks them against
+          bash 3.2. That the login shell is zsh changes nothing &mdash; all three entry points are
+          run under <code>bash</code> explicitly.</p>
           <h4>The tool offers the rest</h4>
           <p>The preflight names what is missing and, for <code>gh</code>, its login and its
           credential helper, prints the command for THIS machine and asks once &mdash; <code>Type yes to continue:</code> &mdash;
@@ -722,7 +723,12 @@ sudo dnf install gh</code></pre></div>
           for <code>git</code>: a run refuses a missing <code>git</code> before its preflight starts.
           There is no <code>openRepoShape</code> command to install here: that two-liner IS the
           Windows way in, and the <code>openRepoShape</code> command is a macOS, Linux and WSL2
-          convenience with no Windows twin, because on Windows there is nothing to install.</p>
+          convenience with no Windows twin, because on Windows there is nothing to install.
+          Printed commands are quoted for a POSIX shell, so paste them into Git Bash. Only
+          <code>shape-doctor.py</code>&rsquo;s lines, <code>setup-project.py</code>&rsquo;s family
+          lines and <code>family.py</code>&rsquo;s <code>NEXT</code>, <code>switch -c</code>,
+          <code>add</code> and <code>git rm -r --cached</code> lines are quoted for PowerShell, on
+          Windows.</p>
         </div>
 
       </div>
@@ -775,11 +781,12 @@ sudo dnf install gh</code></pre></div>
             installs the newest, with no <code>gh</code> and no login. Its command is PINNED to the
             release tag, recorded in <code>openRepoShape.ref</code> beside it: <code>setup.sh</code>
             and the standard are fetched at that tag, not at main. It installs
-            <code>git-filter-repo</code> with <code>pipx</code> where it can, or prints the command,
-            and ends with <code>openRepoShape --preflight</code>. <code>install.sh</code> itself never
-            runs <code>sudo</code>; the preflight it ends with offers what is missing, each behind a
-            typed <code>yes</code> at your terminal. <code>| bash -s -- v1.0.1</code> names a
-            release; the same line again upgrades.</p>
+            <code>git-filter-repo</code> with <code>pipx</code>, or <code>uv</code>, where it can, or
+            prints the command, runs <code>openRepoShape --preflight</code>, and says last if the
+            machine is ready to adopt or only to scaffold. <code>install.sh</code> itself never runs
+            <code>sudo</code>; the preflight offers what is missing, each behind a typed
+            <code>yes</code> at your terminal. <code>| bash -s -- v1.0.1</code> names a release; the
+            same line again upgrades.</p>
             <p data-platform="linux mac" class="sub">By hand, the same command at main, which records no ref and follows main:</p>
             <div data-platform="linux mac" class="code" data-lang="sh"><pre><code>gh api repos/opensoft/openRepoShape/contents/openRepoShape \
     -H 'Accept: application/vnd.github.raw' | bash -s -- --install</code></pre></div>
@@ -964,8 +971,9 @@ sudo dnf install gh</code></pre></div>
           <li>Every action the tool offers that changes the machine or the account is a typed
           <code>yes</code>, at the same prompt: <code>Type yes to continue:</code>. <code>install.sh</code>
           asks nothing before its own two acts, because running it is your act: it places the
-          command and installs <code>git-filter-repo</code> with <code>pipx</code> where it can, and itself
-          never runs <code>sudo</code>. The preflight it ends with asks before each offer, as above.</li>
+          command and installs <code>git-filter-repo</code> with <code>pipx</code> or <code>uv</code>
+          where one is there, and itself never runs <code>sudo</code> or installs either of them. The
+          preflight it ends with asks before each offer, as above.</li>
           <li><code>--yes</code> skips the scaffold question only. It does not answer an install
           offer, <code>gh auth login</code> or <code>gh auth setup-git</code>.</li>
           <li>With no terminal attached there is no offer at all.</li>
@@ -1037,7 +1045,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1072,9 +1080,9 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
 
-      <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
+      <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Reading private legs in CI</h2>
@@ -1130,9 +1138,9 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
 
-      <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
+      <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
       <p class="eyebrow">Reference</p>
       <h2>The three legs, and naming</h2>
@@ -1366,7 +1374,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1663,7 +1671,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob c9aebc088251b401dfbe9e26c7895307cca3eb56 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 
