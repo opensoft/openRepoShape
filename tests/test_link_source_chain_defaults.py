@@ -101,6 +101,16 @@ def naming(cwd: Path, *args: str):
     return run_script(VALIDATOR, *args, cwd=cwd)
 
 
+def stdin_naming(cwd: Path, chain: str, *sources: str):
+    """`codexInk`, read from stdin with `--referent-chain <chain>`, and each
+    of `sources` as a `--link-source`."""
+    return run_script(VALIDATOR, "--role", "assembly", "--pins", "openXdox",
+                      "--referent-chain", chain,
+                      *(arg for source in sources
+                        for arg in ("--link-source", source)),
+                      cwd=cwd, input="codexInk\n")
+
+
 def scaffold(cwd: Path, name: str, source: Path, *args: str):
     """`scaffold-project.py` for `codexSoft/<name>`, pinning `openXdox` at a
     commit of `source`, which is made a repository here and is the
@@ -172,16 +182,32 @@ def test_names_read_from_stdin_note_the_first_link_they_read(ink):
     """Names on stdin come only when no other name does, so their chain's
     first link is found as it is read: the NOTE names it as it does for a
     name on the command line."""
-    result = run_script(VALIDATOR, "--role", "assembly", "--pins", "openXdox",
-                        "--referent-chain", "openXdox,openYdox,openInk",
-                        "--link-source", f"openXdox={ink['x']}",
-                        "--link-source", str(ink["y"]),
-                        cwd=ink["root"], input="codexInk\n")
+    result = stdin_naming(ink["root"], "openXdox,openYdox,openInk",
+                          f"openXdox={ink['x']}", str(ink["y"]))
     assert result.returncode == 0, result.stderr
     assert result.stderr.endswith(
         f"NOTE --link-source {ink['y']}: not used — a bare PATH is the "
         "tree of a chain's first link alone, openXdox, which had "
         f"{MORE_SPECIFIC}.\n"), result.stderr
+
+
+def test_a_two_link_chain_read_from_stdin_counts_its_first_link(tmp_path):
+    """A chain of TWO links is a first link read: `openXdox` is keyed, so the
+    bare tree goes unused, and the NOTE says each link whose declaration is
+    read had a more specific source. Were a two-link chain not counted (the
+    one-link rule taken one link too far), the first-link list would be empty
+    and the sentence would name no link: `first link alone, , which had`."""
+    work = tmp_path / "ws"
+    work.mkdir()
+    bare = tree(tmp_path / "trees" / "other", "openInk")
+    result = stdin_naming(
+        work, "openXdox,openInk",
+        f"openXdox={tree(tmp_path / 'trees' / 'openXdox', 'openInk')}",
+        str(bare))
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == (
+        f"NOTE --link-source {bare}: not used — each link whose own "
+        f"declaration is read had {MORE_SPECIFIC}.\n")
 
 
 def test_chains_that_begin_at_two_links_read_a_bare_tree_for_neither(
