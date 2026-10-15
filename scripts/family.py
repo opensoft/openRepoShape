@@ -705,21 +705,37 @@ def _switch_command(root: Path, branch: str) -> str:
     return shell_line(["git", "-C", root, "switch", "-c", branch])
 
 
+#: What every remedy that names `_switch_command` says next (#607): where an
+#: earlier act left that branch, `switch -c` fails `fatal: a branch named
+#: '<branch>' already exists` (exit 128), and the person had to know `git
+#: switch <branch>`. That keeps the branch's commits and refuses to overwrite
+#: a changed file; nothing here names `switch -C`, which resets the branch.
+#: IN WORDS, NOT A SECOND COMMAND: no one line works in both states in every
+#: shell this file quotes for (PowerShell 5.1 has no `||`), and README lists
+#: the kinds of line printed for PowerShell. The holder's
+#: `validate-family.py` says the same words.
+BRANCH_LEFT = ("If `git switch -c` says that branch already exists, an "
+               "earlier act left it: the same command without `-c` switches "
+               "to it and keeps every commit on it, or give the branch "
+               "another name.")
+
+
 def _checked_branch(family: "Family", verb: str, suggested: str) -> str:
     """The branch `verb`'s ONE commit lands on: the one the holder stands
     on, refused when that is the holder's tracking branch or there is none
     (#487). Asked by the real run, after the refusals about the arguments
     and the holder and before the member is read or anything is written;
-    `--dry-run` asks `_branch_said` instead."""
+    `--dry-run` asks `_branch_said` instead. The remedy's `switch -c` is
+    followed by `BRANCH_LEFT`, for a holder that has the branch (#607)."""
     branch = _holder_branch(family.root)
     if branch is not None and branch != family.tracking():
         return branch
     remedy = ("Remediation: these organisations are pull-request only, so "
               "make a branch for the change and run the same command "
               f"again:\n    {_switch_command(family.root, suggested)}\n"
-              "then push that branch and open a pull request, as the NEXT "
-              "line the command ends with says. `--dry-run` runs on any "
-              "branch.")
+              f"{BRANCH_LEFT}\nThen push that branch and open a pull "
+              "request, as the NEXT line the command ends with says. "
+              "`--dry-run` runs on any branch.")
     if branch is None:
         raise Refusal(
             "family-holder-detached",
@@ -738,7 +754,8 @@ def _checked_branch(family: "Family", verb: str, suggested: str) -> str:
 def _branch_said(family: "Family", verb: str, suggested: str) -> list[str]:
     """The `branch` line a dry run prints (#487): where the real run's
     commit lands, or that the real run refuses here, by its code, and the
-    command that makes a branch, on a line of its own."""
+    command that makes a branch, on a line of its own, then `BRANCH_LEFT`
+    as the real run's remedy says it (#607)."""
     branch = _holder_branch(family.root)
     tracking = family.tracking()
     if branch is not None and branch != tracking:
@@ -750,7 +767,8 @@ def _branch_said(family: "Family", verb: str, suggested: str) -> list[str]:
                     f"{branch} is the holder's tracking branch"))
     return [f"branch       {where}, where a real {verb} refuses ({code}); "
             "make a branch first:",
-            f"             {_switch_command(family.root, suggested)}"]
+            f"             {_switch_command(family.root, suggested)}",
+            f"             {BRANCH_LEFT}"]
 
 
 def _print_next(family: "Family", branch: str) -> None:
@@ -1361,7 +1379,9 @@ def _print_next_steps(args, work: Path, folder: Path | None) -> None:
 
     Split from `cmd_init` for #136. A BRANCH FIRST (#487): the holder stands
     on its tracking branch, where `add` refuses to commit, so the block
-    opens with the `git switch -c` that makes the branch `add` suggests.
+    opens with the `git switch -c` that makes a branch for it. Its member
+    is `<Project>`, the one placeholder the `--member` under it says
+    (#607); `add`'s own refusal names the branch lowercased.
 
     ONE COMMAND A LINE, `cd` apart from `make siblings`: Windows PowerShell
     5.1, the shell `setup-project.py` documents, rejects `&&` between two
@@ -1387,7 +1407,7 @@ def _print_next_steps(args, work: Path, folder: Path | None) -> None:
     print(f"""
 NEXT STEPS
 
-    {switch} family/add-<project>
+    {switch} family/add-<Project>
     {_add_command(work, args.org)}
     cd {shell_quoted(work)}
     make siblings
