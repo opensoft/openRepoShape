@@ -57,7 +57,9 @@ one exception is `--reuse-empty-repo`, which reuses each of the three remotes
 while it has ZERO commits, and a leg whose one commit is the seed this
 scaffold pushes (#462): a reserved name, or what a run whose later push an
 organisation's ruleset refused left behind. It never deletes, rewrites or
-force-pushes a remote.
+force-pushes a remote. `--dry-run` asks the same question of the three
+remotes and refuses `scaffold-remote-exists` as the real run does (#537), so
+`setup-project.py` refuses at the plan, before it asks for the yes.
 
 EXIT CODES: 0 done · 1 nothing (dry run prints and exits 0) · 2 refusal.
 """
@@ -136,6 +138,21 @@ from shape_materialize import (  # noqa: E402
 CHAIN_LINK_FORM = "neutral-product"
 
 
+def _gh_not_found(question: str, exc: FileNotFoundError) -> Refusal:
+    """NO `gh` ON PATH IS `gh-not-found` (#537), as `pin_digest_from_gh` names
+    it, and not a `FileNotFoundError` traceback. Each `gh` read this file makes
+    before it creates anything refuses with this one, in these words, where
+    `question` is what could not be asked."""
+    return Refusal(
+        "gh-not-found",
+        f"the `gh` CLI is not on PATH, so {question} cannot be asked: {exc}",
+        "Remediation: put `gh` on PATH, logged in (`gh auth login`), and "
+        "run this again: the real run creates the three repositories "
+        "with `gh repo create`. `openRepoShape --preflight` names each "
+        "missing prerequisite and offers to install it, on a typed "
+        "yes.")
+
+
 def remote_is_empty(repository: str) -> bool | None:
     """Does `<org>/<repo>` exist on GitHub with ZERO commits?
 
@@ -143,10 +160,19 @@ def remote_is_empty(repository: str) -> bool | None:
     does not exist. GitHub answers a commit listing for an empty repository
     with 409 and the words "Git Repository is empty", which is the only
     reliable signal — `size: 0` is also what a repository of small files says.
+
+    NO `gh` ON PATH IS `gh-not-found` (#537), and not a `FileNotFoundError`
+    traceback: `--dry-run` asks this question too now, and before that a dry
+    run needed no `gh` at all.
     """
-    probe = subprocess.run(["gh", "repo", "view", repository, "--json", "name"],
-                           capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", check=False)
+    try:
+        probe = subprocess.run(
+            ["gh", "repo", "view", repository, "--json", "name"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except FileNotFoundError as exc:
+        raise _gh_not_found(
+            f"whether {repository} already exists on GitHub", exc) from exc
     if probe.returncode != 0:
         return None
     commits = subprocess.run(
@@ -174,11 +200,21 @@ def remote_visibility(repository: str) -> str | None:
     lowercased, or None if it cannot be read — the repository does not exist,
     or `gh` cannot see it. Never called for a `--local-remote-dir` repository:
     a bare repository on disk has no visibility at all.
+
+    NO `gh` ON PATH IS `gh-not-found` (#537), as `remote_is_empty`'s is, and
+    not a `FileNotFoundError` traceback: `--reuse-empty-repo` reads the root's
+    visibility (`_leg_visibility`) BEFORE it asks `remote_is_empty` whether the
+    three repositories exist, in a dry run and a real one alike, so the refusal
+    has to come from here too or the run never reaches the one that has it.
     """
-    proc = subprocess.run(
-        ["gh", "repo", "view", repository, "--json", "visibility"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        check=False)
+    try:
+        proc = subprocess.run(
+            ["gh", "repo", "view", repository, "--json", "visibility"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except FileNotFoundError as exc:
+        raise _gh_not_found(
+            f"what visibility {repository} has on GitHub", exc) from exc
     if proc.returncode != 0:
         return None
     try:
@@ -262,7 +298,13 @@ def main(argv: list[str] | None = None) -> int:
                              "writes into the root is refused before anything "
                              "is created: `project.yaml` is one, and "
                              "`contracts` holds several.")
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print the plan and ask, as the real run does, "
+                             "whether each of the three repositories already "
+                             "exists (`gh repo view` and its commit listing, "
+                             "or the bare repositories with "
+                             "--local-remote-dir), refusing what it refuses; "
+                             "create no remote and push nothing")
     parser.add_argument("--local-remote-dir", type=Path, default=None,
                         help="create bare repositories here instead of calling "
                              "`gh repo create` (the TEST path; no network)")
@@ -1595,6 +1637,16 @@ def _scaffold(args) -> int:
     _print_plan(args, values, names, repositories, urls, local, policy,
                 declared_pins, chain, link_pins, pins)
     if args.dry_run:
+        # THE DRY RUN ASKS WHETHER THE REMOTES EXIST (#537), with the real
+        # run's own question, `_reusable_remotes`, and refuses what it
+        # refuses: `scaffold-remote-exists` used to come only from the real
+        # run, which `setup-project.py` starts after the yes. It READS: `gh
+        # repo view` and a commit listing, or the bare repositories on disk
+        # with `--local-remote-dir`, and for a leg that is not empty the one
+        # commit it holds, fetched into a temporary directory it deletes. It
+        # creates no remote and pushes nothing.
+        _reusable_remotes(names, urls, repositories, local,
+                          args.reuse_empty_repo, values, args.tracking_branch)
         print("\n--dry-run: nothing was created.")
         return 0
 
