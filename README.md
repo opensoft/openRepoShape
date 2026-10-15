@@ -476,8 +476,10 @@ manifest, sets the topic `xf-project-atlas` on all three, clones the root as
 > created. A failed push says so in as many words — *NOTHING has been rolled
 > back. What already exists is listed above; delete it by hand if you want a
 > clean re-run* — and it is no less true of a failure anywhere else. A second
-> run is refused while they exist, and there is no `--force`: delete what was
-> created — `gh repo delete <org>/<name>`, which needs the `delete_repo` scope
+> run is refused while they exist, at the plan in (3), before the `yes`: the
+> plan is the scaffold's `--dry-run`, which asks whether each of the three
+> already exists. There is no `--force`: delete what was created —
+> `gh repo delete <org>/<name>`, which needs the `delete_repo` scope
 > (`gh auth refresh -s delete_repo`) — or scaffold under a different
 > `--project`, or re-run with `--reuse-empty-repo`. That reuses each of the
 > three that has ZERO commits, a reserved name rather than a project, and a
@@ -784,8 +786,9 @@ The contracts decision costs something, and the plan says so instead of letting
 it be discovered later: `scripts/validate.py` reads `contracts/*.yaml` from
 beside it and must now read ACROSS the root. `plan` finds every such file with
 `git grep` and lists up to eight per directory in `follow_ups:`, counting the
-rest; the root Makefile it materializes exports `CONTRACTS_DIR ?=
-$(CURDIR)/spec/contracts`. The tool does not make the edit — naming it is the
+rest; the root Makefile it materializes exports `CONTRACTS_DIR`, pointing at the
+`contracts/` of the spec leg where the plan mounts it (`$(CURDIR)/spec/contracts`
+by default). The tool does not make the edit — naming it is the
 honest half, making it silently would be the dangerous one. And `.specify/` and
 the ten identical assistant stubs stay at the root because an assistant reading
 `CLAUDE.md` from inside the code leg would be told about specifications it
@@ -798,7 +801,11 @@ ambiguous`, first match wins, each with a reason. The fourth class is not a
 failure: a classifier that guessed at `examples/golden-run/` would be wrong
 about half the time and silent about it. Those entries get `leg: null`,
 `review_required: true` and the QUESTION; `execute` refuses while any remain,
-because an unanswered question is never an implicit `root`.
+because an unanswered question is never an implicit `root`. One question comes
+answered: a source's own `single-repository.yaml` record is written `leg: drop`,
+its rule's default, still `review_required: true` with its question beside it,
+and `execute` takes it as written, so it drops the record unless a person
+changes `leg:` (the question offers `root`).
 
 A shape file whose name the source already holds — `README.md`, `Makefile` — is
 written under `shape/` as a follow-up to merge, and a kept root `.gitattributes`
