@@ -41,8 +41,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, clear_ambient_pin_sources,
-                      git, make_source_repo, resolve, run_script, write_plan)
+from conftest import (ADOPT, REPO, clear_ambient_pin_sources,
+                      cloned_just_pushed, git, make_source_repo, resolve,
+                      run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import parse_yaml  # noqa: E402
@@ -559,9 +560,7 @@ def test_the_split_lands_the_files_the_pin_names(adopted):
 @needs_filter_repo
 def test_the_assembly_bootstraps_where_it_failed_with_shape_copy_missing(
         adopted, tmp_path):
-    clone = tmp_path / PROJECT
-    git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b", BRANCH,
-        str(adopted.source), str(clone), cwd=tmp_path)
+    clone = cloned_just_pushed(adopted.source, tmp_path / PROJECT, BRANCH)
     bootstrapped = run_script(clone / "scripts" / "bootstrap.py", cwd=clone)
     output = bootstrapped.stderr + bootstrapped.stdout
     assert "shape-copy-missing" not in output, output
@@ -601,13 +600,8 @@ def test_a_checkout_that_writes_crlf_still_bootstraps(adopted, tmp_path, key,
     shape copy, its `* text=auto` alone governs it, and it IS checked out
     with CRLF, so the setting reached the checkout and the pass means what
     it says."""
-    clone = tmp_path / PROJECT
-    cloned = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
-         BRANCH, str(adopted.source), str(clone)], cwd=str(tmp_path),
-        env=command_scope(key, value), capture_output=True, text=True,
-        check=False)
-    assert cloned.returncode == 0, cloned.stderr
+    clone = cloned_just_pushed(adopted.source, tmp_path / PROJECT, BRANCH,
+                               env=command_scope(key, value))
     if adopted.own:
         assert b"\r\n" in (clone / README).read_bytes(), \
             "this clone did not write CRLF, so it tests nothing"
@@ -752,9 +746,8 @@ def test_a_root_kept_symlink_the_shape_writes_through_adopts(
 def test_the_assembly_with_a_root_kept_symlink_bootstraps(
         adopted_through_a_link, tmp_path):
     assert adopted_through_a_link.result.returncode == 0
-    clone = tmp_path / PROJECT
-    git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b", BRANCH,
-        str(adopted_through_a_link.source), str(clone), cwd=tmp_path)
+    clone = cloned_just_pushed(adopted_through_a_link.source,
+                               tmp_path / PROJECT, BRANCH)
     bootstrapped = run_script(clone / "scripts" / "bootstrap.py", cwd=clone)
     output = bootstrapped.stderr + bootstrapped.stdout
     assert bootstrapped.returncode == 0, output

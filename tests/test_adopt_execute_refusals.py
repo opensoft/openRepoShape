@@ -1017,6 +1017,13 @@ def a_whole_pin(product: str) -> str:
 #: then passes. A `paths:` with no entries is valid as a TYPE and leaves every
 #: source path uncovered, which is `plan-uncovered`'s to say, as it was. A
 #: `pins:` is a list of mappings, as `plan` writes it since #273.
+#:
+#: A TEXT in the third place is what `check` says instead, because the key
+#: is read as it always was (#544, #435's `source is None` and `legs is None`
+#: arms): `source:` bare or absent is `plan-no-source`, a refusal, exit 2, and
+#: `legs:` bare is the names' own `naming-role-mismatch`, a finding, exit 1.
+#: Neither is `plan-bad-source` or `plan-bad-legs`, which say a value is the
+#: wrong TYPE, and a bare key has no value at all.
 GOOD_KEYS = {
     "pins-empty": ("pins", "pins: []\n", True),
     "pins-bare": ("pins", "pins:\n", True),
@@ -1029,6 +1036,9 @@ GOOD_KEYS = {
     "allow-absent": ("allow_empty_legs", "", True),
     "allow-both": ("allow_empty_legs", "allow_empty_legs: [spec, code]\n",
                    True),
+    "source-bare": ("source", "source:\n", "REFUSED plan-no-source"),
+    "source-absent": ("source", "", "REFUSED plan-no-source"),
+    "legs-bare": ("legs", "legs:\n", "FINDING naming-role-mismatch"),
     "paths-empty": ("paths", "paths: []\n", False),
     "paths-bare": ("paths", "paths:\n", False),
     "paths-absent": ("paths", "", False),
@@ -1036,17 +1046,23 @@ GOOD_KEYS = {
 
 
 @pytest.mark.parametrize("edit", sorted(GOOD_KEYS))
-def test_a_list_an_empty_list_a_bare_key_and_no_key_are_not_findings(
+def test_a_list_an_empty_list_a_bare_key_and_no_key_are_not_plan_bad_findings(
         adopter, world, edit):
     """#386 (d): what `plan` writes, and the ways of writing none, are not
     findings of this kind; a plan with no entries is `plan-uncovered`, as it
-    was, and never `plan-bad-paths`."""
+    was, and never `plan-bad-paths`. A `source:` or `legs:` left bare, or no
+    `source:` at all, is read as it always was too (#544), never as the wrong
+    type."""
     key, block, passes = GOOD_KEYS[edit]
     text = with_key(world.answered, key, block)
     checked = run_check(write_edited(world, text))
     assert_no_traceback(checked)
     assert "FINDING plan-bad-" not in checked.stderr, checked.stderr
-    if passes:
+    if isinstance(passes, str):
+        assert f"{passes}: " in checked.stderr, checked.stderr
+        assert checked.returncode == (2 if passes.startswith("REFUSED")
+                                      else 1), checked.stderr
+    elif passes:
         assert checked.returncode == 0, checked.stderr + checked.stdout
         plan, source = open_plan(adopter, world, text)
         assert adopter._refuse_what_check_finds(plan, source) is None

@@ -18,22 +18,22 @@ carrying neither manifest is not a shape root at all and wants
 `adopt-project.py plan` or `setup.sh`. This runs them in sequence, prints one
 row each, and then prints ONE verdict. Every row is somebody else's check.
 
-WHAT IT NEVER DOES. It never writes into the repository it is pointed at and
-it never fetches. ONE FLAG WRITES AT ALL, and it writes one file the caller
-named and nothing else: `--placement-plan <file>`, below. The upstream a
-project's copies are compared against is THE CHECKOUT THIS FILE IS RUN FROM,
-which is the whole of why the verdict is offline: no clone, no authenticated
-call, and the same answer on a machine that has never spoken to github.com.
-It runs the project's own validators OFFLINE: `run_validator` starts each
-child with no token, no `gh` configuration and a proxy that goes nowhere
-(#297), so they are offline whatever their own contract says. ONE ROW IS THE
-EXCEPTION AND IT IS NAMED: `machine` asks `gh` who
-it is logged in as (`setup-project.py --preflight` runs `gh --version`, `gh
-auth status` and `gh api user`), which `gh` answers by talking to its host. That row
-is `n/a` by status and cannot move the verdict -- a workstation missing `gh`
-is not a repository being non-compliant -- so nothing this command CONCLUDES
-depends on a network, and a machine with no `gh` at all is reported rather
-than refused.
+WHAT IT NEVER DOES. It writes nothing into the repository it is pointed at
+but a `--placement-plan <file>` the caller names there, and it never fetches.
+ONE FLAG WRITES AT ALL, and it writes one file the caller named and nothing
+else: `--placement-plan <file>`, below. The upstream a project's copies are
+compared against is THE CHECKOUT THIS FILE IS RUN FROM, which is the whole of
+why the verdict is offline: no clone, no authenticated call, and the same
+answer on a machine that has never spoken to github.com. It runs the project's
+own validators OFFLINE: `run_validator` starts each child with no token, no
+`gh` configuration and a proxy that goes nowhere (#297), so they are offline
+whatever their own contract says. ONE ROW IS THE EXCEPTION AND IT IS NAMED:
+`machine` asks `gh` who it is logged in as (`setup-project.py --preflight`
+runs `gh --version`, `gh auth status` and `gh api user`), which `gh` answers
+by talking to its host. That row is `n/a` by status and cannot move the
+verdict -- a workstation missing `gh` is not a repository being non-compliant
+-- so nothing this command CONCLUDES depends on a network, and a machine with
+no `gh` at all is reported rather than refused.
 
 THE CHECKS ARE A REGISTRY, not a function with eight paragraphs in it. Each
 one is a `Check` -- an `id`, the root kinds it `applies_to`, a `run(ctx)` that
@@ -94,7 +94,10 @@ and for a FAMILY holder: `merge` likewise, `family` (its own
 `members` and `machine`. A directory that
 is NEITHER gets `naming` (what it is called, under the policy), `what is
 here`, `the way in` -- `adopt-project.py plan` for a repository that already
-exists, `setup.sh` for a new one -- and `machine`.
+exists, `setup.sh` for a new one -- and `machine`. A git repository is told
+of both: `the way in` is its adoption, with `--org <your-org>` where its
+`origin` names no organisation `plan` can read, and `the other way in` is the
+scaffold (#545); a directory that is not a repository gets the scaffold alone.
 
 A MANIFEST THAT IS THERE AND DOES NOT LOAD IS NOT AN ABSENT ONE (#205). A
 `project.yaml` with a merge conflict left in it, a tab, a construct the
@@ -285,6 +288,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -1150,72 +1154,164 @@ def offline(env: dict) -> dict:
     return env
 
 
-#: The line Python prints first when an exception reaches the top of a
-#: program -- and one a validator that reached a verdict never prints (#278).
-TRACEBACK_HEADER = "Traceback (most recent call last):"
+#: The two words every verdict a validator reaches starts with: each finding
+#: it reports and each refusal it makes is a line that begins with one of
+#: them (#278, #410).
+VERDICT_WORDS = ("FINDING", "REFUSED")
+
+
+def signal_name(number: int) -> str:
+    """`SIGKILL` for 9, where this platform names the signal, else `signal
+    <number>` (#447)."""
+    try:
+        return signal.Signals(number).name
+    except ValueError:
+        return f"signal {number}"
 
 
 def crashed(code: int, whole: str) -> str | None:
-    """The line to quote when a validator CRASHED before reaching a verdict,
-    or None when it reached one (#278).
+    """What to quote when a validator ended WITHOUT REACHING A VERDICT, or
+    None when it reached one (#278, #410, #448, #447).
 
-    THE EXIT CODE CANNOT SAY. The validators' protocol is `0 valid, 1
-    findings, 2 refusal`, and an exception that reaches the top of a Python
-    program exits 1 too -- so a validator that could not import `repo_shape`,
-    or raised on a line of its own, read as a project with a finding, quoting
-    the exception. A crash is told by three things together: a non-zero
-    exit, no line starting `FINDING` or `REFUSED` (every finding and refusal
-    a validator prints starts with one), and a `TRACEBACK_HEADER` line. The
-    line quoted is the output's last, which for a traceback is the exception
-    itself -- what the row quoted before, kept so a reader still sees why.
+    A VERDICT IS A PRINTED `FINDING` OR `REFUSED`; ANYTHING ELSE NON-ZERO IS
+    A CRASH. The validators' protocol is `0 valid, 1 findings, 2 refusal`,
+    and the exit code alone cannot say which of those a child reached: an
+    exception that reaches the top of a Python program exits 1 too, so a
+    validator that could not import `repo_shape`, or raised on a line of its
+    own, read as a project with a finding (#278). What CAN say is the
+    output. Every finding and every refusal `validate-pins.py`,
+    `validate-manifest.py`, `validate-family.py` and the naming script
+    choose to report is a line starting `FINDING` or `REFUSED`, printed
+    before the exit 1 or 2 that goes with it, so a non-zero exit with
+    neither line is a child that stopped before it had anything to say.
+
+    THE TRACEBACK IS NO LONGER ASKED FOR (#447). #357 required a
+    `Traceback (most recent call last):` line as well, and so missed every
+    crash that prints none: a child killed by a signal (a NEGATIVE exit,
+    `-9` for the OOM killer's SIGKILL, `-15` for a timeout's SIGTERM, which
+    no Python program can choose for itself); `os._exit(1)` with nothing
+    printed; a validator holding merge-conflict markers, whose `SyntaxError`
+    CPython prints with no traceback header; a file the interpreter `can't
+    open`, exit 2; and an argparse `usage:` error, exit 2. Each of those read
+    as "reports a finding" or "refuses", a statement about the project made
+    by a child that never read it. One rule covers them all where a test for
+    a traceback covered none.
+
+    A FINDING PRINTED BEFORE THE CHILD DIED IS STILL A VERDICT (#357,
+    R278-1): the line is there, and an exception after it does not take it
+    back, so any `FINDING` or `REFUSED` line anywhere in the output answers
+    None. The NAMING rows ask this too (#410), through `naming_crashed_row`.
+
+    THE QUOTED LINE is the output's last, which for a traceback is the
+    exception itself, for a `SyntaxError` its `SyntaxError:` line and for
+    argparse its `error:` line -- what a reader needs to see why. With no
+    output at all it is words that say so, naming the signal for a negative
+    exit (`signal_name`), so a row never ends on an empty quote.
     """
     lines = [line.strip() for line in whole.splitlines() if line.strip()]
-    if code == 0 or TRACEBACK_HEADER not in lines:
+    if code == 0 or any(line.startswith(VERDICT_WORDS) for line in lines):
         return None
-    if any(line.startswith(("FINDING", "REFUSED")) for line in lines):
-        return None
-    return lines[-1][:200]
+    if lines:
+        return lines[-1][:200]
+    if code < 0:
+        return f"it printed nothing and was ended by {signal_name(-code)}"
+    return "it printed nothing"
+
+
+#: The `why` of every crash row, the validators' and the naming rows' alike
+#: (#278, #410): the NEXT is the child's own line, run to see where it
+#: stopped, and the row quotes only the last line of that.
+CRASH_WHY = "read its output in full, it shows where the validator stopped"
 
 
 #: The first line of an ITEM in a validator's report, as against a line that
-#: CONTINUES the item above it: an `  ok`, `  skip` or `  --` line, a
-#: `FINDING`, `REFUSED` or `WARNING`, and the success summary a validator ends
-#: on (`pins ok`, `manifest ok: ...`, `family ok: ...`).
+#: CONTINUES the item above it: an `  ok`, `  skip`, `  note` or `  --` line,
+#: a `FINDING`, `REFUSED` or `WARNING`, and the success summary a validator
+#: ends on (`pins ok`, `manifest ok: ...`, `family ok: ...`). `  note` is an
+#: item since #448: `validate-pins.py` prints its notes beside its skips, and
+#: a note printed after a skip was read as the rest of that skip's text.
 REPORT_ITEM = re.compile(
-    r"  (?:ok|skip|--)\s|(?:FINDING|REFUSED|WARNING)\b|[a-z]+ ok\b")
+    r"  (?:ok|skip|note|--)\s|(?:FINDING|REFUSED|WARNING)\b|[a-z]+ ok\b")
 
 
-def skipped(whole: str) -> list[str]:
-    """What each `  skip <text>` block a validator printed did not check, as
-    `<text>` (#297): `validate-pins.py`'s line for a neutral product's digest
-    it found no source to recompute, which it reports and still exits 0.
+#: What a validator that PASSED can still have said, by the prefix it says it
+#: with, as `(prefix, the row's detail key, the words the reason quotes it
+#: after)` (#297, #448). Each kind is a `note` on a row whose child exited 0:
+#: `validate-pins.py`'s skip of a digest it had no source to recompute,
+#: `validate-manifest.py`'s WARNING about a chain link whose tree is not on
+#: this disk, and `validate-pins.py`'s note, such as
+#: `neutral-pin-source-collides` (#460's pins-note line).
+PASS_REPORTS = (
+    ("  skip ", "skipped", "did not recheck"),
+    ("WARNING ", "warnings", "warns"),
+    ("  note ", "notes", "notes"),
+)
 
-    THE WHOLE BLOCK, NOT ITS FIRST LINE: the skip embeds `gh`'s own stderr
+
+def reported(whole: str) -> list[tuple[str, str]]:
+    """`[(detail key, text)]` for every `  skip `, `WARNING ` and `  note `
+    block a validator printed, in the order printed, each `<text>` the block
+    less its prefix (#297, #448).
+
+    THE WHOLE BLOCK, NOT ITS FIRST LINE: a skip embeds `gh`'s own stderr
     verbatim, and `gh` prints its not-logged-in help over two lines (four
     under `GITHUB_ACTIONS`), so the text `validate-pins.py` meant to say runs
     on past the first newline -- to the `--pin-source`,
     `SHAPE_PIN_SOURCE_<PRODUCT>` and `../<product>` ways to give it a source,
-    which are why the row has no NEXT. Every line after the `  skip ` line is
+    which are why the row has no NEXT. Every line after the block's first is
     kept, up to the next `REPORT_ITEM` or the end, and the lines are joined
-    with a space. Flattened by `ascii_text`, as the machine row's `report`
-    is, so `detail` says what the reason says."""
-    skips: list[list[str]] = []
+    with a space. ONE READER FOR THE THREE KINDS, AND `REPORT_ITEM` IS ITS
+    ONE DEFINITION OF AN ITEM: every line it matches ends the block before
+    it, and a block starts only at one of them. So a note printed after a
+    skip, or a skip after a note, starts a block of its own and neither
+    swallows the other, because `  note ` is an item. Flattened by
+    `ascii_text`, as the machine row's `report` is, so `detail` says what
+    the reason says."""
+    blocks: list[tuple[str, list[str]]] = []
     inside = False
     for line in whole.splitlines():
-        if line.startswith("  skip "):
-            skips.append([line.strip()[len("skip "):]])
-            inside = True
-        elif REPORT_ITEM.match(line):
-            inside = False
+        if REPORT_ITEM.match(line):
+            kind = next(((prefix, key) for prefix, key, _words in PASS_REPORTS
+                         if line.startswith(prefix)), None)
+            inside = kind is not None
+            if kind is not None:
+                prefix, key = kind
+                blocks.append((key,
+                               [line.strip()[len(prefix.strip()) + 1:]]))
         elif inside and line.strip():
-            skips[-1].append(line.strip())
-    return [ascii_text(" ".join(lines)) for lines in skips]
+            blocks[-1][1].append(line.strip())
+    return [(key, ascii_text(" ".join(lines))) for key, lines in blocks]
+
+
+def skipped(whole: str) -> list[str]:
+    """What each `  skip <text>` block a validator printed did not check, as
+    `<text>` (#297): `reported`'s skips alone."""
+    return [text for key, text in reported(whole) if key == "skipped"]
+
+
+def passed_but(said: list[tuple[str, str]]) -> str:
+    """The words after "passes, but" for what a passing validator `reported`
+    (#297, #448): each kind's words from `PASS_REPORTS`, then its texts, in
+    the order printed. A RUN of one kind shares its words, so a validator
+    that only skipped reads `did not recheck: <a>; <b>`, as it always did,
+    and a skip, a note and a skip read as three runs."""
+    words = {key: said_as for _prefix, key, said_as in PASS_REPORTS}
+    runs: list[tuple[str, list[str]]] = []
+    for key, text in said:
+        if runs and runs[-1][0] == key:
+            runs[-1][1].append(text)
+        else:
+            runs.append((key, [text]))
+    return "; ".join(f"{words[key]}: {'; '.join(texts)}"
+                     for key, texts in runs)
 
 
 def run_validator(ctx: Context, script: Path, args: list[str],
                   pythonpath: Path | None = None, *,
                   reach_network: bool = False) -> tuple:
-    """`(exit code, first line worth quoting, whole output)`.
+    """`(exit code, the line worth quoting, whole output)`: the first
+    `FINDING` or `REFUSED` line, else the first `WARNING`, else the last
+    (#448).
 
     THE CHILD'S `PYTHONPATH` IS EXACTLY WHAT THE ROW'S NEXT PRINTS, AND THE
     DOCTOR'S OWN IS NEVER PART OF IT (#306). `pythonpath` is the directory to
@@ -1313,15 +1409,18 @@ def run_validator(ctx: Context, script: Path, args: list[str],
                           stdin=subprocess.DEVNULL, env=env,
                           start_new_session=True)
     whole = (proc.stdout or "") + (proc.stderr or "")
-    quoted = ""
-    for line in whole.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("FINDING", "REFUSED", "WARNING")):
-            quoted = stripped
-            break
-    if not quoted:
-        lines = [line.strip() for line in whole.splitlines() if line.strip()]
-        quoted = lines[-1] if lines else ""
+    # THE QUOTED LINE OF A RED ROW IS A VERDICT LINE (#448, decision 4): the
+    # first `FINDING` or `REFUSED`, else the first `WARNING`, else the last
+    # line. `validate-manifest.py` prints leg by leg, so an earlier leg's
+    # WARNING came before a later leg's FINDING, and a row whose gate went
+    # red quoted the note that moved nothing instead of the finding that
+    # failed it. A WARNING is still quoted where nothing else would say
+    # more: an exit 0 never quotes, and a crash quotes its own last line.
+    lines = [line.strip() for line in whole.splitlines() if line.strip()]
+    quoted = next(
+        (line for line in lines if line.startswith(VERDICT_WORDS)),
+        next((line for line in lines if line.startswith("WARNING")),
+             lines[-1] if lines else ""))
     return proc.returncode, quoted[:200], whole
 
 
@@ -1443,14 +1542,19 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
 
     A VALIDATOR THAT CRASHED HAS NOT ANSWERED (#278). Exit 1 is a finding
     AND an exception that reached the top, so the row asks `crashed` before
-    it believes the code. The root's OWN copy crashing is still a FINDING --
-    a project whose gate cannot run has a broken gate, which is a fact about
-    the project (#237 draws the same line from the other side) -- but it
-    says it crashed, carries `detail.crashed`, and says when the cause is
-    the `repo_shape.py` it imports (`imports_repo_shape`). The TEMPLATE copy
+    it believes the code -- and since #447 a crash is ANY non-zero exit that
+    printed no `FINDING` or `REFUSED` line: a signal, `os._exit(1)`, a
+    `SyntaxError`, an argparse `usage:` error. The verb a verdict row picks
+    by its code, "refuses" for 2 and "reports a finding" otherwise, is then
+    reached only by a child that printed one of those lines. The root's OWN
+    copy crashing is still a FINDING -- a project whose gate cannot run has
+    a broken gate, which is a fact about the project (#237 draws the same
+    line from the other side) -- but it says it crashed, carries
+    `detail.crashed`, and says when the cause is the `repo_shape.py` it
+    imports (`imports_repo_shape`). The TEMPLATE copy
     crashing is this checkout's failure and not the project's: it carries
     `detail.environment`, so the verdict is CANNOT ANSWER, exit 3. Either
-    way the NEXT is the validator's own line, which shows the traceback.
+    way the NEXT is the validator's own line, which shows where it stopped.
 
     AND A TEMPLATE THIS CHECKOUT CANNOT GIVE ITS `PYTHONPATH` IS NOT RUN
     (#278): `pythonpath_unnamable` says why, the row is an environment row
@@ -1464,6 +1568,18 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
     reason quotes what was not rechecked, because "passes" alone said a
     digest was verified that nobody verified. The skip line already names
     the three ways to give it a source, so there is no NEXT.
+
+    AND SO DOES A PASS THAT WARNED OR NOTED (#448, #460's pins-note line).
+    `validate-manifest.py` prints `WARNING naming-referent-chain: ...` and
+    exits 0 for a chain link whose tree is not on this disk -- "printed and
+    then forgotten by the exit code, deliberately" -- and `validate-pins.py`
+    prints `  note neutral-pin-source-collides: ...` beside its skips. Both
+    were dropped, so a chain nothing here could check read as checked under
+    COMPLIANT, and the one line saying which variable is read for neither
+    pin reached nobody. Each is a `note` the same way: its own `detail` key
+    (`skipped`, `warnings`, `notes`, from `PASS_REPORTS`), quoted in the
+    reason in the order printed (`passed_but`), and no NEXT -- each names
+    its own remedies, and which declaration stays is the human's call.
     """
     used, which, own_copy = validator_for(ctx, own, template)
     if not used.is_file():
@@ -1491,12 +1607,13 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
     detail = {"validator": used.as_posix(), "own_copy": own_copy,
               "exit": code}
     if code == 0:
-        skips = skipped(whole)
-        if not skips:
+        said = reported(whole)
+        if not said:
             return Row(check_id, label, OK, f"{which} passes", None, detail)
-        detail["skipped"] = skips
-        return Row(check_id, label, NOTE, f"{which} passes, but did not "
-                   f"recheck: {'; '.join(skips)}", None, detail)
+        for key, text in said:
+            detail.setdefault(key, []).append(text)
+        return Row(check_id, label, NOTE,
+                   f"{which} passes, but {passed_but(said)}", None, detail)
     crash = crashed(code, whole)
     if crash is not None:
         detail["crashed"] = True
@@ -1513,8 +1630,7 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
                        "so nothing here is a statement about the project")
         command = validator_command(ctx.shape, used, own_copy, args)
         return Row(check_id, label, FINDING, reason, command, detail,
-                   why="read its output in full, it shows where the "
-                       "validator stopped")
+                   why=CRASH_WHY)
     verb = "refuses" if code >= 2 else "reports a finding"
     reason = f"{which} {verb} (exit {code})" + (f": {quoted}" if quoted else "")
     # A COMMAND THAT RUNS WHEN IT IS PASTED. This row used to print
@@ -1704,13 +1820,23 @@ def check_naming(ctx: Context) -> Row:
 
     The names are READ OUT OF `project.yaml`, so a manifest that does not
     load leaves none to classify: `waiting_row` (#205).
+
+    A SCRIPT THAT CRASHED HAS NOT ANSWERED (#410). This row read the exit
+    code alone, so a checkout of the standard whose own naming script raised
+    said `INVALID (naming)`, exit 1, about a compliant project: a statement
+    about the project caused by a fault in the checkout asking. It asks
+    `crashed` as `validator_row` does, and a crash is `naming_crashed_row`,
+    CANNOT ANSWER, exit 3. `--quiet` stays: the script's WARNINGs are about
+    a chain link it could not read, and the `manifest` row now carries
+    `validate-manifest.py`'s WARNING for that same link (#448), so the fact
+    is said once.
     """
     waiting = waiting_row(ctx, "naming", "naming",
                           "there are no leg names to classify")
     if waiting is not None:
         return waiting
     script = ctx.shape / "scripts" / "validate-repository-naming.py"
-    code, quoted, _ = run_validator(
+    code, quoted, whole = run_validator(
         ctx, script,
         ["--project", str(ctx.root / PROJECT_MANIFEST), "--quiet"])
     detail = {"policy": (ctx.shape / "contracts" /
@@ -1719,11 +1845,46 @@ def check_naming(ctx: Context) -> Row:
         return Row("naming", "naming", OK,
                    "every leg name classifies, and each declared role agrees "
                    "with its form", None, detail)
+    command = (f"{PYTHON} {quote_arg(script)} --explain --project "
+               f"{quote_arg(ctx.root / PROJECT_MANIFEST)}")
+    crash = crashed(code, whole)
+    if crash is not None:
+        return naming_crashed_row(code, crash, command, detail)
     return Row("naming", "naming", FINDING,
                f"the naming policy is not satisfied (exit {code})"
-               + (f": {quoted}" if quoted else ""),
-               f"{PYTHON} {quote_arg(script)} --explain --project "
-               f"{quote_arg(ctx.root / PROJECT_MANIFEST)}", detail)
+               + (f": {quoted}" if quoted else ""), command, detail)
+
+
+def naming_crashed_row(code: int, crash: str, command: str, detail: dict,
+                       names: list[str] | None = None) -> Row:
+    """The `naming` row for a naming script that ended without a verdict
+    (#410): `check_naming`'s, or, given the `names` it classified,
+    `check_not_a_root_naming`'s.
+
+    THE NAMING SCRIPT IS ALWAYS THIS CHECKOUT'S, never the project's, so its
+    crash is what a crash of the standard's TEMPLATE validator is in
+    `validator_row` (#278): `detail.crashed`, and `detail.environment`, so
+    an assembly root's verdict is CANNOT ANSWER, exit 3, and the reason
+    says nothing here is a statement about the project. In a directory that
+    is not a root the same marking leaves the verdict NOT A SHAPE ROOT, exit
+    2, because `verdict_for` decides that before `cannot_answer`; what the
+    marking changes there is the row, which used to quote the script's
+    exception as a fact about the name. The NEXT is the script's own line,
+    as before, and its `why` is a crash row's: read the output in full.
+    """
+    detail["crashed"] = True
+    detail["environment"] = True
+    if names is None:
+        lead, whose, about = "", "the project's", "the project"
+    else:
+        lead = f"{', '.join(names)}: "
+        whose, about = "this directory's", "what it is called"
+    return Row("naming", "naming", FINDING,
+               f"{lead}the standard's scripts/validate-repository-naming.py "
+               f"crashed before reaching a verdict (exit {code}): {crash}; "
+               f"that script is this checkout's, not {whose}, so nothing "
+               f"here is a statement about {about}", command, detail,
+               why=CRASH_WHY)
 
 
 def check_manifest(ctx: Context) -> Row:
@@ -6512,6 +6673,45 @@ def repo_local_origin_name(root: Path) -> str | None:
     return origin_name(root) if (root / ".git").exists() else None
 
 
+#: The `org/repo` pair `adopt-project.py`'s `_remote_repository` reads off the
+#: end of an `origin` URL, byte for byte: the text after the last two
+#: separators, less a `.git`. It is COPIED, not imported -- `adopt-project.py`
+#: is a script with a hyphen in its name, not a module this file may load --
+#: and `tests/test_shape_doctor.py` runs both over the same URLs, so a change
+#: to one that the other does not follow is a red test.
+_ORIGIN_REPOSITORY_RE = re.compile(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$")
+
+
+def origin_org(root: Path) -> str | None:
+    """The organisation `adopt-project.py plan` would read off `root`'s own
+    `origin`, or None where it reads none (#545).
+
+    `plan --source <path>` takes its `--org` from the source's `origin` and,
+    with none to take, refuses `adopt-no-org` and asks for the flag. It
+    reads none in THREE cases, and this is the one question the NEXT of
+    `the way in` needs answered: the repository has no `origin`; its URL is
+    not UTF-8 (git keeps a URL as the bytes it was given, and `plan` reads
+    it strictly, so it is no origin there, as `origin_name` and
+    `shape_advisory.repository_names` already say of it, #385); or its URL
+    ends in no `org/repo` -- a bare `repo.git`, a Windows path with no `/` in
+    it, a trailing slash. The first is the case #545 was filed for. The
+    other two are the same refusal on the same line, so the line is built
+    from the same reading rather than from "has an origin".
+
+    ONLY WHEN `root` CARRIES ITS OWN `.git`, for `repo_local_origin_name`'s
+    reason: `git remote get-url origin` walks UP to the nearest ancestor
+    repository, and an ancestor's organisation is not this directory's.
+    """
+    if not (root / ".git").exists():
+        return None
+    try:
+        url = git_out(["remote", "get-url", "origin"], cwd=root)
+    except (Refusal, OSError, UnicodeDecodeError):
+        return None
+    pair = _ORIGIN_REPOSITORY_RE.search(url)
+    return pair.group(1).split("/")[0] if pair else None
+
+
 def check_not_a_root_naming(ctx: Context) -> Row:
     """Classify what this directory is CALLED, under the naming policy.
 
@@ -6544,13 +6744,21 @@ def check_not_a_root_naming(ctx: Context) -> Row:
                                         ["--explain", "--", *names])
     detail = {"names": names, "origin": remote, "exit": code,
               "explain": ascii_text(whole).strip().splitlines()[:40]}
+    spelled = " ".join(quote_arg(name) for name in names)
+    command = f"{PYTHON} {quote_arg(script)} --explain -- {spelled}"
+    # A SCRIPT THAT CRASHED SAID NOTHING ABOUT THE NAME (#410). A directory
+    # whose name is not UTF-8 made the script raise as it printed that name,
+    # and this row quoted `UnicodeEncodeError: ...` as the name's finding.
+    # The verdict stays NOT A SHAPE ROOT; the row says the checkout's script
+    # stopped, as `check_naming`'s does.
+    crash = crashed(code, whole)
+    if crash is not None:
+        return naming_crashed_row(code, crash, command, detail, names)
     reason = f"{', '.join(names)}: " + (
         "classifies under the naming policy" if code == 0
         else (quoted or "matches no family in the policy"))
-    spelled = " ".join(quote_arg(name) for name in names)
     return Row("naming", "naming", OK if code == 0 else FINDING, reason,
-               None if code == 0 else
-               f"{PYTHON} {quote_arg(script)} --explain -- {spelled}", detail)
+               None if code == 0 else command, detail)
 
 
 def check_what_is_here(ctx: Context) -> Row:
@@ -6597,6 +6805,68 @@ def check_what_is_here(ctx: Context) -> Row:
 #: at. Absent is not a finding -- it is needed to ADOPT and for nothing else.
 ADOPTION_TOOL = "git-filter-repo"
 
+#: The mark the preflight puts on a check that failed. `setup-project.py`'s
+#: `CROSS`, spelled again here because that file is run, never imported.
+PREFLIGHT_FAILED = "[!!]"
+#: How the preflight's closing line opens: `this machine is not ready yet (see
+#: above).`, which it prints with the same mark as the checks it points at.
+PREFLIGHT_VERDICT = "this machine is not ready yet"
+
+
+def preflight_failures(whole: str) -> list[str]:
+    """What the preflight found NOT READY, as the lines it printed (#549).
+
+    THE ROW USED TO QUOTE THE CHILD'S LAST LINE, which is that closing
+    verdict -- `this machine is not ready yet (see above).` -- and above it
+    the doctor shows nothing: the preflight's lines are kept only in `--json`
+    (`detail.report`). A reader of the table got a pointer at output that was
+    never printed. The lines it points at are the `[!!]` ones, one per check
+    that failed, in the order the preflight made them; each is returned
+    without its mark and flattened by `ascii_text`, as `detail.report` is.
+
+    THE VERDICT IS NOT ONE OF THEM, though it carries the same mark: it is
+    the child summarising its own failures, so it is dropped here and a
+    machine that failed two checks says two things. Nothing in
+    `setup-project.py` had to change for this: the mark was already the one
+    thing a line of the report is read by (`check_machine` reads `[ok]` and
+    `[??]` by theirs). An empty list is a child that exited non-zero without
+    saying which check failed -- a crash, an interpreter that would not
+    start -- and the caller falls back to the one line `run_validator` quoted.
+    """
+    failed: list[str] = []
+    for line in whole.splitlines():
+        text = line.strip()
+        if not text.startswith(PREFLIGHT_FAILED):
+            continue
+        said = ascii_text(text[len(PREFLIGHT_FAILED):].strip())
+        if said and not is_preflight_verdict(said):
+            failed.append(said)
+    return failed
+
+
+def is_preflight_verdict(line: str) -> bool:
+    """Whether `line` is the preflight's closing verdict, `[!!]` mark on it
+    or not -- the one line of its report that summarises the checks above it
+    instead of being one of them (#549)."""
+    return line.strip().removeprefix(PREFLIGHT_FAILED).strip().startswith(
+        PREFLIGHT_VERDICT)
+
+
+def first_sentence(line: str) -> str:
+    """`line` up to its first full stop that ends a sentence: one followed by
+    white space or by the end. `3.9` ends nothing; `gh is not installed.
+    Install it: ...` says `gh is not installed`.
+
+    A FAILED CHECK'S LINE IS THE FACT, THEN THE PREFLIGHT'S OWN REMEDY FOR
+    SOMEBODY RUNNING THE SCAFFOLD (#549, review): `Run: gh auth login`, or
+    `re-run with --local-remote-dir <dir>`. This command refuses that flag,
+    and `setup-project.py --preflight --local-remote-dir <dir>` then says the
+    machine is ready, which is false for this row. The row's NEXT is its one
+    remedy, so the reason keeps only what is not ready and
+    `detail.not_ready` keeps the whole line."""
+    stop = re.search(r"\.(?:\s|$)", line)
+    return line[:stop.start()] if stop else line
+
 
 def check_machine(ctx: Context) -> Row:
     """Can this machine run the fixes the rows above name?
@@ -6620,6 +6890,14 @@ def check_machine(ctx: Context) -> Row:
     with no `gh` cannot open the pull request a fix needs, which is worth
     saying and is not this repository being non-compliant. So the row reports
     and never changes the verdict.
+
+    WHEN IT IS NOT READY THE REASON NAMES WHAT IS NOT (#549): the first
+    sentence (`first_sentence`) of each of the preflight's own `[!!]` check
+    lines (`preflight_failures`), `; `-joined, and the whole lines in
+    `detail.not_ready`. It used to quote the child's last line, a verdict that
+    points "above" at output this table does not show, and the first version
+    of this change quoted the lines whole, remedies and all, beside a NEXT
+    that is the one command.
     """
     entry = ctx.shape / "setup-project.py"
     adoption = shutil.which(ADOPTION_TOOL)
@@ -6638,14 +6916,25 @@ def check_machine(ctx: Context) -> Row:
     marks = [ascii_text(line.strip()) for line in whole.splitlines()
              if line.strip().startswith(("[ok]", "[!!]", "[??]"))]
     detail["report"] = marks
+    # WHAT IS NOT READY, in the preflight's own words (#549): its `[!!]`
+    # lines, whole in `detail`, and the first sentence of each in the reason.
+    # `quoted` is the child's last line and, for a machine that is not ready,
+    # that is its verdict pointing "above" at lines this table does not print
+    # -- so it is the fallback for a child that said nothing better, and never
+    # the verdict itself.
+    failures = preflight_failures(whole) if code != 0 else []
+    detail["not_ready"] = failures
     ready = "this machine is ready" if code == 0 else \
         "this machine is missing something the fixes above may need"
-    extra = ("" if adoption else
-             f"; {ADOPTION_TOOL} is not on PATH, which only `adopt-project.py`"
-             " needs")
-    reason = f"{ready} (setup-project.py --preflight, exit {code}){extra}"
-    if code != 0 and quoted:
-        reason += f": {quoted}"
+    reason = f"{ready} (setup-project.py --preflight, exit {code})"
+    said = "; ".join(first_sentence(line) for line in failures)
+    if not said and code != 0 and not is_preflight_verdict(quoted):
+        said = quoted
+    if said:
+        reason += f": {said}"
+    if not adoption:
+        reason += (f"; {ADOPTION_TOOL} is not on PATH, which only "
+                   "`adopt-project.py` needs")
     if code == 0:
         return Row("machine", "machine", NA, reason, None, detail)
     return Row("machine", "machine", NA, reason,
@@ -6676,6 +6965,21 @@ def python_command(platform: str | None = None) -> str:
     if platform is None:
         return PYTHON
     return "python" if platform == "nt" else "python3"
+
+
+#: The one value a way-in command needs and this report cannot know, spelled
+#: the one way the handbook's scaffold commands and this file's own scaffold
+#: line have always spelled it. IT IS NOT QUOTED AND MUST NOT BE: it is a
+#: placeholder the reader replaces, not a value a command could take, and
+#: quoting it would tell them to type the angle brackets.
+ORG_PLACEHOLDER = "<your-org>"
+
+#: What both scaffold rows say about their one line (#545): the placeholder
+#: the line carries is the reader's to replace, and the scaffold asks before
+#: it creates anything. Said once, so the non-repository row and the second
+#: row of a repository cannot word it two ways.
+SCAFFOLD_WHY = (f"replace {ORG_PLACEHOLDER} with the GitHub organisation to "
+                "create it in; without --yes, it asks")
 
 
 def scaffold_command(shape: Path, project: str,
@@ -6730,8 +7034,9 @@ def scaffold_command(shape: Path, project: str,
     if target == "nt":
         return (f"{python_command(platform)} "
                 f"{quote_arg(shape / 'setup-project.py', target)} "
-                f"--org <your-org> --project {quote_arg(project, target)}")
-    return (f"{quote_arg(shape / 'setup.sh', target)} --org <your-org> "
+                f"--org {ORG_PLACEHOLDER} --project "
+                f"{quote_arg(project, target)}")
+    return (f"{quote_arg(shape / 'setup.sh', target)} --org {ORG_PLACEHOLDER} "
             f"--project {quote_arg(project, target)}")
 
 
@@ -6801,6 +7106,24 @@ def check_the_way_in(ctx: Context) -> Row:
     person wants is a fact about their repository, not about this directory
     listing, so both are named and the human chooses.
 
+    A ROW CARRIES ONE NEXT, SO A GIT REPOSITORY GETS TWO ROWS (#545). This
+    one is the way a directory's own kind points at -- the adoption for a
+    repository, the scaffold for one that is not -- and `check_the_other_way_in`
+    is the second command a repository is told of, which `AGENTS.md` asks the
+    report to give ("Report the verdict and both commands"). A directory
+    that is not a repository has no adoption to offer and gets one row, as it
+    always did; a leg clone gets neither (below).
+
+    THE ADOPTION LINE NAMES THE ORGANISATION WHEN IT CANNOT BE READ (#545).
+    `adopt-project.py plan` takes `--org` from the source's `origin`, so a
+    repository with no `origin` -- or one whose URL names no `org/repo`, or
+    is not UTF-8 -- pasted this line and was refused `adopt-no-org`, exit 2.
+    `origin_org` asks the question `plan` asks, and where it has no answer
+    the line ends `--org <your-org>`, the placeholder this report already
+    prints on the scaffold line (`ORG_PLACEHOLDER`). It is a value the
+    reader supplies, so the row's `why` says to replace it; where `origin`
+    does name an organisation the line is unchanged, and carries none.
+
     THE SUGGESTED `--project` READS THE SAME IDENTITY THE `naming` ROW DOES:
     `origin`'s repository name where there is one, the directory's own name
     otherwise -- `check_not_a_root_naming`'s own docstring, "the name that
@@ -6820,10 +7143,8 @@ def check_the_way_in(ctx: Context) -> Row:
     """
     root = ctx.root
     is_repo = (root / ".git").exists()
-    identity = repo_local_origin_name(root) or root.name
-    policy = NamingPolicy.load(ctx.shape / "contracts" /
-                               "repository-naming.yaml")
-    project = project_token_for(identity, policy)
+    project = way_in_project(ctx)
+    org = origin_org(root)
     if is_repo and leg_clone(ctx):
         # A LEG IS NOT ADOPTED. Splitting a spec or code leg into two more
         # legs is the one adoption nobody wants, and offering it two rows
@@ -6839,20 +7160,69 @@ def check_the_way_in(ctx: Context) -> Row:
                f"plan --source {quote_arg(root)} --project "
                f"{quote_arg(project)}")
         why = None
+        if org is None:
+            # NOT QUOTED, for `ORG_PLACEHOLDER`'s reason.
+            fix += f" --org {ORG_PLACEHOLDER}"
+            why = (f"replace {ORG_PLACEHOLDER} with the GitHub organisation "
+                   "to adopt under: this repository's `origin` names none "
+                   "that `plan` can read")
         reason = ("this is a git repository with no shape manifest: it is "
                   "ADOPTED in place, keeping its name, identity and history")
     else:
-        # `<your-org>` IS NOT QUOTED and must not be: it is a placeholder
-        # the reader replaces, not a value this command knows. Quoting it
-        # would tell them to type the angle brackets.
         fix = scaffold_command(ctx.shape, project)
-        why = "without --yes; it asks"
+        why = SCAFFOLD_WHY
         reason = ("there is no repository here to adopt: a new project is "
                   "SCAFFOLDED, which creates three repositories and asks "
                   "first")
     return Row("way-in", "the way in", NA, reason, fix,
-               {"git_repository": is_repo, "suggested_project": project},
+               {"git_repository": is_repo, "suggested_project": project,
+                "origin_org": org},
                why=why)
+
+
+def way_in_project(ctx: Context) -> str:
+    """The `--project` both ways in are offered, from the one identity
+    `check_the_way_in` reads: `origin`'s repository name where `root`
+    carries its own `.git` and one, the directory's name otherwise."""
+    identity = repo_local_origin_name(ctx.root) or ctx.root.name
+    policy = NamingPolicy.load(ctx.shape / "contracts" /
+                               "repository-naming.yaml")
+    return project_token_for(identity, policy)
+
+
+#: Named once, as `LABEL_TRIAD_ADVISORY` below is: the row, the registry entry
+#: and the tests all print the same words.
+LABEL_OTHER_WAY_IN = "the other way in"
+
+
+def check_the_other_way_in(ctx: Context) -> Row | None:
+    """The scaffold, for a git repository that is also told of the adoption
+    (#545).
+
+    `check_the_way_in` carries one NEXT, and for a repository it is the
+    adoption. `AGENTS.md` says the two ways in are `adopt-project.py plan`
+    and `setup.sh` and that the report gives the verdict "and both commands":
+    which of them is wanted is a fact about the person's repository, and the
+    row that answered only the adoption chose for them. THE SAME LINE THE
+    NON-REPOSITORY ROW PRINTS, `scaffold_command`, for the same `--project`
+    -- the one identity `way_in_project` reads -- so the two rows cannot
+    name two projects.
+
+    SILENT WHERE THE FIRST ROW OFFERS NO ADOPTION: a directory that is not a
+    repository already has the scaffold as its one row, and a leg clone is
+    sent to its assembly root (`leg_clone`, asked as `check_the_way_in` asks
+    it). A row that repeated the scaffold there would be this report
+    printing the same line twice, or contradicting the Triad row above it.
+    """
+    if not (ctx.root / ".git").exists() or leg_clone(ctx):
+        return None
+    project = way_in_project(ctx)
+    return Row("way-in-scaffold", LABEL_OTHER_WAY_IN, NA,
+               "a NEW project is SCAFFOLDED instead of adopting this "
+               "repository: it creates three repositories and asks first",
+               scaffold_command(ctx.shape, project),
+               {"git_repository": True, "suggested_project": project},
+               why=SCAFFOLD_WHY)
 
 
 #: Named once, like `LABEL_MANIFEST_KINDS` above: this function's three
@@ -7151,6 +7521,10 @@ CHECKS = (
     Check("naming", "naming", (NOT_A_ROOT,), check_not_a_root_naming),
     Check("contents", "what is here", (NOT_A_ROOT,), check_what_is_here),
     Check("way-in", "the way in", (NOT_A_ROOT,), check_the_way_in),
+    # RIGHT AFTER IT: a git repository is told of the scaffold too (#545), and
+    # the two commands are read together. Silent for anything else.
+    Check("way-in-scaffold", LABEL_OTHER_WAY_IN, (NOT_A_ROOT,),
+          check_the_other_way_in),
     # AFTER EVERYTHING ABOUT THE REPOSITORY AND BEFORE THE MACHINE, and only
     # where there is no manifest at all. A family holder is never advised; an
     # assembly root whose manifest is short of a Triad is a broken root, which
@@ -7462,7 +7836,13 @@ def report(ctx: Context, rows: list[Row], verdict: str, code: int,
     note = verdict_note(ctx)
     if note:
         print(note)
-    blocked = cannot_answer(rows)
+    # ONLY UNDER THE VERDICT IT EXPLAINS (#410). A crashed naming script in
+    # a directory that is not a root marks its row `environment` as it does
+    # in a root, and the verdict there is still NOT A SHAPE ROOT, exit 2:
+    # a `shape-doctor-cannot-answer` refusal under it would contradict the
+    # line above it.
+    blocked = (cannot_answer(rows) if verdict.startswith(V_CANNOT_ANSWER)
+               else None)
     if blocked is not None:
         print(f"\nREFUSED shape-doctor-cannot-answer: {blocked.reason}",
               file=sys.stderr)

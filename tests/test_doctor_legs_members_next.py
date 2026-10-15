@@ -48,7 +48,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
-from conftest import WINDOWS_SKIP, git, rmtree
+from conftest import WINDOWS_SKIP, cloned_just_pushed, git, rmtree
 from test_shape_doctor import (  # noqa: F401
     FAMILY_MEMBER, FAMILY_NAME, GIT_IDENTITY, PROJECT, commit_all, doctor,
     doctor_module, holder, project, record_gitlink, rows_of,
@@ -509,12 +509,9 @@ def test_a_plain_clones_empty_mounts_are_cured_by_the_pasted_line(
     mounts empty. Without `--init` the update prints `not initialized` and
     the row stays red; the fixture's own recursive clone sets
     `submodule.active`, so every other paste here would pass without it."""
-    plain = tmp_path / "Plain"
-    cloned = subprocess.run(
-        ["git", "clone", "-q", str(scaffolded_here["base"] / "remotes"
-                                   / f"{PROJECT}.git"), str(plain)],
-        capture_output=True, text=True, check=False, env=PASTE_ENV)
-    assert cloned.returncode == 0, cloned.stderr
+    plain = cloned_just_pushed(
+        scaffolded_here["base"] / "remotes" / f"{PROJECT}.git",
+        tmp_path / "Plain", recurse=False, env=PASTE_ENV)
     row = row_of(standard, plain, "legs")
     assert row["status"] == "FINDING", row
     assert command_of(row).endswith("-- spec code"), row["next"]
