@@ -962,10 +962,10 @@ sudo dnf install gh</code></pre></div>
         <h4>Consent rules, on every platform</h4>
         <ul class="plain">
           <li>Every action the tool offers that changes the machine or the account is a typed
-          <code>yes</code>, at the same prompt: <code>Type yes to continue:</code>. The one-line
-          install asks nothing, because running it is your act: it places the command, installs
-          <code>git-filter-repo</code> with <code>pipx</code> where it can, and itself never runs
-          <code>sudo</code>.</li>
+          <code>yes</code>, at the same prompt: <code>Type yes to continue:</code>. <code>install.sh</code>
+          asks nothing before its own two acts, because running it is your act: it places the
+          command and installs <code>git-filter-repo</code> with <code>pipx</code> where it can, and itself
+          never runs <code>sudo</code>. The preflight it ends with asks before each offer, as above.</li>
           <li><code>--yes</code> skips the scaffold question only. It does not answer an install
           offer, <code>gh auth login</code> or <code>gh auth setup-git</code>.</li>
           <li>With no terminal attached there is no offer at all.</li>
