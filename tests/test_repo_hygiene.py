@@ -649,9 +649,23 @@ def test_agents_md_is_short_enough_to_be_read():
     question, and `check` passes a default, so an assistant briefed from
     this file alone would let it through unread. The lines buy that it is
     a question too, which `execute` takes as written, answered like the
-    others."""
+    others.
+
+    2026-10-15: 492 -> 495 — the second way in, `pipx install
+    openreposhape` (#563), decision 6 of #563's design, which Brett Heap
+    approved that day ("approve all six for #563"). The argument is #38's:
+    a way in this file does not name is a way in performed from memory.
+    Two lines are in section 2: the installed command may be pipx's as
+    well as `install.sh`'s, and pipx places `scaffold-project`,
+    `adopt-project`, `update-shape` and `shape-doctor` beside it, the
+    tools this file's procedures run, by name, so an assistant on a
+    machine that holds the package and no checkout can still follow them.
+    One is the native Windows line, where pipx now places the command that
+    the two-liner was the only way to run. The first rule's sentence that
+    the one-line install is the human's to run now names the pipx install
+    too, and was reworded to cost no line."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 492, f"AGENTS.md is {len(lines)} lines; the cap is 492"
+    assert len(lines) <= 495, f"AGENTS.md is {len(lines)} lines; the cap is 495"
 
 
 def test_claude_md_points_at_agents_md():

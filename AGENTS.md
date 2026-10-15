@@ -23,9 +23,9 @@ hand-edited; `tests/test_cli_reference.py` fails when the two disagree.
 types `yes` at its prompt; you never answer it for them. No terminal: section 2.
 
 **Never answer an install prompt.** The preflight asks `Type yes to continue:`
-for each thing it offers to run — an install, `gh auth login`, `gh auth
-setup-git`. The human types it; you never install software or log in for them.
-The one-line install (`install.sh`) is theirs to run: relay it, never run it.
+for each offer — an install, `gh auth login`, `gh auth setup-git` — and the
+human types it; you never install software or log in for them. The one-line
+`install.sh` and `pipx install openreposhape` are theirs: relay, never run.
 
 **Never pass `--allow-upstream-org` on your own initiative.** It guards only
 `--org opensoft`, the namespace of openRepoShape's upstream owner. If setup.sh
@@ -60,13 +60,16 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.s
       --visibility <private|public|internal> --elected-by '<Name>'
 ```
 
-`openRepoShape <Project> --org <org> --visibility <…> --elected-by '<Name>'`
-is the same run through the installed command, still without `--yes`. With no
-arguments it prints its usage and exits 1, and `--install` ends with a
-read-only `machine:` block naming anything missing; neither installs anything.
-Relay the block; the human runs `--preflight` if they want the offers.
+`openRepoShape <Project> --org <org> --visibility <…> --elected-by '<Name>'` is
+the same run through the installed command, still without `--yes`, whether
+`install.sh` or `pipx install openreposhape` placed it; pipx adds
+`scaffold-project`, `adopt-project`, `update-shape` and `shape-doctor`, the
+tools below by name. Bare, it prints its usage and exits 1; the bash one's
+`--install` ends with a read-only `machine:` block naming anything missing, and
+installs nothing: relay it; the human runs `--preflight` for the offers.
 
-On Windows without WSL2, `Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py`
+On Windows without WSL2, `pipx install openreposhape` places that command too.
+Installing nothing, `Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py`
 then `py setup-project.py <Project> --org <org> --visibility <…> --elected-by '<Name>'`
 is the same run again — two commands because a piped script cannot ask — still without `--yes`.
 
