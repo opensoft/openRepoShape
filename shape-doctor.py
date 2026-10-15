@@ -5677,7 +5677,7 @@ def answered_questions(adopt, review: list, role: str, files: list,
     places every submodule the file registers (`gitmodules_the_record_
     answers`).
 
-    NO RECORD, NO SCAN (r525's F2). A project with no `answered_paths:` --
+    NO RECORD, NO SCAN (#525). A project with no `answered_paths:` --
     every one adopted before #525 -- returns its questions as they are,
     which is what the loop below would return for them, without holding
     each question against every file of its leg.
@@ -6208,7 +6208,7 @@ def moved_alone(adopt, detail: dict) -> bool:
     submodule that leg keeps is recorded there or moved in, and every name
     in it could be read. So does the `.gitmodules` a plain `git rm` leaves,
     tracked and empty, in the leg a moved submodule LEFT, where that leg now
-    keeps no submodule at all (r525's F1). Anything else in the wrong leg,
+    keeps no submodule at all (#525). Anything else in the wrong leg,
     or asked, keeps the plan as the NEXT.
     """
     misplaced = detail["misplaced"]

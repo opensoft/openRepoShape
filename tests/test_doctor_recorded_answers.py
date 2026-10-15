@@ -239,7 +239,7 @@ def test_a_submodule_moved_in_both_legs_names_its_row_not_a_plan(
     leg's `.gitmodules`, a question only because the row names the other
     leg, goes with the move. So does the code leg's, emptied and left
     tracked, which is what a plain `git rm` of a leg's only submodule
-    leaves: that leg keeps no submodule at all now (r525's F1)."""
+    leaves: that leg keeps no submodule at all now (#525)."""
     moved_rules(project, gitmodules=gitmodules)
     if emptied:
         stage(project / "code", GITMODULES, "")
