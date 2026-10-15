@@ -5262,7 +5262,9 @@ def _entry_findings(plan: Plan, source: Source,
     then each symlink the plan keeps in the root that a shape file cannot
     be written through (#178, #183), then each `.gitattributes` the plan
     keeps below the root that outranks the root's line-ending rule for a
-    pinned copy (#530), then each value `execute` writes into
+    pinned copy (#530), then the source's own root `.gitattributes`, which
+    the split writes into, where this machine's `git add` would not store
+    what it writes there (#530's D5(a)), then each value `execute` writes into
     a file that no file can hold (#255), then what the project's own
     `validate-manifest.py` would refuse of the values `execute` writes into
     its manifest (#261), then a tracking branch that is no branch of the
@@ -5362,6 +5364,7 @@ def _entry_findings(plan: Plan, source: Source,
     return (findings + misread + split
             + _root_symlink_findings(plan, source, tree)
             + _nested_attributes_findings(plan, source, tree)
+            + _reencoded_attributes_findings(plan, source, tree)
             + unwritable_findings + value_findings + tracking_findings
             + moved + field_findings,
             unsafe_remediation
@@ -6641,15 +6644,14 @@ _NOT_INHERITED = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
 ATTR_TREE = "attr.tree"
 
 
-def _probe_env(nothing: Path) -> dict:
-    """The environment `git check-attr` is asked in: this process's, with
-    nothing of `_NOT_INHERITED`, no system config, the empty file `nothing`
-    as the global config, and no `attr.tree` in git's command scope
-    (`GIT_CONFIG_COUNT`), whose other entries are kept in their order. Each
-    of those could steer the answer here and holds nothing on another
-    machine: git 2.43 reads `attr.tree` from any config, and one naming the
-    empty tree made `check-attr` read no rule at all, which silenced the
-    finding; `GIT_ATTR_SOURCE=HEAD` made it fail in the empty repository."""
+def _inherited_env() -> dict:
+    """This process's environment, as a question to a throwaway repository
+    inherits it: with nothing of `_NOT_INHERITED`, and no `attr.tree` in
+    git's command scope (`GIT_CONFIG_COUNT`), whose other entries are kept
+    in their order. Git 2.43 reads `attr.tree` from any config, and one
+    naming the empty tree made `check-attr` read no rule at all, which
+    silenced the finding; `GIT_ATTR_SOURCE=HEAD` made git fail in the empty
+    repository."""
     count = os.environ.get("GIT_CONFIG_COUNT", "")
     scoped = [(os.environ.get(f"GIT_CONFIG_KEY_{n}", ""),
                os.environ.get(f"GIT_CONFIG_VALUE_{n}", ""))
@@ -6664,6 +6666,15 @@ def _probe_env(nothing: Path) -> dict:
         env[f"GIT_CONFIG_KEY_{n}"], env[f"GIT_CONFIG_VALUE_{n}"] = key, value
     if kept:
         env["GIT_CONFIG_COUNT"] = str(len(kept))
+    return env
+
+
+def _probe_env(nothing: Path) -> dict:
+    """The environment `git check-attr` is asked in: `_inherited_env()`,
+    with no system config and the empty file `nothing` as the global
+    config. Each could steer the answer here and holds nothing on another
+    machine, as `attr.tree` from either did."""
+    env = _inherited_env()
     env.update(GIT_ATTR_NOSYSTEM="1", GIT_CONFIG_NOSYSTEM="1",
                GIT_CONFIG_GLOBAL=str(nothing))
     return env
@@ -6882,7 +6893,7 @@ def _outranking(asked: _AttributesProbe, fold: bool, landed: list[str],
     A file is named for a copy when, added to the root's files alone, it
     makes a checkout write that copy with CRLF. Where no file alone does,
     and two or more do it only together, each that changes what git says
-    of the copy is named (r530's F3)."""
+    of the copy is named."""
     held = {at: data for at, (_, data) in placed.items()}
     before = asked.ask(root, landed, fold)
     after = asked.ask({**root, **held}, landed, fold)
@@ -6948,6 +6959,140 @@ def _nested_attributes_findings(plan: Plan, source: Source,
                                              placed):
                 found.setdefault(path, finding)
     return [found[row[0]] for row in nested if row[0] in found]
+
+
+# ---------------------------------------------------------------------------
+# The root's own `.gitattributes`, as `git add` stores it (#530, D5(a))
+# ---------------------------------------------------------------------------
+#
+# THE ONE FILE OF THE SOURCE'S THE SPLIT WRITES INTO (#471) is staged again
+# by the split's `git add -A`, and git stores it through its rules for it. A
+# blob the source committed with CRLF under `* text eol=lf`, `* text
+# eol=crlf` or `* eol=lf` was stored as LF, so the root held neither the
+# source's blob nor its bytes followed by the block, and the verification
+# ended `adopt-lost` after both legs existed (measured at 2423eaa2: lane 2's
+# D5(a) line on #530; `* ident` over a `$Id: deadbeef $` did the same).
+# `text=auto` leaves alone a file whose indexed blob already holds CRLF, so
+# a CRLF blob under it adopted, as an LF blob did under every rule.
+#
+# GIT IS ASKED, AS THE SPLIT ASKS IT (`_stored_as_written`). A throwaway
+# repository's index holds the source's blob at `.gitattributes`, as the
+# assembly's checkout does, so the check-in rules that read the index answer
+# as they do there; its work tree holds what the verification expects at the
+# root (`_land_the_eol_block`), the source's bytes followed by the block
+# (`_root_attributes`); and `git add` there stores those bytes or not. The
+# materializer appends the block to the checkout's bytes, and git's check-in
+# undoes what its checkout did to line endings, an `ident` or an encoding,
+# so the blob's own bytes get the same answer. UNLIKE THE NESTED QUESTION,
+# THIS MACHINE'S SETTINGS ARE READ: the split's `git add` runs here, with
+# this machine's config and attributes (`core.autocrlf`, `core.safecrlf`, a
+# `filter` driver, `core.attributesFile`), so only `_inherited_env` is taken
+# from them: no other repository, and no tree to read attributes from
+# (`GIT_ATTR_SOURCE`, `attr.tree`), of which the throwaway repository has
+# none. What `git add` refuses there -- `core.safecrlf=true` over such a
+# CRLF, or a `working-tree-encoding` the bytes are not in -- would stop the
+# split committing after both legs exist, and is found too, in git's words.
+#
+# A FINDING, as the nested one is: the fix is the source's, a commit of the
+# file as git stores it, and `execute` refuses it before any leg exists. A
+# root that keeps no `.gitattributes` of the source's, or keeps a symlink
+# there, which the split writes nothing into, asks git nothing. Another kept
+# file whose blob `git add` would re-encode fails the same way when git reads
+# it again; asking about each one needs a checkout of the whole source, and
+# is not done here.
+
+#: `check`'s finding, and the code of `execute`'s refusal, for the source's
+#: root `.gitattributes` that `git add` would not store as the split writes
+#: it (#530, D5(a)).
+REENCODED_ATTRIBUTES = "plan-attributes-reencoded"
+
+
+def _stored_as_written(blob: bytes, mode: str, written: bytes) -> str | None:
+    """None when this machine's `git add` stores `written` at the root's
+    `.gitattributes`, over an index that holds `blob` there with `mode`, as
+    exactly those bytes; else what it did: git's last line where it
+    refused, or "" where it stored other bytes. Asked in a throwaway
+    repository in the system's temporary directory, removed afterwards."""
+    scratch = Path(tempfile.mkdtemp(prefix="openreposhape-attributes-"))
+    env = _inherited_env()
+    # No fsmonitor daemon is started for a repository that is about to go.
+    git = ["-c", "core.fsmonitor=false"]
+    repository = scratch / "repository"
+
+    def raw_oid(data: bytes, name: str, *write: str) -> str:
+        """The oid of `data` as they are, no rule applied; `-w` stores it."""
+        (scratch / name).write_bytes(data)
+        return git_out([*git, "hash-object", *write, "--no-filters", "--",
+                        str(scratch / name)], cwd=repository, env=env)
+
+    try:
+        empty = scratch / "no-template"
+        empty.mkdir()
+        git_out(["init", "-q", f"--template={empty}", str(repository)],
+                cwd=scratch, env=env)
+        git_out([*git, "update-index", "--add", "--cacheinfo",
+                 f"{mode},{raw_oid(blob, 'held', '-w')},{ATTRIBUTES}"],
+                cwd=repository, env=env)
+        (repository / ATTRIBUTES).write_bytes(written)
+        added = subprocess.run(["git", *git, "add", "--", ATTRIBUTES],
+                               cwd=str(repository), env=env,
+                               capture_output=True, check=False)
+        if added.returncode:
+            said = added.stderr.decode("utf-8", "replace").strip()
+            return said.splitlines()[-1] if said else \
+                f"exit {added.returncode}"
+        staged = git_out([*git, "ls-files", "-s", "--", ATTRIBUTES],
+                         cwd=repository, env=env).split()[1]
+        return None if staged == raw_oid(written, "wanted") else ""
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _reencoded_attributes_finding(said: str) -> str:
+    """`check`'s line for the root's `.gitattributes`, which this machine's
+    `git add` stores as other bytes (`said` empty) or refuses (`said`, in
+    git's words)."""
+    if said:
+        what = (f"refuses what the split writes there (git said "
+                f"{_spelled(said)}), so the split's own `git add` would fail, "
+                "after both legs exist.")
+    else:
+        what = ("would store other bytes there than the source's followed by "
+                "the block, as git does where its rules for the file make it "
+                "text and the blob holds CRLF line endings, or where an "
+                "`ident`, `working-tree-encoding` or `filter` rule reaches "
+                f"it. The verification would then report the source's "
+                f"`{ATTRIBUTES}` as `adopt-lost`, in no leg and not in the "
+                "root tree, after both legs exist.")
+    return (f"FINDING {REENCODED_ATTRIBUTES}: the plan keeps the source's "
+            f"`{ATTRIBUTES}` in the assembly root, where the split appends "
+            f"#471's block to it, and this machine's `git add` {what} Commit "
+            "the file in the source as git stores it (`git add --renormalize "
+            f"-- {ATTRIBUTES}`, then commit), or change the rule git applies "
+            "to it, and re-run `plan`.")
+
+
+def _reencoded_attributes_findings(plan: Plan, source: Source,
+                                   tree: list) -> list[str]:
+    """A FINDING where the plan keeps the source's own `.gitattributes` in
+    the root, which the split appends the block to, and this machine's `git
+    add` would not store what the split writes there as those bytes (#530,
+    D5(a)). A root that keeps none, or keeps a symlink there, asks git
+    nothing."""
+    disk = _KeptTree(_kept_in_root(plan.entries, tree), False)
+    row = disk.at(ATTRIBUTES)
+    if row is None or row[1] not in FILE_MODES:
+        return []
+    walks = _PlannedRoot(plan, source, tree,
+                         probe=_SymlinkProbe(source.work_root)).walks()
+    written = _root_attributes(source, walks, disk, tree,
+                               [name for name, _ in _pinned_landings(walks)])
+    if f"{COLLISION_DIR}/{ATTRIBUTES}" not in written:
+        return []
+    blobs = {path: oid for path, _, oid, _ in tree}
+    said = _stored_as_written(_blob_bytes(source.path, blobs[row[0]]),
+                              row[1], written[ATTRIBUTES])
+    return [] if said is None else [_reencoded_attributes_finding(said)]
 
 
 def cmd_check(args) -> int:

@@ -25,6 +25,13 @@ and the lines that keep them LF. The question is asked of git itself
 (`git check-attr`), so the tests that need no `git filter-repo` run on every
 CI job; the end-to-end ones adopt the remedied source, clone it the ways
 Windows clones it, and read `git check-attr` on every pinned copy.
+
+The root's OWN `.gitattributes` is the one file of the source's the split
+writes into (#471), and `git add` stores what it writes there through git's
+rules for that file. A blob committed CRLF under `* text eol=lf` was stored as
+LF, and `execute` ended `adopt-lost` after both legs existed (lane 2's D5(a)
+line on this issue). `check` now asks this machine's `git add` and finds it as
+`plan-attributes-reencoded`, and `execute` refuses it before any leg exists.
 """
 
 from __future__ import annotations
@@ -459,6 +466,199 @@ def test_a_source_with_no_kept_file_above_a_copy_asks_git_nothing(
 
 
 # ---------------------------------------------------------------------------
+# The root's own `.gitattributes`, which `git add` would re-encode (#530, D5)
+# ---------------------------------------------------------------------------
+
+#: The finding, and the code of `execute`'s refusal.
+REENCODED = "plan-attributes-reencoded"
+#: The start of every such finding.
+KEPT_AND_APPENDED = ("the plan keeps the source's `.gitattributes` in the "
+                     "assembly root, where the split appends #471's block to "
+                     "it, and this machine's `git add` ")
+STORES_OTHER_BYTES = "would store other bytes there"
+CRLF_UNDER_TEXT = b"* text eol=lf\r\n"
+
+
+def committed_raw(source: Path, name: str, data: bytes) -> None:
+    """Commit `data` at `name` in `source` byte for byte, whatever the
+    attributes say, as a file committed before its rules were, or by a
+    machine that wrote it CRLF, is held: `hash-object --no-filters`, then
+    `update-index`."""
+    target = source / name
+    target.write_bytes(data)
+    blob = git("hash-object", "-w", "--no-filters", "--", name, cwd=source)
+    git("update-index", "--add", "--cacheinfo",
+        f"100644,{blob.stdout.strip()},{name}", cwd=source)
+    git("commit", "-qm", f"Commit {name} as it is", cwd=source)
+
+
+def root_attributes_plan(base: Path, data: bytes) -> Path:
+    """The plan for `SOURCE` with a root `.gitattributes` committed as
+    `data`, which `plan` asks nothing about."""
+    source = make_source_repo(base / "Thing", tree=dict(SOURCE), edits=())
+    committed_raw(source, ROOT_ATTRIBUTES, data)
+    return planned(source, base, {})
+
+
+#: Root `.gitattributes` blobs whose own rules make `git add` store them as
+#: other bytes once the split appends the block: CRLF under `text`, under
+#: `eol` alone (which says `text`), and an `ident` collapsed on the way in.
+#: Each of the first three ended `adopt-lost` after both legs at 2423eaa2.
+REENCODED_ROOTS = [
+    pytest.param(CRLF_UNDER_TEXT, id="crlf-under-text-eol-lf"),
+    pytest.param(b"* text eol=crlf\r\n", id="crlf-under-text-eol-crlf"),
+    pytest.param(b"* eol=lf\r\n", id="crlf-under-eol-alone"),
+    pytest.param(b"* text\r\n", id="crlf-under-text"),
+    pytest.param(b"# $Id: deadbeef $\n* ident\n", id="an-expanded-ident"),
+]
+
+
+@pytest.mark.parametrize("data", REENCODED_ROOTS)
+def test_a_root_attributes_git_add_would_reencode_is_found(tmp_path, data):
+    """lane 2's D5(a) line, measured at 2423eaa2: `check` exited 0 and
+    `execute` 1, `FINDING adopt-lost: .gitattributes`, after both leg remotes
+    were made. `check` now finds it, says why, and names the way out."""
+    found = findings(root_attributes_plan(tmp_path, data))
+    assert [code for code, _ in found] == [REENCODED], found
+    detail = found[0][1]
+    assert detail.startswith(KEPT_AND_APPENDED + STORES_OTHER_BYTES), detail
+    assert ("The verification would then report the source's `.gitattributes` "
+            "as `adopt-lost`, in no leg and not in the root tree, after both "
+            "legs exist.") in detail
+    assert ("Commit the file in the source as git stores it (`git add "
+            "--renormalize -- .gitattributes`, then commit), or change the "
+            "rule git applies to it, and re-run `plan`.") in detail
+
+
+def test_an_encoding_the_root_attributes_is_not_in_is_found(tmp_path):
+    """`* working-tree-encoding=UTF-16LE` reaches the root's own
+    `.gitattributes`, which is UTF-8: `git add` stores it decoded as
+    UTF-16, or refuses it, as the length of what the split writes falls.
+    Either is found, before any leg; at 2423eaa2 `execute` died after both."""
+    found = findings(root_attributes_plan(
+        tmp_path, b"* working-tree-encoding=UTF-16LE\n"))
+    assert [code for code, _ in found] == [REENCODED], found
+
+
+#: Root `.gitattributes` blobs `git add` stores as the split writes them: a
+#: CRLF blob `text=auto` leaves alone because the index already holds it
+#: with CRLF, an LF blob, a file its own rules leave as it is, and one no
+#: rule names. The first two adopted at 2423eaa2, as main does.
+STORED_AS_WRITTEN = [
+    pytest.param(b"* text=auto\r\n", id="crlf-under-text-auto"),
+    pytest.param(b"* text=auto eol=lf\r\n", id="crlf-under-text-auto-eol-lf"),
+    pytest.param(b"* text eol=lf\n", id="lf-under-text-eol-lf"),
+    pytest.param(b"* text eol=crlf\n", id="lf-under-text-eol-crlf"),
+    pytest.param(CRLF_UNDER_TEXT + b".gitattributes -text\r\n",
+                 id="crlf-its-own-rules-leave-alone"),
+    pytest.param(b"*.md text\r\n", id="crlf-no-rule-names-it"),
+]
+
+
+@pytest.mark.parametrize("data", STORED_AS_WRITTEN)
+def test_a_root_attributes_git_add_stores_as_written_is_no_finding(tmp_path,
+                                                                  data):
+    assert findings(root_attributes_plan(tmp_path, data)) == []
+
+
+def test_execute_refuses_a_reencoded_root_attributes_before_any_leg(
+        adopter, monkeypatch, tmp_path):
+    plan = root_attributes_plan(tmp_path, CRLF_UNDER_TEXT)
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == REENCODED
+
+
+def checked_root_with(tmp_path: Path, env: dict,
+                      data: bytes = CRLF_UNDER_TEXT):
+    """`check` of the plan keeping a root `.gitattributes` committed as
+    `data`, run with `env` laid over this process's own."""
+    plan = root_attributes_plan(tmp_path, data)
+    return run_script(ADOPT, "check", "--plan", str(plan), env=env)
+
+
+def reencoded(checked) -> str:
+    """The one `plan-attributes-reencoded` line `check` printed."""
+    lines = [line for line in checked.stderr.splitlines()
+             if line.startswith(f"FINDING {REENCODED}: ")]
+    assert len(lines) == 1, checked.stderr
+    return lines[0]
+
+
+def test_what_this_machines_git_add_refuses_is_found_in_gits_words(tmp_path):
+    """`core.safecrlf=true` makes this machine's `git add` refuse a CRLF it
+    would store as LF, so the split would die committing, not verifying."""
+    line = reencoded(checked_root_with(
+        tmp_path, command_scope("core.safecrlf", "true")))
+    assert (KEPT_AND_APPENDED + "refuses what the split writes there (git "
+            "said `fatal: CRLF would be replaced by LF in .gitattributes`), "
+            "so the split's own `git add` would fail, after both legs "
+            "exist.") in line, line
+
+
+def test_this_machines_own_attributes_are_read_for_the_split(tmp_path):
+    """Unlike the nested question, which a clone elsewhere answers, the
+    split's `git add` runs here and reads this machine's attributes: a
+    global file saying `.gitattributes text eol=lf` makes it store a CRLF
+    blob whose own rules say nothing of it as LF."""
+    rules = tmp_path / "global-attributes"
+    rules.write_bytes(b".gitattributes text eol=lf\n")
+    checked = checked_root_with(
+        tmp_path, command_scope("core.attributesFile", str(rules)),
+        b"*.md text\r\n")
+    assert STORES_OTHER_BYTES in reencoded(checked)
+
+
+@pytest.mark.parametrize("where", [
+    pytest.param(lambda: {"GIT_ATTR_SOURCE": "HEAD"},
+                 id="git-attr-source-head"),
+    pytest.param(lambda: {"GIT_ATTR_SOURCE": EMPTY_TREE},
+                 id="git-attr-source-the-empty-tree"),
+    pytest.param(lambda: command_scope("attr.tree", EMPTY_TREE),
+                 id="attr-tree-in-the-command-scope")])
+def test_no_tree_this_machine_names_steers_the_split_question(tmp_path,
+                                                              where):
+    """The question's throwaway repository has no commit for `HEAD` to name,
+    and the empty tree would make git read no rule at all: neither is
+    inherited, so git neither fails nor goes quiet."""
+    checked = checked_root_with(tmp_path, where())
+    assert "REFUSED" not in checked.stderr, checked.stderr
+    assert STORES_OTHER_BYTES in reencoded(checked)
+
+
+def _never_asked(*_args, **_kwargs):
+    raise AssertionError("git was asked what `git add` stores")
+
+
+def no_root_attributes(base: Path) -> Path:
+    return make_source_repo(base / "Thing", tree=dict(SOURCE), edits=())
+
+
+def a_root_attributes_symlink(base: Path) -> Path:
+    source = make_source_repo(
+        base / "Thing", tree={**SOURCE, "config/attributes": TEXT_AUTO},
+        edits=())
+    index_link(source, ROOT_ATTRIBUTES, "config/attributes")
+    return source
+
+
+@pytest.mark.parametrize(("made", "answers"), [
+    pytest.param(no_root_attributes, {}, id="no-root-attributes"),
+    pytest.param(a_root_attributes_symlink, {"config/": ROOT},
+                 id="a-root-attributes-symlink")])
+def test_a_root_attributes_the_split_does_not_write_into_asks_git_nothing(
+        adopter, monkeypatch, tmp_path, made, answers):
+    """The split writes into the source's root `.gitattributes` only where
+    the root keeps it as a regular file: where it keeps none the shape's own
+    is written, and through a symlink nothing is (#471's follow-up)."""
+    plan = adopter.Plan.load(planned(made(tmp_path), tmp_path, answers))
+    (tmp_path / "work").mkdir()
+    source = plan.open_source(None, tmp_path / "work")
+    monkeypatch.setattr(adopter, "_stored_as_written", _never_asked)
+    assert adopter._reencoded_attributes_findings(plan, source,
+                                                  source.tree()) == []
+
+
+# ---------------------------------------------------------------------------
 # End to end: the remedy adopts, and every pinned copy keeps its bytes
 # ---------------------------------------------------------------------------
 
@@ -512,3 +712,22 @@ def test_every_pinned_copy_keeps_its_bytes_in_the_adopted_clone(
             "this clone did not write CRLF, so it tests nothing"
     booted = run_script(clone / "scripts" / "bootstrap.py", cwd=clone)
     assert booted.returncode == 0, booted.stderr + booted.stdout
+
+
+@needs_filter_repo
+def test_a_renormalized_root_attributes_adopts(tmp_path):
+    """The finding's way out, taken: the CRLF root `.gitattributes`
+    committed again as git stores it, and the plan made again. `check` finds
+    nothing, and `execute` verifies the source's bytes followed by the
+    block."""
+    source = make_source_repo(tmp_path / "Thing", tree=dict(SOURCE), edits=())
+    committed_raw(source, ROOT_ATTRIBUTES, CRLF_UNDER_TEXT)
+    git("add", "--renormalize", "--", ROOT_ATTRIBUTES, cwd=source)
+    git("commit", "-qm", "Renormalize .gitattributes", cwd=source)
+    plan = planned(source, tmp_path, {})
+    assert findings(plan) == []
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "adoption verified" in result.stdout, result.stdout
