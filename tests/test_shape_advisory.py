@@ -411,6 +411,8 @@ def test_a_leg_known_by_name_alone_is_told_so_with_a_hedge(tmp_path,
     assert way_in["next"] is None, way_in
     assert "adopt-project.py" not in (way_in["next"] or "")
     assert "AS A LEG" in way_in["reason"], way_in["reason"]
+    # NOR IS THE SCAFFOLD OFFERED INSTEAD (#545): a leg is sent to its root.
+    assert "way-in-scaffold" not in rows, sorted(rows)
     result = adopt_plan(here, tmp_path / "plan.yaml", quiet_env)
     assert "This is a single repository." not in result.stdout
     assert f"NOTE `{name}` is named as the {role} leg" in result.stdout, \
