@@ -305,7 +305,11 @@ options:
                         or lies inside a FILE the shape writes into the root
                         is refused before anything is created: `project.yaml`
                         is one, and `contracts` holds several.
-  --dry-run
+  --dry-run             print the plan and ask, as the real run does, whether
+                        each of the three repositories already exists (`gh
+                        repo view` and its commit listing, or the bare
+                        repositories with --local-remote-dir), refusing what
+                        it refuses; create no remote and push nothing
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
                         repo create` (the TEST path; no network)
@@ -736,7 +740,11 @@ options:
                         and make no family folder at all. Mutually exclusive
                         with --into.
   --no-push
-  --dry-run
+  --dry-run             print the plan and ask, as the real run does, whether
+                        <org>/<Family> already exists (`gh repo view` and its
+                        commit listing; with --local-remote-dir, the bare
+                        repository), refusing what it refuses; make no folder,
+                        remote or repository
 ```
 
 #### `scripts/family.py add`
@@ -759,7 +767,8 @@ options:
   --member ORG/PROJECT  the member's ASSEMBLY ROOT, `<org>/<Project>` — never
                         a leg
   --at COMMIT           pin this 40-hex commit instead of the member's current
-                        tip
+                        tip (an annotated tag's own 40-hex id is peeled to the
+                        commit it names)
   --local-remote-dir LOCAL_REMOTE_DIR
                         resolve the member to a bare repository here instead
                         of github.com (the TEST path)
@@ -792,7 +801,8 @@ options:
   --family-root FAMILY_ROOT
   --member PROJECT
   --to COMMIT           the 40-hex commit to move the gitlink and the pin to,
-                        together
+                        together (an annotated tag's own 40-hex id is peeled
+                        to the commit it names, as `add --at` peels one)
   --trailer "KEY: VALUE"
                         append this `<Key>: <value>` line to the commit this
                         writes; repeatable, kept in the order given

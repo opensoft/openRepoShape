@@ -339,7 +339,9 @@ def test_the_pins_row_keeps_the_gate_while_check_refuses_a_linked_record(
     assert "update-shape.py" not in pins_row["next"], pins_row["next"]
     assert "merged-away" not in pins_row["reason"], pins_row["reason"]
     assert currency["detail"]["error"] == "update-rewrite-symlink", currency
-    assert currency["next"].startswith(f"replace {linked} "), currency["next"]
+    # No NEXT: replacing the link is a person's act, said in the `why` (#548).
+    assert currency["next"] is None, currency
+    assert currency["why"].startswith(f"replace {linked} "), currency["why"]
 
     (root / linked).unlink()
     shutil.move(str(end), str(root / linked))
