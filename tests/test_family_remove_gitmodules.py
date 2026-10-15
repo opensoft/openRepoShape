@@ -14,22 +14,25 @@ section was removed and printed no registration, though `deinit` dropped one
 (the review's N9).
 
 NOW. `remove` refuses, before any git command that writes and under
-`--dry-run` in the same words, a `.gitmodules` the index or HEAD holds and
-the work tree lacks (`gitmodules-missing`), and prints the restore git takes
-in that state, an unmerged one's included. `remove` and `add` both refuse a
-work tree's copy that is not the index's (`gitmodules-unstaged`): modified
-(git's own answer, so a copy that differs only in line endings counts, and
-the refusal says the difference may be that alone), unmerged, one whose
-deletion is staged, an edit the index's assume-unchanged mark hides, and an
-untracked file where neither the index nor HEAD holds one. Both refuse a file
-a sparse checkout leaves out, or that the index marks skip-worktree, on disk
-or not (`gitmodules-sparse`). `add` committed such a change beside the
-member's section. Each remedy is typed here as printed, and the same command
-then runs. A change somebody STAGED still goes into the commit: the
-remediations of #300 and #360 rely on it, and so do `member-name-taken`'s and
-`gitmodules-unreadable`'s, which now say to stage the file they have the
-person mend (the review's S1). `add` leaves a missing file to `git submodule
-add`, which refuses it at the mount, as before.
+`--dry-run` in the same words, a `.gitmodules` the index or HEAD holds and the
+work tree lacks (`gitmodules-missing`), and prints the restore git takes in
+that state, an unmerged one's included. `remove` and `add` both refuse a work
+tree's copy that is not the index's (`gitmodules-unstaged`): modified (git's
+own answer, so a copy that differs only in line endings counts, and the
+refusal says the difference may be that alone), unmerged, one whose deletion
+is staged, an edit the index's assume-unchanged mark hides, and an untracked
+file where neither the index nor HEAD holds one. Both refuse a file a sparse
+checkout leaves out (`gitmodules-sparse`), and `add` any the index marks
+skip-worktree, which `git submodule add` cannot stage. A clean copy behind a
+mark is not refused: `remove` commits one marked skip-worktree, and both verbs
+one marked assume-unchanged, as before #407 (the re-review's nits 1 and 2).
+`add` committed such a change beside the member's section. Each remedy is
+typed here as printed, and the same command then runs. A change somebody
+STAGED still goes into the commit: the remediations of #300 and #360 rely on
+it, and so do `member-name-taken`'s and `gitmodules-unreadable`'s, which now
+say to stage the file they have the person mend (the review's S1). `add`
+leaves a missing file to `git submodule add`, which refuses it at the mount,
+as before.
 
 THE SAME FAMILY, RULES AND OFFLINE ENVIRONMENT as `test_family_dry_run.py`,
 and the same reading of what a refusal leaves (`state`). Every file this
@@ -56,10 +59,11 @@ from conftest import clone_just_pushed, run_script
 from test_family import (  # noqa: F401
     FAMILY, NAME, ORG, SPARE, family, validate,
 )
-from test_family_add_excludes import empty_holder  # noqa: F401
+from test_family_add_excludes import RULES, empty_holder  # noqa: F401
 from test_family_add_refusals import holder, offline, refusal  # noqa: F401
 from test_family_dry_run import REMOVE_ORDER, assert_as_it_was, isolated, state
 from test_family_member_path import MEMBER, OTHER, raw
+from test_scaffold_ignored_shape_files import excluding
 
 GITMODULES = ".gitmodules"
 PATH = f"members/{MEMBER}"
@@ -110,9 +114,10 @@ KEEP_OR_DROP_ASSUMED = keep_or_drop(
     "--no-assume-unchanged -- .gitmodules` and `git add .gitmodules`")
 KEEP_OR_LEAVE_OUT = (
     "Remediation: whether it belongs in the holder is a person's to say. To "
-    "keep it, stage it, `git add .gitmodules`, and commit it on its own first "
-    "if the command's commit should carry only its own change; to leave it "
-    "out, move it out of the holder. Then run the same command again.")
+    "keep it, stage it, `git add -f .gitmodules` (`-f`, since an operator's "
+    "excludes may match it), and commit it on its own first if the command's "
+    "commit should carry only its own change; to leave it out, move it out of "
+    "the holder. Then run the same command again.")
 
 #: What `gitmodules-sparse` says, around the verb, and its remediation.
 SPARSE = (
@@ -233,6 +238,21 @@ def hidden_by_skip_worktree(root: Path, env: dict) -> None:
     edited(root, env)
 
 
+def marked(tag: bytes, *flags: str):
+    """A set-up that marks `.gitmodules` in the index with `flags`, one `git
+    update-index` call each (one call applies only its first flag), and
+    leaves the file as the index has it. `tag` is the letter `git ls-files
+    -v` must then print, the premise: `S` for skip-worktree, `h` for
+    assume-unchanged (which `core.ignoreStat` sets on every file git writes),
+    `s` for both."""
+    def set_up(root: Path, env: dict) -> None:
+        for flag in flags:
+            raw(root, env, "update-index", flag, "--", GITMODULES)
+        listed = raw(root, env, "ls-files", "-v", "--", GITMODULES).stdout
+        assert listed.startswith(tag + b" "), f"premise: {listed!r}"
+    return set_up
+
+
 # --- what a refusal leaves, and what a remedy does ---------------------------
 
 def verb_args(verb: str, root: Path, family) -> list[str]:
@@ -297,6 +317,12 @@ def committed_url(root: Path, env: dict) -> str:
     return raw(root, env, "config", "--blob", f"HEAD:{GITMODULES}",
                f"submodule.members/{OTHER}.url").stdout.decode(
                    "utf-8").strip()
+
+
+def committed_paths(root: Path, env: dict) -> list[str]:
+    """The paths HEAD's commit changes, as `git diff-tree` lists them."""
+    return raw(root, env, "diff-tree", "--no-commit-id", "--name-only", "-r",
+               "HEAD").stdout.decode("utf-8").split()
 
 
 def ran(root: Path, env: dict, args: list[str]) -> None:
@@ -452,16 +478,33 @@ def test_a_work_tree_copy_that_is_not_the_indexs_is_refused(
     assert committed_url(holder, env).endswith(url)
 
 
-@pytest.mark.parametrize("verb", ["remove", "add"])
+#: `{id: (verb, set-up)}`: each state `gitmodules-sparse` refuses but the
+#: edit `test_an_edit_skip_worktree_hides_is_refused_then_named_as_modified`
+#: holds.
+SPARSE_STATES = {
+    "left out-remove": ("remove", left_out),
+    "left out-add": ("add", left_out),
+    "marked by hand, clean-add": ("add", marked(b"S", "--skip-worktree")),
+    "marked both ways, clean-add": (
+        "add", marked(b"s", "--skip-worktree", "--assume-unchanged")),
+}
+
+
+@pytest.mark.parametrize("verb, set_up", SPARSE_STATES.values(),
+                         ids=SPARSE_STATES)
 def test_a_gitmodules_a_sparse_checkout_leaves_out_is_refused(
-        family, holder, offline, tmp_path, verb):
+        family, holder, offline, tmp_path, verb, set_up):
     """`gitmodules-sparse` (the review's N2): the printed restore of
     `gitmodules-missing`, `git checkout -- .gitmodules`, matches nothing in
     a sparse checkout that leaves the file out, and `add`'s own note's
-    neither. `git sparse-checkout disable` does, typed as printed, and the
-    same command then runs."""
+    neither. `add` refuses a file the index marks skip-worktree even where
+    it is on disk and clean, since `git submodule add` cannot stage it (on
+    bfed143 it failed at the mount, after writing), and so where the index
+    marks it assume-unchanged too, `ls-files -v`'s `s` (the re-review's
+    X1). `git sparse-checkout disable` works in each, typed as printed, and
+    the same command then runs."""
     env = isolated(offline, tmp_path)
-    left_out(holder, env)
+    set_up(holder, env)
     args = verb_args(verb, holder, family)
 
     refused_then_typed(holder, env, args,
@@ -494,16 +537,63 @@ def test_an_edit_skip_worktree_hides_is_refused_then_named_as_modified(
     assert committed_url(holder, env).endswith(f"{OTHER}.git")
 
 
+#: `{id: (verb, the member it adds or removes, set-up)}`: a clean
+#: `.gitmodules` behind a mark, which the verb commits rightly.
+MARKED_CLEAN = {
+    "skip-worktree-remove": ("remove", MEMBER,
+                             marked(b"S", "--skip-worktree")),
+    "assume-unchanged-remove": ("remove", MEMBER,
+                                marked(b"h", "--assume-unchanged")),
+    "assume-unchanged-add": ("add", SPARE, marked(b"h", "--assume-unchanged")),
+}
+
+
+@pytest.mark.parametrize("verb, member, set_up", MARKED_CLEAN.values(),
+                         ids=MARKED_CLEAN)
+def test_a_clean_gitmodules_behind_a_mark_is_committed_as_before(
+        family, holder, offline, tmp_path, verb, member, set_up):
+    """THE RE-REVIEW'S NITS 1 AND 2. A `.gitmodules` the index marks, whose
+    work tree's copy is the index's, is not refused: `remove` committed one
+    marked skip-worktree by hand rightly on bfed143 and still does, and both
+    verbs commit one marked assume-unchanged. The dry run refuses nothing,
+    and the commit changes exactly `.gitmodules`, `family.yaml` and the
+    member's gitlink, with OTHER's url as it was and the gate passing."""
+    env = isolated(offline, tmp_path)
+    set_up(holder, env)
+    args = verb_args(verb, holder, family)
+
+    dry = run_script(FAMILY, *args, "--dry-run", env=env)
+
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    ran(holder, env, args)
+    assert committed_paths(holder, env) == [
+        GITMODULES, "family.yaml", f"members/{member}"]
+    assert committed_url(holder, env).endswith(f"{OTHER}.git")
+    assert validate(holder).returncode == 0
+
+
+#: An operator with no global excludes, and one whose excludes match every
+#: path (#242's `*`), where a plain `git add` refuses an untracked file.
+OPERATOR_EXCLUDES = {"no excludes": b"", "*": RULES["*"]}
+
+
+@pytest.mark.parametrize("rules", OPERATOR_EXCLUDES.values(),
+                         ids=OPERATOR_EXCLUDES)
 def test_add_refuses_an_untracked_gitmodules_in_a_holder_with_none(
-        family, empty_holder, offline, tmp_path):
+        family, empty_holder, offline, tmp_path, rules):
     """CODEX'S FIRST STATE. In a holder with no member, neither the index nor
     HEAD holds a `.gitmodules`, and `git submodule add` writes its section
     into one the work tree has and stages all of it: `add` committed a file
     nobody staged. It is `gitmodules-unstaged` now, by both runs; staged as
-    printed, it goes into the commit with the member's section."""
-    env = isolated(offline, tmp_path)
+    printed, `git add -f`, it goes into the commit with the member's
+    section, under an operator's `*` too (the re-review's nit 3)."""
+    env = {**isolated(offline, tmp_path),
+           **excluding(tmp_path / "operator", rules)}
     note = b"# a note nobody staged\n"
     (empty_holder / GITMODULES).write_bytes(note)
+    ignored = raw(empty_holder, env, "check-ignore", "-q", "--", GITMODULES,
+                  check=False)
+    assert (ignored.returncode == 0) == bool(rules), "premise"
     args = verb_args("add", empty_holder, family)
 
     refused_then_typed(empty_holder, env, args,

@@ -123,13 +123,15 @@ commit took the file out of HEAD and every other member's section with it,
 with exit 0. Both verbs refuse, as early, a work tree's copy that is not the
 index's: changed and not staged, unmerged, one whose deletion is staged, an
 edit the index's assume-unchanged mark hides from git, an untracked file where
-neither the index nor HEAD holds one, and a file a sparse checkout leaves out.
-`add` committed such a change beside the member's section; `remove`'s `git
-rm` refused some of them only after `git submodule deinit` had emptied the
-member. A change somebody has STAGED is theirs and goes into the commit, which
-is what the remediations of #300 and #360 rely on. `add` leaves a
-`.gitmodules` the work tree lacks to `git submodule add`, which refuses it, as
-said above, but for one a sparse checkout leaves out, where the restore its
+neither the index nor HEAD holds one, and a file a sparse checkout leaves out:
+one the index marks skip-worktree, which `add` refuses on disk or not, as `git
+submodule add` cannot stage it, and `remove` where it is missing or is not the
+index's copy. `add` committed such a change beside the member's section;
+`remove`'s `git rm` refused some of them only after `git submodule deinit` had
+emptied the member. A change somebody has STAGED is theirs and goes into the
+commit, which is what the remediations of #300 and #360 rely on. `add` leaves
+a `.gitmodules` the work tree lacks to `git submodule add`, which refuses it,
+as said above, but for one a sparse checkout leaves out, where the restore its
 dry run's note prints would not work.
 """
 
@@ -4506,10 +4508,13 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
       content `git add` would not stage as the index's blob (`_stages_as`);
       and an untracked one, which neither the index nor HEAD holds.
     - as `gitmodules-sparse`: one the index marks skip-worktree, as a sparse
-      checkout that leaves the file out does, on disk or not. git neither
-      compares that copy nor stages it (`git add` refuses a path outside the
-      sparse checkout, and `git checkout -- .gitmodules` matches nothing),
-      so `git sparse-checkout disable` is the restore that works as typed.
+      checkout that leaves the file out does. git neither compares that copy
+      nor stages it (`git add` refuses a path outside the sparse checkout,
+      and `git checkout -- .gitmodules` matches nothing), so `git
+      sparse-checkout disable` is the restore that works as typed. `add`
+      refuses it on disk or not, since `git submodule add` cannot stage it;
+      `remove` refuses it where it is missing or is not the index's copy,
+      and commits a clean one on disk rightly, as it did before #407.
 
     "Modified" is git's own answer, `git ls-files -m`, which writes nothing:
     the comparison `git status` lists a file as modified by, and the one
@@ -4539,10 +4544,14 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
             verb, f"the work tree has a {GITMODULES} that neither the index "
             "nor HEAD holds: it is untracked, and nobody has staged it",
             "whether it belongs in the holder is a person's to say. To keep "
-            f"it, stage it, `git add {GITMODULES}`, and commit it on its own "
+            f"it, stage it, `git add -f {GITMODULES}` (`-f`, since an "
+            "operator's excludes may match it), and commit it on its own "
             "first if the command's commit should carry only its own change; "
             "to leave it out, move it out of the holder. Then")
-    if tag.upper() == "S":
+    # `add` cannot stage a skip-worktree `.gitmodules` at all; `remove`
+    # commits a clean one on disk rightly, as it did before #407.
+    if tag.upper() == "S" and (verb == "add" or not on_disk
+                               or not _stages_as(root, blob)):
         raise Refusal(
             "gitmodules-sparse",
             f"the index marks {GITMODULES} skip-worktree, as a sparse "
