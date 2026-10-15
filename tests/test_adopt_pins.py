@@ -841,7 +841,8 @@ def test_a_pin_source_no_pin_reads_is_refused(source_repo, tmp_path, gh_env,
         "digest is read from.\nRemediation: no plan was written. Add the "
         "--pin <openProduct>@<40 hex commit> that clone was given for, or "
         "drop --pin-source.\n")
-    assert "\x1b" not in result.stderr and "‍" not in result.stderr
+    assert "\x1b" not in result.stderr, result.stderr
+    assert "\u200d" not in result.stderr, result.stderr
     assert not out.exists()
     assert gh_calls(gh_env) == ""
 
