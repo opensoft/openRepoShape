@@ -421,8 +421,11 @@ def test_a_failed_push_is_named_and_its_next_line_pushes_first(root, project,
             "--title " in line
         assert f"`apply --push --pr` run again on {BRANCH}" in result.stderr
     else:
-        assert line.endswith(f"&& gh pr create --repo testorg/{PROJECT} "
-                             f"--base main --head {BRANCH}"), line
+        assert f"&& gh pr create --repo testorg/{PROJECT} --base main " \
+            f"--head {BRANCH} --title " in line, line
+        assert " --body " in line and "--fill" not in line, (
+            "a bare `gh pr create` has gh prompt for what a shell with no "
+            "terminal cannot answer (#535)")
         assert "run again" not in result.stderr, (
             "a re-run without --pr finishes nothing, so none is promised")
     the_commit_stands(root, project)

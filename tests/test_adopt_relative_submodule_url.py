@@ -26,8 +26,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, git, make_source_repo, resolve,
-                      run_script, write_plan)
+from conftest import (ADOPT, FILE_PROTOCOL, clone_just_pushed, git,
+                      make_source_repo, resolve, run_script, write_plan)
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
@@ -626,9 +626,7 @@ def execute(plan: Path, work: Path, remotes: Path):
 def clone_the_split(source: Path, clone: Path):
     """`git clone --recurse-submodules` of the branch `execute` pushed the
     split to: what a person runs next."""
-    return git(*FILE_PROTOCOL, "clone", "-q", "--recurse-submodules", "-b",
-               "adopt/three-repo-shape", str(source), str(clone),
-               cwd=clone.parent, check=False)
+    return clone_just_pushed(source, clone, "adopt/three-repo-shape")
 
 
 @needs_filter_repo

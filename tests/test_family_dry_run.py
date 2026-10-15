@@ -49,7 +49,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import git, run_script
+from conftest import cloned_just_pushed, git, run_script
 #: The trailer lines a lane's run lands, from the file that owns them.
 from test_commit_trailers import TRAILERS, trailers_of
 #: The family fixture, its names and the offline environment, imported from
@@ -1049,8 +1049,7 @@ def a_renamed_copy_of_a_member(root: Path) -> Path:
                  f"submodule.members/{PINNED}.url", cwd=root).stdout.strip()
     remotes = root.parent / "renamed-remotes"
     remotes.mkdir()
-    git("clone", "-q", "--bare", source, str(remotes / f"{RENAMED}.git"),
-        cwd=root.parent)
+    cloned_just_pushed(Path(source), remotes / f"{RENAMED}.git", bare=True)
     return remotes
 
 
