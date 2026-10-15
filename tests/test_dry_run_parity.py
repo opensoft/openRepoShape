@@ -118,6 +118,12 @@ def refused_line(result) -> str:
                  if line.startswith("REFUSED ")), "")
 
 
+def remediation_line(result) -> str:
+    """The `Remediation:` line a refusal ended on."""
+    return next((line for line in result.stderr.splitlines()
+                 if line.startswith("Remediation:")), "")
+
+
 def assert_refused(result, said: str) -> None:
     """Exit 2 with the refusal `said`, its whole line, and no traceback."""
     assert result.returncode == 2, result.stdout + result.stderr
@@ -325,10 +331,31 @@ CANNOT_WRITE = {"no-w": 0o555, "no-x": 0o600}
 
 #: Where each tool writes a working tree, as `(the tree's path under the
 #: test's directory, how a run lands there, the code it refuses an occupied
-#: tree by)`.
+#: tree by, the flag the person met the folder by)`.
 TREE_AT = {
-    "scaffold": ("wd/Atlas", scaffold_in, "scaffold-target-exists"),
-    "family": ("into/Orbit/Orbit", init_in, "family-target-exists"),
+    "scaffold": ("wd/Atlas", scaffold_in, "scaffold-target-exists",
+                 "--work-dir"),
+    "family": ("into/Orbit/Orbit", init_in, "family-target-exists", "--into"),
+}
+
+
+def unwritable_remediation(flag: str) -> str:
+    """What the refusal of an EMPTY working tree this user cannot write in
+    says to do: not "choose an empty folder", which is about a tree that
+    holds something."""
+    return ("Remediation: nothing was created, and `--dry-run` refuses the "
+            "same. Give this user write and search permission on that "
+            f"folder, or choose another {flag}, and run this again.")
+
+
+#: What each tool says to do about a tree that HOLDS something, as it always
+#: said it; the empty unwritable tree no longer says it.
+HOLDS_REMEDIATION = {
+    "scaffold": "Remediation: choose an empty --work-dir. There is no "
+                "--force: re-running over a live tree is not a scaffold.",
+    "family": "Remediation: choose another --into (or an empty --work-dir); "
+              "if that IS the holder, it is already a family and `family.py "
+              "add` is what grows it. There is no --force.",
 }
 
 
@@ -343,15 +370,45 @@ def test_an_empty_working_tree_this_user_cannot_write_in_is_refused_by_name(
     longer dies in a `PermissionError` traceback once the bare remote
     exists. On main 396c0ff4 every dry run here exited 0, and every real
     run made the bare remote and then raised."""
-    put, lands, code = TREE_AT[tool]
+    put, lands, code, flag = TREE_AT[tool]
     tree = unwritable_folder(put, CANNOT_WRITE[how])
     scratch_env(tmp_path)
     before = snapshot(tmp_path)
     result = lands(tmp_path)(dry_run=dry_run)
     assert_refused(result, f"REFUSED {code}: {tree.resolve()} already exists "
                            "and is a folder this user cannot write in")
+    assert remediation_line(result) == unwritable_remediation(flag)
     assert snapshot(tmp_path) == before, "the run made something"
     assert not list(tmp_path.rglob("*.git")), "a remote was made"
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real-run"])
+def test_an_unwritable_holder_under_work_dir_says_to_choose_another_work_dir(
+        tmp_path, unwritable_folder, dry_run):
+    """The remediation names the flag the person landed by: with
+    `--work-dir` there is no family folder, so `--into` would not move the
+    holder it names."""
+    tree = unwritable_folder("wd/Orbit", CANNOT_WRITE["no-w"])
+    result = init_in(tmp_path, "--work-dir", "wd")(dry_run=dry_run)
+    assert_refused(result, f"REFUSED family-target-exists: {tree.resolve()} "
+                           "already exists and is a folder this user cannot "
+                           "write in")
+    assert remediation_line(result) == unwritable_remediation("--work-dir")
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real-run"])
+@pytest.mark.parametrize("held", ["a-file", "a-nonempty-folder"])
+@pytest.mark.parametrize("tool", list(TREE_AT))
+def test_a_working_tree_that_holds_something_keeps_its_remediation(
+        tmp_path, tool, held, dry_run):
+    """A tree that holds something, a file included, is told what both tools
+    always told it, "choose an empty folder; there is no --force", and not
+    the permissions sentence that fits an empty one."""
+    put, lands, code, _ = TREE_AT[tool]
+    touch(tmp_path / put if held == "a-file" else tmp_path / put / "f")
+    result = lands(tmp_path)(dry_run=dry_run)
+    assert refused_line(result).startswith(f"REFUSED {code}: ")
+    assert remediation_line(result) == HOLDS_REMEDIATION[tool]
 
 
 def test_a_working_tree_this_user_cannot_write_in_is_named_last(
@@ -365,6 +422,17 @@ def test_a_working_tree_this_user_cannot_write_in_is_named_last(
                 == "is a folder this user cannot write in")
         assert (ask(unwritable_folder(f"full-{how}", mode, holding="f"))
                 == "is not empty")
+
+
+def test_the_remediation_is_chosen_by_what_stands_in_the_way():
+    """`target_remediation`: the permissions sentence for the one answer
+    that says so, and the tool's own sentence, unchanged, for every other."""
+    pick = shape_materialize.target_remediation
+    assert pick(shape_materialize.CANNOT_WRITE_IN, "holds", "--x") == (
+        unwritable_remediation("--x"))
+    for why in ("is not empty", "is a file, not a folder",
+                "cannot be read: Permission denied"):
+        assert pick(why, "holds", "--x") == "holds"
 
 
 # --- L2-35, and the scaffold's own: a refused real run leaves no folder -------
@@ -611,7 +679,8 @@ def test_both_tools_ask_the_one_definition(tool):
     module = (load("parity_scaffold_names", SCAFFOLD) if tool == "scaffold"
               else load("parity_family_names", FAMILY))
     for name in ("refuse_unmakeable_folder", "make_folder",
-                 "target_in_the_way", "refuse_unless_not_found"):
+                 "target_in_the_way", "target_remediation",
+                 "refuse_unless_not_found"):
         assert getattr(module, name) is getattr(shape_materialize, name), name
 
 

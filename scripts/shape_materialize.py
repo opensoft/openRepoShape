@@ -1419,6 +1419,23 @@ def target_in_the_way(target: Path) -> str | None:
     return None
 
 
+def target_remediation(why: str, holds: str, choose: str) -> str:
+    """The remediation of a `-target-exists` refusal, chosen by what
+    `target_in_the_way` said, in the one place both tools ask it (#609).
+
+    `holds` is the tool's own sentence for a tree that HOLDS something, a
+    file included: choose an empty folder, there is no --force. It is wrong
+    for an EMPTY folder whose only fault is its permissions
+    (`CANNOT_WRITE_IN`, L2-60), which is told to be given write and search
+    permission for this user, or to be replaced by another folder, named by
+    `choose`, the flag the person met it by."""
+    if why != CANNOT_WRITE_IN:
+        return holds
+    return ("Remediation: nothing was created, and `--dry-run` refuses the "
+            "same. Give this user write and search permission on that "
+            f"folder, or choose another {choose}, and run this again.")
+
+
 # ---------------------------------------------------------------------------
 # What a run asks before its first write: whether a repository exists (#609)
 # ---------------------------------------------------------------------------

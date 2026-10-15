@@ -178,7 +178,7 @@ from shape_materialize import (  # noqa: E402
     force_stage, inherited_child_environment, make_folder,
     materialize_family_root, refuse_bad_branch, refuse_unless_not_found,
     refuse_unmakeable_folder, run, stage_written, target_in_the_way,
-    trailer_line, write_lf,
+    target_remediation, trailer_line, write_lf,
 )
 # What `init` asks of the holder's own reader and validator before it creates
 # anything (#307), imported as its own unit and not added to the lists above.
@@ -1251,17 +1251,23 @@ def _landing_folder(folder: Path | None, holder: Path) -> tuple[Path, str]:
     return folder, "the family folder"
 
 
-def _refuse_a_taken_holder(holder: Path) -> None:
+def _refuse_a_taken_holder(folder: Path | None, holder: Path) -> None:
     """`family-target-exists`: something already stands where the holder
     goes, a folder that holds anything or, since #609, a file, which
-    `iterdir()` met with a `NotADirectoryError` traceback."""
+    `iterdir()` met with a `NotADirectoryError` traceback, or an empty folder
+    this user cannot write in (L2-60), whose remediation names the flag the
+    person landed by: `--work-dir` where there is no family folder, `--into`
+    otherwise."""
     why = target_in_the_way(holder)
     if why:
         raise Refusal(
             "family-target-exists", f"{holder} already exists and {why}",
-            "Remediation: choose another --into (or an empty --work-dir); if "
-            "that IS the holder, it is already a family and `family.py add` "
-            "is what grows it. There is no --force.")
+            target_remediation(
+                why,
+                "Remediation: choose another --into (or an empty "
+                "--work-dir); if that IS the holder, it is already a family "
+                "and `family.py add` is what grows it. There is no --force.",
+                "--work-dir" if folder is None else "--into"))
 
 
 def _refuse_unmakeable_landing(args, folder: Path | None, holder: Path,
@@ -1280,7 +1286,7 @@ def _refuse_unmakeable_landing(args, folder: Path | None, holder: Path,
     """
     landing, named = _landing_folder(folder, holder)
     refuse_unmakeable_folder(FOLDER_REFUSAL, named, landing)
-    _refuse_a_taken_holder(holder)
+    _refuse_a_taken_holder(folder, holder)
     if local:
         refuse_unmakeable_folder(FOLDER_REFUSAL, "--local-remote-dir",
                                  args.local_remote_dir.resolve())
@@ -1299,7 +1305,7 @@ def _prepare_landing_dir(folder: Path | None, holder: Path) -> Path:
     # landed in, is exactly the case this is supposed to join.
     landing, named = _landing_folder(folder, holder)
     make_folder(FOLDER_REFUSAL, named, landing)
-    _refuse_a_taken_holder(holder)
+    _refuse_a_taken_holder(folder, holder)
     return holder
 
 
