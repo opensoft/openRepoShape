@@ -279,6 +279,25 @@ def test_the_holder_remove_leaves_clones_with_the_other_member(
     assert gate.returncode == 0, gate.stdout + gate.stderr
 
 
+def test_remove_of_a_member_with_no_gitlink_is_not_this_refusal(
+        family, holder, offline, tmp_path):
+    """The refusal is for a member whose gitlink the index records: that is
+    the unmount the commit's failure emptied. With none, the run fails at
+    its first git call, which writes nothing, and the dry run says so by
+    git's own words, as before; the remedy of this refusal could not help."""
+    env = isolated(offline, tmp_path)
+    head_lost(holder, env)
+    raw(holder, env, "rm", "-q", "--cached", "--", f"members/{MEMBER}")
+    commit_all(holder, env, "MEMBER's gitlink taken out")
+
+    dry = run_script(FAMILY, *verb_args("remove", holder, family),
+                     "--dry-run", env=env)
+
+    assert dry.returncode == 2, dry.stdout + dry.stderr
+    assert "member-gitmodules-absent" not in dry.stderr, dry.stderr
+    assert "did not match any file(s) known to git" in dry.stderr
+
+
 def test_remove_of_a_member_whose_section_alone_is_gone_runs_as_before(
         family, holder, offline, tmp_path):
     """The refusal is for a holder with NO `.gitmodules`, where the commit
@@ -434,6 +453,30 @@ def test_a_holder_with_no_members_is_asked_nothing(empty_holder):
     for extra in ((), ("--pins",), ("--no-members",)):
         result = validate(empty_holder, *extra)
         assert result.returncode == 0, (extra, result.stderr + result.stdout)
+
+
+def test_a_row_the_gitlink_checks_do_not_read_is_asked_nothing(
+        holder, offline, tmp_path):
+    """The rows `_check_member` reads at their path, and no other, in a
+    holder whose HEAD lost `.gitmodules`. OTHER's gitlink taken out too: a
+    row with no gitlink is `member-gitlink-absent`'s, members checked.
+    MEMBER's row given another `path:` by hand: that row is `member-path`'s,
+    and its mount `member-gitlink-unnamed`'s."""
+    env = isolated(offline, tmp_path)
+    head_lost(holder, env)
+    raw(holder, env, "rm", "-q", "--cached", "--", f"members/{OTHER}")
+    commit_all(holder, env, "OTHER's gitlink taken out")
+    rows = (holder / "family.yaml").read_bytes()
+    line = f"    path: members/{MEMBER}\n".encode()
+    assert rows.count(line) == 1, "fixture drift: MEMBER's path line"
+    (holder / "family.yaml").write_bytes(rows.replace(
+        line, f"    path: members/{MEMBER}-moved\n".encode()))
+
+    result = validate(holder, "--no-members")
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "member-gitlink-unnamed" in result.stderr, result.stderr
+    assert "member-gitmodules-absent" not in result.stderr, result.stderr
 
 
 def test_an_untracked_copy_put_back_is_still_a_finding_until_committed(
