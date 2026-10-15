@@ -53,13 +53,20 @@ A LEG ON ANOTHER BRANCH (#603, D1). A tracking branch BEHIND the pin is
 fast-forwarded from a third checkout too: HEAD on another branch. It was left
 there under `which is neither`, while a tracking branch AT the pin was checked
 out from the same checkout, and the difference was left to #458 to rule on. The
-other branch keeps its commits, so the move loses nothing: `branch -f` moves
+other branch keeps its commits, so the move loses no commit: `branch -f` moves
 the tracking branch to the pin and the checkout puts the leg on it, as from the
-pin; the other branch is not touched. From another branch the checkout changes
-files, so git can refuse it over a local edit or an untracked file, which a
-checkout from the pin never meets: the branch is then left at the pin and HEAD
-where it was, and the next run meets the branch-at-the-pin state. A leg
-detached at a commit that is not the pin is still left, whatever it holds.
+pin; the other branch is not touched. One line under the `fast-forwarded` one
+says the leg left that branch and that it keeps its commits (or has none yet),
+since the next commit made in the leg is on the tracking branch now; no other
+start prints it, and nor does a refusal. From another branch the checkout
+changes files, so git can refuse it over a local edit or an untracked file,
+which a checkout from the pin never meets: the branch is then left at the pin
+and HEAD where it was, and the next run meets the branch-at-the-pin state. Two
+things are NOT refused, as in the branch-at-the-pin and missing-branch cases
+(#458's to rule on): an IGNORED file at a path the pin tracks is overwritten,
+and a merge in progress on the other branch is ended, its `MERGE_HEAD` removed
+and its staged result carried onto `main`. A leg detached at a commit that is
+not the pin is still left, whatever it holds.
 
 EACH TEST GOES THE WAY A PERSON DOES: a scaffold into bare repositories on
 disk, cloned recursively and bootstrapped, so each leg is on `main` at its
@@ -259,6 +266,7 @@ def test_bootstrap_after_a_bump_puts_the_leg_on_its_branch_at_the_new_pin(
     assert (f"[spec] spec: branch main fast-forwarded {old[:12]} -> "
             f"{new[:12]}, the pin") in result.stdout, result.stdout
     assert NOT_MOVING not in result.stdout
+    assert "the leg was " not in result.stdout, "detached at the pin"
     assert head_ref(leg) == MAIN, "the leg is on its tracking branch"
     assert rev(leg, MAIN) == new, "AT the new pin"
     assert rev(root, "HEAD:spec") == new, "and the pin is not moved"
@@ -280,6 +288,7 @@ def test_a_leg_on_its_branch_behind_the_pin_is_fast_forwarded_with_its_files(
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"fast-forwarded {old[:12]} -> {new[:12]}" in result.stdout, (
         result.stdout)
+    assert "the leg was " not in result.stdout, "HEAD was on `main`"
     assert head_ref(leg) == MAIN
     assert rev(leg, MAIN) == new
     assert (leg / ADDED).is_file(), "the pin's files are checked out"
@@ -1119,6 +1128,8 @@ def test_the_bump_prints_that_bootstrap_places_the_leg_or_says_why_not(
 
 #: A file made on `elsewhere`, which the checkout of `main` takes out again.
 MINE = "ELSEWHERE.md"
+#: What the line a leg's move off another branch adds starts with (#603).
+LEFT = "the leg was "
 #: What step (a) prints under git's own lines when git refuses a move.
 NOTHING_ELSE = ("          nothing else is tried; the recorded pin is "
                 "authoritative. Deal with what git said and run bootstrap "
@@ -1132,6 +1143,16 @@ def fast_forwarded(old: str, new: str) -> str:
     return (f"  [spec] spec: branch main fast-forwarded {old[:12]} -> "
             f"{new[:12]}, the pin; origin/main is {old[:12]}, which the pin "
             "deliberately does NOT follow\n")
+
+
+def left_branch(other: str = "elsewhere", orphan: bool = False) -> str:
+    """The line the T7 path prints under the `fast-forwarded` one when HEAD
+    started on another branch, byte for byte as main prints it (#603): the
+    leg left `other`, which keeps its commits (or has none yet, `orphan`),
+    and is on `main` now. Nothing else prints it."""
+    kept = ("a branch with no commit yet" if orphan
+            else "which keeps its commits")
+    return f"          the leg was on {other}, {kept}; it is on main now\n"
 
 
 def moved_and_refused(old: str, new: str) -> str:
@@ -1171,7 +1192,8 @@ def test_a_leg_on_another_branch_behind_the_pin_is_put_on_main_at_the_pin(
 
     result = bootstrap(root)
     assert result.returncode == 0, result.stderr + result.stdout
-    assert fast_forwarded(old, new) in result.stdout, result.stdout
+    assert fast_forwarded(old, new) + left_branch() in result.stdout, (
+        result.stdout)
     assert "neither" not in result.stdout
     assert NOT_MOVING not in result.stdout
     assert head_ref(leg) == MAIN and rev(leg) == new == rev(leg, MAIN)
@@ -1198,7 +1220,8 @@ def test_a_leg_on_another_branch_at_the_pin_is_put_on_main_and_changes_no_file(
 
     result = bootstrap(root)
     assert result.returncode == 0, result.stderr + result.stdout
-    assert fast_forwarded(old, new) in result.stdout, result.stdout
+    assert fast_forwarded(old, new) + left_branch() in result.stdout, (
+        result.stdout)
     assert "neither" not in result.stdout
     assert head_ref(leg) == MAIN and rev(leg) == new == rev(leg, MAIN)
     assert rev(leg, "refs/heads/elsewhere") == new, "`elsewhere` stays"
@@ -1222,7 +1245,8 @@ def test_the_branch_a_leg_is_on_is_not_the_one_that_moves_to_the_pin(
     result = bootstrap(root)
     assert result.returncode == 0, result.stderr + result.stdout
     assert rev(leg, "refs/heads/elsewhere") == old, "`elsewhere` is not moved"
-    assert fast_forwarded(old, new) in result.stdout, result.stdout
+    assert fast_forwarded(old, new) + left_branch() in result.stdout, (
+        result.stdout)
     assert head_ref(leg) == MAIN and rev(leg) == new == rev(leg, MAIN)
     assert (leg / ADDED).is_file(), "the pin's files are checked out"
     assert git("status", "--porcelain", cwd=leg).stdout == ""
@@ -1253,6 +1277,7 @@ def test_a_checkout_off_another_branch_git_refuses_leaves_main_at_the_pin(
     assert NOTHING_ELSE in result.stdout
     assert "fast-forwarded" not in result.stdout
     assert "neither" not in result.stdout
+    assert LEFT not in result.stdout, "HEAD did not leave `elsewhere`"
     assert head_ref(leg) == "refs/heads/elsewhere" and rev(leg) == old
     assert rev(leg, MAIN) == new, "`main` stays at the pin"
     assert (leg / EDITED).read_bytes() == edited, "the edit is intact"
@@ -1262,11 +1287,13 @@ def test_a_checkout_off_another_branch_git_refuses_leaves_main_at_the_pin(
     assert (f"  [spec] spec: branch main is at the pin {new[:12]}, and git "
             "refused to check it out:\n") in second.stdout, second.stdout
     assert head_ref(leg) == "refs/heads/elsewhere" and rev(leg, MAIN) == new
+    assert LEFT not in second.stdout
 
     git("checkout", "-q", "--", EDITED, cwd=leg)
     again = skip_validators(root)
     assert f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n" in (
         again.stdout), again.stdout
+    assert LEFT not in again.stdout, "P9 says nothing of the branch it left"
     assert head_ref(leg) == MAIN and rev(leg) == new
 
 
@@ -1290,6 +1317,7 @@ def test_a_branch_another_worktree_has_checked_out_is_not_moved_from_elsewhere(
         result.stdout)
     assert NOTHING_ELSE in result.stdout
     assert "neither" not in result.stdout
+    assert LEFT not in result.stdout, "nothing moved"
     assert rev(leg, MAIN) == old
     assert head_ref(leg) == "refs/heads/elsewhere" and rev(leg) == new
     assert head_ref(held) == MAIN and rev(held) == old
@@ -1306,9 +1334,10 @@ def test_a_leg_on_a_branch_with_no_commit_yet_is_placed_as_on_any_branch(
     """HEAD on a branch with NO COMMIT YET (`git switch --orphan`): there is
     no commit to keep, and `place_at_pin` checks `main` out from it, so a
     `main` behind the pin does the same (#603). The four lines side by side:
-    free, `main` goes to the pin and the leg onto it, and nothing is said of
-    the branch HEAD left; with an untracked file in the way, git refuses the
-    checkout, HEAD stays on the unborn branch, and `main` is at the pin."""
+    free, `main` goes to the pin and the leg onto it, T7 says the leg left a
+    branch with no commit yet and P9 says nothing of it; with an untracked
+    file in the way, git refuses the checkout, HEAD stays on the unborn
+    branch, `main` is at the pin and nothing is said of the leg leaving."""
     old = rev(root / "spec")
     advanced = f"advance-orphan-{where}-{'blocked' if blocked else 'free'}"
     if where == "behind":
@@ -1337,9 +1366,57 @@ def test_a_leg_on_a_branch_with_no_commit_yet_is_placed_as_on_any_branch(
         assert NOTHING_ELSE in result.stdout
         assert head_ref(leg) == "refs/heads/orphan"
         assert (leg / ADDED).read_bytes() == b"mine\n"
+        assert LEFT not in result.stdout
     else:
-        assert ((fast_forwarded(old, new) if where == "behind" else
+        assert ((fast_forwarded(old, new) + left_branch("orphan", True)
+                 if where == "behind" else
                  f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n")
                 in result.stdout), result.stdout
+        assert (LEFT in result.stdout) == (where == "behind")
         assert head_ref(leg) == MAIN and rev(leg) == new
         assert git("status", "--porcelain", cwd=leg).stdout == ""
+
+
+def test_a_failing_hook_after_the_move_off_another_branch_is_said_after_it(
+        root, bootstrapped, tmp_path):
+    """T7 with a post-checkout hook that fails after HEAD has moved: `git
+    checkout` exits non-zero over a checkout that happened, so the move is
+    said, the line that says the leg left `elsewhere` follows it, and the
+    hook's words follow that, as `place_at_pin`'s do (#533). Nothing is
+    called a refusal. Without the `_say_after` of `fast_forward_to_pin`, the
+    hook's words are not said at all, and no other test sees it."""
+    leg = root / "spec"
+    old = rev(leg)
+    new = bumped(root, bootstrapped["remotes"], tmp_path, "advance-t7-hook")
+    git("checkout", "-q", "-b", "elsewhere", "main", cwd=leg)
+    assert rev(leg) == old
+
+    result = run_script(root / "scripts" / "bootstrap.py",
+                        "--skip-validators", cwd=root,
+                        env=failing_post_checkout(tmp_path))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (fast_forwarded(old, new) + left_branch()
+            + "          checked out, and then git said:\n"
+            "          post-checkout hook failed\n") in result.stdout, (
+        result.stdout)
+    assert "refused" not in result.stdout
+    assert head_ref(leg) == MAIN and rev(leg) == new == rev(leg, MAIN)
+    assert rev(leg, "refs/heads/elsewhere") == old
+
+
+def test_the_branch_the_leg_left_is_spelled_in_the_line_that_names_it(
+        root, bootstrapped, tmp_path):
+    """The line that says the leg left a branch prints the BRANCH'S name, which
+    is a person's, not the manifest's, and git accepts U+2028 in one (#391):
+    it is spelled, as the tracking branch's is."""
+    leg = root / "spec"
+    old = rev(leg)
+    new = bumped(root, bootstrapped["remotes"], tmp_path, "advance-t7-spelled")
+    git("checkout", "-q", "-b", "el\u2028se", cwd=leg)
+
+    result = bootstrap(root)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "\u2028" not in result.stdout, result.stdout
+    assert fast_forwarded(old, new) + left_branch(r"el\u2028se") in (
+        result.stdout), result.stdout
+    assert head_ref(leg) == MAIN and rev(leg) == new

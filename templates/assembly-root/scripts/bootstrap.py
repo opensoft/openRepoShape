@@ -221,7 +221,11 @@ def _move_and_check_out(sub: Path, branch: str,
     no file in the leg changes, a local edit included. From another branch
     the checkout changes files, as `place_at_pin`'s does, and git refuses
     it where a local change to a file that differs, or an untracked file, is
-    in the way: the branch has moved by then, and HEAD has not.
+    in the way: the branch has moved by then, and HEAD has not. It does not
+    refuse an IGNORED file at a path the pin tracks: git overwrites that,
+    as it does for `place_at_pin` and the on-branch `merge --ff-only`, and
+    it ends a merge in progress on the branch HEAD leaves (#458's to rule
+    on, #603).
 
     Returns whether the branch moved, whether HEAD is on it at the pin, and
     git's lines (`None` when both steps exited 0). The checkout runs only
@@ -359,14 +363,22 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
     - HEAD on ANOTHER BRANCH, a `refs/heads/` ref that is not the tracking
       branch (#603, D1 of its checklist triage): `_move_and_check_out`. The
       other branch is not touched and keeps every commit made on it, so the
-      move loses nothing and that work is no reason to leave the leg there.
-      `place_at_pin` already checks the tracking branch out from this
-      checkout when it is AT the pin; leaving the leg for a branch BEHIND
-      the pin was a difference nobody could explain (#458). The checkout
-      changes files from here, so git can refuse it over a local edit or an
-      untracked file, and `_move_and_check_out` says what is left then. A
-      HEAD on a branch with no commit yet takes this path too, as it does in
-      `place_at_pin`.
+      move loses no commit and that work is no reason to leave the leg
+      there. `place_at_pin` already checks the tracking branch out from
+      this checkout when it is AT the pin; leaving the leg for a branch
+      BEHIND the pin was a difference nobody could explain (#458). The
+      checkout changes files from here, so git can refuse it over a local
+      edit or an untracked file, and `_move_and_check_out` says what is
+      left then. A HEAD on a branch with no commit yet takes this path too,
+      as it does in `place_at_pin`. When the checkout is made, one line
+      under the `fast-forwarded` one says the leg left that branch, and
+      that it keeps its commits, since the next commit made in the leg is
+      on the tracking branch now. NO COMMIT IS LOST, BUT TWO THINGS ARE NOT
+      REFUSED, as in `place_at_pin`, in the missing-branch path and, for
+      the first, in the on-branch `merge --ff-only`: git overwrites an
+      IGNORED file at a path the pin tracks, and a merge in progress on the
+      other branch is ended, its `MERGE_HEAD` removed and its staged result
+      carried onto the tracking branch. Both are #458's to rule on.
 
     A LEG DETACHED OFF THE PIN IS LEFT WHERE IT IS: a commit made on the
     detached leg after the bump is on no branch, and checking the branch
@@ -407,6 +419,14 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
                 "deliberately does NOT follow")
     print(f"  {label}: branch {named} fast-forwarded {_short(local)} -> "
           f"{_short(pin)}, the pin{note}")
+    if other_branch:
+        # P9 says nothing of the branch HEAD left; that is #458's. Here the
+        # person is told, since their next commit lands on `named`. HEAD on
+        # a branch with no commit yet has no commit to keep.
+        kept = ("a branch with no commit yet" if head is None
+                else "which keeps its commits")
+        print(f"          the leg was {_place_of(current)}, {kept}; it is on "
+              f"{named} now")
     _say_after(why)
 
 
