@@ -103,9 +103,9 @@ puts it there — run that line, or the next shell cannot find `brew`. Then `bre
 install gh`, and `brew install git-filter-repo` only if you are ADOPTING an
 existing repository rather than scaffolding a new one. The stock `/bin/bash` is
 3.2 and is enough: `setup.sh`, `install.sh` and the `openRepoShape` command are
-written to use no syntax newer than that, though CI runs on Linux only and no
-run of it checks them against bash 3.2. That the login shell is zsh changes
-nothing — all three entry points are run under `bash` explicitly.
+written to use no syntax newer than that, though no CI run, on Linux or in Git
+Bash on Windows, checks them against bash 3.2. That the login shell is zsh
+changes nothing — all three entry points are run under `bash` explicitly.
 
 </details>
 
