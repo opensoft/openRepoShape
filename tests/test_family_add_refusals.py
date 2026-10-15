@@ -1543,7 +1543,9 @@ def test_the_index_is_asked_at_the_mount_path_in_any_case_and_literally(
     to select, since it is not at the mount path, and `_members_spellings`
     names it instead, with every other path under a spelling of `members`
     that is not `members` itself, and each case variant of the mount path
-    under `members/` itself, by the spelling a remedy renames."""
+    under `members/` itself, by the entry its remedy acts on, never the
+    other spelling's directory (#574's review, B1). With nothing on disk,
+    that remedy takes it out of the index, as #318's does."""
     for name in ("MEMBERS/irqs/a", SPARE_MOUNT, f"{SPARE_MOUNT}X/b",
                  "Members/README", "members/IRQ*/c", "members/irq*"):
         plant(holder, "100644", name)
@@ -1555,11 +1557,12 @@ def test_the_index_is_asked_at_the_mount_path_in_any_case_and_literally(
         ("members/IRQ*/c", "a file"), ("members/irq*", "a file")]
     found = family_module._members_spellings(
         holder, SPARE, family_module._members_on_disk(holder))
-    assert [(spelled.name, spelled.target, spelled.mount)
+    assert [(spelled.name, spelled.target, spelled.mount, spelled.remedy)
             for spelled in found] == [
-        ("MEMBERS/irqs/a", "MEMBERS", True),
-        ("Members/README", "Members", False),
-        (f"members/{SPARE.lower()}/d", f"members/{SPARE.lower()}", True)]
+        ("MEMBERS/irqs/a", "MEMBERS/irqs", True, "git rm -r --cached"),
+        ("Members/README", "Members/README", False, "git rm -r --cached"),
+        (f"members/{SPARE.lower()}/d", f"members/{SPARE.lower()}", True,
+         "git rm -r --cached")]
 
 
 def test_a_conflicted_entry_at_the_mount_path_is_counted_once_per_stage(
