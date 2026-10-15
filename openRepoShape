@@ -406,7 +406,9 @@ install_commands() {
     keep the package's command, and update it with: pipx upgrade openreposhape
     or remove the link (pipx uninstall openreposhape, or rm $dir/$name), then run this again."
 	done
-	# THE RECORD SITS BESIDE THE FILE, symlinks followed, as it is read.
+	# THE RECORD SITS BESIDE THE FILE. The target is no link (refused just
+	# above), so `resolved` hands it back unchanged; the call stays because
+	# it is how `read_recorded_ref` names the record, and the two must agree.
 	record="$(resolved "$dir/openRepoShape")$RECORD_SUFFIX"
 	# BOTH CHECKED BEFORE ANYTHING IS COLLECTED OR PLACED: a ref about to be
 	# written down and read back by every later run, and a record path this
