@@ -28,7 +28,7 @@
 # `SOURCE_DATE_EPOCH`, and the `package` job builds twice on one runner at
 # the commit's time and compares the two files; that is all it shows.
 #
-# THE RELEASE IS WHERE THE WHEEL IS SHOWN REPRODUCIBLE
+# THE RELEASE IS WHERE THE WHEEL IS SHOWN PATH-INDEPENDENT
 # (`.github/workflows/release.yml`, #563). This pin fixes hatchling alone,
 # so a build that installs it here, in pip's isolated build environment,
 # resolves hatchling's own requirements (packaging, pathspec, pluggy,
