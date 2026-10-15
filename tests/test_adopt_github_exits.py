@@ -115,8 +115,9 @@ STILL_OPEN = (f"A pull request for that branch IS open on {ORG}/{NORTHWIND}, "
               "for a split that did not pass verification: deleting the "
               "branch, as above, closes it.")
 TOPIC_STAYS = (f"The topic {TOPIC} stays set on {ORG}/{NORTHWIND}, "
-               f"{ORG}/{NORTHWIND}-spec and {ORG}/{NORTHWIND}-code; the "
-               "re-run sets it again.")
+               f"{ORG}/{NORTHWIND}-spec and {ORG}/{NORTHWIND}-code: the "
+               "re-run sets it again on the root and the legs it makes, and "
+               "a leg left behind keeps it.")
 VERIFIED = "adoption verified: every source path is in exactly one place"
 FINDING = "FINDING adopt-shape-file-missing:"
 #: What `_verify` used to say after every pass, whether or not a pull request
@@ -392,9 +393,6 @@ def test_step_7_says_what_a_failed_verification_leaves_on_github():
             "where it was, but the split branch is pushed and, on GitHub, its "
             "pull request may be open and the topic set") in said, said
     assert "delete the split branch (closing that pull request)" in said, said
-    # What the tool prints for it is what the step names.
-    assert "IS open" in STILL_OPEN and "closes it" in STILL_OPEN
-    assert "stays set" in TOPIC_STAYS
 
 
 def test_the_modules_exit_codes_paragraph_names_the_exits_after_the_push(

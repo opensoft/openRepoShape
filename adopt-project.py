@@ -7864,8 +7864,10 @@ def _finish_by_hand(passed: bool, refused: list[str] | None, topic: str,
     was deleted from the source, which is true, and AGENTS.md said the source
     was untouched, which is not. So the open pull request is named as one
     for a split that failed, with what closes it, the deletion of its branch
-    the way out already names; and the topic as staying set, which the
-    re-run sets again.
+    the way out already names; and the topic as staying set: the re-run sets
+    it again on the root and on the legs it makes, and a leg the person
+    keeps, re-running into fresh leg repositories rather than deleting it,
+    keeps the topic too (#582's review).
 
     Stdout is flushed first. The table is on it and a pipe holds it in a
     block buffer, so without the flush this would come before the table it
@@ -7884,7 +7886,9 @@ def _finish_by_hand(passed: bool, refused: list[str] | None, topic: str,
                         "deleting the branch, as above, closes it.")
         if carried:
             said.append(f"The topic {topic} stays set on "
-                        f"{_and_listed(carried)}; the re-run sets it again.")
+                        f"{_and_listed(carried)}: the re-run sets it again "
+                        "on the root and the legs it makes, and a leg left "
+                        "behind keeps it.")
         if said:
             print(" ".join(said), file=sys.stderr)
         return
@@ -8338,8 +8342,9 @@ def cmd_execute(args) -> int:
         # Where the shape's Makefile and bootstrap script WENT, as the
         # materializer reports it, and not a second look at the tree (#480);
         # under `--local-remote-dir` no pull request is opened, so NEXT names
-        # the split's branch instead (#523).
-        _next_steps(names, collisions, branch if local else None)
+        # the split's branch, and the repository it is pushed to (#523).
+        _next_steps(names, collisions,
+                    (branch, urls["assembly"]) if local else None)
     _finish_by_hand(not verified, refused, topic, unset, opened=opened,
                     carried=carried)
     if verified:
@@ -8857,17 +8862,24 @@ SHAPE_MAKEFILE = "Makefile"
 
 
 def _next_steps(names: dict, collisions: list,
-                branch: str | None = None) -> None:
+                split: tuple[str, str] | None = None) -> None:
     """What a person does once the split is verified AND its pull request is
     open, or none was tried. Not said after a refused `gh pr create`: there
     the command to open it is the next step (#304).
 
-    `branch` is the split's branch where no pull request was tried, under
-    `--local-remote-dir`. NEXT said "review the pull request" there as well,
-    over none (#523, N2), and named a clone of the default branch, where the
-    split is not. There it names the split on its branch, and the clone of
-    that branch, quoted for `sh` as `_branch_deletion` quotes it. Without
-    one, the block is what it was, byte for byte.
+    `split` is `(branch, url)`, the split's branch and the repository it is
+    pushed to, where no pull request was tried: under `--local-remote-dir`,
+    where that repository is the source itself. NEXT said "review the pull
+    request" there as well, over none (#523, N2), and named a clone of the
+    default branch, where the split is not. There it names the split on its
+    branch, and a clone of that branch from that repository, each value
+    quoted for `sh` as `_branch_deletion` quotes it, so the line pastes as
+    printed. The clone carries `FILE_PROTOCOL`: the split's `.gitmodules`
+    names each leg by its plain path under `--local-remote-dir`, and git
+    clones a submodule over the `file` transport only where it is told to,
+    so without it both leg clones die `transport 'file' not allowed`, as
+    pasting the line did in #582's review. Without `split`, the block is
+    what it was, byte for byte.
 
     `collisions` is each `(intended, actual)` the materializer wrote beside a
     file the source kept: where the shape's files WENT, and not a second
@@ -8890,15 +8902,18 @@ def _next_steps(names: dict, collisions: list,
     bootstrap = ("" if script else
                  "\n    python3 scripts/bootstrap.py" if makefile else
                  "\n    make bootstrap")
-    if branch is None:
-        review, clone = f"the pull request on {names['assembly']}", ""
+    if split is None:
+        review = f"the pull request on {names['assembly']}"
+        clone = ("git clone --recurse-submodules "
+                 f"<{names['assembly']} url>")
     else:
+        branch, url = split
         review = (f"the split on its branch in {names['assembly']} (no pull "
                   "request is opened under --local-remote-dir)")
-        clone = f"-b {shlex.quote(branch)} "
-    print(f"\nNEXT: review {review}, then\n"
-          f"    git clone --recurse-submodules {clone}<{names['assembly']} url>"
-          f"{bootstrap}")
+        clone = " ".join(["git", *FILE_PROTOCOL, "clone",
+                          "--recurse-submodules", "-b", shlex.quote(branch),
+                          shlex.quote(url)])
+    print(f"\nNEXT: review {review}, then\n    {clone}{bootstrap}")
     if script:
         kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
                 if path in aside]
