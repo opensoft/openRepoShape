@@ -3270,11 +3270,13 @@ WINDOWS_DEVICE_RE = re.compile(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?"
                                re.IGNORECASE)
 
 #: What a plan's non-text `spec_path` was read as. The YAML reader keeps no raw
-#: text (`007` is read as 7, `true` and `True` as one boolean, `1.50` as 1.5),
-#: so a sentence that echoed the parsed value would show something the file
-#: never said; it names the KIND the reader made of it instead.
+#: text (`007` is read as 7, `true` and `True` as one boolean, `1.50` as 1.5,
+#: and `null`, `~` and nothing at all as one None), so a sentence that echoed
+#: the parsed value would show something the file never said; it names the
+#: KIND the reader made of it instead.
 NOT_TEXT_KINDS = {bool: "true or false", int: "a number", float: "a number",
-                  list: "a list", dict: "a mapping"}
+                  list: "a list", dict: "a mapping",
+                  type(None): "no value at all"}
 
 LEG_PATH_REMEDIATION = (
     "Remediation: nothing here rewrites a path for you, so correct the value "
@@ -3408,9 +3410,9 @@ def _listed(names: list[str]) -> str:
 
 
 def _read_as(value) -> str:
-    """What the YAML reader made of a value, in words: `the number 1.5`."""
-    if value is None:
-        return "no value at all"
+    """What the YAML reader made of a value, in words: `the number 1.5`.
+    None is `NOT_TEXT_KINDS`' "no value at all", as for a leg path read out
+    of a plan as no value (#181)."""
     if isinstance(value, bool):
         return f"the boolean {str(value).lower()}"
     if isinstance(value, (int, float)):
@@ -3502,9 +3504,17 @@ def leg_path_problem(what: str, value) -> str | None:
     the thing the person has in front of them.
     """
     if not isinstance(value, str):
+        # NOT "SO QUOTE IT" (#181). Quoted, the plan reads the same spelling
+        # back as text, and since #259 `adopt-project.py execute` mounts the
+        # leg at a directory of that very name (`2026/`, `true/`, `null/`),
+        # which is the path meant only if it was meant. So the sentence asks
+        # for the path meant, or for no key at all, and says nothing of
+        # quotes. Only a value read out of a plan file gets here: `plan`'s
+        # flags and the scaffold's are always text.
         kind = NOT_TEXT_KINDS.get(type(value), "something that is not text")
         return (f"{what} is not text: its value was read as {kind}, and a "
-                "path is written as text, so quote it")
+                "leg path is text: write the path you mean, or remove the key "
+                "to mount the leg at its role's own name")
     spelling = _spelling_reason(value)
     if spelling:
         offered = _canonical_spelling(value)
@@ -3892,13 +3902,24 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
     the validator (a chain link it cannot check offline) is a note and never
     a refusal, exactly as the project's own exit code treats it.
     """
+    notes = _validator_notes(values, policy, template_dir, ignore)
+    if isinstance(notes, YamlError):
+        return ["the manifest this run would write is a file the project's "
+                f"own YAML reader refuses: {notes}."]
+    return _sentences_of(notes, values, what, not_text)
+
+
+def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
+                     ignore: tuple) -> list[str] | YamlError:
+    """The FINDINGs the project's own validator makes of the `project.yaml`
+    these `values` render, less its WARNINGs and the codes in `ignore`; or
+    the `YamlError` its reader raised, where it cannot read that file."""
     template = (Path(template_dir) / MANIFEST_TEMPLATE).read_text(
         encoding="utf-8")
     try:
         manifest = parse_yaml(render(template, values, MANIFEST_TEMPLATE))
     except YamlError as exc:
-        return ["the manifest this run would write is a file the project's "
-                f"own YAML reader refuses: {exc}."]
+        return exc
     validator = manifest_validator(template_dir)
     try:
         notes = validator._findings(manifest, policy, None)
@@ -3906,9 +3927,32 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
         raise _validator_unusable(
             "raised when it was asked", f"{type(exc).__name__}: {exc}"
         ) from exc
-    return _sentences_of(
-        [note for note in notes if not note.startswith("WARNING")
-         and _code_of(note) not in ignore], values, what, not_text)
+    return [note for note in notes if not note.startswith("WARNING")
+            and _code_of(note) not in ignore]
+
+
+def manifest_judged(values: dict, policy: NamingPolicy,
+                    template_dir: Path = ASSEMBLY_TEMPLATE,
+                    ignore: tuple = ()) -> frozenset[str] | None:
+    """The placeholders whose value the project's own validator makes a
+    finding about, in the `project.yaml` these `values` render (the
+    question `manifest_invalid` asks, with the same `ignore`); an empty set
+    when it makes none.
+
+    None where it cannot be told of ANY value that the validator passes it:
+    its reader refuses the whole file, or it makes a finding that is about
+    no one placeholder (`FINDING_PLACEHOLDER`), whatever value caused it.
+    A caller with a rule of its own about the same values (`adopt-project.py`
+    #181's misread) leaves to the validator every value it judges, and every
+    value at all where this is None, so that one value is never two
+    findings and no sentence of that rule's says the validator passes a
+    value it refuses.
+    """
+    notes = _validator_notes(values, policy, template_dir, ignore)
+    if isinstance(notes, YamlError):
+        return None
+    judged = {FINDING_PLACEHOLDER.get(_code_of(note)) for note in notes}
+    return None if None in judged else frozenset(judged)
 
 
 #: The remediation, without the sentence only the caller can write (what was

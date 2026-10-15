@@ -47,7 +47,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, git, run_script
+from conftest import REPO, cloned_just_pushed, git, run_script
 from test_family import (  # noqa: F401
     FAMILY, ORG, SPARE, family, family_module, manifest, validate,
 )
@@ -92,8 +92,8 @@ def remotes_for(family, tmp_path: Path) -> Path:
     remotes = tmp_path / "remotes"
     remotes.mkdir()
     for project in PROJECTS:
-        git("clone", "-q", "--bare", str(family["remotes"] / f"{SPARE}.git"),
-            str(remotes / f"{project}.git"), cwd=tmp_path)
+        cloned_just_pushed(family["remotes"] / f"{SPARE}.git",
+                           remotes / f"{project}.git", bare=True)
     return remotes
 
 

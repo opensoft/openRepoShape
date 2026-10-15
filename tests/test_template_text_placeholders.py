@@ -38,13 +38,12 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, SCAFFOLD, git,
+from conftest import (ADOPT, REPO, SCAFFOLD, cloned_just_pushed, git,
                       make_source_repo, run_script)
 from test_family import family_module
 
@@ -155,15 +154,6 @@ def heads(bare: Path) -> list[str]:
                cwd=bare).stdout.split()
 
 
-def clone(remote: Path, target: Path, *extra: str) -> Path:
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         *extra, str(remote), str(target)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
-    return target
-
-
 def assert_the_root_reads_what_it_was_given(manifest: dict, pins: dict,
                                             project_id: str, branch: str,
                                             spec: str, code: str) -> None:
@@ -225,7 +215,8 @@ def test_a_scaffold_reads_back_every_value_it_was_given(tmp_path, project_id,
     for name in (PROJECT, f"{PROJECT}-spec", f"{PROJECT}-code"):
         assert heads(remotes / f"{name}.git") == [branch], name
 
-    root = clone(remotes / f"{PROJECT}.git", tmp_path / "clone" / PROJECT)
+    root = cloned_just_pushed(remotes / f"{PROJECT}.git",
+                              tmp_path / "clone" / PROJECT)
     assert_the_clone_works(root, branch, spec, code)
 
     # `bump-leg.py` reads the branch and the leg's path out of the same
@@ -249,10 +240,12 @@ def test_a_scaffold_reads_back_every_value_it_was_given(tmp_path, project_id,
 #
 # `plan` writes a value the plan's own reader would misread between double
 # quotes when it starts with a digit, so `2026`, `007`, `1.5` and `20261011`
-# go through the flags. It writes `true` and `null` bare, and the plan's
-# reader then takes them as a boolean and as no value: that is the PLAN's
-# writer, #181's to fix. Those two rows quote the value in the plan by hand,
-# as #181's writer will, and ask `check` and `execute` the rest.
+# go through the flags. It wrote `true` and `null` bare, and the plan's
+# reader then took them as a boolean and as no value: that was the PLAN's
+# writer, which #181 fixes, and `plan` quotes them too now
+# (tests/test_adopt_plan_yaml_quoting.py drives them through the flags).
+# These two rows quote the value in the plan by hand, as a plan edited by
+# hand does, and ask `check` and `execute` the rest.
 
 ADOPTIONS = [
     # --id,      --tracking-branch, --spec-path, --code-path, by hand
@@ -326,7 +319,8 @@ def test_an_adoption_reads_back_every_value_it_was_given(tmp_path, project_id,
     for leg in ("spec", "code"):
         assert heads(remotes / f"{ADOPTED}-{leg}.git") == [branch], leg
 
-    root = clone(source, tmp_path / "clone" / ADOPTED, "-b", ADOPT_BRANCH)
+    root = cloned_just_pushed(source, tmp_path / "clone" / ADOPTED,
+                              ADOPT_BRANCH)
     assert_the_clone_works(root, branch, spec, code)
 
 
