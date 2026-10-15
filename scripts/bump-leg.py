@@ -27,7 +27,14 @@ unnoticed for a day because the check runs on pull requests only.
 WHAT IT REFUSES, and why each is a refusal rather than a warning:
 
   * `--to` that is not exactly 40 hex. A tag can be moved and a short oid can
-    become ambiguous; a pin is a whole commit or it is nothing.
+    become ambiguous; a pin is a whole commit or it is nothing. A tag NAME is
+    still not taken. An annotated tag's own 40-hex id (what `git rev-parse
+    v2` prints for a release tag) is PEELED to the commit it names, as
+    `family.py add --at` peels one: the tag object names one commit and
+    cannot be moved, so the commit is what is pinned, and the `--dry-run`
+    says so and moves the commit, exactly as the real run does (#534). A
+    tree, a blob or a tag of either is refused `bump-leg-target-not-a-commit`
+    by name, in both runs.
   * a commit the leg's REMOTE does not have. A pin nobody else can fetch is a
     root nobody else can bootstrap.
   * a dirty root. The commit is made with explicit pathspecs, so unrelated
@@ -69,6 +76,11 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     `--dry-run` as well, whether or not the file names the leg, and a line
     for a file git does not track is marked as it is for a file that is not
     UTF-8.
+  * a pin file whose layout the rewrite cannot carry, though the validators
+    read it (`digests: {tree_sha256: ...}`, a value on the line below its
+    key): `bump-leg-pin-unrecognised`. The rewrite is computed once, before
+    the `--dry-run` return, so the dry run is refused exactly as the real run
+    is, with nothing written (#438).
   * a validator that goes red after the rewrite. Every byte is rolled back
     first — the pin file, the workflow files, the leg's checkout and the index
     — so a refusal leaves the tree exactly as it was found.
@@ -777,8 +789,9 @@ def leg_placement(submodule: Path) -> str | None:
 
     Remembered BEFORE the checkout so a rollback puts the leg back where it
     stood rather than merely back at the right commit: `bootstrap.py` leaves
-    each leg ON its tracking branch at the pinned commit, and a rollback that
-    left it detached would have changed something a refusal promised not to.
+    each leg ON its tracking branch at the pinned commit where that loses
+    no commit, and a rollback that left it detached would have changed
+    something a refusal promised not to.
     """
     proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
                           cwd=str(submodule), capture_output=True, text=True,
@@ -803,6 +816,81 @@ def object_present(submodule: Path, commit: str) -> bool:
     return proc.returncode == 0
 
 
+def object_kind(submodule: Path, oid: str) -> str | None:
+    """What `oid` IS in the leg's object store (`commit`, `tag`, `tree` or
+    `blob`), or None when the leg does not hold it."""
+    proc = subprocess.run(
+        ["git", "cat-file", "-t", oid], cwd=str(submodule),
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def peeled_target(submodule: Path, repository: str, target: str) -> str:
+    """The COMMIT `--to` names in the leg's own objects (#534): `target`
+    itself for a commit, the commit an annotated tag names, or the refusal
+    saying which of the other kinds it is.
+
+    AN ANNOTATED TAG'S OWN ID IS 40 HEX, and it is what `git rev-parse v2`
+    prints for a release tag, so `COMMIT_RE` passes it. Nothing after that
+    refused it: reachability (`for-each-ref --contains`) and `object_present`
+    (`<id>^{commit}`) both peel a tag, so the `--dry-run` printed the tag's id
+    as the new commit and exited 0; the real run checked the leg out at the
+    commit the tag names, wrote the TAG's id into the pin and the workflow
+    references, was refused by the project's own `validate-pins.py` and
+    rolled back, exit 2. The dry run did not say what the real run does.
+
+    PEELED, as `family.py add --at` peels one. A tag object's id fixes its
+    content, so it names exactly one commit for ever and, unlike a tag NAME,
+    cannot be moved: it is as exact a pin as the commit is. `^{}` peels
+    through a tag of a tag too. The caller goes on with the returned commit,
+    the same in both runs, so the gitlink, `commit:`, the digest and every
+    workflow reference carry the commit and never the tag.
+
+    A TREE OR A BLOB IS NAMED AS ONE, and so is a tag of either. Its id is in
+    the leg (`git ls-tree` prints them) so "no branch contains it" would send
+    the human looking for a push that is not missing; refused under the
+    existing `bump-leg-target-not-a-commit`, by both runs.
+
+    ASKED AFTER THE FETCH, which is where `fetch_leg` calls it. A release tag
+    pushed to the leg's remote reaches the leg's object store only through
+    that fetch (git follows a tag that points into the history it brings), so
+    a question asked before it finds nothing and lets the tag's id through to
+    the reachability check. An id the leg does not hold at all is not asked
+    here: it is the reachability verdict's, `bump-leg-commit-not-on-remote`.
+    """
+    kind = object_kind(submodule, target)
+    if kind is None or kind == "commit":
+        return target
+    peeled = ""
+    names = None
+    if kind == "tag":
+        proc = subprocess.run(
+            ["git", "rev-parse", "-q", "--verify", f"{target}^{{}}"],
+            cwd=str(submodule), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=False)
+        peeled = proc.stdout.strip().lower() if proc.returncode == 0 else ""
+        names = object_kind(submodule, peeled) if peeled else None
+        if names == "commit":
+            return peeled
+    if kind != "tag":
+        what = f"names a {kind}"
+    elif names in ("tree", "blob"):
+        what = f"is an annotated tag of a {names}"
+    else:
+        what = "is an annotated tag that names no commit"
+    raise Refusal(
+        "bump-leg-target-not-a-commit",
+        f"--to {target} {what} in the leg ({repository}), not a commit",
+        "Remediation: pass a commit — `git log --format=%H` in the leg lists "
+        "them — or an annotated tag of one, whose own id is peeled to the "
+        "commit it names, as `family.py add --at` peels one. A tree's or a "
+        "blob's id is part of a commit and never one, and a pin is a commit "
+        "or it is nothing.")
+
+
 def on_a_remote_branch(submodule: Path, commit: str) -> bool:
     """Is `commit` reachable from one of this leg's `origin/*` branches?"""
     proc = subprocess.run(
@@ -814,8 +902,27 @@ def on_a_remote_branch(submodule: Path, commit: str) -> bool:
 
 
 def fetch_leg(submodule: Path, repository: str, commit: str,
-              local_remote_dir: Path | None) -> None:
-    """Get `commit` into the leg's object store, and prove the REMOTE has it.
+              local_remote_dir: Path | None) -> str:
+    """Get `commit` into the leg's object store, prove the REMOTE has it, and
+    return the commit to pin.
+
+    THE COMMIT RETURNED IS `commit`, OR THE ONE AN ANNOTATED TAG NAMES (#534).
+    `peeled_target` is asked right after the fetch and before the
+    reachability verdict, so both runs reach the verdict with the same commit
+    and the fetch is made once. A peel is announced by one line, ahead of the
+    `commit` line the caller prints; a tree, a blob or a tag of either is
+    refused there and never reaches the verdict.
+
+    WHAT THE FETCH BRINGS: every branch, and, by git's own rule, an annotated
+    tag that points into the history those branches bring (it is stored as
+    `refs/tags/<name>` in the leg, as any `git fetch` of a branch does). That
+    is how a release tag pushed to the leg's remote reaches the leg, from the
+    `--local-remote-dir` bare repository and from the leg's own `origin`
+    alike. A tag whose commit is on no branch is not brought, and neither is
+    its commit: it is still `bump-leg-commit-not-on-remote`, in both runs.
+    This adds no tags fetch of its own: a ref the person's leg did not have
+    is a new act, and reachability from a tag is a different question from
+    the one asked here.
 
     A pin nobody else can fetch is a root nobody else can bootstrap, so
     "present in this checkout" is not the question — "on the leg's remote" is.
@@ -857,8 +964,13 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
         print(f"  note: `git fetch {remote}` in {submodule.name} exited "
               f"{exc.code}; answering from the remote-tracking refs this "
               "checkout already has", file=sys.stderr)
+    named = commit
+    commit = peeled_target(submodule, repository, named)
+    if commit != named:
+        print(f"--to {named[:12]} is an annotated tag; it names commit "
+              f"{commit[:12]}, which is what would be pinned")
     if on_a_remote_branch(submodule, commit):
-        return
+        return commit
     stale = ("" if fetched else
              " The fetch above FAILED, so this was answered from stale "
              "remote-tracking refs; fix the network or the credential and "
@@ -1009,6 +1121,25 @@ def _ensure_root_clean(root: Path) -> None:
             "exists to keep readable.")
 
 
+def _switch_command(root: Path, role: str, commit: str) -> str:
+    """`git -C <root> switch -c bump/<role>-<commit[:12]>` as a line a person
+    pastes, every word quoted for a POSIX shell (#532).
+
+    THE ONE PLACE THE THREE `switch -c` LINES ARE SPELLED: the two refusals
+    below and the dry run's closing hint (#477) all name the same branch, and
+    the dry run's rule is that it names the branch the real run's refusal
+    names. Two of them concatenated `str(root)` bare, so a root under `My
+    Projects/` printed a line that ran in the wrong directory or did not
+    parse, and one under `it's here/` a quotation nothing closes; a Windows
+    root, which always holds a backslash, prints in single quotes, as
+    `shlex` spells it. They are lines for a POSIX shell (Git Bash, or WSL2
+    on Windows), as `update-shape.py`'s are, and README's "Windows,
+    natively" says so.
+    """
+    return shlex.join(["git", "-C", str(root), "switch", "-c",
+                       f"bump/{role}-{commit[:12]}"])
+
+
 def _branch_to_bump_from(root: Path, project: "Project", role: str,
                          commit: str, *, dry_run: bool = False) -> str:
     """The branch on which the bump commits, refused if there is none or
@@ -1019,7 +1150,8 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
     next step would be a push to the default branch. A `--dry-run` makes no
     commit, so on the tracking branch it is let through and ends by naming
     the branch the real run needs (#477); a root on no branch at all is
-    refused either way.
+    refused either way. Both refusals name that branch's `switch -c`
+    through `_switch_command`, quoted (#532).
     """
     branch = current_branch(root)
     if branch is None:
@@ -1027,8 +1159,8 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
             "bump-leg-root-detached",
             f"{root} is not on a branch, so there is no branch to push and "
             "open a pull request from",
-            "Remediation: `git -C " + str(root) + " switch -c bump/"
-            + f"{role}-{commit[:12]}` and re-run.")
+            f"Remediation: `{_switch_command(root, role, commit)}` and "
+            "re-run.")
     if branch == project.tracking and not dry_run:
         raise Refusal(
             "bump-leg-on-tracking-branch",
@@ -1036,8 +1168,8 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
             "project's tracking branch",
             "Remediation: these organisations are pull-request only, so this "
             "will not make a commit whose only next step is a push to the "
-            "default branch. Run:\n    git -C " + str(root)
-            + f" switch -c bump/{role}-{commit[:12]}\nand re-run.")
+            "default branch. Run:\n    "
+            f"{_switch_command(root, role, commit)}\nand re-run.")
     return branch
 
 
@@ -1246,10 +1378,12 @@ def _restore_leg_if_moved(submodule: Path, placement: str | None,
                         cwd=submodule).lower() == was.lower()):
         restore_leg(submodule, placement, was)
     if _leg_status(submodule) != status:
+        # QUOTED (#532): the leg's path is a root's, and a person pastes it.
+        where = shlex.join(["git", "-C", str(submodule), "status"])
         raise LegNotAsFound(
             "its `git status` no longer reads as it did before the bump, "
             "which is what a checkout cut off part way leaves behind. Read "
-            f"`git -C {submodule} status` before anything else, and remove "
+            f"`{where}` before anything else, and remove "
             "only what you did not put there yourself.")
 
 
@@ -1316,11 +1450,21 @@ def _with_verdict(detail: str, verdict: str) -> str:
 
 
 def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
-                   pin_path: Path, pin_text: str, digest: str, plans: list,
+                   pin_path: Path, new_pin: str, plans: list,
                    staged: list[str], message: str,
                    trailers: list[str]) -> str:
-    """Rewrite the pin and every workflow file, stage them, validate them and
+    """Write the pin and every workflow file, stage them, validate them and
     commit them — or roll every byte back and re-raise. Returns the commit.
+
+    THE PIN'S NEW TEXT IS PASSED IN, NOT COMPUTED HERE (#438). `cmd_bump`
+    asks `rewrite_pin` once, after the digest and before the dry-run return,
+    because a layout `rewrite_pin` refuses (`bump-leg-pin-unrecognised`, or
+    the read-back fault) must be refused by the dry run as it is by the real
+    run: computed in here, after the leg had been checked out, the dry run
+    never reached it and previewed `old -> new` with exit 0 for a pin the real
+    run then refused. It is a pure function of text that was read before, so
+    the dry run writes nothing new, and a refusal now comes before the leg
+    has been checked out at all: there is nothing to roll back.
 
     Split from `cmd_bump` for #136: the whole rewrite-or-roll-back sequence
     is one question, asked once, instead of being the tail half of a
@@ -1366,7 +1510,7 @@ def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
         # at the pin — and a bump that also moved `main` in the leg would be
         # this tool pushing somebody's branch around from inside a submodule.
         run(["git", "checkout", "-q", "--detach", commit], cwd=submodule)
-        for target, data in [(pin_path, rewrite_pin(pin_text, commit, digest))
+        for target, data in [(pin_path, new_pin)
                              ] + [(wf_path, text) for wf_path, text, _ in plans]:
             written[target] = target.read_bytes()
             # LF, on every platform. `.github/workflows/validate.yml` is
@@ -1435,6 +1579,23 @@ def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
 
 
 def cmd_bump(args) -> int:
+    """Advance one leg. The ORDER is what makes `--dry-run` the real run's
+    answer (#534, #438): everything that can REFUSE the move is asked before
+    the dry-run return, so the dry run and the real run refuse alike and the
+    only thing the dry run skips is the writing.
+
+    1. the root: clean, on a branch, the leg initialized and recorded;
+    2. the fetch, and the commit `--to` names in the leg's objects (an
+       annotated tag's own id is peeled, a tree or a blob refused) and
+       whether the remote has it — `fetch_leg`;
+    3. the digest, recomputed from the leg's own objects;
+    4. the pin as it stands, the workflow plan and the report;
+    5. the pin's new text (`rewrite_pin`, once), `nothing to do` (exit 1)
+       and the trailers;
+    6. `--dry-run` returns here, exit 0;
+    7. only the real run checks the leg out, writes, validates and commits,
+       in `_apply_rewrite`, which writes the text computed in step 5.
+    """
     project = Project.open(args.root)
     root = project.root
     role = checked_value("--leg", args.leg)
@@ -1452,7 +1613,15 @@ def cmd_bump(args) -> int:
 
     print(f"project      {project.display_name} ({project.data.get('id')})")
     print(f"leg          {role:<8} {repository} at {path}/")
-    fetch_leg(submodule, repository, commit, args.local_remote_dir)
+    # THE COMMIT FROM HERE ON IS THE ONE `fetch_leg` RETURNS (#534): `--to`
+    # itself, or the commit an annotated tag's own id names. Both runs take
+    # the same answer before the digest, the report and the dry-run return,
+    # so neither prints or writes the tag's id as a pin. `asked` stays what
+    # was typed, because `_branch_to_bump_from` named its `switch -c` from
+    # that, before the fetch, and the dry run's hint below must name the
+    # branch the real run's refusal names.
+    asked = commit
+    commit = fetch_leg(submodule, repository, commit, args.local_remote_dir)
     digest = tree_digest(submodule, commit)
     pin_rel = f"contracts/{role}-pin.yaml"
     pin_path = _leg_pin_path(root, pin_rel)
@@ -1464,8 +1633,18 @@ def cmd_bump(args) -> int:
     print(f"pin          {pin_rel}")
     _print_workflow_plan(root, plans)
 
-    if was == commit and not plans and rewrite_pin(pin_text, commit,
-                                                   digest) == pin_text:
+    # THE REWRITE, ONCE, BEFORE THE DRY-RUN RETURN (#438). `rewrite_pin` ran
+    # there only inside the test below, so a pin the validators read and the
+    # rewrite refuses (`digests: {tree_sha256: ...}`, a value on the line
+    # below its key) previewed `old -> new`, exit 0, and the real run was
+    # refused `bump-leg-pin-unrecognised` after the leg was checked out. Its
+    # refusals now reach both runs, exit 2, with nothing written. The same
+    # text is what the nothing-to-do test compares and what `_apply_rewrite`
+    # writes; the digest in it is the one computed above from the leg's own
+    # objects, never edited (AGENTS.md rule 2).
+    new_pin = rewrite_pin(pin_text, commit, digest)
+
+    if was == commit and not plans and new_pin == pin_text:
         print(f"\nnothing to do: {repository} is already pinned at "
               f"{commit[:12]} and every fact agrees.")
         return 1
@@ -1483,8 +1662,7 @@ def cmd_bump(args) -> int:
             # The command is quoted, so a root under `My Projects/` pastes.
             print(f"\nthe real run needs a branch: {root} is on {branch!r}, "
                   "the tracking branch. Create one first with: "
-                  + shlex.join(["git", "-C", str(root), "switch", "-c",
-                                f"bump/{role}-{commit[:12]}"]))
+                  + _switch_command(root, role, asked))
         return 0
 
     # ---- the rewrite and the commit, remembered byte for byte so a failure
@@ -1506,14 +1684,18 @@ def cmd_bump(args) -> int:
           "openRepoShape's `scripts/bump-leg.py`; the digest is recomputed "
           "from the leg's own objects, not adjusted.\n")
     head = _apply_rewrite(
-        root, submodule, commit, was, pin_path, pin_text, digest, plans,
-        staged,
+        root, submodule, commit, was, pin_path, new_pin, plans, staged,
         f"Bump {role} leg to {commit[:12]} in {project.display_name}\n\n"
         + body, args.trailer)
     print(f"\n  committed {head[:12]}: " + ", ".join(staged))
     print(f"  {path}/ is left DETACHED at {commit[:12]}; `make bootstrap` in "
-          "the root re-places it on its tracking branch AT the new pin")
-    print(f"\nNEXT  git -C {root} push -u origin {branch}")
+          "the root puts it on its tracking branch AT the new pin, or says "
+          "why not")
+    # QUOTED WHOLE (#532), the root and the branch: a root under `My
+    # Projects/` pasted as two arguments, and the line is the one this run
+    # ends on, the one a person runs next.
+    print("\nNEXT  " + shlex.join(["git", "-C", str(root), "push", "-u",
+                                   "origin", branch]))
     print(f"      then open a pull request against {project.tracking}; never "
           "push the bump to the default branch directly")
     return 0
@@ -1531,7 +1713,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "project.yaml declares")
     parser.add_argument("--to", required=True, metavar="COMMIT",
                         help="the 40-hex commit to move the gitlink, the pin "
-                             "and every workflow reference to, together")
+                             "and every workflow reference to, together (an "
+                             "annotated tag's own 40-hex id is peeled to the "
+                             "commit it names, as `family.py add --at` peels "
+                             "one)")
     parser.add_argument("--trailer", action="append", metavar='"KEY: VALUE"',
                         default=[], type=trailer_line,
                         help="append this `<Key>: <value>` line to the "

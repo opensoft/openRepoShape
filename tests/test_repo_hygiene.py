@@ -68,12 +68,13 @@ LOCAL_MODULES = {"repo_shape", "shape_materialize", "path_classify",
                  "shape_advisory", "conftest", "bootstrap"}
 
 #: The bash scripts a person runs BEFORE they have a checkout, or with no
-#: checkout in sight at all: the front door itself and the command that
-#: fetches it. `park` and `resume` were here from #82 until the carve (#92)
-#: and are opensoft/openRepoTools' now, held to these same rules by that
-#: repository's own copy of this test. Every one is a shipped executable and
-#: is held to the same shebang, mode bit and `set -euo pipefail` rule.
-SHIPPED_BASH = ["setup.sh", "openRepoShape"]
+#: checkout in sight at all: the front door itself, the command that
+#: fetches it, and the one-line installer that places that command pinned to
+#: a release (#564). `park` and `resume` were here from #82 until the carve
+#: (#92) and are opensoft/openRepoTools' now, held to these same rules by
+#: that repository's own copy of this test. Every one is a shipped executable
+#: and is held to the same shebang, mode bit and `set -euo pipefail` rule.
+SHIPPED_BASH = ["setup.sh", "openRepoShape", "install.sh"]
 
 #: The entry point a person runs BEFORE they have a checkout on a machine with
 #: no bash: the same front door, on an interpreter alone. Held to the same
@@ -616,9 +617,20 @@ def test_agents_md_is_short_enough_to_be_read():
     no rule id is not a broken row; and a submodule moved on purpose stays
     MISPLACED against its row, which is the human's to change -- never a
     manifest edit an assistant makes to turn the row green, the hand-edited
-    pin arriving through a new door."""
+    pin arriving through a new door.
+
+    2026-10-15: 490 -> 492 — step 2 of "Adopting an existing repository"
+    (#528). Two lines, inside that one numbered point. `plan` now writes a
+    rule's default into an entry as its `leg:`, still
+    `review_required: true` with the question beside it: a source's own
+    `single-repository.yaml` record comes as `drop`, by Brett Heap's
+    2026-10-12 ruling. Step 2 said only that an UNRESOLVED entry carries a
+    question, and `check` passes a default, so an assistant briefed from
+    this file alone would let it through unread. The lines buy that it is
+    a question too, which `execute` takes as written, answered like the
+    others."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 490, f"AGENTS.md is {len(lines)} lines; the cap is 490"
+    assert len(lines) <= 492, f"AGENTS.md is {len(lines)} lines; the cap is 492"
 
 
 def test_claude_md_points_at_agents_md():
@@ -1397,7 +1409,7 @@ def test_shipped_bash_is_executable_and_fails_loudly(name):
 @WINDOWS_SKIP
 @pytest.mark.parametrize("name", SHIPPED_BASH)
 def test_shipped_bash_parses_under_bash(name):
-    """`bash -n` on the two shipped bash scripts, everywhere there is a bash.
+    """`bash -n` on the shipped bash scripts, everywhere there is a bash.
 
     SKIPPED ON WINDOWS, AND `shutil.which` IS NOT ENOUGH TO SEE WHY. The
     `bash` a stock Windows install puts on PATH is
@@ -1489,6 +1501,111 @@ def test_the_openrepotools_install_line_is_the_same_everywhere(name):
     assert OPENREPOTOOLS_INSTALL in text, (
         f"{name} must carry openRepoTools' install line byte for byte:\n"
         f"    {OPENREPOTOOLS_INSTALL}")
+
+
+#: THE ONE LINE THAT INSTALLS THIS STANDARD (#564), and every file that
+#: carries it: the installer it fetches, the command it installs (in its
+#: header), the README and its designed reading, and the release notes that
+#: introduced it. Pasted by people who cannot check it, like the two lines
+#: above, so the copies are held byte for byte. `releases/latest/download/`
+#: is what makes it the NEWEST release's `install.sh` every time.
+ONE_LINE_INSTALL = (
+    "curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/"
+    "download/install.sh | bash")
+ONE_LINE_INSTALL_IN = ["install.sh", "openRepoShape", "README.md",
+                       "docs/handbook.html", "docs/release-notes/v1.0.1.md"]
+
+
+@pytest.mark.parametrize("name", ONE_LINE_INSTALL_IN)
+def test_the_one_line_install_is_the_same_everywhere(name):
+    text = (REPO / name).read_text(encoding="utf-8")
+    assert ONE_LINE_INSTALL in text, (
+        f"{name} must carry the one-line install byte for byte:\n"
+        f"    {ONE_LINE_INSTALL}")
+
+
+#: Where each document describes `openRepoShape --doctor`: the file, the
+#: line its passage begins with, what ends it, and whether it describes the
+#: installed form's kept clone. `docs/cli.md` has two: the doctor's purpose in
+#: its table (scripts/render-cli-reference.py's `TOOLS`) and the command's own
+#: `--help`.
+DOCTOR_PASSAGES = [
+    pytest.param("README.md", "### Is this repository compliant?", "\n## ",
+                 True, id="README.md"),
+    pytest.param("AGENTS.md", "## Checking a repository's compliance",
+                 "\n## ", True, id="AGENTS.md"),
+    pytest.param("docs/handbook.html", '<section id="doctor">', "</section>",
+                 True, id="docs/handbook.html"),
+    pytest.param("docs/cli.md", "### `openRepoShape`", "\n### ", True,
+                 id="docs/cli.md-help"),
+    pytest.param("docs/cli.md", "| [`shape-doctor.py`]", "\n", False,
+                 id="docs/cli.md-purpose"),
+]
+
+#: In any case: a sentence, or a table cell, can begin with it.
+WRITES_NOTHING = re.compile(r"(?i)\bwrites nothing\b")
+
+
+def writes_nothing_unexcepted(paragraph: str) -> list:
+    """The sentences of `paragraph` that say the doctor writes nothing with
+    no exception: neither the sentence itself nor the one right after it
+    names `--placement-plan` as what it does write. AGENTS.md says the
+    exception in a sentence of its own, 'The one exception to "writes
+    nothing" is `--placement-plan <file>`', so the next sentence counts when
+    it says "writes nothing" too, and a mere mention of the flag further on
+    does not."""
+    # A sentence also ends at `.)`, `."` or `.**`: the stop inside a bracket,
+    # a quotation or bold text.
+    sentences = re.split(r"(?<=[.!?])\s+|(?<=[.!?][)\"'*])\s+"
+                         r"|(?<=[.!?][)\"'*]{2})\s+", paragraph)
+
+    def excepted(sentence: str) -> bool:
+        return bool(WRITES_NOTHING.search(sentence)) \
+            and "--placement-plan" in sentence
+
+    return [sentence for here, sentence in enumerate(sentences)
+            if WRITES_NOTHING.search(sentence) and not excepted(sentence)
+            and not excepted((sentences[here + 1:] or [""])[0])]
+
+
+@pytest.mark.parametrize(("name", "begins", "ends", "keeps"),
+                         DOCTOR_PASSAGES)
+def test_the_doctor_says_what_it_writes_and_why_it_keeps_its_clone(
+        name, begins, ends, keeps):
+    """Two things every description of the doctor said that it does not do
+    (#546).
+
+    "It writes nothing into the repository" left out the one file it writes:
+    the `--placement-plan <file>` you name, at the path you give, so a
+    relative one typed inside the repository lands there. A sentence that
+    says the doctor writes nothing carries that exception, or is followed at
+    once by the sentence that does.
+
+    And the installed form KEEPS its clone of the standard "because its NEXT
+    lines run from it". A `pins` row's NEXT can name no file in it, and "run
+    from it" reads as "cd into it", where the `placement` row's relative
+    `--placement-plan placement-plan.yaml` writes the plan into the directory
+    the same sentence calls safe to delete. It is kept for the NEXT lines that
+    name it, and every passage about the installed form says so.
+    """
+    text = (REPO / name).read_text(encoding="utf-8")
+    start = text.index(begins)
+    passage = text[start:text.find(ends, start + len(begins))]
+    problems, kept = [], 0
+    for paragraph in re.split(r"\n\s*\n|</p>", passage):
+        said = " ".join(re.sub(r"<[^>]+>", "", paragraph).split())
+        problems += [f"says the doctor writes nothing, and not that it writes "
+                     f"the --placement-plan file you name: {sentence}"
+                     for sentence in writes_nothing_unexcepted(said)]
+        if "KEEPS" in said:
+            kept += 1
+            if not re.search(r"for the NEXT lines (?:that name|naming)\b", said) \
+                    or re.search(r"NEXT (?:lines?|commands?) runs? from", said):
+                problems.append("gives a reason for the kept clone other than "
+                                f"the NEXT lines that name it: {said}")
+    assert kept or not keeps, (
+        f"{name} no longer says that the installed doctor KEEPS its clone")
+    assert not problems, f"{name}:\n" + "\n".join(problems)
 
 
 def test_nothing_here_installs_park_or_resume():

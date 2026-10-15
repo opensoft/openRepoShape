@@ -45,6 +45,7 @@ from __future__ import annotations
 import errno
 import io
 import os
+import shlex
 import stat
 import sys
 from pathlib import Path
@@ -463,7 +464,9 @@ def test_a_forward_checkout_that_left_files_in_the_leg_is_not_called_put_back(
     assert ROLLED_BACK not in err, "nothing says the tree is exactly as it was"
     assert "the checkout of spec/ could not be put back: its `git status`" \
         in err, "the step is named"
-    assert "spec status` before anything else" in err, err
+    where = shlex.join(["git", "-C", str((project / "spec").resolve()),
+                        "status"])
+    assert f"`{where}` before anything else" in err, err
     after = snapshot(project)
     for key in ("head", "pin", "workflows", "gitlink", "leg_head",
                 "leg_branch"):

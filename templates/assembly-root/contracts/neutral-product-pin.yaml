@@ -7,7 +7,8 @@ kind: pinned_contract_manifest
 # This file is not copied into a project under this name. It is RENDERED once
 # per declared pin as `contracts/<product lowercased>-pin.yaml` — so a project
 # declaring `openGlass` carries `contracts/openglass-pin.yaml` — by
-# `scaffold-project.py --pin <openProduct>@<commit>`.
+# `scaffold-project.py --pin <openProduct>@<commit>`, and by
+# `adopt-project.py execute` for each pin its `plan --pin` recorded.
 #
 # WHAT IT IS FOR. `<Domainx><Product>` is a CLAIM of descent and a claim needs
 # a REFERENT (Brett Heap, 2026-09-02). The referent is a pin the project
@@ -40,7 +41,9 @@ digests:
   tree_sha256: "{{PIN_TREE_SHA256}}"
 
 # How the digest above was read, so a later reader knows whether it came from
-# a clone on this machine or from the forge's own tree listing.
+# a clone on the machine that wrote this file (`local-clone`) or from the
+# forge's own tree listing (`gh-api-tree-recursive`). The clone's path is that
+# machine's own, so it is not recorded.
 digest_source: {{PIN_DIGEST_SOURCE}}
 
 declared_in: project.yaml

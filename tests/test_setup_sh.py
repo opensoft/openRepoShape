@@ -30,7 +30,19 @@ from conftest import PTY_SKIP, run_in_a_terminal
 
 from conftest import (TAKEN_CLONE_PATHS,
                       assert_a_rehearsals_clone_stops_the_real_run,
-                      assert_a_taken_clone_path_is_refused)
+                      assert_a_taken_clone_path_is_refused,
+                      assert_the_plan_refuses_a_remote_that_exists)
+
+from conftest import (DECLARATIONS, DRY_RUNS, FILE_ABOVE_THE_CLONE,
+                      UPSTREAM_CASINGS,
+                      assert_a_dry_run_passed_through_ends_at_the_plan,
+                      assert_a_file_above_the_clone_path_is_refused,
+                      assert_an_upstream_origin_in_any_case_needs_an_org,
+                      assert_the_backstop_is_finished_by_hand_as_printed,
+                      assert_the_closing_cd_is_one_word,
+                      assert_the_naming_check_hears_what_is_passed_through,
+                      assert_the_scaffold_leaves_its_next_steps_to_setup,
+                      assert_the_upstream_org_is_refused_in_any_case)
 
 SETUP = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
@@ -410,6 +422,12 @@ def test_a_taken_clone_path_is_refused_before_anything(tmp_path, kind):
     assert_a_taken_clone_path_is_refused(run_setup, tmp_path, kind)
 
 
+def test_the_plan_refuses_a_remote_that_exists_before_the_yes(tmp_path):
+    """#537, through the shim: `conftest.assert_the_plan_refuses_a_
+    remote_that_exists`."""
+    assert_the_plan_refuses_a_remote_that_exists(run_setup, tmp_path)
+
+
 def test_no_test_here_depends_on_gh_being_authenticated():
     """Every invocation either stops before the preflight or runs offline.
 
@@ -443,6 +461,46 @@ def test_no_test_here_depends_on_gh_being_authenticated():
         assert "--local-remote-dir" in call, (
             "this run_setup call reaches the gh preflight and will fail "
             f"wherever gh is not authenticated:\n    {' '.join(call.split())}")
+
+
+# --- #538, through the shim: each is `conftest`'s helper of that name -------
+
+def test_the_closing_cd_names_the_clone_as_one_word(tmp_path):
+    assert_the_closing_cd_is_one_word(run_setup, tmp_path)
+
+
+def test_the_backstop_is_finished_by_hand_as_printed(tmp_path):
+    assert_the_backstop_is_finished_by_hand_as_printed(run_setup, tmp_path)
+
+
+def test_the_scaffold_leaves_its_next_steps_to_setup(setup_run):
+    assert_the_scaffold_leaves_its_next_steps_to_setup(setup_run["result"])
+
+
+@pytest.mark.parametrize("where", FILE_ABOVE_THE_CLONE)
+def test_a_file_above_the_clone_path_is_refused(tmp_path, where):
+    assert_a_file_above_the_clone_path_is_refused(run_setup, tmp_path, where)
+
+
+@pytest.mark.parametrize("spelling,yes", DRY_RUNS)
+def test_a_dry_run_passed_through_ends_at_the_plan(tmp_path, spelling, yes):
+    assert_a_dry_run_passed_through_ends_at_the_plan(run_setup, tmp_path,
+                                                     spelling, yes)
+
+
+@pytest.mark.parametrize("how", DECLARATIONS)
+def test_the_naming_check_hears_what_is_passed_through(tmp_path, how):
+    assert_the_naming_check_hears_what_is_passed_through(run_setup, tmp_path,
+                                                         how)
+
+
+@pytest.mark.parametrize("org", UPSTREAM_CASINGS)
+def test_the_upstream_org_is_refused_in_any_case(tmp_path, org):
+    assert_the_upstream_org_is_refused_in_any_case(run_setup, tmp_path, org)
+
+
+def test_an_upstream_origin_in_any_case_needs_an_org(tmp_path):
+    assert_an_upstream_origin_in_any_case_needs_an_org(run_setup, tmp_path)
 
 
 # --- self-bootstrap ---------------------------------------------------------
