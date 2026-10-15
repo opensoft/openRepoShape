@@ -6688,14 +6688,44 @@ def submodule_config(root: Path) -> dict:
     config syntax, it ESCAPES a backslash on the way in -- a Windows path is
     stored `D:\\\\a\\\\...` -- and reading it as text is how a report ends up
     quoting a url nobody has.
+
+    AND IT IS READ AS `make siblings` READS IT: a byte that is not UTF-8 is
+    replaced, which is `siblings.py::submodule_urls`'s `errors="replace"`
+    over the same file (#432), and the decode `origin_url` makes of the
+    holder's own remote (#385). git keeps a url as the bytes it was given,
+    so a member mounted from a directory named in a legacy code page, or a
+    hand-edited `.gitmodules`, has one that is not text, and read through
+    `git_out`'s strict decode it raised a `UnicodeDecodeError` that the
+    `except` below does not name -- it is a `ValueError`, neither a
+    `Refusal` nor an `OSError` -- so `--root` ended in a traceback, exit 1,
+    which is also the code of a finding, with no verdict. The bytes are
+    asked for, so nothing is decoded before this function says how.
+
+    THE URL IS KEPT, NOT DROPPED. The row exists to agree with `make
+    siblings` about one directory (#146): a clone whose own `origin` is the
+    same bytes reads back as the same string through `origin_url`, and is
+    the member's working clone by the mount comparison, as `verify_sibling`
+    calls it. An empty `{}` here would send every such member's comparison
+    to the `repository:` tail alone and call that clone a stranger. A url
+    that matches nothing is quoted with the replacement character in it, as
+    `origin_url` quotes one.
+
+    `validate-family.py` reads the same file as bytes too, and decodes with
+    `surrogateescape`. The replacement is chosen over it because this url
+    is COMPARED with `origin_url`'s reading of a clone's remote, which is
+    the replacement (#385): the same bytes read two ways are two strings,
+    so a clone made from this very url would stop being the member's
+    working clone. It is also what the row PRINTS, and a lone surrogate is
+    a string no UTF-8 stream can write.
     """
     fields: dict = {}
     try:
-        listing = git_out(["config", "-f", str(root / ".gitmodules"),
-                           "--get-regexp", r"^submodule\..*\.(path|url)$"],
-                          cwd=root)
+        raw = git_out(["config", "-f", str(root / ".gitmodules"),
+                       "--get-regexp", r"^submodule\..*\.(path|url)$"],
+                      cwd=root, binary=True)
     except (Refusal, OSError):
         return fields
+    listing = raw.decode("utf-8", "replace").strip()
     for line in listing.splitlines():
         key, _, value = line.partition(" ")
         name, _, field = key[len("submodule."):].rpartition(".")
