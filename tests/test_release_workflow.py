@@ -13,9 +13,14 @@ The properties, each a test below: a dispatch is the only trigger; only
 the two upload jobs can mint an identity token, each in its own
 environment and on a `v*` tag alone; every action is pinned by a full
 commit; the build refuses a tag that is not `v<version>`, annotated, at the
-run's commit, and a commit without passing `tests`, `tests-macos` and
-`tests-windows`; and every tool the release installs comes from a hash
-lock, by digest.
+run's commit, a commit on neither main nor its release branch, and a commit
+whose own tree has not passed `tests`, `tests-macos` and `tests-windows`;
+and every tool the release installs comes from a hash lock, by digest.
+RV599's mutations each fail one of them: a condition or an early exit
+added to a step, a check dropped from one upload job, a credential kept, a
+`PIP_*` index added. Three steps run as scripts here: the stamp, the wheel
+check over a wheel made from HEAD's own blobs, and the main-or-release-
+branch check under a `gh` that answers as the forge does.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ import os
 import re
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -82,6 +88,14 @@ def heredoc(script: str) -> str:
     [start] = [at for at, line in enumerate(lines)
                if line.rstrip().endswith("<<'PY'")]
     return "\n".join(lines[start + 1:lines.index("PY", start)]) + "\n"
+
+
+def commands(script: str) -> list:
+    """A `run:` script's command lines as the shell reads them: each
+    continuation joined to the line it continues, comment lines dropped."""
+    joined = re.sub(r"\s*\\\n\s*", " ", script)
+    return [line.strip() for line in joined.splitlines()
+            if line.strip() and not line.strip().startswith("#")]
 
 
 def lock_entries(path: Path) -> dict:
@@ -155,19 +169,23 @@ def test_a_branch_dispatch_rehearses_and_both_environments_admit_v_tags_alone(
     failed. The build job refuses unless both environments' deployment
     limit is the one rule, the tags `v*`, and each upload job reads that
     and this run's approval again at use time."""
-    guard = workflow["jobs"]["install"]["if"]
-    assert "needs.testpypi.result == 'success'" in guard
-    assert ("needs.testpypi.result == 'skipped' && "
-            "!startsWith(github.ref, 'refs/tags/')") in guard
-    limit = "[(\"tag\", \"v*\")]"
-    build = named_step(workflow, "build", "both environments")
-    assert 'for environment in ("testpypi", "pypi")' in build["run"]
-    assert f"rules != {limit}" in build["run"]
+    assert workflow["jobs"]["install"]["if"] == (
+        "${{ !cancelled() && needs.build.result == 'success' && "
+        "(needs.testpypi.result == 'success' || "
+        "(needs.testpypi.result == 'skipped' && "
+        "!startsWith(github.ref, 'refs/tags/'))) }}")
+    rule = ('if policy.get("custom_branch_policies") is not True '
+            'or rules != [("tag", "v*")]:')
+    build = heredoc(named_step(workflow, "build", "both environments")["run"])
+    assert 'for environment in ("testpypi", "pypi"):' in build
+    assert rule in build
+    assert "if not reviewers:" in build
     for job in UPLOADS:
         at_use = named_step(workflow, job, "this environment still")
         assert at_use["env"]["ENVIRONMENT"] == UPLOADS[job]
-        assert f"rules != {limit}" in at_use["run"]
-        assert "/approvals" in at_use["run"]
+        assert rule in heredoc(at_use["run"])
+        assert "if not reviewers:" in heredoc(at_use["run"])
+        assert "if not approved:" in heredoc(at_use["run"])
 
 
 # --- what the workflow runs ----------------------------------------------------
@@ -216,17 +234,25 @@ def test_the_build_refuses_a_tag_that_is_not_the_annotated_v_version_at_this_com
 
 
 def test_the_build_refuses_a_commit_without_the_three_os_checks(workflow):
-    """`tests`, `tests-macos` and `tests-windows` must have passed on the
-    commit itself, run by `tests.yml`, whose three jobs those are (a check
-    run is named after its job, and none of the three renames itself)."""
+    """RV599, MUST 1: `tests`, `tests-macos` and `tests-windows` must have
+    passed in a `push` or `workflow_dispatch` run of `tests.yml` whose head
+    is the commit (a `pull_request` run tests a merge, another tree), read
+    from that run's own jobs, never from the commit's check runs, which an
+    Actions token can create. The three are `tests.yml`'s jobs, and none
+    renames itself, so a job's name is its id."""
     build = workflow["jobs"]["build"]
-    assert build["permissions"]["checks"] == "read"
-    script = named_step(workflow, "build", "the commit carries")["run"]
+    assert "checks" not in build["permissions"]
+    assert build["permissions"]["actions"] == "read"
+    script = heredoc(named_step(workflow, "build", "the commit carries")["run"])
     gate = ", ".join(f'"{name}"' for name in GATE)
-    assert (f'gate, workflow = ({gate}), ".github/workflows/tests.yml"'
-            in heredoc(script))
-    assert "check-runs" in script
-    assert "check_suite_id" in script
+    assert f'gate, workflow = ({gate}), ".github/workflows/tests.yml"' in script
+    assert ('if run.get("path") == workflow and run.get("head_sha") == sha\n'
+            '        and run.get("event") in ("push", "workflow_dispatch")]'
+            in script)
+    assert '/jobs?filter=all&per_page=100", "jobs")' in script
+    assert "check-runs" not in script
+    assert "check_suite" not in script
+    assert 'if newest["conclusion"] != "success":' in script
     tests = load_yaml(WORKFLOWS / "tests.yml")
     for name in GATE:
         assert name in tests["jobs"], name
@@ -246,22 +272,35 @@ def test_the_digest_is_the_checkouts_own_and_the_forges(workflow):
         in script
     assert "repo_shape.tree_digest(here, sha)" in script
     assert "repo_shape.tree_digest_from_gh(repo, sha)" in script
+    assert "if local != forge:" in script
 
 
 # --- the tools, by digest -------------------------------------------------------
 
-@pytest.mark.parametrize("job, prefix, lock", [
-    ("build", "install the release tools", BUILD_LOCK),
-    ("install", "pipx installs", PIPX_LOCK),
-])
-def test_every_tool_the_release_installs_comes_from_a_hash_lock(
-        workflow, job, prefix, lock):
-    """`--require-hashes`, wheels only, from a lock in which every
-    requirement is pinned to one version and named by its sha256."""
-    script = named_step(workflow, job, prefix)["run"]
-    relative = lock.relative_to(REPO).as_posix()
-    assert re.search(r"--only-binary :all: --require-hashes \\\n\s+-r "
-                     + re.escape(relative), script), script
+def test_every_pip_install_is_from_a_hash_lock_by_digest(workflow):
+    """Every `pip install` the workflow runs, read as the shell reads it
+    (continuations joined, comments dropped), is `--require-hashes`, wheels
+    only, from one of the two locks: the build's tools in the build job,
+    pipx in the install check, and nothing else anywhere."""
+    used = set()
+    for name, job in workflow["jobs"].items():
+        for step in job["steps"]:
+            for command in commands(step.get("run", "")):
+                if not re.search(r"\bpip install\b", command):
+                    continue
+                assert "--require-hashes" in command, command
+                assert "--only-binary :all:" in command, command
+                [lock] = re.findall(r"-r (\S+)", command)
+                used.add((name, lock))
+    assert used == {
+        ("build", BUILD_LOCK.relative_to(REPO).as_posix()),
+        ("install", PIPX_LOCK.relative_to(REPO).as_posix())}
+
+
+@pytest.mark.parametrize("lock", [BUILD_LOCK, PIPX_LOCK], ids=["build", "pipx"])
+def test_every_lock_entry_is_one_version_named_by_its_sha256(lock):
+    """A lock in which every requirement is pinned to one version and named
+    by its sha256."""
     entries = lock_entries(lock)
     assert entries
     for requirement, digests in entries.items():
@@ -301,8 +340,11 @@ def test_the_wheel_is_built_twice_from_two_extractions_and_compared(workflow):
         in build
     assert "-m build --wheel --no-isolation" in build
     assert "--sdist" not in build
-    assert 'cmp "$RUNNER_TEMP/dist-a/$wheel" "$RUNNER_TEMP/dist-b/$wheel"' \
-        in build
+    assert ('if ! cmp "$RUNNER_TEMP/dist-a/$wheel" "$RUNNER_TEMP/dist-b/$wheel"; then'
+            in commands(build))
+    stamp = commands(named_step(workflow, "build", "write the stamp")["run"])
+    assert stamp[0] == ('python3 -I - "$TREE_A/src/openreposhape/_release.py" '
+                        '"$TREE_B/src/openreposhape/_release.py" <<\'PY\'')
 
 
 # --- the stamp, written and read back --------------------------------------------
@@ -418,10 +460,325 @@ def test_the_install_check_runs_on_three_systems_and_python_3_9(workflow):
 
 def test_the_header_says_how_to_release(workflow):
     """No `docs/release-notes/v1.1.0.md` exists yet, so the header carries
-    the steps the docs pull request will point at."""
+    the steps the docs pull request will point at: Brett Heap's acts, with
+    the trusted publisher's environment REQUIRED and why (RV599, SHOULD 1),
+    and the limits carried over from openDox-code."""
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "# RELEASING TO PyPI." in text
     assert "gh workflow run release.yml --ref v<version> -f version=<version>" \
         in text
     assert "# A DISPATCH ON A BRANCH IS THE REHEARSAL, AND IT CANNOT DEPLOY." \
         in text
+    assert "#     THE ENVIRONMENT IS REQUIRED in both" in text
+    assert "# ACCEPTED LIMITS, carried over from openDox-code's release.yml" \
+        in text
+    assert "lane\n#     sessions act as brettheap" in text
+
+
+# --- RV599, SHOULD 2: the commit is on main or its release branch -------------------
+
+ON_BRANCH = "the commit is on main or on the version's release branch"
+
+#: A `gh` that answers `compare` from the environment, as the forge would,
+#: and logs each call: STATUS_MAIN for main, STATUS_RELEASE for any other
+#: branch, and a 404 where the one it reads is empty.
+COMPARE_GH = """#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$2" in
+  *...refs/heads/main) status="$STATUS_MAIN" ;;
+  *) status="$STATUS_RELEASE" ;;
+esac
+if [ -z "$status" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+echo "$status"
+"""
+
+
+def test_the_commit_must_be_on_main_or_its_release_branch(workflow):
+    """After the tag's checks and before anything from the checkout runs:
+    the forge's compare must call `main` or `release/v<major>.<minor>`
+    identical to the commit or ahead of it, by `refs/heads/`."""
+    names = [step.get("name", "") for step in job_steps(workflow, "build")]
+    assert names.index(ON_BRANCH) == names.index(
+        "the dispatched ref is the annotated tag v<version> at this commit, "
+        "or a branch to rehearse on") + 1
+    lines = commands(named_step(workflow, "build", ON_BRANCH)["run"])
+    assert 'for branch in main "release/v${VERSION%.*}"; do' in lines
+    assert ('status="$(gh api "repos/$GITHUB_REPOSITORY/compare/'
+            '$GITHUB_SHA...refs/heads/$branch" --jq .status 2>/dev/null)" '
+            '|| status=') in lines
+    assert "identical|ahead)" in lines
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the step is bash on ubuntu; "
+                    "this runs it under a POSIX `gh` stub")
+@pytest.mark.parametrize("ref, version, main, release, code, asked", [
+    ("refs/tags/v1.1.0", "1.1.0", "ahead", "", 0, ["main"]),
+    ("refs/tags/v1.1.0", "1.1.0", "identical", "", 0, ["main"]),
+    ("refs/tags/v1.0.1", "1.0.1", "diverged", "identical", 0,
+     ["main", "release/v1.0"]),
+    ("refs/tags/v1.1.0", "1.1.0", "diverged", "", 1, ["main", "release/v1.1"]),
+    ("refs/tags/v1.1.0", "1.1.0", "behind", "diverged", 1,
+     ["main", "release/v1.1"]),
+    ("refs/heads/rehearse", "1.1.0", "", "", 0, []),
+])
+def test_the_on_branch_step_answers_from_the_forges_compare(
+        workflow, tmp_path, ref, version, main, release, code, asked):
+    """Run with a `gh` that answers as the forge did for v1.0.1 (diverged
+    from main, identical to `release/v1.0`) and for an unmerged head
+    (diverged, no release branch); a branch rehearsal asks nothing."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(COMPARE_GH, encoding="utf-8")
+    (bin_dir / "gh").chmod(0o755)
+    script = tmp_path / "step.sh"
+    script.write_text(named_step(workflow, "build", ON_BRANCH)["run"],
+                      encoding="utf-8")
+    log = tmp_path / "gh.log"
+    log.write_text("", encoding="utf-8")
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+           "GH_LOG": str(log), "STATUS_MAIN": main, "STATUS_RELEASE": release,
+           "GITHUB_REF": ref, "GITHUB_REF_NAME": ref.rsplit("/", 1)[-1],
+           "GITHUB_SHA": "c" * 40, "GITHUB_REPOSITORY": "opensoft/openRepoShape",
+           "VERSION": version}
+    done = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail",
+                           str(script)], env=env, capture_output=True,
+                          text=True, check=False)
+    assert done.returncode == code, done.stdout + done.stderr
+    called = [line.split("refs/heads/")[1].split()[0]
+              for line in log.read_text(encoding="utf-8").splitlines()]
+    assert called == asked
+
+
+# --- RV599, SHOULD 3: what the mutations got past -------------------------------------
+
+#: The only steps that run conditionally, and their conditions: the tag
+#: path's TestPyPI fetch, the rehearsal's own wheel, and PowerShell.
+STEP_CONDITIONS = {
+    ("install", "fetch the wheel from TestPyPI"):
+        "startsWith(github.ref, 'refs/tags/')",
+    ("install", "take the build's own wheel, on a branch (the rehearsal)"):
+        "${{ !startsWith(github.ref, 'refs/tags/') }}",
+    ("install", "PowerShell runs openRepoShape by its name (Windows)"):
+        "runner.os == 'Windows'",
+}
+
+#: Each upload job's steps, in their order: the artifact, its digest, the
+#: environment and this run's approval, the tag, the index before, the
+#: upload, the index after.
+UPLOAD_STEPS = [
+    "actions/download-artifact",
+    "dist holds the wheel the build job verified, and nothing else",
+    "this environment still asks a reviewer and admits only the tags v*, and "
+    "this run's deployment to it was approved",
+    "the tag v<version> still names this commit",
+    "the index holds no file of this version but the verified wheel",
+    "pypa/gh-action-pypi-publish",
+    "the index serves exactly the verified wheel",
+]
+
+
+def label(step: dict) -> str:
+    return step.get("name") or step["uses"].split("@")[0]
+
+
+def test_only_the_intended_steps_and_jobs_run_conditionally(workflow):
+    """(a) An `if:` on any other step, or another condition on these,
+    could skip a check; and nothing continues past a failed step."""
+    found = {(name, label(step)): step["if"]
+             for name, job in workflow["jobs"].items()
+             for step in job["steps"] if "if" in step}
+    assert found == STEP_CONDITIONS
+    assert "if" not in workflow["jobs"]["build"]
+    for name, job in workflow["jobs"].items():
+        assert "continue-on-error" not in job, name
+        for step in job["steps"]:
+            assert "continue-on-error" not in step, (name, label(step))
+
+
+def test_every_checkout_keeps_no_credentials(workflow):
+    """(b) The token is never left in a checkout's git config, where code
+    the job then runs could read it."""
+    checkouts = [step for job in workflow["jobs"].values()
+                 for step in job["steps"]
+                 if step.get("uses", "").startswith("actions/checkout@")]
+    assert len(checkouts) == 2
+    for step in checkouts:
+        assert step["with"]["persist-credentials"] is False
+
+
+def test_no_pip_setting_but_pypi_as_the_install_checks_only_index(workflow):
+    """(c) `PIP_*` appears in no environment and no script but the install
+    check's two settings: PyPI as the one index, and no version check."""
+    scopes = [workflow.get("env") or {}]
+    for job in workflow["jobs"].values():
+        scopes.append(job.get("env") or {})
+        scopes.extend(step.get("env") or {} for step in job["steps"])
+    pip = sorted(key for scope in scopes for key in scope
+                 if key.startswith("PIP_"))
+    assert pip == ["PIP_DISABLE_PIP_VERSION_CHECK", "PIP_INDEX_URL"]
+    assert workflow["jobs"]["install"]["env"]["PIP_INDEX_URL"] == \
+        "https://pypi.org/simple/"
+    for job in workflow["jobs"].values():
+        for step in job["steps"]:
+            assert "PIP_" not in step.get("run", ""), label(step)
+            assert "--index-url" not in step.get("run", ""), label(step)
+
+
+@pytest.mark.parametrize("job", sorted(UPLOADS))
+def test_each_upload_job_checks_in_its_fixed_order(workflow, job):
+    """(d) The digest, the environment and approval, the tag, the index
+    before, the upload, the index after, in that order; each check is the
+    same script in both jobs; TestPyPI's upload names TestPyPI and PyPI's
+    names no other index."""
+    steps = job_steps(workflow, job)
+    assert [label(step) for step in steps] == UPLOAD_STEPS
+    assert ('echo "$WHEEL_SHA256  dist/$WHEEL" | sha256sum --strict -c -'
+            in commands(steps[1]["run"]))
+    other = job_steps(workflow, ({*UPLOADS} - {job}).pop())
+    for mine, theirs in zip(steps, other):
+        assert mine.get("run") == theirs.get("run"), label(mine)
+    publish = steps[UPLOAD_STEPS.index("pypa/gh-action-pypi-publish")]["with"]
+    if job == "testpypi":
+        assert publish == {"repository-url": "https://test.pypi.org/legacy/",
+                           "skip-existing": True, "print-hash": True}
+    else:
+        assert publish == {"skip-existing": True, "print-hash": True}
+    index = {"testpypi": "https://test.pypi.org/pypi/openreposhape/",
+             "pypi": "https://pypi.org/pypi/openreposhape/"}
+    assert workflow["jobs"][job]["env"]["JSON_BASE"] == index[job]
+
+
+WHEEL_CHECK = "the wheel holds the commit's own files, byte for byte, and the stamp"
+
+
+def test_the_wheel_is_checked_against_the_commit_before_it_is_recorded(
+        workflow):
+    """(e) RV599, SHOULD 5 besides: right after the two builds and before
+    the digest is recorded, with each of its comparisons."""
+    names = [step.get("name", "") for step in job_steps(workflow, "build")]
+    check = names.index(WHEEL_CHECK)
+    assert names[check - 1] == ("build the wheel from each extraction, and "
+                                "the two are one file")
+    assert names[check + 1] == "record the wheel and its sha256"
+    script = heredoc(named_step(workflow, "build", WHEEL_CHECK)["run"])
+    for line in (
+            "elif wheel.read(name) != committed(source):",
+            "for name in sorted(wanted - set(names)):",
+            "if changed != release or assigned != release:",
+            "if shown != declared:",
+            'if entry_points.sections() != ["console_scripts"]:',
+            'if scripts != project["scripts"]:',
+            'if described != sorted(["METADATA", "WHEEL", "RECORD", '
+            '"entry_points.txt",',
+            'if wheel.read(info + "licenses/LICENSE") != committed("LICENSE"):',
+            "sys.exit(1 if problems else 0)"):
+        assert line in script, line
+
+
+def fake_wheel(path: Path, sha: str, version: str, digest: str,
+               change: dict) -> None:
+    """The wheel the build writes for `sha`, laid out as hatchling lays it
+    out, from git's own blobs; `change` replaces entries, None drops one."""
+    tomllib = pytest.importorskip("tomllib")
+
+    def blob(name: str) -> bytes:
+        return subprocess.run(["git", "cat-file", "blob", f"{sha}:{name}"],
+                              cwd=REPO, capture_output=True, check=True).stdout
+
+    project = tomllib.loads(blob("pyproject.toml").decode())["project"]
+    listed = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", sha,
+                             "--", "src/openreposhape/"], cwd=REPO,
+                            capture_output=True, check=True).stdout.decode()
+    files = {name[len("src/"):]: blob(name)
+             for name in listed.split("\0") if name}
+    files["openreposhape/setup-project.py"] = blob("setup-project.py")
+    stamp = files["openreposhape/_release.py"].decode()
+    for name, old, new in (("VERSION", "0.0.0", version),
+                           ("TAG", "", f"v{version}"), ("COMMIT", "", sha),
+                           ("DIGEST", "", digest)):
+        stamp = stamp.replace(f'{name} = "{old}"', f'{name} = "{new}"', 1)
+    files["openreposhape/_release.py"] = stamp.encode()
+    info = f"openreposhape-{version}.dist-info/"
+    files[info + "METADATA"] = "".join(
+        [f"Metadata-Version: 2.4\nName: {project['name']}\n",
+         f"Version: {version}\nRequires-Python: {project['requires-python']}\n",
+         *(f"Requires-Dist: {r}\n" for r in project["dependencies"])]).encode()
+    files[info + "WHEEL"] = b"Wheel-Version: 1.0\nTag: py3-none-any\n"
+    files[info + "entry_points.txt"] = "".join(
+        ["[console_scripts]\n",
+         *(f"{k} = {v}\n" for k, v in project["scripts"].items())]).encode()
+    files[info + "licenses/LICENSE"] = blob("LICENSE")
+    files[info + "RECORD"] = b""
+    files.update({name.replace("<info>", info): data
+                  for name, data in change.items()})
+    with zipfile.ZipFile(path, "w") as wheel:
+        for name, data in sorted(files.items()):
+            if data is not None:
+                wheel.writestr(name, data)
+
+
+@pytest.mark.parametrize("change, code", [
+    ({}, 0),
+    ({"openreposhape/cli.py": b"# not the commit's\n"}, 1),
+    ({"openreposhape/extra.py": b"import os\n"}, 1),
+    ({"openreposhape/standard.py": None}, 1),
+    ({"<info>top_level.txt": b"openreposhape\n"}, 1),
+    ({"<info>RECORD": None}, 1),
+    ({"<info>entry_points.txt": b"[console_scripts]\n[gui_scripts]\n"}, 1),
+], ids=["the-commits-own", "a-changed-module", "an-extra-module",
+        "a-missing-module", "an-extra-dist-info-file", "no-record",
+        "a-second-entry-point-section"])
+def test_the_wheel_check_refuses_any_file_that_is_not_the_commits(
+        workflow, tmp_path, change, code):
+    """The step's own script, over a wheel made from this checkout's HEAD:
+    the commit's own files pass, and a changed, extra or missing module, an
+    extra or missing `.dist-info/` file, or an entry-point section beside
+    `console_scripts` refuses (RV599, SHOULD 5)."""
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO,
+                         capture_output=True, text=True, check=True).stdout.strip()
+    wheel = tmp_path / "openreposhape-1.1.0-py3-none-any.whl"
+    fake_wheel(wheel, sha, "1.1.0", "d" * 64, change)
+    script = tmp_path / "check.py"
+    script.write_text(heredoc(named_step(workflow, "build", WHEEL_CHECK)["run"]),
+                      encoding="utf-8")
+    done = subprocess.run([sys.executable, "-I", str(script), str(wheel)],
+                          cwd=REPO, capture_output=True, text=True, check=False,
+                          env={**os.environ, "VERSION": "1.1.0",
+                               "GITHUB_SHA": sha, "DIGEST": "d" * 64})
+    assert done.returncode == code, done.stdout + done.stderr
+
+
+def test_a_bare_success_exit_is_the_rehearsal_or_a_404_alone(workflow):
+    """(f) `exit 0` ends a step early only on a branch rehearsal, inside
+    its `refs/heads/*)` arm, and `sys.exit(0)` only where an index answers
+    404 for a version it holds no file of."""
+    found = {}
+    for name, job in workflow["jobs"].items():
+        for step in job["steps"]:
+            lines = step.get("run", "").splitlines()
+            for at, line in enumerate(lines):
+                if re.fullmatch(r"\s*exit 0\s*", line):
+                    assert "refs/heads/*)" in "\n".join(lines[at - 2:at])
+                    found.setdefault((name, label(step)), []).append("exit 0")
+                if "sys.exit(0)" in line:
+                    assert "!= 404" in "\n".join(lines[at - 4:at])
+                    found.setdefault((name, label(step)), []).append(
+                        "sys.exit(0)")
+    assert found == {
+        ("build", "the dispatched ref is the annotated tag v<version> at this "
+                  "commit, or a branch to rehearse on"): ["exit 0"],
+        ("build", ON_BRANCH): ["exit 0"],
+        ("testpypi", UPLOAD_STEPS[4]): ["sys.exit(0)"],
+        ("pypi", UPLOAD_STEPS[4]): ["sys.exit(0)"],
+    }
+
+
+# --- RV599, SHOULD 4: the release workflow is linted on every pull request ----------
+
+def test_tests_yml_lints_the_release_workflow():
+    """`tests.yml`'s actionlint step hands it this file, so a workflow no
+    pull request ever runs is still read by the linter on each one."""
+    tests = load_yaml(WORKFLOWS / "tests.yml")
+    [lint] = [step for step in tests["jobs"]["tests"]["steps"]
+              if step.get("name", "").startswith("actionlint")]
+    assert ".github/workflows/release.yml" in lint["run"].split()
