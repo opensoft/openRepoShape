@@ -2722,7 +2722,9 @@ def resolve_link_source(product: str, root: Path | None = None,
       1. `--link-source <product>=<path>` (case-insensitive on the name)
       2. `SHAPE_PIN_SOURCE_<PRODUCT>` in the environment
       3. a checkout sitting BESIDE this project (`../openXdox`)
-      4. a bare `--link-source <path>` with no `product=` prefix
+      4. a bare `--link-source <path>` with no `product=` prefix, which is
+         asked only when `default_source` is passed: `link_pins_from_trees`
+         passes it for a chain's FIRST link and for no other (#441)
 
     The first that holds a manifest answers, and one that does not is passed
     over whatever the reason: one that cannot be entered no longer raises
@@ -2810,16 +2812,27 @@ def link_pins_from_trees(links, root: Path | None = None,
     declared-unverified. Only a hand-written chain can hold two such links:
     `scaffold-project.py` takes every link but the first from the naming
     policy's `open<Product>` form, which has no `-`, `.` or `_` to fold.
+
+    `default_source` IS THE FIRST LINK'S TREE AND NO OTHER'S (#441). It is
+    one tree — the naming validator's bare `--link-source`, the scaffold's
+    `--pin-source` — and the first link is the pin this project holds, the
+    one tree a person who typed one path has to hand. It used to be offered
+    to every link, so in a chain of three or more links a later link with
+    no other source was read from the same tree: `openXdox`'s manifest,
+    declaring `openYdox`, read again as `openYdox`'s, which "declares
+    openYdox, not openInk", and a chain that holds was broken. A later link
+    is read through rules 1 to 3 of `resolve_link_source`, or is
+    declared-unverified.
     """
     found: dict[str, set] = {}
     unreadable: dict[str, str] = {}
     links = list(links)
     shared = pin_source_env_shared(repo_basename(str(link)) for link in links)
-    for link in links:
+    for index, link in enumerate(links):
         name = repo_basename(str(link))
         asked: list = []
         path, _how = resolve_link_source(name, root, keyed_sources,
-                                         default_source,
+                                         None if index else default_source,
                                          pin_product_key(name) in shared,
                                          tried=asked)
         if tried is not None:

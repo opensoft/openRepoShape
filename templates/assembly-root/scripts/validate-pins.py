@@ -818,6 +818,11 @@ class PinSources:
     later one replaced — is said once the pins are checked, by
     `_note_unused_pin_sources`. Saying nothing is how a mistyped key read as
     a pass that never looked.
+
+    A VALUE THAT NAMES NO PATH IS REFUSED (#442), `pin-source-no-path`:
+    `openGlass=` with nothing after its `=`, or an empty value. Either was
+    `Path("")`, which is `.`, so the directory this ran in was asked for the
+    pinned commit and the finding blamed `.`. `.` typed still means it.
     """
 
     def __init__(self, values: list[str], declared) -> None:
@@ -848,6 +853,17 @@ class PinSources:
             self.replaced.pop(typed, None)
             if earlier is not None and earlier[0] != typed:
                 self.replaced[earlier[0]] = typed
+        no_path = [f"`--pin-source {typed}` names no path for {product}"
+                   if typed else "`--pin-source ''` names no path"
+                   for typed, product in self.reading.items()
+                   if not (typed.partition("=")[2] if product else typed)]
+        if no_path:
+            raise Refusal(
+                "pin-source-no-path",
+                "; ".join(no_path) + ". An empty path would be read as the "
+                "directory this runs in.",
+                "Remediation: give the checkout's path (`--pin-source "
+                "<product>=<path>`), or `.` to mean this directory.")
 
     def read_as_path(self, typed: str | None) -> str:
         """The sentence saying a value holding `=` was read as a bare PATH,
