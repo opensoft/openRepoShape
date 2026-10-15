@@ -35,6 +35,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
@@ -868,6 +869,48 @@ def pytest_runtest_teardown(item, nextitem):
     if found:
         pytest.fail(found, pytrace=False)
     return result
+
+
+# --- the suite's own temporary directory (#461, #526) ------------------------
+#
+# A TOOL RUN WITHOUT A DIRECTORY OF ITS OWN WRITES IN THE SYSTEM TEMP FOLDER,
+# outside pytest's retention: `adopt-project.py` makes an
+# `openreposhape-adopt-*` work directory per `plan`, `check` and `execute`
+# given no `--work-dir`, and one run of `tests/test_adopt_pins.py` left 117 of
+# them in `/tmp` (15,206 in one container, 226,165 on another machine). So
+# the session points `TMPDIR` into its basetemp, where pytest keeps or removes
+# it with everything else, and the tool removes each one that holds nothing.
+# A test that gives a child a `TMPDIR` of its own still does: `run_script`
+# lays a caller's variables over `os.environ`.
+
+#: The directory `temporary_directory` points `TMPDIR` at, ONE level under
+#: the session's basetemp and not one per test: the Windows runner meets
+#: MAX_PATH where git writes beneath a deep path.
+TMPDIR_NAME = "tmpdir"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def temporary_directory(tmp_path_factory):
+    """`<basetemp>/tmpdir` as the system temp folder for the whole session:
+    `TMPDIR` for every child, however it is started, and `tempfile.tempdir`
+    for this process, where a test that loads `adopt-project.py` as a module
+    runs its `tempfile.mkdtemp`, and where `tempfile` keeps the folder it
+    found first whatever `TMPDIR` says later. `TMPDIR` alone, because
+    `tempfile` reads it first on every platform. Both are put back as they
+    were."""
+    directory = tmp_path_factory.getbasetemp() / TMPDIR_NAME
+    directory.mkdir(exist_ok=True)
+    before, cached = os.environ.get("TMPDIR"), tempfile.tempdir
+    os.environ["TMPDIR"] = str(directory)
+    tempfile.tempdir = str(directory)
+    try:
+        yield directory
+    finally:
+        tempfile.tempdir = cached
+        if before is None:
+            os.environ.pop("TMPDIR", None)
+        else:
+            os.environ["TMPDIR"] = before
 
 
 def assert_refuses_for_want_of_a_terminal(stderr: str) -> None:
