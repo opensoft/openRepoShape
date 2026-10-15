@@ -23,6 +23,15 @@ AMBIGUOUS IS AN ANSWER. `leg: null` plus the question to ask is what the tool
 owes a reader when the honest state is that it does not know; a guess dressed
 as a classification is worse, because nobody reviews a confident answer.
 
+A QUESTION MAY CARRY A DEFAULT, AND IT IS STILL A QUESTION (#528). A rule
+that asks may name the answer that holds when nobody gives another, as
+`default:`. The verdict keeps `leg` None and carries the default beside it,
+so whatever reads `leg` -- the doctor's placement row, walking a leg already
+split -- still reads a question; `adopt-project.py plan` is what writes the
+default into the plan, with the question still beside it. Only `drop` may
+be one: an unanswered question is never an implicit `root`, and a rule that
+can answer `spec` or `code` says so in `leg:`.
+
 STANDARD LIBRARY ONLY, like everything else here.
 """
 
@@ -36,6 +45,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import Refusal, load_yaml  # noqa: E402
 
 LEGS = ("spec", "code", "root", "ambiguous")
+#: The answers a rule that asks may name as its `default:` (#528). `drop`
+#: alone: `root` unanswered would keep a path in the assembly root that no
+#: person chose to keep, and a rule that answers `spec` or `code` says so in
+#: `leg:` rather than asking.
+DEFAULTS = ("drop",)
 DEFAULT_MAJORITY = 0.75
 
 
@@ -44,12 +58,18 @@ class Verdict:
 
     `leg` is `None` for `ambiguous`, because that is what the plan writes and
     a single spelling of "unknown" is one fewer thing to get wrong.
+
+    `default` is the answer the rule names for its question, or None. It is
+    kept only beside a question (`leg` None) and never fills `leg` in: the
+    path is still one the rules could not call, and `review_required` says
+    so whatever the default is.
     """
 
-    __slots__ = ("leg", "rule", "reason", "confidence", "question")
+    __slots__ = ("leg", "rule", "reason", "confidence", "question", "default")
 
     def __init__(self, leg: str | None, rule: str, reason: str,
-                 confidence: str, question: str | None = None):
+                 confidence: str, question: str | None = None,
+                 default: str | None = None):
         self.leg = None if leg in (None, "ambiguous") else leg
         self.rule = rule
         self.reason = " ".join(str(reason).split())
@@ -59,6 +79,7 @@ class Verdict:
         # as a confident answer to a question nobody has answered.
         self.confidence = "review" if self.leg is None else confidence
         self.question = " ".join(str(question).split()) if question else None
+        self.default = default if self.leg is None else None
 
     @property
     def review_required(self) -> bool:
@@ -114,6 +135,24 @@ def _compiled_rule(rule) -> tuple[dict, list[tuple[str, re.Pattern]]]:
             "path-policy-leg",
             f"rule {rule['id']!r} declares leg {rule.get('leg')!r}; the "
             f"classes are {list(LEGS)}")
+    # A DEFAULT IS AN ANSWER TO A QUESTION (#528), so only a rule that asks
+    # one may name it, and only one of DEFAULTS. Refused at load time like
+    # an unknown leg: a `default: root` that `plan` wrote unread would keep
+    # a path in the assembly root nobody chose to keep.
+    if "default" in rule:
+        if rule["leg"] != "ambiguous":
+            raise Refusal(
+                "path-policy-default",
+                f"rule {rule['id']!r} declares default "
+                f"{rule['default']!r} beside leg {rule['leg']!r}; only a "
+                "rule that asks (leg `ambiguous`) names a default answer")
+        if rule["default"] not in DEFAULTS:
+            raise Refusal(
+                "path-policy-default",
+                f"rule {rule['id']!r} declares default "
+                f"{rule['default']!r}; a default is one of {list(DEFAULTS)}, "
+                "because an unanswered question is never an implicit `root` "
+                "and a rule that answers `spec` or `code` says so in `leg:`")
     compiled = [(str(p), glob_to_regex(str(p)))
                 for p in (rule.get("paths") or [])]
     if not compiled:
@@ -153,24 +192,31 @@ class PathPolicy:
 
     # -- one path -----------------------------------------------------------
 
-    def rule_for(self, path: str) -> dict | None:
+    def rule_for(self, path: str, skip=()) -> dict | None:
         """The FIRST rule whose globs match, or None.
 
         A rule written as `foo/**` also matches the bare directory `foo`,
         because a policy that classified every file under a directory but not
         the directory itself would descend into it for no reason.
+
+        A rule whose id is in `skip` is passed over, as if the policy did not
+        hold it. `adopt-project.py plan` passes the record's rule over for a
+        file that has the record's name and declares another `kind:`, which
+        is then asked what the rules below that one ask (#528).
         """
         for rule, compiled in self.rules:
+            if rule["id"] in skip:
+                continue
             for pattern, regex in compiled:
                 if regex.match(path) or pattern == f"{path}/**":
                     return rule
         return None
 
-    def classify_file(self, path: str) -> Verdict:
-        rule = self.rule_for(path)
+    def classify_file(self, path: str, skip=()) -> Verdict:
+        rule = self.rule_for(path, skip)
         if rule is not None:
             return Verdict(rule["leg"], str(rule["id"]), rule.get("reason", ""),
-                           "high", rule.get("question"))
+                           "high", rule.get("question"), rule.get("default"))
         suffix = ("." + path.rsplit(".", 1)[1].lower()) if "." in \
             Path(path).name.lstrip(".") else ""
         leg = self.extension_classes.get(suffix)
@@ -208,7 +254,8 @@ class PathPolicy:
             rules = {v.rule for v in verdicts}
             if len(rules) == 1:
                 return Verdict(leg, verdicts[0].rule, verdicts[0].reason,
-                               verdicts[0].confidence, verdicts[0].question)
+                               verdicts[0].confidence, verdicts[0].question,
+                               verdicts[0].default)
             return Verdict(
                 leg, "consensus",
                 "every file under this path classifies as "
