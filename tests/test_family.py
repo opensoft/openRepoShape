@@ -32,7 +32,8 @@ import sys
 
 import pytest
 
-from conftest import FILE_PROTOCOL, REPO, git, rmtree, run_script
+from conftest import (NO_BYTECODE, REPO, cloned_just_pushed, git, rmtree,
+                      run_script)
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
@@ -1377,12 +1378,8 @@ def test_remove_refuses_a_member_that_is_not_there(holder):
 @pytest.fixture(scope="module")
 def bootstrapped(family, tmp_path_factory):
     """A fresh recursive clone of the family, bootstrapped."""
-    target = tmp_path_factory.mktemp("family-clone") / NAME
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--recurse-submodules",
-         str(family["remotes"] / f"{NAME}.git"), str(target)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    target = cloned_just_pushed(family["remotes"] / f"{NAME}.git",
+                                tmp_path_factory.mktemp("family-clone") / NAME)
     result = run_script(target / "scripts" / "bootstrap.py", cwd=target,
                         env=ALLOW_FILE_PROTOCOL)
     return {"root": target, "result": result}
@@ -1409,12 +1406,8 @@ def test_bootstrap_degrades_when_a_member_cannot_be_fetched(family, tmp_path):
     """A missing credential is a DEGRADE, not a failure: without
     `protocol.file.allow` git refuses these local submodules exactly as it
     would refuse a private one with no token."""
-    target = tmp_path / NAME
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q",
-         str(family["remotes"] / f"{NAME}.git"), str(target)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    target = cloned_just_pushed(family["remotes"] / f"{NAME}.git",
+                                tmp_path / NAME, recurse=False)
     result = run_script(target / "scripts" / "bootstrap.py", cwd=target)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "FETCH INCOMPLETE" in result.stderr
@@ -1952,7 +1945,7 @@ def test_family_py_siblings_runs_the_holders_own_file(family, tmp_path):
     theirs = one("target", lambda holder: siblings(holder))
     ours = one("shim", lambda holder: run_script(
         FAMILY, "siblings", "--family-root", str(holder),
-        env=ALLOW_FILE_PROTOCOL))
+        env={**ALLOW_FILE_PROTOCOL, **NO_BYTECODE}))
 
     assert layout(ours["result"].stdout) == layout(theirs["result"].stdout)
     for project in MEMBERS:
