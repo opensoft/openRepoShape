@@ -442,21 +442,23 @@ def test_a_source_that_answers_is_read_as_before(kind, spelling, tmp_path,
 # --- a `--pin-source` nothing reads is `pin-source-unused` (#451) ------------
 #
 # `--pin-source` is read by each `--pin` (its digest) and, in the scaffold, by
-# each `--referent-chain` link (its declaration). With neither, nothing read
-# it, so nothing asked about it: `--dry-run` said `nothing was created.`,
-# the real run made a project that declares no descent, and `plan` wrote a
-# plan, each exit 0, with no word of the flag, even for a path that does not
-# exist. It is refused, before anything exists, as `pin-source-unused`.
+# the first `--referent-chain` link (its declaration: a bare path is that
+# link's tree alone, #441). With neither, nothing read it, so nothing asked
+# about it: `--dry-run` said `nothing was created.`, the real run made a
+# project that declares no descent, and `plan` wrote a plan, each exit 0,
+# with no word of the flag, even for a path that does not exist. It is
+# refused, before anything exists, as `pin-source-unused`.
 
 #: What each tool says of a `--pin-source <typed>` no flag of its reads.
 UNUSED = {
     "scaffold": (
         "REFUSED pin-source-unused: --pin-source {typed} was given with no "
         "--pin and no --referent-chain, so nothing reads it: it names the "
-        "clone each --pin's digest is read from, and each --referent-chain "
-        "link's declaration.\nRemediation: nothing was created, and "
-        "`--dry-run` refuses the same. Add the --pin <openProduct>@<40 hex "
-        "commit> that clone was given for, or drop --pin-source.\n"),
+        "clone each --pin's digest is read from, and the first "
+        "--referent-chain link's declaration.\nRemediation: nothing was "
+        "created, and `--dry-run` refuses the same. Add the --pin "
+        "<openProduct>@<40 hex commit> that clone was given for, or drop "
+        "--pin-source.\n"),
     "adopt": (
         "REFUSED pin-source-unused: --pin-source {typed} was given with no "
         "--pin, so nothing reads it: it names the clone each --pin's digest "
@@ -495,7 +497,7 @@ def test_a_pin_source_a_pin_reads_is_not_unused(kind, tmp_path, adoptable,
 
 @pytest.mark.parametrize("kind", ["scaffold-dry-run", "scaffold-run"])
 def test_a_referent_chain_reads_the_pin_source(kind, tmp_path, adoptable):
-    """A `--referent-chain` link with no keyed source reads the bare
+    """A `--referent-chain`'s FIRST link with no keyed source reads the bare
     `--pin-source` (`link_pins_from_trees`), so a chain is a reader: with
     no `--pin`, the refusal is the chain's own, which names the `--pin` the
     chain begins at, and not `pin-source-unused`."""

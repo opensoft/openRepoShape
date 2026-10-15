@@ -2715,17 +2715,18 @@ def refuse_an_unread_pin_source(pin_source, pins, chain=None, *,
     no plan.
 
     ITS READERS ARE `declared_pin_values`, which reads each `--pin`'s digest
-    there, and, in the scaffold, `link_pins_from_trees`, which reads a
-    `--referent-chain` link's declaration there when nothing keyed names that
-    link's tree. With neither, nothing read it, so nothing asked about it
-    either: a path that does not exist was accepted, `--dry-run` said
-    `nothing was created.` and `plan` wrote its plan, each exit 0 with no
-    word that the flag had changed nothing. Typed meaning to pin, with the
-    `--pin` forgotten, it made a project that declares no descent. The
-    root's own `validate-pins.py` NOTES an unused `--pin-source` of its own
-    (#295), a check that is run again and again; the two tools that make a
-    project refuse one, before it is made, as they refuse each other value
-    they cannot use.
+    there, and, in the scaffold, `link_pins_from_trees`, which reads the
+    first `--referent-chain` link's declaration there when nothing keyed
+    names that link's tree: a bare path is the first link's tree alone
+    (#441), never a later link's. With neither, nothing read it, so nothing
+    asked about it either: a path that does not exist was accepted,
+    `--dry-run` said `nothing was created.` and `plan` wrote its plan, each
+    exit 0 with no word that the flag had changed nothing. Typed meaning to
+    pin, with the `--pin` forgotten, it made a project that declares no
+    descent. The root's own `validate-pins.py` NOTES an unused
+    `--pin-source` of its own (#295), a check that is run again and again;
+    the two tools that make a project refuse one, before it is made, as
+    they refuse each other value they cannot use.
 
     `pins` is the `--pin` list and `chain` the scaffold's `--referent-chain`
     links, or `None` for a tool that takes no chain (`adopt-project.py
@@ -2739,7 +2740,7 @@ def refuse_an_unread_pin_source(pin_source, pins, chain=None, *,
         given, reads = "no --pin", "each --pin's digest is read from"
     else:
         given = "no --pin and no --referent-chain"
-        reads = ("each --pin's digest is read from, and each "
+        reads = ("each --pin's digest is read from, and the first "
                  "--referent-chain link's declaration")
     raise Refusal(
         "pin-source-unused",
