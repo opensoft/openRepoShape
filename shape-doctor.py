@@ -53,7 +53,11 @@ inventory plugs in by adding one row to that table. A kind whose check never
 runs on THIS kind of root is that failure too, and the same FINDING (#327):
 `validate-family.py` is registered for `family-manifest` and runs in a family
 holder only, so a `contracts/family.yaml` in an assembly root -- or a
-`contracts/project.yaml` in a holder -- is a manifest nothing here reads.
+`contracts/project.yaml` in a holder -- is a manifest nothing here reads. So
+is one at a path its gate never opens, in a root that runs it (#439): every
+gate reads fixed paths, so a `contracts/project.yaml` in an assembly root,
+or a `contracts/<x>-pin.yaml` no leg and no product names, is the same
+FINDING, and its NEXT takes the file out as git has it (#548).
 
 THE ROWS, for an assembly root, in this order:
 
@@ -74,7 +78,8 @@ THE ROWS, for an assembly root, in this order:
     pins              the project's own `scripts/validate-pins.py` likewise:
                       the lockstep invariant, and the shape-copy digests
     manifest kinds    every `kind:`-bearing manifest in the root, against
-                      MANIFEST_VALIDATORS and the kind of root it is in
+                      MANIFEST_VALIDATORS, the kind of root it is in and the
+                      path it sits at
     shape currency    `update-shape.py check`'s per-file verdicts, summarised
     legs              each leg mounted, and its checked-out commit against the
                       pin (no fetch)
@@ -822,14 +827,30 @@ class ManifestKind:
     is one sentence on every platform, so it names `setup-project.py` beside
     `setup.sh`, which is a bash script Windows cannot run -- the reason
     `scaffold_command` spells that line per platform (Copilot, PR #102).
+
+    AND ONLY AT A PATH THAT CHECK READS (#439). Each gate opens fixed paths:
+    `validate-manifest.py` the root's `project.yaml` (and the naming policy
+    at `contracts/repository-naming.yaml`), `validate-pins.py` the shape pin
+    and each pin `project.yaml` declares, `validate-family.py` the holder's
+    `family.yaml`, the shape pin and the naming policy. So a
+    `contracts/project.yaml` in an assembly root, or a
+    `contracts/release-pin.yaml` that no leg and no product names, is read
+    by nothing, though its kind's check runs here. `read_at(ctx)` says where
+    the check that runs here reads the kind, as root paths, and
+    `check_manifest_kinds` counts a file `validated` only at one of them.
+    None is a kind this row does not decide by path:
+    `path-classification-policy`, which the registry covers with this row
+    itself, and a pin in an assembly root whose `project.yaml` does not
+    load, which declares nothing this run can read (`pins_read_here`).
     """
 
     def __init__(self, kind: str, covered_by: tuple, how: str,
-                 home: str | None = None):
+                 home: str | None = None, read_at=None):
         self.kind = kind
         self.covered_by = covered_by
         self.how = how
         self.home = home
+        self.read_at = read_at
 
     def runs_in(self) -> tuple:
         """The kinds of root a check that `covered_by` names runs on."""
@@ -838,24 +859,121 @@ class ManifestKind:
                             and root in check.applies_to
                             for check in CHECKS))
 
+    def reads(self, ctx: Context) -> set | None:
+        """The root paths a check that runs here reads this kind at, or None
+        where this row does not decide by path (#439)."""
+        return None if self.read_at is None else self.read_at(ctx)
+
+
+#: Where an assembly root keeps the naming policy `validate-manifest.py`
+#: reads, and a holder the one `validate-family.py` reads (#439).
+NAMING_COPY = "contracts/repository-naming.yaml"
+
+
+def own_pins(ctx: Context) -> set:
+    """The pins the shape itself writes in this kind of root, whatever its
+    manifest declares: the shape pin, and in an assembly root
+    `contracts/<role>-pin.yaml` for each role the schema has (review of PR
+    #555).
+
+    A leg's role is the schema's, and `validate-manifest.py` refuses any
+    other (`manifest-roles`). So a `- role: specs` typo leaves
+    `contracts/spec-pin.yaml` the spec leg's pin, which the gate reads again
+    once the typo is fixed, and not a file nothing reads: `declared_pins`
+    alone named `contracts/specs-pin.yaml`, and the row's NEXT took the
+    real pin out, over a manifest the `manifest` row already names.
+    """
+    if ctx.kind == FAMILY:
+        return {SHAPE_PIN}
+    return {SHAPE_PIN} | {f"contracts/{role}-pin.yaml" for role in LEG_ROLES}
+
+
+def pins_read_here(ctx: Context) -> set | None:
+    """Where this root's gate reads a `pinned_contract_manifest` (#439).
+
+    In a holder, `validate-family.py` reads the shape pin and no other: a
+    holder has no legs and declares no product. In an assembly root,
+    `validate-pins.py` reads `declared_pins` -- the shape pin, a pin per leg
+    and a pin per `neutral_product_pins:` entry -- and `own_pins` are
+    counted read whatever the legs declare. Where `project.yaml` does not
+    load, it declares nothing this run can read, and None leaves every pin
+    counted as before: a pin called read by nothing would be a NEXT that
+    takes it out, over a manifest the `manifest` row already names.
+    """
+    if ctx.kind == FAMILY:
+        return own_pins(ctx)
+    if ctx.manifest_refusal is not None:
+        return None
+    return own_pins(ctx) | declared_pins(ctx)
+
+
+def kinds_read_here(ctx: Context) -> dict:
+    """`{path: kind}`: every root path a gate that runs here reads a file
+    at, and the kind it reads that file as -- each kind's `read_at`, for the
+    kinds whose check runs on this root, and `own_pins` as pins (review of
+    PR #555).
+
+    A FILE AT ONE OF THESE PATHS IS NEVER `unread`, AND THE NEXT NEVER TAKES
+    IT OUT, whatever this row finds in it. A `contracts/repository-naming.yaml`
+    declaring `kind: pinned_contract_manifest` called read by nothing got a
+    NEXT that took out the file `validate-manifest.py` reads. What is wrong
+    with such a file is the kind it declares, and the row says which kind
+    that path is read as (`taking_out`).
+    """
+    kinds = {pin: "pinned_contract_manifest" for pin in own_pins(ctx)}
+    for kind, entry in MANIFEST_VALIDATORS.items():
+        if ctx.kind in entry.runs_in():
+            kinds.update((path, kind) for path in entry.reads(ctx) or ())
+    return kinds
+
+
+def kind_checked_by(ctx: Context) -> dict:
+    """`{path: row}`: the paths whose gate refuses a file declaring another
+    kind than it reads the path as, and the row that runs that gate (review
+    of PR #555, round 2).
+
+    ONLY THESE, because the row says that gate judges the file, and that
+    has to be true. `validate-pins.py` checks the `kind:` of each LEG pin
+    `project.yaml` declares (`pin-wrong-kind`), and `NamingPolicy.load`,
+    which `validate-manifest.py` and `validate-family.py` both call, that of
+    the naming policy (`policy-wrong-kind`). Nothing checks the kind of the
+    shape pin (`_check_shape_pin_header` reads its fields, not its kind), of
+    a neutral product pin, or of `contracts/spec-pin.yaml` while no leg
+    declares the role `spec`. And where the root's own manifest does not
+    load, its gate stops there and checks nothing. For every other path in
+    `kinds_read_here`, this row is the one that says the kind is wrong.
+    """
+    if ctx.manifest_refusal is not None:
+        return {}
+    if ctx.kind == FAMILY:
+        return {NAMING_COPY: "family"}
+    checked = {NAMING_COPY: "manifest"}
+    checked.update((f"contracts/{leg['role']}-pin.yaml", "pins")
+                   for leg in ctx.legs()
+                   if isinstance(leg.get("role"), str) and leg["role"])
+    return checked
+
 
 MANIFEST_VALIDATORS: dict[str, ManifestKind] = {
     "project-manifest": ManifestKind(
         "project-manifest", ("manifest",), "scripts/validate-manifest.py",
         "an assembly root of its own (`setup.sh`, or `setup-project.py` on "
         "Windows, for a new one; `adopt-project.py plan` for a repository "
-        "that exists), which a holder pins with `family.py add`"),
+        "that exists), which a holder pins with `family.py add`",
+        read_at=lambda ctx: {PROJECT_MANIFEST}),
     "family-manifest": ManifestKind(
         "family-manifest", ("family",), "scripts/validate-family.py",
         "a family holder of its own (`family.py init`, then `family.py add` "
-        "there)"),
+        "there)", read_at=lambda ctx: {FAMILY_MANIFEST}),
     "pinned_contract_manifest": ManifestKind(
         "pinned_contract_manifest", ("pins", "family"),
-        "scripts/validate-pins.py (or validate-family.py in a holder)"),
+        "scripts/validate-pins.py (or validate-family.py in a holder)",
+        read_at=pins_read_here),
     "repository-naming-policy": ManifestKind(
         "repository-naming-policy", ("naming", "family"),
         "scripts/validate-repository-naming.py, through NamingPolicy.load "
-        "(validate-family.py, through the same, in a holder)"),
+        "(validate-family.py, through the same, in a holder)",
+        read_at=lambda ctx: {NAMING_COPY}),
     "path-classification-policy": ManifestKind(
         "path-classification-policy", ("manifest-kinds",),
         "scripts/path_classify.py reads it; nothing validates it in a root"),
@@ -1674,6 +1792,25 @@ def refusal_line(refusal: Refusal) -> str:
     return line.removesuffix("\n" + refusal.remediation)
 
 
+def remedy_as_why(refusal: Refusal) -> str | None:
+    """A refusal's remedy as a row's `why`, less its `Remediation:` label,
+    or None where it carries none (#408, #548).
+
+    NEVER AS A ROW'S NEXT. A remedy is prose a tool prints under its own
+    refusal, and the one most tools used to print, `repo_shape.REMEDIATION`,
+    held `git submodule update` and `validate-pins.py` in backticks, which
+    an interactive zsh runs where the line is pasted (#277). Two places --
+    `run_checks`, for a check that lets a refusal out, and
+    `placement_policy`, for a standard whose own path policy does not load
+    -- printed it as the NEXT. They print no NEXT now, and the remedy, when
+    there is one, is the row's `why`, so what the refusal had to say is not
+    lost.
+    """
+    said = (refusal.remediation or "").strip()
+    said = said.removeprefix("Remediation:").strip()
+    return said or None
+
+
 def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
                           template: str) -> Row:
     """The `manifest` (or `family`) row for a manifest that is THERE and does
@@ -2360,28 +2497,52 @@ def family_beside_project(ctx: Context, data: dict) -> tuple[str, dict]:
                       "undeclared_gitlinks": undeclared}
 
 
-#: The `manifest kinds` row's next command for #211, named once so the row
-#: and `tests/test_shape_doctor.py` spell it the same way. NOT `family.py
-#: add`, which is what `validate-family.py`'s own refusal offers: run here,
-#: it would mount the members INSIDE a project, which is the one shape the
-#: family ruling rules out. Which of the two exits is right is a fact about
-#: the repository, so the line offers both and decides neither.
-FAMILY_BESIDE_FIX = (
-    "an assembly root is not a family holder: take family.yaml out of this "
-    "root, or move the membership to a holder of its own (`family.py init`, "
-    "then `family.py add` there), as the human decides -- never `family.py "
-    "add` here, which would mount the members inside a project")
+#: The other way out of #211's finding, a sentence of the `manifest kinds`
+#: row's `why` and never its NEXT (#548): the backticks it holds are
+#: commands an interactive zsh runs where the line is pasted. NOT `family.py
+#: add` here, which is what `validate-family.py`'s own refusal offers: run
+#: in an assembly root it would mount the members INSIDE a project, which is
+#: the one shape the family ruling rules out. Which exit is right is a fact
+#: about the repository, so the row names both and decides neither.
+FAMILY_BESIDE_WAY = (
+    "Or move the membership family.yaml records to a holder of its own "
+    "(`family.py init`, then `family.py add` there), as the human decides "
+    "-- never `family.py add` here, which would mount the members inside a "
+    "project")
 
 
-def registered_elsewhere(ctx: Context, found: list) -> tuple[str, str, list]:
+def listed(names: list) -> str:
+    """`names` as a sentence lists them."""
+    return ", ".join(names)
+
+
+def register_way(names: list) -> str:
+    """The other way out for files of a kind nothing registers, a sentence
+    of the `manifest kinds` row's `why` (#548): what its NEXT said, less the
+    removal its command now is."""
+    one = len(names) == 1
+    return (f"Or register the kind{'' if one else 's'} {listed(names)} "
+            f"declare{'s' if one else ''} in shape-doctor.py's "
+            "MANIFEST_VALIDATORS, beside the check that validates "
+            f"{'it' if one else 'each'}, as the human decides")
+
+
+def registered_elsewhere(ctx: Context, found: list, states: dict,
+                         held: set = frozenset()) -> tuple[str, list, list]:
     """Manifests whose kind is registered to a gate this root never runs:
-    the sentence, the next command, and the facts (#327).
+    the sentence, the other way out, and the facts (#327).
 
-    `found` is `(path, kind, entry)` for each, in the row's own order. The
-    sentence opens the way the unregistered kind's does -- "no validator
-    ... is registered for kind" -- because to this root it is the same
-    fact: the registry has a validator for the kind, and none that runs
-    here. Each file says which validator that is and where it does run.
+    `found` is `(path, kind, entry)` for each, in the row's own order,
+    `states` each file's git state, from `git_states`, and `held` the
+    files a gate here reads, which are offered no other way out: what is
+    wrong with the shape pin declaring `family-manifest` is its kind line,
+    not where a family holder is (review of PR #555, round 2).
+
+    The sentence opens the way the unregistered kind's does -- "no
+    validator ... is registered for kind" -- because to this root it is the
+    same fact: the registry has a validator for the kind, and none that
+    runs here. Each file says which validator that is and where it does
+    run.
 
     A FINDING, NOT A NOTE, for the reason an unregistered kind is one. A
     `note` is a difference nothing asserts, and a file declaring `kind:`
@@ -2390,32 +2551,14 @@ def registered_elsewhere(ctx: Context, found: list) -> tuple[str, str, list]:
     in a root whose gate never reads it. Nor could the same bytes be a
     FINDING as `family.yaml` (#211) and a note as `contracts/family.yaml`.
 
-    THE NEXT COMMAND IS ONE THAT EXISTS, FOR THE FILE AS GIT HAS IT. The
-    doctor reads the disk, so the file may be one nobody has committed yet,
-    and `git rm` takes out only a file whose every byte a commit holds: it
-    says "did not match any files" (exit 128) for one git does not track,
-    ignored or not, and refuses one with changes no commit holds. So
-    `git_states` asks first, and each file gets the exit that works:
-      committed   `git rm`, quoted for the reader's shell like every path
-                  this report prints, committed on a branch and landed as
-                  a pull request, the way every change here lands;
-      untracked,  deleting it, with nothing to commit;
-      ignored
-      changed     committing or dropping those changes first, since `git
-                  rm` will not discard them, and the next run names the
-                  `git rm`.
-    Where git cannot say, the line is #211's, which holds in any state:
-    take it out of this root. Each file's state is `detail`'s `git`.
-
-    The other exit is the kind's `home`, as the human decides. Renaming the
-    file to the root's own manifest name is ruled out in the line itself,
+    The row's NEXT takes the file out as git has it (`removal_next`), and
+    this names the other exit, the kind's `home`, as the human decides --
+    a sentence of the row's `why`, never of its NEXT (#548). Renaming the
+    file to the root's own manifest name is ruled out in that sentence,
     because that is the one move that looks like a fix: in a holder it
     makes the root read as a project, and in an assembly root it is #211's
-    finding instead of this one.
+    finding instead of this one. Each file's state is `detail`'s `git`.
     """
-    names = [rel for rel, _, _ in found]
-    one = len(names) == 1
-    states = git_states(ctx.root, names)
     clauses, detail = [], []
     for rel, kind, entry in found:
         runs = entry.runs_in()
@@ -2429,20 +2572,91 @@ def registered_elsewhere(ctx: Context, found: list) -> tuple[str, str, list]:
     sentence = (f"no validator that runs in {ROOT_IN_WORDS[ctx.kind]} is "
                 "registered for kind " + ", ".join(clauses))
     homes = {rel: entry.home or "a root whose gate runs its validator"
-             for rel, _, entry in found}
+             for rel, _, entry in found if rel not in held}
+    if not homes:
+        return sentence, [], detail
+    names = list(homes)
+    one = len(names) == 1
     if len(set(homes.values())) == 1:
-        other_exit = (f"move what {'it describes' if one else 'they describe'}"
-                      f" to {homes[names[0]]}")
+        other_exit = (f"move what {listed(names)} "
+                      f"describe{'s' if one else ''} to {homes[names[0]]}")
     else:
         other_exit = "move what each describes to " + "; ".join(
             f"{rel}: {home}" for rel, home in homes.items())
-    fix = (f"take {', '.join(names)} out of this root"
-           f"{removal_ways(ctx, names, states)}, or {other_exit}, as the "
-           f"human decides -- never rename {'it' if one else 'one'} to "
-           f"{PROJECT_MANIFEST} or {FAMILY_MANIFEST} in this root: a family "
-           "holder is not a project, and an assembly root is not a family "
-           "holder")
-    return sentence, fix, detail
+    way = (f"Or {other_exit}, as the human decides -- never rename "
+           f"{'it' if one else 'one'} to {PROJECT_MANIFEST} or "
+           f"{FAMILY_MANIFEST} in this root: a family holder is not a "
+           "project, and an assembly root is not a family holder")
+    return sentence, [way], detail
+
+
+def read_nowhere(ctx: Context, found: list,
+                 states: dict) -> tuple[str, list, list]:
+    """Manifests of a kind whose check runs here, at a path that check never
+    reads: the sentence, the other ways out, and the facts (#439).
+
+    `found` is `(path, kind, paths)` for each, in the row's own order, where
+    `paths` are the root paths the check that runs here reads that kind at
+    (`ManifestKind.read_at`), and `states` each file's git state.
+
+    A FINDING, as Brett Heap ruled on 2026-10-12 ("#439 (registered kind at
+    a path no check reads): FINDING"), for #327's reason: a file that
+    declares `kind:` asserts what it is, and a kind whose check runs here is
+    no better answered at a path that check never opens than in a root
+    where it never runs. The sentence names the path, the kind and where a
+    gate here does read that kind.
+
+    The row's NEXT takes the file out as git has it (`removal_next`). The
+    other way out is the human declaring it, and only a pin in an assembly
+    root can be declared: a product this root descends from is named under
+    `neutral_product_pins:`, and AGENTS.md says no pin is declared that the
+    human has not asked for, so the sentence says that too and never
+    declares one itself. Nothing here suggests renaming the file onto a path
+    a gate reads -- that would put its bytes where another file's are read
+    -- and the last sentence says so.
+    """
+    clauses, detail = [], []
+    for rel, kind, paths in found:
+        clauses.append(f"{rel} ({kind}, which a gate here reads only at "
+                       f"{listed(paths)})")
+        detail.append({"manifest": rel, "kind": kind, "read_at": paths,
+                       "git": states.get(rel)})
+    sentence = "no gate here reads " + ", ".join(clauses)
+    pins = [rel for rel, kind, _ in found
+            if ctx.kind == PROJECT and kind == "pinned_contract_manifest"]
+    ways = []
+    if pins:
+        ways.append(
+            f"Or, if {listed(pins)} pin{'s' if len(pins) == 1 else ''} a "
+            "product this root descends from, the human names that product "
+            f"under `neutral_product_pins:` in {PROJECT_MANIFEST} -- and "
+            "nobody declares a pin the human has not asked for")
+    ways.append(f"Never rename {'it' if len(found) == 1 else 'one'} onto a "
+                "path a gate here reads")
+    return sentence, ways, detail
+
+
+def read_here(ctx: Context, path: Path, rel: str, paths) -> str | None:
+    """Which of `paths` -- the root paths a gate here reads -- is the file at
+    `path` (`rel` from the root), or None where it is none of them (#439).
+
+    BY THE FILE, NOT ONLY BY ITS SPELLING. A filesystem that folds case
+    hands `validate-pins.py` the file `contracts/Spec-pin.yaml` when it
+    opens `contracts/spec-pin.yaml`, and a hard link is the file its other
+    name is. Called read by nothing, such a file would get a NEXT that takes
+    out a pin a gate does read. So a name that is not one of `paths` is
+    still read where it is the same file as one of them, and the path it
+    is read at is the one returned.
+    """
+    if rel in paths:
+        return rel
+    for other in paths:
+        try:
+            if path.samefile(ctx.root / other):
+                return other
+        except OSError:
+            continue
+    return None
 
 
 def git_states(root: Path, names: list) -> dict:
@@ -2496,44 +2710,166 @@ def git_states(root: Path, names: list) -> dict:
     return states
 
 
-def removal_ways(ctx: Context, names: list, states: dict) -> str:
-    """How each of `names` comes out of the root, as git has it: the
-    parenthesis the `manifest kinds` row's NEXT carries (#327), or nothing
-    where git could not say. A file is named again only where the files
-    do not all come out the same way."""
-    root = quote_arg(ctx.root)
+#: What git reads as a pattern in a pathspec. A name holding one is passed
+#: after `--literal-pathspecs`, or `git rm -- 'contracts/shape-pin[.]yaml'`
+#: would take `contracts/shape-pin.yaml` out with it.
+PATHSPEC_MAGIC = re.compile(r"[*?\[\\]")
+
+
+def removal_next(ctx: Context, names: list,
+                 states: dict) -> tuple[str | None, str]:
+    """`(command, said)`: the ONE command for taking `names` out of the
+    root as git has them, and the sentence that says what it does -- the
+    `manifest kinds` row's NEXT and the start of its `why` (#327, #548).
+
+    THE NEXT IS ONE COMMAND AND NOTHING ELSE (#548). It used to be prose:
+    "take ... out of this root" with each way in a parenthesis, joined by
+    `; ` to the next fault's sentence and holding commands in backticks,
+    which an interactive zsh runs where the line is pasted (#277). Now the
+    command is the first of these that applies and the sentence goes in the
+    row's `why`; a file that comes out another way is named there, and the
+    next run names its command.
+
+    FOR THE FILE AS GIT HAS IT. The doctor reads the disk, so the file may
+    be one nobody has committed yet, and `git rm` takes out only a file
+    whose every byte a commit holds: it says "did not match any files"
+    (exit 128) for one git does not track, ignored or not, and refuses one
+    with changes no commit holds. So `git_states` asks first, and:
+      committed   `git rm`, committed on a branch and landed as a pull
+                  request, the way every change here lands, which the
+                  history can undo;
+      untracked,  `git status --ignored`, which shows them. NEVER the
+      ignored     deletion as the NEXT (review of PR #555): no commit
+                  holds such a file, so deleting it cannot be undone, and
+                  AGENTS.md tells an agent to run the NEXT -- a person's
+                  draft would be gone. The `why` names it, `git clean -f`
+                  (`-x` too where one is ignored, which `clean` otherwise
+                  leaves), for a person to run, as `pin_restore` shows a
+                  file a person may have edited rather than putting it back
+                  (#291, #358);
+      changed     `git status`, which shows the changes, since `git rm`
+                  will not discard them: commit or drop them first.
+    Each path is quoted for the reader's shell like every path this report
+    prints, and passed after `--literal-pathspecs` where git would read it
+    as a pattern. Where git cannot say, there is no command, and the
+    sentence is #211's, which holds in any state: take it out of this root.
+    """
     groups = {state: [name for name in names if states.get(name) in kinds]
               for state, kinds in (("committed", ("committed",)),
                                    ("loose", ("untracked", "ignored")),
                                    ("changed", ("changed",)))}
     groups = {state: group for state, group in groups.items() if group}
-    alone = len(groups) == 1
+    if not groups:
+        return None, f"take {listed(names)} out of this root"
+    state, group = next(iter(groups.items()))
+    git_c = git_on(ctx, group)
+    spelled = " ".join(quote_arg(name) for name in group)
+    if state == "committed":
+        command = f"{git_c} rm -- {spelled}"
+        said = (f"takes {listed(group)} out of this root: commit that on a "
+                "branch and land it as a pull request")
+    elif state == "loose":
+        ignored = any(states[name] == "ignored" for name in group)
+        command = f"{git_c} status --ignored -- {spelled}"
+        them = "it" if len(group) == 1 else "them"
+        # The deletion is spelled after a colon and never in backticks,
+        # which an interactive zsh or bash would run where this sentence was
+        # pasted whole (review of PR #555, round 2).
+        said = (f"shows {listed(group)}, which git does not track: no "
+                f"commit holds {them}, so deleting {them} cannot be undone "
+                f"and is a person's act, never this row's, with nothing to "
+                f"commit after. A person deletes {them} with: {git_c} clean "
+                f"-f{' -x' if ignored else ''} -- {spelled}")
+    else:
+        command = f"{git_c} status -- {spelled}"
+        said = (f"shows the changes no commit holds in {listed(group)}, "
+                "which git rm will not discard: commit or drop them, and "
+                "the next run names the way out")
+    rest = [name for other, more in groups.items() if other != state
+            for name in more]
+    if rest:
+        said += f". The next run names the way out for {listed(rest)}"
+    return command, said
 
-    def subject(group: list, pronoun: str) -> str:
-        return pronoun if alone else ", ".join(group)
 
-    ways = []
-    if "committed" in groups:
-        ways.append(f"`git -C {root} rm -- "
-                    + " ".join(quote_arg(n) for n in groups["committed"])
-                    + "`, committed on a branch and landed as a pull "
-                    "request")
-    if "loose" in groups:
-        group = groups["loose"]
-        single = len(group) == 1
-        ways.append(f"delete {subject(group, 'it' if single else 'them')}, "
-                    "which git does not track, so there is nothing to "
-                    "commit")
-    if "changed" in groups:
-        group = groups["changed"]
-        single = len(group) == 1
-        ways.append(
-            f"{subject(group, 'it' if single else 'they')} "
-            f"{'has' if single else 'have'} changes no commit holds, which "
-            "`git rm` will not discard: commit or drop them (`git -C "
-            f"{root} status -- {' '.join(quote_arg(n) for n in group)}` "
-            "shows them), and the next run names the `git rm`")
-    return f" ({'; '.join(ways)})" if ways else ""
+def git_on(ctx: Context, names: list) -> str:
+    """`git -C <root>`, quoted for the reader's shell, and
+    `--literal-pathspecs` where git would read one of `names` as a
+    pattern."""
+    literal = (" --literal-pathspecs"
+               if any(PATHSPEC_MAGIC.search(name) for name in names) else "")
+    return f"git -C {quote_arg(ctx.root)}{literal}"
+
+
+def showing_the_kind(ctx: Context, rel: str,
+                     states: dict) -> tuple[str | None, str | None]:
+    """`(command, said)`: the read-only command that shows how `rel`, a file
+    a gate here reads, came to declare the kind it does, and what it shows
+    (review of PR #555, round 2): its uncommitted change where it has one,
+    else the last commit that changed it, else the file itself where git
+    does not track it. None where git cannot say."""
+    git_c, spelled = git_on(ctx, [rel]), quote_arg(rel)
+    state = states.get(rel)
+    if state == "changed":
+        return (f"{git_c} diff HEAD -- {spelled}",
+                f"shows the change to {rel} that no commit holds")
+    if state == "committed":
+        return (f"{git_c} log -p -1 -- {spelled}",
+                f"shows the last commit that changed {rel}")
+    if state in ("untracked", "ignored"):
+        return (f"{git_c} status --ignored -- {spelled}",
+                f"shows {rel}, which git does not track")
+    return None, None
+
+
+def misdeclared_said(rel: str, kind: str, read_as: str,
+                     row: str | None) -> str:
+    """The sentence of the `manifest kinds` row's `why` for a file a gate
+    here reads as `read_as` that declares `kind` instead (review of PR
+    #555, round 2): which row judges it -- that gate's own, only where the
+    gate checks the kind (`kind_checked_by`), else this one -- and to put
+    its kind line back."""
+    judge = (f"the {row} row's gate finds that too" if row else
+             "no gate here checks the kind it declares, so this row is the "
+             "one that says so")
+    return (f"{rel} declares kind {kind} where a gate here reads it as "
+            f"{read_as}, and {judge}: put its kind line back to {read_as}")
+
+
+def taking_out(ctx: Context, names: list, states: dict, judged: list,
+               ways: list) -> tuple[str | None, str]:
+    """`(command, why)` for the `manifest kinds` row's files, `names` being
+    those to take out, `judged` those a gate here reads, as `(path, kind,
+    read_as, row)`, and `ways` each other fault's other way out, a sentence
+    each (#548).
+
+    A FILE A GATE HERE READS IS NEVER TAKEN OUT (review of PR #555). It is
+    the shape pin, a leg pin, a neutral product pin or the naming policy,
+    and what is wrong with it is the kind it declares. So the NEXT is the
+    read-only `showing_the_kind` for the first of them, and the `why` names,
+    for each, the kind a gate here reads its path as, the kind it declares
+    instead, and which row judges it, and says to put its kind line back.
+    No other way out is offered for such a file: registering its kind, or
+    moving what it describes to a holder, is no answer for a pin (round 2).
+    The files to take out are named for the next run. With none judged, the
+    NEXT is `removal_next`'s, as before.
+    """
+    said = []
+    if judged:
+        command, shown = showing_the_kind(ctx, judged[0][0], states)
+        said += [shown] if shown else []
+        said += [misdeclared_said(*entry) for entry in judged]
+        if len(judged) > 1:
+            said.append("The next run shows "
+                        + listed([entry[0] for entry in judged[1:]]))
+        if names:
+            said.append(f"The next run names the way out for {listed(names)}")
+    elif names:
+        command, taken = removal_next(ctx, names, states)
+        said.append(taken)
+    else:
+        command = None
+    return command, ". ".join([*said, *ways])
 
 
 def check_manifest_kinds(ctx: Context) -> Row:
@@ -2555,13 +2891,46 @@ def check_manifest_kinds(ctx: Context) -> Row:
     assembly root is the same fact with more to say: `family_beside_project`
     also checks the members it pins against the gitlinks.
 
+    AND SO IS ONE AT A PATH ITS GATE NEVER READS, in a root that runs that
+    gate (#439, ruled a FINDING by Brett Heap on 2026-10-12). Each gate
+    opens fixed paths, and `ManifestKind.read_at` says which, so a
+    `contracts/project.yaml` in an assembly root, a `contracts/family.yaml`
+    or `contracts/spec-pin.yaml` in a holder, or a `contracts/<x>-pin.yaml`
+    no leg and no product names, is listed under `unread` and is the FINDING
+    `read_nowhere()` explains. Every file a root's own gates read is
+    `validated` as before, so an untouched root's row is byte for byte the
+    row it was.
+
+    THE NEXT IS ONE COMMAND, OR NOTHING (#548). Each fault but a file that
+    does not load is a file to take out of the root, so the NEXT is the one
+    command `removal_next` names for them, as git has them -- a `git rm` of
+    what a commit holds, and for the rest a `git status` that shows them,
+    never a deletion no history can undo -- and the `why` says what it does
+    and then, a sentence each, the other way out of each fault, which is
+    the human's to choose: register the kind, move what the file describes
+    to its `home`, declare the pin, move a membership to a holder. Those
+    sentences were the NEXT, joined by `; `, and held `family.py init` and
+    `family.py add` in backticks, which an interactive zsh runs where the
+    line is pasted (#277).
+
+    A FILE AT A PATH A GATE HERE READS IS NEVER `unread` AND NEVER TAKEN OUT
+    (review of PR #555). `kinds_read_here` says which kind each such path is
+    read as. Declaring another, the file is a fault in the kind line, and
+    the NEXT shows how it came to say that (`showing_the_kind`). The `why`
+    names both kinds and the row that judges it: the gate's own, where that
+    gate checks the kind (`kind_checked_by`), else this one. A kind whose
+    check runs here is this row's finding only there, as `misdeclared`: the
+    shape pin declaring `repository-naming-policy` read COMPLIANT, though
+    no gate checks the shape pin's kind (round 2).
+
     THE ROOT'S OWN MANIFEST, WHEN IT DOES NOT LOAD, IS NOT THIS ROW'S (#205).
     The `manifest` (or `family`) row quotes its refusal and names its gate,
     and the kind of the root was read off its filename for exactly that
     reason. Listed here as well, it would be the same fault twice, under a
-    next command -- register a kind, or remove the file from the root --
-    that is the wrong remedy for a merge conflict in a project's own
-    manifest. So it is skipped, and the row says where it went.
+    second NEXT beside the gate that row names, and on main before #291
+    that NEXT was "register a kind, or remove the file from the root", the
+    wrong remedy for a merge conflict in a project's own manifest. So it is
+    skipped, and the row says where it went.
 
     A FILE THAT DOES NOT LOAD IS NOT AN UNREGISTERED KIND (#291). It used to
     share that case's next command -- register the kind, or remove the file
@@ -2571,24 +2940,39 @@ def check_manifest_kinds(ctx: Context) -> Row:
     and `unreadable_next` picks the command. That sentence stays the
     unregistered kind's alone, and where a row has more than one fault -- an
     unregistered kind, a kind registered to a gate this root never runs, a
-    `family.yaml` beside `project.yaml` -- it names the restore alone, first,
-    because the row cannot say what kind a file declares until it loads, and
-    because a command and a sentence joined by `;` would be a second command
-    in a pasted line (#277). The reason still names every fault, and the
-    next run names the rest. `restore` and `refusals` join `detail` only
-    when a file does not load, so every other root reports the row it
-    always did.
+    `family.yaml` beside `project.yaml`, a kind at a path no gate reads --
+    it names the restore alone, first, because the row cannot say what kind
+    a file declares until it loads, and because a command and a sentence
+    joined by `;` would be a second command in a pasted line (#277). The
+    reason still names every fault, and the next run names the rest.
+    `restore` and `refusals` join `detail` only when a file does not load,
+    so every other root reports the row it always did.
     """
     known: list[str] = []
-    unknown: list[str] = []
+    #: `(path, kind)` for each manifest of a kind the registry does not know.
+    unknown: list[tuple] = []
     unreadable: list[str] = []
     refusals: dict[str, dict] = {}
     #: `(path, kind, entry)` for each manifest whose registered gate never
     #: runs on this kind of root (#327).
     ungated: list[tuple] = []
+    #: `(path, kind, paths)` for each manifest whose gate runs here and
+    #: never reads its path, with the paths it does read that kind at (#439).
+    unread: list[tuple] = []
+    #: `(path, kind, read_as)` for each file of a kind whose check runs here,
+    #: at a path a gate reads as another kind and checks no kind at (review
+    #: of PR #555, round 2): this row is the only one that can say so.
+    misdeclared: list[tuple] = []
+    #: `(path, kind, read_as, row)` for each file this row finds a fault in
+    #: at a path a gate here reads: never taken out (`taking_out`).
+    judged: list[tuple] = []
     elsewhere = (ctx.manifest_path if ctx.manifest_refusal is not None
                  else None)
     beside: tuple[str, dict] | None = None
+    #: Every path a gate here reads, and the kind it reads it as, and the
+    #: paths whose gate refuses another kind (review of PR #555).
+    read_as = kinds_read_here(ctx)
+    checked = kind_checked_by(ctx)
     for path in manifest_candidates(ctx.root):
         if path == elsewhere:
             continue
@@ -2617,20 +3001,59 @@ def check_manifest_kinds(ctx: Context) -> Row:
             beside = family_beside_project(ctx, data)
             continue
         entry = MANIFEST_VALIDATORS.get(kind)
-        if entry is None:
-            unknown.append(f"{rel} ({kind})")
-        elif ctx.kind not in entry.runs_in():
-            ungated.append((rel, kind, entry))
+        # The path a gate here reads this file at, as any kind, if any.
+        at = read_here(ctx, path, rel, read_as)
+        wrong = (rel, kind, read_as[at], checked.get(at)) \
+            if at is not None and read_as[at] != kind else None
+        if entry is None or ctx.kind not in entry.runs_in():
+            if entry is None:
+                unknown.append((rel, kind))
+            else:
+                ungated.append((rel, kind, entry))
+            judged += [wrong] if wrong else []
+            continue
+        paths = entry.reads(ctx)
+        if at is None and paths is not None:
+            unread.append((rel, kind, sorted(paths)))
+        elif wrong is not None and wrong[3] is None:
+            # A kind whose check runs here, at a path a gate reads as
+            # another kind and never checks the kind of: no row but this
+            # one says so (review of PR #555, round 2).
+            misdeclared.append(wrong[:3])
+            judged.append(wrong)
         else:
+            # Its own path, or one whose gate refuses the kind it declares
+            # in its own row, which is that gate's finding (round 1).
             known.append(f"{rel} ({kind})")
-    detail = {"validated": known, "unregistered": unknown,
+    detail = {"validated": known,
+              "unregistered": [f"{rel} ({kind})" for rel, kind in unknown],
               "unreadable": unreadable,
               "registered_kinds": sorted(MANIFEST_VALIDATORS)}
-    ungated_said = registered_elsewhere(ctx, ungated) if ungated else None
+    #: Every file the row's NEXT takes out of the root, in the row's order,
+    #: and how git has each and every file it judges, asked once (#548).
+    held = {entry[0] for entry in judged}
+    names = [rel for rel in
+             ([rel for rel, _ in unknown] + [rel for rel, _, _ in ungated]
+              + [rel for rel, _, _ in unread]
+              + ([FAMILY_MANIFEST] if beside is not None else []))
+             if rel not in held]
+    states = (git_states(ctx.root, names + [entry[0] for entry in judged])
+              if names or judged else {})
+    ungated_said = (registered_elsewhere(ctx, ungated, states, held)
+                    if ungated else None)
     if ungated_said is not None:
         # ONLY WHEN THERE IS ONE, like `family_beside` below, so every root
         # without such a file reports the row it reported before #327.
         detail["registered_elsewhere"] = ungated_said[2]
+    unread_said = read_nowhere(ctx, unread, states) if unread else None
+    if unread_said is not None:
+        # Likewise, so every root without one reports the row of #327.
+        detail["unread"] = unread_said[2]
+    if misdeclared:
+        # Likewise.
+        detail["misdeclared"] = [
+            {"manifest": rel, "kind": kind, "read_as": read,
+             "git": states.get(rel)} for rel, kind, read in misdeclared]
     # Only when there is one, so every other root's row is the row it was.
     aside = ""
     if elsewhere is not None:
@@ -2642,31 +3065,39 @@ def check_manifest_kinds(ctx: Context) -> Row:
         # ONLY WHEN THERE IS ONE, so every root without it reports the same
         # row, byte for byte, as it did before #211.
         detail["family_beside"] = beside[1]
-    if (unknown or unreadable or ungated_said is not None
-            or beside is not None):
+    if names or judged or unreadable:
         parts = []
-        fixes = []
+        #: The sentences of the `why` that name the other way out of each
+        #: fault, in the row's order: never the NEXT's (#548), and never for
+        #: a file a gate here reads (`taking_out`).
+        ways = []
         if unknown:
-            parts.append("no validator registered for kind "
-                         + ", ".join(unknown))
-            fixes.append("register the kind in shape-doctor.py's "
-                         "MANIFEST_VALIDATORS, beside the check that "
-                         "validates it, or remove the file from the root")
+            parts.append("no validator registered for kind " + ", ".join(
+                detail["unregistered"]))
+            free = [rel for rel, _ in unknown if rel not in held]
+            ways += [register_way(free)] if free else []
         if unreadable:
             said = {rel: ": ".join(filter(None, (why["code"], why["detail"])))
                     for rel, why in refusals.items()}
             parts.append("unreadable as YAML: " + ", ".join(
                 f"{rel} ({said[rel]})" for rel in unreadable))
-        if ungated_said is not None:
-            parts.append(ungated_said[0])
-            fixes.append(ungated_said[1])
+        for found in (ungated_said, unread_said):
+            if found is not None:
+                parts.append(found[0])
+                ways += found[1]
+        if misdeclared:
+            parts.append(", ".join(
+                f"{rel} declares kind {kind} where a gate here reads it as "
+                f"{read}, and no gate here checks the kind it declares"
+                for rel, kind, read in misdeclared))
         if beside is not None:
             parts.append(beside[0])
-            fixes.append(FAMILY_BESIDE_FIX)
-        command, why = "; ".join(fixes), None
+            ways.append(FAMILY_BESIDE_WAY)
         if unreadable:
             restore, command, why = unreadable_next(ctx, unreadable, detail)
             detail.update({"restore": restore, "refusals": refusals})
+        else:
+            command, why = taking_out(ctx, names, states, judged, ways)
         return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
                    "; ".join(parts) + aside, command, detail, why=why)
     return Row("manifest-kinds", LABEL_MANIFEST_KINDS, OK,
@@ -2785,10 +3216,14 @@ def pin_reads_at(ctx: Context, rev: str, pin: str = SHAPE_PIN) -> bool:
     return pin_at(ctx, rev, pin) is not None
 
 
-def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN):
+def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN,
+           whole: bool = False):
     """What the pin `rev` holds reads as, by `read_pin`'s own checks (#237),
     or None where it does not read: for the shape pin the paths its
     `files:` rows name, never empty, and for any other file the mapping.
+    `whole` asks for the shape pin as `check_pin` hands it back, `(the pin,
+    its rows)`, which is how `taken_with_the_pin` reads the commit each
+    side of a merge names through the same checks (#547).
 
     READ BEFORE IT IS NAMED: a NEXT that puts back a pin out of history
     must name one that reads. Rolling back to a pin that is broken too
@@ -2829,10 +3264,10 @@ def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN):
         data = us.parse_yaml(text)
         if pin != SHAPE_PIN:
             return data if isinstance(data, dict) else None
-        _pin, rows = us.check_pin(data, f"{rev}:{SHAPE_PIN}", ctx.root)
+        read, rows = us.check_pin(data, f"{rev}:{SHAPE_PIN}", ctx.root)
     except (Refusal, us.YamlError, ValueError):
         return None
-    return [row.path for row in rows]
+    return (read, rows) if whole else [row.path for row in rows]
 
 
 def pin_restore(ctx: Context, detail: dict | None = None,
@@ -2848,27 +3283,44 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     these that applies decides, as `detail["restore"]`:
 
       unmerged     a merge left the pin conflicted. `checkout --ours`, or
-                   `--theirs` where only that side holds a pin, of THE PIN
-                   ALONE, which only a tool writes, so one side taken whole
-                   is one tool's output.
-                   A copy is never named with it (#485), though a merge of
-                   two `update-shape.py apply` runs conflicts in the two
-                   together: a copy can hold an edit of the project, kept by
-                   `apply --accept-local` on one side, and taken whole the
-                   other side's copy dropped it, the hunks git merged
-                   cleanly with it, and the doctor then said COMPLIANT. The
-                   copies are the files the taken side's pin has `files:`
-                   rows for, their collision copies included -- those rows
-                   and not this standard's copy lists, since a file the pin
-                   has no row for is not a shape copy, though the lists
-                   name its path (review of PR #358). Where one of them is
-                   conflicted the `why` says a person merges it by hand,
-                   keeping the hunks git merged, as a copy conflicted on its
-                   own is merged, and that `update-shape.py apply
-                   --accept-local` on a copy merged unlike the pin re-pins
-                   it from the merge. The `shape currency` row never names
-                   it (#501), and the `apply` it names is refused and asks
-                   for it: `update-local-drift` where `check` calls the
+                   `--theirs` where only that side holds a pin, of THE PIN,
+                   which only a tool writes, so one side taken whole is one
+                   tool's output, and of no copy but one PROVED to be tool
+                   output on both sides (#547).
+                   A copy either side may have edited is never named with it
+                   (#485), though a merge of two `update-shape.py apply`
+                   runs conflicts in the two together: a copy can hold an
+                   edit of the project, kept by `apply --accept-local` on one
+                   side, and taken whole the other side's copy dropped it,
+                   the hunks git merged cleanly with it, and the doctor then
+                   said COMPLIANT. The copies are the files the taken side's
+                   pin has `files:` rows for, their collision copies
+                   included -- those rows and not this standard's copy
+                   lists, since a file the pin has no row for is not a shape
+                   copy, though the lists name its path (review of PR #358).
+                   PROVE AND TAKE (Brett Heap, 2026-10-14T23:54:30Z, #547):
+                   a conflicted copy whose two stages are each, byte for
+                   byte, the standard's own file at the commit THAT side's
+                   pin names, in one mode, holds no edit of the project on
+                   either side. It is pure tool output, so the command
+                   names it beside the pin and takes it whole, and the
+                   `why` says so; `taken_with_the_pin` makes the proof, and
+                   `detail["taken_with_the_pin"]` lists what it proved.
+                   Every other conflicted copy is still a person's: one side
+                   that differs, a mode the two sides disagree on, a side's
+                   pin naming a commit the checkout this doctor runs from
+                   does not hold, a path the standard does not have at that
+                   commit, a read that fails. So is every copy where that
+                   checkout is a partial clone, where a read can fetch, and
+                   the `why` says so (`partial_clone`). Where
+                   one of them is conflicted the `why` says a person merges
+                   it by hand, keeping the hunks git merged, as a copy
+                   conflicted on its own is merged, and that
+                   `update-shape.py apply --accept-local` on a copy merged
+                   unlike the pin re-pins it from the merge. The `shape
+                   currency` row never names it (#501), and the `apply` it
+                   names is refused and asks for it: `update-local-drift`
+                   where `check` calls the
                    copy `locally-modified`, as it does with the update
                    side's pin taken, and `update-conflict` where it calls
                    it `both`, as it does with the person's side's pin
@@ -2899,7 +3351,12 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    commit>~1`, the pin as it was before it. The history is
                    walked newest first, and the commit named is the first
                    whose parent holds a pin that reads, so two commits in a
-                   row that each broke it are reached past.
+                   row that each broke it are reached past. A leg pin put
+                   back that names another commit than the root's gitlink
+                   for that leg -- the slip was in the bump's own commit,
+                   whose parent holds the OLD pin -- is still the one to put
+                   back, and the `why` says what comes after it:
+                   `gitlink_left_behind` (#547).
       none         nothing above: no history, a root commit, no git, a walk
                    that meets a parent holding no pin, or goes
                    `PIN_HISTORY_DEPTH` commits back, before a pin that reads.
@@ -2969,15 +3426,16 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     if xy in UNMERGED_STATUS:
         us = ctx.update_shape()
         kind = us.root_kind(root)
-        # `<mode> SP <object> SP <stage> TAB <path>`, one record per stage.
-        stages: dict[str, set] = {}
+        # `<mode> SP <object> SP <stage> TAB <path>`, one record per stage:
+        # `{path: {stage: mode}}`, the mode kept for `taken_with_the_pin`.
+        stages: dict[str, dict] = {}
         listing = git_answer(["ls-files", "-u", "-z"], root, binary=True)
         for record in (listing or b"").split(b"\0"):
             meta, _tab, path = record.partition(b"\t")
             if path:
-                stages.setdefault(path.decode("utf-8", "replace"),
-                                  set()).add(meta.rsplit(b" ", 1)[-1])
-        pin_stages = stages.get(pin, set())
+                stages.setdefault(path.decode("utf-8", "replace"), {})[
+                    meta.rsplit(b" ", 1)[-1]] = meta.split(b" ", 1)[0]
+        pin_stages = stages.get(pin, {})
         side, stage = (("--ours", b"2") if b"2" in pin_stages else
                        ("--theirs", b"3") if b"3" in pin_stages else
                        (None, None))
@@ -2986,18 +3444,35 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                     f"{what} whole" if b"3" in pin_stages and side == "--ours"
                     else f"only that side of the merge holds a {what}. Take "
                     "it whole")
-            lines, copies = [], []
+            lines, copies, taken, partial = [], [], [], False
             if pin == SHAPE_PIN:
                 lines = sorted(name for name in (kind.manifest, us.README)
                                if name in stages)
                 copies = sorted(name for name in set(
                     pin_at(ctx, f":{stage.decode()}") or ())
                     if name in stages)
+                # A read of a partial clone can fetch: prove nothing there.
+                partial = bool(copies) and partial_clone(ctx.shape)
+                if not partial:
+                    taken = taken_with_the_pin(ctx, kind, copies, stages)
+                copies = [name for name in copies if name not in taken]
             then, after = ", then finish", ""
+            said = []
+            if taken:
+                if detail is not None:
+                    detail["taken_with_the_pin"] = taken
+                said.append(
+                    f"{' and '.join(taken)} "
+                    + ("are" if len(taken) > 1 else "is")
+                    + " conflicted too and taken whole with the pin: each "
+                    "side holds " + ("them" if len(taken) > 1 else "it")
+                    + " byte for byte as the standard wrote "
+                    + ("them" if len(taken) > 1 else "it") + " at the "
+                    "commit that side's pin names, so neither side holds an "
+                    "edit of the project")
             if lines or copies:
                 if detail is not None:
                     detail["left_for_a_person"] = sorted(lines + copies)
-                said = []
                 if lines:
                     said.append(
                         f"{' and '.join(lines)} "
@@ -3016,6 +3491,8 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                         "taken whole: a person merges "
                         + ("each" if len(copies) > 1 else "it")
                         + " by hand, keeping the hunks git merged")
+                    if partial:
+                        said.append(PARTIAL_CLONE_WHY)
                     after = (". Where a copy as merged differs from the pin, "
                              "update-shape.py apply --accept-local on that "
                              "copy re-pins it from the merge. The shape "
@@ -3026,9 +3503,11 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                              "check calls it both, as update-conflict, and "
                              "either refusal asks for --accept-local on that "
                              "path")
+            if said:
                 then = ". " + ". ".join(said) + ". Then finish"
             return "unmerged", (
                 f"{git_c} checkout {side} -- {quote_arg(pin)}"
+                + "".join(f" {quote_arg(name)}" for name in taken)
             ), (f"{note} and never a hand-merged {what}{then} the merge as "
                 f"git says and run this doctor again{after}")
     elif pin_reads_at(ctx, "HEAD", pin):
@@ -3077,8 +3556,170 @@ def pin_restore(ctx: Context, detail: dict | None = None,
             f"{git_c} checkout {quote_arg(before)} -- {quote_arg(pin)}"
         ), (f"the {what} as it was before {breaking[:12]}, the commit that "
             f"broke it, and the newest {what} in its history that reads. "
-            f"Commit that rather than editing the {what}")
+            f"Commit that rather than editing the {what}"
+            + gitlink_left_behind(ctx, before, pin))
     return "none", None, None
+
+
+def taken_with_the_pin(ctx: Context, kind, copies: list,
+                       stages: dict) -> list:
+    """Which of `copies`, conflicted beside the shape pin, `pin_restore`
+    takes whole with it: those PROVED to be pure tool output on both sides
+    of the merge, in `copies`' order (#547). `stages` is `{path: {stage:
+    mode}}`, as `pin_restore` reads `ls-files -u`.
+
+    PROVE AND TAKE, Brett Heap's ruling on #460's L2-8 (2026-10-14T23:54:30Z).
+    Before #496 one NEXT took every conflicted copy whole with the pin,
+    right for a copy nobody edited and wrong for one kept by `apply
+    --accept-local`. Since #496 (#485) every one went to a person, the
+    copies two `apply` runs to different targets wrote included, and a hand
+    merge that kept both sides of a hunk, then `--accept-local`, pinned a
+    stale line as the project's own edit, so every later upgrade of that
+    copy was a `both`. A side is proved unedited where its stage is, byte
+    for byte, the standard's own file at the commit THAT side's pin names:
+    its own `files:` rows and `commit:`, read by `pin_at` through the
+    checks `read_pin` makes. Where both sides are, the copy is one tool's
+    output either way, and the side the restore takes is the copy that
+    matches the pin it keeps.
+
+    THE MODE IS PART OF THE COPY (review of PR #586). The bytes say nothing
+    of the executable bit, and a project that changed it on one side holds
+    an edit no byte compare sees: taken whole, `--ours` dropped the other
+    side's mode, and the `why` said neither side held an edit. So the two
+    stages must hold one regular-file mode, `one_regular_mode`, and the
+    restore then keeps the mode both sides hold.
+
+    THE STANDARD'S FILE IS `update-shape.py`'s, by its `source_for`, so a
+    pinned path maps to the file `check` compares it with, a collision copy
+    under `shape/` included. And it comes from the checkout this doctor
+    runs from, as AGENTS.md says to run it, read by `git show`: nothing is
+    fetched or cloned. `pin_restore` never asks this of a checkout that is a
+    partial clone (`partial_clone`), where a read fetches what it lacks.
+
+    ANYTHING NOT PROVED STAYS THE HAND MERGE, as before: a stage that
+    differs or is missing, a mode the two sides disagree on, a side's pin
+    that does not read or has no row for the copy, a commit that checkout
+    does not hold, a path the standard does not have at that commit, a read
+    that fails, a checkout that is a partial clone. None of those is a
+    guess this makes.
+    """
+    if not copies:
+        return []
+    us = ctx.update_shape()
+    standard = us.Upstream(ctx.shape, str(ctx.shape))
+    sides = []
+    for number in ("2", "3"):
+        read = pin_at(ctx, f":{number}", whole=True)
+        if read is None:
+            return []
+        held, rows = read
+        sides.append((number, str(held["commit"]).lower(),
+                      {row.path for row in rows}))
+    return [copy for copy in copies
+            if one_regular_mode(stages.get(copy, {}))
+            and all(as_the_standard_wrote_it(ctx, us, kind, standard, copy,
+                                            *side) for side in sides)]
+
+
+#: The modes `ls-files -u` gives a regular file's stage, executable or not.
+REGULAR_FILE_MODES = (b"100644", b"100755")
+
+
+def one_regular_mode(held: dict) -> bool:
+    """Whether the stages the two sides of a merge hold for a copy agree on
+    ONE regular-file mode (#547, review of PR #586). `held` is that copy's
+    `{stage: mode}`. A side with no stage is not a mode it disagrees on:
+    `as_the_standard_wrote_it` finds no stage to read and proves nothing."""
+    modes = {held[number] for number in (b"2", b"3") if number in held}
+    return len(modes) == 1 and modes <= set(REGULAR_FILE_MODES)
+
+
+#: What the `why` adds where `pin_restore` proved no copy, because the
+#: checkout of the standard is a partial clone (#547).
+PARTIAL_CLONE_WHY = (
+    "The checkout of the standard this doctor runs from is a partial clone, "
+    "which fetches what it lacks on a read, so nothing was read from it to "
+    "prove a copy unedited")
+
+
+def partial_clone(shape: Path) -> bool:
+    """Whether the checkout of the standard at `shape` is a partial clone:
+    its config names a promisor remote or a partial-clone filter (#547).
+
+    A READ THERE CAN FETCH. `git show` of a blob a `--filter` clone left
+    out asks its promisor remote for it, and Brett Heap's ruling for
+    `taken_with_the_pin` is never to fetch, clone or touch the network. So
+    `pin_restore` proves no copy there and every one stays the hand merge.
+    The config is only read, which fetches nothing and writes nothing.
+    """
+    return bool(git_answer(["config", "--get-regexp", r"^(extensions\."
+                            r"partialclone|remote\..*\.promisor)$"], shape))
+
+
+def as_the_standard_wrote_it(ctx: Context, us, kind, standard, copy: str,
+                             number: str, commit: str, rows: set) -> bool:
+    """Whether index stage `number` holds `copy` byte for byte as the
+    standard wrote it at `commit`, the commit that side's pin names, whose
+    `files:` rows are `rows` (#547). False wherever any of it cannot be
+    read: `taken_with_the_pin` takes nothing it has not proved."""
+    if copy not in rows:
+        return False
+    held = git_answer(["cat-file", "blob", f":{number}:./{copy}"], ctx.root,
+                      binary=True)
+    if held is None:
+        return False
+    try:
+        source = us.source_for(copy, standard, commit, kind)
+        wrote = standard.blob(commit, source) if source else None
+    except (OSError, ValueError):
+        return False
+    return wrote is not None and wrote == held
+
+
+def gitlink_left_behind(ctx: Context, rev: str, pin: str) -> str:
+    """What the `why` adds where `pin_restore` puts back a LEG pin out of
+    history, from `rev`, that names another commit than the root's gitlink
+    for that leg; otherwise nothing (#547, #460's L2-9).
+
+    THE BUMP'S OWN COMMIT. `bump-leg.py --to X` moves the gitlink, the pin
+    and every workflow reference in one commit; amend a slip into that
+    commit's pin and the commit before it holds the pin for the OLD leg
+    commit. Putting that pin back is still right, since it is the newest
+    one that reads, but once it is committed the doctor says DRIFTED, the
+    gitlink at X and the pin at the old commit. `with_gitlink_repairs`
+    then names the closing step, a `bump-leg.py` line, in the `pins` row's
+    reason, and a `bump-leg.py` run before the pin is committed is refused
+    `bump-leg-root-dirty`. So the sentence says commit it, then run that
+    line, and the NEXT stays the one command it was (#548's rule: every
+    addition goes in `why`).
+
+    THE GITLINK THE `pins` ROW READS, `recorded_gitlink` -- the index
+    first, then HEAD -- since that row is the one the sentence sends the
+    reader to: in a tree whose index holds what HEAD does, HEAD's gitlink.
+    Nothing is said where either commit cannot be read, or for the shape
+    pin, which has no gitlink.
+    """
+    if pin == SHAPE_PIN:
+        return ""
+    for leg in ctx.legs():
+        role = str(leg.get("role") or "")
+        path = str(leg.get("path") or "")
+        if not role or not path or pin != f"contracts/{role}-pin.yaml":
+            continue
+        commit = str((pin_at(ctx, rev, pin) or {}).get("commit")
+                     or "").lower()
+        try:
+            gitlink = recorded_gitlink(ctx.root, path)
+        except (OSError, ValueError):
+            return ""
+        if not COMMIT_RE.match(commit) or not gitlink or gitlink == commit:
+            return ""
+        return (f". That pin names {commit[:12]} and the root's gitlink for "
+                f"{path} is {gitlink[:12]}, so commit it, then run the "
+                f"bump-leg.py line the pins row names for {path}: --to the "
+                f"gitlink's {gitlink[:12]} keeps the move, and --to the "
+                f"pin's {commit[:12]} undoes it")
+    return ""
 
 
 def declared_pins(ctx: Context) -> set:
@@ -3240,7 +3881,10 @@ def unreadable_next(ctx: Context, unreadable: list,
     person. That copy's case is `unmerged`, the one it has once the pin
     reads, and not `project`, and `detail` gets the `left_for_a_person`
     the `shape currency` row's has, so both rows say the same of the same
-    command.
+    command. A copy that command takes whole with the pin, proved tool
+    output on both sides (#547), is `unmerged` too, and `detail` gets the
+    `taken_with_the_pin` that row's has: the command overwrites it, and
+    `project` would say git was not asked about a file the NEXT puts back.
     """
     restore: dict[str, str] = {}
     #: `(command, why)` for each file with a command, in the row's order.
@@ -3255,11 +3899,14 @@ def unreadable_next(ctx: Context, unreadable: list,
         else:
             restore[rel] = "project"
     left = held.get("left_for_a_person", [])
-    for rel in left:
+    taken = held.get("taken_with_the_pin", [])
+    for rel in left + taken:
         if restore.get(rel) == "project":
             restore[rel] = "unmerged"
     if left and detail is not None:
         detail["left_for_a_person"] = left
+    if taken and detail is not None:
+        detail["taken_with_the_pin"] = taken
     command, why = (commands.get(SHAPE_PIN)
                     or next(iter(commands.values()), (None, None)))
     if command is None:
@@ -3507,10 +4154,11 @@ def linked_record_row(ctx: Context, us) -> Row | None:
     linked pin is answered as a link, whatever else reads it next.
 
     THE REFUSAL, QUOTED AS `update-shape.py` PRINTS IT, and its remedy for
-    the NEXT: replace the link with what it points at, commit that, run the
-    doctor again. Said, not spelled as a command: what the link points at
-    may be shared with other trees, and removing a link -- a junction above
-    all -- is a person's call.
+    the `why`: replace the link with what it points at, commit that, run
+    the doctor again. Said, not spelled as a command: what the link points
+    at may be shared with other trees, and removing a link -- a junction
+    above all -- is a person's call. So the row has no NEXT, which is one
+    pasteable command or nothing (#548); the sentence was the NEXT once.
     """
     linked = us.linked_record(ctx.root, us.root_kind(ctx.root))
     if linked is None:
@@ -3519,13 +4167,13 @@ def linked_record_row(ctx: Context, us) -> Row | None:
     refusal = us.rewrite_link_refusal([linked])
     return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                "update-shape.py cannot re-pin this root: "
-               f"REFUSED {refusal.code}: {refusal.detail}",
-               f"replace {name} with the file or directory it points at, "
-               "or with what it replaced where it points at nothing, commit "
-               "that, and run this doctor again -- update-shape.py never "
-               f"rewrites {record} through a link",
+               f"REFUSED {refusal.code}: {refusal.detail}", None,
                {"error": refusal.code, "path": record, "link": name,
-                "points": points})
+                "points": points},
+               why=f"replace {name} with the file or directory it points "
+                   "at, or with what it replaced where it points at "
+                   "nothing, commit that, and run this doctor again -- "
+                   f"update-shape.py never rewrites {record} through a link")
 
 
 def head_of(path: Path) -> str | None:
@@ -5261,10 +5909,12 @@ def placement_policy(ctx: Context, policy_path: Path) -> tuple:
     try:
         policy = adopt.PathPolicy.load(policy_path)
     except Refusal as exc:
+        # No NEXT: a remedy is prose, and goes in the `why` (#408, #548).
         return None, None, placement_row(
             NA,
             f"the standard's own path policy could not be read: {exc.detail}",
-            exc.remediation or None, {"policy": policy_path.as_posix()})
+            None, {"policy": policy_path.as_posix()},
+            why=remedy_as_why(exc))
     return adopt, policy, None
 
 
@@ -7552,9 +8202,11 @@ def run_checks(ctx: Context) -> list[Row]:
             if row is not None:
                 rows.append(row)
         except Refusal as exc:
+            # No NEXT: a refusal's remedy is prose, never a command to paste,
+            # so it is the row's `why` (#408, #548).
             rows.append(Row(check.id, check.label, FINDING,
-                            f"refused: {exc.detail}", exc.remediation or None,
-                            {"error": exc.code}))
+                            f"refused: {exc.detail}", None,
+                            {"error": exc.code}, why=remedy_as_why(exc)))
         except OSError as exc:
             rows.append(Row(check.id, check.label, FINDING,
                             f"could not be run: {exc}", None, {}))

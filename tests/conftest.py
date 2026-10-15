@@ -155,11 +155,14 @@ def load_without_bytecode(path: Path, name: str):
     return module
 
 
-#: `load_without_bytecode`'s counterpart for a CHILD process (#544). `family.py
-#: siblings` runs the standard's `templates/family-root/scripts/siblings.py`
-#: through `runpy`, and that file imports `bootstrap` from beside it, so
-#: without this in the child's environment the import writes
-#: `__pycache__/bootstrap.*.pyc` into the template tree.
+#: `load_without_bytecode`'s counterpart for a CHILD process (#544). A child
+#: that imports a file under `templates/` writes `__pycache__` beside it
+#: unless this is in its environment. `family.py siblings` used to run the
+#: template's `scripts/siblings.py` through `runpy`, importing `bootstrap`
+#: from the template tree; since #543 it runs the holder's own
+#: `scripts/siblings.py` in a child process standing in the holder, so its
+#: imports come from the holder's copy. Kept on those calls so a return to
+#: an in-process run cannot write into the templates unseen.
 NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
 
 
@@ -441,6 +444,30 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
                                   else subprocess.PIPE),
                           text=True, check=False, env=env, input=input,
                           stdin=stdin)
+
+
+def scaffold_dry_run_on_github(monkeypatch, capsys, *args: str):
+    """`scaffold-project.py <args> --dry-run` with no `--local-remote-dir`,
+    IN PROCESS, and `(exit code, stdout, stderr, the repositories asked
+    about)`.
+
+    THE DRY RUN ASKS GITHUB NOW (#537): `remote_is_empty`, a `gh repo view`
+    of each of the three, as the real run does. A stub `gh` is a `#!` script
+    Windows does not run, so a test of the plan a real organisation is shown
+    replaces that one question with a stand-in that answers "none of the
+    three exists" and records whom it was asked about. No `gh` is started on
+    any platform, and every other step of the dry run is the tool's own.
+    """
+    spec = importlib.util.spec_from_file_location("scaffold_on_github",
+                                                  SCAFFOLD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    asked: list = []
+    monkeypatch.setattr(module, "remote_is_empty",
+                        lambda repository: asked.append(repository))
+    code = module.main([*args, "--dry-run"])
+    out, err = capsys.readouterr()
+    return code, out, err, asked
 
 
 @pytest.fixture(scope="session")
@@ -1019,6 +1046,43 @@ def assert_a_taken_clone_path_is_refused(run, tmp_path: Path,
     after = sorted(p.name for p in taken.iterdir()) if taken.is_dir() else (
         taken.read_bytes())
     assert after == before, f"{taken} was changed by a run that refused"
+
+
+def assert_the_plan_refuses_a_remote_that_exists(run, tmp_path: Path) -> None:
+    """A leg that already exists with commits is refused in step (5), the
+    plan, which is the scaffold's own `--dry-run` (#537): the scaffold's
+    `scaffold-remote-exists`, before the yes is asked, and nothing created.
+    On main the plan passed it, and a run with no terminal stopped at the
+    question instead; with one, the refusal came from step (6), after the
+    yes."""
+    remotes = tmp_path / "remotes"
+    seed = tmp_path / "somebody"
+    seed.mkdir()
+    git("init", "-q", "-b", "main", str(seed), cwd=seed)
+    (seed / "README.md").write_bytes(b"# somebody's\n")
+    git("add", "README.md", cwd=seed)
+    git("commit", "-q", "-m", "somebody's", cwd=seed)
+    leg = remotes / "Sample-spec.git"
+    remotes.mkdir()
+    git("init", "-q", "--bare", "-b", "main", str(leg), cwd=remotes)
+    git("push", "-q", str(leg), "main", cwd=seed)
+    before = git("for-each-ref", cwd=leg).stdout
+    result = run("--project", "Sample", "--org", "demoorg",
+                 "--local-remote-dir", str(remotes),
+                 "--into", str(tmp_path / "work"))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert (f"REFUSED scaffold-remote-exists: {leg.resolve()} already exists "
+            "and has commits" in result.stderr), result.stderr
+    assert "REFUSED: the plan could not be produced" in result.stderr
+    assert "(5) the plan" in result.stdout, result.stdout
+    assert "--dry-run: nothing was created." not in result.stdout
+    assert "(6) scaffold" not in result.stdout, "the run reached (6)"
+    assert "This will create THREE repositories" not in result.stdout
+    assert "no terminal to confirm on" not in result.stderr, (
+        "the run reached the question")
+    assert sorted(p.name for p in remotes.iterdir()) == ["Sample-spec.git"]
+    assert git("for-each-ref", cwd=leg).stdout == before
+    assert not (tmp_path / "work").exists()
 
 
 #: THE PERSON'S OWN TERMINAL, IN A TEST (#492). The one-liner reads its yes

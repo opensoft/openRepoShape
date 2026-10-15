@@ -30,7 +30,8 @@ from conftest import PTY_SKIP, run_in_a_terminal
 
 from conftest import (TAKEN_CLONE_PATHS,
                       assert_a_rehearsals_clone_stops_the_real_run,
-                      assert_a_taken_clone_path_is_refused)
+                      assert_a_taken_clone_path_is_refused,
+                      assert_the_plan_refuses_a_remote_that_exists)
 
 from conftest import (DECLARATIONS, DRY_RUNS, FILE_ABOVE_THE_CLONE,
                       UPSTREAM_CASINGS,
@@ -419,6 +420,12 @@ def test_a_taken_clone_path_is_refused_before_anything(tmp_path, kind):
     """#498, through the shim: `conftest.assert_a_taken_clone_path_is_
     refused`."""
     assert_a_taken_clone_path_is_refused(run_setup, tmp_path, kind)
+
+
+def test_the_plan_refuses_a_remote_that_exists_before_the_yes(tmp_path):
+    """#537, through the shim: `conftest.assert_the_plan_refuses_a_
+    remote_that_exists`."""
+    assert_the_plan_refuses_a_remote_that_exists(run_setup, tmp_path)
 
 
 def test_no_test_here_depends_on_gh_being_authenticated():
