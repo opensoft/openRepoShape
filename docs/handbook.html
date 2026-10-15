@@ -472,7 +472,7 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
@@ -609,7 +609,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -688,10 +688,10 @@ sudo dnf install gh</code></pre></div>
           <p>Then <code>brew install git-filter-repo</code> only if you are ADOPTING an existing
           repository rather than scaffolding a new one.</p>
           <p>The stock <code>/bin/bash</code> is 3.2 and is enough: <code>setup.sh</code> and the
-          <code>openRepoShape</code> command use no syntax newer than that, and CI runs the whole
-          suite on <code>macos-latest</code>, parsing both there with <code>/bin/bash</code> itself.
-          That the login shell is zsh changes nothing &mdash; both entry points are run under
-          <code>bash</code> explicitly.</p>
+          <code>openRepoShape</code> command are written to use no syntax newer than that, though
+          CI runs on Linux only and no run of it checks them against bash 3.2. That the login
+          shell is zsh changes nothing &mdash; both entry points are run under <code>bash</code>
+          explicitly.</p>
           <h4>The tool offers the rest</h4>
           <p>The preflight names what is missing and, for <code>gh</code>, its login and its
           credential helper, prints the command for THIS machine and asks once &mdash; <code>Type yes to continue:</code> &mdash;
@@ -1022,7 +1022,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1057,7 +1057,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
@@ -1115,7 +1115,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
@@ -1351,7 +1351,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1648,7 +1648,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob f0693d8ad542c7eba50d9f25babe23675ed05e9d -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 
