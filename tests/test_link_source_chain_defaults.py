@@ -75,6 +75,28 @@ def project(path: Path, pin: str, chain: str) -> Path:
         f"    role: assembly\n    naming:\n      referent_chain: [{chain}]\n"))
 
 
+def two_legs(path: Path) -> Path:
+    """A project pinning `openXdox` and `openYdox`, whose legs record
+    `openXdox → openInk` (`codexInk`) and `openYdox → openQuill`
+    (`codexQuill`): its chains begin at two links."""
+    return manifest(path, (
+        "neutral_product_pins:\n  - openXdox\n  - openYdox\nlegs:\n"
+        + "".join(
+            f"  - repository: testorg/{name}\n    path: \".\"\n"
+            f"    role: assembly\n    naming:\n"
+            f"      referent_chain: [{chain}]\n"
+            for name, chain in (("codexInk", "openXdox, openInk"),
+                                ("codexQuill", "openYdox, openQuill")))))
+
+
+def two_firsts_note(bare: Path, first: str, second: str) -> str:
+    """The NOTE for a bare value that chains beginning at two links left
+    unread."""
+    return (f"NOTE --link-source {bare}: not used — a bare PATH is one first "
+            f"link's tree, and the chains read here begin at {first}, "
+            f"{second}: name the link it is, as --link-source <link>=PATH.\n")
+
+
 def naming(cwd: Path, *args: str):
     return run_script(VALIDATOR, *args, cwd=cwd)
 
@@ -179,9 +201,44 @@ def test_chains_that_begin_at_two_links_read_a_bare_tree_for_neither(
     assert result.stderr == (
         unverified("codexInk", "openXdox", "openInk")
         + unverified("codexQuill", "openYdox", "openQuill")
-        + f"NOTE --link-source {bare}: not used — a bare PATH is one first "
-        "link's tree, and the chains read here begin at openXdox, openYdox: "
-        "name the link it is, as --link-source <link>=PATH.\n")
+        + two_firsts_note(bare, "openXdox", "openYdox"))
+
+
+def test_a_project_whose_legs_begin_at_two_links_reads_a_bare_tree_for_neither(
+        tmp_path):
+    """One `--project`, two legs: `codexInk` records `openXdox → openInk` and
+    `codexQuill` records `openYdox → openQuill`, and the bare tree is
+    `openXdox`'s. It is found before either leg is classified that the legs
+    begin at two links. Were it not, the first classification pass would read
+    the bare tree for `openXdox` and count it used, while the pass that
+    prints says `openXdox` is unverified: two WARNINGs and no NOTE."""
+    root = two_legs(tmp_path / "ws" / "codexSoft")
+    bare = tree(tmp_path / "trees" / "openXdox", "openInk")
+    result = naming(root, "--project", "project.yaml",
+                    "--link-source", str(bare))
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == (
+        unverified("codexInk", "openXdox", "openInk")
+        + unverified("codexQuill", "openYdox", "openQuill")
+        + two_firsts_note(bare, "openXdox", "openYdox"))
+
+
+def test_a_chain_of_one_link_is_no_first_link_read(tmp_path):
+    """`codexInk` records the chain `openInk`: one link, so no holder, so no
+    declaration read, so no first link. Beside `codexQuill`'s
+    `openXdox → openQuill`, the chains read begin at `openXdox` alone, and
+    the bare tree, which is `openXdox`'s, verifies it: no WARNING, no NOTE.
+    A one-link chain was counted as a second first link, the bare tree went
+    to neither, and `codexQuill` was declared-unverified."""
+    root = project(tmp_path / "ws" / "codexQuill", "openXdox",
+                   "openXdox, openQuill")
+    bare = tree(tmp_path / "trees" / "openXdox", "openQuill")
+    result = naming(root, "--role", "assembly", "--pins", "openInk",
+                    "--referent-chain", "openInk", "--project",
+                    "project.yaml", "--link-source", str(bare), "codexInk")
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert "codexQuill" in result.stdout
 
 
 # --- #441: the lookup itself, and the scaffold -------------------------------

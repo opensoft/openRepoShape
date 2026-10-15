@@ -162,7 +162,8 @@ class LinkSources:
     reads (`link_pins_from_trees` offers it to no later link), and only
     while every such chain begins at that one link, so it is never counted
     as the answer for two. `firsts` are those first links, found before any
-    chain is read (`_first_links_read`).
+    chain is read (`_first_links_read`). A chain of one link has no holder,
+    reads no declaration, and so adds none.
 
     A VALUE THAT NAMES NO PATH IS REFUSED (#442). `openXdox=` is
     `Path("")`, which is `.`: run from a project root it read the project's
@@ -238,8 +239,9 @@ class LinkSources:
         if not policy.reads_link_declarations(target.name, target.pins,
                                               target.chain):
             return {}
-        first = repo_basename(str(target.chain[0]))
-        self.firsts.setdefault(first.casefold(), first)
+        if len(target.chain) > 1:
+            first = repo_basename(str(target.chain[0]))
+            self.firsts.setdefault(first.casefold(), first)
         tried: dict = {}
         found = link_pins_from_trees(
             target.chain, target.root,
@@ -682,16 +684,19 @@ def _first_links_read(policy: NamingPolicy, targets: list,
                       data: dict | None) -> list[str]:
     """The first link of every chain a name here READS, found before any is
     read (#441): a bare `--link-source` is that link's tree, and only while
-    the chains begin at one link. The names on the command line and the legs
-    `_leg_target` makes targets of; names on stdin come only when there are
-    neither, all with `--referent-chain`, so they cannot add a second."""
+    the chains begin at one link. A chain of one link has no holder, reads
+    no declaration, and so has no first link to count. The names on the
+    command line and the legs `_leg_target` makes targets of; names on stdin
+    come only when there are neither, all with `--referent-chain`, so they
+    cannot add a second."""
     readers = [(target.name, target.pins, target.chain) for target in targets]
     if data is not None:
         pins = _pins_from_project(data)
         readers.extend((name, pins, chain)
                        for name, chain in _project_leg_chains(data))
     return [chain[0] for name, pins, chain in readers
-            if policy.reads_link_declarations(name, pins, chain)]
+            if len(chain) > 1
+            and policy.reads_link_declarations(name, pins, chain)]
 
 
 def _targets_from_project(policy: NamingPolicy, path: Path, data: dict,
@@ -856,11 +861,17 @@ def main(argv: list[str] | None = None) -> int:
                              "link (the pin the project holds), read when "
                              "that link has no more specific answer, and "
                              "never a later link's, which needs its own "
-                             "PRODUCT=PATH. A value that names no path "
-                             "(PRODUCT=, or empty) is refused. Repeatable; a "
-                             "value no link used is noted. "
-                             "SHAPE_PIN_SOURCE_<PRODUCT> and a checkout "
-                             "beside the project are tried too. A link no "
+                             "PRODUCT=PATH, its SHAPE_PIN_SOURCE_<PRODUCT> "
+                             "or a checkout beside the project. When the "
+                             "chains read here begin at two different "
+                             "links, a bare PATH is read for neither. A "
+                             "value that names no path (PRODUCT=, or "
+                             "empty) is refused. Repeatable; a value no "
+                             "link used is noted. Every link is tried "
+                             "against PRODUCT=PATH, SHAPE_PIN_SOURCE_"
+                             "<PRODUCT> and a checkout beside the project, "
+                             "in that order, and a bare PATH last, for the "
+                             "first link alone. A link no "
                              "source answers for is declared-unverified, and "
                              "a source that cannot be read is named with the "
                              "system's reason: both are warnings and not "
