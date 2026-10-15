@@ -854,6 +854,21 @@ def doctor_of(behind, root: Path) -> dict:
             "rows": {row["id"]: row for row in payload["rows"]}}
 
 
+def pins_row_says_the_collision(row: dict, names) -> None:
+    """The doctor's `pins` row over a `validate-pins.py` that passed and
+    printed the `neutral-pin-source-collides` note: a `note`, with the note
+    in `detail.notes` and quoted in the reason, and no NEXT, because which
+    declaration stays is the human's decision (#460's pins-note line). The
+    row used to say `ok`, and the note reached nobody."""
+    assert row["status"] == "note", row
+    assert row["next"] is None, row
+    (note,) = row["detail"]["notes"]
+    assert note.startswith("neutral-pin-source-collides: "), row
+    assert "SHAPE_PIN_SOURCE_OPEN_GLASS" in note, row
+    assert all(repr(name) in note for name in names), row
+    assert row["reason"].endswith(f"passes, but notes: {note}"), row
+
+
 @pytest.mark.parametrize("names", [
     pytest.param(["open-glass", "open_glass"], id="hyphen-underscore"),
     pytest.param(["open-glass", "open.glass", "open_glass"], id="three"),
@@ -868,14 +883,16 @@ def test_a_project_declaring_a_colliding_pair_takes_a_shape_update(
     rolled back, for this update and every later one, until a person dropped a
     true declaration of descent. Now it is a note: the update applies, the
     project's validator passes and says the note, each pin still verifies from
-    its own checkout, and the doctor's `pins` row stays `ok` before and after
-    and moves no verdict a project declaring no pair does not have."""
+    its own checkout, and the doctor's `pins` row carries the note before and
+    after, as a `note` row (#460's pins-note line, #448's ruling), which moves
+    no verdict a project declaring no pair does not have."""
     root = declared_project(behind, tmp_path, names)
     control = declared_project(behind, tmp_path / "control", ["openGlass"])
 
     before, before_control = doctor_of(behind, root), doctor_of(behind,
                                                                 control)
-    assert before["rows"]["pins"]["status"] == "ok", before["rows"]["pins"]
+    pins_row_says_the_collision(before["rows"]["pins"], names)
+    assert before_control["rows"]["pins"]["status"] == "ok", before_control
     assert before["rows"]["shape-currency"]["status"] == "FINDING"
     assert (before["verdict"], before["exit"]) == (
         before_control["verdict"], before_control["exit"]), (before,
@@ -912,7 +929,8 @@ def test_a_project_declaring_a_colliding_pair_takes_a_shape_update(
     controlled = update(behind, control, "apply", "--yes")
     assert controlled.returncode == 0, controlled.stdout + controlled.stderr
     after, after_control = doctor_of(behind, root), doctor_of(behind, control)
-    assert after["rows"]["pins"]["status"] == "ok", after["rows"]["pins"]
+    pins_row_says_the_collision(after["rows"]["pins"], names)
+    assert after_control["rows"]["pins"]["status"] == "ok", after_control
     assert after["rows"]["shape-currency"]["status"] == "ok"
     assert (after["verdict"], after["exit"]) == (
         after_control["verdict"], after_control["exit"]), (after,
