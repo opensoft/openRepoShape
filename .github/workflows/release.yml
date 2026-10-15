@@ -13,9 +13,16 @@ name: release
 # RELEASING TO PyPI. Brett Heap's own acts come first, once:
 #   - pypi.org: a pending trusted publisher for the project `openreposhape`,
 #     owner `opensoft`, repository `openRepoShape`, workflow `release.yml`,
-#     environment `pypi`; test.pypi.org: the same, environment `testpypi`;
+#     environment `pypi`; test.pypi.org: the same, environment `testpypi`.
+#     THE ENVIRONMENT IS REQUIRED in both, though the form calls it
+#     optional. A publisher that names none accepts a token from ANY job of
+#     a `release.yml` in this repository, so a branch's own copy of this
+#     file could drop `environment:` from an upload job and publish with no
+#     approval and no tag limit;
 #   - here: the environments `testpypi` and `pypi`, each with him as the
-#     required reviewer and a deployment limit to the tags `v*` alone.
+#     required reviewer and a deployment limit to the tags `v*` alone;
+#   - recommended: a ruleset on the tags `v*` that lets only him create,
+#     move or delete one (see ACCEPTED LIMITS below).
 # Nothing is uploaded before them: the build job refuses every dispatch
 # until both environments exist and are limited so. Then, for each release:
 #   1. The release commit passes `tests`, `tests-macos` and `tests-windows`
@@ -41,7 +48,9 @@ name: release
 # 4): `v1.1.0` gives `1.1.0`, which the build writes into the stamp,
 # `openreposhape/_release.py`, with the tag, the commit and the digest. A
 # dispatch on a tag refuses unless that tag is `v<version>`, annotated, and
-# pointing at the run's own commit.
+# pointing at the run's own commit, and unless that commit is on `main` or
+# on the version's release branch, `release/v<major>.<minor>` (v1.0.1 was
+# cut from `release/v1.0`).
 #
 # A DISPATCH ON A BRANCH IS THE REHEARSAL, AND IT CANNOT DEPLOY. It builds
 # and runs every check: all of the build job's, and the install check on
@@ -53,6 +62,18 @@ name: release
 # tags `v*` alone, so no branch can deploy to either. The build job refuses
 # the run when either environment lacks that limit or a required reviewer,
 # and each upload job reads both again at use time.
+#
+# ACCEPTED LIMITS, carried over from openDox-code's release.yml, where they
+# were accepted:
+#   - A deployment limit admits a tag by its NAME. Anyone who can push a
+#     `v*` tag can dispatch on it, and the run is that tag's own copy of
+#     this file, whatever it says. The checks here bind only where the tag
+#     carries the reviewed file.
+#   - The required reviewer's approval is therefore the last line, and lane
+#     sessions act as brettheap, the reviewer. An approval is a deliberate
+#     act of his, never a session's.
+#   - So a ruleset on the tags `v*` that lets only Brett Heap create, move
+#     or delete one is recommended, not required, and not checked here.
 #
 # FOUR JOBS, EACH GATED ON THE ONE BEFORE IT:
 #   build     the refusals below; then the wheel, built twice from two
@@ -72,9 +93,11 @@ name: release
 #
 # RE-RUN ONLY THE FAILED JOBS ("Re-run failed jobs"), never the whole run
 # and never a second dispatch of a version already uploaded. A re-run of a
-# failed job reuses the build's artifact and its recorded digest; a second
-# build is a second set of bytes to account for, and an index keeps the
-# first file under its name for good.
+# failed job reuses the build's artifact and its recorded digest. A second
+# dispatch builds again, and its wheel is the same file only while the
+# locks, the runner's Python and the commit all stay the same; the index
+# keeps the first file under its name for good, and the upload jobs refuse
+# any other.
 #
 # NO PyPI TOKEN AND NO STORED SECRET, ANYWHERE. Both uploads use trusted
 # publishing (OIDC): `id-token: write` is granted to the two upload jobs and
@@ -127,9 +150,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read  # the checkout, the tag, and the forge's tree listing
-      checks: read  # the release commit's three-OS check runs
-      actions: read  # which workflow ran them, and both environments' rules
+      contents: read  # the checkout, the tag, main and the release branch, and the forge's tree listing
+      actions: read  # the commit's tests.yml runs and their jobs, and both environments' rules
     outputs:
       wheel: ${{ steps.record.outputs.wheel }}
       wheel-sha256: ${{ steps.record.outputs.wheel-sha256 }}
@@ -206,6 +228,41 @@ jobs:
           fi
           echo "$tag: annotated, tag object $object, at $GITHUB_SHA"
 
+      # THE COMMIT IS ON main OR ON THE VERSION'S RELEASE BRANCH. A tag can be
+      # pushed at any commit; a release is cut from one that a reviewed branch
+      # holds, as `main` itself or an ancestor of it (`identical` or `ahead`).
+      # `release/v<major>.<minor>` is where a patch on an older line lands
+      # (v1.0.1 was cut from `release/v1.0`). The compare names
+      # `refs/heads/<branch>`: a bare name would resolve to a tag of that name
+      # first. A rehearsal on a branch has no release branch to be on.
+      - name: the commit is on main or on the version's release branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/*)
+              echo "a rehearsal on the branch $GITHUB_REF_NAME: no release branch to be on"
+              exit 0
+              ;;
+          esac
+          found=
+          for branch in main "release/v${VERSION%.*}"; do
+            status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...refs/heads/$branch" \
+                --jq .status 2>/dev/null)" || status=
+            case "$status" in
+              identical|ahead)
+                found="$branch"
+                echo "$GITHUB_SHA is on $branch ($status)"
+                break
+                ;;
+              *) echo "$GITHUB_SHA is not on $branch (compare: ${status:-no such branch})" ;;
+            esac
+          done
+          if [ -z "$found" ]; then
+            echo "::error::$GITHUB_SHA is on neither main nor release/v${VERSION%.*}; a release is cut from a commit one of them holds"
+            exit 1
+          fi
+
       # THE CHECKOUT IS THIS COMMIT, AND CLEAN, before anything from it runs.
       # The digest below is computed by the checkout's own
       # `scripts/repo_shape.py`, and a file changed or added in the work tree
@@ -278,12 +335,16 @@ jobs:
           sys.exit(1 if problems else 0)
           PY
 
-      # THE THREE-OS GATE THIS REPOSITORY LANDS BY, ON THIS COMMIT ITSELF.
-      # `tests`, `tests-macos` and `tests-windows` must each have passed on
-      # it, run by `.github/workflows/tests.yml` (a check run is matched to
-      # that workflow through its check suite, so a job of the same name in
-      # another workflow does not count). Skipped runs are passed over: a
-      # push to main skips the macOS and Windows jobs (#122), so a commit
+      # THE THREE-OS GATE THIS REPOSITORY LANDS BY, ON THIS COMMIT'S OWN TREE.
+      # `tests`, `tests-macos` and `tests-windows` must each have passed in a
+      # run of `.github/workflows/tests.yml` that tested THIS commit: a
+      # `push` or `workflow_dispatch` run whose head is the commit. A
+      # `pull_request` run is not counted, because it reports the PR's head
+      # but tests a merge of it with its base, another tree. The jobs are
+      # read from each run itself (`actions/runs/<id>/jobs`), never from the
+      # commit's check runs, which anything holding an Actions token can
+      # create inside that run's check suite. Skipped jobs are passed over:
+      # a push to main skips the macOS and Windows jobs (#122), so a commit
       # that only main's push run tested refuses here. Of the rest, none may
       # still be running, and the newest to finish must have succeeded.
       - name: the commit carries passing tests, tests-macos and tests-windows checks
@@ -306,14 +367,11 @@ jobs:
               return [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
 
 
-          suites = {run["check_suite_id"]
-                    for run in rows(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
-                                    "workflow_runs")
-                    if run.get("path") == workflow}
-          checks = [check for check in rows(f"repos/{repo}/commits/{sha}/check-runs"
-                                            "?filter=all&per_page=100", "check_runs")
-                    if (check.get("app") or {}).get("slug") == "github-actions"
-                    and (check.get("check_suite") or {}).get("id") in suites]
+          runs = [run for run in rows(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100", "workflow_runs")
+                  if run.get("path") == workflow and run.get("head_sha") == sha
+                  and run.get("event") in ("push", "workflow_dispatch")]
+          checks = [job for run in runs
+                    for job in rows(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=all&per_page=100", "jobs")]
           problems = []
           for name in gate:
               ran = [c for c in checks if c["name"] == name and c.get("conclusion") != "skipped"]
@@ -448,8 +506,9 @@ jobs:
               print(f"{path}: {release}")
           PY
 
-      # TWICE, AT THE COMMIT'S OWN TIME, AND THE TWO MUST BE ONE FILE. A
-      # wheel only: one pure file, and byte-reproducible from
+      # TWICE, AT THE COMMIT'S OWN TIME, AND THE TWO MUST BE ONE FILE: the
+      # bytes depend on the commit and the locked tools, not on the
+      # directory built in. A wheel only: one pure file, its times from
       # `SOURCE_DATE_EPOCH` (an sdist can come later). `--no-isolation`, so
       # the backend is the hash-locked one, and `build` refuses a backend
       # that does not satisfy `[build-system] requires`.
@@ -469,7 +528,7 @@ jobs:
             fi
           done
           if ! cmp "$RUNNER_TEMP/dist-a/$wheel" "$RUNNER_TEMP/dist-b/$wheel"; then
-            echo "::error::two builds of $GITHUB_SHA, from two extractions in two directories, are not one file: the wheel is not reproducible, and nothing is uploaded"
+            echo "::error::two builds of $GITHUB_SHA, from two extractions in two directories, are not one file: the wheel depends on where it was built, and nothing is uploaded"
             exit 1
           fi
           sha256sum "$RUNNER_TEMP/dist-a/$wheel" "$RUNNER_TEMP/dist-b/$wheel"
@@ -560,9 +619,18 @@ jobs:
               entry_points = configparser.ConfigParser(delimiters=("=",))
               entry_points.optionxform = str
               entry_points.read_string(wheel.read(info + "entry_points.txt").decode())
-              scripts = {k: v.strip() for k, v in entry_points["console_scripts"].items()}
+              if entry_points.sections() != ["console_scripts"]:
+                  problems.append(f"the wheel's entry points declare {entry_points.sections()}, "
+                                  "not ['console_scripts'] alone")
+              scripts = ({k: v.strip() for k, v in entry_points["console_scripts"].items()}
+                         if entry_points.has_section("console_scripts") else {})
               if scripts != project["scripts"]:
                   problems.append(f"the wheel's commands are {scripts}, not {project['scripts']}")
+              described = sorted(n[len(info):] for n in names if n.startswith(info))
+              if described != sorted(["METADATA", "WHEEL", "RECORD", "entry_points.txt",
+                                      "licenses/LICENSE"]):
+                  problems.append(f"the wheel's {info} holds {described}, not exactly METADATA, "
+                                  "WHEEL, RECORD, entry_points.txt and licenses/LICENSE")
               if wheel.read(info + "licenses/LICENSE") != committed("LICENSE"):
                   problems.append("the wheel's LICENSE is not the commit's")
               print(f"metadata: {shown}; commands {sorted(scripts)}")
