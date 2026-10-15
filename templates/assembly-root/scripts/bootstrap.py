@@ -285,6 +285,22 @@ def _place_of(current: str | None) -> str:
     return "on " + spelled(current.split("refs/heads/", 1)[-1])
 
 
+def _say_left(head: str | None, current: str, named: str) -> None:
+    """The line under `fast-forwarded` when the leg started on ANOTHER
+    branch, `current`, and is on the tracking branch `named` now (#603).
+
+    The person is told, since their next commit lands on `named`. P9
+    (`place_at_pin`) says nothing of the branch it leaves; that is #458's.
+    `head` is `None` for a branch with no commit yet, which has no commit to
+    keep, so it is said so. Its own function, so that `fast_forward_to_pin`
+    stays within Sonar's cognitive-complexity limit (S3776).
+    """
+    kept = ("a branch with no commit yet" if head is None
+            else "which keeps its commits")
+    print(f"          the leg was {_place_of(current)}, {kept}; it is on "
+          f"{named} now")
+
+
 def _say_keep(options: str = "the pin or the branch") -> None:
     """What to do about a checkout step (a) will not move, in the words
     both refusals of it share. Nothing moves."""
@@ -420,13 +436,7 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
     print(f"  {label}: branch {named} fast-forwarded {_short(local)} -> "
           f"{_short(pin)}, the pin{note}")
     if other_branch:
-        # P9 says nothing of the branch HEAD left; that is #458's. Here the
-        # person is told, since their next commit lands on `named`. HEAD on
-        # a branch with no commit yet has no commit to keep.
-        kept = ("a branch with no commit yet" if head is None
-                else "which keeps its commits")
-        print(f"          the leg was {_place_of(current)}, {kept}; it is on "
-              f"{named} now")
+        _say_left(head, current, named)
     _say_after(why)
 
 

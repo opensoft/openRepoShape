@@ -18,8 +18,8 @@ make bootstrap
 ```
 
 `make bootstrap` puts each leg on the `{{TRACKING_BRANCH}}` branch **at its
-pinned commit** where that loses no commit, and says why where it does not (so
-you are not staring at a detached HEAD), runs the three neutral validators,
+pinned commit** (so you are not staring at a detached HEAD) where that loses
+no commit, and says why where it does not, runs the three neutral validators,
 and prints whatever review authority a wallet register names for this project
 — or says plainly that authority is not wallet-carried here, and continues.
 
