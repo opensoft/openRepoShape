@@ -359,7 +359,12 @@ options:
   --pin-source PIN_SOURCE
                         a local clone to compute --pin digests from, instead
                         of reading the forge with `gh api` (the TEST path; no
-                        network)
+                        network). The pin file says only that the digest was
+                        read from `local-clone`, never the path. Given with no
+                        --pin and no --referent-chain to read it, it is
+                        refused as `pin-source-unused`; an empty value is
+                        refused as `pin-source-no-path`, and `.` means this
+                        directory.
   --work-dir WORK_DIR   where the working trees are built (default: a
                         temporary directory)
   --no-next-steps       leave out the closing NEXT STEPS (the clone, the cd
@@ -490,7 +495,13 @@ options:
   --pin-source PIN_SOURCE
                         a local clone to compute --pin digests from, instead
                         of reading the forge with `gh api` (the TEST path; no
-                        network)
+                        network). The plan records the path, so that `check`
+                        recomputes each digest there; a path that is not one
+                        printable line is refused as `adopt-unwritable-value`.
+                        The pin file says only `local-clone`, never the path.
+                        Given with no --pin to read it, the flag is refused as
+                        `pin-source-unused`; an empty value is refused as
+                        `pin-source-no-path`, and `.` means this directory.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's
