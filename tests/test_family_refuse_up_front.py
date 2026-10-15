@@ -55,7 +55,7 @@ from pathlib import Path
 import pytest
 
 #: The family fixture and its names, imported from the module that owns them.
-from test_family import SPARE, family  # noqa: F401
+from test_family import SPARE, family, family_module  # noqa: F401
 from test_family_add_excludes import empty_holder  # noqa: F401
 from test_family_add_refusals import holder, offline, refusal  # noqa: F401
 #: What a verb must leave as it found it, and the three verbs, as the dry-run
@@ -65,7 +65,7 @@ from test_family_dry_run import (
     BUMP_ORDER, REMOVE_ORDER, add, add_state, assert_add_as_it_was,
     assert_as_it_was, bump, isolated, remove, state,
 )
-from test_family_member_path import MEMBER, OTHER, older, raw
+from test_family_member_path import MEMBER, OTHER, older, raw, recorded
 
 GITMODULES = ".gitmodules"
 NOTES = "NOTES.txt"
@@ -132,11 +132,13 @@ def head_of(root: Path, env: dict) -> str:
 
 
 def assert_refused_alike(verb: str, family, root: Path, env: dict,
-                         expected_stderr) -> None:
+                         expected_stderr, mark: str | None = None):
     """THE PROOF OF A REFUSAL BEFORE THE FIRST WRITE, under both runs: exit 2,
     the one paragraph `expected_stderr` (a compiled pattern for the REFUSED
     line, the remediation exactly) and nothing on stdout, so the member was
-    not read; the holder as it was; and the dry run's words the real run's."""
+    not read; the holder as it was, and `mark`, the act's own mark in git's
+    directory, still there; and the dry run's words the real run's. Returns
+    the last run."""
     before = snapshot(verb, root, env)
     said = []
     for extra in ((), ("--dry-run",)):
@@ -149,14 +151,32 @@ def assert_refused_alike(verb: str, family, root: Path, env: dict,
         assert expected_line.fullmatch(line), (extra, line)
         assert remedy == expected_remedy, (extra, remedy)
         assert_untouched(verb, root, env, before)
+        if mark is not None:
+            assert os.path.lexists(mark_of(root, env, mark)), mark
     assert said[0] == said[1], "the two runs refuse in different words"
+    return ran
 
 
 # --- an act git has unfinished ---------------------------------------------
 
 #: `{kind: (what, the mark git keeps, how it is finished, how it is given
 #: up, what the commit would do)}`, as the refusal says each. `{verb}` is the
-#: verb that asked.
+#: verb that asked. `finish` is None where git can continue nothing.
+REBASE_EFFECT = (
+    "git does not refuse that during a rebase: the commit would land on the "
+    "HEAD the rebase has detached, in the middle of its sequence, where "
+    "`git rebase --continue` replays the rest on top of it into the rebased "
+    "branch and `git rebase --abort` drops it")
+
+
+def series_effect(command: str) -> str:
+    return ("git does not refuse that between the steps of a series, so the "
+            f"commit would land in the middle of it: `{command} --continue` "
+            f"replays the rest on top of it, and `{command} --abort` stops "
+            "and leaves it where it is (`You seem to have moved HEAD. Not "
+            "rewinding`)")
+
+
 OPERATIONS = {
     "merge": (
         "a merge", "MERGE_HEAD", "git commit", "git merge --abort",
@@ -171,19 +191,31 @@ OPERATIONS = {
         "which are then put back"),
     "rebase": (
         "a rebase", "rebase-merge", "git rebase --continue",
-        "git rebase --abort",
-        "git does not refuse that during a rebase, so the commit would land "
-        "on the HEAD the rebase has detached, inside its sequence, where no "
-        "branch can carry it to a pull request"),
+        "git rebase --abort", REBASE_EFFECT),
     "revert": (
         "a revert", "REVERT_HEAD", "git revert --continue",
         "git revert --abort",
-        "git does not refuse that during a revert, so the commit would be "
-        "made inside the revert and end it as the revert's own"),
+        "git does not refuse that during a revert: the commit is made on "
+        "the branch as `{verb}`'s own, and git takes it as the end of the "
+        "revert, so `git revert --continue` and `--abort` then say `no "
+        "cherry-pick or revert in progress` and the revert's changes are "
+        "left half done in the index and the work tree"),
     "am": (
         "a `git am`", "rebase-apply", "git am --continue", "git am --abort",
         "git does not refuse that during a `git am`, so the commit would "
         "land on the branch, in the middle of the patches being applied"),
+    "cherry-pick series": (
+        "a cherry-pick series", "sequencer", "git cherry-pick --continue",
+        "git cherry-pick --abort", series_effect("git cherry-pick")),
+    "revert series": (
+        "a revert series", "sequencer", "git revert --continue",
+        "git revert --abort", series_effect("git revert")),
+    "unreadable series": (
+        "a cherry-pick or revert series", "sequencer", None,
+        "git cherry-pick --abort",
+        "git does not refuse that, and the commit would land beside a "
+        "`sequencer/` directory git can read no series from, which "
+        "`--continue` fails on"),
 }
 
 
@@ -198,10 +230,18 @@ def operation_said(kind: str, verb: str) -> tuple:
         + re.escape(f". `{verb}` makes its commit with `git commit -- "
                     f"<paths>`, and {effect.format(verb=verb)}. No git "
                     "command that writes was run and nothing was written."))
-    remedy = ("Remediation: end it, whichever way suits the work in it: "
-              f"finish it with `{finish}` once whatever stopped it is "
-              f"resolved and staged, or give it up with `{abort}`. Then run "
-              "the same command again.")
+    if finish is None:
+        remedy = ("Remediation: `sequencer/` is what a cherry-pick or revert "
+                  "series left behind, and git can read no step from it, so "
+                  "there is nothing to continue: give it up with "
+                  f"`{abort}` (`git revert --abort` is the same), or clear "
+                  "it without moving HEAD with `git cherry-pick --quit`. "
+                  "Then run the same command again.")
+    else:
+        remedy = ("Remediation: end it, whichever way suits the work in it: "
+                  f"finish it with `{finish}` once whatever stopped it is "
+                  f"resolved and staged, or give it up with `{abort}`. Then "
+                  "run the same command again.")
     return line, remedy
 
 
@@ -237,10 +277,61 @@ def mark_of(root: Path, env: dict, name: str) -> Path:
     return root / shown
 
 
+def series(kind: str, root: Path, env: dict) -> None:
+    """A cherry-pick or a revert of SEVERAL commits, stopped on its first step
+    and that step committed by hand, so no `CHERRY_PICK_HEAD` or
+    `REVERT_HEAD` is left and `sequencer/` holds the steps still to take
+    (#612's review, F2). `unreadable series` has its `todo` taken away."""
+    work = work_branch(root, env)
+    if kind == "revert series":
+        commit_file(root, env, NOTES, b"zero\n", "zero")
+        base = head_of(root, env)
+        commit_file(root, env, "x1.txt", b"1\n", "x1")
+        commit_file(root, env, "x2.txt", b"2\n", "x2")
+        commit_file(root, env, NOTES, b"mid\n", "y")
+        commit_file(root, env, NOTES, b"late\n", "z")
+        stopped = raw(root, env, "revert", "--no-edit", f"{base}..HEAD~1",
+                      check=False)
+    else:
+        commit_file(root, env, NOTES, b"base\n", "base")
+        base = head_of(root, env)
+        raw(root, env, "switch", "-q", "-c", "side")
+        commit_file(root, env, NOTES, b"side\n", "side1")
+        commit_file(root, env, "side2.txt", b"2\n", "side2")
+        commit_file(root, env, "side3.txt", b"3\n", "side3")
+        raw(root, env, "switch", "-q", work)
+        commit_file(root, env, NOTES, b"main\n", "main")
+        stopped = raw(root, env, "cherry-pick", f"{base}..side", check=False)
+    assert stopped.returncode != 0, "premise: the first step conflicts"
+    commit_file(root, env, NOTES, b"resolved\n", "the stopped step, by hand")
+    for gone in ("CHERRY_PICK_HEAD", "REVERT_HEAD"):
+        assert not os.path.lexists(mark_of(root, env, gone)), (
+            f"premise: only `sequencer/` is left, not {gone}")
+    if kind == "unreadable series":
+        mark_of(root, env, "sequencer/todo").unlink()
+
+
 def begin(kind: str, root: Path, env: dict, tmp_path: Path) -> None:
     """Leave `root` in the middle of `kind`, with git, and check the mark git
     keeps for it is there: the premise of every test that calls this."""
-    if kind == "merge":
+    if kind.endswith(" series"):
+        series(kind, root, env)
+    elif kind == "rebase and merge":
+        # A merge begun at a rebase's stop leaves `MERGE_HEAD` and
+        # `rebase-merge/` both. `-x "exit 1"` stops the rebase after a step.
+        work = work_branch(root, env)
+        base = head_of(root, env)
+        raw(root, env, "switch", "-q", "-c", "other")
+        commit_file(root, env, "other.txt", b"other\n", "other")
+        raw(root, env, "switch", "-q", work)
+        raw(root, env, "switch", "-q", "-c", "topic")
+        commit_file(root, env, "topic.txt", b"topic\n", "topic")
+        stopped = raw(root, env, "rebase", "-x", "exit 1", base, check=False)
+        assert stopped.returncode != 0, "premise: the rebase stops"
+        raw(root, env, "merge", "--no-commit", "--no-ff", "other")
+        assert os.path.lexists(mark_of(root, env, "MERGE_HEAD")), (
+            "premise: the merge is in progress too")
+    elif kind == "merge":
         # `--no-commit`: no conflict at all, the state the issue's probe made.
         work = work_branch(root, env)
         raw(root, env, "switch", "-q", "-c", "side")
@@ -269,37 +360,8 @@ def begin(kind: str, root: Path, env: dict, tmp_path: Path) -> None:
         stopped = raw(root, env, "am", str(patch), check=False)
         assert stopped.returncode != 0, "premise: the am conflicts"
         assert work_branch(root, env) == work
-    mark = OPERATIONS[kind][1]
+    mark = OPERATIONS.get(kind, OPERATIONS["rebase"])[1]
     assert os.path.lexists(mark_of(root, env, mark)), f"premise: {mark}"
-
-
-@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
-@pytest.mark.parametrize("verb", VERBS)
-def test_each_verb_refuses_a_merge_in_progress_before_it_writes(
-        family, holder, offline, tmp_path, verb, dry_run):
-    """THE ISSUE'S PROBE (p07), for each verb: during a `--no-commit` merge
-    every verb exited 2 at `git commit`, `fatal: cannot do a partial commit
-    during a merge.`, after its first writes. Now `family-operation-in-
-    progress`, before them: HEAD, the index, `family.yaml`, the work tree and
-    the git config as they were, no member read, and the dry run's words the
-    real run's. The real run and the dry run are each asked of the holder
-    the merge left, which neither changes."""
-    env = isolated(offline, tmp_path)
-    begin("merge", holder, env, tmp_path)
-    before = snapshot(verb, holder, env)
-    manifest = (holder / "family.yaml").read_bytes()
-    extra = ("--dry-run",) if dry_run else ()
-    ran = run_verb(verb, family, holder, env, *extra)
-    assert ran.returncode == 2, ran.stdout + ran.stderr
-    assert ran.stdout == "", ran.stdout
-    line, remedy = refusal(ran.stderr)
-    expected_line, expected_remedy = operation_said("merge", verb)
-    assert expected_line.fullmatch(line), line
-    assert remedy == expected_remedy
-    assert "partial commit" in line and "after" in line
-    assert (holder / "family.yaml").read_bytes() == manifest
-    assert_untouched(verb, holder, env, before)
-    assert os.path.lexists(mark_of(holder, env, "MERGE_HEAD"))
 
 
 @pytest.mark.parametrize("kind, verb", [
@@ -307,18 +369,69 @@ def test_each_verb_refuses_a_merge_in_progress_before_it_writes(
     ("cherry-pick", "add"), ("cherry-pick", "remove"),
     ("rebase", "bump"), ("rebase", "add"), ("revert", "remove"),
     ("revert", "bump"), ("am", "add"), ("am", "remove"),
+    ("cherry-pick series", "add"), ("cherry-pick series", "bump"),
+    ("revert series", "remove"), ("revert series", "add"),
+    ("unreadable series", "remove"), ("unreadable series", "bump"),
 ])
 def test_every_unfinished_act_is_named_and_refused_alike_in_both_runs(
         family, holder, offline, tmp_path, kind, verb):
-    """A merge, a cherry-pick, a rebase, a revert and a `git am`, each
-    stopped on a conflict by git: each named, with its own finish and its
-    own give-up, by the real run and the dry run in the same words, the
-    holder untouched. A rebase and an `am` were no failure at the commit at
-    all (git does not refuse a partial commit there); the real run met a
-    rebase as `family-holder-detached`, the dry run printed a plan."""
+    """THE ISSUE'S PROBE (p07) for a merge, and the other acts: a merge
+    (stopped with `--no-commit`, no conflict at all), a cherry-pick, a
+    rebase, a revert and a `git am`, each stopped on a conflict by git, and a
+    cherry-pick or revert SERIES with only `sequencer/` left, and one whose
+    `todo` git cannot read. Each is named, with its own finish and its own
+    give-up, by the real run and the dry run in the same words, the holder
+    untouched and the act's mark still there. A revert, a rebase and an `am`
+    were no failure at the commit (git does not refuse a partial commit
+    there); the real run met a rebase as `family-holder-detached`, which
+    committed nothing, the dry run printed a plan."""
     env = isolated(offline, tmp_path)
     begin(kind, holder, env, tmp_path)
-    assert_refused_alike(verb, family, holder, env, operation_said(kind, verb))
+    assert_refused_alike(verb, family, holder, env, operation_said(kind, verb),
+                         mark=OPERATIONS[kind][1])
+
+
+@pytest.mark.parametrize("kind, refused", [
+    ("merge", "a merge"), ("cherry-pick", "a cherry-pick"),
+    ("revert", None), ("rebase", None), ("am", None),
+    ("cherry-pick series", None), ("revert series", None)])
+def test_what_each_refusal_says_the_commit_would_do_is_what_git_does(
+        family, holder, offline, tmp_path, kind, refused):
+    """THE EFFECT SENTENCES ARE TIED TO GIT, so they cannot drift from it
+    (#612's review, F1). The partial commit the verbs make is made here with
+    git itself, `git commit -- :(literal)family.yaml`: a merge and a
+    cherry-pick are refused (`cannot do a partial commit during ...`); a
+    revert takes it as the END of the revert (`REVERT_HEAD` goes, and `git
+    revert --continue` says `no cherry-pick or revert in progress`); a
+    rebase and an `am` keep their mark; and in a series git commits it, and
+    `--continue` then replays the rest on top of it."""
+    env = isolated(offline, tmp_path)
+    begin(kind, holder, env, tmp_path)
+    manifest = holder / "family.yaml"
+    manifest.write_bytes(manifest.read_bytes() + b"# a change\n")
+    made = raw(holder, env, "commit", "-q", "-m", "THE VERB'S COMMIT", "--",
+               ":(literal)family.yaml", check=False)
+    mark = OPERATIONS[kind][1]
+    if refused:
+        assert made.returncode == 128, made.stderr
+        assert (f"cannot do a partial commit during {refused}".encode()
+                in made.stderr)
+        return
+    assert made.returncode == 0, made.stderr
+    if kind == "revert":
+        assert not os.path.lexists(mark_of(holder, env, mark))
+        stuck = raw(holder, env, "revert", "--continue", check=False)
+        assert stuck.returncode == 128
+        assert b"no cherry-pick or revert in progress" in stuck.stderr
+    elif kind.endswith(" series"):
+        command = kind.split()[0]
+        raw(holder, env, command, "--continue")
+        subjects = raw(holder, env, "log", "--format=%s", "-6"
+                       ).stdout.decode().split("\n")
+        assert "THE VERB'S COMMIT" in subjects[1:], subjects
+        assert subjects[0] != "THE VERB'S COMMIT", subjects
+    else:
+        assert os.path.lexists(mark_of(holder, env, mark))
 
 
 #: `{id: (kind, verb, the command the remediation names, what is added to it
@@ -332,6 +445,14 @@ EXITS = {
     "rebase, given up": ("rebase", "add", "git rebase --abort", ()),
     "revert, given up": ("revert", "remove", "git revert --abort", ()),
     "am, given up": ("am", "bump", "git am --abort", ()),
+    "cherry-pick series, continued": (
+        "cherry-pick series", "add", "git cherry-pick --continue", ()),
+    "cherry-pick series, given up": (
+        "cherry-pick series", "bump", "git cherry-pick --abort", ()),
+    "revert series, continued": (
+        "revert series", "remove", "git revert --continue", ()),
+    "unreadable series, given up": (
+        "unreadable series", "add", "git cherry-pick --abort", ()),
 }
 
 
@@ -356,6 +477,41 @@ def test_the_remedy_typed_as_printed_lets_the_same_command_run(
     assert raw(holder, env, "rev-parse", "HEAD~1").stdout.decode().strip() \
         == was
     assert raw(holder, env, "status", "--porcelain").stdout == b""
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_rebase_is_asked_before_a_merge_begun_inside_it(
+        family, holder, offline, tmp_path, verb):
+    """"A REBASE IS ASKED FIRST": a merge begun at a rebase's stop leaves
+    `MERGE_HEAD` and `rebase-merge/` both, and the refusal names the rebase,
+    whose `git rebase --abort` clears both in one step, where `git merge
+    --abort` would leave `rebase-merge/` and a second refusal (#612's
+    review, N2). The exit is typed as printed, and the verb then runs."""
+    env = isolated(offline, tmp_path)
+    begin("rebase and merge", holder, env, tmp_path)
+    ran = assert_refused_alike(verb, family, holder, env,
+                               operation_said("rebase", verb),
+                               mark="rebase-merge")
+    assert "git rebase --abort" in ran.stderr
+    raw(holder, env, "rebase", "--abort")
+    assert not os.path.lexists(mark_of(holder, env, "MERGE_HEAD"))
+    assert not os.path.lexists(mark_of(holder, env, "rebase-merge"))
+    done = run_verb(verb, family, holder, env)
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_every_mark_is_asked_in_one_git_call(
+        family, holder, offline, tmp_path, monkeypatch):
+    """ONE `git rev-parse` answers every mark (#612's review, N8): up to eight
+    `--git-path` arguments, one line each, where a process per mark cost
+    eight on every verb, and more on Windows."""
+    for key, value in isolated(offline, tmp_path).items():
+        monkeypatch.setenv(key, value)
+    calls = recorded(monkeypatch)
+    assert family_module()._operation_in_progress(holder) is None
+    asked = [argv for argv in calls if "--git-path" in argv]
+    assert len(asked) == 1, asked
+    assert asked[0].count("--git-path") >= 8, asked
 
 
 def test_a_merge_in_a_linked_worktree_is_found_where_git_keeps_it(
@@ -401,13 +557,20 @@ def sparse_set(root: Path, env: dict, *rules: str, cone: bool = False) -> None:
         "--cone" if cone else "--no-cone", *rules)
 
 
-def restored_by_hand(root: Path, env: dict) -> None:
+#: The rules that leave `.gitmodules` out, by what names it: the file
+#: anchored, the file anywhere, and every dotfile at the root.
+GITMODULES_OUT = {"anchored": ("/*", f"!/{GITMODULES}"),
+                  "unanchored": ("/*", f"!{GITMODULES}"),
+                  "every dotfile": ("/*", "!/.*")}
+
+
+def restored_by_hand(root: Path, env: dict, shape: str = "anchored") -> None:
     """THE ISSUE'S STATE (571(d)): the rules leave `.gitmodules` out, the file
     is back on disk because a person put it there, and git's skip-worktree
     mark is CLEAR, so #407's check, which reads the mark, passes. Built with
     git's own `sparse-checkout set`, then the file written back as bytes and
     the mark taken off."""
-    sparse_set(root, env, "/*", f"!/{GITMODULES}")
+    sparse_set(root, env, *GITMODULES_OUT[shape])
     put_back(root, env, GITMODULES)
 
 
@@ -465,18 +628,22 @@ def type_the_remedy(root: Path, env: dict, stderr: str) -> None:
 
 
 @needs_check_rules
+@pytest.mark.parametrize("shape", GITMODULES_OUT)
 @pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
 def test_remove_refuses_a_gitmodules_the_rules_leave_out_before_deinit(
-        family, holder, offline, tmp_path, dry_run):
+        family, holder, offline, tmp_path, dry_run, shape):
     """THE ISSUE'S p06: sparse rules leave `.gitmodules` out, the file is put
     back by hand, git clears the mark, #407's check passes, and `remove` did
     `deinit` and `git rm` and failed at `git add` (`outside of your
     sparse-checkout definition`), then rolled back. Now refused before
     `deinit`: the mount, the registration in the git config and the index are
     untouched, which `REMOVE_ORDER` reads key by key. The pattern the
-    remediation names is typed as printed, and `remove` then goes through."""
+    remediation names is typed as printed, and `remove` then goes through.
+    The pattern is the file UNANCHORED, `.gitmodules`: appended after each
+    of the rules that leave it out (the file named with a slash, without
+    one, and every dotfile) it brings the file back (#612's review, N7)."""
     env = isolated(offline, tmp_path)
-    restored_by_hand(holder, env)
+    restored_by_hand(holder, env, shape)
     before = state(holder, env)
     extra = ("--dry-run",) if dry_run else ()
     ran = remove(holder, env, *extra)
@@ -484,7 +651,7 @@ def test_remove_refuses_a_gitmodules_the_rules_leave_out_before_deinit(
     assert ran.stdout == ""
     line, remedy = refusal(ran.stderr)
     expected_line, expected_remedy = sparse_said(
-        "remove", [GITMODULES], f"/{GITMODULES}")
+        "remove", [GITMODULES], GITMODULES)
     assert expected_line.fullmatch(line), line
     assert remedy == expected_remedy
     assert_as_it_was(holder, env, before, REMOVE_ORDER)
@@ -498,23 +665,45 @@ def test_remove_refuses_a_gitmodules_the_rules_leave_out_before_deinit(
     assert not (holder / "members" / MEMBER).exists()
 
 
+#: The rules that leave a member's mount out: cone mode, which keeps only
+#: what it names, and non-cone rules that leave out the whole of `members/`,
+#: or name the member, or glob under it. `{p}` is the member's name.
+MOUNT_OUT = {
+    "cone": (True, ("contracts",)),
+    "non-cone, members/": (False, ("/*", "!/members/")),
+    "non-cone, the member named": (False, ("/*", "!/members/{p}")),
+    "non-cone, members/*": (False, ("/*", "!/members/*")),
+}
+
+
+def mount_out(root: Path, env: dict, rows: str, member: str) -> str:
+    """Put the rules `rows` in force, and name the pattern the refusal must
+    print: `members` in cone mode, the mount path itself otherwise (#612's
+    review, F3)."""
+    cone, rules = MOUNT_OUT[rows]
+    sparse_set(root, env, *[rule.format(p=member) for rule in rules],
+               cone=cone)
+    assert outside(root, env, f"members/{member}"), "premise: out"
+    return "members" if cone else f"members/{member}"
+
+
 @needs_check_rules
-@pytest.mark.parametrize("cone", [False, True], ids=["non-cone", "cone"])
+@pytest.mark.parametrize("rows", MOUNT_OUT)
 @pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
 def test_add_refuses_a_members_the_rules_leave_out_before_it_reads_the_member(
-        family, holder, offline, tmp_path, cone, dry_run):
+        family, holder, offline, tmp_path, rows, dry_run):
     """574/5 (p12b): `add` printed `mounting ...`, then `git submodule add`
     refused the mount as outside the sparse-checkout definition, and the
-    unwind restored the holder. Now refused first, naming `git
-    sparse-checkout add members`, which works in cone mode and in non-cone
-    mode: it is typed as printed, and `add` then mounts the member. Nothing
-    on stdout: not even the line that says the member is being read."""
+    unwind restored the holder. Now refused first, naming the pattern that
+    brings the mount back: `git sparse-checkout add members` in cone mode,
+    and the mount path itself, `members/<Project>`, under non-cone rules. A
+    bare `members` does not win over a rule that names the member (`!/members/
+    <P>`, `!/members/*`: it exits 0 and the verb was refused again with the
+    same remedy, #612's review, F3). The printed command is typed as printed,
+    and `add` then mounts the member. Nothing on stdout: not even the line
+    that says the member is being read."""
     env = isolated(offline, tmp_path)
-    if cone:
-        sparse_set(holder, env, "contracts", cone=True)
-    else:
-        sparse_set(holder, env, "/*", "!/members/")
-    assert outside(holder, env, f"members/{SPARE}"), "premise: out"
+    pattern = mount_out(holder, env, rows, SPARE)
     before = add_state(holder, env)
     extra = ("--dry-run",) if dry_run else ()
     ran = add(holder, env, family["remotes"], *extra)
@@ -522,7 +711,7 @@ def test_add_refuses_a_members_the_rules_leave_out_before_it_reads_the_member(
     assert ran.stdout == ""
     line, remedy = refusal(ran.stderr)
     expected_line, expected_remedy = sparse_said(
-        "add", [f"members/{SPARE}"], "members")
+        "add", [f"members/{SPARE}"], pattern)
     assert expected_line.fullmatch(line), line
     assert remedy == expected_remedy
     assert_add_as_it_was(holder, env, before)
@@ -534,20 +723,25 @@ def test_add_refuses_a_members_the_rules_leave_out_before_it_reads_the_member(
 
 
 @needs_check_rules
+@pytest.mark.parametrize("rows", MOUNT_OUT)
 @pytest.mark.parametrize("verb", ["bump", "remove"])
 def test_bump_and_remove_refuse_a_members_the_rules_leave_out_too(
-        family, holder, offline, tmp_path, verb):
+        family, holder, offline, tmp_path, verb, rows):
     """The same helper covers `bump`'s staged paths, `members/<P>` and
     `family.yaml`, and `remove`'s: before it, `bump` checked the member out
     at `--to` and failed at `git add` of the gitlink, `remove` ran `deinit`
-    and failed at `git rm`, each rolled back. Refused first, both runs."""
+    and failed at `git rm`, each rolled back. Refused first, both runs, with
+    the pattern of `mount_out`; typed as printed, the verb then runs."""
     env = isolated(offline, tmp_path)
-    sparse_set(holder, env, "/*", "!/members/")
-    assert outside(holder, env, f"members/{MEMBER}"), "premise: out"
+    pattern = mount_out(holder, env, rows, MEMBER)
     # `remove` stages `.gitmodules`, the gitlink and `family.yaml`; only the
     # gitlink is out here, so it alone is named, as for `bump`.
-    assert_refused_alike(verb, family, holder, env,
-                         sparse_said(verb, [f"members/{MEMBER}"], "members"))
+    ran = assert_refused_alike(
+        verb, family, holder, env,
+        sparse_said(verb, [f"members/{MEMBER}"], pattern))
+    type_the_remedy(holder, env, ran.stderr)
+    done = run_verb(verb, family, holder, env)
+    assert done.returncode == 0, done.stdout + done.stderr
 
 
 @needs_check_rules
@@ -566,7 +760,8 @@ def test_the_cone_keeps_every_root_file_so_only_the_mount_is_refused(
     line, _ = refusal(ran.stderr)
     assert ran.returncode == 2
     assert f"leaves out `members/{MEMBER}`, which" in line, line
-    assert GITMODULES not in line and "family.yaml" not in line, line
+    assert GITMODULES not in line, line
+    assert "family.yaml" not in line, line
 
 
 @needs_check_rules
@@ -590,7 +785,7 @@ def test_every_excluded_path_is_named_and_one_command_brings_them_all_back(
     line, remedy = refusal(ran.stderr)
     expected_line, expected_remedy = sparse_said(
         "add", [GITMODULES, f"members/{SPARE}", "family.yaml"],
-        f"/{GITMODULES}", "members", "/family.yaml")
+        GITMODULES, f"members/{SPARE}", "family.yaml")
     assert expected_line.fullmatch(line), line
     assert remedy == expected_remedy
     assert_add_as_it_was(holder, env, before)
@@ -757,12 +952,3 @@ def test_add_refuses_a_file_named_members_before_it_reads_the_member(
     done = add(holder, env, family["remotes"])
     assert done.returncode == 0, done.stdout + done.stderr
     assert (holder / "members" / SPARE / "project.yaml").is_file()
-
-
-def test_a_members_directory_is_not_refused_as_a_file(
-        family, holder, offline, tmp_path):
-    """THE CONTROL: `members` is the directory every holder has, and `add`
-    mounts beside what is there."""
-    env = isolated(offline, tmp_path)
-    ran = add(holder, env, family["remotes"])
-    assert ran.returncode == 0, ran.stdout + ran.stderr
