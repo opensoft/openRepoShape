@@ -789,8 +789,9 @@ def leg_placement(submodule: Path) -> str | None:
 
     Remembered BEFORE the checkout so a rollback puts the leg back where it
     stood rather than merely back at the right commit: `bootstrap.py` leaves
-    each leg ON its tracking branch at the pinned commit, and a rollback that
-    left it detached would have changed something a refusal promised not to.
+    each leg ON its tracking branch at the pinned commit where that loses
+    nothing, and a rollback that left it detached would have changed
+    something a refusal promised not to.
     """
     proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
                           cwd=str(submodule), capture_output=True, text=True,

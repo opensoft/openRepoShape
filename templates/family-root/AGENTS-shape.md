@@ -61,8 +61,8 @@ make resume      the same, with `make resume`
 ```
 
 `make bootstrap` puts each member's legs on their tracking branch AT their
-pinned commits, by running the member's own bootstrap rather than
-reimplementing it.
+pinned commits where that loses nothing, and says why where it does not, by
+running the member's own bootstrap rather than reimplementing it.
 
 `make park` and `make resume` carry the ESTATE'S IN-FLIGHT WORK to another
 workstation, one member at a time and through each member's own verb — the
