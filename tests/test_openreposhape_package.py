@@ -43,8 +43,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -116,7 +118,8 @@ TOOLS = ("setup-project.py", "scaffold-project.py", "adopt-project.py",
 #: Every stub: one line, `STUB {json}`, naming the file, the ref it was
 #: committed at, its arguments, where it ran, what it finds of
 #: git-filter-repo, the first PATH entry and the hand-over variable; then
-#: `$STUB_EXIT`, so a test sees an exit status travel back.
+#: `$STUB_SIGNAL` sent to itself where it is set, or `$STUB_EXIT`, so a test
+#: sees an exit status travel back.
 STUB = '''\
 import json, os, shutil, sys
 print("STUB " + json.dumps({
@@ -125,6 +128,8 @@ print("STUB " + json.dumps({
     "path0": os.environ.get("PATH", "").split(os.pathsep)[0],
     "self_bootstrap": os.environ.get("OPENREPOSHAPE_SELF_BOOTSTRAP")}),
     flush=True)
+if os.environ.get("STUB_SIGNAL"):
+    os.kill(os.getpid(), int(os.environ["STUB_SIGNAL"]))
 sys.exit(int(os.environ.get("STUB_EXIT", "0")))
 '''
 
@@ -190,23 +195,29 @@ class PythonCommand:
     `command` mean nothing here, because this command fetches no `setup.sh`
     and has no file of its own to run.
 
-    Called, `$OPENREPOSHAPE_REPO` names a repository that does not exist,
-    unless the test names one: beside this checkout nothing is cloned, and a
-    run that failed to see the checkout would fail on disk rather than ask
-    github.com where main is."""
+    Either way `$OPENREPOSHAPE_REPO` names a repository that does not exist,
+    unless the test names one, so a run that reached for a clone it should
+    not need fails on disk rather than asking github.com where main is; and
+    either way it runs in the test's own directory, so a scaffold that lost
+    its `--into` lands there and never in this checkout."""
 
     usage_lines = (USAGE_FIRST, *LAUNCHER_USAGE[1:])
 
     def __init__(self, tmp_path: Path) -> None:
         self.tmp_path = tmp_path
 
+    def nowhere(self, env: dict | None) -> dict:
+        """`env` over a `$OPENREPOSHAPE_REPO` that does not exist."""
+        return {"OPENREPOSHAPE_REPO": str(self.tmp_path / "nowhere.git"),
+                **(env or {})}
+
     def __call__(self, *args: str, home: Path | None = None,
                  env: dict | None = None, setup_sh: Path | None = None,
                  command: Path | None = None) -> subprocess.CompletedProcess:
-        nowhere = {"OPENREPOSHAPE_REPO": str(self.tmp_path / "nowhere.git")}
         return run_package(SOURCE, "openreposhape", args,
                            package_env(self.tmp_path, home,
-                                       {**nowhere, **(env or {})}))
+                                       self.nowhere(env)),
+                           cwd=self.tmp_path)
 
     def detached(self, *args: str, home: Path | None = None,
                  env: dict | None = None,
@@ -215,8 +226,8 @@ class PythonCommand:
         if not site.is_dir():
             installed_copy(self.tmp_path / "package")
         return run_package(site, "openreposhape", args,
-                           package_env(self.tmp_path, home, env,
-                                       detached=True),
+                           package_env(self.tmp_path, home,
+                                       self.nowhere(env), detached=True),
                            cwd=cwd or self.tmp_path)
 
 
@@ -411,7 +422,9 @@ def test_version_names_the_release_and_clones_nothing(tmp_path,
 
 
 def test_version_says_an_unstamped_build_follows_main(cmd):
-    result = cmd.detached("--version")
+    """`$OPENREPOSHAPE_REPO` set EMPTY is unset, the shell's
+    `${VAR:-default}`: the default repository, named."""
+    result = cmd.detached("--version", env={"OPENREPOSHAPE_REPO": ""})
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
     assert lines[0] == "openRepoShape 0.0.0 (opensoft/openRepoShape @ main)"
@@ -444,7 +457,9 @@ def test_the_install_line_keeps_the_launchers_description_column(cmd):
 def test_a_bare_run_asks_nothing_of_git_gh_or_curl(cmd, tmp_path):
     """The usage, exit 1, and NO CALL: a `git`, a `gh` and a `curl` that
     log every call stand first on PATH (a POSIX script and a `.cmd` each),
-    and the log must not exist afterwards."""
+    and the log must not exist afterwards. DETACHED, where the standard is
+    a clone and so a git call away, with the repository nowhere: a bare run
+    that reached for its standard would log a `git ls-remote` here."""
     log = tmp_path / "calls.log"
     fakes = tmp_path / "fakes"
     fakes.mkdir()
@@ -455,7 +470,8 @@ def test_a_bare_run_asks_nothing_of_git_gh_or_curl(cmd, tmp_path):
         posix.chmod(0o755)
         (fakes / f"{name}.cmd").write_bytes(
             f'@echo {name} %* >> "{log}"\r\n@exit /b 1\r\n'.encode("utf-8"))
-    result = cmd(env={"PATH": f"{fakes}{os.pathsep}{os.environ['PATH']}"})
+    result = cmd.detached(
+        env={"PATH": f"{fakes}{os.pathsep}{os.environ['PATH']}"})
     assert result.returncode == 1, result.stdout + result.stderr
     assert USAGE_FIRST in result.stdout.splitlines()
     assert not log.exists(), log.read_text(encoding="utf-8")
@@ -500,7 +516,8 @@ def test_a_standard_with_no_doctor_is_refused_by_name(cmd, tmp_path):
 
 
 def test_version_names_the_ref_set_for_the_run(cmd):
-    result = cmd.detached("--version", env={"OPENREPOSHAPE_REF": "v1.2.3"})
+    result = cmd.detached("--version", env={"OPENREPOSHAPE_REF": "v1.2.3",
+                                            "OPENREPOSHAPE_REPO": ""})
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines()[0] == \
         "openRepoShape 0.0.0 (opensoft/openRepoShape @ v1.2.3)"
@@ -531,6 +548,47 @@ def test_a_stamped_run_clones_its_commit_once_and_runs_from_it(
     assert sorted(cache_dir(tmp_path).iterdir()) == [clone], (
         "a clone half made, or a second one, was left in the cache")
     assert git("rev-parse", "HEAD", cwd=clone).stdout.strip() == commit
+
+
+def test_the_clone_is_full(tmp_path, shape_standard):
+    """A FULL clone, never a shallow one: the doctor's currency row compares
+    commits, and `update-shape.py` reads the standard's history. Cloned
+    through a `file://` URL, because git ignores `--depth` in a clone from a
+    plain path, so only a URL would show a shallow one: every commit of the
+    standard is there, the stamped commit's parent and the other branch's
+    included."""
+    result = stamped_run(
+        tmp_path, shape_standard, ["--doctor", "."],
+        env={"OPENREPOSHAPE_REPO": shape_standard.bare.as_uri()})
+    assert result.returncode == 0, result.stdout + result.stderr
+    clone = cache_dir(tmp_path) / shape_standard.stamp()["commit"]
+    assert git("rev-parse", "--is-shallow-repository",
+               cwd=clone).stdout.strip() == "false"
+    for ref, commit in shape_standard.commits.items():
+        assert git("cat-file", "-e", commit, cwd=clone,
+                   check=False).returncode == 0, f"{ref} ({commit}) is missing"
+
+
+def test_a_clone_a_killed_run_left_is_swept_once_an_hour_has_passed(
+        tmp_path, shape_standard):
+    """A run killed mid-clone leaves its `.incoming-*` directory beside the
+    clones. The next run that clones removes one nothing has touched for an
+    hour, and leaves a newer one alone: another run may be cloning into it
+    right now."""
+    cache = cache_dir(tmp_path)
+    old, new = cache / ".incoming-old", cache / ".incoming-new"
+    for leftover in (old, new):
+        (leftover / ".git").mkdir(parents=True)
+        (leftover / ".git" / "HEAD").write_text("ref: refs/heads/main\n",
+                                                encoding="utf-8")
+    two_hours_ago = time.time() - 2 * 3600
+    os.utime(old, (two_hours_ago, two_hours_ago))
+    result = stamped_run(tmp_path, shape_standard, ["--doctor", "."])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not old.exists(), "the killed run's leftover was not swept"
+    assert (new / ".git" / "HEAD").is_file(), "a fresh one was swept"
+    assert sorted(path.name for path in cache.iterdir()) == sorted(
+        [new.name, shape_standard.stamp()["commit"]])
 
 
 def test_a_clone_whose_digest_is_not_the_stamped_one_is_refused(
@@ -615,6 +673,24 @@ def test_the_variable_overrides_the_stamp_for_one_run(tmp_path,
         "instead of the commit above; no digest is checked" in version.stdout
 
 
+def test_a_ref_that_is_a_tag_and_a_branch_is_the_tag(tmp_path):
+    """A name that is a tag AND a branch is the tag, which is what `git
+    checkout` in a fresh clone makes of it; an annotated tag is read through
+    to its commit (`^{}`), never taken for one."""
+    standard = make_standard(tmp_path / "both")
+    commits = standard.commits
+    git("branch", PINNED, commits[OTHER], cwd=standard.bare)
+    git("tag", "-a", "-m", "annotated", "annotated", commits[OTHER],
+        cwd=standard.bare)
+    git("branch", "annotated", commits["main"], cwd=standard.bare)
+    site = installed_copy(tmp_path / "package", standard.stamp())
+    for ref, at in ((PINNED, PINNED), ("annotated", OTHER)):
+        result = stamped_run(tmp_path, standard, ["--doctor", "."],
+                             site=site, env={"OPENREPOSHAPE_REF": ref})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert stub_report(result.stdout)["at"] == at, ref
+
+
 def test_an_unstamped_build_follows_main(tmp_path):
     """Each run asks the repository where main is: a commit landing there
     is the next run's standard, in a clone of its own."""
@@ -664,6 +740,20 @@ def test_each_tool_command_runs_its_file_with_every_argument_unchanged(
     assert (report["tool"], report["at"]) == (tool, PINNED)
     assert report["argv"] == args
     assert Path(report["cwd"]).resolve() == typed_in.resolve()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a POSIX signal's exit status: "
+                    "Windows ends a process with the status it is handed")
+def test_a_tool_killed_by_a_signal_exits_128_plus_the_signal(
+        tmp_path, shape_standard):
+    """As a shell reports it: a tool ended by SIGTERM exits 143, never the
+    -15 `subprocess` reports, which an exit status would wrap to 241."""
+    result = stamped_run(tmp_path, shape_standard, ["--json"],
+                         entry="shape_doctor",
+                         env={"STUB_SIGNAL": str(int(signal.SIGTERM))})
+    assert result.returncode == 128 + signal.SIGTERM, (
+        result.stdout + result.stderr)
+    assert stub_report(result.stdout)["tool"] == "shape-doctor.py"
 
 
 def test_a_scaffold_hands_over_to_the_clones_setup_project(tmp_path,

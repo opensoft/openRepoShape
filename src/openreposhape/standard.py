@@ -414,9 +414,13 @@ def remote_commit(url: str, repo: str, ref: str, env: dict) -> str:
     A TAG FIRST, then a branch, then the name as given (`HEAD`, or a full
     `refs/...`): `git checkout <name>` in a fresh clone resolves it in that
     order, and the two must not disagree. An annotated tag is read through
-    to its commit (`^{}`).
+    to its commit (`^{}`), and that line is asked for BY NAME: `git
+    ls-remote` given a name prints a tag's peeled line only when a pattern
+    names it too, and the tag's own line names a tag object, not a commit.
+    (A ref here is letters, digits, `.`, `_`, `/` and `-`, so neither
+    pattern holds a wildcard.)
     """
-    proc = git(["ls-remote", "--", url, ref], env)
+    proc = git(["ls-remote", "--", url, ref, f"{ref}^{{}}"], env)
     if proc.returncode != 0:
         raise Refusal(
             f"could not ask {repo} which commit {ref} is (`git ls-remote` "
@@ -450,6 +454,31 @@ def move_into_place(incoming: Path, final: Path) -> None:
             time.sleep(0.2)
 
 
+#: Where a clone is made before it is moved into place, and how long one
+#: may sit untouched before a later run takes it for the leftover of a run
+#: that was killed mid-clone.
+INCOMING_PREFIX = ".incoming-"
+INCOMING_STALE_SECONDS = 3600
+
+
+def sweep_incoming(cache: Path) -> None:
+    """Remove what a KILLED run left: an `.incoming-*` directory nothing has
+    touched for an hour. A run that fails, or is interrupted with Ctrl-C,
+    removes its own (`clone_into`'s `finally`); one ended by SIGTERM,
+    SIGHUP or SIGKILL cannot, and its half-made clone would otherwise sit in
+    the cache for good. An hour, so a clone another run is making right now
+    is left alone. A link is never followed, and a directory that cannot be
+    removed is left for the next run: this is tidying, never a refusal."""
+    cutoff = time.time() - INCOMING_STALE_SECONDS
+    for leftover in cache.glob(INCOMING_PREFIX + "*"):
+        try:
+            if (not leftover.is_symlink() and leftover.is_dir()
+                    and leftover.stat().st_mtime < cutoff):
+                remove_tree(leftover)
+        except OSError:
+            continue
+
+
 def clone_into(cache: Path, url: str, repo: str, wanted: Target,
                commit: str, env: dict) -> Path:
     """A full clone of `url` at `commit` (or at `wanted.ref`, resolved by the
@@ -458,11 +487,14 @@ def clone_into(cache: Path, url: str, repo: str, wanted: Target,
     CLONED BESIDE ITS PLACE AND MOVED IN WHOLE. A clone that failed half way,
     or a run interrupted, leaves nothing at `<cache>/<commit>` for the next
     run to mistake for a clone; and of two runs cloning at once, the one that
-    moves second uses the first one's and discards its own.
+    moves second uses the first one's and discards its own. What a killed
+    run left beside it is swept first (`sweep_incoming`).
     """
     try:
         cache.mkdir(parents=True, exist_ok=True)
-        incoming = Path(tempfile.mkdtemp(prefix=".incoming-", dir=str(cache)))
+        sweep_incoming(cache)
+        incoming = Path(tempfile.mkdtemp(prefix=INCOMING_PREFIX,
+                                         dir=str(cache)))
     except OSError as exc:
         raise Refusal(f"could not make a directory under {cache}, where "
                       f"this command keeps its clones of the standard: "

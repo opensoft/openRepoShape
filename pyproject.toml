@@ -24,8 +24,9 @@
 # depend on that day. 1.27.0 is the newest hatchling that still runs on
 # Python 3.9, the oldest Python this package supports (1.28.0 and later need
 # 3.10). Hatchling, because `force-include` below puts `setup-project.py`
-# into the package declaratively, and its wheels are reproducible from
-# `SOURCE_DATE_EPOCH`.
+# into the package declaratively. Its wheels take their file times from
+# `SOURCE_DATE_EPOCH`, and the `package` job builds twice on one runner at
+# the commit's time and compares the two files; that is all it shows.
 requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 

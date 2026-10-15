@@ -74,7 +74,7 @@ no change, and digest to the value the package carries (sorted-ls-tree-r-v1,
 computed by the clone's own scripts/repo_shape.py), so a project scaffolded
 from it pins exactly the release you installed. `--version` names the
 release, its commit, its digest and the clone. A build that is not a release
-follows main; installed from a checkout of the standard, it uses that
+follows main; run from a checkout's src/ (an editable install), it uses that
 checkout as it stands.
 
   $OPENREPOSHAPE_REPO   owner/name, URL or path to clone (default opensoft/openRepoShape)
