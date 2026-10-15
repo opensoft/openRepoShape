@@ -233,8 +233,8 @@ def adopt_with_legs_mounted_away(base: Path, *, by_hand: bool) -> dict:
                                f"  spec_path: {SPEC_PATH}\n")
                       .replace("  code_path: code\n",
                                f"  code_path: {CODE_PATH}\n"))
-        assert (f"  spec_path: {SPEC_PATH}\n" in edited
-                and f"  code_path: {CODE_PATH}\n" in edited), text
+        assert f"  spec_path: {SPEC_PATH}\n" in edited, text
+        assert f"  code_path: {CODE_PATH}\n" in edited, text
         with open(plan, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(edited)
     checked = run_script(ADOPT, "check", "--plan", str(plan))
