@@ -2405,6 +2405,74 @@ def remote_is_a_path(base: str) -> bool:
     return ":" not in head or REMOTE_DRIVE_RE.match(head) is not None
 
 
+#: A `file://` url, which is a path on this machine written as a url (#521).
+FILE_URL_RE = re.compile(r"^file://", re.IGNORECASE)
+#: git's scp spelling with a bracketed host, `[::1]:org/repo.git`: the
+#: host's own colons are inside the brackets, and its path starts after `]:`.
+SCP_BRACKETED_HOST_RE = re.compile(r"^(?:[^@/]*@)?\[[^\]/]*\]:")
+
+
+def origin_is_a_path(url: str) -> bool:
+    """Whether a repository's `origin` is a FILESYSTEM PATH, which names no
+    repository (`url_repository`): `remote_is_a_path`'s answer -- absolute
+    or relative, with `/` or `\\`, a drive or a share -- or a `file://` url,
+    which `remote_is_a_path` calls a url for its separator alone."""
+    return remote_is_a_path(url) or FILE_URL_RE.match(url) is not None
+
+
+def url_repository(url: str) -> str | None:
+    """`<org>/<repo>`: the last two segments of the path a url names, case
+    kept, however the url ends; None for a url whose path has fewer, and for
+    a filesystem PATH, however it is written (#521).
+
+    THE ONE READING OF AN `origin`, for both tools that need one:
+    `adopt-project.py plan` takes `--org` from it and compares `--org` and
+    `--project` with it (#499), and `shape-doctor.py`'s adoption line asks
+    for `--org` exactly where `plan` reads none (`origin_org`, #545). Each
+    kept a regex of its own until #521, and the doctor's was a copy of
+    `plan`'s that a test held to it; one function is the same answer by
+    construction.
+
+    FOR EVERY SPELLING GIT TAKES. A url names its repository with or
+    without `.git` and with or without a trailing `/`:
+    `https://github.com/acme/Atlas/` and `.../Atlas.git/` named nothing to
+    the regex this replaced, whose `$` came after `[^/]+?`, so nothing was
+    compared and a mistyped `--project` planned with exit 0. The path of a
+    url is what follows its host: `<scheme>://<host>[:<port>]/`, git's scp
+    colon (`[user@]host:`), or `]:` after a bracketed host (`[::1]:`), whose
+    own colons are not that one.
+
+    A PATH NAMES NO REPOSITORY (`origin_is_a_path`). It is a directory on
+    this machine, and says nothing of the repository on GitHub that
+    `adopt-project.py execute` acts on without `--local-remote-dir`
+    (`https://github.com/<org>/<project>.git`). Read as its last two
+    directories, as the regex read it, a clone of `/srv/clones/Atlas.git`
+    was the repository `clones/Atlas`, and the right `--org` was refused
+    `adopt-not-the-source` and sent to `--org clones`, a directory's name;
+    written with backslashes, as Windows writes it, the same path named
+    nothing and was not compared. So no path is compared, in either
+    separator, and `plan` says so in a NOTE; nor does one give `plan` an
+    organisation, so it asks for `--org` (`adopt-no-org`), and so does the
+    doctor's adoption line.
+    """
+    if origin_is_a_path(url):
+        return None
+    scheme = REMOTE_SCHEME_RE.match(url)
+    bracketed = SCP_BRACKETED_HOST_RE.match(url)
+    if scheme:
+        path = url[scheme.end():].partition("/")[2]
+    elif bracketed:
+        path = url[bracketed.end():]
+    else:
+        path = url.partition(":")[2]
+    path = path.rstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    above, _, name = path.rpartition("/")
+    org = above.rpartition("/")[2]
+    return f"{org}/{name}" if org and name else None
+
+
 def remote_local_path(url: str) -> str | None:
     """The path on A MACHINE this remote names, or None when it names none.
 
@@ -2722,7 +2790,9 @@ def resolve_link_source(product: str, root: Path | None = None,
       1. `--link-source <product>=<path>` (case-insensitive on the name)
       2. `SHAPE_PIN_SOURCE_<PRODUCT>` in the environment
       3. a checkout sitting BESIDE this project (`../openXdox`)
-      4. a bare `--link-source <path>` with no `product=` prefix
+      4. a bare `--link-source <path>` with no `product=` prefix, which is
+         asked only when `default_source` is passed: `link_pins_from_trees`
+         passes it for a chain's FIRST link and for no other (#441)
 
     The first that holds a manifest answers, and one that does not is passed
     over whatever the reason: one that cannot be entered no longer raises
@@ -2810,16 +2880,27 @@ def link_pins_from_trees(links, root: Path | None = None,
     declared-unverified. Only a hand-written chain can hold two such links:
     `scaffold-project.py` takes every link but the first from the naming
     policy's `open<Product>` form, which has no `-`, `.` or `_` to fold.
+
+    `default_source` IS THE FIRST LINK'S TREE AND NO OTHER'S (#441). It is
+    one tree — the naming validator's bare `--link-source`, the scaffold's
+    `--pin-source` — and the first link is the pin this project holds, the
+    one tree a person who typed one path has to hand. It used to be offered
+    to every link, so in a chain of three or more links a later link with
+    no other source was read from the same tree: `openXdox`'s manifest,
+    declaring `openYdox`, read again as `openYdox`'s, which "declares
+    openYdox, not openInk", and a chain that holds was broken. A later link
+    is read through rules 1 to 3 of `resolve_link_source`, or is
+    declared-unverified.
     """
     found: dict[str, set] = {}
     unreadable: dict[str, str] = {}
     links = list(links)
     shared = pin_source_env_shared(repo_basename(str(link)) for link in links)
-    for link in links:
+    for index, link in enumerate(links):
         name = repo_basename(str(link))
         asked: list = []
         path, _how = resolve_link_source(name, root, keyed_sources,
-                                         default_source,
+                                         None if index else default_source,
                                          pin_product_key(name) in shared,
                                          tried=asked)
         if tried is not None:

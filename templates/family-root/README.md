@@ -11,10 +11,10 @@ cd {{FAMILY_NAME}}
 make bootstrap
 ```
 
-`make bootstrap` initialises every member recursively — each member is itself
-a superproject with two legs — and then runs each member's own
-`make bootstrap`, which puts its legs on their tracking branches at their
-pinned commits and runs its validators.
+`make bootstrap` initialises every member recursively — each member is itself a
+superproject with two legs — and then runs each member's own `make bootstrap`,
+which puts its legs on their tracking branches at their pinned commits where
+that loses no commit, says why where it does not, and runs its validators.
 
 | target | what it does |
 |---|---|
