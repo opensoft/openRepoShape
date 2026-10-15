@@ -6972,11 +6972,21 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     rows = detail["members"]
     on_a_branch = detail["on_a_branch"]
     siblings_absent = detail["without_working_clone"]
+    # WHAT `make siblings` DOES WITH A STRANGER IS CONDITIONAL, AND THE WORDS
+    # SAY ON WHAT (#605). Since #578 it asks about the holder's parent folder
+    # before it looks at any member, so it calls this directory WRONG ORIGIN
+    # only from a holder in a folder named after the family (or in one a link
+    # of that name leads to; the words keep to the shorter, plainer case);
+    # from anywhere else it clones nothing and never reaches the directory.
+    # The rule lives in the holder's pinned `scripts/siblings.py` and is not
+    # copied here, where a copy would drift: the words name the condition,
+    # and `make siblings` itself prints the exact `mv` when it does not hold.
     strangers = [f"{entry['project']}: {ctx.root.parent / entry['project']} "
                  f"is a clone of {entry['other_origin']}, not of "
                  f"{entry['mounted_from']}, so it is not counted as its "
-                 "working clone (`make siblings` calls the same directory "
-                 "WRONG ORIGIN and leaves it exactly as it is)"
+                 "working clone (`make siblings`, from a holder in a folder "
+                 "named after the family, calls the same directory WRONG "
+                 "ORIGIN and leaves it exactly as it is)"
                  for entry in rows if entry["other_origin"]]
     if problems:
         # A STRANGER IS SAID ON THE RED PATH TOO, AND IS NOT ONE OF THE
@@ -7146,11 +7156,23 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     if strangers:
         note += "; " + "; ".join(strangers)
     if siblings_absent:
+        # THE NOTE SAYS WHEN `make siblings` PLACES THEM, NOT THAT IT DOES
+        # (#605). Since #578 it asks about the holder's parent folder before
+        # it clones anything: from one named after the family, or reached
+        # through a link of that name, it places the working clones; from
+        # anywhere else it clones nothing, prints the exact `mv` and exits 1.
+        # The rule is the holder's own, in its pinned `scripts/siblings.py`,
+        # and is not tested here -- a second copy would drift -- so the words
+        # are the same whichever folder this holder is in.
         return Row("members", "members", OK,
                    f"{note}; no working clone beside the holder for "
                    + ", ".join(siblings_absent)
-                   + " (`make siblings` places them; the pinned copy under "
-                     f"{members_dir}/ is detached by design)", None, detail)
+                   + " (`make siblings` places them when the holder is in a "
+                     "folder named after the family, or in one a link of "
+                     "that name leads to; with the holder anywhere else it "
+                     "clones nothing and prints the `mv` that moves it into "
+                     f"such a folder; the pinned copy under {members_dir}/ "
+                     "is detached by design)", None, detail)
     return Row("members", "members", OK,
                f"{note}, each with a working clone beside the holder", None,
                detail)
