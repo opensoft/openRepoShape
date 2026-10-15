@@ -402,9 +402,10 @@ def test_a_case_sensitive_disk_keeps_its_move(placement, monkeypatch,
     """Linux, where `InkRouter` and `inkrouter` are two folders: with
     nothing at `InkRouter`, the holder moves there through a staging name;
     with a folder of its own there, the holder moves into it, as it always
-    did. A LINK named `InkRouter` onto this folder is never renamed through:
-    a family folder reached through a link is resolved first, a question
-    #543 leaves as it was."""
+    did. A LINK named `InkRouter` onto this folder is the family folder
+    reached through a link, so nothing is printed at all: never a rename of
+    the folder through it. Simulated, so a system that refuses to make a
+    link asks it too."""
     folder = tmp_path / NAME.lower()
     root = folder / NAME
     root.mkdir(parents=True)
@@ -422,8 +423,10 @@ def test_a_case_sensitive_disk_keeps_its_move(placement, monkeypatch,
             there != "nothing" if self == wanted else exists(self)))
         patched.setattr(Path, "is_symlink", lambda self: (
             self == wanted and there == "a link"))
+        patched.setattr(os.path, "islink", lambda path: (
+            Path(path) == wanted and there == "a link"))
         patched.setattr(os.path, "samefile", same)
-        commands = move_commands(placement.parent_folder_warning(root, NAME))
+        warning = placement.parent_folder_warning(root, NAME)
     staged = tmp_path / f"{NAME}.holder"
     expected = {
         "nothing": [["mv", str(root), str(staged)],
@@ -433,10 +436,9 @@ def test_a_case_sensitive_disk_keeps_its_move(placement, monkeypatch,
                      ["mv", str(root), str(wanted / NAME)]],
     }
     if there in expected:
-        assert commands == expected[there]
+        assert move_commands(warning) == expected[there]
     else:
-        assert ["mv", str(folder), str(tmp_path / f"{NAME}.folder")] \
-            not in commands
+        assert warning is None
 
 
 @pytest.mark.parametrize("root", [
@@ -457,6 +459,79 @@ def test_a_holder_at_a_filesystem_or_drive_root_moves_through_a_staging_name(
     assert move_commands(warning) == [
         ["mv", str(root), str(staged)], ["mkdir", "-p", str(wanted)],
         ["mv", str(staged), str(wanted / NAME)]]
+
+
+# --- the family folder reached through a link --------------------------------
+
+
+def link_or_skip(link: Path, target: Path) -> None:
+    """`link`, a directory link to `target`, made before anything else the
+    test does, or a skip where this system refuses one (Windows without the
+    right to make links)."""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError) as refused:
+        pytest.skip(f"this system makes no directory link here: {refused}")
+
+
+def test_a_family_folder_reached_through_a_link_passes_and_clones_into_it(
+        diverged, tmp_path):
+    """`<t>/InkRouter` is a link to `<t>/real-x`, which holds the holder, so
+    the holder is reachable as `<t>/InkRouter/InkRouter`: the layout holds
+    through the link. Both entry points ask about the resolved holder and
+    pass, and `make siblings`' own script clones each member into `real-x`,
+    the link's target, beside the holder. The header names that folder and
+    the link."""
+    real = tmp_path / "real-x"
+    real.mkdir()
+    link = tmp_path / NAME
+    link_or_skip(link, real)
+    holder_in(diverged, real)
+    logical = link / NAME
+
+    shim = run_script(FAMILY, "siblings", "--family-root", str(logical),
+                      "--dry-run", env=ALLOW_FILE_PROTOCOL)
+    assert shim.returncode == 0, shim.stdout + shim.stderr
+    assert "WARNING" not in shim.stderr
+
+    result = siblings(logical)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WARNING" not in result.stderr
+    assert (f"\n  family folder   {real}   (through the link {link})\n"
+            in result.stdout)
+    for project in MEMBERS:
+        assert (real / project / ".git").is_dir(), project
+        assert branch_of(link / project) == "main", project
+
+
+def test_a_link_named_after_the_family_to_another_folder_is_not_accepted(
+        diverged, tmp_path):
+    """`<t>/InkRouter` leads to `<t>/other`, not to `<t>/real-x`, where the
+    holder is: no family folder of this holder, so the run stops. Its move,
+    done as written, puts the holder into `other` through the link, where
+    the next run passes."""
+    real, other = tmp_path / "real-x", tmp_path / "other"
+    real.mkdir()
+    other.mkdir()
+    link = tmp_path / NAME
+    link_or_skip(link, other)
+    holder = holder_in(diverged, real)
+
+    stopped = siblings(holder, "--dry-run")
+    assert stopped.returncode == 1, stopped.stdout + stopped.stderr
+    assert "NOTHING WAS CLONED" in stopped.stderr
+    assert f"\n  parent folder   {real}\n" in stopped.stdout
+    commands = move_commands(stopped.stderr)
+    assert commands == [["mkdir", "-p", str(link)],
+                        ["mv", str(holder), str(link / NAME)]]
+    for argv in commands:
+        if argv[0] == "mkdir":
+            Path(argv[2]).mkdir(parents=True, exist_ok=True)
+        else:
+            os.rename(argv[1], argv[2])
+    assert (other / NAME / "family.yaml").is_file()
+    moved = siblings(link / NAME, "--dry-run")
+    assert moved.returncode == 0, moved.stdout + moved.stderr
 
 
 # --- family.py siblings runs the holder's own copy ---------------------------

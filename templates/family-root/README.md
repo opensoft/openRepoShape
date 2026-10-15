@@ -64,9 +64,10 @@ named after the family because that is what the folder holds. `family.yaml`
 is the only thing that tells the two apart, and it is inside the holder.
 
 **Nothing ever moves a checkout.** When this holder's parent folder is not
-named after the family, `make siblings` WARNS, prints the exact `mv` for a
-human to run and stops before it clones anything, so that the run after the
-move clones each member once — it moves nothing itself. Relocating a
+named after the family, and no link of that name beside it leads to it,
+`make siblings` WARNS, prints the exact `mv` for a human to run and stops
+before it clones anything, so that the run after the move clones each member
+once — it moves nothing itself. Relocating a
 directory out from under a shell, an editor or an agent lane breaks linked
 worktrees, whose `.git` files carry absolute paths, and this standard does
 not act by surprise.

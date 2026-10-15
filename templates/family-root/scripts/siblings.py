@@ -36,6 +36,11 @@ WHAT IT DOES:
            and is the one act this standard refuses everywhere else: done by
            surprise, with no hand on it. The doctor pattern, not a mover.
 
+           A LINK named after the family, beside the holder's (resolved)
+           parent directory and leading to it, passes the check: that is the
+           family folder reached through a link, and the members are cloned
+           into the directory it leads to.
+
   then, per member row in `family.yaml`:
 
   ABSENT   `git clone --recurse-submodules` from the SAME url `make bootstrap`
@@ -110,7 +115,8 @@ EXIT CODES
     0  every member is beside the holder; nothing to report. With `--make`:
        every member RAN and exited 0
     1  a FINDING a human can act on: a holder whose parent folder is not
-       named after the family (nothing is cloned until it is moved), a
+       named after the family, nor linked as it (nothing is cloned until
+       it is moved), a
        sibling that is a DIFFERENT repository, a clone that failed (a
        tracking branch its remote does not have included), a member's own
        bootstrap that went red. With
@@ -825,6 +831,30 @@ def same_directory(one: Path, two: Path) -> bool:
         return False
 
 
+def family_link(root: Path, family: str) -> Path | None:
+    """`<grandparent>/<Family>` when it is a LINK to the holder's parent
+    folder, or None: the family folder reached through a link (#543).
+
+    The holder's path is RESOLVED before it is asked about (`find_repo_root`
+    for `make siblings`, and `family.py siblings` runs this file standing in
+    the resolved holder), so `~/p/InkRouter`, a link to `~/p/real-x`, reads
+    as `real-x`. The holder is then reachable as `~/p/InkRouter/InkRouter`
+    and its members are cloned into `real-x`, the link's own target, so the
+    family layout holds through the link and the run goes on. A link named
+    `<Family>` that leads anywhere else is no family folder of this holder.
+
+    Only a LINK, asked with `os.path.islink`, and never a second spelling:
+    on a disk that ignores case, `InkRouter` beside `inkrouter` is the same
+    directory entry and no link, so it is the strict test's case-only
+    rename below and never this.
+    """
+    folder = root.parent
+    link = folder.parent / family
+    if os.path.islink(link) and same_directory(link, folder):
+        return link
+    return None
+
+
 def parent_folder_warning(root: Path, family: str) -> str | None:
     """The WARNING and the exact `mv`, or None when the layout is right.
 
@@ -849,12 +879,14 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
       staging name, because a rename that changes only the case is a move
       onto itself there. Linux, where the two are two folders, is unchanged.
     - otherwise the holder moves into `<parent>/<Family>`, made if missing.
-    A LINK named `<Family>` onto this folder is never renamed through: the
-    holder's path is resolved before this is asked, so a family folder
-    reached through a link is a question #543 leaves as it was.
+
+    A LINK named `<Family>` beside this folder that leads to it passes the
+    check (`family_link`): it is the family folder, reached through a link.
+    One that leads elsewhere does not, and its move runs as typed: the
+    holder moves into the link's target, where the link then passes.
     """
     folder = root.parent
-    if folder.name == family:
+    if folder.name == family or family_link(root, family) is not None:
         return None
     lines = [
         f"WARNING the holder's parent folder is {folder.name or str(folder)!r}"
@@ -892,6 +924,9 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
           and not wanted.is_symlink() and same_directory(wanted, folder)):
         # THIS FOLDER under another case, on a disk that ignores case: the
         # folder is renamed, in two steps, and the holder stays inside it.
+        # Never a link: a link to this folder passed above (`family_link`),
+        # and a case-only alias is one directory entry, never a link, so
+        # the two rules never meet.
         staged = folder.parent / f"{family}.folder"
         steps = [["mv", folder, staged], ["mv", staged, wanted]]
     else:
@@ -1039,12 +1074,15 @@ def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
     runs or any member is cloned, and `--dry-run` stops in the same words:
     once the holder is moved, the run after it clones each member once, in
     the right folder. Until the check passes, the header calls that folder
-    the PARENT folder, not the family's.
+    the PARENT folder, not the family's. Passed through a link named after
+    the family, it names the folder the clones go into, and the link.
     """
     family = family_folder_name(manifest, root)
     warning = parent_folder_warning(root, family)
+    link = None if warning else family_link(root, family)
     print(f"siblings: {name} ({root}) — {len(rows)} member(s)")
-    print(f"  {'parent' if warning else 'family'} folder   {root.parent}")
+    print(f"  {'parent' if warning else 'family'} folder   {root.parent}"
+          + (f"   (through the link {link})" if link else ""))
     print("  each member is cloned BESIDE the holder and stays PINNED inside "
           "it under")
     print("  members/ — the pinned copy is detached for bootstrap and "
