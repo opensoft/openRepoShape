@@ -393,8 +393,9 @@ def standard(tmp_path_factory) -> dict:
 
 
 def cut(standard, tmp_path_factory, name: str) -> Path:
-    """A private copy of the holder as it was cut."""
-    target = tmp_path_factory.mktemp(name) / FAMILY
+    """A private copy of the holder as it was cut, in a folder named after
+    the family: `make siblings` stops before cloning in any other (#543)."""
+    target = tmp_path_factory.mktemp(name) / FAMILY / FAMILY
     shutil.copytree(standard["holder"], target, symlinks=True)
     return target
 

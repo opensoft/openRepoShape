@@ -155,11 +155,14 @@ def load_without_bytecode(path: Path, name: str):
     return module
 
 
-#: `load_without_bytecode`'s counterpart for a CHILD process (#544). `family.py
-#: siblings` runs the standard's `templates/family-root/scripts/siblings.py`
-#: through `runpy`, and that file imports `bootstrap` from beside it, so
-#: without this in the child's environment the import writes
-#: `__pycache__/bootstrap.*.pyc` into the template tree.
+#: `load_without_bytecode`'s counterpart for a CHILD process (#544). A child
+#: that imports a file under `templates/` writes `__pycache__` beside it
+#: unless this is in its environment. `family.py siblings` used to run the
+#: template's `scripts/siblings.py` through `runpy`, importing `bootstrap`
+#: from the template tree; since #543 it runs the holder's own
+#: `scripts/siblings.py` in a child process standing in the holder, so its
+#: imports come from the holder's copy. Kept on those calls so a return to
+#: an in-process run cannot write into the templates unseen.
 NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
 
 
