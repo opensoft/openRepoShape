@@ -755,14 +755,20 @@ def test_the_assembly_with_a_root_kept_symlink_bootstraps(
 
 @needs_filter_repo
 def test_a_source_pin_kept_in_the_root_fails_verification_with_the_plan_answer(
-        tmp_path):
+        adopter, tmp_path, monkeypatch, capsys):
     """The case the finding is left for once the add is forced: the source
     has a `contracts/shape-pin.yaml` of its OWN, and the plan keeps
     `contracts/` in the root. The shape's pin lands beside it, under
     `shape/`; the one at the pinned path names a file the plan moved to the
     code leg, and the first bootstrap would refuse with shape-copy-missing.
     `execute` says so, with the plan answer as the exit, never a hand edit
-    of the split."""
+    of the split.
+
+    Since #524 `check` finds that plan, and `execute` refuses it before any
+    leg exists, as `plan-root-holds-pin`
+    (`tests/test_adopt_shape_pin_and_work_dir.py`). So the verification is
+    the backstop here: `execute` runs in this process with the shape's pin
+    left out of what that rule asks, as before #524, and still says so."""
     own_pin = pin_of(README, "src/app/main.py")
     source = make_source_repo(
         tmp_path / "Thing",
@@ -781,18 +787,26 @@ def test_a_source_pin_kept_in_the_root_fails_verification_with_the_plan_answer(
                "    resolution: \"kept beside the shape's own\"\n", 1),
         encoding="utf-8")
     checked = run_script(ADOPT, "check", "--plan", str(plan))
-    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert (f"FINDING plan-root-holds-pin: the plan keeps the file `{PIN}` "
+            in checked.stderr), checked.stderr
 
-    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
-                        "--local-remote-dir", str(tmp_path / "remotes"),
-                        "--work-dir", str(tmp_path / "work"))
+    pin_files = adopter._pin_files
+    monkeypatch.setattr(adopter, "_pin_files", lambda read: [
+        pin for pin in pin_files(read) if pin[0] != PIN])
+    monkeypatch.setenv("LANES_LANE", "")
+    clear_ambient_pin_sources(monkeypatch)
+    code = adopter.main(["execute", "--plan", str(plan), "--yes",
+                         "--local-remote-dir", str(tmp_path / "remotes"),
+                         "--work-dir", str(tmp_path / "work")])
+    result = capsys.readouterr()
 
-    assert result.returncode == 1, result.stderr + result.stdout
-    assert "adoption verified" not in result.stdout
-    assert COLLISION_PIN in result.stdout
-    findings = [line for line in result.stderr.splitlines()
+    assert code == 1, result.err + result.out
+    assert "adoption verified" not in result.out
+    assert COLLISION_PIN in result.out
+    findings = [line for line in result.err.splitlines()
                 if line.startswith("FINDING ")]
-    assert len(findings) == 1, result.stderr
+    assert len(findings) == 1, result.err
     assert findings[0].startswith(
         f"{MISSING} `src/app/main.py` is named by {PIN} but is not in the "
         "split "
@@ -803,9 +817,9 @@ def test_a_source_pin_kept_in_the_root_fails_verification_with_the_plan_answer(
     # The finding points at the end of the report, so that is where the way
     # out must be: after the finding, ending with the split branch's
     # deletion, which a re-run otherwise meets as `adopt-branch-exists`.
-    after = result.stderr.split(findings[0], 1)[1]
+    after = result.err.split(findings[0], 1)[1]
     assert "fix the plan and re-run" in after
-    assert after.rstrip().endswith(f"--delete {BRANCH}"), result.stderr
+    assert after.rstrip().endswith(f"--delete {BRANCH}"), result.err
     assert git("show", f"{BRANCH}:{PIN}", cwd=source).stdout == own_pin
 
 

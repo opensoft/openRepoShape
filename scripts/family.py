@@ -49,8 +49,8 @@ clones beside it. The doubled name is kept on purpose: the holder is a
 repository and keeps its own name, and `family.yaml` is what tells the two
 apart. `siblings` is the holder's own `make siblings`, run from a checkout of
 this standard so it works before the holder is anywhere else; there is ONE
-implementation of it, `templates/family-root/scripts/siblings.py`, and this
-subcommand runs that file rather than a second copy of its logic.
+implementation of it, the holder's pinned `scripts/siblings.py`, and this
+subcommand runs that file rather than a second copy of its logic (#543).
 
 EXIT CODES: 0 done, or a `--dry-run` printed what it would do · 1 nothing to
 do · 2 a refusal, and a refusal made before the first write is the same
@@ -60,7 +60,7 @@ real `add`, `bump` or `remove` refuses to commit onto the holder's tracking
 branch, or onto no branch at all, as `bump-leg.py` does for a leg; a dry run
 commits nothing, so it runs on any branch and says where the real run's commit
 would land, or that it would refuse there and the command that makes a branch.
-`siblings` exits with the template script's own code, unchanged. A `bump` whose
+`siblings` exits with the holder's script's own code, unchanged. A `bump` whose
 commit would record nothing — the member is already pinned at `--to`, in the
 gitlink and in `family.yaml` alike — is `nothing`: it says `nothing to do`, as
 `bump-leg.py` does for a leg, and writes no commit; its dry run says the same
@@ -122,7 +122,6 @@ import datetime as _dt
 import json
 import os
 import re
-import runpy
 import shlex
 import shutil
 import stat
@@ -143,8 +142,8 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     FAMILY_RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, env_commit, escape_what_stdout_cannot_encode,
-    force_stage, materialize_family_root, refuse_bad_branch, run,
-    stage_written, trailer_line, write_lf,
+    force_stage, inherited_child_environment, materialize_family_root,
+    refuse_bad_branch, run, stage_written, trailer_line, write_lf,
 )
 # What `init` asks of the holder's own reader and validator before it creates
 # anything (#307), imported as its own unit and not added to the lists above.
@@ -884,8 +883,10 @@ def _local_remote_is_empty(bare: Path) -> bool | None:
 # ---------------------------------------------------------------------------
 
 
-SIBLINGS_SCRIPT = (SHAPE_ROOT / "templates" / "family-root" / "scripts" /
-                   "siblings.py")
+#: The holder's own copy of the workstation utility, relative to the holder:
+#: the path its Makefile's `SIBLINGS_SCRIPT` names, and the file `siblings`
+#: runs (#543).
+SIBLINGS_SCRIPT = "scripts/siblings.py"
 
 
 def _family_script() -> str:
@@ -925,10 +926,10 @@ def _standard_checkout(start: Path) -> Path | None:
 
     A checkout is a directory holding `scripts/family.py` beside
     `templates/family-root/`, which is what this file needs of its own
-    (`SIBLINGS_SCRIPT`, `FAMILY_TEMPLATE`), so it is found whatever the
-    directory is called and whichever copy of the standard is asked: this
-    one, another clone, an install. `os.path`'s tests, which answer False
-    for a directory this user cannot search rather than raising.
+    (`FAMILY_TEMPLATE`), so it is found whatever the directory is called and
+    whichever copy of the standard is asked: this one, another clone, an
+    install. `os.path`'s tests, which answer False for a directory this user
+    cannot search rather than raising.
     """
     for directory in (start, *start.parents):
         if os.path.isfile(directory / "scripts" / "family.py") and \
@@ -1320,8 +1321,24 @@ def _print_next_steps(args, work: Path, folder: Path | None) -> None:
     ONE COMMAND A LINE, `cd` apart from `make siblings`: Windows PowerShell
     5.1, the shell `setup-project.py` documents, rejects `&&` between two
     statements, and these lines are quoted for the shell of the host (#486).
+
+    `--work-dir` makes no family folder, and `make siblings` stops before it
+    clones anything in a holder whose parent folder is not named after the
+    family (#543), so there the block says so instead of promising clones.
     """
     switch = shell_line(["git", "-C", work, "switch", "-c"])
+    beside = ("`make siblings` then puts each member's WORKING clone\n"
+              "beside the holder, in the family folder, on its tracking "
+              "branch.")
+    where = f"family folder  {folder if folder is not None else work.parent}"
+    if folder is None and work.parent.name != work.name:
+        # --work-dir MAKES NO FAMILY FOLDER, and `make siblings` clones
+        # nothing until the holder sits in one (#543), so none is promised.
+        beside = ("--work-dir made no family folder, so `make siblings`\n"
+                  "clones nothing: it prints the `mv` that puts the holder "
+                  f"in a folder\nnamed {work.name}, and stops until it is "
+                  "there.")
+        where = f"family folder  none: {work.parent} is not named {work.name}"
     print(f"""
 NEXT STEPS
 
@@ -1333,15 +1350,14 @@ NEXT STEPS
 `add` mounts the member at {MEMBERS_DIR}/<Project>, records its pin, and
 writes ONE commit on that branch: it refuses {args.tracking_branch}, the
 holder's tracking branch. Push the branch as its NEXT line says and land it
-as a pull request. `make siblings` then puts each member's WORKING clone
-beside the holder, in the family folder, on its tracking branch.
+as a pull request. {beside}
 
 TWO COPIES OF EVERY MEMBER, on purpose: pinned and DETACHED inside the holder
 under {MEMBERS_DIR}/ (what `make bootstrap` and `make validate` read), and a
 working clone BESIDE the holder — that second one is where you work, and
 `family.py bump` is how the family follows it.
 
-family folder  {folder if folder is not None else work.parent}
+{where}
 holder         {work}
 """)
 
@@ -2182,6 +2198,30 @@ def _checked_add_target(family: Family, repository: str, project: str,
     return commit.lower()
 
 
+def _row_recording(family: Family, project_id: str,
+                   besides: str | None = None) -> dict | None:
+    """The first row that records `project_id` as its `id:`, or None, asked
+    the way `_checked_member_id` says the validator asks it: a row with no
+    `project:` or no `id:`, and a row whose `project:` an earlier row
+    already spells exactly, are skipped.
+
+    `besides` IS THE `project:` OF THE ROW `bump` MOVES, spelled exactly
+    (#541). `bump` replaces that row, and every row spelled the same way,
+    with the one it writes, so the id it records today is no other
+    project's; every other row is asked as `add` asks it.
+    """
+    projects: set[str] = set()
+    for row in family.members:
+        name = row.get("project")
+        if not isinstance(name, str) or not name or name in projects:
+            continue
+        projects.add(name)
+        if name != besides and row.get("id") and \
+                str(row["id"]) == project_id:
+            return row
+    return None
+
+
 def _checked_member_id(family: Family, repository: str, project: str,
                        project_id: str) -> None:
     """Refused when a row already records the `id` the member's own
@@ -2209,14 +2249,9 @@ def _checked_member_id(family: Family, repository: str, project: str,
     rule, as it keeps `member-path`'s: it ships INTO every holder, and a
     shared copy would move every holder's pin.
     """
-    projects: set[str] = set()
-    for row in family.members:
-        name = row.get("project")
-        if not isinstance(name, str) or not name or name in projects:
-            continue
-        projects.add(name)
-        if not row.get("id") or str(row["id"]) != project_id:
-            continue
+    row = _row_recording(family, project_id)
+    if row is not None:
+        name = row["project"]
         raise Refusal(
             "member-duplicate-id",
             f"{project} is already a member of {family.data.get('name')} "
@@ -2272,6 +2307,26 @@ def _probe_member(url: str, protocol: list[str], repository: str,
                   "refers to it", file=sys.stderr)
 
 
+def _names_no_commit(code: str, flag: str, value: str, kind: str,
+                     repository: str, where: str) -> Refusal:
+    """The refusal for a `--at` or `--to` whose 40 hex names a tree or a
+    blob in the member, or an annotated tag of one: `kind` is what it names
+    once any tag is peeled (`<id>^{}`), and `where` is where `git log` lists
+    the commits to pass instead.
+
+    ONE WORDING FOR `add --at` AND `bump --to` (#541). The two worded a tag
+    of a tree differently, `names a tree` and `is an annotated tag of a
+    tree`. `bump` now peels a tag of a commit as `add` does, so it names a
+    tag of a tree as `add` does too, by the tree it tags (`_probe_commit`),
+    and each verb keeps only its own code.
+    """
+    return Refusal(
+        code, f"{flag} {value} names a {kind} in {repository}, not a commit",
+        "Remediation: pass the commit itself — `git log --format=%H` in "
+        f"{where} lists them. A tree's or a blob's sha is part of a commit "
+        "and never one, and a pin is a commit or it is nothing.")
+
+
 def _probe_commit(clone: Path, repository: str, at: str | None) -> str:
     """`--at`, or the member's tip, as a commit of the member — or the
     refusal saying which of the two it was not.
@@ -2307,13 +2362,8 @@ def _probe_commit(clone: Path, repository: str, at: str | None) -> str:
     except Refusal:
         kind = None
     if kind in ("tree", "blob"):
-        raise Refusal(
-            "member-at-unknown",
-            f"--at {at} names a {kind} in {repository}, not a commit",
-            "Remediation: pass the commit itself — `git log --format=%H` in "
-            "the member lists them. A tree's or a blob's sha is part of a "
-            "commit and never one, and a pin is a commit or it is "
-            "nothing.") from missing
+        raise _names_no_commit("member-at-unknown", "--at", at, kind,
+                               repository, "the member") from missing
     raise Refusal(
         "member-at-unknown",
         f"--at {at} is not a commit any branch or tag of {repository} "
@@ -3912,6 +3962,49 @@ def _member_id_at(member: Path, commit: str, project: str,
             shown=f"{repository} @ {commit[:12]}:project.yaml")
 
 
+def _checked_bumped_id(family: Family, row: dict, commit: str,
+                       project_id: str) -> None:
+    """`member-duplicate-id` for a `bump` whose `--to` records, in the
+    member's own `project.yaml`, the `id` another row already records
+    (#541): the question `add` asks since #330 (`_checked_member_id`), asked
+    of the row `bump` writes.
+
+    `bump` READ THE ID AND NEVER ASKED IT. A member whose `project.yaml` at
+    `--to` records another member's id was committed, exit 0, and the
+    holder's own `validate-family.py` then refused it as
+    `member-duplicate-id`. So the dry run and the real run both ask it,
+    before the checkout, of the id `_member_id_at` reads from the member's
+    objects, and the real run asks it again of the id its checkout reads,
+    which is what the row records: a linked `project.yaml`, which only a
+    checkout reads through, is refused there and put back like any other
+    refusal after the first write (#365).
+
+    THE MEMBER'S OWN ROW IS NOT ASKED (`_row_recording`'s `besides`): the
+    bump replaces it, so the id it records today is no other project's.
+    Every other row is asked as `add` asks it, so `bump` refuses what the
+    gate would refuse and nothing it would pass.
+    """
+    project = str(row["project"])
+    held = _row_recording(family, project_id, besides=project)
+    if held is None:
+        return
+    repository = row.get("repository")
+    raise Refusal(
+        "member-duplicate-id",
+        f"{repository} at {commit[:12]} is already a member of "
+        f"{family.data.get('name')} under another name: its project.yaml "
+        f"there records id {project_id!r}, and the row {held['project']} "
+        f"pins {held.get('repository')} with that id. Bumping {project} to "
+        "it would pin one project twice, which `validate-family.py` refuses",
+        "Remediation: a family pins each project once. Pass `--to` a commit "
+        f"of {repository} whose project.yaml records an id no other row "
+        f"records. If {repository} and {held.get('repository')} are one "
+        f"project, `family.py remove --member {held['project']}` takes the "
+        "other row out first. Two projects that record one id are a fault in "
+        "one of their `project.yaml` files, mended in that project, not in "
+        "the family.")
+
+
 def _head_oid(root: Path, path: str) -> str | None:
     """The object HEAD records at `path` — for a gitlink, the commit — or
     None where HEAD records nothing there. A tree path, not a pathspec, so
@@ -3973,67 +4066,96 @@ def _print_trailers(trailers: list[str]) -> None:
 
 
 def _checked_to_names_a_commit(member: Path, path: str, row: dict,
-                               commit: str) -> None:
-    """`member-to-not-a-commit` for a `--to` that is 40 hex and names, in the
-    member's objects, something that is not a commit: an annotated tag, a
-    tree or a blob (#405). `bump` and `bump --dry-run` both ask it, after
-    the fetch and before the checkout, so the two runs make one refusal and
-    the holder is left byte for byte as it was.
+                               commit: str, fetched: bool) -> str:
+    """The COMMIT `--to` names in the member's objects: `--to` itself, or the
+    commit an annotated tag's own id names (#541), or the refusal saying why
+    there is none. `bump` and `bump --dry-run` both ask it, after the fetch
+    (`fetched` False when it failed) and before the dry run leaves or the
+    checkout, so the two runs go on with one commit or make one refusal,
+    and the holder is left byte for byte as it was.
 
-    AN ANNOTATED TAG'S OWN ID IS 40 HEX, and it is what `git rev-parse v2`
-    prints for a release tag. `COMMIT_RE` passed it, the checkout PEELED it
-    to the commit it names, which the gitlink then recorded, and the row
-    recorded the tag's id as typed: `bump` exited 0 with a commit the
-    holder's own `validate-family.py` refused as `member-gitlink-mismatch`,
-    and the dry run printed the two ids side by side on its `commit` and
-    `gitlink` lines.
+    AN ANNOTATED TAG'S OWN ID IS PEELED, as `add --at` peels one (Brett
+    Heap, 2026-10-14, on #541). It is 40 hex, and it is what `git rev-parse
+    v2` prints for a release tag. Once the checkout peeled it while the row
+    recorded the tag's id as typed, so `bump` committed a holder its own
+    `validate-family.py` refused as `member-gitlink-mismatch`; #405 made
+    both runs refuse it instead, naming the commit for the person to type.
+    A tag object's id fixes its content, so it names one commit for ever
+    and, unlike a tag NAME, cannot be moved. The caller goes on with that
+    commit, in both runs, so the gitlink, the row's `commit:`, the digest
+    and the commit message carry it and never the tag's id. `^{}` peels
+    through a tag of a tag too.
 
-    REFUSED, NOT PEELED, as `bump-leg.py` refuses the same `--to` for a leg:
-    its `validate-pins.py` goes red on the tag's id in the pin and the bump
-    is rolled back, exit 2. The pin is the id the person typed and the
-    `old -> new` line is what they read, so the refusal names the commit the
-    tag peels to (through a tag of a tag too, `^{}`) and the re-run is
-    theirs. A tree's or a blob's id, or a tag of one, is named for what it
-    is, as `add --at` names one (`member-at-unknown`); before, both runs
-    failed on it in git's words, exit 2, from the dry run's resolve or the
-    real run's checkout.
+    A TREE OR A BLOB IS NAMED AS ONE, and so is a tag of either, in `add
+    --at`'s words (`_names_no_commit`): its id is in the member, so "not
+    pushed" would send the person looking for a push that is not missing.
+    Before #405 both runs failed on it in git's words, exit 2.
 
-    AN ID THE MEMBER DOES NOT HOLD is not asked here. The dry run's resolve
-    and the real run's checkout fail on it in git's words, exit 2, as they
-    always have.
+    AN ID THE MEMBER DOES NOT HOLD AFTER THE FETCH is refused
+    `member-to-unknown` (#541), saying to push it first. The dry run's
+    resolve and the real run's checkout failed on it in git's words,
+    `fatal: reference is not a tree`, exit 2, which never said what was
+    wrong: the commonest such `--to` is a commit made in the member's
+    working clone beside the holder and not pushed yet, and the fetch of the
+    mount brings only what the member's remote has. When that fetch failed,
+    the refusal says so and does not claim the remote lacks it.
+
+    A TAG WHOSE COMMIT IS ON NO BRANCH is refused `member-to-unknown` too,
+    and so is that commit, while `add --at` pins the same tag's id. The
+    fetch here brings every branch and, by git's own rule, only the tags
+    that point into the history those branches bring; `add`'s bare clone
+    brings every tag. A `git push origin v2` without the branch makes one,
+    and the refusal's push to a branch is what lets `bump` pin it. Left as
+    it is: `bump-leg.py` refuses its twin the same way, as
+    `bump-leg-commit-not-on-remote`, and fetching every tag would write refs
+    the person's member did not have, which is a new act.
     """
+    repository = row.get("repository")
     try:
         kind = run(["git", "cat-file", "-t", commit], cwd=member)
     except CommandFailed:
-        return
-    if kind == "commit":
-        return
-    try:
-        peeled = run(["git", "rev-parse", "-q", "--verify", f"{commit}^{{}}"],
-                     cwd=member).lower()
-        names = run(["git", "cat-file", "-t", peeled], cwd=member)
-    except CommandFailed:
-        peeled, names = "", ""
-    repository = row.get("repository")
-    if names == "commit":
+        kind = None
+    if kind is None and fetched:
         raise Refusal(
-            "member-to-not-a-commit",
-            f"--to {commit} is an annotated tag in {repository}, not a "
-            f"commit; the commit it names is {peeled}",
-            f"Remediation: pass that commit, `--to {peeled}`. A pin is a "
-            "commit or it is nothing: checking the tag out would put "
-            f"{peeled[:12]} in the gitlink at {path} and the tag's own id in "
-            "the row, which `validate-family.py` refuses as "
-            "`member-gitlink-mismatch`.")
-    if kind != "tag":
-        what = f"names a {kind}"
-    elif names in ("tree", "blob"):
-        what = f"is an annotated tag of a {names}"
-    else:
-        what = "is an annotated tag"
+            "member-to-unknown",
+            f"--to {commit} is not a commit any branch of {repository} "
+            f"reaches: {path} fetched from its origin and holds no object "
+            "with that id",
+            f"Remediation: push it first, to a branch of {repository}, and "
+            "run the same command again. A pin the rest of the world cannot "
+            "fetch is a family the rest of the world cannot bootstrap. If it "
+            "is pushed, check the commit: it belongs to the member's "
+            "ASSEMBLY ROOT, not to one of its legs.")
+    if kind is None:
+        raise Refusal(
+            "member-to-unknown",
+            f"--to {commit} is not a commit {path} holds, and its fetch from "
+            f"its origin failed, so whether a branch of {repository} reaches "
+            "it is not known",
+            f"Remediation: push it first, to a branch of {repository}, if it "
+            f"is not pushed yet; make {repository} readable from here — if it "
+            "is PRIVATE, check `gh auth status` or your SSH key — and run the "
+            "same command again. A pin the rest of the world cannot fetch is "
+            "a family the rest of the world cannot bootstrap.")
+    if kind == "commit":
+        return commit
+    peeled, names = "", ""
+    if kind == "tag":
+        try:
+            peeled = run(["git", "rev-parse", "-q", "--verify",
+                          f"{commit}^{{}}"], cwd=member).lower()
+            names = run(["git", "cat-file", "-t", peeled], cwd=member)
+        except CommandFailed:
+            peeled, names = "", ""
+        if names == "commit":
+            return peeled
+    named = names if kind == "tag" else kind
+    if named in ("tree", "blob"):
+        raise _names_no_commit("member-to-not-a-commit", "--to", commit,
+                               named, repository, path)
     raise Refusal(
         "member-to-not-a-commit",
-        f"--to {commit} {what} in {repository}, not a commit",
+        f"--to {commit} is an annotated tag in {repository}, not a commit",
         "Remediation: pass the commit itself — `git log --format=%H` in "
         f"{path} lists them. A pin is a commit or it is nothing.")
 
@@ -4045,10 +4167,13 @@ def _bump_dry_run(family: Family, row: dict, path: str, commit: str,
     (#326): the answers a real `bump` gives, and no write.
 
     THE REAL RUN'S QUESTIONS, IN ITS ORDER, ASKED OF THE MEMBER'S OBJECTS.
-    `--to` is resolved as the checkout would take it (`^{commit}`, which is
-    what `git checkout` accepts), and one the member does not have after the
-    fetch is exit 2, where the real run's checkout fails. The manifest is
-    read by `_member_id_at` and the digest by `tree_digest`, which reads
+    `commit` is the one `_checked_to_names_a_commit` returned, which both
+    runs asked after the fetch: an annotated tag's own id is already peeled,
+    and an id the member does not hold is already refused (#541). It is
+    resolved as the checkout would take it (`^{commit}`, which is what `git
+    checkout` accepts). The manifest is read by `_member_id_at`, its id is
+    asked against the other rows by `_checked_bumped_id` as the real run
+    asks it (#541), and the digest is computed by `tree_digest`, which reads
     objects and never a checkout, so the digest printed is the one the real
     run computes, never a guess. The rows are `_bumped_rows`', and
     `family.rewritten` asks `family-members-unrecognised` without writing.
@@ -4078,6 +4203,8 @@ def _bump_dry_run(family: Family, row: dict, path: str, commit: str,
     linked = project_id is None
     if linked:
         project_id = str(row.get("id") or "")
+    else:
+        _checked_bumped_id(family, row, commit, project_id)
     digest = tree_digest(member, commit)
     new, rows = _bumped_rows(family, row, project_id, commit, digest)
     text = family.rewritten(rows)
@@ -4131,6 +4258,10 @@ def _bump_and_pin(family: Family, row: dict, path: str, commit: str,
     was = str((row.get("pin") or {}).get("commit") or "")
     project_id = _read_member_project(member, project,
                                       str(row.get("repository")))
+    # Asked again of THIS reading, which is the id the row records (#541),
+    # as `add` asks it of its mount's: a linked `project.yaml` is read
+    # through only here, and a refusal is put back like any other.
+    _checked_bumped_id(family, row, commit, project_id)
     digest = tree_digest(member, commit)
     _, rows = _bumped_rows(family, row, project_id, commit, digest)
     original = family.path.read_bytes()
@@ -4179,19 +4310,21 @@ def _checked_bump_target(family: Family, row: dict, path: str,
                          commit: str) -> None:
     """Every refusal the real `bump` can ask before its checkout, asked as
     `bump --dry-run` asks it and in its order (#365): the member's
-    `project.yaml` at `--to`, read from its objects (`_member_id_at`), and
+    `project.yaml` at `--to`, read from its objects (`_member_id_at`), the
+    id it records against the other rows (`_checked_bumped_id`, #541), and
     a `members:` block this tool will not rewrite.
 
-    THE REAL RUN ASKED BOTH AFTER ITS FIRST WRITE. A `--to` whose tree has no
-    `project.yaml` was refused `member-not-a-project` with the member left
-    checked out at `--to`, which the holder's own validator then reported,
-    while `bump --dry-run` refused the same commit and changed nothing. Asked
-    here, before the rollback is even recorded, the two runs refuse at the
-    same point in the same words, and the holder is byte for byte as it was.
-    A `--to` the member's objects do not hold is left to the checkout, which
-    fails on it in git's words, as it always has, before it writes anything;
-    a symbolic link is left to the read through the checkout, as the dry run
-    leaves it.
+    THE REAL RUN ASKED THEM AFTER ITS FIRST WRITE, OR NEVER. A `--to` whose
+    tree has no `project.yaml` was refused `member-not-a-project` with the
+    member left checked out at `--to`, which the holder's own validator then
+    reported, while `bump --dry-run` refused the same commit and changed
+    nothing; and an id another row records was committed. Asked here, before
+    the rollback is even recorded, the two runs refuse at the same point in
+    the same words, and the holder is byte for byte as it was. A `--to` the
+    member's objects do not hold never gets here: `_checked_to_names_a_commit`
+    refused it after the fetch (#541). A symbolic link is left to the read
+    through the checkout, as the dry run leaves it, and `_bump_and_pin` asks
+    the id of that reading.
     """
     member = family.root / path
     try:
@@ -4203,6 +4336,8 @@ def _checked_bump_target(family: Family, row: dict, path: str,
                                str(row.get("repository")))
     if project_id is None:
         project_id = str(row.get("id") or "")
+    else:
+        _checked_bumped_id(family, row, commit, project_id)
     # THE ROWS THE BUMP WRITES, not the rows the manifest has: a row with no
     # `path:` line is the member's own path by default (`_member_path`), and
     # only the row `_bumped_rows` makes for it spells one out to rewrite.
@@ -4286,10 +4421,21 @@ def cmd_bump(args) -> int:
         fetched = False
         print(f"  note: could not fetch {path} from its origin; the commit "
               "must already be in its object store", file=sys.stderr)
-    # WHAT `--to` NAMES IS ASKED OF THE FETCHED OBJECTS (#405), before the
-    # dry run leaves and before the checkout: a tag, a tree or a blob is
-    # refused by both runs alike, with nothing in the holder moved.
-    _checked_to_names_a_commit(member, path, row, commit)
+    # WHAT `--to` NAMES IS ASKED OF THE FETCHED OBJECTS (#405, #541), before
+    # the dry run leaves and before the checkout. From here on `commit` is
+    # the one it returns, in both runs: an annotated tag's own id is peeled
+    # to the commit it names, and said; an id the member does not hold, a
+    # tree or a blob is refused alike, with nothing in the holder moved.
+    # `suggested` keeps the id as typed: the real run's branch refusal named
+    # it before the fetch, and the dry run's `branch` line names the same.
+    # The line says WOULD BE PINNED: the dry run prints it, and so does a
+    # run refused by a question asked after it, and neither pins anything.
+    typed = commit
+    commit = _checked_to_names_a_commit(member, path, row, typed, fetched)
+    if commit != typed:
+        print(f"--to {typed[:12]} is an annotated tag in "
+              f"{row.get('repository')}; the commit it names, "
+              f"{commit[:12]}, is what would be pinned", flush=True)
     if args.dry_run:
         return _bump_dry_run(family, row, path, commit, args.trailer,
                              fetched, suggested)
@@ -4682,16 +4828,25 @@ def cmd_siblings(args) -> int:
 
     ONE IMPLEMENTATION, TWO ENTRY POINTS (Brett Heap, 2026-09-09, ruling 1b:
     *"One implementation, two entry points… No second code path."*). The
-    implementation is `templates/family-root/scripts/siblings.py`, the file a
-    holder CARRIES and its Makefile calls; this subcommand runs that same file
+    implementation is the HOLDER'S OWN `scripts/siblings.py`, the pinned copy
+    its Makefile's `siblings` target runs; this subcommand runs that same file
     against `--family-root`, exactly as the root `bootstrap` shim runs the
-    assembly root's `scripts/bootstrap.py`. That is what makes it work before
-    the holder is cloned anywhere else — the standard has the utility, the
-    holder is only where it usually lives.
+    assembly root's `scripts/bootstrap.py`: from a checkout of the standard,
+    against a holder anywhere on disk.
 
-    `runpy` rather than an import: the script is a `__main__` program that
-    ends in `sys.exit(main())`, so its exit code is the one this process
-    exits with, unchanged and unrewritten.
+    NOT THE STANDARD'S COPY (#543). It used to run this checkout's
+    `templates/family-root/scripts/siblings.py`, through `runpy`, so a holder
+    pinned at another shape ran other code under the two entry points, and
+    did so inside THIS process, whose `repo_shape` its file then imported in
+    place of the holder's own. So it runs as `make siblings` runs it: the
+    holder's file, by this interpreter, in a process of its own, standing in
+    the holder, with the holder's own `repo_shape.py` and `bootstrap.py`
+    beside it, and its exit code is the one this subcommand returns,
+    unchanged.
+
+    A HOLDER WITHOUT ONE IS REFUSED BY NAME, as its Makefile refuses (#489,
+    #503): `siblings-script-missing`, exit 2, before anything is cloned, in
+    the Makefile's words, which name `update-shape.py` and its `--add`.
     """
     root = Path(args.family_root).expanduser().resolve()
     if not (root / MANIFEST).is_file():
@@ -4701,18 +4856,38 @@ def cmd_siblings(args) -> int:
             "Remediation: `family.py init --org <org> --family <Name>` creates "
             "one; point --family-root at the HOLDER (the `<Family>/<Family>` "
             "clone), not at the family folder around it.")
-    if not SIBLINGS_SCRIPT.is_file():
+    script = root / SIBLINGS_SCRIPT
+    if not script.is_file():
         raise Refusal(
             "siblings-script-missing",
-            f"{SIBLINGS_SCRIPT} is missing from this checkout of the standard",
-            "Remediation: this subcommand runs the holder's own copy of that "
-            "file and has no second implementation to fall back on. Re-clone "
-            "openRepoShape, or run `make siblings` in the holder, which uses "
-            "its own copy.")
-    sys.argv = ["siblings", "--root", str(root),
-                *(["--dry-run"] if args.dry_run else [])]
-    runpy.run_path(str(SIBLINGS_SCRIPT), run_name="__main__")
-    return 0  # pragma: no cover - the script exits before returning here
+            f"family.py siblings needs {SIBLINGS_SCRIPT}, which this holder "
+            f"does not have: there is no {script}. It runs the holder's own "
+            "copy, as `make siblings` does, and has no second implementation "
+            "to fall back on, so nothing was cloned or fetched.",
+            "Remediation: update-shape.py copies a changed Makefile but adds "
+            "a new file only on the human's word, so a holder updated without "
+            f"--add {SIBLINGS_SCRIPT} lands here. From a checkout of "
+            "openRepoShape run `"
+            + shlex.join(["python3", "update-shape.py", "check", "--root",
+                          str(root)])
+            + f"`, which reports {SIBLINGS_SCRIPT} as upstream-added. When "
+            "the human says to take it, run the apply command it prints with "
+            f"--add {SIBLINGS_SCRIPT} added. If it reports copy-missing "
+            "instead, a pinned copy was deleted: restore it from this "
+            "holder's history rather than with --add.")
+    # STANDING IN THE HOLDER, AS MAKE STANDS THERE, so every word of the
+    # command is a constant and none is a value from this command line: the
+    # holder is the directory it runs in, and `--root .` names it. The child
+    # writes into this stdout but takes its encoding from its environment,
+    # not from the `reconfigure` `main()` did (#214): told this stdout's own
+    # encoding and a handler that cannot raise, it escapes what the stream
+    # cannot hold, as the in-process run did, instead of dying on an em dash.
+    sys.stdout.flush()
+    return subprocess.run(
+        [sys.executable or PYTHON, SIBLINGS_SCRIPT, "--root", ".",
+         *(["--dry-run"] if args.dry_run else [])],
+        cwd=str(root), check=False,
+        env=inherited_child_environment()).returncode
 
 
 # ---------------------------------------------------------------------------
@@ -4793,7 +4968,8 @@ def build_parser() -> argparse.ArgumentParser:
                           "never a leg")
     add.add_argument("--at", default=None, metavar="COMMIT",
                      help="pin this 40-hex commit instead of the member's "
-                          "current tip")
+                          "current tip (an annotated tag's own 40-hex id is "
+                          "peeled to the commit it names)")
     add.add_argument("--local-remote-dir", type=Path, default=None,
                      help="resolve the member to a bare repository here "
                           "instead of github.com (the TEST path)")
@@ -4819,7 +4995,9 @@ def build_parser() -> argparse.ArgumentParser:
     bump.add_argument("--member", required=True, metavar="PROJECT")
     bump.add_argument("--to", required=True, metavar="COMMIT",
                       help="the 40-hex commit to move the gitlink and the pin "
-                           "to, together")
+                           "to, together (an annotated tag's own 40-hex id is "
+                           "peeled to the commit it names, as `add --at` "
+                           "peels one)")
     bump.add_argument("--trailer", action="append", metavar='"KEY: VALUE"',
                       default=[], type=trailer_line,
                       help="append this `<Key>: <value>` line to the commit "

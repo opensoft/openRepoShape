@@ -472,7 +472,7 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
 
@@ -609,7 +609,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -688,10 +688,10 @@ sudo dnf install gh</code></pre></div>
           <p>Then <code>brew install git-filter-repo</code> only if you are ADOPTING an existing
           repository rather than scaffolding a new one.</p>
           <p>The stock <code>/bin/bash</code> is 3.2 and is enough: <code>setup.sh</code> and the
-          <code>openRepoShape</code> command use no syntax newer than that, and CI runs the whole
-          suite on <code>macos-latest</code>, parsing both there with <code>/bin/bash</code> itself.
-          That the login shell is zsh changes nothing &mdash; both entry points are run under
-          <code>bash</code> explicitly.</p>
+          <code>openRepoShape</code> command are written to use no syntax newer than that, though
+          CI runs on Linux only and no run of it checks them against bash 3.2. That the login
+          shell is zsh changes nothing &mdash; both entry points are run under <code>bash</code>
+          explicitly.</p>
           <h4>The tool offers the rest</h4>
           <p>The preflight names what is missing and, for <code>gh</code>, its login and its
           credential helper, prints the command for THIS machine and asks once &mdash; <code>Type yes to continue:</code> &mdash;
@@ -972,7 +972,8 @@ sudo dnf install gh</code></pre></div>
         it refuses, creating nothing, if anything stands at <code>&lt;into&gt;/Atlas</code>:</p>
         <div class="code" data-lang="sh"><pre><code>git clone --depth 1 https://github.com/opensoft/openRepoShape.git &lt;tmp-dir&gt;
 python3 scripts/validate-repository-naming.py --explain Atlas Atlas-spec Atlas-code
-python3 scaffold-project.py --org &lt;your-org&gt; --project Atlas --dry-run
+python3 scaffold-project.py --org &lt;your-org&gt; --project Atlas \
+    --visibility private --elected-by 'Your Name' --dry-run
 python3 scaffold-project.py --org &lt;your-org&gt; --project Atlas \
     --visibility private --elected-by 'Your Name'   # or public / internal
 mkdir -p &lt;into&gt;/&lt;Family&gt;   # --family only, and skipped when &lt;into&gt; IS &lt;Family&gt;
@@ -1021,7 +1022,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1056,7 +1057,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
 
@@ -1114,7 +1115,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <!-- reads README.md § The three legs: blob 6ebed796b7b135151ff3ca2c5280fb501e001acc -->
 
@@ -1350,7 +1351,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1450,7 +1451,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="current">
 
-      <!-- reads README.md § Keeping a project's shape current: blob 408c49c1603699fbe7ae74fa16c6330ec7860c10 -->
+      <!-- reads README.md § Keeping a project's shape current: blob 545639ebf5e9ab7837df5c012f216832dc7de56f -->
 
       <p class="eyebrow">Reference</p>
       <h2>Keeping a project&rsquo;s shape current</h2>
@@ -1493,8 +1494,12 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
         something to do. <code>apply</code> writes NONE of them unless <code>--add &lt;path&gt;</code>
         names one, per file, and names each file it adds in the line-ending block of an adopted
         root&rsquo;s own <code>.gitattributes</code> when that file carries #471&rsquo;s block;
-        <code>--add</code> refuses a path that is already pinned, one the target&rsquo;s lists do
-        not name, and one the root ALREADY has a file at.</li>
+        <code>--add</code> refuses a path that is already pinned
+        (<code>update-add-already-pinned</code>), one the target&rsquo;s lists do not name
+        (<code>update-add-not-upstream</code>), one with a symlink at or above it, which is never
+        written through (<code>update-add-symlink</code>), one with a file where a directory above
+        it goes (<code>update-add-not-a-directory</code>), and one the root ALREADY has a file at
+        (<code>update-add-would-overwrite</code>).</li>
       </ul>
       <p><code>--upstream</code> takes a path to a clone (offline) or an <code>owner/repo</code> it
       bare-clones itself; it defaults to the repository the pin names. <code>make bootstrap</code>
@@ -1508,7 +1513,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doctor">
 
-      <!-- reads README.md § Keeping a project's shape current: blob 408c49c1603699fbe7ae74fa16c6330ec7860c10 -->
+      <!-- reads README.md § Keeping a project's shape current: blob 545639ebf5e9ab7837df5c012f216832dc7de56f -->
 
       <p class="eyebrow">Reference</p>
       <h2>Is this repository compliant? <code>openRepoShape --doctor</code></h2>
@@ -1518,12 +1523,13 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       <div class="code" data-lang="sh"><pre><code>openRepoShape --doctor ../MedxEHR      # or: ./shape-doctor.py --root ../MedxEHR
 openRepoShape --doctor                 # the repository you are standing in
 ./shape-doctor.py --root ../MedxEHR --json</code></pre></div>
-      <p>It <strong>writes nothing into the repository and fetches nothing from it</strong>, and
-      it reimplements nothing. One flag writes at all, and it writes one file you named:
-      <code>--placement-plan</code>, below. It compares against the checkout it is RUN FROM, so
-      the verdict is offline. Installed, it clones the standard into a temporary directory and
-      KEEPS it, because its NEXT lines run from there: its last line names it, safe to delete
-      after they run.</p>
+      <p>It <strong>writes nothing into the repository but a <code>--placement-plan</code> file you
+      name, and fetches nothing from it</strong>, and it reimplements nothing. That flag, below, is
+      the one that writes at all, and it writes one file, at the path you give: a relative one
+      lands in the directory you stand in, inside the repository when you stand there. It
+      compares against the checkout it is RUN FROM, so the verdict is offline. Installed, it
+      clones the standard into a temporary directory and KEEPS it for the NEXT lines that name
+      it: its last line names it, safe to delete after they run.</p>
       <p>For an assembly root the rows are <strong>naming</strong>, <strong>manifest</strong> and
       <strong>pins</strong> (the project&rsquo;s OWN validators when it carries them &mdash; they
       are the pinned copies, which is the point &mdash; else the template copies, and the row says
@@ -1642,7 +1648,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 4e4093125221b1ce5d2369613635d189b461d36f -->
+      <!-- reads README.md § Starting a project in a new organisation: blob acdf65726ad6433d1d70386eb17f21b015673da0 -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 

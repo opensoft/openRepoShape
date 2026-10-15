@@ -71,8 +71,13 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            source, which the pull request is opened against, and the split
            branch one `execute` can make: none of its name where the split
            is pushed that the push cannot fast-forward, and none git cannot
-           hold beside it there or in the source. It prints what will happen
-           and changes nothing.
+           hold beside it there or in the source. Each pin's digest is
+           recomputed at its commit in the clone `plan` read it from, where
+           that clone is still on this machine, with no network: a partial
+           clone (`git clone --filter`), whose `git` would fetch what it
+           lacks, is not asked, and a NOTE names each pin it was not
+           rechecked for (#449). It prints what will happen and changes
+           nothing.
   execute  creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three and then opens the split's
@@ -242,11 +247,15 @@ PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
 #: pin; `check` finds, and `execute` refuses before any leg exists, a pin the
 #: plan does not record whole, a name alone among them (an old plan, or an
 #: edit). The manifest lists each product with its owner stripped, as the
-#: file is named.
+#: file is named. Where the clone `plan` read a digest from is still on this
+#: machine, and is no partial clone, `check` and `execute` recompute the
+#: digest there with `plan`'s own reader (`pin_digest_from_source`), which
+#: in such a clone reads no network, and find a commit or a digest edited
+#: after `plan` read them (#449).
 from shape_materialize import (  # noqa: E402
     PIN_ARG_RE, declared_pin_products, declared_pin_values, neutral_pin_path,
-    one_printable_line, pin_collisions, pin_variable_collisions,
-    refuse_colliding_pins,
+    one_printable_line, pin_collisions, pin_digest_from_source,
+    pin_variable_collisions, refuse_colliding_pins,
 )
 from repo_shape import SHA256_RE, repo_basename  # noqa: E402
 
@@ -258,11 +267,21 @@ PIN_FIELDS = (("product", "PIN_PRODUCT"), ("repository", "PIN_REPOSITORY"),
 #: The two a pin is a fact by. A pin without either is a name.
 PIN_RECORDED = ("commit", "tree_sha256")
 
-#: `check`'s findings about the plan's `pins:`.
+#: `check`'s findings about the plan's `pins:`, and the last of them about a
+#: path the root keeps where `execute` writes a pin: a declared pin's file
+#: (#273), or the shape's own pin (#524).
 PIN_UNRECORDED = "plan-pin-unrecorded"
 PIN_MALFORMED = "plan-pin-malformed"
 PIN_COLLIDES = "plan-pin-collides"
 ROOT_HOLDS_PIN = "plan-root-holds-pin"
+#: And about a pin the clone `plan` read its digest from answers for
+#: otherwise, or cannot answer for at all, at the plan's commit (#449).
+PIN_DIGEST_MISMATCH = "plan-pin-digest-mismatch"
+PIN_SOURCE_UNREADABLE = "plan-pin-source-unreadable"
+#: How `declared_pin_values` records where it read a digest: from a clone on
+#: this machine, `--pin-source` as typed, or from the forge.
+LOCAL_CLONE_RE = re.compile(r"local-clone \((?P<path>.+)\)")
+GH_DIGEST_SOURCE = "gh-api-tree-recursive"
 
 #: The comment `plan` writes above `pins:`.
 PINS_COMMENT = (
@@ -443,23 +462,40 @@ def _recorded_pins(plan: "Plan") -> dict[str, dict[str, str]]:
     return {product: values for _, product, values in _read_pins(plan)[0]}
 
 
+def _pin_files(plan: "Plan") -> list[tuple[str, str | None]]:
+    """`(path, product)` for each pin file `execute` writes, in the order
+    `place` writes them: each declared pin's, once, then the shape's own
+    pin, whose product is None (#524)."""
+    return [*((neutral_pin_path(product), product)
+              for product in dict.fromkeys(_declared_pins(plan))),
+            (SHAPE_PIN, None)]
+
+
 def _kept_pin_findings(plan: "Plan", tree: list) -> list[str]:
-    """A FINDING for each declared pin whose file a path the plan keeps in
-    the root already holds. The materializer writes the shape's pin beside
-    such a path, under `COLLISION_DIR`, as it writes any shape file the root
-    holds; for a pin that is no copy to merge but the wrong file, because the
-    root's own `validate-pins.py` reads `contracts/<product>-pin.yaml` and
-    would read the source's. Asked of a disk that keeps case and, where that
-    finds nothing, of one that ignores it."""
-    products = list(dict.fromkeys(_declared_pins(plan)))
-    kept = _kept_in_root(plan.entries, tree) if products else []
+    """A FINDING for each pin file a path the plan keeps in the root already
+    holds: a declared pin's (#273), or the shape's own pin (#524). The
+    materializer writes the pin beside such a path, under `COLLISION_DIR`,
+    as it writes any shape file the root holds; for a pin that is no copy to
+    merge but the wrong file at the pin's path, which the root reads there:
+    its own `validate-pins.py` reads `contracts/<product>-pin.yaml`, and
+    `execute`'s verification, `validate-pins.py` and `make bootstrap` read
+    `contracts/shape-pin.yaml`. Asked of a disk that keeps case and, where
+    that finds nothing, of one that ignores it.
+
+    THE SHAPE'S OWN PIN WAS NEVER ASKED (#524). A file the source keeps at
+    `contracts/shape-pin.yaml`, with a pin declared or without, or a link
+    there that leads to something, passed `check`; `execute` made and
+    pushed both legs, wrote the shape's pin beside it and failed its
+    verification as `adopt-shape-pin-unreadable`. A link there that leads
+    nowhere, which `place` writes the pin through, is named here too, and
+    not again by the walk (`_links_at_a_pin`)."""
+    kept = _kept_in_root(plan.entries, tree)
     if not kept:
         return []
     disks = ((_KeptTree(kept, fold=False), ""),
              (_KeptTree(kept, fold=True), _CASE_ASIDE))
     out = []
-    for product in products:
-        rel = neutral_pin_path(product)
+    for rel, product in _pin_files(plan):
         for disk, aside in disks:
             at = disk.at(rel)
             rows = [row for row in ([at] if at else disk.under(rel))
@@ -469,24 +505,204 @@ def _kept_pin_findings(plan: "Plan", tree: list) -> list[str]:
             path, mode, entry = rows[0]
             under = "" if entry == path else f" under the entry {_spelled(entry)}"
             where = "at" if at else "inside"
+            written = (_declared_pin_held(product) if product
+                       else _shape_pin_held(mode if at else None))
             out.append(
                 f"FINDING {ROOT_HOLDS_PIN}: the plan keeps {_kind_of(mode)} "
                 f"{_spelled(path)} in the assembly root{under}, {where} "
-                f"`{rel}`{aside}, where `execute` writes the pin the plan "
-                f"declares on `{product}`. The shape's pin would be written "
-                f"beside it, under `{COLLISION_DIR}/`, and the root's own "
-                "`validate-pins.py` would read the source's file as that "
-                f"pin: {_fix_the_kept_path(entry)}.")
+                f"`{rel}`{aside}, where `execute` writes {written}: "
+                f"{_fix_the_kept_path(entry)}.")
             break
     return out
+
+
+def _declared_pin_held(product: str) -> str:
+    """What `plan-root-holds-pin` says of a declared pin's file (#273)."""
+    return (f"the pin the plan declares on `{product}`. The shape's pin would "
+            f"be written beside it, under `{COLLISION_DIR}/`, and the root's "
+            "own `validate-pins.py` would read the source's file as that pin")
+
+
+def _shape_pin_held(mode: str | None) -> str:
+    """What `plan-root-holds-pin` says of the shape's own pin (#524), where
+    the root keeps an entry of `mode` AT it, or, with None, a directory
+    there."""
+    found = "directory" if mode is None else _kind_of(mode).split()[-1]
+    through = (", or written through it where it leads nowhere"
+               if mode == SYMLINK_MODE else "")
+    return ("the shape's own pin: the openRepoShape commit the root's copies "
+            "came from and each copy's digest, which `execute`'s "
+            "verification, the root's own `validate-pins.py` and `make "
+            "bootstrap` read at that path. The split would hold the source's "
+            f"{found} there, and the shape's pin beside it, under "
+            f"`{COLLISION_DIR}/`{through}")
 
 
 def _pin_findings(plan: "Plan", tree: list) -> list[str]:
     """Every FINDING about the plan's pins: each entry `execute` cannot
     write a pin file from, two pins at one file or one at a file the shape
     writes, two whose products one `SHAPE_PIN_SOURCE_<PRODUCT>` names
-    (#275), and a path the root keeps where a pin is written."""
+    (#275), and a path the root keeps where a pin is written, the shape's
+    own among them (#524)."""
     return _read_pins(plan)[1] + _kept_pin_findings(plan, tree)
+
+
+# ---------------------------------------------------------------------------
+# A pin's digest, recomputed where `plan` read it (#449)
+# ---------------------------------------------------------------------------
+#
+# `plan` reads each pin's digest and records it beside the commit, and the
+# comment it writes above `pins:` says a commit or a digest edited there is one
+# nobody read. `check` held the two to the form `plan` writes them in and to
+# nothing else, so an edit of either -- a typo, a paste from another pin --
+# checked ok, `execute` wrote the pin file from it and said `adoption
+# verified`, and the root's own `validate-pins.py` then found
+# `neutral-pin-digest-mismatch` on its first run, after both legs existed.
+#
+# WHERE THE CLONE `plan` READ THE DIGEST FROM IS STILL HERE, the digest is
+# recomputed there at the plan's commit, by `plan`'s own reader, so the same
+# words answer for the same clone: a digest that differs is
+# `plan-pin-digest-mismatch`, and a clone that cannot answer for the commit
+# (it does not hold it, or the path is no clone any more) is
+# `plan-pin-source-unreadable`. The digest is a function of the commit, so a
+# clone that holds the commit recomputes the digest `plan` read, whichever
+# clone it is. A commit and a digest both moved to another commit are a pin
+# of that commit, and that is the pin `execute` writes.
+#
+# NOTHING ELSE IS ASKED. `check` and `execute` read no network for a pin, and
+# `execute --local-remote-dir` needs no `gh`, so a digest `gh api` read is
+# not read again, and a clone no longer at its path is not looked for. Nor is
+# a partial clone (`git clone --filter`) asked: `git` there fetches an object
+# the clone lacks from its promisor remote, a commit edited into the plan
+# among them, so whether it is one is read from its own config, which reads
+# no network (`_a_partial_clone`). Each such pin gets one NOTE saying its
+# digest was not rechecked here; the root's own `validate-pins.py` recomputes
+# it wherever it can read the product. A relative path is read from the
+# directory `check` or `execute` runs in, as `plan` read it from the one it
+# ran in, and every sentence naming one says where that is
+# (`_read_from_here`). Anything else at the path that cannot answer -- a
+# commit it lacks, a directory that is no clone, a file -- is
+# `plan-pin-source-unreadable`, as `validate-pins.py` finds a source it reads
+# that cannot answer. `check` and `execute` ask this through
+# `_entry_findings`, the one list.
+
+#: Why a pin's digest `gh api` read was not rechecked.
+NOT_RECHECKED_GH = "`plan` read it with `gh api`, and `check` reads no network"
+
+
+def _recorded_clone(how: str) -> str | None:
+    """The path of the clone a pin's `digest_source:` says `plan` read its
+    digest from, as `--pin-source` was typed, or None where it names none."""
+    clone = LOCAL_CLONE_RE.fullmatch(how)
+    return clone["path"] if clone else None
+
+
+def _read_from_here(clone: str) -> str:
+    """` (read from this directory as <absolute path>)` for a relative clone
+    path, which `check` and `execute` read from the directory they run in,
+    as `plan` read it from the one it ran in; nothing for an absolute one."""
+    if Path(clone).is_absolute():
+        return ""
+    return f" (read from this directory as {_shown(os.path.abspath(clone))})"
+
+
+def _a_partial_clone(clone: Path) -> bool:
+    """Whether `git` in `clone` fetches an object the clone lacks from a
+    promisor remote (`git clone --filter`): read from the clone's own
+    config, with no network. A path that is no clone is not one."""
+    try:
+        proc = subprocess.run(
+            ["git", "config", "--local", "--get-regexp",
+             r"^(extensions\.partialclone|remote\..*\.promisor)$"],
+            cwd=str(clone), capture_output=True, check=False)
+    except OSError:
+        return False
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def _why_not_rechecked(how: str) -> str | None:
+    """Why the digest `plan` read as `how` says cannot be recomputed here, or
+    None where the clone it names is still at its path and is no partial
+    clone. Only nothing there is gone, what `plan`'s reader calls "no such
+    directory": anything else at the path, a file or a directory that cannot
+    be entered among it, is asked, and the reader says why it cannot answer.
+    A partial clone is not asked, because `git` there would fetch what it
+    lacks over the network."""
+    clone = _recorded_clone(how)
+    if clone is None:
+        return (NOT_RECHECKED_GH if how == GH_DIGEST_SOURCE else
+                f"`digest_source: {_shown(how)}` names no clone `plan` read "
+                "it from")
+    try:
+        Path(clone).stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return (f"the clone `plan` read it from is not at {_shown(clone)}"
+                f"{_read_from_here(clone)}")
+    except OSError:
+        # There: `pin_digest_from_source` names why it cannot answer.
+        return None
+    if _a_partial_clone(Path(clone)):
+        return (f"the clone at {_shown(clone)}{_read_from_here(clone)} is a "
+                "partial clone (`git clone --filter`), whose `git` fetches "
+                "what it lacks over the network, and `check` reads no "
+                "network")
+    return None
+
+
+def _recomputed_pin_finding(said: str, values: dict) -> str | None:
+    """The FINDING for a pin whose digest the clone `plan` read it from,
+    still at its path, recomputes otherwise at the plan's commit or cannot
+    recompute there, with `plan`'s own reader; None where it recomputes."""
+    clone = _recorded_clone(values["PIN_DIGEST_SOURCE"])
+    repository, commit, recorded = (values["PIN_REPOSITORY"],
+                                    values["PIN_COMMIT"],
+                                    values["PIN_TREE_SHA256"])
+    try:
+        actual = pin_digest_from_source(Path(clone), commit, repository)
+    except Refusal as exc:
+        return (f"FINDING {PIN_SOURCE_UNREADABLE}: {said} records `commit: "
+                f"{commit}`, and the clone its `digest_source:` names"
+                f"{_read_from_here(clone)} cannot answer for it: "
+                f"{_shown(exc.detail)}. Either the commit was edited after "
+                "`plan` read it, or that path no longer holds the clone "
+                "`plan` read it in: run `check` where `plan` ran, or `git "
+                f"fetch` in that clone, or {_pin_fix(repository)}.")
+    if actual == recorded:
+        return None
+    return (f"FINDING {PIN_DIGEST_MISMATCH}: {said} records `commit: "
+            f"{commit}` and `tree_sha256: {recorded}`, and the clone `plan` "
+            f"read the digest from, {_shown(clone)}{_read_from_here(clone)}, "
+            f"recomputes {actual} at that commit: one of the two was edited "
+            "after `plan` read them, and the root's own `validate-pins.py` "
+            "would refuse the pin file `execute` writes from them "
+            f"(`neutral-pin-digest-mismatch`): {_pin_fix(repository)}.")
+
+
+def _pin_digest_findings(plan: "Plan") -> tuple[list[str], list[str]]:
+    """`(findings, notes)` for each pin `execute` would write: a FINDING for
+    a digest the clone `plan` read it from recomputes otherwise at the
+    plan's commit, or cannot recompute there; otherwise one NOTE for `check`
+    to print, that the digest recomputes there, or that it was not
+    rechecked here and why."""
+    findings: list[str] = []
+    notes: list[str] = []
+    for said, _, values in _read_pins(plan)[0]:
+        how = values["PIN_DIGEST_SOURCE"]
+        why = _why_not_rechecked(how)
+        found = None if why else _recomputed_pin_finding(said, values)
+        if why:
+            notes.append(f"NOTE {said}: digest NOT rechecked here: {why}. The "
+                         "root's own `validate-pins.py` recomputes it "
+                         "wherever it can read the product.")
+        elif found:
+            findings.append(found)
+        else:
+            clone = _recorded_clone(how)
+            notes.append(f"NOTE {said}: digest recomputes at "
+                         f"{values['PIN_COMMIT'][:12]} in the clone `plan` "
+                         f"read it from, {_shown(clone)}"
+                         f"{_read_from_here(clone)}.")
+    return findings, notes
 
 
 PLAN_KIND = "adoption-plan"
@@ -2187,14 +2403,17 @@ MANIFEST_FIELDS = {TRACKING_KEY: "TRACKING_BRANCH",
                    VISIBILITY_KEY: "VISIBILITY", ELECTED_BY_KEY: "ELECTED_BY",
                    ELECTED_ON_KEY: "ELECTED_ON", REFERENCE_KEY: "REFERENCE"}
 LEG_PATH_PLACEHOLDERS = {"spec": "SPEC_PATH", "code": "CODE_PATH"}
-#: How `plan` fills a flag nobody passed, where the value it fills in can be
-#: one the loader misreads: a sentence about it names where it came from,
-#: as `checked_value` names the same default (the tracking branch, #479).
-#: Not the elector it takes from `git config user.name`: the manifest writes
-#: that between double quotes, which `render` spells with `double_quoted`
-#: (#284), and no elector is misread there.
+#: How `plan` fills a flag nobody passed: a sentence about the value it fills
+#: in names where it came from (`_flag_named`), as `checked_value` names the
+#: tracking branch (#479), and never as a flag the person did not type. #181's
+#: misread rule asks only about a value the loader can read as something else,
+#: and no elector is one: the manifest writes it between double quotes, which
+#: `render` spells with `double_quoted` (#284). The validator's rule (#261)
+#: asks about every value, so an elector `git config user.name` leaves empty
+#: is named by where it came from as well (#529).
 FLAG_DEFAULTS = {"id": "--project lowercased",
-                 TRACKING_KEY: "the source's default branch"}
+                 TRACKING_KEY: "the source's default branch",
+                 ELECTED_BY_KEY: "`git config user.name`"}
 #: How a sentence names the id `execute` derives when the plan sets none:
 #: when it has no `id:`, or an `id:` with no value (`null`, `~` or nothing,
 #: as `main`'s `plan --id null` wrote it), which `Plan.get` reads alike.
@@ -2388,6 +2607,18 @@ def manifest_misreads(fields) -> list[str]:
     return problems
 
 
+def _flag_named(key: str, given: set) -> str:
+    """`key`'s flag as a sentence names it: `--elected-by` when the person
+    passed it (`key` is in `given`), and, where `plan` fills the flag in by
+    itself (`FLAG_DEFAULTS`) and nobody passed it, where the value came from:
+    `--elected-by (not given, so `git config user.name`)`. A refusal of a
+    value `plan` chose must not point at a flag nobody typed (#529)."""
+    spelled = "--" + key.replace("_", "-")
+    if key in FLAG_DEFAULTS and key not in given:
+        spelled += f" (not given, so {FLAG_DEFAULTS[key]})"
+    return spelled
+
+
 def _flag_fields(args, given: set, pins: dict, source: Source,
                  planned: "Plan", naming: NamingPolicy) -> list[tuple]:
     """`plan`'s values as it is about to record them, each named by its flag,
@@ -2404,10 +2635,7 @@ def _flag_fields(args, given: set, pins: dict, source: Source,
     (#479). `plan` records either, and notes one that is no branch of the
     source."""
     def flag(key: str) -> str:
-        spelled = "--" + key.replace("_", "-")
-        if key in FLAG_DEFAULTS and key not in given:
-            spelled += f" (not given, so {FLAG_DEFAULTS[key]})"
-        return spelled
+        return _flag_named(key, given)
 
     fields = [_field(flag("id"), ID_PLACEHOLDER, args.id)]
     fields += [_field(flag(key), placeholder, getattr(args, key))
@@ -2841,8 +3069,7 @@ def _checked_plan_inputs(args, source: Source,
     # `--elected-by` is below, and not as a flag the person never passed.
     given = args.tracking_branch is not None
     args.tracking_branch = checked_value(
-        "--tracking-branch" if given else
-        "--tracking-branch (not given, so the source's default branch)",
+        _flag_named(TRACKING_KEY, {TRACKING_KEY} if given else set()),
         args.tracking_branch if given else source.branch)
     # The ONE question first -- spelling, Git's and Windows's names, then the
     # alphabet `checked_value` allows -- so `spec/` is refused here with the
@@ -2902,8 +3129,7 @@ def _checked_plan_inputs(args, source: Source,
     args.reference = args.reference or default_reference(args.elected_on)
     # A value `plan` filled in by itself is named by where it came from, as
     # #181 names one, and not as a flag the person never passed.
-    elector = ("--elected-by" if args.elected_by else
-               "--elected-by (not given, so `git config user.name`)")
+    elector = _flag_named(ELECTED_BY_KEY, flags_given)
     args.elected_by = args.elected_by or _elector()
     # Before the plan is written, in the words `check` would use (#255): a
     # value `execute` writes into a file must be text one can hold. The
@@ -2931,7 +3157,8 @@ def _checked_plan_inputs(args, source: Source,
     # exists (#181); since #259 and #514 that is only a value on a line
     # written bare, so every value that refusal names is one `execute` would
     # write and end `adoption verified` with, as its remediation says.
-    planned = _refuse_unholdable_values(args, names, pins, naming)
+    planned = _refuse_unholdable_values(args, flags_given, names, pins,
+                                        naming)
     _refuse_misread_values(args, flags_given, pins, source, planned, naming)
     return names, pins
 
@@ -3025,10 +3252,20 @@ MANIFEST_PLAN_KEYS = {
     "ORG": "org",
 }
 
-#: And how `plan` names the same values: the flag a person typed, which is
-#: the key, dashed, as `_flag_fields` spells #181's.
-MANIFEST_FLAGS = {placeholder: "--" + key.replace("_", "-")
-                  for placeholder, key in MANIFEST_PLAN_KEYS.items()}
+
+def _manifest_flag_names(given: set) -> dict[str, str]:
+    """How `plan` names each value the manifest records: by the flag that
+    gives it, as `_flag_fields` spells #181's, and a value `plan` filled in
+    when its flag is not in `given` by where it came from (`_flag_named`,
+    #529), so the validator's sentence never points at a flag nobody typed."""
+    return {placeholder: _flag_named(key, given)
+            for placeholder, key in MANIFEST_PLAN_KEYS.items()}
+
+
+#: And the same names when the person typed every flag: the key, dashed. No
+#: production code asks for this table any more (`_refuse_unholdable_values`
+#: asks `_manifest_flag_names` for the flags given); the tests pin it.
+MANIFEST_FLAGS = _manifest_flag_names(set(FLAG_DEFAULTS))
 
 #: The validator's findings about a leg's mount path, which `check` already
 #: reports as `plan-bad-leg-path` and `plan-leg-path-collides` from the same
@@ -3189,7 +3426,7 @@ def _named_as_read(plan: Plan) -> dict[str, str]:
     return named
 
 
-def _refuse_unholdable_values(args, names: dict, pins: dict,
+def _refuse_unholdable_values(args, given: set, names: dict, pins: dict,
                               naming: NamingPolicy) -> "Plan":
     """`plan` refuses, before it writes a file, what `check` would find in the
     plan it is about to write (#261): the three repository names it derives,
@@ -3197,12 +3434,15 @@ def _refuse_unholdable_values(args, names: dict, pins: dict,
     255 characters planned, then `check` refused `legs.spec`), and the
     manifest's values, through the one question `check` asks of them. It
     returns that plan, built once (`_flag_plan`), for #181's question to ask
-    of the same values (`_refuse_misread_values`)."""
+    of the same values (`_refuse_misread_values`). `given` says which flags
+    the person passed: a value `plan` filled in by itself, an elector
+    `git config user.name` left empty, is named by where it came from
+    (#529)."""
     plan = _flag_plan(args, names, pins)
     values = _manifest_values(plan, naming)
     if values is not None:
         refuse_manifest_values(
-            "adopt", values, naming, MANIFEST_FLAGS,
+            "adopt", values, naming, _manifest_flag_names(given),
             "No plan was written.", misreads=False)
     return plan
 
@@ -3719,8 +3959,9 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
         findings += _root_shape_findings(plan, tree)
         # THE PINS, LAST (#273): each `pins:` entry `execute` cannot write a
         # pin file from, two pins at one file, and a path the root keeps
-        # where a pin is written. Each finding names the `plan` that records
-        # the pin whole. A leg mounted over a pin's file is
+        # where a pin is written, the shape's own pin among them (#524).
+        # Each finding about an entry names the `plan` that records the pin
+        # whole. A leg mounted over a pin's file is
         # `plan-leg-path-collides`, above, with the shape's own paths.
         findings += _pin_findings(plan, tree)
     return findings
@@ -5276,9 +5517,11 @@ def _entry_findings(plan: Plan, source: Source,
     """Every FINDING `check` prints about the plan's ENTRIES, in its order,
     what it prints once after them, and the NOTEs it prints beside them:
     each entry's path, then coverage, then each entry's `leg:`, the two
-    mount paths and what the root keeps where the shape writes, then each
-    value `execute` would write into the project's YAML for its loader to
-    read back as something else (#181), then the source's own submodules,
+    mount paths and what the root keeps where the shape writes, the pins,
+    then each pin's digest the clone `plan` read it from recomputes
+    otherwise (#449), then each value `execute` would write into the
+    project's YAML for its loader to read back as something else (#181),
+    then the source's own submodules,
     then each symlink the plan keeps in the root that a shape file cannot
     be written through (#178, #183), then each value `execute` writes into
     a file that no file can hold (#255), then what the project's own
@@ -5359,6 +5602,10 @@ def _entry_findings(plan: Plan, source: Source,
                                       for e in plan.entries],
                                      [path for path, _, _, _ in tree])
                 + _leg_findings(plan, tree))
+    # Beside the pins' other findings, which `_leg_findings` lists last: a
+    # digest the clone `plan` read it from recomputes otherwise (#449).
+    digest_findings, pin_notes = _pin_digest_findings(plan)
+    findings += digest_findings
     (split, split_remediation), (moved, moved_remediation), notes = \
         _submodule_findings(plan, source, tree, local_remote_dir)
     unwritable_findings, unwritable_remediation = _value_findings(plan)
@@ -5385,7 +5632,7 @@ def _entry_findings(plan: Plan, source: Source,
             + ([MANIFEST_MISREAD_REMEDIATION] if misread else [])
             + split_remediation + unwritable_remediation + value_remediation
             + tracking_remediation + moved_remediation + field_remediation,
-            notes)
+            pin_notes + notes)
 
 
 # ---------------------------------------------------------------------------
@@ -5778,20 +6025,18 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     # Each pin `execute` writes, as the plan records it (#273): a pin it
-    # cannot write is a finding, printed after this. NOT READ AGAIN, by
-    # design: `check` and `execute` read no network for a pin, so a commit
-    # or a digest edited into the plan is written as it stands, and the
-    # root's own gate is what recomputes it (#273's review, S3).
+    # cannot write is a finding, printed after this. Whether its digest was
+    # recomputed is said once per pin with the NOTEs `_entry_findings`
+    # returns: it recomputes, or it was not rechecked here, where the clone
+    # `plan` read it from is gone or partial or `gh api` read it, because
+    # `check` and `execute` read no network for a pin (#273's review, S3;
+    # #449).
     recorded = _recorded_pins(plan)
     for product, values in recorded.items():
         print(f"  write {neutral_pin_path(product)}: "
               f"{values['PIN_REPOSITORY']} @ {values['PIN_COMMIT'][:12]} tree "
               f"{values['PIN_TREE_SHA256'][:12]}… "
               f"({_shown(values['PIN_DIGEST_SOURCE'])})")
-    if recorded:
-        print("  each pin as `plan` read it, not read again here: the root's "
-              "own `validate-pins.py` recomputes its digest wherever it can "
-              "read the product")
     print("  the source is never deleted, never renamed, never force-pushed")
     print(_topics_line(topic, local))
     for item in _plan_follow_ups(plan):
@@ -5849,7 +6094,10 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 # them, a link that only a pin's file runs through passed `check`, and
 # `execute` stopped at it after both legs; and a link to a pin's file was
 # taken to lead nowhere, though `place` meets the pin there. A symlink AT a
-# pin's file is #273's `plan-root-holds-pin`, said once there.
+# pin's file is #273's `plan-root-holds-pin`, said once there, and so is one
+# AT the shape's own pin, wherever it leads (#524): where it leads to
+# something, `place` writes the shape's pin beside it and the root's
+# `contracts/shape-pin.yaml` is the source's link, which no walk refuses.
 
 #: The finding for a symlink the plan keeps in the root that the shape cannot
 #: write through.
@@ -6370,20 +6618,20 @@ def _links_at_a_copy(plan: Plan, tree: list) -> set[str]:
 
 
 def _links_at_a_pin(plan: Plan, tree: list) -> set[str]:
-    """Each symlink the plan keeps AT the file a declared pin is written to,
-    `contracts/<product>-pin.yaml`, that #273's `plan-root-holds-pin` names
-    (`_kept_pin_findings`): the walks follow each pin's file too, and the
-    link is not said again by them. Asked as `_kept_pin_findings` asks it,
-    in `_leg_findings`, of a plan whose `legs` it can read: of each declared
-    pin, on a disk that keeps case and, where that finds nothing there, on
+    """Each symlink the plan keeps AT a file a pin is written to, a declared
+    pin's `contracts/<product>-pin.yaml` or the shape's own
+    `contracts/shape-pin.yaml`, that #273's `plan-root-holds-pin` names
+    (`_kept_pin_findings`, #524): the walks follow each pin's file too, and
+    the link is not said again by them. Asked as `_kept_pin_findings` asks
+    it, in `_leg_findings`, of a plan whose `legs` it can read: of each pin
+    file, on a disk that keeps case and, where that finds nothing there, on
     one that ignores it."""
-    products = list(dict.fromkeys(_declared_pins(plan)))
-    if not products or not isinstance(plan.legs, dict):
+    if not isinstance(plan.legs, dict):
         return set()
     kept = _kept_in_root(plan.entries, tree)
     disks = (_KeptTree(kept, fold=False), _KeptTree(kept, fold=True))
     named: set[str] = set()
-    for rel in map(neutral_pin_path, products):
+    for rel, _ in _pin_files(plan):
         # The disk `_kept_pin_findings` names its row from.
         disk = next((one for one in disks if _holds_a_pin(one, rel)), None)
         at = disk.at(rel) if disk else None
@@ -6419,8 +6667,8 @@ def _root_symlink_findings(plan: Plan, source: Source,
     this check's, because #262's rule follows no link. A symlink AT
     `project.yaml` is #305's `plan-root-blocks-manifest`, which
     `_shape_blocks` reports the same way, and is not said again either; nor
-    is a symlink AT a declared pin's file, #273's `plan-root-holds-pin`
-    (`_links_at_a_pin`).
+    is a symlink AT a declared pin's file or AT the shape's own pin, #273's
+    `plan-root-holds-pin` (`_links_at_a_pin`, #524).
 
     A walk that stops at a symlink with an empty target is #303's to say:
     `plan-empty-symlink` names every such symlink in the source, first in
@@ -6501,8 +6749,10 @@ class _SymlinkProbe:
                 # user cannot write (J4 of #183's re-verify). Taken as a disk
                 # that holds symlinks, `check` prints the finding it printed
                 # before B-OFF for a link AT a path that a walk cannot follow,
-                # and `execute` refuses with it, where both would otherwise
-                # end in a traceback.
+                # beside `adopt-work-dir-unwritable` (#524), and
+                # `_refuse_what_check_finds` refuses with it, where both
+                # would otherwise end in a traceback. `execute` itself
+                # refuses such a directory before it gets here (#524).
                 self._answer = True
         return self._answer
 
@@ -6564,9 +6814,23 @@ def cmd_check(args) -> int:
         print(f"\n{len(mistyped)} finding(s) in {plan.path}", file=sys.stderr)
         return 1
     work_root = _work_root(args)
-    source = plan.open_source(args.source, work_root)
+    # Asked before the source is opened, as `execute` asks it (#524). An
+    # `org/repo` source is cloned into the work directory, so where that
+    # directory cannot be written there is no source to read: refused as
+    # `execute` refuses it, where it ended in a PermissionError traceback.
+    unwritable = _unwritable_work_dir(args, work_root)
+    try:
+        source = plan.open_source(args.source, work_root)
+    except OSError:
+        if not unwritable:
+            raise
+        raise Refusal(WORK_DIR_UNWRITABLE, unwritable,
+                      f"Remediation: {WORK_DIR_FIX}") from None
     naming = NamingPolicy.load(NAMING_POLICY)
     findings: list[str] = []
+    if unwritable:
+        findings.append(
+            f"FINDING {WORK_DIR_UNWRITABLE}: {unwritable}. {WORK_DIR_FIX}")
     # FIRST, because it is said where work starts; it is never one of the
     # findings below and never moves this command's exit code.
     _print_triad_advisory(source.path,
@@ -7024,6 +7288,54 @@ def _refuse_an_occupied_work_dir(work_root: Path, names: dict,
             "Remediation: no leg repository was created and nothing was "
             "pushed. Pass a --work-dir that is new or empty, or none: without "
             "one, each run makes a new one.")
+
+
+#: `check`'s finding, and the code `execute` refuses it under, for a
+#: `--work-dir` this user cannot write in (#524); and what both say to do.
+WORK_DIR_UNWRITABLE = "adopt-work-dir-unwritable"
+WORK_DIR_FIX = ("Pass a --work-dir this user can write in, or none: without "
+                "one, each run makes a new one.")
+
+
+def _unwritable_work_dir(args, work_root: Path) -> str | None:
+    """Why this run cannot build in the `--work-dir` it was given, or None:
+    a directory made in it, and removed again, could not be (#524).
+
+    `_work_root` only makes the directory, and what `execute` builds there,
+    the legs and the split (`BUILT_IN`), it builds only after
+    `_create_leg_remotes` has made both leg repositories. So with a
+    `--work-dir` this user cannot write in (`chmod 500`), `check` said `plan
+    ok`, and `execute` made and pushed both legs and stopped `extracting the
+    spec leg`, exit 2, as on main at 8beb3d92 and bfed143. Each command now
+    asks the directory itself, as `execute` will use it: `execute` refuses
+    it first, before it opens the source (an `org/repo` source is cloned
+    there), and `check` names it beside the plan's findings, so the two
+    agree. The probe has a name of its own (`tempfile.mkdtemp`), so it
+    meets nothing an earlier run left there, and it is removed again.
+
+    Without `--work-dir`, `_work_root` makes a new directory, which this
+    user owns and can write in, and nothing is asked."""
+    if not getattr(args, "work_dir", None):
+        return None
+    try:
+        os.rmdir(tempfile.mkdtemp(prefix="write-probe-", dir=work_root))
+    except OSError as exc:
+        return (f"--work-dir {_spelled(str(work_root))} cannot be written: "
+                "making a directory in it, and removing it again, failed "
+                f"({exc.strerror or exc}), and `execute` builds "
+                f"{_and_listed(list(BUILT_IN.values()))} there, only after "
+                "it has made both leg repositories")
+    return None
+
+
+def _refuse_an_unwritable_work_dir(args, work_root: Path) -> None:
+    """Refuse `_unwritable_work_dir`'s `--work-dir`, before any leg
+    repository exists (#524)."""
+    unwritable = _unwritable_work_dir(args, work_root)
+    if unwritable:
+        raise Refusal(WORK_DIR_UNWRITABLE, unwritable,
+                      "Remediation: no leg repository was created and "
+                      f"nothing was pushed. {WORK_DIR_FIX}")
 
 
 def _why_occupied(built: list[tuple[str, str]], names: dict,
@@ -8212,6 +8524,8 @@ def cmd_execute(args) -> int:
     plan = Plan.load(Path(args.plan))
     _refuse_a_mistyped_plan(plan)
     work_root = _work_root(args)
+    # Before the source is opened, so before any leg exists (#524).
+    _refuse_an_unwritable_work_dir(args, work_root)
     source = plan.open_source(args.source, work_root)
     naming = NamingPolicy.load(NAMING_POLICY)
     _require_filter_repo()
