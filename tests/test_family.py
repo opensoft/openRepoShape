@@ -404,15 +404,24 @@ def test_init_plans_the_topic_and_skips_it_against_local_remotes(family):
     assert "gh repo edit" not in family["init"].stdout
 
 
-def test_init_dry_run_plans_the_gh_topic_command_for_a_real_org(tmp_path):
+def test_init_dry_run_plans_the_gh_topic_command_for_a_real_org(
+        tmp_path, monkeypatch, capsys):
     """No `--local-remote-dir`, so the plan is the REAL one — and a dry run
-    prints it before anything is created, so this needs no network either."""
-    result = run_script(FAMILY, "init", "--org", ORG, "--family", "Contoso",
+    prints it before anything is created. It also asks whether the holder
+    exists (#537), which against GitHub is `gh repo view`: asked in process
+    here, of a stand-in that says it does not, so no `gh` is run."""
+    module = family_module()
+    asked = []
+    monkeypatch.setattr(module, "_remote_is_empty",
+                        lambda repository: asked.append(repository))
+    code = module.main(["init", "--org", ORG, "--family", "Contoso",
                         "--created-by", "Test Human",
-                        "--work-dir", str(tmp_path / "work"), "--dry-run")
-    assert result.returncode == 0, result.stderr
+                        "--work-dir", str(tmp_path / "work"), "--dry-run"])
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
     assert "topics       gh repo edit --add-topic xf-project-contoso" \
-        in result.stdout
+        in captured.out
+    assert asked == [f"{ORG}/Contoso"]
     assert not (tmp_path / "work").exists()
 
 

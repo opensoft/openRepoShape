@@ -305,7 +305,11 @@ options:
                         or lies inside a FILE the shape writes into the root
                         is refused before anything is created: `project.yaml`
                         is one, and `contracts` holds several.
-  --dry-run
+  --dry-run             print the plan and ask, as the real run does, whether
+                        each of the three repositories already exists (`gh
+                        repo view` and its commit listing, or the bare
+                        repositories with --local-remote-dir), refusing what
+                        it refuses; create no remote and push nothing
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
                         repo create` (the TEST path; no network)
@@ -734,7 +738,11 @@ options:
                         and make no family folder at all. Mutually exclusive
                         with --into.
   --no-push
-  --dry-run
+  --dry-run             print the plan and ask, as the real run does, whether
+                        <org>/<Family> already exists (`gh repo view` and its
+                        commit listing; with --local-remote-dir, the bare
+                        repository), refusing what it refuses; make no folder,
+                        remote or repository
 ```
 
 #### `scripts/family.py add`

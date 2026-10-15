@@ -14,8 +14,20 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A RUN IS CANCELLED ONLY BY A NEWER RUN IN ITS OWN GROUP: a newer push to the
+# same pull request, or a second dispatch on the same commit. A pull request's
+# group is its number. A `push` run on main has no number, and the old fallback
+# `github.ref` put every one of them in the one group `tests-refs/heads/main`,
+# so each landing cancelled the run on the main before it: on 2026-10-15 every
+# push run from #561 (7d9bec9) to #580 (dd3f23a) ended `cancelled` and nine PRs
+# landed with no Linux run over their combination (#592). `github.sha` gives a
+# push run a group of its own commit, so no later landing cancels it and each
+# landing keeps its own Linux result. `github.event_name` keeps a push run and
+# a dispatch apart, so a dispatch on main, which runs on whatever commit main
+# is at, never cancels that commit's push run; a second dispatch on the same
+# commit still replaces the first.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
