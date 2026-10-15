@@ -234,11 +234,11 @@ curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/in
 `install.sh` is attached to every release and installs the newest, with no `gh`
 and no login. Its command is PINNED to the release tag, recorded in
 `openRepoShape.ref` beside it: `setup.sh` and the standard are fetched at that
-tag, not at main. It installs `git-filter-repo` with `pipx` where it can, or
-prints the command, and ends with `openRepoShape --preflight`. `install.sh`
-itself never runs `sudo`; the preflight it ends with offers what is missing,
-each behind a typed `yes` at your terminal. `| bash -s -- v1.0.1` names a
-release; the same line again upgrades.
+tag, not at main. It installs `git-filter-repo` with `pipx`, or `uv`, where it
+can, or prints the command, runs `openRepoShape --preflight`, and says last if
+the machine is ready to adopt or only to scaffold. `install.sh` never runs
+`sudo`; the preflight offers what is missing, each behind a typed `yes` at your
+terminal. `| bash -s -- v1.0.1` names a release; the same line again upgrades.
 
 By hand, the same command at main, which records no ref and follows main:
 
