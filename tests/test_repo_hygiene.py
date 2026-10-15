@@ -616,9 +616,20 @@ def test_agents_md_is_short_enough_to_be_read():
     no rule id is not a broken row; and a submodule moved on purpose stays
     MISPLACED against its row, which is the human's to change -- never a
     manifest edit an assistant makes to turn the row green, the hand-edited
-    pin arriving through a new door."""
+    pin arriving through a new door.
+
+    2026-10-15: 490 -> 492 — step 2 of "Adopting an existing repository"
+    (#528). Two lines, inside that one numbered point. `plan` now writes a
+    rule's default into an entry as its `leg:`, still
+    `review_required: true` with the question beside it: a source's own
+    `single-repository.yaml` record comes as `drop`, by Brett Heap's
+    2026-10-12 ruling. Step 2 said only that an UNRESOLVED entry carries a
+    question, and `check` passes a default, so an assistant briefed from
+    this file alone would let it through unread. The lines buy that it is
+    a question too, which `execute` takes as written, answered like the
+    others."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 490, f"AGENTS.md is {len(lines)} lines; the cap is 490"
+    assert len(lines) <= 492, f"AGENTS.md is {len(lines)} lines; the cap is 492"
 
 
 def test_claude_md_points_at_agents_md():

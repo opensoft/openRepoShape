@@ -33,6 +33,9 @@ kind: path-classification-policy
 # evidence or the code's test fixture?" is right every time and costs one
 # sentence of human attention. The plan marks those `review_required: true`
 # with `leg: null`, and `adopt-project.py execute` REFUSES while any remain.
+# A rule that asks may name a `default:` answer, `drop` and nothing else:
+# the plan writes it as `leg:`, still `review_required: true` with the
+# question beside it, and `execute` takes it unless a person changes it.
 #
 # THE ROOT CLASS IS THE ONE PEOPLE GET WRONG. Ruled by Brett Heap on
 # 2026-09-02 for the MedxEHR conversion: `.specify/` (vendored Spec-Kit
@@ -431,19 +434,21 @@ rules:
   # a question of its own that names the file and offers drop or root, drop
   # by default (Brett Heap's ruling of 2026-10-12, the A7 line of #457).
   #
-  # THE DEFAULT IS THE QUESTION'S OWN WORDS, NOT A VALUE THE PLAN FILLS IN.
-  # `plan` still writes `leg: null` and `execute` still refuses while it is
-  # open, because an unanswered question is never an implicit anything and a
-  # path is dropped only when a person has answered `drop`. Nothing refuses
-  # `root` here, unlike `ambiguous-project-yaml`: the file blocks nothing the
-  # shape writes and no validator, gate or doctor row reads it. As for the
-  # rules above, what `execute` does is said of a repository WHEN IT IS
-  # ADOPTED; `shape-doctor.py --placement-plan` prints this question too, for
-  # a leg already split.
+  # THE DEFAULT IS WRITTEN INTO THE PLAN, AND IT IS STILL A QUESTION. `plan`
+  # writes `leg: drop` with `review_required: true`, this rule and its
+  # question, so `check` passes it and `execute` drops the file unless a
+  # person writes `root`, and the split commit names it among the paths it
+  # dropped. Nothing refuses `root` here, unlike `ambiguous-project-yaml`:
+  # the file blocks nothing the shape writes and no validator, gate or
+  # doctor row reads it. As for the rules above, what `execute` does is said
+  # of a repository WHEN IT IS ADOPTED: `shape-doctor.py --placement-plan`
+  # prints this question too, by name, for a leg already split, and reads
+  # the leg's copy as a question, because the verdict's leg stays null.
   - id: ambiguous-single-repository-record
     paths:
       - "single-repository.yaml"
     leg: ambiguous
+    default: drop
     reason: >-
       A top-level `single-repository.yaml` is this standard's record that a
       project STAYS a single repository: who decided it, when and why.

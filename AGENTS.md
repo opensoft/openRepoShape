@@ -129,7 +129,9 @@ install command). Seven steps, in order, and step 4 is the one you must not skip
 ```
 
 2. **You resolve the questions, in writing, in the plan.** Each unresolved
-   entry carries a `question:`. Set `leg:` to `spec`, `code`, `root` or `drop`
+   entry carries a `question:`; so does one whose `leg:` is its rule's default,
+   which `execute` takes as written (`drop` for a `single-repository.yaml`
+   record). Set `leg:` to `spec`, `code`, `root` or `drop`
    AND add a `resolution:` line saying why — read the repository to answer it
    (does the specification cite `examples/golden-run/`, or do the tests?). An
    answer with no reason beside it is a guess that will be read as a finding.
