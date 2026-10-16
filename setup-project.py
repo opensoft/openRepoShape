@@ -1579,6 +1579,21 @@ def family_folder_here(shape_root: Path, parent: Path) -> str:
     `kind: family-manifest` inside it that NAMES that same family. All three
     have to agree, or this says nothing at all and the run is what it was.
 
+    THE FOLDER IS NAMED AFTER THE HOLDER'S REPOSITORY, NOT AFTER `name:`
+    (#696, #629's class). `scripts/family.py init --family Quill --name
+    QuillWorks` makes `Quill/Quill/family.yaml` holding `name: QuillWorks`
+    and `repository: <org>/Quill`: `--family` is the repository's name and
+    lays the folder out, and `name:` is only a display name. This read
+    `name:`, so it said nothing of that very folder, and AGENTS.md's
+    "detected with no flag" was false for every family made with `--name`,
+    while `QuillWorks/QuillWorks` - the layout the holder's README used to
+    tell a person to make, and the one `siblings.py` now refuses
+    (`family_folder_name`) - was detected. So the answer is the basename of
+    `repository:`, which is `family_folder_name`'s answer for the same
+    manifest, and `name:` only where there is no `repository:` to ask. A
+    manifest whose repository is not this folder's name is another family's,
+    whatever its `name:` says.
+
     ANY read failure means "not a family folder". This is advice printed in a
     plan, so a manifest that is half-written, unreadable, or a YAML shape
     nobody expected must not refuse a scaffold that never needed it.
@@ -1595,7 +1610,10 @@ def family_folder_here(shape_root: Path, parent: Path) -> str:
         return ""
     if not isinstance(data, dict) or data.get("kind") != FAMILY_KIND:
         return ""
-    return name if str(data.get("name") or "") == name else ""
+    repository = str(data.get("repository") or "")
+    named = (shape_scripts(shape_root).repo_basename(repository) if repository
+             else str(data.get("name") or ""))
+    return name if named == name else ""
 
 
 class Landing:
