@@ -71,6 +71,13 @@ WHAT IS CHECKED
     `adopt-project.py execute` writes it, once, from the adoption plan, and
     `shape-doctor.py` holds each submodule a leg keeps to the row naming its
     path. A row whose `path` or `leg` is refused here holds nothing there.
+  - `answered_paths`, OPTIONAL: the record an adoption writes of the leg each
+    entry covering a path the path policy asked about was answered into
+    (#525), in the same rows, except that a directory's `path` ends with
+    the one `/` the adoption plan wrote it with, and no row's path lies
+    under another's. `shape-doctor.py` takes a row as the answer to the
+    question it would ask again of that path in that leg. Neither record is
+    checked against the legs: this runs where they are not checked out.
 
 EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadable)
 """
@@ -721,99 +728,150 @@ def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
     return out
 
 
-#: The legs a source submodule may be recorded in (#189). The assembly is not
-#: one of them: the root keeps no submodule but its two legs.
+#: The legs a record's row may name (#189, #525). The assembly is not one of
+#: them: the root keeps no submodule but its legs, and an answer that kept a
+#: path in the root is recorded nowhere.
 SUBMODULE_LEGS = ("spec", "code")
 
 
-#: What a recorded `path` is, said beside one that is not.
-SUBMODULE_PATH = ("it is the submodule's path inside its leg, relative and "
-                  "without `..`")
+class _Record:
+    """One of the two records an adoption appends, each a list of `path:` /
+    `leg:` rows (#189, #525), and how its findings are spelled.
+
+    ONE CHECKER FOR BOTH, because the rows are one shape and the doctor
+    reads both the same way. What differs is said here: the key, the stem of
+    each finding's code, what a row's path is, why a leg other than `spec`
+    or `code` says nothing, and whether a row names a directory -- with the
+    one `/` the adoption plan wrote it with -- that covers every path under
+    it.
+    """
+
+    def __init__(self, key: str, code: str, path_is: str, not_canonical: str,
+                 why_leg: str, directories: bool):
+        self.key = key
+        self.code = code
+        self.path_is = path_is
+        self.not_canonical = not_canonical
+        self.why_leg = why_leg
+        self.directories = directories
 
 
-def _submodule_path_problem(path, seen: set) -> str | None:
-    """Why one recorded `path` is not a submodule's path inside its leg, or
-    None. Records a good one in `seen`, so a second row for it is named.
+SUBMODULE_ROWS = _Record(
+    "submodules", "manifest-submodule",
+    "it is the submodule's path inside its leg, relative and without `..`",
+    "Git records no path with a `.` segment, a trailing `/` or a doubled "
+    "`/`, so no submodule is ever at it",
+    "the assembly root keeps no submodule but its legs", False)
+
+ANSWER_ROWS = _Record(
+    "answered_paths", "manifest-answered",
+    "it is a path inside its leg, relative and without `..`, and a "
+    "directory's ends with one `/`",
+    "Git records no path with a `.` segment or a doubled `/`, and only a "
+    "directory's row ends with one `/`, so no path is ever at it",
+    "an answer that kept a path in the root is recorded nowhere", True)
+
+
+def _covers(row_path: str, path: str) -> bool:
+    """Does a row naming `row_path` cover `path`: the path itself, or a
+    directory above it (#525)."""
+    return row_path == path or (row_path.endswith("/")
+                                and path.startswith(row_path))
+
+
+def _record_path_problem(record: _Record, path, seen: list) -> str | None:
+    """Why one recorded `path` is not a path the record's reader can find, or
+    None. Records a good one in `seen`, so a second row for it is named, and,
+    where rows name directories, so is a row under another.
 
     SPELLED THE ONE WAY GIT RECORDS A PATH (`repo_shape.path_spelling_fault`,
     the rule a leg's mount path is held to as well). The doctor finds a
     submodule by the path its leg's index records, and Git records none with
     a leading `./`, a trailing `/`, a doubled `/` or a `.` segment, so a row
-    spelled that way would name nothing the doctor could ever hold to it.
-    A backslash or a drive letter is accepted: on POSIX each is a character
-    of a name Git records, and an adoption records a submodule at one.
+    spelled that way would name nothing the doctor could ever hold to it. A
+    directory's answer keeps the one `/` the plan wrote after it, and is
+    spelled as Git records a path without it (#525). A backslash or a drive
+    letter is accepted: on POSIX each is a character of a name Git records,
+    and an adoption records a submodule at one.
     """
-    fault = path_spelling_fault(path) if isinstance(path, str) else None
+    named = (path[:-1] if record.directories and isinstance(path, str)
+             and path.endswith("/") else path)
+    fault = path_spelling_fault(named) if isinstance(named, str) else None
     if fault == PATH_NOT_CANONICAL:
-        return (f"path is {path!r}; Git records no path with a `.` segment, "
-                "a trailing `/` or a doubled `/`, so no submodule is ever at "
-                "it")
+        return f"path is {path!r}; {record.not_canonical}"
     if fault is not None or not isinstance(path, str):
-        return f"path is {path!r}; {SUBMODULE_PATH}"
+        return f"path is {path!r}; {record.path_is}"
     if path in seen:
         return f"path {path!r} is recorded twice"
-    seen.add(path)
+    under = next((other for other in seen
+                  if _covers(other, path) or _covers(path, other)), None)
+    seen.append(path)
+    if under is not None:
+        return (f"path {path!r} overlaps the row for {under!r}: a path is "
+                "answered once")
     return None
 
 
-def _submodule_row_findings(index: int, row, seen: set) -> list[str]:
-    """One row of the `submodules:` record.
+def _record_row_findings(record: _Record, index: int, row,
+                         seen: list) -> list[str]:
+    """One row of a record.
 
-    Split from `_submodules_findings` so that each reads as one question.
+    Split from `_record_findings` so that each reads as one question.
     """
-    where = f"submodules[{index}]"
+    where = f"{record.key}[{index}]"
     if not isinstance(row, dict):
         return [_finding(
-            "manifest-submodules",
+            f"manifest-{record.key.replace('_', '-')}",
             f"{where} is {row!r}, expected a mapping with `path:` and "
             "`leg:`")]
     out = []
-    problem = _submodule_path_problem(row.get("path"), seen)
+    problem = _record_path_problem(record, row.get("path"), seen)
     if problem:
-        out.append(_finding("manifest-submodule-path", f"{where}: {problem}"))
+        out.append(_finding(f"{record.code}-path", f"{where}: {problem}"))
     if row.get("leg") not in SUBMODULE_LEGS:
         out.append(_finding(
-            "manifest-submodule-leg",
+            f"{record.code}-leg",
             f"{where}: leg is {row.get('leg')!r}, expected one of "
-            f"{list(SUBMODULE_LEGS)}: the assembly root keeps no submodule "
-            "but its legs"))
+            f"{list(SUBMODULE_LEGS)}: {record.why_leg}"))
     resolution = row.get("resolution")
     if resolution is not None and not isinstance(resolution, str):
         out.append(_finding(
-            "manifest-submodule-resolution",
+            f"{record.code}-resolution",
             f"{where}: resolution is {resolution!r}, expected the text the "
             "adoption plan gave"))
     commit = row.get("source_commit")
     if commit is not None and not COMMIT_RE.match(str(commit)):
         out.append(_finding(
-            "manifest-submodule-commit",
+            f"{record.code}-commit",
             f"{where}: source_commit is {commit!r}, not 40 hex"))
     return out
 
 
-def _submodules_findings(manifest: dict) -> list[str]:
-    """`submodules`, OPTIONAL: the leg each source submodule was answered
-    into when this project was adopted (#189).
+def _record_findings(manifest: dict, record: _Record) -> list[str]:
+    """`submodules` or `answered_paths`, OPTIONAL: the leg each source
+    submodule (#189), or each path the policy asked about (#525), was
+    answered into when this project was adopted.
 
     A RECORD IS CHECKED BECAUSE SOMETHING READS IT. `shape-doctor.py` holds
     every submodule a leg keeps to the row naming its path, and calls one in
-    the other leg MISPLACED; a row it could not read would leave that
-    submodule unchecked, and nothing would say so. Absent is fine: a project
-    with no submodule of its source's has nothing to record, and nor does
-    one adopted before the record was written.
+    the other leg MISPLACED; it takes an answered path's row as the answer
+    to the question it would ask again of it. A row it could not read would
+    leave that submodule unchecked, or that question asked, and nothing
+    would say so. Absent is fine: a project with nothing to record has none,
+    and nor does one adopted before the record was written.
     """
-    rows = manifest.get("submodules")
+    rows = manifest.get(record.key)
     if rows is None:
         return []
     if not isinstance(rows, list):
         return [_finding(
-            "manifest-submodules",
-            f"submodules is {rows!r}, expected a list of `path:` and `leg:` "
-            "records")]
-    seen: set[str] = set()
+            f"manifest-{record.key.replace('_', '-')}",
+            f"{record.key} is {rows!r}, expected a list of `path:` and "
+            "`leg:` records")]
+    seen: list[str] = []
     out: list[str] = []
     for index, row in enumerate(rows):
-        out.extend(_submodule_row_findings(index, row, seen))
+        out.extend(_record_row_findings(record, index, row, seen))
     return out
 
 
@@ -843,7 +901,8 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
     out.extend(_visibility_finding(manifest))
     out.extend(_tracking_branch_finding(manifest))
     out.extend(_shape_findings(manifest))
-    out.extend(_submodules_findings(manifest))
+    out.extend(_record_findings(manifest, SUBMODULE_ROWS))
+    out.extend(_record_findings(manifest, ANSWER_ROWS))
 
     legs = manifest.get("legs")
     if not isinstance(legs, list) or not legs:
