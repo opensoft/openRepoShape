@@ -36,7 +36,8 @@ private legs in CI" has to say that it is the root, that a public root is the
 exception, and on what condition: the `gh secret set --org` commands above it
 default to `--visibility private`, which on Free reaches no repository, so a
 public root told only that it "takes org secrets" would keep the silent green
-with the pin check skipped, and the sentence names `all`, or `selected` with the
-root in it. Naming the root and the exception takes one line more than the
-paragraph had (+1), the condition two (+2); that is +3 of the ten. #627 lands
-after #621.
+with the pin check skipped. The sentence names `selected` with the root in
+`--repos` first, the least-privilege form, and `all` after it with its cost,
+that every repository of the organisation sees the App key (rv627n N1). Naming
+the root and the exception takes one line more than the paragraph had (+1), the
+condition two (+2); that is +3 of the ten. #627 lands after #621.
