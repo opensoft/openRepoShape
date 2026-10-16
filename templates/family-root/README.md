@@ -118,7 +118,7 @@ project the row claims and not merely a repository at the right commit.
 From a checkout of `{{SHAPE_REPOSITORY}}`:
 
 ```sh
-git -C <path> switch -c family/add-<project>
+git -C <path> switch -c family/add-<Project>
 python3 scripts/family.py add    --family-root <path> --member {{ORG}}/<Project>
 python3 scripts/family.py bump   --family-root <path> --member <Project> --to <40 hex>
 python3 scripts/family.py remove --family-root <path> --member <Project>

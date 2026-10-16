@@ -816,7 +816,7 @@ def test_a_submodule_takes_nothing_from_what_the_rules_imply(tmp_path,
     assert follow_ups == without["follow_ups"]
     assert [item.split(" ", 1)[0] for item in follow_ups
             if "`contracts/`" in item or "CONTRACTS_DIR" in item] \
-        == ["code/src/app/harness.py", "the"], follow_ups
+        == ["src/app/harness.py", "the"], follow_ups
     assert data["seeding"] == without["seeding"] == {
         "spec": {"seeded_from_template": False},
         "code": {"seeded_from_template": False}}

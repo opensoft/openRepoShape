@@ -299,8 +299,7 @@ rules:
       Requirements, decisions, contracts and governance prose — what the
       project has DECIDED, as opposed to what it currently runs. `contracts/`
       is here by the 2026-09-02 ruling even where the code reads it: the code
-      reads across the assembly-root mount (`spec/contracts` from the root,
-      `../spec/contracts` from `code/`), which is what the legs are mounted
+      reads across the assembly-root mount, which is what the legs are mounted
       for.
 
   # -- the implementation leg ----------------------------------------------
