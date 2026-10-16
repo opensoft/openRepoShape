@@ -3350,9 +3350,10 @@ def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN,
     puts back is what the row then reads.
 
     THE ROWS, NOT A YES, for the shape pin (review of PR #358): `rev` may
-    be an index stage, `:2` or `:3`, and the rows of the side of a merge
-    `pin_restore` takes whole are the copies that side's tool wrote, so
-    they are the conflicted files its `why` gives a person to merge (#485).
+    be an index stage, `:2` or `:3`, and the rows of each side of a merge
+    are the copies that side's tool wrote, so they are the conflicted files
+    `pin_restore`'s `why` takes with the pin or gives a person to merge
+    (#485, #687).
     """
     blob = git_answer(["cat-file", "blob", f"{rev}:./{pin}"],
                       ctx.root, binary=True)
@@ -3393,11 +3394,12 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    edit of the project, kept by `apply --accept-local` on one
                    side, and taken whole the other side's copy dropped it,
                    the hunks git merged cleanly with it, and the doctor then
-                   said COMPLIANT. The copies are the files the taken side's
+                   said COMPLIANT. The copies are the files EITHER side's
                    pin has `files:` rows for, their collision copies
                    included -- those rows and not this standard's copy
-                   lists, since a file the pin has no row for is not a shape
-                   copy, though the lists name its path (review of PR #358).
+                   lists, since a file neither pin has a row for is not a
+                   shape copy, though the lists name its path (review of PR
+                   #358). Only the taken side's can be taken (#687).
                    PROVE AND TAKE (Brett Heap, 2026-10-14T23:54:30Z, #547):
                    a conflicted copy whose two stages are each, byte for
                    byte, the standard's own file at the commit THAT side's
@@ -3429,6 +3431,24 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    is the person's word: AGENTS.md's rule 3 is never to
                    pass the flag to make a refusal go away, and nothing
                    here tells a copy merged by hand from one nobody merged.
+                   A COPY ONLY THE OTHER SIDE'S PIN HAS A ROW FOR (#687) --
+                   a path that side's `apply --add` took from the standard
+                   and the side taken here wrote as its own, say -- is
+                   never taken either: `as_the_standard_wrote_it` proves
+                   nothing of a side whose pin has no row for it. Nor is it
+                   left out of the `why`, though the pin taken here makes it
+                   the project's own file once the merge is finished: its
+                   conflict holds the other side's `apply` output, and the
+                   `merge` row lists it unmerged all the same. So the `why`
+                   says that the other side's pin calls it a copy and the
+                   pin taken here does not, and that a person merges it by
+                   hand, keeping the hunks git merged. The `--accept-local`
+                   sentence is not for it, and is said only where a copy the
+                   kept pin has a row for is left: `apply` refuses the flag
+                   on a path the pin has no row for. In the `manifest kinds`
+                   row such a copy under `contracts/` is `unmerged` while
+                   the pin is conflicted, as every file the `why` gives a
+                   person is, and `project` once the pin taken here reads.
                    The manifest and README.md are never named either, though
                    `apply` writes lines of them: every other line is the
                    project's own, and one side taken whole drops the other
@@ -3437,7 +3457,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    says a person merges it.
                    `detail["left_for_a_person"]` lists every file the `why`
                    gives a person. A file of the project's own is never
-                   named: its merge is theirs.
+                   named: its merge is theirs. Both pins decide which file
+                   that is, not the pin taken here alone: one NEITHER
+                   side's pin has a row for. A file only the other side's
+                   pin calls a copy is named, as above (#687).
       uncommitted  HEAD holds a pin that reads, and the tree or the index
                    differs from it. `checkout HEAD`, which drops a change no
                    tool of this standard leaves uncommitted.
@@ -3544,13 +3567,18 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                     f"{what} whole" if b"3" in pin_stages and side == "--ours"
                     else f"only that side of the merge holds a {what}. Take "
                     "it whole")
-            lines, copies, taken, partial = [], [], [], False
+            lines, copies, other_side, taken, partial = [], [], [], [], False
             if pin == SHAPE_PIN:
                 lines = sorted(name for name in (kind.manifest, us.README)
                                if name in stages)
-                copies = sorted(name for name in set(
-                    pin_at(ctx, f":{stage.decode()}") or ())
-                    if name in stages)
+                # Both pins say what is a copy, and the kept one what can be
+                # taken: a copy only the other side's is never taken (#687).
+                kept = set(pin_at(ctx, f":{stage.decode()}") or ())
+                other = set(pin_at(ctx, ":3" if stage == b"2" else ":2")
+                            or ())
+                copies = sorted(name for name in kept if name in stages)
+                other_side = sorted(name for name in other - kept
+                                    if name in stages)
                 # A read of a partial clone can fetch: prove nothing there.
                 partial = bool(copies) and partial_clone(ctx.shape)
                 if not partial:
@@ -3570,9 +3598,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                     + ("them" if len(taken) > 1 else "it") + " at the "
                     "commit that side's pin names, so neither side holds an "
                     "edit of the project")
-            if lines or copies:
+            if lines or copies or other_side:
                 if detail is not None:
-                    detail["left_for_a_person"] = sorted(lines + copies)
+                    detail["left_for_a_person"] = sorted(lines + copies
+                                                         + other_side)
                 if lines:
                     said.append(
                         f"{' and '.join(lines)} "
@@ -3603,6 +3632,19 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                              "check calls it both, as update-conflict, and "
                              "either refusal asks for --accept-local on that "
                              "path")
+                if other_side:
+                    many = len(other_side) > 1
+                    said.append(
+                        f"{' and '.join(other_side)} "
+                        + ("are" if many else "is")
+                        + " conflicted too, and the other side's pin calls "
+                        + ("them copies" if many else "it a copy")
+                        + " where the pin taken here does not, so neither "
+                        "side is taken whole: once the merge is finished "
+                        + ("each" if many else "it")
+                        + " is the project's own file, and a person merges "
+                        + ("each" if many else "it")
+                        + " by hand, keeping the hunks git merged")
             if said:
                 then = ". " + ". ".join(said) + ". Then finish"
             return "unmerged", (
