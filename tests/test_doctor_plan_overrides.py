@@ -173,6 +173,34 @@ def test_execute_records_each_answer_against_a_rule_into_a_leg(
         f"why {leg}" for _, leg in rows], recorded
 
 
+#: `engine/` folds `code` by the extension majority without its gitlink (3
+#: of 4 files) and not with it (3 of 5), so `plan` lists its files one by
+#: one and proposes `engine/notes.md` as `spec`, by its own extension.
+GITLINK_TREE = tree_of(
+    ("README.md", BLOB), ("requirements/r.md", BLOB), (GITMODULES, BLOB),
+    ("engine/a.py", BLOB), ("engine/b.py", BLOB), ("engine/c.py", BLOB),
+    ("engine/notes.md", BLOB), ("engine/vendor", "160000"))
+
+
+def test_an_entry_left_as_plan_wrote_it_is_no_answer_against_a_rule(
+        standard):
+    """AGAINST A RULE MEANS AGAINST WHAT `plan` SHOWED AS WELL. Only the
+    submodule's question is answered and every other entry keeps the leg
+    `plan` proposed, so nothing was answered against a rule: the record is
+    "", and the manifest is the one main writes, although the walk without
+    the gitlink folds `engine/` as code (r655's F1)."""
+    adopt = adoption_module(standard)
+    policy = adopt.PathPolicy.load(adopt.PATH_POLICY)
+    written = adopt.ask_about_submodules(policy, adopt.walk(
+        policy, [(path, size) for path, _, _, size in GITLINK_TREE]),
+        GITLINK_TREE)
+    answers = {"engine/vendor": "code", GITMODULES: "code"}
+    entries = [{"path": entry.path, "leg": answers.get(entry.path, entry.leg)}
+               for entry in written]
+    assert adopt.answered_path_record(policy, entries, GITLINK_TREE,
+                                      SOURCE_COMMIT) == ""
+
+
 # --- L1-57, end to end: `execute`, then the doctor --------------------------
 
 @pytest.fixture(scope="module")

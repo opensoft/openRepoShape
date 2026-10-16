@@ -9904,6 +9904,16 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
     policy's, and is recorded only where the policy's walk disagrees with
     the answer under it.
 
+    AGAINST A RULE MEANS AGAINST WHAT `plan` SHOWED AS WELL (#655). `plan`
+    walks the tree WITH its gitlinks, and a gitlink is one more verdict in
+    its directory's extension majority, so it can keep `plan` from folding
+    a directory the walk above folds: `plan` then proposes each file by its
+    own extension. An entry left as `plan` wrote it was answered against
+    nothing, so an answer against a rule is recorded only where it also
+    differs from the leg `plan` showed: that walk, with its entries asked
+    again by `ask_about_submodules` and `ask_about_refused_paths` as `plan`
+    asks them. A question of the walk above is recorded as before.
+
     A SOURCE WITH NO SUCH ENTRY GETS "" and so the `project.yaml` it always
     got, byte for byte.
     """
@@ -9911,10 +9921,16 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
     files = [(path, size) for path, mode, _, size in tree
              if path not in gitlinks]
     called = {entry.path: entry.leg for entry in walk(policy, files)}
+    shown = {entry.path: entry.leg for entry in ask_about_refused_paths(
+        ask_about_submodules(policy, walk(
+            policy, [(path, size) for path, _, _, size in tree]), tree),
+        tree)}
     answered = _answered_legs(entries, [path for path, _ in files])
     kept = sorted({entry: leg for path, (leg, entry) in answered.items()
                    if leg in EXTRACTED_LEGS and entry != GITMODULES
-                   and leg != _walked_leg(called, path)}.items())
+                   and leg != _walked_leg(called, path)
+                   and (_walked_leg(called, path) is None
+                        or leg != _walked_leg(shown, path))}.items())
     return _record_block(ANSWER_RECORD_PREAMBLE,
                          [(entry, leg, entry) for entry, leg in kept],
                          entries, commit)
