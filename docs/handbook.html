@@ -472,9 +472,9 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob fe0d932b031e4a08fc885f93d6cd978df0d5a25c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
-      <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
+      <!-- reads README.md § The three legs: blob fd6098f84f128d9adb9bfe27c3ea640e5e4d1565 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -610,7 +610,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob fe0d932b031e4a08fc885f93d6cd978df0d5a25c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -1048,7 +1048,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob fe0d932b031e4a08fc885f93d6cd978df0d5a25c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1085,9 +1085,9 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob fe0d932b031e4a08fc885f93d6cd978df0d5a25c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
-      <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
+      <!-- reads README.md § The three legs: blob fd6098f84f128d9adb9bfe27c3ea640e5e4d1565 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Reading private legs in CI</h2>
@@ -1108,10 +1108,11 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       <code>SHAPE_LEGS_TOKEN</code> PAT, <code>contents:read</code> on the LEGS ONLY.</p>
       <div class="code" data-lang="sh"><pre><code>gh secret set SHAPE_LEGS_TOKEN --org &lt;your-org&gt; --body '&lt;token&gt;'</code></pre></div>
       <p><strong>On the Free plan, use <code>--repo</code>, not <code>--org</code>.</strong> GitHub
-      delivers org secrets only to PUBLIC repositories, so on a private one
-      <code>secrets.SHAPE_LEGS_APP_ID</code> is silently empty and <code>validate</code> goes GREEN
-      with the pin check skipped. Set both per repository, or upgrade to Team; the creating tools
-      check and say so. Both <code>scaffold-project.py</code> and
+      delivers org secrets only to PUBLIC repositories, and <code>validate</code> runs in the root,
+      so on a private or internal root <code>secrets.SHAPE_LEGS_APP_ID</code> is silently empty and
+      <code>validate</code> goes GREEN with the pin check skipped. Set both on the root, or
+      upgrade to Team; a public root takes org secrets. The creating tools check and say so. Both
+      <code>scaffold-project.py</code> and
       <code>adopt-project.py execute</code> print a one-line reminder &mdash; App first &mdash; when
       they create a private or internal leg.</p>
       <ul class="plain">
@@ -1143,9 +1144,9 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob fe0d932b031e4a08fc885f93d6cd978df0d5a25c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
-      <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
+      <!-- reads README.md § The three legs: blob fd6098f84f128d9adb9bfe27c3ea640e5e4d1565 -->
 
       <p class="eyebrow">Reference</p>
       <h2>The three legs, and naming</h2>
@@ -1384,7 +1385,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob fe0d932b031e4a08fc885f93d6cd978df0d5a25c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1681,7 +1682,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob fe0d932b031e4a08fc885f93d6cd978df0d5a25c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 

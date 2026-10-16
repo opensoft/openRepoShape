@@ -512,9 +512,9 @@ commits, not on a detached HEAD.
 **If the legs are private**, CI needs a credential to fetch them: a GitHub
 App with Contents read on the legs, registered as `SHAPE_LEGS_APP_ID` and
 `SHAPE_LEGS_APP_PRIVATE_KEY`, or the `SHAPE_LEGS_TOKEN` fallback — as
-REPOSITORY secrets on the GitHub Free plan, where organisation secrets do not
-reach private repositories (see "Reading private legs in CI" below). Without
-either, `validate` degrades with a warning instead of failing.
+REPOSITORY secrets on the assembly root when it is private or internal and the
+organisation is on the GitHub Free plan (see "Reading private legs in CI"
+below). Without either, `validate` degrades with a warning instead of failing.
 
 **Daily work.** Dana works in `spec/` and `code/` as ordinary repositories:
 branches, commits, pull requests in `Atlas-spec` and `Atlas-code`. Committing
@@ -628,9 +628,10 @@ Both `scaffold-project.py` and `adopt-project.py execute` print a one-line
 reminder — App first — when they create a private or internal leg.
 
 **On the Free plan, use `--repo`, not `--org`.** GitHub delivers org secrets
-only to PUBLIC repositories, so on a private one `secrets.SHAPE_LEGS_APP_ID`
-is silently empty and `validate` goes GREEN with the pin check skipped. Set
-both per repository, or upgrade to Team; the creating tools check and say so.
+only to PUBLIC repositories, and `validate` runs in the root, so on a private
+or internal root `secrets.SHAPE_LEGS_APP_ID` is silently empty and `validate`
+goes GREEN with the pin check skipped. Set both on the root, or upgrade to
+Team; a public root takes org secrets. The creating tools check and say so.
 
 The root repository is always readable by the workflow's own default token, so
 `actions/checkout` never carries a `token:` override. Putting a legs credential

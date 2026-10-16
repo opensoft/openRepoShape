@@ -1,7 +1,7 @@
-+7
++8
 2026-10-15
-Seven lines for three sentences #566, #572 and #573 left false or incomplete in
-the README, once those pull requests landed (#606). Each is the words that
+Eight lines for four sentences #566, #572, #573 and #602 left false or incomplete
+in the README, once those pull requests landed (#606). Each is the words that
 pull request's own body held, as far as the code on main bore them out.
 One: "Ambiguous is an answer" said every entry the policy cannot call gets
 `leg: null` and that `execute` refuses while any remain. #566 gives one rule,
@@ -22,3 +22,13 @@ the `yes`, because the plan is the scaffold's `--dry-run` and asks whether
 each of the three exists; a reader who expects the refusal after typing `yes`
 would not look at the plan. The sentence has to say where, and why, and that
 takes two lines (+2).
+Four: after #602 (#621) the Free-plan hint goes by the assembly root, where
+`validate` reads the secrets, and only when the root is private or internal; a
+public root over private legs takes the organisation's secrets and gets the
+per-leg note and no hint. The README still said "REPOSITORY secrets on the
+GitHub Free plan" of any project whose legs are private, which a public root
+makes false, and "on a private one" without saying which repository. The
+sentence under "Starting a project in a new organisation" is reworded in the six
+lines it had. The paragraph under "Reading private legs in CI" has to say that
+it is the root, that a public root is the exception and that the tools check it,
+and that takes one line more than it had (+1). #627 lands after #621.
