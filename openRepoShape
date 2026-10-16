@@ -403,9 +403,60 @@ record_ref() {
 	fi
 }
 
+# THE `export PATH` LINE THE PATH NOTE PRINTS, QUOTED FOR BASH (#667). It is
+# a line somebody copies and pastes, so it has to do what it says for any
+# directory that can be on a `$PATH`. Between double quotes bash still reads
+# `"`, `$`, a backquote and `\`, and an interactive bash `!` too (history),
+# so a directory holding one of them is printed between single quotes, where
+# nothing is read but the quote itself, which is written `'\''`. Every other
+# directory keeps the line this command has always printed, byte for byte:
+# README says `export PATH=…`, and a space or an apostrophe is safe in
+# double quotes. A `:` splits a `$PATH` whatever the quoting, and a newline
+# breaks the printed line in two, so `install_commands` refuses both before
+# this is asked.
+export_path_line() {
+	local dir="$1" backslash='\' quote="'" rest quoted=""
+	case "$dir" in
+	*[\"\$\`\\!]*)
+		# The apostrophes are walked, not replaced with `${dir//…}`: how a
+		# pattern substitution reads a quote in its replacement has changed
+		# between bash releases (this runs on 3.2 as well), and `sed` is
+		# not one of the programs `--install` uses.
+		rest="$dir"
+		while :; do
+			case "$rest" in
+			*"$quote"*)
+				quoted="$quoted${rest%%"$quote"*}$quote$backslash$quote$quote"
+				rest="${rest#*"$quote"}"
+				;;
+			*)
+				quoted="$quoted$rest"
+				break
+				;;
+			esac
+		done
+		printf 'export PATH=%s%s%s:"$PATH"' "$quote" "$quoted" "$quote"
+		;;
+	*) printf 'export PATH="%s:$PATH"' "$dir" ;;
+	esac
+}
+
 install_commands() {
 	local dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
 	local name target source verb placed=0 recording=0 record spelled=""
+	# NO LINE ABOUT `$PATH` CAN NAME A DIRECTORY HOLDING A NEWLINE OR A `:`
+	# (#667): the colon is what splits a `$PATH`, and a newline breaks the
+	# line the note prints in two. Refused before anything is placed, as the
+	# Windows spelling below is. The newline goes first, and its refusal says
+	# nothing of the value, so that no refusal after it echoes one that can
+	# forge a line of output. The colon is checked after the Windows
+	# spelling, which holds one by definition, is respelled without one, and
+	# refuses what it cannot respell.
+	case "$dir" in
+	*$'\n'*)
+		die "--install would place this command in a directory whose name holds a newline, which no line about \$PATH can name: it would break in two. Nothing was placed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this again."
+		;;
+	esac
 	# A WINDOWS SPELLING IS SPELLED AGAIN THE WAY BASH SPELLS IT (#649), with
 	# `cygpath -u`, which Git Bash has, before anything is checked or placed:
 	# `D:\tools\bin` becomes `/d/tools/bin`. Kept as typed, every line below
@@ -426,6 +477,11 @@ install_commands() {
 			;;
 		esac
 		dir="$spelled"
+		;;
+	esac
+	case "$dir" in
+	*:*)
+		die "--install would place this command in '$dir', which holds a ':', and a ':' is what splits a \$PATH into its directories, so no line about \$PATH can name it. Nothing was placed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this again."
 		;;
 	esac
 	if [ "$REF_FROM_RECORD" -eq 1 ] ||
@@ -498,7 +554,7 @@ install_commands() {
 	*":$dir:"*) ;;
 	*)
 		say "  $dir is not on \$PATH. Add it:"
-		say "    export PATH=\"$dir:\$PATH\""
+		say "    $(export_path_line "$dir")"
 		;;
 	esac
 	# LAST, because it is about the NEXT command rather than about this one.
