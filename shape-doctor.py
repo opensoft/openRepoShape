@@ -24,7 +24,10 @@ ONE FLAG WRITES AT ALL, and it writes one file the caller named and nothing
 else: `--placement-plan <file>`, below. The upstream a project's copies are
 compared against is THE CHECKOUT THIS FILE IS RUN FROM, which is the whole of
 why the verdict is offline: no clone, no authenticated call, and the same
-answer on a machine that has never spoken to github.com. It runs the project's
+answer on a machine that has never spoken to github.com. A partial clone
+(`git clone --filter`) fetches what it lacks on a read, so it is asked first,
+without fetching, whether it holds what the comparison reads, and the verdict
+is CANNOT ANSWER where it does not (#683). It runs the project's
 own validators OFFLINE: `run_validator` starts each child with no token, no
 `gh` configuration and a proxy that goes nowhere (#297), so they are offline
 whatever their own contract says. ONE ROW IS THE EXCEPTION AND IT IS NAMED:
@@ -287,7 +290,8 @@ EXIT CODES
     3  usage or environment -- nothing here is a statement about the tree
        that was pointed at: no such root, this file is not sitting in a
        checkout of the standard, or THIS CHECKOUT cannot answer (a pin
-       naming a commit it does not carry)
+       naming a commit it does not carry, or a partial clone lacking what
+       the comparison reads)
 
 THE VERDICT NAMES THE MOST SPECIFIC FINDING; THE TABLE NAMES EVERY ONE. Drift
 outranks a red validator on that line for one concrete reason: an edited shape
@@ -3744,16 +3748,61 @@ PARTIAL_CLONE_WHY = (
 
 def partial_clone(shape: Path) -> bool:
     """Whether the checkout of the standard at `shape` is a partial clone:
-    its config names a promisor remote or a partial-clone filter (#547).
+    its config names a remote git fetches a missing object from (#547).
 
     A READ THERE CAN FETCH. `git show` of a blob a `--filter` clone left
     out asks its promisor remote for it, and Brett Heap's ruling for
     `taken_with_the_pin` is never to fetch, clone or touch the network. So
-    `pin_restore` proves no copy there and every one stays the hand merge.
-    The config is only read, which fetches nothing and writes nothing.
+    `pin_restore` proves no copy there and every one stays the hand merge,
+    and the `shape currency` row asks first, without fetching, whether the
+    clone holds what it reads (`partial_clone_row`, #683). Which remotes
+    those are is `promisor_remotes`' answer.
     """
-    return bool(git_answer(["config", "--get-regexp", r"^(extensions\."
-                            r"partialclone|remote\..*\.promisor)$"], shape))
+    return bool(promisor_remotes(shape))
+
+
+#: The config keys `promisor_remotes` reads: git's, in `promisor-remote.c`.
+PROMISOR_KEYS = (r"^(remote\..*\.(promisor|partialclonefilter)"
+                 r"|extensions\.partialclone)$")
+
+
+def promisor_remotes(shape: Path) -> list:
+    """The remotes git fetches a missing object from in the checkout at
+    `shape`, by the rule git 2.43's `promisor-remote.c` reads its config
+    with (#683): a remote whose `promisor` is true, a remote with a
+    `partialclonefilter`, and the remote `extensions.partialclone` names,
+    that one last, as git asks them. Each name once, in the config's order.
+
+    `promisor = false` ALONE IS NOT ONE (#683). `partial_clone` matched
+    `remote.<name>.promisor` whatever its value, so `false` counted.
+    Measured with git 2.43 on a `--filter=blob:none` clone: with `promisor
+    = false` and no `partialclonefilter`, a read of a blob the clone lacks
+    fails and fetches nothing; with the filter kept beside it, the read
+    fetches, as with `promisor = true`, a bare `promisor` key or
+    `extensions.partialclone = origin` alone. So `false` is git's `false`,
+    read by `git config --type=bool`, and a filter makes a remote one on
+    its own. A missing object where no remote is one is a read that fails,
+    which `update-shape.py` refuses (`update-upstream-unreadable`). The
+    config is only read, which fetches nothing and writes nothing.
+    """
+    true = git_answer(["config", "--type=bool", "-z", "--get-regexp",
+                       r"^remote\..*\.promisor$"], shape, binary=True)
+    promised = {key for key, _newline, value in (
+        record.partition(b"\n") for record in (true or b"").split(b"\0"))
+        if value == b"true"}
+    listed = git_answer(["config", "-z", "--get-regexp", PROMISOR_KEYS],
+                        shape, binary=True)
+    names: list[str] = []
+    named = None
+    for record in (listed or b"").split(b"\0"):
+        key, _newline, value = record.partition(b"\n")
+        if key == b"extensions.partialclone":
+            named = value
+        elif key.endswith(b".partialclonefilter") or key in promised:
+            name = key[len(b"remote."):key.rindex(b".")]
+            names.append(name.decode("utf-8", "replace"))
+    last = [] if named is None else [named.decode("utf-8", "replace")]
+    return [name for name in dict.fromkeys(names) if name not in last] + last
 
 
 def as_the_standard_wrote_it(ctx: Context, us, kind, standard, copy: str,
@@ -3771,7 +3820,8 @@ def as_the_standard_wrote_it(ctx: Context, us, kind, standard, copy: str,
     try:
         source = us.source_for(copy, standard, commit, kind)
         wrote = standard.blob(commit, source) if source else None
-    except (OSError, ValueError):
+    except (Refusal, OSError, ValueError):
+        # `Refusal`: a read `Upstream.blob` could not make (#683).
         return False
     return wrote is not None and wrote == held
 
@@ -4070,6 +4120,112 @@ def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
                command, detail, why=why)
 
 
+#: A line `rev-list --missing=print` writes for an object the clone lacks:
+#: `?` and the object's id, SHA-1 or SHA-256.
+MISSING_OBJECT = re.compile(rb"\?(?:[0-9a-f]{40}|[0-9a-f]{64})")
+
+
+def objects_lacking(shape: Path, commit: str) -> int | None:
+    """How many of the objects `commit` and its tree reach the checkout at
+    `shape` lacks, asked without fetching (#683), or None where git cannot
+    list them there.
+
+    `git rev-list --objects --no-walk --missing=print` walks the commit's
+    tree and prints `?<id>` for each object it does not hold, and
+    `--missing=` turns git's lazy fetch off for its run: measured with git
+    2.43, no fetch in a trace2 log, and the same objects missing after it.
+    It is asked before any `ls-tree`, which fetches a tree a
+    `--filter=tree:0` clone lacks. A commit the clone does not hold is
+    `bad object` there, exit 128, and None, which `partial_clone_row`
+    counts as lacking: `update-shape.py`'s first read of that commit, its
+    `rev-parse`, fetches it (measured with git 2.43).
+    """
+    listed = git_answer(["rev-list", "--objects", "--no-walk",
+                         "--missing=print", commit], shape, binary=True)
+    if listed is None:
+        return None
+    return sum(1 for line in listed.split(b"\n")
+               if MISSING_OBJECT.fullmatch(line))
+
+
+#: `partial_clone_row`'s `error` (#683).
+PARTIAL_CLONE_LACKS = "shape-doctor-partial-clone"
+
+
+def partial_clone_row(ctx: Context, pinned: str) -> Row | None:
+    """The `shape currency` row for a checkout of the standard that is a
+    partial clone and lacks an object the comparison reads, or None where
+    it is no partial clone or lacks none of them (#683).
+
+    THE DOCTOR FETCHED, AND OFFLINE IT CALLED UNEDITED COPIES `both`.
+    `update-shape.py`'s comparison reads each copy's blob at the pinned
+    commit and at this standard's, and a `--filter` clone fetches a blob it
+    lacks on that read. Measured on #683 with git 2.43,
+    a `--filter=blob:none` clone made five lazy fetches for the five copies
+    the standard had changed since the pin; with its remote out of reach
+    the reads failed, `Upstream.blob` read each failure as "no such file at
+    the pinned commit", and the row said `DRIFTED (5 both)` of copies
+    nobody edited. So before anything reads this checkout, where
+    `partial_clone` holds, `objects_lacking` asks of the pinned commit and
+    of HEAD whether every object their trees reach is here.
+
+    THE WHOLE TREE, NOT THE COPIES' PATHS. `--missing=print` names a missing
+    object by its id alone, and which path it sits at is read from the tree
+    that holds it, which a `--filter=tree:0` clone lacks too; and the paths
+    the comparison reads are `prepare`'s, whose second definition here
+    would be one to drift. So a partial clone pinned behind its HEAD, where
+    the clone lacks what its checkout never needed, is this row even where
+    no copy changed. That is the cost of never fetching, and the NEXT
+    below ends it. A partial clone whose pin names its HEAD lacks nothing
+    and answers as a full clone does.
+
+    CANNOT ANSWER, as the row for a checkout short of the pin's commit is:
+    `environment`, exit 3, nothing said about the repository. THE NEXT IS
+    THAT ROW'S, MADE TO FIT: there, the fetch a person runs to put in this
+    checkout what it lacks. Here `fetch --all` would put in no blob, since
+    a promisor remote's fetch keeps its `partialclonefilter`, so the NEXT
+    is `fetch --refetch --no-filter` from the remote a read would fetch
+    from: measured with git 2.43, it leaves the clone lacking nothing and
+    its config as it was, and the doctor run again answers. It is the
+    person's fetch, never this doctor's, and the `why` names the other way,
+    a full clone of the standard, as the precedent's names a clone that
+    has the commit.
+    """
+    remotes = promisor_remotes(ctx.shape)
+    if not remotes:
+        return None
+    standard = head_of(ctx.shape)
+    lacking = {commit: objects_lacking(ctx.shape, commit)
+               for commit in dict.fromkeys((pinned, standard)) if commit}
+    lacking = {commit: count for commit, count in lacking.items()
+               if count != 0}
+    if not lacking:
+        return None
+    said = []
+    for commit, count in lacking.items():
+        which = ("the pinned commit" if commit == pinned
+                 else "this standard's commit")
+        said.append(f"git cannot list {which} {commit[:12]} there"
+                    if count is None else
+                    f"it lacks {count} object{'' if count == 1 else 's'} "
+                    f"at {which} {commit[:12]}")
+    remote = remotes[0]
+    return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
+               "the copies cannot be compared without fetching: this "
+               "checkout of the standard is a partial clone, and "
+               + " and ".join(said),
+               f"git -C {quote_arg(ctx.shape)} fetch --refetch --no-filter "
+               f"{quote_arg(remote)}",
+               {"error": PARTIAL_CLONE_LACKS, "environment": True,
+                "pinned": pinned, "standard": standard, "remote": remote,
+                "lacking": lacking},
+               why="this checkout of the standard is a partial clone, and "
+                   "a read of an object it lacks fetches it from "
+                   f"{remote}, which this doctor never does; fetch every "
+                   f"object {remote} holds, then run the doctor again, or "
+                   "run it from a full clone of the standard")
+
+
 def check_shape_currency(ctx: Context) -> Row:
     """`update-shape.py check`, summarised, against THIS checkout.
 
@@ -4089,6 +4245,15 @@ def check_shape_currency(ctx: Context) -> Row:
     not by a list of refusal codes or a match on their text, and a refusal
     `read_pin` or `open_upstream` learns later lands on the right side
     without this file being told.
+
+    A PARTIAL CLONE IS ASKED BEFORE ANYTHING READS IT (#683). Once the pin
+    reads, and before `prepare` opens this checkout, `partial_clone_row`
+    asks, without fetching, whether a partial clone holds every object the
+    comparison reads, and where it does not this row is CANNOT ANSWER with
+    a fetch of its own for a person to run. A read that fails anyway --
+    a clone that lacks objects and has no promisor remote, a damaged one --
+    is `update-upstream-unreadable` from `prepare`, CANNOT ANSWER too, and
+    never a copy called `both`.
     """
     us = ctx.update_shape()
     # A PIN OR MANIFEST KEPT AS A LINK IS ASKED ABOUT FIRST, before anything
@@ -4101,13 +4266,27 @@ def check_shape_currency(ctx: Context) -> Row:
     args = argparse.Namespace(root=str(ctx.root), upstream=str(ctx.shape),
                               at=None)
     try:
-        us.read_pin(ctx.root)
+        pin, _rows = us.read_pin(ctx.root)
     except Refusal as exc:
         return unreadable_pin_row(ctx, exc)
+    partial = partial_clone_row(ctx, str(pin["commit"]).lower())
+    if partial is not None:
+        return partial
     try:
         _root, _pin, rows, additions, upstream, pinned, target, _kind = \
             us.prepare(args)
     except Refusal as exc:
+        if exc.code == us.UPSTREAM_UNREADABLE:
+            # A READ THAT FAILED, NOT A COMMIT THAT IS NOT HERE (#683), so
+            # the `fetch --all` below would bring nothing to read it.
+            return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
+                       f"the copies cannot be compared: {exc.detail}", None,
+                       {"error": exc.code, "environment": True},
+                       why="git could not read what this checkout of the "
+                           "standard holds at that commit, so no copy was "
+                           "compared and none is called both over it; run "
+                           "the doctor from a clone of the standard that "
+                           "git reads whole")
         # NOT A VERDICT ABOUT THE REPOSITORY. A pin naming a commit THIS
         # checkout does not carry -- a fork, a branch pin, a clone made
         # before the commit landed -- is this standard being unable to
