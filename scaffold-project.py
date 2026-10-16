@@ -846,6 +846,61 @@ def _refuse_unwritable_values(fields) -> None:
                       UNWRITABLE_REMEDIATION)
 
 
+#: What a `scaffold-unwritable-value` for the clone URL is told to do (#433).
+#: It is not `UNWRITABLE_REMEDIATION`, which says to retype a value: the path
+#: is a directory, so the way out is another directory, or GitHub.
+CLONE_URL_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
+    "control character in it, a directory renamed or made anew, and run "
+    "again; or scaffold against GitHub, without --local-remote-dir, where "
+    "the clone URL is `https://github.com/<org>/<name>.git`. The READMEs "
+    "print the clone URL as it stands: a byte that is not UTF-8 in the path "
+    "(a directory named in a legacy code page) cannot be written at all, a "
+    "line break or a control character would break or garble the line it is "
+    "written into, and a bidirectional embedding, override or isolate "
+    "control would show the rest of that line in another order than it is "
+    "written.")
+
+
+def _refuse_an_unwritable_clone_url(local: bool, url: str) -> None:
+    """Refuse the assembly root's clone URL when no file can hold it, before
+    any remote exists, as `adopt-project.py` refuses its own (#255).
+
+    Only a local one can be refused: under `--local-remote-dir` the URL is the
+    bare repository's own path, which `templates/assembly-root/README.md`
+    prints (`git clone --recurse-submodules {{CLONE_URL}}`) and each leg's
+    `README.md` prints as `{{ASSEMBLY_CLONE_URL}}`; against GitHub it is
+    `https://github.com/<org>/<name>.git`, ASCII by construction. A directory
+    whose name is not UTF-8 reaches `sys.argv` as a string with a lone
+    surrogate, and `write_lf` encodes strictly, so it raised
+    `UnicodeEncodeError` in `_seed_legs` after all three bare repositories
+    existed and the work directory was half made, while `--dry-run` exited 0
+    and said nothing (#433). One bidi override or a line break in the path
+    was written into the README raw.
+
+    ONLY THE ASSEMBLY ROOT'S URL IS ASKED. It is the one URL `_scaffold`
+    renders into a file; the legs' are `<dir>/<name>.git` beside it, so what
+    makes one unwritable makes all three so, and the refusal names the one a
+    README holds. `_refuse_unwritable_values` is not reused because its
+    remediation tells a person to retype a value, and a directory is renamed
+    or replaced, not retyped; the code and the question are the same, so the
+    refusal is the same `scaffold-unwritable-value` for the same reasons
+    (`unwritable_reason`).
+    """
+    if not local:
+        return
+    reason = unwritable_reason(url)
+    if reason:
+        raise Refusal(
+            "scaffold-unwritable-value",
+            "under --local-remote-dir the assembly root's clone URL is the "
+            f"bare repository's own path, {url!r}, which the scaffold writes "
+            "into the `README.md` of the assembly root and of each leg, and "
+            f"{reason}.",
+            CLONE_URL_REMEDIATION)
+
+
 def referent_chain_links(raw: str) -> tuple:
     """`--referent-chain`'s links: split on commas, each stripped, an empty
     one dropped. ONE reading, for `_declaration` and for the check below, so
@@ -876,10 +931,11 @@ def _refuse_malformed_chain_links(policy, chain: tuple) -> None:
 
     The FIRST and LAST links are left to the checks that already anchor them:
     the first must be a `--pin` product and the last the referent the name
-    claims, both compared casefolded because a pin names WHICH repository, not
-    how it was typed. Each must casefold to a name this run already holds
-    (`[A-Za-z0-9_.-]`, or `open<Product>`), so neither can carry a `#`, a
-    quote, a bracket, a comma or a space.
+    claims, both compared by `pin_product_key`, the pin file's own fold
+    (#444), because a pin names WHICH product, not how it was typed. Each
+    must fold to a name this run already holds (`[A-Za-z0-9_.-]`, or
+    `open<Product>`), so neither can carry a `#`, a quote, a bracket, a comma
+    or a space.
 
     Asked before `_declaration`, so before `gh api` reads a pin's tree and
     before `--dry-run` returns: a dry run refuses exactly as the real run
@@ -1008,10 +1064,19 @@ def _shape_revision() -> tuple[str, str]:
     per-file sha256 rows are computed from the actual copies, so drift stays
     detectable — but it says so, loudly, because `commit:` and `tree_sha256`
     would then describe bytes nobody copied.
+
+    WHETHER THE CHECKOUT IS DIRTY IS ASKED OF GIT'S BYTES (#423). Only
+    whether `status --porcelain` printed anything is used, never what, so it
+    is not decoded at all. With `core.quotePath=false` git prints a file name
+    as the bytes it holds, and a name that is not UTF-8 (a checkout from a
+    filesystem that stores one) made `git_out`'s strict decode raise
+    `UnicodeDecodeError`: a traceback, exit 1, before a remote existed, where
+    this means to print the warning below and go on.
     """
     shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
     shape_tree = tree_digest(SHAPE_ROOT, shape_commit)
-    dirty = git_out(["status", "--porcelain"], cwd=SHAPE_ROOT)
+    dirty = bool(git_out(["status", "--porcelain"], cwd=SHAPE_ROOT,
+                         binary=True))
     if dirty:
         print(
             "WARNING the openRepoShape checkout is DIRTY. `commit:` and "
@@ -1383,8 +1448,18 @@ def _seed_legs(args, values: dict, names: dict, repositories: dict,
         leg_digests[role] = tree_digest(work, commit)
         if not args.no_push:
             try:
-                run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
-                    cwd=work)
+                # THE BRANCH BY ITS FULL REFNAME (#421). A bare `<branch>`
+                # is a REFSPEC, and a leading `+` in a refspec means FORCE:
+                # `--tracking-branch +x`, a name `git check-ref-format
+                # --branch` accepts and `git init -b` creates, was read as
+                # the forced push of a local branch `x` and died `src refspec
+                # x does not match any`, after all three remotes existed.
+                # `HEAD:refs/heads/<branch>` names both sides in full, so
+                # every name git accepts is pushed as the branch it is, and
+                # `-u` still records `origin/<branch>` as its upstream.
+                # `adopt-project.py` pushes `HEAD:refs/heads/<branch>` too.
+                run(["git", "push", "-q", "-u", "origin",
+                     f"HEAD:refs/heads/{args.tracking_branch}"], cwd=work)
             except CommandFailed as exc:
                 print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
                 print(RULESET_HINT.format(repo=repositories[role],
@@ -1499,8 +1574,10 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
     run(["git", "remote", "add", "origin", urls["assembly"]], cwd=assembly)
     if not args.no_push:
         try:
-            run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
-                cwd=assembly)
+            # By full refname, as the legs are pushed (`_seed_legs`, #421): a
+            # bare `+x` is a forced refspec, not the branch named `+x`.
+            run(["git", "push", "-q", "-u", "origin",
+                 f"HEAD:refs/heads/{args.tracking_branch}"], cwd=assembly)
         except CommandFailed as exc:
             print(exc.loudly("pushing the assembly root"), file=sys.stderr)
             print(RULESET_HINT.format(repo=repositories["assembly"],
@@ -1633,6 +1710,13 @@ def _scaffold(args) -> int:
     refuse_unstorable_names(
         "scaffold-name-too-long", list(names.values()),
         list(names.values()) if args.local_remote_dir is not None else [])
+    # THE CLONE URL IS A PATH A FILE WILL HOLD (#433): under
+    # `--local-remote-dir` it is the bare repository's own path, which the
+    # READMEs print, so it is asked here, as the free-text values are asked
+    # in `_identity` (#282), before `_declaration` runs `gh api` and before
+    # a work directory or a remote exists, and `--dry-run` refuses alike.
+    local, repositories, urls = _repository_urls(args, names)
+    _refuse_an_unwritable_clone_url(local, urls["assembly"])
     policy = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
     if not PROJECT_ID_RE.match(project_id):
         raise Refusal("scaffold-bad-id",
@@ -1683,7 +1767,6 @@ def _scaffold(args) -> int:
                       args.tracking_branch)
 
     shape_commit, shape_tree = _shape_revision()
-    local, repositories, urls = _repository_urls(args, names)
     args.visibility = _leg_visibility(args, repositories["assembly"], local)
 
     values = {

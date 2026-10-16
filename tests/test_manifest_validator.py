@@ -614,13 +614,43 @@ SUBMODULE_RECORD = (
 )
 
 
+#: The record of the plan's other answers (#525), as `execute` writes it
+#: after `submodules:`: a directory's row keeps its `/`, and a row may carry
+#: no `resolution:`.
+ANSWER_RECORD = (
+    "\n# THE PATHS THE ADOPTION'S POLICY ASKED ABOUT (#525)\n"
+    "answered_paths:\n"
+    '  - path: "examples/"\n'
+    "    leg: spec\n"
+    '    resolution: "the specification cites the golden runs"\n'
+    '    source_commit: "0123456789abcdef0123456789abcdef01234567"\n'
+    '  - path: "notebooks/fit.ipynb"\n'
+    "    leg: code\n"
+    '    source_commit: "0123456789abcdef0123456789abcdef01234567"\n'
+)
+
+
 def append_record(project, text: str = SUBMODULE_RECORD) -> None:
     manifest = project / "project.yaml"
     manifest.write_bytes((manifest.read_text() + text).encode("utf-8"))
 
 
-def test_a_submodule_record_is_accepted(project):
-    append_record(project)
+def assert_refused(project, record: str, old: str, new: str,
+                   code: str) -> str:
+    """`record` with `old` made `new`, appended: a finding named `code`, and
+    the validator's stderr for a test that reads the sentence."""
+    assert old in record, f"fixture drift: {old!r}"
+    append_record(project, record.replace(old, new, 1))
+    result = validate(project)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert code in result.stderr, result.stderr
+    return result.stderr
+
+
+@pytest.mark.parametrize("record", [SUBMODULE_RECORD, ANSWER_RECORD],
+                         ids=["submodules", "answered-paths"])
+def test_a_record_is_accepted(project, record):
+    append_record(project, record)
     result = validate(project)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "manifest ok" in result.stdout
@@ -660,11 +690,59 @@ def test_a_submodule_record_is_accepted(project):
         "doubled-slash", "dot-segment", "the-leg-itself"])
 def test_a_submodule_record_row_that_says_nothing_is_a_finding(project, old,
                                                               new, code):
-    assert old in SUBMODULE_RECORD, f"fixture drift: {old!r}"
-    append_record(project, SUBMODULE_RECORD.replace(old, new, 1))
+    assert_refused(project, SUBMODULE_RECORD, old, new, code)
+
+
+#: The second row of `ANSWER_RECORD`, whose path the cases below respell.
+SECOND_ANSWER = '  - path: "notebooks/fit.ipynb"\n'
+
+
+@pytest.mark.parametrize("old, new, code", [
+    ("    leg: spec\n", "    leg: root\n", "manifest-answered-leg"),
+    ('  - path: "examples/"\n', '  - path: "../examples/"\n',
+     "manifest-answered-path"),
+    ('  - path: "examples/"\n', '  - path: ""\n', "manifest-answered-path"),
+    ('  - path: "examples/"\n', '  - path: "/"\n', "manifest-answered-path"),
+    ('  - path: "examples/"\n', '  - path: "examples//"\n',
+     "manifest-answered-path"),
+    ('  - path: "examples/"\n', '  - path: "./examples/"\n',
+     "manifest-answered-path"),
+    (SECOND_ANSWER, '  - path: "examples/"\n', "manifest-answered-path"),
+    (SECOND_ANSWER, '  - path: "examples/golden/a.json"\n',
+     "manifest-answered-path"),
+    ('    resolution: "the specification cites the golden runs"\n',
+     "    resolution: 3\n", "manifest-answered-resolution"),
+    ('    source_commit: "0123456789abcdef0123456789abcdef01234567"\n',
+     '    source_commit: "main"\n', "manifest-answered-commit"),
+    (SECOND_ANSWER + "    leg: code\n"
+     '    source_commit: "0123456789abcdef0123456789abcdef01234567"\n',
+     '  - "notebooks/fit.ipynb"\n', "manifest-answered-paths"),
+], ids=["leg-root", "dotdot-path", "empty-path", "the-root", "doubled-slash",
+        "leading-dot-slash", "path-twice", "path-under-another",
+        "resolution-not-text", "commit-not-hex", "row-not-a-mapping"])
+def test_an_answer_record_row_that_says_nothing_is_a_finding(project, old,
+                                                            new, code):
+    """THE #189 ROW'S RULES, AND ONE OF ITS OWN (#525): a directory's row
+    keeps the one `/` the plan wrote it with, and no row lies under
+    another, because `check` refuses a path two entries cover and the doctor
+    takes an answer from the one row that covers a file."""
+    assert_refused(project, ANSWER_RECORD, old, new, code)
+
+
+def test_an_answer_record_that_is_not_a_list_is_a_finding(project):
+    append_record(project, "\nanswered_paths: examples/\n")
     result = validate(project)
     assert result.returncode == 1, result.stderr + result.stdout
-    assert code in result.stderr, result.stderr
+    assert "manifest-answered-paths" in result.stderr, result.stderr
+
+
+def test_an_answer_under_another_says_which_row_it_overlaps(project):
+    """The finding names both rows, so a reader knows which to keep."""
+    said = assert_refused(project, ANSWER_RECORD, SECOND_ANSWER,
+                          '  - path: "examples/golden/a.json"\n',
+                          "manifest-answered-path")
+    assert ("answered_paths[1]: path 'examples/golden/a.json' overlaps the "
+            "row for 'examples/': a path is answered once") in said, said
 
 
 def test_a_submodule_record_that_is_not_a_list_is_a_finding(project):
