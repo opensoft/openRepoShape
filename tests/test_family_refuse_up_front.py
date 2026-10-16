@@ -535,6 +535,39 @@ def test_a_merge_in_a_linked_worktree_is_found_where_git_keeps_it(
                          r"MERGE_HEAD\. ", line), line
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="Windows refuses a newline in a file name; Linux "
+                           "and APFS take it")
+def test_a_holder_path_with_a_newline_still_shows_its_merge(
+        family, holder, offline, tmp_path):
+    """V-F1 of #612's verification. A linked worktree's `git rev-parse
+    --git-path` answers with an ABSOLUTE path through the holder's own
+    `.git`, so a holder in a directory whose name holds a newline makes every
+    answer two lines, and `_git_paths` asks each name alone. It once kept
+    only that answer's FIRST line, which named a directory that does not
+    exist: no mark was found, `add --dry-run` printed a plan, and the real
+    `add` mounted and failed at the commit, #612's own defect back for that
+    path. The whole answer, less git's final newline, is the path."""
+    env = isolated(offline, tmp_path)
+    broken = tmp_path / "Ink\nRouter"
+    shutil.copytree(holder, broken, symlinks=True)
+    linked = tmp_path / "linked"
+    raw(broken, env, "worktree", "add", "-q", "-b", "linked-branch",
+        str(linked))
+    begin("merge", linked, env, tmp_path)
+    shown = raw(linked, env, "rev-parse", "--git-path", "MERGE_HEAD"
+                ).stdout.decode()
+    assert shown.count("\n") == 2, f"premise: a newline in the path: {shown!r}"
+    for extra in ((), ("--dry-run",)):
+        ran = add(linked, env, family["remotes"], *extra)
+        assert ran.returncode == 2, (extra, ran.stdout, ran.stderr)
+        assert ran.stdout == ""
+        assert ran.stderr.startswith(
+            "REFUSED family-operation-in-progress: a merge is unfinished in "
+            "the family root: git keeps MERGE_HEAD at "), ran.stderr
+        assert "Ink\nRouter/.git/worktrees/" in ran.stderr, ran.stderr
+
+
 def test_with_no_act_and_no_sparse_checkout_each_verb_runs_as_it_always_did(
         family, holder, offline, tmp_path):
     """THE CONTROL: no act in progress, no sparse checkout; each verb commits

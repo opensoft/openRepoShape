@@ -826,7 +826,8 @@ AM_OPERATION = ("a `git am`", "git am --continue", "git am --abort",
 #: it: `pick` or `p`, a cherry-pick; `revert`, a revert.
 SEQUENCER = "sequencer"
 SEQUENCER_TODO = "sequencer/todo"
-SEQUENCE_COMMANDS = {"pick": "git cherry-pick", "p": "git cherry-pick",
+CHERRY_PICK = "git cherry-pick"
+SEQUENCE_COMMANDS = {"pick": CHERRY_PICK, "p": CHERRY_PICK,
                      "revert": "git revert"}
 
 #: A `sequencer/` whose `todo` is missing, empty or not a series git reads.
@@ -849,16 +850,21 @@ def _git_paths(root: Path, names: list[str]) -> list[Path]:
     a file and the per-worktree state (`MERGE_HEAD`, `rebase-merge/`,
     `index.lock`) is under `.git/worktrees/<name>/` (#365, `_module_dir`,
     `_checked_index_unlocked`). git answers relative to `root` or absolute,
-    and `root /` takes both. A holder whose path holds a newline would make
-    the lines and the names disagree: each name is then asked alone."""
-    def asked(*words: str) -> list[str]:
+    and `root /` takes both. A holder whose path holds a newline (a linked
+    worktree's answer is absolute, through the holder's own `.git`) would make
+    the lines and the names disagree: each name is then asked alone, and its
+    WHOLE answer less git's final newline is the path, never its first line
+    (#612's verification, V-F1: a path cut at its newline named nothing, and
+    a merge in that worktree was missed, which is #612's own defect)."""
+    def asked(*words: str) -> str:
         shown = _git_bytes(["rev-parse", *words], root).decode(
             "utf-8", "surrogateescape")
-        return shown[:-1].split("\n") if shown.endswith("\n") else [shown]
+        return shown[:-1] if shown.endswith("\n") else shown
 
-    lines = asked(*[word for name in names for word in ("--git-path", name)])
+    lines = asked(*[word for name in names
+                    for word in ("--git-path", name)]).split("\n")
     if len(lines) != len(names):
-        lines = [asked("--git-path", name)[0] for name in names]
+        lines = [asked("--git-path", name) for name in names]
     return [root / line for line in lines]
 
 
@@ -873,7 +879,7 @@ def _sequence_act(todo: Path) -> tuple:
         first[0].decode("utf-8", "replace") if first else "")
     if command is None:
         return SEQUENCE_UNREADABLE
-    what = "a cherry-pick" if command == "git cherry-pick" else "a revert"
+    what = "a cherry-pick" if command == CHERRY_PICK else "a revert"
     return (f"{what} series", f"{command} --continue", f"{command} --abort",
             "git does not refuse that between the steps of a series, so the "
             f"commit would land in the middle of it: `{command} --continue` "
@@ -1090,11 +1096,13 @@ def _checked_inside_sparse_rules(root: Path, verb: str,
     .gitmodules`, which wins over `!/.gitmodules`, `!.gitmodules` and `!/.*`
     appended before it (measured here, and over `!/*` by the review), and
     which meets no shell that converts a leading slash into a path (Git Bash
-    on Windows can). git
-    prints a warning for such a pattern (`pass a leading slash before paths
-    such as 'family.yaml' if you want a single file`); it is about how far a
-    slashless pattern reaches, and nothing else in a holder's root, or in
-    what `members/` holds that git tracks, is named so.
+    on Windows can). git prints a warning when the PERSON types such a
+    pattern, and also for `members/<Project>` of a member git already tracks
+    (`pass a leading slash before paths such as 'family.yaml' if you want a
+    single file`); it never appears in the verb's own output, and the command
+    brings the path back all the same. It is about how far a slashless
+    pattern reaches, and nothing else in a holder's root, or in what
+    `members/` holds that git tracks, is named so.
 
     `git sparse-checkout disable` is named beside it for any path: it brings
     back every path and leaves a copy already on disk as it is, as
@@ -3985,9 +3993,11 @@ def cmd_add(args) -> int:
     repository, project = _checked_member(args.member)
     path = _member_path(project)
     # A merge, cherry-pick, revert, rebase or `am` unfinished in the holder
-    # is asked before any refusal that reads the holder, since its commit
-    # fails however the rest is; `family.yaml` is read before it, so a merge
-    # conflicted there reads as `yaml-unparsable` (#612, 571(e), N4).
+    # is asked after `Family.open`, which parses `family.yaml` (so a merge
+    # conflicted there reads as `yaml-unparsable`, #612 N4), and before every
+    # refusal about the holder's own state: the commit goes wrong however
+    # the rest is, refused after the writes or made inside the act (#612,
+    # 571(e)).
     _checked_no_operation_in_progress(family.root, "add")
     at = _checked_add_target(family, repository, project, path, args.at)
     # What the sparse rules leave out, after the refusals that read the same
@@ -6124,8 +6134,11 @@ def cmd_remove(args) -> int:
     # call: `path: members/*` unmounted every member under one commit naming
     # one, and `path: .` removed the holder's own files.
     path = _member_path(project, row)
-    # A merge, cherry-pick, revert or rebase in progress is asked before the
-    # holder's files are read: its commit fails however they are (#612).
+    # A merge, cherry-pick, revert, rebase or `am` unfinished in the holder
+    # is asked after `Family.open`, `member-unknown` and the row's `path:`
+    # check, which read the manifest, and before the refusals about the
+    # holder's own files: the commit goes wrong however they are, refused
+    # after the writes or made inside the act (#612).
     _checked_no_operation_in_progress(family.root, "remove")
     # A `.gitmodules` the work tree lacks, or has not as the index has it,
     # is refused first (#407): the commit would take it out of HEAD, or
