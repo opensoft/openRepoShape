@@ -17,7 +17,8 @@ from pathlib import Path
 import pytest
 
 from conftest import ADOPT, REPO, git, resolve, run_script, write_plan
-from test_adopt_project_is_the_source import RENAME_FIRST
+from test_adopt_project_is_the_source import (DERIVED_OWN_NAME, NAME_RULE,
+                                              RENAME_FIRST)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from path_classify import PathPolicy  # noqa: E402
@@ -380,15 +381,15 @@ PASS_AN_ID = "Remediation: pass an explicit lowercase --id."
 DERIVED_ID = "--id (not given, so --project lowercased)"
 #: And what it is told to do (L2-54): change `--project`, which the naming
 #: policy reads itself, so "pass an explicit lowercase --id" led to
-#: `naming-unclassified`.
+#: `naming-unclassified`; and to what that refusal's rule takes, for
+#: "change --project" alone led to `North-Wind`, which it refuses (rv699).
 CHANGE_PROJECT = (
-    "Remediation: change --project. The id is --project lowercased, and an "
-    "explicit --id would not change --project, which also names the "
-    "assembly root and both legs.")
+    f"Remediation: change --project to {NAME_RULE}. The id is --project "
+    "lowercased, and an explicit --id would not change --project, which "
+    "also names the assembly root and both legs.")
 #: Or, where `--project` is the name of the repository the source names,
-#: adopted in place, `_rename_first`'s words.
-IN_PLACE = ("Remediation: the id is --project lowercased, and --project is "
-            f"the source's own name. testorg/North_Wind {RENAME_FIRST}")
+#: adopted in place, `_rename_first`'s words after the same rule.
+IN_PLACE = f"Remediation: {DERIVED_OWN_NAME} testorg/North_Wind {RENAME_FIRST}"
 
 
 def bad_id(result) -> list[str]:
@@ -458,6 +459,24 @@ def test_an_id_derived_from_the_project_is_named_as_derived(
         f"REFUSED adopt-bad-id: {DERIVED_ID} is {project.lower()!r}, which "
         f"must match {ID_PATTERN}", remediation], result.stderr
     assert not plan.exists()
+
+
+def test_a_derived_ids_remedy_names_the_rule_naming_unclassified_does(
+        source_repo, tmp_path):
+    """rv699: "change --project" alone sent the person to `North-Wind`, which
+    `naming-unclassified` then refused. The remedy names the rule that
+    refusal gives for `--project`, in its own words, and the next refusal
+    of the same `--project` says the same rule."""
+    derived = bad_id(write_plan(source_repo, tmp_path / "derived.yaml",
+                                project="North_Wind"))
+    named = bad_id(write_plan(source_repo, tmp_path / "named.yaml",
+                              project="North_Wind",
+                              extra=("--id", "north-wind")))
+    assert named == [
+        "REFUSED naming-unclassified: 'North_Wind' matches no family in the "
+        "naming policy", f"Remediation: --project takes {NAME_RULE}."], named
+    assert derived[1].startswith(
+        f"Remediation: change --project to {NAME_RULE}. "), derived
 
 
 def test_a_passed_id_equal_to_the_derived_one_is_still_named_as_passed(

@@ -3309,6 +3309,14 @@ def _refuse_a_tracking_branch_the_remote_lacks(urls: dict, tracking: str,
         REMOTE_LACKS_REMEDIATION + (LOCAL_REMOTE_LACKS if local else ""))
 
 
+#: The name the naming policy takes for an assembly root, in the words
+#: `naming-unclassified` says it in (`_check_names`). A derived id's remedy
+#: says the same (#658): "change --project" alone sent the person to
+#: `North-Wind`, which `naming-unclassified` then refused.
+PROJECT_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot or "
+                     "space")
+
+
 def _refuse_bad_id(project_id: str, project: str, given: set,
                    source: Source) -> None:
     """`plan`'s refusal of an id the project's validators would not take
@@ -3324,9 +3332,12 @@ def _refuse_bad_id(project_id: str, project: str, given: set,
     refused only for a `--project` holding a character no id takes, and the
     naming policy reads `--project` itself, as all three repositories'
     names: "pass an explicit lowercase --id" led to `naming-unclassified`.
-    So the remedy is to change `--project`; and where the source names a
-    repository and `--project` is its name, adopted in place, that name is
-    not the person's to retype, and the remedy is `_rename_first`'s."""
+    So the remedy is to change `--project`, to what the naming policy takes
+    (`PROJECT_NAME_RULE`, the words of `naming-unclassified`); and where the
+    source names a repository and `--project` is its name, adopted in place,
+    that name is not the person's to retype, and the remedy is
+    `_rename_first`'s, after the same rule. A source `plan` cloned names its
+    repository as an `origin` does (`Source.repository`)."""
     if PROJECT_ID_RE.match(project_id):
         return
     flag, pattern = _flag_named("id", given), PROJECT_ID_RE.pattern
@@ -3339,11 +3350,13 @@ def _refuse_bad_id(project_id: str, project: str, given: set,
     if repository is not None and _is_the_source(
             repository, repository.partition("/")[0], project):
         remedy = _rename_first(repository, f"the id is {derived}, and "
-                               "--project is the source's own name. ")
+                               "--project is the source's own name, which "
+                               f"must be {PROJECT_NAME_RULE}. ")
     else:
-        remedy = (f"Remediation: change --project. The id is {derived}, and "
-                  "an explicit --id would not change --project, which also "
-                  "names the assembly root and both legs.")
+        remedy = (f"Remediation: change --project to {PROJECT_NAME_RULE}. "
+                  f"The id is {derived}, and an explicit --id would not "
+                  "change --project, which also names the assembly root and "
+                  "both legs.")
     raise Refusal("adopt-bad-id",
                   f"{flag} is {project_id!r}, which must match {pattern}",
                   remedy)
@@ -11258,8 +11271,7 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
                 "naming-unclassified",
                 f"{name!r} matches no family in the naming policy",
                 renamed or
-                "Remediation: --project takes one CamelCase token with no "
-                "hyphen, underscore, dot or space.")
+                f"Remediation: --project takes {PROJECT_NAME_RULE}.")
         if not accepts_role(found, role):
             raise Refusal(
                 "naming-role-mismatch",
