@@ -447,9 +447,9 @@ rules:
   # `kind:` DECIDES, NOT THE NAME, as it does for the advisory. `plan` asks
   # this question only of a file that declares `kind:
   # single-repository-record` at the commit it plans, and the doctor only
-  # of a leg's copy that declares it on the disk (#691). One of this name
-  # that declares anything else, or does not parse, is no record, and is
-  # asked the general question below as any other top-level data file is.
+  # of a leg's copy that declares it in the leg's index (#691). One of this
+  # name that declares anything else, or does not parse, is no record, and
+  # is asked the general question below as any other top-level data file is.
   - id: ambiguous-single-repository-record
     paths:
       - "single-repository.yaml"

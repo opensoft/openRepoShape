@@ -19,12 +19,14 @@ unless a person writes `root`. The verdict keeps `leg` None, so the doctor,
 which walks a leg with the same `walk`, still reads a leg's copy as a
 question. And `kind:` decides, not the name: a file of that name that is no
 record at the commit `plan` reads is asked the general question, and so is
-a leg's copy that is no record on the disk the doctor reads (#691).
+a leg's copy that is no record in the leg's index, which the doctor reads
+(#691).
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import sys
 from argparse import Namespace
@@ -42,6 +44,9 @@ from shape_advisory import RECORD_FILE  # noqa: E402
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
+needs_disk_symlinks = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a tracked symlink is a plain file in a Windows checkout")
 
 PROJECT = "Northwind"
 RULE = "ambiguous-single-repository-record"
@@ -365,15 +370,29 @@ def doctor():
                                  "shape_doctor_single_repository_record_leg")
 
 
-def leg_audited(adopter, doctor, tmp_path, text: str) -> tuple:
+def leg_audited(adopter, doctor, tmp_path, text: str, edit=None) -> tuple:
     """`audit_leg`'s `(paths in the wrong leg, questions)` for a code leg
-    that holds `RECORD_FILE` with `text`, and the source file beside it."""
-    make_source_repo(tmp_path / "code", edits=(), tree={
-        "src/main.c": "int main(void) { return 0; }\n", RECORD_FILE: text})
+    that commits `RECORD_FILE` with `text`, a source file and a `widgets/`
+    the walk folds into one entry beside it, and then has `edit(leg)` done
+    to its disk. The folded entry is what a reclassification of EVERY entry
+    would turn into a second question."""
+    leg = make_source_repo(tmp_path / "code", edits=(), tree={
+        "src/main.c": "int main(void) { return 0; }\n",
+        "widgets/a.c": "int a;\n", "widgets/b.c": "int b;\n",
+        RECORD_FILE: text})
+    if edit is not None:
+        edit(leg)
     _, misplaced, review, _, _ = doctor.audit_leg(
         adopter, PathPolicy.load(POLICY), [], "code", "code", tmp_path, {},
         {})
     return misplaced, review
+
+
+def size_of_the_file(tmp_path) -> int:
+    """The bytes the leg's `RECORD_FILE` holds on this disk, which is what
+    the row counts. `write_text` made them, so on Windows they are not
+    `len(text.encode())`."""
+    return len((tmp_path / "code" / RECORD_FILE).read_bytes())
 
 
 @pytest.mark.parametrize("body", list(NOT_A_RECORD.values()),
@@ -382,7 +401,8 @@ def test_the_doctor_asks_a_leg_file_that_is_no_record_the_general_question(
         adopter, doctor, tmp_path, body):
     """`plan` asks the general question of a file of that name that is no
     record, and so does the placement row: it does not tell the person the
-    file records that the repository stays single."""
+    file records that the repository stays single. Nothing else is asked,
+    and the entry keeps its one file and its bytes."""
     misplaced, review = leg_audited(adopter, doctor, tmp_path, body)
     row, = review
     general = PathPolicy.load(POLICY).classify_file("release.yaml")
@@ -392,6 +412,7 @@ def test_the_doctor_asks_a_leg_file_that_is_no_record_the_general_question(
     assert row["review_required"] is True
     assert row["question"] == general.question
     assert row["reason"] == general.reason
+    assert (row["files"], row["bytes"]) == (1, size_of_the_file(tmp_path))
 
 
 @pytest.mark.parametrize("body", [RECORD, "kind: single-repository-record\n"],
@@ -406,6 +427,52 @@ def test_the_doctor_keeps_the_records_question_for_a_record(
     assert (row["rule"], row["classified_as"]) == (RULE, None)
     assert row["question"] == record_question()
     assert "(drop, the default" in row["question"]
+    assert (row["files"], row["bytes"]) == (1, size_of_the_file(tmp_path))
+
+
+def deleted(leg) -> None:
+    (leg / RECORD_FILE).unlink()
+
+
+def rewritten(text: str):
+    """An `edit` that rewrites the leg's `RECORD_FILE` on disk, unstaged."""
+    return lambda leg: (leg / RECORD_FILE).write_bytes(text.encode())
+
+
+@pytest.mark.parametrize("committed, edit, rule", [
+    (RECORD, deleted, RULE),
+    (RECORD, rewritten(NOT_A_RECORD["another kind"]), RULE),
+    (NOT_A_RECORD["another kind"], rewritten(RECORD), GENERAL),
+], ids=["deleted-on-disk", "edited-to-no-record", "edited-to-a-record"])
+def test_the_doctor_reads_the_legs_index_and_not_its_disk(
+        adopter, doctor, tmp_path, committed, edit, rule):
+    """THE ROW LISTS THE LEG'S INDEX, so the file is read there, as `plan`
+    reads its commit: one that is tracked and gone from the disk, or edited
+    there and not staged, is asked as what it is in the index."""
+    _, review = leg_audited(adopter, doctor, tmp_path, committed, edit)
+    row, = review
+    assert (row["rule"], row["classified_as"]) == (rule, None)
+
+
+@needs_disk_symlinks
+def test_a_tracked_link_to_a_record_is_asked_the_general_question(
+        adopter, doctor, tmp_path):
+    """A tracked link is read as its blob, the target's name, which is no
+    record, and never followed: not to a record beside the leg, which the
+    leg's own repository does not hold, as `plan` reads it."""
+    (tmp_path / "outside.yaml").write_bytes(RECORD.encode())
+
+    def link(leg) -> None:
+        (leg / RECORD_FILE).unlink()
+        try:
+            os.symlink("../outside.yaml", leg / RECORD_FILE)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"this platform cannot create a symlink here: {exc}")
+        git("add", "--", RECORD_FILE, cwd=leg)
+
+    _, review = leg_audited(adopter, doctor, tmp_path, RECORD, link)
+    row, = review
+    assert (row["rule"], row["classified_as"]) == (GENERAL, None)
 
 
 # --- what each answer does ----------------------------------------------------
