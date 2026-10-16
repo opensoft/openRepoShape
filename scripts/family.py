@@ -707,17 +707,24 @@ def _switch_command(root: Path, branch: str) -> str:
 
 #: What every remedy that names `_switch_command` says next (#607): where an
 #: earlier act left that branch, `switch -c` fails `fatal: a branch named
-#: '<branch>' already exists` (exit 128), and the person had to know `git
-#: switch <branch>`. That keeps the branch's commits and refuses to overwrite
-#: a changed file; nothing here names `switch -C`, which resets the branch.
+#: '<branch>' already exists` (exit 128). ANOTHER NAME COMES FIRST, because a
+#: new branch starts where the holder stands now, which is right in every
+#: state. Going back to the old branch is right only where it holds work not
+#: merged yet: one left behind a main that has moved on makes the act collide
+#: with what main took in since, or find its member already there, and a
+#: commit made on a detached HEAD is left behind by any `git switch <branch>`.
+#: `git switch` keeps the branch's commits and refuses to overwrite a changed
+#: file; nothing here names `switch -C`, which resets the branch.
 #: IN WORDS, NOT A SECOND COMMAND: no one line works in both states in every
 #: shell this file quotes for (PowerShell 5.1 has no `||`), and README lists
 #: the kinds of line printed for PowerShell. The holder's
 #: `validate-family.py` says the same words.
 BRANCH_LEFT = ("If `git switch -c` says that branch already exists, an "
-               "earlier act left it: the same command without `-c` switches "
-               "to it and keeps every commit on it, or give the branch "
-               "another name.")
+               "earlier act left it: give the branch another name, which "
+               "starts it where the holder stands, or, only if that branch "
+               "holds work not merged yet, the same command with `switch` "
+               "in place of `switch -c` goes back to it and keeps every "
+               "commit on it.")
 
 
 def _checked_branch(family: "Family", verb: str, suggested: str) -> str:

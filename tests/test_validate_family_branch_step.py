@@ -51,9 +51,11 @@ RULE = "THE LOCKSTEP RULE: a member's gitlink and its `members[].pin.commit`"
 #: where that branch exists already (#607), pinned as text, as `family.py`
 #: and the holder's validator both say it.
 BRANCH_LEFT = ("If `git switch -c` says that branch already exists, an "
-               "earlier act left it: the same command without `-c` switches "
-               "to it and keeps every commit on it, or give the branch "
-               "another name.")
+               "earlier act left it: give the branch another name, which "
+               "starts it where the holder stands, or, only if that branch "
+               "holds work not merged yet, the same command with `switch` "
+               "in place of `switch -c` goes back to it and keeps every "
+               "commit on it.")
 
 
 def gate_module(monkeypatch):

@@ -9,15 +9,25 @@ the same line before each `add` and `remove` it prints (#539). Where an
 earlier act left that branch the line fails, `fatal: a branch named
 'family/add-irqs' already exists`, exit 128, and neither tool said what to
 do next. Both now end the remedy with ONE sentence, the same words in both:
-the same command without `-c` switches to the branch and keeps every commit
-on it, or give the branch another name. Neither prints a command that
-resets or deletes it.
+give the branch another name, which starts it where the holder stands, or,
+only if that branch holds work not merged yet, the same command with
+`switch` in place of `switch -c` goes back to it and keeps every commit on
+it. Neither prints a command that resets or deletes it.
 
-THE PROOF IS THE PRINTED LINE, TYPED, IN BOTH STATES. With no such branch,
+THE PROOF IS THE PRINTED LINE, TYPED, IN EVERY STATE. With no such branch,
 the `switch -c` makes it. With one an earlier act left, holding a commit of
 its own, the `switch -c` fails as git says and changes nothing, the same
-command without `-c` switches to it, the act goes through there, and the
-earlier commit is the parent of the act's.
+command with `switch` for `switch -c` goes back to it, the act goes through
+there, and the earlier commit is the parent of the act's. Another name is
+the way out where going back is wrong, and the reason it comes first: where
+`main` has moved on since the earlier act (a later member was squash-merged),
+the new branch starts at that `main` and `add` goes through and merges with
+no conflict; where the holder stands on a detached HEAD that carries a
+commit, the new branch keeps it.
+
+THE GUARD. Every remedy of the holder's validator that names `_switch_line`
+ends its prose with the sentence, read from the template's source, so a
+fourth remedy added later (#610's `_lockstep`) that forgets it fails here.
 
 ONE PLACEHOLDER (L2-45). AGENTS.md, the holder's README and AGENTS-shape.md
 and `init`'s NEXT STEPS spelled the branch `family/add-<project>` beside
@@ -32,6 +42,7 @@ the holder on its tracking branch. Nothing here pushes.
 
 from __future__ import annotations
 
+import ast
 import re
 import shlex
 import subprocess
@@ -43,7 +54,8 @@ import pytest
 from conftest import REPO, git, run_script
 from repo_shape import PYTHON
 from test_family import (  # noqa: F401
-    ORG, SPARE, family, family_module, manifest, mount_twice, validate,
+    FAMILY, ORG, SPARE, family, family_module, manifest, mount_twice,
+    scaffold_member, validate,
 )
 from test_family_printed_quoting import host_words
 from test_family_tracking_branch import (  # noqa: F401
@@ -52,7 +64,7 @@ from test_family_tracking_branch import (  # noqa: F401
 # `BRANCH_LEFT` is the sentence both tools end the remedy with, pinned as
 # text: a person, an agent and a holder's CI read it, so it is not rebuilt
 # from either tool's own constant here.
-from test_validate_family_branch_step import BRANCH_LEFT, gate_module
+from test_validate_family_branch_step import BRANCH_LEFT, TEMPLATE, gate_module
 from test_validate_family_unnamed_mounts import spare_commits, stage_gitlink
 
 #: Each state a remedy is typed in: no branch of that name, and one an
@@ -78,7 +90,8 @@ def typed(argv: list[str]) -> subprocess.CompletedProcess:
 
 
 def without_c(argv: list[str]) -> list[str]:
-    """The same command without `-c`, as the sentence says."""
+    """The same command with `switch` in place of `switch -c`, as the
+    sentence says."""
     assert argv.count("-c") == 1, argv
     return [word for word in argv if word != "-c"]
 
@@ -91,26 +104,60 @@ def head(holder: Path) -> str:
     return git("rev-parse", "HEAD", cwd=holder).stdout.strip()
 
 
+def remedy_lines(stderr: str) -> tuple[list[str], list[str]]:
+    """The remedy's `switch -c` as the reader's shell reads it, and the
+    lines under it."""
+    lines = stderr.splitlines()
+    switch = remedy_switch(stderr)
+    at = next(i for i, line in enumerate(lines)
+              if line.startswith("    ") and host_words(line) == switch)
+    return switch, lines[at + 1:]
+
+
+def refused_as_left(holder: Path, switch: list[str], branch: str) -> None:
+    """The remedy's `switch -c`, typed as printed where `branch` is there:
+    git's `fatal: a branch named ... already exists`, exit 128, and nothing
+    changed."""
+    before = head(holder)
+    made = typed(switch)
+    assert made.returncode == 128, made.stderr
+    assert re.search(rf"fatal: a branch named '{re.escape(branch)}' "
+                     "already exists", made.stderr, re.I), made.stderr
+    assert head(holder) == before
+
+
 def type_switch(holder: Path, switch: list[str], branch: str,
                 earlier: str | None) -> None:
     """The remedy's `switch -c`, typed as printed. With no branch of that
     name (`earlier` None) it makes it. With one an earlier act left, it
-    fails as #607 says and changes nothing, and the same command without
-    `-c` switches to that branch, at its own commit."""
-    before = head(holder)
-    made = typed(switch)
+    fails as #607 says and changes nothing, and the same command with
+    `switch` in place of `switch -c` goes back to that branch, at its own
+    commit."""
     if earlier is None:
+        made = typed(switch)
         assert made.returncode == 0, made.stderr
     else:
-        assert made.returncode == 128, made.stderr
-        assert re.search(rf"fatal: a branch named '{re.escape(branch)}' "
-                         "already exists", made.stderr, re.I), made.stderr
-        assert head(holder) == before
+        refused_as_left(holder, switch, branch)
         assert on_branch(holder) == TRACKING
         back = typed(without_c(switch))
         assert back.returncode == 0, back.stderr
         assert head(holder) == earlier
     assert on_branch(holder) == branch
+
+
+def type_other_name(holder: Path, switch: list[str], branch: str) -> str:
+    """The remedy's `switch -c` where `branch` is there, typed as printed
+    (refused), then with another name: the new branch starts where the
+    holder stands. Returns its name."""
+    assert switch[-1] == branch, switch
+    refused_as_left(holder, switch, branch)
+    other = f"{branch}-2"
+    before = head(holder)
+    made = typed([*switch[:-1], other])
+    assert made.returncode == 0, made.stderr
+    assert head(holder) == before
+    assert on_branch(holder) == other
+    return other
 
 
 # --- family.py: the refusal, typed as printed, in both states ---------------
@@ -131,12 +178,9 @@ def test_the_refusal_typed_as_printed_puts_the_act_on_its_branch(
     refused = act(family, holder, verb)
     assert refused.returncode == 2, refused.stdout + refused.stderr
     assert snapshot(holder) == before
-    lines = refused.stderr.splitlines()
-    switch = remedy_switch(refused.stderr)
-    at = next(i for i, line in enumerate(lines)
-              if line.startswith("    ") and host_words(line) == switch)
-    assert lines[at + 1] == BRANCH_LEFT, lines
-    assert lines[at + 2].startswith("Then push that branch"), lines
+    switch, under = remedy_lines(refused.stderr)
+    assert under[0] == BRANCH_LEFT, under
+    assert under[1].startswith("Then push that branch"), under
     for discards in ("switch -C", "branch -D", "reset", "--discard-changes"):
         assert discards not in refused.stderr, refused.stderr
 
@@ -164,6 +208,91 @@ def test_a_dry_run_on_the_tracking_branch_says_it_too(family, on_main, verb):
                      "(family-on-tracking-branch); make a branch first:")
     assert host_words(lines[at + 1])[-2:] == ["-c", suggested(family, verb)]
     assert lines[at + 2] == "             " + BRANCH_LEFT
+
+
+# --- family.py: another name, where going back to the branch is wrong --------
+
+#: The member a later pull request adds, and squash-merges, while an earlier
+#: act's branch sits: a project that is not one the fixture mounts or keeps
+#: spare.
+LATER = "IRXS"
+
+
+def move_main_on(holder: Path, remotes_base: Path) -> None:
+    """What `main` does while an earlier act's branch sits: another member is
+    added on a branch of its own and its pull request squash-merged, so `main`
+    holds one new commit with that branch's tree on the main the earlier
+    branch was made from. The holder is back on `main` and clean."""
+    scaffold_member(remotes_base, LATER)
+    git("switch", "-q", "-c", f"family/add-{LATER.lower()}", cwd=holder)
+    added = run_script(FAMILY, "add", "--family-root", str(holder),
+                       "--member", f"{ORG}/{LATER}", "--local-remote-dir",
+                       str(remotes_base / "remotes"))
+    assert added.returncode == 0, added.stderr + added.stdout
+    squash = git("commit-tree", "-p", TRACKING, "-m", f"Add {LATER} (#1)",
+                 "HEAD^{tree}", cwd=holder).stdout.strip()
+    git("update-ref", f"refs/heads/{TRACKING}", squash, cwd=holder)
+    git("switch", "-q", TRACKING, cwd=holder)
+    assert git("status", "--porcelain", cwd=holder).stdout == ""
+
+
+def test_another_name_works_where_main_has_moved_since(family, on_main,
+                                                       tmp_path):
+    """STATE (d), the review's: an earlier act left `family/add-irqs` at the
+    `main` of its day, holding no commit, and a later member has been
+    squash-merged since. The refusal's `switch -c`, typed as printed, fails;
+    the same line with another name starts the branch at the `main` the
+    holder stands on, `add` goes through there, and what it commits merges
+    into `main` with no conflict. (Going back to the old branch is the
+    other way, and it conflicts: the sentence puts it second, for a branch
+    that holds work not merged yet.)"""
+    holder = on_main
+    branch = suggested(family, "add")
+    git("branch", branch, cwd=holder)
+    later = tmp_path / "later"
+    later.mkdir()
+    move_main_on(holder, later)
+    assert git("rev-parse", branch, cwd=holder).stdout == \
+        git("rev-parse", f"{TRACKING}~1", cwd=holder).stdout
+    refused = act(family, holder, "add")
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    switch, under = remedy_lines(refused.stderr)
+    assert under[0] == BRANCH_LEFT, under
+    other = type_other_name(holder, switch, branch)
+    done = act(family, holder, "add")
+    assert done.returncode == 0, done.stdout + done.stderr
+    merged = git("merge-tree", "--write-tree", TRACKING, other, cwd=holder,
+                 check=False)
+    assert merged.returncode == 0, merged.stdout
+    projects = [row["project"] for row in manifest(holder)["members"]]
+    assert LATER in projects
+    assert SPARE in projects
+    assert validate(holder).returncode == 0
+
+
+def test_another_name_keeps_a_commit_made_on_a_detached_head(family, on_main):
+    """`family-holder-detached` with a commit made on the detached HEAD, and
+    the earlier act's branch there already. The refusal's `switch -c`, typed
+    as printed, fails; the same line with another name keeps that commit:
+    `git branch --contains` names the new branch and no other. (Going back
+    to a branch with `switch` leaves a commit no branch holds behind, which
+    is why the sentence says that way only for a branch with work on it.)"""
+    holder = on_main
+    branch = suggested(family, "add")
+    git("branch", branch, cwd=holder)
+    git("switch", "-q", "--detach", cwd=holder)
+    git("commit", "-q", "--allow-empty", "-m", "Work done on a detached HEAD",
+        cwd=holder)
+    work = head(holder)
+    refused = act(family, holder, "add")
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert "REFUSED family-holder-detached: " in refused.stderr
+    switch, under = remedy_lines(refused.stderr)
+    assert under[0] == BRANCH_LEFT, under
+    other = type_other_name(holder, switch, branch)
+    held = git("branch", "--contains", work, "--format=%(refname:short)",
+               cwd=holder).stdout.split()
+    assert held == [other]
 
 
 # --- validate-family.py: each remedy that names the branch ------------------
@@ -236,6 +365,85 @@ def test_an_unnamed_gitlinks_remedy_typed_as_printed(family, on_main, left):
     type_switch(holder, switch, branch, earlier)
 
 
+def as_text(node: ast.expr) -> str:
+    """A string expression as the text it builds, each value in it a
+    `{expression}` placeholder: an f-string, a `+` of strings, a literal."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(as_text(part) for part in node.values)
+    if isinstance(node, ast.FormattedValue):
+        return "{" + ast.unparse(node.value) + "}"
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return as_text(node.left) + as_text(node.right)
+    return "{" + ast.unparse(node) + "}"
+
+
+def switch_remedies(source: str) -> list[tuple[int, str]]:
+    """Each place `source` names `_switch_line`: its line and the PROSE of
+    the string it stands in, as text up to the first line break (the
+    command lines come under it). The string is the whole expression the
+    call is written in, however it is passed on: the f-string of a
+    `Refusal` or a `report.finding`, or the `return` of a helper."""
+    tree = ast.parse(source)
+    parents = {child: node for node in ast.walk(tree)
+               for child in ast.iter_child_nodes(node)}
+    found = []
+    for call in ast.walk(tree):
+        if not (isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "_switch_line"):
+            continue
+        string = call
+        while isinstance(parents.get(string),
+                         (ast.FormattedValue, ast.JoinedStr, ast.BinOp)):
+            string = parents[string]
+        found.append((string.lineno, as_text(string).split("\n", 1)[0]))
+    return found
+
+
+def unguarded(source: str) -> list[int]:
+    """The line of each remedy naming `_switch_line` whose prose does not
+    end with `BRANCH_LEFT`."""
+    return [line for line, prose in switch_remedies(source)
+            if not prose.endswith("{BRANCH_LEFT}")]
+
+
+def test_every_remedy_that_names_a_switch_line_ends_with_the_sentence():
+    """THE GUARD (S2). The validator's three remedies that print a `git
+    switch -c` (`member-gitlink-absent`, `member-duplicate-id` and
+    `member-gitlink-unnamed`) end their prose with `BRANCH_LEFT`, and so
+    does any remedy added later: the one that builds it cannot forget, as
+    #610's `_lockstep` does, without this failing."""
+    source = TEMPLATE.read_text(encoding="utf-8")
+    assert len(switch_remedies(source)) >= 3, switch_remedies(source)
+    assert unguarded(source) == []
+
+
+def fourth_remedy(end: str) -> str:
+    """A helper that returns a remedy naming `_switch_line`, as #610's
+    `_lockstep` does, its prose ending with `end`."""
+    return ("\n\ndef _lockstep_remedy(root):\n    return (\n"
+            "        f\"(`{_switch_line(root, 'bump', None)}` makes one); \"\n"
+            "        f\"moving one alone is what this refuses."
+            + end + "\")\n")
+
+
+def test_the_guard_sees_a_remedy_left_without_the_sentence():
+    """The guard is not vacuous: the validator's source with the sentence
+    taken out of any one of its remedies fails it, and so does a fourth
+    remedy, built by a helper as `_lockstep` builds its, until the sentence
+    ends it."""
+    source = TEMPLATE.read_text(encoding="utf-8")
+    placed = [m.start() for m in re.finditer(r"\{BRANCH_LEFT\}", source)]
+    assert len(placed) >= 3, placed
+    for at in placed:
+        dropped = source[:at] + source[at + len("{BRANCH_LEFT}"):]
+        assert len(unguarded(dropped)) == 1, source[at - 60:at]
+    assert len(unguarded(source + fourth_remedy(""))) == 1
+    assert unguarded(source + fourth_remedy(" {BRANCH_LEFT}")) == []
+
+
 def test_the_two_tools_say_the_same_words(monkeypatch):
     """ONE ANSWER: `family.py` and the holder's validator, which a holder
     carries as a copy and which cannot import `family.py`, spell the
@@ -247,9 +455,11 @@ def test_the_two_tools_say_the_same_words(monkeypatch):
 # --- one placeholder for the member (L2-45) ----------------------------------
 
 #: The `switch -c` and the first `add` of each doc's block, each read for the
-#: placeholder it puts where the member goes.
+#: placeholder it puts where the member goes. The docs say `<path>` where a
+#: root goes, so a word with no space in it; what `init` prints says a real
+#: root, which may hold one, so it is read with `host_words` instead.
 BRANCH_WORD = re.compile(r" switch -c family/add-(\S+)")
-MEMBER_WORD = re.compile(r" add +--family-root \S+ --member \S*/(\S+)")
+MEMBER_WORD = re.compile(r" add +--family-root <path> --member \S*/(\S+)")
 
 
 @pytest.mark.parametrize("doc", [
@@ -269,9 +479,12 @@ def test_init_next_steps_spell_the_branch_as_its_member(capsys, tmp_path):
     work = tmp_path / "Orbit" / "Orbit"
     family_module()._print_next_steps(
         SimpleNamespace(org=ORG, tracking_branch=TRACKING), work, None)
-    printed = capsys.readouterr().out
-    assert BRANCH_WORD.search(printed).group(1) == "<Project>", printed
-    assert MEMBER_WORD.search(printed).group(1) == "<Project>", printed
+    block = [line.strip() for line in
+             capsys.readouterr().out.split("NEXT STEPS", 1)[1].splitlines()
+             if line.strip()]
+    switch, add = host_words(block[0]), host_words(block[1])
+    assert switch[-1] == "family/add-<Project>", block
+    assert add[add.index("--member") + 1] == f"{ORG}/<Project>", block
 
 
 def test_the_branch_filled_in_as_written_is_one_add_commits_on(family,

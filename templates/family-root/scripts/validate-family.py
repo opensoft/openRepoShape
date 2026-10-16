@@ -122,15 +122,20 @@ PROJECT_PLACEHOLDER = "<Project>"
 
 #: What a remedy that names `_switch_line` says at the end of its prose
 #: (#607): where an earlier act left that branch, `switch -c` fails `fatal: a
-#: branch named '<branch>' already exists` (exit 128). The same command
-#: without `-c` switches to it and keeps its commits; nothing here names
-#: `switch -C`, which resets it. In words, not a second command: this report
-#: is read in CI too, where the checkout has none of the person's branches to
-#: ask about. `family.py`'s `BRANCH_LEFT`, word for word.
+#: branch named '<branch>' already exists` (exit 128). Another name comes
+#: first: it starts the branch where the holder stands now, which is right in
+#: every state. The same command with `switch` for `switch -c` goes back to
+#: the old branch, which is right only where it holds work not merged yet;
+#: it keeps its commits, and nothing here names `switch -C`, which resets it.
+#: In words, not a second command: this report is read in CI too, where the
+#: checkout has none of the person's branches to ask about. `family.py`'s
+#: `BRANCH_LEFT`, word for word.
 BRANCH_LEFT = ("If `git switch -c` says that branch already exists, an "
-               "earlier act left it: the same command without `-c` switches "
-               "to it and keeps every commit on it, or give the branch "
-               "another name.")
+               "earlier act left it: give the branch another name, which "
+               "starts it where the holder stands, or, only if that branch "
+               "holds work not merged yet, the same command with `switch` "
+               "in place of `switch -c` goes back to it and keeps every "
+               "commit on it.")
 
 
 def _switch_line(root: Path, verb: str, name: str | None) -> str:
@@ -142,7 +147,8 @@ def _switch_line(root: Path, verb: str, name: str | None) -> str:
     `add`, lowercased; None says `PROJECT_PLACEHOLDER`, the one the
     `--member` beside it says. POSIX-quoted, as every other line this file
     prints is. Every remedy that names it ends its prose with `BRANCH_LEFT`
-    (#607)."""
+    (#607); openRepoShape's own tests read this file's source and fail one
+    that does not."""
     if name is None:
         return (f"git -C {shlex.quote(str(root))} switch -c "
                 f"family/{verb}-{PROJECT_PLACEHOLDER}")
