@@ -21,7 +21,10 @@ either is red. With two legs off their pins, or any finding the bump does
 not clear, every line would be rolled back, so the doctor and the gate name
 none and say what comes first (`detail.gitlink_repairs_held_back`). A
 finding the bump DOES clear, the leg's own digest or a workflow reference
-to it, holds nothing back.
+to it, holds nothing back. The OTHER leg's digest or workflow reference is
+cleared by a bump of that leg, which the gitlink rolls back in turn, so
+what comes first is the gitlink put back by hand, never "clear that
+finding" (#677).
 
 EVERY REPAIR HERE IS RUN, from a directory that is not the root and through
 the argv the reader's own shell makes of the printed line (`pasted`: `shlex`
@@ -357,8 +360,8 @@ def edit(root: Path, relative: str, pattern: str, replacement: str) -> None:
     target.write_text(edited, encoding="utf-8")
 
 
-def digest_moved(root: Path) -> None:
-    edit(root, "contracts/spec-pin.yaml",
+def digest_moved(root: Path, role: str = "spec") -> None:
+    edit(root, f"contracts/{role}-pin.yaml",
          r'(?m)^(  tree_sha256: ")[0-9a-f]{64}(")$', r"\g<1>" + "0" * 64 +
          r"\g<2>")
 
@@ -457,6 +460,14 @@ def gate_says(root: Path) -> list[str]:
     return gate.stderr.splitlines()
 
 
+def put_back(root: Path, role: str, pin: str) -> None:
+    """What comes first, done by hand: the `role` leg checked out at its
+    pin, and its gitlink committed in the root (#478, #677)."""
+    git("checkout", "-q", "--detach", pin, cwd=root / role)
+    git("add", "--", role, cwd=root)
+    git("commit", "-qm", f"put the {role} leg back", cwd=root)
+
+
 def assert_no_line_is_named(standard: Path, root: Path, row: dict) -> None:
     """No `bump-leg.py` command in the row or its `detail`, and the NEXT is
     the gate's own, byte for byte."""
@@ -483,7 +494,7 @@ def test_two_legs_off_their_pins_name_no_line_and_say_what_comes_first(
                   "pin": pins["spec"]},
                  {"role": "code", "path": "code", "gitlink": code_advanced,
                   "pin": pins["code"]}],
-        "findings": [], "manifest": False}, row["detail"]
+        "findings": [], "other_legs": [], "manifest": False}, row["detail"]
     held = ("No single bump-leg.py line can commit while spec and code are "
             "both off their pins: bump-leg.py moves one leg and runs the "
             "root's whole validate-pins.py before it commits, rolling the bump "
@@ -499,40 +510,36 @@ def test_two_legs_off_their_pins_name_no_line_and_say_what_comes_first(
         "both off their pins: ")]
     assert len(said) == 2, lines
     assert "First put one leg's gitlink back at its pin" in said[0], said
-    # What comes first, done by hand: the spec leg back at its pin.
-    git("checkout", "-q", "--detach", pins["spec"], cwd=root / "spec")
-    git("add", "--", "spec", cwd=root)
-    git("commit", "-qm", "put the spec leg back", cwd=root)
+    put_back(root, "spec", pins["spec"])
     repairs = pins_row(standard, root)["detail"]["gitlink_repairs"]
     assert [leg["role"] for leg in repairs] == ["code"], repairs
     run_as_printed(repairs[0]["keep_gitlink"], tmp_path)
     assert_compliant(standard, root)
 
 
-#: A finding the bump does NOT clear, committed with the gitlink: the edit,
-#: and the code the gate reports for it.
+#: A finding NO bump clears, committed with the gitlink, by the code the gate
+#: reports for it. The other leg's workflow reference was one too, until
+#: #677: a bump of that leg clears it (`ANOTHER_LEG`, below).
 HOLDS_BACK = {
     "shape-copy-drift": copy_drifted,
-    "the other leg's workflow reference": workflow_at("code", OTHER_SHA),
 }
 
 
-@pytest.mark.parametrize("case", sorted(HOLDS_BACK))
+@pytest.mark.parametrize("code", sorted(HOLDS_BACK))
 def test_another_finding_holds_the_lines_back(standard, project, advanced,
-                                              tmp_path, case):
-    """One leg off its pin, and a finding a bump of it does not clear: the
-    gate `bump-leg.py` runs is red after either line's rewrite, so the row
-    and the gate name none and say to clear that finding first."""
-    code = ("pin-workflow-ref-mismatch" if "workflow" in case else case)
+                                              tmp_path, code):
+    """One leg off its pin, and a finding no bump clears: the gate
+    `bump-leg.py` runs is red after either line's rewrite, so the row and
+    the gate name none and say to clear that finding first."""
     moved = moved_by_hand(project, tmp_path, {"spec": advanced},
-                          HOLDS_BACK[case])
+                          HOLDS_BACK[code])
     root = moved["root"]
     row = pins_row(standard, root)
     assert_no_line_is_named(standard, root, row)
     assert row["detail"]["gitlink_repairs_held_back"] == {
         "legs": [{"role": "spec", "path": "spec", "gitlink": advanced,
                   "pin": moved["pins"]["spec"]}],
-        "findings": [code], "manifest": False}, row["detail"]
+        "findings": [code], "other_legs": [], "manifest": False}, row["detail"]
     assert row["reason"].endswith(
         f". No single bump-leg.py line can commit while the gate also reports "
         f"{code}: bump-leg.py moves one leg and runs the root's whole "
@@ -546,6 +553,51 @@ def test_another_finding_holds_the_lines_back(standard, project, advanced,
             "validator before it commits, rolling the bump back when it is "
             "red. First clear that finding; this validator then names the "
             "two bump-leg.py lines for that leg.") in lines, lines
+
+
+#: The CODE leg out of step, committed with the spec gitlink, by the code
+#: the gate reports for it: a finding only a bump of the code leg clears,
+#: rolled back while the spec gitlink is off its pin (#677).
+ANOTHER_LEG = {
+    "pin-digest-mismatch": lambda root: digest_moved(root, "code"),
+    "pin-workflow-ref-mismatch": workflow_at("code", OTHER_SHA),
+}
+
+
+@pytest.mark.parametrize("code", sorted(ANOTHER_LEG))
+def test_another_legs_finding_waits_on_the_gitlink_put_back(
+        standard, project, advanced, tmp_path, code):
+    """#677's case: no line for either leg can commit, so "First clear
+    that finding" named a step nothing could take. The row names the step
+    by hand that two gitlinks off their pins name, and `other_legs` names
+    the code leg; done, the row is the gate's own, and the gate names the
+    code leg's line."""
+    moved = moved_by_hand(project, tmp_path, {"spec": advanced},
+                          ANOTHER_LEG[code])
+    root = moved["root"]
+    row = pins_row(standard, root)
+    assert_no_line_is_named(standard, root, row)
+    assert row["detail"]["gitlink_repairs_held_back"] == {
+        "legs": [{"role": "spec", "path": "spec", "gitlink": advanced,
+                  "pin": moved["pins"]["spec"]}],
+        "findings": [], "other_legs": [{"role": "code", "path": "code",
+                                        "findings": [code]}],
+        "manifest": False}, row["detail"]
+    lines = "line" if code == "pin-digest-mismatch" else "lines"
+    assert row["reason"].endswith(
+        ". No single bump-leg.py line can commit while code is out of step "
+        f"too ({code}): bump-leg.py moves one leg and runs the root's whole "
+        "validate-pins.py before it commits, rolling the bump back when it is "
+        "red. First put spec's gitlink back at its pin (check that leg out at "
+        "the pin's commit and commit its gitlink in the root), or undo the "
+        "commit that moved it; the gate then names the bump-leg.py "
+        f"{lines} for code"), row["reason"]
+    put_back(root, "spec", moved["pins"]["spec"])
+    after = pins_row(standard, root)
+    assert after == gate_row(standard, root), after
+    assert f"FINDING {code}: " in after["reason"], after["reason"]
+    named = [line for line in gate_says(root) if "scripts/bump-leg.py" in line]
+    assert named[0].endswith(f" --leg code --to {pin_of(root, 'code')}"), named
 
 
 def test_a_red_manifest_gate_holds_the_lines_back(standard, project, advanced,
