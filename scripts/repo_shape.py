@@ -193,10 +193,10 @@ class YamlError(Exception):
 # with the `-` and `+` chomping indicators accepted and `-` honoured).
 #
 # REFUSED (raises YamlError): tabs used for indentation, anchors and aliases
-# (`&`, `*`), tags (`!`), merge keys (`<<`), explicit keys (`? `), and more
-# than one document. Each of those has a meaning this reader would have to
-# invent, and an invented meaning in a validator is a wrong answer with a
-# confident tone.
+# (`&`, `*`), tags (`!`), merge keys (`<<`), explicit keys (`? `), a
+# single-pair mapping in a flow sequence (`[a: b]`, #392), and more than one
+# document. Each of those has a meaning this reader would have to invent, and
+# an invented meaning in a validator is a wrong answer with a confident tone.
 #
 # A QUOTE OPENS A QUOTED SCALAR ONLY WHERE A SCALAR BEGINS, as in YAML; in
 # the middle of a plain scalar (`it's`) it is a character of it (#249). A
@@ -207,6 +207,15 @@ class YamlError(Exception):
 # A FLOW MAPPING READS AS ITS BLOCK TWIN (#252): an entry opening `? ` is an
 # explicit key and is refused as a block line opening `? ` is, and an empty
 # value (`{k: }`, `{k:}`) is null as a block `k:` is.
+#
+# THESE INDICATORS OPEN NO PLAIN SCALAR, AND A FLOW ENTRY IS NEVER EMPTY
+# (#392, #393), which is what YAML says and PyYAML refuses: `]`, `}`, `,`, `@`,
+# a backtick and `%` open no plain scalar, nor does a lone `?`, `-` or `:`, and
+# a flow entry opens with none of `:`, `#`, `- ` and `? `. So `k: ]` is not the
+# text `]`, and `k: [,a]` is not `['a']`. These are not refused, and still read
+# as text where PyYAML refuses them: `k: - a`, `k: : a`, a block key such as
+# `@a: 1`, and `|` or `>` opening a plain scalar. See `_scalar`,
+# `_refuse_entry_indicator` and `_split_flow`.
 
 _DASH_RE = re.compile(r"^-(\s+|$)")
 
@@ -473,7 +482,50 @@ def _quoted_scalar(text: str) -> str:
     return _unescape(text[1:-1])
 
 
+#: What each indicator a refusal below names DOES where a plain scalar would
+#: begin, in YAML (#392, #393): the reason the refusal gives. `?` is not
+#: here: the scalar it opens is an explicit key, and refused as one.
+_INDICATOR_ROLES = {
+    "]": "closes a flow sequence",
+    "}": "closes a flow mapping",
+    ",": "separates flow entries",
+    "#": "opens a comment",
+    "@": "is reserved",
+    "`": "is reserved",
+    "%": "opens a directive",
+    ":": "opens a value",
+    "-": "opens a sequence entry",
+}
+
+
+def _indicator_refusal(text: str) -> YamlError:
+    """The refusal of the plain scalar `text`, which opens with an indicator
+    YAML does not let open one (#392, #393): the indicator, what it does, and
+    the scalar. One `?` opens an explicit key, refused in #252's words."""
+    char = text[0]
+    if char == "?":
+        return YamlError(f"explicit keys are not supported: {text!r}")
+    shown = "a backtick" if char == "`" else f"`{char}`"
+    return YamlError(f"a plain scalar cannot open with {shown}, which "
+                     f"{_INDICATOR_ROLES[char]} in YAML: {text!r}")
+
+
 def _scalar(raw: str) -> Any:
+    """One scalar's value: null, a quoted scalar's text, a bool, a number, or
+    a plain scalar's text.
+
+    THE READER OF EVERY PLAIN VALUE, block and flow, so A PLAIN SCALAR THAT
+    OPENS WITH AN INDICATOR IS REFUSED HERE (#393). YAML lets none open with
+    `]`, `}`, `,`, `@`, a backtick or `%`, and none be a lone `?` or `:`,
+    and PyYAML refuses each, but the one test of the first character here
+    was `&*!`, so the rest was text: `tracking_branch: ]`, left by a
+    half-deleted flow list, read as the branch `]`. Refused, it is a
+    `yaml-unparsable` naming the scalar. A lone `-` is refused where the
+    block reader reads a value (`_parse_mapping`), because a flow collection
+    reads `[-]` as the text `-`, as PyYAML does. The same characters later in
+    a scalar (`k: a]`, `- see [1]`, `k: a, b`), and every quoted scalar
+    (`k: "]"`), read as before.
+    """
     text = raw.strip()
     if text == "" or text in ("null", "~", "Null", "NULL"):
         return None
@@ -481,6 +533,8 @@ def _scalar(raw: str) -> Any:
         return _quoted_scalar(text)
     if text[0] in "&*!":
         raise YamlError(f"anchors, aliases and tags are not supported: {text!r}")
+    if text[0] in "]},@`%" or text in ("?", ":"):
+        raise _indicator_refusal(text)
     if text in ("true", "True", "TRUE"):
         return True
     if text in ("false", "False", "FALSE"):
@@ -517,7 +571,31 @@ def _refuse_flow_indicator(text: str) -> None:
                         f"which ends it in YAML: {text!r}")
 
 
-def _flow_value(text: str) -> Any:
+def _refuse_entry_indicator(text: str) -> None:
+    """Refuse a flow ENTRY -- an item of a flow sequence, or an entry of a
+    flow mapping, whose key it opens -- that opens with an indicator (#392).
+
+    Inside a flow collection YAML takes a `:` as a value and a `#` as a
+    comment wherever a scalar would begin, and `- ` (with a space or tab) as
+    a sequence entry, which a flow collection cannot hold; `@`, a backtick
+    and `%` open no scalar at all. PyYAML refuses each. The plain-scalar
+    reader tested only `&*!`, so `k: [:]` read `[':']`, `k: [#a]` read
+    `['#a']`, `k: [- a]` read `['- a']` and `k: {: a}` read the empty key.
+    A `?` with a space or nothing after it opens an explicit key, refused as
+    #252 refuses `{? a: b}`, so `k: [? a]` is no longer the text `? a`.
+
+    A QUOTED entry opens with its quote, and `-`, `-a` and `?a` open no
+    indicator, as in YAML and #252: `[-]`, `[-a]`, `{-: 1}` and `{?a: b}`
+    read as they did. A `]` or `}` is left to `_refuse_flow_indicator`, which
+    names it in #301's words.
+    """
+    first, after = text[:1], text[1:2]
+    if (first in ":#@`%" or first in "-?" and after in (" ", "\t")
+            or text == "?"):
+        raise _indicator_refusal(text)
+
+
+def _flow_value(text: str, item: bool = False) -> Any:
     """A flow entry is itself a flow collection when it OPENS with `[` or `{`.
 
     AN EMPTY ENTRY OPENS NOTHING (#252): `{a: }` and `{a:}` give this `''`,
@@ -527,10 +605,30 @@ def _flow_value(text: str) -> Any:
 
     ONE THAT OPENS NOTHING HOLDS NO BRACKET OR BRACE (#301): a plain item or
     value holding one is refused by `_refuse_flow_indicator`.
+
+    A FLOW SEQUENCE'S `item` OPENS WITH NO INDICATOR AND IS NO PAIR (#392).
+    The first is `_refuse_entry_indicator`'s. The second: YAML reads
+    `[a: b]` as `[{'a': 'b'}]`, and this read the string `'a: b'`. It is
+    refused, not read as YAML reads it, because no file this reader serves
+    can hold one. Every flow sequence in them is a list of names
+    (`neutral_product_pins`, `allow_empty_legs`, `also_matches`,
+    `referent_chain`), where a mapping would reach the tool as a name --
+    `{'openGlass': 'x'}` -- and every list of mappings (`legs`, `members`,
+    `files`, `submodules`, a policy's rules, and a plan's entries and
+    `pins`, whose rows are `product`, `repository`, `commit`, `tree_sha256`
+    and `digest_source`) has rows of two keys or more, which a single pair
+    cannot spell. So
+    `pins: [openGlass: x]` is a typo, refused as one. `{a: b}` in a sequence
+    is a flow mapping and reads, and `[a:b]` is the text `a:b`, as before.
     """
     if text.startswith(("[", "{")):
         return _flow(text)
     _refuse_flow_indicator(text)
+    if item:
+        _refuse_entry_indicator(text)
+        if _split_key(text) is not None:
+            raise YamlError("a single-pair mapping in a flow sequence is not "
+                            f"supported: {text!r}")
     return _scalar(text)
 
 
@@ -538,7 +636,8 @@ def _flow(text: str) -> Any:
     text = text.strip()
     if text.startswith("[") and text.endswith("]"):
         body = text[1:-1].strip()
-        return [] if not body else [_flow_value(p) for p in _split_flow(body)]
+        return [] if not body else [_flow_value(p, item=True)
+                                    for p in _split_flow(body)]
     if text.startswith("{") and text.endswith("}"):
         body = text[1:-1].strip()
         out: dict[str, Any] = {}
@@ -569,14 +668,18 @@ def _split_key_flow(text: str) -> tuple[str, str] | None:
     entry. A QUOTED key, `"? a"`, does not open with the `?`, and `?a` is not
     the indicator, which needs a space after it: both read as they did.
 
+    AND AN ENTRY OPENS WITH NO OTHER INDICATOR (#392): `{: a}` read the
+    empty key, `{:":}` the key `:"`, `{#a: 1}` the key `#a` and `{- a: 1}`
+    the key `- a`, where PyYAML refuses each. `_refuse_entry_indicator`
+    refuses them, and the explicit key above, in one test.
+
     A PLAIN KEY HOLDS NO `]` OR `}` EITHER (#301). `_split_key` refuses a
     `[` or `{` later in a key, and in a flow a closer ends the key as surely,
     so `{a"]:}` read as the key `a"]` and `{]:}` as `]`, where PyYAML
     refuses both. `_refuse_flow_indicator` refuses them; a quoted key is
     still text.
     """
-    if text.startswith("? "):
-        raise YamlError(f"explicit keys are not supported: {text!r}")
+    _refuse_entry_indicator(text)
     kv = _split_key(text)
     if kv is not None and not text.startswith(('"', "'")):
         _refuse_flow_indicator(kv[0])
@@ -592,6 +695,13 @@ def _split_flow(body: str) -> list[str]:
     character after a backslash is taken with it, so `\\"` neither ends the
     item nor lets a `,` or `]` after it read as structure (#213). A
     single-quoted item has no backslash escape: its `''` is a quote.
+
+    NO ENTRY IS EMPTY BUT THE ONE AFTER A TRAILING COMMA (#392). YAML allows
+    one comma after the last entry, `[a,]`, and no other empty entry. This
+    dropped every empty part, so `k: [,a]` read `['a']`, `k: [a,,b]` read
+    two names and `k: {,}` read `{}`, where PyYAML refuses each: a pin list
+    with its first name deleted read as the rest. The one trailing empty
+    part is dropped and any other is refused, naming the body.
     """
     parts, depth, start = [], 0, 0
     for i, ch in _unquoted(body, flow=True):
@@ -603,7 +713,12 @@ def _split_flow(body: str) -> list[str]:
             parts.append(body[start:i].strip())
             start = i + 1
     parts.append(body[start:].strip())
-    return [p for p in parts if p != ""]
+    if len(parts) > 1 and parts[-1] == "":
+        parts.pop()
+    if "" in parts:
+        raise YamlError("a flow collection holds an empty entry, which YAML "
+                        f"allows only after its last comma: {body!r}")
+    return parts
 
 
 #: A block scalar's HEADER: `|` or `>`, optionally with a chomping indicator
@@ -833,6 +948,14 @@ def _nested_value(recs: list[_Rec], i: int, indent: int) -> tuple[Any, int]:
 
 
 def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
+    """A block mapping's keys and values, from record `i` at `indent`.
+
+    A VALUE THAT IS A LONE `-` IS REFUSED (#393): in a block it opens a
+    sequence entry, which cannot stand on a key's line, so `k: -` is not the
+    text `-`, and PyYAML refuses it. `_scalar` refuses the other indicators;
+    this one is refused here because a flow collection reads `[-]` and
+    `{a: -}` as the text `-`, as PyYAML does.
+    """
     out: dict[str, Any] = {}
     while i < len(recs) and not recs[i].dash and recs[i].indent == indent:
         rec = recs[i]
@@ -850,6 +973,8 @@ def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
             out[key], i = _nested_value(recs, i, indent)
         elif rest[0] in "[{":
             out[key] = _flow(rest)
+        elif rest == "-":
+            raise _indicator_refusal(rest)
         else:
             out[key] = _scalar(rest)
     return out, i
@@ -907,6 +1032,23 @@ def git_out(args: list[str], cwd: Path, binary: bool = False,
     own. A git that cannot be STARTED (none on PATH) raises `OSError` from
     here, never a refusal: whether that is a question the caller cannot
     answer is the caller's to say (#368).
+
+    THE REFUSAL'S TWO UNTRUSTED PARTS ARE SPELLED (#610), because it is
+    printed as a line, and a root's `validate-pins.py` prints it inside the
+    `neutral-pin-source-unreadable` FINDING. `cwd` is a person's path, named
+    with `shown_path`: as it is, unless a character in it is not printable.
+    What git printed is `spelled`, as ONE line. git echoes the paths it
+    reads (`invalid gitfile format: <cwd>/.git`, `not a git repository:
+    <gitdir>`, `detected dubious ownership in repository at '<cwd>'`) and
+    passes a line break through, so a folder named with a line break, then
+    `WARNING forged-line: ...`, began a line the tool never printed; git
+    2.43 replaces an ESC, a CR or a BEL that it echoes with `?` but passes
+    a line break and a C1 control (U+0080 to U+009F) through, and another
+    git may replace nothing, so everything git printed is spelled. A line
+    break git itself printed between two lines of its message is `\\n`
+    here, because it cannot be told from a path's. Printable text, UTF-8
+    included, is unchanged. `args`, which the caller wrote, are named as
+    they were.
     """
     proc = subprocess.run(
         ["git", *args], cwd=str(cwd), capture_output=True, check=False,
@@ -916,8 +1058,8 @@ def git_out(args: list[str], cwd: Path, binary: bool = False,
         raise Refusal(
             "git-failed",
             "`git {}` in {} exited {}: {}".format(
-                " ".join(args), cwd, proc.returncode,
-                proc.stderr.decode("utf-8", "replace").strip(),
+                " ".join(args), shown_path(cwd), proc.returncode,
+                spelled(proc.stderr.decode("utf-8", "replace").strip()),
             ),
         )
     return proc.stdout if binary else proc.stdout.decode("utf-8").strip()
@@ -1445,12 +1587,19 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     reached could not: a warning for such a link says so, where a plain
     mapping's says the tree is not reachable (#338).
 
+    A tree that is not reachable is offered the sources that would let it be
+    read: the caller's own, where its `LinkPins` has `remedies` for the link
+    (the scaffold's, #610), and otherwise the naming validator's, which
+    reads a checkout beside the project and takes `--link-source`.
+
     A holder's tree and the next link are matched by `pin_product_key`
     (#444): a tree declaring `openss` does not declare `openß`, whose pin
-    file is another.
+    file is another. A holder's `remedies` entry is found by it too, so in a
+    chain naming both, each is offered its own sources and not the other's.
     """
     available = _link_declarations(link_pins)
     unreadable = getattr(link_pins, "unreadable", None) or {}
+    remedies = getattr(link_pins, "remedies", None) or {}
     warnings: list[str] = []
     unverified: list[str] = []
     # A link whose variable another link of the chain shares is never offered
@@ -1471,15 +1620,17 @@ def _chain_link_findings(chain, link_pins) -> tuple:
             continue
         if declared is None:
             unverified.append(holder)
-            alone = pin_product_key(holder) not in shared
-            offered = (f"a sibling checkout, {pin_source_env_name(holder)}, or"
-                       if alone else "a sibling checkout or")
+            remedy = remedies.get(pin_product_key(holder))
+            if remedy is None:
+                variable = ("" if pin_product_key(holder) in shared
+                            else f", {pin_source_env_name(holder)},")
+                remedy = (f"a sibling checkout{variable} or --link-source "
+                          f"{holder}=<path> would let it be read")
             warnings.append(
                 f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
                 f"is a fact in {holder}'s own tree, which is not "
-                f"reachable here ({offered} --link-source "
-                f"{holder}=<path> would let it be read). The recorded "
-                "chain still classifies.")
+                f"reachable here ({remedy}). The recorded chain still "
+                "classifies.")
             continue
         if pin_product_key(held) not in {pin_product_key(pin)
                                          for pin in declared}:
@@ -2721,6 +2872,22 @@ def _os_reason(exc: BaseException) -> str:
     return getattr(exc, "strerror", None) or str(exc)
 
 
+def shown_path(path) -> str:
+    """A path as a line about it names it: as it is, unless a character in
+    it is not printable (`str.isprintable`), and then as Python's `repr`
+    spells it -- `\\x1b`, `\\n`, `\\r`, and `\\udcff` for a byte that is not
+    UTF-8, as `sys.argv` keeps one (#610).
+
+    THE SPELLING `pin-source-unreadable` GIVES A `--pin-source` (#339):
+    `shape_materialize.shown_source` is this function. Printed raw, an ESC
+    in a path reached the terminal, and a line break or a carriage return
+    began a line of the path's choosing. A printable path is named byte for
+    byte as it always was.
+    """
+    text = str(path)
+    return text if text.isprintable() else repr(text)
+
+
 def link_manifest_lookup(path) -> tuple[Path | None, str | None]:
     """`(manifest, None)` where `path` can answer as a link's tree, else
     `(None, why)`. `<dir>` -> `<dir>/project.yaml`; a file is taken as the
@@ -2773,32 +2940,39 @@ def link_declarations(manifest_path, key: str = CHAIN_LINK_DECLARED_BY
     iterating it as one read `openDox` as the characters `D`, `e`, `n`, `o`,
     `p`, `x` and ended the run in a `TypeError` for `5` (#338). An absent or
     empty `key`, and a blank entry in the list, declare nothing, as ever.
+
+    THE MANIFEST'S PATH IN `why` IS `shown_path`'S (#610). It is the
+    scaffold's `--pin-source`, or a `--link-source`, with `/project.yaml`
+    after it, and the scaffold prints `why` in its `declared-unverified`
+    WARNING: a `--pin-source` holding an ESC put a raw `\\x1b[31m` on
+    stderr. A printable path is the bytes it always was.
     """
     path, why = link_manifest_lookup(manifest_path)
     if path is None:
         return None, why
+    named = shown_path(path)
     try:
         data = load_yaml(path)
     except Refusal as exc:
         cause = exc.__cause__
         if isinstance(cause, OSError):
-            return None, f"{path}: {_os_reason(cause)}"
-        return None, exc.detail
+            return None, f"{named}: {_os_reason(cause)}"
+        return None, exc.detail.replace(str(path), named)
     except (YamlError, OSError, UnicodeDecodeError) as exc:
-        return None, f"{path}: {exc}"
+        return None, f"{named}: {exc}"
     if not isinstance(data, dict):
-        return None, f"{path}: not a mapping"
+        return None, f"{named}: not a mapping"
     declared = data.get(key)
     if declared is None:
         return set(), None
     if not isinstance(declared, list):
-        return None, f"{path}: {key} is not a list"
+        return None, f"{named}: {key} is not a list"
     pins: set[str] = set()
     for pin in declared:
         if pin is None or pin == "":
             continue
         if not isinstance(pin, str):
-            return None, f"{path}: {key} holds an entry that is not text"
+            return None, f"{named}: {key} holds an entry that is not text"
         pins.add(repo_basename(pin))
     return pins, None
 
@@ -2871,11 +3045,22 @@ class LinkPins(dict):
     it, which names the reason instead of saying the tree is "not reachable
     here". Only a caller that asks for one gets one, so every other
     reader's warning is exactly the text it always was.
+
+    `remedies`, `{pin_product_key(link): what would let its tree be read}`,
+    is the sources a caller that reads OTHER sources than the naming
+    validator's has to offer for a tree that is not reachable (#610, #444).
+    That warning offers "a sibling checkout, SHAPE_PIN_SOURCE_<LINK>, or
+    --link-source <link>=<path>", and the scaffold reads no sibling checkout
+    and has no `--link-source`, so it names its own here. A link with no
+    entry, and every link for a caller that gives none, gets the naming
+    validator's words, as ever.
     """
 
-    def __init__(self, found=(), unreadable: dict | None = None) -> None:
+    def __init__(self, found=(), unreadable: dict | None = None,
+                 remedies: dict | None = None) -> None:
         super().__init__(found)
         self.unreadable: dict[str, str] = dict(unreadable or {})
+        self.remedies: dict[str, str] = dict(remedies or {})
 
 
 def link_pins_from_trees(links, root: Path | None = None,
@@ -2883,7 +3068,8 @@ def link_pins_from_trees(links, root: Path | None = None,
                          default_source=None,
                          key: str = CHAIN_LINK_DECLARED_BY, *,
                          tried: dict | None = None,
-                         with_reasons: bool = False) -> dict[str, set]:
+                         with_reasons: bool = False,
+                         remedies: dict | None = None) -> dict[str, set]:
     """`{link: the pins ITS manifest declares}` for the links that answered.
 
     A link whose tree is not on the disk is simply ABSENT from the mapping,
@@ -2900,6 +3086,11 @@ def link_pins_from_trees(links, root: Path | None = None,
     link a source reached and could not read, so that the caller that has no
     line of its own for it (the scaffold) can have the warning say so. It is
     off for the callers that print the reason themselves, and for the rest.
+
+    `remedies` returns a `LinkPins` too, carrying them: what would let each
+    link's tree be read, in the caller's own sources, for the warning about
+    a tree that is not reachable (#610). Given without `with_reasons`, the
+    `LinkPins` remembers no reason, as the plain mapping does not.
 
     A link whose `SHAPE_PIN_SOURCE_<PRODUCT>` another of `links` names too is
     not read through it (#275): one tree would answer for two links, and a
@@ -2946,7 +3137,9 @@ def link_pins_from_trees(links, root: Path | None = None,
             unreadable[pin_product_key(name)] = why
             continue
         found[pin_product_key(name)] = pins
-    return LinkPins(found, unreadable) if with_reasons else found
+    if not (with_reasons or remedies):
+        return found
+    return LinkPins(found, unreadable if with_reasons else None, remedies)
 
 
 def find_repo_root(start: Path) -> Path:

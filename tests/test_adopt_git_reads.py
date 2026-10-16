@@ -300,6 +300,32 @@ def test_plan_records_the_elector_given_where_user_name_is_unset(tmp_path):
     assert load_yaml(tmp_path / PLAN_FILE)["elected_by"] == "Test Human"
 
 
+#: What `plan` says of a `--elected-by ''` the person passed (L2-53): the
+#: flag as typed, in the validator's words for an empty elector.
+EMPTY_ELECTOR = (b"REFUSED adopt-manifest-invalid: --elected-by is '', which "
+                 b"the project's own validate-manifest.py refuses: "
+                 b"manifest-elected-by: elected_by is empty.")
+
+
+@pytest.mark.parametrize("user_name", ["unset", "configured"])
+def test_plan_refuses_an_empty_elector_that_was_passed(tmp_path, user_name):
+    """L2-53. `--elected-by ''` was read as not passed: with a `git config
+    user.name` the plan recorded that name, exit 0, though `--help` says
+    "not blank"; with none, the refusal said `--elected-by (not given, so
+    `git config user.name`) is ''` of a flag the person passed. It is the
+    flag's own value now, refused by name as a blank one is (#261), and
+    `git config user.name` does not stand in for it."""
+    extra = (no_user_name(tmp_path, "unset") if user_name == "unset"
+             else global_user_name(tmp_path, b"Jose"))
+    source = make_source_repo(tmp_path / "Thing")
+    refused = by_git_config(tmp_path, source, extra, "--elected-by", "")
+    assert_no_traceback_and_no_leg(tmp_path, {"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert EMPTY_ELECTOR in refused.stderr, said(refused)
+    assert b"not given" not in refused.stderr, said(refused)
+    assert not (tmp_path / PLAN_FILE).exists()
+
+
 @pytest.mark.parametrize("name", [b"Jose", "José".encode("utf-8")],
                          ids=["ascii", "utf8"])
 def test_plan_records_a_user_name_that_is_utf8(tmp_path, name):
