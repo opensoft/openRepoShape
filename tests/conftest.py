@@ -250,7 +250,11 @@ def submodule_update_through_git(root: Path, remotes: Path,
 #   settings still apply, and sets the two keys after them. A `git config
 #   --global <key>` read without `--includes` sees the two alone: in this
 #   repository that is `setup-project.py`'s Windows-only `core.autocrlf`
-#   warning, which no test reads from a person's own config.
+#   warning, which no test reads from a person's own config. An EMPTY
+#   `GIT_CONFIG_GLOBAL` is git's "no global config", and nothing is included.
+#   A `~/` path is written only where `HOME` is set, or on Windows, where Git
+#   for Windows sets it: with `HOME` unset git cannot expand one, and every
+#   git then dies `could not expand include path`.
 #
 # WHAT IT LEAVES: a git whose environment takes away both -- a
 # `GIT_CONFIG_COUNT` overwritten rather than appended to, together with a
@@ -285,19 +289,33 @@ def appended_to_command_scope(environ: Mapping[str, str],
     return added
 
 
+def home_is_known() -> bool:
+    """Whether git can expand a `~/` path: `HOME` is set, or this is Windows,
+    where Git for Windows finds a home of its own."""
+    return bool(os.environ.get("HOME")) or os.name == "nt"
+
+
 def session_global_config(named: str | None) -> bytes:
     """The global config file `no_auto_maintenance` writes: an include of
-    what git reads as its global config without one -- `named`, the file
-    `GIT_CONFIG_GLOBAL` held, or else git's two default files in git's own
-    order -- and then `NO_AUTO_MAINTENANCE`. LF, and every path POSIX-style:
-    `~/` is expanded by git, from the `HOME` of the git that reads it."""
-    if named:
-        included = [Path(os.path.abspath(named)).as_posix()]
+    what git reads as its global config without one, and then
+    `NO_AUTO_MAINTENANCE`. LF, and every path POSIX-style: `~/` is expanded by
+    git, from the `HOME` of the git that reads it.
+
+    `named` is what `GIT_CONFIG_GLOBAL` held. A name is the file included. An
+    empty value is git's "no global config" (2.43), so nothing is included.
+    None, unset, is git's two default files in git's own order, the
+    `~/` ones only where `home_is_known()`: with `HOME` unset git dies
+    `could not expand include path` over one, in every command it runs."""
+    if named is not None:
+        included = [Path(os.path.abspath(named)).as_posix()] if named else []
     else:
+        homed = (["~/.config/git/config", "~/.gitconfig"]
+                 if home_is_known() else [])
         xdg = os.environ.get("XDG_CONFIG_HOME")
-        included = [(Path(xdg) / "git" / "config").as_posix() if xdg
-                    else "~/.config/git/config", "~/.gitconfig"]
-    lines = ["[include]"]
+        # `XDG_CONFIG_HOME` stands in for the first, and needs no `HOME`.
+        included = ([(Path(xdg) / "git" / "config").as_posix(), *homed[1:]]
+                    if xdg else homed)
+    lines = ["[include]"] if included else []
     lines += [f"\tpath = {_config_quoted(path)}" for path in included]
     for key, value in NO_AUTO_MAINTENANCE:
         section, name = key.split(".")
