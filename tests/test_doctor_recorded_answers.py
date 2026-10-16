@@ -358,7 +358,8 @@ def plan_entries(**legs: str) -> list:
     ({"examples_": "drop"}, []),
     ({"examples_a_": "spec", "examples_b_": "code"},
      [("examples/a/", "spec"), ("examples/b/", "code")]),
-    ({"examples_": "spec", "docs_": "code"}, [(EXAMPLES, "spec")]),
+    ({"examples_": "spec", "docs_": "code"},
+     [("docs/", "code"), (EXAMPLES, "spec")]),
 ], ids=["answered-spec", "answered-root", "answered-drop", "split-by-hand",
         "a-confident-rule-overridden"])
 def test_execute_records_the_policys_own_questions_answered_into_a_leg(
@@ -369,8 +370,9 @@ def test_execute_records_the_policys_own_questions_answered_into_a_leg(
     `root` and `drop` are in no leg. `.gitmodules` and a gitlink are
     `submodules:`'s, and `vendor/` is recorded only because the policy
     cannot call the file beside its gitlink. A path a confident rule called
-    and the plan answered the other way is not a question the policy asked
-    (outside #525)."""
+    and the plan answered into the other leg is recorded too (#655): the
+    plan's answer against the rule is the person's word, as a question's
+    is."""
     adopt = adoption_module(standard)
     legs = {README: "root", "src_": "code", "docs_": "spec",
             "dot_gitmodules": "code", "vendor_": "code", **answers}
@@ -406,11 +408,13 @@ def test_a_plan_that_answered_no_question_into_a_leg_appends_nothing(
 
 # --- end to end: `execute`, then the doctor ---------------------------------
 
-def adopt_source(standard: Path, base: Path, answers: dict) -> dict:
+def adopt_source(standard: Path, base: Path, answers: dict,
+                 overrides: dict | None = None) -> dict:
     """A source with a golden run under `examples/` and the editor rules as
     a submodule at `vendor/rules`, planned, answered as `answers` says
-    (`{entry: (leg, resolution)}`), executed into local remotes and cloned
-    recursively from the split branch."""
+    (`{entry: (leg, resolution)}`) and, against a rule, as `overrides` says
+    (`{entry: (the rule's leg, leg, resolution)}`, #655), executed into
+    local remotes and cloned recursively from the split branch."""
     dependency = base / "rules"
     dependency.mkdir()
     git("init", "-q", "-b", "main", ".", cwd=dependency)
@@ -436,8 +440,10 @@ def adopt_source(standard: Path, base: Path, answers: dict) -> dict:
                          "--elected-on", "2026-10-15", "--out", str(plan))
     assert written.returncode == 0, written.stdout + written.stderr
     text = plan.read_text(encoding="utf-8")
-    for path, (leg, why) in answers.items():
-        needle = f"  - path: {path}\n    leg: null\n"
+    edits = [(path, "null", leg, why) for path, (leg, why) in answers.items()]
+    edits += [(path, *answer) for path, answer in (overrides or {}).items()]
+    for path, was, leg, why in edits:
+        needle = f"  - path: {path}\n    leg: {was}\n"
         assert needle in text, (path, text)
         text = text.replace(needle, f"  - path: {path}\n    leg: {leg}\n"
                             f'    resolution: "{why}"\n')
