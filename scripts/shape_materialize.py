@@ -816,8 +816,9 @@ def _append_eol_block(target: Path, result: "Materialized",
     shape's copy of that file had to be written beside it.
 
     A SYMLINK IS NOT WRITTEN THROUGH: what it leads to may be another file of
-    the source's, or nothing in this repository, and git reads no
-    `.gitattributes` that is a link anyway. It is left as it is, and the
+    the source's, or nothing in this repository, and git follows no
+    `.gitattributes` that is a link anyway: a checkout reads only the link's
+    own text, the path it leads to, which names no attribute (#654). It is left as it is, and the
     follow-up says so and lists the lines a regular file would need. A link
     is one on the disk OR in git's index (`_tracked_as_link`)."""
     if (ATTRIBUTES, f"{collision_dir}/{ATTRIBUTES}") not in result.collisions:
@@ -843,7 +844,7 @@ def collision_follow_up(intended: str, actual: str,
 
     A `.gitattributes` THAT IS A SYMLINK gets no block (`_append_eol_block`),
     so `attributes_link` says which of two things happened, and the follow-up
-    for a link says that nothing was appended, that git reads no
+    for a link says that nothing was appended, that git follows no
     `.gitattributes` that is a link, and the exact lines a regular file in
     its place needs (#471's review, SHOULD-2). `plan` knows it from the
     source tree's mode.
@@ -934,9 +935,11 @@ def _attributes_link_follow_up(intended: str, actual: str,
     return (
         f"{intended} is a symlink, so the split appended nothing to it (it "
         f"never writes through a link) and wrote the shape's copy beside it "
-        f"as {actual}, which governs only its own directory. Git reads no "
-        f"{intended} that is a symlink, so no line-ending rule reaches the "
-        "pinned copies outside it: a Windows clone writes them with CRLF and "
+        f"as {actual}, which governs only its own directory. Git follows no "
+        f"{intended} that is a symlink: a checkout reads only the link's own "
+        "text, the path it leads to, and a path names no attribute, so no "
+        "line-ending rule reaches the pinned copies outside it: a Windows "
+        "clone writes them with CRLF and "
         "reports shape-copy-drift on each one. To give every clone one, "
         f"replace the link with a regular {intended} holding the lines of "
         "the file it leads to that should still apply, then these, one per "
