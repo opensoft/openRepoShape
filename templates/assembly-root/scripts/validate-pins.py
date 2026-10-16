@@ -571,18 +571,18 @@ def _put_back(paths: list[str]) -> str:
     commit that moved them undone. No `bump-leg.py` line takes it, since
     the other leg rolls that line back.
 
-    ONE LEG'S WORKFLOW REFERENCES GO BACK WITH ITS GITLINK: a reference
-    moved with it stays at the move, and stands as that leg's finding
-    beside the other leg's. AN UNDO IS FOLLOWED BY `git submodule update`
-    over the legs: it puts the gitlink back and leaves the leg checked out
-    at the move, a root `bump-leg.py` refuses as dirty."""
+    A LEG'S WORKFLOW REFERENCES GO BACK WITH ITS GITLINK: a reference moved
+    with it stays at the move, and stands as that leg's finding beside the
+    other leg's, which holds the next line back and asks for this step
+    again. AN UNDO IS FOLLOWED BY `git submodule update` over the legs: it
+    puts the gitlink back and leaves the leg checked out at the move, a
+    root `bump-leg.py` refuses as dirty."""
     one = len(paths) == 1
     which, moved = (f"{paths[0]}'s", "it") if one else ("one leg's", "them")
-    refs = (", with every workflow reference to its repository at that "
-            "commit too") if one else ""
     legs = " ".join(shlex.quote(path) for path in paths)
     return (f"put {which} gitlink back at its pin (check that leg out at the "
-            f"pin's commit and commit its gitlink in this root{refs}), or "
+            "pin's commit and commit its gitlink in this root, with every "
+            "workflow reference to its repository at that commit too), or "
             f"undo the commit that moved {moved} and run `git submodule "
             f"update -- {legs}` in this root")
 
@@ -592,14 +592,17 @@ def _held_then(lines: str, whom: str, back: Back | None,
     """What a held-back finding says comes after its first step: `lines`
     for `whom`. Never a line while `back`'s own digest stands, since two
     legs are then out of step with no gitlink off; and in the gitlink's own
-    finding (`other_legs`), how its move is kept if it was meant."""
+    finding (`other_legs`), how its move is kept if it was meant: the
+    whole commit, which is the only `--to` `bump-leg.py` takes."""
     if back is not None and back.digest:
         return (f"names no line while {back.path}'s own pin-digest-mismatch "
                 "stands.")
     if back is not None and other_legs:
+        after = ("after that line" if lines.endswith("line")
+                 else "after one of them")
         return (f"names {lines} for {whom}, and if {back.path}'s move was "
-                f"meant, bumping {back.path} to {back.gitlink[:12]} after "
-                "that line keeps it.")
+                f"meant, bumping {back.path} to {back.gitlink} {after} keeps "
+                "it.")
     return f"names {lines} for {whom}."
 
 

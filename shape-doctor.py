@@ -2284,7 +2284,9 @@ def gitlink_held_then(leg: dict, other_legs: list[dict],
             + ("line" if digests else "lines") + " for "
             + " and ".join(other["path"] for other in other_legs)
             + f", and if {leg['path']}'s move was meant, bumping "
-            f"{leg['path']} to {leg['gitlink'][:12]} after that line keeps it")
+            f"{leg['path']} to {leg['gitlink']} "
+            + ("after that line" if digests else "after one of them")
+            + " keeps it")
 
 
 def gitlink_repairs_held_back(off: list[dict], others: list[str],
@@ -2298,11 +2300,12 @@ def gitlink_repairs_held_back(off: list[dict], others: list[str],
     line is rolled back while this gitlink is off its pin, as this leg's
     lines are while that finding stands: "First clear that finding" named a
     step nothing could take. The step is the one two gitlinks off their
-    pins name, by hand, for this leg, with its workflow references, which
-    would otherwise stay at the move; `gitlink_held_then` says what
-    follows. An undo, in either text, is followed by `git submodule
-    update` over the legs: it puts the gitlink back and leaves the leg
-    checked out at the move, a root `bump-leg.py` refuses as dirty."""
+    pins name, by hand, for this leg; `gitlink_held_then` says what
+    follows. In either text the gitlink goes back with its leg's workflow
+    references, which would otherwise stay at the move and ask for the
+    step again, and an undo is followed by `git submodule update` over the
+    legs: it puts the gitlink back and leaves the leg checked out at the
+    move, a root `bump-leg.py` refuses as dirty."""
     paths = [leg["path"] for leg in off]
     if manifest:
         return ("No single bump-leg.py line can commit while the root's "
@@ -2324,19 +2327,20 @@ def gitlink_repairs_held_back(off: list[dict], others: list[str],
     then = f"this row then names the two bump-leg.py lines for {paths[0]}"
     put = None
     if len(off) > 1:
-        put = ("one leg's", "", "them")
+        put = ("one leg's", "them")
         then = ("this row then names the two bump-leg.py lines for the leg "
                 "that is left")
     elif other_legs:
-        put = (f"{paths[0]}'s", ", with every workflow reference to its "
-               "repository at that commit too", "it")
+        put = (f"{paths[0]}'s", "it")
         then = gitlink_held_then(off[0], other_legs, stays)
     if put is not None:
         legs = " ".join(quote_arg(path) for path in paths)
         first.append(f"put {put[0]} gitlink back at its pin (check that leg "
                      "out at the pin's commit and commit its gitlink in the "
-                     f"root{put[1]}), or undo the commit that moved {put[2]} "
-                     f"and run `git submodule update -- {legs}` in the root")
+                     "root, with every workflow reference to its repository "
+                     "at that commit too), or undo the commit that moved "
+                     f"{put[1]} and run `git submodule update -- {legs}` in "
+                     "the root")
     return ("No single bump-leg.py line can commit while "
             + " and ".join(what) + ": bump-leg.py moves one leg and runs the "
             "root's whole validate-pins.py before it commits, rolling the bump "

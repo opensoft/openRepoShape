@@ -503,9 +503,10 @@ def test_two_legs_off_their_pins_name_no_line_and_say_what_comes_first(
             "root's whole validate-pins.py before it commits, rolling the bump "
             "back when it is red. First put one leg's gitlink back at its pin "
             "(check that leg out at the pin's commit and commit its gitlink "
-            "in the root), or undo the commit that moved them and run `git "
-            "submodule update -- spec code` in the root; this row then names "
-            "the two bump-leg.py lines for the leg that is left")
+            "in the root, with every workflow reference to its repository at "
+            "that commit too), or undo the commit that moved them and run "
+            "`git submodule update -- spec code` in the root; this row then "
+            "names the two bump-leg.py lines for the leg that is left")
     assert row["reason"].endswith(". " + held), row["reason"]
     lines = gate_says(root)
     assert not [line for line in lines if "scripts/bump-leg.py" in line]
@@ -612,11 +613,12 @@ def test_another_legs_finding_waits_on_the_gitlink_put_back(
         "findings": [], "other_legs": [{"role": "code", "path": "code",
                                         "findings": [code]}],
         "manifest": False}, row["detail"]
-    lines = "line" if code == "pin-digest-mismatch" else "lines"
+    lines, after = (("line", "that line") if code == "pin-digest-mismatch"
+                    else ("lines", "one of them"))
     assert row["reason"].endswith(". " + spec_held(
         code, f"names the bump-leg.py {lines} for code, and if spec's move "
-        f"was meant, bumping spec to {advanced[:12]} after that line keeps "
-        "it")), row["reason"]
+        f"was meant, bumping spec to {advanced} after {after} keeps it")
+    ), row["reason"]
     put_back(root, "spec", moved["pins"]["spec"])
     after = pins_row(standard, root)
     assert after == gate_row(standard, root), after
