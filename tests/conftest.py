@@ -1769,8 +1769,9 @@ def assert_an_empty_pin_source_is_the_plans_to_refuse(run,
     it, made the naming check WARN about `--link-source`, `.` and a folder the
     plan never reads. The naming check is given no source, so it says of the
     chain what it says of any it cannot verify, `[declared-unverified]`, and
-    its hint there, `--link-source <product>=<path>`, is the one place the
-    flag is named in a run that never typed it."""
+    its hint there, `--link-source <product>=<path>`, one per holder it
+    cannot verify, is the one spelling of the flag in a run that never typed
+    it."""
     result = run("--project", "codexDox", "--org", "demoorg",
                  "--local-remote-dir", str(tmp_path / "remotes"),
                  "--into", str(tmp_path / "work"),
