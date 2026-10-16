@@ -1608,11 +1608,25 @@ def _origin_url(path: Path) -> str | None:
 
 
 def _default_branch(path: Path) -> str:
-    """The branch the adoption reads, in the order a reader would guess it."""
+    """The branch the adoption reads, in the order a reader would guess it.
+
+    A BYTE THAT IS NOT UTF-8 IS KEPT, AS `sys.argv` KEEPS ONE (#425). git
+    keeps a branch's name as the bytes it was given: `git branch caf<e9>` is
+    legal, and a name typed in a Latin-1 terminal is one. Read strictly, it
+    ended `plan`, `check` and `execute` in a `UnicodeDecodeError` traceback
+    from `Source.open`, with no plan written and nothing said of the branch.
+    Kept as a lone surrogate, it is the tracking branch `plan` would take
+    (#479) and refuses as `unsafe-value`, before any plan is written, with
+    `--tracking-branch` as the way past it; and it is the default branch
+    `check` and `execute` name, as `plan-tracking-branch-missing`, when the
+    plan tracks one the source no longer has. Where the plan tracks a branch
+    that is text, the source is read at this one and adopted.
+    """
     for args in (["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
                  ["symbolic-ref", "--short", "HEAD"]):
         try:
-            name = git_out(args, cwd=path)
+            name = git_out(args, cwd=path, binary=True).decode(
+                "utf-8", "surrogateescape").strip()
         except Refusal:
             continue
         if name:
