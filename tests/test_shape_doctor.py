@@ -10127,7 +10127,7 @@ def doctor_with_no_pythonpath(standard: Path, root: Path):
 @pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
 def test_an_own_validator_without_repo_shape_is_a_finding_the_paste_agrees(
         standard, project, holder, tmp_path, case):
-    """(a): the row quotes the ImportError, and the own-copy NEXT, pasted from
+    """(a): the row quotes the ImportError, and the own-copy line, pasted from
     `/` with no `PYTHONPATH`, dies on that same import with the row's exit.
 
     THE RUN AND THE LINE ARE ONE PROCESS FOR THIS COPY: neither has a
@@ -10136,6 +10136,12 @@ def test_an_own_validator_without_repo_shape_is_a_finding_the_paste_agrees(
     produced (`manifest-topic`, ...) is in NEITHER, because neither run got as
     far as reading it -- which is what separates this from a validator that
     ran and was red.
+
+    THE LINE IS THE ROW'S WHY'S SINCE #697: the NEXT of this crash is `git
+    checkout HEAD` on the lost file, so that a reader whose own environment
+    reaches another `repo_shape` is not sent to a line that passes for them
+    (`tests/test_doctor_validator_rows.py`), and the gate is what the why
+    tells them to run after it. This test runs that line as the NEXT once was.
     """
     spec = TEMPLATE_FALLBACK[case]
     root = root_without_its_repo_shape(case, project, holder, tmp_path,
@@ -10148,10 +10154,14 @@ def test_an_own_validator_without_repo_shape_is_a_finding_the_paste_agrees(
         row["reason"], row
     assert spec["finding"] not in row["reason"], row
     # The own copy's line is what it has always been: no environment.
-    assert "PYTHONPATH" not in row["next"], row["next"]
-    assert_next_runs_the_roots_own(row, root, Path(spec["own"]).name)
+    line = doctor_module(standard).validator_command(
+        standard.resolve(), root / spec["own"], True, ["--root", root])
+    assert "PYTHONPATH" not in line, line
+    assert line in row["why"], row["why"]
+    assert Path(row["detail"]["validator"]).resolve() == \
+        (root / spec["own"]).resolve(), row["detail"]
 
-    pasted = pasted_from_elsewhere(row["next"], tmp_path)
+    pasted = pasted_from_elsewhere(line, tmp_path)
     whole = pasted.stdout + pasted.stderr
     assert pasted.returncode == row["detail"]["exit"], whole
     assert "ModuleNotFoundError: No module named 'repo_shape'" in whole, whole
