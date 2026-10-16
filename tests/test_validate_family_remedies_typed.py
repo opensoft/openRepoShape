@@ -40,6 +40,7 @@ variant is skipped where the disk cannot hold one (`case_sensitive_disk`).
 from __future__ import annotations
 
 import os
+import re
 import shlex
 from pathlib import Path
 
@@ -76,13 +77,17 @@ STAGED = ("HEAD records it and the index holds nothing at that path, so its "
           "removal is staged and not committed, and no git rm is printed, "
           "since one fails there (pathspec ... did not match any files).")
 
-#: What a hand mount's says after it, in place of the `git rm` step.
+#: What a hand mount's says after it, in place of the `git rm` step: with
+#: the checkout `git rm --cached` leaves deleted by hand first (rv681's S1).
 STAGED_HAND_MOUNT = (
     f" {STAGED} Commit that removal before family.py add, which refuses a "
     "path under another spelling of members/ that HEAD holds and the index "
     "no longer does, and on a branch, since family.py add refuses the "
     "holder's tracking branch: where the holder stands on it, the first "
-    "command below makes one, taking the staged removal with it. If it was "
+    "command below makes one, taking the staged removal with it. Where git "
+    f"rm --cached took it out, its checkout is still at {HAND}, and "
+    "family.py add refuses that directory (member-path-taken): delete it by "
+    "hand, once nothing only it holds is needed, before the add. If it was "
     "mounted by hand, then mount it with the second, from a checkout of "
     "openRepoShape: family.py add writes its row and its gitlink in one "
     "commit, and names the object store git rm leaves under .git/modules if "
@@ -105,15 +110,21 @@ def added_as_printed(family, root: Path, env: dict, add: str):
 
 # --- L20: a removal staged and not committed --------------------------------
 
+@pytest.mark.parametrize("how", ["git-rm", "git-rm-cached"])
 def test_a_hand_mounts_staged_removal_is_committed_and_added_as_printed(
-        family, holder, offline, tmp_path):
-    """THE ISSUE'S L20, from a real hand mount. Its printed branch and `git
-    rm` typed, the re-run before the commit names the gitlink again, as
-    HEAD still records it, says the removal is staged, and prints the
-    branch and the `add` with no `git rm`, which typed again fails, as
-    before the change. Committed as it says, and the `add` typed as
-    printed (after the object store it names, as before), the holder passes
-    in every mode with the member mounted."""
+        family, holder, offline, tmp_path, how):
+    """THE ISSUE'S L20, from a real hand mount, taken out with the printed
+    `git rm`, or with `git rm --cached`, which git itself suggests when
+    that `git rm` refuses a checkout holding changes (rv681's S1, its probe
+    P1). The re-run before the commit names the gitlink again, as HEAD
+    still records it, says the removal is staged, and prints the branch
+    and the `add` with no `git rm`; the printed one, typed again, fails, as
+    before the change. After `--cached` the `.gitmodules` section is left,
+    and its own finding's lines take it out. Committed as it says, the
+    checkout `--cached` leaves deleted by hand where `add` refuses it
+    (`member-path-taken`), as the text says, and the `add` typed as printed
+    (after the object store it names, as before), the holder passes in
+    every mode with the member mounted."""
     env = fetching(isolated(offline, tmp_path))
     raw(holder, env, "submodule", "add", "-q", "--",
         str(family["remotes"] / f"{SPARE}.git"), HAND)
@@ -122,18 +133,32 @@ def test_a_hand_mounts_staged_removal_is_committed_and_added_as_printed(
     gitlink, _ = findings(validate(holder, "--no-members"))
     switch, rm, add = commands(gitlink)
     raw(holder.parent, env, *shlex.split(switch)[1:])
-    raw(holder, env, *shlex.split(rm)[1:])
+    if how == "git-rm":
+        raw(holder, env, *shlex.split(rm)[1:])
+    else:
+        raw(holder, env, "rm", "-q", "--cached", "--", HAND)
 
     again = validate(holder, "--no-members")
 
     assert again.returncode == 1, again.stdout + again.stderr
-    assert findings(again) == [
-        GITLINK_SAID.format(path=HAND, commit=at) + STAGED_HAND_MOUNT
-        + f"\n    {switch}\n    {add}"]
+    staged, *section = findings(again)
+    assert staged == (GITLINK_SAID.format(path=HAND, commit=at)
+                      + STAGED_HAND_MOUNT + f"\n    {switch}\n    {add}")
     retyped = raw(holder, env, *shlex.split(rm)[1:], check=False)
     assert retyped.returncode == 128, retyped.stderr
     assert b"did not match any files" in retyped.stderr
-    commit_all(holder, env, "Take the hand mount out, as printed")
+    if how == "git-rm":
+        assert section == []
+        commit_all(holder, env, "Take the hand mount out, as printed")
+    else:
+        (left,) = section
+        assert commands(left) == removal(HAND, "path", "url")
+        take_out_as_printed(holder, left)
+        assert (holder / HAND / ".git").is_file(), "premise: checkout left"
+        taken = added_as_printed(family, holder, env, add)
+        assert taken.returncode == 2, taken.stdout + taken.stderr
+        assert "REFUSED member-path-taken: " in taken.stderr
+        rmtree(holder / HAND)
     refused = added_as_printed(family, holder, env, add)
     assert refused.returncode == 2, refused.stdout + refused.stderr
     assert "REFUSED member-git-dir-cached: " in refused.stderr
@@ -323,6 +348,31 @@ def test_a_row_whose_gitlink_was_taken_out_is_put_back_as_printed(
     assert_passes_in_every_mode(holder, 2)
 
 
+def test_a_section_back_in_the_work_tree_alone_still_prints_its_lines(
+        holder, offline, tmp_path):
+    """rv681's N3 (its mutant MO1): the section `git rm` took out written
+    back in the work tree's `.gitmodules` and not committed. HEAD's gives
+    the path no section, and HEAD is what a clone gets, so the refusal
+    still prints the section lines; typed as printed over the file, staged
+    and committed, `git submodule update --init --recursive` checks the
+    member out, and the holder passes in every mode."""
+    env = fetching(isolated(offline, tmp_path))
+    commit = taken_out(holder, env, "git-rm")
+    (holder / ".gitmodules").write_bytes(
+        raw(holder, env, "show", "HEAD~1:.gitmodules").stdout)
+    assert raw(holder, env, "diff", "--quiet", "--", ".gitmodules",
+               check=False).returncode == 1, "premise: the work tree has it"
+
+    refused = validate(holder)
+
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    lines = refused.stderr.splitlines()
+    assert lines == put_back(commit, section=True)
+    put_back_as_printed(holder, env, lines)
+    raw(holder, env, "submodule", "update", "--init", "--recursive")
+    assert_passes_in_every_mode(holder, 2)
+
+
 def test_a_fresh_clone_of_it_is_put_back_and_checks_the_member_out(
         family, holder, offline, tmp_path):
     """The same state pushed and cloned, as CI checks it out: no object
@@ -440,29 +490,59 @@ def mounted_at_the_variant(family, root: Path, env: dict, commit: str,
     commit_all(root, env, "IRRS recorded at Members/IRRS, checked out there")
 
 
-@pytest.mark.parametrize("kind", ["submodule", "clone"])
-def test_a_checkout_at_the_variant_is_left_in_place_and_deleted_by_hand(
+#: The command the variant refusal names for a clone's commits not pushed.
+UNPUSHED = re.compile(r"`(git -C \S+ log --oneline HEAD --branches "
+                      r"--not --remotes)`")
+
+
+@pytest.mark.parametrize("kind", ["submodule", "clone", "moved"])
+def test_a_checkout_at_the_variant_is_kept_and_handled_as_the_text_says(
         family, holder, offline, tmp_path, case_sensitive_disk, kind):
-    """THE ISSUE'S N-1. A checkout at `Members/IRRS` holding a commit of
-    its own: after the two lines and their commit, the guarded line moves
-    nothing, where the bare `mv` left a submodule's checkout saying `fatal:
-    not a git repository`. It is still a working checkout, and a
-    submodule's commits are where the text says, in
-    `.git/modules/Members/IRRS`, and stay there once the directory is
-    deleted by hand, as the text says to do when nothing it holds is
-    needed. Then the holder passes in every mode, and SPARE is added past
-    it, where `family.py add` refused the directory."""
+    """THE ISSUE'S N-1, and rv681's S2 and N1. A checkout at `Members/IRRS`
+    holding a commit of its own: after the two lines and their commit, the
+    guarded line moves nothing, where the bare `mv` left a submodule's
+    checkout saying `fatal: not a git repository`. Then each kind as the
+    text says:
+
+    - `submodule`, a `git submodule add` there: still a working checkout,
+      its commits in the store its `.git` file names,
+      `.git/modules/Members/IRRS`, where they stay once it is deleted by
+      hand.
+    - `clone`, its own `.git` directory, the only place its commit is: the
+      printed `git log` lists that commit, and the clone is moved out of
+      the holder whole, by hand, with the commit readable there.
+    - `moved`, the row's own checkout moved there by a plain `mv` (#363's
+      state reached on Linux): its `.git` file still names
+      `.git/modules/members/IRRS`, where its commit is, and git cannot open
+      it there, as the text says. Deleted by hand, the update checks the
+      member out at its row's path again.
+
+    Then the holder passes in every mode, and SPARE is added past it, where
+    `family.py add` refused the directory."""
     env = fetching(isolated(offline, tmp_path))
     commit = pinned(holder, MEMBER)
-    mounted_at_the_variant(family, holder, env, commit, kind)
     checkout = holder / VARIANT_PATH
-    raw(checkout, env, "commit", "-q", "--allow-empty", "-m", "Work there")
-    work = raw(checkout, env, "rev-parse", "HEAD").stdout.decode(
-        "ascii").strip()
-    store = holder / ".git" / "modules" / "Members" / MEMBER
-    if kind == "submodule":
-        assert (checkout / ".git").read_bytes() == (
-            b"gitdir: ../../.git/modules/Members/" + MEMBER.encode() + b"\n")
+    if kind == "moved":
+        own = holder / "members" / MEMBER
+        raw(own, env, "commit", "-q", "--allow-empty", "-m", "Work there")
+        work = raw(own, env, "rev-parse", "HEAD").stdout.decode().strip()
+        (holder / "Members").mkdir()
+        os.rename(own, checkout)
+        stage_gitlink(holder, VARIANT_PATH, commit)
+        raw(holder, env, "rm", "-q", "--cached", "--", f"members/{MEMBER}")
+        commit_all(holder, env, "IRRS moved to Members/IRRS by a plain mv")
+        store = holder / ".git" / "modules" / "members" / MEMBER
+    else:
+        mounted_at_the_variant(family, holder, env, commit, kind)
+        raw(checkout, env, "commit", "-q", "--allow-empty", "-m",
+            "Work there")
+        work = raw(checkout, env, "rev-parse", "HEAD").stdout.decode().strip()
+        store = holder / ".git" / "modules" / "Members" / MEMBER
+    if kind != "clone":
+        named = (checkout / ".git").read_text(encoding="utf-8")
+        assert named.startswith("gitdir: "), named
+        assert (checkout / named[len("gitdir: "):].strip()).resolve() == (
+            store.resolve())
     lines = refused_at(holder, commit, [VARIANT_PATH])
     moved_as_printed(holder, env, lines, [VARIANT_PATH])
     (move,) = GUARDED_MOVE.findall(lines[1])
@@ -471,18 +551,35 @@ def test_a_checkout_at_the_variant_is_left_in_place_and_deleted_by_hand(
 
     assert typed.returncode == 0, typed.stderr
     assert not (tmp_path / MOVED_TO).exists()
-    assert raw(checkout, env, "status", "--porcelain").returncode == 0
-    if kind == "submodule":
-        assert Path(raw(checkout, env, "rev-parse", "--absolute-git-dir")
-                    .stdout.decode().strip()).resolve() == store.resolve()
-        found = validate(holder)
-        assert codes(found) == ["gitmodules-path-unnamed"], found.stderr
-        take_out_as_printed(holder, findings(found)[0])
-    rmtree(checkout)
-    if kind == "submodule":
+    assert (checkout / ".git").exists()
+    status = raw(checkout, env, "status", "--porcelain", check=False)
+    assert (status.returncode == 0) is (kind != "moved"), status.stderr
+    if kind == "clone":
+        (log,) = UNPUSHED.findall(lines[1])
+        listed = raw(holder, env, *shlex.split(log)[1:]).stdout.decode()
+        assert [line.split(" ", 1)[1] for line in listed.splitlines()] == [
+            "Work there"], listed
+        assert work.startswith(listed.split(" ", 1)[0])
+        assert ("move it out of the holder whole, by hand, rather than "
+                "delete it") in lines[1]
+        kept = tmp_path / f"{MEMBER}-clone"
+        os.rename(checkout, kept)
+        assert raw(kept, env, "cat-file", "-e", work,
+                   check=False).returncode == 0
+    else:
+        if kind == "submodule":
+            found = validate(holder)
+            assert codes(found) == ["gitmodules-path-unnamed"], found.stderr
+            take_out_as_printed(holder, findings(found)[0])
+        else:
+            assert not (holder / ".git" / "modules" / "Members").exists()
+        rmtree(checkout)
         kept = raw(holder, env, f"--git-dir={store}", f"--work-tree={holder}",
                    "cat-file", "-e", work, check=False)
         assert kept.returncode == 0, kept.stderr
+    if kind == "moved":
+        raw(holder, env, "submodule", "update", "--init", "--recursive")
+        assert (holder / "members" / MEMBER / "project.yaml").is_file()
     assert_passes_in_every_mode(holder, 2)
     added = run_script(FAMILY, *verb_args("add", holder, family), env=env)
     assert added.returncode == 0, added.stdout + added.stderr

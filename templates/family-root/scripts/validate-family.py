@@ -564,8 +564,14 @@ def _wrong_case_move(path: str, commit: str, variants: list[str]) -> str:
     pointing nowhere (`fatal: not a git repository`). So the `mv` runs only
     for a directory apart from the row's with no `.git` entry, the empty one
     a fresh clone leaves or a plain one, and the text says where a
-    submodule checkout's commits are kept, what deleting it would lose, and
-    to delete a checkout by hand once nothing it holds is needed.
+    submodule checkout's commits are kept, in the store its `.git` file
+    names (not always `.git/modules/<variant>`: a checkout a plain `mv`
+    brought there names the old one, and git cannot open it), what deleting
+    it would lose, and to delete it by hand once nothing only it holds is
+    needed. A clone's own `.git` DIRECTORY holds its commits and nothing
+    else does, so the text names the `git log` that lists the ones not
+    pushed and says to move it out whole, not delete it (rv681's S2 and
+    N1, Direction B: the `-e` guard Brett Heap's word took is kept).
     """
     taken_out = " ".join(shlex.quote(variant) for variant in variants)
     moved = " and ".join(
@@ -574,9 +580,11 @@ def _wrong_case_move(path: str, commit: str, variants: list[str]) -> str:
         f"mv -- {shlex.quote(variant)} "
         f"{shlex.quote('../' + variant.replace('/', '-'))}`"
         for variant in variants)
-    stores = " or ".join(f".git/modules/{variant}" for variant in variants)
     status = " or ".join(f"`git -C {shlex.quote(variant)} status`"
                          for variant in variants)
+    unpushed = " or ".join(f"`git -C {shlex.quote(variant)} log --oneline "
+                           "HEAD --branches --not --remotes`"
+                           for variant in variants)
     return (
         "Move its gitlink to the row's path, at the commit the row pins, in "
         "the index alone, which touches no file, with the two lines below, "
@@ -588,14 +596,20 @@ def _wrong_case_move(path: str, commit: str, variants: list[str]) -> str:
         "(WSL's /mnt/c). Where the disk holds the two apart it stays there, "
         "untracked, and family.py add refuses it as "
         "family-members-dir-variant: move each one that is there out of the "
-        f"holder, {moved}, which moves nothing where the two names are one "
-        "directory or where it holds a .git entry, a checkout. A checkout "
-        "git submodule add made there holds a .git file naming this "
-        "holder's .git/modules/ by a path relative to it, which a move would "
-        f"leave pointing nowhere; its commits are kept in {stores}, whatever "
-        "becomes of the directory, and only what is not committed is in the "
-        f"directory alone ({status} shows it). Delete a checkout by hand "
-        "once nothing it holds is needed. The two lines:\n"
+        f"holder, in a POSIX shell, {moved}, which moves nothing where the "
+        "two names are one directory or where it holds a .git entry, a "
+        "checkout. A checkout git submodule add made holds a .git file "
+        "naming its store by a path relative to it, which a move would "
+        "leave pointing nowhere. Its commits are kept under this holder's "
+        ".git/modules/, in the directory its .git file names, whatever "
+        "becomes of the checkout, and only what is not committed is in the "
+        f"checkout alone ({status} shows it, except where a plain mv brought "
+        "the checkout to that path: git cannot open it there, so check its "
+        "files by hand). Delete such a checkout by hand once nothing only it "
+        "holds is needed. A checkout whose .git is a directory, a clone of "
+        "its own, holds its commits there and nowhere else, and "
+        f"{unpushed} lists the ones not pushed: move it out of the holder "
+        "whole, by hand, rather than delete it. The two lines:\n"
         f"    git rm -r --cached --ignore-unmatch -- {taken_out}\n"
         "    git update-index --add --cacheinfo "
         f"{shlex.quote(f'160000,{commit},{path}')}")
@@ -1467,7 +1481,9 @@ def _mounted_by_hand(root: Path, path: str, project: str | None,
     """What a gitlink no row names, in no case, says to do after what it is:
     put its row back, or take a hand mount out, commit that, and mount it
     with `family.py add`, on a branch (`_check_gitlinks_named`). Where its
-    removal is staged already (#681), the same with no `git rm`."""
+    removal is staged already (#681), the same with no `git rm`, and the
+    checkout `git rm --cached` leaves at the path, which `family.py add`
+    refuses (`member-path-taken`), deleted by hand first (rv681's S1)."""
     member = (PROJECT_PLACEHOLDER if project is None
               else shlex.quote(project))
     add = (f"    {PYTHON} scripts/family.py add --family-root "
@@ -1479,8 +1495,11 @@ def _mounted_by_hand(root: Path, path: str, project: str | None,
             "HEAD holds and the index no longer does, and on a branch, since "
             "family.py add refuses the holder's tracking branch: where the "
             "holder stands on it, the first command below makes one, taking "
-            "the staged removal with it. If it was mounted by hand, then "
-            "mount it with the second, from a checkout of "
+            "the staged removal with it. Where git rm --cached took it out, "
+            f"its checkout is still at {path}, and family.py add refuses that "
+            "directory (member-path-taken): delete it by hand, once nothing "
+            "only it holds is needed, before the add. If it was mounted by "
+            "hand, then mount it with the second, from a checkout of "
             "openRepoShape: family.py add writes its row and its gitlink in "
             "one commit, and names the object store git rm leaves under "
             f".git/modules if one is still there. {BRANCH_LEFT}\n"

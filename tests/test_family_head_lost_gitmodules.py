@@ -668,8 +668,9 @@ def variant_refused(path: str, commit: str, variants: list[str],
     moved = " and ".join(f"`[ {variant} -ef {path} ] || [ -e {variant}/.git ] "
                          f"|| mv -- {variant} ../{variant.replace('/', '-')}`"
                          for variant in variants)
-    stores = " or ".join(f".git/modules/{variant}" for variant in variants)
     status = " or ".join(f"`git -C {variant} status`" for variant in variants)
+    unpushed = " or ".join(f"`git -C {variant} log --oneline HEAD --branches "
+                           "--not --remotes`" for variant in variants)
     return [
         f"REFUSED member-gitlink-absent: no gitlink (mode 160000) recorded at "
         f"'{path}'. {project} is named in family.yaml, and this repository "
@@ -686,14 +687,20 @@ def variant_refused(path: str, commit: str, variants: list[str],
         "usually do and a Linux mount can (WSL's /mnt/c). Where the disk "
         "holds the two apart it stays there, untracked, and family.py add "
         "refuses it as family-members-dir-variant: move each one that is "
-        f"there out of the holder, {moved}, which moves nothing where the "
-        "two names are one directory or where it holds a .git entry, a "
-        "checkout. A checkout git submodule add made there holds a .git "
-        "file naming this holder's .git/modules/ by a path relative to it, "
-        "which a move would leave pointing nowhere; its commits are kept in "
-        f"{stores}, whatever becomes of the directory, and only what is not "
-        f"committed is in the directory alone ({status} shows it). Delete a "
-        "checkout by hand once nothing it holds is needed. The two lines:",
+        f"there out of the holder, in a POSIX shell, {moved}, which moves "
+        "nothing where the two names are one directory or where it holds a "
+        ".git entry, a checkout. A checkout git submodule add made holds a "
+        ".git file naming its store by a path relative to it, which a move "
+        "would leave pointing nowhere. Its commits are kept under this "
+        "holder's .git/modules/, in the directory its .git file names, "
+        "whatever becomes of the checkout, and only what is not committed is "
+        f"in the checkout alone ({status} shows it, except where a plain mv "
+        "brought the checkout to that path: git cannot open it there, so "
+        "check its files by hand). Delete such a checkout by hand once "
+        "nothing only it holds is needed. A checkout whose .git is a "
+        "directory, a clone of its own, holds its commits there and nowhere "
+        f"else, and {unpushed} lists the ones not pushed: move it out of the "
+        "holder whole, by hand, rather than delete it. The two lines:",
         "    git rm -r --cached --ignore-unmatch -- " + " ".join(variants),
         f"    git update-index --add --cacheinfo 160000,{commit},{path}"]
 
