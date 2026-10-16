@@ -108,6 +108,19 @@ from repo_shape import (  # noqa: E402
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
 
 
+def _shown(path) -> str:
+    """A path as a line about it names it: as it is, unless a character in
+    it is not printable (`str.isprintable`), and then as Python's `repr`
+    spells it (#610). It is `repo_shape.shown_path`, which spells the
+    manifest in a `link-source-unreadable` reason, so one line holds one
+    spelling. Written here rather than imported: this file is copied into
+    every project and may meet a `scripts/repo_shape.py` older than itself,
+    which has no such name, and the gate would end in an `ImportError` before
+    it classified a name."""
+    text = str(path)
+    return text if text.isprintable() else repr(text)
+
+
 class Target:
     """One name to classify, with everything DECLARED about it.
 
@@ -147,9 +160,10 @@ class LinkSources:
     That is `validate-pins.py`'s reading of `--pin-source` (#295), with a
     chain link where that file has a declared pin, so the two copied tools
     read `[PRODUCT=]PATH` one way OVER ASCII ONLY (#444). Outside it they part
-    company: `PinSources` (`templates/assembly-root/scripts/validate-pins.py`
-    `:831`, `:845`, `:848-849` and `:912`) still keys `--pin-source PRODUCT=`
-    by `casefold()`, so `--pin-source openss=` answers for a declared `openß`
+    company: `templates/assembly-root/scripts/validate-pins.py` still keys
+    `--pin-source PRODUCT=` by `casefold()`, in `PinSources.__init__`, which
+    builds the table, and in `resolve_neutral_pin_source`, which looks a pin
+    up in it, so `--pin-source openss=` answers for a declared `openß`
     where `--link-source openss=` no longer answers for the link `openß`. It
     is left, and the issue leaves it as its own change, because a pin's digest
     stops a wrong source from passing: `validate-pins.py` checks it, a wrong
@@ -346,8 +360,8 @@ class LinkSources:
                 continue
             path, how, why, links = self.unread[typed]
             lines.append(
-                f"link-source-unreadable: {path} ({how}) could not answer "
-                f"for {', '.join(links)}: {why}"
+                f"link-source-unreadable: {_shown(path)} ({how}) could not "
+                f"answer for {', '.join(links)}: {why}"
                 + "".join(f"\n  {line}" for line in (
                     self.read_as_path(typed), self._also_a_directory(typed))
                     if line))
