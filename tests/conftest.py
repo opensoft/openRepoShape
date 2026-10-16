@@ -144,14 +144,16 @@ def cloned_just_pushed(remote: Path, dest: Path, branch: str | None = None,
 # file at a time, as git's local clone does (`clone_just_pushed` above), and
 # this suite copies a repository a fixture has just committed in, fetched
 # into or pushed to in over a hundred places: `project`, `test_family.py`'s
-# `holder`, a bare remote.
+# `holder`, `test_doctor_pin_restore_merges.py`'s copies of the session's
+# `standard` (`the_standard_moved`), a bare remote.
 # `git commit`, `merge` and `fetch`, and the `receive-pack` a push starts in
 # the remote, each run `git maintenance run --auto` as they finish. Since git
 # 2.47 that run DETACHES, holding `objects/maintenance.lock`, and the command
 # returns while it goes on; since 2.54 its default strategy (`geometric`)
 # repacks a repository of a few hundred loose objects and deletes the ones
 # it packed. A copy taken in that moment fails `[Errno 2] No such file or
-# directory` on one of them: `holder`, on the Linux runner (#645).
+# directory` on one of them: `holder` and `the_standard_moved`, on the
+# Linux runner (#645).
 #
 # So the session turns it off, as every git command in this estate is told
 # to: `gc.auto=0`, for a git that runs `git gc --auto` itself (2.43's
@@ -170,7 +172,10 @@ def cloned_just_pushed(remote: Path, dest: Path, branch: str | None = None,
 #   maintenance. The file INCLUDES the global config git would read without
 #   it -- the file `GIT_CONFIG_GLOBAL` already named, or
 #   `$XDG_CONFIG_HOME/git/config` then `~/.gitconfig` -- so a person's own
-#   settings still apply, and sets the two keys after them.
+#   settings still apply, and sets the two keys after them. A `git config
+#   --global <key>` read without `--includes` sees the two alone: in this
+#   repository that is `setup-project.py`'s Windows-only `core.autocrlf`
+#   warning, which no test reads from a person's own config.
 #
 # WHAT IT LEAVES: a git whose environment takes away both -- a
 # `GIT_CONFIG_COUNT` overwritten rather than appended to, together with a
