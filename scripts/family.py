@@ -1180,9 +1180,23 @@ def _checked_inside_sparse_rules(root: Path, verb: str,
 def _print_next(family: "Family", branch: str) -> None:
     """The NEXT an act that committed ends with (#487): ONE pasteable line
     that pushes the branch the commit is on, every word quoted for the
-    reader's shell (#486), then the pull request it is for."""
+    reader's shell (#486), then the pull request it is for.
+
+    THE BRANCH BY ITS FULL REFNAME, ON BOTH SIDES (#689). A bare `<branch>`
+    is a REFSPEC git reads for itself, and a leading `+` in one means FORCE:
+    a holder on `+x` printed `push -u origin +x`, which pushed the LOCAL
+    branch `x` over origin's `x` (`+ 77de599...261789e x -> x (forced
+    update)`) and never the commit this act made, or, with no local `x`,
+    died `src refspec x does not match any`. A branch that shares its name
+    with a tag (`v1`) died `src refspec v1 matches more than one`.
+    `refs/heads/<branch>:refs/heads/<branch>` is the branch it is whatever
+    is checked out, and `-u` still records `origin/<branch>` as its upstream
+    (`branch.<branch>.merge`). `init`'s own push spells it the same way
+    (#421), and the whole refspec is ONE word for `shell_line` to quote.
+    """
+    refspec = f"{HEADS_PREFIX}{branch}:{HEADS_PREFIX}{branch}"
     print("\nNEXT  " + shell_line(["git", "-C", family.root, "push", "-u",
-                                    "origin", branch]))
+                                    "origin", refspec]))
     print(f"      then open a pull request against {family.tracking()}; "
           "never push to it directly")
 

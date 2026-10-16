@@ -1185,6 +1185,23 @@ BRANCH_UNCHECKED_REMEDIATION = (
 #: the person's name: a git that refuses this one too could not answer.
 BRANCH_CONTROL = "main"
 
+#: What git adds to a branch's last part to lock its ref while it makes it:
+#: `refs/heads/<name>.lock`, a file in the same directory.
+BRANCH_LOCK_SUFFIX = ".lock"
+
+#: The remedy for a part too long for the disk (#689), whose own words are
+#: the same for a flag and for a plan's key, so `adopt-project.py`'s `check`
+#: prints it as it stands. `BRANCH_REMEDIATION` would send the person to
+#: `git check-ref-format --branch`, which accepts every such name.
+BRANCH_LENGTH_REMEDIATION = (
+    "Remediation: shorten the part the name above says is too long. Git "
+    "makes each part of a branch name a directory, and the last one a file "
+    f"as well, named `<part>{BRANCH_LOCK_SUFFIX}` while it locks the ref, "
+    "and a disk keeps a file or directory name to 255 bytes: the last part "
+    "may be at most 250 bytes and every other part at most 255. "
+    "`git check-ref-format` has no length limit, so it accepts such a name "
+    "and the first commit is where git fails.")
+
 
 def _ask_git_branch(name: str) -> str:
     """`git check-ref-format --branch <name>`, asked of NO repository and
@@ -1213,8 +1230,9 @@ def _ask_git_branch(name: str) -> str:
 
 def _branch_verdict(what: str, value) -> tuple[str | None, str]:
     """`(problem, remediation)`: `branch_problem`'s sentence, and the remedy
-    that fits it, which is about the NAME when git judged the name and about
-    GIT when git could not answer."""
+    that fits it, which is about the NAME when git judged the name, about
+    GIT when git could not answer, and about the DISK when a part of the
+    name is too long for it (#689, `_branch_length_verdict`)."""
     text = str(value)
     refused = f"{what} is {text!r}, which is not a branch name git will create"
     unchecked = f"{what} is {text!r}, which could not be checked"
@@ -1250,12 +1268,54 @@ def _branch_verdict(what: str, value) -> tuple[str | None, str]:
     if answer != text:
         return (f"{refused}: `git check-ref-format --branch` reads it as "
                 f"{answer!r}, not as written", BRANCH_REMEDIATION)
+    return _branch_length_verdict(what, text)
+
+
+def _branch_length_verdict(what: str, text: str) -> tuple[str | None, str]:
+    """`_branch_verdict`'s last question, asked of a name git accepted
+    (#689): can the disk hold the files git makes for it?
+
+    `git check-ref-format` has NO LENGTH LIMIT, so a tracking branch of 251
+    to 255 characters, inside `checked_value`'s 255, passed it and passed
+    `--dry-run`, and the real run died at the first commit with every remote
+    already made: `fatal: cannot lock ref 'HEAD': Unable to create
+    '.../refs/heads/aaa....lock': File name too long`. The limit is the
+    disk's, not git's, so it is the one question here that is written down
+    and not asked of git. Each part of the name is a directory under
+    `refs/heads/` and the last one is also the file `<part>.lock`, so the
+    last part may be at most `NAME_MAX - len(".lock")` = 250 bytes and any
+    other part `NAME_MAX` = 255 (measured: `<255 a's>/x` and `x/<250 a's>`
+    are created, `x/<251 a's>` and `<251 a's>` are not). BYTES, as
+    `refuse_unstorable_names` counts them, in the form the operating system
+    is given (`os.fsencode`). One refusal, for the first part over its limit.
+    """
+    parts = text.split("/")
+    for number, part in enumerate(parts, 1):
+        last = number == len(parts)
+        limit = NAME_MAX - (len(BRANCH_LOCK_SUFFIX) if last else 0)
+        size = len(os.fsencode(part))
+        if size <= limit:
+            continue
+        # BOTH ENDS, as `refuse_unstorable_names` shows a long name: the
+        # tail is what tells two long names apart.
+        shown = text if len(text) <= 27 else f"{text[:12]}...{text[-12:]}"
+        if len(parts) == 1:
+            which = "it"
+        elif last:
+            which = "its last part"
+        else:
+            which = f"its part {number}"
+        return (f"{what} is {shown!r}, which is not a branch name git will "
+                f"create: {which} is {size} bytes long, and may be at most "
+                f"{limit}", BRANCH_LENGTH_REMEDIATION)
     return None, BRANCH_REMEDIATION
 
 
 def branch_problem(what: str, value) -> str | None:
     """None when `git check-ref-format --branch` accepts `value` exactly as
-    written; otherwise the sentence that says what git made of it.
+    written and the disk can hold the files git makes for it (#689);
+    otherwise the sentence that says what git made of it, or which part is
+    too long.
 
     `what` names the value as the person met it (`--tracking-branch`,
     `tracking_branch`), the way `leg_path_problem` is given its flag. Git is
@@ -1277,8 +1337,10 @@ def refuse_bad_branch(refusal: str, what: str, value) -> None:
 
     `refusal` is the caller's own code (`scaffold-bad-tracking-branch`), so
     each tool refuses in its own voice, as `refuse_bad_leg_paths` lets it.
-    The remedy is `BRANCH_REMEDIATION` when git judged the name, and
-    `BRANCH_UNCHECKED_REMEDIATION` when git could not answer at all.
+    The remedy is `BRANCH_REMEDIATION` when git judged the name,
+    `BRANCH_UNCHECKED_REMEDIATION` when git could not answer at all, and
+    `BRANCH_LENGTH_REMEDIATION` when a part of the name is too long for the
+    disk (#689).
     """
     problem, remediation = _branch_verdict(what, value)
     if problem:
