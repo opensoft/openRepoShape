@@ -1575,6 +1575,19 @@ def test_the_one_line_install_is_the_same_everywhere(name):
         f"    {ONE_LINE_INSTALL}")
 
 
+def test_every_handbook_copy_of_the_one_line_install_is_the_same():
+    """The handbook shows the one line in three code blocks: the masthead's,
+    step 3's on the Linux, macOS and WSL2 tabs, and step 3's on the Windows
+    tab, for Git Bash (#461's line "The handbook's step 3 has no Git Bash
+    path", settled by #630). The test above finds ONE copy; this one holds
+    every copy, so a line edited on one tab alone fails here."""
+    page = (REPO / "docs" / "handbook.html").read_text(encoding="utf-8")
+    copies = [line for block in re.findall(r"<code>(.*?)</code>", page, re.S)
+              for line in block.splitlines() if "download/install.sh" in line]
+    assert len(copies) >= 3, copies
+    assert set(copies) == {ONE_LINE_INSTALL}, copies
+
+
 #: Where each document describes `openRepoShape --doctor`: the file, the
 #: line its passage begins with, what ends it, and whether it describes the
 #: installed form's kept clone. `docs/cli.md` has two: the doctor's purpose in

@@ -826,6 +826,12 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
             an exhausted stdin, so it cannot ask for the one <code>yes</code> before three
             repositories exist &mdash; it refuses instead. Downloading the file first leaves stdin
             attached to the terminal you are typing at.</p>
+            <p data-platform="win" class="sub">In Git Bash, the bash that Git for Windows installs, the
+            one-line install works as on Linux:</p>
+            <div data-platform="win" class="code" data-lang="sh"><pre><code>curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash</code></pre></div>
+            <p data-platform="win">It places the bash <code>openRepoShape</code>, with the panel&rsquo;s
+            caveat: the preflight it ends with cannot take a typed <code>yes</code> in Git Bash, so
+            none of its offers can be accepted there.</p>
             <p data-platform="mac wsl">Each way installs ONE command into <code>~/.local/bin</code>,
             idempotently &mdash; a second run prints <code>unchanged</code> &mdash; and prints the
             <code>export PATH=&hellip;</code> line if that directory is not on <code>PATH</code>.
