@@ -68,6 +68,9 @@ from repo_shape import (  # noqa: E402
     GH_TREE_API, NEUTRAL_PRODUCT_OWNER, PIN_SOURCE_ENV_PREFIX,
     pin_product_key, pin_source_env_collisions, tree_digest,
 )
+# How a `--pin-source` that is not printable is named, the one spelling the
+# scaffold's chain WARNING gives it too (#610).
+from repo_shape import shown_path  # noqa: E402
 # What the Free-plan secrets hint goes by (#660): GitHub's three
 # visibilities, and the hint's own words, which stay in the pinned copy.
 from repo_shape import FREE_PLAN_HINT, VISIBILITY_CHOICES  # noqa: E402
@@ -2929,9 +2932,12 @@ def shown_source(source) -> str:
     Python's `repr` spells it -- `\\x1b`, `\\n`, `\\r`, and `\\udcff` for a
     byte that is not UTF-8, as `sys.argv` keeps one -- which is how every
     other value a refusal here names is spelled (`--pin {raw!r}`). The
-    question `adopt-project.py`'s `_shown` asks of a path it prints."""
-    text = str(source)
-    return text if text.isprintable() else repr(text)
+    question `adopt-project.py`'s `_shown` asks of a path it prints.
+
+    It IS `repo_shape.shown_path` (#610), which the scaffold's
+    `declared-unverified` WARNING spells the same `--pin-source` with, so
+    the two lines about one path cannot spell it two ways."""
+    return shown_path(source)
 
 
 def _digest_from_pin_source(source: Path, commit: str) -> str:

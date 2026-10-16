@@ -407,14 +407,16 @@ def test_the_flags_and_the_plan_keys_name_the_same_values(adopter):
 
 
 def test_a_value_plan_filled_in_is_named_by_where_it_came_from(adopter):
-    """#529: the three values `plan` fills in when its flag is not given are
-    named by the default, in the words `_flag_fields` and the unwritable-value
-    path use, and no other value is renamed. Two of the three (the id, the
-    tracking branch) are refused before the validator is asked, so this is
-    where their names are held."""
+    """#529 and L1-39: the four values `plan` fills in when its flag is not
+    given are named by the default, in the words `_flag_fields` and the
+    unwritable-value path use, and no other value is renamed. Two of the four
+    (the id, the tracking branch) are refused before the validator is asked,
+    so this is where their names are held. The organisation is in
+    `_planned_org`'s words: `--org is '~x'` named a flag nobody passed."""
     defaults = {"ELECTED_BY": "`git config user.name`",
                 "PROJECT_ID": "--project lowercased",
-                "TRACKING_BRANCH": "the source's default branch"}
+                "TRACKING_BRANCH": "the source's default branch",
+                "ORG": "the organisation of the source's `origin`"}
     typed = adopter._manifest_flag_names(set(adopter.FLAG_DEFAULTS))
     filled = adopter._manifest_flag_names(set())
     assert filled == {
@@ -425,6 +427,19 @@ def test_a_value_plan_filled_in_is_named_by_where_it_came_from(adopter):
                                     "`git config user.name`)")
     assert adopter._manifest_flag_names({"elected_by"})["ELECTED_BY"] == (
         "--elected-by")
+
+
+def test_the_derived_ids_words_are_the_tables(adopter, monkeypatch):
+    """rv601's nit, L2-54: #620 wrote the derived id's sentence by hand, so
+    an edit to `FLAG_DEFAULTS["id"]` would not have reached it. Its label
+    and its remedy are both read from the table."""
+    monkeypatch.setitem(adopter.FLAG_DEFAULTS, "id", "a stand-in")
+    with pytest.raises(adopter.Refusal) as refused:
+        adopter._refuse_bad_id("north_wind", "North_Wind", set(),
+                               Namespace(repository=None))
+    assert refused.value.detail.startswith(
+        "--id (not given, so a stand-in) is 'north_wind'"), refused.value
+    assert "The id is a stand-in, and" in refused.value.remediation
 
 
 # --- the question is asked with no git at all -------------------------------
