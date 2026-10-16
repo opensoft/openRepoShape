@@ -415,7 +415,12 @@ options:
   --source SOURCE       a local path (read only) or `org/repo` to clone
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name
-  --org ORG
+  --org ORG             the organisation the source repository is in, which
+                        the plan records as `org:` (default: the organisation
+                        of an `org/repo` --source, or the one a local source's
+                        `origin` url names). A source whose `origin` is a
+                        path, or that has none, names no organisation: `plan`
+                        refuses it as `adopt-no-org` unless --org is given.
   --id ID
   --visibility {private,public,internal}
   --elected-by ELECTED_BY
@@ -512,7 +517,16 @@ options:
                         `--allow-empty-leg code`. Repeatable.
   --path-policy PATH_POLICY
   --out OUT
-  --work-dir WORK_DIR
+  --work-dir WORK_DIR   the directory an `org/repo` --source is cloned into,
+                        as `source-readonly/<repo>`, which the plan records as
+                        `source.local_path` for `check` and `execute` to read;
+                        a local --source is read in place. Default: a new
+                        directory in the system temp folder, removed when the
+                        run ends if it holds no file. A --work-dir you give is
+                        made where it is missing, and nothing in it is
+                        removed. One that cannot be made, or that this user
+                        cannot write in when a source is cloned into it, is
+                        refused as `adopt-work-dir-unwritable`.
 ```
 
 #### `adopt-project.py check`
@@ -527,7 +541,17 @@ options:
   -h, --help           show this help message and exit
   --plan PLAN
   --source SOURCE      override the source the plan names
-  --work-dir WORK_DIR
+  --work-dir WORK_DIR  where `check` works: an `org/repo` --source, or the
+                       plan's `source.repository` where its recorded clone is
+                       gone, is cloned there. Give the one `execute` will be
+                       given. Default: a new directory in the system temp
+                       folder, removed when the run ends if it holds no file.
+                       A --work-dir you give is made where it is missing, and
+                       nothing in it is removed. One this user cannot write in
+                       is a finding, `adopt-work-dir-unwritable`, and is
+                       refused under that code where the source would be
+                       cloned into it or cannot be opened, as one that cannot
+                       be made is.
 ```
 
 #### `adopt-project.py execute`
@@ -553,7 +577,19 @@ options:
                         plan's own `allow_empty_legs:`; without one of the
                         two, execute refuses.
   --yes                 the human has read the plan and the follow-ups
-  --work-dir WORK_DIR
+  --work-dir WORK_DIR   where `execute` builds the two legs and the split, and
+                        clones an `org/repo` source; the verification table
+                        and the notice of a failure name what is there.
+                        Default: a new directory in the system temp folder,
+                        removed when the run ends if it holds no file. A
+                        --work-dir you give is made where it is missing, and
+                        nothing in it is removed. A default one that holds
+                        what the run made is kept, and the run's last line
+                        names it. One that already holds what a run builds is
+                        refused as `adopt-work-dir-occupied`, and one that
+                        cannot be made, or that this user cannot write in, as
+                        `adopt-work-dir-unwritable`, before any leg repository
+                        exists.
 ```
 
 ### `update-shape.py`
