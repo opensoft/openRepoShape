@@ -241,9 +241,15 @@ fetch_or_die() {
 # handed the clone URL of the very repository these bytes came from: name a
 # fork or mirror once and it is used for the fetch AND the clone. A URL or a
 # path on disk (what the tests point it at) goes through untouched.
+#
+# A WINDOWS PATH IS A PATH TOO (#649): `C:/src/openRepoShape` and
+# `C:\src\openRepoShape`, which Git Bash and git itself both take, were read
+# as an owner/name and became `https://github.com/C:/src/openRepoShape.git`.
+# No owner/name holds a colon, and the package's `clone_url` reads a drive
+# letter the same way.
 shape_clone_url() {
 	case "$REPO" in
-	*://* | *@*:* | /* | .*) printf '%s' "$REPO" ;;
+	*://* | *@*:* | /* | .* | [A-Za-z]:/* | [A-Za-z]:\\*) printf '%s' "$REPO" ;;
 	*) printf 'https://github.com/%s.git' "$REPO" ;;
 	esac
 }
@@ -306,10 +312,20 @@ collect_commands() {
 # `python3`, and `git-filter-repo` -- which only `adopt-project.py` needs and
 # `--preflight` therefore does not ask about.
 #
-# IT OFFERS NOTHING AND RUNS NO INSTALLER. Four `command -v` probes, which
+# IT OFFERS NOTHING AND RUNS NO INSTALLER. `command -v` probes, which
 # execute nothing at all, and one `gh auth status`, which is the only way to
 # learn a login state. An offer belongs behind a typed yes, in `--preflight`,
 # and this line points there rather than growing a second consent.
+#
+# A PYTHON BY EITHER NAME, `python3` THEN `python`, in `find_python`'s order
+# (#649). Where Python came from python.org, Git Bash has `python` and no
+# `python3`, and this row said `python3 MISSING` while `--preflight` passed.
+# The row keeps its name and says `present, as python` there. Still a probe
+# and never a run, so what answers is never asked its version: the Microsoft
+# Store's `python3` stub and macOS's Command Line Tools stubs read as present
+# here, and so does a `python` that is Python 2, or older than 3.9, where
+# there is no `python3`. `--preflight` runs the version check, and this
+# report runs none.
 #
 # IT NEVER CHANGES THE EXIT CODE. A machine missing a prerequisite did not
 # make the copy that was just placed any less placed, and an install that
@@ -319,7 +335,10 @@ machine_report() {
 	local name state short=0
 	say "  machine:"
 	for name in git gh python3 git-filter-repo; do
-		if command -v "$name" >/dev/null 2>&1; then
+		if [ "$name" = python3 ] && ! command -v python3 >/dev/null 2>&1 &&
+			command -v python >/dev/null 2>&1; then
+			state="present, as python"
+		elif command -v "$name" >/dev/null 2>&1; then
 			state="present"
 			if [ "$name" = gh ]; then
 				if gh auth status >/dev/null 2>&1; then
@@ -386,7 +405,29 @@ record_ref() {
 
 install_commands() {
 	local dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
-	local name target source verb placed=0 recording=0 record
+	local name target source verb placed=0 recording=0 record spelled=""
+	# A WINDOWS SPELLING IS SPELLED AGAIN THE WAY BASH SPELLS IT (#649), with
+	# `cygpath -u`, which Git Bash has, before anything is checked or placed:
+	# `D:\tools\bin` becomes `/d/tools/bin`. Kept as typed, every line below
+	# named it, and the PATH note printed `export PATH="D:\tools\bin:$PATH"`,
+	# which the drive's colon splits in two, and never found it on a `$PATH`
+	# that holds `/d/tools/bin`. Where no cygpath answers, nothing here can
+	# spell it as bash's `$PATH` needs it (and off Windows the drive letter is
+	# no drive at all), so the value is refused: no line it could print about
+	# `$PATH` would work.
+	case "$dir" in
+	[A-Za-z]:/* | [A-Za-z]:\\*)
+		if command -v cygpath >/dev/null 2>&1; then
+			spelled="$(cygpath -u -- "$dir" 2>/dev/null)" || spelled=""
+		fi
+		case "$spelled" in
+		"" | [A-Za-z]:*)
+			die "--install would place this command in '$dir', which is spelled for Windows, and no cygpath here spells it the way bash does, so the directory could not go on \$PATH: the drive's colon splits it. Nothing was placed. Set \$OPENREPOSHAPE_BIN_DIR to the directory as this shell spells it, then run this again."
+			;;
+		esac
+		dir="$spelled"
+		;;
+	esac
 	if [ "$REF_FROM_RECORD" -eq 1 ] ||
 		{ [ "$REF_NAMED" -eq 1 ] && [ "${OPENREPOSHAPE_RECORD_REF:-}" = 1 ]; }; then
 		recording=1

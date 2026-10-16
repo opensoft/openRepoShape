@@ -68,6 +68,9 @@ from repo_shape import (  # noqa: E402
     GH_TREE_API, NEUTRAL_PRODUCT_OWNER, PIN_SOURCE_ENV_PREFIX,
     pin_product_key, pin_source_env_collisions, tree_digest,
 )
+# How a `--pin-source` that is not printable is named, the one spelling the
+# scaffold's chain WARNING gives it too (#610).
+from repo_shape import shown_path  # noqa: E402
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
 
@@ -1283,6 +1286,230 @@ def refuse_bad_branch(refusal: str, what: str, value) -> None:
     problem, remediation = _branch_verdict(what, value)
     if problem:
         raise Refusal(refusal, problem, remediation)
+
+
+# ---------------------------------------------------------------------------
+# What a run asks before its first write: the folders it makes (#609)
+# ---------------------------------------------------------------------------
+#
+# `scaffold-project.py` and `family.py init` each make folders -- the work
+# directory, `--local-remote-dir`, a family folder -- and write a working tree
+# into one, and their dry runs asked about none of it. With a file standing
+# where a folder must go the dry run exited 0 and the real run died in
+# `mkdir` (`FileExistsError`) or in the target-exists question itself
+# (`NotADirectoryError`), a traceback, exit 1. These are the questions both
+# runs now ask, before anything is made, and the `mkdir` the real run makes
+# after them. They live here and not in `scripts/repo_shape.py` for the reason
+# `refuse_bad_branch` does: that file is a SHAPE COPY.
+
+#: Said by every refusal of a folder asked about before anything is made.
+FOLDER_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "Move what stands in the way aside, or pass a path where a folder can be "
+    "made. There is no --force.")
+
+#: What a folder this user cannot write in is called, by
+#: `folder_cannot_be_made` (a folder to make) and `target_in_the_way` (an
+#: empty working tree) alike.
+CANNOT_WRITE_IN = "is a folder this user cannot write in"
+
+#: Said when the real run's own `mkdir` fails, after the question said yes:
+#: the run has made folders by then, and no remote.
+MKDIR_REMEDIATION = (
+    "Remediation: no remote was created. Move what stands in the way aside, "
+    "or pass a path where a folder can be made, then run this again. There "
+    "is no --force.")
+
+
+def _not_a_folder(path: Path) -> str | None:
+    """Why the thing that stands at `path` is no folder to make one in or
+    write into, or None when it is a folder (a link to one included).
+
+    `stat()` INSIDE THE GUARD judges it, as `_digest_from_pin_source` does:
+    a link to nothing, a link loop or a path this user cannot search is the
+    system's own reason, where `is_dir()` would have said False or raised."""
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        return f"cannot be used as a folder: {exc.strerror or exc}"
+    if stat.S_ISDIR(mode):
+        return None
+    return ("is a file, not a folder" if stat.S_ISREG(mode)
+            else "is not a folder")
+
+
+def folder_cannot_be_made(path: Path) -> str | None:
+    """Why `path` cannot be made as a folder, with every folder above it, and
+    written in, or None when it can (#609). It makes nothing.
+
+    The question `Path.mkdir(parents=True, exist_ok=True)` and the first
+    write into the folder ask, put without making anything: the nearest of
+    `path` and the folders above it that exists is the one that answers. A
+    file there, or above it, is named, and so is a folder this user cannot
+    write in (the system's own answer, `os.access`, where it has one; it
+    says yes for root, and for any folder on Windows, as `mkdir` would). A
+    `path` nothing stands at is asked of the folder above it.
+    """
+    for here in (path, *path.parents):
+        if not os.path.lexists(here):
+            continue
+        why = _not_a_folder(here)
+        if why:
+            return f"{here} {why}"
+        if not os.access(here, os.W_OK | os.X_OK):
+            return f"{here} {CANNOT_WRITE_IN}"
+        return None
+    return None
+
+
+def _unwritable_remediation(choose: str) -> str:
+    """What a refusal of a folder this user cannot write in says to do, for
+    a folder to make and for a working tree alike: give this user write and
+    search permission on it, or choose another folder by the flag `choose`.
+    """
+    return ("Remediation: nothing was created, and `--dry-run` refuses the "
+            "same. Give this user write and search permission on that "
+            f"folder, or choose another {choose}, and run this again.")
+
+
+def refuse_unmakeable_folder(refusal: str, named: str, path: Path,
+                             choose: str | None = None) -> None:
+    """Raise `Refusal(refusal)` when `folder_cannot_be_made(path)` says why.
+
+    `refusal` is the caller's own code (`scaffold-folder-cannot-be-made`)
+    and `named` how the person met the folder (`--work-dir`, `the family
+    folder`), so each tool refuses in its own voice. Asked by the dry run
+    and the real run alike, before anything is made.
+
+    A FOLDER THIS USER CANNOT WRITE IN (`CANNOT_WRITE_IN`, the folder itself
+    or one above it) is not told to "move what stands in the way aside": it
+    is told what `_unwritable_remediation` says, naming the flag `choose`,
+    which is `named` unless it is no flag (`the family folder`, met by
+    `--into`). Every other answer keeps `FOLDER_REMEDIATION`."""
+    why = folder_cannot_be_made(path)
+    if why:
+        raise Refusal(
+            refusal, f"{named} {path} cannot be made: {why}",
+            _unwritable_remediation(choose or named)
+            if why.endswith(CANNOT_WRITE_IN) else FOLDER_REMEDIATION)
+
+
+def make_folder(refusal: str, named: str, path: Path) -> None:
+    """`path.mkdir(parents=True, exist_ok=True)`, and a refusal in the
+    system's own words when it fails, never an `OSError` traceback.
+
+    The real run's `mkdir`, after `refuse_unmakeable_folder` has said yes:
+    what still fails here (a file made in the meantime, a permission
+    `os.access` did not foresee) is the same refusal, before any remote is
+    made."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise Refusal(refusal, f"{named} {path} cannot be made: "
+                      f"{exc.strerror or exc}", MKDIR_REMEDIATION) from exc
+
+
+def target_in_the_way(target: Path) -> str | None:
+    """Why a working tree cannot be written at `target`, which a run fills
+    and never empties, or None when nothing is there or an empty folder is
+    (#609). The caller's sentence is `<target> already exists and <why>`.
+
+    A FILE THERE was a `NotADirectoryError` out of `target.iterdir()` in
+    the real run, after its dry run exited 0. It is said here, and so is a
+    folder that holds anything, which both tools always refused, and one
+    this user cannot list.
+
+    AN EMPTY FOLDER THIS USER CANNOT WRITE IN IS SAID TOO (L2-60), last: the
+    emptiness check passed it, the dry run exited 0, and the real run made
+    its remotes and then died in a `PermissionError` traceback at the first
+    file it wrote there. It asks the question `folder_cannot_be_made` asks
+    of a folder to make, `os.access(W_OK | X_OK)`: a folder with no `w`
+    takes no file and one with no `x` cannot be entered, and a folder that
+    holds something is still `is not empty`, whatever its mode."""
+    if not os.path.lexists(target):
+        return None
+    why = _not_a_folder(target)
+    if why:
+        return why
+    try:
+        if any(target.iterdir()):
+            return "is not empty"
+    except OSError as exc:
+        return f"cannot be read: {exc.strerror or exc}"
+    if not os.access(target, os.W_OK | os.X_OK):
+        return CANNOT_WRITE_IN
+    return None
+
+
+def target_remediation(why: str, holds: str, choose: str) -> str:
+    """The remediation of a `-target-exists` refusal, chosen by what
+    `target_in_the_way` said, in the one place both tools ask it (#609).
+
+    `holds` is the tool's own sentence for a tree that HOLDS something, a
+    file included: choose an empty folder, there is no --force. It is wrong
+    for an EMPTY folder whose only fault is its permissions
+    (`CANNOT_WRITE_IN`, L2-60), which is told to be given write and search
+    permission for this user, or to be replaced by another folder, named by
+    `choose`, the flag the person met it by."""
+    if why != CANNOT_WRITE_IN:
+        return holds
+    return _unwritable_remediation(choose)
+
+
+# ---------------------------------------------------------------------------
+# What a run asks before its first write: whether a repository exists (#609)
+# ---------------------------------------------------------------------------
+
+#: The words of gh's answer for a repository GitHub does not have, on stderr
+#: with exit 1: `gh repo view` asks GitHub's GraphQL API, which answers
+#: `Could not resolve to a Repository with the name '<owner>/<name>'.`, and
+#: gh prints it as `GraphQL: <message> (repository)` (gh 2.x; its
+#: `FetchRepository` says the same when the API returns no repository).
+GH_NOT_FOUND_WORDS = "Could not resolve to a Repository"
+
+#: Said by every refusal of a `gh repo view` that failed otherwise.
+GH_UNREADABLE_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "Only gh's own answer that a repository does not exist (exit 1, "
+    f"`{GH_NOT_FOUND_WORDS}`) lets a run go on as if it were not there; any "
+    "other failure says nothing about whether it is. Check `gh auth status` "
+    "(`gh auth login` where it names a token that is missing, bad or "
+    "expired), or let a rate limit or an outage pass, then run this again.")
+
+
+def refuse_unless_not_found(repository: str, probe) -> None:
+    """A `gh repo view <repository>` that FAILED is gh's answer that the
+    repository does not exist, and this returns; any other failure is
+    refused as `remote-unreadable` (#609).
+
+    ANY FAILURE USED TO MEAN "ABSENT". With a bad token (`HTTP 401: Bad
+    credentials`), a rate limit or no network, both dry runs exited 0 and
+    the real runs went on to `gh repo create`: the scaffold failed there,
+    and `init` had made its family folder first. A repository that DOES
+    exist, read through a passing failure, would have had the scaffold
+    create and push both legs before its root met `gh repo create`. So only
+    exit 1 with `GH_NOT_FOUND_WORDS` on stderr means absent; the refusal
+    quotes the command, its exit and the first line gh said (stdout's when
+    stderr is empty), as Python spells it when it is not printable.
+
+    `probe` is the finished `subprocess.CompletedProcess` of the command;
+    one that exited 0 is not asked about here.
+    """
+    if probe.returncode == 1 and GH_NOT_FOUND_WORDS in (probe.stderr or ""):
+        return
+    lines = [line.strip()
+             for line in (probe.stderr or probe.stdout or "").splitlines()
+             if line.strip()]
+    said = lines[0] if lines else ""
+    if not said.isprintable():
+        said = repr(said)
+    command = " ".join(str(word) for word in probe.args)
+    raise Refusal(
+        "remote-unreadable",
+        f"whether {repository} already exists on GitHub cannot be told: "
+        f"`{command}` exited {probe.returncode}"
+        + (f": {said}" if said else ""),
+        GH_UNREADABLE_REMEDIATION)
 
 
 #: `-F -` reads the message from STDIN. Every argument is then a literal, and
@@ -2525,9 +2752,12 @@ def shown_source(source) -> str:
     Python's `repr` spells it -- `\\x1b`, `\\n`, `\\r`, and `\\udcff` for a
     byte that is not UTF-8, as `sys.argv` keeps one -- which is how every
     other value a refusal here names is spelled (`--pin {raw!r}`). The
-    question `adopt-project.py`'s `_shown` asks of a path it prints."""
-    text = str(source)
-    return text if text.isprintable() else repr(text)
+    question `adopt-project.py`'s `_shown` asks of a path it prints.
+
+    It IS `repo_shape.shown_path` (#610), which the scaffold's
+    `declared-unverified` WARNING spells the same `--pin-source` with, so
+    the two lines about one path cannot spell it two ways."""
+    return shown_path(source)
 
 
 def _digest_from_pin_source(source: Path, commit: str) -> str:
@@ -2585,29 +2815,9 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
             # confident tone (#217).
             capture_output=True, text=True, encoding="utf-8", check=False)
     except FileNotFoundError as exc:
-        raise Refusal(
-            "gh-not-found",
-            f"the `gh` CLI is not on PATH, so `gh api` cannot read "
-            f"{repository} @ {commit}: {exc}",
-            "Remediation: pass --pin-source <a local clone of that "
-            "repository> to compute the digest with no network at all, or "
-            "put `gh` on PATH and run this again (`openRepoShape "
-            "--preflight` names each missing prerequisite and offers to "
-            "install it, on a typed yes).",
-        ) from exc
+        raise _gh_not_on_path(repository, commit, exc) from exc
     if proc.returncode != 0:
-        raise Refusal(
-            "pin-unreadable",
-            f"`gh api` could not read {repository} @ {commit}: "
-            f"{proc.stderr.strip()}",
-            "Remediation: check the commit exists in that repository and that "
-            "`gh auth status` can see it. An unqualified --pin resolves under "
-            f"{NEUTRAL_PRODUCT_OWNER} by default (never the project's own "
-            "--org) — if this product actually lives under a different "
-            "owner, name it explicitly with --pin <owner>/<openProduct>@<sha> "
-            "or --pin-owner <owner>. You can also pass --pin-source <local "
-            "clone> to compute the digest with no network at all.",
-        )
+        raise _gh_could_not_read(repository, commit, proc.stderr.strip())
     try:
         payload = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
@@ -2631,6 +2841,194 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
         digest.update(record)
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def _gh_not_on_path(repository: str, commit: str,
+                    exc: FileNotFoundError) -> Refusal:
+    """`gh-not-found`, for a pin the forge was to be asked about: what
+    each `gh` read here refuses with when `subprocess` finds no `gh`."""
+    return Refusal(
+        "gh-not-found",
+        f"the `gh` CLI is not on PATH, so `gh api` cannot read "
+        f"{repository} @ {commit}: {exc}",
+        "Remediation: pass --pin-source <a local clone of that "
+        "repository> to compute the digest with no network at all, or "
+        "put `gh` on PATH and run this again (`openRepoShape "
+        "--preflight` names each missing prerequisite and offers to "
+        "install it, on a typed yes).")
+
+
+def _gh_could_not_read(repository: str, commit: str, why: str) -> Refusal:
+    """`pin-unreadable`, for a pin the forge did not answer for: what
+    each `gh` read here refuses with, `why` being what `gh` said."""
+    return Refusal(
+        "pin-unreadable",
+        f"`gh api` could not read {repository} @ {commit}: {why}",
+        "Remediation: check the commit exists in that repository and that "
+        "`gh auth status` can see it. An unqualified --pin resolves under "
+        f"{NEUTRAL_PRODUCT_OWNER} by default (never the project's own "
+        "--org) — if this product actually lives under a different "
+        "owner, name it explicitly with --pin <owner>/<openProduct>@<sha> "
+        "or --pin-owner <owner>. You can also pass --pin-source <local "
+        "clone> to compute the digest with no network at all.")
+
+
+# ---------------------------------------------------------------------------
+# What a pin's id names: an annotated tag's own id is peeled (#651)
+# ---------------------------------------------------------------------------
+#
+# `git rev-parse v1.2` prints a release tag's OWN id, 40 hex, so `PIN_ARG_RE`
+# takes it, and nothing after that asked what it was. `tree_digest` reads it
+# with `git ls-tree`, which peels a tag to its tree, so the digest was the
+# commit's, and `--pin openGlass@<the tag's id>` wrote the TAG's id as the
+# pin's `commit:`, under the pin file's own `revision_kind: commit` and "A
+# COMMIT, NEVER A TAG": in the scaffold, its `--dry-run` and `adopt-project.py
+# plan` alike. The root's `validate-pins.py` passed it, for the same reason,
+# and a tree's id went the same way.
+#
+# PEELED, as `bump-leg.py --to` (#534), `family.py add --at` and `family.py
+# bump --to` (#541, Brett Heap's ruling of 2026-10-14) peel one. A tag
+# object's id fixes its content, so it names one commit for ever and, unlike
+# a tag NAME, cannot be moved: it is as exact a pin as that commit. One line
+# says so, and every value after it, the digest, the plan and the pin file,
+# is the commit's. A tree, a blob or a tag of either names no commit at all,
+# and is refused `pin-not-a-commit`, naming which, in `bump-leg.py`'s words.
+#
+# ASKED WHERE THE DIGEST IS READ: `git cat-file -t` in the `--pin-source`
+# clone, or, with none, the forge's own GraphQL `object(oid:)`, whose
+# `__typename` names the same four kinds; a tag of a tag is followed to the
+# end. `adopt-project.py check` asks the clone `plan` read a digest from the
+# same question (`commit_in_clone`).
+
+#: What `git cat-file -t` calls the one kind a pin may name, and the one
+#: that is peeled to it.
+COMMIT_KIND, TAG_KIND = "commit", "tag"
+#: The forge's GraphQL `__typename` for each kind `git cat-file -t` names.
+GH_KINDS = {"Commit": COMMIT_KIND, "Tag": TAG_KIND, "Tree": "tree",
+            "Blob": "blob"}
+#: A whole object id, as the forge spells the one a tag names.
+OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}")
+#: What the forge is asked about a pin's id: what kind of object it is, and
+#: for a tag, the kind and id of what the tag names.
+GH_OBJECT_QUERY = (
+    "query($owner: String!, $name: String!, $oid: GitObjectID!) "
+    "{ repository(owner: $owner, name: $name) { object(oid: $oid) "
+    "{ __typename ... on Tag { target { __typename oid } } } } }")
+#: What `pin-not-a-commit` tells a person to pass instead.
+PIN_NOT_A_COMMIT_REMEDIATION = (
+    "Remediation: pass a commit -- `git log --format=%H` in a clone of the "
+    "product lists them -- or an annotated tag of one, whose own id is "
+    "peeled to the commit it names, as `bump-leg.py --to` peels one. A "
+    "tree's or a blob's id is part of a commit and never one, and a pin is "
+    "a commit or it is nothing.")
+
+
+def not_a_commit(kind: str, names: str | None) -> str:
+    """How an id that names no commit is said (#651), in `bump-leg.py`'s
+    words: `names a tree`, `is an annotated tag of a blob`, or `is an
+    annotated tag that names no commit`. `kind` is what the id is, and
+    `names` what the last tag it leads through names, if anything."""
+    if kind != TAG_KIND:
+        return f"names a {kind}"
+    if names in ("tree", "blob"):
+        return f"is an annotated tag of a {names}"
+    return "is an annotated tag that names no commit"
+
+
+def _git_answer(clone: Path, *args: str) -> str | None:
+    """What `git <args>` prints in `clone`, or None where it fails or
+    `subprocess` cannot enter `clone` at all."""
+    try:
+        proc = subprocess.run(["git", *args], cwd=str(clone),
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
+                              check=False)
+    except OSError:
+        return None
+    return (proc.stdout.strip() or None) if proc.returncode == 0 else None
+
+
+def commit_in_clone(clone: Path, oid: str) -> tuple[str, str]:
+    """`(commit, "")` for the commit `oid` names in the clone at `clone`
+    (#651): `oid` itself, or the commit an annotated tag's own id names,
+    peeled through a tag of a tag (`<id>^{}`). `(oid, why)` for an id that
+    names no commit, `why` as `not_a_commit` says it. And `(oid, "")` where
+    the clone cannot say, no object with that id or no clone there, which
+    the digest's reader then names in its own words
+    (`pin-source-unreadable`)."""
+    kind = _git_answer(clone, "cat-file", "-t", oid)
+    if kind in (None, COMMIT_KIND):
+        return oid, ""
+    names = None
+    if kind == TAG_KIND:
+        peeled = (_git_answer(clone, "rev-parse", "-q", "--verify",
+                              f"{oid}^{{}}") or "").lower()
+        names = (_git_answer(clone, "cat-file", "-t", peeled) if peeled
+                 else None)
+        if names == COMMIT_KIND:
+            return peeled, ""
+    return oid, not_a_commit(kind, names)
+
+
+def _gh_object(repository: str, commit: str, oid: str) -> dict:
+    """What the forge says `oid` is in `repository`, through `gh api
+    graphql`: `{"__typename": ..., "target": ...}`. A forge that cannot
+    answer, holds no such object, or answers with no kind this reads, is
+    `pin-unreadable` for the pin `commit`, as `pin_digest_from_gh` refuses
+    one; no `gh` on PATH is its `gh-not-found`."""
+    owner, name = repository.split("/", 1)
+    try:
+        proc = subprocess.run(
+            ["gh", "api", "graphql", "-f", f"query={GH_OBJECT_QUERY}",
+             "-f", f"owner={owner}", "-f", f"name={name}", "-f", f"oid={oid}"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except FileNotFoundError as exc:
+        raise _gh_not_on_path(repository, commit, exc) from exc
+    if proc.returncode != 0:
+        raise _gh_could_not_read(repository, commit, proc.stderr.strip())
+    try:
+        found = json.loads(proc.stdout)["data"]["repository"]["object"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise _gh_could_not_read(
+            repository, commit,
+            f"its answer about {oid} holds no `data.repository.object` "
+            f"({exc!r})") from exc
+    if found is None:
+        raise _gh_could_not_read(
+            repository, commit,
+            f"the forge holds no object {oid} in {repository}")
+    if not isinstance(found, dict) or found.get("__typename") not in GH_KINDS:
+        raise _gh_could_not_read(
+            repository, commit,
+            f"its answer about {oid} names no kind of object: {found!r}")
+    return found
+
+
+def commit_on_forge(repository: str, oid: str) -> tuple[str, str]:
+    """`commit_in_clone`'s answer, asked of the forge (#651): `(commit,
+    "")` for the commit `oid` names in `repository`, itself or the one its
+    annotated tags lead to, or `(oid, why)` for an id that names none. Each
+    tag in a tag of a tag is one more question; a tag that names a commit,
+    a tree or a blob is answered by the question that found it."""
+    found = _gh_object(repository, oid, oid)
+    kind = GH_KINDS[found["__typename"]]
+    names, seen = kind, {oid}
+    while names == TAG_KIND:
+        target = found.get("target")
+        target = target if isinstance(target, dict) else {}
+        peeled = str(target.get("oid") or "").lower()
+        names = GH_KINDS.get(target.get("__typename"))
+        if OBJECT_ID_RE.fullmatch(peeled) is None or peeled in seen:
+            names = None
+        elif names == COMMIT_KIND:
+            return peeled, ""
+        elif names == TAG_KIND:
+            seen.add(peeled)
+            found = _gh_object(repository, oid, peeled)
+    if kind == COMMIT_KIND:
+        return oid, ""
+    return oid, not_a_commit(kind, names)
 
 
 #: How a pin file says its digest was read (`digest_source:`): from a clone
@@ -2665,10 +3063,16 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
     values, `local-clone (<path>)`, so that `check` recomputes the digest in
     that clone (#449): the plan is a file on that machine, which nothing
     commits, and `execute` writes the pin file's field as this says it.
+
+    THE COMMIT IS THE ONE THE ID NAMES (#651), asked where the digest is
+    read, before it is (`_pinned_commit`): an annotated tag's own id is
+    peeled to its commit, and a tree's, a blob's or a tag of either is
+    refused `pin-not-a-commit`.
     """
     pins: dict[str, dict[str, str]] = {}
     for raw in args.pin:
         product, repository, commit = parse_pin(raw, args.pin_owner)
+        commit = _pinned_commit(args, raw, repository, commit)
         if args.pin_source is not None:
             digest = pin_digest_from_source(
                 _resolved_pin_source(args.pin_source), commit, repository)
@@ -2684,6 +3088,30 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
             "PIN_DIGEST_SOURCE": digest_source,
         }
     return pins
+
+
+def _pinned_commit(args, raw: str, repository: str, typed: str) -> str:
+    """The commit the `--pin` `raw`, whose id is `typed`, pins (#651), asked
+    where `declared_pin_values` reads its digest: in the `--pin-source`
+    clone, or of the forge. A peeled tag is said in one line on stdout, as
+    `bump-leg.py` says one, before the plan either tool prints; an id that
+    names no commit is `pin-not-a-commit`, before any digest is read, and
+    so before the scaffold creates anything or `plan` writes a plan."""
+    if args.pin_source is not None:
+        clone = _resolved_pin_source(args.pin_source)
+        commit, why = commit_in_clone(clone, typed)
+        where = f"the clone at {shown_source(clone)}"
+    else:
+        commit, why = commit_on_forge(repository, typed)
+        where = f"{repository} on the forge"
+    if why:
+        raise Refusal("pin-not-a-commit",
+                      f"--pin {raw.strip()} {why} in {where}, not a commit",
+                      PIN_NOT_A_COMMIT_REMEDIATION)
+    if commit != typed:
+        print(f"--pin {repository} @ {typed[:12]} is an annotated tag; it "
+              f"names commit {commit[:12]}, which is what the pin records")
+    return commit
 
 
 def declared_pin_products(args) -> dict[str, None]:
