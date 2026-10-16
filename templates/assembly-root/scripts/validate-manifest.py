@@ -18,6 +18,10 @@ WHAT IS CHECKED
   - the envelope: `schema_version`, `kind`, `id`, `name`, `schema`
   - `elected_by` / `elected_on`, because an election with no elector and no
     date is not an election
+  - `tracking_branch`, and a leg's own `branch`, both OPTIONAL: that none
+    holds a NUL or a lone surrogate, which no command can be given and which
+    `make bootstrap` would hand to git (#455). Whether the value is a name
+    git will create is not asked here.
   - `topic` equals `xf-project-<id>` derived from the id
   - `shape`: a commit-and-digest pin of the openRepoShape revision this
     project was scaffolded from, `revision_kind: commit`, never a tag
@@ -106,8 +110,18 @@ def _declared_pins(manifest: dict) -> set[str]:
     set — never folded into it. Reading the record as a declaration would let
     a `naming:` block assert its own descent, which is a claim promoting
     itself to a referent: exactly the move the 2026-09-02 ruling forbids.
+
+    A VALUE THAT IS NOT A LIST DECLARES NOTHING (#443), as `_recorded_chain`
+    reads a chain that is not one, and `_neutral_product_pins_type_finding`
+    reports it. `_findings` asks this first, so iterating `5`, `true` or
+    `1.5` ended the run in a `TypeError` before that finding could print, and
+    a scalar `openXdox` was read as the pins `X`, `d`, `e`, `n`, `o`, `p`,
+    `x` for every leg's classification.
     """
-    return {str(pin) for pin in (manifest.get("neutral_product_pins") or []) if pin}
+    declared = manifest.get("neutral_product_pins")
+    if not isinstance(declared, list):
+        return set()
+    return {str(pin) for pin in declared if pin}
 
 
 def _recorded_chain(naming: dict) -> tuple:
@@ -506,6 +520,58 @@ def _visibility_finding(manifest: dict) -> list[str]:
     return []
 
 
+def _branch_finding(code: str, what: str, value) -> list[str]:
+    """One branch value of the manifest: `tracking_branch`, or a leg's
+    `branch`.
+
+    A VALUE NO COMMAND CAN BE GIVEN IS A FINDING (#455). `bootstrap.py` hands
+    the branch to git as an argument, and a NUL or a lone surrogate (the
+    double-quoted escapes `"a\\x00b"` and `"a\\ud83db"` read as them, as in
+    #280) cannot be one: step (a) used to end in a traceback from
+    `subprocess.py` and, with that fixed, would only say it could not place
+    the leg, while this file said `manifest ok`. So no tool named the key.
+    Any surrogate is found, as `name` is (#280): no UTF-8 file or console can
+    hold one, so none is a name anybody wrote. That is the whole of the
+    question. Whether the value is a name git will create (`a..b`, `x.lock`)
+    is `git check-ref-format`'s to answer, as the scaffold asks it for
+    `--tracking-branch` (#283); and a value that is not text is left alone,
+    as `bootstrap.py` turns it into text.
+    """
+    if not isinstance(value, str):
+        return []
+    char = next((c for c in value if c == "\x00" or "\ud800" <= c <= "\udfff"),
+                None)
+    if char is None:
+        return []
+    kind = ("a NUL: no argument, file name or ref name can hold one"
+            if char == "\x00" else
+            "a lone surrogate: no UTF-8 file or console can hold it, so no "
+            "branch name is spelled with one")
+    return [_finding(
+        code,
+        f"{what} is {value!r}, which holds U+{ord(char):04X}, {kind}. Name a "
+        "branch git can create, such as `main` or `release/1.2`.")]
+
+
+def _tracking_branch_finding(manifest: dict) -> list[str]:
+    """`tracking_branch`, OPTIONAL (#455); see `_branch_finding`."""
+    return _branch_finding("manifest-tracking-branch", "tracking_branch",
+                           manifest.get("tracking_branch"))
+
+
+def _leg_branch_findings(legs: list) -> list[str]:
+    """Each leg's own `branch`, OPTIONAL, which wins over `tracking_branch`
+    in `bootstrap.py` (#455); see `_branch_finding`. A leg that is not a
+    mapping is `_leg_findings`' to name."""
+    out: list[str] = []
+    for leg in legs:
+        if isinstance(leg, dict):
+            out.extend(_branch_finding(
+                "manifest-leg-branch", f"leg {leg.get('role')!r}: branch",
+                leg.get("branch")))
+    return out
+
+
 def _shape_findings(manifest: dict) -> list[str]:
     """`shape`: the commit-and-digest pin of the openRepoShape revision this
     project was scaffolded from.
@@ -843,6 +909,7 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
         out.extend(_topic_finding(manifest, policy, project_id))
     out.extend(_reference_finding(manifest))
     out.extend(_visibility_finding(manifest))
+    out.extend(_tracking_branch_finding(manifest))
     out.extend(_shape_findings(manifest))
     out.extend(_record_findings(manifest, SUBMODULE_ROWS))
     out.extend(_record_findings(manifest, ANSWER_ROWS))
@@ -855,6 +922,7 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
     pins = _declared_pins(manifest)
     out.extend(_neutral_product_pins_type_finding(manifest))
     out.extend(_roles_finding(legs))
+    out.extend(_leg_branch_findings(legs))
 
     owners: set[str] = set()
     paths: dict[str, str] = {}

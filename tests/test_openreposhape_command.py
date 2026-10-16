@@ -385,6 +385,48 @@ def test_install_refuses_to_also_scaffold(tmp_path):
     assert "--install takes no other arguments" in result.stderr
 
 
+@pytest.mark.parametrize("dangling", [False, True], ids=["live", "dangling"])
+def test_install_refuses_a_target_that_is_a_symlink(tmp_path, dangling):
+    """pipx places the openreposhape package's `openRepoShape` as a LINK
+    into the package's own environment, in this same directory (#563).
+
+    `cp` writes through a link, so an install over it would overwrite the
+    package's command and leave the link standing. It is refused before
+    anything is collected or placed, a dangling link too: the link stays as
+    it was, the file it names keeps its bytes, nothing is recorded, and the
+    refusal names both ways out.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    packaged = tmp_path / "pipx" / "venvs" / "openreposhape" / "bin" / \
+        "openRepoShape"
+    original = b"#!/usr/bin/env python3\n# the package's own command\n"
+    if not dangling:
+        packaged.parent.mkdir(parents=True)
+        packaged.write_bytes(original)
+    link = bin_dir / "openRepoShape"
+    link.symlink_to(packaged)
+    result = run_cmd("--install", home=tmp_path,
+                     env={"OPENREPOSHAPE_BIN_DIR": bash_path(bin_dir),
+                          "OPENREPOSHAPE_REF": "v9.9.9",
+                          "OPENREPOSHAPE_RECORD_REF": "1"})
+    assert result.returncode == 2, result.stdout + result.stderr
+    said = " ".join(result.stderr.split())
+    assert f"{bash_path(link)} is a symbolic link, so --install will not " \
+        "copy this command through it" in said, said
+    assert "pipx upgrade openreposhape" in said
+    assert "pipx uninstall openreposhape" in said
+    assert link.is_symlink()
+    # Windows reads a link back with `\\?\` ahead of its target.
+    assert os.readlink(link).removeprefix("\\\\?\\") == str(packaged)
+    if not dangling:
+        assert packaged.read_bytes() == original
+    assert not packaged.with_name("openRepoShape.ref").exists()
+    assert sorted(path.name for path in bin_dir.iterdir()) == \
+        ["openRepoShape"]
+    assert "placed" not in result.stdout
+
+
 # --- the real thing, offline ------------------------------------------------
 
 def test_it_scaffolds_through_setup_sh(tmp_path):

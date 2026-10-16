@@ -245,8 +245,8 @@ def test_a_shared_variable_is_offered_to_neither_link(scaffold_module, first,
     file carries, and not of the link as typed. Every name here was
     lowercase, so `link in shared` passed for `pin_product_key(link) in
     shared`, and `Open-X` was offered a variable the scaffold does not read
-    for it. The remedy stays keyed by the link casefolded, as the chain's
-    own lookup is."""
+    for it. The remedy is keyed by `pin_product_key` too, as the chain's
+    own lookup is (#444)."""
     assert scaffold_module._link_remedies(
         (first, "open_x", "openInk")) == {
         keyed: f"a --pin-source clone of {first} that holds its "
@@ -282,6 +282,36 @@ def test_a_caller_s_remedies_reach_the_warning_and_no_one_else_s(
     assert type(plain) is dict
     assert "OURS" not in " ".join(policy.resolve_referent(
         "codexInk", {"openXdox"}, chain, plain).warnings)
+
+
+def test_two_pin_files_one_casefold_are_each_offered_their_own(
+        scaffold_module, monkeypatch):
+    """`openß` and `openss` are two pin files, so a chain may name both
+    (#444), and the variable they share, `SHAPE_PIN_SOURCE_OPENSS`, is read
+    for neither (#275). Keyed by `casefold()` (rv610's fix-list item 7 on
+    #634), `_link_remedies` wrote ONE entry for the pair, the later link's,
+    and `openß`, the first link, whose `--pin-source` the scaffold does
+    read, was told the scaffold reads no source for it. Keyed by
+    `pin_product_key`, as the chain's lookup is, each holder's WARNING
+    offers its own sources."""
+    clear_ambient_pin_sources(monkeypatch)
+    sharp, ss = "openß", "openss"
+    chain = (sharp, ss, "openInk")
+    remedies = scaffold_module._link_remedies(chain)
+    assert remedies == {
+        sharp: f"a --pin-source clone of {sharp} that holds its "
+               "project.yaml would let it be read",
+        ss: "the scaffold reads no source for it: SHAPE_PIN_SOURCE_OPENSS "
+            "is another link's too, and --pin-source is the first link's "
+            "tree alone"}
+    found = link_pins_from_trees(chain, None, remedies=remedies)
+    resolution = NamingPolicy.load(POLICY).resolve_referent(
+        "codexInk", {sharp}, chain, found)
+    assert resolution.status == "declared-unverified"
+    assert [line.partition("which is not reachable here ")[2]
+            for line in resolution.warnings] == [
+        f"({remedies[sharp]}). The recorded chain still classifies.",
+        f"({remedies[ss]}). The recorded chain still classifies."]
 
 
 def test_remedies_without_reasons_remember_no_reason(tmp_path, monkeypatch):

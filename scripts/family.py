@@ -181,6 +181,11 @@ from shape_materialize import (  # noqa: E402
 # How every command this prints for a person to paste spells its paths
 # (#486), the quoting the holder's `scripts/siblings.py` uses too.
 from repo_shape import shell_line, shell_quoted  # noqa: E402
+# Whether a value `init` writes into the holder is one line of text a file
+# can hold: the creator read from `git config user.name` (#426), and the
+# holder's clone URL under `--local-remote-dir` (#255, #433). It is the
+# question the scaffold and `adopt-project.py` ask of theirs.
+from shape_materialize import unwritable_reason  # noqa: E402
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -753,6 +758,391 @@ def _branch_said(family: "Family", verb: str, suggested: str) -> list[str]:
             f"             {_switch_command(family.root, suggested)}"]
 
 
+# ---------------------------------------------------------------------------
+# What the holder is in the middle of, and what its sparse checkout leaves out
+# ---------------------------------------------------------------------------
+#
+# `add`, `bump` and `remove` each end in ONE `git commit -- <paths>`
+# (`_commit_one`), made after the verb's first writes and put back by its
+# rollback if it fails. An act git has unfinished in the holder, and a path
+# its sparse checkout leaves out, make that commit fail or land in the wrong
+# place EVERY time, so each verb did its writes and undid them, or committed
+# where nobody wanted it: refusals made at the wrong end (#612, from #459's
+# 571(e), 571(d) and 574/5; the third of 574/5, a `members` that is a file,
+# is `_members_is_a_file`, beside the mount path's other refusals). Each is
+# asked once, before the first write and under `--dry-run` alike, so the two
+# runs refuse in the same words.
+
+#: What git keeps in its directory while an act is unfinished, in the order
+#: `_operation_in_progress` asks it: `(the name git keeps, what it is, how a
+#: person finishes it, how a person gives it up, what `git commit --
+#: <paths>` does during it)`, the last with `{verb}` for the verb that
+#: asked. A REBASE IS ASKED FIRST: it holds a HEAD detached on the commit it
+#: stopped at, it may hold a merge, a cherry-pick or a revert of its own
+#: beside its mark (a merge begun at a rebase's `edit` stop leaves both
+#: `MERGE_HEAD` and `rebase-merge/`), and `git rebase --abort` puts all of it
+#: back, where `git merge --abort` would leave `rebase-merge/` and a second
+#: refusal. What git does with the partial commit was measured on git 2.43 in
+#: each state: it REFUSES one during a merge and a cherry-pick and MAKES it
+#: during a revert, a rebase and a `git am`.
+REBASE_EFFECT = (
+    "git does not refuse that during a rebase: the commit would land on the "
+    "HEAD the rebase has detached, in the middle of its sequence, where "
+    "`git rebase --continue` replays the rest on top of it into the rebased "
+    "branch and `git rebase --abort` drops it")
+OPERATION_MARKS = (
+    ("rebase-merge", "a rebase", "git rebase --continue",
+     "git rebase --abort", REBASE_EFFECT),
+    ("rebase-apply", "a rebase", "git rebase --continue",
+     "git rebase --abort", REBASE_EFFECT),
+    ("MERGE_HEAD", "a merge", "git commit", "git merge --abort",
+     "git refuses that during a merge (`fatal: cannot do a partial commit "
+     "during a merge.`), after `{verb}`'s first writes, which are then put "
+     "back"),
+    ("CHERRY_PICK_HEAD", "a cherry-pick", "git cherry-pick --continue",
+     "git cherry-pick --abort",
+     "git refuses that during a cherry-pick (`fatal: cannot do a partial "
+     "commit during a cherry-pick.`), after `{verb}`'s first writes, which "
+     "are then put back"),
+    ("REVERT_HEAD", "a revert", "git revert --continue",
+     "git revert --abort",
+     "git does not refuse that during a revert: the commit is made on the "
+     "branch as `{verb}`'s own, and git takes it as the end of the revert, "
+     "so `git revert --continue` and `--abort` then say `no cherry-pick or "
+     "revert in progress` and the revert's changes are left half done in "
+     "the index and the work tree"),
+)
+
+#: `git am` keeps its state in `rebase-apply` too, and git tells it from a
+#: rebase by the file `applying` there (`wt_status_check_rebase`): so that
+#: its exit is `git am --abort`, which `git rebase --abort` is not. Its HEAD
+#: stays on the branch, so the partial commit lands there.
+AM_MARK = "rebase-apply/applying"
+AM_OPERATION = ("a `git am`", "git am --continue", "git am --abort",
+                "git does not refuse that during a `git am`, so the commit "
+                "would land on the branch, in the middle of the patches "
+                "being applied")
+
+#: A cherry-pick or a revert of SEVERAL commits keeps `sequencer/` for the
+#: steps still to take, and once its stopped step is committed by hand
+#: neither `CHERRY_PICK_HEAD` nor `REVERT_HEAD` is left, though `git status`
+#: still says `Cherry-pick currently in progress.` (#612's review, F2). It
+#: is named from the first word of `sequencer/todo`, as `git status` names
+#: it: `pick` or `p`, a cherry-pick; `revert`, a revert.
+SEQUENCER = "sequencer"
+SEQUENCER_TODO = "sequencer/todo"
+CHERRY_PICK = "git cherry-pick"
+SEQUENCE_COMMANDS = {"pick": CHERRY_PICK, "p": CHERRY_PICK,
+                     "revert": "git revert"}
+
+#: A `sequencer/` whose `todo` is missing, empty or not a series git reads.
+#: Measured on git 2.43: `git status` says nothing is in progress,
+#: `--continue` fails (`fatal: cherry-pick failed`, exit 128), and `--abort`
+#: and `--quit` of either command exit 0 and take the directory away. So it
+#: is named for what it is and has no `finish`.
+SEQUENCE_UNREADABLE = (
+    "a cherry-pick or revert series", None, "git cherry-pick --abort",
+    "git does not refuse that, and the commit would land beside a "
+    "`sequencer/` directory git can read no series from, which `--continue` "
+    "fails on")
+
+
+def _git_paths(root: Path, names: list[str]) -> list[Path]:
+    """Where git keeps each of `names` for the holder at `root`, ASKED OF GIT
+    in ONE `git rev-parse --git-path <a> --git-path <b> ...` (one line per
+    name; a process per name matters on Windows), never `.git/<name>`: in a
+    linked worktree, which is where a lane opens its pull request, `.git` is
+    a file and the per-worktree state (`MERGE_HEAD`, `rebase-merge/`,
+    `index.lock`) is under `.git/worktrees/<name>/` (#365, `_module_dir`,
+    `_checked_index_unlocked`). git answers relative to `root` or absolute,
+    and `root /` takes both. A holder whose path holds a newline (a linked
+    worktree's answer is absolute, through the holder's own `.git`) would make
+    the lines and the names disagree: each name is then asked alone, and its
+    WHOLE answer less git's final newline is the path, never its first line
+    (#612's verification, V-F1: a path cut at its newline named nothing, and
+    a merge in that worktree was missed, which is #612's own defect)."""
+    def asked(*words: str) -> str:
+        shown = _git_bytes(["rev-parse", *words], root).decode(
+            "utf-8", "surrogateescape")
+        return shown[:-1] if shown.endswith("\n") else shown
+
+    lines = asked(*[word for name in names
+                    for word in ("--git-path", name)]).split("\n")
+    if len(lines) != len(names):
+        lines = [asked("--git-path", name) for name in names]
+    return [root / line for line in lines]
+
+
+def _sequence_act(todo: Path) -> tuple:
+    """`(what, finish, abort, effect)` for the series `todo` holds, named from
+    its first word as `git status` names it, or `SEQUENCE_UNREADABLE`."""
+    try:
+        first = todo.read_bytes().split(b"\n", 1)[0].split(None, 1)
+    except OSError:
+        first = []
+    command = SEQUENCE_COMMANDS.get(
+        first[0].decode("utf-8", "replace") if first else "")
+    if command is None:
+        return SEQUENCE_UNREADABLE
+    what = "a cherry-pick" if command == CHERRY_PICK else "a revert"
+    return (f"{what} series", f"{command} --continue", f"{command} --abort",
+            "git does not refuse that between the steps of a series, so the "
+            f"commit would land in the middle of it: `{command} --continue` "
+            f"replays the rest on top of it, and `{command} --abort` stops "
+            "and leaves it where it is (`You seem to have moved HEAD. Not "
+            "rewinding`)")
+
+
+def _operation_in_progress(
+        root: Path) -> tuple[str, str, Path, str | None, str, str] | None:
+    """`(what, the mark's name, where it is, how to finish it, how to give it
+    up, what the partial commit would do)` for the act the holder's git
+    directory shows unfinished, or None; the first of `OPERATION_MARKS`
+    that is there, then a `sequencer/`. `finish` is None where git can
+    continue nothing."""
+    names = [*(mark for mark, *_ in OPERATION_MARKS), AM_MARK, SEQUENCER,
+             SEQUENCER_TODO]
+    marks = dict(zip(names, _git_paths(root, names)))
+    for mark, what, finish, abort, effect in OPERATION_MARKS:
+        where = marks[mark]
+        if not os.path.lexists(where):
+            continue
+        if mark == "rebase-apply" and os.path.lexists(marks[AM_MARK]):
+            what, finish, abort, effect = AM_OPERATION
+        return what, mark, where, finish, abort, effect
+    if os.path.lexists(marks[SEQUENCER]):
+        what, finish, abort, effect = _sequence_act(marks[SEQUENCER_TODO])
+        return what, SEQUENCER, marks[SEQUENCER], finish, abort, effect
+    return None
+
+
+def _checked_no_operation_in_progress(root: Path, verb: str) -> None:
+    """`family-operation-in-progress`: `verb` refuses, before its first
+    write and under `--dry-run` alike, a holder with a merge, a cherry-pick,
+    a revert, a rebase or a `git am` unfinished in it (#612, 571(e)).
+
+    THE COMMIT GOES WRONG, AFTER THE WRITES. `add`, `bump` and `remove`
+    commit with `git commit -- <paths>` (`_commit_one`). git refuses a
+    partial commit while a merge or a cherry-pick is unfinished (`fatal:
+    cannot do a partial commit during a merge.`), and by then `add` had
+    mounted the member, `bump` had checked it out at `--to` and `remove` had
+    unmounted it; the rollback put each back (#203, #365) and the person got
+    exit 2, with the work done and undone for nothing. The commonest source
+    is `git merge`, which is also where #571's `--ours` and `--theirs`
+    restores come from: the same state, one step earlier. A merge that
+    stopped with `--no-commit` has no conflict at all and fails the same.
+
+    A REVERT, A REBASE AND A `git am` ARE NOT REFUSED BY git, which is
+    worse (measured on git 2.43, each stopped on a conflict). The partial
+    commit is made: in a revert, on the branch as the verb's own, and git
+    takes it as the END of the revert (`REVERT_HEAD` goes, `--continue` and
+    `--abort` then say `no cherry-pick or revert in progress`, and the
+    revert's changes are left half done in the index and the work tree); on
+    the HEAD a rebase has detached, in the middle of its sequence, where
+    `git rebase --continue` replays the rest on top of it into the rebased
+    branch and `--abort` drops it; and on the branch in the middle of an
+    `am`. The real run met a rebase at the branch refusal
+    (`family-holder-detached`, #487), which committed nothing but whose
+    remedy, `git switch -c`, is the wrong advice in the middle of a rebase,
+    and the dry run printed a plan for it. This check comes before that one,
+    so a rebase is named as what it is.
+
+    A SERIES IS ASKED TOO (#612's review, F2). `git cherry-pick A..B` and
+    `git revert A..B` keep `sequencer/` for the steps to come; once a
+    stopped step is committed by hand no `CHERRY_PICK_HEAD` or `REVERT_HEAD`
+    is left, yet `git status` still says the act is in progress, and the
+    verb's commit lands in the middle of the series (measured: `--continue`
+    then replays the rest on top of it, and `--abort` exits 0 with `You seem
+    to have moved HEAD. Not rewinding`, keeping it). The act is named from
+    the first word of `sequencer/todo`. Where that file is missing, empty or
+    no series, `git status` says nothing and `--continue` fails, and
+    `--abort` and `--quit` both exit 0: the refusal names it generically and
+    offers only what works.
+
+    So the marks are asked, and the refusal names the one it found and that
+    act's OWN exit: `git commit` for a merge, `--continue` for the others,
+    or `--abort`. Every mark is looked for WHERE GIT KEEPS IT (`_git_paths`),
+    which in a linked worktree is not `.git/<name>`. Asked of the holder's
+    own git directory, never of a member's: a merge in a MEMBER's mount is
+    that checkout's own business.
+
+    WHEN IT IS ASKED, AND WHAT IT DOES NOT NAME (#612's review, N4). Each
+    verb asks it right after `Family.open` and the checks of its own
+    arguments, so after `family.yaml` is parsed. The commonest merge conflict
+    in a holder is in `family.yaml` itself, whose `<<<<<<<` `load_yaml` reads
+    as a YAML merge key: `yaml-unparsable`, with no remediation, and no word
+    of a merge. That predates this check and is left for #459: asking before
+    `load_yaml` makes git run before the refusal of a hand-edited `path:`,
+    which this test holds to no git command at all:
+    `test_family_member_path.py::test_the_refusal_is_made_before_any_git_call`.
+    """
+    found = _operation_in_progress(root)
+    if found is None:
+        return
+    what, mark, where, finish, abort, effect = found
+    if finish is None:
+        end = ("Remediation: `sequencer/` is what a cherry-pick or revert "
+               "series left behind, and git can read no step from it, so "
+               "there is nothing to continue: give it up with "
+               f"`{abort}` (`git revert --abort` is the same), or clear it "
+               "without moving HEAD with `git cherry-pick --quit`. Then run "
+               "the same command again.")
+    else:
+        end = ("Remediation: end it, whichever way suits the work in it: "
+               f"finish it with `{finish}` once whatever stopped it is "
+               f"resolved and staged, or give it up with `{abort}`. Then "
+               "run the same command again.")
+    raise Refusal(
+        "family-operation-in-progress",
+        f"{what} is unfinished in the family root: git keeps {mark} at "
+        f"{where.as_posix()}. `{verb}` makes its commit with `git commit -- "
+        f"<paths>`, and {effect.format(verb=verb)}. No git command that "
+        "writes was run and nothing was written.", end)
+
+
+def _sparse_rules_exclude(root: Path, paths: list[str]) -> list[str]:
+    """The `paths` the holder's sparse-checkout rules leave out, in the order
+    given, ASKED OF GIT (`git sparse-checkout check-rules`), or none.
+
+    `check-rules` reads paths on stdin and prints the ones the rules keep
+    INSIDE, so what it does not print is out. It is asked only where sparse
+    checkout is ON, and that is asked of git too, with `git sparse-checkout
+    list`, which dies `this worktree is not sparse` where `core.sparseCheckout`
+    is off. THE GATE IS NOT OPTIONAL (measured on git 2.43): `git
+    sparse-checkout disable` turns the setting off and leaves
+    `.git/info/sparse-checkout` as it was, and `check-rules` still reads that
+    file and says the paths it excluded are outside, so a holder that is no
+    longer sparse would be refused for rules git no longer applies.
+
+    A GIT THAT CANNOT ANSWER IS "CANNOT TELL", NOT A REFUSAL. A git without
+    the subcommand says `unknown subcommand` and exits 129; one with it can
+    fail on the rules themselves (a sparse-checkout file that is not there).
+    Any non-zero exit is treated alike: nothing is refused, and the late
+    failure and its rollback stay as they were before #612, which leave the
+    holder as it was. So a refusal made here is always git's own word, and a
+    git that cannot give it costs nothing but the earliness.
+
+    Paths go on stdin as BYTES, NUL-separated (`-z`), so no name is quoted,
+    split or re-encoded on the way, on Windows too.
+    """
+    try:
+        _git_bytes(["sparse-checkout", "list"], root)
+    except CommandFailed:
+        return []
+    names = [path.encode("utf-8", "surrogateescape") for path in paths]
+    try:
+        inside = _git_bytes(["sparse-checkout", "check-rules", "-z"], root,
+                            b"".join(name + b"\0" for name in names))
+    except CommandFailed:
+        return []
+    kept = set(inside.split(b"\0"))
+    return [path for path, name in zip(paths, names) if name not in kept]
+
+
+def _sparse_is_cone(root: Path) -> bool:
+    """Are the holder's sparse rules in cone mode? Read as a LISTING, `git
+    config -z --list`, the way `_registered` reads config, and never `git
+    config --get`: `test_family_dry_run.py` counts any `git config` that is
+    not a listing as a write. Git writes section and variable names in lower
+    case, so the key is `core.sparsecheckoutcone`; the last one listed wins,
+    one with no value (`sparseCheckoutCone` alone) is true, and one that is
+    unset is false, which is non-cone."""
+    try:
+        listing = _git_bytes(["config", "-z", "--list"], root)
+    except CommandFailed:
+        return False
+    cone = False
+    for record in listing.split(b"\0"):
+        key, has_value, value = record.partition(b"\n")
+        if key.lower() == b"core.sparsecheckoutcone":
+            word = value.strip().lower()
+            cone = not has_value or word in (b"true", b"yes", b"on") or (
+                word.isdigit() and int(word) != 0)
+    return cone
+
+
+def _checked_inside_sparse_rules(root: Path, verb: str,
+                                 paths: list[str]) -> None:
+    """`family-sparse-excluded`: `verb` refuses, before its first write and
+    under `--dry-run` alike, a path it stages that the holder's sparse
+    checkout leaves out (#612, 571(d) and 574/5).
+
+    GIT WILL NOT UPDATE AN INDEX ENTRY OUTSIDE THE RULES. `git add` and `git
+    rm` say so (`outside of your sparse-checkout definition`) whatever the
+    entry's skip-worktree mark says, and `git submodule add` says it of the
+    mount. #407's `gitmodules-sparse` reads the MARK, which git clears for a
+    file put back on disk by hand, so a `.gitmodules` the rules leave out
+    but a person restored passed it: `remove` then did `deinit` and `git
+    rm`, and failed at `git add` in its commit. A `members/` the rules
+    leave out failed `add` at `git submodule add`, after the member was
+    read, and `remove` and `bump` at `git rm` and `git add`, after the
+    unmount and the checkout. Each rolled back. Here the rules are asked,
+    not the marks: the paths each verb stages, named by its caller, are
+    `.gitmodules`, `members/<Project>` and `family.yaml` for `add` and
+    `remove` (the gitlink of the second is staged by `git rm`), and
+    `members/<Project>` and `family.yaml` for `bump`.
+
+    THE EXIT NAMES THE COMMAND THAT BRINGS THE PATH BACK, by the mode of the
+    rules (`_sparse_is_cone`). In CONE mode, `git sparse-checkout add
+    members`: it takes a directory, and `members/<Project>` is refused there
+    for a gitlink git already tracks (`fatal: 'members/IRSS' is not a
+    directory`). In NON-cone mode, the mount path itself, `git
+    sparse-checkout add members/<Project>`, which its inner slash anchors at
+    the root. `members` alone is NOT enough there: appended after a rule that
+    names the member (`!/members/IRQS`, `!/members/*`, `!IRQS`,
+    `!/members/I*`) it exits 0 and leaves the path out (measured on git
+    2.43, #612's review F3), and the verb was refused again with the same
+    remedy, a loop that only `disable` got out of.
+
+    A ROOT FILE (`.gitmodules`, `family.yaml`) can only be out of non-cone
+    rules: in CONE mode git keeps every file at the root inside (measured on
+    git 2.43 with `set --cone`: both are inside, and a directory that is not
+    in the cone is out). It is named UNANCHORED, `git sparse-checkout add
+    .gitmodules`, which wins over `!/.gitmodules`, `!.gitmodules` and `!/.*`
+    appended before it (measured here, and over `!/*` by the review), and
+    which meets no shell that converts a leading slash into a path (Git Bash
+    on Windows can). git prints a warning when the PERSON types such a
+    pattern, and also for `members/<Project>` of a member git already tracks
+    (`pass a leading slash before paths such as 'family.yaml' if you want a
+    single file`); it never appears in the verb's own output, and the command
+    brings the path back all the same. It is about how far a slashless
+    pattern reaches, and nothing else in a holder's root, or in what
+    `members/` holds that git tracks, is named so.
+
+    `git sparse-checkout disable` is named beside it for any path: it brings
+    back every path and leaves a copy already on disk as it is, as
+    `gitmodules-sparse` says.
+
+    `git sparse-checkout check-rules` is a recent subcommand (the git here,
+    2.43, has it); a git without it is "cannot tell" and refuses nothing
+    (`_sparse_rules_exclude`).
+    """
+    out = _sparse_rules_exclude(root, paths)
+    if not out:
+        return
+    # ONE PATTERN PER PATH: the mount path itself, or `members` once in cone
+    # mode; a root file as it is named, unanchored.
+    cone = _sparse_is_cone(root)
+    patterns = list(dict.fromkeys(
+        MEMBERS_DIR if cone and path.startswith(MEMBERS_DIR + "/") else path
+        for path in out))
+    names = ", ".join(f"`{path}`" for path in out)
+    one = len(out) == 1
+    raise Refusal(
+        "family-sparse-excluded",
+        f"the holder's sparse checkout leaves out {names}, which `{verb}` "
+        "stages, and git will not update an index entry outside the "
+        "sparse-checkout definition: `git sparse-checkout check-rules` says "
+        f"{'it is' if one else 'they are'} outside, so `{verb}` would fail "
+        "after its first writes. No git command that writes was run and "
+        "nothing was written.",
+        f"Remediation: bring {'it' if one else 'them'} back into the rules: "
+        f"`git sparse-checkout add {' '.join(patterns)}`, or `git "
+        "sparse-checkout disable`, which brings back every path the sparse "
+        "checkout leaves out and leaves a copy already on disk as it is. "
+        "Then run the same command again.")
+
+
 def _print_next(family: "Family", branch: str) -> None:
     """The NEXT an act that committed ends with (#487): ONE pasteable line
     that pushes the branch the commit is on, every word quoted for the
@@ -1098,19 +1488,64 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     return family, family_id, topic
 
 
+#: What `family-unwritable-value` is told to do (#426), in the scaffold's
+#: words for the same refusal (`scaffold-unwritable-value`, #282).
+CREATOR_UNWRITABLE_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "`init` read the creator from `git config user.name`, because no "
+    "--created-by was given and GIT_AUTHOR_NAME names nobody: pass "
+    "--created-by 'Your Name', or correct that setting. git keeps it as the "
+    "bytes it was given, so a name saved in a legacy code page holds a byte "
+    "that is not UTF-8, which the manifest could keep only as a lone "
+    "surrogate, and that is no character; a line break or a control "
+    "character would break or garble the line the plan prints it on; and a "
+    "bidirectional embedding, override or isolate control would show the "
+    "rest of that line in another order than it is written.")
+
+
 def _creator_name(args) -> str:
     """Whoever `--created-by` (or the environment, or git config) says
     created this family — refused when nothing does.
 
     Split from `cmd_init` for #136: creating a family is a human's act and
     the manifest records whose.
+
+    A `git config user.name` THAT IS NOT TEXT IS REFUSED BY NAME (#426), as
+    the scaffold refuses the same setting (#282) and `adopt-project.py`'s
+    `plan` does (#292). git keeps the name as the bytes it was given, and one
+    saved in a legacy code page is not UTF-8: nobody did anything wrong.
+    `git_out`'s own strict decode raised `UnicodeDecodeError`, a traceback,
+    exit 1, under `--dry-run` too, naming neither the setting nor the flag
+    (`--created-by`) that gets past it. The setting is now read as bytes and
+    decoded as `sys.argv` and `os.environ` are, `surrogateescape`, so the
+    byte survives as a lone surrogate for `unwritable_reason` to name: the
+    one question the scaffold and adopt ask of the same name, so a name that
+    holds a line break, a control character or a bidi control is refused in
+    the same words as one that holds a byte that is not UTF-8. It is asked
+    here, before the holder's remote or work directory, and `--dry-run`
+    refuses alike. ONLY WHAT `git config user.name` ANSWERED IS ASKED: a
+    `--created-by` or a GIT_AUTHOR_NAME holding such a byte is another
+    question (#426 leaves it), and neither is read as git's answer.
     """
     created_by = args.created_by or (os.environ.get("GIT_AUTHOR_NAME") or "").strip()
     if not created_by:
         try:
-            created_by = git_out(["config", "user.name"], cwd=SHAPE_ROOT)
+            created_by = git_out(["config", "user.name"], cwd=SHAPE_ROOT,
+                                 binary=True).decode(
+                                     "utf-8", "surrogateescape").strip()
         except Refusal:
             created_by = ""
+        else:
+            reason = unwritable_reason(created_by)
+            if reason:
+                # Named as `_manifest_flags` (#307) names a creator no flag
+                # supplied, so the two refusals agree on who is meant.
+                raise Refusal(
+                    "family-unwritable-value",
+                    f"{_manifest_flags(args)['CREATED_BY']} is "
+                    f"{created_by!r}, which `init` records in the holder's "
+                    f"`family.yaml`, and {reason}.",
+                    CREATOR_UNWRITABLE_REMEDIATION)
     if not created_by:
         raise Refusal(
             "family-no-creator",
@@ -1133,15 +1568,72 @@ def _holder_remote(args, family: str) -> tuple[bool, str, str]:
     return local, repository, url
 
 
+#: What a `family-unwritable-value` for the holder's clone URL is told to do
+#: (#433): another directory, or GitHub, as the scaffold's twin says
+#: (`CLONE_URL_REMEDIATION`).
+CLONE_URL_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
+    "control character in it, a directory renamed or made anew, and run "
+    "again; or run `init` against GitHub, without --local-remote-dir, where "
+    "the clone URL is `https://github.com/<org>/<Family>.git`. The holder's "
+    "`README.md` prints the clone URL as it stands: a byte that is not UTF-8 "
+    "in the path (a directory named in a legacy code page) cannot be "
+    "written at all, a line break or a control character would break or "
+    "garble the line it is written into, and a bidirectional embedding, "
+    "override or isolate control would show the rest of that line in "
+    "another order than it is written.")
+
+
+def _refuse_an_unwritable_clone_url(local: bool, url: str) -> None:
+    """Refuse the holder's clone URL when no file can hold it, before any
+    remote or folder exists, as `adopt-project.py` (#255) and the scaffold
+    (#433) refuse theirs.
+
+    Only a local one can be refused: under `--local-remote-dir` the URL is
+    the bare repository's own path, which `templates/family-root/README.md`
+    prints (`git clone --recurse-submodules {{CLONE_URL}}`); against GitHub
+    it is `https://github.com/<org>/<Family>.git`, ASCII by construction. A
+    directory whose name is not UTF-8 reaches `sys.argv` as a string with a
+    lone surrogate, and `write_lf` encodes strictly, so `init` raised
+    `UnicodeEncodeError` in `materialize_family_root` after `<Family>.git`
+    existed and the family folder was made, while `--dry-run` exited 0 and
+    said nothing (#433). One bidi override or a line break in the path was
+    written into the README raw.
+
+    The code is this tool's own, `family-unwritable-value`, for the question
+    `adopt-unwritable-value` and `scaffold-unwritable-value` answer:
+    `unwritable_reason`, the one `shape_materialize` keeps for all three.
+    """
+    if not local:
+        return
+    reason = unwritable_reason(url)
+    if reason:
+        raise Refusal(
+            "family-unwritable-value",
+            "under --local-remote-dir the holder's clone URL is the bare "
+            f"repository's own path, {url!r}, which `init` writes into the "
+            f"holder's `README.md`, and {reason}.",
+            CLONE_URL_REMEDIATION)
+
+
 def _shape_snapshot() -> tuple[str, str]:
     """`(shape_commit, shape_tree)` of this checkout, warning to stderr when
     it is dirty.
 
     Split from `cmd_init` for #136.
+
+    WHETHER THE CHECKOUT IS DIRTY IS ASKED OF GIT'S BYTES (#423). Only
+    whether `status --porcelain` printed anything is used, never what, so it
+    is not decoded at all. With `core.quotePath=false` git prints a file name
+    as the bytes it holds, and a name that is not UTF-8 made `git_out`'s
+    strict decode raise `UnicodeDecodeError`: a traceback, exit 1, before the
+    holder's remote existed, where this means to print the warning below and
+    go on.
     """
     shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
     shape_tree = tree_digest(SHAPE_ROOT, shape_commit)
-    if git_out(["status", "--porcelain"], cwd=SHAPE_ROOT):
+    if git_out(["status", "--porcelain"], cwd=SHAPE_ROOT, binary=True):
         print("WARNING the openRepoShape checkout is DIRTY. `commit:` and "
               f"`tree_sha256` will record {shape_commit[:12]}, which does NOT "
               "describe the bytes being copied. The per-file sha256 rows are "
@@ -1322,8 +1814,17 @@ def _create_holder_worktree(args, work: Path, values: dict, shape_commit: str,
     if args.no_push:
         return None
     try:
-        run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
-            cwd=work)
+        # THE BRANCH BY ITS FULL REFNAME (#421). A bare `<branch>` is a
+        # REFSPEC, and a leading `+` in one means FORCE: `--tracking-branch
+        # +x`, a name `git check-ref-format --branch` accepts and `git init
+        # -b` creates, was read as the forced push of a local branch `x` and
+        # died `src refspec x does not match any`, after `gh repo create` had
+        # made the holder. `HEAD:refs/heads/<branch>` names both sides in
+        # full, so every name git accepts is pushed as the branch it is, and
+        # `-u` still records `origin/<branch>` as its upstream. The same
+        # spelling `scaffold-project.py` pushes its three repositories with.
+        run(["git", "push", "-q", "-u", "origin",
+             f"HEAD:refs/heads/{args.tracking_branch}"], cwd=work)
     except CommandFailed as exc:
         print(exc.loudly("pushing the family holder"), file=sys.stderr)
         print(FAMILY_RULESET_HINT.format(repo=repository,
@@ -1768,6 +2269,7 @@ def cmd_init(args) -> int:
     family, family_id, topic = _checked_family_identity(args)
     created_by = _creator_name(args)
     local, repository, url = _holder_remote(args, family)
+    _refuse_an_unwritable_clone_url(local, url)
     shape_commit, shape_tree = _shape_snapshot()
     values = _template_values(args, family, family_id, repository, url,
                               created_by, shape_commit, shape_tree)
@@ -2470,6 +2972,36 @@ def _submodule_paths(
             for name, keys in found.items() if "path" in keys}
 
 
+def _members_is_a_file(root: Path, path: str) -> Refusal:
+    """`member-path-unaddable` for a `members` that is a FILE (#612, 574/5):
+    what it says, and the move that makes room. A file git tracks is moved
+    with `git mv` and the move committed first. Left staged, the move is not
+    left alone by the add: its commit names three paths, and git, putting a
+    directory where the file was, takes the deletion half of the move into
+    that commit (`A .gitmodules`, `M family.yaml`, `D members`, `A
+    members/<Project>`) and leaves the new name staged alone (`A
+    members-file`), which is half a move in the holder's history (#612's
+    review, N3). One git does not track is moved with `mv`."""
+    tracked = any(name == MEMBERS_DIR
+                  for name, _ in _index_entries(root, MEMBERS_DIR))
+    move = ("git mv" if tracked else "mv")
+    return Refusal(
+        "member-path-unaddable",
+        f"git will not add the mount path {path}: `{MEMBERS_DIR}` is "
+        f"{'a tracked' if tracked else 'an untracked'} file in the family "
+        "root, not a directory, so nothing can be mounted under it, and "
+        "`git submodule add` would fail at its mount (`Not a directory`) "
+        "after the member was read. No git command that writes was run and "
+        "nothing was written.",
+        f"Remediation: every member is mounted under {MEMBERS_DIR}/, which "
+        "must be a plain directory of the holder's own. Move the file "
+        f"aside, `{move} -- {MEMBERS_DIR} <new name>`"
+        + (", and commit the move on its own first, since the add's own "
+           f"commit names {GITMODULES}, {path} and {MANIFEST} alone"
+           if tracked else "")
+        + ", and run the same command again.")
+
+
 def _checked_mount_path(root: Path, project: str, path: str) -> None:
     """Every refusal about the MOUNT PATH, made before the member is read or
     anything is mounted (#242).
@@ -2509,6 +3041,17 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
       renames it first. `member-path-taken` where a path is a case variant
       of the mount path, `family-members-dir-variant` where it is under a
       spelling of `members/` alone.
+    - A FILE NAMED `members` (#612, 574/5). Git's own dry run, below, does
+      not refuse it (measured on git 2.43), and the mount's `git submodule
+      add --force` then dies cloning into it (`could not create leading
+      directories ... Not a directory`), after the member was read, and the
+      unwind restores the holder. It is asked of the listing already made
+      (`_members_on_disk`): `members` itself, spelled so and a file. It is
+      refused as `member-path-unaddable`, the code of a mount path git will
+      not take, whose remediation says already that `members/` must be a
+      plain directory of the holder's own (a link and a submodule are the
+      other two ways it is not). A file under another spelling of `members`
+      is `_members_spellings`'s, below.
     - GIT'S OWN DRY RUN, `git add --dry-run --ignore-missing` of the path —
       the check `--force` skips — made here with `-f`, so an ignore rule
       passes it and nothing else does. It refuses a path beyond a symbolic
@@ -2544,6 +3087,8 @@ def _checked_mount_path(root: Path, project: str, path: str) -> None:
         "directory. Remove it (`git rm -r` if it is tracked), then re-run.")
     on_disk = _members_on_disk(root)
     canon = _members_dir_on_disk(root, on_disk)
+    if on_disk.get(MEMBERS_DIR, ("",))[0] == "a file":
+        raise _members_is_a_file(root, path)
     held = _index_entries(root, path)
     # Each spelling of the mount path the index holds other than its own,
     # and whether git tracks a directory there.
@@ -3542,14 +4087,17 @@ def cmd_add(args) -> int:
     holder exactly as it was (#203); or with `--dry-run`, print what it
     would write and change nothing in the holder (#326, `_add_dry_run`).
 
-    IN THIS ORDER, AND ONLY THIS ORDER: the holder's refusals
-    (`_checked_add_target`), then the branch the commit lands on, which the
-    real run refuses on the tracking branch or none (`_checked_branch`,
-    #487) and a dry run only reports, then the member's (`_probe_member`, of
-    a throwaway clone), then the member's id against the rows
-    (`_checked_member_id`, #330), and only then the mount, the pin and the
-    commit (`_mount_and_pin`), inside a `MountRollback` that puts the holder
-    back if anything still fails and says what it put back.
+    IN THIS ORDER, AND ONLY THIS ORDER: an act git has unfinished in the
+    holder (`_checked_no_operation_in_progress`, #612), the holder's
+    refusals (`_checked_add_target`, which includes a `members` that is a
+    file, `_checked_mount_path`, #612), the paths the sparse rules leave out
+    (`_checked_inside_sparse_rules`, #612), then the branch the commit lands
+    on, which the real run refuses on the tracking branch or none
+    (`_checked_branch`, #487) and a dry run only reports, then the member's
+    (`_probe_member`, of a throwaway clone), then the member's id against the
+    rows (`_checked_member_id`, #330), and only then the mount, the pin and
+    the commit (`_mount_and_pin`), inside a `MountRollback` that puts the
+    holder back if anything still fails and says what it put back.
 
     WHEN TWO APPLY, THE EARLIER ONE IS SAID. The holder's refusals need
     nothing cloned, so they come first: a section under another name that
@@ -3561,7 +4109,18 @@ def cmd_add(args) -> int:
     family = Family.open(args.family_root)
     repository, project = _checked_member(args.member)
     path = _member_path(project)
+    # A merge, cherry-pick, revert, rebase or `am` unfinished in the holder
+    # is asked after `Family.open`, which parses `family.yaml` (so a merge
+    # conflicted there reads as `yaml-unparsable`, #612 N4), and before every
+    # refusal about the holder's own state: the commit goes wrong however
+    # the rest is, refused after the writes or made inside the act (#612,
+    # 571(e)).
+    _checked_no_operation_in_progress(family.root, "add")
     at = _checked_add_target(family, repository, project, path, args.at)
+    # What the sparse rules leave out, after the refusals that read the same
+    # paths by their marks (`gitmodules-sparse`), before the member is read.
+    _checked_inside_sparse_rules(family.root, "add",
+                                 [GITMODULES, path, MANIFEST])
     suggested = _suggested_branch("add", project)
     branch = None if args.dry_run else _checked_branch(family, "add",
                                                          suggested)
@@ -5069,6 +5628,10 @@ def cmd_bump(args) -> int:
     # fetch and checkout in it, and every pathspec after them are this path.
     path = _member_path(project, row)
     member = family.root / path
+    # BEFORE `member-uninitialized`, whose remedy a merge in progress or a
+    # sparse checkout that leaves the mount out would make wrong (#612).
+    _checked_no_operation_in_progress(family.root, "bump")
+    _checked_inside_sparse_rules(family.root, "bump", [path, MANIFEST])
     if not (member / ".git").exists():
         raise Refusal(
             "member-uninitialized",
@@ -5299,7 +5862,10 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
       sparse-checkout disable` is the restore that works as typed. `add`
       refuses it on disk or not, since `git submodule add` cannot stage it;
       `remove` refuses it where it is missing or is not the index's copy,
-      and commits a clean one on disk rightly, as it did before #407.
+      and commits a clean one on disk rightly, as it did before #407. The
+      MARK is all this reads: a file the rules leave out, put back on disk,
+      has none, and is `_checked_inside_sparse_rules`'s (`family-sparse-
+      excluded`, #612), which asks git's rules.
 
     "Modified" is git's own answer, `git ls-files -m`, which writes nothing:
     the comparison `git status` lists a file as modified by, and the one
@@ -5685,6 +6251,12 @@ def cmd_remove(args) -> int:
     # call: `path: members/*` unmounted every member under one commit naming
     # one, and `path: .` removed the holder's own files.
     path = _member_path(project, row)
+    # A merge, cherry-pick, revert, rebase or `am` unfinished in the holder
+    # is asked after `Family.open`, `member-unknown` and the row's `path:`
+    # check, which read the manifest, and before the refusals about the
+    # holder's own files: the commit goes wrong however they are, refused
+    # after the writes or made inside the act (#612).
+    _checked_no_operation_in_progress(family.root, "remove")
     # A `.gitmodules` the work tree lacks, or has not as the index has it,
     # is refused first (#407): the commit would take it out of HEAD, or
     # carry a change nobody staged. Where the index holds a copy, every
@@ -5694,6 +6266,11 @@ def cmd_remove(args) -> int:
     # here, before any git command that writes (#360), so the dry run makes
     # the same refusal, as it makes every one above.
     _checked_one_section(family.root, project, path)
+    # The paths the commit stages, which the sparse rules may leave out
+    # though the file is on disk and its mark clear (#612, 571(d)). The
+    # gitlink is staged by `git rm`, which refuses it the same way.
+    _checked_inside_sparse_rules(family.root, "remove",
+                                 [GITMODULES, path, MANIFEST])
     # Every refusal above is the same under `--dry-run`, which leaves here,
     # before the unmount, the real run's first write (#326), and reports the
     # branch the real run refuses (#487) rather than refusing it.
