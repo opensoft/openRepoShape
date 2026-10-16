@@ -117,8 +117,8 @@ def command_env(home: Path | None = None, env: dict | None = None,
 
 
 def run_cmd(*args: str, home: Path | None = None, env: dict | None = None,
-            setup_sh: Path | None = SETUP,
-            command: Path = COMMAND) -> subprocess.CompletedProcess:
+            setup_sh: Path | None = SETUP, command: Path = COMMAND,
+            cwd: Path | None = None) -> subprocess.CompletedProcess:
     """The command, run from its file, with that environment.
 
     `input=""` means stdin is a pipe rather than a terminal, which is what the
@@ -129,11 +129,13 @@ def run_cmd(*args: str, home: Path | None = None, env: dict | None = None,
 
     `command` is this checkout's file unless a test names an INSTALLED copy,
     which is how the record `--install` leaves beside one is read (#564).
+    `cwd`, where a relative path the command is handed must land.
     """
     return subprocess.run([BASH, bash_path(command), *args],
                           capture_output=True, text=True, check=False,
                           input="", env=command_env(home, env, setup_sh),
-                          start_new_session=True)
+                          start_new_session=True,
+                          cwd=None if cwd is None else str(cwd))
 
 
 def write_script(path: Path, text: str) -> None:
@@ -346,6 +348,85 @@ def test_install_says_how_to_put_it_on_path(tmp_path):
         in result.stdout
 
 
+#: `$OPENREPOSHAPE_BIN_DIR` spelled for Windows, as a Git Bash user may type
+#: it, where a test needs a value that names no directory of its own (#649).
+WINDOWS_BIN_DIR = "D:\\tools\\bin"
+
+
+def fake_cygpath(directory: Path, answer: str | None) -> None:
+    """A `cygpath` in `directory` that spells `WINDOWS_BIN_DIR` as `answer`,
+    as Git Bash's own `cygpath -u` spells a drive path, or fails when
+    `answer` is None. Anything else it is asked fails."""
+    directory.mkdir(exist_ok=True)
+    answers = "" if answer is None else (
+        f'[ "$*" = {shlex.quote("-u -- " + WINDOWS_BIN_DIR)} ] && '
+        f"printf '%s\\n' {shlex.quote(answer)} && exit 0\n")
+    write_script(directory / "cygpath", f"#!/bin/sh\n{answers}exit 1\n")
+    (directory / "cygpath").chmod(0o755)
+
+
+@pytest.mark.parametrize("on_path", [False, True],
+                         ids=["not-on-path", "on-path"])
+def test_a_windows_spelled_bin_dir_is_spelled_the_way_bash_spells_it(
+        tmp_path, on_path):
+    """`OPENREPOSHAPE_BIN_DIR=D:\\tools\\bin` in Git Bash (#649).
+
+    `--install` named the directory as typed, so its PATH note printed
+    `export PATH="D:\\tools\\bin:$PATH"`, which the drive's colon splits in
+    two, and never found it on a `$PATH` holding `/d/tools/bin`. It is
+    spelled with `cygpath -u` first, so every line names the directory as
+    bash does, and the note is printed only when that directory is not on
+    `$PATH`. On Windows it is a real drive path and Git Bash's own
+    `cygpath`; elsewhere a fake answers as that one would.
+    """
+    bin_dir = tmp_path / "bin"
+    spelled = bash_path(bin_dir)
+    path = os.environ["PATH"]
+    if os.name == "nt":
+        typed = str(bin_dir)
+    else:
+        typed = WINDOWS_BIN_DIR
+        fake_cygpath(tmp_path / "fake-path", spelled)
+        path = f"{tmp_path / 'fake-path'}{os.pathsep}{path}"
+    if on_path:
+        path = f"{bin_dir}{os.pathsep}{path}"
+    result = run_cmd("--install", home=tmp_path, cwd=tmp_path,
+                     env={"PATH": path, "OPENREPOSHAPE_BIN_DIR": typed})
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = result.stdout.splitlines()
+    assert f"openRepoShape: installed at {spelled}/openRepoShape" in lines, \
+        result.stdout
+    assert (bin_dir / "openRepoShape").read_bytes() == COMMAND.read_bytes()
+    assert (f'    export PATH="{spelled}:$PATH"' in lines) is not on_path, \
+        result.stdout
+    assert typed not in result.stdout
+
+
+@pytest.mark.parametrize("failing_cygpath", [False, True],
+                         ids=["no-cygpath", "cygpath-fails"])
+def test_a_windows_spelled_bin_dir_is_refused_where_no_cygpath_spells_it(
+        tmp_path, failing_cygpath):
+    """With no `cygpath` to spell it, or one that cannot, the drive's colon
+    would still split the directory on `$PATH`, so `--install` refuses
+    before it places anything, and says what to set instead (#649). The
+    `$PATH` is the machine report's own, which holds no `cygpath` but the
+    failing fake."""
+    env = machine_path(tmp_path, ())
+    env.pop("_log")
+    if failing_cygpath:
+        fake_cygpath(tmp_path / "machine-path", None)
+    result = run_cmd("--install", home=tmp_path, cwd=tmp_path,
+                     env={**env, "OPENREPOSHAPE_BIN_DIR": WINDOWS_BIN_DIR})
+    assert result.returncode == 2, result.stdout + result.stderr
+    said = " ".join(result.stderr.split())
+    assert f"--install would place this command in '{WINDOWS_BIN_DIR}', " \
+        "which is spelled for Windows" in said, said
+    assert "Nothing was placed. Set $OPENREPOSHAPE_BIN_DIR to the directory " \
+        "as this shell spells it, then run this again." in said, said
+    assert result.stdout == ""
+    assert [path.name for path in tmp_path.iterdir()] == ["machine-path"]
+
+
 def test_install_from_a_file_never_calls_gh(tmp_path):
     """`--install` run from a file copies THOSE bytes. A machine with no `gh`
     — or no network — must still be able to install the command, so a `gh` on
@@ -553,6 +634,9 @@ def test_help_still_exits_zero():
 #: restricted `$PATH` the machine-report tests build. Everything else it uses
 #: is a bash builtin. The list is short because the installer is: make a
 #: temporary directory, copy a file into place, compare, chmod, tidy up.
+#: `cygpath` is left off on purpose: `--install` asks it only to respell a
+#: directory written for Windows (#649), and a test that hands this `$PATH`
+#: one is a test of the refusal where no `cygpath` answers.
 #: `tests/test_setup_sh.py::test_the_shim_refuses_before_cloning_when_git_is_
 #: missing` is the precedent for the whole shape of this — an absolute bash
 #: and a `$PATH` the test owns entirely, because there is no other way to
@@ -606,12 +690,15 @@ def install_with_machine(tmp_path, present, logged_in=True):
     log = Path(env.pop("_log"))
     bin_dir = tmp_path / "bin"
     # The bash by ABSOLUTE path: `subprocess` resolves a bare argv[0] against
-    # the CHILD's PATH, and this one holds no bash on purpose.
+    # the CHILD's PATH, and this one holds no bash on purpose. The directory
+    # as bash spells it, because this PATH holds no `cygpath` to respell a
+    # Windows one (#649).
     result = subprocess.run(
         [BASH, bash_path(COMMAND), "--install"],
         capture_output=True, text=True, check=False, input="",
         env=command_env(home=tmp_path, setup_sh=None,
-                        env={**env, "OPENREPOSHAPE_BIN_DIR": str(bin_dir)}))
+                        env={**env,
+                             "OPENREPOSHAPE_BIN_DIR": bash_path(bin_dir)}))
     return result, log, bin_dir
 
 
@@ -673,6 +760,33 @@ def test_the_machine_report_runs_no_installer(tmp_path):
     assert "was EXECUTED by a read-only report" not in result.stderr
 
 
+@pytest.mark.parametrize("pythons, row", [
+    pytest.param(("python",), "present, as python", id="python-alone"),
+    pytest.param(("python3", "python"), "present", id="both"),
+    pytest.param((), "MISSING", id="neither"),
+])
+def test_the_machine_report_finds_a_python_by_either_name(tmp_path, pythons,
+                                                           row):
+    """`python3`, THEN `python`, the order `--preflight` finds one in (#649).
+
+    Where Python came from python.org, Git Bash has `python` and no
+    `python3`, and the row said `python3 MISSING`, with the line pointing at
+    `--preflight`, which then passed. It keeps its name and says which name
+    answered, and only a machine with neither is short of one. Still by
+    `command -v` alone: every fake here logs a run, and only `gh auth
+    status` may be in the log.
+    """
+    result, log, _bin = install_with_machine(
+        tmp_path, ("git", "gh", *pythons, "git-filter-repo"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.search(rf"^    python3 +{re.escape(row)}$", result.stdout,
+                     re.M), result.stdout
+    assert ("--preflight" in result.stdout) is (row == "MISSING"), \
+        result.stdout
+    assert log.read_text(encoding="utf-8").split("\n")[:-1] == \
+        ["gh auth status"], log.read_text(encoding="utf-8")
+
+
 # --- the fix round on PR #96 ------------------------------------------------
 
 @pytest.mark.parametrize("args", [
@@ -707,8 +821,9 @@ def test_a_ref_the_doctor_would_check_out_is_validated(ref, tmp_path):
     `setup.sh` validates `--shape-ref` in three steps and this value lands
     in the same place, which the first cut of `--doctor` missed (Copilot,
     PR #96): a leading dash is an option to git, not a ref. Run from STDIN
-    so the clone path is the one taken, and the refusal has to arrive before
-    any clone does.
+    so the clone path is the one taken: the command clones this checkout
+    first, then checks the ref, and refuses before `git checkout` is ever
+    handed it.
     """
     result = subprocess.run(
         ["bash", "-s", "--", "--doctor", str(tmp_path)], executable=BASH,
@@ -1115,6 +1230,66 @@ def test_install_from_stdin_fetches_itself_into_a_live_workdir(offline_github,
         assert_a_command(target)
         assert target.read_bytes() == (REPO / name).read_bytes(), name
         assert f"{name}: installed at" in result.stdout
+
+
+# --- what `git clone` is handed for `$OPENREPOSHAPE_REPO` (#649) -------------
+
+#: `$OPENREPOSHAPE_REPO` as a person sets it, and what a clone is handed for
+#: it, `None` meaning the value itself. An owner/name becomes its github.com
+#: URL; a URL, an scp address and a path go through as they are, and a
+#: Windows path with a drive letter is a path in either slash (#649).
+CLONE_URLS = [
+    pytest.param("acme/openRepoShape",
+                 "https://github.com/acme/openRepoShape.git", id="owner-name"),
+    pytest.param("https://example.invalid/acme/openRepoShape.git", None,
+                 id="url"),
+    pytest.param("git@example.invalid:acme/openRepoShape.git", None,
+                 id="scp"),
+    pytest.param("/srv/git/openRepoShape.git", None, id="posix-path"),
+    pytest.param("C:/src/openRepoShape", None, id="drive-slash"),
+    pytest.param("C:\\src\\openRepoShape", None, id="drive-backslash"),
+    pytest.param("d:\\work\\openRepoShape.git", None, id="drive-lower-case"),
+]
+
+
+def cloned_for(tmp_path, repo: str, caller: str) -> list:
+    """What the clone `caller` makes is handed for `$OPENREPOSHAPE_REPO`:
+    the value setup.sh is given to clone, through a setup.sh that prints
+    it, or the URL `--doctor`'s own `git clone` names, through a `git` that
+    prints it and fails, from a copy of the command with no checkout of the
+    standard beside it. Nothing is cloned and nothing is fetched."""
+    if caller == "setup.sh":
+        stub = tmp_path / "setup.sh"
+        write_script(stub, '#!/usr/bin/env bash\n'
+                     'printf "CLONES %s\\n" "$OPENREPOSHAPE_REPO"\n')
+        result = run_cmd("--preflight", setup_sh=stub,
+                         env={"OPENREPOSHAPE_REPO": repo})
+        assert result.returncode == 0, result.stdout + result.stderr
+    else:
+        fake = tmp_path / "fake-path"
+        fake.mkdir()
+        write_script(fake / "git", '#!/bin/sh\n[ "$1" = clone ] && '
+                     'printf "CLONES %s\\n" "$4"\nexit 1\n')
+        (fake / "git").chmod(0o755)
+        copy = tmp_path / "openRepoShape"
+        copy.write_bytes(COMMAND.read_bytes())
+        result = run_cmd("--doctor", str(tmp_path), command=copy, env={
+            "OPENREPOSHAPE_REPO": repo, "TMPDIR": str(tmp_path),
+            "PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"})
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "could not clone" in result.stderr
+    return re.findall(r"^CLONES (.*)$", result.stdout, re.M)
+
+
+@pytest.mark.parametrize("caller", ["setup.sh", "doctor"])
+@pytest.mark.parametrize("repo, url", CLONE_URLS)
+def test_a_clone_is_handed_a_path_or_url_as_it_is(tmp_path, repo, url,
+                                                  caller):
+    """`shape_clone_url`, through both of its callers (#649). A drive
+    letter was read as an owner, so `C:/src/openRepoShape` became
+    `https://github.com/C:/src/openRepoShape.git`, a repository on
+    github.com that nobody named, for setup.sh's clone and the doctor's."""
+    assert cloned_for(tmp_path, repo, caller) == [url or repo]
 
 
 # --- the ref `--install` records, and the installed command runs (#564) -----
