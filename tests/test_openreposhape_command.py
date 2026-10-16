@@ -407,17 +407,18 @@ def test_install_refuses_a_target_that_is_a_symlink(tmp_path, dangling):
     link = bin_dir / "openRepoShape"
     link.symlink_to(packaged)
     result = run_cmd("--install", home=tmp_path,
-                     env={"OPENREPOSHAPE_BIN_DIR": str(bin_dir),
+                     env={"OPENREPOSHAPE_BIN_DIR": bash_path(bin_dir),
                           "OPENREPOSHAPE_REF": "v9.9.9",
                           "OPENREPOSHAPE_RECORD_REF": "1"})
     assert result.returncode == 2, result.stdout + result.stderr
     said = " ".join(result.stderr.split())
-    assert f"{link} is a symbolic link, so --install will not copy this " \
-        "command through it" in said, said
+    assert f"{bash_path(link)} is a symbolic link, so --install will not " \
+        "copy this command through it" in said, said
     assert "pipx upgrade openreposhape" in said
     assert "pipx uninstall openreposhape" in said
     assert link.is_symlink()
-    assert os.readlink(link) == str(packaged)
+    # Windows reads a link back with `\\?\` ahead of its target.
+    assert os.readlink(link).removeprefix("\\\\?\\") == str(packaged)
     if not dangling:
         assert packaged.read_bytes() == original
     assert not packaged.with_name("openRepoShape.ref").exists()

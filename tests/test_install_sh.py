@@ -671,12 +671,14 @@ def test_a_command_that_is_a_symlink_is_refused_before_any_request(
     result = net.run()
     assert result.returncode == 2, result.stdout + result.stderr
     said = " ".join(result.stderr.split())
-    assert f"{link} is a symbolic link, so nothing was installed" in said, said
+    assert f"{bash_path(link)} is a symbolic link, so nothing was installed" \
+        in said, said
     assert "pipx upgrade openreposhape" in said
     assert "pipx uninstall openreposhape" in said
     assert net.calls() == [], net.calls()
     assert link.is_symlink()
-    assert link.readlink() == packaged
+    # Windows reads a link back with `\\?\` ahead of its target.
+    assert str(link.readlink()).removeprefix("\\\\?\\") == str(packaged)
     if not dangling:
         assert packaged.read_bytes() == original
     assert sorted(path.name for path in net.bin.iterdir()) == \
