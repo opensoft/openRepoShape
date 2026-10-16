@@ -509,7 +509,8 @@ LOCAL_PATHS = {
 #: nothing that exists and that `plan` did not clone (#652): by its key. They
 #: said `source-unresolvable`, naming a `--source` nobody passed.
 LOCAL_PATH_GONE = b"REFUSED plan-source-gone: the plan's `source.local_path`, "
-NOT_PLANS_CLONE = b"names nothing that exists, and it is a path given to `plan`"
+NOT_PLANS_CLONE = (b"names nothing that exists, and the plan does not record "
+                   b"it as a clone `plan` made")
 
 
 def assert_refused_as_gone(runs: dict) -> None:

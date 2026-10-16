@@ -62,9 +62,15 @@ UNRESOLVABLE = "REFUSED source-unresolvable: "
 NOT_WHOLE = "is a clone `plan` made that is no longer whole ("
 NO_REPOSITORY = "git finds no repository there"
 NO_COMMIT = "it no longer holds the plan's commit "
-NOT_MADE = ("names nothing that exists, and it is a path given to `plan`, "
-            "not a clone `plan` made (`source.cloned` is not `true`), so "
-            "nothing clones it again")
+NOT_MADE = ("names nothing that exists, and the plan does not record it as "
+            "a clone `plan` made (`source.cloned` is not `true`), so nothing "
+            "clones it again")
+#: `plan-source-gone`'s way out, which names no recorded `org/repo`: the
+#: plan does not record the host a clone's `origin` named (#652's N4).
+GONE_REMEDY = ("Remediation: pass the source again with --source: the path "
+               "its clone is at now; or, where `plan` cloned it from GitHub, "
+               "the `org/repo` it cloned, which clones it again. Either is "
+               "held to the plan's `commit:`.")
 MINE = "mine\n"
 MARKER = "mine.txt"
 
@@ -277,9 +283,9 @@ ORIGINS = {"no-origin": None,
 def test_a_path_given_to_plan_that_is_gone_is_refused_and_never_cloned(
         adopter, monkeypatch, capsys, tmp_path, origin, command):
     """Named by its key, with no word of `gh`, and `--source` as the way
-    past it, naming the plan's repository where it records one. On main the
-    path itself went to `gh repo clone`, or the `origin`'s name was cloned
-    from github.com, a gitlab clone's too."""
+    past it, naming no recorded `org/repo` as GitHub's. On main the path
+    itself went to `gh repo clone`, or the `origin`'s name was cloned from
+    github.com, a gitlab clone's too."""
     calls = gh_clones(adopter, monkeypatch, tmp_path / "nowhere")
     source = make_source_repo(tmp_path / "src" / PROJECT, tree=SMALL_TREE,
                               edits=())
@@ -293,14 +299,10 @@ def test_a_path_given_to_plan_that_is_gone_is_refused_and_never_cloned(
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     code, _, err = run(adopter, capsys, command, PLAN_FLAG, str(plan),
                        WORK_FLAG, work)
-    again = f"`--source {REPOSITORY}`" if origin else "`--source <org>/<repo>`"
     assert code == 2, err
     assert err.splitlines()[:2] == [
         f"{GONE_REFUSED}the plan's `source.local_path`, {spelled(local_path)},"
-        f" {NOT_MADE}",
-        "Remediation: pass the source again with --source: the path of a "
-        f"clone of it, or {again} to clone it from GitHub. Either is held to "
-        "the plan's `commit:`."]
+        f" {NOT_MADE}", GONE_REMEDY]
     assert calls == []
 
 
@@ -568,6 +570,167 @@ def test_a_clone_is_removed_where_a_read_only_file_cannot_be_unlinked(
                        SOURCE_FLAG, REPOSITORY)
     assert code == 0, err
     assert left_in(temporary) == []
+
+
+# --- what the removal never does (#652's review, F1, F2, F4) -----------------
+
+#: How the NOTE for a clone the run could not remove begins.
+KEPT = "NOTE the clone this run made, "
+
+
+def then(adopter, monkeypatch, act) -> None:
+    """`act(clone)` right after `gh repo clone` has made the clone."""
+    inner = adopter.run
+
+    def and_then(args, *rest, **keywords):
+        done = inner(args, *rest, **keywords)
+        if args[0] == "gh":
+            act(Path(args[4]))
+        return done
+
+    monkeypatch.setattr(adopter, "run", and_then)
+
+
+def symlinks_are_made(base: Path) -> None:
+    """Skip where this machine makes no directory symlink: one is tried in
+    `base`."""
+    (base / "link-probe").mkdir()
+    try:
+        os.symlink(base / "link-probe", base / "link-probe-link",
+                   target_is_directory=True)
+    except OSError:
+        pytest.skip("this machine makes no symlink")
+
+
+def test_a_work_dir_swapped_for_a_symlink_during_the_run_loses_nothing(
+        adopter, monkeypatch, capsys, tmp_path):
+    """The work directory is moved aside and replaced by a symlink to
+    another directory after the clone: the removal is of the real path the
+    clone had, so nothing the symlink leads to goes. Before the review the
+    run removed `elsewhere/source-readonly/Thing`, a file in it, and
+    `elsewhere/source-readonly/` itself (r652's S1a)."""
+    planned = planned_from_github(adopter, monkeypatch, tmp_path)
+    symlinks_are_made(tmp_path)
+    work, aside = tmp_path / WORK, tmp_path / "aside"
+    precious = tmp_path / "elsewhere" / SOURCE_READONLY / PROJECT / MARKER
+    precious.parent.mkdir(parents=True)
+    precious.write_text(MINE, encoding="utf-8")
+
+    def swapped(_clone: Path):
+        os.rename(work, aside)
+        os.symlink(tmp_path / "elsewhere", work, target_is_directory=True)
+        raise adopter.CommandFailed(["gh"], None, 1, "swapped")
+
+    then(adopter, monkeypatch, swapped)
+    code, _, err = run(adopter, capsys, CHECK, PLAN_FLAG, str(planned.plan),
+                       SOURCE_FLAG, REPOSITORY, WORK_FLAG, str(work))
+    assert code == 2, err
+    assert precious.read_text(encoding="utf-8") == MINE
+    assert (aside / SOURCE_READONLY / PROJECT / ".git").is_dir()
+
+
+def test_a_plan_cut_short_after_it_is_written_keeps_its_clone(
+        adopter, monkeypatch, capsys, tmp_path):
+    """The plan that records the clone is written before its report is
+    printed, and a report cut short (a closed pipe, Ctrl-C) removed the
+    clone that plan records, and an `--out` the person put in it (r652's
+    S3b)."""
+    on_github(adopter, monkeypatch, tmp_path)
+    work = tmp_path / WORK
+    out = clone_dir(work) / "my-plan.yaml"
+
+    def cut_short(*_args, **_keywords):
+        raise RuntimeError("the report is cut short")
+
+    monkeypatch.setattr(adopter, "_print_plan_report", cut_short)
+    argv = plan_args(REPOSITORY, out, WORK_FLAG, str(work))
+    with pytest.raises(RuntimeError, match="cut short"):
+        adopter.main(argv)
+    assert out.is_file()
+    assert (clone_dir(work) / ".git").is_dir()
+
+
+@pytest.fixture
+def modes_hold(tmp_path):
+    """Skip where a directory's mode does not stop this user: as root, or
+    on Windows, where it is never asked."""
+    probe = tmp_path / "w652-mode-probe"
+    probe.mkdir()
+    os.chmod(probe, 0o555)
+    try:
+        holds = not os.access(probe, os.W_OK)
+    finally:
+        os.chmod(probe, 0o755)
+    if not holds:
+        pytest.skip("a directory's mode does not stop this user")
+
+
+def modes_under(clone: Path) -> dict[Path, int]:
+    """The mode of every directory in `clone`."""
+    return {path: stat.S_IMODE(path.lstat().st_mode)
+            for path in [clone, *clone.rglob("*")] if path.is_dir()}
+
+
+UNREMOVABLE = {"unreadable": ("src/app", 0o000), "unwritable": ("src", 0o555)}
+
+
+@pytest.mark.parametrize(("relative", "mode"), list(UNREMOVABLE.values()),
+                         ids=list(UNREMOVABLE))
+def test_a_clone_that_cannot_be_removed_is_named_and_no_mode_lowered(
+        adopter, monkeypatch, capsys, tmp_path, modes_hold, relative, mode):
+    """The run's exit is its own, a NOTE names the clone it keeps, and no
+    directory loses a permission. Before the review a directory nobody can
+    read ended `check` in a TypeError traceback from the removal's handler,
+    exit 1; one nobody can write in was kept and nothing said so; and the
+    handler set a mode to exactly `S_IWRITE` (r652's S1c, S1d)."""
+    planned = planned_from_github(adopter, monkeypatch, tmp_path)
+    in_a_fresh_temp_folder(monkeypatch, tmp_path / "check-temp")
+    before: dict[Path, int] = {}
+
+    def lock(clone: Path):
+        before.update(modes_under(clone))
+        os.chmod(clone / relative, mode)
+        before[clone / relative] = mode
+
+    then(adopter, monkeypatch, lock)
+    try:
+        code, _, err = run(adopter, capsys, CHECK, PLAN_FLAG,
+                           str(planned.plan), SOURCE_FLAG, REPOSITORY)
+        lowered = [path for path, was in before.items() if path.exists()
+                   and was & ~stat.S_IMODE(path.lstat().st_mode)]
+    finally:
+        for path in before:
+            if path.is_dir():
+                os.chmod(path, 0o755)
+    clone = os.path.realpath(min(before, key=lambda path: len(path.parts)))
+    assert code == 0, err
+    [note] = [line for line in err.splitlines() if line.startswith(KEPT)]
+    assert note.startswith(f"{KEPT}{spelled(clone)}, is kept: removing it "
+                           "failed ("), note
+    assert note.endswith("Delete it once nothing in it is needed."), note
+    assert lowered == []
+
+
+def test_execute_into_a_work_dir_holding_its_clone_says_nothing_exists(
+        adopter, monkeypatch, capsys, tmp_path):
+    """`execute` keeps the clone it makes, so a re-run given its
+    `--work-dir` meets it: refused as `execute`'s other early refusals are,
+    saying that no leg repository exists yet, and what the occupant may
+    be."""
+    planned = planned_from_github(adopter, monkeypatch, tmp_path)
+    work = tmp_path / WORK
+    clone_dir(work).mkdir(parents=True)
+    (clone_dir(work) / MARKER).write_text(MINE, encoding="utf-8")
+    code, _, err = run(adopter, capsys, EXECUTE, PLAN_FLAG, str(planned.plan),
+                       SOURCE_FLAG, REPOSITORY, WORK_FLAG, str(work),
+                       LOCAL_REMOTE_DIR, str(tmp_path / REMOTES))
+    assert code == 2, err
+    assert err.splitlines()[1] == (
+        "Remediation: no leg repository was created and nothing was pushed. "
+        "Pass a --work-dir that does not hold it, or none: without one, each "
+        "run makes a new one. An earlier `execute` given this --work-dir "
+        "keeps the clone it made there: where that is what it holds, delete "
+        "it once nothing in it is needed.")
 
 
 # --- what `--help` says -------------------------------------------------------

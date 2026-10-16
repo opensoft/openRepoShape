@@ -1612,6 +1612,29 @@ def _ambiguous(spec: str, name: str) -> Refusal:
         "clone the repository from GitHub.")
 
 
+def _repository_in_url(spec: str, url: re.Match, candidate: Path) -> str:
+    """The `owner/repo` a url `--source` names (`SOURCE_URL_RE`'s `url`):
+    refused where its host is not GitHub's, where it names no `owner/repo`,
+    and, for `github.com/<owner>/<repo>` written with no scheme, where it is
+    a path here as well (`candidate`), as `_source_spec` refuses a name."""
+    host = (url["host"] or url["scp"] or url["bare"]).lower()
+    name = _github_name(url["path"])
+    if host != GITHUB_HOST:
+        raise Refusal(
+            SOURCE_UNRESOLVABLE,
+            f"--source {spec!r} names a repository on {host}, and `gh repo "
+            f"clone` clones from {GITHUB_HOST} alone",
+            "Remediation: clone it yourself and pass the clone's path.")
+    if name is None:
+        raise Refusal(
+            SOURCE_UNRESOLVABLE,
+            f"--source {spec!r} names no `owner/repo` on {GITHUB_HOST}",
+            "Remediation: pass a local clone's path, or `org/repo`.")
+    if url["bare"] and candidate.exists():
+        raise _ambiguous(spec, name)
+    return name
+
+
 def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     """What a `--source` names: `(path, None)`, a path read in place, or
     `(None, "owner/repo")`, a GitHub repository `Source.clone` clones.
@@ -1644,22 +1667,7 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
                              or WINDOWS_ABSOLUTE_RE.match(spec))
     url = None if written_as_a_path else SOURCE_URL_RE.fullmatch(spec)
     if url is not None:
-        host = (url["host"] or url["scp"] or url["bare"]).lower()
-        name = _github_name(url["path"])
-        if host != GITHUB_HOST:
-            raise Refusal(
-                SOURCE_UNRESOLVABLE,
-                f"--source {spec!r} names a repository on {host}, and `gh "
-                f"repo clone` clones from {GITHUB_HOST} alone",
-                "Remediation: clone it yourself and pass the clone's path.")
-        if name is None:
-            raise Refusal(
-                SOURCE_UNRESOLVABLE,
-                f"--source {spec!r} names no `owner/repo` on {GITHUB_HOST}",
-                "Remediation: pass a local clone's path, or `org/repo`.")
-        if url["bare"] and candidate.exists():
-            raise _ambiguous(spec, name)
-        return None, name
+        return None, _repository_in_url(spec, url, candidate)
     name = (None if written_as_a_path or "\\" in spec
             else _github_name(spec))
     if candidate.exists():
@@ -1676,10 +1684,13 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
 
 
 def _occupied_clone_target(work_root: Path, path: Path, repository: str,
-                           taken: str = "") -> Refusal:
+                           taken: str = "", done: str = "") -> Refusal:
     """`adopt-work-dir-occupied` for a clone target `path` that already
     holds something (#652). `taken` is said first where it is the plan's own
-    clone, no longer whole, and the way out then begins with deleting it."""
+    clone, no longer whole, and the way out then begins with deleting it.
+    `done` is `execute`'s word that nothing exists yet (`NO_LEG_YET`), said
+    first in the way out as its other early refusals say it; `execute` keeps
+    the clone it makes, so the way out says that too."""
     held = path.relative_to(work_root).as_posix()
     detail = (f"--work-dir {_spelled(str(work_root))} already holds "
               f"{_spelled(held)}, where this run clones {repository}, and "
@@ -1692,7 +1703,12 @@ def _occupied_clone_target(work_root: Path, path: Path, repository: str,
         remedy = (f"It is no longer a whole clone: delete {_spelled(held)} "
                   "and run the command again, which clones it there anew; "
                   f"or pass {another}")
-    return Refusal("adopt-work-dir-occupied", detail, f"Remediation: {remedy}")
+    if done:
+        remedy += (" An earlier `execute` given this --work-dir keeps the "
+                   "clone it made there: where that is what it holds, delete "
+                   "it once nothing in it is needed.")
+    return Refusal("adopt-work-dir-occupied", detail,
+                   f"Remediation: {done}{remedy}")
 
 
 def _not_a_whole_clone(path: Path, commit: str) -> str | None:
@@ -1745,13 +1761,14 @@ class Source:
 
     @classmethod
     def open(cls, spec: str, work_root: Path, unwritable: str | None = None,
-             made: list | None = None) -> "Source":
+             made: list | None = None, done: str = "") -> "Source":
         """`spec`, a `--source`, as `_source_spec` reads it: a local path,
         read in place, or a GitHub repository, cloned (`clone`, which takes
-        `unwritable` and `made`)."""
+        `unwritable`, `made` and `done`)."""
         path, repository = _source_spec(spec)
         if repository is not None:
-            return cls.clone(repository, work_root, unwritable, made)
+            return cls.clone(repository, work_root, unwritable, made,
+                             done=done)
         return cls.in_place(path, work_root)
 
     @classmethod
@@ -1764,7 +1781,7 @@ class Source:
     @classmethod
     def clone(cls, repository: str, work_root: Path,
               unwritable: str | None = None, made: list | None = None, *,
-              note: str = "", taken: str = "") -> "Source":
+              note: str = "", taken: str = "", done: str = "") -> "Source":
         """`repository`, an `owner/repo` `_github_name` gave, cloned with
         `gh repo clone` into `<work_root>/source-readonly/<repo>`, and read
         there. Every clone of a source goes through here.
@@ -1777,22 +1794,28 @@ class Source:
         refused as `adopt-work-dir-occupied` (#652): `git clone` refuses it,
         and the refusal was `source-unclonable` with a remedy about `gh auth
         status`. `taken` is what that refusal says first, when the occupant
-        is the plan's own clone (`Plan.open_source`). Only then is `note`,
-        the NOTE that says why the plan's clone is made again, printed.
+        is the plan's own clone (`Plan.open_source`), and `done` what
+        `execute` says first in its way out. Only then is `note`, the NOTE
+        that says why the plan's clone is made again, printed.
 
         `made` is the list a command keeps of the clones it made, for
-        `_leave_the_clones`: the target is put on it before `gh` runs, with
-        whether this run made `source-readonly/` too, when it did not exist."""
+        `_leave_the_clones`: the target is put on it before `gh` runs, where
+        it did not exist, with the REAL path it has now, which is the only
+        path `_leave_the_clones` will remove, and whether this run made
+        `source-readonly/` too."""
         path = work_root / SOURCE_READONLY / repository.split("/")[1]
         if unwritable:
             raise _work_dir_refusal(unwritable)
         if _holds_something(path):
-            raise _occupied_clone_target(work_root, path, repository, taken)
+            raise _occupied_clone_target(work_root, path, repository, taken,
+                                         done)
         if note:
             print(note)
         made_parent = not os.path.lexists(path.parent)
         if made is not None and not os.path.lexists(path):
-            made.append((path, made_parent))
+            made.append((path, os.path.join(os.path.realpath(work_root),
+                                            SOURCE_READONLY, path.name),
+                         made_parent))
         path.parent.mkdir(parents=True, exist_ok=True)
         print(f"cloning {repository} (read only) into {path}")
         try:
@@ -4436,6 +4459,10 @@ def cmd_plan(args) -> int:
     out = Path(args.out)
     write_lf(out, render_plan(args, source, entries, names, pins, follow_ups,
                               seeded))
+    # The plan that records the clone exists from here, whatever happens
+    # next: `_leave_the_clones` keeps it, though the report below be cut
+    # short by a closed pipe or Ctrl-C (#652's review, F2).
+    args.plan_written = True
 
     _print_plan_report(args, source, tree, entries, follow_ups, seeded, out,
                        pins)
@@ -4595,29 +4622,31 @@ class Plan:
 
     def open_source(self, override: str | None, work_root: Path,
                     unwritable: str | None = None,
-                    made: list | None = None) -> Source:
+                    made: list | None = None, done: str = "") -> Source:
         """The source `check` and `execute` read: `override`, read as `plan
         --source` reads it, or the one the plan records
         (`_recorded_source`). `unwritable` is why `work_root` cannot be
-        written, and `made` the list of clones the command removes when it
-        ends, as `Source.clone` takes them.
+        written, `made` the list of clones the command removes when it ends,
+        and `done` what `execute` says first in a way out, as `Source.clone`
+        takes them.
 
         A RECORDED NAME IS ALWAYS CLONED FROM GITHUB, never read as a
         directory here (#652): on main `check`, run where `./acme/Atlas`
         existed, said the plan's repository is cloned again and read that
         directory instead."""
         if override:
-            return Source.open(override, work_root, unwritable, made)
+            return Source.open(override, work_root, unwritable, made, done)
         local_path = self.source.get("local_path")
         if local_path:
             return self._recorded_source(str(local_path), work_root,
-                                         unwritable, made)
+                                         unwritable, made, done)
         repository = self._recorded_repository()
         if repository is None:
             raise Refusal("plan-no-source",
                           f"{self.path}: `source:` names neither a local path "
                           "nor a repository")
-        return Source.clone(repository, work_root, unwritable, made)
+        return Source.clone(repository, work_root, unwritable, made,
+                            done=done)
 
     def _recorded_repository(self) -> str | None:
         """The plan's `source.repository` as `_github_name` reads it, or None
@@ -4635,7 +4664,8 @@ class Plan:
         return name
 
     def _recorded_source(self, local_path: str, work_root: Path,
-                         unwritable: str | None, made: list | None) -> Source:
+                         unwritable: str | None, made: list | None,
+                         done: str = "") -> Source:
         """The source the plan's `source.local_path` records, read in place
         where it can be; or, where it is a clone `plan` made
         (`source.cloned: true`) that is gone or no longer whole, its
@@ -4671,8 +4701,8 @@ class Plan:
             if there:
                 return Source.in_place(path, work_root)
             raise self._gone(local_path, "names nothing that exists",
-                             "it is a path given to `plan`, not a clone "
-                             "`plan` made (`source.cloned` is not `true`), so "
+                             "the plan does not record it as a clone `plan` "
+                             "made (`source.cloned` is not `true`), so "
                              "nothing clones it again")
         broken = _not_a_whole_clone(path, self.source_commit) if there \
             else None
@@ -4694,22 +4724,27 @@ class Plan:
                   f"`source.repository`, {repository}, is cloned again from "
                   "GitHub, as `plan` cloned it."),
             taken=(f"the plan's `source.local_path`, {_spelled(local_path)}, "
-                   f"{state}" if at_the_record and there else ""))
+                   f"{state}" if at_the_record and there else ""),
+            done=done)
 
     def _gone(self, local_path: str, state: str, why: str) -> Refusal:
         """`plan-source-gone`: the plan's `source.local_path` is in `state`,
-        and `why` nothing clones it again (#652). The way out is `--source`,
-        naming the plan's repository where it records one."""
-        name = _github_name(str(self.source.get("repository") or ""))
-        again = (f"`--source {name}`" if name
-                 else "`--source <org>/<repo>`")
+        and `why` nothing clones it again (#652). The way out is `--source`.
+
+        NO RECORDED NAME IS OFFERED. A `source.repository` the plan read from
+        a clone's `origin` names its last two segments on whatever host that
+        is, and the plan does not record the host: offering `--source
+        testorg/Thing` "to clone it from GitHub" for a moved clone of
+        gitlab.com/testorg/Thing named another repository (#652's review,
+        N4). An `org/repo` is named only as what `plan` cloned from GitHub."""
         return Refusal(
             PLAN_SOURCE_GONE,
             f"the plan's `source.local_path`, {_spelled(local_path)}, "
             f"{state}, and {why}",
-            "Remediation: pass the source again with --source: the path of a "
-            f"clone of it, or {again} to clone it from GitHub. Either is held "
-            "to the plan's `commit:`.")
+            "Remediation: pass the source again with --source: the path its "
+            "clone is at now; or, where `plan` cloned it from GitHub, the "
+            "`org/repo` it cloned, which clones it again. Either is held to "
+            "the plan's `commit:`.")
 
     def names(self) -> dict[str, str]:
         """The three repository names the plan declares, validated as values.
@@ -11466,7 +11501,7 @@ def cmd_execute(args) -> int:
     work_root = _work_root(args, NO_LEG_YET)
     # Before the source is opened, so before any leg exists (#524).
     _refuse_an_unwritable_work_dir(args, work_root)
-    source = plan.open_source(args.source, work_root)
+    source = plan.open_source(args.source, work_root, done=NO_LEG_YET)
     naming = NamingPolicy.load(NAMING_POLICY)
     _require_filter_repo()
 
@@ -12977,22 +13012,32 @@ def _removed_if_it_holds_no_file(root: Path) -> bool:
 
 
 def _remove_a_tree(path: Path) -> None:
-    """`shutil.rmtree` of `path`, making each file it cannot remove writable
-    and removing it again: git writes a clone's packs and loose objects
-    READ-ONLY, and Windows refuses to unlink a read-only file. The handler's
+    """`shutil.rmtree` of `path`. What git wrote READ-ONLY, a clone's packs
+    and loose objects, Windows refuses to unlink: a file or directory whose
+    unlink or rmdir fails gets its write bit ADDED, and is removed again.
+    Every other failure is raised as it was, and no mode is ever lowered
+    (#652's review, F4): the handler once set the mode to exactly
+    `S_IWRITE`, taking read and search away, and called whatever function
+    failed, `os.open` included, which ended in a TypeError traceback. A
+    symlink is never changed, since `chmod` would follow it. The handler's
     keyword is `onexc` from Python 3.12, whose `onerror` warns."""
-    def writable_then_removed(remove, target, _error):
-        os.chmod(target, stat.S_IWRITE)
+    def writable_then_removed(remove, target, error):
+        if remove not in (os.unlink, os.remove, os.rmdir) \
+                or os.path.islink(target):
+            raise error if isinstance(error, BaseException) else error[1]
+        os.chmod(target, stat.S_IMODE(os.lstat(target).st_mode)
+                 | stat.S_IWRITE)
         remove(target)
 
     keyword = "onexc" if sys.version_info >= (3, 12) else "onerror"
     shutil.rmtree(path, **{keyword: writable_then_removed})
 
 
-def _leave_the_clones(args, ended) -> None:
+def _leave_the_clones(args) -> None:
     """Remove each clone of a source this command made that no plan records
     (#652), however the command ended: `args.clones`, which `Source.clone`
-    fills for `plan` and `check`, with whether it made `source-readonly/`.
+    fills for `plan` and `check`, each with the real path it had when it was
+    made and whether this run made `source-readonly/` too.
 
     ON MAIN EACH STAYED, and nothing said so: the clone `check --source
     <org/repo>` made, the one `check` made again where the plan's was gone,
@@ -13002,28 +13047,43 @@ def _leave_the_clones(args, ended) -> None:
     about `gh auth status`), so `check --work-dir W` and then `execute
     --work-dir W`, as `check`'s help says to run them, failed.
 
-    WHAT IS NEVER REMOVED. A `plan` that ended 0 has written the plan that
-    records its clone, which is kept. `check` does not list a clone it made
-    again at the plan's own `local_path` (`Plan._recorded_source`).
-    `execute` lists none: under `--local-remote-dir` its clone IS the
-    assembly the split is pushed into, and the deletion command
-    `adopt-branch-exists` prints runs in it; the work directory it made is
-    named on its last line (`_leave_the_work_root`). A path is listed only
-    where it did not exist before this run, so nothing a person or an
-    earlier run put there is; and one reached through a symlink, at
-    `source-readonly/` or at the clone, is left, so nothing outside the
-    work directory's own `source-readonly/` is. Nothing here raises: an
-    exception the command raised reaches the caller as it was."""
-    if getattr(args, "command", None) == "plan" and ended == 0:
+    WHAT IS NEVER REMOVED. A clone that a written plan records: once `plan`
+    has written it (`args.plan_written`), whatever ends the run after, its
+    report cut short by a closed pipe or Ctrl-C included (#652's review,
+    F2). `check` does not list a clone it made again at the plan's own
+    `local_path` (`Plan._recorded_source`). `execute` lists none: under
+    `--local-remote-dir` its clone IS the assembly the split is pushed into,
+    and the deletion command `adopt-branch-exists` prints runs in it; the
+    work directory it made is named on its last line (`_leave_the_work_root`).
+    A path is listed only where it did not exist before this run, so nothing
+    a person or an earlier run put there is. And a path is removed only
+    where its real path is still the one it had when it was made, so
+    nothing outside that work directory's own `source-readonly/` is: not
+    through a symlink or a junction there before the run, and not through
+    one put there during it, at the work directory or below (F1).
+
+    A CLONE THAT CANNOT BE REMOVED IS NAMED, in a NOTE on stderr, and kept.
+    Nothing here raises: an exception the command raised reaches the
+    caller as it was, and the exit is the command's (F4)."""
+    if getattr(args, "plan_written", False):
         return
-    for path, made_parent in getattr(args, "clones", None) or ():
-        if os.path.islink(path.parent) or os.path.islink(path):
+    for path, made_at, made_parent in getattr(args, "clones", None) or ():
+        if os.path.realpath(path) != made_at:
             continue
-        with contextlib.suppress(OSError):
-            if path.is_dir():
-                _remove_a_tree(path)
-            if made_parent:
-                os.rmdir(path.parent)
+        try:
+            if os.path.isdir(made_at):
+                _remove_a_tree(Path(made_at))
+        except OSError as exc:
+            _flush_stdout()
+            with contextlib.suppress(OSError, UnicodeError):
+                print(f"NOTE the clone this run made, {_spelled(made_at)}, "
+                      f"is kept: removing it failed ({exc.strerror or exc}). "
+                      "Delete it once nothing in it is needed.",
+                      file=sys.stderr)
+            continue
+        if made_parent:
+            with contextlib.suppress(OSError):
+                os.rmdir(os.path.dirname(made_at))
 
 
 def _leave_the_work_root(args, succeeded: bool) -> None:
@@ -13043,9 +13103,11 @@ def _leave_the_work_root(args, succeeded: bool) -> None:
     and `execute` read; and the legs and the split `execute` built, which
     the verification table and the notice of a failure name. Those stay.
 
-    A `--work-dir` the person gave is theirs, and nothing in it is removed.
-    Nothing here raises: an exception the command raised reaches the
-    caller as it was."""
+    A `--work-dir` the person gave is theirs, and nothing in it is removed
+    here; `_leave_the_clones`, before this, removes from it only the clone
+    `plan` or `check` made there that no plan records (#652). Nothing here
+    raises: an exception the command raised reaches the caller as it
+    was."""
     root = getattr(args, "made_work_root", None)
     if root is None or _removed_if_it_holds_no_file(root) \
             or getattr(args, "command", None) != "execute":
@@ -13338,7 +13400,7 @@ def main(argv: list[str] | None = None) -> int:
             raise
         return 2
     finally:
-        _leave_the_clones(args, ended)
+        _leave_the_clones(args)
         _leave_the_work_root(args, ended == 0)
 
 
