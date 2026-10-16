@@ -414,7 +414,12 @@ usage: adopt-project.py plan [-h] --source SOURCE --project PROJECT
 
 options:
   -h, --help            show this help message and exit
-  --source SOURCE       a local path (read only) or `org/repo` to clone
+  --source SOURCE       a local path, read in place, or `org/repo` to clone
+                        from GitHub, which a github.com url names too.
+                        `source-ambiguous` refuses a name that is also a path
+                        here, as `acme/Atlas` is beside a directory
+                        `acme/Atlas`: pass `./acme/Atlas` for the directory,
+                        or the url for the repository.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name
   --org ORG             the organisation the source repository is in, which
@@ -525,10 +530,13 @@ options:
                         a local --source is read in place. Default: a new
                         directory in the system temp folder, removed when the
                         run ends if it holds no file. A --work-dir you give is
-                        made where it is missing, and nothing in it is
-                        removed. One that cannot be made, or that this user
-                        cannot write in when a source is cloned into it, is
-                        refused as `adopt-work-dir-unwritable`.
+                        made where it is missing, and nothing in it is removed
+                        but the clone, when `plan` writes no plan that records
+                        it. One that cannot be made, or that this user cannot
+                        write in when a source is cloned into it, is refused
+                        as `adopt-work-dir-unwritable`. One that already holds
+                        `source-readonly/<repo>`, where a source is cloned, is
+                        refused as `adopt-work-dir-occupied`.
 ```
 
 #### `adopt-project.py check`
@@ -542,18 +550,27 @@ usage: adopt-project.py check [-h] --plan PLAN [--source SOURCE]
 options:
   -h, --help           show this help message and exit
   --plan PLAN
-  --source SOURCE      override the source the plan names
+  --source SOURCE      override the source the plan names, read as `plan
+                       --source` reads it. Without it, the plan's
+                       `source.local_path` is read; where that is a clone
+                       `plan` made (`source.cloned: true`) and is gone or no
+                       longer whole, its `source.repository` is cloned again,
+                       and any other `local_path` that is gone is refused as
+                       `plan-source-gone`.
   --work-dir WORK_DIR  where `check` works: an `org/repo` --source, or the
-                       plan's `source.repository` where its recorded clone is
-                       gone, is cloned there. Give the one `execute` will be
-                       given. Default: a new directory in the system temp
-                       folder, removed when the run ends if it holds no file.
-                       A --work-dir you give is made where it is missing, and
-                       nothing in it is removed. One this user cannot write in
-                       is a finding, `adopt-work-dir-unwritable`, and is
-                       refused under that code where the source would be
-                       cloned into it or cannot be opened, as one that cannot
-                       be made is.
+                       plan's `source.repository` where the clone `plan` made
+                       is gone or no longer whole, is cloned there. Give the
+                       one `execute` will be given. Default: a new directory
+                       in the system temp folder, removed when the run ends if
+                       it holds no file. A --work-dir you give is made where
+                       it is missing, and nothing in it is removed but a clone
+                       `check` made there, unless it is the clone the plan
+                       records. One this user cannot write in is a finding,
+                       `adopt-work-dir-unwritable`, and is refused under that
+                       code where the source would be cloned into it or cannot
+                       be opened, as one that cannot be made is. One that
+                       already holds `source-readonly/<repo>`, where a source
+                       is cloned, is refused as `adopt-work-dir-occupied`.
 ```
 
 #### `adopt-project.py execute`
@@ -569,7 +586,13 @@ usage: adopt-project.py execute [-h] --plan PLAN [--source SOURCE]
 options:
   -h, --help            show this help message and exit
   --plan PLAN
-  --source SOURCE
+  --source SOURCE       override the source the plan names, read as `plan
+                        --source` reads it. Without it, the plan's
+                        `source.local_path` is read; where that is a clone
+                        `plan` made (`source.cloned: true`) and is gone or no
+                        longer whole, its `source.repository` is cloned again,
+                        and any other `local_path` that is gone is refused as
+                        `plan-source-gone`.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create the legs as bare repositories here instead of
                         calling `gh` (the TEST path)
