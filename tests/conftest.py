@@ -1602,10 +1602,10 @@ def read_through_git(remotes: Path) -> dict:
     URL and the legs' `.gitmodules` URLs are both rewritten.
 
     The entries are APPENDED to the ones `os.environ` holds
-    (`appended_to_command_scope`), which every caller lays this over, so the
-    session's own (`no_auto_maintenance`'s, and the two the Windows job sets)
-    still reach the pasted line, as they reach every other git a test
-    starts."""
+    (`appended_to_command_scope`), which every caller lays this over at the
+    same moment, so the session's own (`no_auto_maintenance`'s, and the two
+    the Windows job sets) still reach the pasted line, as they reach every
+    other git a test starts."""
     return appended_to_command_scope(
         os.environ, insteadof_entries(remotes, typed=True))
 

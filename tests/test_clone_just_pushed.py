@@ -154,16 +154,23 @@ def test_a_directory_is_named_with_a_separator_after_it_given_or_not(
     assert prefixes == insteadof_prefixes(remotes, typed=typed), prefixes
 
 
+def a_link_to(directory: Path, tmp_path: Path) -> Path:
+    """`tmp_path/link`, a symlink to `directory`, or a skip where this
+    account cannot make one."""
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(directory, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this account cannot make a symlink")
+    return link
+
+
 def test_a_typed_directory_adds_the_spelling_it_was_given_first(tmp_path):
     """TYPED: a symlink kept, as a line a tool prints names a remote. The
     resolved directory is the one `.gitmodules` records, and stays."""
     real = tmp_path / "real"
     real.mkdir()
-    link = tmp_path / "link"
-    try:
-        link.symlink_to(real, target_is_directory=True)
-    except (OSError, NotImplementedError):
-        pytest.skip("this account cannot make a symlink")
+    link = a_link_to(real, tmp_path)
     resolved = spellings(real.resolve())
     typed = spellings(Path(os.path.abspath(link)))
     assert typed.isdisjoint(resolved), "premise: a link that is not its target"
@@ -202,6 +209,20 @@ def test_the_arguments_and_the_environment_send_a_plain_path_to_its_uri(
     assert get_url(neighbour, *insteadof_args(remotes),
                    cwd=tmp_path) == neighbour
     assert get_url(neighbour, env=environ, cwd=tmp_path) == neighbour
+
+
+def test_the_environment_form_reads_a_path_typed_through_a_symlink(
+        remotes, tmp_path):
+    """`read_through_git` is the one user of `typed=True`: the line a tool
+    prints names the remotes as the person typed them, a symlink and all, and
+    only the TYPED spelling matches that path. Both go to the resolved
+    directory's URI."""
+    link = a_link_to(remotes, tmp_path)
+    environ = {**os.environ, **read_through_git(link)}
+    assert get_url(str(link / "A.git"), env=environ, cwd=tmp_path) == (
+        remotes.resolve() / "A.git").as_uri()
+    assert get_url(str(remotes / "A.git"), env=environ, cwd=tmp_path) == (
+        remotes.resolve() / "A.git").as_uri()
 
 
 def test_the_environment_form_keeps_what_the_environment_holds(
