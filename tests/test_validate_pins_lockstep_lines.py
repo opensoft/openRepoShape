@@ -26,7 +26,10 @@ reference to it: a bump of either leg is rolled back over the other's
 finding, so "First clear that finding" named a step no line could take.
 Both findings name the step two gitlinks off their pins name, by hand, and
 once it is committed the code leg's line is named and cures the root. A
-finding no bump clears is still the one to clear first.
+finding no bump clears is still the one to clear first. The step puts the
+leg's workflow references back with its gitlink, an undo is followed by
+`git submodule update`, and where the leg's own digest is wrong too, which
+the step leaves, no line is promised (#702's review, S15 and S18).
 
 EVERY LINE HERE IS RUN AS PRINTED, from the standard's checkout, split as a
 POSIX shell splits it (the gate's lines are POSIX-quoted, #532), over a root
@@ -48,12 +51,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import git, run_script
+from conftest import FILE_PROTOCOL, git, run_script
 from repo_shape import PYTHON
 from test_doctor_gitlink_repairs import (  # noqa: F401
     ANOTHER_LEG, OTHER_SHA, WORKING, advanced, assert_compliant,
-    copy_drifted, digest_moved, moved_by_hand, path_moved, pin_of, put_back,
-    under_an_awkward_name, workflow_at,
+    both_digests, copy_drifted, digest_moved, moved_by_hand, path_moved,
+    pin_of, put_back, under_an_awkward_name, workflow_at,
 )
 from test_shape_doctor import (  # noqa: F401
     GIT_IDENTITY, PROJECT, project, scaffolded_here, standard,
@@ -306,19 +309,33 @@ def test_another_leg_out_of_step_names_no_line(project):
 
 # --- another leg's gitlink is put back by hand first (#677) ------------------
 
-def held(what: str, first: str, lines: str, whom: str) -> str:
+def held(what: str, first: str, then: str) -> str:
     """The last line of a held-back finding, in the gate's words (#478):
-    what holds the line back, what comes first, and whose lines follow."""
+    what holds the line back, what comes first, and what follows."""
     return (f"  No single bump-leg.py line can commit while {what}: "
             "bump-leg.py moves one leg and runs this validator before it "
             f"commits, rolling the bump back when it is red. First {first}; "
-            f"this validator then names {lines} for {whom}.")
+            f"this validator then {then}")
 
 
-#: What comes first where the spec gitlink holds back another leg's line.
+#: What comes first where the spec gitlink holds back another leg's line:
+#: its workflow references go back with it, and an undo is followed by the
+#: leg checked out again (#702).
 PUT_SPEC_BACK = ("put spec's gitlink back at its pin (check that leg out at "
-                 "the pin's commit and commit its gitlink in this root), or "
-                 "undo the commit that moved it")
+                 "the pin's commit and commit its gitlink in this root, with "
+                 "every workflow reference to its repository at that commit "
+                 "too), or undo the commit that moved it and run `git "
+                 "submodule update -- spec` in this root")
+
+#: The code digest's finding, where the spec pin has one too.
+CODE_DIGEST = "pin-digest-mismatch: contracts/code-pin.yaml"
+
+
+def code_named(lines: str, advanced: str) -> str:
+    """What the spec gitlink's finding says follows the step: the code
+    leg's `lines`, and how the spec move is kept if it was meant (#702)."""
+    return (f"names {lines} for code, and if spec's move was meant, bumping "
+            f"spec to {advanced[:12]} after that line keeps it.")
 
 
 @pytest.mark.parametrize("code", sorted(ANOTHER_LEG))
@@ -327,6 +344,7 @@ def test_another_legs_finding_and_the_gitlink_name_the_hand_step(
     """The spec gitlink committed by hand, and the code leg's digest or a
     workflow reference to it: each finding names the spec gitlink put back
     by hand, neither says to clear the other first, and no line is named.
+    The code finding names its own lines for code, by name (#702).
     Once that is committed the code leg's line is named, and run as printed
     it makes the root COMPLIANT."""
     moved = moved_by_hand(project, tmp_path, {"spec": advanced},
@@ -335,11 +353,12 @@ def test_another_legs_finding_and_the_gitlink_name_the_hand_step(
     result = gate(root)
     assert result.returncode == 1, result.stdout + result.stderr
     assert block(result.stderr, "pin-gitlink-mismatch")[-1] == held(
-        f"code is out of step too ({code})", PUT_SPEC_BACK,
-        "the bump-leg.py line" if code == "pin-digest-mismatch"
-        else "the bump-leg.py lines", "code")
+        f"code is out of step too ({code})", PUT_SPEC_BACK, code_named(
+            "the bump-leg.py line" if code == "pin-digest-mismatch"
+            else "the bump-leg.py lines", advanced))
     assert block(result.stderr, code)[-1] == held(
-        "spec is off its pin", PUT_SPEC_BACK, HELD[code][1], "that leg")
+        "spec is off its pin", PUT_SPEC_BACK, f"names {HELD[code][1]} for "
+        "code.")
     assert "First clear" not in result.stderr, result.stderr
     assert "scripts/bump-leg.py" not in result.stderr, result.stderr
     put_back(root, "spec", moved["pins"]["spec"])
@@ -367,10 +386,76 @@ def test_a_finding_no_bump_clears_is_still_cleared_first(project, advanced,
     first = "clear that finding, and " + PUT_SPEC_BACK
     assert block(result.stderr, "pin-gitlink-mismatch")[-1] == held(
         "code is out of step too (pin-digest-mismatch)" + also, first,
-        "the bump-leg.py line", "code")
+        code_named("the bump-leg.py line", advanced))
     assert block(result.stderr, "pin-digest-mismatch")[-1] == held(
-        "spec is off its pin" + also, first, "the bump-leg.py line",
-        "that leg")
+        "spec is off its pin" + also, first,
+        "names the bump-leg.py line for code.")
+
+
+def test_the_legs_own_digest_promises_no_line(project, advanced, tmp_path):
+    """#702's S15: the spec gitlink committed by hand, and both pins'
+    digests written wrong. The spec digest is recomputed at its pin's
+    commit, so it outlasts the gitlink put back: both findings name the
+    step and promise no line, and after it the gate names none."""
+    moved = moved_by_hand(project, tmp_path, {"spec": advanced},
+                          both_digests)
+    root = moved["root"]
+    result = gate(root)
+    assert result.returncode == 1, result.stdout + result.stderr
+    none = "names no line while spec's own pin-digest-mismatch stands."
+    assert block(result.stderr, "pin-gitlink-mismatch")[-1] == held(
+        "code is out of step too (pin-digest-mismatch)", PUT_SPEC_BACK, none)
+    assert block(result.stderr, CODE_DIGEST)[-1] == held(
+        "spec is off its pin", PUT_SPEC_BACK, none)
+    put_back(root, "spec", moved["pins"]["spec"])
+    after = gate(root)
+    assert after.returncode == 1, after.stdout + after.stderr
+    assert "bump-leg.py" not in after.stderr, after.stderr
+
+
+def undo_the_move(root: Path, moved: dict) -> None:
+    """The other route: the commit that moved the spec leg reverted, and
+    the leg checked out at the gitlink that restores (#702)."""
+    git("revert", "--no-edit", moved["base"], cwd=root)
+    git(*FILE_PROTOCOL, "submodule", "update", "--", "spec", cwd=root)
+
+
+#: The two routes the step names, each as it is taken by hand.
+ROUTES = {
+    "put back": lambda root, moved: put_back(
+        root, "spec", moved["pins"]["spec"],
+        workflow_at("spec", moved["pins"]["spec"])),
+    "undo": undo_the_move,
+}
+
+
+@pytest.mark.parametrize("route", sorted(ROUTES))
+def test_a_reference_moved_with_the_gitlink_goes_back_with_it(
+        standard, project, advanced, tmp_path, route):
+    """#702's S18: the spec gitlink and a workflow reference to the spec
+    leg moved together by hand, then the code pin's digest written wrong.
+    The reference agrees with the gitlink, so the gate does not report it,
+    and the step names it. Taken either way, the gate then names the code
+    leg's line; run as printed, and then the spec bump the gitlink's
+    finding offers for a move that was meant, the root is COMPLIANT."""
+    moved = moved_by_hand(project, tmp_path, {"spec": advanced},
+                          workflow_at("spec", advanced))
+    root = moved["root"]
+    digest_moved(root, "code")
+    git("commit", "-qam", "the code digest, by hand", cwd=root)
+    result = gate(root)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert block(result.stderr, "pin-gitlink-mismatch")[-1] == held(
+        "code is out of step too (pin-digest-mismatch)", PUT_SPEC_BACK,
+        code_named("the bump-leg.py line", advanced))
+    ROUTES[route](root, moved)
+    cleared = gate(root)
+    assert cleared.returncode == 1, cleared.stdout + cleared.stderr
+    line = f"    {bump_of(root, 'code')} {pin_of(root, 'code')}"
+    assert block(cleared.stderr, "pin-digest-mismatch")[-1] == line
+    run_from_the_standard(standard, line.strip())
+    run_from_the_standard(standard, f"{bump_of(root)} {advanced}")
+    assert_compliant(standard, root)
 
 
 @pytest.mark.parametrize("code", ["pin-digest-mismatch",

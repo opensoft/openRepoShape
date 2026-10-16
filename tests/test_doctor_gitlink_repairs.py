@@ -460,11 +460,14 @@ def gate_says(root: Path) -> list[str]:
     return gate.stderr.splitlines()
 
 
-def put_back(root: Path, role: str, pin: str) -> None:
+def put_back(root: Path, role: str, pin: str, also=None) -> None:
     """What comes first, done by hand: the `role` leg checked out at its
-    pin, and its gitlink committed in the root (#478, #677)."""
+    pin, and its gitlink committed in the root with whatever `also(root)`
+    puts back beside it, its workflow references (#478, #677)."""
     git("checkout", "-q", "--detach", pin, cwd=root / role)
-    git("add", "--", role, cwd=root)
+    if also is not None:
+        also(root)
+    git("add", "-A", "--", ".", cwd=root)
     git("commit", "-qm", f"put the {role} leg back", cwd=root)
 
 
@@ -500,8 +503,9 @@ def test_two_legs_off_their_pins_name_no_line_and_say_what_comes_first(
             "root's whole validate-pins.py before it commits, rolling the bump "
             "back when it is red. First put one leg's gitlink back at its pin "
             "(check that leg out at the pin's commit and commit its gitlink "
-            "in the root), or undo the commit that moved them; this row then "
-            "names the two bump-leg.py lines for the leg that is left")
+            "in the root), or undo the commit that moved them and run `git "
+            "submodule update -- spec code` in the root; this row then names "
+            "the two bump-leg.py lines for the leg that is left")
     assert row["reason"].endswith(". " + held), row["reason"]
     lines = gate_says(root)
     assert not [line for line in lines if "scripts/bump-leg.py" in line]
@@ -510,6 +514,8 @@ def test_two_legs_off_their_pins_name_no_line_and_say_what_comes_first(
         "both off their pins: ")]
     assert len(said) == 2, lines
     assert "First put one leg's gitlink back at its pin" in said[0], said
+    assert ("or undo the commit that moved them and run `git submodule "
+            "update -- spec code` in this root;") in said[0], said
     put_back(root, "spec", pins["spec"])
     repairs = pins_row(standard, root)["detail"]["gitlink_repairs"]
     assert [leg["role"] for leg in repairs] == ["code"], repairs
@@ -564,6 +570,29 @@ ANOTHER_LEG = {
 }
 
 
+def both_digests(root: Path) -> None:
+    """The spec pin's digest and the code pin's, both written wrong: the
+    spec digest is recomputed at its pin's commit, so it outlasts the spec
+    gitlink put back there, and two legs are out of step after it (#702's
+    S15)."""
+    digest_moved(root)
+    digest_moved(root, "code")
+
+
+def spec_held(code: str, then: str) -> str:
+    """The `pins` row's sentence for the spec gitlink held back by the code
+    leg's `code` (#677), ending on `then`."""
+    return (f"No single bump-leg.py line can commit while code is out of "
+            f"step too ({code}): bump-leg.py moves one leg and runs the "
+            "root's whole validate-pins.py before it commits, rolling the "
+            "bump back when it is red. First put spec's gitlink back at its "
+            "pin (check that leg out at the pin's commit and commit its "
+            "gitlink in the root, with every workflow reference to its "
+            "repository at that commit too), or undo the commit that moved it "
+            "and run `git submodule update -- spec` in the root; the gate "
+            f"then {then}")
+
+
 @pytest.mark.parametrize("code", sorted(ANOTHER_LEG))
 def test_another_legs_finding_waits_on_the_gitlink_put_back(
         standard, project, advanced, tmp_path, code):
@@ -584,20 +613,29 @@ def test_another_legs_finding_waits_on_the_gitlink_put_back(
                                         "findings": [code]}],
         "manifest": False}, row["detail"]
     lines = "line" if code == "pin-digest-mismatch" else "lines"
-    assert row["reason"].endswith(
-        ". No single bump-leg.py line can commit while code is out of step "
-        f"too ({code}): bump-leg.py moves one leg and runs the root's whole "
-        "validate-pins.py before it commits, rolling the bump back when it is "
-        "red. First put spec's gitlink back at its pin (check that leg out at "
-        "the pin's commit and commit its gitlink in the root), or undo the "
-        "commit that moved it; the gate then names the bump-leg.py "
-        f"{lines} for code"), row["reason"]
+    assert row["reason"].endswith(". " + spec_held(
+        code, f"names the bump-leg.py {lines} for code, and if spec's move "
+        f"was meant, bumping spec to {advanced[:12]} after that line keeps "
+        "it")), row["reason"]
     put_back(root, "spec", moved["pins"]["spec"])
     after = pins_row(standard, root)
     assert after == gate_row(standard, root), after
     assert f"FINDING {code}: " in after["reason"], after["reason"]
     named = [line for line in gate_says(root) if "scripts/bump-leg.py" in line]
     assert named[0].endswith(f" --leg code --to {pin_of(root, 'code')}"), named
+
+
+def test_the_legs_own_digest_promises_no_line(standard, project, advanced,
+                                              tmp_path):
+    """The spec gitlink committed by hand, and both pins' digests written
+    wrong (#702's S15): the spec digest outlasts the gitlink put back, so
+    the row names the step and promises no line after it."""
+    moved = moved_by_hand(project, tmp_path, {"spec": advanced},
+                          both_digests)
+    row = pins_row(standard, moved["root"])
+    assert row["reason"].endswith(". " + spec_held(
+        "pin-digest-mismatch", "names no line while spec's own "
+        "pin-digest-mismatch stands")), row["reason"]
 
 
 def test_a_red_manifest_gate_holds_the_lines_back(standard, project, advanced,
