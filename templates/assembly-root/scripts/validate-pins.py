@@ -46,8 +46,9 @@ EXIT CODES
     1  a FINDING: drift a reviewer can act on
     2  a REFUSAL: the question could not be asked — an uninitialized submodule,
        an unresolvable commit, an unreadable pin or workflow file (one that is
-       not UTF-8, or that this user cannot open). An unanswerable pin question
-       is never an implicit pass.
+       not UTF-8, or that this user cannot open), or a `.github/workflows/`
+       directory this user cannot list or search (#434). An unanswerable pin
+       question is never an implicit pass.
        No git to run is one too (`git-not-runnable`, #412), a git that is
        missing, will not run or cannot be executed: the gitlinks and the
        digests are read through git.
@@ -56,12 +57,13 @@ EXIT CODES
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
 import shlex
 import stat
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
@@ -214,7 +216,9 @@ def _workflow_unreadable(files: list[_Unreadable]) -> Refusal:
     if not all(one.encoding for one in files):
         advice += (
             "A `cannot be read` file is not an encoding failure: this user "
-            "cannot open it, so restore read access to it. ")
+            "cannot open it, so restore read access to it, and search access "
+            "to every directory above it inside the root (a file in a "
+            "directory this user can list but not search cannot be opened). ")
     return Refusal(
         "workflow-unreadable",
         "\n".join(one.line for one in files),
@@ -228,9 +232,82 @@ def _workflow_unreadable(files: list[_Unreadable]) -> Refusal:
         + advice + "Then run the same command again.")
 
 
+#: The `OSError`s that `Path.is_file()` and `Path.is_dir()` answered False to
+#: on Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means there
+#: is nothing at the name to open: no such file, a part of the path that is
+#: not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". Every other one was raised.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `stat.S_ISDIR`),
+    raising the `OSError` of a `stat` the operating system REFUSED (#434).
+
+    NOT `Path.is_file()` OR `Path.is_dir()`, whose answer depends on the
+    Python. Up to 3.13 they raised a refused `stat` (`PermissionError`) and
+    answered False only when nothing was there; from 3.14 they call
+    `os.path.isfile` and `isdir`, which answer False to ANY `OSError`. On
+    3.14 a `.github/` this user cannot search read as "no workflows", and
+    every file of a workflows directory it can list but not search read as
+    "not a file": `pins ok` over workflows nobody read, which is the one
+    thing this validator exists to prevent. Asked here, every Python answers
+    as 3.9 to 3.13 did, and a refused `stat` is an error that is named. The
+    same reason `_digest_from_source` gives for its own `stat()`.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    return kind(mode)
+
+
+def _workflows_unlistable(root: Path, workflows: Path,
+                          exc: OSError) -> Refusal:
+    """`workflow-unreadable` for the DIRECTORY, named as one (#434).
+
+    The id a workflow file this user cannot open has (#359), so one id says
+    "this validator cannot read the workflows" whatever the cause, in the
+    words that file's line uses: `<path relative to root>: cannot be listed
+    (<the operating system's reason>)`, POSIX and never absolute. The
+    remediation is its own, because `_workflow_unreadable`'s counts files and
+    a directory this user cannot list has none to count.
+
+    The advice follows the cause. A refusal of permission (`PermissionError`,
+    `EACCES` and `EPERM`) is put right by the mode or the owner, on the
+    directory and on every one above it inside the root, since a `.github/`
+    this user cannot search hides `workflows/` as surely as its own mode.
+    Any other `OSError` (an I/O error, too many open files, a directory
+    replaced while this ran) is not a permission and is not told to `chmod`.
+    """
+    advice = (
+        "Restore read and search access to .github/workflows/ and to every "
+        "directory above it inside the root (`chmod u+rx` on each, or fix who "
+        "owns them). " if isinstance(exc, PermissionError) else
+        "Where the operating system gave another reason, put a directory "
+        "this user can list back in its place, and make sure nothing is "
+        "changing it while this runs. ")
+    return Refusal(
+        "workflow-unreadable",
+        f"{workflows.relative_to(root).as_posix()}: cannot be listed "
+        f"({exc.strerror or type(exc).__name__})",
+        "Remediation: this validator reads every `.yml` and `.yaml` file "
+        "under .github/workflows/, whether or not it names a leg, and "
+        "neither skips one nor reads one lossily: a workflow it skipped "
+        "could hide a `@<sha>` reference that is out of lockstep, which is "
+        "what it exists to find, and a directory it cannot list is one whose "
+        "workflows it cannot read. " + advice
+        + "Then run the same command again.")
+
+
 def _workflow_refs(root: Path) -> list[tuple[Path, str, str]]:
     """Every (file, owner/repo, sha) `@<sha>` reference in the workflows, or
-    ONE refusal naming each workflow file that cannot be read (#359).
+    ONE refusal naming each workflow file that cannot be read (#359), or the
+    workflows directory when this user cannot list it (#434).
 
     EVERY FILE IS READ, whether or not it names a leg: the file is opened
     before it is known to hold a reference, so a UTF-16 workflow that names no
@@ -238,14 +315,40 @@ def _workflow_refs(root: Path) -> list[tuple[Path, str, str]]:
     `main()` does not catch: a traceback, exit 1 -- the code this validator
     uses for a finding). It is a REFUSAL, exit 2, `workflow-unreadable`, as a
     pin that is not UTF-8 is `yaml-unreadable`: the question cannot be asked.
+
+    THE DIRECTORY IS THE SAME REFUSAL, BY ANOTHER CAUSE (#434). The three
+    calls that reach a workflow had no handler either: `workflows.is_dir()`,
+    `workflows.iterdir()` and `is_file()` on each child, and `main()` catches
+    `Refusal` alone, so a `.github/workflows/` this user could not list, one
+    it could list and not search, or a `.github/` it could not search ended
+    the run in a `PermissionError` traceback, exit 1. A directory it cannot
+    reach is refused by name, and so is each file whose `stat` is refused (the
+    directory listable and not searchable): the same `cannot be read` line a
+    file it cannot open gets, never a file skipped as "not a file", because a
+    skipped workflow could hide a `@<sha>` reference that is out of lockstep.
+    Only a name with nothing at it (`_is_a` is False) is "no workflows", as it
+    always was.
     """
     out: list[tuple[Path, str, str]] = []
     unreadable: list[_Unreadable] = []
     workflows = root / ".github" / "workflows"
-    if not workflows.is_dir():
-        return out
-    for path in sorted(workflows.iterdir()):
-        if path.suffix not in (".yml", ".yaml") or not path.is_file():
+    try:
+        if not _is_a(workflows, stat.S_ISDIR):
+            return out
+        children = sorted(workflows.iterdir())
+    except OSError as exc:
+        raise _workflows_unlistable(root, workflows, exc) from exc
+    for path in children:
+        if path.suffix not in (".yml", ".yaml"):
+            continue
+        try:
+            if not _is_a(path, stat.S_ISREG):
+                continue
+        except OSError as exc:
+            # The words `_read_workflow` gives a file it cannot open.
+            unreadable.append(_Unreadable(
+                f"{path.relative_to(root).as_posix()}: cannot be read "
+                f"({exc.strerror or type(exc).__name__})", False))
             continue
         text, problem = _read_workflow(root, path)
         if problem is not None:
