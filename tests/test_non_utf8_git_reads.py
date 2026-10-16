@@ -143,6 +143,48 @@ def test_make_file_writes_the_name_that_is_not_utf8_where_the_system_has_it(
     assert target.read_bytes() == b"on: [push]\n"
 
 
+def assert_shown_without_hex_escapes(shown: str, output: str) -> None:
+    """Assert that the refusal's line for `caf\u00e9.yml` holds no literal
+    `\\x`, or skip where this system's file name encoding is not UTF-8.
+
+    On a Latin-1 host `make_file` writes the one byte 0xE9 for it, and the
+    tool, which decodes git's bytes as UTF-8, rightly prints `caf\\xe9.yml`:
+    the assertion would fail though the tool is right (#663, NIT-1). So it
+    is asked after the system's encoding is, and a system whose encoding is
+    not UTF-8 skips. (Where `make_file` could not write the name at all, an
+    ASCII host, it skipped already.)"""
+    if os.fsencode(UTF8) != UTF8.encode("utf-8"):
+        pytest.skip("this system's file name encoding is not UTF-8, so a "
+                    "UTF-8 name is not written as the bytes the tool decodes")
+    assert "\\x" not in shown, output
+
+
+def test_the_hex_escape_check_skips_where_the_file_name_encoding_is_not_utf_8(
+        monkeypatch):
+    """THE LATIN-1 HOST, EMULATED (#663, NIT-1): `os.fsencode` gives the name
+    `caf\u00e9.yml` as the one byte 0xE9, the line holds a `\\x`, and the
+    check skips, where it would otherwise fail on a tool that is right."""
+    monkeypatch.setattr(os, "fsencode", lambda name: name.encode("latin-1"))
+    reason = skip_message(assert_shown_without_hex_escapes,
+                          r"    M .github/workflows/caf\xe9.yml", "output")
+    assert reason is not None, "the check asserted instead of skipping"
+    assert "UTF-8" in reason, reason
+
+
+def test_the_hex_escape_check_asserts_where_the_file_name_encoding_is_utf_8(
+        monkeypatch):
+    """The control: Windows' `os.fsencode` (emulated), like Linux's and
+    macOS's, is UTF-8 for text, so the check is not skipped, and it still
+    fails a line that holds a `\\x` and passes one that does not."""
+    monkeypatch.setattr(os, "fsencode", windows_fsencode)
+    reason = skip_message(assert_shown_without_hex_escapes,
+                          "    M .github/workflows/caf\u00e9.yml", "output")
+    assert reason is None, reason
+    with pytest.raises(AssertionError):
+        skip_message(assert_shown_without_hex_escapes,
+                     r"    M .github/workflows/caf\xc3\xa9.yml", "output")
+
+
 def git_bytes(*args: str, cwd: Path) -> bytes:
     """`git <args>` in `cwd`, stdout as the bytes git wrote. `conftest.git`
     decodes as text, which is the failure under test."""
@@ -269,9 +311,9 @@ def test_a_name_that_is_utf8_under_quote_path_false_is_still_refused(
     [shown] = [line for line in result.stderr.splitlines()
                if line.startswith("    M .github/workflows/caf")]
     assert shown.endswith(".yml"), output
-    assert "\\x" not in shown, output
     assert "Traceback" not in output, output
     assert found(project) == before
+    assert_shown_without_hex_escapes(shown, output)
 
 
 def test_the_refusal_names_every_dirty_file_whatever_its_bytes(

@@ -14,6 +14,10 @@ CI runs the suite on Linux only (#597), so what Windows answers is EMULATED:
 `os.fsencode` is replaced for one test by `windows_fsencode`, which gives a
 surrogate three bytes, as Windows' does. No Windows run was made. macOS's
 EILSEQ is emulated the same way, by a `mkdir` that answers it.
+
+The two tools the tests below are written with are held here too:
+`skip_message`, which every one of them reads a skip with, and
+`windows_fsencode`, the emulation itself.
 """
 
 from __future__ import annotations
@@ -41,6 +45,49 @@ def mkdir_answers(code: int, said: str):
     def refuse(self, *args, **kwargs):
         raise OSError(code, said, str(self))
     return refuse
+
+
+# --- `skip_message`: how every test below reads a skip -----------------------
+#
+# A skip that ESCAPES a helper ends its test SKIPPED, and no run fails on a
+# skip: a `skip_message` that let one out would turn every assertion below
+# that expects a skip, or expects none, into a silent skip. So the first test
+# catches the escape and fails it.
+
+def test_skip_message_returns_the_reason_a_call_skips_with():
+    try:
+        reason = skip_message(lambda: pytest.skip("x"))
+    except pytest.skip.Exception:
+        pytest.fail("the skip escaped skip_message, which would end the test "
+                    "SKIPPED, and no run fails on that")
+    assert reason == "x"
+
+
+def test_skip_message_returns_none_where_the_call_does_not_skip():
+    assert skip_message(lambda: None) is None
+
+
+def test_skip_message_lets_any_other_exception_go_on():
+    def not_a_skip():
+        raise ZeroDivisionError("not a skip")
+
+    with pytest.raises(ZeroDivisionError):
+        skip_message(not_a_skip)
+
+
+# --- `windows_fsencode`: the emulation is Windows' `os.fsencode` --------------
+
+def test_windows_fsencode_makes_three_bytes_of_a_surrogate_and_utf_8_of_text():
+    assert windows_fsencode("\udcff") == b"\xed\xb3\xbf"
+    assert windows_fsencode("caf\u00e9.yml") == "caf\u00e9.yml".encode("utf-8")
+
+
+def test_windows_fsencode_passes_bytes_through_as_os_fsencode_does():
+    """`os.fsencode` takes bytes on every system and gives them back; the
+    emulation that stands in for it must not fail on them."""
+    data = b"caf\xe9.yml"
+    assert os.fsencode(data) == data
+    assert windows_fsencode(data) == data
 
 
 # --- the system's question: what `os.fsencode` makes of the surrogate --------
