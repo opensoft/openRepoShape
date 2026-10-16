@@ -224,6 +224,25 @@ the adoption put in the other repository is not that file. A row whose path
 no leg holds is silent, because it can only settle a question, never make a
 finding. And a leg's `.gitmodules` is answered by `submodules:` alone.
 
+AN ANSWER AGAINST A RULE IS NOT MISPLACED (#655). The plan may keep a path in
+a leg its rule does not name -- `docs/`, which `spec-governance` puts in the
+spec leg, answered `code` with its reason -- and `execute` records that
+answer under `answered_paths:` as it records a question's. A walked path in
+the wrong leg whose every file one row answers into the leg it is in is
+held to the record as a question is: listed under `answered_paths` with the
+rule it overrode, said, and never a finding; a row naming the other leg
+settles nothing here either. A directory's row answers for every file under
+it, one added since the adoption too: no file is held to the row's
+`source_commit:`. A row naming a directory of its leg without the `/` a
+directory's row ends with answers nothing under it, as a plan entry spelled
+so covers nothing, and the leg's entry names it under `unslashed`, said and
+never a finding.
+
+AN EMPTY `.gitmodules` ASKS NOTHING (#655). One that holds no byte -- what a
+plain `git rm` of a leg's only submodule leaves, tracked -- registers no
+submodule, so the policy's question of it has no subject. The leg's entry
+names it under `empty_gitmodules`, the row says so, and it is no question.
+
 A SUBMODULE MOVED OR REMOVED SINCE THE ADOPTION (#525). Its row is a
 person's to change, by hand, in the pull request that bumps the pins; no
 command rewrites one. Until then a submodule in a leg its row does not name,
@@ -317,6 +336,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -581,6 +601,14 @@ MOVED = "moved"
 #: The key under `detail`, and under `counts`, of the `submodules:` rows no
 #: leg holds (#525); present only where there is one.
 UNHELD = "unheld"
+#: The key of a leg's entry naming its `.gitmodules` where that file holds
+#: no byte, so the policy has nothing to ask of it (#655); present only on a
+#: leg that has one.
+EMPTY_GITMODULES = "empty_gitmodules"
+#: The key of a leg's entry naming each `answered_paths:` row for that leg
+#: whose path is a directory of it written without its `/` (#655); present
+#: only on a leg that has one.
+UNSLASHED = "unslashed"
 #: The `why` of a row whose every path in the wrong leg is a submodule moved
 #: since the adoption (#525). Its NEXT is this doctor again, as the
 #: `manifest kinds` row's is for a file only a person can mend
@@ -5611,28 +5639,71 @@ def held_clauses(detail: dict) -> str:
     no submodule at all, or only misplaced ones, which `misplaced_clauses`
     names -- so that no reason ends on a separator with nothing after it.
     """
+    legs = detail.get("legs") or []
     clauses = (kept_submodules(detail.get("submodules") or []),
-               answered_clause(detail.get("legs") or []),
+               answered_clause(legs),
+               empty_clause(legs),
                answers_clause(detail.get(ANSWERED_PATHS) or []),
+               unslashed_clause(legs),
                unheld_clause(detail.get(UNHELD) or []))
     said = "; ".join(clause for clause in clauses if clause)
     return f"; {said}" if said else ""
 
 
 def answers_clause(answered: list) -> str:
-    """The clause naming the questions `answered_paths:` answered, each with
-    the rule that asked it, or "" where it answered none (#525).
+    """The clauses naming the paths `answered_paths:` answered, each with the
+    rule behind it, or "" where it answered none: the questions the policy
+    asks (#525), then the paths a rule puts in another leg (#655).
 
     SAID, as the `.gitmodules` the record answers is said: the row no longer
-    counts these among the paths the policy will not call, and a reader who
-    knows the policy asks of them is owed where the answer came from.
+    counts these among the paths the policy will not call, or puts
+    elsewhere, and a reader who knows the policy is owed where the answer
+    came from. SAID APART, because a question the policy asked and a rule
+    the plan answered against are not the same claim, and the second names
+    the leg the rule gives.
     """
-    if not answered:
+    asked = [row for row in answered if row["classified_as"] is None]
+    against = [row for row in answered if row["classified_as"] is not None]
+    clauses = []
+    if asked:
+        named = first_three([f"{row['path']} (rule {row['rule']})"
+                             for row in asked])
+        clauses.append(f"{THE_ANSWERS} answers the question the policy asks "
+                       f"of {len(asked)} path(s) (#525): {named}")
+    if against:
+        named = first_three([f"{row['path']} ({row['classified_as']} by rule "
+                             f"{row['rule']})" for row in against])
+        clauses.append(f"{THE_ANSWERS} answers {len(against)} path(s) into "
+                       "the leg they are in, which a rule puts elsewhere "
+                       f"(#655): {named}")
+    return "; ".join(clauses)
+
+
+def empty_clause(legs: list) -> str:
+    """The clause naming each leg's `.gitmodules` that holds no byte, or ""
+    where none does (#655). SAID, as the one the record answers is: a reader
+    who knows the policy asks about every `.gitmodules` is owed why this one
+    was not asked."""
+    empty = [path for leg in legs for path in leg.get(EMPTY_GITMODULES) or []]
+    if not empty:
         return ""
-    named = first_three([f"{row['path']} (rule {row['rule']})"
-                         for row in answered])
-    return (f"{THE_ANSWERS} answers the question the policy asks of "
-            f"{len(answered)} path(s) (#525): {named}")
+    return (f"the policy asks nothing of {len(empty)} `.gitmodules` that "
+            "hold(s) no byte and so register(s) no submodule (#655): "
+            f"{', '.join(empty)}")
+
+
+def unslashed_clause(legs: list) -> str:
+    """The clause naming each `answered_paths:` row that names a directory of
+    its leg without its `/`, or "" where none does (#655). SAID, and never a
+    finding nor what keeps the row off `ok`: such a row answers nothing,
+    which is said so that its writer is not left to wonder why the question
+    it was meant to answer is still asked."""
+    rows = [path for leg in legs for path in leg.get(UNSLASHED) or []]
+    if not rows:
+        return ""
+    return (f"{len(rows)} row(s) of {THE_ANSWERS} name a directory without "
+            "the `/` a directory's row ends with, so each answers nothing "
+            f"under it (#655): {first_three(rows)}")
 
 
 def unheld_clause(unheld: list) -> str:
@@ -5925,8 +5996,9 @@ def walked_findings(walked: list, role: str, rel: str,
 
 def answered_questions(adopt, review: list, role: str, files: list,
                        answers: dict) -> tuple:
-    """The leg's questions, less those `answered_paths:` answered into THIS
-    leg; and those, as entries of their own (#525).
+    """`review` -- the leg's questions, or its walked paths in the wrong leg
+    (#655) -- less those `answered_paths:` answered into THIS leg; and
+    those, as entries of their own (#525).
 
     A QUESTION IS ANSWERED WHEN EVERY FILE UNDER IT IS. The doctor's walk
     folds a leg's files as they fall in that leg, not as they fell in the
@@ -5937,35 +6009,54 @@ def answered_questions(adopt, review: list, role: str, files: list,
     this leg. A file the record does not cover, or covers twice, leaves the
     question asked.
 
+    A PATH IN THE WRONG LEG IS HELD TO THE RECORD THE SAME WAY (#655). The
+    plan may keep a path in a leg its rule does not name, and `execute`
+    records that answer as it records a question's: a path whose every file
+    one row answers into this leg is the plan's answer, not MISPLACED. Its
+    entry keeps the rule and the leg the rule gives (`classified_as`), so
+    the reader is told which rule the record answered against.
+
     A ROW NAMING THE OTHER LEG SETTLES NOTHING AND ASSERTS NOTHING. The
     record confers nothing, and a file in this repository named like one the
     adoption put in the other is not that file, so it stays the question it
-    was -- a `note` -- and is never MISPLACED. Nor is the leg's
-    `.gitmodules` answered here: `submodules:` answers it, and only where it
-    places every submodule the file registers (`gitmodules_the_record_
-    answers`).
+    was -- a `note` -- and is never MISPLACED; a path in the wrong leg stays
+    MISPLACED, by its rule. Nor is the leg's `.gitmodules` answered here:
+    `submodules:` answers it, and only where it places every submodule the
+    file registers (`gitmodules_the_record_answers`).
 
     NO RECORD, NO SCAN (#525). A project with no `answered_paths:` --
     every one adopted before #525 -- returns its questions as they are,
     which is what the loop below would return for them, without holding
     each question against every file of its leg.
+
+    ONE PASS OVER THE LEG'S FILES (#655). Each file is looked up by the
+    names `_covering` could find covering it (`_covering_names`), in the
+    paths found and in the record, rather than every path found being held
+    against every file: called twice, for the questions and for the paths
+    in the wrong leg, a leg costs its files times their depth.
     """
-    if not answers:
+    if not answers or not review:
         return review, []
-    rows = list(answers)
+    found = {row["path_in_leg"] for row in review}
+    under: dict = {}
+    covering: dict = {}
+    for path in files:
+        names = adopt._covering_names(path)
+        for name in names:
+            if name in found:
+                under.setdefault(name, []).append(path)
+                covering[path] = [by for by in names if by in answers]
     still: list = []
     answered: list = []
     for row in review:
-        found = row["path_in_leg"]
-        under = [path for path in files
-                 if adopt._covering([found], path)]
-        covering = [adopt._covering(rows, path) for path in under]
-        if (found == adopt.GITMODULES or not under
-                or any(len(by) != 1 or answers[by[0]].get("leg") != role
-                       for by in covering)):
+        paths = under.get(row["path_in_leg"], [])
+        if (row["path_in_leg"] == adopt.GITMODULES or not paths
+                or any(len(covering[path]) != 1
+                       or answers[covering[path][0]].get("leg") != role
+                       for path in paths)):
             still.append(row)
             continue
-        by = list(dict.fromkeys(paths[0] for paths in covering))
+        by = list(dict.fromkeys(covering[path][0] for path in paths))
         resolution = answers[by[0]].get("resolution")
         answered.append({
             **row, "confidence": SUBMODULE_RECORDED, "review_required": False,
@@ -5973,6 +6064,67 @@ def answered_questions(adopt, review: list, role: str, files: list,
             "resolution": (resolution if len(by) == 1
                            and isinstance(resolution, str) else None)})
     return still, answered
+
+
+def empty_gitmodules(adopt, review: list, mount: Path) -> tuple:
+    """The leg's questions less its `.gitmodules` where that file holds no
+    byte, and that file's path in the row, or [] (#655).
+
+    AN EMPTY `.gitmodules` REGISTERS NO SUBMODULE, so the question rule
+    `ambiguous-gitmodules` asks of it -- which leg owns the submodules it
+    registers -- has no subject, and no answer could be wrong. It is what a
+    plain `git rm` of a leg's only submodule leaves, tracked; the doctor
+    asked it on every run, and no record could answer it: `answered_paths:`
+    leaves `.gitmodules` out, and `submodules:` answers it only where the
+    leg keeps a submodule. Not asking is the fix, rather than a row a
+    person writes by hand into the manifest to quiet a question that has
+    no subject.
+
+    NO BYTE, AND A REGULAR FILE, read on this disk as `leg_tracked_files`
+    reads a size: the file git's submodule commands read. One holding
+    anything -- a blank line, a comment, a section -- is one only git's own
+    reader could say registers nothing, so it stays the question it was.
+    git refuses to index a `.gitmodules` that is a symlink, and reads the
+    index's copy where the disk has none, so neither is the empty file.
+    """
+    for row in review:
+        if (row["path_in_leg"] == adopt.GITMODULES
+                and holds_no_byte(mount / adopt.GITMODULES)):
+            return [other for other in review if other is not row], [
+                row["path"]]
+    return review, []
+
+
+def holds_no_byte(path: Path) -> bool:
+    """Is `path` a regular file, not a link, of no byte (#655)?"""
+    try:
+        found = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(found.st_mode) and found.st_size == 0
+
+
+def unslashed_rows(answers: dict, role: str, rel: str, files: list) -> list:
+    """Each `answered_paths:` row for THIS leg whose path is a directory of
+    it written without the `/` a directory's row ends with, as its path in
+    the row (#655).
+
+    SUCH A ROW ANSWERS NOTHING UNDER IT. `_covering` reads a path without
+    its `/` as a file's, as `adopt-project.py check` reads a plan entry,
+    where the same spelling is `plan-empty-entry` beside a `plan-uncovered`
+    for each file under it. `execute` never writes one, a hand edit does,
+    and the project's `validate-manifest.py` cannot tell it from a file's
+    row, because it runs where the legs are not checked out. Here the leg
+    is read, so it is said. It is never read as the directory's row, which
+    would make one spelling name two things, and never a finding.
+    """
+    rows = [path for path, row in answers.items()
+            if row.get("leg") == role and not path.endswith("/")]
+    if not rows:
+        return []
+    directories = {path[:index] for path in files
+                   for index, char in enumerate(path) if char == "/"}
+    return [f"{rel}/{path}" for path in rows if path in directories]
 
 
 def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
@@ -6026,7 +6178,14 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     (`gitmodules_the_record_answers`): the file is placed, and the leg's
     entry names it under `answered` instead of as a question.
     Otherwise a real adoption, whose leg always holds the `.gitmodules` that
-    registers its submodules, could never read `ok`.
+    registers its submodules, could never read `ok`. One that holds no byte
+    asks nothing at all (`empty_gitmodules`, #655).
+
+    AND `answered_paths:` IS READ FOR THE QUESTIONS AND FOR THE PATHS IN THE
+    WRONG LEG ALIKE (#525, #655): `answered_questions` takes from each those
+    the record answers into this leg, which are returned apart, and
+    `unslashed_rows` names the rows for this leg that name a directory
+    without its `/`.
     """
     entry = {"role": role, "path": rel}
     mount = root / rel
@@ -6067,8 +6226,11 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     submodules, wrong = leg_submodules(policy, role, rel, held, record)
     answered = gitmodules_the_record_answers(adopt, submodules, unwritable)
     misplaced, review, settled = walked_findings(walked, role, rel, answered)
-    review, recorded = answered_questions(
-        adopt, review, role, [path for path, _ in kept], answers)
+    review, empty = empty_gitmodules(adopt, review, mount)
+    paths = [path for path, _ in kept]
+    review, recorded = answered_questions(adopt, review, role, paths, answers)
+    misplaced, against = answered_questions(adopt, misplaced, role, paths,
+                                            answers)
     misplaced += wrong
     # FILES AND PATHS ARE DIFFERENT NUMBERS and the row prints both. `walk`
     # folds a directory whose files agree into ONE entry, so `src/` with two
@@ -6079,10 +6241,12 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
                   "classified": len(kept), "paths": len(walked),
                   "misplaced": len(misplaced),
                   "review_required": len(review)})
-    if settled:
-        # Only when there is one, so that no other leg's entry changes.
-        entry[ANSWERED] = settled
-    return entry, misplaced, review, submodules, recorded
+    for key, said in ((ANSWERED, settled), (EMPTY_GITMODULES, empty),
+                      (UNSLASHED, unslashed_rows(answers, role, rel, paths))):
+        if said:
+            # Only when there is one, so that no other leg's entry changes.
+            entry[key] = said
+    return entry, misplaced, review, submodules, recorded + against
 
 
 def placement_policy(ctx: Context, policy_path: Path) -> tuple:
@@ -6474,10 +6638,10 @@ def moved_alone(adopt, detail: dict) -> bool:
     registers what moved in is the policy's question only because the row
     still names the other leg, so it goes with the move -- where every
     submodule that leg keeps is recorded there or moved in, and every name
-    in it could be read. So does the `.gitmodules` a plain `git rm` leaves,
-    tracked and empty, in the leg a moved submodule LEFT, where that leg now
-    keeps no submodule at all (#525). Anything else in the wrong leg,
-    or asked, keeps the plan as the NEXT.
+    in it could be read. So does the `.gitmodules` left in the leg a moved
+    submodule LEFT, where that leg now keeps no submodule at all (#525); the
+    empty one a plain `git rm` leaves there is no question at all (#655).
+    Anything else in the wrong leg, or asked, keeps the plan as the NEXT.
     """
     misplaced = detail["misplaced"]
     if not misplaced or not all(row.get(MOVED) for row in misplaced):
