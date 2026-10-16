@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# THE openreposhape PACKAGE (#563): a SECOND WAY IN, NEVER A REQUIREMENT.
+# Cloning this repository and running its tools with python3 and git alone
+# keeps working, and every tool stays standard-library only
+# (`tests/test_repo_hygiene.py` holds the package's own files to that too).
+# Brett Heap approved the design on #563 at 2026-10-15T13:32:51Z ("approve
+# all six for #563").
+#
+# THIN: the wheel holds `src/openreposhape/` as `openreposhape/`, plus ONE
+# file of this tree byte for byte, `setup-project.py`, so that `openRepoShape
+# --preflight` runs before git is installed. Every other run uses a full
+# clone of this repository at the commit the package was built from
+# (`src/openreposhape/standard.py`), so a pin means what it always meant.
+#
+# `src/`, AND NOT THE ROOT, because the root already holds `openRepoShape`,
+# the bash launcher: a directory `openreposhape/` beside it is the same name
+# on a case-insensitive disk (macOS's and Windows' default), and a clone
+# there could not hold both.
+
+[build-system]
+# PINNED, as every tool this repository's CI installs is: a build that
+# resolves the newest backend on the day it runs is a build whose bytes
+# depend on that day. 1.27.0 is the newest hatchling that still runs on
+# Python 3.9, the oldest Python this package supports (1.28.0 and later need
+# 3.10). Hatchling, because `force-include` below puts `setup-project.py`
+# into the package declaratively. Its wheels take their file times from
+# `SOURCE_DATE_EPOCH`, and the `package` job builds twice on one runner at
+# the commit's time and compares the two files; that is all it shows.
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openreposhape"
+# THE TAG IS THE ONE SOURCE OF THE VERSION: the release build writes it into
+# the stamp, `src/openreposhape/_release.py`, with the tag, the commit and
+# the digest, and this reads it from there. The committed stamp says 0.0.0.
+dynamic = ["version"]
+description = "openRepoShape's commands, run from a clone of the standard at the release's own commit"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "opensoft" }]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+# THE ONE DEPENDENCY, and none of the tools': `adopt-project.py` extracts a
+# leg's history with `git filter-repo`. The version CI runs and install.sh
+# installs (`.github/workflows/tests.yml`, `install.sh`'s FILTER_REPO_PIN).
+# pipx exposes only this package's commands, so each of them puts the
+# package environment's scripts directory first on PATH for its children
+# whenever a `git-filter-repo` is there (`standard.child_environment`).
+dependencies = ["git-filter-repo==2.47.0"]
+
+[project.urls]
+Homepage = "https://github.com/opensoft/openRepoShape"
+Issues = "https://github.com/opensoft/openRepoShape/issues"
+
+# THE FIVE COMMANDS, each a native `.exe` on Windows. `openRepoShape` is the
+# launcher's modes and flags; the other four run that tool from the clone,
+# arguments unchanged. The names README, AGENTS.md and `docs/cli.md` already
+# use, less `./` and `.py`.
+[project.scripts]
+openRepoShape = "openreposhape.cli:openreposhape"
+scaffold-project = "openreposhape.cli:scaffold_project"
+adopt-project = "openreposhape.cli:adopt_project"
+update-shape = "openreposhape.cli:update_shape"
+shape-doctor = "openreposhape.cli:shape_doctor"
+
+[tool.hatch.version]
+path = "src/openreposhape/_release.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openreposhape"]
+
+# The release's own `setup-project.py`, beside the package's modules, which
+# is where `standard.preflight_entry` looks for it.
+[tool.hatch.build.targets.wheel.force-include]
+"setup-project.py" = "openreposhape/setup-project.py"

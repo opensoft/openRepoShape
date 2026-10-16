@@ -1041,10 +1041,19 @@ def _shape_revision() -> tuple[str, str]:
     per-file sha256 rows are computed from the actual copies, so drift stays
     detectable — but it says so, loudly, because `commit:` and `tree_sha256`
     would then describe bytes nobody copied.
+
+    WHETHER THE CHECKOUT IS DIRTY IS ASKED OF GIT'S BYTES (#423). Only
+    whether `status --porcelain` printed anything is used, never what, so it
+    is not decoded at all. With `core.quotePath=false` git prints a file name
+    as the bytes it holds, and a name that is not UTF-8 (a checkout from a
+    filesystem that stores one) made `git_out`'s strict decode raise
+    `UnicodeDecodeError`: a traceback, exit 1, before a remote existed, where
+    this means to print the warning below and go on.
     """
     shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
     shape_tree = tree_digest(SHAPE_ROOT, shape_commit)
-    dirty = git_out(["status", "--porcelain"], cwd=SHAPE_ROOT)
+    dirty = bool(git_out(["status", "--porcelain"], cwd=SHAPE_ROOT,
+                         binary=True))
     if dirty:
         print(
             "WARNING the openRepoShape checkout is DIRTY. `commit:` and "
