@@ -1269,12 +1269,12 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="adopt">
 
-      <!-- reads README.md § Adopting an existing repository: blob a7e9e29f234e9ba7dfd20b0cc53aa773d51d0366 -->
+      <!-- reads README.md § Adopting an existing repository: blob b23e9f9819cedc3e6ca6321c811b6d11da8de508 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Adopting an existing repository</h2>
-      <p>A repository that already exists is converted <strong>in place</strong>. It KEEPS ITS NAME,
-      which <code>--project</code> must be, ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly root, while
+      <p>A repository that already exists is converted <strong>in place</strong>. It KEEPS ITS NAME
+      (which <code>--project</code> must be), ITS IDENTITY AND ITS FULL HISTORY, and becomes the assembly root, while
       <code>&lt;Project&gt;-spec</code> and <code>&lt;Project&gt;-code</code> are NEW repositories
       extracted with history-preserving filters. The source is never deleted, never renamed and
       never force-pushed; the only change to its history is ONE split commit, arriving on a branch

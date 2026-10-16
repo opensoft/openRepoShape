@@ -768,8 +768,8 @@ it satisfies no leg form to be admitted into, and is still refused as any leg.
 ## Adopting an existing repository
 
 A repository that already exists is converted **in place**, by `adopt-project.py`,
-and this is a ruling (**Brett Heap, 2026-09-02**): it KEEPS ITS NAME, which
-`--project` must be, ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly
+and this is a ruling (**Brett Heap, 2026-09-02**): it KEEPS ITS NAME (which
+`--project` must be), ITS IDENTITY AND ITS FULL HISTORY, and becomes the assembly
 root, while `<Project>-spec` and `<Project>-code` are NEW repositories extracted
 with history-preserving filters. The source is never deleted, never renamed and
 never force-pushed; the only change to its history is ONE split commit, arriving
