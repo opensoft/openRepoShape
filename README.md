@@ -631,7 +631,9 @@ reminder — App first — when they create a private or internal leg.
 only to PUBLIC repositories, and `validate` runs in the root, so on a private
 or internal root `secrets.SHAPE_LEGS_APP_ID` is silently empty and `validate`
 goes GREEN with the pin check skipped. Set both on the root, or upgrade to
-Team; a public root takes org secrets. The creating tools check and say so.
+Team; a public root takes org secrets registered with `--visibility all`, or
+`selected` with the root in it (the commands above default to `private`). The
+creating tools check and say so.
 
 The root repository is always readable by the workflow's own default token, so
 `actions/checkout` never carries a `token:` override. Putting a legs credential

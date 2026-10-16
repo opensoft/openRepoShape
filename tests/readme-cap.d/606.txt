@@ -1,8 +1,10 @@
-+8
++10
 2026-10-15
-Eight lines for four sentences #566, #572, #573 and #602 left false or incomplete
-in the README, once those pull requests landed (#606). Each is the words that
-pull request's own body held, as far as the code on main bore them out.
+Ten lines for four sentences: three that #566, #572 and #573 left false or
+incomplete in the README once those pull requests landed, and one that #621
+(#602) will leave false once it lands (#606). Each is the words that pull
+request's own body held, as far as the code bore them out, on main or, for
+#621, on its branch.
 One: "Ambiguous is an answer" said every entry the policy cannot call gets
 `leg: null` and that `execute` refuses while any remain. #566 gives one rule,
 a source's own `single-repository.yaml` record, a default: `plan` writes
@@ -22,13 +24,19 @@ the `yes`, because the plan is the scaffold's `--dry-run` and asks whether
 each of the three exists; a reader who expects the refusal after typing `yes`
 would not look at the plan. The sentence has to say where, and why, and that
 takes two lines (+2).
-Four: after #602 (#621) the Free-plan hint goes by the assembly root, where
-`validate` reads the secrets, and only when the root is private or internal; a
-public root over private legs takes the organisation's secrets and gets the
-per-leg note and no hint. The README still said "REPOSITORY secrets on the
-GitHub Free plan" of any project whose legs are private, which a public root
-makes false, and "on a private one" without saying which repository. The
-sentence under "Starting a project in a new organisation" is reworded in the six
-lines it had. The paragraph under "Reading private legs in CI" has to say that
-it is the root, that a public root is the exception and that the tools check it,
-and that takes one line more than it had (+1). #627 lands after #621.
+Four, written 2026-10-16: once #621 (#602) lands, the Free-plan hint goes by the
+assembly root, where `validate` reads the secrets, and only when the root is
+private or internal; a public root over private legs gets the per-leg note and
+no hint, because on Free the organisation's secrets reach public repositories.
+The README said "REPOSITORY secrets on the GitHub Free plan" of any project
+whose legs are private, which a public root makes false, and "on a private one"
+without saying which repository. The sentence under "Starting a project in a new
+organisation" is reworded in the six lines it had. The paragraph under "Reading
+private legs in CI" has to say that it is the root, that a public root is the
+exception, and on what condition: the `gh secret set --org` commands above it
+default to `--visibility private`, which on Free reaches no repository, so a
+public root told only that it "takes org secrets" would keep the silent green
+with the pin check skipped, and the sentence names `all`, or `selected` with the
+root in it. Naming the root and the exception takes one line more than the
+paragraph had (+1), the condition two (+2); that is +3 of the ten. #627 lands
+after #621.
