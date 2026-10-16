@@ -68,7 +68,7 @@ BAD_DIRECTORIES = [
     ("not-utf8", b"caf\xe9", NOT_UTF8),
     ("line-feed", b"line\nbreak", LINE_BREAK),
     ("escape", b"a\x1bb", CONTROL),
-    ("bidi-override", "‮evil".encode("utf-8"), BIDI),
+    ("bidi-override", "\u202eevil".encode("utf-8"), BIDI),
 ]
 BAD_IDS = [row[0] for row in BAD_DIRECTORIES]
 
@@ -146,7 +146,8 @@ def directory_named(tmp_path: Path, raw: bytes) -> Path:
     except (OSError, ValueError, UnicodeError) as error:
         pytest.skip(f"this disk cannot hold the name {raw!r}: {error}")
     path = Path(os.fsdecode(made))
-    assert path.is_dir() and os.listdir(path) == []
+    assert path.is_dir()
+    assert os.listdir(path) == []
     return path
 
 

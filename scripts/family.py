@@ -1137,8 +1137,9 @@ def _holder_remote(args, family: str) -> tuple[bool, str, str]:
     return local, repository, url
 
 
-#: What a `family-unwritable-value` is told to do (#433): another directory,
-#: or GitHub, as the scaffold's twin says (`CLONE_URL_REMEDIATION`).
+#: What a `family-unwritable-value` for the holder's clone URL is told to do
+#: (#433): another directory, or GitHub, as the scaffold's twin says
+#: (`CLONE_URL_REMEDIATION`).
 CLONE_URL_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
     "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
