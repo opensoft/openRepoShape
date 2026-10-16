@@ -27,6 +27,17 @@
 # into the package declaratively. Its wheels take their file times from
 # `SOURCE_DATE_EPOCH`, and the `package` job builds twice on one runner at
 # the commit's time and compares the two files; that is all it shows.
+#
+# THE RELEASE IS WHERE THE WHEEL IS SHOWN PATH-INDEPENDENT
+# (`.github/workflows/release.yml`, #563). This pin fixes hatchling alone,
+# so a build that installs it here, in pip's isolated build environment,
+# resolves hatchling's own requirements (packaging, pathspec, pluggy,
+# trove-classifiers, and tomli below 3.11) on the day it runs. The release
+# builds from `.github/release-build-requirements.txt`, which names
+# hatchling at this pin and each of those five by digest, twice, from two
+# `git archive` extractions of the tagged commit in two directories, with
+# `SOURCE_DATE_EPOCH` at the commit's time, and uploads nothing unless the
+# two builds are one file.
 requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
