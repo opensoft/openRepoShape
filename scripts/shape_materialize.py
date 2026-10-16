@@ -1467,6 +1467,11 @@ def target_remediation(why: str, holds: str, choose: str) -> str:
 #: `FetchRepository` says the same when the API returns no repository).
 GH_NOT_FOUND_WORDS = "Could not resolve to a Repository"
 
+#: The same answer from `gh api`, which asks GitHub's REST API: gh prints a
+#: REST error as `gh: <message> (HTTP <status>)` on stderr, with exit 1, and
+#: GitHub's message for a 404 is `Not Found` (#660).
+GH_API_NOT_FOUND_WORDS = "Not Found (HTTP 404)"
+
 #: Said by every refusal of a `gh repo view` that failed otherwise.
 GH_UNREADABLE_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
@@ -1475,6 +1480,19 @@ GH_UNREADABLE_REMEDIATION = (
     "other failure says nothing about whether it is. Check `gh auth status` "
     "(`gh auth login` where it names a token that is missing, bad or "
     "expired), or let a rate limit or an outage pass, then run this again.")
+
+
+def gh_said_not_found(probe, words: str = GH_NOT_FOUND_WORDS) -> bool:
+    """Is `probe`, a finished `gh` command, gh's own answer that what it asked
+    for does not exist: exit 1 with gh's not-found `words` on stderr (#609)?
+
+    The ONE reading of that answer, `refuse_unless_not_found`'s, with the
+    words for each API gh asks: `GH_NOT_FOUND_WORDS` for `gh repo view`, and
+    `GH_API_NOT_FOUND_WORDS` for `gh api`, which `organisation_plan` asks
+    (#660). Every other failure, a bad login, a rate limit or an outage, is
+    not this answer, whatever else it says.
+    """
+    return probe.returncode == 1 and words in (probe.stderr or "")
 
 
 def refuse_unless_not_found(repository: str, probe) -> None:
@@ -1495,7 +1513,7 @@ def refuse_unless_not_found(repository: str, probe) -> None:
     `probe` is the finished `subprocess.CompletedProcess` of the command;
     one that exited 0 is not asked about here.
     """
-    if probe.returncode == 1 and GH_NOT_FOUND_WORDS in (probe.stderr or ""):
+    if gh_said_not_found(probe):
         return
     lines = [line.strip()
              for line in (probe.stderr or probe.stdout or "").splitlines()
@@ -1598,23 +1616,41 @@ def repository_visibility(repository: str) -> str | None:
 
 def organisation_plan(org: str) -> str | None:
     """`"free"` when GitHub names `org`'s plan `free` (in any case, around any
-    whitespace), `"other"` when it names another, and None when it names none
-    (#660): `gh api orgs/<org>` failed (an organisation the token cannot
-    see, a rate limit, an outage) or could not be started, or answered with
-    no plan name, which is what `--jq .plan.name` prints where the field is
-    absent from what the token was shown.
+    whitespace), `"other"` when it names another, `"not-an-organisation"`
+    when gh says there is no organisation `org`, and None when GitHub names
+    no plan (#660): `gh api orgs/<org>` failed otherwise (an organisation
+    the token cannot see, a rate limit, an outage) or could not be started,
+    or answered with no plan name, which is what `--jq .plan.name` prints
+    where the field is absent from what the token was shown.
 
-    `free_plan_secret_hint` reads the same field and answers None for all
-    three of the last cases as for a paid plan, so a private root whose plan
-    could not be read was told nothing, the silent failure its own docstring
-    says it exists for. Each creating tool asks this instead, through
+    NO ORGANISATION IS NOT AN UNREAD PLAN. GitHub answers `GET /orgs/<login>`
+    with 404 where `<login>` is not an organisation, which is what a
+    repository owned by a personal account gives, and a personal account
+    has no organisation secrets for the hint to be about. gh's not-found
+    answer is read by `gh_said_not_found`, the reading
+    `refuse_unless_not_found` gives `gh repo view` (#609), so every other
+    failure stays unread. The command is run here rather than by `run`,
+    because that reading is of the finished command's own stderr, which
+    `run` folds into one text with stdout.
+
+    `free_plan_secret_hint` reads the same field and answers None for every
+    case but `free`, as for a paid plan, so a private root whose plan could
+    not be read was told nothing, the silent failure its own docstring says
+    it exists for. Each creating tool asks this instead, through
     `free_plan_secrets_note`, and names an unread plan.
     """
     try:
-        answer = run(["gh", "api", f"orgs/{org}", "--jq", ".plan.name"])
-    except (CommandFailed, OSError):
+        probe = subprocess.run(
+            ["gh", "api", f"orgs/{org}", "--jq", ".plan.name"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except OSError:
         return None
-    name = answer.strip().lower()
+    if gh_said_not_found(probe, GH_API_NOT_FOUND_WORDS):
+        return "not-an-organisation"
+    if probe.returncode != 0:
+        return None
+    name = (probe.stdout or "").strip().lower()
     if not name:
         return None
     return "free" if name == "free" else "other"
@@ -1633,7 +1669,7 @@ def free_plan_secrets_note(org: str, root: str,
       `FREE_PLAN_HINT`, with `root` alone as the repository that is private,
       as the scaffold and adopt name it since #602 and `family.py init` since
       #660; where the plan is unread, `FREE_PLAN_UNREAD`; on any other
-      plan, None.
+      plan, and where the owner is not an organisation, None.
 
     The scaffold passes the run's visibility for a root it created and
     GitHub's for one it reused, adopt GitHub's for the root it adopted, and

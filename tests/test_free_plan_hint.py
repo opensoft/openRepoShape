@@ -9,10 +9,19 @@ with the lockstep pin check degraded away. Measured on InkRouter, 2026-09-04:
 the App was installed on every repository and the org secrets existed at
 `visibility: all`, and both split pull requests still fetched no legs.
 
-So the hint has to be right in BOTH directions, and the tests below pin both:
-it appears on `free`, and it stays silent on every other answer — a paid plan,
-no `gh` on PATH, a failed call, an unparseable one. A wrong hint about
-credentials is worse than none.
+So the hint has to be right in BOTH directions. The tests below pin both of
+`free_plan_secret_hint`, the pinned copy's own reader in `repo_shape.py`: it
+appears on `free`, and it stays silent on every other answer — a paid plan,
+no `gh` on PATH, a failed call, an unparseable one — because a wrong hint
+about credentials is worse than none.
+
+NO CREATING TOOL CALLS IT SINCE #660. Each asks
+`shape_materialize.free_plan_secrets_note`, which gives the same hint on
+`free`, says nothing on a paid plan or for an owner that is not an
+organisation, and NAMES a plan it could not read, where this one is silent;
+`tests/test_free_plan_hint_reads.py` pins that. Here the last two tests pin
+that every tool asks it with its own organisation, and that the documents
+say the hint too.
 """
 
 from __future__ import annotations

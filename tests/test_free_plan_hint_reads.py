@@ -38,12 +38,15 @@ own tests below run everywhere.
 
 from __future__ import annotations
 
+import argparse
+import subprocess
 import sys
 
 import pytest
 
 import test_adopt_free_plan_hint_root as adopt_hint
-from conftest import ORG, PROJECT, REPO, WINDOWS_SKIP, run_script
+from conftest import (ORG, PROJECT, REPO, WINDOWS_SKIP, load_without_bytecode,
+                      run_script)
 from test_adopt_free_plan_hint_root import NORTHWIND, create_the_legs
 from test_scaffold_reuse_seeded_legs import fake_gh, on_github
 
@@ -59,8 +62,17 @@ HOLDER = "Orbit"
 #: The repository each tool's `validate` workflow runs in, by tool.
 ROOTS = {"scaffold": f"{ORG}/{PROJECT}", "adopt": f"{ORG}/{NORTHWIND}",
          "family": f"{ORG}/{HOLDER}"}
-#: An outage, as `gh` reports one on stderr with exit 1.
+#: What `gh` says on stderr, with exit 1: an outage; a token an organisation's
+#: SAML enforcement refuses (a 403, in GraphQL's words); a repository GitHub
+#: does not show it; and the REST 404 GitHub gives `orgs/<login>` for a login
+#: that is not an organisation, such as a personal account (#660's F1).
 BAD_GATEWAY = "HTTP 502: Bad Gateway (https://api.github.com/graphql)"
+SAML_REFUSED = ("GraphQL: Resource protected by organization SAML enforcement."
+                " You must grant your Personal Access token access to this "
+                "organization. (repository)")
+NOT_FOUND = ("GraphQL: Could not resolve to a Repository with the name "
+             f"'{ORG}/Orbit'. (repository)")
+NOT_AN_ORGANISATION = "gh: Not Found (HTTP 404)"
 PLAN_ASKED = f"api orgs/{ORG} --jq .plan.name"
 HINT = f"NOTE {ORG} is on the GitHub FREE plan"
 
@@ -125,12 +137,18 @@ def run_tool(tool: str, tmp_path, monkeypatch, capsys, module,
 #: hint naming the root, "root" the unread-visibility NOTE, "plan" the
 #: unread-plan NOTE, and None nothing about the secrets at all. A
 #: `visibility_errors` text fails the root's `--json visibility` read alone.
+#: An owner GitHub says is no organisation has no organisation secrets, so
+#: nothing is said of them: it is not a plan this run could not read.
 CASES = {
     "public": ("PUBLIC", {"plan": "free"}, None),
     "private": ("PRIVATE", {"plan": "free"}, "hint"),
     "visibility-502": ("PRIVATE", {"plan": "free",
                                    "visibility_errors": BAD_GATEWAY}, "root"),
+    "visibility-403": ("PRIVATE", {"plan": "free",
+                                   "visibility_errors": SAML_REFUSED}, "root"),
     "plan-502": ("PRIVATE", {"plan_error": BAD_GATEWAY}, "plan"),
+    "not-an-organisation": ("PRIVATE", {"plan_error": NOT_AN_ORGANISATION},
+                            None),
     "plan-unnamed": ("PRIVATE", {"plan": ""}, "plan"),
     "paid": ("PRIVATE", {"plan": "team"}, None),
 }
@@ -183,7 +201,8 @@ HOLDER_NOTE = (": give it a way to read the members you add that are private "
     ("PRIVATE", None, "private"),
     ("INTERNAL", None, "internal"),
     ("PRIVATE", {HOLDER: BAD_GATEWAY}, None),
-], ids=["public", "private", "internal", "visibility-502"])
+    ("PRIVATE", {HOLDER: NOT_FOUND}, None),
+], ids=["public", "private", "internal", "visibility-502", "visibility-404"])
 def test_init_notes_a_reused_holder_at_its_own_visibility(
         tmp_path, monkeypatch, capsys, seen, errors, noted):
     """L2-58 and the NOTE's half of L2-71. `init`'s NOTE goes by the reused
@@ -225,6 +244,36 @@ def test_init_asks_nothing_of_a_holder_it_creates(tmp_path):
     assert f"repo view {holder} --json visibility" not in calls, calls
 
 
+def test_init_takes_a_holder_gh_cannot_be_asked_about_as_unread(
+        monkeypatch, capsys):
+    """A reused holder whose visibility read cannot start `gh` (an `OSError`)
+    is unread, as a failed read is: `ROOT_VISIBILITY_UNREAD`, and no NOTE
+    and no hint at the run's `--visibility`, which is not the holder's
+    (#660's F8). In process, so it runs on every platform: the topic edit and
+    the plan are answered here, and nothing reaches `gh`."""
+    family = load_without_bytecode(FAMILY, "family_free_plan_hint_reads")
+    edits: list = []
+    monkeypatch.setattr(family, "run",
+                        lambda args, *_rest, **_keywords: edits.append(args))
+
+    def cannot_start(repository):
+        raise FileNotFoundError(2, "No such file or directory", "gh")
+
+    monkeypatch.setattr(family, "repository_visibility", cannot_start)
+    monkeypatch.setattr(shape_materialize, "organisation_plan",
+                        lambda org: "free")
+    holder = ROOTS["family"]
+    family._finish_holder_remote(
+        argparse.Namespace(org=ORG, visibility="private"), holder,
+        "xf-project-orbit", False, True)
+    printed = capsys.readouterr().out
+    assert unread_root(holder)[0] in printed, printed
+    assert f"NOTE {holder} is " not in printed, printed
+    assert HINT not in printed, printed
+    assert edits == [["gh", "repo", "edit", holder, "--add-topic",
+                      "xf-project-orbit"]]
+
+
 # --- the readers, on every platform -----------------------------------------
 
 def answering(monkeypatch, answer) -> list:
@@ -246,17 +295,41 @@ FAILED = shape_materialize.CommandFailed(["gh"], None, 1, BAD_GATEWAY)
 NO_GH = FileNotFoundError(2, "No such file or directory", "gh")
 
 
+#: The JSON body `gh api` prints on stdout for a REST 404.
+NOT_FOUND_BODY = ('{"message":"Not Found","documentation_url":"https://docs.'
+                  'github.com/rest/orgs/orgs#get-an-organization",'
+                  '"status":"404"}')
+
+
 @pytest.mark.parametrize("answer, plan", [
-    ("free", "free"), (" Free \n", "free"), ("team", "other"),
-    ("enterprise", "other"), ("", None), ("\n", None), (FAILED, None),
+    ((0, "free\n", ""), "free"), ((0, " Free \n", ""), "free"),
+    ((0, "team\n", ""), "other"), ((0, "enterprise\n", ""), "other"),
+    ((0, "", ""), None), ((0, "\n", ""), None),
+    ((1, NOT_FOUND_BODY, NOT_AN_ORGANISATION + "\n"), "not-an-organisation"),
+    ((1, "", "gh: Resource protected by organization SAML enforcement. (HTTP "
+             "403)\n"), None),
+    ((1, "", f"gh: {BAD_GATEWAY}\n"), None),
+    ((1, NOT_FOUND_BODY, f"gh: {BAD_GATEWAY}\n"), None),
     (NO_GH, None),
 ], ids=["free", "free-spaced", "team", "enterprise", "unnamed",
-        "blank-line", "failed", "no-gh"])
+        "blank-line", "not-an-organisation", "saml-403", "failed-502",
+        "not-found-on-stdout-alone", "no-gh"])
 def test_the_plan_is_free_other_or_unread(monkeypatch, answer, plan):
-    """`organisation_plan`: GitHub's word for the plan, `free` or any other,
-    and None where it names none, never "other" for a plan it did not
-    name."""
-    asked = answering(monkeypatch, answer)
+    """`organisation_plan`: GitHub's word for the plan, `free` or any other;
+    `not-an-organisation` where gh says, on stderr, that there is no such
+    organisation (the reading `refuse_unless_not_found` gives, #609); and
+    None where it names no plan, never "other" for a plan it did not name.
+    The command is asked of `subprocess.run`, faked here, since the reading
+    is of stderr alone."""
+    asked: list = []
+
+    def gh(args, *_rest, **_keywords):
+        asked.append(list(args))
+        if isinstance(answer, BaseException):
+            raise answer
+        return subprocess.CompletedProcess(args, *answer)
+
+    monkeypatch.setattr(shape_materialize.subprocess, "run", gh)
     assert shape_materialize.organisation_plan(ORG) == plan
     assert asked == [["gh", "api", f"orgs/{ORG}", "--jq", ".plan.name"]]
 
@@ -282,8 +355,9 @@ def test_a_visibility_read_is_one_of_three_or_unread(monkeypatch):
     (None, "free", "root"), ("public", "free", None),
     ("private", "free", "hint"), ("internal", "free", "hint"),
     ("private", "other", None), ("private", None, "plan"),
+    ("private", "not-an-organisation", None),
 ], ids=["unread-root", "public", "private-free", "internal-free",
-        "private-paid", "private-unread-plan"])
+        "private-paid", "private-unread-plan", "private-not-an-organisation"])
 def test_the_note_goes_by_both_answers(monkeypatch, visibility, plan, said):
     """`free_plan_secrets_note`, the one decision the three tools ask: the
     plan is asked only of a closed root, and what neither GitHub answer
