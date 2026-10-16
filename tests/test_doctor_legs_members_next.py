@@ -2005,18 +2005,27 @@ def test_pasted_there_the_git_line_fills_the_member_the_bootstrap_would_not(
 def test_section_url_reads_gits_listing_and_the_last_value_wins(standard,
                                                                  tmp_path):
     """`section_url` is the pure half of `gitmodules_entry`: one `git config
-    -z --get-regexp` listing in, `(name, url)` out. Fed git's own listing of
-    a `.gitmodules` whose section NAME holds a space and a dot and gives its
+    -z --list` listing in, `(name, url)` out. Fed git's own listing of a
+    `.gitmodules` whose section NAME holds a space and a dot and gives its
     url twice, and of a path two sections give: the last value given wins
-    each time, as git reads the file, and an empty url is no url."""
+    each time, as git reads the file, and an empty url is no url.
+
+    `--list` gives every key (#668), so the file holds keys no submodule
+    has: a `path` and `url` in a section that is not `submodule`, given
+    last, and in a `submodule` section with no name, which git ignores. A
+    reading that cut `submodule.` off every key by its length took the
+    first for a section named `gin` and the second for one named `''`."""
     module = doctor_module(standard)
     (tmp_path / ".gitmodules").write_bytes(
         b'[submodule "my lib.v2"]\n\tpath = vendor/lib\n'
         b"\turl = ../first.git\n\turl = ../second.git\n"
         b'[submodule "old"]\n\tpath = vendor/both\n\turl = ../old.git\n'
-        b'[submodule "new"]\n\tpath = vendor/both\n\turl =\n')
-    listing = git("config", "-z", "--file", ".gitmodules", "--get-regexp",
-                  r"^submodule\..*\.(path|url)$", cwd=tmp_path).stdout
+        b'[submodule "new"]\n\tpath = vendor/both\n\turl =\n'
+        b"\tbranch = main\n"
+        b"[submodule]\n\tpath = vendor/none\n\turl = ../nameless.git\n"
+        b'[remote "origin"]\n\tpath = vendor/lib\n\turl = ../other.git\n')
+    listing = git("config", "-z", "--file", ".gitmodules", "--list",
+                  cwd=tmp_path).stdout
     assert module.section_url(listing, "vendor/lib") == (
         "my lib.v2", "../second.git"), listing
     assert module.section_url(listing, "vendor/both") == ("new", None), \
