@@ -71,6 +71,9 @@ from repo_shape import (  # noqa: E402
 # How a `--pin-source` that is not printable is named, the one spelling the
 # scaffold's chain WARNING gives it too (#610).
 from repo_shape import shown_path  # noqa: E402
+# What the Free-plan secrets hint goes by (#660): GitHub's three
+# visibilities, and the hint's own words, which stay in the pinned copy.
+from repo_shape import FREE_PLAN_HINT, VISIBILITY_CHOICES  # noqa: E402
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
 
@@ -1467,6 +1470,11 @@ def target_remediation(why: str, holds: str, choose: str) -> str:
 #: `FetchRepository` says the same when the API returns no repository).
 GH_NOT_FOUND_WORDS = "Could not resolve to a Repository"
 
+#: The same answer from `gh api`, which asks GitHub's REST API: gh prints a
+#: REST error as `gh: <message> (HTTP <status>)` on stderr, with exit 1, and
+#: GitHub's message for a 404 is `Not Found` (#660).
+GH_API_NOT_FOUND_WORDS = "Not Found (HTTP 404)"
+
 #: Said by every refusal of a `gh repo view` that failed otherwise.
 GH_UNREADABLE_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
@@ -1475,6 +1483,19 @@ GH_UNREADABLE_REMEDIATION = (
     "other failure says nothing about whether it is. Check `gh auth status` "
     "(`gh auth login` where it names a token that is missing, bad or "
     "expired), or let a rate limit or an outage pass, then run this again.")
+
+
+def gh_said_not_found(probe, words: str = GH_NOT_FOUND_WORDS) -> bool:
+    """Is `probe`, a finished `gh` command, gh's own answer that what it asked
+    for does not exist: exit 1 with gh's not-found `words` on stderr (#609)?
+
+    The ONE reading of that answer, `refuse_unless_not_found`'s, with the
+    words for each API gh asks: `GH_NOT_FOUND_WORDS` for `gh repo view`, and
+    `GH_API_NOT_FOUND_WORDS` for `gh api`, which `organisation_plan` asks
+    (#660). Every other failure, a bad login, a rate limit or an outage, is
+    not this answer, whatever else it says.
+    """
+    return probe.returncode == 1 and words in (probe.stderr or "")
 
 
 def refuse_unless_not_found(repository: str, probe) -> None:
@@ -1495,7 +1516,7 @@ def refuse_unless_not_found(repository: str, probe) -> None:
     `probe` is the finished `subprocess.CompletedProcess` of the command;
     one that exited 0 is not asked about here.
     """
-    if probe.returncode == 1 and GH_NOT_FOUND_WORDS in (probe.stderr or ""):
+    if gh_said_not_found(probe):
         return
     lines = [line.strip()
              for line in (probe.stderr or probe.stdout or "").splitlines()
@@ -1510,6 +1531,165 @@ def refuse_unless_not_found(repository: str, probe) -> None:
         f"`{command}` exited {probe.returncode}"
         + (f": {said}" if said else ""),
         GH_UNREADABLE_REMEDIATION)
+
+
+# ---------------------------------------------------------------------------
+# What the Free-plan secrets hint goes by (#602, #660)
+# ---------------------------------------------------------------------------
+#
+# The `validate` workflow that reads SHAPE_LEGS_APP_ID and
+# SHAPE_LEGS_APP_PRIVATE_KEY runs in ONE repository, the assembly root or the
+# family holder, and on the GitHub Free plan an organisation secret is
+# delivered only to a public repository. So `FREE_PLAN_HINT` holds when that
+# repository is private or internal AND its organisation is on Free: two
+# questions for GitHub, and either can go unanswered. AN UNANSWERED ONE IS
+# SAID, NEVER GUESSED. Guessing private gives a public repository a false
+# hint; guessing public, or a paid plan, hides a true one with nothing said.
+# `free_plan_secret_hint` in `repo_shape.py` answers None alike for a paid
+# plan and for one it could not read, as its docstring chooses, and that file
+# is a shape copy every project digest-pins; so the three creating tools ask
+# the plan here instead, and `FREE_PLAN_HINT`'s words are not changed.
+
+#: What a creating tool prints where GitHub would not say what visibility the
+#: repository its `validate` workflow runs in has (#602, from
+#: `adopt-project.py`, whose words these are; the scaffold's reused root and
+#: `family.py init`'s reused holder since #660): the question it could not
+#: answer, what the Free-plan hint would then say, and how to answer it.
+#: `{root}` is that repository.
+ROOT_VISIBILITY_UNREAD = (
+    "NOTE this run could not read {root}'s visibility from GitHub, so it "
+    "cannot say whether the Free-plan secrets hint applies. It applies when "
+    "{root} is private or internal and its organisation is on the GitHub Free "
+    "plan: organisation secrets are then not delivered to it, so org-level "
+    "SHAPE_LEGS_APP_ID / SHAPE_LEGS_APP_PRIVATE_KEY resolve to EMPTY in its "
+    "`validate` workflow and must be set as REPOSITORY secrets on {root} "
+    "instead. `gh repo view {root} --json visibility` says which it is.")
+
+#: The same where the repository is private or internal and GitHub would not
+#: name its organisation's plan (#660). `{visibility}` is the repository's.
+#: The last sentence rests on GitHub's REST page for `GET /orgs/{org}`: an
+#: organisation's full details are shown to its owners.
+FREE_PLAN_UNREAD = (
+    "NOTE this run could not read {org}'s plan from GitHub, so it cannot say "
+    "whether the Free-plan secrets hint applies. {root} is {visibility}, so "
+    "it applies when {org} is on the GitHub Free plan: organisation secrets "
+    "are then not delivered to {root}, so org-level SHAPE_LEGS_APP_ID / "
+    "SHAPE_LEGS_APP_PRIVATE_KEY resolve to EMPTY in its `validate` workflow "
+    "and must be set as REPOSITORY secrets on {root} instead. `gh api "
+    "orgs/{org} --jq .plan.name`, run with an owner's login, says which plan "
+    "it is on.")
+
+
+def visibility_in(answer: str) -> str | None:
+    """The visibility a `gh repo view --json visibility` answer names, one of
+    `VISIBILITY_CHOICES` in any case, or None for anything else: not JSON,
+    not an object, no field, or a word that is not one of GitHub's three.
+    `repository_visibility` reads its answer with it, and `adopt-project.py`'s
+    `_root_visibility` reads its own (#660)."""
+    try:
+        value = json.loads(answer)
+    except ValueError:
+        return None
+    value = value.get("visibility") if isinstance(value, dict) else None
+    seen = value.lower() if isinstance(value, str) else None
+    return seen if seen in VISIBILITY_CHOICES else None
+
+
+def repository_visibility(repository: str) -> str | None:
+    """`repository`'s visibility on GitHub, one of `VISIBILITY_CHOICES`, or
+    None when it cannot be read: `gh repo view` failed (a repository the
+    token cannot see, a rate limit, an outage such as an `HTTP 502`) or
+    answered anything `visibility_in` does not read as one of the three.
+
+    THE ONE READER of the scaffold and `family.py` (#660), on the model of
+    `adopt-project.py`'s `_root_visibility` (#602). A `gh` that cannot be
+    started is NOT answered here: its `OSError` reaches the caller, because
+    the scaffold refuses a missing `gh` as `gh-not-found` before it creates
+    anything (#537), and `family.py`, which asks only after `gh` has made or
+    edited the holder, takes it as unread. Never asked of a
+    `--local-remote-dir` repository, which has no visibility.
+    """
+    try:
+        answer = run(["gh", "repo", "view", repository, "--json",
+                      "visibility"])
+    except CommandFailed:
+        return None
+    return visibility_in(answer)
+
+
+def organisation_plan(org: str) -> str | None:
+    """`"free"` when GitHub names `org`'s plan `free` (in any case, around any
+    whitespace), `"other"` when it names another, `"not-an-organisation"`
+    when gh says there is no organisation `org`, and None when GitHub names
+    no plan (#660): `gh api orgs/<org>` failed otherwise (an organisation
+    the token cannot see, a rate limit, an outage) or could not be started,
+    or answered with no plan name, which is what `--jq .plan.name` prints
+    where the field is absent from what the token was shown.
+
+    NO ORGANISATION IS NOT AN UNREAD PLAN. GitHub answers `GET /orgs/<login>`
+    with 404 where `<login>` is not an organisation, which is what a
+    repository owned by a personal account gives, and a personal account
+    has no organisation secrets for the hint to be about. gh's not-found
+    answer is read by `gh_said_not_found`, the reading
+    `refuse_unless_not_found` gives `gh repo view` (#609), so every other
+    failure stays unread. The command is run here rather than by `run`,
+    because that reading is of the finished command's own stderr, which
+    `run` folds into one text with stdout.
+
+    `free_plan_secret_hint` reads the same field and answers None for every
+    case but `free`, as for a paid plan, so a private root whose plan could
+    not be read was told nothing, the silent failure its own docstring says
+    it exists for. Each creating tool asks this instead, through
+    `free_plan_secrets_note`, and names an unread plan.
+    """
+    try:
+        probe = subprocess.run(
+            ["gh", "api", f"orgs/{org}", "--jq", ".plan.name"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except OSError:
+        return None
+    if gh_said_not_found(probe, GH_API_NOT_FOUND_WORDS):
+        return "not-an-organisation"
+    if probe.returncode != 0:
+        return None
+    name = (probe.stdout or "").strip().lower()
+    if not name:
+        return None
+    return "free" if name == "free" else "other"
+
+
+def free_plan_secrets_note(org: str, root: str,
+                           visibility: str | None) -> str | None:
+    """What a creating tool prints about the Free-plan secrets of `root`, the
+    repository its `validate` workflow runs in, at `visibility` (None: GitHub
+    did not say), or None where nothing applies (#602, #660).
+
+    - Unread: `ROOT_VISIBILITY_UNREAD`, and the plan is not asked: that NOTE
+      names both conditions, so it holds whatever the plan is.
+    - Public: None. An organisation secret reaches it on every plan.
+    - Private or internal: the plan is asked. On `free` it is
+      `FREE_PLAN_HINT`, with `root` alone as the repository that is private,
+      as the scaffold and adopt name it since #602 and `family.py init` since
+      #660; where the plan is unread, `FREE_PLAN_UNREAD`; on any other
+      plan, and where the owner is not an organisation, None.
+
+    The scaffold passes the run's visibility for a root it created and
+    GitHub's for one it reused, adopt GitHub's for the root it adopted, and
+    `family.py` the run's for a holder it created and GitHub's for one it
+    reused.
+    """
+    if visibility is None:
+        return ROOT_VISIBILITY_UNREAD.format(root=root)
+    if visibility not in ("private", "internal"):
+        return None
+    plan = organisation_plan(org)
+    if plan == "free":
+        return FREE_PLAN_HINT.format(org=org, repo=root, what=f"{root} is")
+    if plan is None:
+        return FREE_PLAN_UNREAD.format(org=org, root=root,
+                                       visibility=visibility)
+    return None
 
 
 #: `-F -` reads the message from STDIN. Every argument is then a literal, and
