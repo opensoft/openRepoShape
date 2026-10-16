@@ -55,6 +55,10 @@ from test_validate_pins_unreadable_workflow import (
     CANNOT_RUN_AS_ROOT, DOCTOR, WORKFLOWS, commit_bytes, leg_workflow,
     refusal_lines, validate,
 )
+# `refused_stat` is the stand-in `tests/test_bump_leg_unopenable.py` (#383)
+# makes for Python 3.14's answer to a refused `stat`: the same four patches,
+# and a second copy of it is what SonarCloud's duplication gate counted.
+from test_bump_leg_unopenable import refused_stat
 # A fixture is used by being named in this module's namespace, which is what
 # this import is for: the project's own `validate-pins.py`, loaded as a module.
 from test_validate_pins_without_git import validator  # noqa: F401
@@ -296,40 +300,14 @@ def test_a_workflows_path_that_is_a_file_is_still_no_workflows(
 
 # --- the same answers on every Python, root and Windows included -------------
 
-def refused_stat(monkeypatch, *names: str) -> None:
-    """`Path.stat` refused (`Permission denied`) for each of `names`, as it is
-    for a name inside a directory this user may not search, with
-    `Path.is_file`, `is_dir` and `exists` answering as Python 3.14's do: False
-    to ANY `OSError` (they call `os.path.isfile` and the like), where 3.9 to
-    3.13 raised a refused `stat`. In-process, so it runs on every Python,
-    every platform and as root, and on a Python before 3.14 it still fails a
-    tool that asks `is_dir` or `is_file` and counts on the raise."""
-    real = Path.stat
-
-    def refusing(self, *args, **kwargs):
-        if self.name in names:
-            raise PermissionError(errno.EACCES, "Permission denied", str(self))
-        return real(self, *args, **kwargs)
-
-    def as_python_314(kind):
-        def answer(self, *args, **kwargs):
-            try:
-                return kind(self.stat().st_mode)
-            except (OSError, ValueError):
-                return False
-        return answer
-
-    monkeypatch.setattr(Path, "stat", refusing)
-    monkeypatch.setattr(Path, "is_file", as_python_314(stat.S_ISREG))
-    monkeypatch.setattr(Path, "is_dir", as_python_314(stat.S_ISDIR))
-    monkeypatch.setattr(Path, "exists", as_python_314(lambda mode: True))
-
-
-def refusal_of(call, *args):
-    """The `Refusal` `call(*args)` raises, failing the test if it returns."""
-    with pytest.raises(Exception) as refused:
-        call(*args)
-    assert type(refused.value).__name__ == "Refusal", refused.value
+def refusal_of(validator, root):
+    """The `Refusal` that `validator._workflow_refs(root)` raises, failing the
+    test if it returns or raises anything else. The class is the one the
+    project's own copy of `repo_shape` defines, which is the one its
+    `main()` catches, and not a bare `Exception`, which would pass for any
+    error at all (SonarCloud S5958)."""
+    with pytest.raises(validator.Refusal) as refused:
+        validator._workflow_refs(root)
     return refused.value
 
 
@@ -340,7 +318,7 @@ def test_a_directory_whose_stat_is_refused_is_refused_not_no_workflows(
     The `stat` is asked of the operating system, so the answer is the same on
     every Python: the directory refusal, with the system's reason."""
     refused_stat(monkeypatch, "workflows")
-    refusal = refusal_of(validator._workflow_refs, with_leg_workflow)
+    refusal = refusal_of(validator, with_leg_workflow)
     assert refusal.code == "workflow-unreadable"
     assert refusal.detail == (f"{DIRECTORY}: cannot be listed "
                               "(Permission denied)")
@@ -354,7 +332,7 @@ def test_a_workflow_whose_stat_is_refused_is_named_not_skipped(
     would call it "not a file" and skip it, which is a stale reference the
     gate never saw. It is named as a file this user cannot read."""
     refused_stat(monkeypatch, "legs.yml")
-    refusal = refusal_of(validator._workflow_refs, with_leg_workflow)
+    refusal = refusal_of(validator, with_leg_workflow)
     assert refusal.code == "workflow-unreadable"
     assert refusal.detail == (
         f"{WORKFLOWS}/legs.yml: cannot be read (Permission denied)")
@@ -371,7 +349,7 @@ def test_every_file_whose_stat_is_refused_is_named_in_the_one_refusal(
     commit_bytes(with_leg_workflow, f"{WORKFLOWS}/ok.yml",
                  b"on: [push]\n", "ok")
     refused_stat(monkeypatch, "legs.yml", "other.yaml")
-    refusal = refusal_of(validator._workflow_refs, with_leg_workflow)
+    refusal = refusal_of(validator, with_leg_workflow)
     assert refusal.detail.splitlines() == [
         f"{WORKFLOWS}/legs.yml: cannot be read (Permission denied)",
         f"{WORKFLOWS}/other.yaml: cannot be read (Permission denied)",
@@ -398,7 +376,7 @@ def test_a_listing_that_fails_for_another_reason_is_refused_by_name(
         return real(self)
 
     monkeypatch.setattr(Path, "iterdir", iterdir)
-    refusal = refusal_of(validator._workflow_refs, with_leg_workflow)
+    refusal = refusal_of(validator, with_leg_workflow)
     assert refusal.code == "workflow-unreadable"
     assert refusal.detail == (
         f"{DIRECTORY}: cannot be listed ({failure.strerror})")
@@ -458,7 +436,7 @@ def test_any_other_refused_stat_is_refused_by_name(
         return real(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "stat", refused)
-    refusal = refusal_of(validator._workflow_refs, project)
+    refusal = refusal_of(validator, project)
     assert refusal.code == "workflow-unreadable"
     assert refusal.detail == (
         f"{DIRECTORY}: cannot be listed ({os.strerror(code)})")
