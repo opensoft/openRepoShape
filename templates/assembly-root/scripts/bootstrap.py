@@ -28,11 +28,14 @@ WHAT IT DOES, in order:
       branch is at the pin, behind it, ahead of it or not there at all, and
       whatever the branch or `origin` holds: a commit made there is on no
       branch, and a checkout would leave it only in the reflog, so bootstrap
-      says where the leg is instead. Advancing a pin remains an explicit commit
-      in this repository — see `README.md`, "The lockstep invariant". This is
-      why `.gitmodules` carries no `branch=`: that would buy the same
-      ergonomics by weakening the pin, and then "what commit is this project"
-      would have two answers.
+      says where the leg is instead. A branch no command can be given (a NUL,
+      or a lone surrogate this system cannot encode) is never tried: the leg
+      is left as it is and the line says why (#455); step (b)'s manifest
+      validator names the key when the manifest holds it. Advancing a pin
+      remains an explicit commit in this repository — see `README.md`, "The
+      lockstep invariant". This is why `.gitmodules` carries no `branch=`:
+      that would buy the same ergonomics by weakening the pin, and then "what
+      commit is this project" would have two answers.
 
   (b) RUNS THE NEUTRAL VALIDATORS — naming, manifest, lockstep pins. These are
       the only ones a fork with no review lane and no wallet register has, and
@@ -117,6 +120,62 @@ def _try_git(args: list[str], cwd: Path) -> str | None:
         return git_out(args, cwd=cwd)
     except Refusal:
         return None
+
+
+def _argument_fault(branch: str) -> str | None:
+    """What stops `branch` being an argument to a command, or `None` (#455).
+
+    WHAT WAS WRONG. A branch reaches git as argv (`rev-parse --verify --quiet
+    refs/heads/<branch>`, `checkout -q -b <branch> <pin>`) through `_try_git`,
+    which catches `Refusal` and nothing else, and `subprocess` cannot hand a
+    command a NUL (`ValueError: embedded null byte`) or a lone surrogate the
+    system cannot encode (`UnicodeEncodeError`). `tracking_branch: "a\\ud83db"`
+    or a leg's `branch: "a\\x00b"` ended `make bootstrap` in a traceback from
+    `subprocess.py` in step (a), one step before `validate-manifest.py`, the
+    validator that names the key, was reached.
+
+    ASKED BEFORE ANY COMMAND IS BUILT FROM THE VALUE, and not read off an
+    exception `_try_git` would then have to swallow: a `UnicodeDecodeError`,
+    which `git_out` raises over output that is not UTF-8, is a `ValueError`
+    too, and catching that there would read a leg whose HEAD is on such a
+    branch as detached. Only a NUL and a lone surrogate are looked for; a
+    character the system's encoding merely lacks is not this fix's.
+
+    A surrogate that is ONE BYTE of a name is not refused. POSIX spells a name
+    that is not UTF-8 with U+DC80 to U+DCFF and `os.fsencode` writes each back
+    as the single byte it stands for, so git is handed that byte, as it was
+    before this check. Any other surrogate has no byte: `os.fsencode` raises,
+    or (`surrogatepass`, Windows) writes the three bytes of a sequence that
+    is not UTF-8 for ANY of them, so a lone surrogate is never handed to git
+    there either, where a `CreateProcess` would pass it on mangled. The answer
+    is `os.fsencode`'s own, so it is the system's and not a list kept here.
+    """
+    for char in branch:
+        if char == "\x00":
+            return "U+0000, a NUL"
+        if "\ud800" <= char <= "\udfff" and _fsencoded_length(char) != 1:
+            return f"U+{ord(char):04X}, a lone surrogate"
+    return None
+
+
+def _fsencoded_length(char: str) -> int:
+    """How many bytes `os.fsencode` writes for `char`; 0 when it cannot."""
+    try:
+        return len(os.fsencode(char))
+    except UnicodeEncodeError:
+        return 0
+
+
+def _say_not_tried(where: str, named: str, fault: str) -> None:
+    """A branch `_argument_fault` found: no command was run with it. The leg
+    stays where it is, and the line says which of the three places the
+    person's value can have come from holds it (#455)."""
+    print(f"  {where}: could not create branch {named}: it holds {fault}, "
+          "which no command can be given as an argument; the leg is left as "
+          "it is")
+    print("          the branch is the leg's `branch:`, else `--branch`, else "
+          "`tracking_branch`. Give that one a name git can create and run "
+          "bootstrap again.")
 
 
 def _short(sha: str | None) -> str:
@@ -517,6 +576,10 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
         print(f"  {where}: NOT INITIALIZED. Run "
               f"`git submodule update --init {spelled(path)}` — the "
               f"validators below will refuse until you do.")
+        return
+    fault = _argument_fault(branch)
+    if fault is not None:
+        _say_not_tried(where, named, fault)
         return
     pin = recorded_gitlink(root, path)
     local = _try_git(["rev-parse", "--verify", "--quiet",

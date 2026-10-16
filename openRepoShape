@@ -391,7 +391,24 @@ install_commands() {
 		{ [ "$REF_NAMED" -eq 1 ] && [ "${OPENREPOSHAPE_RECORD_REF:-}" = 1 ]; }; then
 		recording=1
 	fi
-	# THE RECORD SITS BESIDE THE FILE, symlinks followed, as it is read.
+	# A LINK IS NOT A PLACE TO COPY TO (#563). pipx places its
+	# `openRepoShape`, the openreposhape package's, as a symbolic link into
+	# the package's own environment, in this same `~/.local/bin`. `cp`
+	# writes THROUGH a link, so an install over one would overwrite the
+	# package's command with this file and leave the link where it was:
+	# two installers, one name, each breaking the other. Refused before
+	# anything is collected or placed, a dangling link included, and the
+	# refusal names both ways out. install.sh refuses the same target
+	# itself, for a release whose command predates this check.
+	for name in "${INSTALLABLES[@]}"; do
+		[ ! -L "$dir/$name" ] ||
+			die "$dir/$name is a symbolic link, so --install will not copy this command through it: pipx places the openreposhape package's openRepoShape that way, and a copy written through the link would overwrite the package's command. Nothing was placed. Use one installer or the other:
+    keep the package's command, and update it with: pipx upgrade openreposhape
+    or remove the link (pipx uninstall openreposhape, or rm $dir/$name), then run this again."
+	done
+	# THE RECORD SITS BESIDE THE FILE. The target is no link (refused just
+	# above), so `resolved` hands it back unchanged; the call stays because
+	# it is how `read_recorded_ref` names the record, and the two must agree.
 	record="$(resolved "$dir/openRepoShape")$RECORD_SUFFIX"
 	# BOTH CHECKED BEFORE ANYTHING IS COLLECTED OR PLACED: a ref about to be
 	# written down and read back by every later run, and a record path this

@@ -947,13 +947,42 @@ def nothing_to_do_line(project: str, commit: str) -> str:
             f"{commit[:12]} and every fact agrees.")
 
 
+def pushed_from_the_mount(member, commit: str) -> None:
+    """`commit`, made in the holder's own mount `member`, PUSHED to a branch
+    of the member's remote, as a person pushes one before they bump it
+    (#613).
+
+    `bump --to` refuses a commit no branch of the member's remote reaches,
+    `member-to-local-only`, as `bump-leg.py` refuses its twin, so a commit a
+    test bumps to is pushed first. NOT TO THE FIXTURE'S OWN REMOTE: every
+    holder is a copy of one module family, and the other tests read its bare
+    remotes (`older` is their `main~1`). The remote is a bare repository of
+    the test's own beside the holder, named for the holder and the member,
+    made on the first push with the member's `main` as the mount last
+    fetched it; the mount's `origin` is pointed at it, so `bump`'s own fetch
+    reads it, and each commit goes to a branch named for it.
+    """
+    holder = member.parents[1]
+    remote = holder.parent / f"{holder.name}-{member.name}-origin.git"
+    if not remote.exists():
+        git("init", "-q", "--bare", str(remote), cwd=holder.parent)
+        git("push", "-q", str(remote),
+            "refs/remotes/origin/main:refs/heads/main", cwd=member)
+        git("remote", "set-url", "origin", str(remote), cwd=member)
+    git("push", "-q", "origin", f"{commit}:refs/heads/pushed-{commit[:12]}",
+        cwd=member)
+
+
 def commit_in_member(member, message: str = "The member moved again") -> str:
     """An EMPTY commit on top of the member's HEAD: a new commit whose tree is
     the old one's, so `pin.tree_sha256` still recomputes and the gitlink is the
-    only fact that moves. Returns its sha."""
+    only fact that moves. PUSHED (`pushed_from_the_mount`, #613), so a bump to
+    it is a bump to a commit the member's remote has. Returns its sha."""
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
         "--allow-empty", "-m", message, cwd=member)
-    return git("rev-parse", "HEAD", cwd=member).stdout.strip()
+    made = git("rev-parse", "HEAD", cwd=member).stdout.strip()
+    pushed_from_the_mount(member, made)
+    return made
 
 
 @pytest.mark.parametrize("extra", [

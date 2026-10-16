@@ -7,7 +7,7 @@ utilities to fetch and bootstrap them together.
 
 ```sh
 git clone --recurse-submodules {{CLONE_URL}}
-cd {{FAMILY_NAME}}
+cd {{FAMILY}}
 make bootstrap
 ```
 
@@ -32,8 +32,8 @@ repository, not a submodule, just a directory — with the members' working
 clones beside it:
 
 ```
-{{FAMILY_NAME}}/                    a PLAIN FOLDER, not a git repository
-  {{FAMILY_NAME}}/                  THE HOLDER (this repository)
+{{FAMILY}}/                         a PLAIN FOLDER, not a git repository
+  {{FAMILY}}/                       THE HOLDER (this repository)
     family.yaml                     the members and their pins
     members/<Project>               each member, PINNED and DETACHED
   <Project>/                        a WORKING clone, on its tracking branch
@@ -58,10 +58,16 @@ The clone BESIDE the holder is **where you work**: its own tracking branch,
 its own worktrees, its own pull requests. The family follows it afterwards
 with `family.py bump`, which is the only thing that moves a pin.
 
-**The doubled `{{FAMILY_NAME}}/{{FAMILY_NAME}}` is deliberate** (ruled
+**The doubled `{{FAMILY}}/{{FAMILY}}` is deliberate** (ruled
 2026-09-09). The holder is a repository and keeps its own name; the folder is
 named after the family because that is what the folder holds. `family.yaml`
 is the only thing that tells the two apart, and it is inside the holder.
+
+**Both are named after the REPOSITORY, `{{FAMILY}}`** (the last part of
+`{{FAMILY_REPOSITORY}}`, and what `git clone` calls the holder's directory):
+that is the name `make siblings` checks the folder against. The display name
+in `family.yaml` is only a title and names no folder, even when it is spelled
+differently.
 
 **Nothing ever moves a checkout.** When this holder's parent folder is not
 named after the family, and no link of that name beside it leads to it,
