@@ -123,7 +123,7 @@ PROJECT_PLACEHOLDER = "<Project>"
 #: What a remedy that names `_switch_line` says at the end of its prose
 #: (#607): where an earlier act left that branch, `switch -c` fails `fatal: a
 #: branch named '<branch>' already exists` (exit 128). Another name comes
-#: first: it starts the branch where the holder stands now, which is right in
+#: first: it starts the branch where the holder stands now, which works in
 #: every state. The same command with `switch` for `switch -c` goes back to
 #: the old branch, which is right only where it holds work not merged yet;
 #: it keeps its commits, and nothing here names `switch -C`, which resets it.

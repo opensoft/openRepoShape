@@ -243,9 +243,11 @@ def test_another_name_works_where_main_has_moved_since(family, on_main,
     squash-merged since. The refusal's `switch -c`, typed as printed, fails;
     the same line with another name starts the branch at the `main` the
     holder stands on, `add` goes through there, and what it commits merges
-    into `main` with no conflict. (Going back to the old branch is the
-    other way, and it conflicts: the sentence puts it second, for a branch
-    that holds work not merged yet.)"""
+    into `main` with no conflict. That is what this test shows: the other
+    name works. Going back to the old branch is the other way, and it
+    conflicts here, but this test does not assert that; rv607's probe and
+    decision 2's table in the PR body show it. The sentence puts that way
+    second, for a branch that holds work not merged yet."""
     holder = on_main
     branch = suggested(family, "add")
     git("branch", branch, cwd=holder)
@@ -383,8 +385,9 @@ def switch_remedies(source: str) -> list[tuple[int, str]]:
     """Each place `source` names `_switch_line`: its line and the PROSE of
     the string it stands in, as text up to the first line break (the
     command lines come under it). The string is the whole expression the
-    call is written in, however it is passed on: the f-string of a
-    `Refusal` or a `report.finding`, or the `return` of a helper."""
+    call is written in: wherever the call stands inside the string
+    expression that is passed on, as the f-string of a `Refusal` or a
+    `report.finding`, or as the `return` of a helper."""
     tree = ast.parse(source)
     parents = {child: node for node in ast.walk(tree)
                for child in ast.iter_child_nodes(node)}

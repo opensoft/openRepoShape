@@ -708,7 +708,7 @@ def _switch_command(root: Path, branch: str) -> str:
 #: What every remedy that names `_switch_command` says next (#607): where an
 #: earlier act left that branch, `switch -c` fails `fatal: a branch named
 #: '<branch>' already exists` (exit 128). ANOTHER NAME COMES FIRST, because a
-#: new branch starts where the holder stands now, which is right in every
+#: new branch starts where the holder stands now, which works in every
 #: state. Going back to the old branch is right only where it holds work not
 #: merged yet: one left behind a main that has moved on makes the act collide
 #: with what main took in since, or find its member already there, and a
