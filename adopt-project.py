@@ -2665,10 +2665,16 @@ LEG_PATH_PLACEHOLDERS = {"spec": "SPEC_PATH", "code": "CODE_PATH"}
 #: and no elector is one: the manifest writes it between double quotes, which
 #: `render` spells with `double_quoted` (#284). The validator's rule (#261)
 #: asks about every value, so an elector `git config user.name` leaves empty
-#: is named by where it came from as well (#529).
+#: is named by where it came from as well (#529), and so is an organisation
+#: read from the source's `origin` (L1-39): a url can end in `~x`, which
+#: `checked_value` takes and the validator refuses, and that refusal said
+#: `--org is '~x'`. The words are `_planned_org`'s for the same value; a
+#: source `plan` cloned has the `--source` it was cloned from as its
+#: `origin`.
 FLAG_DEFAULTS = {"id": "--project lowercased",
                  TRACKING_KEY: "the source's default branch",
-                 ELECTED_BY_KEY: "`git config user.name`"}
+                 ELECTED_BY_KEY: "`git config user.name`",
+                 "org": "the organisation of the source's `origin`"}
 #: How a sentence names the id `execute` derives when the plan sets none:
 #: when it has no `id:`, or an `id:` with no value (`null`, `~` or nothing,
 #: as `main`'s `plan --id null` wrote it), which `Plan.get` reads alike.
@@ -3303,22 +3309,44 @@ def _refuse_a_tracking_branch_the_remote_lacks(urls: dict, tracking: str,
         REMOTE_LACKS_REMEDIATION + (LOCAL_REMOTE_LACKS if local else ""))
 
 
-def _refuse_bad_id(project_id: str, project: str, passed: bool) -> None:
+def _refuse_bad_id(project_id: str, project: str, given: set,
+                   source: Source) -> None:
     """`plan`'s refusal of an id the project's validators would not take
-    (`PROJECT_ID_RE`), in the words of where it came from. A `--id` the person
-    passed is named as the flag they typed, with the value as typed. One
-    `plan` derived from `--project` (lowercased, `FLAG_DEFAULTS`) is named as
-    derived, the way `_flag_named` names the tracking branch and the elector
-    it fills in (#529): `--id 'north_wind' must match` named a flag nobody
-    had passed (#601). The finding's code is the same for both."""
+    (`PROJECT_ID_RE`), in the words of where it came from. `given` is
+    `flags_given`. A `--id` the person passed, `''` among them (L2-53), is
+    named as the flag they typed, with the value as typed, and the remedy is
+    another `--id`. One `plan` derived from `--project` is named by
+    `_flag_named` from `FLAG_DEFAULTS`, as the tracking branch and the
+    elector it fills in are (#529): `--id 'north_wind' must match` named a
+    flag nobody had passed (#601). The finding's code is the same for both.
+
+    A DERIVED ID IS MENDED IN `--project`, NOT WITH `--id` (L2-54). It is
+    refused only for a `--project` holding a character no id takes, and the
+    naming policy reads `--project` itself, as all three repositories'
+    names: "pass an explicit lowercase --id" led to `naming-unclassified`.
+    So the remedy is to change `--project`; and where the source names a
+    repository and `--project` is its name, adopted in place, that name is
+    not the person's to retype, and the remedy is `_rename_first`'s."""
     if PROJECT_ID_RE.match(project_id):
         return
-    pattern = PROJECT_ID_RE.pattern
-    what = (f"--id {project_id!r} must match {pattern}" if passed
-            else f"the id derived from --project {project!r} (--id was not "
-                 f"given) is {project_id!r}, which must match {pattern}")
-    raise Refusal("adopt-bad-id", what,
-                  "Remediation: pass an explicit lowercase --id.")
+    flag, pattern = _flag_named("id", given), PROJECT_ID_RE.pattern
+    if "id" in given:
+        raise Refusal("adopt-bad-id",
+                      f"{flag} {project_id!r} must match {pattern}",
+                      "Remediation: pass an explicit lowercase --id.")
+    derived = FLAG_DEFAULTS["id"]
+    repository = source.repository
+    if repository is not None and _is_the_source(
+            repository, repository.partition("/")[0], project):
+        remedy = _rename_first(repository, f"the id is {derived}, and "
+                               "--project is the source's own name. ")
+    else:
+        remedy = (f"Remediation: change --project. The id is {derived}, and "
+                  "an explicit --id would not change --project, which also "
+                  "names the assembly root and both legs.")
+    raise Refusal("adopt-bad-id",
+                  f"{flag} is {project_id!r}, which must match {pattern}",
+                  remedy)
 
 
 def _checked_plan_inputs(args, source: Source,
@@ -3335,7 +3363,15 @@ def _checked_plan_inputs(args, source: Source,
     # Which of the flags `plan` fills in by itself were passed: a value it
     # filled in is named by where it came from, should it be refused below.
     # Not `given`, which #479 binds below to whether `--tracking-branch` was.
-    flags_given = {key for key in FLAG_DEFAULTS if getattr(args, key)}
+    # PASSED IS ON THE COMMAND LINE, `''` INCLUDED (L2-53), as #479 reads
+    # `--tracking-branch`: `--id ''` and `--elected-by ''` were read as not
+    # passed, so `--id "$ID"` with `ID` unset planned the derived id, and an
+    # empty elector became `git config user.name` though `--help` says "not
+    # blank". Each is a value typed, held to its flag's own rule below and
+    # refused there by name. (`_planned_org` still reads `--org ''` as no
+    # `--org`, as it did.)
+    flags_given = {key for key in FLAG_DEFAULTS
+                   if getattr(args, key) is not None}
     args.project = checked_value("--project", args.project)
     # THE SOURCE'S OWN BRANCH, UNLESS ONE IS NAMED (#479): the branch `plan`
     # reads the source at is the one its pull request can be opened against.
@@ -3378,10 +3414,9 @@ def _checked_plan_inputs(args, source: Source,
     args.spec_path = checked_value(*spec)
     args.code_path = checked_value(*code)
     # Whether `--id` was passed is read BEFORE it is filled in: a refusal of
-    # the id names where it came from (#601).
-    id_passed = "id" in flags_given
-    args.id = args.id or args.project.lower()
-    _refuse_bad_id(args.id, args.project, id_passed)
+    # the id names where it came from (#601), and says what to change.
+    args.id = args.id if "id" in flags_given else args.project.lower()
+    _refuse_bad_id(args.id, args.project, flags_given, source)
     # The organisation, given or read from the source's `origin`, and named
     # by which of the two it is should it be refused (#292, #427).
     org_given = bool(args.org)
@@ -3400,7 +3435,8 @@ def _checked_plan_inputs(args, source: Source,
     # A value `plan` filled in by itself is named by where it came from, as
     # #181 names one, and not as a flag the person never passed.
     elector = _flag_named(ELECTED_BY_KEY, flags_given)
-    args.elected_by = args.elected_by or _elector()
+    args.elected_by = (args.elected_by if ELECTED_BY_KEY in flags_given
+                       else _elector())
     # Before the plan is written, in the words `check` would use (#255): a
     # value `execute` writes into a file must be text one can hold. The
     # date has had its answer above, `election_date`.
