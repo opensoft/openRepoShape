@@ -2071,8 +2071,10 @@ def test_the_projects_own_manifest_gate_keeps_its_warning_for_a_tree_it_reached(
     own = run_script(project / "scripts" / "validate-manifest.py",
                      cwd=project)
     assert "Traceback" not in own.stderr, own.stderr
-    assert "which is not reachable here (a sibling checkout, " in (
-        own.stdout + own.stderr), own.stdout + own.stderr
+    assert ("which is not reachable here (SHAPE_PIN_SOURCE_OPENXDOX, or a "
+            "checkout of openXdox beside this root, would let it be read)"
+            ) in own.stdout + own.stderr, own.stdout + own.stderr
+    assert "--link-source" not in own.stdout + own.stderr
     assert "was reached" not in own.stdout + own.stderr
 
 

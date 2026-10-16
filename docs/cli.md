@@ -940,7 +940,9 @@ usage: validate-repository-naming.py [-h] [--policy POLICY]
                                      [--pins PINS]
                                      [--referent-chain REFERENT_CHAIN]
                                      [--link-source [PRODUCT=]PATH]
-                                     [--explain] [--quiet] [names ...]
+                                     [--link-source-label FLAG]
+                                     [--link-remedy LINK=TEXT] [--explain]
+                                     [--quiet] [names ...]
 
 Classify repository names against `contracts/repository-naming.yaml`.
 
@@ -993,6 +995,17 @@ options:
                         declared-unverified, and a source that cannot be read
                         is named with the system's reason: both are warnings
                         and not findings, an explicit source included.
+  --link-source-label FLAG
+                        the caller's own name for the bare --link-source it
+                        passes, such as --pin-source (a FLAG that starts with
+                        - is given after an =): the link-source-unreadable
+                        WARNING and the not-used NOTE name that value by FLAG,
+                        and neither says a value holding = was read as a PATH
+  --link-remedy LINK=TEXT
+                        the caller's words for what would let LINK's tree be
+                        read, offered in place of this script's own where that
+                        link is declared-unverified. Repeatable; the last
+                        value for a link wins.
   --explain             print every family each name satisfies, why one of
                         them won, and what the others are recorded as
   --quiet

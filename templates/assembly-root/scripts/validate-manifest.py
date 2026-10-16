@@ -89,6 +89,7 @@ EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadabl
 from __future__ import annotations
 
 import argparse
+import inspect
 import re
 import sys
 from pathlib import Path
@@ -98,7 +99,8 @@ from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, COMMIT_RE, PATH_NOT_CANONICAL, PROJECT_ID_RE,
     SHA256_RE, TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES, NamingPolicy,
     Refusal, accepts_role, find_repo_root, link_pins_from_trees, load_yaml,
-    path_spelling_fault, repo_basename,
+    path_spelling_fault, pin_product_key, pin_source_env_name,
+    pin_source_env_shared, repo_basename,
 )
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -154,9 +156,68 @@ def _chain_and_links(naming, root: Path | None) -> tuple[tuple, dict]:
     pin on `openDox` is a fact in openXdox's tree; a checkout beside this root
     (or `SHAPE_PIN_SOURCE_<PRODUCT>`) is read when there is one, and its
     absence is a warning, never a failure. Nothing here goes to a host.
+
+    THE WARNING OFFERS WHAT THIS READS (#661): `_link_remedies`,
+    handed over only where `link_pins_from_trees` takes `remedies=`
+    (`_library_takes_remedies`).
     """
     chain = _recorded_chain(naming) if isinstance(naming, dict) else ()
-    return chain, (link_pins_from_trees(chain, root) if chain else {})
+    if not chain:
+        return chain, {}
+    offered = ({"remedies": _link_remedies(chain)}
+               if _library_takes_remedies() else {})
+    return chain, link_pins_from_trees(chain, root, **offered)
+
+
+def _link_remedies(chain) -> dict[str, str]:
+    """What would let each chain link's own tree be read, in THIS
+    validator's sources: `{pin_product_key(link): the words}`, for the
+    `declared-unverified` WARNING about a tree that is not reachable
+    (#661).
+
+    The library's own words are the naming gate's: "a sibling checkout,
+    SHAPE_PIN_SOURCE_<LINK>, or --link-source <link>=<path>". This file
+    takes `--root`, `--policy` and `--quiet` and no `--link-source`, so the
+    offer was a flag it refuses as `unrecognized arguments`. It reads
+    `SHAPE_PIN_SOURCE_<LINK>`, unless another link of the chain shares the
+    variable (#275), and a checkout beside this root (`resolve_link_source`'s
+    rules 2 and 3, as `_chain_and_links` asks), so it offers those. Every
+    holder is offered both, or the checkout alone where another link shares
+    its variable; the chain's end holds no pin and has no entry.
+
+    Keyed by `pin_product_key`, the key `_chain_link_findings` looks a
+    holder's entry up by (#444), and the links are read as that function
+    reads them: by `repo_basename`, a blank entry dropped.
+    """
+    links = [repo_basename(str(link)) for link in chain if str(link).strip()]
+    shared = pin_source_env_shared(links)
+    remedies: dict[str, str] = {}
+    for link in links[:-1]:
+        beside = f"a checkout of {link} beside this root"
+        if pin_product_key(link) in shared:
+            words = f"{beside} would let it be read"
+        else:
+            words = (f"{pin_source_env_name(link)}, or {beside}, would let "
+                     "it be read")
+        remedies[pin_product_key(link)] = words
+    return remedies
+
+
+def _library_takes_remedies() -> bool:
+    """Does this root's `scripts/repo_shape.py` take `remedies=`?
+
+    THE SKEW RULE (#661). This file is copied into every project and
+    may run beside a `repo_shape.py` older than itself (a half-applied
+    update, `update-shape.py apply --accept-local`). Before #610 the library
+    had no `remedies=`, and passing it ended this validator in a `TypeError`
+    before it checked a leg. So it is passed only where the function's own
+    signature names it, and an older library's warning keeps that library's
+    words."""
+    try:
+        return "remedies" in inspect.signature(
+            link_pins_from_trees).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _naming_chain_field_finding(leg_role, naming: dict) -> list[str]:

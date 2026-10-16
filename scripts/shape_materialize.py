@@ -64,9 +64,13 @@ from repo_shape import YamlError, _strip_comment, parse_yaml  # noqa: E402
 # which products share a `SHAPE_PIN_SOURCE_<PRODUCT>` variable, the one answer
 # the project's own `validate-pins.py` reports on (#275), with two
 # declarations ONE product when they share a pin file (`pin_product_key`).
+# `scaffold_link_remedies` reads a chain with the same names: each link's
+# variable (`pin_source_env_name`), whether another link shares it
+# (`pin_source_env_shared`), and the link's name (`repo_basename`) (#661).
 from repo_shape import (  # noqa: E402
     GH_TREE_API, NEUTRAL_PRODUCT_OWNER, PIN_SOURCE_ENV_PREFIX,
-    pin_product_key, pin_source_env_collisions, tree_digest,
+    pin_product_key, pin_source_env_collisions, pin_source_env_name,
+    pin_source_env_shared, repo_basename, tree_digest,
 )
 # How a `--pin-source` that is not printable is named, the one spelling the
 # scaffold's chain WARNING gives it too (#610).
@@ -2924,6 +2928,48 @@ def pin_digest_from_source(source: Path, commit: str, repository: str) -> str:
             "that HAS the pinned commit (`git fetch --all` first), or drop "
             "--pin-source and let `gh api` read the forge.",
         ) from exc
+
+
+def scaffold_link_remedies(chain) -> dict[str, str]:
+    """What would let each chain link's own tree be read, in the scaffold's
+    own sources: `{pin_product_key(link): the words}` for the
+    `declared-unverified` WARNING about a tree that is not reachable (#610).
+
+    That warning offered "a sibling checkout, SHAPE_PIN_SOURCE_<LINK>, or
+    --link-source <link>=<path>": the naming validator's three, and two of
+    them the scaffold does not have. It has no `--link-source`, and it reads
+    no checkout beside anything (`link_pins_from_trees(chain, None, ...)`).
+    It reads `SHAPE_PIN_SOURCE_<LINK>` for every link, unless another link
+    of the chain shares the variable (#275), and its `--pin-source` for the
+    FIRST link alone (#441), the pinned product's clone. A later link that
+    shares its variable has neither, which only a hand-written chain can
+    hold, and the warning says so.
+
+    Keyed by `pin_product_key`, the key `_chain_link_findings` finds a
+    holder's entry by (#444). Keyed by `casefold()`, `openß` and `openss`,
+    two links of one chain, wrote one entry, and the first link was offered
+    the later one's words.
+    """
+    links = [repo_basename(link) for link in chain]
+    shared = pin_source_env_shared(links)
+    remedies: dict[str, str] = {}
+    for index, link in enumerate(links[:-1]):
+        key = pin_product_key(link)
+        sources = [] if key in shared else [pin_source_env_name(link)]
+        if not index:
+            sources.append(f"a --pin-source clone of {link} that holds its "
+                           "project.yaml")
+        if not sources:
+            remedies[key] = (
+                "the scaffold reads no source for it: "
+                f"{pin_source_env_name(link)} is another link's too, and "
+                "--pin-source is the first link's tree alone")
+        elif len(sources) == 1:
+            remedies[key] = f"{sources[0]} would let it be read"
+        else:
+            remedies[key] = (f"{sources[0]}, or {sources[1]}, "
+                             "would let it be read")
+    return remedies
 
 
 def shown_source(source) -> str:
