@@ -15,6 +15,16 @@ services"*, and the layout ruling of 2026-09-09):
       <Project>/                  …one per row in family.yaml
       session-handoff-*.md        the estate's own files live in the folder
 
+WHICH NAME `<Family>` IS (#629). It is the holder's REPOSITORY name: the
+basename of `repository:` in `family.yaml`, which is what `family.py init
+--family` took and what `git clone` names the holder's directory. It is
+NEVER `name:`, the display name (`--name`), which is only a title and can
+differ: `--family Quill --name QuillWorks` is a holder cloned as `Quill`, in
+a folder named `Quill`, and a run still says `QuillWorks` on its first line.
+The holder's own README names the folder the same way (`{{FAMILY}}`, not
+`{{FAMILY_NAME}}`), and a run says which name it means, on a line of its own,
+wherever the two differ (`family_name_note`).
+
 TWO COPIES OF EVERY MEMBER, ON PURPOSE. `members/<Project>` inside the holder
 is a PINNED, DETACHED checkout: it is what `make bootstrap` and `make
 validate` read, and it is detached because a pin is a commit and not a branch.
@@ -111,6 +121,25 @@ each outcome. `--dry-run` prints what would run and runs nothing.
 
 IT CONFERS NOTHING, and neither does the layout. A folder is navigation.
 
+WHAT IT PRINTS IS A PERSON'S TEXT (#454). `family.yaml`'s `name:`, a member's
+`project:` and `path:`, a url, a branch and every directory name come from a
+manifest or a disk, and this file does not choose them. A stdout that cannot
+hold what they say raised: `name: "a\\ud83db"` (a lone surrogate) or `日本`
+under `PYTHONIOENCODING=ascii` ended `make siblings`, `make park` and `make
+resume` in a `UnicodeEncodeError` on the first line, before a member was
+touched (`park`, which exists to save work, parked nothing), and this file's
+own dash raised for EVERY name on that stdout. A raw ESC or CR in a value
+reached the terminal as the control it is. So, as both roots' `bootstrap.py`
+do (#391): `main` makes a stdout that would raise escape what it cannot
+encode (`escape_unencodable_stdout`), and every value a line prints from a
+manifest, a member row or a disk goes through `spelled`, which writes the
+controls, the surrogates, the line and paragraph separators and the
+bidirectional controls as the escape Python spells them and prints every
+other character as it is. What a member's own `make` is handed is the RAW
+target, and the `mv` lines a person pastes are quoted, never spelled: an
+escape in a command would not run as typed. Git's own words are left as git
+wrote them.
+
 EXIT CODES
     0  every member is beside the holder; nothing to report. With `--make`:
        every member RAN and exited 0
@@ -150,9 +179,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # `family.py init` and travels with it in `contracts/shape-pin.yaml`, so the
 # rule is one function both tools import — and `join_remote` is the
 # arithmetic `resolve_relative` hands git's relative-url rule to.
+# WHAT IT PRINTS IS SPELLED, AND THE TWO FUNCTIONS ARE #391's (#454).
+# `escape_unencodable_stdout` and `spelled` are written once, in
+# `repo_shape.py`, and both roots' `bootstrap.py` import them from there; this
+# file imports `bootstrap` already, so it needs nothing a holder does not
+# carry.
 from repo_shape import (  # noqa: E402
-    PYTHON, Refusal, find_repo_root, join_remote, load_yaml,
-    remote_local_path, repo_basename, same_repository,
+    PYTHON, Refusal, escape_unencodable_stdout, find_repo_root, join_remote,
+    load_yaml, remote_local_path, repo_basename, same_repository, spelled,
 )
 # THE CREDENTIAL AND THE MEMBER ROWS ARE READ BY `bootstrap.py` ALREADY, and a
 # second definition of either is how the two start disagreeing about which
@@ -405,8 +439,11 @@ class Sibling:
         self.finding: str | None = None
 
     def row(self, kind: str = "sibling") -> str:
-        return (f"  {kind:<9} {self.project:<18} {self.state:<22} "
-                f"{self.branch}")
+        # `project` is a manifest's text and `branch` a clone's (#454), so a
+        # row prints them spelled; the fields still hold the raw values, which
+        # the paths and the commands are made from.
+        return (f"  {kind:<9} {spelled(self.project):<18} {self.state:<22} "
+                f"{spelled(self.branch)}")
 
 
 def project_id(path: Path) -> str | None:
@@ -432,7 +469,10 @@ def verify_sibling(row: dict, target: Path, url: str, repository: str,
     """
     origin = git_text(["remote", "get-url", "origin"], target) or ""
     identity = project_id(target)
-    project = str(row.get("project") or "?")
+    # A finding is printed, and what it names comes from a manifest, a disk
+    # and a clone's own config (#454): spelled where it is named.
+    project = spelled(row.get("project") or "?")
+    where = spelled(target)
     # THE MOUNT COMPARISON MAY ASK THE DISK; THE MANIFEST'S NAME MAY NOT
     # (#157). A mirror is allowed to be a symlink onto a storage path whose
     # own tail is a serial number, and the row's `repository: Org/Repo` is
@@ -444,8 +484,9 @@ def verify_sibling(row: dict, target: Path, url: str, repository: str,
         sibling.state = "WRONG ORIGIN"
         sibling.branch = branch_of(target)
         sibling.finding = (
-            f"{project}: {target} is a clone of {origin or '(no origin)'}, "
-            f"not of {repository or url}, so it is not this member and is "
+            f"{project}: {where} is a clone of "
+            f"{spelled(origin or '(no origin)')}, not of "
+            f"{spelled(repository or url)}, so it is not this member and is "
             "left exactly as it is. Rename it, or move it aside and re-run; "
             "this command never fetches into a repository it cannot identify.")
         return False
@@ -453,7 +494,7 @@ def verify_sibling(row: dict, target: Path, url: str, repository: str,
         sibling.state = "WRONG PROJECT"
         sibling.branch = branch_of(target)
         sibling.finding = (
-            f"{project}: {target}/project.yaml declares id {identity!r} where "
+            f"{project}: {where}/project.yaml declares id {identity!r} where "
             f"the family's row records {str(row.get('id'))!r}. A repository at "
             "the right url is not by itself the project the row claims, so "
             "this is reported and skipped rather than fetched.")
@@ -468,18 +509,19 @@ def run_member_bootstrap(path: Path, sibling: Sibling) -> None:
     does not reimplement it: each member is a whole project and knows how.
     """
     script = path / "scripts" / "bootstrap.py"
+    project = spelled(sibling.project)
     if not script.is_file():
-        print(f"  [{sibling.project}] no scripts/bootstrap.py; cloned and "
+        print(f"  [{project}] no scripts/bootstrap.py; cloned and "
               "left as it is. A member without one is not misconfigured — it "
               "simply has nothing for this command to call.")
         return
-    print(f"  --- {sibling.project}: its own bootstrap ---")
+    print(f"  --- {project}: its own bootstrap ---")
     sys.stdout.flush()
     proc = subprocess.run([sys.executable or PYTHON, str(script)],
                           cwd=str(path), check=False)
     sys.stdout.flush()
     if proc.returncode != 0:
-        sibling.finding = (f"{sibling.project}: its own bootstrap exited "
+        sibling.finding = (f"{project}: its own bootstrap exited "
                            f"{proc.returncode}; the clone is there and its "
                            "legs may not be placed")
 
@@ -492,6 +534,10 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
     target = root.parent / project
     sibling = Sibling(project, target)
     url, source = clone_url(root, row, urls)
+    # What a line names of this member is a manifest's and a disk's text
+    # (#454), so the lines below print `who`, `at` and `src`, and the raw
+    # `project`, `target` and `url` stay what the paths and git are given.
+    who, at, src = spelled(project), spelled(target), spelled(url)
 
     if target == root:
         # A MEMBER NAMED AFTER ITS OWN FAMILY. `<Family>/<Family>` is the
@@ -502,7 +548,7 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
         sibling.state = "IS THE HOLDER"
         sibling.branch = branch_of(root)
         sibling.finding = (
-            f"{project}: its sibling would be {target}, which is this holder "
+            f"{who}: its sibling would be {at}, which is this holder "
             "itself — the member is named after its own family. Nothing was "
             "done. Rename the family FOLDER (the holder keeps its name) so "
             f"the two are not the same path, then re-run.")
@@ -512,7 +558,7 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
     if not present and target.exists() and any(target.iterdir()):
         sibling.state = "NOT A CLONE"
         sibling.finding = (
-            f"{project}: {target} exists, is not empty and is not a git "
+            f"{who}: {at} exists, is not empty and is not a git "
             "clone, so this command will not write into it. Move it aside or "
             "name the directory something else; nothing here overwrites a "
             "directory somebody made.")
@@ -520,14 +566,13 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
 
     if not present:
         branch, where = tracking_branch(root, row)
-        on = (f"on {branch}, its tracking branch ({where})" if branch else
-              f"on its remote's default branch: {where}")
+        on = spelled(f"on {branch}, its tracking branch ({where})" if branch
+                     else f"on its remote's default branch: {where}")
         if dry_run:
             sibling.state = "would clone"
-            print(f"  [{project}] would clone {url} ({source}) -> {target}, "
-                  f"{on}")
+            print(f"  [{who}] would clone {src} ({source}) -> {at}, {on}")
             return sibling
-        print(f"  [{project}] cloning {url} ({source}) {on}")
+        print(f"  [{who}] cloning {src} ({source}) {on}")
         sys.stdout.flush()
         proc = subprocess.run(
             ["git", *prefix, "clone", "-q", "--no-local",
@@ -539,7 +584,7 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
         if proc.returncode != 0:
             sibling.state = "CLONE FAILED"
             sibling.finding = (
-                f"{project}: git clone exited {proc.returncode}:\n"
+                f"{who}: git clone exited {proc.returncode}:\n"
                 + scrub((proc.stderr + proc.stdout).strip(), token))
             return sibling
         sibling.state = "cloned"
@@ -554,9 +599,9 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
     if dry_run:
         sibling.state = "present, would fetch"
         sibling.branch = branch_of(target)
-        print(f"  [{project}] present at {target}; would fetch, nothing else")
+        print(f"  [{who}] present at {at}; would fetch, nothing else")
         return sibling
-    print(f"  [{project}] present at {target}; fetching only")
+    print(f"  [{who}] present at {at}; fetching only")
     fetched = subprocess.run(["git", *prefix, "fetch", "--quiet", "origin"],
                              cwd=str(target), capture_output=True, text=True,
                              encoding="utf-8", errors="replace", check=False)
@@ -564,7 +609,7 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
     sibling.state = "present, fetched" if fetched.returncode == 0 \
         else "present, fetch failed"
     if fetched.returncode != 0:
-        print(f"  [{project}] fetch exited {fetched.returncode}; the clone is "
+        print(f"  [{who}] fetch exited {fetched.returncode}; the clone is "
               "untouched:\n"
               + scrub((fetched.stderr + fetched.stdout).strip(), token),
               file=sys.stderr)
@@ -663,13 +708,18 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
     path = root.parent / project
     sibling = Sibling(project, path)
     url, _ = clone_url(root, row, urls)
-    spelling = " ".join([f"make {target}", *make_args])
+    # What a line names is a manifest's, a disk's or the command line's text
+    # (#454; a `--make-arg` value may hold a surrogate or a C1 control): the
+    # lines print `who`, `at` and `spelling`, and the raw `project`, `path`
+    # and `make_args` stay what the paths and `make` are given.
+    who, at = spelled(project), spelled(path)
+    spelling = spelled(" ".join([f"make {target}", *make_args]))
 
     if path == root:
         sibling.state = "IS THE HOLDER"
         sibling.branch = branch_of(root)
         sibling.finding = (
-            f"{project}: its working clone would be {path}, which is this "
+            f"{who}: its working clone would be {at}, which is this "
             "holder itself — the member is named after its own family. "
             f"`{spelling}` was not run for it; rename the family FOLDER (the "
             "holder keeps its name) so the two are not the same path.")
@@ -678,7 +728,7 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
     if not (path / ".git").exists():
         sibling.state = "SKIPPED no clone"
         sibling.finding = (
-            f"{project}: skipped: no working clone at {path}; run `make "
+            f"{who}: skipped: no working clone at {at}; run `make "
             "siblings` first. The verb runs in the clone BESIDE the holder "
             "and never in the pinned copy under members/, which is detached "
             "and is not where anybody's work is.")
@@ -691,7 +741,7 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
     if not (path / "Makefile").is_file():
         sibling.state = "SKIPPED no Makefile"
         sibling.finding = (
-            f"{project}: {path} has no Makefile, so there is no `{spelling}` "
+            f"{who}: {at} has no Makefile, so there is no `{spelling}` "
             "to run in it. A member that carries the shape has one; this is "
             "reported rather than passed over silently, because a member "
             "nothing ran in is not a member that succeeded.")
@@ -699,7 +749,7 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
 
     if dry_run:
         sibling.state = f"would make {target}"
-        print(f"  [{project}] would run `{spelling}` in {path}")
+        print(f"  [{who}] would run `{spelling}` in {at}")
         return sibling
 
     # THE CHECK, BESIDE THE CALL. `validated_make_call` already refused a
@@ -710,7 +760,7 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
     if not is_a_make_call(target, make_args):
         sibling.state = "REFUSED not a make call"
         sibling.finding = (
-            f"{project}: refused: `make {target}` with {make_args!r} is not a "
+            f"{who}: refused: `make {target}` with {make_args!r} is not a "
             "make target plus `NAME=value` assignments, so nothing was run "
             "in this member. This is a BUG if you see it — the same check "
             "refuses at parse time, before any member runs.")
@@ -723,7 +773,7 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
     # these words.
     checked_target = target
     checked_assignments = list(make_args)
-    print(f"  --- {project}: make {checked_target} ---")
+    print(f"  --- {who}: make {checked_target} ---")
     sys.stdout.flush()
     proc = subprocess.run([make, checked_target, *checked_assignments],
                           cwd=str(path), check=False)
@@ -731,7 +781,7 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
     if proc.returncode != 0:
         sibling.state = f"make {target} exited {proc.returncode}"
         sibling.finding = (
-            f"{project}: `{spelling}` in {path} exited {proc.returncode}; "
+            f"{who}: `{spelling}` in {at} exited {proc.returncode}; "
             "its own output above says what it refused and what to run. "
             "Nothing else was stopped by it.")
     else:
@@ -754,8 +804,9 @@ def dispatch_all(root: Path, name: str, rows: list[dict],
         print(str(exc), file=sys.stderr)
         return 2
 
-    print(f"siblings: {name} ({root}) — {len(rows)} member(s)")
-    print(f"  family folder   {root.parent}")
+    print(f"siblings: {spelled(name)} ({spelled(root)}) — "
+          f"{len(rows)} member(s)")
+    print(f"  family folder   {spelled(root.parent)}")
     print(f"  `make {target}` runs in each member's WORKING CLONE beside the "
           "holder. This")
     print("  command clones nothing and fetches nothing: it only dispatches.")
@@ -791,7 +842,7 @@ def dispatch_all(root: Path, name: str, rows: list[dict],
               f"{len(dispatched)} member(s).")
         return 0
     print(f"siblings ok: `make {target}` ran in {len(dispatched)} member(s) "
-          f"beside the holder in {root.parent}")
+          f"beside the holder in {spelled(root.parent)}")
     return 0
 
 
@@ -805,13 +856,38 @@ def family_folder_name(manifest: dict, root: Path) -> str:
 
     THE HOLDER'S REPOSITORY NAME, not `name:`. `family.py init` creates
     `<into>/<Family>/<Family>` out of `--family <Name>`, which is the
-    repository's name; `name:` is a DISPLAY name and may carry a space. Where
-    a family never set one the two are the same string.
+    repository's name; `name:` is a DISPLAY name (`--name`) and may differ
+    from it. Where a family never set one the two are the same string.
+
+    ONE ANSWER FOR EVERY FILE THAT NAMES THE FOLDER (#629). The holder's
+    README spells the folder `{{FAMILY}}`, the same repository name this
+    returns, where it said `{{FAMILY_NAME}}` and so told a holder made with
+    `--family Quill --name QuillWorks` to `cd QuillWorks` and lay itself out
+    as `QuillWorks/QuillWorks`: a layout this function then refuses, with the
+    WARNING and the `mv`, and clones nothing.
     """
     repository = str(manifest.get("repository") or "")
     if repository:
         return repo_basename(repository)
     return str(manifest.get("name") or root.name)
+
+
+def family_name_note(name: str, family: str) -> str | None:
+    """The line that says which name names the folder, or None where the
+    manifest's `name:` and the folder's name are one string (#629).
+
+    A run printed the display name, `siblings: QuillWorks (...)`, and then
+    asked for a folder named `Quill`, so one run named the family two ways
+    and said nothing about which one it meant. Where the two are one string
+    there is nothing to tell apart and the run prints no extra line, so a
+    holder whose `name:` is its repository (the usual one) reads exactly as
+    it did. Both names are a manifest's text, so both are spelled (#454).
+    """
+    if name == family:
+        return None
+    return ("  the folder is named after the holder's REPOSITORY, "
+            f"{spelled(family)}, and never after name: {spelled(name)}, "
+            "which is only a display name")
 
 
 def same_directory(one: Path, two: Path) -> bool:
@@ -1062,7 +1138,7 @@ def _report_placement(root: Path, siblings: list[Sibling],
         print("--dry-run: nothing was cloned, fetched or moved.")
         return 0
     print(f"siblings ok: {len(siblings)} member(s) beside the holder in "
-          f"{root.parent}")
+          f"{spelled(root.parent)}")
     return 0
 
 
@@ -1082,13 +1158,25 @@ def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
     the right folder. Until the check passes, the header calls that folder
     the PARENT folder, not the family's. Passed through a link named after
     the family, it names the folder the clones go into, and the link.
+
+    THE HEADER SAYS WHICH NAME IT MEANS (#629). Its first line is `name:`, the
+    display name, and the folder it asks about is named after the
+    repository, so where those differ a line under the folder's says so
+    (`family_name_note`), on a stopped run and a passing one alike. And it
+    is all one spelling (#454): the name, the paths and the link are text a
+    manifest or a disk gave, so each is printed spelled.
     """
     family = family_folder_name(manifest, root)
     warning = parent_folder_warning(root, family)
     link = None if warning else family_link(root, family)
-    print(f"siblings: {name} ({root}) — {len(rows)} member(s)")
-    print(f"  {'parent' if warning else 'family'} folder   {root.parent}"
-          + (f"   (through the link {link})" if link else ""))
+    print(f"siblings: {spelled(name)} ({spelled(root)}) — "
+          f"{len(rows)} member(s)")
+    print(f"  {'parent' if warning else 'family'} folder   "
+          f"{spelled(root.parent)}"
+          + (f"   (through the link {spelled(link)})" if link else ""))
+    note = family_name_note(name, family)
+    if note:
+        print(note)
     print("  each member is cloned BESIDE the holder and stays PINNED inside "
           "it under")
     print("  members/ — the pinned copy is detached for bootstrap and "
@@ -1100,8 +1188,8 @@ def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
         sys.stdout.flush()          # so the warning lands where it belongs
         print(warning, file=sys.stderr)
         print(f"\nsiblings: stopped before cloning: the holder is not in a "
-              f"folder named {family}. Nothing was cloned, fetched or moved.",
-              file=sys.stderr)
+              f"folder named {spelled(family)}. Nothing was cloned, fetched "
+              "or moved.", file=sys.stderr)
         sys.stderr.flush()
         return 1
 
@@ -1117,6 +1205,10 @@ def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, before the parser or anything is printed (#454): every line below
+    # may hold a value a stdout cannot encode, and a stdout that raised on the
+    # first one ended `make park` before it parked anything.
+    escape_unencodable_stdout()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=None,
                         help="the family holder (default: the enclosing "

@@ -13,11 +13,16 @@ the default:
     `../<spec path>/<dir>` "relative to `<code path>/`", one `..` whatever
     the code leg's depth: `--spec-path legs/spec --code-path legs/code`
     printed `../legs/spec/contracts/`, where `../spec/contracts/` is right
-    (auA-13 on #457).
+    (auA-13 on #457). #522 climbed once per segment; #600 then took the path
+    out of the follow-up, because `plan` writes the line once and the hand
+    edit of `legs.spec_path` or `legs.code_path` that the tool asks for left
+    a path in it that no longer led anywhere: it names the two keys, and the
+    path is printed beside the CURRENT mounts instead, by `check` and in the
+    split message (#600's review, F1; `tests/test_adopt_leg_keys.py`).
 
 The block is now rendered with the plan's mount paths, and a DEFAULT
-adoption gets the bytes it always got; the follow-up climbs once per segment
-of the code leg's path below what the two paths share. Each relative path is
+adoption gets the bytes it always got; the path climbs once per segment of
+the code leg's path below what the two paths share. Each relative path is
 checked by where it LEADS, not only by how it is spelled.
 
 `plan` needs no `git filter-repo`; the end-to-end tests at the bottom do, and
@@ -29,7 +34,6 @@ keeps a `gh` guard first on PATH.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import posixpath
 import shutil
 import subprocess
@@ -38,8 +42,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, clone_just_pushed, git, make_source_repo,
-                      run_script, write_plan)
+from conftest import (ADOPT, REPO, clone_just_pushed, git,
+                      load_without_bytecode, make_source_repo, run_script,
+                      write_plan)
+from test_adopt_literal_names import follow_up
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -118,11 +124,7 @@ MOUNTS = [
 @pytest.fixture(scope="module")
 def adopter():
     """`adopt-project.py` loaded as a module, for its helpers."""
-    module_spec = importlib.util.spec_from_file_location(
-        "adopt_contracts_dir", ADOPT)
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
-    return module
+    return load_without_bytecode(ADOPT, "adopt_contracts_dir")
 
 
 def contracts_dir_line(block: str) -> str:
@@ -165,6 +167,9 @@ def test_the_block_exports_the_spec_leg_where_the_plan_mounts_it(
 @pytest.mark.parametrize("spec_path, code_path, expected", MOUNTS)
 def test_the_spec_leg_is_named_relative_to_where_the_code_leg_is(
         adopter, spec_path, code_path, expected):
+    """The path `check` and the split message print beside the CURRENT mounts
+    (#600's review, F1): #522's helper, which #600 had deleted with the path
+    in the follow-up."""
     across = adopter.spec_leg_from_code_leg(spec_path, code_path)
     assert across == expected
     # And it LEADS there: from the code leg, the path is the spec leg.
@@ -187,23 +192,26 @@ def planned_follow_ups(source: Path, out: Path, spec_path: str,
     return [str(item) for item in load_yaml(out)["follow_ups"]]
 
 
-@pytest.mark.parametrize("spec_path, code_path, expected", MOUNTS)
-def test_plan_names_the_read_across_from_where_the_code_leg_is(
-        source, tmp_path, spec_path, code_path, expected):
-    """The follow-up for the code file that names `contracts/` gives the
-    path from the code leg's mount, and that path leads to the spec leg's
-    `contracts/`. The defaults print what they always printed."""
+@pytest.mark.parametrize("spec_path, code_path, across", MOUNTS)
+def test_plan_names_the_read_across_by_the_two_keys(
+        source, tmp_path, spec_path, code_path, across):
+    """The follow-up for the code file that names `contracts/` is the same
+    line for every mount: it says where the file is, in the code leg, and
+    names `legs.code_path` and `legs.spec_path` for the two mounts, with no
+    path of either. #522 printed the path from the code leg to the spec
+    leg's `contracts/`, and a hand edit of either key after `plan` left a
+    path in it that led nowhere (#600); `check` and the split message print
+    it beside the CURRENT mounts instead (#600's review, F1)."""
     follow_ups = planned_follow_ups(source, tmp_path / "plan.yaml",
                                     spec_path, code_path)
     (named,) = [item for item in follow_ups
-                if item.startswith(f"{code_path}/{READER} names ")]
-    assert named == (
-        f"{code_path}/{READER} names `contracts/`, which moves to the spec "
-        f"leg: it must read across the assembly root — `{expected}/"
-        f"contracts/` relative to `{code_path}/` — or take the path from "
-        "the environment")
-    assert posixpath.normpath(posixpath.join(
-        code_path, f"{expected}/contracts/")) == f"{spec_path}/contracts"
+                if f"{READER} in the code leg names " in item]
+    assert named == follow_up(READER, "contracts/")
+    assert "`legs.code_path`" in named and "`legs.spec_path`" in named
+    # Neither mount path, nor the path from one to the other, is in it.
+    assert f"{spec_path}/" not in named and f"{code_path}/" not in named
+    assert "../" not in named and " relative to " not in named
+    assert f"{across}/contracts/" not in named
     # The Makefile follow-up names the key, so it is the same line for every
     # mount, and it names no path for a hand edit of the key to contradict.
     assert follow_ups.count(MAKEFILE_FOLLOW_UP) == 1, follow_ups
@@ -212,7 +220,7 @@ def test_plan_names_the_read_across_from_where_the_code_leg_is(
 
 # --- `execute`, end to end --------------------------------------------------
 
-SPEC_PATH, CODE_PATH, ACROSS = "legs/spec", "impl/code", "../../legs/spec"
+SPEC_PATH, CODE_PATH = "legs/spec", "impl/code"
 
 
 def adopt_with_legs_mounted_away(base: Path, *, by_hand: bool) -> dict:
@@ -227,7 +235,7 @@ def adopt_with_legs_mounted_away(base: Path, *, by_hand: bool) -> dict:
     """
     source = make_source_repo(base / "Thing", TREE, edits=EDITS)
     plan = base / "adoption-plan.yaml"
-    follow_ups = planned_follow_ups(
+    planned_follow_ups(
         source, plan, *(("spec", "code") if by_hand else (SPEC_PATH, CODE_PATH)))
     if by_hand:
         text = plan.read_text(encoding="utf-8")
@@ -254,8 +262,7 @@ def adopt_with_legs_mounted_away(base: Path, *, by_hand: bool) -> dict:
     makefile = subprocess.run(
         ["git", "show", f"{SPLIT_BRANCH}:Makefile"], cwd=str(source),
         capture_output=True, check=True).stdout
-    return {"source": source, "clone": clone, "follow_ups": follow_ups,
-            "makefile": makefile}
+    return {"source": source, "clone": clone, "makefile": makefile}
 
 
 @pytest.fixture(scope="module")
@@ -317,21 +324,6 @@ def test_the_pin_digests_the_rendered_makefile(adopted):
 
 
 @needs_filter_repo
-def test_the_follow_ups_read_across_leads_to_the_contracts(adopted):
-    """What the plan told the person to write in the code leg, followed from
-    the code leg of a recursive clone, reaches the spec leg's file."""
-    (named,) = [item for item in adopted["follow_ups"]
-                if item.startswith(f"{CODE_PATH}/{READER} names ")]
-    assert f"`{ACROSS}/contracts/` relative to `{CODE_PATH}/`" in named
-    code_leg = adopted["clone"].joinpath(*CODE_PATH.split("/"))
-    assert (code_leg / READER).is_file()
-    target = code_leg.joinpath(*ACROSS.split("/"), "contracts", POLICY)
-    assert target.resolve().is_file()
-    assert target.resolve() == (adopted["clone"].joinpath(
-        *SPEC_PATH.split("/"), "contracts", POLICY)).resolve()
-
-
-@needs_filter_repo
 def test_a_hand_edited_mount_leaves_the_follow_up_true_of_the_makefile(
         adopted_by_hand):
     """#522's review, F1. `plan` wrote the Makefile follow-up once, and the
@@ -353,3 +345,27 @@ def test_a_hand_edited_mount_leaves_the_follow_up_true_of_the_makefile(
                  cwd=adopted_by_hand["source"]).stdout
     assert f"path = {SPEC_PATH}" in mounts
     assert f"path = {CODE_PATH}" in mounts
+
+
+@needs_filter_repo
+def test_the_path_the_split_message_prints_leads_to_the_contracts(
+        adopted_by_hand):
+    """#600's review, F1. The follow-up names the keys and no path, so the
+    split commit's message prints the path from the code leg to the spec
+    leg's `contracts/` where it says where the legs are mounted, from the
+    mounts `execute` made: after the hand edit to `legs/spec` and
+    `impl/code`, `../../legs/spec/contracts/`, which the default plan would
+    have given as `../spec/contracts/`. Followed from the code leg of a
+    recursive clone, it reaches the spec leg's file."""
+    message = git("log", "-1", "--format=%B", SPLIT_BRANCH,
+                  cwd=adopted_by_hand["source"]).stdout
+    marker = "the spec leg's `contracts/` is `"
+    printed = message.split(marker, 1)[1].split("`", 1)[0]
+    assert printed == "../../legs/spec/contracts/"
+    assert (f"mounted back here at {SPEC_PATH}/ and {CODE_PATH}/, so from "
+            f"the code leg {marker}{printed}`.") in message
+    code_leg = adopted_by_hand["clone"].joinpath(*CODE_PATH.split("/"))
+    target = code_leg.joinpath(*printed.rstrip("/").split("/"), POLICY)
+    assert target.resolve() == adopted_by_hand["clone"].joinpath(
+        *SPEC_PATH.split("/"), "contracts", POLICY).resolve()
+    assert target.resolve().is_file()
