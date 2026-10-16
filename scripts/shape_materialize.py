@@ -1346,15 +1346,21 @@ def folder_cannot_be_made(path: Path) -> str | None:
     write in (the system's own answer, `os.access`, where it has one; it
     says yes for root, and for any folder on Windows, as `mkdir` would). A
     `path` nothing stands at is asked of the folder above it.
+
+    THE FOLDER IS NAMED AS `shown_source` NAMES A PATH (#692): as it is, and
+    as Python's `repr` spells it when a character in it is not printable.
+    Printed raw, an ESC in a folder's name reached the terminal and a line
+    break began a line of the person's choosing. A printable path is named
+    byte for byte, so `why.endswith(CANNOT_WRITE_IN)` still holds.
     """
     for here in (path, *path.parents):
         if not os.path.lexists(here):
             continue
         why = _not_a_folder(here)
         if why:
-            return f"{here} {why}"
+            return f"{shown_source(here)} {why}"
         if not os.access(here, os.W_OK | os.X_OK):
-            return f"{here} {CANNOT_WRITE_IN}"
+            return f"{shown_source(here)} {CANNOT_WRITE_IN}"
         return None
     return None
 
@@ -1382,11 +1388,13 @@ def refuse_unmakeable_folder(refusal: str, named: str, path: Path,
     or one above it) is not told to "move what stands in the way aside": it
     is told what `_unwritable_remediation` says, naming the flag `choose`,
     which is `named` unless it is no flag (`the family folder`, met by
-    `--into`). Every other answer keeps `FOLDER_REMEDIATION`."""
+    `--into`). Every other answer keeps `FOLDER_REMEDIATION`.
+
+    THE PATH IS NAMED AS `folder_cannot_be_made` NAMES IT (#692)."""
     why = folder_cannot_be_made(path)
     if why:
         raise Refusal(
-            refusal, f"{named} {path} cannot be made: {why}",
+            refusal, f"{named} {shown_source(path)} cannot be made: {why}",
             _unwritable_remediation(choose or named)
             if why.endswith(CANNOT_WRITE_IN) else FOLDER_REMEDIATION)
 
@@ -1398,12 +1406,13 @@ def make_folder(refusal: str, named: str, path: Path) -> None:
     The real run's `mkdir`, after `refuse_unmakeable_folder` has said yes:
     what still fails here (a file made in the meantime, a permission
     `os.access` did not foresee) is the same refusal, before any remote is
-    made."""
+    made. The path is named as `refuse_unmakeable_folder` names it (#692)."""
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise Refusal(refusal, f"{named} {path} cannot be made: "
-                      f"{exc.strerror or exc}", MKDIR_REMEDIATION) from exc
+        raise Refusal(refusal, f"{named} {shown_source(path)} cannot be "
+                      f"made: {exc.strerror or exc}",
+                      MKDIR_REMEDIATION) from exc
 
 
 def target_in_the_way(target: Path) -> str | None:

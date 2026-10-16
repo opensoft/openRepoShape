@@ -124,6 +124,9 @@ from shape_materialize import (  # noqa: E402
     make_folder, refuse_unless_not_found, refuse_unmakeable_folder,
     target_in_the_way, target_remediation,
 )
+# How a refusal names a folder: as it is, unless a character in it is not
+# printable, and then as `repr` spells it (#692).
+from shape_materialize import shown_source  # noqa: E402
 
 #: How a refusal names each value the manifest records (#258, #261). The leg
 #: paths are not here: `refuse_bad_leg_paths` asks for them (#179, #225).
@@ -1247,7 +1250,7 @@ def _refuse_existing_trees(work_root: Path, names: dict) -> None:
         if why:
             raise Refusal(
                 "scaffold-target-exists",
-                f"{target} already exists and {why}",
+                f"{shown_source(target)} already exists and {why}",
                 target_remediation(
                     why,
                     "Remediation: choose an empty --work-dir. There is no "

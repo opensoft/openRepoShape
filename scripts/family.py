@@ -195,6 +195,9 @@ from repo_shape import shell_line, shell_quoted  # noqa: E402
 # holder's clone URL under `--local-remote-dir` (#255, #433). It is the
 # question the scaffold and `adopt-project.py` ask of theirs.
 from shape_materialize import unwritable_reason  # noqa: E402
+# How a refusal names a path of the person's: as it is, unless a character in
+# it is not printable, and then as `repr` spells it (#692).
+from shape_materialize import shown_source  # noqa: E402
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -1009,6 +1012,13 @@ def _checked_no_operation_in_progress(root: Path, verb: str) -> None:
     `load_yaml` makes git run before the refusal of a hand-edited `path:`,
     which this test holds to no git command at all:
     `test_family_member_path.py::test_the_refusal_is_made_before_any_git_call`.
+
+    THE MARK'S PATH IS NAMED AS `shown_source` NAMES A PATH (#692): as it is,
+    and as Python's `repr` spells it when a character in it is not printable.
+    It is the true path, as git keeps it, so a holder whose path holds a line
+    break printed the refusal across two lines, with a line of the person's
+    choosing in it, and an ESC reached the terminal. A printable path is
+    named byte for byte.
     """
     found = _operation_in_progress(root)
     if found is None:
@@ -1029,7 +1039,8 @@ def _checked_no_operation_in_progress(root: Path, verb: str) -> None:
     raise Refusal(
         "family-operation-in-progress",
         f"{what} is unfinished in the family root: git keeps {mark} at "
-        f"{where.as_posix()}. `{verb}` makes its commit with `git commit -- "
+        f"{shown_source(where.as_posix())}. `{verb}` makes its commit with "
+        "`git commit -- "
         f"<paths>`, and {effect.format(verb=verb)}. No git command that "
         "writes was run and nothing was written.", end)
 
@@ -1788,7 +1799,8 @@ def _refuse_a_taken_holder(folder: Path | None, holder: Path) -> None:
     why = target_in_the_way(holder)
     if why:
         raise Refusal(
-            "family-target-exists", f"{holder} already exists and {why}",
+            "family-target-exists",
+            f"{shown_source(holder)} already exists and {why}",
             target_remediation(
                 why,
                 "Remediation: choose another --into (or an empty "
