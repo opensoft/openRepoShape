@@ -36,6 +36,7 @@ encoding stays UTF-8 under it (`c_locale_or_skip`, #527's own).
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -459,3 +460,43 @@ def test_rev_parse_hands_git_the_name_s_bytes_and_refuses_it_by_name(
         return
     assert answer.get("refused") == "git-failed", answer
     assert answer["detail"].startswith(f"`git rev-parse {name}` in "), answer
+
+
+@pytest.fixture(scope="module")
+def adopter():
+    """`adopt-project.py` as a module, in this process."""
+    module_spec = importlib.util.spec_from_file_location(
+        "adopt_c_locale_bytes", ADOPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
+
+
+#: A folder name `shown_path` spells, U+2028 not being printable, and one
+#: NTFS holds.
+UNPRINTABLE_DIR = "line separator"
+
+
+def test_git_out_exact_refuses_in_git_out_s_own_words(adopter, monkeypatch,
+                                                      tmp_path):
+    """`_git_out_exact`'s refusal is a copy of the pinned `git_out`'s, and
+    #634 (#610) changed `git_out`'s after the copy was made: it names the
+    folder with `shown_path` and spells what git printed as one line. The
+    copy kept the folder and git's lines raw, so under the C locale a
+    folder named with a line break began a line the tool never printed.
+    Asked the same failing command, in a folder `shown_path` spells, of a
+    git whose message is three lines, the two now refuse alike, on one
+    line. `_git_out_exact` is made to take its own path, as it does under
+    the C locale for a name outside ASCII."""
+    repository = make_source_repo(tmp_path / UNPRINTABLE_DIR / NORTHWIND,
+                                  on_github.SOURCE_TREE, edits=())
+    args = ["rev-parse", "no-such-branch"]
+    with pytest.raises(adopter.Refusal) as by_git_out:
+        adopter.git_out(args, cwd=repository)
+    monkeypatch.setattr(adopter, "_the_locale_hands_it_alike",
+                        lambda _argument: False)
+    with pytest.raises(adopter.Refusal) as by_hand:
+        adopter._git_out_exact(args, repository)
+    assert by_hand.value.code == by_git_out.value.code
+    assert by_hand.value.detail == by_git_out.value.detail
+    assert "\n" not in by_hand.value.detail

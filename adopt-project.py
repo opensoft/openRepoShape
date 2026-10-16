@@ -189,7 +189,7 @@ from repo_shape import (  # noqa: E402
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError,
     accepts_role, checked_value, double_quoted, git_out, load_yaml,
     parse_yaml, redacted, remote_is_a_path, remote_key, remote_local_path,
-    tree_digest,
+    shown_path, spelled as spelled_as_git_out, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS,
@@ -1073,6 +1073,13 @@ def _git_out_exact(args: list[str], cwd: Path) -> str:
     hands every argument alike, and elsewhere git is run here, and a git
     that refuses is refused as `git_out` refuses it: `git-failed`, naming
     the command as the person reads it.
+
+    THE REFUSAL IS `git_out`'S, WORD FOR WORD, AND MUST STAY IN STEP WITH
+    IT: the folder named with `shown_path` and what git printed `spelled`
+    as one line (#610). Raw, a folder named with a line break began a line
+    the tool never printed, under the C locale alone. A change to
+    `git_out`'s words is a change here too, and
+    `tests/test_adopt_c_locale_bytes.py` compares the two.
     """
     if os.name == "nt" or all(map(_the_locale_hands_it_alike, args)):
         return git_out(args, cwd=cwd)
@@ -1080,8 +1087,9 @@ def _git_out_exact(args: list[str], cwd: Path) -> str:
                           capture_output=True, check=False)
     if proc.returncode != 0:
         raise Refusal("git-failed", "`git {}` in {} exited {}: {}".format(
-            " ".join(args), cwd, proc.returncode,
-            proc.stderr.decode("utf-8", "replace").strip()))
+            " ".join(args), shown_path(cwd), proc.returncode,
+            spelled_as_git_out(
+                proc.stderr.decode("utf-8", "replace").strip())))
     return proc.stdout.decode("utf-8").strip()
 
 
