@@ -260,7 +260,7 @@ def test_init_next_steps_make_the_branch_before_the_add(tmp_path):
              result.stdout.split("NEXT STEPS", 1)[1].splitlines()
              if line.strip()]
     assert host_words(block[0]) == ["git", "-C", str(holder), "switch",
-                                    "-c", "family/add-<project>"]
+                                    "-c", "family/add-<Project>"]
     assert " add --family-root " in block[1]
     assert git("symbolic-ref", "--short", "HEAD", cwd=holder).stdout.strip() \
         == TRACKING

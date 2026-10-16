@@ -369,6 +369,58 @@ def test_a_project_name_that_is_not_a_lowercase_id_is_refused(source_repo,
     assert "adopt-bad-id" in result.stderr
 
 
+#: `repo_shape.PROJECT_ID_RE`, as `adopt-bad-id` prints it.
+ID_PATTERN = "^[a-z0-9][a-z0-9-]*$"
+
+
+def test_a_passed_id_that_is_not_a_lowercase_id_is_named_as_passed(
+        source_repo, tmp_path):
+    """#601: the refusal of a `--id` the person typed keeps naming that flag,
+    with the value as typed; nothing in it says the id came from elsewhere."""
+    plan = tmp_path / "plan.yaml"
+    result = write_plan(source_repo, plan, project="Northwind",
+                        extra=("--id", "Foo_Bar"))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (f"REFUSED adopt-bad-id: --id 'Foo_Bar' must match {ID_PATTERN}"
+            in result.stderr), result.stderr
+    assert "derived" not in result.stderr, result.stderr
+    assert not plan.exists()
+
+
+@pytest.mark.parametrize("project", ["North_Wind", "Wind.Mill"])
+def test_an_id_derived_from_the_project_is_named_as_derived(
+        source_repo, tmp_path, project):
+    """#601: with no `--id`, `plan` lowercases `--project` into the id, and
+    the refusal of that id names where it came from, as `_flag_named` names
+    the tracking branch and the elector (#529), and not as a flag nobody
+    passed: the sentence used to read `--id 'north_wind' must match`."""
+    plan = tmp_path / "plan.yaml"
+    result = write_plan(source_repo, plan, project=project)
+    derived = project.lower()
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert ("REFUSED adopt-bad-id: the id derived from --project "
+            f"{project!r} (--id was not given) is {derived!r}, which must "
+            f"match {ID_PATTERN}") in result.stderr, result.stderr
+    assert f"--id {derived!r}" not in result.stderr, result.stderr
+    assert "Remediation: pass an explicit lowercase --id." in result.stderr
+    assert not plan.exists()
+
+
+def test_a_passed_id_equal_to_the_derived_one_is_still_named_as_passed(
+        source_repo, tmp_path):
+    """Whether the id was passed is what the person did, not whether it
+    equals `--project` lowercased: `--id north_wind` beside `--project
+    North_Wind` is a flag typed, so its refusal names the flag."""
+    plan = tmp_path / "plan.yaml"
+    result = write_plan(source_repo, plan, project="North_Wind",
+                        extra=("--id", "north_wind"))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (f"REFUSED adopt-bad-id: --id 'north_wind' must match {ID_PATTERN}"
+            in result.stderr), result.stderr
+    assert "derived" not in result.stderr, result.stderr
+    assert not plan.exists()
+
+
 # --- --pin, and --visibility internal ---------------------------------------
 
 @pytest.mark.parametrize("value", ["openGlass", "opensoft/openGlass"])

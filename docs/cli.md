@@ -321,10 +321,12 @@ options:
                         is refused before anything is created: `project.yaml`
                         is one, and `contracts` holds several.
   --dry-run             print the plan and ask, as the real run does, whether
-                        each of the three repositories already exists (`gh
-                        repo view` and its commit listing, or the bare
-                        repositories with --local-remote-dir), refusing what
-                        it refuses; create no remote and push nothing
+                        each folder it makes can be made (--work-dir, the
+                        trees in it, --local-remote-dir) and whether each of
+                        the three repositories already exists (`gh repo view`
+                        and its commit listing, or the bare repositories with
+                        --local-remote-dir), refusing what it refuses; make no
+                        folder, create no remote and push nothing
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
                         repo create` (the TEST path; no network)
@@ -435,7 +437,9 @@ options:
                         source's default branch, which the plan records as
                         `source.default_branch`). `check` finds, and `execute`
                         refuses before any leg exists, one that is no branch
-                        of the source (`plan-tracking-branch-missing`).
+                        of the source (`plan-tracking-branch-missing`), and
+                        `plan` refuses one git will not create as a branch
+                        (`adopt-bad-tracking-branch`) and writes no plan.
   --spec-path SPEC_PATH
                         where the spec leg is mounted, as a path in the
                         assembly root (default: spec); the plan records it as
@@ -769,10 +773,12 @@ options:
                         with --into.
   --no-push
   --dry-run             print the plan and ask, as the real run does, whether
-                        <org>/<Family> already exists (`gh repo view` and its
-                        commit listing; with --local-remote-dir, the bare
-                        repository), refusing what it refuses; make no folder,
-                        remote or repository
+                        each folder it makes can be made (the family folder or
+                        --work-dir, the holder in it, --local-remote-dir) and
+                        whether <org>/<Family> already exists (`gh repo view`
+                        and its commit listing; with --local-remote-dir, the
+                        bare repository), refusing what it refuses; make no
+                        folder, remote or repository
 ```
 
 #### `scripts/family.py add`
