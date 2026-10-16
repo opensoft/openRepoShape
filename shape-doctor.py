@@ -7026,12 +7026,7 @@ def submodule_config(root: Path) -> dict:
     is COMPARED with `origin_url`'s reading of a clone's remote, which is
     the replacement (#385): the same bytes read two ways are two strings,
     so a clone made from this very url would stop being the member's
-    working clone. That comparison is the whole reason; what the row PRINTS
-    is not part of it, because the table goes through `ascii_text` and
-    `--json` through `json.dumps`, so neither would raise on a lone
-    surrogate. `surrogateescape` would change one thing there: `--json`'s
-    `mounted_from` would carry a `\\udce9` escape that a strict JSON reader
-    refuses, where the table shows `?` whichever way the byte is read.
+    working clone.
     """
     fields: dict = {}
     try:
