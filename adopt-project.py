@@ -170,6 +170,7 @@ import argparse
 import contextlib
 import datetime as _dt
 import itertools
+import json
 import os
 import re
 import shlex
@@ -8957,11 +8958,78 @@ def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
               "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
               "PAT (contents:read on the legs, fallback) — or the `validate` "
               "check cannot check them out.")
+        # The secrets that credential is kept in are the ROOT's, where the
+        # workflow runs, so the Free-plan hint goes by the root (#602).
+        _free_plan_hint_by_the_root(plan, repositories["assembly"])
+
+
+#: What `execute` prints where GitHub would not say what visibility the
+#: adopted root has (#602): the question it could not answer, what the
+#: Free-plan hint would then say, and how to answer it. `{root}` is the root.
+ROOT_VISIBILITY_UNREAD = (
+    "NOTE this run could not read {root}'s visibility from GitHub, so it "
+    "cannot say whether the Free-plan secrets hint applies. It applies when "
+    "{root} is private or internal and its organisation is on the GitHub Free "
+    "plan: organisation secrets are then not delivered to it, so org-level "
+    "SHAPE_LEGS_APP_ID / SHAPE_LEGS_APP_PRIVATE_KEY resolve to EMPTY in its "
+    "`validate` workflow and must be set as REPOSITORY secrets on {root} "
+    "instead. `gh repo view {root} --json visibility` says which it is.")
+
+
+def _free_plan_hint_by_the_root(plan: Plan, root: str) -> None:
+    """The Free-plan secrets hint, BY THE ADOPTED ROOT (#602).
+
+    The `validate` workflow that reads SHAPE_LEGS_APP_ID and
+    SHAPE_LEGS_APP_PRIVATE_KEY runs in the assembly root, and on the Free
+    plan an organisation secret is delivered only to a public repository. An
+    adopted root keeps the visibility it had, which is not the plan's
+    `visibility:` (the two new legs'), so the hint went by the wrong
+    repository: a public source adopted with private legs was told its
+    organisation secrets "resolve to EMPTY", and a private one was told the
+    legs were why. It is printed now only when GitHub says the root is
+    private or internal, naming the root, as `scaffold-project.py`'s
+    `_private_leg_note` has gated it since #542. Asked only once a leg is
+    private or internal: a public leg needs no credential, so no secret
+    decides whether the `validate` check reads it.
+
+    A ROOT WHOSE VISIBILITY CANNOT BE READ IS NOT GUESSED. Read as private,
+    a public root would be given a false hint; read as public, a private one
+    would lose a true one with nothing said. `ROOT_VISIBILITY_UNREAD` says
+    so instead, with the condition and the command that settles it. It asks
+    nothing of the organisation's plan: `free_plan_secret_hint` answers None
+    alike for a paid plan and for one it could not read, so its answer could
+    not tell "the hint does not apply" from a second unknown. It is a NOTE
+    and not a refusal, because both legs exist by now and the run goes on to
+    push them.
+    """
+    seen = _root_visibility(root)
+    if seen in ("private", "internal"):
         hint = free_plan_secret_hint(
-            plan.get("org", ""), repositories["assembly"],
-            f"{repositories['spec']} and {repositories['code']} are")
+            plan.get("org", ""), root, f"{root} is")
         if hint:
             print(hint)
+    elif seen is None:
+        print(ROOT_VISIBILITY_UNREAD.format(root=root))
+
+
+def _root_visibility(repository: str) -> str | None:
+    """`repository`'s visibility on GitHub, one of `VISIBILITY_CHOICES`, or
+    None when it cannot be read: `gh repo view` failed (a repository the
+    token cannot see, a rate limit, the network) or could not be started,
+    or answered anything but one of GitHub's three visibilities. Never asked
+    under `--local-remote-dir`, whose root is the source on disk."""
+    try:
+        answer = run(["gh", "repo", "view", repository, "--json",
+                      "visibility"])
+    except (CommandFailed, OSError):
+        return None
+    try:
+        value = json.loads(answer)
+    except ValueError:
+        return None
+    value = value.get("visibility") if isinstance(value, dict) else None
+    seen = value.lower() if isinstance(value, str) else None
+    return seen if seen in VISIBILITY_CHOICES else None
 
 
 def _create_leg_remote(plan: Plan, names: dict, repositories: dict,
