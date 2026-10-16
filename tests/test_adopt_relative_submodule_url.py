@@ -437,9 +437,10 @@ def test_a_credential_in_the_source_remote_is_never_printed(adopter,
 
 def test_an_absolute_url_resolves_nothing(adopter, tmp_path, monkeypatch):
     """(d) A url that is not relative is copied by git as it stands, so it
-    is never resolved and no scratch repository is made for it: a source
-    with an absolute url checks exactly as it did on #166's base, with no
-    finding and no NOTE. The same plan with a relative url is resolved."""
+    is never resolved and `_resolved` makes no scratch repository for it: a
+    source with an absolute url that answers (#418) checks exactly as it did
+    on #166's base, with no finding and no NOTE. The same plan with a
+    relative url is resolved."""
     def refuse(*_):
         raise AssertionError("a url was resolved")
 
@@ -559,7 +560,8 @@ def test_one_directory_through_a_symlink_is_one_repository(adopter,
     """The source's `origin` reaches the remotes directory through a
     symlink, and `--local-remote-dir` names it directly: two spellings, one
     directory, so `../dependency` names one repository from both and is not
-    refused. A directory that is not the same one is."""
+    refused. The dependency is there, as a url that answers nothing is
+    refused for that (#418). A directory that is not the same one is."""
     remotes = tmp_path / REMOTES
     remotes.mkdir()
     link = tmp_path / "link"
@@ -569,7 +571,7 @@ def test_one_directory_through_a_symlink_is_one_repository(adopter,
         # A platform, or a filesystem, that refuses one: not a failure.
         pytest.skip(f"this platform cannot create a symlink here: {exc}")
     linked = source_with(tmp_path / "linked", SIBLING,
-                         str(link / THING_REMOTE))
+                         str(link / THING_REMOTE), remotes / "dependency")
     plan = planned(linked, tmp_path / "linked",
                    its_org(str(link / THING_REMOTE)))
     assert refusal_of(adopter, plan, tmp_path, remotes) is None

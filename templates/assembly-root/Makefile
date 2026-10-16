@@ -31,8 +31,9 @@ OVERLAY_MISSING = needs the Speckit worktree overlay; install it with: \
 .PHONY: help bootstrap validate pins park resume
 
 help:
-	@echo 'make bootstrap   legs onto tracking branches at their pins, then'
-	@echo '                 the validators, then the review-authority readout'
+	@echo 'make bootstrap   legs onto tracking branches at their pins where that'
+	@echo '                 loses no commit, or says why not; then the validators,'
+	@echo '                 then the review-authority readout'
 	@echo 'make validate    naming + manifest + lockstep pins (what CI runs)'
 	@echo 'make pins        the lockstep pin validator alone'
 	@echo 'make park        commit, push and RECORD every open feature, so'

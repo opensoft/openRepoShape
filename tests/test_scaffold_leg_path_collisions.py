@@ -267,8 +267,9 @@ def test_the_remediation_lists_the_materializers_paths(scaffold, no_process,
 
 @pytest.mark.parametrize("value", CLEAR)
 def test_a_path_that_overlaps_nothing_the_scaffold_writes_plans(
-        scaffold, capsys, value):
-    code = scaffold.main([*BASE_ARGS, "--dry-run", "--spec-path", value])
+        scaffold, capsys, tmp_path, value):
+    code = scaffold.main([*BASE_ARGS, "--dry-run", "--spec-path", value,
+                          "--local-remote-dir", str(tmp_path / "remotes")])
     out, err = capsys.readouterr()
     assert code == 0, out + err
     assert REFUSED not in err
@@ -536,7 +537,7 @@ def test_a_pinned_run_refuses_before_anything_exists(tmp_path, glass):
             "--local-remote-dir", str(remotes), "--work-dir", str(work))
     control = run_script(SCAFFOLD, *args, "--dry-run")
     assert control.returncode == 0, control.stdout + control.stderr
-    assert f"-> {GLASS_PIN} (local-clone (" in control.stdout
+    assert f"-> {GLASS_PIN} (local-clone)\n" in control.stdout
     dry = run_script(SCAFFOLD, *args, "--spec-path", GLASS_PIN, "--dry-run")
     real = run_script(SCAFFOLD, *args, "--spec-path", GLASS_PIN)
     assert (dry.returncode, real.returncode) == (2, 2), (

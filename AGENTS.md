@@ -129,36 +129,37 @@ install command). Seven steps, in order, and step 4 is the one you must not skip
 ```
 
 2. **You resolve the questions, in writing, in the plan.** Each unresolved
-   entry carries a `question:`. Set `leg:` to `spec`, `code`, `root` or `drop`
+   entry carries a `question:`; so does one whose `leg:` is its rule's default,
+   which `execute` takes as written (`drop` for a `single-repository.yaml`
+   record). Set `leg:` to `spec`, `code`, `root` or `drop`
    AND add a `resolution:` line saying why — read the repository to answer it
    (does the specification cite `examples/golden-run/`, or do the tests?). An
-   answer with no reason beside it is a guess that will be read as a finding.
-   Never delete an entry to make the question go away: `check` refuses a path
-   that no entry covers, and it is right to.
+   answer with no reason is a guess, and `check` passes it: the human reads the
+   reasons at step 4. Never delete an entry to make the question go away:
+   `check` refuses a path that no entry covers, and it is right to.
 4. **Show the human the plan and the follow-ups and let them say yes.** The
    follow-ups are code changes the split MAKES NECESSARY — the harness that
    reads `contracts/` from beside it will read it across the root mount — and
-   `execute` does not make them. Do not pass `--yes` on your own initiative;
-   it is the human's word, not your convenience.
+   `execute` does not make them; it opens the split's pull request itself,
+   because these organisations are pull-request only. Never suggest a direct
+   push to the default branch, and never `--admin`. Do not pass `--yes` on your
+   own initiative; it is the human's word, not your convenience.
 7. **Read the verification table back to them.** It accounts for every source
    path at the source commit, by blob sha (a kept root `.gitattributes` as the
    source's bytes plus the line-ending block the split appends), in exactly one
    of {spec leg, code leg, root tree} or as `drop`. If it exits non-zero, STOP
    and relay it, and take the way out THAT exit prints. Exit 1, a failed
-   verification: the source is untouched — nothing is deleted, `main` is where
-   it was, the split is on a branch — so fix the plan, delete the split branch,
+   verification: nothing is deleted and `main` is where it was, but the split
+   branch is pushed and, on GitHub, its pull request may be open and the topic
+   set — so fix the plan, delete the split branch (closing that pull request),
    and re-run into fresh legs and a fresh `--work-dir`, or none. Exit 2 saying
    `IS pushed` (GitHub only: `gh pr create` or the topic refused) comes after
    both legs and the split are pushed and verified: finish with the command it
    prints and never re-run into fresh legs, which abandons that pair.
 
-`execute` also records the plan's answers about the source's submodules in
-the split's `project.yaml`, under `submodules:` — per submodule a leg keeps,
-its `path`, `leg`, `resolution:` and `source_commit`. It confers nothing,
-nothing rewrites it, and the doctor holds each submodule to it.
-
-`execute` opens a pull request, because these organisations are pull-request
-only. Never suggest a direct push to the default branch, and never `--admin`.
+`execute` also records the plan's answers in the split's `project.yaml`, under
+`submodules:` (per submodule a leg keeps) and `answered_paths:` (per other path
+the policy asked about). They confer nothing, and no command rewrites them.
 
 ### Adopting a repository that has NO code yet (or no spec)
 
@@ -248,10 +249,11 @@ its last line names that directory, the human's to delete once those have run.
    `review_required: true` is a question the policy is ASKING, not a defect
    found: answering it on their behalf puts a fact in their tree that nobody
    decided. The plan is `kind: placement-plan` and is not an adoption plan;
-   never hand one to `adopt-project.py`, which refuses it by name. A
-   submodule is judged by the adoption's `submodules:` record, not a rule
-   (`rule: null`, `confidence: recorded`), and is a `note` where no row names
-   it. One moved on purpose stays MISPLACED: its row is the human's to change.
+   never hand one to `adopt-project.py`, which refuses it by name. A submodule
+   is held to its `submodules:` row, not a rule (`rule: null`, `confidence:
+   recorded`); one no row names, or a row no leg holds, is a `note`. A move or
+   removal the human decided is recorded by editing its row by hand, in the
+   pull request that bumps the pins: that is not the edit 3 forbids.
 5. **`NOT A SHAPE ROOT` is a question for the human, not a task.** There is
    no `project.yaml` and no `family.yaml`. The two ways in are
    `adopt-project.py plan` (a repository that already exists, converted in
@@ -405,13 +407,13 @@ python3 scripts/family.py siblings --family-root <path>
    `members/<Project>` inside the holder is pinned and DETACHED, for
    `bootstrap` and `validate`; the sibling is where the human works.
    **What it never does, and neither do you:** it MOVES NOTHING — when the
-   parent folder is not named after the family it warns and prints an `mv`,
-   and running that `mv` yourself relocates a checkout out from under a
-   shell, an editor and every agent lane, and breaks any linked worktree
-   (its `.git` file carries an absolute path). An existing clone gets only
-   `git fetch` — no checkout, no reset, no pull — because somebody works in
-   there; one of a different repository is reported and skipped, and the
-   exit is the human's hand, not an overwrite.
+   parent folder is not named after the family (nor linked as it) it clones
+   nothing, prints an `mv` and exits 1 (`make`: 2), and running that `mv`
+   relocates a checkout out from under a shell, an editor and every agent lane,
+   and breaks any linked worktree (its `.git` file carries an absolute path). An
+   existing clone gets only `git fetch` — no checkout, no reset, no pull —
+   because somebody works in there; one of a different repository is reported
+   and skipped, and the exit is the human's hand, not an overwrite.
 6. `update-shape.py` updates a family root exactly as it updates a project,
    with the same four refusals, and mirrors into `family.yaml`. An existing
    holder receives `scripts/siblings.py` that way: `check` reports it as

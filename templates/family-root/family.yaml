@@ -45,9 +45,13 @@ created_on: "{{CREATED_ON}}"
 # is what lets a reader tell why the members need a credential in CI.
 visibility: "{{VISIBILITY}}"
 
-# The branch `scripts/bootstrap.py` places each member on, AT its pinned
-# commit. `.gitmodules` carries no `branch=`: there is exactly one
-# authoritative answer to "what commit of this member is this family".
+# The HOLDER's own branch: the one a new holder is created on, and the one
+# `scripts/family.py` refuses to commit `add`, `bump` and `remove` on. It
+# places no member on any branch: `scripts/bootstrap.py` leaves each member
+# DETACHED at its pinned commit, and `make siblings` clones each working copy
+# on the `tracking_branch:` of that member's own `project.yaml`. `.gitmodules`
+# carries no `branch=`: there is exactly one authoritative answer to "what
+# commit of this member is this family".
 tracking_branch: "{{TRACKING_BRANCH}}"
 
 # The directory every member is mounted under. One name, so a reader and a

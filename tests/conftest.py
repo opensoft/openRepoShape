@@ -25,6 +25,7 @@ fast.
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import os
 import re
@@ -35,6 +36,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
@@ -155,11 +157,14 @@ def load_without_bytecode(path: Path, name: str):
     return module
 
 
-#: `load_without_bytecode`'s counterpart for a CHILD process (#544). `family.py
-#: siblings` runs the standard's `templates/family-root/scripts/siblings.py`
-#: through `runpy`, and that file imports `bootstrap` from beside it, so
-#: without this in the child's environment the import writes
-#: `__pycache__/bootstrap.*.pyc` into the template tree.
+#: `load_without_bytecode`'s counterpart for a CHILD process (#544). A child
+#: that imports a file under `templates/` writes `__pycache__` beside it
+#: unless this is in its environment. `family.py siblings` used to run the
+#: template's `scripts/siblings.py` through `runpy`, importing `bootstrap`
+#: from the template tree; since #543 it runs the holder's own
+#: `scripts/siblings.py` in a child process standing in the holder, so its
+#: imports come from the holder's copy. Kept on those calls so a return to
+#: an in-process run cannot write into the templates unseen.
 NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
 
 
@@ -220,6 +225,102 @@ WINDOWS_SKIP = pytest.mark.skipif(
     os.name == "nt",
     reason="needs a POSIX shell and shebang execution; on Windows the entry "
            "point is setup-project.py (tests/test_setup_project_py.py)")
+
+
+def _git_for_windows() -> Path | None:
+    """Git for Windows' own directory, from the `git` that runs this suite.
+
+    `git --exec-path` answers `<root>/mingw64/libexec/git-core` there, and
+    `<root>/usr/bin/bash.exe` is its bash. None off Windows, and where that
+    git is some other build, with no such bash beside it.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        answer = subprocess.run(["git", "--exec-path"], capture_output=True,
+                                text=True, check=False).stdout.strip()
+    except OSError:
+        return None
+    parents = Path(answer).parents if answer else ()
+    if len(parents) < 3:
+        return None
+    root = parents[2]
+    return root if (root / "usr" / "bin" / "bash.exe").is_file() else None
+
+
+GIT_FOR_WINDOWS = _git_for_windows()
+
+#: THE BASH THAT `openRepoShape` AND `install.sh` ARE TESTED UNDER (#585).
+#: Off Windows, the `bash` on PATH. On Windows, Git Bash: Git for Windows'
+#: own `usr\bin\bash.exe`, found beside the git this suite runs and NEVER
+#: from PATH, because a bare `bash` there can be `System32\bash.exe`, the WSL
+#: launcher, and `subprocess` looks in System32 before it reads PATH at all.
+#: `usr\bin` and not `bin`: `bin\bash.exe`, which Git Bash's own shortcut
+#: runs, puts Git's `mingw64\bin` and `usr\bin` FIRST on PATH, ahead of a
+#: test's fake `curl`, and a test's own PATH of a few programs would hold
+#: every one of Git's. `git_bash_session` puts the two there behind the
+#: fakes instead. These suites wore `WINDOWS_SKIP` until then.
+if os.name == "nt":
+    BASH = (str(GIT_FOR_WINDOWS / "usr" / "bin" / "bash.exe")
+            if GIT_FOR_WINDOWS is not None else None)
+else:
+    BASH = shutil.which("bash")
+
+BASH_SKIP = pytest.mark.skipif(
+    BASH is None,
+    reason="needs bash: on Windows, Git for Windows' own usr\\bin\\bash.exe "
+           "beside the git on PATH, which this machine does not have")
+
+
+@functools.lru_cache(maxsize=None)
+def _cygpath(flag: str, path: str) -> str:
+    """Git for Windows' `cygpath <flag>`: the spelling bash itself uses."""
+    return subprocess.run(
+        [str(GIT_FOR_WINDOWS / "usr" / "bin" / "cygpath.exe"), flag, "--",
+         path], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def bash_path(path) -> str:
+    """`path` as `BASH` spells it, for its argv, its environment and what it
+    prints (#585): unchanged off Windows, and `/d/a/...` under Git Bash, from
+    its own `cygpath -u` — the spelling Git Bash gives `$HOME`, `$TMPDIR`,
+    `PATH` and `pwd`, and so the one a person there types."""
+    if GIT_FOR_WINDOWS is None:
+        return str(path)
+    return _cygpath("-u", str(path))
+
+
+def native_path(text: str) -> Path:
+    """The other way: a path `BASH` printed, as this interpreter opens it."""
+    if GIT_FOR_WINDOWS is None:
+        return Path(text)
+    return Path(_cygpath("-w", text))
+
+
+@pytest.fixture
+def git_bash_session(monkeypatch):
+    """PATH and `MSYSTEM` as Git Bash makes them, for a test that runs
+    `BASH` (#585); off Windows, nothing.
+
+    Git Bash puts Git's `mingw64\\bin` and `usr\\bin` ahead of the Windows
+    PATH, which is where a person there finds `mktemp`, `cp` and the bash
+    that `openRepoShape` runs `setup.sh` with, ahead of System32's WSL
+    launcher. Here they go ahead of `os.environ["PATH"]`, so a fake a test
+    puts first still comes first. Neither directory holds a `gh`, so the
+    session's gh guard still answers. The GitHub runner's own PATH already
+    holds both, and Git's `bin` before System32; Git for Windows' default
+    install puts only its `cmd` on PATH, and there, without this, `mktemp`
+    is not found and `bash` is the WSL launcher.
+    """
+    if GIT_FOR_WINDOWS is None:
+        return
+    # Git for Windows on ARM64 ships `clangarm64` where x64 has `mingw64`.
+    msystem = "clangarm64" if (GIT_FOR_WINDOWS / "clangarm64").is_dir() \
+        else "mingw64"
+    monkeypatch.setenv("PATH", os.pathsep.join([
+        str(GIT_FOR_WINDOWS / msystem / "bin"),
+        str(GIT_FOR_WINDOWS / "usr" / "bin"), os.environ.get("PATH", "")]))
+    monkeypatch.setenv("MSYSTEM", msystem.upper())
 
 
 def rmtree(path: Path) -> None:
@@ -441,6 +542,30 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
                                   else subprocess.PIPE),
                           text=True, check=False, env=env, input=input,
                           stdin=stdin)
+
+
+def scaffold_dry_run_on_github(monkeypatch, capsys, *args: str):
+    """`scaffold-project.py <args> --dry-run` with no `--local-remote-dir`,
+    IN PROCESS, and `(exit code, stdout, stderr, the repositories asked
+    about)`.
+
+    THE DRY RUN ASKS GITHUB NOW (#537): `remote_is_empty`, a `gh repo view`
+    of each of the three, as the real run does. A stub `gh` is a `#!` script
+    Windows does not run, so a test of the plan a real organisation is shown
+    replaces that one question with a stand-in that answers "none of the
+    three exists" and records whom it was asked about. No `gh` is started on
+    any platform, and every other step of the dry run is the tool's own.
+    """
+    spec = importlib.util.spec_from_file_location("scaffold_on_github",
+                                                  SCAFFOLD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    asked: list = []
+    monkeypatch.setattr(module, "remote_is_empty",
+                        lambda repository: asked.append(repository))
+    code = module.main([*args, "--dry-run"])
+    out, err = capsys.readouterr()
+    return code, out, err, asked
 
 
 @pytest.fixture(scope="session")
@@ -893,6 +1018,48 @@ def pytest_runtest_teardown(item, nextitem):
     return result
 
 
+# --- the suite's own temporary directory (#461, #526) ------------------------
+#
+# A TOOL RUN WITHOUT A DIRECTORY OF ITS OWN WRITES IN THE SYSTEM TEMP FOLDER,
+# outside pytest's retention: `adopt-project.py` makes an
+# `openreposhape-adopt-*` work directory per `plan`, `check` and `execute`
+# given no `--work-dir`, and one run of `tests/test_adopt_pins.py` left 117 of
+# them in `/tmp` (15,206 in one container, 226,165 on another machine). So
+# the session points `TMPDIR` into its basetemp, where pytest keeps or removes
+# it with everything else, and the tool removes each one that holds nothing.
+# A test that gives a child a `TMPDIR` of its own still does: `run_script`
+# lays a caller's variables over `os.environ`.
+
+#: The directory `temporary_directory` points `TMPDIR` at, ONE level under
+#: the session's basetemp and not one per test: the Windows runner meets
+#: MAX_PATH where git writes beneath a deep path.
+TMPDIR_NAME = "tmpdir"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def temporary_directory(tmp_path_factory):
+    """`<basetemp>/tmpdir` as the system temp folder for the whole session:
+    `TMPDIR` for every child, however it is started, and `tempfile.tempdir`
+    for this process, where a test that loads `adopt-project.py` as a module
+    runs its `tempfile.mkdtemp`, and where `tempfile` keeps the folder it
+    found first whatever `TMPDIR` says later. `TMPDIR` alone, because
+    `tempfile` reads it first on every platform. Both are put back as they
+    were."""
+    directory = tmp_path_factory.getbasetemp() / TMPDIR_NAME
+    directory.mkdir(exist_ok=True)
+    before, cached = os.environ.get("TMPDIR"), tempfile.tempdir
+    os.environ["TMPDIR"] = str(directory)
+    tempfile.tempdir = str(directory)
+    try:
+        yield directory
+    finally:
+        tempfile.tempdir = cached
+        if before is None:
+            os.environ.pop("TMPDIR", None)
+        else:
+            os.environ["TMPDIR"] = before
+
+
 def assert_refuses_for_want_of_a_terminal(stderr: str) -> None:
     """What a run with no terminal prints where it would have asked (#476),
     held to ONE reading by every test that reaches it.
@@ -1021,6 +1188,43 @@ def assert_a_taken_clone_path_is_refused(run, tmp_path: Path,
     assert after == before, f"{taken} was changed by a run that refused"
 
 
+def assert_the_plan_refuses_a_remote_that_exists(run, tmp_path: Path) -> None:
+    """A leg that already exists with commits is refused in step (5), the
+    plan, which is the scaffold's own `--dry-run` (#537): the scaffold's
+    `scaffold-remote-exists`, before the yes is asked, and nothing created.
+    On main the plan passed it, and a run with no terminal stopped at the
+    question instead; with one, the refusal came from step (6), after the
+    yes."""
+    remotes = tmp_path / "remotes"
+    seed = tmp_path / "somebody"
+    seed.mkdir()
+    git("init", "-q", "-b", "main", str(seed), cwd=seed)
+    (seed / "README.md").write_bytes(b"# somebody's\n")
+    git("add", "README.md", cwd=seed)
+    git("commit", "-q", "-m", "somebody's", cwd=seed)
+    leg = remotes / "Sample-spec.git"
+    remotes.mkdir()
+    git("init", "-q", "--bare", "-b", "main", str(leg), cwd=remotes)
+    git("push", "-q", str(leg), "main", cwd=seed)
+    before = git("for-each-ref", cwd=leg).stdout
+    result = run("--project", "Sample", "--org", "demoorg",
+                 "--local-remote-dir", str(remotes),
+                 "--into", str(tmp_path / "work"))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert (f"REFUSED scaffold-remote-exists: {leg.resolve()} already exists "
+            "and has commits" in result.stderr), result.stderr
+    assert "REFUSED: the plan could not be produced" in result.stderr
+    assert "(5) the plan" in result.stdout, result.stdout
+    assert "--dry-run: nothing was created." not in result.stdout
+    assert "(6) scaffold" not in result.stdout, "the run reached (6)"
+    assert "This will create THREE repositories" not in result.stdout
+    assert "no terminal to confirm on" not in result.stderr, (
+        "the run reached the question")
+    assert sorted(p.name for p in remotes.iterdir()) == ["Sample-spec.git"]
+    assert git("for-each-ref", cwd=leg).stdout == before
+    assert not (tmp_path / "work").exists()
+
+
 #: THE PERSON'S OWN TERMINAL, IN A TEST (#492). The one-liner reads its yes
 #: from the CONTROLLING terminal when its stdin is the pipe the script came
 #: down, so a test that says it asks has to give the run one: a
@@ -1146,3 +1350,270 @@ def spelled(path) -> str:
     `_spelled` writes as it is; a Windows path keeps its separators, each
     one escaped."""
     return "`" + str(path).replace("\\", "\\\\").replace("`", "\\`") + "`"
+
+
+# --- setup's paste lines, its step checks and the upstream guard (#538) ------
+#
+# ONE READING, TWO ENTRY POINTS, as for #498 above: each helper takes the
+# runner of the file that calls it, and every run passes `--local-remote-dir`
+# for the reason given there.
+
+#: A folder whose name holds a space, which a shell splits a bare path at:
+#: `--into "/home/a b"`, or a Windows profile folder.
+SPACED = "a b"
+
+#: The word setup prints for the interpreter a person types:
+#: `setup-project.py`'s `PYTHON_CMD`.
+SETUP_PYTHON_CMD = "python" if os.name == "nt" else "python3"
+
+#: Where a FILE can stand above the clone path: the `--family` folder,
+#: `<into>/<Family>`, and `--into` itself.
+FILE_ABOVE_THE_CLONE = ("family folder", "into")
+
+#: `(spelling, --yes)`: `--dry-run` passed through after `--` as the
+#: scaffold's argparse reads it, whole and as a prefix it takes for the same
+#: flag, told `--yes`; and whole with no `--yes` and no terminal to ask on.
+DRY_RUNS = (("--dry-run", True), ("--dry", True), ("--dry-run", False))
+
+#: What setup says when that `--dry-run` ends the run at its plan.
+DRY_RUN_ENDS_IT = ("--dry-run was passed through to the scaffold, so this run "
+                   "ends at the plan above: nothing was created and nothing "
+                   "was cloned.")
+
+#: What a project declares after `--` that the naming check must hear: a
+#: `--pin` in either spelling, and a pin chain.
+DECLARATIONS = ("--pin", "--pin=", "--referent-chain")
+
+#: `opensoft` in a case other than its own, which GitHub reads as opensoft.
+UPSTREAM_CASINGS = ("OpenSoft", "OPENSOFT")
+
+
+def read_through_git(remotes: Path) -> dict:
+    """The environment that makes every git a pasted line starts read the
+    bare repositories in `remotes` through git, not through their files
+    (#440): `clone_just_pushed`'s `url.<file URI>.insteadOf` rewrites, as
+    `GIT_CONFIG_COUNT` entries, because the line under test is run exactly
+    as it was printed and a submodule's own clone inherits the environment.
+    The directory as typed and as resolved, so the root's URL and the legs'
+    `.gitmodules` URLs are both rewritten."""
+    uri = remotes.resolve().as_uri().rstrip("/") + "/"
+    prefixes = list(dict.fromkeys(
+        spelling for directory in (Path(os.path.abspath(remotes)),
+                                   remotes.resolve())
+        for spelling in (os.path.join(str(directory), ""),
+                         directory.as_posix().rstrip("/") + "/")))
+    env = {"GIT_CONFIG_COUNT": str(len(prefixes))}
+    for index, prefix in enumerate(prefixes):
+        env[f"GIT_CONFIG_KEY_{index}"] = f"url.{uri}.insteadOf"
+        env[f"GIT_CONFIG_VALUE_{index}"] = prefix
+    return env
+
+
+def pasted(lines, cwd: Path,
+           env: dict | None = None) -> subprocess.CompletedProcess:
+    """`lines` pasted into `sh` one after another, stopping at the first that
+    fails: what a person does with the commands a tool prints."""
+    return subprocess.run(["sh", "-c", "set -e\n" + "\n".join(lines)],
+                          cwd=str(cwd), env={**os.environ, **(env or {})},
+                          capture_output=True, text=True, check=False)
+
+
+def indented_commands(text: str) -> list:
+    """The commands `text` prints for pasting, each on a line of its own
+    indented four spaces, as setup indents them, with the indent dropped."""
+    return [line.strip() for line in text.splitlines()
+            if line.startswith("    ") and not line[4:5].isspace()]
+
+
+def assert_the_closing_cd_is_one_word(run, tmp_path: Path) -> None:
+    """The hand-over's `cd <clone>` names the clone as ONE word, so a folder
+    with a space in `--into` reaches `cd` whole. On main it printed `cd
+    /.../a b/work/Sample`, which `cd` refuses as two arguments. Read the way
+    a POSIX shell reads it on every host, and run in one where there is
+    one."""
+    into = tmp_path / SPACED / "work"
+    clone = os.path.abspath(str(into / "Sample"))
+    result = run("--project", "Sample", "--yes", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / SPACED / "remotes"),
+                 "--into", str(into))
+    assert result.returncode == 0, result.stderr + result.stdout
+    [cd] = [line for line in indented_commands(
+        result.stdout.split("\nNext:\n", 1)[-1]) if line.startswith("cd ")]
+    assert shlex.split(cd) == ["cd", clone], cd
+    if os.name != "nt":
+        ran = pasted([cd, "test -f project.yaml"], cwd=tmp_path)
+        assert ran.returncode == 0, ran.stderr
+
+
+def assert_the_backstop_is_finished_by_hand_as_printed(
+        run, tmp_path: Path) -> None:
+    """Step (7)'s backstop, followed the way it says: move the path aside,
+    then paste the lines. Each path is ONE word, and under
+    `--local-remote-dir` the recursive clone carries `-c
+    protocol.file.allow=always`, as setup's own clone does: the legs are
+    cloned over the file transport, which git refuses a submodule without
+    it. On main the lines split at the space, and the clone failed
+    `transport 'file' not allowed`.
+
+    THE PATH APPEARS WHILE THE RUN IS GOING because the scaffold is told to
+    build its working trees in `--into` itself (`--work-dir`, passed through
+    after `--`), so its root tree stands at `<into>/Sample` by step (7)."""
+    into = tmp_path / SPACED / "work"
+    remotes = tmp_path / SPACED / "remotes"
+    clone = into / "Sample"
+    result = run("--project", "Sample", "--yes", "--org", "demoorg",
+                 "--local-remote-dir", str(remotes), "--into", str(into),
+                 "--", "--work-dir", str(into))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert ("REFUSED: %s already exists - it was not there when step (3) "
+            "looked" % os.path.abspath(str(clone))) in result.stderr, (
+        result.stderr)
+    lines = indented_commands(result.stderr.split("REFUSED: ", 1)[-1])
+    assert [shlex.split(line) for line in lines] == [
+        ["cd", os.path.abspath(str(into))],
+        ["git", *FILE_PROTOCOL, "clone", "--recurse-submodules",
+         os.path.join(os.path.abspath(str(remotes)), "Sample.git")],
+        ["cd", "Sample", "&&", SETUP_PYTHON_CMD, "scripts/bootstrap.py"],
+    ], lines
+    if os.name != "nt":
+        clone.rename(into / "Sample.aside")
+        ran = pasted(lines, cwd=tmp_path, env=read_through_git(remotes))
+        assert ran.returncode == 0, ran.stderr + ran.stdout
+        assert "bootstrap ok" in ran.stdout, ran.stdout
+
+
+def assert_the_scaffold_leaves_its_next_steps_to_setup(result) -> None:
+    """Inside setup the scaffold's own NEXT STEPS block (`git clone`, `cd`,
+    `make bootstrap`) is not printed: step (7) runs those very steps next,
+    and the block read as work left to the person. Its `Working trees are
+    at` line stays, after the scaffold and before step (7): README's
+    rehearsal paragraph sends a person to it."""
+    out = result.stdout
+    assert "NEXT STEPS" not in out, out
+    trees = out.find("\nWorking trees are at ")
+    assert out.find("(6) scaffold") < trees, out
+    assert trees < out.find("(7) clone and bootstrap"), out
+
+
+def assert_a_file_above_the_clone_path_is_refused(run, tmp_path: Path,
+                                                  where: str) -> None:
+    """A FILE where a folder above the clone path must be - one of
+    `FILE_ABOVE_THE_CLONE` - is refused in step (3), naming it, and is left
+    as it was. On main `lexists(<file>/Sample)` was False, so step (3)
+    passed, all three repositories were created, and the run ended in a
+    `FileExistsError` traceback where step (7) made the folder."""
+    work = tmp_path / "work"
+    if where == "into":
+        blocker, family = work, ()
+    else:
+        work.mkdir()
+        blocker, family = work / "Zephyr", ("--family", "Zephyr")
+    blocker.write_bytes(b"not a folder\n")
+    result = run("--project", "Sample", "--yes", "--org", "demoorg", *family,
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(work))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert ("REFUSED: %s is a file, and this project would be cloned inside "
+            "it, at %s, so the run stops here and nothing was created. %s"
+            % (os.path.abspath(str(blocker)),
+               os.path.abspath(str(blocker / "Sample")), KEEP_IT)
+            ) in result.stderr, result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    for later in ("(4) naming policy", "(5) the plan", "(6) scaffold"):
+        assert later not in result.stdout, f"the run reached {later}"
+    assert not (tmp_path / "remotes").exists()
+    assert blocker.read_bytes() == b"not a folder\n"
+
+
+def assert_a_dry_run_passed_through_ends_at_the_plan(run, tmp_path: Path,
+                                                     spelling: str,
+                                                     yes: bool) -> None:
+    """`-- --dry-run` (`spelling` and `yes`, one of `DRY_RUNS`) ends the run
+    at the plan, exit 0, whatever `--yes` says and with no terminal to ask on:
+    nothing is created, nothing is cloned, and no folder is made. On main
+    the scaffold made nothing, step (7)'s clone failed, and the refusal said
+    "The three repositories WERE created"; the family folder was left
+    behind."""
+    work = tmp_path / "work"
+    result = run("--project", "Sample", *(["--yes"] if yes else []),
+                 "--org", "demoorg", "--family", "Zephyr",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(work), "--", spelling)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert DRY_RUN_ENDS_IT in result.stdout, result.stdout
+    assert "WERE created" not in result.stderr, result.stderr
+    assert "no terminal to confirm on" not in result.stderr, result.stderr
+    for later in ("(6) scaffold", "(7) clone and bootstrap", "DONE."):
+        assert later not in result.stdout, f"the run reached {later}"
+    assert not (tmp_path / "remotes").exists()
+    assert not work.exists(), f"{work} was made by a run that made nothing"
+
+
+def assert_the_naming_check_hears_what_is_passed_through(run, tmp_path: Path,
+                                                         how: str) -> None:
+    """Step (4) asks the naming check with the `--pin` products and the
+    `--referent-chain` passed through after `--` (`how`, one of
+    `DECLARATIONS`), so a descendant-form name is reported as the
+    descendant the plan then says it is. On main step (4) asked about the
+    three names alone and reported `no referent pin declared`. The run
+    stops at the confirm: no terminal, and nothing is created."""
+    source = tmp_path / "product"
+    source.mkdir()
+    git("init", "-q", "-b", "main", cwd=source)
+    (source / "README.md").write_bytes(b"# a neutral product\n")
+    git("add", "README.md", cwd=source)
+    git("commit", "-q", "-m", "seed", cwd=source)
+    commit = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    project, declared = "MedxGlass", ("--pin", f"openGlass@{commit}")
+    if how == "--pin=":
+        declared = (f"--pin=openGlass@{commit}",)
+    elif how == "--referent-chain":
+        project = "codexDox"
+        declared = ("--pin", f"openXdox@{commit}",
+                    "--referent-chain", "openXdox,openDox")
+    result = run("--project", project, "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", *declared, "--pin-source", str(source))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert_refuses_for_want_of_a_terminal(result.stderr)
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert f"{project}: domain-descendant" in step_four, step_four
+    assert "no referent pin declared" not in step_four, step_four
+    assert not (tmp_path / "remotes").exists()
+
+
+def assert_the_upstream_org_is_refused_in_any_case(run, tmp_path: Path,
+                                                   org: str) -> None:
+    """`--org OpenSoft` (`org`, one of `UPSTREAM_CASINGS`) is refused as
+    `--org opensoft` is: GitHub reads an organisation's login in any case,
+    so it is opensoft's namespace. On main the guard compared exactly and
+    scaffolded."""
+    result = run("--project", "Sample", "--yes", "--org", org,
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert f"the organisation is '{org}', which is the UPSTREAM" in (
+        result.stderr), result.stderr
+    assert "--allow-upstream-org" in result.stderr, result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+def assert_an_upstream_origin_in_any_case_needs_an_org(run,
+                                                       tmp_path: Path) -> None:
+    """A checkout whose `origin` is `OpenSoft/openRepoShape` IS the upstream
+    checkout, and with no `--org` the run refuses as it does for
+    `opensoft/`. On main the casing went through as the organisation."""
+    fork = tmp_path / "fork"
+    fork.mkdir()
+    git("init", "-q", cwd=fork)
+    git("remote", "add", "origin",
+        "https://github.com/OpenSoft/openRepoShape.git", cwd=fork)
+    result = run("--project", "Sample", "--yes",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"), cwd=fork)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "you are running from the upstream checkout" in result.stderr, (
+        result.stderr)
+    assert not (tmp_path / "remotes").exists()
