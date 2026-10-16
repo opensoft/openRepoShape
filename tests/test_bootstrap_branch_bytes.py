@@ -420,6 +420,24 @@ def test_a_branch_the_system_carries_has_no_fault(bootstrap_module, branch):
     assert bootstrap_module._argument_fault(branch) is None
 
 
+@pytest.mark.parametrize("branch, skipped", [
+    pytest.param("a\udcffb", True, id="byte-carrying-surrogate"),
+    pytest.param("\udc80", True, id="the-first-one"),
+    pytest.param("release/1.2", False, id="plain"),
+    pytest.param("a\xe9b", False, id="text"),
+])
+def test_the_no_fault_test_skips_where_fsencode_makes_no_byte_of_the_branch(
+        bootstrap_module, monkeypatch, branch, skipped):
+    """THE WINDOWS GUARD, EMULATED (#663): under Windows' `os.fsencode` the
+    test above skips a branch holding a byte-carrying surrogate, which
+    `_argument_fault` refuses there, and runs every other (the next test
+    holds the refusal)."""
+    monkeypatch.setattr(os, "fsencode", windows_fsencode)
+    reason = skip_message(test_a_branch_the_system_carries_has_no_fault,
+                          bootstrap_module, branch)
+    assert (reason is not None) is skipped, reason
+
+
 @pytest.mark.parametrize("branch, fault", [
     ("a\x00b", "U+0000, a NUL"),
     ("\x00", "U+0000, a NUL"),
