@@ -1572,6 +1572,14 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     gate can import in CI either. ONE RULE FOR EVERY CHILD, as the `env`
     block is: the flag does not ask which script it starts.
 
+    THAT IS TRUE OF AN UNEDITED COPY ONLY. A root whose own copy of a
+    validator gained an `import yaml` read `passes` here while `site` was on,
+    wherever the doctor's interpreter could import it, and now reads
+    `crashed before reaching a verdict (exit 1): ModuleNotFoundError: No
+    module named 'yaml'`, which is the crash its own CI gets, because
+    `validate.yml` installs nothing. That row is a fair answer for that root,
+    and `-S` stays as it is: it does not ask whether a copy was edited.
+
     WHICH AGREEMENT THE ROW KEEPS (#306, #342): the row reports the
     project's own GATE as CI runs it, with no inherited `PYTHONPATH` and no
     `site`; it does not predict what a pasted line prints in the reader's
@@ -7018,8 +7026,12 @@ def submodule_config(root: Path) -> dict:
     is COMPARED with `origin_url`'s reading of a clone's remote, which is
     the replacement (#385): the same bytes read two ways are two strings,
     so a clone made from this very url would stop being the member's
-    working clone. It is also what the row PRINTS, and a lone surrogate is
-    a string no UTF-8 stream can write.
+    working clone. That comparison is the whole reason; what the row PRINTS
+    is not part of it, because the table goes through `ascii_text` and
+    `--json` through `json.dumps`, so neither would raise on a lone
+    surrogate. `surrogateescape` would change one thing there: `--json`'s
+    `mounted_from` would carry a `\\udce9` escape that a strict JSON reader
+    refuses, where the table shows `?` whichever way the byte is read.
     """
     fields: dict = {}
     try:

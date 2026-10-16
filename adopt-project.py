@@ -137,8 +137,8 @@ have no code yet — InkRouter's IRRS and IRSS are specifications (Brett Heap,
 HISTORY rather than an empty repository. So a leg no entry assigns a path to
 is seeded from `templates/<role>-root/` as one initial commit, the plan
 records `seeded_from_template: true` for it, the split still mounts and pins
-it, and the verification table reads `code: 0 of N source paths (seeded from
-template)`. `check` WARNS; `execute` refuses without `--allow-empty-leg
+it, and the verification table's `code` row reads `0 of N source paths (seeded
+from template)`. `check` WARNS; `execute` refuses without `--allow-empty-leg
 <leg>`, in the plan or on its command line, because a plan that lost its code
 paths to a bad edit looks identical from here.
 
