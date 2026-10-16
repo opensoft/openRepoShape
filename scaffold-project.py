@@ -698,7 +698,7 @@ def _refuse_unholdable_manifest(args, values: dict, policy) -> None:
     """
     flags = dict(MANIFEST_FLAGS)
     for key, flag, given, source in (
-            ("PROJECT_ID", "--id", args.id, "--project lowercased"),
+            ("PROJECT_ID", "--id", args.id, ID_DERIVED_FROM),
             ("PROJECT_NAME", "--name", args.name, "--project"),
             ("ELECTED_BY", "--elected-by", args.elected_by,
              "GIT_AUTHOR_NAME or `git config user.name`")):
@@ -767,6 +767,50 @@ def _identity(args, project: str) -> tuple[str, str, str, str, str]:
         ("--reference", reference, ROOT_MANIFEST_AND_README),
         ("--name", display, NAME_WRITTEN_INTO)))
     return project_id, display, elected_on, reference, elected_by
+
+
+#: Where `_identity` takes the id from when no `--id` is passed, as a
+#: sentence names it: in the label `_refuse_unholdable_manifest` gives a
+#: value no flag supplied, and in `scaffold-bad-id` (#659).
+ID_DERIVED_FROM = "--project lowercased"
+
+#: How `scaffold-bad-id` is told to go on (#659), in the words
+#: `adopt-project.py plan` gives `adopt-bad-id` (#658). A `--id` the person
+#: passed is theirs to retype. An id `_identity` derived is `--project`
+#: lowercased, and `--project` also names the three repositories, which the
+#: naming policy reads itself: every form it holds takes only ASCII letters,
+#: digits and hyphens, so "pass an explicit lowercase --id" led straight to
+#: `naming-unclassified`.
+PASSED_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
+DERIVED_ID_REMEDIATION = (
+    f"Remediation: change --project. The id is {ID_DERIVED_FROM}, and an "
+    "explicit --id would not change --project, which also names the "
+    "assembly root and both legs.")
+
+
+def _refuse_bad_id(project_id: str, given: str | None) -> None:
+    """`scaffold-bad-id`: an id the project's validators would not take
+    (`PROJECT_ID_RE`), named by where it came from (#659), as
+    `adopt-project.py plan` names `adopt-bad-id` (#658).
+
+    `given` is `--id` as parsed. One the person passed is named as the flag
+    they typed, value as typed, and keeps its remedy. With none, or an empty
+    one, `_identity` derived the id (`args.id or project.lower()`), and
+    `--id 'north_wind' must match` named a value nobody had typed: the flag
+    is named as `_refuse_unholdable_manifest` names one, by where its value
+    came from, and an empty `--id ''` as empty, because it was passed."""
+    if PROJECT_ID_RE.match(project_id):
+        return
+    pattern = PROJECT_ID_RE.pattern
+    if given:
+        raise Refusal("scaffold-bad-id",
+                      f"--id {project_id!r} must match {pattern}",
+                      PASSED_ID_REMEDIATION)
+    unset = "not given" if given is None else "empty"
+    raise Refusal("scaffold-bad-id",
+                  f"--id ({unset}, so {ID_DERIVED_FROM}) is {project_id!r}, "
+                  f"which must match {pattern}",
+                  DERIVED_ID_REMEDIATION)
 
 
 #: How a refusal names an elector `_elector` did not get from `--elected-by`
@@ -1718,10 +1762,7 @@ def _scaffold(args) -> int:
     local, repositories, urls = _repository_urls(args, names)
     _refuse_an_unwritable_clone_url(local, urls["assembly"])
     policy = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
-    if not PROJECT_ID_RE.match(project_id):
-        raise Refusal("scaffold-bad-id",
-                      f"--id {project_id!r} must match {PROJECT_ID_RE.pattern}",
-                      "Remediation: pass an explicit lowercase --id.")
+    _refuse_bad_id(project_id, args.id)
     # WHAT THE PROJECT DECLARES ABOUT ITSELF, before any name is judged.
     # With no `--pin`, a descendant-form name is a claim with no referent and
     # the DECLARED ROLE wins. With `--pin openGlass@<sha>`, `MedxGlass` IS a

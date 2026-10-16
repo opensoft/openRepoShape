@@ -1502,6 +1502,50 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     return folder, holder
 
 
+#: Where `init` takes the id from when no `--id` is passed, as a sentence
+#: names it: in the label `_manifest_flags` gives a value no flag supplied,
+#: and in `family-bad-id` (#659).
+FAMILY_ID_DERIVED_FROM = "--family lowercased"
+
+#: How `family-bad-id` is told to go on (#659), in the words the scaffold
+#: gives `scaffold-bad-id` and `adopt-project.py plan` `adopt-bad-id`
+#: (#658). A `--id` the person passed is theirs to retype. An id `init`
+#: derived is `--family` lowercased, and `--family` also names the holder,
+#: which `_classify_family_name` reads itself against a policy whose forms
+#: take only ASCII letters, digits and hyphens, so "pass an explicit
+#: lowercase --id" led straight to `naming-unclassified`.
+FAMILY_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
+DERIVED_FAMILY_ID_REMEDIATION = (
+    f"Remediation: change --family. The id is {FAMILY_ID_DERIVED_FROM}, and "
+    "an explicit --id would not change --family, which also names the "
+    "holder.")
+
+
+def _refuse_bad_family_id(family_id: str, given: str | None) -> None:
+    """`family-bad-id`: an id `validate-family.py` would not take
+    (`PROJECT_ID_RE`), named by where it came from (#659), as the scaffold
+    names `scaffold-bad-id`.
+
+    `given` is `--id` as parsed. One the person passed is named as the flag
+    they typed, value as typed, and keeps its remedy. With none, or an empty
+    one, the id is `--family` lowercased (`args.id or family.lower()`), and
+    `--id 'north_wind' must match` named a value nobody had typed: the flag
+    is named as `_manifest_flags` names one, by where its value came from,
+    and an empty `--id ''` as empty, because it was passed."""
+    if PROJECT_ID_RE.match(family_id):
+        return
+    pattern = PROJECT_ID_RE.pattern
+    if given:
+        raise Refusal("family-bad-id",
+                      f"--id {family_id!r} must match {pattern}",
+                      FAMILY_ID_REMEDIATION)
+    unset = "not given" if given is None else "empty"
+    raise Refusal("family-bad-id",
+                  f"--id ({unset}, so {FAMILY_ID_DERIVED_FROM}) is "
+                  f"{family_id!r}, which must match {pattern}",
+                  DERIVED_FAMILY_ID_REMEDIATION)
+
+
 def _checked_family_identity(args) -> tuple[str, str, str]:
     """`(family, family_id, topic)` — every name check `init` makes before
     it decides where anything lands.
@@ -1523,10 +1567,7 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     refuse_bad_branch("family-bad-tracking-branch", "--tracking-branch",
                       args.tracking_branch)
     family_id = checked_value("--id", args.id or family.lower())
-    if not PROJECT_ID_RE.match(family_id):
-        raise Refusal("family-bad-id",
-                      f"--id {family_id!r} must match {PROJECT_ID_RE.pattern}",
-                      "Remediation: pass an explicit lowercase --id.")
+    _refuse_bad_family_id(family_id, args.id)
     policy = NamingPolicy.load(NAMING_POLICY)
     _classify_family_name(policy, family)
     topic = policy.topic_for(family_id)
@@ -2332,7 +2373,7 @@ def _manifest_flags(args) -> dict:
     from, so that a refusal does not point at a flag nobody typed."""
     flags = dict(MANIFEST_FLAGS)
     for key, flag, given, source in (
-            ("FAMILY_ID", "--id", args.id, "--family lowercased"),
+            ("FAMILY_ID", "--id", args.id, FAMILY_ID_DERIVED_FROM),
             ("FAMILY_NAME", "--name", args.name, "--family"),
             ("CREATED_BY", "--created-by", args.created_by,
              "GIT_AUTHOR_NAME or `git config user.name`"),
