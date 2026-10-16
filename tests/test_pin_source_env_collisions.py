@@ -408,8 +408,9 @@ def test_no_gh_command_runs_before_the_variable_refusal(world):
     control = run_script(SCAFFOLD, *common, env=world["env"])
     assert control.returncode == 2, control.stdout + control.stderr
     assert "pin-unreadable" in control.stderr
-    assert world["log"].read_text(encoding=UTF8).startswith(
-        "api repos/opensoft/open-glass")
+    # Its first `gh` call asks the forge what the id names (#651).
+    assert world["log"].read_text(encoding=UTF8).splitlines()[0].endswith(
+        f"-f owner=opensoft -f name=open-glass -f oid={commit}")
 
 
 @pytest.mark.parametrize("values, files", [
