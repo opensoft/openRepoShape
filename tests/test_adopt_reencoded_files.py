@@ -39,8 +39,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, findings, make_source_repo, planned,
-                      refused_before_any_leg)
+from conftest import (ADOPT, findings, git, make_source_repo, planned,
+                      refused_before_any_leg, run_script)
 from test_adopt_nested_attributes import (EMPTY_TREE, GITHUB_ATTRIBUTES,
                                           REENCODED, ROOT, ROOT_ATTRIBUTES,
                                           SOURCE, adopted_by_execute, checked,
@@ -425,6 +425,37 @@ def test_a_malformed_plan_gets_findings_not_a_traceback(tmp_path, old, new):
     result = checked(plan, {})
     assert "Traceback" not in result.stderr, result.stderr
     assert result.returncode == 1, result.stderr
+
+
+def test_a_link_the_checkout_writes_is_never_written_through(monkeypatch,
+                                                             tmp_path):
+    """The source keeps a root `.gitattributes` that is a symlink out of it,
+    `../../../victim.txt`, which leads to the same file from the source and
+    from the throwaway repository in `TMPDIR`. `plan-root-symlink` names it
+    alone: the question writes the shape's `.gitattributes` in the link's
+    place, never through it (at 0224f96a `check` overwrote that file), and
+    does not ask about the link it replaced."""
+    victim = tmp_path / "victim.txt"
+    victim.write_bytes(b"left alone\n")
+    temporary = tmp_path / "temporary"
+    temporary.mkdir()
+    monkeypatch.setenv("TMPDIR", str(temporary))
+    source = make_source_repo(tmp_path / "a" / "b" / "Thing",
+                              tree=dict(SOURCE), edits=())
+    try:
+        (source / ROOT_ATTRIBUTES).symlink_to("../../../victim.txt")
+    except OSError as exc:
+        pytest.skip(f"this platform cannot create a symlink here: {exc}")
+    git("add", ROOT_ATTRIBUTES, cwd=source)
+    git("commit", "-qm", "Link the root's rules out of the source",
+        cwd=source)
+    result = run_script(ADOPT, "check", "--plan",
+                        str(planned(source, tmp_path, {ROOT_ATTRIBUTES: ROOT})),
+                        "--work-dir", str(tmp_path / "work"))
+    assert [line.split(":")[0] for line in result.stderr.splitlines()
+            if line.startswith("FINDING ")] == ["FINDING plan-root-symlink"], \
+        result.stderr
+    assert victim.read_bytes() == b"left alone\n"
 
 
 def test_a_kept_file_named_shape_is_that_finding_alone(tmp_path):

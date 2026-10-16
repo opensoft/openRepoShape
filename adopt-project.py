@@ -8548,9 +8548,13 @@ class _SplitRehearsal:
         return self.refused(["checkout-index", "-a", "-f", "-q"], index)
 
     def place(self, rel: str, data: bytes) -> None:
-        """`data` at `rel` in the work tree, as the split writes a file."""
+        """`data` at `rel` in the work tree, as the split writes a file: in
+        place of a symlink the checkout wrote there, never through it, as
+        one the source keeps may lead out of this repository."""
         target = self.work.joinpath(*rel.split("/"))
         target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_symlink():
+            target.unlink()
         target.write_bytes(data)
 
 
@@ -8595,9 +8599,9 @@ def _as_the_split_writes(asked: _SplitRehearsal, rules: list, kept: set[str],
         asked.place(ATTRIBUTES, written[ATTRIBUTES])
         return
     if own is not None:
-        top = asked.work / ATTRIBUTES
-        top.write_bytes(with_eol_block(top.read_bytes(), eol_block_paths(
-            names, COLLISION_DIR)))
+        asked.place(ATTRIBUTES, with_eol_block(
+            (asked.work / ATTRIBUTES).read_bytes(),
+            eol_block_paths(names, COLLISION_DIR)))
     if beside not in kept:
         asked.place(beside, written[beside])
 
@@ -8734,13 +8738,16 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     pinned copies, that this machine's git would store as other bytes than
     the split expects, then one for each of git's refusals (#654). The
     source's own root `.gitattributes`, kept as a file, is #530's D5(a)
-    question, and is not asked again. `probe` is `_entry_findings`' one
-    probe, shared with `_root_symlink_findings`."""
+    question, and is not asked again; one kept as a symlink, which the split
+    never writes through, is `plan-root-symlink`'s or #471's follow-up's.
+    `probe` is `_entry_findings`' one probe, shared with
+    `_root_symlink_findings`."""
     kept_rows = _kept_in_root(plan.entries, tree)
     kept = {path for path, _, _ in kept_rows}
     disk = _KeptTree(kept_rows, False)
     top = disk.at(ATTRIBUTES)
     own = top[0] if top is not None and top[1] in FILE_MODES else None
+    at_the_top = top[0] if top is not None else None
     order = {path: at for at, (path, _, _, _) in enumerate(tree)}
     files = [(path, mode, oid) for path, mode, oid, _ in tree
              if mode in FILE_MODES and path != own]
@@ -8779,7 +8786,8 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
         except OSError:
             return [_moved_finding(taken)] if taken else []
         held = {*[row for row in wanted if row[0] in kept],
-                *[row for row in rules if row[0] in kept and row[0] != own]}
+                *[row for row in rules
+                  if row[0] in kept and row[0] != at_the_top]}
         asked.hold(STORED, held)
         stored_said = asked.refused(["add", "-u"], STORED)
         blobs = {path: oid for path, _, oid in held}
