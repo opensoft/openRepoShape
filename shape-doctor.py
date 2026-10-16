@@ -1539,13 +1539,48 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     fails here as the project's own gate fails, and the row reports that
     failure rather than a pass.
 
-    WHICH AGREEMENT THE ROW KEEPS (#306): the row reports the project's own
-    GATE as CI runs it, with no inherited `PYTHONPATH`; it does not predict
-    what a pasted line prints in the reader's shell. The pasted line runs under
-    the READER'S environment, so a reader whose own `PYTHONPATH` reaches a
-    `repo_shape` can see a pasted own-copy line pass where the row says
-    FINDING. That is their variable, and the gate has no such variable: the
-    row is about the gate.
+    AND NO `site` IN ANY CHILD, WHICH IS `-S` (#342). `PYTHONPATH` is one way
+    a directory reaches `sys.path`, not the only one: at start-up `site`
+    appends every directory a `.pth` file names, in the user's site-packages
+    and in the interpreter's own -- a virtualenv's, or the system's -- runs
+    every line of one that starts with `import`, and imports `sitecustomize`
+    and `usercustomize`. With `site` on, a `.pth` naming a directory that holds
+    `repo_shape.py` stood in for the copy a root lost, exactly as an exported
+    `PYTHONPATH` did before #306: the `manifest` row said `passes`, for that
+    operator, over a gate that dies on `ModuleNotFoundError` in CI. A
+    validator puts its own directory first, so a `.pth` never shadowed a
+    `repo_shape.py` the root still has; it filled the gap a lost one leaves,
+    which is the one case #238's row exists to report. `-S` closes every one
+    of those routes and keeps the rest of the child: its own directory, the
+    standard library, which the interpreter finds without `site`, and
+    `PYTHONPATH`, so the template copy keeps its `<shape>/scripts`. `-s`
+    (`PYTHONNOUSERSITE`) closes the user's site-packages alone, and a
+    virtualenv's `.pth` still stood in; `-I` is `-s` and `-E`, so it closed no
+    more `.pth` routes than `-s`, took the template's `PYTHONPATH` away
+    (CANNOT ANSWER), and wrote `scripts/__pycache__` into the root, because
+    `-E` ignores `PYTHONDONTWRITEBYTECODE` as well. And a `.pth` that runs
+    code ran it in every child: coverage's, with `COVERAGE_PROCESS_START`
+    exported, left `.coverage.*` files in the root.
+
+    IT COSTS NO CHILD AN IMPORT. Every script this starts -- the three
+    validators, the naming script, the preflight -- is a file this standard
+    ships, or a root's pinned copy of one, and imports the standard library
+    and this standard's own modules and nothing else, which
+    `tests/test_repo_hygiene.py` holds the shipped files to. The project's
+    own workflow runs its gate on a fresh interpreter with no `pip install`
+    ("Standard library only"), so nothing on a `site` path is anything the
+    gate can import in CI either. ONE RULE FOR EVERY CHILD, as the `env`
+    block is: the flag does not ask which script it starts.
+
+    WHICH AGREEMENT THE ROW KEEPS (#306, #342): the row reports the
+    project's own GATE as CI runs it, with no inherited `PYTHONPATH` and no
+    `site`; it does not predict what a pasted line prints in the reader's
+    shell. The pasted line runs under the READER'S environment and their
+    interpreter, so a reader whose own `PYTHONPATH`, or a `.pth` in whose
+    site-packages, reaches a `repo_shape` can see a pasted own-copy line pass
+    where the row says FINDING. That is their variable and their
+    site-packages, and the gate has neither: the row is about the gate, and
+    the line it prints is the project's own command, with no `-S` in it.
 
     AND NO CHILD REACHES A NETWORK UNLESS ITS CALLER SAYS SO (#297). A
     project that pins a neutral product has a `validate-pins.py` that, with
@@ -1584,7 +1619,9 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     # offer `gh auth login` there and wait. A session of its own has no
     # controlling terminal, so the child has none to ask on (POSIX; Windows
     # has no `/dev/tty` and ignores the flag).
-    proc = subprocess.run([sys.executable, str(script), *args],
+    # `-S`: no `site`, so no `.pth` from any site-packages stands in for a
+    # file the root lost (#342, in the docstring above).
+    proc = subprocess.run([sys.executable, "-S", str(script), *args],
                           cwd=str(ctx.root), capture_output=True, text=True,
                           encoding="utf-8", errors="replace", check=False,
                           stdin=subprocess.DEVNULL, env=env,
@@ -6954,14 +6991,44 @@ def submodule_config(root: Path) -> dict:
     config syntax, it ESCAPES a backslash on the way in -- a Windows path is
     stored `D:\\\\a\\\\...` -- and reading it as text is how a report ends up
     quoting a url nobody has.
+
+    AND IT IS READ AS `make siblings` READS IT: a byte that is not UTF-8 is
+    replaced, which is `siblings.py::submodule_urls`'s `errors="replace"`
+    over the same file (#432), and the decode `origin_url` makes of the
+    holder's own remote (#385). git keeps a url as the bytes it was given,
+    so a member mounted from a directory named in a legacy code page, or a
+    hand-edited `.gitmodules`, has one that is not text, and read through
+    `git_out`'s strict decode it raised a `UnicodeDecodeError` that the
+    `except` below does not name -- it is a `ValueError`, neither a
+    `Refusal` nor an `OSError` -- so `--root` ended in a traceback, exit 1,
+    which is also the code of a finding, with no verdict. The bytes are
+    asked for, so nothing is decoded before this function says how.
+
+    THE URL IS KEPT, NOT DROPPED. The row exists to agree with `make
+    siblings` about one directory (#146): a clone whose own `origin` is the
+    same bytes reads back as the same string through `origin_url`, and is
+    the member's working clone by the mount comparison, as `verify_sibling`
+    calls it. An empty `{}` here would send every such member's comparison
+    to the `repository:` tail alone and call that clone a stranger. A url
+    that matches nothing is quoted with the replacement character in it, as
+    `origin_url` quotes one.
+
+    `validate-family.py` reads the same file as bytes too, and decodes with
+    `surrogateescape`. The replacement is chosen over it because this url
+    is COMPARED with `origin_url`'s reading of a clone's remote, which is
+    the replacement (#385): the same bytes read two ways are two strings,
+    so a clone made from this very url would stop being the member's
+    working clone. It is also what the row PRINTS, and a lone surrogate is
+    a string no UTF-8 stream can write.
     """
     fields: dict = {}
     try:
-        listing = git_out(["config", "-f", str(root / ".gitmodules"),
-                           "--get-regexp", r"^submodule\..*\.(path|url)$"],
-                          cwd=root)
+        raw = git_out(["config", "-f", str(root / ".gitmodules"),
+                       "--get-regexp", r"^submodule\..*\.(path|url)$"],
+                      cwd=root, binary=True)
     except (Refusal, OSError):
         return fields
+    listing = raw.decode("utf-8", "replace").strip()
     for line in listing.splitlines():
         key, _, value = line.partition(" ")
         name, _, field = key[len("submodule."):].rpartition(".")
@@ -7840,7 +7907,10 @@ def check_machine(ctx: Context) -> Row:
     controlling terminal (`run_validator`, #492), so the "no terminal, no
     offer" rule fires and nothing is offered, prompted for or installed: the
     doctor diagnoses, and installing something is a different act with a
-    different consent.
+    different consent. It is run with no `site` as well, as every child is
+    (#342), which changes nothing it reports: what it asks about -- `git`,
+    `gh`, the running interpreter -- it reaches as programs and through
+    `sys`, never through site-packages.
 
     THIS IS THE ONE ROW THAT CAN REACH A NETWORK, and it is `n/a` by status
     for a separate reason. The preflight asks `gh` its version, whether it is
