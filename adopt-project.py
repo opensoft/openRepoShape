@@ -170,6 +170,7 @@ import argparse
 import contextlib
 import datetime as _dt
 import itertools
+import json
 import os
 import re
 import shlex
@@ -989,7 +990,9 @@ SUBMODULE_KEY_RE = re.compile(r"submodule\.(?P<name>.*)\.(?P<key>path|url)")
 GIT_CONFIG = "config"
 #: The `git` subcommand that prints one object: a source's `.gitmodules`
 #: and the target of a symlink it keeps in the root, and in the split commit
-#: a symlink's target and the shape pin.
+#: a symlink's target and the shape pin. With `--batch`, it prints the
+#: target of every symlink of the source whose blob is not empty, in one
+#: pass (#388).
 GIT_CAT_FILE = "cat-file"
 
 
@@ -1455,8 +1458,16 @@ class Source:
         self.cloned = cloned
 
     @classmethod
-    def open(cls, spec: str, work_root: Path) -> "Source":
-        """`spec` is a local path (used in place) or `org/repo` (cloned)."""
+    def open(cls, spec: str, work_root: Path,
+             unwritable: str | None = None) -> "Source":
+        """`spec` is a local path (used in place) or `org/repo` (cloned).
+
+        `unwritable` is why `work_root` cannot be written
+        (`_unwritable_work_dir`), or None. An `org/repo` is cloned into it,
+        so it is then refused as `adopt-work-dir-unwritable` before any
+        directory is made or any clone is said (#650): `plan` ended in a
+        PermissionError traceback at `source-readonly`. A local path is
+        read in place and writes nothing there."""
         candidate = Path(spec).expanduser()
         cloned = False
         if candidate.exists():
@@ -1487,6 +1498,8 @@ class Source:
                     f"--source {spec!r} is neither a path that exists nor an "
                     "`org/repo` name",
                     "Remediation: pass a local clone's path, or `org/repo`.")
+            if unwritable:
+                raise _work_dir_refusal(unwritable)
             repository = spec
             path = work_root / "source-readonly" / spec.split("/")[-1]
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1628,11 +1641,25 @@ def _origin_url(path: Path) -> str | None:
 
 
 def _default_branch(path: Path) -> str:
-    """The branch the adoption reads, in the order a reader would guess it."""
+    """The branch the adoption reads, in the order a reader would guess it.
+
+    A BYTE THAT IS NOT UTF-8 IS KEPT, AS `sys.argv` KEEPS ONE (#425). git
+    keeps a branch's name as the bytes it was given: `git branch caf<e9>` is
+    legal, and a name typed in a Latin-1 terminal is one. Read strictly, it
+    ended `plan`, `check` and `execute` in a `UnicodeDecodeError` traceback
+    from `Source.open`, with no plan written and nothing said of the branch.
+    Kept as a lone surrogate, it is the tracking branch `plan` would take
+    (#479) and refuses as `unsafe-value`, before any plan is written, with
+    `--tracking-branch` as the way past it; and it is the default branch
+    `check` and `execute` name, as `plan-tracking-branch-missing`, when the
+    plan tracks one the source no longer has. Where the plan tracks a branch
+    that is text, the source is read at this one and adopted.
+    """
     for args in (["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
                  ["symbolic-ref", "--short", "HEAD"]):
         try:
-            name = git_out(args, cwd=path)
+            name = git_out(args, cwd=path, binary=True).decode(
+                "utf-8", "surrogateescape").strip()
         except Refusal:
             continue
         if name:
@@ -2064,8 +2091,8 @@ def _spelled_character(char: str) -> str:
     return double_quoted(char)[1:-1]
 
 
-def cross_leg_references(source: "Source", entries: list["Entry"],
-                        spec_path: str, code_path: str) -> list[str]:
+def cross_leg_references(source: "Source",
+                        entries: list["Entry"]) -> list[str]:
     """Files that will move to the CODE leg and name a path in the SPEC leg.
 
     Found by asking git, not by guessing: `git grep -l` over the source commit,
@@ -2077,6 +2104,20 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
     the spec leg, and the code that reads them reads ACROSS the assembly root
     mount. The read is one relative path from the code leg — but only once
     somebody edits it, so the plan says which file and the human decides when.
+
+    IT NAMES THE TWO MOUNT KEYS, `legs.code_path` AND `legs.spec_path`, AND NO
+    PATH OF EITHER (#600), so it takes neither path. `plan` writes the list
+    once; `MOUNT_REMEDIATION` and `plan-leg-path-collides` ask a person to
+    change those keys afterwards; `check`, the split commit's message and the
+    pull request's body read the line back. It said `code/src/app/main.py` and
+    `../spec/contracts/` "relative to `code/`" for legs mounted elsewhere. The
+    file is named as the code leg holds it and the directory as the spec leg
+    does: both are paths in the SOURCE, which no edit of the plan moves. The
+    Makefile follow-up (#522's review, F1) and the tracking branch's (#493's
+    review, F3) are written the same way. The path from the code leg to the
+    spec leg's `contracts/`, which a person has then to work out from the two
+    mounts, is printed next to the CURRENT mounts by the two sentences that
+    name them (`contracts_from_code_leg`, #600's review, F1).
 
     EVERY NAME IS A NAME (#216). Both inputs are source paths, and git reads
     each as something else unless told not to. A spec directory passed bare
@@ -2128,14 +2169,14 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
         # DOES read it under twenty of them is how a follow-up list stops
         # being read at all.
         hits.sort(key=lambda h: ("fixture" in h or h.startswith("tests/"), h))
-        across = spec_leg_from_code_leg(spec_path, code_path)
         for hit in hits[:8]:
             shown = "".join(map(_spelled_character, hit))
             out.append(
-                f"{code_path}/{shown} names `{named}`, which moves to the "
-                f"spec leg: it must read across the assembly root — "
-                f"`{across}/{named}` relative to `{code_path}/` — or "
-                "take the path from the environment")
+                f"{shown} in the code leg names `{named}`, which moves to "
+                "the spec leg: it must read across the assembly root — from "
+                "the code leg, where the plan's `legs.code_path` mounts it, "
+                f"to `{named}` in the spec leg, where `legs.spec_path` "
+                "mounts it — or take the path from the environment")
         if len(hits) > 8:
             out.append(f"… and {len(hits) - 8} more file(s) under the code leg "
                        f"naming `{named}`")
@@ -2153,6 +2194,10 @@ def spec_leg_from_code_leg(spec_path: str, code_path: str) -> str:
     while the code leg sits in the root: with `--spec-path legs/spec
     --code-path legs/code` it said `../legs/spec/contracts/` "relative to
     `legs/code/`", a path that leads to `legs/legs/spec`.
+
+    It is asked of the plan's CURRENT mounts, when a sentence that prints
+    them is rendered, and never of the two a plan was written with (#600's
+    review, F1): `contracts_from_code_leg` below.
 
     Both are canonical mount paths, asked by `plan` before it writes a
     follow-up and by `execute` before it mounts a leg: `/` between
@@ -2172,6 +2217,42 @@ def spec_leg_from_code_leg(spec_path: str, code_path: str) -> str:
     return "/".join([".."] * (len(code) - shared) + spec[shared:])
 
 
+def contracts_from_code_leg(spec_path, code_path, spec_leg_paths) -> str:
+    """What the two sentences that print the plan's CURRENT mounts end with
+    when the spec leg holds `contracts/`: ", so from the code leg the spec
+    leg's `contracts/` is `../spec/contracts/`", or "" when there is nothing
+    true to say (#600's review, F1).
+
+    THE READ-ACROSS FOLLOW-UP NAMES `legs.code_path` AND `legs.spec_path` AND
+    NO PATH, so no hand edit of either can contradict it, and it leaves the
+    path itself to the two mounts printed beside it. That path is the one
+    #522's review (auA-13) showed a person gets wrong for nested legs by
+    hand, and `CONTRACTS_DIR` is the root Makefile's alone. So it is printed
+    where the mounts are, computed from the values the surface itself prints:
+    `check`'s `mount the legs at X/ and Y/`, from the plan as it stands, and
+    the split message's `mounted back here at X/ and Y/`, from the mounts
+    `execute` made. It is never stored in `follow_ups:`, so it cannot go stale
+    between a hand edit and the next `check`, and it needs no `git grep`.
+
+    NOTHING, in three cases. No path of the spec leg is `contracts/` or lies
+    under it, so there is no `contracts/` to lead to (the Makefile follow-up's
+    own condition). A mount is not text, or the two are not mount paths
+    `execute` accepts, or they overlap or differ only in case: `check` says
+    so as a finding, and a path computed from two strings that are not two
+    mounts leads nowhere. `spec_leg_paths` are the paths the plan assigns to
+    the spec leg, as `_leg_paths` reads them.
+    """
+    if not any(path == "contracts/" or path.startswith("contracts/")
+               for path in spec_leg_paths):
+        return ""
+    if leg_path_problems(("legs.spec_path", spec_path),
+                         ("legs.code_path", code_path)):
+        return ""
+    across = spec_leg_from_code_leg(spec_path, code_path)
+    return (", so from the code leg the spec leg's `contracts/` is "
+            f"`{across}/contracts/`")
+
+
 def _search_by_hand(named: str, why: str) -> str:
     """The follow-up for a spec directory git did not search for: the
     reason, and what to look for instead."""
@@ -2182,7 +2263,6 @@ def _search_by_hand(named: str, why: str) -> str:
 
 
 def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
-                   spec_path: str, code_path: str,
                    collisions: list[str]) -> list[str]:
     """The code changes an in-place split MAKES NECESSARY, named in the plan.
 
@@ -2215,9 +2295,14 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
     `plan-leg-path-collides` both ask for a hand edit of it, so a path named
     here went on naming the old mount in the split commit's message, the
     pull request's own body, while the Makefile in that commit named the new
-    one (#522's review, F1).
+    one (#522's review, F1). So does the read-across line that
+    `cross_leg_references` writes, for both mounts, and this function takes
+    no mount path: no value of either key can reach a line it writes (#600).
+    The path from the code leg to the spec leg's `contracts/` is printed
+    beside the CURRENT mounts instead, where `check` and the split message
+    name them (`contracts_from_code_leg`).
     """
-    out = cross_leg_references(source, entries, spec_path, code_path)
+    out = cross_leg_references(source, entries)
     if any(e.leg == "spec" and (e.path == "contracts/"
                                 or e.path.startswith("contracts/"))
            for e in entries):
@@ -2696,10 +2781,16 @@ LEG_PATH_PLACEHOLDERS = {"spec": "SPEC_PATH", "code": "CODE_PATH"}
 #: and no elector is one: the manifest writes it between double quotes, which
 #: `render` spells with `double_quoted` (#284). The validator's rule (#261)
 #: asks about every value, so an elector `git config user.name` leaves empty
-#: is named by where it came from as well (#529).
+#: is named by where it came from as well (#529), and so is an organisation
+#: read from the source's `origin` (L1-39): a url can end in `~x`, which
+#: `checked_value` takes and the validator refuses, and that refusal said
+#: `--org is '~x'`. The words are `_planned_org`'s for the same value; a
+#: source `plan` cloned has the `--source` it was cloned from as its
+#: `origin`.
 FLAG_DEFAULTS = {"id": "--project lowercased",
                  TRACKING_KEY: "the source's default branch",
-                 ELECTED_BY_KEY: "`git config user.name`"}
+                 ELECTED_BY_KEY: "`git config user.name`",
+                 "org": "the organisation of the source's `origin`"}
 #: How a sentence names the id `execute` derives when the plan sets none:
 #: when it has no `id:`, or an `id:` with no value (`null`, `~` or nothing,
 #: as `main`'s `plan --id null` wrote it), which `Plan.get` reads alike.
@@ -3334,6 +3425,59 @@ def _refuse_a_tracking_branch_the_remote_lacks(urls: dict, tracking: str,
         REMOTE_LACKS_REMEDIATION + (LOCAL_REMOTE_LACKS if local else ""))
 
 
+#: The name the naming policy takes for an assembly root, in the words
+#: `naming-unclassified` says it in (`_check_names`). A derived id's remedy
+#: says the same (#658): "change --project" alone sent the person to
+#: `North-Wind`, which `naming-unclassified` then refused.
+PROJECT_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot or "
+                     "space")
+
+
+def _refuse_bad_id(project_id: str, project: str, given: set,
+                   source: Source) -> None:
+    """`plan`'s refusal of an id the project's validators would not take
+    (`PROJECT_ID_RE`), in the words of where it came from. `given` is
+    `flags_given`. A `--id` the person passed, `''` among them (L2-53), is
+    named as the flag they typed, with the value as typed, and the remedy is
+    another `--id`. One `plan` derived from `--project` is named by
+    `_flag_named` from `FLAG_DEFAULTS`, as the tracking branch and the
+    elector it fills in are (#529): `--id 'north_wind' must match` named a
+    flag nobody had passed (#601). The finding's code is the same for both.
+
+    A DERIVED ID IS MENDED IN `--project`, NOT WITH `--id` (L2-54). It is
+    refused only for a `--project` holding a character no id takes, and the
+    naming policy reads `--project` itself, as all three repositories'
+    names: "pass an explicit lowercase --id" led to `naming-unclassified`.
+    So the remedy is to change `--project`, to what the naming policy takes
+    (`PROJECT_NAME_RULE`, the words of `naming-unclassified`); and where the
+    source names a repository and `--project` is its name, adopted in place,
+    that name is not the person's to retype, and the remedy is
+    `_rename_first`'s, after the same rule. A source `plan` cloned names its
+    repository as an `origin` does (`Source.repository`)."""
+    if PROJECT_ID_RE.match(project_id):
+        return
+    flag, pattern = _flag_named("id", given), PROJECT_ID_RE.pattern
+    if "id" in given:
+        raise Refusal("adopt-bad-id",
+                      f"{flag} {project_id!r} must match {pattern}",
+                      "Remediation: pass an explicit lowercase --id.")
+    derived = FLAG_DEFAULTS["id"]
+    repository = source.repository
+    if repository is not None and _is_the_source(
+            repository, repository.partition("/")[0], project):
+        remedy = _rename_first(repository, f"the id is {derived}, and "
+                               "--project is the source's own name, which "
+                               f"must be {PROJECT_NAME_RULE}. ")
+    else:
+        remedy = (f"Remediation: change --project to {PROJECT_NAME_RULE}. "
+                  f"The id is {derived}, and an explicit --id would not "
+                  "change --project, which also names the assembly root and "
+                  "both legs.")
+    raise Refusal("adopt-bad-id",
+                  f"{flag} is {project_id!r}, which must match {pattern}",
+                  remedy)
+
+
 def _checked_plan_inputs(args, source: Source,
                          naming: NamingPolicy) -> tuple[dict, list]:
     """Every value the plan will RECORD, defaulted and checked before one of
@@ -3348,7 +3492,15 @@ def _checked_plan_inputs(args, source: Source,
     # Which of the flags `plan` fills in by itself were passed: a value it
     # filled in is named by where it came from, should it be refused below.
     # Not `given`, which #479 binds below to whether `--tracking-branch` was.
-    flags_given = {key for key in FLAG_DEFAULTS if getattr(args, key)}
+    # PASSED IS ON THE COMMAND LINE, `''` INCLUDED (L2-53), as #479 reads
+    # `--tracking-branch`: `--id ''` and `--elected-by ''` were read as not
+    # passed, so `--id "$ID"` with `ID` unset planned the derived id, and an
+    # empty elector became `git config user.name` though `--help` says "not
+    # blank". Each is a value typed, held to its flag's own rule below and
+    # refused there by name. (`_planned_org` still reads `--org ''` as no
+    # `--org`, as it did.)
+    flags_given = {key for key in FLAG_DEFAULTS
+                   if getattr(args, key) is not None}
     args.project = checked_value("--project", args.project)
     # THE SOURCE'S OWN BRANCH, UNLESS ONE IS NAMED (#479): the branch `plan`
     # reads the source at is the one its pull request can be opened against.
@@ -3390,11 +3542,10 @@ def _checked_plan_inputs(args, source: Source,
                       _leg_collision_remediation(products))
     args.spec_path = checked_value(*spec)
     args.code_path = checked_value(*code)
-    args.id = args.id or args.project.lower()
-    if not PROJECT_ID_RE.match(args.id):
-        raise Refusal("adopt-bad-id",
-                      f"--id {args.id!r} must match {PROJECT_ID_RE.pattern}",
-                      "Remediation: pass an explicit lowercase --id.")
+    # Whether `--id` was passed is read BEFORE it is filled in: a refusal of
+    # the id names where it came from (#601), and says what to change.
+    args.id = args.id if "id" in flags_given else args.project.lower()
+    _refuse_bad_id(args.id, args.project, flags_given, source)
     # The organisation, given or read from the source's `origin`, and named
     # by which of the two it is should it be refused (#292, #427).
     org_given = bool(args.org)
@@ -3413,7 +3564,8 @@ def _checked_plan_inputs(args, source: Source,
     # A value `plan` filled in by itself is named by where it came from, as
     # #181 names one, and not as a flag the person never passed.
     elector = _flag_named(ELECTED_BY_KEY, flags_given)
-    args.elected_by = args.elected_by or _elector()
+    args.elected_by = (args.elected_by if ELECTED_BY_KEY in flags_given
+                       else _elector())
     # Before the plan is written, in the words `check` would use (#255): a
     # value `execute` writes into a file must be text one can hold. The
     # date has had its answer above, `election_date`.
@@ -3882,7 +4034,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
         print(line)
     for line in _kept_collision_notes(args, entries, tree):
         print(line)
-    for line in _empty_symlink_notes(tree):
+    for line in _empty_symlink_notes(tree, symlink_targets(source, tree)):
         print(line)
     for line in _tracking_branch_notes(args, source):
         print(line)
@@ -3924,7 +4076,11 @@ def cmd_plan(args) -> int:
     if args.pin and args.pin_source is not None:
         _refuse_an_unrecordable_pin_source(args.pin_source)
     work_root = _work_root(args)
-    source = Source.open(args.source, work_root)
+    # An `org/repo` source is cloned into the work directory, so one this
+    # user cannot write in is refused before the clone, as `check` refuses
+    # it (#650); a local source is read in place, and writes nothing there.
+    source = Source.open(args.source, work_root,
+                         _unwritable_work_dir(args, work_root))
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
     naming = NamingPolicy.load(NAMING_POLICY)
 
@@ -3965,8 +4121,7 @@ def cmd_plan(args) -> int:
     materialized = _predict_collisions(
         implied, attributes_link=any(path == ATTRIBUTES and mode == SYMLINK_MODE
                                      for path, mode, _, _ in tree))
-    follow_ups = follow_ups_for(source, implied, names, args.spec_path,
-                                args.code_path, materialized)
+    follow_ups = follow_ups_for(source, implied, names, materialized)
     seeded = seeded_legs(assigned_paths(implied))
     entries = with_defaults(ask_about_refused_paths(
         ask_about_submodules(policy, ruled, tree), tree))
@@ -4130,7 +4285,11 @@ class Plan:
     def source_commit(self) -> str:
         return str(self.source.get("commit") or "")
 
-    def open_source(self, override: str | None, work_root: Path) -> Source:
+    def open_source(self, override: str | None, work_root: Path,
+                    unwritable: str | None = None) -> Source:
+        """The source `check` and `execute` read: `override`, or the one the
+        plan records. `unwritable` is why `work_root` cannot be written, as
+        `Source.open` takes it."""
         spec = override or self.source.get("local_path") \
             or self.source.get("repository")
         if not spec:
@@ -4138,10 +4297,11 @@ class Plan:
                           f"{self.path}: `source:` names neither a local path "
                           "nor a repository")
         if not override and spec == self.source.get("local_path"):
-            spec = self._where_the_clone_is_gone(str(spec))
-        return Source.open(str(spec), work_root)
+            spec = self._where_the_clone_is_gone(str(spec), unwritable)
+        return Source.open(str(spec), work_root, unwritable)
 
-    def _where_the_clone_is_gone(self, local_path: str) -> str:
+    def _where_the_clone_is_gone(self, local_path: str,
+                                 unwritable: str | None = None) -> str:
         """The plan's `source.repository` in place of a `local_path` that no
         longer exists, said in one NOTE; `local_path` itself where it
         exists, or where the plan records no repository (#526).
@@ -4154,10 +4314,16 @@ class Plan:
         though passing `--source <org/repo>` again recovered. They now do
         what that does, and say so. A clone made again at another commit
         is no plan's source: `check` finds `plan-stale` and `execute`
-        refuses it, each naming both commits, as for `--source`."""
+        refuses it, each naming both commits, as for `--source`.
+
+        Where the work directory cannot be written (`unwritable`), nothing
+        can be cloned into it: refused before the NOTE says it is (#650),
+        as `execute` refuses it before it opens the source."""
         repository = self.source.get("repository")
         if not repository or Path(local_path).expanduser().exists():
             return local_path
+        if unwritable:
+            raise _work_dir_refusal(unwritable)
         repository = str(repository)
         print(f"NOTE the plan's `source.local_path`, {_spelled(local_path)}, "
               f"no longer exists, so its `source.repository`, "
@@ -4591,17 +4757,18 @@ def _blocked_sentence(code: str, rels: list[str], copies: list[str],
         written = (
             f"Where it leads to something, {beside}, and where it leads "
             "nowhere, through it, which a clone that makes no symlinks "
-            "holds as a file naming its target; either way it would say "
+            "holds as a file naming its target; either way it would fail "
             if relation == "is" and mode == SYMLINK_MODE else
-            f"{beside} and say ")
+            f"{beside} and fail ")
         return (
             f"the plan keeps {_kind_of(mode)} {named} in the assembly "
             f"root{under}{spot}, where the shape writes its manifest. No "
             "copy stands in for the manifest: `shape-doctor.py`, the root's "
             f"validators and `make bootstrap` read {_first_and_more(rels)} "
             "at the root itself, and there they would find the source's "
-            f"{found}. {written}`adoption verified`, after both leg "
-            f"repositories were created and pushed: {fix}.")
+            f"{found}. {written}its verification "
+            "(`adopt-manifest-not-shape`), after both leg repositories were "
+            f"created and pushed: {fix}.")
     if code == ROOT_BLOCKS_SHAPE:
         relation, aside = _overlap(rels[0], path)
         return (
@@ -6011,7 +6178,8 @@ UNSAFE_PATH_REMEDIATION = (
 
 
 # ---------------------------------------------------------------------------
-# A symlink in the source whose target is empty (#303)
+# A symlink in the source whose target is empty (#303), or begins with a NUL
+# byte (#388)
 # ---------------------------------------------------------------------------
 #
 # A source tree can hold a symlink whose target is EMPTY: a `120000` entry
@@ -6044,14 +6212,32 @@ UNSAFE_PATH_REMEDIATION = (
 # plan the next machine cannot adopt. `drop` is not offered as the fix: it
 # is one only where symlinks are not made. The remediation is in the source.
 #
-# No target is read. `Source.tree()` lists each entry with `ls-tree -l`, and
-# the size of a symlink's blob is the length of its target, so an empty
-# target is a `120000` row of size 0, in a SHA-1 or a SHA-256 repository
-# alike. Only the commit being adopted is read: an empty symlink in the
+# A TARGET THAT BEGINS WITH A NUL BYTE IS EMPTY TOO (#388). git hands a
+# symlink's target to `symlink(2)` as a C string, which ends at its first
+# NUL, so `\0spec.md`, 8 bytes and not the empty blob, is the empty target
+# to Linux, and every run above went the same way: on main `check` said
+# `plan ok`, and with symlinks on `execute` failed in its first clone after
+# both leg repositories were created; with `core.symlinks` false it said
+# `adoption verified` over a spec leg whose own clone exits 128. It is the
+# same fact of the source, failing the same way, with the same remediation,
+# so it is the same finding, worded for its blob. A second code would give
+# one fault two names for every reader of this one to learn: `execute`'s
+# refusal, and the walk of #183, which says nothing of a link this finding
+# names. A NUL further on (`spec\0.md`) is another failure, a link git
+# makes to `spec`, and is not this one's to report.
+#
+# Size first, then the target. `Source.tree()` lists each entry with
+# `ls-tree -l`, and the size of a symlink's blob is the length of its
+# target, so an empty target is a `120000` row of size 0, in a SHA-1 or a
+# SHA-256 repository alike, and is not read. The target of every other link
+# is read in ONE `git cat-file --batch` over the blob ids the tree lists
+# (`symlink_targets`), so a source with no symlink of size 1 or more starts
+# no process for it. Only the commit being adopted is read: a symlink in the
 # history alone is never checked out by a clone, and `git filter-repo`
 # rewrites the history without a checkout.
 
-#: `check`'s finding for a symlink of the source's whose target is empty.
+#: `check`'s finding for a symlink of the source's whose target is empty, or
+#: begins with a NUL byte, which ends it (#388).
 EMPTY_SYMLINK = "plan-empty-symlink"
 #: How many of them `check` names one by one; past it, a count, as
 #: `plan-uncovered` counts the paths past its twentieth.
@@ -6069,48 +6255,110 @@ EMPTY_SYMLINK_REMEDIATION = (
     "`check` calls it `plan-stale` once the source has moved.")
 
 
-def empty_symlinks(tree: list) -> list[str]:
-    """The paths of `tree` (`Source.tree()`'s rows) that are symlinks with
-    an empty target: mode 120000, and a blob of size 0."""
-    return [path for path, mode, _, size in tree
-            if mode == SYMLINK_MODE and not size]
+def symlink_targets(source: Source, tree: list) -> dict[str, bytes]:
+    """The target of each symlink of `tree` (`Source.tree()`'s rows) whose
+    blob is not empty, as the bytes the blob holds, by blob id (#388).
+
+    ONE `git cat-file --batch` over the ids, each id once however many
+    links share it, and none at all when no link has a size: a link of size
+    0 has the empty target, which is known without reading it. Each object
+    comes back as `<id> <type> <size>`, a line feed, that many bytes and a
+    line feed, so it is cut by its size, and a target that holds a line feed
+    is read whole. An id git does not have comes back as `<id> missing` and
+    nothing else, and is left out: such a link is judged by its size alone.
+    """
+    oids = list(dict.fromkeys(oid for _, mode, oid, size in tree
+                              if mode == SYMLINK_MODE and size))
+    if not oids:
+        return {}
+    args = [GIT_CAT_FILE, "--batch"]
+    read = subprocess.run(["git", *args], cwd=source.path,
+                          input="".join(f"{oid}\n" for oid in oids).encode(),
+                          capture_output=True, check=False)
+    if read.returncode:
+        raise Refusal(
+            "git-failed",
+            f"`git {' '.join(args)}` in {source.path} exited "
+            f"{read.returncode}: "
+            f"{read.stderr.decode('utf-8', 'replace').strip()}")
+    targets: dict[str, bytes] = {}
+    out, at = read.stdout, 0
+    for oid in oids:
+        end = out.find(b"\n", at)
+        if end < 0:
+            break
+        header, at = out[at:end].split(), end + 1
+        if len(header) == 3:
+            size = int(header[2])
+            targets[oid] = out[at:at + size]
+            at += size + 1
+    return targets
 
 
-def _empty_symlink_sentence(path: str) -> str:
-    """What `check` says of the empty symlink at `path`, and `plan` notes."""
-    return (f"{_spelled(path)} is a symlink whose target is empty at the "
-            "source commit, and Linux cannot make a symlink to nothing. "
+def empty_symlinks(tree: list, targets: dict[str, bytes]) -> list[str]:
+    """The paths of `tree` (`Source.tree()`'s rows) that are symlinks whose
+    target is empty to Linux: mode 120000, and a blob of size 0 (#303), or
+    one whose target in `targets` (`symlink_targets`, by blob id) begins
+    with a NUL byte, which ends it there (#388)."""
+    return [path for path, mode, oid, size in tree
+            if mode == SYMLINK_MODE
+            and (not size or targets.get(oid, b"").startswith(b"\0"))]
+
+
+def _empty_symlink_sentence(path: str, nul: bool) -> str:
+    """What `check` says of the symlink at `path` whose target is empty,
+    or, with `nul`, begins with a NUL byte (#388), and `plan` notes."""
+    if nul:
+        target = ("begins with a NUL byte at the source commit; a symlink's "
+                  "target ends at its first NUL, so this one is empty too,")
+        held = "a plain file"
+    else:
+        target, held = "is empty at the source commit,", "an empty file"
+    return (f"{_spelled(path)} is a symlink whose target {target} and Linux "
+            "cannot make a symlink to nothing. "
             "There, where git makes symlinks by default, each clone "
             "`execute` makes of the source stops at it after both leg "
             "repositories were created, whatever the plan answers for it; "
-            "and where `core.symlinks` is false the clone holds it as an "
-            "empty file, and the leg or root the plan keeps it in then "
+            "and where `core.symlinks` is false the clone holds it as "
+            f"{held}, and the leg or root the plan keeps it in then "
             "cannot be cloned on Linux, where the root's own `validate` "
             "workflow runs")
 
 
-def _empty_symlink_findings(tree: list) -> tuple[list[str], list[str]]:
+def _empty_symlink_sentences(tree: list,
+                             targets: dict[str, bytes]) -> list[str]:
+    """`_empty_symlink_sentence` of each path `empty_symlinks` names, in its
+    order: one that has a size is there for its NUL."""
+    sized = {path for path, _, _, size in tree if size}
+    return [_empty_symlink_sentence(path, nul=path in sized)
+            for path in empty_symlinks(tree, targets)]
+
+
+def _empty_symlink_findings(tree: list, targets: dict[str, bytes]
+                            ) -> tuple[list[str], list[str]]:
     """A FINDING for each symlink of the source whose target is empty
-    (#303), as `check` prints it, the first EMPTY_SYMLINKS_NAMED one by one;
-    and what to print ONCE after every finding, as `_unsafe_path_findings`
-    does. Read from the tree alone: no answer of the plan's changes it."""
-    empty = empty_symlinks(tree)
-    found = [f"FINDING {EMPTY_SYMLINK}: {_empty_symlink_sentence(path)}."
-             for path in empty[:EMPTY_SYMLINKS_NAMED]]
-    if len(empty) > EMPTY_SYMLINKS_NAMED:
+    (#303) or begins with a NUL byte (#388), as `check` prints it, the first
+    EMPTY_SYMLINKS_NAMED one by one; and what to print ONCE after every
+    finding, as `_unsafe_path_findings` does. Read from the tree and the
+    targets (`symlink_targets`) alone: no answer of the plan's changes it."""
+    said = _empty_symlink_sentences(tree, targets)
+    found = [f"FINDING {EMPTY_SYMLINK}: {sentence}."
+             for sentence in said[:EMPTY_SYMLINKS_NAMED]]
+    if len(said) > EMPTY_SYMLINKS_NAMED:
         found.append(f"FINDING {EMPTY_SYMLINK}: … and "
-                     f"{len(empty) - EMPTY_SYMLINKS_NAMED} more symlinks "
-                     "whose target is empty")
+                     f"{len(said) - EMPTY_SYMLINKS_NAMED} more symlinks "
+                     "whose target is empty or begins with a NUL byte")
     return found, [EMPTY_SYMLINK_REMEDIATION] if found else []
 
 
-def _empty_symlink_notes(tree: list) -> list[str]:
-    """What `plan` says of each symlink of the source whose target is empty:
-    a NOTE in `check`'s words, and a line saying what follows. `plan` still
-    writes the plan, but no answer in it will pass `check`."""
+def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
+    """What `plan` says of each symlink of the source whose target is empty
+    or begins with a NUL byte: a NOTE in `check`'s words, and a line saying
+    what follows. `plan` still writes the plan, but no answer in it will
+    pass `check`."""
     notes: list[str] = []
-    for path in empty_symlinks(tree):
-        notes += [f"\nNOTE {_empty_symlink_sentence(path)}.",
+    for sentence in _empty_symlink_sentences(tree, targets):
+        notes += [f"\nNOTE {sentence}.",
                   f"     `check` reports this as `{EMPTY_SYMLINK}` and "
                   "`execute` refuses it, whatever the plan answers: give it "
                   "a target in the source, or remove it there, commit, and "
@@ -6118,14 +6366,15 @@ def _empty_symlink_notes(tree: list) -> list[str]:
     return notes
 
 
-def _source_path_findings(plan: Plan, tree: list
+def _source_path_findings(plan: Plan, tree: list, targets: dict[str, bytes]
                           ) -> tuple[list[str], list[str]]:
     """The findings `_entry_findings` lists first, about the source's own
     paths, and what to print once after every finding for them: each entry
     path `execute` will not extract (#196), then each symlink of the source
-    whose target is empty (#303)."""
+    whose target is empty (#303) or begins with a NUL byte (#388), its
+    target read from `targets` (`symlink_targets`)."""
     unsafe, unsafe_remediation = _unsafe_path_findings(plan)
-    empty, empty_remediation = _empty_symlink_findings(tree)
+    empty, empty_remediation = _empty_symlink_findings(tree, targets)
     return unsafe + empty, unsafe_remediation + empty_remediation
 
 
@@ -6285,7 +6534,8 @@ def _entry_findings(plan: Plan, source: Source,
     `plan-unsafe-path` for a plan that has one: a path that is a `git` option
     is refused as that, and never as the uncovered file it also leaves.
 
-    THEN THE SOURCE'S EMPTY SYMLINKS (#303), which no answer in the plan
+    THEN THE SOURCE'S EMPTY SYMLINKS (#303), a target that begins with a
+    NUL byte among them (#388), which no answer in the plan
     fixes: the fix is a commit in the source, and the fresh `plan` after it
     takes back every answer given before, so they are listed before the
     findings about those answers (`_source_path_findings`). Their
@@ -6328,7 +6578,8 @@ def _entry_findings(plan: Plan, source: Source,
     source, and is not also said to be missing from this one.
     """
     tree = source.tree()
-    unsafe, unsafe_remediation = _source_path_findings(plan, tree)
+    unsafe, unsafe_remediation = _source_path_findings(
+        plan, tree, symlink_targets(source, tree))
     findings = (unsafe
                 + _coverage_findings([str(e.get("path"))
                                       for e in plan.entries],
@@ -6843,10 +7094,14 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     mounts = [_plan_leg_path(plan, role) for role in EXTRACTED_LEGS]
     mounted = (f" at {_shown(mounts[0])}/ and {_shown(mounts[1])}/"
                if all(isinstance(mount, str) for mount in mounts) else "")
+    # Beside the mounts, the path the read-across follow-up leaves to them,
+    # from the mounts as the plan stands (#600's review, F1).
+    across = contracts_from_code_leg(mounts[0], mounts[1],
+                                     _leg_paths(plan)["spec"])
     print(f"  ONE split commit on branch "
           f"{_shown(str(plan.get('adopt_branch', ADOPT_BRANCH)))} "
           f"of {names['assembly']}: `git rm -r` those paths, mount the "
-          f"legs{mounted}")
+          f"legs{mounted}{across}")
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     # Each pin `execute` writes, as the plan records it (#273) and as the
@@ -7238,7 +7493,9 @@ class _PlannedRoot:
             walk.problem = (f"it follows too many symlinks at {_spelled(at)}: "
                             f"{TOO_MANY_SYMLINKS}")
             return []
-        if not target:
+        if not target or target.startswith("\0"):
+            # A target that begins with NUL ends there, and is as empty to
+            # Linux as an empty one: `plan-empty-symlink` names both (#388).
             walk.empty = at
             walk.problem = (f"the symlink {_spelled(at)} has an empty target, "
                             "which leads nowhere")
@@ -7503,10 +7760,11 @@ def _root_symlink_findings(plan: Plan, source: Source,
     is a symlink AT a declared pin's file or AT the shape's own pin, #273's
     `plan-root-holds-pin` (`_links_at_a_pin`, #524).
 
-    A walk that stops at a symlink with an empty target is #303's to say:
-    `plan-empty-symlink` names every such symlink in the source, first in
-    `_entry_findings`' list, with the fix in the source, so it is not said
-    again here, wherever in the walk's chain that symlink is.
+    A walk that stops at a symlink with an empty target, or one that begins
+    with a NUL byte (#388), is #303's to say: `plan-empty-symlink` names
+    every such symlink in the source, first in `_entry_findings`' list, with
+    the fix in the source, so it is not said again here, wherever in the
+    walk's chain that symlink is.
 
     Where `git` checks a symlink out as a plain file, the link a reported
     walk meets first ABOVE its path is that file in the clone, and the
@@ -8247,15 +8505,17 @@ def cmd_check(args) -> int:
     # Asked before the source is opened, as `execute` asks it (#524). An
     # `org/repo` source is cloned into the work directory, so where that
     # directory cannot be written there is no source to read: refused as
-    # `execute` refuses it, where it ended in a PermissionError traceback.
+    # `execute` refuses it, where it ended in a PermissionError traceback,
+    # and before the NOTE that says a recorded clone is made again (#650).
+    # So is a source that cannot be opened at all, which `execute`, asking
+    # first, never reaches: `source-unresolvable` here was a second answer.
     unwritable = _unwritable_work_dir(args, work_root)
     try:
-        source = plan.open_source(args.source, work_root)
-    except OSError:
+        source = plan.open_source(args.source, work_root, unwritable)
+    except (OSError, Refusal):
         if not unwritable:
             raise
-        raise Refusal(WORK_DIR_UNWRITABLE, unwritable,
-                      f"Remediation: {WORK_DIR_FIX}") from None
+        raise _work_dir_refusal(unwritable) from None
     naming = NamingPolicy.load(NAMING_POLICY)
     findings: list[str] = []
     if unwritable:
@@ -8727,6 +8987,17 @@ def _refuse_an_occupied_work_dir(work_root: Path, names: dict,
 WORK_DIR_UNWRITABLE = "adopt-work-dir-unwritable"
 WORK_DIR_FIX = ("Pass a --work-dir this user can write in, or none: without "
                 "one, each run makes a new one.")
+#: What `execute` says it left as it was when it refuses a `--work-dir`.
+NO_LEG_YET = "no leg repository was created and nothing was pushed. "
+
+
+def _work_dir_refusal(detail: str, done: str = "") -> Refusal:
+    """`adopt-work-dir-unwritable` for `detail`, why the `--work-dir`
+    cannot be used: `_work_root`'s or `_unwritable_work_dir`'s. The one
+    refusal of a work directory, in all three commands (#650); `done` is
+    what the refusing command left as it was, said first."""
+    return Refusal(WORK_DIR_UNWRITABLE, detail,
+                   f"Remediation: {done}{WORK_DIR_FIX}")
 
 
 def _unwritable_work_dir(args, work_root: Path) -> str | None:
@@ -8765,9 +9036,7 @@ def _refuse_an_unwritable_work_dir(args, work_root: Path) -> None:
     repository exists (#524)."""
     unwritable = _unwritable_work_dir(args, work_root)
     if unwritable:
-        raise Refusal(WORK_DIR_UNWRITABLE, unwritable,
-                      "Remediation: no leg repository was created and "
-                      f"nothing was pushed. {WORK_DIR_FIX}")
+        raise _work_dir_refusal(unwritable, NO_LEG_YET)
 
 
 def _why_occupied(built: list[tuple[str, str]], names: dict,
@@ -8918,11 +9187,78 @@ def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
               "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
               "PAT (contents:read on the legs, fallback) — or the `validate` "
               "check cannot check them out.")
+        # The secrets that credential is kept in are the ROOT's, where the
+        # workflow runs, so the Free-plan hint goes by the root (#602).
+        _free_plan_hint_by_the_root(plan, repositories["assembly"])
+
+
+#: What `execute` prints where GitHub would not say what visibility the
+#: adopted root has (#602): the question it could not answer, what the
+#: Free-plan hint would then say, and how to answer it. `{root}` is the root.
+ROOT_VISIBILITY_UNREAD = (
+    "NOTE this run could not read {root}'s visibility from GitHub, so it "
+    "cannot say whether the Free-plan secrets hint applies. It applies when "
+    "{root} is private or internal and its organisation is on the GitHub Free "
+    "plan: organisation secrets are then not delivered to it, so org-level "
+    "SHAPE_LEGS_APP_ID / SHAPE_LEGS_APP_PRIVATE_KEY resolve to EMPTY in its "
+    "`validate` workflow and must be set as REPOSITORY secrets on {root} "
+    "instead. `gh repo view {root} --json visibility` says which it is.")
+
+
+def _free_plan_hint_by_the_root(plan: Plan, root: str) -> None:
+    """The Free-plan secrets hint, BY THE ADOPTED ROOT (#602).
+
+    The `validate` workflow that reads SHAPE_LEGS_APP_ID and
+    SHAPE_LEGS_APP_PRIVATE_KEY runs in the assembly root, and on the Free
+    plan an organisation secret is delivered only to a public repository. An
+    adopted root keeps the visibility it had, which is not the plan's
+    `visibility:` (the two new legs'), so the hint went by the wrong
+    repository: a public source adopted with private legs was told its
+    organisation secrets "resolve to EMPTY", and a private one was told the
+    legs were why. It is printed now only when GitHub says the root is
+    private or internal, naming the root, as `scaffold-project.py`'s
+    `_private_leg_note` has gated it since #542. Asked only once a leg is
+    private or internal: a public leg needs no credential, so no secret
+    decides whether the `validate` check reads it.
+
+    A ROOT WHOSE VISIBILITY CANNOT BE READ IS NOT GUESSED. Read as private,
+    a public root would be given a false hint; read as public, a private one
+    would lose a true one with nothing said. `ROOT_VISIBILITY_UNREAD` says
+    so instead, with the condition and the command that settles it. It asks
+    nothing of the organisation's plan: `free_plan_secret_hint` answers None
+    alike for a paid plan and for one it could not read, so its answer could
+    not tell "the hint does not apply" from a second unknown. It is a NOTE
+    and not a refusal, because both legs exist by now and the run goes on to
+    push them.
+    """
+    seen = _root_visibility(root)
+    if seen in ("private", "internal"):
         hint = free_plan_secret_hint(
-            plan.get("org", ""), repositories["assembly"],
-            f"{repositories['spec']} and {repositories['code']} are")
+            plan.get("org", ""), root, f"{root} is")
         if hint:
             print(hint)
+    elif seen is None:
+        print(ROOT_VISIBILITY_UNREAD.format(root=root))
+
+
+def _root_visibility(repository: str) -> str | None:
+    """`repository`'s visibility on GitHub, one of `VISIBILITY_CHOICES`, or
+    None when it cannot be read: `gh repo view` failed (a repository the
+    token cannot see, a rate limit, the network) or could not be started,
+    or answered anything but one of GitHub's three visibilities. Never asked
+    under `--local-remote-dir`, whose root is the source on disk."""
+    try:
+        answer = run(["gh", "repo", "view", repository, "--json",
+                      "visibility"])
+    except (CommandFailed, OSError):
+        return None
+    try:
+        value = json.loads(answer)
+    except ValueError:
+        return None
+    value = value.get("visibility") if isinstance(value, dict) else None
+    seen = value.lower() if isinstance(value, str) else None
+    return seen if seen in VISIBILITY_CHOICES else None
 
 
 def _create_leg_remote(plan: Plan, names: dict, repositories: dict,
@@ -10116,7 +10452,7 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
 def cmd_execute(args) -> int:
     plan = Plan.load(Path(args.plan))
     _refuse_a_mistyped_plan(plan)
-    work_root = _work_root(args)
+    work_root = _work_root(args, NO_LEG_YET)
     # Before the source is opened, so before any leg exists (#524).
     _refuse_an_unwritable_work_dir(args, work_root)
     source = plan.open_source(args.source, work_root)
@@ -10520,7 +10856,8 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
         "are NEW repositories extracted with `git filter-repo`, so every "
         "moved file keeps the commits that made it. Nothing was deleted: what "
         "leaves this tree arrives in a leg at the same path, mounted back "
-        f"here at {spec_path}/ and {code_path}/.",
+        f"here at {spec_path}/ and {code_path}/"
+        f"{contracts_from_code_leg(spec_path, code_path, paths_for['spec'])}.",
         "",
         f"MOVED TO THE SPEC LEG ({names['spec']} @ {leg_commits['spec'][:12]}):",
     ]
@@ -10659,6 +10996,8 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
 
     counts, findings = _account_for(before, after, paths_for["drop"])
     findings += _shape_file_findings(assembly, split_commit)
+    findings += _split_manifest_findings(split_tree, before,
+                                         paths_for["drop"])
     added = sorted(set(after) - set(before))
     for leg in ("spec", "code", "root", "drop"):
         note = " (seeded from template)" if leg in seeded else ""
@@ -10880,6 +11219,11 @@ ROOT_SUBMODULE_DEFECT = (
     "of the source's in the root (`plan-submodule-root`) or leaves one with "
     "no leg (`plan-unresolved`, `plan-uncovered`, `plan-bad-leg`), "
     f"{SPLIT_IS_WRONG}")
+#: The exit of `adopt-manifest-not-shape` (#389).
+MANIFEST_DEFECT = (
+    "`execute` refuses before any leg exists a plan that keeps a path of the "
+    f"source's at `{SHAPE_MANIFEST}` in the root (`{ROOT_BLOCKS_MANIFEST}`) "
+    f"or mounts a leg there (`{LEG_COLLIDES}`), {SPLIT_IS_WRONG}")
 
 
 def _land_the_root_tree(after: dict, tree: list, before: dict,
@@ -10995,6 +11339,64 @@ def _mount_commit_findings(tree: list, mounts: dict[str, str],
             for path, mode, oid, _ in tree
             if mode == GITLINK_MODE and path in mounts
             and oid != pushed[mounts[path]]]
+
+
+def _split_manifest_findings(tree: list, before: dict,
+                             drops: list[str]) -> list[str]:
+    """`adopt-manifest-not-shape` when the root's `project.yaml` is not the
+    shape's manifest (#389): the source's own entry is still there, or the
+    manifest went beside the root's as `shape/project.yaml`, or both.
+
+    THE ONE SHAPE FILE NO COPY STANDS IN FOR (#305). `shape-doctor.py`, the
+    root's validators and `make bootstrap` read the manifest at the root
+    itself. A plan that kept the source's `project.yaml` there had the
+    manifest written beside it, and every source blob was still in exactly
+    one place, so this check said `adoption verified` over an assembly the
+    doctor calls NOT A SHAPE ROOT. `check` finds that plan and `execute`
+    refuses it before any leg exists (`plan-root-blocks-manifest`), and that
+    refusal was all there was: this check does not lean on it, as it leans
+    on none of `check`'s (#165).
+
+    BY BLOB, AS THE REST OF THE ACCOUNTING IS, and never by the pin, which
+    does not list a rendered file. The source's own entry is matched by path
+    and blob, whatever its mode: a kept symlink that led nowhere had the
+    manifest written through it, and the root keeps the link. The copy is
+    the shape's only when the source did not have that blob at that path: a
+    source's own `shape/project.yaml`, kept where the root's `project.yaml`
+    is the manifest, is a file like any other.
+
+    A `project.yaml` THE PLAN DROPS IS NOT THE SOURCE'S OWN AT THE ROOT,
+    whatever its bytes. `drops` is `paths_for["drop"]`, the list
+    `_mount_the_legs` has `git rm`ed before the shape writes anything, so
+    what is at `project.yaml` then is what the shape wrote: this asks what
+    the split did, not what `check` refused. Matched by blob alone, a source
+    file that held exactly the manifest this run renders, answered `drop`
+    (a plan `check` passes, and main verified), was called the source's own,
+    and the run failed after both legs were pushed (#389's review, R1). Only
+    that half is waived: the manifest beside it is a finding still.
+    """
+    entries = {path: (mode, oid) for path, mode, oid, _ in tree}
+    copy = f"{COLLISION_DIR}/{SHAPE_MANIFEST}"
+    mode, oid = entries.get(SHAPE_MANIFEST, ("", ""))
+    dropped = SHAPE_MANIFEST in {path.rstrip("/") for path in drops}
+    kept = bool(oid) and oid == before.get(SHAPE_MANIFEST) and not dropped
+    beside = copy in entries and entries[copy][1] != before.get(copy)
+    if not (kept or beside):
+        return []
+    if kept:
+        said = (f"{_spelled(SHAPE_MANIFEST)} in the root tree is the "
+                f"source's own {_kind_of(mode).split()[-1]} ({oid[:12]}), "
+                "not the shape's manifest"
+                + (f", which is beside it as {_spelled(copy)}" if beside
+                   else ""))
+    else:
+        said = (f"the shape's manifest is at {_spelled(copy)} in the root "
+                "tree, where it is written only when the root already holds "
+                f"{_spelled(SHAPE_MANIFEST)}")
+    return [f"FINDING adopt-manifest-not-shape: {said}. `shape-doctor.py`, "
+            "the root's validators and `make bootstrap` read the manifest at "
+            f"{_spelled(SHAPE_MANIFEST)} itself, and no copy stands in for "
+            f"it; {MANIFEST_DEFECT}"]
 
 
 def _pushed_commits(work_root: Path, names: dict) -> dict[str, str]:
@@ -11244,8 +11646,7 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
                 "naming-unclassified",
                 f"{name!r} matches no family in the naming policy",
                 renamed or
-                "Remediation: --project takes one CamelCase token with no "
-                "hyphen, underscore, dot or space.")
+                f"Remediation: --project takes {PROJECT_NAME_RULE}.")
         if not accepts_role(found, role):
             raise Refusal(
                 "naming-role-mismatch",
@@ -11494,17 +11895,32 @@ def _elector() -> str:
     return name.decode("utf-8", "surrogateescape").strip()
 
 
-def _work_root(args) -> Path:
+def _work_root(args, done: str = "") -> Path:
     """The command's work directory: `--work-dir`, made where it is missing,
     or a new one in the system temp folder, which `args` keeps as
     `made_work_root`, so that `main` can remove it once the command has
-    ended (`_leave_the_work_root`, #526)."""
-    if getattr(args, "work_dir", None):
-        root = args.work_dir.resolve()
-    else:
+    ended (`_leave_the_work_root`, #526).
+
+    A `--work-dir` THAT CANNOT BE MADE IS REFUSED, by `plan`, `check` and
+    `execute` alike, before anything is read (#650): a file is there or
+    above it, a symlink there leads round a loop, or this user cannot write
+    where it would be made. The bare `mkdir` ended each command in a
+    FileExistsError, NotADirectoryError or PermissionError traceback, exit
+    1, and on a loop Python 3.12's `Path.resolve` raised RuntimeError
+    first; `os.path.realpath` is the same reading without that raise. The
+    code and the way out are #524's, for one this user cannot write in;
+    `done` is what the refusing command left as it was, said first."""
+    if not getattr(args, "work_dir", None):
         root = Path(tempfile.mkdtemp(prefix="openreposhape-adopt-"))
         args.made_work_root = root
-    root.mkdir(parents=True, exist_ok=True)
+        return root
+    root = Path(os.path.realpath(args.work_dir))
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise _work_dir_refusal(
+            f"--work-dir {_spelled(str(root))} cannot be made: making it a "
+            f"directory failed ({exc.strerror or exc})", done) from None
     return root
 
 
@@ -11628,6 +12044,18 @@ def _leg_path_help(leg: str, default: str) -> str:
         "again.")
 
 
+def _work_dir_help(does: str, refused: str) -> str:
+    """`--help` for `--work-dir` (#650): what the command does there
+    (`does`), then where the default lands and what becomes of it, and of
+    one given, which is the same in all three commands (`_work_root`,
+    `_leave_the_work_root`), then the codes the command refuses one under
+    (`refused`), by the words the command prints."""
+    return (f"{does} Default: a new directory in the system temp folder, "
+            "removed when the run ends if it holds no file. A --work-dir "
+            "you give is made where it is missing, and nothing in it is "
+            f"removed. {refused}")
+
+
 def main(argv: list[str] | None = None) -> int:
     # FIRST, so that every `print` after it -- `--help` included -- escapes
     # a name stdout cannot encode rather than raising on it (#214).
@@ -11643,7 +12071,14 @@ def main(argv: list[str] | None = None) -> int:
     plan.add_argument("--project", required=True,
                       help="the assembly-root name; for an in-place adoption "
                            "it is the source repository's own name")
-    plan.add_argument("--org", default=None)
+    plan.add_argument("--org", default=None,
+                      help="the organisation the source repository is in, "
+                           "which the plan records as `org:` (default: the "
+                           "organisation of an `org/repo` --source, or the "
+                           "one a local source's `origin` url names). A "
+                           "source whose `origin` is a path, or that has "
+                           "none, names no organisation: `plan` refuses "
+                           "it as `adopt-no-org` unless --org is given.")
     plan.add_argument("--id", default=None)
     plan.add_argument("--visibility", choices=VISIBILITY_CHOICES,
                       default="private")
@@ -11718,14 +12153,32 @@ def main(argv: list[str] | None = None) -> int:
                            "Repeatable.")
     plan.add_argument("--path-policy", type=Path, default=None)
     plan.add_argument("--out", default="adoption-plan.yaml")
-    plan.add_argument("--work-dir", type=Path, default=None)
+    plan.add_argument(
+        "--work-dir", type=Path, default=None,
+        help=_work_dir_help(
+            "the directory an `org/repo` --source is cloned into, as "
+            "`source-readonly/<repo>`, which the plan records as "
+            "`source.local_path` for `check` and `execute` to read; a "
+            "local --source is read in place.",
+            "One that cannot be made, or that this user cannot write in "
+            "when a source is cloned into it, is refused as "
+            "`adopt-work-dir-unwritable`."))
     plan.set_defaults(func=cmd_plan)
 
     check = subparsers.add_parser("check", help="validate a plan")
     check.add_argument("--plan", required=True)
     check.add_argument("--source", default=None,
                        help="override the source the plan names")
-    check.add_argument("--work-dir", type=Path, default=None)
+    check.add_argument(
+        "--work-dir", type=Path, default=None,
+        help=_work_dir_help(
+            "where `check` works: an `org/repo` --source, or the plan's "
+            "`source.repository` where its recorded clone is gone, is "
+            "cloned there. Give the one `execute` will be given.",
+            "One this user cannot write in is a finding, "
+            "`adopt-work-dir-unwritable`, and is refused under that code "
+            "where the source would be cloned into it or cannot be opened, "
+            "as one that cannot be made is."))
     check.set_defaults(func=cmd_check)
 
     execute = subparsers.add_parser("execute", help="carry the plan out")
@@ -11742,7 +12195,19 @@ def main(argv: list[str] | None = None) -> int:
                               "without one of the two, execute refuses.")
     execute.add_argument("--yes", action="store_true",
                          help="the human has read the plan and the follow-ups")
-    execute.add_argument("--work-dir", type=Path, default=None)
+    execute.add_argument(
+        "--work-dir", type=Path, default=None,
+        help=_work_dir_help(
+            "where `execute` builds the two legs and the split, and clones "
+            "an `org/repo` source; the verification table and the notice "
+            "of a failure name what is there.",
+            "A default one that holds what the run made is kept, and the "
+            "run's last line names it. One that already "
+            "holds what a run builds is refused as "
+            "`adopt-work-dir-occupied`, and one that cannot be made, or "
+            "that this user cannot write in, as "
+            "`adopt-work-dir-unwritable`, before any leg repository "
+            "exists."))
     execute.set_defaults(func=cmd_execute)
 
     args = parser.parse_args(argv)

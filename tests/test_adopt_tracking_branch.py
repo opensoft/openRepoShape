@@ -236,3 +236,44 @@ def test_a_default_branch_no_command_line_can_carry_is_named_as_the_default(
     assert ("unsafe-value: --tracking-branch (not given, so the source's "
             "default branch) is 'feat#1'") in result.stderr, result.stderr
     assert not plan.exists()
+
+
+@pytest.mark.parametrize("value", [pytest.param("", id="empty"),
+                                   pytest.param("feat#1", id="feat-hash-1")])
+def test_a_branch_the_person_passed_is_named_as_passed_when_refused(
+        tmp_path, value):
+    """#601's rider (RV567): a `--tracking-branch` the person PASSED is
+    refused as the flag they typed, with `<given>` as the value, and never as
+    "not given, so the source's default branch", which is only for the value
+    `plan` filled in. An empty one is a value too: it is refused, where a
+    test of the argument's truth would take it for none and plan the
+    source's own branch without a word."""
+    source = make_source_repo(tmp_path / "Northwind", tree=TREE, edits=())
+    plan = tmp_path / "adoption-plan.yaml"
+
+    result = write_plan(source, plan, extra=("--tracking-branch", value))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (f"REFUSED unsafe-value: --tracking-branch is {value!r}, which is "
+            "not a value this tool will put on a `git` or `gh` command "
+            "line") in result.stderr, result.stderr
+    assert "not given" not in result.stderr, result.stderr
+    assert not plan.exists()
+
+
+def test_a_passed_branch_equal_to_the_sources_own_is_still_named_as_passed(
+        tmp_path):
+    """Passed is what the person did, not whether the value differs from the
+    source's default: `--tracking-branch feat#1` over a source ON `feat#1` is
+    a flag typed, so it is refused as one."""
+    source = make_source_repo(tmp_path / "Northwind", tree=TREE, edits=(),
+                              branch="feat#1")
+    plan = tmp_path / "adoption-plan.yaml"
+
+    result = write_plan(source, plan, extra=("--tracking-branch", "feat#1"))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "unsafe-value: --tracking-branch is 'feat#1', which" in \
+        result.stderr, result.stderr
+    assert "not given" not in result.stderr, result.stderr
+    assert not plan.exists()

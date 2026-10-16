@@ -68,6 +68,9 @@ from repo_shape import (  # noqa: E402
     GH_TREE_API, NEUTRAL_PRODUCT_OWNER, PIN_SOURCE_ENV_PREFIX,
     pin_product_key, pin_source_env_collisions, tree_digest,
 )
+# How a `--pin-source` that is not printable is named, the one spelling the
+# scaffold's chain WARNING gives it too (#610).
+from repo_shape import shown_path  # noqa: E402
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
 
@@ -1283,6 +1286,230 @@ def refuse_bad_branch(refusal: str, what: str, value) -> None:
     problem, remediation = _branch_verdict(what, value)
     if problem:
         raise Refusal(refusal, problem, remediation)
+
+
+# ---------------------------------------------------------------------------
+# What a run asks before its first write: the folders it makes (#609)
+# ---------------------------------------------------------------------------
+#
+# `scaffold-project.py` and `family.py init` each make folders -- the work
+# directory, `--local-remote-dir`, a family folder -- and write a working tree
+# into one, and their dry runs asked about none of it. With a file standing
+# where a folder must go the dry run exited 0 and the real run died in
+# `mkdir` (`FileExistsError`) or in the target-exists question itself
+# (`NotADirectoryError`), a traceback, exit 1. These are the questions both
+# runs now ask, before anything is made, and the `mkdir` the real run makes
+# after them. They live here and not in `scripts/repo_shape.py` for the reason
+# `refuse_bad_branch` does: that file is a SHAPE COPY.
+
+#: Said by every refusal of a folder asked about before anything is made.
+FOLDER_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "Move what stands in the way aside, or pass a path where a folder can be "
+    "made. There is no --force.")
+
+#: What a folder this user cannot write in is called, by
+#: `folder_cannot_be_made` (a folder to make) and `target_in_the_way` (an
+#: empty working tree) alike.
+CANNOT_WRITE_IN = "is a folder this user cannot write in"
+
+#: Said when the real run's own `mkdir` fails, after the question said yes:
+#: the run has made folders by then, and no remote.
+MKDIR_REMEDIATION = (
+    "Remediation: no remote was created. Move what stands in the way aside, "
+    "or pass a path where a folder can be made, then run this again. There "
+    "is no --force.")
+
+
+def _not_a_folder(path: Path) -> str | None:
+    """Why the thing that stands at `path` is no folder to make one in or
+    write into, or None when it is a folder (a link to one included).
+
+    `stat()` INSIDE THE GUARD judges it, as `_digest_from_pin_source` does:
+    a link to nothing, a link loop or a path this user cannot search is the
+    system's own reason, where `is_dir()` would have said False or raised."""
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        return f"cannot be used as a folder: {exc.strerror or exc}"
+    if stat.S_ISDIR(mode):
+        return None
+    return ("is a file, not a folder" if stat.S_ISREG(mode)
+            else "is not a folder")
+
+
+def folder_cannot_be_made(path: Path) -> str | None:
+    """Why `path` cannot be made as a folder, with every folder above it, and
+    written in, or None when it can (#609). It makes nothing.
+
+    The question `Path.mkdir(parents=True, exist_ok=True)` and the first
+    write into the folder ask, put without making anything: the nearest of
+    `path` and the folders above it that exists is the one that answers. A
+    file there, or above it, is named, and so is a folder this user cannot
+    write in (the system's own answer, `os.access`, where it has one; it
+    says yes for root, and for any folder on Windows, as `mkdir` would). A
+    `path` nothing stands at is asked of the folder above it.
+    """
+    for here in (path, *path.parents):
+        if not os.path.lexists(here):
+            continue
+        why = _not_a_folder(here)
+        if why:
+            return f"{here} {why}"
+        if not os.access(here, os.W_OK | os.X_OK):
+            return f"{here} {CANNOT_WRITE_IN}"
+        return None
+    return None
+
+
+def _unwritable_remediation(choose: str) -> str:
+    """What a refusal of a folder this user cannot write in says to do, for
+    a folder to make and for a working tree alike: give this user write and
+    search permission on it, or choose another folder by the flag `choose`.
+    """
+    return ("Remediation: nothing was created, and `--dry-run` refuses the "
+            "same. Give this user write and search permission on that "
+            f"folder, or choose another {choose}, and run this again.")
+
+
+def refuse_unmakeable_folder(refusal: str, named: str, path: Path,
+                             choose: str | None = None) -> None:
+    """Raise `Refusal(refusal)` when `folder_cannot_be_made(path)` says why.
+
+    `refusal` is the caller's own code (`scaffold-folder-cannot-be-made`)
+    and `named` how the person met the folder (`--work-dir`, `the family
+    folder`), so each tool refuses in its own voice. Asked by the dry run
+    and the real run alike, before anything is made.
+
+    A FOLDER THIS USER CANNOT WRITE IN (`CANNOT_WRITE_IN`, the folder itself
+    or one above it) is not told to "move what stands in the way aside": it
+    is told what `_unwritable_remediation` says, naming the flag `choose`,
+    which is `named` unless it is no flag (`the family folder`, met by
+    `--into`). Every other answer keeps `FOLDER_REMEDIATION`."""
+    why = folder_cannot_be_made(path)
+    if why:
+        raise Refusal(
+            refusal, f"{named} {path} cannot be made: {why}",
+            _unwritable_remediation(choose or named)
+            if why.endswith(CANNOT_WRITE_IN) else FOLDER_REMEDIATION)
+
+
+def make_folder(refusal: str, named: str, path: Path) -> None:
+    """`path.mkdir(parents=True, exist_ok=True)`, and a refusal in the
+    system's own words when it fails, never an `OSError` traceback.
+
+    The real run's `mkdir`, after `refuse_unmakeable_folder` has said yes:
+    what still fails here (a file made in the meantime, a permission
+    `os.access` did not foresee) is the same refusal, before any remote is
+    made."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise Refusal(refusal, f"{named} {path} cannot be made: "
+                      f"{exc.strerror or exc}", MKDIR_REMEDIATION) from exc
+
+
+def target_in_the_way(target: Path) -> str | None:
+    """Why a working tree cannot be written at `target`, which a run fills
+    and never empties, or None when nothing is there or an empty folder is
+    (#609). The caller's sentence is `<target> already exists and <why>`.
+
+    A FILE THERE was a `NotADirectoryError` out of `target.iterdir()` in
+    the real run, after its dry run exited 0. It is said here, and so is a
+    folder that holds anything, which both tools always refused, and one
+    this user cannot list.
+
+    AN EMPTY FOLDER THIS USER CANNOT WRITE IN IS SAID TOO (L2-60), last: the
+    emptiness check passed it, the dry run exited 0, and the real run made
+    its remotes and then died in a `PermissionError` traceback at the first
+    file it wrote there. It asks the question `folder_cannot_be_made` asks
+    of a folder to make, `os.access(W_OK | X_OK)`: a folder with no `w`
+    takes no file and one with no `x` cannot be entered, and a folder that
+    holds something is still `is not empty`, whatever its mode."""
+    if not os.path.lexists(target):
+        return None
+    why = _not_a_folder(target)
+    if why:
+        return why
+    try:
+        if any(target.iterdir()):
+            return "is not empty"
+    except OSError as exc:
+        return f"cannot be read: {exc.strerror or exc}"
+    if not os.access(target, os.W_OK | os.X_OK):
+        return CANNOT_WRITE_IN
+    return None
+
+
+def target_remediation(why: str, holds: str, choose: str) -> str:
+    """The remediation of a `-target-exists` refusal, chosen by what
+    `target_in_the_way` said, in the one place both tools ask it (#609).
+
+    `holds` is the tool's own sentence for a tree that HOLDS something, a
+    file included: choose an empty folder, there is no --force. It is wrong
+    for an EMPTY folder whose only fault is its permissions
+    (`CANNOT_WRITE_IN`, L2-60), which is told to be given write and search
+    permission for this user, or to be replaced by another folder, named by
+    `choose`, the flag the person met it by."""
+    if why != CANNOT_WRITE_IN:
+        return holds
+    return _unwritable_remediation(choose)
+
+
+# ---------------------------------------------------------------------------
+# What a run asks before its first write: whether a repository exists (#609)
+# ---------------------------------------------------------------------------
+
+#: The words of gh's answer for a repository GitHub does not have, on stderr
+#: with exit 1: `gh repo view` asks GitHub's GraphQL API, which answers
+#: `Could not resolve to a Repository with the name '<owner>/<name>'.`, and
+#: gh prints it as `GraphQL: <message> (repository)` (gh 2.x; its
+#: `FetchRepository` says the same when the API returns no repository).
+GH_NOT_FOUND_WORDS = "Could not resolve to a Repository"
+
+#: Said by every refusal of a `gh repo view` that failed otherwise.
+GH_UNREADABLE_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "Only gh's own answer that a repository does not exist (exit 1, "
+    f"`{GH_NOT_FOUND_WORDS}`) lets a run go on as if it were not there; any "
+    "other failure says nothing about whether it is. Check `gh auth status` "
+    "(`gh auth login` where it names a token that is missing, bad or "
+    "expired), or let a rate limit or an outage pass, then run this again.")
+
+
+def refuse_unless_not_found(repository: str, probe) -> None:
+    """A `gh repo view <repository>` that FAILED is gh's answer that the
+    repository does not exist, and this returns; any other failure is
+    refused as `remote-unreadable` (#609).
+
+    ANY FAILURE USED TO MEAN "ABSENT". With a bad token (`HTTP 401: Bad
+    credentials`), a rate limit or no network, both dry runs exited 0 and
+    the real runs went on to `gh repo create`: the scaffold failed there,
+    and `init` had made its family folder first. A repository that DOES
+    exist, read through a passing failure, would have had the scaffold
+    create and push both legs before its root met `gh repo create`. So only
+    exit 1 with `GH_NOT_FOUND_WORDS` on stderr means absent; the refusal
+    quotes the command, its exit and the first line gh said (stdout's when
+    stderr is empty), as Python spells it when it is not printable.
+
+    `probe` is the finished `subprocess.CompletedProcess` of the command;
+    one that exited 0 is not asked about here.
+    """
+    if probe.returncode == 1 and GH_NOT_FOUND_WORDS in (probe.stderr or ""):
+        return
+    lines = [line.strip()
+             for line in (probe.stderr or probe.stdout or "").splitlines()
+             if line.strip()]
+    said = lines[0] if lines else ""
+    if not said.isprintable():
+        said = repr(said)
+    command = " ".join(str(word) for word in probe.args)
+    raise Refusal(
+        "remote-unreadable",
+        f"whether {repository} already exists on GitHub cannot be told: "
+        f"`{command}` exited {probe.returncode}"
+        + (f": {said}" if said else ""),
+        GH_UNREADABLE_REMEDIATION)
 
 
 #: `-F -` reads the message from STDIN. Every argument is then a literal, and
@@ -2525,9 +2752,12 @@ def shown_source(source) -> str:
     Python's `repr` spells it -- `\\x1b`, `\\n`, `\\r`, and `\\udcff` for a
     byte that is not UTF-8, as `sys.argv` keeps one -- which is how every
     other value a refusal here names is spelled (`--pin {raw!r}`). The
-    question `adopt-project.py`'s `_shown` asks of a path it prints."""
-    text = str(source)
-    return text if text.isprintable() else repr(text)
+    question `adopt-project.py`'s `_shown` asks of a path it prints.
+
+    It IS `repo_shape.shown_path` (#610), which the scaffold's
+    `declared-unverified` WARNING spells the same `--pin-source` with, so
+    the two lines about one path cannot spell it two ways."""
+    return shown_path(source)
 
 
 def _digest_from_pin_source(source: Path, commit: str) -> str:
