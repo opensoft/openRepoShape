@@ -220,6 +220,12 @@ from shape_materialize import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     ATTRIBUTES, eol_block_paths, eol_line, with_eol_block,
 )
+# The copies the shape pins, in the pin's order, and which paths a
+# `.gitattributes` line can name literally: asked of a `.gitattributes` the
+# plan keeps below the root, over a pinned copy (#530).
+from shape_materialize import (  # noqa: E402
+    COPIED_FROM_SHAPE, COPIED_VERBATIM, EOL_PATH_RE,
+)
 # What the project's own `validate-manifest.py` would say of the values written
 # into its manifest, and whether a repository's name can be a directory's:
 # asked of the plan's values by `plan`, `check` and `execute` (#261).
@@ -5929,7 +5935,11 @@ def _entry_findings(plan: Plan, source: Source,
     project's YAML for its loader to read back as something else (#181),
     then the source's own submodules,
     then each symlink the plan keeps in the root that a shape file cannot
-    be written through (#178, #183), then each value `execute` writes into
+    be written through (#178, #183), then each `.gitattributes` the plan
+    keeps below the root that outranks the root's line-ending rule for a
+    pinned copy (#530), then the source's own root `.gitattributes`, which
+    the split writes into, where this machine's `git add` would not store
+    what it writes there (#530's D5(a)), then each value `execute` writes into
     a file that no file can hold (#255), then what the project's own
     `validate-manifest.py` would refuse of the values `execute` writes into
     its manifest (#261), then the split branch's name and the tracking
@@ -6042,6 +6052,8 @@ def _entry_findings(plan: Plan, source: Source,
         else (MANIFEST_FIELDS[TRACKING_KEY],))
     return (findings + misread + split
             + _root_symlink_findings(plan, source, tree)
+            + _nested_attributes_findings(plan, source, tree)
+            + _reencoded_attributes_findings(plan, source, tree)
             + unwritable_findings + value_findings + names
             + tracking_findings + moved + field_findings,
             unsafe_remediation
@@ -7357,6 +7369,561 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
         "`core.symlinks` true, on a filesystem that can hold one -- or send "
         f"{_spelled(link)} to a leg or `drop` it in the plan and run `check` "
         "again.")
+
+
+# ---------------------------------------------------------------------------
+# A `.gitattributes` the plan keeps BELOW the root, over a pinned copy (#530)
+# ---------------------------------------------------------------------------
+#
+# #471 gives every pinned copy at the root ONE line-ending rule: a `/<copy>
+# text eol=lf` line in the block the split appends to the source's own root
+# `.gitattributes` (`shape_materialize.with_eol_block`), or, where the source
+# keeps none, the shape's own `* text=auto eol=lf`. Git reads attributes for a
+# path from the `.gitattributes` of its own directory and of each directory
+# above it, and a deeper file outranks a shallower one, so a source's
+# `.github/.gitattributes` or `scripts/.gitattributes` that the plan keeps in
+# the root outranks that rule for each copy under it. Measured on main at
+# 2247dbff with git 2.43: `*.yml eol=crlf` in a kept `.github/.gitattributes`
+# -- or `* text=auto eol=crlf`, or a macro the root defines to say it --
+# checked `.github/workflows/validate.yml` out with CRLF in every clone,
+# Linux's included, and `* !eol` did so in every clone that writes CRLF
+# (`core.autocrlf=true`, Git for Windows' default, or `core.eol=crlf`). Each
+# time `execute` said `adoption verified` and exited 0, and the root's first
+# `make bootstrap` reported shape-copy-drift: `validate-pins.py` digests the
+# bytes on disk (#51).
+#
+# A FINDING, NOT A WRITE. Brett Heap ruled at 2026-10-12T22:48Z that the
+# root's `.gitattributes` is the ONE file of the source's that the split
+# writes into, because no file beside it can reach the copies at the root. A
+# nested file is not that case: the person can end it, in the source, with
+# the lines the finding names, or keep it out of the root, and neither needs
+# this tool to write a second file of theirs, to make a second exception to
+# "by blob sha" in the verification, or to give `update-shape.py --add` a
+# second block to extend. So `check` finds it, and `execute` refuses it with
+# every other finding of `check`'s, before any leg exists (#168).
+#
+# GIT IS ASKED, NEVER IMITATED (`_AttributesProbe`): patterns, macros,
+# precedence and what `crlf`, `text` and `eol` make of each other are git's.
+# A throwaway repository holds, where the split's tree will hold them, only
+# the root's `.gitattributes` as the split writes it, the shape's
+# `shape/.gitattributes` where that goes beside the source's, and the kept
+# nested files, and `git check-attr` is asked about each pinned copy where
+# the split puts it: `_PlannedRoot`'s walks, which follow the root's symlinks
+# as the materializer does. No system or global attributes file is read, nor
+# a tree `GIT_ATTR_SOURCE` or `attr.tree` names, nor system or global config,
+# since a clone on another machine has none of them (`_probe_env`). What a
+# checkout then writes over the copy's LF blob is `checked_out_as`: the blob
+# itself where the copy is not text or says `eol=lf`, CRLF everywhere where
+# it says `eol=crlf`, and CRLF wherever git is set to write it where it is
+# text and says no `eol`; git reads `text` first, and `crlf` only where
+# `text` is unspecified, both measured with real checkouts. So
+# `-text` and `binary` are no finding: a checkout writes a file that is not
+# text as its blob, and the blob is LF (measured too).
+#
+# ONE FINDING PER CAUSE. A copy is outranked when the root's own files keep
+# it LF and the kept nested files, added, do not. Each kept file that,
+# added to the root's own files alone, makes a checkout write such a copy
+# with CRLF is named once (and only where no file alone does, each that
+# changes what git says of the copy), with every outranked copy it reaches
+# and the line its own directory spells for each; a copy still outranked
+# once those lines are in is named again by the next `check`, under the
+# file that then decides it. A deeper kept file that restores LF leaves
+# nothing to find, and one that alone keeps the copy LF is not named. A root
+# `.gitattributes` that is a symlink, which git reads no rule from, is
+# #471's follow-up, not this finding: its copies are asked against the block
+# that follow-up asks a regular file to hold, so a kept nested file is still
+# found. Asked as a disk that keeps case does and again as one that ignores
+# it, as #262's findings are: there `core.ignorecase` folds git's patterns,
+# and a kept `.GitHub/.gitattributes` is read for `.github/`. A finding only
+# the second makes says so.
+
+#: `check`'s finding, and the code of `execute`'s refusal, for a kept
+#: `.gitattributes` below the root that outranks the root's line-ending rule
+#: for a pinned copy (#530).
+NESTED_ATTRIBUTES = "plan-nested-attributes"
+
+#: The copies the shape pins, in the pin's order: what `_materialize` lists
+#: in `Materialized.shape_files`, each at its own path or under `shape/`.
+PINNED_COPIES = (*COPIED_VERBATIM, *(rel for _, rel in COPIED_FROM_SHAPE))
+
+#: The attributes a checkout reads a file's line endings from. Git's
+#: `convert.c` reads `text` first, and `crlf`, its old spelling, only where
+#: `text` is unspecified.
+LINE_ENDING_ATTRIBUTES = ("crlf", "text", "eol")
+
+#: What `crlf` or `text` asks of a checkout, as git's `git_path_check_crlf`
+#: reads either one: not text, text checked out as it was checked in, and
+#: the rest. Any other value is no answer, and the next is read.
+_NOT_TEXT, _AS_CHECKED_IN = "binary", "input"
+_TEXT_ACTIONS = {"set": "text", "unset": _NOT_TEXT,
+                 _AS_CHECKED_IN: _AS_CHECKED_IN, "auto": "auto"}
+
+#: What a checkout writes over a pinned copy's LF blob (`checked_out_as`).
+KEPT = "kept"
+CRLF_EVERYWHERE = "everywhere"
+CRLF_BY_CONFIG = "by config"
+
+#: What a question to `git check-attr` must not inherit: a repository, an
+#: index or a work tree named for another one; a tree to read attributes
+#: from instead of the work tree (`GIT_ATTR_SOURCE`); and a parent git's
+#: `-c` settings, whose quoted form is not read here and none of which the
+#: question needs (`GIT_CONFIG_PARAMETERS`).
+_NOT_INHERITED = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                  "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ATTR_SOURCE",
+                  "GIT_CONFIG_PARAMETERS")
+#: The setting that reads attributes from a tree instead of the work tree.
+ATTR_TREE = "attr.tree"
+
+
+def _inherited_env() -> dict:
+    """This process's environment, as a question to a throwaway repository
+    inherits it: with nothing of `_NOT_INHERITED`, and no `attr.tree` in
+    git's command scope (`GIT_CONFIG_COUNT`), whose other entries are kept
+    in their order. Git 2.43 reads `attr.tree` from any config, and one
+    naming the empty tree made `check-attr` read no rule at all, which
+    silenced the finding; `GIT_ATTR_SOURCE=HEAD` made git fail in the empty
+    repository."""
+    count = os.environ.get("GIT_CONFIG_COUNT", "")
+    scoped = [(os.environ.get(f"GIT_CONFIG_KEY_{n}", ""),
+               os.environ.get(f"GIT_CONFIG_VALUE_{n}", ""))
+              for n in range(int(count) if count.isdigit() else 0)]
+    env = {name: value for name, value in os.environ.items()
+           if name.upper() not in _NOT_INHERITED
+           and not re.fullmatch(r"GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)",
+                                name.upper())}
+    kept = [(key, value) for key, value in scoped
+            if key.lower() != ATTR_TREE]
+    for n, (key, value) in enumerate(kept):
+        env[f"GIT_CONFIG_KEY_{n}"], env[f"GIT_CONFIG_VALUE_{n}"] = key, value
+    if kept:
+        env["GIT_CONFIG_COUNT"] = str(len(kept))
+    return env
+
+
+def _probe_env(nothing: Path) -> dict:
+    """The environment `git check-attr` is asked in: `_inherited_env()`,
+    with no system config and the empty file `nothing` as the global
+    config. Each could steer the answer here and holds nothing on another
+    machine, as `attr.tree` from either did."""
+    env = _inherited_env()
+    env.update(GIT_ATTR_NOSYSTEM="1", GIT_CONFIG_NOSYSTEM="1",
+               GIT_CONFIG_GLOBAL=str(nothing))
+    return env
+
+
+def checked_out_as(values: dict) -> str:
+    """What a checkout writes over an LF blob whose `crlf`, `text` and `eol`
+    are `values`, as `git check-attr` prints them: `KEPT`, the blob itself
+    on every platform; `CRLF_EVERYWHERE`; or `CRLF_BY_CONFIG`, CRLF wherever
+    `core.autocrlf` or `core.eol` asks for it, as Git for Windows' default
+    does.
+
+    Git's `convert.c`, `convert_attrs`, read for a checkout: `text`, else
+    `crlf`, says whether the file is text, and one that is not is written as
+    its blob. Then `eol=lf` keeps LF and `eol=crlf` writes CRLF; with
+    neither, only `input` keeps LF without asking the configuration."""
+    crlf, text, eol = (values.get(name, "") for name in LINE_ENDING_ATTRIBUTES)
+    action = _TEXT_ACTIONS.get(text) or _TEXT_ACTIONS.get(crlf)
+    if action == _NOT_TEXT or eol == "lf":
+        return KEPT
+    if eol == "crlf":
+        return CRLF_EVERYWHERE
+    return KEPT if action == _AS_CHECKED_IN else CRLF_BY_CONFIG
+
+
+class _AttributesProbe:
+    """A throwaway repository to ask `git check-attr` in: each question's
+    `.gitattributes` files are written into a work tree of their own, which
+    holds nothing else. Made where `_ask_git_branch` makes its own, in the
+    system's temporary directory, and removed on leaving the `with`."""
+
+    def __init__(self) -> None:
+        self._scratch = Path(tempfile.mkdtemp(
+            prefix="openreposhape-attributes-"))
+        self._asked = 0
+        #: An empty file, read in place of the person's own global config
+        #: and `core.attributesFile`.
+        self._nothing = self._scratch / "nothing"
+        self._env = _probe_env(self._nothing)
+        self._git_dir = self._scratch / "repository" / ".git"
+
+    def __enter__(self) -> "_AttributesProbe":
+        try:
+            empty = self._scratch / "no-template"
+            empty.mkdir()
+            self._nothing.write_bytes(b"")
+            git_out(["init", "-q", f"--template={empty}",
+                     str(self._git_dir.parent)], cwd=self._scratch,
+                    env=self._env)
+        except BaseException:
+            self.__exit__()
+            raise
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        shutil.rmtree(self._scratch, ignore_errors=True)
+
+    def ask(self, layout: dict, paths: list[str],
+            fold: bool) -> dict[str, dict[str, str]]:
+        """`{path: {attribute: value}}` for each of `paths`, with the
+        `.gitattributes` files `layout` holds (`{path: bytes}`) where git
+        reads them, and git ignoring case where `fold` says so."""
+        self._asked += 1
+        tree = self._scratch / f"tree-{self._asked}"
+        tree.mkdir()
+        for rel, data in layout.items():
+            target = tree.joinpath(*rel.split("/"))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        raw = git_out([f"--git-dir={self._git_dir}", f"--work-tree={tree}",
+                       "-c", f"core.ignorecase={str(fold).lower()}",
+                       "-c", f"core.attributesFile={self._nothing}",
+                       "check-attr", "-z", *LINE_ENDING_ATTRIBUTES, "--",
+                       *paths], cwd=tree, binary=True, env=self._env)
+        fields = raw.split(b"\0")
+        said: dict[str, dict[str, str]] = {}
+        for at in range(0, len(fields) - 2, 3):
+            path, name, value = (field.decode("utf-8", "surrogateescape")
+                                 for field in fields[at:at + 3])
+            said.setdefault(path, {})[name] = value
+        return said
+
+
+def _kept_nested_attributes(plan: Plan, tree: list) -> list[tuple]:
+    """`(path, mode, blob, entry)` for each `.gitattributes` below the root
+    that the plan keeps in the root, in the tree's order, one so named only
+    once case is ignored among them, for the disk that ignores it.
+
+    A SYMLINK IS ONE. Git follows none to read attributes, but a checkout
+    reads each `.gitattributes` from the index first, and there a symlink's
+    blob is its target, which git then reads as the file's rules: measured
+    with git 2.43, a kept `.github/.gitattributes` linking to `*.yml
+    eol=crlf` checked `.github/workflows/validate.yml` out with CRLF. A
+    target that is a path names no attribute, and changes nothing."""
+    blobs = {path: oid for path, _, oid, _ in tree}
+    return [(path, mode, blobs[path], entry)
+            for path, mode, entry in _kept_in_root(plan.entries, tree)
+            if "/" in path and mode in (*FILE_MODES, SYMLINK_MODE)
+            and path.rsplit("/", 1)[1].casefold() == ATTRIBUTES]
+
+
+def _pinned_landings(walks: list) -> list[tuple[str, str]]:
+    """`(the name the pin gives it, where the split puts it)` for each copy
+    the shape pins, in the pin's order, as `place` writes it: at its own
+    path, or under `shape/` where that is taken, followed through the
+    root's symlinks. A copy a walk cannot write, or one it writes outside
+    the assembly, is another finding's, and is left out."""
+    by_path = {walk.path: walk for walk in walks}
+    landings = []
+    for rel in PINNED_COPIES:
+        name, walk = rel, by_path.get(rel)
+        if walk is not None and walk.problem is None and walk.taken:
+            name = f"{COLLISION_DIR}/{rel}"
+            walk = by_path.get(name)
+        if walk is None or walk.problem is not None or walk.outside \
+                or walk.taken:
+            continue
+        landings.append((name, walk.landed))
+    return landings
+
+
+def _root_attributes(source: Source, walks: list, disk: _KeptTree,
+                     tree: list, names: list[str]) -> dict:
+    """The `.gitattributes` the split puts at the root, and under `shape/`,
+    as `{path: bytes}`. Where the root keeps none, the shape's own. Where it
+    keeps one, the shape's goes beside it and the split appends the block
+    for the copies `names` outside `shape/` (#471); a kept one that is not a
+    regular file gets no block, so it is asked as the block alone, the lines
+    #471's follow-up asks a regular file in its place to hold."""
+    shapes = (ASSEMBLY_TEMPLATE / ATTRIBUTES).read_text(
+        encoding="utf-8").encode("utf-8")
+    walk = next((walk for walk in walks if walk.path == ATTRIBUTES), None)
+    if walk is None or not walk.taken:
+        return {ATTRIBUTES: shapes}
+    row = disk.at(ATTRIBUTES)
+    blobs = {path: oid for path, _, oid, _ in tree}
+    own = (_blob_bytes(source.path, blobs[row[0]])
+           if row and row[1] in FILE_MODES else b"")
+    return {ATTRIBUTES: with_eol_block(own, eol_block_paths(names,
+                                                           COLLISION_DIR)),
+            f"{COLLISION_DIR}/{ATTRIBUTES}": shapes}
+
+
+def _placed_attributes(nested: list[tuple], landed: list[str],
+                       fold: bool) -> dict:
+    """`{where git reads it: row}` for each row of `nested` in a directory
+    above where a pinned copy lands, spelled as that place spells it; on a
+    disk that ignores case, the first of two twins."""
+    def key(path: str) -> str:
+        return path.casefold() if fold else path
+
+    above: dict[str, str] = {}
+    for path in landed:
+        parts = path.split("/")
+        for end in range(1, len(parts)):
+            here = "/".join(parts[:end])
+            above.setdefault(key(here), here)
+    placed: dict[str, tuple] = {}
+    for row in nested:
+        directory, _, name = row[0].rpartition("/")
+        spelled = above.get(key(directory))
+        if spelled is not None and key(name) == ATTRIBUTES:
+            placed.setdefault(f"{spelled}/{ATTRIBUTES}", row)
+    return placed
+
+
+def _copy_line(rel: str) -> str:
+    """The line a kept file's own directory spells for the copy at `rel`
+    below it, between backticks; for a name no line can spell literally,
+    which a symlink the root keeps can lead a copy to, what to write."""
+    if EOL_PATH_RE.fullmatch(rel):
+        return f"`{eol_line(rel)}`"
+    return f"a `text eol=lf` line that names {_spelled(rel)}"
+
+
+def _nested_attributes_finding(row: tuple, at: str, copies: list[str],
+                               written: list[str], aside: str) -> str:
+    """`check`'s line for the kept file `row`, which git reads at `at`, and
+    the outranked `copies` it reaches, each written as `written` says."""
+    path, mode, _, entry = row
+    directory = at[:-len(ATTRIBUTES) - 1]
+    many = len(copies) > 1
+    under = "" if entry == path else f" under the entry {_spelled(entry)}"
+    where = (("on such a disk, whatever git is set to" if aside else
+              "on every platform, Linux and macOS included")
+             if CRLF_EVERYWHERE in written else
+             "wherever git writes them, as Git for Windows does by default "
+             "(`core.autocrlf=true`)")
+    lines = ", ".join(_copy_line(copy[len(directory) + 1:])
+                      for copy in copies)
+    end = (f"replace the symlink {_spelled(path)} in the source with a "
+           "regular file that ends" if mode == SYMLINK_MODE else
+           f"end {_spelled(path)} in the source")
+    return (
+        f"FINDING {NESTED_ATTRIBUTES}: the plan keeps {_spelled(path)} in "
+        f"the assembly root{under}, and git reads it after the root's own "
+        f"`{ATTRIBUTES}` for each path under {_spelled(directory + '/')}, so "
+        "its rules outrank the root's line-ending rule for the pinned "
+        f"{'copies' if many else 'copy'} "
+        f"{_first_and_more(copies, _spelled)}{aside}: a clone would check "
+        f"{'them' if many else 'it'} out with CRLF line endings {where}, and "
+        "the root's first `make bootstrap` would report shape-copy-drift on "
+        f"{'each' if many else 'it'}, after `execute` had said `adoption "
+        f"verified`. Send {_spelled(entry)} to a leg or `drop` it, or {end} "
+        f"with {'these lines, one per copy:' if many else 'the line'} "
+        f"{lines}, commit, and re-run `plan`.")
+
+
+def _outranking(asked: _AttributesProbe, fold: bool, landed: list[str],
+                root: dict, placed: dict) -> list[tuple[str, str]]:
+    """`(path, finding)` for each kept nested file that outranks the root's
+    rule for a copy landed at one of `landed`, asked of git on the disk
+    `fold` says. `root` is `_root_attributes`', and `placed` is
+    `{where git reads it: (row, its bytes)}`.
+
+    A file is named for a copy when, added to the root's files alone, it
+    makes a checkout write that copy with CRLF. Where no file alone does,
+    and two or more do it only together, each that changes what git says
+    of the copy is named."""
+    held = {at: data for at, (_, data) in placed.items()}
+    before = asked.ask(root, landed, fold)
+    after = asked.ask({**root, **held}, landed, fold)
+    outranked = [path for path in landed
+                 if checked_out_as(before[path]) == KEPT
+                 and checked_out_as(after[path]) != KEPT]
+    alone = {}
+    for at, data in held.items():
+        under = [path for path in outranked
+                 if path.startswith(at[:-len(ATTRIBUTES)])]
+        alone[at] = asked.ask({**root, at: data}, under, fold) if under else {}
+    breaks = {(at, path) for at, said in alone.items() for path in said
+              if checked_out_as(said[path]) != KEPT}
+    broken = {path for _, path in breaks}
+    found = []
+    for at, (row, _) in placed.items():
+        copies = [path for path in alone[at] if (at, path) in breaks
+                  or (path not in broken
+                      and alone[at][path] != before[path])]
+        if copies:
+            found.append((row[0], _nested_attributes_finding(
+                row, at, copies, [checked_out_as(after[path])
+                                  for path in copies],
+                _CASE_ASIDE if fold else "")))
+    return found
+
+
+def _nested_attributes_findings(plan: Plan, source: Source,
+                                tree: list) -> list[str]:
+    """A FINDING for each `.gitattributes` the plan keeps below the root
+    whose rules outrank the root's line-ending rule for a pinned copy (#530),
+    in the tree's order. A source that keeps none above a copy asks git
+    nothing, and adopts as it did."""
+    nested = _kept_nested_attributes(plan, tree)
+    if not nested:
+        return []
+    kept = _kept_in_root(plan.entries, tree)
+    probe = _SymlinkProbe(source.work_root)
+    questions = []
+    for fold in (False, True):
+        walks = _PlannedRoot(plan, source, tree, probe=probe,
+                             fold=fold).walks()
+        landings = _pinned_landings(walks)
+        landed = [where for _, where in landings]
+        placed = _placed_attributes(nested, landed, fold)
+        if not placed:
+            continue
+        root = _root_attributes(source, walks, _KeptTree(kept, fold), tree,
+                                [name for name, _ in landings])
+        # The shape's own `shape/.gitattributes` is written where the source
+        # keeps one only if nothing is there: `plan-root-blocks-shape-copy`
+        # names what is (#262), and it is not named again here.
+        placed = {at: (row, _blob_bytes(source.path, row[2]))
+                  for at, row in placed.items() if at not in root}
+        if placed:
+            questions.append((fold, landed, root, placed))
+    if not questions:
+        return []
+    found: dict[str, str] = {}
+    with _AttributesProbe() as asked:
+        for fold, landed, root, placed in questions:
+            for path, finding in _outranking(asked, fold, landed, root,
+                                             placed):
+                found.setdefault(path, finding)
+    return [found[row[0]] for row in nested if row[0] in found]
+
+
+# ---------------------------------------------------------------------------
+# The root's own `.gitattributes`, as `git add` stores it (#530, D5(a))
+# ---------------------------------------------------------------------------
+#
+# THE ONE FILE OF THE SOURCE'S THE SPLIT WRITES INTO (#471) is staged again
+# by the split's `git add -A`, and git stores it through its rules for it. A
+# blob the source committed with CRLF under `* text eol=lf`, `* text
+# eol=crlf` or `* eol=lf` was stored as LF, so the root held neither the
+# source's blob nor its bytes followed by the block, and the verification
+# ended `adopt-lost` after both legs existed (measured at 2423eaa2: lane 2's
+# D5(a) line on #530; `* ident` over a `$Id: deadbeef $` did the same).
+# `text=auto` leaves alone a file whose indexed blob already holds CRLF, so
+# a CRLF blob under it adopted, as an LF blob did under every rule.
+#
+# GIT IS ASKED, AS THE SPLIT ASKS IT (`_stored_as_written`). A throwaway
+# repository's index holds the source's blob at `.gitattributes`, as the
+# assembly's checkout does, so the check-in rules that read the index answer
+# as they do there; its work tree holds what the verification expects at the
+# root (`_land_the_eol_block`), the source's bytes followed by the block
+# (`_root_attributes`); and `git add` there stores those bytes or not. The
+# materializer appends the block to the checkout's bytes, and git's check-in
+# undoes what its checkout did to line endings, an `ident` or an encoding,
+# so the blob's own bytes get the same answer. UNLIKE THE NESTED QUESTION,
+# THIS MACHINE'S SETTINGS ARE READ: the split's `git add` runs here, with
+# this machine's config and attributes (`core.autocrlf`, `core.safecrlf`, a
+# `filter` driver, `core.attributesFile`), so only `_inherited_env` is taken
+# from them: no other repository, and no tree to read attributes from
+# (`GIT_ATTR_SOURCE`, `attr.tree`), of which the throwaway repository has
+# none. What `git add` refuses there -- `core.safecrlf=true` over such a
+# CRLF, or a `working-tree-encoding` the bytes are not in -- would stop the
+# split committing after both legs exist, and is found too, in git's words.
+#
+# A FINDING, as the nested one is: the fix is the source's, a commit of the
+# file as git stores it, and `execute` refuses it before any leg exists. A
+# root that keeps no `.gitattributes` of the source's, or keeps a symlink
+# there, which the split writes nothing into, asks git nothing. Another kept
+# file whose blob `git add` would re-encode fails the same way when git reads
+# it again; asking about each one needs a checkout of the whole source, and
+# is not done here.
+
+#: `check`'s finding, and the code of `execute`'s refusal, for the source's
+#: root `.gitattributes` that `git add` would not store as the split writes
+#: it (#530, D5(a)).
+REENCODED_ATTRIBUTES = "plan-attributes-reencoded"
+
+
+def _stored_as_written(blob: bytes, mode: str, written: bytes) -> str | None:
+    """None when this machine's `git add` stores `written` at the root's
+    `.gitattributes`, over an index that holds `blob` there with `mode`, as
+    exactly those bytes; else what it did: git's last line where it
+    refused, or "" where it stored other bytes. Asked in a throwaway
+    repository in the system's temporary directory, removed afterwards."""
+    scratch = Path(tempfile.mkdtemp(prefix="openreposhape-attributes-"))
+    env = _inherited_env()
+    # No fsmonitor daemon is started for a repository that is about to go.
+    git = ["-c", "core.fsmonitor=false"]
+    repository = scratch / "repository"
+
+    def raw_oid(data: bytes, name: str, *write: str) -> str:
+        """The oid of `data` as they are, no rule applied; `-w` stores it."""
+        (scratch / name).write_bytes(data)
+        return git_out([*git, "hash-object", *write, "--no-filters", "--",
+                        str(scratch / name)], cwd=repository, env=env)
+
+    try:
+        empty = scratch / "no-template"
+        empty.mkdir()
+        git_out(["init", "-q", f"--template={empty}", str(repository)],
+                cwd=scratch, env=env)
+        git_out([*git, "update-index", "--add", "--cacheinfo",
+                 f"{mode},{raw_oid(blob, 'held', '-w')},{ATTRIBUTES}"],
+                cwd=repository, env=env)
+        (repository / ATTRIBUTES).write_bytes(written)
+        added = subprocess.run(["git", *git, "add", "--", ATTRIBUTES],
+                               cwd=str(repository), env=env,
+                               capture_output=True, check=False)
+        if added.returncode:
+            said = added.stderr.decode(errors="replace").strip()
+            return said.splitlines()[-1] if said else \
+                f"exit {added.returncode}"
+        staged = git_out([*git, "ls-files", "-s", "--", ATTRIBUTES],
+                         cwd=repository, env=env).split()[1]
+        return None if staged == raw_oid(written, "wanted") else ""
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _reencoded_attributes_finding(said: str) -> str:
+    """`check`'s line for the root's `.gitattributes`, which this machine's
+    `git add` stores as other bytes (`said` empty) or refuses (`said`, in
+    git's words)."""
+    if said:
+        what = (f"refuses what the split writes there (git said "
+                f"{_spelled(said)}), so the split's own `git add` would fail, "
+                "after both legs exist.")
+    else:
+        what = ("would store other bytes there than the source's followed by "
+                "the block, as git does where its rules for the file make it "
+                "text and the blob holds CRLF line endings, or where an "
+                "`ident`, `working-tree-encoding` or `filter` rule reaches "
+                f"it. The verification would then report the source's "
+                f"`{ATTRIBUTES}` as `adopt-lost`, in no leg and not in the "
+                "root tree, after both legs exist.")
+    return (f"FINDING {REENCODED_ATTRIBUTES}: the plan keeps the source's "
+            f"`{ATTRIBUTES}` in the assembly root, where the split appends "
+            f"#471's block to it, and this machine's `git add` {what} Commit "
+            "the file in the source as git stores it (`git add --renormalize "
+            f"-- {ATTRIBUTES}`, then commit), or change the rule git applies "
+            "to it, and re-run `plan`.")
+
+
+def _reencoded_attributes_findings(plan: Plan, source: Source,
+                                   tree: list) -> list[str]:
+    """A FINDING where the plan keeps the source's own `.gitattributes` in
+    the root, which the split appends the block to, and this machine's `git
+    add` would not store what the split writes there as those bytes (#530,
+    D5(a)). A root that keeps none, or keeps a symlink there, asks git
+    nothing."""
+    disk = _KeptTree(_kept_in_root(plan.entries, tree), False)
+    row = disk.at(ATTRIBUTES)
+    if row is None or row[1] not in FILE_MODES:
+        return []
+    walks = _PlannedRoot(plan, source, tree,
+                         probe=_SymlinkProbe(source.work_root)).walks()
+    written = _root_attributes(source, walks, disk, tree,
+                               [name for name, _ in _pinned_landings(walks)])
+    if f"{COLLISION_DIR}/{ATTRIBUTES}" not in written:
+        return []
+    blobs = {path: oid for path, _, oid, _ in tree}
+    said = _stored_as_written(_blob_bytes(source.path, blobs[row[0]]),
+                              row[1], written[ATTRIBUTES])
+    return [] if said is None else [_reencoded_attributes_finding(said)]
 
 
 def cmd_check(args) -> int:
