@@ -68,7 +68,10 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            the source's own submodules kept on one leg with their
            `.gitmodules`, registered there and never in the root, each
            relative url naming the same repository from the leg as from the
-           source, no symlink kept in the root that the shape would write
+           source, and each url a leg keeps that names a place on this
+           machine's disk one where `git ls-remote` reaches a repository (a
+           url on a network is never asked, and a NOTE says so) (#418), no
+           symlink kept in the root that the shape would write
            one of its files, or that file's copy under `shape/`, through
            where it cannot (one that dangles, loops, or leads out of the
            root or into a leg, one that leads the copy onto something
@@ -106,6 +109,7 @@ any `leg:` is still null, and on every other finding `check` reports, before
 it has created a leg repository or pushed anything -- a source submodule's
 relative url resolved again from the leg remotes it is about to create, which
 under `--local-remote-dir` are not the GitHub ones `check` resolves from, and
+asked there whether it answers, and
 the place outside the assembly that a symlink kept at a path the shape writes
 leads to asked again of the disk, a climb from its own work directory.
 
@@ -4919,7 +4923,8 @@ def _kept_submodule_problems(kept: list, registered: Registrations,
 # commits the absolute url in the source or drops the submodule. Where both
 # name the same repository -- legs made in the source's own GitHub
 # organisation, or on disk beside the dependency -- nothing changes, and the
-# verification has nothing new to account for.
+# verification has nothing new to account for. Whether anything ANSWERS
+# there is #418's question, asked below of the leg's resolution.
 #
 # ASKED OF GIT. Each resolution is `git submodule init`'s, run in a scratch
 # repository whose `origin` is the remote in question: the code the
@@ -4949,6 +4954,15 @@ RELATIVE_URL_REMEDIATION = (
     "remotes it is about to create, before it creates any; under "
     "`--local-remote-dir` those are bare repositories on disk, where "
     "`check`'s `plan ok` settles nothing about it.")
+
+
+class _FromTheLeg(str):
+    """A FINDING about a RELATIVE url as git resolves it from a leg's
+    remote: #190's, and #418's of one that answers nothing there. Under
+    `--local-remote-dir` `execute` resolves it from the bare repositories it
+    would create, where `check` resolves it from GitHub's, so its refusal
+    says that the finding is its own (`_as_resolved_here`). A `str`, as
+    `InTheHistory` is, so that every reader takes it as the line it is."""
 
 
 class _Resolution:
@@ -4987,14 +5001,13 @@ class _Resolution:
                 else f"not at all ({self.said})")
 
 
-def _kept_relative_urls(entries: list, tree: list,
-                        registered: Registrations | str
-                        ) -> tuple[str | None, list[tuple[str, str, str]]]:
+def _kept_urls(entries: list, tree: list, registered: Registrations | str
+               ) -> tuple[str | None, list[tuple[str, str, str]]]:
     """`(leg, [(path, entry, url), ...])`: each submodule the plan keeps in
-    the leg its `.gitmodules` goes to, registered with a relative url, and
-    that leg. A submodule kept anywhere else, or not registered, is already
-    a finding of `submodule_plan_problems`; a dropped one is inert; and a
-    `.gitmodules` git cannot read has no url to read."""
+    the leg its `.gitmodules` goes to, registered with a url, in the tree's
+    order, and that leg. A submodule kept anywhere else, or not registered,
+    is already a finding of `submodule_plan_problems`; a dropped one is
+    inert; and a `.gitmodules` git cannot read has no url to read."""
     gitlinks = [path for path, mode, _, _ in tree if mode == GITLINK_MODE]
     if not gitlinks or isinstance(registered, str):
         return None, []
@@ -5002,8 +5015,16 @@ def _kept_relative_urls(entries: list, tree: list,
     leg = answered.get(GITMODULES, (None, None))[0]
     return leg, [(path, entry, registered.url(path)) for path, kept, entry
                  in _kept_in_a_leg(answered, gitlinks)
-                 if kept == leg and path in registered
-                 and RELATIVE_URL_RE.match(registered.url(path))]
+                 if kept == leg and path in registered]
+
+
+def _kept_relative_urls(entries: list, tree: list,
+                        registered: Registrations | str
+                        ) -> tuple[str | None, list[tuple[str, str, str]]]:
+    """`_kept_urls`, of the urls that are relative alone."""
+    leg, kept = _kept_urls(entries, tree, registered)
+    return leg, [(path, entry, url) for path, entry, url in kept
+                 if RELATIVE_URL_RE.match(url)]
 
 
 def _default_remote(source: Source) -> tuple[str, str, Path | None]:
@@ -5094,12 +5115,16 @@ def _resolution_of(scratch: Path, name: str,
 def _relative_url_findings(plan: Plan, source: Source, tree: list,
                            registered: Registrations | str,
                            local_remote_dir: Path | None
-                           ) -> tuple[list[str], list[str]]:
-    """`(findings, notes)` for the relative urls of the submodules the plan
-    keeps in a leg: a `plan-submodule-relative-url` FINDING for each that
-    git resolves to another repository from its leg than from the source,
-    or cannot resolve from one of them; and, when there is none of those,
-    the one NOTE `check` prints about what it could not know.
+                           ) -> tuple[list[str], list[str],
+                                      dict[str, tuple[str, str]]]:
+    """`(findings, notes, from_the_leg)` for the relative urls of the
+    submodules the plan keeps in a leg: a `plan-submodule-relative-url`
+    FINDING for each that git resolves to another repository from its leg
+    than from the source, or cannot resolve from one of them; when there is
+    none of those, the one NOTE `check` prints about what it could not know;
+    and `{path: (remote, url)}` for each url that names one repository from
+    both: the leg's remote, and the url git resolves from it, which #418
+    asks (`_unanswered_url_findings`).
 
     THE LEG'S REMOTE IS THE ONE `execute` WOULD CREATE: under
     `local_remote_dir`, the bare repository there; otherwise the GitHub
@@ -5112,28 +5137,29 @@ def _relative_url_findings(plan: Plan, source: Source, tree: list,
     --local-remote-dir`."""
     leg, kept = _kept_relative_urls(plan.entries, tree, registered)
     if not kept:
-        return [], []
+        return [], [], {}
     remote = _remote_urls(checked_value("org", plan.get("org")), plan.names(),
                           local_remote_dir, source)[leg]
     base, which, working_tree = _default_remote(source)
     urls = [url for _, _, url in kept]
-    found, alike = [], []
+    found, alike, from_the_leg = [], [], {}
     for (path, entry, url), here, there in zip(
             kept, _resolved(base, urls, working_tree),
             _resolved(remote, urls)):
         if here.same_as(there):
             alike.append(f"{_spelled(url)} of {_spelled(path)}, {there}")
+            from_the_leg[path] = (remote, there.url)
             continue
-        found.append(
+        found.append(_FromTheLeg(
             f"FINDING {RELATIVE_URL}: the submodule {_as_entry(path, entry)} "
             f"has leg: {leg}, and its url in the source's {GITMODULES} is the "
             f"relative {_spelled(url)}, which git resolves against the remote "
             "of the repository holding that file: from the source, at "
             f"{_spelled(redacted(base))} ({which}), {here}, and from the "
             f"{leg} leg, at {_spelled(remote)}, {there}; the assembly's "
-            "recursive clone resolves it from the leg")
+            "recursive clone resolves it from the leg"))
     if found or local_remote_dir is not None:
-        return found, []
+        return found, [], from_the_leg
     return [], [
         f"NOTE `check` resolved the relative url of each submodule the plan "
         f"keeps in the {leg} leg from that leg's GitHub remote, "
@@ -5141,7 +5167,214 @@ def _relative_url_findings(plan: Plan, source: Source, tree: list,
         f"as from the source: {'; '.join(alike)}. `execute "
         "--local-remote-dir` resolves it again from the bare repository it "
         "would create instead, and refuses there, before it creates any leg, "
-        "a url that names another repository."]
+        "a url that names another repository."], from_the_leg
+
+
+# ---------------------------------------------------------------------------
+# Whether the url of a kept submodule answers at all (#418)
+# ---------------------------------------------------------------------------
+#
+# `adoption verified` accounts for blobs, and the `NEXT:` it prints is `git
+# clone --recurse-submodules`, which clones each submodule a leg keeps from
+# its url, as the leg resolves it. Nothing asked whether anything answers
+# there. A dependency since moved or deleted, or a relative url that names
+# the same empty place from the leg as from the source -- which #190 above
+# takes as settled -- passed `plan`, `check` and `execute`, and that clone
+# then failed, as the source's own recursive clone already did: after both
+# leg repositories were made and the split was pushed.
+#
+# ASKED ON THIS MACHINE ALONE. Each url the plan keeps in a leg, as the leg
+# resolves it and as git here expands it (`url.<base>.insteadOf`, read by
+# `git ls-remote --get-url`, which contacts nothing), that names a
+# repository on this machine's disk -- an absolute path, or a `file://` url
+# with no host (`_on_this_disk`) -- is asked with `git ls-remote`, which
+# needs no clone, under `GIT_ALLOW_PROTOCOL=file`, so that git can reach
+# nothing else whatever it is configured to do. One that answers nothing is
+# a FINDING of `check` and a refusal of `execute` before any leg exists.
+# Under `--local-remote-dir` that is every relative url too, resolved from
+# the bare repositories `execute` would create, and the answer is certain
+# there. A url on a network is never asked: whether it answers can depend
+# on whose credentials ask, and neither command makes a network call to
+# find out, so `check` names each in a NOTE instead. A source whose kept
+# submodules all name a network starts no git process here.
+#
+# ONE FINDING PER CAUSE. A relative url that names another repository from
+# its leg, or that git cannot resolve from one side, is
+# `plan-submodule-relative-url` alone and is not asked: the fix that finding
+# names -- the absolute url committed in the source, or the submodule
+# dropped -- comes first, and `check` asks the url it leaves when it runs
+# again.
+
+URL_ANSWERS_NOTHING = "plan-submodule-url-answers-nothing"
+#: What a plan that keeps a submodule whose url answers nothing is told: by
+#: `check`, once after its findings, and by `execute`'s refusal.
+URL_ANSWERS_NOTHING_REMEDIATION = (
+    "Remediation for a submodule url that answers nothing: the assembly's "
+    "`git clone --recurse-submodules` clones each submodule a leg keeps from "
+    "its url, as the leg resolves it, and fails where no repository "
+    "answers, as the source's own recursive clone does. Commit a url that "
+    "names the submodule's repository in the source's `.gitmodules` and "
+    "re-run `plan`, or put that repository where the url names it, or "
+    "`drop` the submodule: its registration then stays behind in the leg, "
+    "inert. `check` and `execute` ask, with `git ls-remote`, only a url "
+    "that names a repository on this machine's disk; a relative one is "
+    "resolved from the leg's remote, which for `check` is on GitHub and for "
+    "`execute --local-remote-dir` is the bare repository it would create.")
+#: What `_answers` holds `git ls-remote` to: the disk, and no transport
+#: that could reach a network.
+ON_THIS_DISK_ONLY = {"GIT_ALLOW_PROTOCOL": "file"}
+#: A Windows drive at the start of a path `remote_local_path` names, which
+#: folds `\` to `/`: `C:` or `C:/...`.
+DRIVE_RE = re.compile(r"[A-Za-z]:(?:/|\Z)")
+
+
+def _on_this_disk(url: str) -> bool:
+    """Whether git on THIS machine opens `url` as a repository on its own
+    disk: an absolute path, or a `file://` url with no host
+    (`remote_local_path`). A drive only on Windows, where git reads `C:/` as
+    a drive; everywhere else it reads `C:` as the scp host `C`, which only a
+    network can answer. A path relative to wherever the clone is made, such
+    as `dependency`, is not one: nobody knows yet where that is. Nor, on any
+    platform, is a path that starts with two separators, which
+    `remote_local_path` spells `//server/share` for `\\\\server\\share`,
+    `//server/share` and `file:////server/share` alike: Windows opens it as
+    a share on another machine, over the network, with the credentials of
+    whoever asks, and on POSIX `\\\\server` is a name relative to the
+    clone."""
+    path = remote_local_path(url)
+    return path is not None and not path.startswith("//") and (
+        os.name == "nt" or DRIVE_RE.match(path) is None)
+
+
+def _answers(urls: list[str]) -> list[tuple[str, str | None]]:
+    """`(expanded, said)` for each of `urls`: the url as git here expands it
+    (`git ls-remote --get-url`, which contacts nothing) and, where that is
+    on this machine's disk, None when `git ls-remote` reaches a repository
+    there and the first line git said when it does not. An expansion that
+    leaves the disk is not asked, and its `said` is None.
+
+    Asked in a scratch repository made for the purpose, as `_resolved` asks
+    its questions, so that no repository's own config around this process
+    rewrites a url as the assembly's clone would not; and under
+    ON_THIS_DISK_ONLY, so that nothing a config could do sends git to a
+    network."""
+    scratch = Path(tempfile.mkdtemp(prefix="openreposhape-ask-"))
+    env = {**os.environ, **ON_THIS_DISK_ONLY}
+    try:
+        run(["git", "init", "-q", str(scratch)])
+        out = []
+        for url in urls:
+            got = subprocess.run(["git", "ls-remote", "--get-url", "--", url],
+                                 cwd=scratch, env=env, capture_output=True,
+                                 check=False)
+            expanded = ("" if got.returncode else
+                        _git_path(got.stdout.rstrip(b"\r\n"))) or url
+            if not _on_this_disk(expanded):
+                out.append((expanded, None))
+                continue
+            listed = subprocess.run(["git", "ls-remote", "--", url],
+                                    cwd=scratch, env=env, capture_output=True,
+                                    check=False)
+            out.append((expanded, None if not listed.returncode
+                        else _first_words(listed)))
+        return out
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _first_words(failed: subprocess.CompletedProcess) -> str:
+    """The first line git wrote to stderr, on one line, each character a
+    terminal would act on spelled as `_spelled` spells it; the exit code
+    when git wrote nothing."""
+    lines = [line for line in failed.stderr.decode(
+        "utf-8", "replace").splitlines() if line.strip()]
+    if not lines:
+        return f"`git ls-remote` exited {failed.returncode}"
+    return "".join(char if char.isprintable() else _spelled_character(char)
+                   for char in _one_line(lines[0]))
+
+
+def _unanswered_url_findings(plan: Plan, tree: list,
+                             registered: Registrations | str,
+                             from_the_leg: dict[str, tuple[str, str]],
+                             local_remote_dir: Path | None
+                             ) -> tuple[list[str], list[str]]:
+    """`(findings, notes)` for the url of each submodule the plan keeps in
+    the leg its `.gitmodules` goes to (`_kept_urls`), as that leg resolves
+    it: a `plan-submodule-url-answers-nothing` FINDING for each on this
+    machine's disk where `git ls-remote` reaches no repository, in the
+    tree's order, and the one NOTE `check` prints about those it did not
+    ask. `from_the_leg` is `_relative_url_findings`' own: an absolute url
+    is its own resolution, and a relative one not in it is that function's
+    finding and is not asked."""
+    leg, kept = _kept_urls(plan.entries, tree, registered)
+    candidates = []
+    for path, entry, url in kept:
+        if not RELATIVE_URL_RE.match(url):
+            candidates.append((path, entry, url, None, url))
+        elif path in from_the_leg:
+            candidates.append((path, entry, url, *from_the_leg[path]))
+    on_disk = [each for each in candidates if _on_this_disk(each[4])]
+    answers = dict(zip([each[0] for each in on_disk],
+                       _answers([each[4] for each in on_disk]))) \
+        if on_disk else {}
+    found, unasked = [], []
+    for path, entry, url, remote, there in candidates:
+        expanded, said = answers.get(path, (there, None))
+        if not _on_this_disk(expanded):
+            unasked.append(_unasked(path, url, remote, there, expanded))
+        elif said is not None:
+            found.append(_answers_nothing(path, entry, leg, url, remote,
+                                          there, said))
+    if not unasked or local_remote_dir is not None:
+        return found, []
+    return found, [
+        "NOTE `check` did not ask whether the url of each submodule the "
+        f"plan keeps in the {leg} leg answers, as that leg resolves it: "
+        f"{'; '.join(unasked)}. It asks, with `git ls-remote`, only a url "
+        "that names a repository on this machine's disk, and finds one that "
+        f"answers nothing as `{URL_ANSWERS_NOTHING}`; whether a url on a "
+        "network answers can depend on whose credentials ask, and neither "
+        "`check` nor `execute` makes a network call to find out. The "
+        "assembly's `git clone --recurse-submodules` asks, after the legs "
+        "are made, and fails on one that answers nothing, as the source's "
+        "own does."]
+
+
+def _unasked(path: str, url: str, remote: str | None, there: str,
+             expanded: str) -> str:
+    """One url the NOTE names: the url, the submodule, where the leg
+    resolves it when it is relative, and where git here sends it when a
+    config rewrites it off the disk. Each url `redacted`: an absolute one
+    may carry a token, as a source's remote may (#190)."""
+    named = f"{_spelled(redacted(url))} of {_spelled(path)}"
+    if remote is not None:
+        named += f", to {_spelled(redacted(there))}"
+    if expanded != there:
+        named += (", which git here rewrites to "
+                  f"{_spelled(redacted(expanded))}")
+    return named
+
+
+def _answers_nothing(path: str, entry: str, leg: str, url: str,
+                     remote: str | None, there: str, said: str) -> str:
+    """The FINDING for one url that answers nothing: `remote` is the leg's
+    remote it was resolved from when it is relative, and None when it is
+    absolute; `said` is what git said. A relative one is `_FromTheLeg`."""
+    if remote is None:
+        named = f"is {_spelled(redacted(url))}"
+    else:
+        named = (f"is the relative {_spelled(url)}, which git resolves from "
+                 f"the {leg} leg, at {_spelled(redacted(remote))}, to "
+                 f"{_spelled(redacted(there))}, the repository it names "
+                 "from the source")
+    finding = (
+        f"FINDING {URL_ANSWERS_NOTHING}: the submodule "
+        f"{_as_entry(path, entry)} has leg: {leg}, and its url in the "
+        f"source's {GITMODULES} {named}, where `git ls-remote` reaches no "
+        f"repository ({said}): the assembly's recursive clone fails on it "
+        f"in the {leg} leg, as the source's own recursive clone does")
+    return finding if remote is None else _FromTheLeg(finding)
 
 
 def _submodule_findings(plan: Plan, source: Source, tree: list,
@@ -5149,20 +5382,27 @@ def _submodule_findings(plan: Plan, source: Source, tree: list,
                         ) -> tuple[tuple[list[str], list[str]],
                                    tuple[list[str], list[str]], list[str]]:
     """`(findings, remediation)` for `submodule_plan_problems`, one FINDING
-    each and SUBMODULE_REMEDIATION when there is one; the same for each
-    `_relative_url_findings` one, with RELATIVE_URL_REMEDIATION; and the
-    NOTEs `check` prints. A remediation is printed ONCE after every finding.
-    The two come back apart because `_entry_findings` lists the relative
-    urls last, after the values #255 finds. `check` is where the person is
-    told to fix the plan, so it says how, in the words `execute`'s refusal
-    would use one step later."""
+    each and SUBMODULE_REMEDIATION when there is one; the same for the urls
+    of the submodules a leg keeps, each `_relative_url_findings` one and
+    then each `_unanswered_url_findings` one (#418), with
+    RELATIVE_URL_REMEDIATION and URL_ANSWERS_NOTHING_REMEDIATION for those
+    there are; and the NOTEs `check` prints. A remediation is printed ONCE
+    after every finding. The two come back apart because `_entry_findings`
+    lists the urls last, after the values #255 finds. `check` is where the
+    person is told to fix the plan, so it says how, in the words `execute`'s
+    refusal would use one step later."""
     registered = source.registered_submodules(tree)
     found = [f"FINDING {code}: {detail}" for code, detail
              in submodule_plan_problems(plan.entries, tree, registered)]
-    moved, notes = _relative_url_findings(plan, source, tree, registered,
-                                          local_remote_dir)
+    moved, notes, from_the_leg = _relative_url_findings(
+        plan, source, tree, registered, local_remote_dir)
+    unanswered, unasked = _unanswered_url_findings(
+        plan, tree, registered, from_the_leg, local_remote_dir)
     return ((found, [SUBMODULE_REMEDIATION] if found else []),
-            (moved, [RELATIVE_URL_REMEDIATION] if moved else []), notes)
+            (moved + unanswered,
+             ([RELATIVE_URL_REMEDIATION] if moved else [])
+             + ([URL_ANSWERS_NOTHING_REMEDIATION] if unanswered else [])),
+            notes + unasked)
 
 
 #: The answers that never extract an entry into a leg. A path answered
@@ -5973,7 +6213,9 @@ def _entry_findings(plan: Plan, source: Source,
     `checked_value`'s alphabet and otherwise asked of git (#420, #520), then
     a tracking branch that is no branch of the source (#479), then each
     relative url of a kept submodule that names another repository from its
-    leg (#190), and last each plan value `execute` reads late and
+    leg (#190), then each url of a kept submodule that names a repository on
+    this machine's disk where none answers (#418), and last each plan value
+    `execute` reads late and
     `_plan_field_findings` asks about (#293, #294).
 
     ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
@@ -9184,7 +9426,8 @@ def _refuse_what_check_finds(plan: Plan, source: Source,
     `local_remote_dir` that is a bare repository `check` cannot know of: such
     a finding is this run's own, and the refusal says so. A url `check` finds
     from GitHub's remotes may name the same repository from these, and one it
-    passes may not.
+    passes may not; and one these resolve to a repository on this disk is
+    asked whether it answers (#418), which a url on GitHub never is.
     """
     findings, remediation, _ = _entry_findings(plan, source, local_remote_dir)
     if not findings:
@@ -9213,10 +9456,11 @@ def _as_resolved_here(findings: list[str],
                       local_remote_dir: Path | None) -> str:
     """What the refusal's first line adds when a finding in it is not one
     `check` prints: a relative url resolved from `local_remote_dir`'s
-    remotes, where `check` resolves it from GitHub's. Nothing otherwise."""
+    remotes, where `check` resolves it from GitHub's -- #190's finding, or
+    #418's of one that answers nothing there (`_FromTheLeg`). Nothing
+    otherwise."""
     if local_remote_dir is None or not any(
-            finding.startswith(f"FINDING {RELATIVE_URL}:")
-            for finding in findings):
+            isinstance(finding, _FromTheLeg) for finding in findings):
         return ""
     return (", but with each relative submodule url resolved from the leg "
             "remotes this run would create under --local-remote-dir, where "
