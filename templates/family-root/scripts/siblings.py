@@ -233,23 +233,37 @@ def submodule_urls(root: Path) -> dict[str, str]:
     from the manifest instead would clone a different remote from the one this
     holder is pinned against, silently, in exactly the estates that do not use
     the default spelling.
+
+    AND READ AS GIT READS IT (#690): `git config -z --list`, the reading
+    `validate-family.py`'s `_gitmodules_sections` makes and #668 gives the
+    doctor's `members` row, so the two tools name one url for one member
+    (#146). Each record ends in a NUL and is the key, a newline and the
+    value; a key holds no newline and a value may, so a record is split at
+    its FIRST one. The plain listing this read was split by `str.splitlines`
+    and at the first `=`: a url holding NEL, U+2028, U+2029, VT, FF or
+    U+001C to U+001E, which git keeps whole, was cut there (`<remotes>/caf`
+    of `caf<NEL>e/IRRS.git`), and a section named `members/a=b` gave no url,
+    so its member was cloned from the `repository:` guess. A section's NAME
+    is all of its key between `submodule.` and the last dot, so a name
+    holding a space, a dot, a quote or an `=` is read whole; only its `path`
+    and `url` count, and the later value wins, as git reads the file. A
+    byte that is not UTF-8 is still replaced (#432).
     """
     path = root / ".gitmodules"
     if not path.is_file():
         return {}
-    proc = subprocess.run(["git", "config", "-f", str(path), "--list"],
-                          capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", check=False)
+    proc = subprocess.run(["git", "config", "-z", "-f", str(path), "--list"],
+                          capture_output=True, check=False)
     if proc.returncode != 0:
         return {}
     paths: dict[str, str] = {}
     urls: dict[str, str] = {}
-    for line in proc.stdout.splitlines():
-        key, _, value = line.partition("=")
-        parts = key.split(".")
-        if len(parts) < 3 or parts[0] != "submodule":
+    for record in proc.stdout.decode("utf-8", "replace").split("\0"):
+        key, _, value = record.partition("\n")
+        section, _, field = key.rpartition(".")
+        if not section.startswith("submodule."):
             continue
-        name, field = ".".join(parts[1:-1]), parts[-1]
+        name = section[len("submodule."):]
         if field == "path":
             paths[name] = value
         elif field == "url":
@@ -526,9 +540,47 @@ def run_member_bootstrap(path: Path, sibling: Sibling) -> None:
                            "legs may not be placed")
 
 
+def argument_fault(value: str) -> str | None:
+    """The character that stops `value` being an argument to a command, or
+    None (#690): #455's rule, as `make bootstrap` asks it of a branch.
+
+    `place` hands a member's `project:` (as the clone's path) and its url
+    to `git clone` as argv, and `subprocess` cannot give a command a NUL
+    (`ValueError: embedded null byte`) or a lone surrogate the system cannot
+    encode (`UnicodeEncodeError`): `project: "IR\\ud83dRS"` ended `make
+    siblings` in a traceback at the clone, and the members after it were
+    never placed. A surrogate that is ONE BYTE of a name (POSIX spells a
+    name that is not UTF-8 with U+DC80 to U+DCFF) is handed on as that
+    byte, as before; whether one is, is `os.fsencode`'s own answer.
+    """
+    for char in value:
+        if char == "\x00":
+            return "U+0000, a NUL"
+        if "\ud800" <= char <= "\udfff" and _bytes_for(char) != 1:
+            return f"U+{ord(char):04X}, a lone surrogate"
+    return None
+
+
+def _bytes_for(char: str) -> int:
+    """How many bytes `os.fsencode` writes for `char`; 0 when it cannot."""
+    try:
+        return len(os.fsencode(char))
+    except UnicodeEncodeError:
+        return 0
+
+
 def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
           token: str, dry_run: bool) -> Sibling:
-    """Clone or fetch ONE member beside the holder. Never moves a HEAD."""
+    """Clone or fetch ONE member beside the holder. Never moves a HEAD.
+
+    A ROW NO COMMAND CAN BE GIVEN IS A FINDING, BEFORE ANYTHING (#690): a
+    `project:` or url holding a NUL or a lone surrogate (`argument_fault`)
+    is never made a path or handed to git, the dry run says so alike, and
+    the members after it are still placed. And a `tracking_branch:` that
+    names only a TAG of the member's remote is cloned DETACHED at it, which
+    `git clone --branch` does with a tag, so the line after the clone says
+    the name is no branch of that remote.
+    """
     project = str(row.get("project") or "?")
     repository = str(row.get("repository") or "")
     target = root.parent / project
@@ -538,6 +590,17 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
     # (#454), so the lines below print `who`, `at` and `src`, and the raw
     # `project`, `target` and `url` stay what the paths and git are given.
     who, at, src = spelled(project), spelled(target), spelled(url)
+
+    for named, value in ((f"its `project:` in {MANIFEST}", project),
+                         (f"its url {src} ({source})", url)):
+        fault = argument_fault(value)
+        if fault is not None:
+            sibling.state = "NOT AN ARGUMENT"
+            sibling.finding = (
+                f"{who}: {named} holds {fault}, which no command can be "
+                "given as an argument, so nothing was cloned or fetched for "
+                "this member: git was never run with it.")
+            return sibling
 
     if target == root:
         # A MEMBER NAMED AFTER ITS OWN FAMILY. `<Family>/<Family>` is the
@@ -588,6 +651,10 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
                 + scrub((proc.stderr + proc.stdout).strip(), token))
             return sibling
         sibling.state = "cloned"
+        if branch and branch_of(target) == "detached":
+            print(f"  [{who}] {spelled(branch)} is not a branch of {src} but "
+                  "a tag, which git clone checks out DETACHED: this clone is "
+                  "on no branch")
         run_member_bootstrap(target, sibling)
         sibling.branch = branch_of(target)
         return sibling
@@ -935,6 +1002,23 @@ def family_link(root: Path, family: str) -> Path | None:
     return None
 
 
+def staging_path(parent: Path, name: str) -> Path:
+    """`<parent>/<name>`, or the first `<parent>/<name>.<n>` (n = 1, 2, ...)
+    at which nothing is: a name one step of the printed move passes through
+    (#690).
+
+    `os.path.lexists`, which follows no link: a link to nothing is
+    something there, and so is the name in another case on a disk that
+    ignores case. `mv` onto what is there does not make the name: it moves
+    the holder INTO a folder, or fails on a link or a file.
+    """
+    staged, number = parent / name, 0
+    while os.path.lexists(staged):
+        number += 1
+        staged = parent / f"{name}.{number}"
+    return staged
+
+
 def parent_folder_warning(root: Path, family: str) -> str | None:
     """The WARNING and the exact `mv`, or None when the layout is right.
 
@@ -964,6 +1048,18 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
     check (`family_link`): it is the family folder, reached through a link.
     One that leads elsewhere does not, and its move runs as typed: the
     holder moves into the link's target, where the link then passes.
+
+    AND NOTHING ALREADY THERE SENDS IT ASTRAY (#690). A staging name was
+    printed whether or not something held it: with `<Family>.holder` a
+    directory already, `mv` put the holder INSIDE it, and the three lines
+    all exited 0 and left it at `<Family>/<Family>/<Family>`, one level too
+    deep. Each staging name is now the first of `<Family>.holder`,
+    `<Family>.holder.1`, `<Family>.holder.2` ... (`.folder` alike) at which
+    nothing is (`staging_path`). A LINK TO NOTHING named `<Family>` is not
+    a folder to move into: `mkdir -p` fails on it, after the holder's first
+    move has run. It is named, to be moved aside first, and the moves under
+    it are the ones that run once it is gone. The prose names the holder,
+    the folders and the family spelled (#454); the commands stay as typed.
     """
     folder = root.parent
     if folder.name == family or family_link(root, family) is not None:
@@ -971,12 +1067,12 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
     lines = [
         f"WARNING the holder's parent folder is {folder.name or str(folder)!r}"
         f", not {family!r}.",
-        f"        {root} should sit in a plain folder named {family}, beside "
-        "the members'",
+        f"        {spelled(root)} should sit in a plain folder named "
+        f"{spelled(family)}, beside the members'",
         "        working clones — that is the layout `make siblings` places. "
         "So",
         "        NOTHING WAS CLONED: a member cloned now would land in "
-        f"{folder}, and",
+        f"{spelled(folder)}, and",
         "        the re-run after the move would clone it a second time, "
         "beside the",
         "        moved holder.",
@@ -997,7 +1093,9 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
         # `<parent>/<Family>` IS the holder itself and the move needs a
         # staging name — `mv A A/A` cannot be spelled in one command. At a
         # filesystem or drive root it is the holder even though it exists.
-        staged = folder.parent / f"{family}.holder"
+        # A LINK TO NOTHING named <Family> is here too: `exists` follows it,
+        # and these are the moves once it is moved aside (said below).
+        staged = staging_path(folder.parent, f"{family}.holder")
         steps = [["mv", root, staged], ["mkdir", "-p", wanted],
                  ["mv", staged, wanted / family]]
     elif (folder.name.casefold() == family.casefold()
@@ -1009,10 +1107,16 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
         # differ by disk at one edge: a LINK spelled in another case
         # (`inkrouter` to `real-x`) stops on Linux, with a staged move that
         # runs, and passes as the family's link on a disk that ignores case.
-        staged = folder.parent / f"{family}.folder"
+        staged = staging_path(folder.parent, f"{family}.folder")
         steps = [["mv", folder, staged], ["mv", staged, wanted]]
     else:
         steps = [["mkdir", "-p", wanted], ["mv", root, wanted / family]]
+    if os.path.lexists(wanted) and not os.path.exists(wanted):
+        lines += [f"        First move {spelled(wanted)} aside: it is a link "
+                  "to nothing,",
+                  "        named after the family, and in the way of the "
+                  "move. Then:",
+                  ""]
     # EVERY PATH QUOTED (#486): under `my work/` a bare `mv` moved nothing
     # and pasted as four arguments. Quoted for the POSIX shell `mv` and
     # `mkdir -p` are commands of, as the sentence above says, by the standard
