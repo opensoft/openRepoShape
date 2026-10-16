@@ -58,17 +58,20 @@ posix_only = pytest.mark.skipif(
 #: A code file that names a spec directory, the way a harness names
 #: `contracts/`.
 READER = "SPEC = '{}'\n"
-SPEC_PATH = "spec"
-CODE_PATH = "code"
 
 
 def follow_up(hit: str, spec_dir: str) -> str:
-    """The line `plan` writes for a code file that names `spec_dir`: the
-    wording main has always written, so an ordinary name is unchanged."""
-    return (f"{CODE_PATH}/{hit} names `{spec_dir}`, which moves to the spec "
-            f"leg: it must read across the assembly root — "
-            f"`../{SPEC_PATH}/{spec_dir}` relative to `{CODE_PATH}/` — or "
-            "take the path from the environment")
+    """The line `plan` writes for a code file that names `spec_dir`. It names
+    the plan's two mount KEYS and no value of either: `plan` writes it once,
+    and `check`, the split commit's message and the pull request's body read
+    it back after the hand edit of `legs.spec_path` or `legs.code_path` that
+    the tool's own remediations ask for (#600). `hit` is the file's path in
+    the code leg, as the source has it."""
+    return (f"{hit} in the code leg names `{spec_dir}`, which moves to the "
+            "spec leg: it must read across the assembly root — from the code "
+            "leg, where the plan's `legs.code_path` mounts it, to "
+            f"`{spec_dir}` in the spec leg, where `legs.spec_path` mounts it "
+            "— or take the path from the environment")
 
 
 def planned(source: Path, base: Path) -> dict:
@@ -195,8 +198,7 @@ def test_each_file_that_names_a_spec_directory_is_a_follow_up(
     assert {e.path: e.leg for e in entries}[spec_dir] == "spec"
     assert all(rows[entry] == "code" for entry in code), rows
     found = [follow_up(hit, spec_dir) for hit in hits]
-    assert adopter.cross_leg_references(opened, entries, SPEC_PATH,
-                                        CODE_PATH) == found
+    assert adopter.cross_leg_references(opened, entries) == found
     if spec_dir in ASKED:
         assert_asked(plan, spec_dir)
         assert named(plan) == []
@@ -240,7 +242,7 @@ def test_a_spec_directory_named_like_the_pager_option_runs_nothing(adopter,
 
     opened, entries = ruled(adopter, source, tmp_path)
     assert {e.path: e.leg for e in entries}[spec_dir] == "spec"
-    said = adopter.cross_leg_references(opened, entries, SPEC_PATH, CODE_PATH)
+    said = adopter.cross_leg_references(opened, entries)
 
     assert sorted(os.listdir(source)) == before, "git ran the pager"
     assert said == [follow_up("src/reader.py", spec_dir)]
@@ -303,12 +305,11 @@ def test_a_grep_that_fails_is_said_and_never_read_as_no_file(adopter,
     source = adopter.Source.open(str(path), tmp_path / "work")
     entries = adopter.walk(adopter.PathPolicy.load(adopter.PATH_POLICY),
                            [(name, size) for name, _, _, size in source.tree()])
-    assert adopter.cross_leg_references(source, entries, SPEC_PATH,
-                                        CODE_PATH) \
+    assert adopter.cross_leg_references(source, entries) \
         == [follow_up("src/reader.py", "notes/")]
 
     missing = adopter.Source(source.path, None, source.branch, "f" * 40)
-    said = adopter.cross_leg_references(missing, entries, SPEC_PATH, CODE_PATH)
+    said = adopter.cross_leg_references(missing, entries)
 
     # git's own words differ between versions; its exit and its `fatal:` do
     # not, and the sentence around them is this tool's.
@@ -352,7 +353,7 @@ def test_a_spec_directory_with_a_line_feed_is_left_to_a_human(adopter,
                            [(name, size) for name, _, _, size in source.tree()])
     assert {e.path: e.leg for e in entries}["a\nb/"] == "spec"
 
-    said = adopter.cross_leg_references(source, entries, SPEC_PATH, CODE_PATH)
+    said = adopter.cross_leg_references(source, entries)
 
     assert said == [
         "git could not search the files moving to the code leg for `a\\nb/` "

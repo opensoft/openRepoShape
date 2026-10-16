@@ -2515,6 +2515,25 @@ def shell_word(value, posix: bool = False) -> str:
     return "'" + text.replace("'", "'\\''") + "'"
 
 
+#: What the `switch -c` line of the family block says under it (#647): where
+#: an earlier try left that branch in the holder, `switch -c` fails `fatal: a
+#: branch named '<branch>' already exists` (exit 128). Another name comes
+#: first, because a new branch starts where the holder stands now; going back
+#: is right only where the old branch holds work not merged yet. IN WORDS, NOT
+#: A SECOND COMMAND, so no line changes and none needs quoting. THE SAME
+#: SENTENCE as `scripts/family.py`'s and the holder's `validate-family.py`'s
+#: `BRANCH_LEFT` (#607), word for word: this file carries its own copy, as it
+#: does of `shell_word`, because it runs before any checkout of the standard
+#: exists, and `tests/test_branch_left_bump_leg_setup.py` holds them to one
+#: answer.
+BRANCH_LEFT = ("If `git switch -c` says that branch already exists, an "
+               "earlier act left it: give the branch another name, which "
+               "starts it where the holder stands, or, only if that branch "
+               "holds work not merged yet, the same command with `switch` "
+               "in place of `switch -c` goes back to it and keeps every "
+               "commit on it.")
+
+
 def family_next_command(project: str, org: str, landing: Landing) -> None:
     """The LAST line of the next commands: who records the membership.
 
@@ -2533,12 +2552,15 @@ def family_next_command(project: str, org: str, landing: Landing) -> None:
     A BRANCH FIRST, AND EVERY PATH ONE WORD (#487, #486). `add` refuses to
     commit onto the holder's tracking branch, so the `git switch -c` that
     makes the branch it suggests comes before it; and a holder under a
-    folder with a space in it must reach `--family-root` whole.
+    folder with a space in it must reach `--family-root` whole. Under the
+    `switch -c`, one comment line says what to do where the holder has that
+    branch already (`BRANCH_LEFT`, #647).
     """
     holder = shell_word(landing.holder)
     say("    git -C %s switch -c family/add-%s" % (holder, project.lower()))
     say("                           # a branch first: `add` refuses the")
     say("                           #   holder's tracking branch")
+    say("                           # " + BRANCH_LEFT)
     say("    %s scripts/family.py add --family-root %s --member %s"
         % (PYTHON_CMD, holder, shell_word("%s/%s" % (org, project))))
     say("                           # from a checkout of openRepoShape. The")
