@@ -10311,8 +10311,10 @@ def test_an_exported_pythonpath_does_not_reach_a_template_validator(
     # read the real finding. Since `-S` no child imports the decoy's
     # `sitecustomize`, so that case no longer shows here; the probe in
     # `test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given`
-    # holds it, beside the root as well as inside it. What this loop still
-    # holds is that no row quotes the decoy or says it exited 86.
+    # holds it, beside the root as well as inside it. Under `-S` this loop
+    # cannot fire. It is kept as a tripwire for a future removal of `-S`,
+    # which `test_run_validator_starts_every_child_with_no_site` (in
+    # `tests/test_doctor_validator_site.py`) is the test that holds.
     reached = [name for name, other in rows.items()
                if "DECOY" in other["reason"]
                or "(exit 86)" in other["reason"]
@@ -10349,8 +10351,8 @@ def test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given(
     caller sees it, and it holds the callers which pass no `pythonpath` by
     where its probe lies: beside the root, as the standard's own naming and
     preflight scripts do, as well as inside it. Those scripts need nothing
-    from the variable, so only a probe like this one, or (b)'s decoy, can see
-    that they have none.
+    from the variable, so only a probe like this one can see that they have
+    none (the decoy of (b) could before `-S`, #342).
     """
     module = doctor_module(standard)
     if exported is None:
