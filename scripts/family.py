@@ -5305,8 +5305,9 @@ def _print_trailers(trailers: list[str]) -> None:
 def _on_a_remote_branch(member: Path, commit: str) -> bool:
     """Whether `commit` is reachable from one of the member's remote-tracking
     branches, `refs/remotes/origin/*` (#613): the refs `bump`'s `git fetch
-    origin` has just updated, or, when that fetch failed, the ones the mount
-    already had.
+    origin` has just updated, every branch of `origin` whatever refspec the
+    mount carries and none `origin` has deleted since (#686), or, when that
+    fetch failed, the ones the mount already had.
 
     THE QUESTION `bump-leg.py`'s `on_a_remote_branch` ASKS OF A LEG, in the
     same git words, `for-each-ref --contains` over `refs/remotes/origin/`,
@@ -5326,6 +5327,63 @@ def _on_a_remote_branch(member: Path, commit: str) -> bool:
                     cwd=member))
 
 
+def _has_origin(member: Path) -> bool:
+    """Whether the member's mount has a remote named `origin`, the only one
+    `bump` fetches and asks (#686). Asked once its fetch has failed: a mount
+    whose `origin` was renamed (to `upstream`, say) or removed fails that
+    fetch with no network or credential at fault, and was told to fix one.
+
+    `git remote get-url origin` exits 2 for "No such remote" and for nothing
+    else, so that exit is the answer "none"; any other failure is git's,
+    raised as `CommandFailed` and quoted, exit 2, before anything is written.
+    """
+    try:
+        run(["git", "remote", "get-url", "origin"], cwd=member)
+    except CommandFailed as exc:
+        if exc.code == 2:
+            return False
+        raise
+    return True
+
+
+def _origin_tag_reaches(member: Path, commit: str) -> bool:
+    """Whether a tag of the member's `origin` reaches `commit` (#686): a tag
+    the mount has whose commit contains it, which `origin` lists under the
+    same id. Asked only for the refusal's words, after a fetch that worked,
+    of a commit no branch of `origin` reaches; the rule stays branches.
+
+    WHY IT IS ASKED. Such a commit was refused with "A pin the rest of the
+    world cannot fetch", which is untrue of one a tag of the remote holds: a
+    fresh clone brings every tag, so it holds the commit, and a fetch by sha
+    works. The mount's own tags cannot say it alone: a tag made inside the
+    mount is one only the mount has, so `git ls-remote --tags` asks `origin`
+    which of them it has, by object id, which names a tag's target for
+    ever. Only when a tag of the mount contains the commit is the remote
+    asked, so a commit made in the mount and never tagged asks nothing more.
+    A listing that fails is no answer, and the words stay the plain ones.
+    """
+    held = set(run(["git", "for-each-ref", "--contains", commit,
+                    "--format=%(objectname)", "refs/tags/"],
+                   cwd=member).lower().split())
+    if not held:
+        return False
+    try:
+        listed = run(["git", "ls-remote", "--tags", "--refs", "origin"],
+                     cwd=member)
+    except CommandFailed:
+        return False
+    return any(line.split("\t", 1)[0].lower() in held
+               for line in listed.splitlines())
+
+
+def _origin_back(path: str, repository: str | None) -> str:
+    """What a mount with no `origin` is told to do (#686): give it back, and
+    why nothing else will do."""
+    return (f"give {path} back a remote named `origin`, for {repository}, "
+            "and run the same command again: `bump` fetches the member's "
+            "branches from `origin` and asks no other remote")
+
+
 def _checked_on_a_remote_branch(member: Path, path: str,
                                 repository: str | None, typed: str,
                                 commit: str, fetched: bool) -> str:
@@ -5342,12 +5400,40 @@ def _checked_on_a_remote_branch(member: Path, path: str,
     remote-tracking refs the fetch did not refresh, so a commit pushed since
     may be refused here, and the network or the credential is the thing to
     fix before believing it.
+
+    TWO STATES THOSE WORDS WERE UNTRUE OF (#686), each said as what it is,
+    with the rule and the code kept. A commit a TAG of the remote reaches
+    (`_origin_tag_reaches`) is refused as one no branch reaches, which it
+    is, with the way out, a push to a branch, and without "a pin the rest of
+    the world cannot fetch", which a fresh clone disproves. A mount with NO
+    `origin` (`_has_origin`) failed its fetch with no network at fault: the
+    words say it has none, that whether a branch reaches the commit is
+    therefore not known, and to give the mount its `origin` back, since
+    `bump` asks no other remote, where they said the commit was on no branch
+    and to fix the network or the credential.
     """
     if _on_a_remote_branch(member, commit):
         return commit
     named = (f"--to {commit}" if typed == commit else
              f"--to {typed} is an annotated tag, and the commit it names, "
              f"{commit},")
+    if not fetched and not _has_origin(member):
+        raise Refusal(
+            "member-to-local-only",
+            f"{named} is in the member's own object store, in {path}, but "
+            f"{path} has no remote named `origin`, so whether a branch of "
+            f"{repository} reaches it is not known",
+            f"Remediation: {_origin_back(path, repository)}. If the commit "
+            f"is not pushed yet, push it to a branch of {repository} first.")
+    if fetched and _origin_tag_reaches(member, commit):
+        raise Refusal(
+            "member-to-local-only",
+            f"{named} is in the member's own object store, in {path}, and a "
+            f"tag of {repository} reaches it, but no branch of {repository} "
+            "does",
+            f"Remediation: push it to a branch of {repository} and run the "
+            "same command again: `bump` pins only a commit a branch of the "
+            "member's remote reaches, and a tag is not a branch.")
     stale = ("" if fetched else
              f" The fetch of {path} FAILED, as the note above says, so this "
              "was answered from stale remote-tracking refs: fix the network "
@@ -5415,7 +5501,10 @@ def _checked_to_names_a_commit(member: Path, path: str, row: dict,
     refs the mount already has, as `bump-leg.py` answers it, and a bump is
     never refused for being offline: a commit those refs contain is pinned,
     after the note that the fetch failed, and one they do not is refused with
-    the sentence that says the answer came from stale refs.
+    the sentence that says the answer came from stale refs. A mount with no
+    `origin` at all is told that instead, in this refusal and in
+    `member-to-unknown`'s (#686): its fetch failed with no network or
+    credential at fault.
 
     A TAG WHOSE COMMIT IS ON NO BRANCH is refused too, and so is that
     commit, while `add --at` pins the same tag's id. Where the mount does
@@ -5430,7 +5519,9 @@ def _checked_to_names_a_commit(member: Path, path: str, row: dict,
     its twins the same two ways, as `bump-leg-commit-not-on-remote` and
     `bump-leg-commit-local-only`, and fetching every tag would write refs the
     person's member did not have, which is a new act; reachability from a
-    tag is not the question either tool asks.
+    tag is not the question either tool asks. Where a tag of the remote
+    reaches the commit, the refusal says so (#686), and still refuses: that
+    tag is asked for the words, never for the rule.
 
     SO A PIN `add --at` MADE FROM SUCH A TAG cannot be named by `bump --to`
     again: its clone brought the tag, so the mount holds the commit, and a
@@ -5457,6 +5548,16 @@ def _checked_to_names_a_commit(member: Path, path: str, row: dict,
             "fetch is a family the rest of the world cannot bootstrap. If it "
             "is pushed, check the commit: it belongs to the member's "
             "ASSEMBLY ROOT, not to one of its legs.")
+    if kind is None and not _has_origin(member):
+        raise Refusal(
+            "member-to-unknown",
+            f"--to {commit} is not a commit {path} holds, and {path} has no "
+            "remote named `origin` to fetch it from, so whether a branch of "
+            f"{repository} reaches it is not known",
+            f"Remediation: push it first, to a branch of {repository}, if it "
+            f"is not pushed yet; {_origin_back(path, repository)}. A pin the "
+            "rest of the world cannot fetch is a family the rest of the world "
+            "cannot bootstrap.")
     if kind is None:
         raise Refusal(
             "member-to-unknown",
@@ -5753,14 +5854,30 @@ def cmd_bump(args) -> int:
                                   commit)
     branch = None if args.dry_run else _checked_branch(family, "bump",
                                                          suggested)
+    # EVERY BRANCH OF `origin`, BY AN EXPLICIT REFSPEC (#686), as
+    # `bump-leg.py` fetches a leg: a plain `git fetch origin` obeys the
+    # mount's own `remote.origin.fetch`, and one narrowed by hand (a
+    # single-branch clone, or an `origin` with a URL and no refspec) left no
+    # remote-tracking ref for the branch that holds `--to`, so a pushed
+    # commit was refused `member-to-local-only` as on no branch.
+    # AND NO BRANCH `origin` NO LONGER HAS (#686; #459's line 105, on Brett
+    # Heap's word "prune the fetch the tool already makes"): a branch deleted
+    # on the remote after the last fetch kept its remote-tracking ref, which
+    # passed the reachability check for a commit nothing on the remote may
+    # keep. `--prune` drops only refs the refspec writes, under
+    # `refs/remotes/origin/`; `--no-prune-tags` keeps a `pruneTags` setting
+    # from reaching the mount's tags. No local branch or tag is touched.
     fetched = True
     try:
-        run(["git", "fetch", "-q", "origin"], cwd=member)
+        run(["git", "fetch", "-q", "--prune", "--no-prune-tags", "origin",
+             "+refs/heads/*:refs/remotes/origin/*"], cwd=member)
     except CommandFailed:
         fetched = False
-        print(f"  note: could not fetch {path} from its origin; the commit "
-              "must already be in its object store and on a branch of its "
-              "remote as last fetched", file=sys.stderr)
+        why = (" from its origin" if _has_origin(member) else
+               ": it has no remote named `origin`")
+        print(f"  note: could not fetch {path}{why}; the commit must already "
+              "be in its object store and on a branch of its remote as last "
+              "fetched", file=sys.stderr)
     # WHAT `--to` NAMES IS ASKED OF THE FETCHED OBJECTS (#405, #541), before
     # the dry run leaves and before the checkout. From here on `commit` is
     # the one it returns, in both runs: an annotated tag's own id is peeled
