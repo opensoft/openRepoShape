@@ -26,6 +26,7 @@ THE FIXTURES ARE `test_shape_doctor`'s, imported rather than rebuilt.
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 from pathlib import Path
@@ -34,8 +35,8 @@ import pytest
 
 from conftest import git, run_script
 from test_shape_doctor import (  # noqa: F401
-    DOCTOR, FAMILY_MEMBER, commit_all, doctor, holder, member_beside,
-    rows_of, standard,
+    DOCTOR, FAMILY_MEMBER, commit_all, doctor, holder, holder_with_slot,
+    member_beside, rows_of, standard,
 )
 
 #: The characters #673 names, each one a terminal acts on: ESC starts an
@@ -169,3 +170,107 @@ def test_a_member_path_is_spelled_in_the_rows_finding(standard, holder,
     row = printed_row(result.stdout)
     assert "\x1b" not in row, row
     assert f"members/{FAMILY_MEMBER}\\x1b[31m: not populated" in row, row
+
+
+# --- the rest of what the row quotes (#673, the review on #705) -------------
+
+#: The four, in one name, and as the escapes a double-quoted YAML scalar
+#: reads them from (`\x1b`, `\r`, `\x85` and `\u202e`, which
+#: `repo_shape.parse_yaml` reads).
+CONTROLS = "".join(ESCAPES)
+IN_YAML = CONTROLS.encode("unicode_escape").decode("ascii")
+#: The member's `project:`, in the tests that give it the four.
+PROJECT = f"IR{CONTROLS}RS"
+PROJECT_LINE = (f"  - project: {FAMILY_MEMBER}\n",
+                f'  - project: "IR{IN_YAML}RS"\n')
+
+#: A Windows file name cannot hold a control character.
+POSIX_NAMES = pytest.mark.skipif(
+    os.name == "nt",
+    reason="a Windows file name cannot hold a control character")
+
+
+def family_yaml_edited(root: Path, *edits: tuple[str, str]) -> None:
+    """Each `(old, new)` made in `root`'s `family.yaml`, and committed."""
+    manifest = root / "family.yaml"
+    text = manifest.read_text(encoding="utf-8")
+    for old, new in edits:
+        assert text.count(old) == 1, (old, text)
+        text = text.replace(old, new)
+    manifest.write_text(text, encoding="utf-8")
+    commit_all(root, "Edit family.yaml")
+
+
+def members_row(standard: Path, root: Path) -> str:
+    """The printed `members` row, with no traceback and no raw control."""
+    result = doctor(standard, root)
+    assert "Traceback" not in result.stderr, result.stderr
+    row = printed_row(result.stdout)
+    assert [char for char in ESCAPES if char in row] == [], row
+    return row
+
+
+@POSIX_NAMES
+def test_a_project_name_is_spelled_wherever_the_row_names_it(
+        standard, holder, tmp_path):
+    """A member `project:` holding the four, with no 40-hex pin and a folder
+    of files at `../<Project>`: the red row's finding names the project,
+    and its sentence about the folder names the project and the directory,
+    each with the escapes."""
+    root = holder_with_slot(holder, tmp_path, "nothing")
+    text = (root / "family.yaml").read_text(encoding="utf-8")
+    family_yaml_edited(root, PROJECT_LINE,
+                       (text[text.index("    pin:\n"):], ""))
+    beside = root.parent / PROJECT
+    beside.mkdir()
+    (beside / "notes.txt").write_text("somebody's\n", encoding="utf-8")
+    row = members_row(standard, root)
+    assert f"{escaped(PROJECT)}: the row carries no 40-hex" in row, row
+    assert (f"{escaped(PROJECT)}: "
+            f"{escaped(str(root.resolve().parent / PROJECT))} is neither a "
+            "git clone nor an empty folder") in row, row
+
+
+def test_the_placed_member_and_the_members_folder_are_spelled(
+        standard, holder, tmp_path):
+    """The same project with nothing beside the holder, and a `members_dir:`
+    holding the four: the green note names both with the escapes."""
+    root = holder_with_slot(holder, tmp_path, "nothing")
+    family_yaml_edited(root, PROJECT_LINE,
+                       ("members_dir: members\n",
+                        f'members_dir: "mem{IN_YAML}"\n'))
+    row = members_row(standard, root)
+    assert (f"no working clone beside the holder for {escaped(PROJECT)} "
+            "(") in row, row
+    assert f"the pinned copy under mem{escaped(CONTROLS)}/ is" in row, row
+
+
+@POSIX_NAMES
+def test_a_member_path_on_a_branch_is_spelled(standard, holder, tmp_path):
+    """A member `path:` holding the four that leads, through a link, to the
+    pinned copy, which `family.py add` left on a branch: the green note
+    names the path with the escapes."""
+    root = holder_with_slot(holder, tmp_path, "nothing")
+    path = f"members/{FAMILY_MEMBER}{CONTROLS}"
+    family_yaml_edited(root, (f"    path: members/{FAMILY_MEMBER}\n",
+                              f'    path: "members/{FAMILY_MEMBER}'
+                              f'{IN_YAML}"\n'))
+    (root / path).symlink_to(FAMILY_MEMBER, target_is_directory=True)
+    row = members_row(standard, root)
+    assert f"on a BRANCH rather than detached: {escaped(path)} (" in row, \
+        row
+
+
+def test_an_unborn_branch_is_spelled(standard, holder, tmp_path):
+    """The pinned copy's HEAD naming a branch with no commit, whose name
+    holds NEL and U+202E (git refuses ESC and CR in a branch name): the red
+    row's finding names it with the escapes."""
+    root = holder_with_slot(holder, tmp_path, "nothing")
+    mount = root / "members" / FAMILY_MEMBER
+    gitdir = git("rev-parse", "--absolute-git-dir", cwd=mount).stdout
+    branch = "unborn\x85\N{RIGHT-TO-LEFT OVERRIDE}"
+    (Path(gitdir.strip()) / "HEAD").write_bytes(
+        f"ref: refs/heads/{branch}\n".encode("utf-8"))
+    row = members_row(standard, root)
+    assert (f"HEAD names the branch {escaped(branch)}, which has no "
+            "commit") in row, row

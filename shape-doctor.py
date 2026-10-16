@@ -466,7 +466,7 @@ NOT_A_ROOT = "none"
 #: The manifest FILENAME for each kind -- distinct from `PROJECT`/`FAMILY`
 #: above, which are the `kind:` a manifest DECLARES, not what the file is
 #: called. `Context.__init__`, `check_naming`, `manifest_candidates`,
-#: `is_this_member` and the way-in and what-is-here probes all read a root by
+#: `working_clone` and the way-in and what-is-here probes all read a root by
 #: this name, so it is spelled once for the five of them.
 PROJECT_MANIFEST = "project.yaml"
 FAMILY_MANIFEST = "family.yaml"
@@ -6911,8 +6911,13 @@ def detached(path: Path, git_dir: Path | None = None) -> bool | None:
     return proc.returncode == 1
 
 
-def is_this_member(sibling: Path, row: dict) -> bool:
-    """Does the directory beside the holder CLAIM to be this member?
+def is_this_member(manifest: object, row: dict) -> bool:
+    """Does the `project.yaml` of the clone beside the holder, as
+    `Context._read` gave it, CLAIM to be this member?
+
+    READ ONCE, BY `working_clone`, which asks `verify_sibling`'s `id`
+    question of the same reading first, and asks this only of a directory
+    with a `.git` of its own (#669).
 
     `scripts/siblings.py::verify_sibling` asks this before it will touch a
     directory, and for the same reason: a repository that happens to sit at
@@ -6927,9 +6932,6 @@ def is_this_member(sibling: Path, row: dict) -> bool:
     repository carries exactly this manifest and is still not the working
     clone. `working_clone` below puts the two back together (#146).
     """
-    if not (sibling / ".git").exists():
-        return False
-    manifest = Context._read(sibling / PROJECT_MANIFEST)
     if not isinstance(manifest, dict):
         return False
     if manifest.get("kind") != "project-manifest":
@@ -7196,9 +7198,33 @@ def working_clone(sibling: Path, row: dict,
     if (isinstance(manifest, dict)
             and str(manifest.get("id")) != str(row.get("id"))):
         return "wrong-project", None
-    if not is_this_member(sibling, row):
+    if not is_this_member(manifest, row):
         return "unidentified", None
     return "working-clone", None
+
+
+def unclonable(sibling: Path) -> str | None:
+    """What stands at `sibling`, a path with no `.git` of its own, that
+    nothing can be cloned into: `files` (a folder with something in it),
+    `file` (anything that is not a folder) or `unlistable` (a folder this
+    process cannot list). None for nothing at all, or an empty folder.
+
+    A FOLDER THAT CANNOT BE LISTED IS NOT EMPTY (#669). A directory that
+    can be entered and not listed (mode `0311`, or `711`, which is common
+    for another user's directory) raised `PermissionError` out of
+    `iterdir`, and the `members` row became a FINDING that the check could
+    not be run, so a COMPLIANT holder read DRIFTED, exit 1. Nobody can say
+    it is empty, and `git clone` refuses a folder it cannot read, so it is
+    a slot nothing is cloned into.
+    """
+    try:
+        if not sibling.exists():
+            return None
+        if not sibling.is_dir():
+            return "file"
+        return "files" if any(sibling.iterdir()) else None
+    except OSError:
+        return "unlistable"
 
 
 def sibling_slot(root: Path, sibling: Path, row: dict,
@@ -7206,23 +7232,30 @@ def sibling_slot(root: Path, sibling: Path, row: dict,
     """`(what stands at ../<Project>, the origin found there when it is
     another remote's)`, in `siblings.py::place`'s order (#669).
 
-    The holder itself (`is-the-holder`), then a folder with files and no
-    `.git` (`not-a-clone`), then nothing or an empty folder (`absent`, the
-    only slot `make siblings` clones into), and then a clone, which
-    `working_clone` answers. This RESTATES `place`'s order, as
+    The holder itself (`is-the-holder`), then a path nothing can be cloned
+    into (`not-a-clone`, `unclonable`), then nothing or an empty folder
+    (`absent`, the only slot `make siblings` clones into), and then a clone,
+    which `working_clone` answers. This RESTATES `place`'s order, as
     `working_clone` restates `verify_sibling`'s questions (#146), and not
     the parent-folder rule `make siblings` asks before either, which the row
-    only names. A FILE at the path is `not-a-clone` too: nothing can be
-    cloned into it.
+    only names.
+
+    A FILE, OR A FOLDER THAT CANNOT BE LISTED OR ENTERED, IS `not-a-clone`
+    TOO: nothing can be cloned into it. `make siblings` itself ends in a
+    traceback on each today (`siblings.py:558`, #735), so the row says what
+    is there and nothing of what `make siblings` does with it
+    (`beside_sentence`). A folder that cannot be entered cannot be asked
+    for its `.git` either, so that question's `OSError` reads "no `.git`".
     """
     if sibling == root:
         return "is-the-holder", None
-    if (sibling / ".git").exists():
+    try:
+        present = (sibling / ".git").exists()
+    except OSError:
+        present = False
+    if present:
         return working_clone(sibling, row, remote)
-    if sibling.exists() and (not sibling.is_dir()
-                             or any(sibling.iterdir())):
-        return "not-a-clone", None
-    return "absent", None
+    return ("not-a-clone" if unclonable(sibling) else "absent"), None
 
 
 def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
@@ -7351,10 +7384,17 @@ BESIDE_THE_HOLDER = {
                     "NOT A CLONE"),
     "wrong-origin": ("", "WRONG ORIGIN"),
     "wrong-project": ("is a clone of the member's remote whose project.yaml "
-                      "declares another id", "WRONG PROJECT"),
+                      "and the family's row do not record the same id",
+                      "WRONG PROJECT"),
     "unidentified": ("is a clone of the member's remote with no "
                      "project.yaml that says it is this member", ""),
 }
+
+#: What stands at a `not-a-clone` slot `make siblings` cannot read today, as
+#: `unclonable` names it: it ends in a traceback on each (#735), so the row
+#: says what is there and no word of what `make siblings` does with it.
+UNREADABLE_BESIDE = {"file": "is a file, not a folder",
+                     "unlistable": "is a folder that cannot be listed"}
 
 
 def beside_sentence(ctx: Context, entry: dict) -> str:
@@ -7367,17 +7407,26 @@ def beside_sentence(ctx: Context, entry: dict) -> str:
     origin and the mount url are a manifest's, a disk's and git's text, and
     an ESC or a CR in one reached the terminal as the control it is.
     `--json` keeps them raw: `json.dumps` escapes them.
+
+    A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone` with no
+    word from `make siblings`, which ends in a traceback on it today (#735):
+    the sentence stops at what stands there (`UNREADABLE_BESIDE`).
     """
-    found, word = BESIDE_THE_HOLDER[entry["sibling"]]
-    if entry["sibling"] == "wrong-origin":
+    state = entry["sibling"]
+    where = ctx.root.parent / entry["project"]
+    named = f"{spelled(entry['project'])}: {spelled(where)}"
+    found, word = BESIDE_THE_HOLDER[state]
+    how = unclonable(where) if state == "not-a-clone" else None
+    if how in UNREADABLE_BESIDE:
+        return (f"{named} {UNREADABLE_BESIDE[how]}, so it is not counted as "
+                "its working clone")
+    if state == "wrong-origin":
         found = (f"is a clone of {spelled(entry['other_origin'])}, not of "
                  f"{spelled(entry['mounted_from'])}")
     does = (f"calls the same directory {word} and leaves it exactly as it is"
             if word else "fetches it as the member, and nothing else")
-    return (f"{spelled(entry['project'])}: "
-            f"{spelled(ctx.root.parent / entry['project'])} {found}, so it "
-            "is not counted as its working clone (`make siblings`, from a "
-            f"holder in {FAMILY_FOLDER}, {does})")
+    return (f"{named} {found}, so it is not counted as its working clone "
+            f"(`make siblings`, from a holder in {FAMILY_FOLDER}, {does})")
 
 
 def members_verdict(ctx: Context, detail: dict, members_dir: str,

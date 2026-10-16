@@ -3750,7 +3750,8 @@ SLOT_SAYS = {
     "absent": PLACES_NOTE,
     "wrong-origin": STRANGER_NOTE,
     "wrong-project": ("is a clone of the member's remote whose project.yaml "
-                      "declares another id, " + NOT_COUNTED
+                      "and the family's row do not record the same id, "
+                      + NOT_COUNTED
                       + "calls the same directory WRONG PROJECT and leaves "
                         "it exactly as it is)"),
     "unidentified": ("is a clone of the member's remote with no "
@@ -3758,6 +3759,18 @@ SLOT_SAYS = {
                      + NOT_COUNTED
                      + "fetches it as the member, and nothing else)"),
     "working-clone": "each with a working clone beside the holder",
+}
+
+#: What the row says instead of a `not-a-clone` slot `make siblings` ends in
+#: a traceback on today (#735): what is there, and nothing of what `make
+#: siblings` does with it.
+UNREADABLE_SAYS = {
+    "file": "is a file, not a folder, so it is not counted as its working "
+            "clone",
+    "unlistable": "is a folder that cannot be listed, so it is not counted "
+                  "as its working clone",
+    "unenterable": "is a folder that cannot be listed, so it is not counted "
+                   "as its working clone",
 }
 
 #: The state the holder's own `scripts/siblings.py --dry-run` prints in its
@@ -3773,7 +3786,17 @@ DRY_RUN_SAYS = {
     "working-clone": "present, would fetch",
 }
 
-#: What is put at `../IRRS`, and the state the row records for it.
+#: A folder with a file in it whose mode then hides what is in it: one that
+#: can be entered and not listed (`711` is common for another user's
+#: directory), and one that can be neither.
+LOCKED = {"unlistable": 0o311, "unenterable": 0o000}
+LOCKED_HOLDS = pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
+    reason="a mode hides a folder's contents only on POSIX, from a user "
+           "who is not root")
+
+#: What is put at `../IRRS`, and the state the row records for it, for both
+#: tests below.
 SLOTS = [
     pytest.param("holder", "is-the-holder", id="the-holder-itself"),
     pytest.param("files", "not-a-clone", id="a-folder-with-files"),
@@ -3781,6 +3804,10 @@ SLOTS = [
     pytest.param("empty", "absent", id="an-empty-folder"),
     pytest.param("another-remote", "wrong-origin",
                  id="the-member-from-another-remote"),
+    # `verify_sibling` asks the origin BEFORE the id, so a clone from another
+    # remote that declares another id is WRONG ORIGIN, not WRONG PROJECT.
+    pytest.param("another-remote-and-id", "wrong-origin",
+                 id="another-id-from-another-remote"),
     pytest.param("another-repository", "wrong-origin",
                  id="another-repository"),
     pytest.param("another-id", "wrong-project",
@@ -3790,6 +3817,10 @@ SLOTS = [
     pytest.param("clone", "working-clone", id="the-working-clone"),
 ]
 
+#: A file at `../IRRS`, which `make siblings` ends in a traceback on today
+#: (#735).
+A_FILE = ("file", "not-a-clone")
+
 
 def holder_with_slot(holder: dict, tmp_path: Path, slot: str) -> Path:
     """A holder in its family folder, `<tmp>/InkRouter/InkRouter`, with
@@ -3798,26 +3829,29 @@ def holder_with_slot(holder: dict, tmp_path: Path, slot: str) -> Path:
     `holder` puts the holder itself at `../IRRS`, so the member's slot IS
     the holder, as for a member named after its own family. Every clone is
     made from the url the holder mounts the member from, as `member_beside`
-    makes one, and then changed.
+    makes one, and then changed. A `LOCKED` slot is a folder with a file in
+    it, and its mode is the test's to take (`locked`).
     """
     folder = tmp_path / FAMILY_NAME
     folder.mkdir()
     root = folder / (FAMILY_MEMBER if slot == "holder" else FAMILY_NAME)
     shutil.copytree(holder["root"], root, symlinks=True)
     beside = folder / FAMILY_MEMBER
-    if slot in ("files", "empty", "another-repository"):
+    if slot in ("files", "empty", "another-repository", *LOCKED):
         beside.mkdir()
-    if slot == "files":
+    if slot in ("files", *LOCKED):
         (beside / "notes.txt").write_text("somebody's\n", encoding="utf-8")
+    elif slot == "file":
+        beside.write_text("somebody's\n", encoding="utf-8")
     elif slot == "another-repository":
         git("init", "-q", "-b", "main", ".", cwd=beside)
-    elif slot in ("another-remote", "another-id", "no-manifest", "clone"):
+    elif slot not in ("holder", "nothing", "empty"):
         cloned_just_pushed(holder["base"] / "remotes" / f"{FAMILY_MEMBER}.git",
                            beside, recurse=False)
-    if slot == "another-remote":
+    if slot in ("another-remote", "another-remote-and-id"):
         git("remote", "set-url", "origin",
             str(holder["base"] / "remotes" / f"{FAMILY_NAME}.git"), cwd=beside)
-    elif slot == "another-id":
+    if slot in ("another-id", "another-remote-and-id"):
         manifest = beside / "project.yaml"
         manifest.write_text(manifest.read_text(encoding="utf-8").replace(
             'id: "irrs"', 'id: "somethingelse"'), encoding="utf-8")
@@ -3826,21 +3860,47 @@ def holder_with_slot(holder: dict, tmp_path: Path, slot: str) -> Path:
     return root
 
 
-@pytest.mark.parametrize("slot, state", SLOTS)
+def locked(request, path: Path, slot: str) -> None:
+    """`path` given `LOCKED[slot]`'s mode, and its own back when the test
+    ends, so the basetemp can be removed."""
+    if slot in LOCKED:
+        path.chmod(LOCKED[slot])
+        request.addfinalizer(lambda: path.chmod(0o755))
+
+
+@pytest.mark.parametrize("slot, state", [
+    *SLOTS,
+    pytest.param(*A_FILE, id="a-file"),
+    pytest.param("unlistable", "not-a-clone", id="a-folder-it-cannot-list",
+                 marks=LOCKED_HOLDS),
+    pytest.param("unenterable", "not-a-clone",
+                 id="a-folder-it-cannot-enter", marks=LOCKED_HOLDS),
+])
 def test_the_row_says_what_make_siblings_does_with_each_slot(
-        standard, holder, tmp_path, slot, state):
+        standard, holder, tmp_path, request, slot, state):
     """#669: ONE ROW PER SLOT STATE. `--json` carries the state as
     `sibling`, so a caller need not parse the sentence; the sentence says,
     of this member alone, what `make siblings` does with the directory, and
     only an absent or empty slot is in the `places them` note. Every state
     is still `ok` and `COMPLIANT`: where somebody keeps a checkout is the
-    workstation's layout, and `without_working_clone` keeps its meaning."""
+    workstation's layout, and `without_working_clone` keeps its meaning.
+
+    A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone`, and the
+    row says nothing of `make siblings` there, which ends in a traceback on
+    it today (#735). The folder was the review's MUST on #705: `iterdir`'s
+    `PermissionError` made the row a FINDING and the holder DRIFTED, exit
+    1, where main says COMPLIANT, exit 0."""
     root = holder_with_slot(holder, tmp_path, slot)
+    locked(request, root.parent / FAMILY_MEMBER, slot)
     result = doctor(standard, root, "--json")
     row = rows_of(result)["members"]
     assert row["detail"]["members"][0]["sibling"] == state, row
-    assert SLOT_SAYS[state] in row["reason"], row["reason"]
+    assert UNREADABLE_SAYS.get(slot, SLOT_SAYS[state]) in row["reason"], \
+        row["reason"]
     assert (PLACES_NOTE in row["reason"]) is (state == "absent"), \
+        row["reason"]
+    assert ("`make siblings`" in row["reason"]) is (
+        slot not in UNREADABLE_SAYS and state != "working-clone"), \
         row["reason"]
     assert (row["detail"]["without_working_clone"] == []) is \
         (state == "working-clone"), row
@@ -3848,7 +3908,13 @@ def test_the_row_says_what_make_siblings_does_with_each_slot(
     assert json.loads(result.stdout)["verdict"] == "COMPLIANT", result.stdout
 
 
-@pytest.mark.parametrize("slot, state", SLOTS)
+@pytest.mark.parametrize("slot, state", [
+    *SLOTS,
+    pytest.param(*A_FILE, id="a-file", marks=pytest.mark.xfail(
+        strict=True, raises=AssertionError,
+        reason="#735: `siblings.py:558` raises NotADirectoryError on a "
+               "file, so `make siblings` ends in a traceback")),
+])
 def test_make_siblings_dry_run_gives_the_rows_word_for_each_slot(
         standard, holder, tmp_path, slot, state):
     """#669: THE AGREEMENT. The holder's own `scripts/siblings.py
@@ -3857,7 +3923,8 @@ def test_make_siblings_dry_run_gives_the_rows_word_for_each_slot(
     directory, `would clone` where the row says it places it, and `present,
     would fetch` where it fetches it as the member. The row restates
     `place`'s order, and this is what keeps the two tools answering
-    together about one directory (#146)."""
+    together about one directory (#146). A FILE is held to it too, as a
+    strict xfail until #735 makes `make siblings` answer NOT A CLONE."""
     root = holder_with_slot(holder, tmp_path, slot)
     entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
         "members"][0]
