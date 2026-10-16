@@ -535,10 +535,10 @@ SOURCE_NAMES = [
 NO_SUCH_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 #: A `git` that is not on this machine: it answers every command with the
-#: bytes beside it on stderr and exit 128. A real git replaces a control
-#: character in what it echoes (2.43 does, with `?`) and passes a line break
-#: through, so only a stub holds the rest to the library, whatever git the
-#: machine has.
+#: bytes beside it on stderr and exit 128. git 2.43 replaces an ESC, a CR
+#: and a BEL in what it echoes with `?`, and passes a line break and a C1
+#: control (U+0080 to U+009F) through, so only a stub holds the rest to the
+#: library, whatever git the machine has.
 STUB_GIT = pytest.mark.skipif(
     os.name == "nt", reason="the stub git is a `sh` script")
 

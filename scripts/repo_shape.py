@@ -916,12 +916,14 @@ def git_out(args: list[str], cwd: Path, binary: bool = False,
     reads (`invalid gitfile format: <cwd>/.git`, `not a git repository:
     <gitdir>`, `detected dubious ownership in repository at '<cwd>'`) and
     passes a line break through, so a folder named with a line break, then
-    `WARNING forged-line: ...`, began a line the tool never printed; a git
-    that does not replace a control character (2.43 does, with `?`) hands
-    an ESC, a CR or a BEL to the terminal as well. A line break git itself
-    printed between two lines of its message is `\\n` here, because it
-    cannot be told from a path's. Printable text, UTF-8 included, is
-    unchanged. `args`, which the caller wrote, are named as they were.
+    `WARNING forged-line: ...`, began a line the tool never printed; git
+    2.43 replaces an ESC, a CR or a BEL that it echoes with `?` but passes
+    a line break and a C1 control (U+0080 to U+009F) through, and another
+    git may replace nothing, so everything git printed is spelled. A line
+    break git itself printed between two lines of its message is `\\n`
+    here, because it cannot be told from a path's. Printable text, UTF-8
+    included, is unchanged. `args`, which the caller wrote, are named as
+    they were.
     """
     proc = subprocess.run(
         ["git", *args], cwd=str(cwd), capture_output=True, check=False,
