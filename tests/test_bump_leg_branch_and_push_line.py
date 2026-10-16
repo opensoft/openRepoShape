@@ -129,21 +129,28 @@ def test_a_tag_named_like_the_tracking_branch_does_not_let_the_bump_onto_it(
     assert "heads/main" not in dry.stdout
 
 
-def test_a_head_on_a_tag_ref_is_no_branch_to_bump_on(project, scaffolded,
-                                                     advanced):
-    """`symbolic-ref` lets HEAD name `refs/tags/<t>`, and `--short` read it
-    as the branch `<t>`: the bump committed THROUGH it, which moved the tag,
-    and printed `push -u origin x`. A ref outside `refs/heads/` is no
-    branch: refused as a root on no branch is, with the tag where it was."""
-    git("tag", "x", cwd=project)
-    tagged = head_of(project, "refs/tags/x")
-    git("symbolic-ref", "HEAD", "refs/tags/x", cwd=project)
+@pytest.mark.parametrize("ref", ["refs/tags/release-1",
+                                 "refs/remotes/origin/main"])
+def test_a_head_on_a_ref_outside_refs_heads_is_no_branch_to_bump_on(
+        project, scaffolded, advanced, ref):
+    """`symbolic-ref` lets HEAD name `refs/tags/<t>` or a remote-tracking
+    ref, and `--short` read either as a branch (`release-1`, `origin/main`):
+    the bump committed THROUGH it, which moved the ref, and printed a push
+    of it. A ref outside `refs/heads/` is no branch: refused as a root on no
+    branch is, with the ref where it was. Neither name is 11 characters
+    long, as `refs/heads/` is, so the refusal is the guard's and not an
+    empty name's (rv672's R1)."""
+    if ref.startswith("refs/tags/"):
+        git("tag", ref[len("refs/tags/"):], cwd=project)
+    was = head_of(project, ref)
+    assert was, f"fixture: {ref} exists"
+    git("symbolic-ref", "HEAD", ref, cwd=project)
 
     result = bump(project, scaffolded, advanced)
     assert result.returncode == 2, result.stderr + result.stdout
     assert "REFUSED bump-leg-root-detached" in result.stderr, result.stderr
     assert result.stdout == ""
-    assert head_of(project, "refs/tags/x") == tagged, "the tag did not move"
+    assert head_of(project, ref) == was, f"{ref} did not move"
 
 
 # --- the push, by its full ref -----------------------------------------------
@@ -225,6 +232,29 @@ def test_a_branch_beside_a_tag_of_its_name_is_pushed_by_its_full_ref(
     assert upstream_of(root, "v1") == "refs/remotes/origin/v1"
 
 
+def test_a_branch_ending_in_a_no_break_space_is_pushed_as_itself(
+        make_root, scaffolded, advanced):
+    """`feat<U+00A0>` beside a branch `feat`: `strip()` took the no-break
+    space off the name it read, so the bump committed on `feat<U+00A0>` and
+    the line pushed `feat`, the other branch, at the commit before the bump
+    (rv672's S2). Only git's newline is taken off now: the line names the
+    branch the bump committed on, and run, pushes that commit."""
+    root, remote = make_root("plain")
+    name = "feat\u00a0"
+    git("branch", "feat", cwd=root)
+    git("checkout", "-q", "-b", name, cwd=root)
+
+    result = bump(root, scaffolded, advanced)
+    assert result.returncode == 0, result.stderr + result.stdout
+    line = next_line(result.stdout)
+    assert words(line) == push_argv(root, name)
+
+    pushed = run_the_line(line, root.parent)
+    assert pushed.returncode == 0, pushed.stderr + pushed.stdout
+    assert head_of(remote, f"refs/heads/{name}") == head_of(root)
+    assert head_of(remote, "refs/heads/feat") == "", "`feat` was not pushed"
+
+
 # --- the dirty root, spelled -------------------------------------------------
 
 #: `(a name, as `bump-leg-root-dirty` lists it under core.quotePath=false)`.
@@ -272,7 +302,7 @@ def test_a_dirty_name_holding_controls_is_listed_spelled(
     result = bump(project, scaffolded, advanced, *extra)
     assert result.returncode == 2, result.stderr + result.stdout
     assert "REFUSED bump-leg-root-dirty" in result.stderr, result.stderr
-    assert f"    M .github/workflows/{shown}" in result.stderr.split("\n"), (
+    assert f"     M .github/workflows/{shown}" in result.stderr.split("\n"), (
         result.stderr)
     assert raw_controls(name, result.stderr) == [], ascii(result.stderr)
 
@@ -285,8 +315,31 @@ def test_under_the_default_quoting_git_names_the_file_itself(
     git("config", "--unset", "core.quotePath", cwd=project)
     result = bump(project, scaffolded, advanced)
     assert result.returncode == 2, result.stderr + result.stdout
-    assert ('    M ".github/workflows/caf\\302\\233\\342\\200\\256evil.yml"'
+    assert ('     M ".github/workflows/caf\\302\\233\\342\\200\\256evil.yml"'
             in result.stderr.splitlines()), result.stderr
+
+
+def test_every_dirty_line_keeps_gits_status_columns(project, scaffolded,
+                                                    advanced):
+    """`strip()` took the leading space off the FIRST line only, so its
+    ` M` (changed in the working tree) read as `M` (changed in the index)
+    and stood one column left of the line under it (rv672's N1). Every line
+    is git's own now, after the same indent."""
+    branched(project)
+    workflows = project / ".github" / "workflows"
+    for name in ("one.yml", "two.yml"):
+        (workflows / name).write_bytes(b"on: [push]\n")
+    git("add", "--", ".github/workflows", cwd=project)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Two workflows", cwd=project)
+    for name in ("one.yml", "two.yml"):
+        (workflows / name).write_bytes(b"on: [pull_request]\n")
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 2, result.stderr + result.stdout
+    lines = result.stderr.split("\n")
+    assert "     M .github/workflows/one.yml" in lines, result.stderr
+    assert "     M .github/workflows/two.yml" in lines, result.stderr
 
 
 # --- the commit, as git holds it ---------------------------------------------
@@ -319,6 +372,27 @@ def test_the_committed_line_names_the_paths_git_holds(
     assert not any(line.startswith("gitlink ") for line in lines_of(result))
 
 
+def move_the_gitlink_by_hand(project: Path, scaffolded: dict,
+                             to: str) -> None:
+    """On a bump branch, the leg checked out at `to` and the gitlink moved
+    to it in a commit of its own, the pin left as it was: the repair case
+    of AT-scaffold N9."""
+    branched(project)
+    leg = project / "spec"
+    git(*FILE_PROTOCOL, "fetch", "-q",
+        str(scaffolded["remotes"] / f"{PROJECT}-spec.git"), ADVANCE_BRANCH,
+        cwd=leg)
+    git("checkout", "-q", "--detach", to, cwd=leg)
+    git("add", "--", "spec", cwd=project)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Move the gitlink by hand", cwd=project)
+
+
+def held_line(commit: str) -> str:
+    return (f"gitlink      spec already records {commit[:12]}, so this "
+            "does not move it")
+
+
 def test_a_gitlink_moved_by_hand_is_reported_as_the_pins_move(
         project, scaffolded, advanced):
     """THE ISSUE'S MEASUREMENT (AT-scaffold N9): a person moved the gitlink to
@@ -326,20 +400,13 @@ def test_a_gitlink_moved_by_hand_is_reported_as_the_pins_move(
     one. The report, the dry run's included, and the commit message said
     `X -> X`, and `committed` named `spec` beside the pin, which the commit
     does not hold. The old commit is the pin's own now, a line says the
-    gitlink does not move, and the commit's paths are git's."""
+    gitlink does not move, and the commit's paths are git's. The message's
+    last sentence states the rule without saying the gitlink moved in it
+    (rv672's N3)."""
     pinned = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
-    branched(project)
-    leg = project / "spec"
-    git(*FILE_PROTOCOL, "fetch", "-q",
-        str(scaffolded["remotes"] / f"{PROJECT}-spec.git"), ADVANCE_BRANCH,
-        cwd=leg)
-    git("checkout", "-q", "--detach", advanced, cwd=leg)
-    git("add", "--", "spec", cwd=project)
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
-        "Move the gitlink by hand", cwd=project)
+    move_the_gitlink_by_hand(project, scaffolded, advanced)
     moved = f"commit       {pinned[:12]} -> {advanced[:12]}"
-    held = (f"gitlink      spec already records {advanced[:12]}, so this "
-            "does not move it")
+    held = held_line(advanced)
 
     dry = bump(project, scaffolded, advanced, "--dry-run")
     assert dry.returncode == 0, dry.stderr + dry.stdout
@@ -359,6 +426,33 @@ def test_a_gitlink_moved_by_hand_is_reported_as_the_pins_move(
     assert (f"The gitlink at spec already recorded {advanced[:12]}, so this "
             "commit does not move it.") in body, body
     assert "so the pin file is the whole of it." in body, body
+    assert ("are brought to the gitlink at spec in ONE commit because "
+            "`scripts/validate-pins.py` refuses when they disagree") in \
+        " ".join(body.split()), body
+    assert "The gitlink at spec, `commit:`" not in body, body
+    assert validate(project).returncode == 0, "the project's own gate agrees"
+
+
+def test_a_pin_commit_that_is_no_commit_is_not_printed_as_the_old_one(
+        project, scaffolded, advanced):
+    """The pin's own `commit:` is the old commit only when it IS one: text
+    such as `not-a-sha` there is not printed on the `commit` line, which
+    names the gitlink's commit instead, with the line that says the gitlink
+    does not move (rv672's R2)."""
+    pin = project / SPEC_PIN
+    pinned = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    move_the_gitlink_by_hand(project, scaffolded, advanced)
+    pin.write_bytes(pin.read_bytes().replace(
+        f'commit: "{pinned}"'.encode("ascii"), b'commit: "not-a-sha"', 1))
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "A pin whose commit is no commit", "--", SPEC_PIN, cwd=project)
+
+    result = bump(project, scaffolded, advanced)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"commit       {advanced[:12]} -> {advanced[:12]}" in \
+        lines_of(result), result.stdout
+    assert held_line(advanced) in lines_of(result), result.stdout
+    assert "not-a-sha" not in result.stdout
     assert validate(project).returncode == 0, "the project's own gate agrees"
 
 
@@ -387,9 +481,10 @@ def test_a_committed_line_git_cannot_read_back_still_says_the_bump_landed(
     head = head_of(project)
     assert code == 0, out
     assert git("rev-parse", f"{head}~1", cwd=project).stdout.strip() == before
-    assert (f"  committed {head[:12]}: its paths could not be read back "
+    said = (f"  committed {head[:12]}: its paths could not be read back "
             "(`git diff-tree` exited 128: fatal: bad object); `git show "
-            f"--name-only {head[:12]}` lists them") in out.splitlines(), out
+            f"--name-only --ignore-submodules=none {head[:12]}` lists them")
+    assert said in out.splitlines(), out
     assert next_line(out) == shlex.join(push_argv(project, "bump/spec"))
 
 

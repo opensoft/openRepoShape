@@ -1082,11 +1082,17 @@ def current_branch(root: Path) -> str | None:
     against `main`, `bump-leg-on-tracking-branch` was not given, and the bump
     committed on the default branch and printed a push to it. The name after
     `refs/heads/` is the branch's own, whatever tags there are.
+
+    ONLY THE NEWLINE IS TAKEN OFF. A ref name holds no control character,
+    so git's line ending is all there is to drop; `strip()` also took a
+    trailing U+00A0, U+2028 or U+0085, which a branch name may end in, and
+    read a root on `feat<U+00A0>` as `feat`, a branch of its own that the
+    push line then pushed instead of the bump.
     """
     proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
                           cwd=str(root), capture_output=True, text=True,
                           encoding="utf-8", errors="replace", check=False)
-    ref = proc.stdout.strip()
+    ref = proc.stdout.rstrip("\n")
     if not ref.startswith(HEADS):
         return None
     return ref[len(HEADS):] or None
@@ -1146,8 +1152,11 @@ def _ensure_root_clean(root: Path) -> None:
         # the bytes it holds, so a C1 control or a bidi override in a file
         # name reached the terminal raw. Split on git's own newlines and no
         # others: `splitlines` also breaks at U+0085 and U+2028, which are
-        # `spelled`'s to show, and `strip()` took them off the last name.
-        shown = dirt.decode("utf-8", "backslashreplace").strip(" \n")
+        # `spelled`'s to show, and `strip()` took them off the last name and
+        # the leading space off the first line's ` M`, which then read as
+        # `M` (staged). git quotes a name with a control in it or a space at
+        # its end, so the last newline is all there is to take off.
+        shown = dirt.decode("utf-8", "backslashreplace").rstrip("\n")
         raise Refusal(
             "bump-leg-root-dirty",
             f"{root} has uncommitted changes:\n"
@@ -1682,7 +1691,8 @@ def _committed_paths(root: Path, head: str) -> str:
         why = " ".join((exc.detail if isinstance(exc, Refusal)
                         else str(exc)).split())
         return (f"its paths could not be read back ({why}); `git show "
-                f"--name-only {head[:12]}` lists them")
+                f"--name-only --ignore-submodules=none {head[:12]}` lists "
+                "them")
     return ", ".join(spelled(name.decode("utf-8", "backslashreplace"))
                      for name in raw.split(b"\0") if name)
 
@@ -1808,11 +1818,18 @@ def cmd_bump(args) -> int:
            + ("the pin file is" if was == commit
               else "the gitlink and the pin file are")
            + " the whole of it.\n\n")
-        + f"The gitlink at {path}, `commit:` and `digests.tree_sha256` in "
-          f"{pin_rel}, and every workflow reference to {repository} move in "
-          "ONE commit because `scripts/validate-pins.py` refuses when they "
-          "disagree — a gitlink advanced alone is red on the next pull "
-          "request, and on somebody else's change.\n\nWritten by "
+        + (f"`commit:` and `digests.tree_sha256` in {pin_rel}, and every "
+           f"workflow reference to {repository}, are brought to the gitlink "
+           f"at {path} in ONE commit because `scripts/validate-pins.py` "
+           "refuses when they disagree — a gitlink advanced alone, as this "
+           "one was, is red on the next pull request, and on somebody "
+           "else's change.\n\n" if was == commit else
+           f"The gitlink at {path}, `commit:` and `digests.tree_sha256` in "
+           f"{pin_rel}, and every workflow reference to {repository} move "
+           "in ONE commit because `scripts/validate-pins.py` refuses when "
+           "they disagree — a gitlink advanced alone is red on the next "
+           "pull request, and on somebody else's change.\n\n")
+        + "Written by "
           "openRepoShape's `scripts/bump-leg.py`; the digest is recomputed "
           "from the leg's own objects, not adjusted.\n")
     head = _apply_rewrite(
