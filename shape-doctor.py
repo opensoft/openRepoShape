@@ -224,6 +224,25 @@ the adoption put in the other repository is not that file. A row whose path
 no leg holds is silent, because it can only settle a question, never make a
 finding. And a leg's `.gitmodules` is answered by `submodules:` alone.
 
+AN ANSWER AGAINST A RULE IS NOT MISPLACED (#655). The plan may keep a path in
+a leg its rule does not name -- `docs/`, which `spec-governance` puts in the
+spec leg, answered `code` with its reason -- and `execute` records that
+answer under `answered_paths:` as it records a question's. A walked path in
+the wrong leg whose every file one row answers into the leg it is in is
+held to the record as a question is: listed under `answered_paths` with the
+rule it overrode, said, and never a finding; a row naming the other leg
+settles nothing here either. A directory's row answers for every file under
+it, one added since the adoption too: no file is held to the row's
+`source_commit:`. A row naming a directory of its leg without the `/` a
+directory's row ends with answers nothing under it, as a plan entry spelled
+so covers nothing, and the leg's entry names it under `unslashed`, said and
+never a finding.
+
+AN EMPTY `.gitmodules` ASKS NOTHING (#655). One that holds no byte -- what a
+plain `git rm` of a leg's only submodule leaves, tracked -- registers no
+submodule, so the policy's question of it has no subject. The leg's entry
+names it under `empty_gitmodules`, the row says so, and it is no question.
+
 A SUBMODULE MOVED OR REMOVED SINCE THE ADOPTION (#525). Its row is a
 person's to change, by hand, in the pull request that bumps the pins; no
 command rewrites one. Until then a submodule in a leg its row does not name,
@@ -282,12 +301,21 @@ EXIT CODES
        a leg is off its pin, a manifest is there and does not load, or a
        tracked path sits in a leg the path policy puts elsewhere -- or, for a
        submodule, a leg other than the one `project.yaml` records for it
-       (#189) -- COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID
+       (#189) -- COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID. INVALID
+       names each red row, and the rows it names are: `merge`, the index
+       holds an unmerged path (#424); `naming`, `manifest`, `pins` and
+       `family`, the gates; `manifest-kinds`, a `kind:`-bearing manifest
+       nothing here validates, in a root that never runs its gate or at a
+       path no gate reads (#327, #439); `agent-files`, a pinned agent file
+       that is gone; and any other row that is a FINDING
     2  NOT A SHAPE ROOT: neither `project.yaml` nor `family.yaml` is there
     3  usage or environment -- nothing here is a statement about the tree
        that was pointed at: no such root, this file is not sitting in a
        checkout of the standard, or THIS CHECKOUT cannot answer (a pin
-       naming a commit it does not carry)
+       naming a commit it does not carry; a validator of its own that
+       crashed or cannot be given its `PYTHONPATH`, its template copy or its
+       naming script, #278, #410; or its own naming policy not loading,
+       #678)
 
 THE VERDICT NAMES THE MOST SPECIFIC FINDING; THE TABLE NAMES EVERY ONE. Drift
 outranks a red validator on that line for one concrete reason: an edited shape
@@ -317,6 +345,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -386,10 +415,11 @@ try:
     #: (#157). `url_repository` is the one reading of an `origin` that
     #: `adopt-project.py plan` takes `--org` from, imported here for the same
     #: reason, in place of a copy of `plan`'s regex (`origin_org`, #521).
+    #: `spelled` is how `siblings.py` prints the values that row quotes (#673).
     from repo_shape import (  # noqa: E402
         COMMIT_RE, NamingPolicy, PYTHON, Refusal, accepts_role, git_out,
         load_yaml, recorded_gitlink, redacted, remote_local_path,
-        resolved_remote, same_repository, url_repository,
+        resolved_remote, same_repository, spelled, url_repository,
     )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
@@ -465,7 +495,7 @@ NOT_A_ROOT = "none"
 #: The manifest FILENAME for each kind -- distinct from `PROJECT`/`FAMILY`
 #: above, which are the `kind:` a manifest DECLARES, not what the file is
 #: called. `Context.__init__`, `check_naming`, `manifest_candidates`,
-#: `is_this_member` and the way-in and what-is-here probes all read a root by
+#: `working_clone` and the way-in and what-is-here probes all read a root by
 #: this name, so it is spelled once for the five of them.
 PROJECT_MANIFEST = "project.yaml"
 FAMILY_MANIFEST = "family.yaml"
@@ -581,6 +611,14 @@ MOVED = "moved"
 #: The key under `detail`, and under `counts`, of the `submodules:` rows no
 #: leg holds (#525); present only where there is one.
 UNHELD = "unheld"
+#: The key of a leg's entry naming its `.gitmodules` where that file holds
+#: no byte, so the policy has nothing to ask of it (#655); present only on a
+#: leg that has one.
+EMPTY_GITMODULES = "empty_gitmodules"
+#: The key of a leg's entry naming each `answered_paths:` row for that leg
+#: whose path is a directory of it written without its `/` (#655); present
+#: only on a leg that has one.
+UNSLASHED = "unslashed"
 #: The `why` of a row whose every path in the wrong leg is a submodule moved
 #: since the adoption (#525). Its NEXT is this doctor again, as the
 #: `manifest kinds` row's is for a file only a person can mend
@@ -929,8 +967,12 @@ class ManifestKind:
 
 
 #: Where an assembly root keeps the naming policy `validate-manifest.py`
-#: reads, and a holder the one `validate-family.py` reads (#439).
+#: reads, and a holder the one `validate-family.py` reads (#439). The same
+#: path in the standard is the policy the `naming` rows read (#678).
 NAMING_COPY = "contracts/repository-naming.yaml"
+
+#: The standard's own naming script, the one both `naming` rows run (#410).
+NAMING_SCRIPT = "scripts/validate-repository-naming.py"
 
 
 def own_pins(ctx: Context) -> set:
@@ -2067,29 +2109,164 @@ def check_naming(ctx: Context) -> Row:
     a chain link it could not read, and the `manifest` row now carries
     `validate-manifest.py`'s WARNING for that same link (#448), so the fact
     is said once.
+
+    AND A CHECKOUT WHOSE OWN POLICY DOES NOT LOAD HAS NOT ANSWERED EITHER
+    (#678). The script refuses, exit 2, before it reads the project, when
+    this checkout's `contracts/repository-naming.yaml` does not load, and
+    `crashed` answers None for a printed `REFUSED`, so a compliant project
+    read `INVALID (naming)`, exit 1, "the naming policy is not satisfied
+    (exit 2)": a person failed for the checkout's file, in the wrong verb.
+    `run_naming_script` asks the question before it runs the script and reads
+    the script's own `REFUSED` for that file after, and the row is
+    `naming_policy_row`'s: CANNOT ANSWER, exit 3, as a crash is. Any other
+    exit 2 is the script refusing something else -- the project's own
+    `project.yaml`, say -- and is worded "refuses (exit 2)" as `validator_row`
+    words it, and stays a finding. Exit 1 is the finding it always was.
     """
     waiting = waiting_row(ctx, "naming", "naming",
                           "there are no leg names to classify")
     if waiting is not None:
         return waiting
-    script = ctx.shape / "scripts" / "validate-repository-naming.py"
-    code, quoted, whole = run_validator(
-        ctx, script,
-        ["--project", str(ctx.root / PROJECT_MANIFEST), "--quiet"])
-    detail = {"policy": (ctx.shape / "contracts" /
-                         "repository-naming.yaml").as_posix(), "exit": code}
+    script = ctx.shape / NAMING_SCRIPT
+    code, quoted, whole, refusal = run_naming_script(
+        ctx, script, ["--project", str(ctx.root / PROJECT_MANIFEST),
+                      "--quiet"])
+    detail = {"policy": (ctx.shape / NAMING_COPY).as_posix(), "exit": code}
     if code == 0:
         return Row("naming", "naming", OK,
                    "every leg name classifies, and each declared role agrees "
                    "with its form", None, detail)
     command = (f"{PYTHON} {quote_arg(script)} --explain --project "
                f"{quote_arg(ctx.root / PROJECT_MANIFEST)}")
+    if refusal is not None:
+        return naming_policy_row(refusal, command, detail)
     crash = crashed(code, whole)
     if crash is not None:
         return naming_crashed_row(code, crash, command, detail)
+    if code >= 2:
+        return Row("naming", "naming", FINDING,
+                   naming_refuses_words(code, quoted), command, detail)
     return Row("naming", "naming", FINDING,
                f"the naming policy is not satisfied (exit {code})"
                + (f": {quoted}" if quoted else ""), command, detail)
+
+
+def own_naming_policy_refusal(shape: Path) -> Refusal | None:
+    """The refusal THIS CHECKOUT's `contracts/repository-naming.yaml` gives
+    where it does not load, else None (#678).
+
+    `NamingPolicy.load` is the reader `validate-repository-naming.py` itself
+    calls before it reads a name, and a refusal from it is that script's exit
+    2. ONLY A REFUSAL IS ANSWERED HERE: a reader that raises anything else --
+    a pattern `re.compile` will not take -- is the script's crash, which
+    `crashed` says and `naming_crashed_row` words, so that exception is the
+    script's to raise and never this report's.
+    """
+    try:
+        NamingPolicy.load(shape / NAMING_COPY)
+    except Refusal as exc:
+        return exc
+    except Exception:  # noqa: BLE001 - the script's crash, for `crashed`
+        return None
+    return None
+
+
+def naming_script_refusal(shape: Path, whole: str) -> Refusal | None:
+    """The `REFUSED` line of the naming script's output that names THIS
+    CHECKOUT's policy file, as the `Refusal` it was printed from, else None
+    (#678).
+
+    A line is that script's `str(Refusal)`, `REFUSED <code>: <detail>`, and
+    the `detail` of a refusal about a file STARTS with the path the loader
+    was given, so the file is this checkout's where the detail starts with
+    its path and `: `. A path found anywhere else in a line is not that
+    file: a project whose own path holds this checkout's, a flag, the
+    `project.yaml` the script was asked to read -- each is about what the
+    script was asked, and is not this.
+    """
+    policy = f"{shape / NAMING_COPY}: "
+    for line in (line.strip() for line in whole.splitlines()):
+        if line.startswith("REFUSED "):
+            code, _, detail = line.removeprefix("REFUSED ").partition(": ")
+            if detail.startswith(policy):
+                return Refusal(code, detail)
+    return None
+
+
+def run_naming_script(ctx: Context, script: Path, args: list[str]) -> tuple:
+    """`(exit code, the line worth quoting, whole output, refusal)` for the
+    naming script, or, where this checkout's own policy does not load, the
+    refusal alone, with the script NOT RUN and no exit code (#678).
+
+    BOTH `naming` ROWS ASK THIS QUESTION AND NEITHER MAY ASK IT AFTER. The
+    script refuses before it reads the project or a name, so the answer it
+    would give is this checkout's, and a refusal read out of its output is
+    only the same question asked of a child. It is asked first and in
+    process, with the reader the script uses, and the output is read for it
+    as well, because a script that refuses naming that file after this
+    process read it fine is still this checkout's refusal (`refusal`).
+    """
+    refusal = own_naming_policy_refusal(ctx.shape)
+    if refusal is not None:
+        return None, "", "", refusal
+    code, quoted, whole = run_validator(ctx, script, args)
+    return (code, quoted, whole,
+            naming_script_refusal(ctx.shape, whole) if code == 2 else None)
+
+
+def naming_refuses_words(code: int, quoted: str) -> str:
+    """What the naming script's exit 2 reads as when it is not this
+    checkout's own policy refusing: "refuses", the verb `validator_row`
+    picks for any exit past 1, and not "is not satisfied", which is a
+    finding's (#678)."""
+    return (f"the standard's {NAMING_SCRIPT} refuses (exit {code})"
+            + (f": {quoted}" if quoted else ""))
+
+
+def naming_row_subject(names: list[str] | None) -> tuple:
+    """`(lead, owner, about)`: how a `naming` row about the checkout's own
+    script or file says what it does not belong to and what it is not saying
+    anything about -- the project, in a root; given the `names`, this
+    directory (#410, #678)."""
+    if names is None:
+        return "", "the project", "the project"
+    return f"{', '.join(names)}: ", "this directory", "what it is called"
+
+
+def naming_policy_row(refusal: Refusal, command: str, detail: dict,
+                      names: list[str] | None = None) -> Row:
+    """The `naming` row for a checkout whose own
+    `contracts/repository-naming.yaml` does not load (#678): `check_naming`'s,
+    or, given the `names` it classified, `check_not_a_root_naming`'s.
+
+    THAT FILE IS ALWAYS THIS CHECKOUT'S, never the project's, so this is what
+    a crash of the naming script is in `naming_crashed_row` (#410) and what
+    a crash of the standard's TEMPLATE validator is in `validator_row`
+    (#278): `detail.environment`, so an assembly root's verdict is CANNOT
+    ANSWER, exit 3, and the reason says nothing here is a statement about the
+    project. In a directory that is not a root the verdict stays NOT A SHAPE
+    ROOT, exit 2, as it does for a crash. It carries no `detail.crashed`: the
+    script did not crash, it refused, and `detail.refusal` is the loader's
+    own `code` and `detail`, as the `manifest` row's is.
+
+    THE LOADER'S OWN LINE, WHOLE, quoted from the refusal rather than from
+    the script's output, which `run_validator` cuts at 200 characters, and
+    here the line ends with the line number after a path of any length. The
+    NEXT is the script's own `--explain` line, which prints the same refusal
+    and exits 2; a refusal's remedy, where it has one, leads the `why`.
+    """
+    detail["environment"] = True
+    detail["refusal"] = {"code": refusal.code, "detail": refusal.detail}
+    lead, owner, about = naming_row_subject(names)
+    mend = ("the file belongs to the checkout of the standard this command is "
+            f"run from, not to {owner}: repair it there, or run the doctor "
+            "from a clone of the standard whose own copy loads")
+    return Row("naming", "naming", FINDING,
+               f"{lead}the standard's {NAMING_COPY} does not load: "
+               f"{refusal_line(refusal)}; that file is this checkout's, not "
+               f"{owner}'s, so nothing here is a statement about {about}",
+               command, detail,
+               why=" ".join(filter(None, (remedy_as_why(refusal), mend))))
 
 
 def naming_crashed_row(code: int, crash: str, command: str, detail: dict,
@@ -2111,15 +2288,11 @@ def naming_crashed_row(code: int, crash: str, command: str, detail: dict,
     """
     detail["crashed"] = True
     detail["environment"] = True
-    if names is None:
-        lead, whose, about = "", "the project's", "the project"
-    else:
-        lead = f"{', '.join(names)}: "
-        whose, about = "this directory's", "what it is called"
+    lead, owner, about = naming_row_subject(names)
     return Row("naming", "naming", FINDING,
-               f"{lead}the standard's scripts/validate-repository-naming.py "
+               f"{lead}the standard's {NAMING_SCRIPT} "
                f"crashed before reaching a verdict (exit {code}): {crash}; "
-               f"that script is this checkout's, not {whose}, so nothing "
+               f"that script is this checkout's, not {owner}'s, so nothing "
                f"here is a statement about {about}", command, detail,
                why=CRASH_WHY)
 
@@ -2232,26 +2405,80 @@ def bump_clears(code: str, rest: str, leg: dict) -> bool:
     return False
 
 
-def findings_no_bump_clears(output: str, off: list[dict]) -> list[str]:
-    """The codes of the findings in the gate's `output` that no
-    `bump-leg.py` line for a leg in `off` clears, each once, in the gate's
-    order (#478)."""
+def findings_no_bump_clears(output: str, off: list[dict], legs: list[dict]
+                            ) -> tuple[list[str], list[dict], list[str]]:
+    """`(codes, other_legs, stays)` for the findings in the gate's `output`
+    that no `bump-leg.py` line for a leg in `off` clears, each code once, in
+    the gate's order (#478).
+
+    `other_legs` are the legs in `legs`, the ones not in `off`, whose own
+    line clears one of them, its pin's digest or a workflow reference to
+    it, as `{"role", "path", "findings"}`: that line can commit only once
+    the gitlink is back at its pin. `codes` are those no line for any leg
+    clears (#677). `stays` are the paths of the legs in `off` whose own
+    `pin-digest-mismatch` the gate reports: it is recomputed at the pin's
+    commit, so it outlasts the gitlink put back there."""
     left: list[str] = []
+    stays: list[str] = []
+    other_legs: dict[str, dict] = {}
     for line in output.splitlines():
         found = FINDING_LINE.match(line)
         if found is None:
             continue
         code, rest = found.group("code", "rest")
-        if not any(bump_clears(code, rest, leg) for leg in off) \
-                and code not in left:
-            left.append(code)
-    return left
+        own = next((leg for leg in off if bump_clears(code, rest, leg)), None)
+        if own is not None:
+            if code == "pin-digest-mismatch" and own["path"] not in stays:
+                stays.append(own["path"])
+            continue
+        whose = next((leg for leg in legs if bump_clears(code, rest, leg)),
+                     None)
+        codes = left if whose is None else other_legs.setdefault(
+            whose["role"], {"role": whose["role"], "path": whose["path"],
+                            "findings": []})["findings"]
+        if code not in codes:
+            codes.append(code)
+    return left, list(other_legs.values()), stays
+
+
+def gitlink_held_then(leg: dict, other_legs: list[dict],
+                      stays: list[str]) -> str:
+    """What the `pins` row says follows `leg`'s gitlink put back by hand
+    while `other_legs` are out of step (#677): the gate, this row's NEXT,
+    names their line, and a bump of `leg` to its gitlink keeps the move if
+    it was meant. No line while `leg`'s own digest `stays`: two legs are
+    then out of step with no gitlink off, and the gate names none."""
+    if leg["path"] in stays:
+        return (f"the gate then names no line while {leg['path']}'s own "
+                "pin-digest-mismatch stands")
+    digests = all(other["findings"] == ["pin-digest-mismatch"]
+                  for other in other_legs)
+    return ("the gate then names the bump-leg.py "
+            + ("line" if digests else "lines") + " for "
+            + " and ".join(other["path"] for other in other_legs)
+            + f", and if {leg['path']}'s move was meant, bumping "
+            f"{leg['path']} to {leg['gitlink']} "
+            + ("after that line" if digests else "after one of them")
+            + " keeps it")
 
 
 def gitlink_repairs_held_back(off: list[dict], others: list[str],
-                              manifest: bool) -> str:
+                              manifest: bool, other_legs: list[dict] = (),
+                              stays: list[str] = ()) -> str:
     """Why the `pins` row names no `bump-leg.py` line for a gitlink off its
-    pin, and what comes first (#478)."""
+    pin, and what comes first (#478).
+
+    ANOTHER LEG'S DIGEST OR WORKFLOW REFERENCE IS NO FINDING TO CLEAR FIRST
+    (#677). `other_legs` are the legs whose own line clears one, and that
+    line is rolled back while this gitlink is off its pin, as this leg's
+    lines are while that finding stands: "First clear that finding" named a
+    step nothing could take. The step is the one two gitlinks off their
+    pins name, by hand, for this leg; `gitlink_held_then` says what
+    follows. In either text the gitlink goes back with its leg's workflow
+    references, which would otherwise stay at the move and ask for the
+    step again, and an undo is followed by `git submodule update` over the
+    legs: it puts the gitlink back and leaves the leg checked out at the
+    move, a root `bump-leg.py` refuses as dirty."""
     paths = [leg["path"] for leg in off]
     if manifest:
         return ("No single bump-leg.py line can commit while the root's "
@@ -2264,20 +2491,33 @@ def gitlink_repairs_held_back(off: list[dict], others: list[str],
     if len(off) > 1:
         what.append(" and ".join(paths) + (" are both" if len(off) == 2
                                            else " are all") + " off their pins")
+    what += [f"{leg['path']} is out of step too ({', '.join(leg['findings'])})"
+             for leg in other_legs]
     if others:
         what.append("the gate also reports " + ", ".join(others))
         first.append("clear " + ("that finding" if len(others) == 1
                                  else "those findings"))
+    then = f"this row then names the two bump-leg.py lines for {paths[0]}"
+    put = None
     if len(off) > 1:
-        first.append("put one leg's gitlink back at its pin (check that leg "
+        put = ("one leg's", "them")
+        then = ("this row then names the two bump-leg.py lines for the leg "
+                "that is left")
+    elif other_legs:
+        put = (f"{paths[0]}'s", "it")
+        then = gitlink_held_then(off[0], other_legs, stays)
+    if put is not None:
+        legs = " ".join(quote_arg(path) for path in paths)
+        first.append(f"put {put[0]} gitlink back at its pin (check that leg "
                      "out at the pin's commit and commit its gitlink in the "
-                     "root), or undo the commit that moved them")
+                     "root, with every workflow reference to its repository "
+                     "at that commit too), or undo the commit that moved "
+                     f"{put[1]} and run `git submodule update -- {legs}` in "
+                     "the root")
     return ("No single bump-leg.py line can commit while "
             + " and ".join(what) + ": bump-leg.py moves one leg and runs the "
             "root's whole validate-pins.py before it commits, rolling the bump "
-            "back when it is red. First " + ", and ".join(first) + "; this row "
-            "then names the two bump-leg.py lines for "
-            + ("the leg that is left" if len(off) > 1 else paths[0]))
+            "back when it is red. First " + ", and ".join(first) + "; " + then)
 
 
 def with_gitlink_repairs(ctx: Context, row: Row, output: str) -> Row:
@@ -2308,7 +2548,12 @@ def with_gitlink_repairs(ctx: Context, row: Row, output: str) -> Row:
     clears (`bump_clears`), and the manifest's gate passes. Two legs off, or
     any other finding, and either line is rolled back: the reason names no
     line, says why, and says what comes first, and
-    `detail.gitlink_repairs_held_back` says the same for `--json`.
+    `detail.gitlink_repairs_held_back` says the same for `--json`. Another
+    leg's digest or workflow reference is cleared by THAT leg's line, which
+    waits on this gitlink put back by hand, so what comes first is that
+    step, and `other_legs` there names each such leg and its findings
+    (#677). Where this leg's own digest is wrong too, it outlasts the step,
+    and the reason promises no line after it.
 
     THE COMMIT MUST BE ON A BRANCH OF THE LEG'S REMOTE, and offline that
     cannot be known: `bump-leg.py` fetches before it asks, and a
@@ -2332,19 +2577,25 @@ def with_gitlink_repairs(ctx: Context, row: Row, output: str) -> Row:
     off = gitlinks_off_their_pins(ctx)
     if not off:
         return row
-    repository = {str(leg.get("role") or ""): str(leg.get("repository") or "")
-                  for leg in ctx.legs()}
-    others = findings_no_bump_clears(output, [
+    legs = [{"role": str(leg.get("role") or ""),
+             "path": str(leg.get("path") or ""),
+             "repository": str(leg.get("repository") or "")}
+            for leg in ctx.legs()]
+    repository = {leg["role"]: leg["repository"] for leg in legs}
+    roles = {leg["role"] for leg in off}
+    others, other_legs, stays = findings_no_bump_clears(output, [
         {**leg, "repository": repository.get(leg["role"], "")}
-        for leg in off])
-    manifest = (len(off) == 1 and not others
+        for leg in off], [leg for leg in legs if leg["role"] and leg["path"]
+                          and leg["role"] not in roles])
+    manifest = (len(off) == 1 and not others and not other_legs
                 and check_manifest(ctx).status == FINDING)
-    if len(off) > 1 or others or manifest:
+    if len(off) > 1 or others or other_legs or manifest:
         row.reason = ascii_text(
-            f"{row.reason}. "
-            + gitlink_repairs_held_back(off, others, manifest))
+            f"{row.reason}. " + gitlink_repairs_held_back(
+                off, others, manifest, other_legs, stays))
         row.detail["gitlink_repairs_held_back"] = {
-            "legs": off, "findings": others, "manifest": manifest}
+            "legs": off, "findings": others, "other_legs": other_legs,
+            "manifest": manifest}
         return row
     leg = off[0]
     leg["keep_gitlink"] = bump_leg_command(ctx.shape, ctx.root, leg["role"],
@@ -4362,46 +4613,46 @@ def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
     index, else the one in HEAD. So a root whose `.gitmodules` was deleted
     from the working tree alone still updates: measured, the line exits 0
     there. `git config -f .gitmodules` by itself would call every mount of
-    that root url-less and withhold a line that works. A file git cannot
-    parse gives no url here.
+    that root url-less and withhold a line that works.
 
-    `-z`, because a section name may hold a space, a dot or a quote, and the
-    listing is read by `section_url`. Read only: `--get-regexp` writes
-    nothing.
+    AND ONLY THAT ONE COPY: the first that EXISTS, as `rev-parse --verify`
+    finds it, which is how git's `config_from_gitmodules` chooses (#668).
+    A copy with no section for `rel`, or one git cannot parse, is no url,
+    and git does not look further: measured, over an index copy of either
+    kind beside a HEAD copy that gives the url, `submodule init` exits 128,
+    `No url found`. Reading the next copy wherever one would not list named
+    a url there, and a line that exits 128.
+
+    The copy is read by `gitmodules_listing`, the one reading
+    `submodule_config` makes too, and `section_url` picks the section out of
+    it.
     """
     if os.path.lexists(root / ".gitmodules"):
-        sources = [["--file", ".gitmodules"]]
+        source = ["--file", ".gitmodules"]
     else:
-        sources = [["--blob", ":.gitmodules"], ["--blob", "HEAD:.gitmodules"]]
-    for source in sources:
-        try:
-            proc = subprocess.run(
-                ["git", "config", "-z", *source, "--get-regexp",
-                 r"^submodule\..*\.(path|url)$"],
-                cwd=str(root), capture_output=True, check=False)
-        except OSError:
+        found = next((copy for copy in (":.gitmodules", "HEAD:.gitmodules")
+                      if git_answer(["rev-parse", "-q", "--verify", copy],
+                                    root) is not None), None)
+        if found is None:
             return None, None
-        if proc.returncode == 1:
-            # Read, and no section gives a path or a url.
-            return None, None
-        if proc.returncode != 0:
-            # No such copy, or one git cannot parse: the next place, as git.
-            continue
-        return section_url(proc.stdout.decode("utf-8", "replace"), rel)
-    return None, None
+        source = ["--blob", found]
+    listing = gitmodules_listing(root, source)
+    if listing is None:
+        # The copy git reads, and one it cannot parse: git stops there.
+        return None, None
+    return section_url(listing, rel)
 
 
 def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
     """`(name, url)` of the section whose `path` is `rel`, read out of one
-    `git config -z --get-regexp` listing of `submodule.<name>.path` and
-    `.url` keys, which is what `gitmodules_entry` asks git for: `(None,
-    None)` when no section gives that path, and `(name, None)` when the one
-    that does gives no url (#414).
+    `gitmodules_listing`, which is what `gitmodules_entry` asks git for:
+    `(None, None)` when no section gives that path, and `(name, None)` when
+    the one that does gives no url (#414).
 
     PURE, so the reading is tested apart from the question of where git
-    found the file. Each record ends in a NUL and is the key, a newline and
-    the value. The NAME is all of the key between `submodule.` and its last
-    dot, so a name that holds a space or a dot is read whole.
+    found the file. Only a section's `path` and `url` keys count
+    (`submodule_keys`): `--list` gives every key the file holds, and the
+    `path` of a section that is not a submodule's names no mount (#668).
 
     THE LAST VALUE GIVEN WINS, for a path two sections give and for a key a
     section gives twice, because git reads `.gitmodules` with each later
@@ -4409,9 +4660,7 @@ def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
     """
     named = None
     urls: dict[str, str] = {}
-    for record in listing.split("\0"):
-        key, _, value = record.partition("\n")
-        name, _, field = key[len("submodule."):].rpartition(".")
+    for name, field, value in submodule_keys(listing):
         if field == "path" and value == rel:
             named = name
         elif field == "url":
@@ -4419,6 +4668,57 @@ def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
     if named is None:
         return None, None
     return named, urls.get(named) or None
+
+
+def submodule_keys(listing: str) -> list[tuple[str, str, str]]:
+    """`(name, field, value)` for each `submodule.<name>.path` and `.url`
+    key of one `gitmodules_listing`, in git's order, and no other key
+    (#668).
+
+    PURE, as `section_url` is. Each record ends in a NUL and is the key, a
+    newline and the value: a key holds no newline and a value may, so the
+    record is split at its FIRST one. The NAME is all of the key between
+    `submodule.` and its last dot, so a name that holds a space, a dot, a
+    quote or an `=` is read whole, and the field is what follows that dot,
+    which git lists in lower case.
+    """
+    keys = []
+    for record in listing.split("\0"):
+        key, _, value = record.partition("\n")
+        section, _, field = key.rpartition(".")
+        if section.startswith("submodule.") and field in ("path", "url"):
+            keys.append((section[len("submodule."):], field, value))
+    return keys
+
+
+def gitmodules_listing(root: Path, source: list[str]) -> str | None:
+    """`git config -z <source> --list` in `root`: every key of one copy of
+    `.gitmodules`, or None where git reads no such copy (it is not there,
+    git cannot parse it, there is no git to run).
+
+    ONE READING, FOR `gitmodules_entry` AND `submodule_config` (#668), and
+    the one `validate-family.py`'s `_gitmodules_sections` and `family.py`
+    make: the whole file, cut by `submodule_keys`.
+
+    `--list` AND NO REGEXP, because git matches a regexp in the locale's
+    character set: under a UTF-8 locale `.*` matches no byte that is not
+    UTF-8, so `--get-regexp '^submodule\\..*\\.(path|url)$'` left out a
+    section whose name holds one, which `LC_ALL=C` read (measured, git
+    2.43), and the mount that section gives was called url-less. `-z`,
+    because a value may hold a line break git keeps, NEL and U+2028 among
+    them, and a name a space: git's plain listing, split at line breaks and
+    at the first space, cut such a url short and such a name in two.
+
+    Decoded with the replacement, as `make siblings` reads the same file
+    (#432) and `origin_url` reads a remote (#385). Read only: `--list`
+    writes nothing.
+    """
+    try:
+        raw = git_out(["config", "-z", *source, "--list"], cwd=root,
+                      binary=True)
+    except (Refusal, OSError):
+        return None
+    return raw.decode("utf-8", "replace")
 
 
 def configured_url(root: Path, name: str) -> str | None:
@@ -5611,28 +5911,71 @@ def held_clauses(detail: dict) -> str:
     no submodule at all, or only misplaced ones, which `misplaced_clauses`
     names -- so that no reason ends on a separator with nothing after it.
     """
+    legs = detail.get("legs") or []
     clauses = (kept_submodules(detail.get("submodules") or []),
-               answered_clause(detail.get("legs") or []),
+               answered_clause(legs),
+               empty_clause(legs),
                answers_clause(detail.get(ANSWERED_PATHS) or []),
+               unslashed_clause(legs),
                unheld_clause(detail.get(UNHELD) or []))
     said = "; ".join(clause for clause in clauses if clause)
     return f"; {said}" if said else ""
 
 
 def answers_clause(answered: list) -> str:
-    """The clause naming the questions `answered_paths:` answered, each with
-    the rule that asked it, or "" where it answered none (#525).
+    """The clauses naming the paths `answered_paths:` answered, each with the
+    rule behind it, or "" where it answered none: the questions the policy
+    asks (#525), then the paths a rule puts in another leg (#655).
 
     SAID, as the `.gitmodules` the record answers is said: the row no longer
-    counts these among the paths the policy will not call, and a reader who
-    knows the policy asks of them is owed where the answer came from.
+    counts these among the paths the policy will not call, or puts
+    elsewhere, and a reader who knows the policy is owed where the answer
+    came from. SAID APART, because a question the policy asked and a rule
+    the plan answered against are not the same claim, and the second names
+    the leg the rule gives.
     """
-    if not answered:
+    asked = [row for row in answered if row["classified_as"] is None]
+    against = [row for row in answered if row["classified_as"] is not None]
+    clauses = []
+    if asked:
+        named = first_three([f"{row['path']} (rule {row['rule']})"
+                             for row in asked])
+        clauses.append(f"{THE_ANSWERS} answers the question the policy asks "
+                       f"of {len(asked)} path(s) (#525): {named}")
+    if against:
+        named = first_three([f"{row['path']} ({row['classified_as']} by rule "
+                             f"{row['rule']})" for row in against])
+        clauses.append(f"{THE_ANSWERS} answers {len(against)} path(s) into "
+                       "the leg they are in, which a rule puts elsewhere "
+                       f"(#655): {named}")
+    return "; ".join(clauses)
+
+
+def empty_clause(legs: list) -> str:
+    """The clause naming each leg's `.gitmodules` that holds no byte, or ""
+    where none does (#655). SAID, as the one the record answers is: a reader
+    who knows the policy asks about every `.gitmodules` is owed why this one
+    was not asked."""
+    empty = [path for leg in legs for path in leg.get(EMPTY_GITMODULES) or []]
+    if not empty:
         return ""
-    named = first_three([f"{row['path']} (rule {row['rule']})"
-                         for row in answered])
-    return (f"{THE_ANSWERS} answers the question the policy asks of "
-            f"{len(answered)} path(s) (#525): {named}")
+    return (f"the policy asks nothing of {len(empty)} `.gitmodules` that "
+            "hold(s) no byte and so register(s) no submodule (#655): "
+            f"{', '.join(empty)}")
+
+
+def unslashed_clause(legs: list) -> str:
+    """The clause naming each `answered_paths:` row that names a directory of
+    its leg without its `/`, or "" where none does (#655). SAID, and never a
+    finding nor what keeps the row off `ok`: such a row answers nothing,
+    which is said so that its writer is not left to wonder why the question
+    it was meant to answer is still asked."""
+    rows = [path for leg in legs for path in leg.get(UNSLASHED) or []]
+    if not rows:
+        return ""
+    return (f"{len(rows)} row(s) of {THE_ANSWERS} name a directory without "
+            "the `/` a directory's row ends with, so each answers nothing "
+            f"under it (#655): {first_three(rows)}")
 
 
 def unheld_clause(unheld: list) -> str:
@@ -5925,8 +6268,9 @@ def walked_findings(walked: list, role: str, rel: str,
 
 def answered_questions(adopt, review: list, role: str, files: list,
                        answers: dict) -> tuple:
-    """The leg's questions, less those `answered_paths:` answered into THIS
-    leg; and those, as entries of their own (#525).
+    """`review` -- the leg's questions, or its walked paths in the wrong leg
+    (#655) -- less those `answered_paths:` answered into THIS leg; and
+    those, as entries of their own (#525).
 
     A QUESTION IS ANSWERED WHEN EVERY FILE UNDER IT IS. The doctor's walk
     folds a leg's files as they fall in that leg, not as they fell in the
@@ -5937,35 +6281,54 @@ def answered_questions(adopt, review: list, role: str, files: list,
     this leg. A file the record does not cover, or covers twice, leaves the
     question asked.
 
+    A PATH IN THE WRONG LEG IS HELD TO THE RECORD THE SAME WAY (#655). The
+    plan may keep a path in a leg its rule does not name, and `execute`
+    records that answer as it records a question's: a path whose every file
+    one row answers into this leg is the plan's answer, not MISPLACED. Its
+    entry keeps the rule and the leg the rule gives (`classified_as`), so
+    the reader is told which rule the record answered against.
+
     A ROW NAMING THE OTHER LEG SETTLES NOTHING AND ASSERTS NOTHING. The
     record confers nothing, and a file in this repository named like one the
     adoption put in the other is not that file, so it stays the question it
-    was -- a `note` -- and is never MISPLACED. Nor is the leg's
-    `.gitmodules` answered here: `submodules:` answers it, and only where it
-    places every submodule the file registers (`gitmodules_the_record_
-    answers`).
+    was -- a `note` -- and is never MISPLACED; a path in the wrong leg stays
+    MISPLACED, by its rule. Nor is the leg's `.gitmodules` answered here:
+    `submodules:` answers it, and only where it places every submodule the
+    file registers (`gitmodules_the_record_answers`).
 
     NO RECORD, NO SCAN (#525). A project with no `answered_paths:` --
     every one adopted before #525 -- returns its questions as they are,
     which is what the loop below would return for them, without holding
     each question against every file of its leg.
+
+    ONE PASS OVER THE LEG'S FILES (#655). Each file is looked up by the
+    names `_covering` could find covering it (`_covering_names`), in the
+    paths found and in the record, rather than every path found being held
+    against every file: called twice, for the questions and for the paths
+    in the wrong leg, a leg costs its files times their depth.
     """
-    if not answers:
+    if not answers or not review:
         return review, []
-    rows = list(answers)
+    found = {row["path_in_leg"] for row in review}
+    under: dict = {}
+    covering: dict = {}
+    for path in files:
+        names = adopt._covering_names(path)
+        for name in names:
+            if name in found:
+                under.setdefault(name, []).append(path)
+                covering[path] = [by for by in names if by in answers]
     still: list = []
     answered: list = []
     for row in review:
-        found = row["path_in_leg"]
-        under = [path for path in files
-                 if adopt._covering([found], path)]
-        covering = [adopt._covering(rows, path) for path in under]
-        if (found == adopt.GITMODULES or not under
-                or any(len(by) != 1 or answers[by[0]].get("leg") != role
-                       for by in covering)):
+        paths = under.get(row["path_in_leg"], [])
+        if (row["path_in_leg"] == adopt.GITMODULES or not paths
+                or any(len(covering[path]) != 1
+                       or answers[covering[path][0]].get("leg") != role
+                       for path in paths)):
             still.append(row)
             continue
-        by = list(dict.fromkeys(paths[0] for paths in covering))
+        by = list(dict.fromkeys(covering[path][0] for path in paths))
         resolution = answers[by[0]].get("resolution")
         answered.append({
             **row, "confidence": SUBMODULE_RECORDED, "review_required": False,
@@ -5973,6 +6336,67 @@ def answered_questions(adopt, review: list, role: str, files: list,
             "resolution": (resolution if len(by) == 1
                            and isinstance(resolution, str) else None)})
     return still, answered
+
+
+def empty_gitmodules(adopt, review: list, mount: Path) -> tuple:
+    """The leg's questions less its `.gitmodules` where that file holds no
+    byte, and that file's path in the row, or [] (#655).
+
+    AN EMPTY `.gitmodules` REGISTERS NO SUBMODULE, so the question rule
+    `ambiguous-gitmodules` asks of it -- which leg owns the submodules it
+    registers -- has no subject, and no answer could be wrong. It is what a
+    plain `git rm` of a leg's only submodule leaves, tracked; the doctor
+    asked it on every run, and no record could answer it: `answered_paths:`
+    leaves `.gitmodules` out, and `submodules:` answers it only where the
+    leg keeps a submodule. Not asking is the fix, rather than a row a
+    person writes by hand into the manifest to quiet a question that has
+    no subject.
+
+    NO BYTE, AND A REGULAR FILE, read on this disk as `leg_tracked_files`
+    reads a size: the file git's submodule commands read. One holding
+    anything -- a blank line, a comment, a section -- is one only git's own
+    reader could say registers nothing, so it stays the question it was.
+    git refuses to index a `.gitmodules` that is a symlink, and reads the
+    index's copy where the disk has none, so neither is the empty file.
+    """
+    for row in review:
+        if (row["path_in_leg"] == adopt.GITMODULES
+                and holds_no_byte(mount / adopt.GITMODULES)):
+            return [other for other in review if other is not row], [
+                row["path"]]
+    return review, []
+
+
+def holds_no_byte(path: Path) -> bool:
+    """Is `path` a regular file, not a link, of no byte (#655)?"""
+    try:
+        found = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(found.st_mode) and found.st_size == 0
+
+
+def unslashed_rows(answers: dict, role: str, rel: str, files: list) -> list:
+    """Each `answered_paths:` row for THIS leg whose path is a directory of
+    it written without the `/` a directory's row ends with, as its path in
+    the row (#655).
+
+    SUCH A ROW ANSWERS NOTHING UNDER IT. `_covering` reads a path without
+    its `/` as a file's, as `adopt-project.py check` reads a plan entry,
+    where the same spelling is `plan-empty-entry` beside a `plan-uncovered`
+    for each file under it. `execute` never writes one, a hand edit does,
+    and the project's `validate-manifest.py` cannot tell it from a file's
+    row, because it runs where the legs are not checked out. Here the leg
+    is read, so it is said. It is never read as the directory's row, which
+    would make one spelling name two things, and never a finding.
+    """
+    rows = [path for path, row in answers.items()
+            if row.get("leg") == role and not path.endswith("/")]
+    if not rows:
+        return []
+    directories = {path[:index] for path in files
+                   for index, char in enumerate(path) if char == "/"}
+    return [f"{rel}/{path}" for path in rows if path in directories]
 
 
 def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
@@ -6026,7 +6450,14 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     (`gitmodules_the_record_answers`): the file is placed, and the leg's
     entry names it under `answered` instead of as a question.
     Otherwise a real adoption, whose leg always holds the `.gitmodules` that
-    registers its submodules, could never read `ok`.
+    registers its submodules, could never read `ok`. One that holds no byte
+    asks nothing at all (`empty_gitmodules`, #655).
+
+    AND `answered_paths:` IS READ FOR THE QUESTIONS AND FOR THE PATHS IN THE
+    WRONG LEG ALIKE (#525, #655): `answered_questions` takes from each those
+    the record answers into this leg, which are returned apart, and
+    `unslashed_rows` names the rows for this leg that name a directory
+    without its `/`.
     """
     entry = {"role": role, "path": rel}
     mount = root / rel
@@ -6067,8 +6498,11 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     submodules, wrong = leg_submodules(policy, role, rel, held, record)
     answered = gitmodules_the_record_answers(adopt, submodules, unwritable)
     misplaced, review, settled = walked_findings(walked, role, rel, answered)
-    review, recorded = answered_questions(
-        adopt, review, role, [path for path, _ in kept], answers)
+    review, empty = empty_gitmodules(adopt, review, mount)
+    paths = [path for path, _ in kept]
+    review, recorded = answered_questions(adopt, review, role, paths, answers)
+    misplaced, against = answered_questions(adopt, misplaced, role, paths,
+                                            answers)
     misplaced += wrong
     # FILES AND PATHS ARE DIFFERENT NUMBERS and the row prints both. `walk`
     # folds a directory whose files agree into ONE entry, so `src/` with two
@@ -6079,10 +6513,12 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
                   "classified": len(kept), "paths": len(walked),
                   "misplaced": len(misplaced),
                   "review_required": len(review)})
-    if settled:
-        # Only when there is one, so that no other leg's entry changes.
-        entry[ANSWERED] = settled
-    return entry, misplaced, review, submodules, recorded
+    for key, said in ((ANSWERED, settled), (EMPTY_GITMODULES, empty),
+                      (UNSLASHED, unslashed_rows(answers, role, rel, paths))):
+        if said:
+            # Only when there is one, so that no other leg's entry changes.
+            entry[key] = said
+    return entry, misplaced, review, submodules, recorded + against
 
 
 def placement_policy(ctx: Context, policy_path: Path) -> tuple:
@@ -6474,10 +6910,10 @@ def moved_alone(adopt, detail: dict) -> bool:
     registers what moved in is the policy's question only because the row
     still names the other leg, so it goes with the move -- where every
     submodule that leg keeps is recorded there or moved in, and every name
-    in it could be read. So does the `.gitmodules` a plain `git rm` leaves,
-    tracked and empty, in the leg a moved submodule LEFT, where that leg now
-    keeps no submodule at all (#525). Anything else in the wrong leg,
-    or asked, keeps the plan as the NEXT.
+    in it could be read. So does the `.gitmodules` left in the leg a moved
+    submodule LEFT, where that leg now keeps no submodule at all (#525); the
+    empty one a plain `git rm` leaves there is no question at all (#655).
+    Anything else in the wrong leg, or asked, keeps the plan as the NEXT.
     """
     misplaced = detail["misplaced"]
     if not misplaced or not all(row.get(MOVED) for row in misplaced):
@@ -6910,8 +7346,13 @@ def detached(path: Path, git_dir: Path | None = None) -> bool | None:
     return proc.returncode == 1
 
 
-def is_this_member(sibling: Path, row: dict) -> bool:
-    """Does the directory beside the holder CLAIM to be this member?
+def is_this_member(manifest: object, row: dict) -> bool:
+    """Does the `project.yaml` of the clone beside the holder, as
+    `Context._read` gave it, CLAIM to be this member?
+
+    READ ONCE, BY `working_clone`, which asks `verify_sibling`'s `id`
+    question of the same reading first, and asks this only of a directory
+    with a `.git` of its own (#669).
 
     `scripts/siblings.py::verify_sibling` asks this before it will touch a
     directory, and for the same reason: a repository that happens to sit at
@@ -6926,9 +7367,6 @@ def is_this_member(sibling: Path, row: dict) -> bool:
     repository carries exactly this manifest and is still not the working
     clone. `working_clone` below puts the two back together (#146).
     """
-    if not (sibling / ".git").exists():
-        return False
-    manifest = Context._read(sibling / PROJECT_MANIFEST)
     if not isinstance(manifest, dict):
         return False
     if manifest.get("kind") != "project-manifest":
@@ -6985,12 +7423,23 @@ def origin_url(path: Path) -> str:
 
 
 def submodule_config(root: Path) -> dict:
-    """`{submodule name: {field: value}}` out of the holder's `.gitmodules`.
+    """`{submodule name: {field: value}}` out of the holder's `.gitmodules`:
+    each section's `path` and `url`, the later value winning as git reads
+    the file.
 
     GIT'S OWN PARSER, never a reader of this file's own: `.gitmodules` is
     config syntax, it ESCAPES a backslash on the way in -- a Windows path is
     stored `D:\\\\a\\\\...` -- and reading it as text is how a report ends up
     quoting a url nobody has.
+
+    THE WORKING TREE'S FILE ALONE, as `make siblings` reads it, and read as
+    `gitmodules_entry` reads each copy git reads: `gitmodules_listing`
+    (#668). The `--get-regexp` listing this split at the first space and at
+    every line break `str.splitlines` knows read a section named `members/My
+    IRRS`, or a url holding NEL or U+2028, as no url or one cut short, and
+    under a UTF-8 locale it held no section whose name is not UTF-8. The
+    member's clone beside the holder was then a stranger, and `make
+    siblings` fetches into it.
 
     AND IT IS READ AS `make siblings` READS IT: a byte that is not UTF-8 is
     replaced, which is `siblings.py::submodule_urls`'s `errors="replace"`
@@ -6999,10 +7448,10 @@ def submodule_config(root: Path) -> dict:
     so a member mounted from a directory named in a legacy code page, or a
     hand-edited `.gitmodules`, has one that is not text, and read through
     `git_out`'s strict decode it raised a `UnicodeDecodeError` that the
-    `except` below does not name -- it is a `ValueError`, neither a
+    `except` there did not name -- it is a `ValueError`, neither a
     `Refusal` nor an `OSError` -- so `--root` ended in a traceback, exit 1,
     which is also the code of a finding, with no verdict. The bytes are
-    asked for, so nothing is decoded before this function says how.
+    asked for, and `gitmodules_listing` says how they are decoded.
 
     THE URL IS KEPT, NOT DROPPED. The row exists to agree with `make
     siblings` about one directory (#146): a clone whose own `origin` is the
@@ -7018,20 +7467,11 @@ def submodule_config(root: Path) -> dict:
     is COMPARED with `origin_url`'s reading of a clone's remote, which is
     the replacement (#385): the same bytes read two ways are two strings,
     so a clone made from this very url would stop being the member's
-    working clone. It is also what the row PRINTS, and a lone surrogate is
-    a string no UTF-8 stream can write.
+    working clone.
     """
     fields: dict = {}
-    try:
-        raw = git_out(["config", "-f", str(root / ".gitmodules"),
-                       "--get-regexp", r"^submodule\..*\.(path|url)$"],
-                      cwd=root, binary=True)
-    except (Refusal, OSError):
-        return fields
-    listing = raw.decode("utf-8", "replace").strip()
-    for line in listing.splitlines():
-        key, _, value = line.partition(" ")
-        name, _, field = key[len("submodule."):].rpartition(".")
+    listing = gitmodules_listing(root, ["--file", ".gitmodules"])
+    for name, field, value in submodule_keys(listing or ""):
         fields.setdefault(name, {})[field] = value
     return fields
 
@@ -7065,15 +7505,22 @@ def mounted_from(root: Path, rel: str, repository: str) -> str:
     to resolve it against is handed back as it is: it then matches nothing,
     and the row's answer rests on the `repository:` comparison alone --
     which is the state `verify_sibling` is in for the same holder.
+
+    THE LAST SECTION THAT GIVES `rel` A URL WINS, as git reads the file,
+    each later value overwriting the one before, and as
+    `siblings.py::submodule_urls` maps it (#668). The first named a remote
+    that `git submodule update` and `make siblings` both pass over.
     """
+    url = None
     for name, mount in submodule_config(root).items():
         # A submodule's NAME is its path unless somebody mounted it by hand
         # under another one, which git allows and this reads rather than
         # assumes.
-        if mount.get("path", name) != rel or not mount.get("url"):
-            continue
-        return resolved_remote(mount["url"], origin_url(root))
-    return f"https://github.com/{repository}.git"
+        if mount.get("path", name) == rel and mount.get("url"):
+            url = mount["url"]
+    if url is None:
+        return f"https://github.com/{repository}.git"
+    return resolved_remote(url, origin_url(root))
 
 
 def same_repository_here(one: str, two: str) -> bool:
@@ -7126,8 +7573,9 @@ def same_repository_here(one: str, two: str) -> bool:
 
 
 def working_clone(sibling: Path, row: dict,
-                  remote: str) -> tuple[str | None, str | None]:
-    """`(the working clone beside the holder, what is there instead)`.
+                  remote: str) -> tuple[str, str | None]:
+    """`(what the clone at `sibling` is to this member, the origin found
+    there when it is another remote's)`, for a directory with a `.git`.
 
     BOTH OF `verify_sibling`'S QUESTIONS, WHICH IS THE POINT (#146). The
     manifest says which project a directory is; only `origin` says which
@@ -7175,15 +7623,83 @@ def working_clone(sibling: Path, row: dict,
     THE ORIGIN IS REDACTED ON THE WAY OUT. The comparisons above are on the
     raw value; what a row prints and `--json` carries must not be somebody's
     token (Codex and Copilot, PR #147).
+
+    AND IN `verify_sibling`'S ORDER, ONE WORD PER ANSWER (#669). The origin
+    is asked FIRST, whatever the manifest says, as `make siblings` asks it:
+    `wrong-origin`. Then the id `project_id` reads, by `verify_sibling`'s
+    own comparison: `wrong-project`. A clone at the right origin that it
+    passes is fetched as the member, but it is counted here only when its
+    `project.yaml` CLAIMS to be this member (`is_this_member`), so one that
+    does not is `unidentified`, and the rest are the `working-clone`.
     """
-    if not is_this_member(sibling, row):
-        return None, None
     origin = origin_url(sibling)
     repository = str(row.get("repository") or "")
-    if origin and (same_repository_here(origin, remote)
-                   or (repository and same_repository(origin, repository))):
-        return sibling.as_posix(), None
-    return None, redacted(origin) if origin else "(no origin)"
+    if not origin or not (same_repository_here(origin, remote)
+                          or (repository
+                              and same_repository(origin, repository))):
+        return "wrong-origin", redacted(origin) if origin else "(no origin)"
+    manifest = Context._read(sibling / PROJECT_MANIFEST)
+    if (isinstance(manifest, dict)
+            and str(manifest.get("id")) != str(row.get("id"))):
+        return "wrong-project", None
+    if not is_this_member(manifest, row):
+        return "unidentified", None
+    return "working-clone", None
+
+
+def unclonable(sibling: Path) -> str | None:
+    """What stands at `sibling`, a path with no `.git` of its own, that
+    nothing can be cloned into: `files` (a folder with something in it),
+    `file` (anything that is not a folder) or `unlistable` (a folder this
+    process cannot list). None for nothing at all, or an empty folder.
+
+    A FOLDER THAT CANNOT BE LISTED IS NOT EMPTY (#669). A directory that
+    can be entered and not listed (mode `0311`, or `711`, which is common
+    for another user's directory) raised `PermissionError` out of
+    `iterdir`, and the `members` row became a FINDING that the check could
+    not be run, so a COMPLIANT holder read DRIFTED, exit 1. Nobody can say
+    it is empty, and `git clone` refuses a folder it cannot read, so it is
+    a slot nothing is cloned into.
+    """
+    try:
+        if not sibling.exists():
+            return None
+        if not sibling.is_dir():
+            return "file"
+        return "files" if any(sibling.iterdir()) else None
+    except OSError:
+        return "unlistable"
+
+
+def sibling_slot(root: Path, sibling: Path, row: dict,
+                 remote: str) -> tuple[str, str | None]:
+    """`(what stands at ../<Project>, the origin found there when it is
+    another remote's)`, in `siblings.py::place`'s order (#669).
+
+    The holder itself (`is-the-holder`), then a path nothing can be cloned
+    into (`not-a-clone`, `unclonable`), then nothing or an empty folder
+    (`absent`, the only slot `make siblings` clones into), and then a clone,
+    which `working_clone` answers. This RESTATES `place`'s order, as
+    `working_clone` restates `verify_sibling`'s questions (#146), and not
+    the parent-folder rule `make siblings` asks before either, which the row
+    only names.
+
+    A FILE, OR A FOLDER THAT CANNOT BE LISTED OR ENTERED, IS `not-a-clone`
+    TOO: nothing can be cloned into it. `make siblings` itself ends in a
+    traceback on each today (`siblings.py:558`, #735), so the row says what
+    is there and nothing of what `make siblings` does with it
+    (`beside_sentence`). A folder that cannot be entered cannot be asked
+    for its `.git` either, so that question's `OSError` reads "no `.git`".
+    """
+    if sibling == root:
+        return "is-the-holder", None
+    try:
+        present = (sibling / ".git").exists()
+    except OSError:
+        present = False
+    if present:
+        return working_clone(sibling, row, remote)
+    return ("not-a-clone" if unclonable(sibling) else "absent"), None
 
 
 def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
@@ -7207,6 +7723,9 @@ def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
     reports no pin at all rather than a comparison that would fail for the
     wrong reason.
 
+    WHAT STANDS AT `../<Project>` IS `sibling` (`sibling_slot`, #669), so
+    a caller reads a word rather than parsing the row's sentence.
+
     Split out of `check_members` for #134.
     """
     project = str(row.get("project") or "?")
@@ -7223,11 +7742,12 @@ def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
     loose = detached(mount) if populated else None
     sibling = ctx.root.parent / project
     remote = mounted_from(ctx.root, rel, str(row.get("repository") or ""))
-    clone, elsewhere = working_clone(sibling, row, remote)
+    beside, elsewhere = sibling_slot(ctx.root, sibling, row, remote)
+    clone = sibling.as_posix() if beside == "working-clone" else None
     return {"project": project, "path": rel, "pin": pinned,
             "populated": populated, "head": head, "own_git": own_git,
             "unborn": unborn, "detached": loose,
-            "mounted_from": redacted(remote),
+            "mounted_from": redacted(remote), "sibling": beside,
             "working_clone": clone, "other_origin": elsewhere}
 
 
@@ -7246,22 +7766,26 @@ def member_problem(entry: dict) -> str | None:
     branch in `check_members` that records it says at length why the standard
     does not refuse a holder its own `family.py add` has just made.
 
+    THE PATH, THE PROJECT AND THE BRANCH ARE SPELLED (#673): they are a
+    manifest's and git's text, printed as `siblings.py` prints them.
+
     Split out of `check_members` for #134.
     """
+    path = spelled(entry["path"])
     if not entry["populated"]:
-        return (f"{entry['path']}: not populated -- the pinned copy is an "
+        return (f"{path}: not populated -- the pinned copy is an "
                 "unbootstrapped submodule")
     if not entry.get("own_git", True):
-        return (f"{entry['path']}: populated, but with no .git of its own, so "
+        return (f"{path}: populated, but with no .git of its own, so "
                 "git cannot read a HEAD in it")
     if entry.get("unborn"):
-        return (f"{entry['path']}: HEAD names the branch {entry['unborn']}, "
+        return (f"{path}: HEAD names the branch {spelled(entry['unborn'])}, "
                 "which has no commit")
     if entry["pin"] is None:
-        return (f"{entry['project']}: the row carries no 40-hex "
+        return (f"{spelled(entry['project'])}: the row carries no 40-hex "
                 "`pin.commit` to compare against")
     if entry["head"] != entry["pin"]:
-        return (f"{entry['path']}: checked out at "
+        return (f"{path}: checked out at "
                 f"{(entry['head'] or '?')[:12]}, pinned at "
                 f"{entry['pin'][:12]}")
     return None
@@ -7286,6 +7810,69 @@ def url_less_members(root: Path, rows: list) -> list[str]:
             and submodule_url(root, entry["path"])[1] is None]
 
 
+#: The folder `make siblings` places the working clones from, as the row
+#: words it (#605). EXACTLY, because `parent_folder_warning` compares the
+#: name with `==` on every disk, so on macOS and Windows a holder in
+#: `inkrouter` is refused for `InkRouter` (#669); `make siblings` prints the
+#: rename itself.
+FAMILY_FOLDER = "a folder named exactly after its repository (case included)"
+
+#: `(what stands at ../<Project>, the word make siblings says it in)` for each
+#: `sibling` state that is not the working clone and not a slot it clones
+#: into (#669). `wrong-origin` names the two urls (`beside_sentence`); an
+#: `unidentified` clone has no word, because `make siblings` fetches it as
+#: the member. `CLONE FAILED` is not predicted: only a run can find it.
+BESIDE_THE_HOLDER = {
+    "is-the-holder": ("is this holder itself", "IS THE HOLDER"),
+    "not-a-clone": ("is neither a git clone nor an empty folder",
+                    "NOT A CLONE"),
+    "wrong-origin": ("", "WRONG ORIGIN"),
+    "wrong-project": ("is a clone of the member's remote whose project.yaml "
+                      "and the family's row do not record the same id",
+                      "WRONG PROJECT"),
+    "unidentified": ("is a clone of the member's remote with no "
+                     "project.yaml that says it is this member", ""),
+}
+
+#: What stands at a `not-a-clone` slot `make siblings` cannot read today, as
+#: `unclonable` names it: it ends in a traceback on each (#735), so the row
+#: says what is there and no word of what `make siblings` does with it.
+UNREADABLE_BESIDE = {"file": "is a file, not a folder",
+                     "unlistable": "is a folder that cannot be listed"}
+
+
+def beside_sentence(ctx: Context, entry: dict) -> str:
+    """One member's sentence about `../<Project>`, for a `sibling` state in
+    `BESIDE_THE_HOLDER`: what stands there, and what `make siblings` does
+    with it, in its own word (#669).
+
+    EVERY VALUE IT QUOTES IS SPELLED (#673), as `verify_sibling` spells the
+    same four in its WRONG ORIGIN finding: the project, the directory, the
+    origin and the mount url are a manifest's, a disk's and git's text, and
+    an ESC or a CR in one reached the terminal as the control it is.
+    `--json` keeps them raw: `json.dumps` escapes them.
+
+    A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone` with no
+    word from `make siblings`, which ends in a traceback on it today (#735):
+    the sentence stops at what stands there (`UNREADABLE_BESIDE`).
+    """
+    state = entry["sibling"]
+    where = ctx.root.parent / entry["project"]
+    named = f"{spelled(entry['project'])}: {spelled(where)}"
+    found, word = BESIDE_THE_HOLDER[state]
+    how = unclonable(where) if state == "not-a-clone" else None
+    if how in UNREADABLE_BESIDE:
+        return (f"{named} {UNREADABLE_BESIDE[how]}, so it is not counted as "
+                "its working clone")
+    if state == "wrong-origin":
+        found = (f"is a clone of {spelled(entry['other_origin'])}, not of "
+                 f"{spelled(entry['mounted_from'])}")
+    does = (f"calls the same directory {word} and leaves it exactly as it is"
+            if word else "fetches it as the member, and nothing else")
+    return (f"{named} {found}, so it is not counted as its working clone "
+            f"(`make siblings`, from a holder in {FAMILY_FOLDER}, {does})")
+
+
 def members_verdict(ctx: Context, detail: dict, members_dir: str,
                     problems: list) -> Row:
     """What the members add up to: the one finding, or the two OK wordings.
@@ -7296,49 +7883,45 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     branch at its pin is a state worth a person's eye rather than a verdict.
     Both of those are therefore said inside an `ok` row, at length, instead
     of being left out of a report that would then look cleaner than the
-    machine it ran on. A directory beside the holder that carries the
-    member's manifest but was cloned from ANOTHER remote is the third of
-    them (#146): `working_clone` declines to count it, and this says which
-    origin it found, because a row that only said "no working clone" would
-    leave a person staring at a directory of that exact name.
+    machine it ran on. A directory beside the holder that `make siblings`
+    will not clone into and that is not the member's working clone is the
+    third of them (#146): `working_clone` declines to count it, and this
+    says what stands there and what `make siblings` will do with it (#669),
+    because a row that only said "no working clone" would leave a person
+    staring at a directory of that exact name.
 
     Split out of `check_members` for #134.
     """
     rows = detail["members"]
     on_a_branch = detail["on_a_branch"]
-    siblings_absent = detail["without_working_clone"]
-    # WHAT `make siblings` DOES WITH A STRANGER IS CONDITIONAL, AND THE WORDS
-    # SAY ON WHAT (#605). Since #578 it asks about the holder's parent folder
-    # before it looks at any member, so it calls this directory WRONG ORIGIN
-    # only from a holder in a folder named after its repository (or in one a
-    # link of that name beside it leads to; the words keep to the shorter,
-    # plainer case); from anywhere else it clones nothing and never reaches
-    # the directory. THE REPOSITORY'S NAME, NOT THE FAMILY'S `name:`: the
-    # rule takes the basename of the holder's `repository:`, and `name:` is a
-    # display name that may differ (`family_folder_name`, measured on a
-    # holder made with `--family Quill --name QuillWorks`). The rule lives in
-    # the holder's pinned `scripts/siblings.py` and is not copied here, where
-    # a copy would drift: the words name the condition, and `make siblings`
-    # itself prints the exact `mv` when it does not hold.
-    strangers = [f"{entry['project']}: {ctx.root.parent / entry['project']} "
-                 f"is a clone of {entry['other_origin']}, not of "
-                 f"{entry['mounted_from']}, so it is not counted as its "
-                 "working clone (`make siblings`, from a holder in a folder "
-                 "named after its repository, calls the same directory "
-                 "WRONG ORIGIN and leaves it exactly as it is)"
-                 for entry in rows if entry["other_origin"]]
+    # WHAT `make siblings` DOES WITH THE DIRECTORY IS CONDITIONAL, AND THE
+    # WORDS SAY ON WHAT (#605). Since #578 it asks about the holder's parent
+    # folder before it looks at any member, so it calls a directory WRONG
+    # ORIGIN, or anything else, only from a holder in a folder named after
+    # its repository (or in one a link of that name beside it leads to; the
+    # words keep to the shorter, plainer case); from anywhere else it clones
+    # nothing and never reaches the directory. THE REPOSITORY'S NAME, NOT
+    # THE FAMILY'S `name:`: the rule takes the basename of the holder's
+    # `repository:`, and `name:` is a display name that may differ
+    # (`family_folder_name`, measured on a holder made with `--family Quill
+    # --name QuillWorks`). The rule lives in the holder's pinned
+    # `scripts/siblings.py` and is not copied here, where a copy would
+    # drift: the words name the condition, and `make siblings` itself prints
+    # the exact `mv` when it does not hold.
+    beside = [beside_sentence(ctx, entry) for entry in rows
+              if entry["sibling"] in BESIDE_THE_HOLDER]
     if problems:
-        # A STRANGER IS SAID ON THE RED PATH TOO, AND IS NOT ONE OF THE
-        # FINDINGS. It was not, until Codex pointed out on PR #147 that a
-        # holder with ONE unbootstrapped mount returns here and says nothing
-        # about the directory beside it -- so the person bootstraps, re-runs,
-        # and only then hears about a clone that has been the wrong one all
-        # along. The pinned copies are still the whole of what makes this row
-        # red; the sentence says so.
+        # WHAT STANDS BESIDE THE HOLDER IS SAID ON THE RED PATH TOO, AND IS
+        # NOT ONE OF THE FINDINGS. It was not, until Codex pointed out on PR
+        # #147 that a holder with ONE unbootstrapped mount returns here and
+        # says nothing about the directory beside it -- so the person
+        # bootstraps, re-runs, and only then hears about a clone that has
+        # been the wrong one all along. The pinned copies are still the whole
+        # of what makes this row red; the sentence says so.
         reason = "; ".join(problems)
-        if strangers:
+        if beside:
             reason += ("; and, though it is not what fails this row: "
-                       + "; ".join(strangers))
+                       + "; ".join(beside))
         # THE NEXT IS CHOSEN BY WHAT IS WRONG, as `check_legs`' is and BY ITS
         # RULES (`checkout_reach`, #414), and the members that a CHECKOUT
         # cures win over the ones none does (#276). An empty mount, one with
@@ -7484,17 +8067,19 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     note = f"{len(rows)} member(s) mounted at their pins"
     if on_a_branch:
         note += ("; on a BRANCH rather than detached: "
-                 + ", ".join(on_a_branch)
+                 + ", ".join(spelled(path) for path in on_a_branch)
                  + " (a fresh `clone --recurse-submodules` of this holder is "
                    "detached; `family.py add` leaves a branch behind)")
-    # AND ON THE GREEN PATH IT IS SAID BEFORE THE ABSENCE IT EXPLAINS.
-    # Every one of these is also in `siblings_absent` -- it is not counted --
-    # and "there is no working clone for IRRS" on its own, about a directory
-    # named `IRRS` that is sitting right there, is the sentence that sends a
+    # AND ON THE GREEN PATH IT IS SAID, MEMBER BY MEMBER. Every one of these
+    # is also in `without_working_clone` -- it is not counted -- and "there
+    # is no working clone for IRRS" on its own, about a directory named
+    # `IRRS` that is sitting right there, is the sentence that sends a
     # person looking for a bug in this command (#146).
-    if strangers:
-        note += "; " + "; ".join(strangers)
-    if siblings_absent:
+    if beside:
+        note += "; " + "; ".join(beside)
+    placed = [spelled(entry["project"]) for entry in rows
+              if entry["sibling"] == "absent"]
+    if placed:
         # THE NOTE SAYS WHEN `make siblings` PLACES THEM, NOT THAT IT DOES
         # (#605). Since #578 it asks about the holder's parent folder before
         # it clones anything: from one named after the holder's REPOSITORY
@@ -7506,16 +8091,23 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
         # The rule is the holder's own, in its pinned `scripts/siblings.py`,
         # and is not tested here -- a second copy would drift -- so the words
         # are the same whichever folder this holder is in.
+        #
+        # AND IT NAMES ONLY THE SLOTS IT CLONES INTO (#669): nothing, or an
+        # empty folder. It named every member with no working clone, so one
+        # row said both that `make siblings` places IRRS and that it leaves
+        # IRRS exactly as it is; every other one is said above, in the word
+        # `make siblings` says it in.
         return Row("members", "members", OK,
                    f"{note}; no working clone beside the holder for "
-                   + ", ".join(siblings_absent)
-                   + " (`make siblings` places them when the holder is in a "
-                     "folder named after its repository, or in one a link "
-                     "of that name beside it leads to; with the holder "
-                     "anywhere else it clones nothing and prints the `mv` "
-                     "that moves it into such a folder; the pinned copy "
-                     f"under {members_dir}/ is detached by design)", None,
-                   detail)
+                   + ", ".join(placed)
+                   + " (`make siblings` places them when the holder is in "
+                     f"{FAMILY_FOLDER}, or in one a link of that name beside "
+                     "it leads to; with the holder anywhere else it clones "
+                     "nothing and prints the `mv` that moves it into such a "
+                     f"folder; the pinned copy under {spelled(members_dir)}/ "
+                     "is detached by design)", None, detail)
+    if beside:
+        return Row("members", "members", OK, note, None, detail)
     return Row("members", "members", OK,
                f"{note}, each with a working clone beside the holder", None,
                detail)
@@ -7528,8 +8120,8 @@ def check_members(ctx: Context) -> Row:
     `members/<Project>` inside the holder is PINNED AND DETACHED — that is
     what `bootstrap` places and what `validate-family.py` reads — and the
     sibling beside the holder is where a person works. So the mount is asked
-    whether it is detached AT the pin, and the sibling is only asked whether
-    it exists and is this project.
+    whether it is detached AT the pin, and the sibling is only asked what
+    stands there, as `make siblings` asks it (#669).
 
     FINDING THE STATE IS `member_state`'s, JUDGING IT IS `member_problem`'s
     AND THE WORDING IS `members_verdict`'s, so that this loop reads as the
@@ -7751,7 +8343,7 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     on its own name alone, the same fact `the way in` row now reads it by
     (Copilot, PR #110).
     """
-    script = ctx.shape / "scripts" / "validate-repository-naming.py"
+    script = ctx.shape / NAMING_SCRIPT
     names = [ctx.root.name]
     remote = repo_local_origin_name(ctx.root)
     if remote and remote not in names:
@@ -7767,12 +8359,18 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     # exactly what was typed. `--` is argparse's own end-of-options marker,
     # not a shell's, and `scripts/validate-repository-naming.py`'s parser
     # accepts it because every `argparse.ArgumentParser` does by default.
-    code, quoted, whole = run_validator(ctx, script,
-                                        ["--explain", "--", *names])
+    code, quoted, whole, refusal = run_naming_script(
+        ctx, script, ["--explain", "--", *names])
     detail = {"names": names, "origin": remote, "exit": code,
               "explain": ascii_text(whole).strip().splitlines()[:40]}
     spelled = " ".join(quote_arg(name) for name in names)
     command = f"{PYTHON} {quote_arg(script)} --explain -- {spelled}"
+    # A CHECKOUT WHOSE OWN POLICY DOES NOT LOAD SAID NOTHING ABOUT THE NAME
+    # (#678). This row quoted the script's `REFUSED` as the name's finding;
+    # the verdict stays NOT A SHAPE ROOT, and the row says whose file it is,
+    # as `check_naming`'s does.
+    if refusal is not None:
+        return naming_policy_row(refusal, command, detail, names)
     # A SCRIPT THAT CRASHED SAID NOTHING ABOUT THE NAME (#410). A directory
     # whose name is not UTF-8 made the script raise as it printed that name,
     # and this row quoted `UnicodeEncodeError: ...` as the name's finding.
@@ -7781,6 +8379,10 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     crash = crashed(code, whole)
     if crash is not None:
         return naming_crashed_row(code, crash, command, detail, names)
+    if code >= 2:
+        return Row("naming", "naming", FINDING,
+                   f"{', '.join(names)}: {naming_refuses_words(code, quoted)}",
+                   command, detail)
     reason = f"{', '.join(names)}: " + (
         "classifies under the naming policy" if code == 0
         else (quoted or "matches no family in the policy"))
