@@ -1565,6 +1565,35 @@ def family_landing(parent, family: str):
     return parent / family
 
 
+def family_manifest_here(shape_root: Path, parent: Path) -> dict | None:
+    """`<parent>/<basename>/family.yaml` as a mapping of `kind:
+    family-manifest`, or None where there is no such manifest.
+
+    THE ONE READ BOTH QUESTIONS BELOW ASK OF THE SAME FILE (#696):
+    `family_folder_here`, which says which family the folder IS, and
+    `display_name_folder_here`, which says only whether the manifest's
+    `name:` is the folder's. Split out of the first so that a refusal and a
+    plan line cannot read the file two ways.
+
+    ANY read failure means None, as the advice above it needs: a manifest
+    that is half-written, unreadable, or a YAML shape nobody expected is not
+    a reason to refuse a scaffold that never needed it.
+    """
+    name = parent.name
+    if not name:
+        return None
+    manifest = parent / name / FAMILY_MANIFEST
+    if not manifest.is_file():
+        return None
+    try:
+        data = shape_scripts(shape_root).load_yaml(manifest)
+    except Exception:  # noqa: BLE001  (advice rather than a gate; see above)
+        return None
+    if not isinstance(data, dict) or data.get("kind") != FAMILY_KIND:
+        return None
+    return data
+
+
 def family_folder_here(shape_root: Path, parent: Path) -> str:
     """The family whose FOLDER `parent` is, or "" for a plain directory.
 
@@ -1592,28 +1621,43 @@ def family_folder_here(shape_root: Path, parent: Path) -> str:
     `repository:`, which is `family_folder_name`'s answer for the same
     manifest, and `name:` only where there is no `repository:` to ask. A
     manifest whose repository is not this folder's name is another family's,
-    whatever its `name:` says.
+    whatever its `name:` says. `--family` typed from inside such a folder is
+    still refused as a family nested in a family (`display_name_folder_here`).
 
-    ANY read failure means "not a family folder". This is advice printed in a
-    plan, so a manifest that is half-written, unreadable, or a YAML shape
-    nobody expected must not refuse a scaffold that never needed it.
+    ANY read failure means "not a family folder" (`family_manifest_here`).
+    This is advice printed in a plan, so a manifest that is half-written,
+    unreadable, or a YAML shape nobody expected must not refuse a scaffold
+    that never needed it.
     """
-    name = parent.name
-    if not name:
-        return ""
-    manifest = parent / name / FAMILY_MANIFEST
-    if not manifest.is_file():
-        return ""
-    try:
-        data = shape_scripts(shape_root).load_yaml(manifest)
-    except Exception:  # noqa: BLE001  (advice rather than a gate; see above)
-        return ""
-    if not isinstance(data, dict) or data.get("kind") != FAMILY_KIND:
+    data = family_manifest_here(shape_root, parent)
+    if data is None:
         return ""
     repository = str(data.get("repository") or "")
     named = (shape_scripts(shape_root).repo_basename(repository) if repository
              else str(data.get("name") or ""))
-    return name if named == name else ""
+    return parent.name if named == parent.name else ""
+
+
+def display_name_folder_here(shape_root: Path, parent: Path) -> str:
+    """The folder's name where `<parent>/<basename>/family.yaml` is a family
+    manifest whose `name:` is that name, or "" - THE OLD DISPLAY-NAME LAYOUT
+    (#696), which `family_folder_here` no longer detects.
+
+    ASKED ONLY BY THE REFUSAL, NEVER BY THE PLAN. `QuillWorks/QuillWorks`
+    holding `repository: <org>/Quill` is not a family folder any more: the
+    folder is named after the holder's repository, and `siblings.py` refuses
+    this one. But a person standing in one who types `--family Quill` (the
+    holder's own name, which is what `--help` asks for) or `--family Other`
+    would land `QuillWorks/Quill/<Project>`, a family filed inside a family,
+    which is what `resolve_family` refuses and what it refused here before
+    #696 stopped detecting the layout. The refusal is kept and the detection
+    is not: no plan line and no `family.py add` are said for a folder `make
+    siblings` will not clone into, and the nested-family words are.
+    """
+    data = family_manifest_here(shape_root, parent)
+    if data is None:
+        return ""
+    return parent.name if str(data.get("name") or "") == parent.name else ""
 
 
 class Landing:
@@ -1672,14 +1716,21 @@ def resolve_family(opts: Options, shape_root: Path) -> Landing:
     # `Northwind/InkRouter/IRTS`: a member of one family filed inside
     # another, which is a layout no `family.yaml` can describe. Both names,
     # and both ways out - this tool moves nothing and asks for no --force.
-    if opts.family and standing and standing != opts.family:
+    #
+    # THE OLD DISPLAY-NAME LAYOUT IS REFUSED AS WELL AS EVER, THOUGH IT IS NO
+    # LONGER DETECTED (#696): `standing` is "" for `QuillWorks/QuillWorks`
+    # holding `repository: <org>/Quill`, so no plan line is said for it, but
+    # a `--family` typed from inside it still names a second family inside
+    # the first, and this refused that before the detection moved.
+    nested = standing or display_name_folder_here(shape_root, parent)
+    if opts.family and nested and nested != opts.family:
         die("--family %s, but %s is the %s family folder (%s says so, with "
             "kind: %s). A family is never nested inside a family. Either "
             "`cd` out of %s first and re-run, or drop --family and let %s "
             "land beside %s's holder."
-            % (opts.family, parent, standing,
-               parent / standing / FAMILY_MANIFEST, FAMILY_KIND,
-               standing, opts.project, standing))
+            % (opts.family, parent, nested,
+               parent / nested / FAMILY_MANIFEST, FAMILY_KIND,
+               nested, opts.project, nested))
 
     landing = family_landing(parent, family)
     if not family:

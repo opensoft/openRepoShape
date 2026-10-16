@@ -16,6 +16,10 @@ holder's README used to describe and `siblings.py` refuses, WAS recognised.
 
 The rule now is `siblings.py`'s `family_folder_name`: the basename of the
 manifest's `repository:`, and `name:` only where there is no `repository:`.
+That hand-built old layout is therefore no longer DETECTED (no plan line, no
+`family.py add`), but the nested-family REFUSAL is still asked of it, in
+main's words, because `--family Quill` typed from inside it would file one
+family inside another (`display_name_folder_here`).
 The rows go through the function itself (the fast ones) and through the
 whole run (the ones that read the plan a person reads), and one row builds
 its folder with the real `family.py init` so the fixture cannot drift from
@@ -88,6 +92,10 @@ LAYOUTS = [
     ("no-repository-name-agrees", "InkRouter", "InkRouter", None,
      "InkRouter"),
     ("no-repository-name-differs", "Quill", "QuillWorks", None, ""),
+    # `siblings.py` compares the basename as written, so setup does too: a
+    # different case, or a repository with a trailing slash, is no folder.
+    ("repository-case-differs", "quill", "Quill", "demoorg/Quill", ""),
+    ("repository-trailing-slash", "Quill", "QuillWorks", "demoorg/Quill/", ""),
 ]
 
 
@@ -121,8 +129,9 @@ def test_the_plan_says_the_folder_init_made_is_a_family_folder(tmp_path):
 def test_the_old_display_name_layout_is_a_plain_directory(tmp_path):
     """`QuillWorks/QuillWorks` holding `repository: demoorg/Quill`: the
     manifest's repository is not this folder's name, so it is another
-    family's folder and not this one's, and the run is what it was - no
-    plan line, no `family.py add`, the clone beside the folder's content."""
+    family's folder and not this one's - no plan line, no `family.py add`,
+    the clone beside the folder's content. What `--family` typed from
+    inside it does is the next test's."""
     folder = family_folder(tmp_path / "work", "QuillWorks", "QuillWorks",
                            "demoorg/Quill")
     result = setup_in(folder, tmp_path)
@@ -134,22 +143,57 @@ def test_the_old_display_name_layout_is_a_plain_directory(tmp_path):
     assert (folder / "Sample" / "project.yaml").is_file()
 
 
-def test_a_different_family_is_refused_inside_the_folder_init_made(tmp_path):
-    """The nested-family refusal, asked of the folder `init` made: `--family
-    Other` from inside `Quill/` would file one family inside another. Both
-    names, both ways out, and nothing created - as for a folder whose
-    `name:` is its repository."""
-    folder = family_folder(tmp_path / "work", "Quill", "QuillWorks",
-                           "demoorg/Quill")
-    result = setup_in(folder, tmp_path, "--family", "Other")
+#: `(id, folder, name:, repository:, --family)`: where a person stands, and
+#: the family they name from there. The first two stand in the folder
+#: `init --name` made, naming another family and naming the DISPLAY name
+#: (the likeliest mistake: main nested both, `Quill/Other/Sample` and
+#: `Quill/QuillWorks/Sample`, with three remotes). The last two stand in the
+#: hand-built old layout, which is not detected but is still refused.
+NESTED = [
+    ("init-layout-another-family", "Quill", "QuillWorks", "demoorg/Quill",
+     "Other"),
+    ("init-layout-the-display-name", "Quill", "QuillWorks", "demoorg/Quill",
+     "QuillWorks"),
+    ("old-layout-the-holders-own-name", "QuillWorks", "QuillWorks",
+     "demoorg/Quill", "Quill"),
+    ("old-layout-another-family", "QuillWorks", "QuillWorks",
+     "demoorg/Quill", "Other"),
+]
+
+
+@pytest.mark.parametrize("folder,name,repository,family",
+                         [row[1:] for row in NESTED],
+                         ids=[row[0] for row in NESTED])
+def test_a_family_is_refused_inside_a_family_folder(tmp_path, folder, name,
+                                                    repository, family):
+    """The nested-family refusal, in main's own words: both names, both ways
+    out, exit 2, and nothing created - asked of the folder `init` made and,
+    since #696 stopped detecting it, still asked of the old display-name
+    layout, where `--family Quill` or `--family Other` would otherwise file a
+    second family inside the first and make three repositories."""
+    stood_in = family_folder(tmp_path / "work", folder, name, repository)
+    result = setup_in(stood_in, tmp_path, "--family", family)
     assert result.returncode == 2, result.stderr + result.stdout
-    assert "--family Other" in result.stderr
-    assert "Quill family folder" in result.stderr
+    assert "--family %s, but " % family in result.stderr
+    assert "%s family folder" % folder in result.stderr
     assert "never nested inside a family" in result.stderr
-    assert "`cd` out of Quill" in result.stderr
-    assert "drop --family" in result.stderr
+    assert "`cd` out of %s" % folder in result.stderr
+    assert "drop --family and let Sample land beside %s's holder" % folder \
+        in result.stderr
     assert not (tmp_path / "remotes").exists()
-    assert not (folder / "Other").exists()
+    assert not (stood_in / family).exists()
+    assert not (stood_in / "Sample").exists()
+
+
+def test_a_manifest_of_another_name_refuses_nothing(tmp_path):
+    """The refusal asks the old layout only where the manifest's `name:` IS
+    the folder's: `Zephyr/Zephyr/family.yaml` holding `name: Other` is not a
+    family folder by either rule, so `--family Orbit` from inside it is the
+    plain-directory run it always was and lands one level down."""
+    folder = family_folder(tmp_path / "work", "Zephyr", "Other")
+    result = setup_in(folder, tmp_path, "--family", "Orbit")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (folder / "Orbit" / "Sample" / "project.yaml").is_file()
 
 
 def test_a_folder_made_by_family_py_init_with_a_name_is_detected(tmp_path):
