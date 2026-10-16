@@ -11,6 +11,10 @@ name: tests
 # "Option 1: keep a small Git Bash job for #596": the `tests-git-bash` job
 # below runs the launcher's and the installer's suites, and nothing else, on
 # Windows under Git Bash.
+#
+# The `package` job at the end runs no pytest. It builds the openreposhape
+# wheel and installs it with pipx, so what it checks needs PyPI (the build
+# backend, git-filter-repo; #563). The other jobs take only test tools there.
 
 on:
   push:
@@ -218,3 +222,139 @@ jobs:
       # before the suites' own nesting starts.
       - name: the launcher's and the installer's suites, under Git Bash
         run: python -m pytest -q -rA tests/test_openreposhape_command.py tests/test_install_sh.py --basetemp=${{ runner.temp }}\t
+
+  # THE openreposhape PACKAGE, BUILT AND INSTALLED AS A PERSON INSTALLS IT
+  # (#563). A JOB OF ITS OWN, AND NO PYTEST IN IT: the build backend
+  # `pyproject.toml` pins (hatchling) and git-filter-repo, the package's one
+  # dependency, both come from PyPI, and the suite in the `tests` job above
+  # never touches the network. What can be checked offline is checked there,
+  # on Linux like the rest of the suite since #597
+  # (`tests/test_openreposhape_package.py`); this job is what only a real
+  # build and a real pipx can say.
+  #
+  # UBUNTU, ON THE OLDEST PYTHON THE PACKAGE SUPPORTS, 3.9. The wheel is pure
+  # Python, one file for every system; the release workflow (#563's next
+  # pull request) installs it on Linux, macOS and Windows before it uploads
+  # anything.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      # The same two commits the other jobs pin.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: '3.9'
+
+      # TWICE, AT THE COMMIT'S OWN TIME, AND THE TWO MUST BE ONE FILE: a
+      # release uploads bytes it can build again. `--no-deps`, because the
+      # wheel is this package alone; git-filter-repo arrives with the install.
+      - name: build the wheel twice, and compare the two
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)"
+          export SOURCE_DATE_EPOCH
+          for out in a b; do
+            python -m pip wheel --disable-pip-version-check --no-deps \
+                --wheel-dir "$RUNNER_TEMP/dist-$out" .
+          done
+          cmp "$RUNNER_TEMP"/dist-a/*.whl "$RUNNER_TEMP"/dist-b/*.whl
+          sha256sum "$RUNNER_TEMP"/dist-a/*.whl
+
+      # EVERY FILE IN THE WHEEL BUT ITS METADATA IS THIS COMMIT'S OWN, BYTE
+      # FOR BYTE, read from git: the package's modules from `src/`, and
+      # `setup-project.py`, which the wheel carries so that `--preflight`
+      # runs before git is installed.
+      - name: the wheel holds this commit's files, byte for byte
+        run: |
+          python - "$RUNNER_TEMP"/dist-a/*.whl <<'EOF'
+          import subprocess, sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as wheel:
+              for name in wheel.namelist():
+                  if ".dist-info/" in name:
+                      continue
+                  source = ("setup-project.py"
+                            if name == "openreposhape/setup-project.py"
+                            else "src/" + name)
+                  committed = subprocess.run(
+                      ["git", "show", "HEAD:" + source],
+                      capture_output=True, check=True).stdout
+                  if wheel.read(name) != committed:
+                      sys.exit(f"{name} in the wheel is not {source} at HEAD")
+                  print(f"{name} = HEAD:{source}")
+          EOF
+
+      # pipx AS A PERSON RUNS IT, into directories of this job's own, and ON
+      # THE 3.9 ABOVE. Not the runner's own pipx with `--python`: that pipx
+      # runs on the image's Python and shares ONE pip with every environment
+      # it makes, a pip that no longer runs on 3.9 (`dataclass(slots=True)`,
+      # this job's first run, 2026-10-15). So pipx itself runs on 3.9, at
+      # 1.11.1, the newest release that installs there, and its shared pip
+      # is then one that 3.9 runs. Wheels only (`--only-binary :all:`), so
+      # installing pipx runs no package's setup script.
+      - name: install the wheel with pipx
+        run: |
+          set -euo pipefail
+          {
+            echo "PIPX_HOME=$RUNNER_TEMP/pipx/home"
+            echo "PIPX_BIN_DIR=$RUNNER_TEMP/pipx/bin"
+          } >> "$GITHUB_ENV"
+          export PIPX_HOME="$RUNNER_TEMP/pipx/home"
+          export PIPX_BIN_DIR="$RUNNER_TEMP/pipx/bin"
+          python -m pip install --disable-pip-version-check \
+              --only-binary :all: pipx==1.11.1
+          python -m pipx --version
+          python -m pipx install "$RUNNER_TEMP"/dist-a/*.whl
+          "$PIPX_HOME/venvs/openreposhape/bin/python" --version
+          ls -l "$PIPX_BIN_DIR"
+
+      # THE FIVE COMMANDS PIPX PLACED, AGAINST THIS COMMIT. A bare repository
+      # on disk holds it as `main`, which an unstamped build follows, so
+      # nothing is cloned from github.com. No git-filter-repo is on PATH, and
+      # the doctor's machine row must still find the one pipx installed
+      # beside the package: the PATH every command gives its children.
+      - name: run the commands pipx placed
+        env:
+          OPENREPOSHAPE_REPO: ${{ runner.temp }}/standard.git
+        run: |
+          set -euo pipefail
+          git init -q --bare --initial-branch=main "$OPENREPOSHAPE_REPO"
+          git push -q "$OPENREPOSHAPE_REPO" HEAD:refs/heads/main
+          export PATH="$PIPX_BIN_DIR:$PATH"
+          if command -v git-filter-repo; then
+            echo "::error::git-filter-repo is on PATH already, so this job cannot show the commands finding their own"
+            exit 1
+          fi
+          out="$RUNNER_TEMP/out"
+          mkdir -p "$out"
+          openRepoShape --version | tee "$out/version"
+          grep -q '^openRepoShape 0.0.0 (.* @ main)$' "$out/version"
+          openRepoShape --help >/dev/null
+          status=0
+          openRepoShape --install 2>"$out/install" || status=$?
+          cat "$out/install"
+          test "$status" -eq 2
+          grep -q 'pipx upgrade openreposhape' "$out/install"
+          openRepoShape --preflight --local-remote-dir "$RUNNER_TEMP/no-remotes"
+          git init -q "$RUNNER_TEMP/empty"
+          status=0
+          openRepoShape --doctor "$RUNNER_TEMP/empty" --json \
+              >"$out/doctor.json" || status=$?
+          test "$status" -eq 2
+          python - "$out/doctor.json" \
+              "$PIPX_HOME/venvs/openreposhape/bin/git-filter-repo" <<'EOF'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              report = json.load(handle)
+          print("verdict:", report["verdict"])
+          [machine] = [row for row in report["rows"] if row["id"] == "machine"]
+          found = machine["detail"]["git-filter-repo"]
+          print("machine row: git-filter-repo at", found)
+          if found != sys.argv[2]:
+              sys.exit(f"the doctor found git-filter-repo at {found!r}, "
+                       f"not at {sys.argv[2]!r}")
+          EOF
+          for tool in scaffold-project adopt-project update-shape shape-doctor; do
+            "$tool" --help >/dev/null
+          done

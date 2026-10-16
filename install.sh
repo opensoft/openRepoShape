@@ -41,7 +41,8 @@
 #      does not stay on the release tag (one older than v1.0.1 cannot record
 #      it): the lines above say which;
 #   2  refused before anything was installed: a version that is not a ref, no
-#      release found, a fetch that failed, or a file that is not the command.
+#      release found, a fetch that failed, a file that is not the command, or
+#      a command already there as a symbolic link (pipx's, #563).
 # git-filter-repo never changes it: only adopting needs it, and
 # `adopt-project.py` refuses with its own install command where it is missing.
 # What it changes is the summary (#595): `adoption:` says whether it is there
@@ -361,6 +362,20 @@ main() {
 	command -v curl >/dev/null 2>&1 ||
 		die "curl is not installed, and this installer fetches with it. Install curl, or install by hand with: gh api repos/$REPO/contents/openRepoShape -H 'Accept: application/vnd.github.raw' | bash -s -- --install"
 
+	# A LINK IS NOT A PLACE TO INSTALL TO (#563), and this installer says so
+	# itself, before anything is asked of the network. pipx places the
+	# openreposhape package's `openRepoShape` as a symbolic link in this same
+	# directory, and the command's `--install` copies with `cp`, which writes
+	# through a link into the package's own environment. The command refuses
+	# such a target too, but only from the release that added the check: the
+	# release named here may be older, so its refusal cannot be relied on.
+	bin_dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
+	target="$bin_dir/openRepoShape"
+	[[ ! -L "$target" ]] ||
+		die "$target is a symbolic link, so nothing was installed: pipx places the openreposhape package's openRepoShape that way, and installing this one through the link would overwrite the package's command. Use one installer or the other:
+    keep the package's command, and update it with: pipx upgrade openreposhape
+    or remove the link (pipx uninstall openreposhape, or rm $target), then run this line again."
+
 	# 1. THE RELEASE.
 	if [ -n "$version" ]; then
 		checked_version "$version" "the version"
@@ -404,8 +419,6 @@ main() {
 		die "$launcher_url is not the openRepoShape command (its first line is not #!/usr/bin/env bash, or it has no INSTALLABLES line), so nothing was installed."
 	say "fetch: $launcher_url"
 
-	bin_dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
-	target="$bin_dir/openRepoShape"
 	say "install: OPENREPOSHAPE_REF=$version OPENREPOSHAPE_RECORD_REF=1 openRepoShape --install"
 	OPENREPOSHAPE_REF="$version" OPENREPOSHAPE_RECORD_REF=1 \
 		"${BASH:-bash}" "$WORKDIR/openRepoShape" --install ||
