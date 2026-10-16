@@ -1335,6 +1335,23 @@ def head_holds(root: Path, relative: str) -> bool:
     return kind == "blob"
 
 
+def restore_from_head(root: Path, relative: str,
+                      platform: str | None = None) -> str:
+    """The line that puts `relative` back as the root's HEAD holds it:
+    `git -C <root> checkout HEAD -- <relative>`, spelled for the READER'S
+    shell (#298, #697).
+
+    ONE SPELLING FOR EVERY ROW THAT RESTORES THE FILE `head_holds` has
+    asked about: the unloaded-manifest row and an own-copy validator row
+    that crashed on the same loss print the same line, and `platform` is
+    passed on to `quote_arg` as `bump_leg_command`'s is, so both dialects
+    are asserted from either host.
+    """
+    target = os.name if platform is None else platform
+    return (f"git -C {quote_arg(root, target)} checkout HEAD -- "
+            f"{quote_arg(relative, target)}")
+
+
 #: The four variables `gh` reads a token from, which no validator's child
 #: keeps (#297).
 GH_TOKEN_VARIABLES = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN",
@@ -1623,6 +1640,9 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     where the row says FINDING. That is their variable and their
     site-packages, and the gate has neither: the row is about the gate, and
     the line it prints is the project's own command, with no `-S` in it.
+    WHERE THE CRASH IS THE ROOT'S LOST `scripts/repo_shape.py` THE LINE IS
+    THE CURE INSTEAD, because that is the one crash the reader's own
+    environment can hide (#697): `lost_repo_shape_cure`.
 
     AND NO CHILD REACHES A NETWORK UNLESS ITS CALLER SAYS SO (#297). A
     project that pins a neutral product has a `validate-pins.py` that, with
@@ -1788,6 +1808,48 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
     return f"env PYTHONPATH={quote_arg(scripts, target)} {command}"
 
 
+def lost_repo_shape_cure(ctx: Context, own: str, lost: Path,
+                         rerun: str) -> tuple[str | None, str]:
+    """`(the NEXT, the why)` for a root's own validator `own` that crashed
+    because `lost`, the `repo_shape.py` it imports from beside itself, is not
+    there, where `rerun` is the line that runs `own` (#697).
+
+    THE NEXT IS THE CURE, NOT THE VALIDATOR. The row used to print `rerun`,
+    and a reader whose own `PYTHONPATH`, or a `.pth` in whose site-packages,
+    reaches another `repo_shape` ran it and saw a pass, or a different
+    finding, under a row that said the gate crashed: the doctor starts every
+    child with no inherited `PYTHONPATH` and no `site` (#306, #342), and a
+    pasted line has neither guard. `-E -S` on the line would have stopped
+    both routes and was declined: the line stays the project's own command.
+    So the NEXT is the one command that puts the file back, the line the
+    unloaded-manifest row prints for the same loss (`restore_from_head`,
+    #298), and `rerun` is the why's, to run once the file is back.
+
+    NO NEXT WHERE HEAD DOES NOT HOLD THE FILE (`head_holds`): a deletion
+    already committed is not in HEAD, so the line could not restore it, and
+    the gate would only crash again. The why says so, where the file comes
+    back from, and the gate to run after.
+
+    THE CONDITION IS THE ROW'S REASON'S -- the file is not beside the root's
+    own copy (`imports_repo_shape`) -- and it is asked of the root's own copy
+    only: the standard's template copy has none beside it by design.
+    """
+    relative = lost.relative_to(ctx.root).as_posix()
+    then = (f"run `{rerun}` again once the file is back; before that, a "
+            "reader whose own PYTHONPATH or site-packages reaches another "
+            "repo_shape sees it run on that one, which says nothing about "
+            "this root's own copy")
+    if head_holds(ctx.root, relative):
+        return (restore_from_head(ctx.root, relative),
+                f"it puts back the {relative} HEAD holds, the copy this "
+                f"project committed and {own} imports, where update-shape.py "
+                f"apply would copy a newer one. Then {then}")
+    return None, (f"HEAD does not hold {relative}, so no git checkout HEAD "
+                  f"puts it back and {own} would only crash again: a "
+                  "deletion already committed comes back from the parent of "
+                  f"the commit that made it. Then {then}")
+
+
 def validator_row(ctx: Context, check_id: str, label: str, own: str,
                   template: str, args: list[str], *,
                   output: list[str] | None = None) -> Row:
@@ -1814,7 +1876,11 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
     imports (`imports_repo_shape`). The TEMPLATE copy
     crashing is this checkout's failure and not the project's: it carries
     `detail.environment`, so the verdict is CANNOT ANSWER, exit 3. Either
-    way the NEXT is the validator's own line, which shows where it stopped.
+    way the NEXT is the validator's own line, which shows where it stopped
+    -- EXCEPT where the root's own copy crashed for want of that
+    `repo_shape.py` (#697): its NEXT is `git checkout HEAD` on the file, or
+    none where HEAD does not hold it, and the validator's line is the why's
+    (`lost_repo_shape_cure`).
 
     AND A TEMPLATE THIS CHECKOUT CANNOT GIVE ITS `PYTHONPATH` IS NOT RUN
     (#278): `pythonpath_unnamable` says why, the row is an environment row
@@ -1879,18 +1945,21 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
         detail["crashed"] = True
         reason = f"{which} crashed before reaching a verdict (exit {code}): " \
             f"{crash}"
+        command = validator_command(ctx.shape, used, own_copy, args)
+        why = CRASH_WHY
         if not imports_repo_shape(ctx.shape, used, own_copy):
             lost = repo_shape_for(ctx.shape, used, own_copy)
             reason += (f"; {lost.relative_to(ctx.root).as_posix()}, which it "
                        "imports from beside itself, is not there"
                        if own_copy else f"; {lost} is not there")
+            if own_copy:
+                command, why = lost_repo_shape_cure(ctx, own, lost, command)
         if not own_copy:
             detail["environment"] = True
             reason += ("; that copy is this checkout's, not the project's, "
                        "so nothing here is a statement about the project")
-        command = validator_command(ctx.shape, used, own_copy, args)
         return Row(check_id, label, FINDING, reason, command, detail,
-                   why=CRASH_WHY)
+                   why=why)
     verb = "refuses" if code >= 2 else "reports a finding"
     reason = f"{which} {verb} (exit {code})" + (f": {quoted}" if quoted else "")
     # A COMMAND THAT RUNS WHEN IT IS PASTED. This row used to print
@@ -2030,8 +2099,7 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
                        f"that deleted it, and then {own} refuses {name} by "
                        "name until it loads", None, detail)
         return Row(check_id, label, FINDING, reason,
-                   f"git -C {quote_arg(ctx.root)} checkout HEAD -- "
-                   f"{quote_arg(lost)}", detail,
+                   restore_from_head(ctx.root, lost), detail,
                    why=f"it puts back the {lost} HEAD holds, the copy this "
                        f"project committed and {own} imports, where "
                        "update-shape.py apply would copy a newer one, then "
