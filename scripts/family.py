@@ -177,8 +177,8 @@ from shape_materialize import (  # noqa: E402
     commit_trailers, env_commit, escape_what_stdout_cannot_encode,
     force_stage, inherited_child_environment, make_folder,
     materialize_family_root, refuse_bad_branch, refuse_unless_not_found,
-    refuse_unmakeable_folder, run, stage_written, target_in_the_way,
-    target_remediation, trailer_line, write_lf,
+    refuse_unmakeable_folder, run, shown_source, stage_written,
+    target_in_the_way, target_remediation, trailer_line, write_lf,
 )
 # What `init` asks of the holder's own reader and validator before it creates
 # anything (#307), imported as its own unit and not added to the lists above.
@@ -195,9 +195,6 @@ from repo_shape import shell_line, shell_quoted  # noqa: E402
 # holder's clone URL under `--local-remote-dir` (#255, #433). It is the
 # question the scaffold and `adopt-project.py` ask of theirs.
 from shape_materialize import unwritable_reason  # noqa: E402
-# How a refusal names a path of the person's: as it is, unless a character in
-# it is not printable, and then as `repr` spells it (#692).
-from shape_materialize import shown_source  # noqa: E402
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"

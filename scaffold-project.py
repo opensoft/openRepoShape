@@ -122,11 +122,8 @@ from repo_shape import YamlError, double_quoted, parse_yaml  # noqa: E402
 # not-found answer as the one failure of `gh repo view` that means absent.
 from shape_materialize import (  # noqa: E402
     make_folder, refuse_unless_not_found, refuse_unmakeable_folder,
-    target_in_the_way, target_remediation,
+    shown_source, target_in_the_way, target_remediation,
 )
-# How a refusal names a folder: as it is, unless a character in it is not
-# printable, and then as `repr` spells it (#692).
-from shape_materialize import shown_source  # noqa: E402
 
 #: How a refusal names each value the manifest records (#258, #261). The leg
 #: paths are not here: `refuse_bad_leg_paths` asks for them (#179, #225).
