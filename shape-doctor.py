@@ -4506,46 +4506,46 @@ def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
     index, else the one in HEAD. So a root whose `.gitmodules` was deleted
     from the working tree alone still updates: measured, the line exits 0
     there. `git config -f .gitmodules` by itself would call every mount of
-    that root url-less and withhold a line that works. A file git cannot
-    parse gives no url here.
+    that root url-less and withhold a line that works.
 
-    `-z`, because a section name may hold a space, a dot or a quote, and the
-    listing is read by `section_url`. Read only: `--get-regexp` writes
-    nothing.
+    AND ONLY THAT ONE COPY: the first that EXISTS, as `rev-parse --verify`
+    finds it, which is how git's `config_from_gitmodules` chooses (#668).
+    A copy with no section for `rel`, or one git cannot parse, is no url,
+    and git does not look further: measured, over an index copy of either
+    kind beside a HEAD copy that gives the url, `submodule init` exits 128,
+    `No url found`. Reading the next copy wherever one would not list named
+    a url there, and a line that exits 128.
+
+    The copy is read by `gitmodules_listing`, the one reading
+    `submodule_config` makes too, and `section_url` picks the section out of
+    it.
     """
     if os.path.lexists(root / ".gitmodules"):
-        sources = [["--file", ".gitmodules"]]
+        source = ["--file", ".gitmodules"]
     else:
-        sources = [["--blob", ":.gitmodules"], ["--blob", "HEAD:.gitmodules"]]
-    for source in sources:
-        try:
-            proc = subprocess.run(
-                ["git", "config", "-z", *source, "--get-regexp",
-                 r"^submodule\..*\.(path|url)$"],
-                cwd=str(root), capture_output=True, check=False)
-        except OSError:
+        found = next((copy for copy in (":.gitmodules", "HEAD:.gitmodules")
+                      if git_answer(["rev-parse", "-q", "--verify", copy],
+                                    root) is not None), None)
+        if found is None:
             return None, None
-        if proc.returncode == 1:
-            # Read, and no section gives a path or a url.
-            return None, None
-        if proc.returncode != 0:
-            # No such copy, or one git cannot parse: the next place, as git.
-            continue
-        return section_url(proc.stdout.decode("utf-8", "replace"), rel)
-    return None, None
+        source = ["--blob", found]
+    listing = gitmodules_listing(root, source)
+    if listing is None:
+        # The copy git reads, and one it cannot parse: git stops there.
+        return None, None
+    return section_url(listing, rel)
 
 
 def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
     """`(name, url)` of the section whose `path` is `rel`, read out of one
-    `git config -z --get-regexp` listing of `submodule.<name>.path` and
-    `.url` keys, which is what `gitmodules_entry` asks git for: `(None,
-    None)` when no section gives that path, and `(name, None)` when the one
-    that does gives no url (#414).
+    `gitmodules_listing`, which is what `gitmodules_entry` asks git for:
+    `(None, None)` when no section gives that path, and `(name, None)` when
+    the one that does gives no url (#414).
 
     PURE, so the reading is tested apart from the question of where git
-    found the file. Each record ends in a NUL and is the key, a newline and
-    the value. The NAME is all of the key between `submodule.` and its last
-    dot, so a name that holds a space or a dot is read whole.
+    found the file. Only a section's `path` and `url` keys count
+    (`submodule_keys`): `--list` gives every key the file holds, and the
+    `path` of a section that is not a submodule's names no mount (#668).
 
     THE LAST VALUE GIVEN WINS, for a path two sections give and for a key a
     section gives twice, because git reads `.gitmodules` with each later
@@ -4553,9 +4553,7 @@ def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
     """
     named = None
     urls: dict[str, str] = {}
-    for record in listing.split("\0"):
-        key, _, value = record.partition("\n")
-        name, _, field = key[len("submodule."):].rpartition(".")
+    for name, field, value in submodule_keys(listing):
         if field == "path" and value == rel:
             named = name
         elif field == "url":
@@ -4563,6 +4561,57 @@ def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
     if named is None:
         return None, None
     return named, urls.get(named) or None
+
+
+def submodule_keys(listing: str) -> list[tuple[str, str, str]]:
+    """`(name, field, value)` for each `submodule.<name>.path` and `.url`
+    key of one `gitmodules_listing`, in git's order, and no other key
+    (#668).
+
+    PURE, as `section_url` is. Each record ends in a NUL and is the key, a
+    newline and the value: a key holds no newline and a value may, so the
+    record is split at its FIRST one. The NAME is all of the key between
+    `submodule.` and its last dot, so a name that holds a space, a dot, a
+    quote or an `=` is read whole, and the field is what follows that dot,
+    which git lists in lower case.
+    """
+    keys = []
+    for record in listing.split("\0"):
+        key, _, value = record.partition("\n")
+        section, _, field = key.rpartition(".")
+        if section.startswith("submodule.") and field in ("path", "url"):
+            keys.append((section[len("submodule."):], field, value))
+    return keys
+
+
+def gitmodules_listing(root: Path, source: list[str]) -> str | None:
+    """`git config -z <source> --list` in `root`: every key of one copy of
+    `.gitmodules`, or None where git reads no such copy (it is not there,
+    git cannot parse it, there is no git to run).
+
+    ONE READING, FOR `gitmodules_entry` AND `submodule_config` (#668), and
+    the one `validate-family.py`'s `_gitmodules_sections` and `family.py`
+    make: the whole file, cut by `submodule_keys`.
+
+    `--list` AND NO REGEXP, because git matches a regexp in the locale's
+    character set: under a UTF-8 locale `.*` matches no byte that is not
+    UTF-8, so `--get-regexp '^submodule\\..*\\.(path|url)$'` left out a
+    section whose name holds one, which `LC_ALL=C` read (measured, git
+    2.43), and the mount that section gives was called url-less. `-z`,
+    because a value may hold a line break git keeps, NEL and U+2028 among
+    them, and a name a space: git's plain listing, split at line breaks and
+    at the first space, cut such a url short and such a name in two.
+
+    Decoded with the replacement, as `make siblings` reads the same file
+    (#432) and `origin_url` reads a remote (#385). Read only: `--list`
+    writes nothing.
+    """
+    try:
+        raw = git_out(["config", "-z", *source, "--list"], cwd=root,
+                      binary=True)
+    except (Refusal, OSError):
+        return None
+    return raw.decode("utf-8", "replace")
 
 
 def configured_url(root: Path, name: str) -> str | None:
@@ -7129,12 +7178,23 @@ def origin_url(path: Path) -> str:
 
 
 def submodule_config(root: Path) -> dict:
-    """`{submodule name: {field: value}}` out of the holder's `.gitmodules`.
+    """`{submodule name: {field: value}}` out of the holder's `.gitmodules`:
+    each section's `path` and `url`, the later value winning as git reads
+    the file.
 
     GIT'S OWN PARSER, never a reader of this file's own: `.gitmodules` is
     config syntax, it ESCAPES a backslash on the way in -- a Windows path is
     stored `D:\\\\a\\\\...` -- and reading it as text is how a report ends up
     quoting a url nobody has.
+
+    THE WORKING TREE'S FILE ALONE, as `make siblings` reads it, and read as
+    `gitmodules_entry` reads each copy git reads: `gitmodules_listing`
+    (#668). The `--get-regexp` listing this split at the first space and at
+    every line break `str.splitlines` knows read a section named `members/My
+    IRRS`, or a url holding NEL or U+2028, as no url or one cut short, and
+    under a UTF-8 locale it held no section whose name is not UTF-8. The
+    member's clone beside the holder was then a stranger, and `make
+    siblings` fetches into it.
 
     AND IT IS READ AS `make siblings` READS IT: a byte that is not UTF-8 is
     replaced, which is `siblings.py::submodule_urls`'s `errors="replace"`
@@ -7143,10 +7203,10 @@ def submodule_config(root: Path) -> dict:
     so a member mounted from a directory named in a legacy code page, or a
     hand-edited `.gitmodules`, has one that is not text, and read through
     `git_out`'s strict decode it raised a `UnicodeDecodeError` that the
-    `except` below does not name -- it is a `ValueError`, neither a
+    `except` there did not name -- it is a `ValueError`, neither a
     `Refusal` nor an `OSError` -- so `--root` ended in a traceback, exit 1,
     which is also the code of a finding, with no verdict. The bytes are
-    asked for, so nothing is decoded before this function says how.
+    asked for, and `gitmodules_listing` says how they are decoded.
 
     THE URL IS KEPT, NOT DROPPED. The row exists to agree with `make
     siblings` about one directory (#146): a clone whose own `origin` is the
@@ -7162,20 +7222,11 @@ def submodule_config(root: Path) -> dict:
     is COMPARED with `origin_url`'s reading of a clone's remote, which is
     the replacement (#385): the same bytes read two ways are two strings,
     so a clone made from this very url would stop being the member's
-    working clone. It is also what the row PRINTS, and a lone surrogate is
-    a string no UTF-8 stream can write.
+    working clone.
     """
     fields: dict = {}
-    try:
-        raw = git_out(["config", "-f", str(root / ".gitmodules"),
-                       "--get-regexp", r"^submodule\..*\.(path|url)$"],
-                      cwd=root, binary=True)
-    except (Refusal, OSError):
-        return fields
-    listing = raw.decode("utf-8", "replace").strip()
-    for line in listing.splitlines():
-        key, _, value = line.partition(" ")
-        name, _, field = key[len("submodule."):].rpartition(".")
+    listing = gitmodules_listing(root, ["--file", ".gitmodules"])
+    for name, field, value in submodule_keys(listing or ""):
         fields.setdefault(name, {})[field] = value
     return fields
 
@@ -7209,15 +7260,22 @@ def mounted_from(root: Path, rel: str, repository: str) -> str:
     to resolve it against is handed back as it is: it then matches nothing,
     and the row's answer rests on the `repository:` comparison alone --
     which is the state `verify_sibling` is in for the same holder.
+
+    THE LAST SECTION THAT GIVES `rel` A URL WINS, as git reads the file,
+    each later value overwriting the one before, and as
+    `siblings.py::submodule_urls` maps it (#668). The first named a remote
+    that `git submodule update` and `make siblings` both pass over.
     """
+    url = None
     for name, mount in submodule_config(root).items():
         # A submodule's NAME is its path unless somebody mounted it by hand
         # under another one, which git allows and this reads rather than
         # assumes.
-        if mount.get("path", name) != rel or not mount.get("url"):
-            continue
-        return resolved_remote(mount["url"], origin_url(root))
-    return f"https://github.com/{repository}.git"
+        if mount.get("path", name) == rel and mount.get("url"):
+            url = mount["url"]
+    if url is None:
+        return f"https://github.com/{repository}.git"
+    return resolved_remote(url, origin_url(root))
 
 
 def same_repository_here(one: str, two: str) -> bool:
