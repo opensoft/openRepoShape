@@ -4724,17 +4724,18 @@ def _blocked_sentence(code: str, rels: list[str], copies: list[str],
         written = (
             f"Where it leads to something, {beside}, and where it leads "
             "nowhere, through it, which a clone that makes no symlinks "
-            "holds as a file naming its target; either way it would say "
+            "holds as a file naming its target; either way it would fail "
             if relation == "is" and mode == SYMLINK_MODE else
-            f"{beside} and say ")
+            f"{beside} and fail ")
         return (
             f"the plan keeps {_kind_of(mode)} {named} in the assembly "
             f"root{under}{spot}, where the shape writes its manifest. No "
             "copy stands in for the manifest: `shape-doctor.py`, the root's "
             f"validators and `make bootstrap` read {_first_and_more(rels)} "
             "at the root itself, and there they would find the source's "
-            f"{found}. {written}`adoption verified`, after both leg "
-            f"repositories were created and pushed: {fix}.")
+            f"{found}. {written}its verification "
+            "(`adopt-manifest-not-shape`), after both leg repositories were "
+            f"created and pushed: {fix}.")
     if code == ROOT_BLOCKS_SHAPE:
         relation, aside = _overlap(rels[0], path)
         return (
@@ -10866,6 +10867,8 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
 
     counts, findings = _account_for(before, after, paths_for["drop"])
     findings += _shape_file_findings(assembly, split_commit)
+    findings += _split_manifest_findings(split_tree, before,
+                                         paths_for["drop"])
     added = sorted(set(after) - set(before))
     for leg in ("spec", "code", "root", "drop"):
         note = " (seeded from template)" if leg in seeded else ""
@@ -11087,6 +11090,11 @@ ROOT_SUBMODULE_DEFECT = (
     "of the source's in the root (`plan-submodule-root`) or leaves one with "
     "no leg (`plan-unresolved`, `plan-uncovered`, `plan-bad-leg`), "
     f"{SPLIT_IS_WRONG}")
+#: The exit of `adopt-manifest-not-shape` (#389).
+MANIFEST_DEFECT = (
+    "`execute` refuses before any leg exists a plan that keeps a path of the "
+    f"source's at `{SHAPE_MANIFEST}` in the root (`{ROOT_BLOCKS_MANIFEST}`) "
+    f"or mounts a leg there (`{LEG_COLLIDES}`), {SPLIT_IS_WRONG}")
 
 
 def _land_the_root_tree(after: dict, tree: list, before: dict,
@@ -11202,6 +11210,64 @@ def _mount_commit_findings(tree: list, mounts: dict[str, str],
             for path, mode, oid, _ in tree
             if mode == GITLINK_MODE and path in mounts
             and oid != pushed[mounts[path]]]
+
+
+def _split_manifest_findings(tree: list, before: dict,
+                             drops: list[str]) -> list[str]:
+    """`adopt-manifest-not-shape` when the root's `project.yaml` is not the
+    shape's manifest (#389): the source's own entry is still there, or the
+    manifest went beside the root's as `shape/project.yaml`, or both.
+
+    THE ONE SHAPE FILE NO COPY STANDS IN FOR (#305). `shape-doctor.py`, the
+    root's validators and `make bootstrap` read the manifest at the root
+    itself. A plan that kept the source's `project.yaml` there had the
+    manifest written beside it, and every source blob was still in exactly
+    one place, so this check said `adoption verified` over an assembly the
+    doctor calls NOT A SHAPE ROOT. `check` finds that plan and `execute`
+    refuses it before any leg exists (`plan-root-blocks-manifest`), and that
+    refusal was all there was: this check does not lean on it, as it leans
+    on none of `check`'s (#165).
+
+    BY BLOB, AS THE REST OF THE ACCOUNTING IS, and never by the pin, which
+    does not list a rendered file. The source's own entry is matched by path
+    and blob, whatever its mode: a kept symlink that led nowhere had the
+    manifest written through it, and the root keeps the link. The copy is
+    the shape's only when the source did not have that blob at that path: a
+    source's own `shape/project.yaml`, kept where the root's `project.yaml`
+    is the manifest, is a file like any other.
+
+    A `project.yaml` THE PLAN DROPS IS NOT THE SOURCE'S OWN AT THE ROOT,
+    whatever its bytes. `drops` is `paths_for["drop"]`, the list
+    `_mount_the_legs` has `git rm`ed before the shape writes anything, so
+    what is at `project.yaml` then is what the shape wrote: this asks what
+    the split did, not what `check` refused. Matched by blob alone, a source
+    file that held exactly the manifest this run renders, answered `drop`
+    (a plan `check` passes, and main verified), was called the source's own,
+    and the run failed after both legs were pushed (#389's review, R1). Only
+    that half is waived: the manifest beside it is a finding still.
+    """
+    entries = {path: (mode, oid) for path, mode, oid, _ in tree}
+    copy = f"{COLLISION_DIR}/{SHAPE_MANIFEST}"
+    mode, oid = entries.get(SHAPE_MANIFEST, ("", ""))
+    dropped = SHAPE_MANIFEST in {path.rstrip("/") for path in drops}
+    kept = bool(oid) and oid == before.get(SHAPE_MANIFEST) and not dropped
+    beside = copy in entries and entries[copy][1] != before.get(copy)
+    if not (kept or beside):
+        return []
+    if kept:
+        said = (f"{_spelled(SHAPE_MANIFEST)} in the root tree is the "
+                f"source's own {_kind_of(mode).split()[-1]} ({oid[:12]}), "
+                "not the shape's manifest"
+                + (f", which is beside it as {_spelled(copy)}" if beside
+                   else ""))
+    else:
+        said = (f"the shape's manifest is at {_spelled(copy)} in the root "
+                "tree, where it is written only when the root already holds "
+                f"{_spelled(SHAPE_MANIFEST)}")
+    return [f"FINDING adopt-manifest-not-shape: {said}. `shape-doctor.py`, "
+            "the root's validators and `make bootstrap` read the manifest at "
+            f"{_spelled(SHAPE_MANIFEST)} itself, and no copy stands in for "
+            f"it; {MANIFEST_DEFECT}"]
 
 
 def _pushed_commits(work_root: Path, names: dict) -> dict[str, str]:
