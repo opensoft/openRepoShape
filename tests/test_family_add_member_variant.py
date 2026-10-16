@@ -474,12 +474,24 @@ def kept_off_disk(root: Path, remotes: Path) -> tuple:
             [REMOVE_SPARSE, record(commit), "git commit"], commit)
 
 
-def unmerged_at(root: Path, stages: dict[int, str]) -> None:
-    """The variant's gitlink at each of `stages`, `{stage: commit}`, and at
-    no stage 0, written as bytes by `update-index --index-info`."""
+def file_blob(root: Path) -> str:
+    """A blob for a file at the variant, written as BYTES."""
+    return subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"], cwd=str(root),
+        input=b"a file\n", capture_output=True,
+        check=True).stdout.decode("ascii").strip()
+
+
+def unmerged_at(root: Path, stages: dict[int, str],
+                files: tuple[int, ...] = ()) -> None:
+    """The variant at each of `stages`, `{stage: object}`, and at no stage
+    0, written as bytes by `update-index --index-info`: a file, whose blob
+    it names, at each stage in `files`, and a gitlink, at the commit it
+    names, at the others."""
     written = subprocess.run(
         ["git", "update-index", "--index-info"], cwd=str(root),
-        input="".join(f"160000 {at} {stage}\t{VARIANT}\n"
+        input="".join(f"{'100644' if stage in files else '160000'} {at} "
+                      f"{stage}\t{VARIANT}\n"
                       for stage, at in stages.items()).encode("ascii"),
         capture_output=True, check=False)
     assert written.returncode == 0, written.stderr
@@ -687,6 +699,16 @@ def unmerged_theirs(root: Path) -> None:
     unmerged_at(root, {1: "1" * 40, 3: "1" * 40})
 
 
+def unmerged_file_ours(root: Path) -> None:
+    """The variant unmerged with a gitlink at stage 1, a FILE at stage 2 and
+    a gitlink at stage 3: git lists stage 1 first, and a gitlink there is
+    not the holder's own side, which is a file, so no member's own (#646's
+    review, NIT-3; a rule that read the first record listed would move the
+    file's blob back as a gitlink)."""
+    unmerged_at(root, {1: "1" * 40, 2: file_blob(root), 3: "1" * 40},
+                files=(2,))
+
+
 #: `{state: (how it is made after the row's gitlink leaves the index, what
 #: `_members_spellings` gives the variant: where, target, remedy)}`. The
 #: index never holds the row's gitlink but in the first.
@@ -709,6 +731,8 @@ OWN = {
         (IN_INDEX, VARIANT, "git rm -r --cached")),
     "unmerged, with no gitlink at stage 2": (
         unmerged_theirs, (IN_INDEX, VARIANT, "git rm -r --cached")),
+    "unmerged, with a file at stage 2 and gitlinks at 1 and 3": (
+        unmerged_file_ours, (IN_INDEX, VARIANT, "git rm -r --cached")),
     "the member's own gitlink": (
         lambda root: plant(root, "160000", VARIANT),
         (IN_INDEX, ROW, "git update-index")),
@@ -722,7 +746,8 @@ def test_only_the_members_own_gitlink_is_moved_back(holder, family_module,
     row's path, where the index holds nothing at or under that path. A
     second gitlink beside the row's, a file at the variant, a gitlink under
     it, a file at or under the row's path, or an unmerged variant with no
-    gitlink at stage 2 keeps #574's remedy."""
+    gitlink at stage 2 (none, or a file there, whatever stages 1 and 3
+    hold) keeps #574's remedy."""
     make, (where, target, remedy_said) = OWN[state]
     if state != "a second gitlink beside the row's":
         git("rm", "-q", "--cached", "--", ROW, cwd=holder)
