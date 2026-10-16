@@ -4102,7 +4102,33 @@ class Plan:
             raise Refusal("plan-no-source",
                           f"{self.path}: `source:` names neither a local path "
                           "nor a repository")
+        if not override and spec == self.source.get("local_path"):
+            spec = self._where_the_clone_is_gone(str(spec))
         return Source.open(str(spec), work_root)
+
+    def _where_the_clone_is_gone(self, local_path: str) -> str:
+        """The plan's `source.repository` in place of a `local_path` that no
+        longer exists, said in one NOTE; `local_path` itself where it
+        exists, or where the plan records no repository (#526).
+
+        `plan --source <org/repo>` without `--work-dir` clones into the
+        system temp folder and records that clone as `local_path`, and the
+        system may clean it before `check` or `execute` runs. Both then
+        handed the vanished PATH to `gh repo clone` as an `org/repo` and
+        refused `source-unclonable`, naming the path and `gh auth status`,
+        though passing `--source <org/repo>` again recovered. They now do
+        what that does, and say so. A clone made again at another commit
+        is no plan's source: `check` finds `plan-stale` and `execute`
+        refuses it, each naming both commits, as for `--source`."""
+        repository = self.source.get("repository")
+        if not repository or Path(local_path).expanduser().exists():
+            return local_path
+        repository = str(repository)
+        print(f"NOTE the plan's `source.local_path`, {_spelled(local_path)}, "
+              f"no longer exists, so its `source.repository`, "
+              f"{_shown(repository)}, is cloned again, as `--source "
+              f"{_shown(repository)}` would clone it.")
+        return repository
 
     def names(self) -> dict[str, str]:
         """The three repository names the plan declares, validated as values.
@@ -11185,10 +11211,88 @@ def _elector() -> str:
 
 
 def _work_root(args) -> Path:
-    root = (args.work_dir.resolve() if getattr(args, "work_dir", None)
-            else Path(tempfile.mkdtemp(prefix="openreposhape-adopt-")))
+    """The command's work directory: `--work-dir`, made where it is missing,
+    or a new one in the system temp folder, which `args` keeps as
+    `made_work_root`, so that `main` can remove it once the command has
+    ended (`_leave_the_work_root`, #526)."""
+    if getattr(args, "work_dir", None):
+        root = args.work_dir.resolve()
+    else:
+        root = Path(tempfile.mkdtemp(prefix="openreposhape-adopt-"))
+        args.made_work_root = root
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _holds_a_file(root: Path) -> bool:
+    """Whether anything but directories is in `root`, at any depth: a file,
+    a symlink, anything else that is not a directory. A directory that
+    cannot be listed counts, as it does for `_holds_something`."""
+    def unlistable(exc: OSError) -> None:
+        raise exc
+
+    try:
+        for top, directories, files in os.walk(root, onerror=unlistable):
+            if files or any(os.path.islink(os.path.join(top, name))
+                            for name in directories):
+                return True
+    except OSError:
+        return True
+    return False
+
+
+def _removed_if_it_holds_no_file(root: Path) -> bool:
+    """Remove `root` where it holds no file (`_holds_a_file`), and say
+    whether it is gone.
+
+    Nothing at all is what `plan` and `check` of a local source leave, and
+    what `execute` leaves when it is refused before it builds anything; an
+    empty `source-readonly/` is what a refused `gh repo clone` leaves.
+    Anything else keeps all of it. Only `os.rmdir` removes, deepest first,
+    and it removes an empty directory and nothing else, so nothing written
+    there meanwhile is lost."""
+    if not os.path.lexists(root):
+        return True
+    if _holds_a_file(root):
+        return False
+    try:
+        for top, _, _ in os.walk(root, topdown=False):
+            os.rmdir(top)
+    except OSError:
+        return False
+    return True
+
+
+def _leave_the_work_root(args, succeeded: bool) -> None:
+    """What happens to the work directory `_work_root` made for a command,
+    however it ended: a success, a refusal, a failed command or an
+    exception (#526). It is removed where it holds no file; where it holds
+    one, it stays, and `execute` says where on its last line, on stdout
+    after a success (`succeeded`) and on stderr after anything else.
+
+    WITHOUT `--work-dir`, EVERY RUN LEFT ONE. `plan` and `check` of a local
+    source read it in place and build nothing, so theirs was empty, as was
+    the one of an `execute` refused before it built anything: 2,992 of the
+    first 3,000 such directories in one container's `/tmp` were empty, and
+    one run of `tests/test_adopt_pins.py` left 117. A directory that holds
+    something is what a person may still need: the clone a
+    `plan --source <org/repo>` records as `source.local_path`, which `check`
+    and `execute` read; and the legs and the split `execute` built, which
+    the verification table and the notice of a failure name. Those stay.
+
+    A `--work-dir` the person gave is theirs, and nothing in it is removed.
+    Nothing here raises: an exception the command raised reaches the
+    caller as it was."""
+    root = getattr(args, "made_work_root", None)
+    if root is None or _removed_if_it_holds_no_file(root) \
+            or getattr(args, "command", None) != "execute":
+        return
+    _flush_stdout()
+    with contextlib.suppress(OSError, UnicodeError):
+        print(f"NOTE the work directory this run made, {_spelled(str(root))}"
+              ", is kept, because it holds what the run made there: delete "
+              "it once nothing in it is needed.",
+              file=sys.stdout if succeeded else sys.stderr)
 
 
 def _leg_path_help(leg: str, default: str) -> str:
@@ -11363,9 +11467,12 @@ def main(argv: list[str] | None = None) -> int:
     # is flushed first, and a merged log keeps the order (#188). One a step
     # has already reported, with the notice of what it left
     # (`_create_leg_remotes` on its second leg), is not printed again: it
-    # only sets the exit.
+    # only sets the exit. However the command ends, the work directory it
+    # made goes where it holds no file, last (#526).
+    ended = None
     try:
-        return args.func(args)
+        ended = args.func(args)
+        return ended
     except Refusal as exc:
         _flush_stdout()
         if not _reported(exc):
@@ -11383,6 +11490,8 @@ def main(argv: list[str] | None = None) -> int:
         if not _reported(exc):
             raise
         return 2
+    finally:
+        _leave_the_work_root(args, ended == 0)
 
 
 if __name__ == "__main__":
