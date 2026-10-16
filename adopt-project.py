@@ -988,12 +988,76 @@ def _path_argument(path: str) -> str | bytes:
     `bytes` argument back into text there first, with `os.fsdecode`
     (`subprocess.list2cmdline`), which raises on a byte that is not UTF-8.
 
-    ONLY FOR A PATH READ FROM GIT. A path read from the disk -- `Path`,
-    `os.readlink`, `Path.resolve` -- is text `os.fsdecode` made, and the
-    `os.fsencode` that `subprocess` applies to it gives back the same bytes
-    in any locale, so `_stage_the_split` hands git such paths as they are.
+    ONLY FOR A PATH READ FROM GIT, or text spelled as one (`_run_exact`). A
+    path read from the disk -- `Path`, `os.readlink`, `Path.resolve` -- is
+    text `os.fsdecode` made, and the `os.fsencode` that `subprocess` applies
+    to it gives back the same bytes in any locale, so `_stage_the_split`
+    hands git such paths as they are.
     """
     return path if os.name == "nt" else path.encode("utf-8", "surrogateescape")
+
+
+def _git_spelling(path: str) -> str:
+    """`path`, text `os.fsdecode` made of a path on the disk, spelled as
+    `_git_path` spells a path git printed: the same bytes, so that
+    `_path_argument` hands git the bytes the disk holds (#653).
+
+    Where a path from the disk meets a url git printed -- the base
+    `_resolved` resolves a relative submodule url against, and the working
+    tree git's relative answer is joined to -- both must reach git spelled
+    one way. Under a UTF-8 locale the two spellings are one, and under
+    `LC_ALL=C PYTHONUTF8=0` `os.fsdecode` keeps each byte outside ASCII as
+    the surrogate `_path_argument` writes back as that byte; but under a
+    locale of one byte per character, Latin-1 say, it reads the two bytes
+    of `\\u00e9` as two characters, which `_path_argument` would write as
+    four. Text on Windows, which `_path_argument` leaves as it is.
+    """
+    return path if os.name == "nt" else _git_path(os.fsencode(path))
+
+
+def _the_locale_hands_it_alike(argument: str) -> bool:
+    """Whether `subprocess`, encoding `argument` with the locale's codec,
+    hands the program the bytes `_path_argument` makes of it: under every
+    UTF-8 locale, and for text that is all ASCII under any."""
+    try:
+        return os.fsencode(argument) == _path_argument(argument)
+    except UnicodeEncodeError:
+        return False
+
+
+def _run_exact(command: list[str], cwd: Path | None = None) -> str:
+    """`run(command, cwd)`, with each argument handed to `git` or `gh` as
+    the UTF-8 bytes it spells, under any locale (#653).
+
+    `run` hands `subprocess` text, which it encodes with the locale's codec
+    when Python is not in UTF-8 mode: under `LC_ALL=C PYTHONUTF8=0` that is
+    ASCII, so the em dash in `gh repo create --description` raised
+    `UnicodeEncodeError` before any leg existed, for every source, and so
+    did a url `_resolved` handed `git config` with a character outside
+    ASCII. Every argument here is text git and gh read as UTF-8: a path or
+    url git printed, a path `_git_spelling` spelled, or text this tool
+    wrote. NEVER a path `os.fsdecode` made, which `run` hands git exactly.
+
+    `run` ITSELF WHEREVER THE LOCALE HANDS EVERY ARGUMENT ALIKE, which is
+    every run under a UTF-8 locale: nothing there changes, a stand-in for
+    `run` included. Elsewhere `subprocess` is handed `_path_argument` of
+    each argument, and the rest is `run`'s: only `git` and `gh`
+    (`check_program`, asked of the command as the person reads it), what
+    the program printed back as text, stripped, and a refusal raised as
+    `CommandFailed` naming that command.
+    """
+    if os.name == "nt" or all(map(_the_locale_hands_it_alike, command)):
+        # As each caller called `run` before: no `cwd` where it gave none.
+        return run(command) if cwd is None else run(command, cwd=cwd)
+    check_program(command)
+    proc = subprocess.run([_path_argument(argument) for argument in command],
+                          cwd=str(cwd) if cwd else None, capture_output=True,
+                          check=False)
+    if proc.returncode != 0:
+        raise CommandFailed(command, cwd, proc.returncode,
+                            (proc.stderr + proc.stdout).decode("utf-8",
+                                                               "replace"))
+    return proc.stdout.decode("utf-8", "replace").strip()
 
 
 def _one_line(text: str) -> str:
@@ -2079,9 +2143,13 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
                 named, "`git grep` reads each line of a pattern as a pattern "
                 "of its own, so it cannot search for this name"))
             continue
+        # The name and the code paths as the bytes the tree holds (#653):
+        # as text, `Übersicht/` raised `UnicodeEncodeError` under
+        # `LC_ALL=C PYTHONUTF8=0`, and `plan` wrote no plan.
         proc = subprocess.run(
             ["git", "--literal-pathspecs", "grep", "--no-color", "-z", "-l",
-             "-I", "-F", "-e", spec_dir, source.commit, "--", *code_paths],
+             "-I", "-F", "-e", _path_argument(spec_dir), source.commit, "--",
+             *map(_path_argument, code_paths)],
             cwd=str(source.path), capture_output=True, check=False)
         if proc.returncode not in (0, 1):
             why = _one_line(proc.stderr.decode("utf-8", "replace"))[:300]
@@ -4984,7 +5052,8 @@ class _Resolution:
         symlinks -- and the `..` of a relative answer joined to the source's
         working tree (`_default_remote`) -- may make two spellings one
         directory: the order `same_repository_here` asks them in, so the
-        disk can add an answer and never take one away.
+        disk can add an answer and never take one away. Each is asked as
+        the bytes it spells (`_path_argument`, #653).
         """
         if self.url is None or other.url is None:
             return False
@@ -4992,7 +5061,8 @@ class _Resolution:
             return True
         paths = [remote_local_path(url) for url in (self.url, other.url)]
         return None not in paths \
-            and os.path.realpath(paths[0]) == os.path.realpath(paths[1])
+            and os.path.realpath(_path_argument(paths[0])) \
+            == os.path.realpath(_path_argument(paths[1]))
 
     def __str__(self) -> str:
         # `redacted`: a source's remote may carry a token, and so does every
@@ -5044,24 +5114,32 @@ def _default_remote(source: Source) -> tuple[str, str, Path | None]:
     `working_tree` is the source's own for such a remote -- a path, and not
     an absolute one (`remote_local_path` names absolute paths only), which
     is git's own test for the answers it leaves relative -- and None for
-    every other base."""
+    every other base.
+
+    The source's directory, the base or the working tree, is spelled as git
+    spells the url beside it (`_git_spelling`), so `_resolved` and
+    `same_as` hand both the bytes they name in any locale (#653)."""
     name = _config_value(source.path, f"branch.{source.branch}.remote") \
         or "origin"
     url = _config_value(source.path, f"remote.{name}.url")
     if url is None:
-        return (source.path.as_posix(),
+        return (_git_spelling(source.path.as_posix()),
                 f"its own directory, as it has no remote {_spelled(name)}",
                 None)
     if remote_is_a_path(url) and remote_local_path(url) is None:
         return (url, f"its remote {_spelled(name)}, relative to its working "
-                "tree", source.path)
+                "tree", Path(_git_spelling(str(source.path))))
     return url, f"its remote {_spelled(name)}", None
 
 
 def _config_value(repository: Path, key: str) -> str | None:
     """`key` in `repository`'s git config, as git reads it -- the last
-    value, when there are several; None when unset."""
-    got = subprocess.run(["git", GIT_CONFIG, "-z", "--get", key],
+    value, when there are several; None when unset. The key as the bytes
+    it spells (`_path_argument`): a remote's name in it is one git printed,
+    and as text `remote.\\u00dcrsprung.url` raised `UnicodeEncodeError`
+    under `LC_ALL=C PYTHONUTF8=0` (#653)."""
+    got = subprocess.run(["git", GIT_CONFIG, "-z", "--get",
+                          _path_argument(key)],
                          cwd=repository, capture_output=True, check=False)
     return None if got.returncode else _git_path(got.stdout.rstrip(b"\x00"))
 
@@ -5072,15 +5150,19 @@ def _resolved(base: str, urls: list[str],
     whose `origin` is `base`, in a scratch repository made for the purpose
     and removed after it; and, given a `working_tree`, git's relative answer
     joined to it, which is what the clone opens (`_default_remote`). A url
-    git cannot resolve is what git said: that is where the clone fails."""
+    git cannot resolve is what git said: that is where the clone fails.
+
+    `base` and each url reach git as the bytes they spell (`_run_exact`):
+    as text, `../\\u00dcnterlagen` raised `UnicodeEncodeError` under
+    `LC_ALL=C PYTHONUTF8=0`, and `check` and `execute` died (#653)."""
     scratch = Path(tempfile.mkdtemp(prefix="openreposhape-url-"))
     try:
         run(["git", "init", "-q", str(scratch)])
-        run(["git", GIT_CONFIG, "remote.origin.url", base], cwd=scratch)
+        _run_exact(["git", GIT_CONFIG, "remote.origin.url", base], scratch)
         for index, url in enumerate(urls):
             for key, value in (("path", f"u{index}"), ("url", url)):
-                run(["git", GIT_CONFIG, "-f", GITMODULES,
-                     f"submodule.u{index}.{key}", value], cwd=scratch)
+                _run_exact(["git", GIT_CONFIG, "-f", GITMODULES,
+                            f"submodule.u{index}.{key}", value], scratch)
         # A gitlink names a commit nobody fetches here; any object id of the
         # repository's own format will do, and this one is at hand.
         oid = run(["git", "hash-object", GITMODULES], cwd=scratch)
@@ -5138,8 +5220,9 @@ def _relative_url_findings(plan: Plan, source: Source, tree: list,
     leg, kept = _kept_relative_urls(plan.entries, tree, registered)
     if not kept:
         return [], [], {}
-    remote = _remote_urls(checked_value("org", plan.get("org")), plan.names(),
-                          local_remote_dir, source)[leg]
+    remote = _git_spelling(_remote_urls(checked_value("org", plan.get("org")),
+                                        plan.names(), local_remote_dir,
+                                        source)[leg])
     base, which, working_tree = _default_remote(source)
     urls = [url for _, _, url in kept]
     found, alike, from_the_leg = [], [], {}
@@ -5257,14 +5340,15 @@ def _answers(urls: list[str]) -> list[tuple[str, str | None]]:
     its questions, so that no repository's own config around this process
     rewrites a url as the assembly's clone would not; and under
     ON_THIS_DISK_ONLY, so that nothing a config could do sends git to a
-    network."""
+    network. Each url as the bytes it spells (`_path_argument`, #653)."""
     scratch = Path(tempfile.mkdtemp(prefix="openreposhape-ask-"))
     env = {**os.environ, **ON_THIS_DISK_ONLY}
     try:
         run(["git", "init", "-q", str(scratch)])
         out = []
         for url in urls:
-            got = subprocess.run(["git", "ls-remote", "--get-url", "--", url],
+            got = subprocess.run(["git", "ls-remote", "--get-url", "--",
+                                  _path_argument(url)],
                                  cwd=scratch, env=env, capture_output=True,
                                  check=False)
             expanded = ("" if got.returncode else
@@ -5272,7 +5356,8 @@ def _answers(urls: list[str]) -> list[tuple[str, str | None]]:
             if not _on_this_disk(expanded):
                 out.append((expanded, None))
                 continue
-            listed = subprocess.run(["git", "ls-remote", "--", url],
+            listed = subprocess.run(["git", "ls-remote", "--",
+                                     _path_argument(url)],
                                     cwd=scratch, env=env, capture_output=True,
                                     check=False)
             out.append((expanded, None if not listed.returncode
@@ -8888,12 +8973,16 @@ def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
 def _create_leg_remote(plan: Plan, names: dict, repositories: dict,
                        urls: dict, tracking: str, local: bool,
                        role: str) -> None:
-    """One leg's repository: `gh repo create`, or a bare one on disk."""
+    """One leg's repository: `gh repo create`, or a bare one on disk.
+
+    The description's em dash reaches gh as UTF-8 under any locale
+    (`_run_exact`): as text it raised `UnicodeEncodeError` under `LC_ALL=C
+    PYTHONUTF8=0`, before any leg existed, for every source (#653)."""
     if not local:
-        run(["gh", "repo", "create", repositories[role],
-             f"--{plan.get('visibility', 'private')}", "--description",
-             f"{names['assembly']} — {role} leg, extracted from "
-             f"{repositories['assembly']} with history"])
+        _run_exact(["gh", "repo", "create", repositories[role],
+                    f"--{plan.get('visibility', 'private')}", "--description",
+                    f"{names['assembly']} — {role} leg, extracted from "
+                    f"{repositories['assembly']} with history"])
         print(f"  gh    {repositories[role]}")
         return
     bare = Path(urls[role])
@@ -9578,8 +9667,10 @@ def _open_the_pull_request(repositories: dict, names: dict, tracking: str,
     out of `cmd_execute` for #138.
     """
     try:
-        url = run(_pull_request_command(repositories, names, tracking, branch,
-                                        message))
+        # The body is the split's message, which names the paths it moved,
+        # as UTF-8 under any locale (`_run_exact`, #653).
+        url = _run_exact(_pull_request_command(repositories, names, tracking,
+                                               branch, message))
         print(f"  pull request {url}")
     except LATE_FAILURES as exc:
         _flush_stdout()   # the pushed split is announced on stdout (#188)
