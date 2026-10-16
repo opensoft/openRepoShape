@@ -99,7 +99,8 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            in a leg was answered into, under `submodules:`, for
            `shape-doctor.py` to check it against, and under
            `answered_paths:` the leg each entry covering a path the policy
-           asked about was answered into, so the doctor asks it no more.
+           asked about, or put in another leg, was answered into, so the
+           doctor neither asks it again nor calls it misplaced.
 
 THE PLAN IS AN ARTIFACT A HUMAN OR AN AI EDITS. That is why it is YAML with
 reasons in it rather than a pipe between two processes: the classifier is
@@ -291,12 +292,15 @@ PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
 #: nothing commits, records where that clone is, `local-clone (<path>)`
 #: (`_as_planned`); the pin file `execute` commits says only how the digest
 #: was read, `local-clone` or `gh-api-tree-recursive`, and never where
-#: (`_recorded_pins`, #540).
+#: (`_recorded_pins`, #540). The commit `plan` records is the one the id
+#: names: an annotated tag's own id is peeled, and any other id that names
+#: no commit refused, and `check` asks the same clone that question
+#: (`commit_in_clone`, #651).
 from shape_materialize import (  # noqa: E402
-    DIGEST_FROM_CLONE, DIGEST_FROM_GH, PIN_ARG_RE, declared_pin_products,
-    declared_pin_values, neutral_pin_path, one_printable_line,
-    pin_collisions, pin_digest_from_source, pin_source_path,
-    pin_variable_collisions, refuse_an_unread_pin_source,
+    DIGEST_FROM_CLONE, DIGEST_FROM_GH, PIN_ARG_RE, commit_in_clone,
+    declared_pin_products, declared_pin_values, neutral_pin_path,
+    one_printable_line, pin_collisions, pin_digest_from_source,
+    pin_source_path, pin_variable_collisions, refuse_an_unread_pin_source,
     refuse_colliding_pins,
 )
 #: How `plan`'s refusals of a `--pin-source` begin their remediation.
@@ -321,9 +325,11 @@ PIN_MALFORMED = "plan-pin-malformed"
 PIN_COLLIDES = "plan-pin-collides"
 ROOT_HOLDS_PIN = "plan-root-holds-pin"
 #: And about a pin the clone `plan` read its digest from answers for
-#: otherwise, or cannot answer for at all, at the plan's commit (#449).
+#: otherwise, or cannot answer for at all, at the plan's commit (#449), or
+#: holds as something other than a commit (#651).
 PIN_DIGEST_MISMATCH = "plan-pin-digest-mismatch"
 PIN_SOURCE_UNREADABLE = "plan-pin-source-unreadable"
+PIN_NOT_A_COMMIT = "plan-pin-not-a-commit"
 #: How `plan` records where it read a digest (`_as_planned`): from a clone on
 #: this machine, `--pin-source` as typed, or from the forge.
 LOCAL_CLONE_RE = re.compile(r"local-clone \((?P<path>.+)\)")
@@ -556,11 +562,20 @@ def _recorded_pins(plan: "Plan") -> dict[str, dict[str, str]]:
 
 def _pin_files(plan: "Plan") -> list[tuple[str, str | None]]:
     """`(path, product)` for each pin file `execute` writes, in the order
-    `place` writes them: each declared pin's, once, then the shape's own
-    pin, whose product is None (#524)."""
-    return [*((neutral_pin_path(product), product)
-              for product in dict.fromkeys(_declared_pins(plan))),
-            (SHAPE_PIN, None)]
+    `place` writes them: each declared pin's, then the shape's own pin,
+    whose product is None (#524).
+
+    EACH PATH ONCE (#651, L1-06 of #457). Two declared pins at one file,
+    `openGlass` and `OpenGlass`, or one whose file is the shape's own pin,
+    a product named `Shape`, are `plan-pin-collides`; a path the root keeps
+    there was named by `plan-root-holds-pin` once for each pin, two lines
+    for one file. The file is the first pin's, and the shape's own where it
+    is the shape's pin, which `execute` writes there whatever is declared."""
+    files: dict[str, str | None] = {}
+    for product in _declared_pins(plan):
+        files.setdefault(neutral_pin_path(product), product)
+    files.pop(SHAPE_PIN, None)
+    return [*files.items(), (SHAPE_PIN, None)]
 
 
 def _kept_pin_findings(plan: "Plan", tree: list) -> list[str]:
@@ -704,7 +719,7 @@ def _a_partial_clone(clone: Path) -> bool:
     config, with no network. A path that is no clone is not one."""
     try:
         proc = subprocess.run(
-            ["git", "config", "--local", "--get-regexp",
+            ["git", GIT_CONFIG, "--local", "--get-regexp",
              r"^(extensions\.partialclone|remote\..*\.promisor)$"],
             cwd=str(clone), capture_output=True, check=False)
     except OSError:
@@ -744,11 +759,28 @@ def _why_not_rechecked(how: str) -> str | None:
 def _recomputed_pin_finding(said: str, values: dict) -> str | None:
     """The FINDING for a pin whose digest the clone `plan` read it from,
     still at its path, recomputes otherwise at the plan's commit or cannot
-    recompute there, with `plan`'s own reader; None where it recomputes."""
+    recompute there, with `plan`'s own reader; None where it recomputes.
+
+    THE COMMIT IS ASKED FIRST, as `plan` asks it (#651): a recorded id the
+    clone holds as an annotated tag, a tree or a blob is
+    `plan-pin-not-a-commit`. A tag's digest recomputes, because `git
+    ls-tree` peels it, so a plan whose `commit:` was a tag's id, written by
+    a `plan` from before #651 or edited in, checked ok and `execute` wrote
+    that id under the pin file's `revision_kind: commit`."""
     clone = _recorded_clone(values["PIN_DIGEST_SOURCE"])
     repository, commit, recorded = (values["PIN_REPOSITORY"],
                                     values["PIN_COMMIT"],
                                     values["PIN_TREE_SHA256"])
+    named, why = commit_in_clone(Path(clone), commit)
+    if why or named != commit:
+        return (f"FINDING {PIN_NOT_A_COMMIT}: {said} records `commit: "
+                f"{commit}`, which "
+                f"{why or f'is an annotated tag of commit {named}'} in the "
+                f"clone `plan` read its digest from, {_shown(clone)}"
+                f"{_read_from_here(clone)}, not a commit. The pin file "
+                "`execute` writes from it says `revision_kind: commit`, and "
+                "`plan` records the commit an annotated tag names and "
+                f"refuses an id that names none: {_pin_fix(repository)}.")
     try:
         actual = pin_digest_from_source(Path(clone), commit, repository)
     except Refusal as exc:
@@ -964,7 +996,9 @@ SUBMODULE_KEY_RE = re.compile(r"submodule\.(?P<name>.*)\.(?P<key>path|url)")
 GIT_CONFIG = "config"
 #: The `git` subcommand that prints one object: a source's `.gitmodules`
 #: and the target of a symlink it keeps in the root, and in the split commit
-#: a symlink's target and the shape pin.
+#: a symlink's target and the shape pin. With `--batch`, it prints the
+#: target of every symlink of the source whose blob is not empty, in one
+#: pass (#388).
 GIT_CAT_FILE = "cat-file"
 
 
@@ -4006,7 +4040,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
         print(line)
     for line in _kept_collision_notes(args, entries, tree):
         print(line)
-    for line in _empty_symlink_notes(tree):
+    for line in _empty_symlink_notes(tree, symlink_targets(source, tree)):
         print(line)
     for line in _tracking_branch_notes(args, source):
         print(line)
@@ -4392,6 +4426,16 @@ def _covering(entry_paths: list[str], path: str) -> list[str]:
             if p == path or (p.endswith("/") and path.startswith(p))]
 
 
+def _covering_names(path: str) -> list[str]:
+    """Every name `_covering` can find covering `path`: each directory above
+    it, with its `/`, then `path` itself (#655).
+
+    For a caller holding many entries, who looks each of these up rather
+    than holding every entry against every path."""
+    return [path[:index + 1] for index, char in enumerate(path)
+            if char == "/"] + [path]
+
+
 def _coverage_findings(entry_paths: list[str], tree_paths: list[str]) -> list[str]:
     """Every source path covered EXACTLY once, and every entry covering something.
 
@@ -4729,17 +4773,18 @@ def _blocked_sentence(code: str, rels: list[str], copies: list[str],
         written = (
             f"Where it leads to something, {beside}, and where it leads "
             "nowhere, through it, which a clone that makes no symlinks "
-            "holds as a file naming its target; either way it would say "
+            "holds as a file naming its target; either way it would fail "
             if relation == "is" and mode == SYMLINK_MODE else
-            f"{beside} and say ")
+            f"{beside} and fail ")
         return (
             f"the plan keeps {_kind_of(mode)} {named} in the assembly "
             f"root{under}{spot}, where the shape writes its manifest. No "
             "copy stands in for the manifest: `shape-doctor.py`, the root's "
             f"validators and `make bootstrap` read {_first_and_more(rels)} "
             "at the root itself, and there they would find the source's "
-            f"{found}. {written}`adoption verified`, after both leg "
-            f"repositories were created and pushed: {fix}.")
+            f"{found}. {written}its verification "
+            "(`adopt-manifest-not-shape`), after both leg repositories were "
+            f"created and pushed: {fix}.")
     if code == ROOT_BLOCKS_SHAPE:
         relation, aside = _overlap(rels[0], path)
         return (
@@ -4775,7 +4820,14 @@ def _root_shape_findings(plan: Plan, tree: list) -> list[str]:
     first shape path it blocks and counting the rest. Asked of a disk that
     keeps case and then of one that ignores it; a finding the first disk
     already made is not made again, and one only the second makes says so,
-    and so does a copy only the second writes."""
+    and so does a copy only the second writes.
+
+    THE COPY OF THE SHAPE'S PIN IS NOT ASKED where the root holds the pin
+    itself (#651, L1-07 of #457). That is #524's `plan-root-holds-pin`
+    (`_kept_pin_findings`), and the copy under `shape/` is only its
+    consequence: with the kept path gone, the shape writes its pin at its
+    own path and nothing at the copy's. A path kept at the copy as well was
+    a second finding, `plan-root-blocks-shape-copy`, for one cause."""
     kept = _kept_in_root(plan.entries, tree)
     if not kept:
         return []
@@ -4787,7 +4839,9 @@ def _root_shape_findings(plan: Plan, tree: list) -> list[str]:
     blocked: dict[tuple, tuple[list, list, list, list]] = {}
     for disk in (keeps_case, _KeptTree(kept, fold=True)):
         for code, rel, copy, group, rows in _shape_blocks(disk):
-            if (code, rel, group) in seen:
+            if (code, rel, group) in seen or (
+                    code == ROOT_BLOCKS_COPY and rel == SHAPE_PIN
+                    and _holds_a_pin(disk, rel)):
                 continue
             seen.add((code, rel, group))
             rels, copies, _, folded = blocked.setdefault(
@@ -6140,7 +6194,8 @@ UNSAFE_PATH_REMEDIATION = (
 
 
 # ---------------------------------------------------------------------------
-# A symlink in the source whose target is empty (#303)
+# A symlink in the source whose target is empty (#303), or begins with a NUL
+# byte (#388)
 # ---------------------------------------------------------------------------
 #
 # A source tree can hold a symlink whose target is EMPTY: a `120000` entry
@@ -6173,14 +6228,32 @@ UNSAFE_PATH_REMEDIATION = (
 # plan the next machine cannot adopt. `drop` is not offered as the fix: it
 # is one only where symlinks are not made. The remediation is in the source.
 #
-# No target is read. `Source.tree()` lists each entry with `ls-tree -l`, and
-# the size of a symlink's blob is the length of its target, so an empty
-# target is a `120000` row of size 0, in a SHA-1 or a SHA-256 repository
-# alike. Only the commit being adopted is read: an empty symlink in the
+# A TARGET THAT BEGINS WITH A NUL BYTE IS EMPTY TOO (#388). git hands a
+# symlink's target to `symlink(2)` as a C string, which ends at its first
+# NUL, so `\0spec.md`, 8 bytes and not the empty blob, is the empty target
+# to Linux, and every run above went the same way: on main `check` said
+# `plan ok`, and with symlinks on `execute` failed in its first clone after
+# both leg repositories were created; with `core.symlinks` false it said
+# `adoption verified` over a spec leg whose own clone exits 128. It is the
+# same fact of the source, failing the same way, with the same remediation,
+# so it is the same finding, worded for its blob. A second code would give
+# one fault two names for every reader of this one to learn: `execute`'s
+# refusal, and the walk of #183, which says nothing of a link this finding
+# names. A NUL further on (`spec\0.md`) is another failure, a link git
+# makes to `spec`, and is not this one's to report.
+#
+# Size first, then the target. `Source.tree()` lists each entry with
+# `ls-tree -l`, and the size of a symlink's blob is the length of its
+# target, so an empty target is a `120000` row of size 0, in a SHA-1 or a
+# SHA-256 repository alike, and is not read. The target of every other link
+# is read in ONE `git cat-file --batch` over the blob ids the tree lists
+# (`symlink_targets`), so a source with no symlink of size 1 or more starts
+# no process for it. Only the commit being adopted is read: a symlink in the
 # history alone is never checked out by a clone, and `git filter-repo`
 # rewrites the history without a checkout.
 
-#: `check`'s finding for a symlink of the source's whose target is empty.
+#: `check`'s finding for a symlink of the source's whose target is empty, or
+#: begins with a NUL byte, which ends it (#388).
 EMPTY_SYMLINK = "plan-empty-symlink"
 #: How many of them `check` names one by one; past it, a count, as
 #: `plan-uncovered` counts the paths past its twentieth.
@@ -6198,48 +6271,110 @@ EMPTY_SYMLINK_REMEDIATION = (
     "`check` calls it `plan-stale` once the source has moved.")
 
 
-def empty_symlinks(tree: list) -> list[str]:
-    """The paths of `tree` (`Source.tree()`'s rows) that are symlinks with
-    an empty target: mode 120000, and a blob of size 0."""
-    return [path for path, mode, _, size in tree
-            if mode == SYMLINK_MODE and not size]
+def symlink_targets(source: Source, tree: list) -> dict[str, bytes]:
+    """The target of each symlink of `tree` (`Source.tree()`'s rows) whose
+    blob is not empty, as the bytes the blob holds, by blob id (#388).
+
+    ONE `git cat-file --batch` over the ids, each id once however many
+    links share it, and none at all when no link has a size: a link of size
+    0 has the empty target, which is known without reading it. Each object
+    comes back as `<id> <type> <size>`, a line feed, that many bytes and a
+    line feed, so it is cut by its size, and a target that holds a line feed
+    is read whole. An id git does not have comes back as `<id> missing` and
+    nothing else, and is left out: such a link is judged by its size alone.
+    """
+    oids = list(dict.fromkeys(oid for _, mode, oid, size in tree
+                              if mode == SYMLINK_MODE and size))
+    if not oids:
+        return {}
+    args = [GIT_CAT_FILE, "--batch"]
+    read = subprocess.run(["git", *args], cwd=source.path,
+                          input="".join(f"{oid}\n" for oid in oids).encode(),
+                          capture_output=True, check=False)
+    if read.returncode:
+        raise Refusal(
+            "git-failed",
+            f"`git {' '.join(args)}` in {source.path} exited "
+            f"{read.returncode}: "
+            f"{read.stderr.decode('utf-8', 'replace').strip()}")
+    targets: dict[str, bytes] = {}
+    out, at = read.stdout, 0
+    for oid in oids:
+        end = out.find(b"\n", at)
+        if end < 0:
+            break
+        header, at = out[at:end].split(), end + 1
+        if len(header) == 3:
+            size = int(header[2])
+            targets[oid] = out[at:at + size]
+            at += size + 1
+    return targets
 
 
-def _empty_symlink_sentence(path: str) -> str:
-    """What `check` says of the empty symlink at `path`, and `plan` notes."""
-    return (f"{_spelled(path)} is a symlink whose target is empty at the "
-            "source commit, and Linux cannot make a symlink to nothing. "
+def empty_symlinks(tree: list, targets: dict[str, bytes]) -> list[str]:
+    """The paths of `tree` (`Source.tree()`'s rows) that are symlinks whose
+    target is empty to Linux: mode 120000, and a blob of size 0 (#303), or
+    one whose target in `targets` (`symlink_targets`, by blob id) begins
+    with a NUL byte, which ends it there (#388)."""
+    return [path for path, mode, oid, size in tree
+            if mode == SYMLINK_MODE
+            and (not size or targets.get(oid, b"").startswith(b"\0"))]
+
+
+def _empty_symlink_sentence(path: str, nul: bool) -> str:
+    """What `check` says of the symlink at `path` whose target is empty,
+    or, with `nul`, begins with a NUL byte (#388), and `plan` notes."""
+    if nul:
+        target = ("begins with a NUL byte at the source commit; a symlink's "
+                  "target ends at its first NUL, so this one is empty too,")
+        held = "a plain file"
+    else:
+        target, held = "is empty at the source commit,", "an empty file"
+    return (f"{_spelled(path)} is a symlink whose target {target} and Linux "
+            "cannot make a symlink to nothing. "
             "There, where git makes symlinks by default, each clone "
             "`execute` makes of the source stops at it after both leg "
             "repositories were created, whatever the plan answers for it; "
-            "and where `core.symlinks` is false the clone holds it as an "
-            "empty file, and the leg or root the plan keeps it in then "
+            "and where `core.symlinks` is false the clone holds it as "
+            f"{held}, and the leg or root the plan keeps it in then "
             "cannot be cloned on Linux, where the root's own `validate` "
             "workflow runs")
 
 
-def _empty_symlink_findings(tree: list) -> tuple[list[str], list[str]]:
+def _empty_symlink_sentences(tree: list,
+                             targets: dict[str, bytes]) -> list[str]:
+    """`_empty_symlink_sentence` of each path `empty_symlinks` names, in its
+    order: one that has a size is there for its NUL."""
+    sized = {path for path, _, _, size in tree if size}
+    return [_empty_symlink_sentence(path, nul=path in sized)
+            for path in empty_symlinks(tree, targets)]
+
+
+def _empty_symlink_findings(tree: list, targets: dict[str, bytes]
+                            ) -> tuple[list[str], list[str]]:
     """A FINDING for each symlink of the source whose target is empty
-    (#303), as `check` prints it, the first EMPTY_SYMLINKS_NAMED one by one;
-    and what to print ONCE after every finding, as `_unsafe_path_findings`
-    does. Read from the tree alone: no answer of the plan's changes it."""
-    empty = empty_symlinks(tree)
-    found = [f"FINDING {EMPTY_SYMLINK}: {_empty_symlink_sentence(path)}."
-             for path in empty[:EMPTY_SYMLINKS_NAMED]]
-    if len(empty) > EMPTY_SYMLINKS_NAMED:
+    (#303) or begins with a NUL byte (#388), as `check` prints it, the first
+    EMPTY_SYMLINKS_NAMED one by one; and what to print ONCE after every
+    finding, as `_unsafe_path_findings` does. Read from the tree and the
+    targets (`symlink_targets`) alone: no answer of the plan's changes it."""
+    said = _empty_symlink_sentences(tree, targets)
+    found = [f"FINDING {EMPTY_SYMLINK}: {sentence}."
+             for sentence in said[:EMPTY_SYMLINKS_NAMED]]
+    if len(said) > EMPTY_SYMLINKS_NAMED:
         found.append(f"FINDING {EMPTY_SYMLINK}: … and "
-                     f"{len(empty) - EMPTY_SYMLINKS_NAMED} more symlinks "
-                     "whose target is empty")
+                     f"{len(said) - EMPTY_SYMLINKS_NAMED} more symlinks "
+                     "whose target is empty or begins with a NUL byte")
     return found, [EMPTY_SYMLINK_REMEDIATION] if found else []
 
 
-def _empty_symlink_notes(tree: list) -> list[str]:
-    """What `plan` says of each symlink of the source whose target is empty:
-    a NOTE in `check`'s words, and a line saying what follows. `plan` still
-    writes the plan, but no answer in it will pass `check`."""
+def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
+    """What `plan` says of each symlink of the source whose target is empty
+    or begins with a NUL byte: a NOTE in `check`'s words, and a line saying
+    what follows. `plan` still writes the plan, but no answer in it will
+    pass `check`."""
     notes: list[str] = []
-    for path in empty_symlinks(tree):
-        notes += [f"\nNOTE {_empty_symlink_sentence(path)}.",
+    for sentence in _empty_symlink_sentences(tree, targets):
+        notes += [f"\nNOTE {sentence}.",
                   f"     `check` reports this as `{EMPTY_SYMLINK}` and "
                   "`execute` refuses it, whatever the plan answers: give it "
                   "a target in the source, or remove it there, commit, and "
@@ -6247,14 +6382,15 @@ def _empty_symlink_notes(tree: list) -> list[str]:
     return notes
 
 
-def _source_path_findings(plan: Plan, tree: list
+def _source_path_findings(plan: Plan, tree: list, targets: dict[str, bytes]
                           ) -> tuple[list[str], list[str]]:
     """The findings `_entry_findings` lists first, about the source's own
     paths, and what to print once after every finding for them: each entry
     path `execute` will not extract (#196), then each symlink of the source
-    whose target is empty (#303)."""
+    whose target is empty (#303) or begins with a NUL byte (#388), its
+    target read from `targets` (`symlink_targets`)."""
     unsafe, unsafe_remediation = _unsafe_path_findings(plan)
-    empty, empty_remediation = _empty_symlink_findings(tree)
+    empty, empty_remediation = _empty_symlink_findings(tree, targets)
     return unsafe + empty, unsafe_remediation + empty_remediation
 
 
@@ -6414,7 +6550,8 @@ def _entry_findings(plan: Plan, source: Source,
     `plan-unsafe-path` for a plan that has one: a path that is a `git` option
     is refused as that, and never as the uncovered file it also leaves.
 
-    THEN THE SOURCE'S EMPTY SYMLINKS (#303), which no answer in the plan
+    THEN THE SOURCE'S EMPTY SYMLINKS (#303), a target that begins with a
+    NUL byte among them (#388), which no answer in the plan
     fixes: the fix is a commit in the source, and the fresh `plan` after it
     takes back every answer given before, so they are listed before the
     findings about those answers (`_source_path_findings`). Their
@@ -6457,7 +6594,8 @@ def _entry_findings(plan: Plan, source: Source,
     source, and is not also said to be missing from this one.
     """
     tree = source.tree()
-    unsafe, unsafe_remediation = _source_path_findings(plan, tree)
+    unsafe, unsafe_remediation = _source_path_findings(
+        plan, tree, symlink_targets(source, tree))
     findings = (unsafe
                 + _coverage_findings([str(e.get("path"))
                                       for e in plan.entries],
@@ -7371,7 +7509,9 @@ class _PlannedRoot:
             walk.problem = (f"it follows too many symlinks at {_spelled(at)}: "
                             f"{TOO_MANY_SYMLINKS}")
             return []
-        if not target:
+        if not target or target.startswith("\0"):
+            # A target that begins with NUL ends there, and is as empty to
+            # Linux as an empty one: `plan-empty-symlink` names both (#388).
             walk.empty = at
             walk.problem = (f"the symlink {_spelled(at)} has an empty target, "
                             "which leads nowhere")
@@ -7636,10 +7776,11 @@ def _root_symlink_findings(plan: Plan, source: Source,
     is a symlink AT a declared pin's file or AT the shape's own pin, #273's
     `plan-root-holds-pin` (`_links_at_a_pin`, #524).
 
-    A walk that stops at a symlink with an empty target is #303's to say:
-    `plan-empty-symlink` names every such symlink in the source, first in
-    `_entry_findings`' list, with the fix in the source, so it is not said
-    again here, wherever in the walk's chain that symlink is.
+    A walk that stops at a symlink with an empty target, or one that begins
+    with a NUL byte (#388), is #303's to say: `plan-empty-symlink` names
+    every such symlink in the source, first in `_entry_findings`' list, with
+    the fix in the source, so it is not said again here, wherever in the
+    walk's chain that symlink is.
 
     Where `git` checks a symlink out as a plain file, the link a reported
     walk meets first ABOVE its path is that file in the clone, and the
@@ -10041,23 +10182,27 @@ SUBMODULE_RECORD_PREAMBLE = (
 )
 
 #: The key `execute` appends after `submodules:` (#525): the plan's answer
-#: for each path the policy itself asked about. Read by the doctor by this
-#: name through the module it loads, and spelt once more by the project's
-#: own `validate-manifest.py`, as `SUBMODULE_RECORD` is.
+#: for each path the policy itself asked about, or put in another leg than
+#: the plan's (#655). Read by the doctor by this name through the module it
+#: loads, and spelt once more by the project's own `validate-manifest.py`,
+#: as `SUBMODULE_RECORD` is.
 ANSWER_RECORD = "answered_paths"
 
 #: The comment above that block, for the same reader.
 ANSWER_RECORD_PREAMBLE = (
     "",
-    "# THE PATHS THE ADOPTION'S POLICY ASKED ABOUT, and the leg each was",
-    "# ANSWERED into (#525). Written once, by `adopt-project.py execute`,",
-    "# from the adoption plan: one row per entry kept in a leg that covers a",
-    "# path `contracts/path-classification.yaml` could not call, its path",
-    "# inside that leg (a directory's with its `/`), the `resolution:` the",
-    "# plan gave it, and the source commit the plan was answered at.",
-    "# `shape-doctor.py` takes each row as the answer to the question it",
-    "# would ask again of that path in that leg. Like every field here, it",
-    "# confers nothing.",
+    "# THE PATHS THE ADOPTION'S POLICY ASKED ABOUT OR PUT IN ANOTHER LEG,",
+    "# and the leg each was ANSWERED into (#525, #655). Written once, by",
+    "# `adopt-project.py execute`, from the adoption plan: one row per entry",
+    "# kept in a leg that covers a path `contracts/path-classification.yaml`",
+    "# could not call, or called for the other leg or the root, its path",
+    "# inside that leg (a directory's with its `/`: without it, a row names",
+    "# a file), the `resolution:` the plan gave it, and the source commit the",
+    "# plan was answered at. `shape-doctor.py` takes each row as the answer",
+    "# for that path in that leg: not asked again, and not misplaced. A",
+    "# directory's row answers for every file under it, one added after the",
+    "# adoption too: the doctor does not hold a file to `source_commit:`.",
+    "# Like every field here, it confers nothing.",
     f"{ANSWER_RECORD}:",
 )
 
@@ -10089,8 +10234,8 @@ def _record_block(preamble: tuple, rows: list, entries: list,
 def answered_path_record(policy: PathPolicy, entries: list, tree: list,
                          commit: str) -> str:
     """The `answered_paths:` block `execute` appends to `project.yaml` after
-    `submodules:`, or "" when the plan answered no question of the policy's
-    into a leg (#525).
+    `submodules:`, or "" when the plan kept no path in a leg the policy did
+    not put it in (#525, #655).
 
     WHY THE ANSWER IS WRITTEN DOWN. A path the policy cannot call --
     `examples/` under `ambiguous-examples`, a directory whose extensions do
@@ -10099,20 +10244,42 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
     each leg after the split and, with no record, asks the same question
     again on every run, of a path somebody already answered.
 
-    ONLY THE POLICY'S OWN QUESTIONS, RE-ASKED HERE. The policy's `walk` is
-    run again over the source's paths at the plan's commit, gitlinks left
-    out as the doctor leaves them out, and a row is written for each entry
-    the plan answers `spec` or `code` (read as `_answered_legs` reads it)
-    that covers a path the walk leaves `leg: null`. Not from the plan's own
-    `review_required:`, which is a file a person edits: an entry they split
-    by hand to answer one question two ways is still recorded, each half in
-    its own leg. An entry answered `root` or `drop` is in no leg, and the
-    doctor never asks of it. `.gitmodules` is left out: its question is
-    which leg owns the submodules it registers, and `submodules:` answers
-    that per submodule, which is the reading the doctor holds a leg's
-    `.gitmodules` to. And a question `plan` asks for a reason of its own --
-    a gitlink under the entry, a name `execute` will not extract -- is not
-    the policy's, and is recorded only where the policy asks one under it.
+    AND AN ANSWER AGAINST A RULE, FOR THE SAME REASON (#655). A path a rule
+    calls -- `docs/` under `spec-governance` -- may be answered into the
+    other leg in the plan, with a `resolution:` saying why: `check` passes
+    it and `execute` carries it out, because the plan is the person's word.
+    With no record the doctor held the leg to the rule, and its first run
+    after `adoption verified` called that path MISPLACED.
+
+    THE POLICY'S OWN VERDICTS, READ AGAIN HERE. The policy's `walk` is run
+    again over the source's paths at the plan's commit, gitlinks left out
+    as the doctor leaves them out, and a row is written for each entry the
+    plan answers `spec` or `code` (read as `_answered_legs` reads it) that
+    covers a path the walk does not put in that leg: one it leaves `leg:
+    null`, or one it calls for the other leg or the root. An entry
+    answered as its rule says needs no record: the doctor's walk agrees
+    with it. Not from the plan's own `review_required:`, which is a file a
+    person edits: an entry they split by hand to answer one question two
+    ways is still recorded, each half in its own leg, and one split to
+    answer half of it against a rule is recorded for that half alone. An
+    entry answered `root` or `drop` is in no leg, and the doctor never
+    reads it. `.gitmodules` is left out: its question is which leg owns
+    the submodules it registers, and `submodules:` answers that per
+    submodule, which is the reading the doctor holds a leg's `.gitmodules`
+    to. And a question `plan` asks for a reason of its own -- a gitlink
+    under the entry, a name `execute` will not extract -- is not the
+    policy's, and is recorded only where the policy's walk disagrees with
+    the answer under it.
+
+    AGAINST A RULE MEANS AGAINST WHAT `plan` SHOWED AS WELL (#655). `plan`
+    walks the tree WITH its gitlinks, and a gitlink is one more verdict in
+    its directory's extension majority, so it can keep `plan` from folding
+    a directory the walk above folds: `plan` then proposes each file by its
+    own extension. An entry left as `plan` wrote it was answered against
+    nothing, so an answer against a rule is recorded only where it also
+    differs from the leg `plan` showed: that walk, with its entries asked
+    again by `ask_about_submodules` and `ask_about_refused_paths` as `plan`
+    asks them. A question of the walk above is recorded as before.
 
     A SOURCE WITH NO SUCH ENTRY GETS "" and so the `project.yaml` it always
     got, byte for byte.
@@ -10120,14 +10287,28 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
     gitlinks = {path for path, mode, _, _ in tree if mode == GITLINK_MODE}
     files = [(path, size) for path, mode, _, size in tree
              if path not in gitlinks]
-    asked = [entry.path for entry in walk(policy, files) if entry.leg is None]
-    questions = [path for path, _ in files if _covering(asked, path)]
-    answered = _answered_legs(entries, questions)
-    kept = sorted({entry: leg for leg, entry in answered.values()
-                   if leg in EXTRACTED_LEGS and entry != GITMODULES}.items())
+    called = {entry.path: entry.leg for entry in walk(policy, files)}
+    shown = {entry.path: entry.leg for entry in ask_about_refused_paths(
+        ask_about_submodules(policy, walk(
+            policy, [(path, size) for path, _, _, size in tree]), tree),
+        tree)}
+    answered = _answered_legs(entries, [path for path, _ in files])
+    kept = sorted({entry: leg for path, (leg, entry) in answered.items()
+                   if leg in EXTRACTED_LEGS and entry != GITMODULES
+                   and leg != _walked_leg(called, path)
+                   and (_walked_leg(called, path) is None
+                        or leg != _walked_leg(shown, path))}.items())
     return _record_block(ANSWER_RECORD_PREAMBLE,
                          [(entry, leg, entry) for entry, leg in kept],
                          entries, commit)
+
+
+def _walked_leg(called: dict, path: str) -> str | None:
+    """The leg `walk` gave `path`, from `called` (`{entry path: leg}`): its
+    own entry's, or the folded directory's above it; None for a question.
+    The walk's entries cover each path it was given exactly once (#655)."""
+    return next((called[name] for name in _covering_names(path)
+                 if name in called), None)
 
 
 def submodule_record(entries: list, tree: list, commit: str) -> str:
@@ -10262,8 +10443,9 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                                   source.commit)
         if record:
             append["project.yaml"] = record
-        # And the plan's answers to the policy's own questions, after it
-        # (#525): `answered_path_record`, read before any leg existed.
+        # And the plan's answers to the policy's own questions, and against
+        # its rules, after it (#525, #655): `answered_path_record`, read
+        # before any leg existed.
         if answers:
             append[SHAPE_MANIFEST] = append.get(SHAPE_MANIFEST, "") + answers
         # Each declared pin's file, `contracts/<product>-pin.yaml`, is
@@ -10371,10 +10553,11 @@ def cmd_execute(args) -> int:
                               code_path, tracking, {}, {},
                               shape_commit, pins, naming)
 
-    # The plan's answers to the policy's own questions (#525), worked out
-    # here, before anything exists: the policy is this standard's file, the
-    # one the doctor will ask, and one that does not load refuses now and
-    # not after both legs are pushed. "" for a plan that answered none.
+    # The plan's answers to the policy's own questions (#525), and against
+    # its rules (#655), worked out here, before anything exists: the policy
+    # is this standard's file, the one the doctor will ask, and one that
+    # does not load refuses now and not after both legs are pushed. "" for
+    # a plan that answered none.
     answers = answered_path_record(PathPolicy.load(PATH_POLICY),
                                    plan.entries, source.tree(), source.commit)
 
@@ -10857,6 +11040,8 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
 
     counts, findings = _account_for(before, after, paths_for["drop"])
     findings += _shape_file_findings(assembly, split_commit)
+    findings += _split_manifest_findings(split_tree, before,
+                                         paths_for["drop"])
     added = sorted(set(after) - set(before))
     for leg in ("spec", "code", "root", "drop"):
         note = " (seeded from template)" if leg in seeded else ""
@@ -11078,6 +11263,11 @@ ROOT_SUBMODULE_DEFECT = (
     "of the source's in the root (`plan-submodule-root`) or leaves one with "
     "no leg (`plan-unresolved`, `plan-uncovered`, `plan-bad-leg`), "
     f"{SPLIT_IS_WRONG}")
+#: The exit of `adopt-manifest-not-shape` (#389).
+MANIFEST_DEFECT = (
+    "`execute` refuses before any leg exists a plan that keeps a path of the "
+    f"source's at `{SHAPE_MANIFEST}` in the root (`{ROOT_BLOCKS_MANIFEST}`) "
+    f"or mounts a leg there (`{LEG_COLLIDES}`), {SPLIT_IS_WRONG}")
 
 
 def _land_the_root_tree(after: dict, tree: list, before: dict,
@@ -11193,6 +11383,64 @@ def _mount_commit_findings(tree: list, mounts: dict[str, str],
             for path, mode, oid, _ in tree
             if mode == GITLINK_MODE and path in mounts
             and oid != pushed[mounts[path]]]
+
+
+def _split_manifest_findings(tree: list, before: dict,
+                             drops: list[str]) -> list[str]:
+    """`adopt-manifest-not-shape` when the root's `project.yaml` is not the
+    shape's manifest (#389): the source's own entry is still there, or the
+    manifest went beside the root's as `shape/project.yaml`, or both.
+
+    THE ONE SHAPE FILE NO COPY STANDS IN FOR (#305). `shape-doctor.py`, the
+    root's validators and `make bootstrap` read the manifest at the root
+    itself. A plan that kept the source's `project.yaml` there had the
+    manifest written beside it, and every source blob was still in exactly
+    one place, so this check said `adoption verified` over an assembly the
+    doctor calls NOT A SHAPE ROOT. `check` finds that plan and `execute`
+    refuses it before any leg exists (`plan-root-blocks-manifest`), and that
+    refusal was all there was: this check does not lean on it, as it leans
+    on none of `check`'s (#165).
+
+    BY BLOB, AS THE REST OF THE ACCOUNTING IS, and never by the pin, which
+    does not list a rendered file. The source's own entry is matched by path
+    and blob, whatever its mode: a kept symlink that led nowhere had the
+    manifest written through it, and the root keeps the link. The copy is
+    the shape's only when the source did not have that blob at that path: a
+    source's own `shape/project.yaml`, kept where the root's `project.yaml`
+    is the manifest, is a file like any other.
+
+    A `project.yaml` THE PLAN DROPS IS NOT THE SOURCE'S OWN AT THE ROOT,
+    whatever its bytes. `drops` is `paths_for["drop"]`, the list
+    `_mount_the_legs` has `git rm`ed before the shape writes anything, so
+    what is at `project.yaml` then is what the shape wrote: this asks what
+    the split did, not what `check` refused. Matched by blob alone, a source
+    file that held exactly the manifest this run renders, answered `drop`
+    (a plan `check` passes, and main verified), was called the source's own,
+    and the run failed after both legs were pushed (#389's review, R1). Only
+    that half is waived: the manifest beside it is a finding still.
+    """
+    entries = {path: (mode, oid) for path, mode, oid, _ in tree}
+    copy = f"{COLLISION_DIR}/{SHAPE_MANIFEST}"
+    mode, oid = entries.get(SHAPE_MANIFEST, ("", ""))
+    dropped = SHAPE_MANIFEST in {path.rstrip("/") for path in drops}
+    kept = bool(oid) and oid == before.get(SHAPE_MANIFEST) and not dropped
+    beside = copy in entries and entries[copy][1] != before.get(copy)
+    if not (kept or beside):
+        return []
+    if kept:
+        said = (f"{_spelled(SHAPE_MANIFEST)} in the root tree is the "
+                f"source's own {_kind_of(mode).split()[-1]} ({oid[:12]}), "
+                "not the shape's manifest"
+                + (f", which is beside it as {_spelled(copy)}" if beside
+                   else ""))
+    else:
+        said = (f"the shape's manifest is at {_spelled(copy)} in the root "
+                "tree, where it is written only when the root already holds "
+                f"{_spelled(SHAPE_MANIFEST)}")
+    return [f"FINDING adopt-manifest-not-shape: {said}. `shape-doctor.py`, "
+            "the root's validators and `make bootstrap` read the manifest at "
+            f"{_spelled(SHAPE_MANIFEST)} itself, and no copy stands in for "
+            f"it; {MANIFEST_DEFECT}"]
 
 
 def _pushed_commits(work_root: Path, names: dict) -> dict[str, str]:
