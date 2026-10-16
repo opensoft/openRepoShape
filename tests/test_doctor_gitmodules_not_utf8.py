@@ -338,25 +338,54 @@ def test_a_url_holding_a_line_break_git_keeps_is_read_whole(
     assert_read_as_git_reads(standard, root, sibling, SECTION.encode())
 
 
-@pytest.mark.parametrize("locale", ["C.UTF-8", "C"])
-def test_a_section_name_in_latin_1_is_read_under_either_locale(
-        standard, holder, tmp_path, monkeypatch, locale):
-    """A section NAMED in Latin-1 was read under `LC_ALL=C` and not under
-    `LC_ALL=C.UTF-8`, where the regexp matched no byte that is not UTF-8:
-    no url, and the member's clone a stranger. The run is skipped where
-    `locale -a` does not list the locale, and on Windows, whose command
-    line is text and cannot carry the byte to `gits_url`."""
-    if os.name == "nt":
-        pytest.skip("a Windows command line cannot carry the byte 0xE9")
+def listed_locale(codeset: str) -> str:
+    """`C`, or for `UTF-8` any UTF-8 locale `locale -a` lists (`C.UTF-8`
+    first where it is one), so the test runs wherever one is installed. The
+    test is skipped where `locale -a` lists none."""
     try:
         listed = subprocess.run(["locale", "-a"], capture_output=True,
                                 text=True, check=False).stdout.split()
     except OSError:
         pytest.skip("no `locale` here to list the locales")
-    if locale.lower().replace("-", "") not in {
-            known.lower().replace("-", "") for known in listed}:
-        pytest.skip(f"no {locale} locale here")
-    monkeypatch.setenv("LC_ALL", locale)
+    if codeset == "C":
+        found = [name for name in listed if name == "C"]
+    else:
+        found = sorted((name for name in listed
+                        if name.lower().replace("-", "").endswith(".utf8")),
+                       key=lambda name: not name.lower().startswith("c."))
+    if not found:
+        pytest.skip(f"`locale -a` lists no {codeset} locale here")
+    return found[0]
+
+
+@pytest.mark.parametrize("codeset", ["UTF-8", "C"])
+def test_a_section_name_in_latin_1_is_read_under_either_locale(
+        standard, holder, tmp_path, monkeypatch, codeset):
+    """A section NAMED in Latin-1 was read under `LC_ALL=C` and not under a
+    UTF-8 locale, where the regexp matched no byte that is not UTF-8: no
+    url, and the member's clone a stranger. Skipped on Windows, whose
+    command line is text and cannot carry the byte to `gits_url`."""
+    if os.name == "nt":
+        pytest.skip("a Windows command line cannot carry the byte 0xE9")
+    monkeypatch.setenv("LC_ALL", listed_locale(codeset))
     root, sibling = member_beside(holder, tmp_path)
     assert_read_as_git_reads(standard, root, sibling,
                              name_section(root, b"members/caf\xe9"))
+
+
+def test_of_two_sections_giving_the_mount_the_last_is_read(
+        standard, holder, tmp_path, siblings):
+    """Two sections give the member's path, and git, `gitmodules_entry` and
+    `make siblings` all take the LAST, as git reads the file. `mounted_from`
+    took the first, and called the clone of the url git fetches from a
+    stranger (#668)."""
+    root, sibling = member_beside(holder, tmp_path)
+    config = root / ".gitmodules"
+    remotes = (holder["base"] / "remotes").as_posix().encode("utf-8")
+    config.write_bytes(b'[submodule "members/Old"]\n\tpath = '
+                       + SECTION.encode() + b"\n\turl = " + remotes
+                       + b"/Old.git\n" + config.read_bytes())
+    commit_all(root, "Give the member's path an earlier section too")
+    assert_read_as_git_reads(standard, root, sibling, SECTION.encode())
+    assert siblings.submodule_urls(root)[SECTION] == gits_url(
+        root, SECTION.encode())

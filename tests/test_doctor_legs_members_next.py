@@ -1495,6 +1495,72 @@ def test_414_3_a_gitmodules_deleted_from_the_working_tree_alone_is_read(
     ), row["next"]
 
 
+#: What the index holds in place of `.gitmodules`, for a root whose working
+#: tree has none and whose HEAD's copy gives the mount `p` its url, and the
+#: `(name, url)` git then finds for `p` (#668). None stages no copy.
+INDEX_COPIES = [
+    pytest.param(b'[submodule "q"]\n\tpath = q\n\turl = /r/index.git\n',
+                 (None, None), id="no-section-for-the-path"),
+    pytest.param(None, ("p", "/r/head.git"), id="no-copy"),
+    pytest.param(b'[submodule "p"\n\tpath = p\n', (None, None),
+                 id="unparsable"),
+]
+
+
+def gitmodules_in_head_and_index(root: Path, index_copy: bytes | None):
+    """`root`, a new repository with a gitlink at `p` and HEAD's
+    `.gitmodules` giving it `/r/head.git`, with no `.gitmodules` in the
+    working tree and `index_copy` staged in its place. The copy reaches git
+    as bytes on stdin."""
+    git("init", "-q", "-b", "main", ".", cwd=root)
+    (root / ".gitmodules").write_bytes(
+        b'[submodule "p"]\n\tpath = p\n\turl = /r/head.git\n')
+    git("add", ".gitmodules", cwd=root)
+    git("update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},p",
+        cwd=root)
+    git("commit", "-q", "-m", "Mount p", cwd=root)
+    (root / ".gitmodules").unlink()
+    if index_copy is None:
+        git("rm", "-q", "--cached", ".gitmodules", cwd=root)
+        return
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(root), input=index_copy,
+                          capture_output=True, check=True).stdout
+    git("update-index", "--cacheinfo",
+        f"100644,{blob.decode('ascii').strip()},.gitmodules", cwd=root)
+
+
+def url_git_finds(root: Path, rel: str) -> str | None:
+    """The url `git submodule init -- <rel>` copies into the root's config,
+    or None where git stops at `No url found`, exit 128."""
+    init = subprocess.run(["git", "submodule", "init", "--", rel],
+                          cwd=str(root), capture_output=True, check=False)
+    if init.returncode != 0:
+        return None
+    return git("config", "--get", f"submodule.{rel}.url",
+               cwd=root).stdout.strip()
+
+
+@pytest.mark.parametrize(("index_copy", "found"), INDEX_COPIES)
+def test_668_with_none_in_the_working_tree_the_first_copy_alone_is_read(
+        standard, tmp_path, index_copy, found):
+    """With no `.gitmodules` in the working tree, git reads the index's
+    copy, else HEAD's, and ONLY the first that exists, whatever it holds
+    (#668). Each answer is git's own, from `git submodule init`:
+
+    - an index copy with no section for the path: no url, although HEAD's
+      copy gives one;
+    - no copy in the index: HEAD's url. Main called the mount url-less
+      there: its `--get-regexp` exits 1 over a blob that is not there,
+      which it took for "read, and no section";
+    - an index copy git cannot parse: no url, for git stops there. Reading
+      on to HEAD's copy named a url and handed over a line that exits 128.
+    """
+    gitmodules_in_head_and_index(tmp_path, index_copy)
+    assert doctor_module(standard).gitmodules_entry(tmp_path, "p") == found
+    assert url_git_finds(tmp_path, "p") == found[1]
+
+
 @WINDOWS_SKIP
 def test_414_3_pasted_there_the_line_runs_and_the_row_is_ok(
         standard, project, tmp_path):
@@ -2012,9 +2078,10 @@ def test_section_url_reads_gits_listing_and_the_last_value_wins(standard,
 
     `--list` gives every key (#668), so the file holds keys no submodule
     has: a `path` and `url` in a section that is not `submodule`, given
-    last, and in a `submodule` section with no name, which git ignores. A
-    reading that cut `submodule.` off every key by its length took the
-    first for a section named `gin` and the second for one named `''`."""
+    last, and in a `[submodule]` section with no subsection, which git
+    ignores. A reading that cut `submodule.` off every key by its length
+    took the first for a section named `gin` and the second for one named
+    `''`."""
     module = doctor_module(standard)
     (tmp_path / ".gitmodules").write_bytes(
         b'[submodule "my lib.v2"]\n\tpath = vendor/lib\n'

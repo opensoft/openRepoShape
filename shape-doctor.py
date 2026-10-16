@@ -4362,24 +4362,34 @@ def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
     index, else the one in HEAD. So a root whose `.gitmodules` was deleted
     from the working tree alone still updates: measured, the line exits 0
     there. `git config -f .gitmodules` by itself would call every mount of
-    that root url-less and withhold a line that works. A file git cannot
-    parse gives no url here.
+    that root url-less and withhold a line that works.
+
+    AND ONLY THAT ONE COPY: the first that EXISTS, as `rev-parse --verify`
+    finds it, which is how git's `config_from_gitmodules` chooses (#668).
+    A copy with no section for `rel`, or one git cannot parse, is no url,
+    and git does not look further: measured, over an index copy of either
+    kind beside a HEAD copy that gives the url, `submodule init` exits 128,
+    `No url found`. Reading the next copy wherever one would not list named
+    a url there, and a line that exits 128.
 
     The copy is read by `gitmodules_listing`, the one reading
-    `submodule_config` makes too (#668), and `section_url` picks the
-    section out of it. A copy read with no section for `rel` in it is no
-    url: git does not look further either.
+    `submodule_config` makes too, and `section_url` picks the section out of
+    it.
     """
     if os.path.lexists(root / ".gitmodules"):
-        sources = [["--file", ".gitmodules"]]
+        source = ["--file", ".gitmodules"]
     else:
-        sources = [["--blob", ":.gitmodules"], ["--blob", "HEAD:.gitmodules"]]
-    for source in sources:
-        listing = gitmodules_listing(root, source)
-        if listing is not None:
-            return section_url(listing, rel)
-        # No such copy, or one git cannot parse: the next place, as git.
-    return None, None
+        found = next((copy for copy in (":.gitmodules", "HEAD:.gitmodules")
+                      if git_answer(["rev-parse", "-q", "--verify", copy],
+                                    root) is not None), None)
+        if found is None:
+            return None, None
+        source = ["--blob", found]
+    listing = gitmodules_listing(root, source)
+    if listing is None:
+        # The copy git reads, and one it cannot parse: git stops there.
+        return None, None
+    return section_url(listing, rel)
 
 
 def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
@@ -7106,15 +7116,22 @@ def mounted_from(root: Path, rel: str, repository: str) -> str:
     to resolve it against is handed back as it is: it then matches nothing,
     and the row's answer rests on the `repository:` comparison alone --
     which is the state `verify_sibling` is in for the same holder.
+
+    THE LAST SECTION THAT GIVES `rel` A URL WINS, as git reads the file,
+    each later value overwriting the one before, and as
+    `siblings.py::submodule_urls` maps it (#668). The first named a remote
+    that `git submodule update` and `make siblings` both pass over.
     """
+    url = None
     for name, mount in submodule_config(root).items():
         # A submodule's NAME is its path unless somebody mounted it by hand
         # under another one, which git allows and this reads rather than
         # assumes.
-        if mount.get("path", name) != rel or not mount.get("url"):
-            continue
-        return resolved_remote(mount["url"], origin_url(root))
-    return f"https://github.com/{repository}.git"
+        if mount.get("path", name) == rel and mount.get("url"):
+            url = mount["url"]
+    if url is None:
+        return f"https://github.com/{repository}.git"
+    return resolved_remote(url, origin_url(root))
 
 
 def same_repository_here(one: str, two: str) -> bool:
