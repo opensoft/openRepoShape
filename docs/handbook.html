@@ -472,7 +472,7 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
 
       <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
@@ -493,7 +493,7 @@
           several of them is held together by convention or by nothing. This repository is the
           convention, as data and as running code.</p>
 
-          <h4>The fastest path &mdash; macOS, Linux, WSL2</h4>
+          <h4>The fastest path &mdash; macOS, Linux, WSL2, Git Bash</h4>
           <div class="code" data-lang="sh"><pre><code>curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash
 openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
           <p class="sub">That first line installs ONE command into <code>~/.local/bin</code>: the
@@ -504,8 +504,8 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
           in-flight work</a> to another workstation, are
           <a href="https://github.com/opensoft/openRepoTools">opensoft/openRepoTools</a>&rsquo; and have a one-liner of
           their own.</p>
-          <p class="sub">On Windows without WSL2 the way in is two PowerShell commands instead,
-          because on Windows there is nothing to install &mdash; see <a href="#start">Start
+          <p class="sub">In PowerShell, without WSL2 or Git Bash, the way in is two commands
+          instead, because there is nothing to install &mdash; see <a href="#start">Start
           here</a>.</p>
         </div>
 
@@ -610,7 +610,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -690,8 +690,8 @@ sudo dnf install gh</code></pre></div>
           repository rather than scaffolding a new one.</p>
           <p>The stock <code>/bin/bash</code> is 3.2 and is enough: <code>setup.sh</code>,
           <code>install.sh</code> and the <code>openRepoShape</code> command are written to use no
-          syntax newer than that, though CI runs on Linux only and no run of it checks them against
-          bash 3.2. That the login shell is zsh changes nothing &mdash; all three entry points are
+          syntax newer than that, though no CI run, on Linux or in Git Bash on Windows, checks them
+          against bash 3.2. That the login shell is zsh changes nothing &mdash; all three entry points are
           run under <code>bash</code> explicitly.</p>
           <h4>The tool offers the rest</h4>
           <p>The preflight names what is missing and, for <code>gh</code>, its login and its
@@ -721,9 +721,11 @@ sudo dnf install gh</code></pre></div>
           <code>winget install --id GitHub.cli -e</code> for <code>gh</code> and, only under
           <code>py setup-project.py --preflight</code>, <code>winget install --id Git.Git -e</code>
           for <code>git</code>: a run refuses a missing <code>git</code> before its preflight starts.
-          There is no <code>openRepoShape</code> command to install here: that two-liner IS the
-          Windows way in, and the <code>openRepoShape</code> command is a macOS, Linux and WSL2
-          convenience with no Windows twin, because on Windows there is nothing to install.
+          There is no <code>openRepoShape</code> command to install in PowerShell: that two-liner
+          IS the Windows way in there. Git Bash, the bash that Git for Windows installs, runs the
+          <code>openRepoShape</code> command and the one-line install, and CI tests both there, but
+          for a typed <code>yes</code>: CI has no terminal, and in Git Bash the preflight that the
+          one-line install ends with cannot take one, so none of its offers can be accepted there.
           Printed commands are quoted for a POSIX shell, so paste them into Git Bash. Only
           <code>shape-doctor.py</code>&rsquo;s lines, <code>setup-project.py</code>&rsquo;s family
           lines and <code>family.py</code>&rsquo;s <code>NEXT</code>, <code>switch -c</code>,
@@ -737,7 +739,7 @@ sudo dnf install gh</code></pre></div>
       <div class="panel" role="tabpanel" id="panel-wsl" aria-labelledby="tab-wsl" tabindex="0">
         <div class="stack">
           <h4>What this machine needs</h4>
-          <p>WSL2 is still how you run the bash entry points: <code>wsl --install</code> from an
+          <p>WSL2 runs every bash entry point in Linux itself: <code>wsl --install</code> from an
           administrator PowerShell, reboot, open the Ubuntu app, and run the steps INSIDE the WSL
           shell.</p>
           <div class="code" data-lang="powershell"><pre><code>wsl --install</code></pre></div>
@@ -973,7 +975,8 @@ sudo dnf install gh</code></pre></div>
           asks nothing before its own two acts, because running it is your act: it places the
           command and installs <code>git-filter-repo</code> with <code>pipx</code> or <code>uv</code>
           where one is there, and itself never runs <code>sudo</code> or installs either of them. The
-          preflight it ends with asks before each offer, as above.</li>
+          preflight it ends with asks before each offer, as above; in Git Bash it can take no
+          <code>yes</code>, so it installs nothing.</li>
           <li><code>--yes</code> skips the scaffold question only. It does not answer an install
           offer, <code>gh auth login</code> or <code>gh auth setup-git</code>.</li>
           <li>With no terminal attached there is no offer at all.</li>
@@ -1045,7 +1048,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1080,7 +1083,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
 
       <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
@@ -1138,7 +1141,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
 
       <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
@@ -1374,7 +1377,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1671,7 +1674,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob d1666fa6ce9176f71a0541d3c3b55d4bf6508d6a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 
