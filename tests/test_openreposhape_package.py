@@ -9,10 +9,9 @@ function reads `run_cmd` and `USAGE_LINES` from its OWN module when it runs,
 so `the_python_command`, autouse here and only here, points both at the
 package's `openRepoShape` for each test this module collects: one case, one
 rule, both commands, and not a line of the launcher's module changed for
-it. This module carries no Windows skip, so those cases run on the Windows
-job too, where the launcher's own module skips. The four launcher cases that
-run its FILE (from stdin, or by its path) are re-stated below for this
-command.
+it. CI runs this module on Linux, as it runs the whole suite since #597,
+and no CI job runs it on Windows. The four launcher cases that run its FILE
+(from stdin, or by its path) are re-stated below for this command.
 
 `PythonCommand`, called, runs the package from this checkout's `src/`,
 where it sits BESIDE a checkout of the standard and uses this one, as the
