@@ -36,9 +36,11 @@ encoding stays UTF-8 under it (`c_locale_or_skip`, #527's own).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -47,8 +49,8 @@ import test_adopt_github_exits as on_github
 from conftest import (ADOPT, WINDOWS_SKIP, git, make_source_repo, run_script,
                       write_plan)
 from test_adopt_git_rm_bytes import (C_LOCALE, NORTHWIND, SPLIT_BRANCH,
-                                     c_locale_or_skip, needs_filter_repo,
-                                     tree_bytes)
+                                     UTF8, c_locale_or_skip,
+                                     needs_filter_repo, tree_bytes)
 from test_adopt_relative_submodule_url import (HTTPS_ORIGIN, RELATIVE,
                                                RELATIVE_ORIGIN, REMOTES,
                                                THING_REMOTE, VERIFIED, found,
@@ -396,3 +398,64 @@ def test_a_default_branch_outside_ascii_reads_as_in_utf_8_mode(
                     else written)
     assert plans[0] == plans[1]
     assert_said_alike(*runs)
+
+
+#: The child: `_git_out_exact(["rev-parse", <name>], <repository>)` under the
+#: C locale. The script and the repository travel as the hex of their bytes,
+#: and the name as JSON, which spells a surrogate as an escape, so every
+#: argument is ASCII. It prints one line of ASCII JSON: the commit, or the
+#: refusal's code and detail.
+REV_PARSE_IN_THE_C_LOCALE = r"""
+import importlib.util, json, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location(
+    "adopt_rev_parse", os.fsdecode(bytes.fromhex(sys.argv[1])))
+adopter = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(adopter)
+repository = Path(os.fsdecode(bytes.fromhex(sys.argv[2])))
+try:
+    answer = {"commit": adopter._git_out_exact(
+        ["rev-parse", json.loads(sys.argv[3])], repository)}
+except adopter.Refusal as exc:
+    answer = {"refused": exc.code, "detail": exc.detail}
+print(json.dumps(answer))
+"""
+
+#: A name that is UTF-8, and one holding the byte 0xE9 where UTF-8 has
+#: none, as #425's `_default_branch` keeps it: the surrogate U+DC00 plus
+#: the byte.
+NAMES = {"utf-8": BRANCH, "not-utf-8": "caf\udce9"}
+
+
+@pytest.mark.parametrize("present", [True, False],
+                         ids=["present", "missing"])
+@pytest.mark.parametrize("name", NAMES.values(), ids=NAMES.keys())
+def test_rev_parse_hands_git_the_name_s_bytes_and_refuses_it_by_name(
+        tmp_path, name, present):
+    """`Source.open`'s `git rev-parse` (#425's review). Under the C locale
+    the name reaches git as its bytes, UTF-8 with `surrogateescape`, so a
+    branch git keeps as `caf\\xe9` is the one asked, and the commit comes
+    back. Where git refuses it, the refusal is `git_out`'s own,
+    `git-failed`, naming the command as text: no bytes reach its words,
+    which `git_out` joins as text and would end in a `TypeError`."""
+    env = c_locale_or_skip()
+    repository = make_source_repo(tmp_path / NORTHWIND, on_github.SOURCE_TREE,
+                                  edits=())
+    if present:
+        subprocess.run(["git", "branch", tree_bytes(name)],
+                       cwd=str(repository), check=True)
+    child = subprocess.run(
+        [sys.executable, "-c", REV_PARSE_IN_THE_C_LOCALE,
+         os.fsencode(ADOPT).hex(), os.fsencode(repository).hex(),
+         json.dumps(name)],
+        capture_output=True, env=env, stdin=subprocess.DEVNULL, check=False)
+    assert child.returncode == 0, child.stderr.decode(UTF8, "replace")
+    answer = json.loads(child.stdout.decode("ascii"))
+    if present:
+        head = subprocess.run(["git", "rev-parse", "HEAD"],
+                              cwd=str(repository), capture_output=True,
+                              check=True).stdout.decode("ascii").strip()
+        assert answer == {"commit": head}
+        return
+    assert answer.get("refused") == "git-failed", answer
+    assert answer["detail"].startswith(f"`git rev-parse {name}` in "), answer
