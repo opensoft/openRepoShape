@@ -103,9 +103,9 @@ puts it there — run that line, or the next shell cannot find `brew`. Then `bre
 install gh`, and `brew install git-filter-repo` only if you are ADOPTING an
 existing repository rather than scaffolding a new one. The stock `/bin/bash` is
 3.2 and is enough: `setup.sh`, `install.sh` and the `openRepoShape` command are
-written to use no syntax newer than that, though CI runs on Linux only and no
-run of it checks them against bash 3.2. That the login shell is zsh changes
-nothing — all three entry points are run under `bash` explicitly.
+written to use no syntax newer than that, though no CI run, on Linux or in Git
+Bash on Windows, checks them against bash 3.2. That the login shell is zsh
+changes nothing — all three entry points are run under `bash` explicitly.
 
 </details>
 
@@ -159,19 +159,19 @@ and refuses. Downloading the file first leaves stdin on your terminal.
 preflight, the same naming check, the same plan, the same one `yes`, the same
 self-bootstrap outside a checkout. It never needs `make` and never looks for a
 `python3` — it runs the interpreter that started it. That two-liner is the
-Windows way in that installs nothing; pipx's `openRepoShape` runs the same flow,
-and the bash one that step 3's one line installs is for macOS, Linux and WSL2
-alone. Printed commands are quoted for a POSIX shell, so paste them into
-Git Bash. Only `shape-doctor.py`'s lines, `setup-project.py`'s family lines
-and `family.py`'s `NEXT`, `switch -c`, `add` and `git rm -r --cached` lines
-are quoted for PowerShell, on Windows.
+Windows way in that installs nothing; pipx's `openRepoShape` runs the same flow.
+Git Bash runs step 3's bash command and its one line, tested in CI but for a
+typed `yes`, which its preflight cannot take there. Printed commands are quoted
+for a POSIX shell, so paste them into Git Bash. Only `shape-doctor.py`'s lines,
+`setup-project.py`'s family lines and `family.py`'s `NEXT`, `switch -c`, `add`
+and `git rm -r --cached` lines are quoted for PowerShell, on Windows.
 
 </details>
 
 <details>
 <summary><b>Windows via WSL2</b></summary>
 
-**Windows via WSL2** is still how you run the bash entry points: `wsl
+**Windows via WSL2** runs every bash entry point in Linux itself: `wsl
 --install` from an administrator PowerShell, reboot, open the Ubuntu app, and
 run the four steps below INSIDE the WSL shell.
 
@@ -240,14 +240,14 @@ three repositories are created and the push fails.
 curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/download/install.sh | bash
 ```
 
-`install.sh` is attached to every release and installs the newest, with no `gh`
-and no login. Its command is PINNED to the release tag, recorded in
-`openRepoShape.ref` beside it: `setup.sh` and the standard are fetched at that
-tag, not at main. It installs `git-filter-repo` with `pipx`, or `uv`, where it
-can, or prints the command, runs `openRepoShape --preflight`, and says last if
-the machine is ready to adopt or only to scaffold. `install.sh` never runs
-`sudo`; the preflight offers what is missing, each behind a typed `yes` at your
-terminal. `| bash -s -- v1.0.1` names a release; the same line again upgrades.
+`install.sh`, attached to every release, installs the newest with no `gh` and no
+login. Its command is PINNED to the release tag, recorded in `openRepoShape.ref`
+beside it: `setup.sh` and the standard are fetched at that tag, not at main. It
+installs `git-filter-repo` with `pipx`, or `uv`, where it can, or prints the
+command, runs `openRepoShape --preflight`, and says last if the machine is ready
+to adopt or only to scaffold. It never runs `sudo` itself; the preflight offers
+what is missing, each behind a typed `yes` at your terminal; in Git Bash it can
+take none. `| bash -s -- v1.0.1` names a release; the same line again upgrades.
 
 By hand, the same command at main, which records no ref and follows main:
 
