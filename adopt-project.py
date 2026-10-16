@@ -1425,8 +1425,16 @@ class Source:
         self.cloned = cloned
 
     @classmethod
-    def open(cls, spec: str, work_root: Path) -> "Source":
-        """`spec` is a local path (used in place) or `org/repo` (cloned)."""
+    def open(cls, spec: str, work_root: Path,
+             unwritable: str | None = None) -> "Source":
+        """`spec` is a local path (used in place) or `org/repo` (cloned).
+
+        `unwritable` is why `work_root` cannot be written
+        (`_unwritable_work_dir`), or None. An `org/repo` is cloned into it,
+        so it is then refused as `adopt-work-dir-unwritable` before any
+        directory is made or any clone is said (#650): `plan` ended in a
+        PermissionError traceback at `source-readonly`. A local path is
+        read in place and writes nothing there."""
         candidate = Path(spec).expanduser()
         cloned = False
         if candidate.exists():
@@ -1457,6 +1465,8 @@ class Source:
                     f"--source {spec!r} is neither a path that exists nor an "
                     "`org/repo` name",
                     "Remediation: pass a local clone's path, or `org/repo`.")
+            if unwritable:
+                raise _work_dir_refusal(unwritable)
             repository = spec
             path = work_root / "source-readonly" / spec.split("/")[-1]
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -4019,7 +4029,11 @@ def cmd_plan(args) -> int:
     if args.pin and args.pin_source is not None:
         _refuse_an_unrecordable_pin_source(args.pin_source)
     work_root = _work_root(args)
-    source = Source.open(args.source, work_root)
+    # An `org/repo` source is cloned into the work directory, so one this
+    # user cannot write in is refused before the clone, as `check` refuses
+    # it (#650); a local source is read in place, and writes nothing there.
+    source = Source.open(args.source, work_root,
+                         _unwritable_work_dir(args, work_root))
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
     naming = NamingPolicy.load(NAMING_POLICY)
 
@@ -4224,7 +4238,11 @@ class Plan:
     def source_commit(self) -> str:
         return str(self.source.get("commit") or "")
 
-    def open_source(self, override: str | None, work_root: Path) -> Source:
+    def open_source(self, override: str | None, work_root: Path,
+                    unwritable: str | None = None) -> Source:
+        """The source `check` and `execute` read: `override`, or the one the
+        plan records. `unwritable` is why `work_root` cannot be written, as
+        `Source.open` takes it."""
         spec = override or self.source.get("local_path") \
             or self.source.get("repository")
         if not spec:
@@ -4232,10 +4250,11 @@ class Plan:
                           f"{self.path}: `source:` names neither a local path "
                           "nor a repository")
         if not override and spec == self.source.get("local_path"):
-            spec = self._where_the_clone_is_gone(str(spec))
-        return Source.open(str(spec), work_root)
+            spec = self._where_the_clone_is_gone(str(spec), unwritable)
+        return Source.open(str(spec), work_root, unwritable)
 
-    def _where_the_clone_is_gone(self, local_path: str) -> str:
+    def _where_the_clone_is_gone(self, local_path: str,
+                                 unwritable: str | None = None) -> str:
         """The plan's `source.repository` in place of a `local_path` that no
         longer exists, said in one NOTE; `local_path` itself where it
         exists, or where the plan records no repository (#526).
@@ -4248,10 +4267,16 @@ class Plan:
         though passing `--source <org/repo>` again recovered. They now do
         what that does, and say so. A clone made again at another commit
         is no plan's source: `check` finds `plan-stale` and `execute`
-        refuses it, each naming both commits, as for `--source`."""
+        refuses it, each naming both commits, as for `--source`.
+
+        Where the work directory cannot be written (`unwritable`), nothing
+        can be cloned into it: refused before the NOTE says it is (#650),
+        as `execute` refuses it before it opens the source."""
         repository = self.source.get("repository")
         if not repository or Path(local_path).expanduser().exists():
             return local_path
+        if unwritable:
+            raise _work_dir_refusal(unwritable)
         repository = str(repository)
         print(f"NOTE the plan's `source.local_path`, {_spelled(local_path)}, "
               f"no longer exists, so its `source.repository`, "
@@ -8336,15 +8361,17 @@ def cmd_check(args) -> int:
     # Asked before the source is opened, as `execute` asks it (#524). An
     # `org/repo` source is cloned into the work directory, so where that
     # directory cannot be written there is no source to read: refused as
-    # `execute` refuses it, where it ended in a PermissionError traceback.
+    # `execute` refuses it, where it ended in a PermissionError traceback,
+    # and before the NOTE that says a recorded clone is made again (#650).
+    # So is a source that cannot be opened at all, which `execute`, asking
+    # first, never reaches: `source-unresolvable` here was a second answer.
     unwritable = _unwritable_work_dir(args, work_root)
     try:
-        source = plan.open_source(args.source, work_root)
-    except OSError:
+        source = plan.open_source(args.source, work_root, unwritable)
+    except (OSError, Refusal):
         if not unwritable:
             raise
-        raise Refusal(WORK_DIR_UNWRITABLE, unwritable,
-                      f"Remediation: {WORK_DIR_FIX}") from None
+        raise _work_dir_refusal(unwritable) from None
     naming = NamingPolicy.load(NAMING_POLICY)
     findings: list[str] = []
     if unwritable:
@@ -8816,6 +8843,17 @@ def _refuse_an_occupied_work_dir(work_root: Path, names: dict,
 WORK_DIR_UNWRITABLE = "adopt-work-dir-unwritable"
 WORK_DIR_FIX = ("Pass a --work-dir this user can write in, or none: without "
                 "one, each run makes a new one.")
+#: What `execute` says it left as it was when it refuses a `--work-dir`.
+NO_LEG_YET = "no leg repository was created and nothing was pushed. "
+
+
+def _work_dir_refusal(detail: str, done: str = "") -> Refusal:
+    """`adopt-work-dir-unwritable` for `detail`, why the `--work-dir`
+    cannot be used: `_work_root`'s or `_unwritable_work_dir`'s. The one
+    refusal of a work directory, in all three commands (#650); `done` is
+    what the refusing command left as it was, said first."""
+    return Refusal(WORK_DIR_UNWRITABLE, detail,
+                   f"Remediation: {done}{WORK_DIR_FIX}")
 
 
 def _unwritable_work_dir(args, work_root: Path) -> str | None:
@@ -8854,9 +8892,7 @@ def _refuse_an_unwritable_work_dir(args, work_root: Path) -> None:
     repository exists (#524)."""
     unwritable = _unwritable_work_dir(args, work_root)
     if unwritable:
-        raise Refusal(WORK_DIR_UNWRITABLE, unwritable,
-                      "Remediation: no leg repository was created and "
-                      f"nothing was pushed. {WORK_DIR_FIX}")
+        raise _work_dir_refusal(unwritable, NO_LEG_YET)
 
 
 def _why_occupied(built: list[tuple[str, str]], names: dict,
@@ -10272,7 +10308,7 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
 def cmd_execute(args) -> int:
     plan = Plan.load(Path(args.plan))
     _refuse_a_mistyped_plan(plan)
-    work_root = _work_root(args)
+    work_root = _work_root(args, NO_LEG_YET)
     # Before the source is opened, so before any leg exists (#524).
     _refuse_an_unwritable_work_dir(args, work_root)
     source = plan.open_source(args.source, work_root)
@@ -11650,17 +11686,32 @@ def _elector() -> str:
     return name.decode("utf-8", "surrogateescape").strip()
 
 
-def _work_root(args) -> Path:
+def _work_root(args, done: str = "") -> Path:
     """The command's work directory: `--work-dir`, made where it is missing,
     or a new one in the system temp folder, which `args` keeps as
     `made_work_root`, so that `main` can remove it once the command has
-    ended (`_leave_the_work_root`, #526)."""
-    if getattr(args, "work_dir", None):
-        root = args.work_dir.resolve()
-    else:
+    ended (`_leave_the_work_root`, #526).
+
+    A `--work-dir` THAT CANNOT BE MADE IS REFUSED, by `plan`, `check` and
+    `execute` alike, before anything is read (#650): a file is there or
+    above it, a symlink there leads round a loop, or this user cannot write
+    where it would be made. The bare `mkdir` ended each command in a
+    FileExistsError, NotADirectoryError or PermissionError traceback, exit
+    1, and on a loop Python 3.12's `Path.resolve` raised RuntimeError
+    first; `os.path.realpath` is the same reading without that raise. The
+    code and the way out are #524's, for one this user cannot write in;
+    `done` is what the refusing command left as it was, said first."""
+    if not getattr(args, "work_dir", None):
         root = Path(tempfile.mkdtemp(prefix="openreposhape-adopt-"))
         args.made_work_root = root
-    root.mkdir(parents=True, exist_ok=True)
+        return root
+    root = Path(os.path.realpath(args.work_dir))
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise _work_dir_refusal(
+            f"--work-dir {_spelled(str(root))} cannot be made: making it a "
+            f"directory failed ({exc.strerror or exc})", done) from None
     return root
 
 
@@ -11784,6 +11835,18 @@ def _leg_path_help(leg: str, default: str) -> str:
         "again.")
 
 
+def _work_dir_help(does: str, refused: str) -> str:
+    """`--help` for `--work-dir` (#650): what the command does there
+    (`does`), then where the default lands and what becomes of it, and of
+    one given, which is the same in all three commands (`_work_root`,
+    `_leave_the_work_root`), then the codes the command refuses one under
+    (`refused`), by the words the command prints."""
+    return (f"{does} Default: a new directory in the system temp folder, "
+            "removed when the run ends if it holds no file. A --work-dir "
+            "you give is made where it is missing, and nothing in it is "
+            f"removed. {refused}")
+
+
 def main(argv: list[str] | None = None) -> int:
     # FIRST, so that every `print` after it -- `--help` included -- escapes
     # a name stdout cannot encode rather than raising on it (#214).
@@ -11799,7 +11862,14 @@ def main(argv: list[str] | None = None) -> int:
     plan.add_argument("--project", required=True,
                       help="the assembly-root name; for an in-place adoption "
                            "it is the source repository's own name")
-    plan.add_argument("--org", default=None)
+    plan.add_argument("--org", default=None,
+                      help="the organisation the source repository is in, "
+                           "which the plan records as `org:` (default: the "
+                           "organisation of an `org/repo` --source, or the "
+                           "one a local source's `origin` url names). A "
+                           "source whose `origin` is a path, or that has "
+                           "none, names no organisation: `plan` refuses "
+                           "it as `adopt-no-org` unless --org is given.")
     plan.add_argument("--id", default=None)
     plan.add_argument("--visibility", choices=VISIBILITY_CHOICES,
                       default="private")
@@ -11874,14 +11944,32 @@ def main(argv: list[str] | None = None) -> int:
                            "Repeatable.")
     plan.add_argument("--path-policy", type=Path, default=None)
     plan.add_argument("--out", default="adoption-plan.yaml")
-    plan.add_argument("--work-dir", type=Path, default=None)
+    plan.add_argument(
+        "--work-dir", type=Path, default=None,
+        help=_work_dir_help(
+            "the directory an `org/repo` --source is cloned into, as "
+            "`source-readonly/<repo>`, which the plan records as "
+            "`source.local_path` for `check` and `execute` to read; a "
+            "local --source is read in place.",
+            "One that cannot be made, or that this user cannot write in "
+            "when a source is cloned into it, is refused as "
+            "`adopt-work-dir-unwritable`."))
     plan.set_defaults(func=cmd_plan)
 
     check = subparsers.add_parser("check", help="validate a plan")
     check.add_argument("--plan", required=True)
     check.add_argument("--source", default=None,
                        help="override the source the plan names")
-    check.add_argument("--work-dir", type=Path, default=None)
+    check.add_argument(
+        "--work-dir", type=Path, default=None,
+        help=_work_dir_help(
+            "where `check` works: an `org/repo` --source, or the plan's "
+            "`source.repository` where its recorded clone is gone, is "
+            "cloned there. Give the one `execute` will be given.",
+            "One this user cannot write in is a finding, "
+            "`adopt-work-dir-unwritable`, and is refused under that code "
+            "where the source would be cloned into it or cannot be opened, "
+            "as one that cannot be made is."))
     check.set_defaults(func=cmd_check)
 
     execute = subparsers.add_parser("execute", help="carry the plan out")
@@ -11898,7 +11986,19 @@ def main(argv: list[str] | None = None) -> int:
                               "without one of the two, execute refuses.")
     execute.add_argument("--yes", action="store_true",
                          help="the human has read the plan and the follow-ups")
-    execute.add_argument("--work-dir", type=Path, default=None)
+    execute.add_argument(
+        "--work-dir", type=Path, default=None,
+        help=_work_dir_help(
+            "where `execute` builds the two legs and the split, and clones "
+            "an `org/repo` source; the verification table and the notice "
+            "of a failure name what is there.",
+            "A default one that holds what the run made is kept, and the "
+            "run's last line names it. One that already "
+            "holds what a run builds is refused as "
+            "`adopt-work-dir-occupied`, and one that cannot be made, or "
+            "that this user cannot write in, as "
+            "`adopt-work-dir-unwritable`, before any leg repository "
+            "exists."))
     execute.set_defaults(func=cmd_execute)
 
     args = parser.parse_args(argv)
