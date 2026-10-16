@@ -651,12 +651,12 @@ def test_a_holder_whose_head_has_no_gitmodules_is_not_asked(
     """Where none of the index, HEAD and the work tree holds a `.gitmodules`
     there is no copy to compare, and no `gitmodules-` refusal is made.
 
-    THE REAL RUN STILL FAILS HERE, a known case from before #407 that goes
-    with the gate's to #459: in a holder whose HEAD already lost the file,
-    `remove` runs `deinit` and `git rm`, then dies at its commit's `git add
-    -f -- .gitmodules family.yaml` and puts back only part of the unmount,
-    while its dry run exits 0. So this pins only that #407's check asks
-    nothing, and not the dry run's answer (the review's N3)."""
+    A holder whose HEAD already lost the file is #611's: `remove` and its
+    dry run refuse it `member-gitmodules-absent`, before any git command
+    that writes (`tests/test_family_head_lost_gitmodules.py`), where the
+    real run used to die at its commit's `git add -f -- .gitmodules
+    family.yaml` with the member emptied. So this pins only that #407's
+    check asks nothing (the review's N3)."""
     env = isolated(offline, tmp_path)
     deletion_staged(holder, env)
     raw(holder, env, "commit", "-q", "-m", "The commit #407 describes")

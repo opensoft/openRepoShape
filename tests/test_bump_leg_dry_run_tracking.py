@@ -33,6 +33,7 @@ import pytest
 
 from conftest import PROJECT, cloned_just_pushed, git
 from test_bump_leg import branched, bump, reference_both_legs
+from test_bump_leg_paste_lines import BRANCH_LEFT_PROJECT
 from test_bump_leg_rollback import assert_nothing_changed, snapshot
 from test_commit_trailers import TRAILERS
 
@@ -85,7 +86,8 @@ def switch_command(project: Path, to: str) -> str:
 def test_a_dry_run_on_the_tracking_branch_prints_the_move_and_names_a_branch(
         project, scaffolded, advanced):
     """THE FIX: exit 0, the whole report, and a last line that says what the
-    real run needs. The workflows and the trailers are printed too, so the
+    real run needs, with the sentence for a branch that is there already
+    under it (#647). The workflows and the trailers are printed too, so the
     run is shown to reach every part of the report a dry run on a branch
     reaches, not only the first line."""
     was, _ = reference_both_legs(project)
@@ -106,7 +108,8 @@ def test_a_dry_run_on_the_tracking_branch_prints_the_move_and_names_a_branch(
     assert "--dry-run: nothing was changed." in out
     assert "bump-leg-on-tracking-branch" not in out
 
-    hint = out.splitlines()[-1]
+    *_, hint, sentence = out.splitlines()
+    assert sentence == BRANCH_LEFT_PROJECT
     assert f"the real run {NEEDS_A_BRANCH}" in hint
     assert hint.endswith(switch_command(project, advanced)), hint
     assert out.index(old_to_new) < out.index(TRAILERS[0]), (
@@ -123,9 +126,10 @@ def test_a_dry_run_on_the_tracking_branch_prints_the_move_and_names_a_branch(
 def test_the_branch_hint_is_the_only_difference_from_a_dry_run_on_a_branch(
         project, scaffolded, advanced):
     """The same root, the same arguments, first on `main` and then on a
-    branch: the second report is the first minus its last two lines, a blank
-    one and the hint, byte for byte. So "a dry run on a branch is unchanged"
-    is a comparison, not a pasted copy of today's wording."""
+    branch: the second report is the first minus its last three lines, a
+    blank one, the hint and the sentence under it (#647), byte for byte. So
+    "a dry run on a branch is unchanged" is a comparison, not a pasted copy
+    of today's wording."""
     reference_both_legs(project)
     on_tracking = bump(project, scaffolded, advanced, DRY_RUN)
     branched(project)
@@ -137,8 +141,10 @@ def test_the_branch_hint_is_the_only_difference_from_a_dry_run_on_a_branch(
         "a root already on a branch is told nothing about one")
     assert on_tracking.stdout.startswith(on_a_branch.stdout)
     tail = on_tracking.stdout[len(on_a_branch.stdout):]
-    assert tail.splitlines() == ["", on_tracking.stdout.splitlines()[-1]]
-    assert tail.endswith(switch_command(project, advanced) + "\n")
+    *_, hint, sentence = on_tracking.stdout.splitlines()
+    assert tail.splitlines() == ["", hint, sentence]
+    assert tail.endswith(switch_command(project, advanced) + "\n"
+                         + BRANCH_LEFT_PROJECT + "\n")
     assert on_tracking.stderr == ""
     assert on_a_branch.stderr == ""
 
@@ -157,7 +163,7 @@ def test_the_printed_switch_command_pastes_for_a_root_with_a_space(
 
     result = bump(root, scaffolded, advanced, DRY_RUN)
     assert result.returncode == 0, result.stderr + result.stdout
-    _, found, command = result.stdout.splitlines()[-1].partition(PASTE_AFTER)
+    _, found, command = result.stdout.splitlines()[-2].partition(PASTE_AFTER)
     assert found, result.stdout
 
     branch = f"bump/spec-{advanced[:12]}"
@@ -186,9 +192,10 @@ def test_the_real_run_on_the_tracking_branch_is_refused_byte_for_byte(
         project, scaffolded, advanced):
     """The refusal's every byte, spelled out, and nothing on stdout: this is
     the text the run had before #477, and a change to it is a change to what
-    a lane that scripts around it reads. The `switch -c` on its last line is
-    spelled as the dry run's hint is, by `shlex` (#532): a plain root prints
-    the bytes it always did, and one that needs quoting prints quoted."""
+    a lane that scripts around it reads. The `switch -c` is spelled as the
+    dry run's hint is, by `shlex` (#532): a plain root prints the bytes it
+    always did, and one that needs quoting prints quoted. The sentence for a
+    branch that is there already ends it, under `and re-run.` (#647)."""
     root = project.resolve()
     before = snapshot(project)
 
@@ -201,7 +208,7 @@ def test_the_real_run_on_the_tracking_branch_is_refused_byte_for_byte(
         "Remediation: these organisations are pull-request only, so this "
         "will not make a commit whose only next step is a push to the "
         f"default branch. Run:\n    {switch_command(project, advanced)}\n"
-        "and re-run.\n")
+        f"and re-run.\n{BRANCH_LEFT_PROJECT}\n")
     assert_nothing_changed(project, before)
 
 
