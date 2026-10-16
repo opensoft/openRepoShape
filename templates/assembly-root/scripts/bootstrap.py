@@ -33,8 +33,10 @@ WHAT IT DOES, in order:
       with a merge, a cherry-pick, a revert, a rebase or an `am` in progress
       is not moved at all: a checkout ends the first three, carrying what
       they staged onto the branch, and leaves the last two to go on over
-      it, so the line names the operation and the commands that finish or
-      abort it (#704). A move git would make over an IGNORED file at a path
+      it, as it does a cherry-pick or a revert of several commits whose
+      stop was committed by hand (its `sequencer/todo` is still there), so
+      the line names the operation and the commands that finish or abort
+      it (#704). A move git would make over an IGNORED file at a path
       the pin tracks is refused, in git's words, as one over an untracked
       file is. A branch no command can be given (a NUL,
       or a lone surrogate this system cannot encode) is never tried: the leg
@@ -59,8 +61,9 @@ WHAT IT DOES, in order:
       wallet-carried authority is not misconfigured, and a bootstrap that
       failed there would have made the layout load-bearing again.
 
-  (d) EXITS 0 unless a validator failed, and 2 where git cannot be run,
-      refused `git-not-runnable` as the validators refuse it (#694).
+  (d) EXITS 0 unless a validator failed, and 2 where step (a) or the
+      upstream notice cannot start git, refused `git-not-runnable` as the
+      validators refuse it (#694).
 
 SCHEMA-NEUTRAL BY CONTRACT. A one-repository project runs the same command:
 step (a) is a no-op where there are no submodules, and steps (c) and (d) are
@@ -119,6 +122,10 @@ IN_PROGRESS = (
     ("CHERRY_PICK_HEAD", "a cherry-pick", "cherry-pick"),
     ("REVERT_HEAD", "a revert", "revert"),
 )
+#: What a cherry-pick or a revert of SEVERAL commits leaves while it is not
+#: done, asked after `IN_PROGRESS`: its stop committed by hand takes the
+#: head file away and leaves this, whose first word says which it is.
+SEQUENCER_TODO = "sequencer/todo"
 #: The remedy of the `git-not-runnable` refusal (#694).
 GIT_NOT_RUNNABLE = (
     "Remediation: put git on PATH and run this again. Step (a) reads each "
@@ -260,9 +267,21 @@ def _git_says(args: list[str], cwd: Path) -> list[str] | None:
 
 def _head_of(sub: Path) -> tuple[str | None, str | None]:
     """The commit the leg has checked out, and the ref HEAD is on (`None`
-    when it is detached)."""
+    when it is detached).
+
+    The ref is read as BYTES and decoded as this system decodes a name it
+    is given (`os.fsdecode`), so a branch whose name is not UTF-8 reads
+    back as the `refs/heads/<branch>` built from the same name. `git_out`'s
+    strict decoding raised `UnicodeDecodeError` over it: a second run with
+    `--branch` such a name ended in a traceback in `place_at_pin`, and the
+    check of where `checkout -b` left HEAD would end the first (#704)."""
+    try:
+        ref = git_out(["symbolic-ref", "--quiet", "HEAD"], cwd=sub,
+                      binary=True)
+    except Refusal:
+        ref = None
     return (_try_git(["rev-parse", "--verify", "--quiet", "HEAD"], sub),
-            _try_git(["symbolic-ref", "--quiet", "HEAD"], sub))
+            None if ref is None else os.fsdecode(ref.rstrip(b"\r\n")))
 
 
 def _is_ancestor(sub: Path, commit: str | None, of: str | None) -> bool:
@@ -401,9 +420,9 @@ def _place_of(current: str | None) -> str:
 
 
 def _say_left(head: str | None, current: str, named: str) -> None:
-    """The line under `fast-forwarded` (#603), or under `on <branch>`
-    (#704), when the leg started on ANOTHER branch, `current`, and is on
-    the tracking branch `named` now.
+    """The line under `fast-forwarded` (#603), or under `on <branch>` or
+    `created` (#704), when the leg started on ANOTHER branch, `current`,
+    and is on the tracking branch `named` now.
 
     The person is told, since their next commit lands on `named`. P9
     (`place_at_pin`) used to say nothing of the branch it left, where T7
@@ -466,7 +485,30 @@ def _in_progress(sub: Path) -> tuple[str, str, str] | None:
     for row in IN_PROGRESS:
         if os.path.lexists(gitdir / row[0]):
             return row
-    return None
+    return _sequence_in_progress(gitdir)
+
+
+def _sequence_in_progress(gitdir: Path) -> tuple[str, str, str] | None:
+    """A cherry-pick or a revert of several commits that is not done, or
+    `None` (rv704's S1 on #704).
+
+    `git cherry-pick A B` stops on a conflict in A, the person resolves it
+    and commits by hand: `CHERRY_PICK_HEAD` is gone, and `git status` still
+    says `Cherry-pick currently in progress.` and to run `git cherry-pick
+    --continue`, which picks B onto wherever HEAD is by then. A move onto
+    the tracking branch put B there. `sequencer/todo` is what is left, and
+    its first word is `revert` for a revert and `pick` for a cherry-pick;
+    a file that cannot be read is taken as the cherry-pick, the commoner."""
+    todo = gitdir / SEQUENCER_TODO
+    if not os.path.lexists(todo):
+        return None
+    try:
+        first = todo.read_bytes().split(None, 1)[:1]
+    except OSError:
+        first = []
+    if first == [b"revert"]:
+        return SEQUENCER_TODO, "a revert", "revert"
+    return SEQUENCER_TODO, "a cherry-pick", "cherry-pick"
 
 
 def _say_in_progress(label: str, path: str,
@@ -479,10 +521,11 @@ def _say_in_progress(label: str, path: str,
     HEAD on it already or detached at the pin, ends a merge, a cherry-pick
     or a revert, taking away the head file `--continue` reads and carrying
     the staged result onto the branch, and it puts a rebase or an `am` on
-    the branch, which goes on from there; `merge --ff-only` refuses some of
-    them and not others. It is the operation's own to finish or abort, so
-    every such leg is refused alike, before any path of step (a) is
-    chosen."""
+    the branch, which goes on from there, as a cherry-pick or a revert of
+    several commits does once its stop is committed by hand (its
+    `sequencer/todo`); `merge --ff-only` refuses some of them and not
+    others. It is the operation's own to finish or abort, so every such leg
+    is refused alike, before any path of step (a) is chosen."""
     marker, doing, verb = row
     command = f"git -C {spelled(shlex.quote(path))} {verb}"
     print(f"  {label}: {doing} is in progress in the leg ({marker} is in its "
@@ -698,6 +741,13 @@ def create_at_pin(sub: Path, label: str, branch: str, pin: str,
     detached` of a leg on another branch, too; it says where the leg stays.
     A HEAD on a ref outside `refs/heads/` is left where it is, as the
     branch-at-the-pin and the behind-branch paths leave it (#704).
+
+    The checkout is judged by WHERE HEAD IS AFTERWARDS, as `_check_out`
+    judges one (#533; rv704's S3): a post-checkout hook that fails after
+    the branch is made makes git exit non-zero, and the line said `could
+    not create` over a leg on the branch at the pin. It says `created`,
+    and git's words follow it (`_say_after`). From another branch, the line
+    under `created` says the leg left it, as P9's and T7's do (rv704's S2).
     """
     named = spelled(branch)
     head, current = _head_of(sub)
@@ -721,10 +771,12 @@ def create_at_pin(sub: Path, label: str, branch: str, pin: str,
         return
     why = _git_says(["checkout", "-q", "--no-overwrite-ignore", "-b", branch,
                      pin], sub)
-    if why is not None:
+    if _head_of(sub) != (pin, f"refs/heads/{branch}"):
         stays = "detached" if current is None else f"it {_place_of(current)}"
         _say_refused(f"  {label}: could not create branch {branch!r} at "
-                     f"the pin {_short(pin)}; leaving {stays}", why)
+                     f"the pin {_short(pin)}; leaving {stays}", why or [
+                         "`git checkout -b` exited 0, and HEAD is not on the "
+                         "branch at the pin"])
         return
     if remote is not None:
         _try_git(["branch", "-q", f"--set-upstream-to=origin/{branch}",
@@ -735,6 +787,9 @@ def create_at_pin(sub: Path, label: str, branch: str, pin: str,
                  f"the pin deliberately does NOT follow")
     print(f"  {label}: branch {named} created at "
           f"{_short(pin)} — {state}")
+    if current not in (None, f"refs/heads/{branch}"):
+        _say_left(head, current, named)
+    _say_after(why)
 
 
 def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:

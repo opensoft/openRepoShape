@@ -29,6 +29,13 @@ before this change, in a scaffold's recursive clone bootstrapped once:
   missing-branch path and left by T7 (`which is neither`). The issue's
   recommended answer: every path leaves it, since a commit made there lands
   on that ref.
+- THE REVIEW'S THREE (rv704 on #745, at 4e2b211b). S1: a cherry-pick or a
+  revert of several commits whose stop was committed by hand leaves only
+  `sequencer/todo`, and was moved onto `main`, where its `--continue` then
+  committed; it is refused as in progress. S2: the missing-branch path
+  says the branch it left, as P9 and T7 do. S3: it judges its `checkout
+  -b` by where HEAD is, so a failing post-checkout hook is not called a
+  branch that could not be made.
 
 Lines 3 and 4 are elsewhere: P9's line naming the branch it left is in
 `tests/test_bootstrap_after_bump.py` (its other-branch tests, now reading
@@ -41,15 +48,18 @@ leg, and every way out is run as printed, from the root.
 from __future__ import annotations
 
 import itertools
+import os
 import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from conftest import git
+from conftest import IDENTITY_CONFIG, git, run_script
 from test_bootstrap_after_bump import (  # noqa: F401
-    ADDED, EDITED, MAIN, NOTHING_ELSE, bootstrapped, bumped, head_ref,
-    moved_and_refused, rev, root, skip_validators,
+    ADDED, EDITED, MAIN, NOTHING_ELSE, bootstrapped, bumped,
+    failing_post_checkout, head_ref, left_branch, moved_and_refused, rev,
+    root, skip_validators,
 )
 
 #: The pin's tracked file the branch `other` deletes, so that checking the
@@ -116,13 +126,27 @@ def snapshot(leg: Path) -> tuple:
             git("status", "--porcelain", cwd=leg).stdout)
 
 
-def placed_once_cleared(root: Path, pin: str) -> None:
+def placed_once_cleared(root: Path, pin: str) -> str:
     """The way out works: a run after it puts the leg on `main` AT the
-    pin."""
+    pin. Returns what that run printed."""
     again = skip_validators(root)
     assert again.returncode == 0, again.stderr + again.stdout
     assert head_ref(root / "spec") == MAIN, again.stdout
     assert rev(root / "spec") == pin, again.stdout
+    return again.stdout
+
+
+def typed(root: Path, command: str) -> None:
+    """`command`, a `git -C ...` step (a) printed, run from the root as a
+    person types it, under the suite's identity, with an editor that keeps
+    the message git offers."""
+    argv = shlex.split(command)
+    assert argv[0] == "git", argv
+    proc = subprocess.run(["git", *IDENTITY_CONFIG, *argv[1:]],
+                          cwd=str(root), capture_output=True, text=True,
+                          env={**os.environ, "GIT_EDITOR": "true"},
+                          check=False)
+    assert proc.returncode == 0, proc.stderr + proc.stdout
 
 
 # --- line 1: an ignored file in the way is refused on every path ------------
@@ -166,7 +190,8 @@ def test_an_ignored_file_a_move_off_another_branch_writes_is_refused(
     assert main_of(leg) == {"at": pin, "behind": pin, "missing": None}[path]
 
     (leg / IN_THE_WAY).unlink()
-    placed_once_cleared(root, pin)
+    again = placed_once_cleared(root, pin)
+    assert left_branch("other") in again, "it says the leg left `other`"
 
 
 def test_an_ignored_file_the_fast_forward_writes_is_refused(
@@ -253,6 +278,9 @@ OPERATIONS = {
     "rebase": (None, "rebase-merge", "a rebase", "rebase"),
     "rebase --apply": (None, "rebase-apply", "a rebase", "rebase"),
     "am": (None, "rebase-apply/applying", "an `am`", "am"),
+    "cherry-pick sequence": (None, "sequencer/todo", "a cherry-pick",
+                             "cherry-pick"),
+    "revert sequence": (None, "sequencer/todo", "a revert", "revert"),
 }
 
 
@@ -266,11 +294,9 @@ def in_progress(operation: str) -> str:
             f"it (`git -C spec {verb} --abort`), then run bootstrap again.\n")
 
 
-def refused_until_aborted(root: Path, operation: str, pin: str) -> None:
+def refuses(root: Path, operation: str) -> None:
     """Bootstrap refuses the leg as `in_progress` says and nothing moves:
-    HEAD, `main`, the index and the operation's marker are as they were.
-    Then the `--abort` the line names, run as printed from the root, and a
-    run after it places the leg at the pin."""
+    HEAD, `main`, the index and the operation's marker are as they were."""
     leg = root / "spec"
     marker = OPERATIONS[operation][1]
     gitdir = leg / git("rev-parse", "--git-dir", cwd=leg).stdout.strip()
@@ -283,6 +309,11 @@ def refused_until_aborted(root: Path, operation: str, pin: str) -> None:
     assert snapshot(leg) == before, "nothing moved"
     assert (gitdir / marker).exists(), f"the {operation} goes on"
 
+
+def refused_until_aborted(root: Path, operation: str, pin: str) -> None:
+    """`refuses`, then the `--abort` the line names, run as printed from the
+    root, and a run after it places the leg at the pin."""
+    refuses(root, operation)
     # The `--abort` of the second line, which is in the output as it is in
     # `in_progress`: the fourth span of backticks there.
     abort = in_progress(operation).splitlines()[1].split("`")[3]
@@ -359,7 +390,8 @@ def rebased(leg: Path, pin: str, start: str, *backend: str) -> None:
     git("commit", "-q", "-am", "mine", cwd=leg)
     assert git("rebase", "-q", *backend, pin, cwd=leg,
                check=False).returncode != 0
-    assert head_ref(leg) is None and rev(leg) == pin
+    assert head_ref(leg) is None, "the rebase detached HEAD"
+    assert rev(leg) == pin, "at the pin, onto which it rebases"
     (leg / EDITED).write_bytes(b"resolved\n")
     git("add", "--", EDITED, cwd=leg)
 
@@ -400,6 +432,142 @@ def test_a_rebase_or_an_am_stopped_in_the_leg_is_not_moved_onto_main(
         rebased(leg, pin, start, *(["--apply"] if "apply" in operation
                                    else []))
     refused_until_aborted(root, operation, pin)
+
+
+def picking_two(leg: Path, start: str) -> None:
+    """`other` from `start` with its own README, then `git cherry-pick
+    theirs~1 theirs`: the first pick, which changes the README too, stops
+    on the conflict; the second adds `z.txt`."""
+    git("checkout", "-q", "-b", "theirs", start, cwd=leg)
+    (leg / EDITED).write_bytes(b"theirs\n")
+    git("commit", "-q", "-am", "theirs edits README", cwd=leg)
+    (leg / "z.txt").write_bytes(b"z\n")
+    git("add", "--", "z.txt", cwd=leg)
+    git("commit", "-q", "-m", "theirs adds z", cwd=leg)
+    git("checkout", "-q", "-b", "other", start, cwd=leg)
+    (leg / EDITED).write_bytes(b"other\n")
+    git("commit", "-q", "-am", "other edits README", cwd=leg)
+    assert git("cherry-pick", "theirs~1", "theirs", cwd=leg,
+               check=False).returncode != 0
+
+
+def reverting_two(leg: Path, start: str) -> None:
+    """`other` from `start` with three commits (the README to `a`, `z.txt`
+    added, the README to `c`), then `git revert <the first> <the second>`:
+    the first revert stops on the README conflict; the second takes
+    `z.txt` out."""
+    git("checkout", "-q", "-b", "other", start, cwd=leg)
+    (leg / EDITED).write_bytes(b"a\n")
+    git("commit", "-q", "-am", "README a", cwd=leg)
+    (leg / "z.txt").write_bytes(b"z\n")
+    git("add", "--", "z.txt", cwd=leg)
+    git("commit", "-q", "-m", "adds z", cwd=leg)
+    (leg / EDITED).write_bytes(b"c\n")
+    git("commit", "-q", "-am", "README c", cwd=leg)
+    assert git("revert", "HEAD~2", "HEAD~1", cwd=leg,
+               check=False).returncode != 0
+
+
+#: Each sequence: what starts it, and the subject of `other`'s last commit
+#: once its `--continue` is done, with whether that leaves `z.txt` there.
+SEQUENCES = {
+    "cherry-pick sequence": (picking_two, "theirs adds z", True),
+    "revert sequence": (reverting_two, 'Revert "adds z"', False),
+}
+
+
+@pytest.mark.parametrize("operation", sorted(SEQUENCES))
+def test_a_sequence_whose_stop_was_committed_by_hand_is_refused(
+        root, bootstrapped, tmp_path, operation):
+    """rv704's S1: a cherry-pick or a revert of TWO commits stops on the
+    first, which the person resolves and commits by hand. Its head file is
+    gone, and `git status` still says it is in progress, with its
+    `--continue`. Bootstrap moved the leg onto `main`, and that
+    `--continue` then put the second commit there. It is refused by its
+    `sequencer/todo` now, and the `--continue` it prints, typed from the
+    root, finishes the sequence on `other`."""
+    pin, start = tracking(root, bootstrapped["remotes"], tmp_path, "at")
+    leg = root / "spec"
+    make, subject, has_z = SEQUENCES[operation]
+    make(leg, start)
+    (leg / EDITED).write_bytes(b"resolved\n")
+    git("add", "--", EDITED, cwd=leg)
+    git("commit", "-q", "--no-edit", cwd=leg)
+    gitdir = leg / git("rev-parse", "--git-dir", cwd=leg).stdout.strip()
+    assert not (gitdir / "CHERRY_PICK_HEAD").exists(), "the stop is committed"
+    assert not (gitdir / "REVERT_HEAD").exists(), "the stop is committed"
+
+    refuses(root, operation)
+
+    typed(root, in_progress(operation).splitlines()[1].split("`")[1])
+    assert head_ref(leg) == "refs/heads/other", "the sequence ends on `other`"
+    assert git("log", "-1", "--format=%s", cwd=leg).stdout.strip() == subject
+    assert (leg / "z.txt").exists() is has_z
+    assert main_of(leg) == pin, "`main` is not moved"
+    placed_once_cleared(root, pin)
+
+
+@pytest.mark.parametrize("start_on", ["detached", "other"])
+def test_a_branch_made_under_a_failing_hook_is_said_to_be_made(
+        root, bootstrapped, tmp_path, start_on):
+    """rv704's S3: with no `main`, a post-checkout hook that fails after
+    `checkout -b main <pin>` made the branch and put HEAD on it makes git
+    exit non-zero. The line said `could not create branch 'main' ...;
+    leaving ...` and `nothing else is tried` over a leg on `main` at the
+    pin. It is judged by where HEAD is, as a checkout of a branch that
+    exists is (#533): `created`, the line saying the leg left `other`
+    where it was there (S2), and the hook's words after them."""
+    pin, start = tracking(root, bootstrapped["remotes"], tmp_path, "missing")
+    leg = root / "spec"
+    left = ""
+    if start_on == "other":
+        git("checkout", "-q", "-b", "other", start, cwd=leg)
+        left = left_branch("other")
+
+    result = run_script(root / "scripts" / "bootstrap.py", "--skip-validators",
+                        cwd=root, env=failing_post_checkout(tmp_path))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (f"  [spec] spec: branch main created at {pin[:12]} — at the "
+            "pin\n" + left + "          checked out, and then git said:\n"
+            "          post-checkout hook failed\n") in result.stdout, (
+        result.stdout)
+    assert "could not create" not in result.stdout
+    assert NOTHING_ELSE not in result.stdout
+    assert head_ref(leg) == MAIN
+    assert rev(leg) == pin
+
+
+@pytest.mark.skipif(os.name == "nt", reason="U+DCFF is three bytes there, "
+                    "and step (a) does not try such a branch at all")
+def test_a_branch_whose_name_is_not_utf8_is_read_back_on_every_run(
+        root, tmp_path):
+    """`--branch` a name holding U+DCFF, the byte 0xff POSIX spells a name
+    that is not UTF-8 with, run twice. The first run makes the branch, and
+    the check of where `checkout -b` left HEAD (S3) reads HEAD back; the
+    second places the leg on it. Each read `symbolic-ref` decoded as UTF-8,
+    and on base the second run ended in a `UnicodeDecodeError` traceback.
+    Made on a disk that takes the byte, skipped on one that does not."""
+    try:
+        (tmp_path / "probe-\udcff").write_bytes(b"")
+    except (OSError, ValueError):
+        pytest.skip("this disk takes no file name with the byte 0xff")
+    leg = root / "spec"
+    pin = rev(leg)
+    git("checkout", "-q", "--detach", pin, cwd=leg)
+    for said in (rf"  [spec] spec: branch a\udcffb created at {pin[:12]} "
+                 "— at the pin\n",
+                 rf"  [spec] spec: on a\udcffb at {pin[:12]} (branch tip == "
+                 "pin)\n"):
+        result = run_script(root / "scripts" / "bootstrap.py",
+                            "--skip-validators", "--branch", "a\udcffb",
+                            cwd=root)
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "Traceback" not in result.stderr, result.stderr
+        assert said in result.stdout, result.stdout
+    head = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
+                          cwd=str(leg), capture_output=True,
+                          check=True).stdout
+    assert head == b"refs/heads/a\xffb\n", head
 
 
 # --- line 5: a HEAD on a ref outside refs/heads/ is left by every path ------
