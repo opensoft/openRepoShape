@@ -824,6 +824,61 @@ def _refuse_unwritable_values(fields) -> None:
                       UNWRITABLE_REMEDIATION)
 
 
+#: What a `scaffold-unwritable-value` for the clone URL is told to do (#433).
+#: It is not `UNWRITABLE_REMEDIATION`, which says to retype a value: the path
+#: is a directory, so the way out is another directory, or GitHub.
+CLONE_URL_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
+    "control character in it, a directory renamed or made anew, and run "
+    "again; or scaffold against GitHub, without --local-remote-dir, where "
+    "the clone URL is `https://github.com/<org>/<name>.git`. The READMEs "
+    "print the clone URL as it stands: a byte that is not UTF-8 in the path "
+    "(a directory named in a legacy code page) cannot be written at all, a "
+    "line break or a control character would break or garble the line it is "
+    "written into, and a bidirectional embedding, override or isolate "
+    "control would show the rest of that line in another order than it is "
+    "written.")
+
+
+def _refuse_an_unwritable_clone_url(local: bool, url: str) -> None:
+    """Refuse the assembly root's clone URL when no file can hold it, before
+    any remote exists, as `adopt-project.py` refuses its own (#255).
+
+    Only a local one can be refused: under `--local-remote-dir` the URL is the
+    bare repository's own path, which `templates/assembly-root/README.md`
+    prints (`git clone --recurse-submodules {{CLONE_URL}}`) and each leg's
+    `README.md` prints as `{{ASSEMBLY_CLONE_URL}}`; against GitHub it is
+    `https://github.com/<org>/<name>.git`, ASCII by construction. A directory
+    whose name is not UTF-8 reaches `sys.argv` as a string with a lone
+    surrogate, and `write_lf` encodes strictly, so it raised
+    `UnicodeEncodeError` in `_seed_legs` after all three bare repositories
+    existed and the work directory was half made, while `--dry-run` exited 0
+    and said nothing (#433). One bidi override or a line break in the path
+    was written into the README raw.
+
+    ONLY THE ASSEMBLY ROOT'S URL IS ASKED. It is the one URL `_scaffold`
+    renders into a file; the legs' are `<dir>/<name>.git` beside it, so what
+    makes one unwritable makes all three so, and the refusal names the one a
+    README holds. `_refuse_unwritable_values` is not reused because its
+    remediation tells a person to retype a value, and a directory is renamed
+    or replaced, not retyped; the code and the question are the same, so the
+    refusal is the same `scaffold-unwritable-value` for the same reasons
+    (`unwritable_reason`).
+    """
+    if not local:
+        return
+    reason = unwritable_reason(url)
+    if reason:
+        raise Refusal(
+            "scaffold-unwritable-value",
+            "under --local-remote-dir the assembly root's clone URL is the "
+            f"bare repository's own path, {url!r}, which the scaffold writes "
+            "into the `README.md` of the assembly root and of each leg, and "
+            f"{reason}.",
+            CLONE_URL_REMEDIATION)
+
+
 def referent_chain_links(raw: str) -> tuple:
     """`--referent-chain`'s links: split on commas, each stripped, an empty
     one dropped. ONE reading, for `_declaration` and for the check below, so
@@ -1597,6 +1652,13 @@ def _scaffold(args) -> int:
     refuse_unstorable_names(
         "scaffold-name-too-long", list(names.values()),
         list(names.values()) if args.local_remote_dir is not None else [])
+    # THE CLONE URL IS A PATH A FILE WILL HOLD (#433): under
+    # `--local-remote-dir` it is the bare repository's own path, which the
+    # READMEs print, so it is asked here, as the free-text values are asked
+    # in `_identity` (#282), before `_declaration` runs `gh api` and before
+    # a work directory or a remote exists, and `--dry-run` refuses alike.
+    local, repositories, urls = _repository_urls(args, names)
+    _refuse_an_unwritable_clone_url(local, urls["assembly"])
     policy = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
     if not PROJECT_ID_RE.match(project_id):
         raise Refusal("scaffold-bad-id",
@@ -1647,7 +1709,6 @@ def _scaffold(args) -> int:
                       args.tracking_branch)
 
     shape_commit, shape_tree = _shape_revision()
-    local, repositories, urls = _repository_urls(args, names)
     args.visibility = _leg_visibility(args, repositories["assembly"], local)
 
     values = {
