@@ -415,10 +415,11 @@ try:
     #: (#157). `url_repository` is the one reading of an `origin` that
     #: `adopt-project.py plan` takes `--org` from, imported here for the same
     #: reason, in place of a copy of `plan`'s regex (`origin_org`, #521).
+    #: `spelled` is how `siblings.py` prints the values that row quotes (#673).
     from repo_shape import (  # noqa: E402
         COMMIT_RE, NamingPolicy, PYTHON, Refusal, accepts_role, git_out,
         load_yaml, recorded_gitlink, redacted, remote_local_path,
-        resolved_remote, same_repository, url_repository,
+        resolved_remote, same_repository, spelled, url_repository,
     )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
@@ -494,7 +495,7 @@ NOT_A_ROOT = "none"
 #: The manifest FILENAME for each kind -- distinct from `PROJECT`/`FAMILY`
 #: above, which are the `kind:` a manifest DECLARES, not what the file is
 #: called. `Context.__init__`, `check_naming`, `manifest_candidates`,
-#: `is_this_member` and the way-in and what-is-here probes all read a root by
+#: `working_clone` and the way-in and what-is-here probes all read a root by
 #: this name, so it is spelled once for the five of them.
 PROJECT_MANIFEST = "project.yaml"
 FAMILY_MANIFEST = "family.yaml"
@@ -7345,8 +7346,13 @@ def detached(path: Path, git_dir: Path | None = None) -> bool | None:
     return proc.returncode == 1
 
 
-def is_this_member(sibling: Path, row: dict) -> bool:
-    """Does the directory beside the holder CLAIM to be this member?
+def is_this_member(manifest: object, row: dict) -> bool:
+    """Does the `project.yaml` of the clone beside the holder, as
+    `Context._read` gave it, CLAIM to be this member?
+
+    READ ONCE, BY `working_clone`, which asks `verify_sibling`'s `id`
+    question of the same reading first, and asks this only of a directory
+    with a `.git` of its own (#669).
 
     `scripts/siblings.py::verify_sibling` asks this before it will touch a
     directory, and for the same reason: a repository that happens to sit at
@@ -7361,9 +7367,6 @@ def is_this_member(sibling: Path, row: dict) -> bool:
     repository carries exactly this manifest and is still not the working
     clone. `working_clone` below puts the two back together (#146).
     """
-    if not (sibling / ".git").exists():
-        return False
-    manifest = Context._read(sibling / PROJECT_MANIFEST)
     if not isinstance(manifest, dict):
         return False
     if manifest.get("kind") != "project-manifest":
@@ -7570,8 +7573,9 @@ def same_repository_here(one: str, two: str) -> bool:
 
 
 def working_clone(sibling: Path, row: dict,
-                  remote: str) -> tuple[str | None, str | None]:
-    """`(the working clone beside the holder, what is there instead)`.
+                  remote: str) -> tuple[str, str | None]:
+    """`(what the clone at `sibling` is to this member, the origin found
+    there when it is another remote's)`, for a directory with a `.git`.
 
     BOTH OF `verify_sibling`'S QUESTIONS, WHICH IS THE POINT (#146). The
     manifest says which project a directory is; only `origin` says which
@@ -7619,15 +7623,83 @@ def working_clone(sibling: Path, row: dict,
     THE ORIGIN IS REDACTED ON THE WAY OUT. The comparisons above are on the
     raw value; what a row prints and `--json` carries must not be somebody's
     token (Codex and Copilot, PR #147).
+
+    AND IN `verify_sibling`'S ORDER, ONE WORD PER ANSWER (#669). The origin
+    is asked FIRST, whatever the manifest says, as `make siblings` asks it:
+    `wrong-origin`. Then the id `project_id` reads, by `verify_sibling`'s
+    own comparison: `wrong-project`. A clone at the right origin that it
+    passes is fetched as the member, but it is counted here only when its
+    `project.yaml` CLAIMS to be this member (`is_this_member`), so one that
+    does not is `unidentified`, and the rest are the `working-clone`.
     """
-    if not is_this_member(sibling, row):
-        return None, None
     origin = origin_url(sibling)
     repository = str(row.get("repository") or "")
-    if origin and (same_repository_here(origin, remote)
-                   or (repository and same_repository(origin, repository))):
-        return sibling.as_posix(), None
-    return None, redacted(origin) if origin else "(no origin)"
+    if not origin or not (same_repository_here(origin, remote)
+                          or (repository
+                              and same_repository(origin, repository))):
+        return "wrong-origin", redacted(origin) if origin else "(no origin)"
+    manifest = Context._read(sibling / PROJECT_MANIFEST)
+    if (isinstance(manifest, dict)
+            and str(manifest.get("id")) != str(row.get("id"))):
+        return "wrong-project", None
+    if not is_this_member(manifest, row):
+        return "unidentified", None
+    return "working-clone", None
+
+
+def unclonable(sibling: Path) -> str | None:
+    """What stands at `sibling`, a path with no `.git` of its own, that
+    nothing can be cloned into: `files` (a folder with something in it),
+    `file` (anything that is not a folder) or `unlistable` (a folder this
+    process cannot list). None for nothing at all, or an empty folder.
+
+    A FOLDER THAT CANNOT BE LISTED IS NOT EMPTY (#669). A directory that
+    can be entered and not listed (mode `0311`, or `711`, which is common
+    for another user's directory) raised `PermissionError` out of
+    `iterdir`, and the `members` row became a FINDING that the check could
+    not be run, so a COMPLIANT holder read DRIFTED, exit 1. Nobody can say
+    it is empty, and `git clone` refuses a folder it cannot read, so it is
+    a slot nothing is cloned into.
+    """
+    try:
+        if not sibling.exists():
+            return None
+        if not sibling.is_dir():
+            return "file"
+        return "files" if any(sibling.iterdir()) else None
+    except OSError:
+        return "unlistable"
+
+
+def sibling_slot(root: Path, sibling: Path, row: dict,
+                 remote: str) -> tuple[str, str | None]:
+    """`(what stands at ../<Project>, the origin found there when it is
+    another remote's)`, in `siblings.py::place`'s order (#669).
+
+    The holder itself (`is-the-holder`), then a path nothing can be cloned
+    into (`not-a-clone`, `unclonable`), then nothing or an empty folder
+    (`absent`, the only slot `make siblings` clones into), and then a clone,
+    which `working_clone` answers. This RESTATES `place`'s order, as
+    `working_clone` restates `verify_sibling`'s questions (#146), and not
+    the parent-folder rule `make siblings` asks before either, which the row
+    only names.
+
+    A FILE, OR A FOLDER THAT CANNOT BE LISTED OR ENTERED, IS `not-a-clone`
+    TOO: nothing can be cloned into it. `make siblings` itself ends in a
+    traceback on each today (`siblings.py:558`, #735), so the row says what
+    is there and nothing of what `make siblings` does with it
+    (`beside_sentence`). A folder that cannot be entered cannot be asked
+    for its `.git` either, so that question's `OSError` reads "no `.git`".
+    """
+    if sibling == root:
+        return "is-the-holder", None
+    try:
+        present = (sibling / ".git").exists()
+    except OSError:
+        present = False
+    if present:
+        return working_clone(sibling, row, remote)
+    return ("not-a-clone" if unclonable(sibling) else "absent"), None
 
 
 def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
@@ -7651,6 +7723,9 @@ def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
     reports no pin at all rather than a comparison that would fail for the
     wrong reason.
 
+    WHAT STANDS AT `../<Project>` IS `sibling` (`sibling_slot`, #669), so
+    a caller reads a word rather than parsing the row's sentence.
+
     Split out of `check_members` for #134.
     """
     project = str(row.get("project") or "?")
@@ -7667,11 +7742,12 @@ def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
     loose = detached(mount) if populated else None
     sibling = ctx.root.parent / project
     remote = mounted_from(ctx.root, rel, str(row.get("repository") or ""))
-    clone, elsewhere = working_clone(sibling, row, remote)
+    beside, elsewhere = sibling_slot(ctx.root, sibling, row, remote)
+    clone = sibling.as_posix() if beside == "working-clone" else None
     return {"project": project, "path": rel, "pin": pinned,
             "populated": populated, "head": head, "own_git": own_git,
             "unborn": unborn, "detached": loose,
-            "mounted_from": redacted(remote),
+            "mounted_from": redacted(remote), "sibling": beside,
             "working_clone": clone, "other_origin": elsewhere}
 
 
@@ -7690,22 +7766,26 @@ def member_problem(entry: dict) -> str | None:
     branch in `check_members` that records it says at length why the standard
     does not refuse a holder its own `family.py add` has just made.
 
+    THE PATH, THE PROJECT AND THE BRANCH ARE SPELLED (#673): they are a
+    manifest's and git's text, printed as `siblings.py` prints them.
+
     Split out of `check_members` for #134.
     """
+    path = spelled(entry["path"])
     if not entry["populated"]:
-        return (f"{entry['path']}: not populated -- the pinned copy is an "
+        return (f"{path}: not populated -- the pinned copy is an "
                 "unbootstrapped submodule")
     if not entry.get("own_git", True):
-        return (f"{entry['path']}: populated, but with no .git of its own, so "
+        return (f"{path}: populated, but with no .git of its own, so "
                 "git cannot read a HEAD in it")
     if entry.get("unborn"):
-        return (f"{entry['path']}: HEAD names the branch {entry['unborn']}, "
+        return (f"{path}: HEAD names the branch {spelled(entry['unborn'])}, "
                 "which has no commit")
     if entry["pin"] is None:
-        return (f"{entry['project']}: the row carries no 40-hex "
+        return (f"{spelled(entry['project'])}: the row carries no 40-hex "
                 "`pin.commit` to compare against")
     if entry["head"] != entry["pin"]:
-        return (f"{entry['path']}: checked out at "
+        return (f"{path}: checked out at "
                 f"{(entry['head'] or '?')[:12]}, pinned at "
                 f"{entry['pin'][:12]}")
     return None
@@ -7730,6 +7810,69 @@ def url_less_members(root: Path, rows: list) -> list[str]:
             and submodule_url(root, entry["path"])[1] is None]
 
 
+#: The folder `make siblings` places the working clones from, as the row
+#: words it (#605). EXACTLY, because `parent_folder_warning` compares the
+#: name with `==` on every disk, so on macOS and Windows a holder in
+#: `inkrouter` is refused for `InkRouter` (#669); `make siblings` prints the
+#: rename itself.
+FAMILY_FOLDER = "a folder named exactly after its repository (case included)"
+
+#: `(what stands at ../<Project>, the word make siblings says it in)` for each
+#: `sibling` state that is not the working clone and not a slot it clones
+#: into (#669). `wrong-origin` names the two urls (`beside_sentence`); an
+#: `unidentified` clone has no word, because `make siblings` fetches it as
+#: the member. `CLONE FAILED` is not predicted: only a run can find it.
+BESIDE_THE_HOLDER = {
+    "is-the-holder": ("is this holder itself", "IS THE HOLDER"),
+    "not-a-clone": ("is neither a git clone nor an empty folder",
+                    "NOT A CLONE"),
+    "wrong-origin": ("", "WRONG ORIGIN"),
+    "wrong-project": ("is a clone of the member's remote whose project.yaml "
+                      "and the family's row do not record the same id",
+                      "WRONG PROJECT"),
+    "unidentified": ("is a clone of the member's remote with no "
+                     "project.yaml that says it is this member", ""),
+}
+
+#: What stands at a `not-a-clone` slot `make siblings` cannot read today, as
+#: `unclonable` names it: it ends in a traceback on each (#735), so the row
+#: says what is there and no word of what `make siblings` does with it.
+UNREADABLE_BESIDE = {"file": "is a file, not a folder",
+                     "unlistable": "is a folder that cannot be listed"}
+
+
+def beside_sentence(ctx: Context, entry: dict) -> str:
+    """One member's sentence about `../<Project>`, for a `sibling` state in
+    `BESIDE_THE_HOLDER`: what stands there, and what `make siblings` does
+    with it, in its own word (#669).
+
+    EVERY VALUE IT QUOTES IS SPELLED (#673), as `verify_sibling` spells the
+    same four in its WRONG ORIGIN finding: the project, the directory, the
+    origin and the mount url are a manifest's, a disk's and git's text, and
+    an ESC or a CR in one reached the terminal as the control it is.
+    `--json` keeps them raw: `json.dumps` escapes them.
+
+    A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone` with no
+    word from `make siblings`, which ends in a traceback on it today (#735):
+    the sentence stops at what stands there (`UNREADABLE_BESIDE`).
+    """
+    state = entry["sibling"]
+    where = ctx.root.parent / entry["project"]
+    named = f"{spelled(entry['project'])}: {spelled(where)}"
+    found, word = BESIDE_THE_HOLDER[state]
+    how = unclonable(where) if state == "not-a-clone" else None
+    if how in UNREADABLE_BESIDE:
+        return (f"{named} {UNREADABLE_BESIDE[how]}, so it is not counted as "
+                "its working clone")
+    if state == "wrong-origin":
+        found = (f"is a clone of {spelled(entry['other_origin'])}, not of "
+                 f"{spelled(entry['mounted_from'])}")
+    does = (f"calls the same directory {word} and leaves it exactly as it is"
+            if word else "fetches it as the member, and nothing else")
+    return (f"{named} {found}, so it is not counted as its working clone "
+            f"(`make siblings`, from a holder in {FAMILY_FOLDER}, {does})")
+
+
 def members_verdict(ctx: Context, detail: dict, members_dir: str,
                     problems: list) -> Row:
     """What the members add up to: the one finding, or the two OK wordings.
@@ -7740,49 +7883,45 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     branch at its pin is a state worth a person's eye rather than a verdict.
     Both of those are therefore said inside an `ok` row, at length, instead
     of being left out of a report that would then look cleaner than the
-    machine it ran on. A directory beside the holder that carries the
-    member's manifest but was cloned from ANOTHER remote is the third of
-    them (#146): `working_clone` declines to count it, and this says which
-    origin it found, because a row that only said "no working clone" would
-    leave a person staring at a directory of that exact name.
+    machine it ran on. A directory beside the holder that `make siblings`
+    will not clone into and that is not the member's working clone is the
+    third of them (#146): `working_clone` declines to count it, and this
+    says what stands there and what `make siblings` will do with it (#669),
+    because a row that only said "no working clone" would leave a person
+    staring at a directory of that exact name.
 
     Split out of `check_members` for #134.
     """
     rows = detail["members"]
     on_a_branch = detail["on_a_branch"]
-    siblings_absent = detail["without_working_clone"]
-    # WHAT `make siblings` DOES WITH A STRANGER IS CONDITIONAL, AND THE WORDS
-    # SAY ON WHAT (#605). Since #578 it asks about the holder's parent folder
-    # before it looks at any member, so it calls this directory WRONG ORIGIN
-    # only from a holder in a folder named after its repository (or in one a
-    # link of that name beside it leads to; the words keep to the shorter,
-    # plainer case); from anywhere else it clones nothing and never reaches
-    # the directory. THE REPOSITORY'S NAME, NOT THE FAMILY'S `name:`: the
-    # rule takes the basename of the holder's `repository:`, and `name:` is a
-    # display name that may differ (`family_folder_name`, measured on a
-    # holder made with `--family Quill --name QuillWorks`). The rule lives in
-    # the holder's pinned `scripts/siblings.py` and is not copied here, where
-    # a copy would drift: the words name the condition, and `make siblings`
-    # itself prints the exact `mv` when it does not hold.
-    strangers = [f"{entry['project']}: {ctx.root.parent / entry['project']} "
-                 f"is a clone of {entry['other_origin']}, not of "
-                 f"{entry['mounted_from']}, so it is not counted as its "
-                 "working clone (`make siblings`, from a holder in a folder "
-                 "named after its repository, calls the same directory "
-                 "WRONG ORIGIN and leaves it exactly as it is)"
-                 for entry in rows if entry["other_origin"]]
+    # WHAT `make siblings` DOES WITH THE DIRECTORY IS CONDITIONAL, AND THE
+    # WORDS SAY ON WHAT (#605). Since #578 it asks about the holder's parent
+    # folder before it looks at any member, so it calls a directory WRONG
+    # ORIGIN, or anything else, only from a holder in a folder named after
+    # its repository (or in one a link of that name beside it leads to; the
+    # words keep to the shorter, plainer case); from anywhere else it clones
+    # nothing and never reaches the directory. THE REPOSITORY'S NAME, NOT
+    # THE FAMILY'S `name:`: the rule takes the basename of the holder's
+    # `repository:`, and `name:` is a display name that may differ
+    # (`family_folder_name`, measured on a holder made with `--family Quill
+    # --name QuillWorks`). The rule lives in the holder's pinned
+    # `scripts/siblings.py` and is not copied here, where a copy would
+    # drift: the words name the condition, and `make siblings` itself prints
+    # the exact `mv` when it does not hold.
+    beside = [beside_sentence(ctx, entry) for entry in rows
+              if entry["sibling"] in BESIDE_THE_HOLDER]
     if problems:
-        # A STRANGER IS SAID ON THE RED PATH TOO, AND IS NOT ONE OF THE
-        # FINDINGS. It was not, until Codex pointed out on PR #147 that a
-        # holder with ONE unbootstrapped mount returns here and says nothing
-        # about the directory beside it -- so the person bootstraps, re-runs,
-        # and only then hears about a clone that has been the wrong one all
-        # along. The pinned copies are still the whole of what makes this row
-        # red; the sentence says so.
+        # WHAT STANDS BESIDE THE HOLDER IS SAID ON THE RED PATH TOO, AND IS
+        # NOT ONE OF THE FINDINGS. It was not, until Codex pointed out on PR
+        # #147 that a holder with ONE unbootstrapped mount returns here and
+        # says nothing about the directory beside it -- so the person
+        # bootstraps, re-runs, and only then hears about a clone that has
+        # been the wrong one all along. The pinned copies are still the whole
+        # of what makes this row red; the sentence says so.
         reason = "; ".join(problems)
-        if strangers:
+        if beside:
             reason += ("; and, though it is not what fails this row: "
-                       + "; ".join(strangers))
+                       + "; ".join(beside))
         # THE NEXT IS CHOSEN BY WHAT IS WRONG, as `check_legs`' is and BY ITS
         # RULES (`checkout_reach`, #414), and the members that a CHECKOUT
         # cures win over the ones none does (#276). An empty mount, one with
@@ -7928,17 +8067,19 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     note = f"{len(rows)} member(s) mounted at their pins"
     if on_a_branch:
         note += ("; on a BRANCH rather than detached: "
-                 + ", ".join(on_a_branch)
+                 + ", ".join(spelled(path) for path in on_a_branch)
                  + " (a fresh `clone --recurse-submodules` of this holder is "
                    "detached; `family.py add` leaves a branch behind)")
-    # AND ON THE GREEN PATH IT IS SAID BEFORE THE ABSENCE IT EXPLAINS.
-    # Every one of these is also in `siblings_absent` -- it is not counted --
-    # and "there is no working clone for IRRS" on its own, about a directory
-    # named `IRRS` that is sitting right there, is the sentence that sends a
+    # AND ON THE GREEN PATH IT IS SAID, MEMBER BY MEMBER. Every one of these
+    # is also in `without_working_clone` -- it is not counted -- and "there
+    # is no working clone for IRRS" on its own, about a directory named
+    # `IRRS` that is sitting right there, is the sentence that sends a
     # person looking for a bug in this command (#146).
-    if strangers:
-        note += "; " + "; ".join(strangers)
-    if siblings_absent:
+    if beside:
+        note += "; " + "; ".join(beside)
+    placed = [spelled(entry["project"]) for entry in rows
+              if entry["sibling"] == "absent"]
+    if placed:
         # THE NOTE SAYS WHEN `make siblings` PLACES THEM, NOT THAT IT DOES
         # (#605). Since #578 it asks about the holder's parent folder before
         # it clones anything: from one named after the holder's REPOSITORY
@@ -7950,16 +8091,23 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
         # The rule is the holder's own, in its pinned `scripts/siblings.py`,
         # and is not tested here -- a second copy would drift -- so the words
         # are the same whichever folder this holder is in.
+        #
+        # AND IT NAMES ONLY THE SLOTS IT CLONES INTO (#669): nothing, or an
+        # empty folder. It named every member with no working clone, so one
+        # row said both that `make siblings` places IRRS and that it leaves
+        # IRRS exactly as it is; every other one is said above, in the word
+        # `make siblings` says it in.
         return Row("members", "members", OK,
                    f"{note}; no working clone beside the holder for "
-                   + ", ".join(siblings_absent)
-                   + " (`make siblings` places them when the holder is in a "
-                     "folder named after its repository, or in one a link "
-                     "of that name beside it leads to; with the holder "
-                     "anywhere else it clones nothing and prints the `mv` "
-                     "that moves it into such a folder; the pinned copy "
-                     f"under {members_dir}/ is detached by design)", None,
-                   detail)
+                   + ", ".join(placed)
+                   + " (`make siblings` places them when the holder is in "
+                     f"{FAMILY_FOLDER}, or in one a link of that name beside "
+                     "it leads to; with the holder anywhere else it clones "
+                     "nothing and prints the `mv` that moves it into such a "
+                     f"folder; the pinned copy under {spelled(members_dir)}/ "
+                     "is detached by design)", None, detail)
+    if beside:
+        return Row("members", "members", OK, note, None, detail)
     return Row("members", "members", OK,
                f"{note}, each with a working clone beside the holder", None,
                detail)
@@ -7972,8 +8120,8 @@ def check_members(ctx: Context) -> Row:
     `members/<Project>` inside the holder is PINNED AND DETACHED — that is
     what `bootstrap` places and what `validate-family.py` reads — and the
     sibling beside the holder is where a person works. So the mount is asked
-    whether it is detached AT the pin, and the sibling is only asked whether
-    it exists and is this project.
+    whether it is detached AT the pin, and the sibling is only asked what
+    stands there, as `make siblings` asks it (#669).
 
     FINDING THE STATE IS `member_state`'s, JUDGING IT IS `member_problem`'s
     AND THE WORDING IS `members_verdict`'s, so that this loop reads as the
