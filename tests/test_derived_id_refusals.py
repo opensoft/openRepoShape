@@ -39,6 +39,10 @@ from repo_shape import PROJECT_ID_RE, SAFE_ARG_RE  # noqa: E402
 FAMILY = REPO / "scripts" / "family.py"
 PATTERN = PROJECT_ID_RE.pattern
 
+#: The rule each tool's `naming-unclassified` holds a name to, in its own
+#: words: the scaffold's and `init`'s are the same.
+NAME_RULE = "one CamelCase token with no hyphen, underscore, dot or space"
+
 #: Per tool: the command, the flag naming whoever creates it, the flag the
 #: id is derived from and what else that flag names, and the finding's code.
 TOOLS = {
@@ -60,11 +64,12 @@ def derived(tool: str, unset: str) -> str:
 
 
 def derived_remedy(tool: str) -> str:
-    """The remedy `tool` gives for an id derived from its flag."""
+    """The remedy `tool` gives for an id derived from its flag: change the
+    flag, to a name the naming policy takes."""
     flag = TOOLS[tool]["flag"]
-    return (f"Remediation: change {flag}. The id is {flag} lowercased, and "
-            f"an explicit --id would not change {flag}, which also names "
-            f"{TOOLS[tool]['names']}.")
+    return (f"Remediation: change {flag} to {NAME_RULE}. The id is {flag} "
+            f"lowercased, and an explicit --id would not change {flag}, "
+            f"which also names {TOOLS[tool]['names']}.")
 
 
 #: Every character a name may hold on a command line (`SAFE_ARG_RE`, which
@@ -159,9 +164,11 @@ def test_a_name_whose_derived_id_is_refused_is_refused_by_the_naming_policy(
     """Why a derived id's remedy is its flag's and not `--id`'s: the naming
     policy reads the name itself and refuses every one whose lowercase is no
     id, so a `--id` that is an id only meets that refusal. Run with one, so
-    this is the run the old remedy led to."""
+    this is the run the old remedy led to. And the refusal states the rule
+    the derived remedy names, in the same words."""
     name = f"North{char}Wind"
     stderr = run_tool(tmp_path, tool, name, "--id", "north-wind")
     assert (f"REFUSED naming-unclassified: {name!r} matches no family in the "
             "naming policy") in stderr
+    assert NAME_RULE in stderr
     assert TOOLS[tool]["code"] not in stderr

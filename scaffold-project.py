@@ -774,18 +774,26 @@ def _identity(args, project: str) -> tuple[str, str, str, str, str]:
 #: value no flag supplied, and in `scaffold-bad-id` (#659).
 ID_DERIVED_FROM = "--project lowercased"
 
+#: The rule a `--project` is held to, as `naming-unclassified` states it
+#: (`_check_one_name`). `scaffold-bad-id`'s derived remedy names it in the
+#: same words, so the person who follows it is not sent from one refusal to
+#: the other (#659).
+PROJECT_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot "
+                     "or space")
+
 #: How `scaffold-bad-id` is told to go on (#659), in the words
 #: `adopt-project.py plan` gives `adopt-bad-id` (#658). A `--id` the person
 #: passed is theirs to retype. An id `_identity` derived is `--project`
 #: lowercased, and `--project` also names the three repositories, which the
 #: naming policy reads itself: every form it holds takes only ASCII letters,
 #: digits and hyphens, so "pass an explicit lowercase --id" led straight to
-#: `naming-unclassified`.
+#: `naming-unclassified`, and so would "change --project" to `North-Wind`.
+#: The derived remedy names the rule.
 PASSED_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
 DERIVED_ID_REMEDIATION = (
-    f"Remediation: change --project. The id is {ID_DERIVED_FROM}, and an "
-    "explicit --id would not change --project, which also names the "
-    "assembly root and both legs.")
+    f"Remediation: change --project to {PROJECT_NAME_RULE}. The id is "
+    f"{ID_DERIVED_FROM}, and an explicit --id would not change --project, "
+    "which also names the assembly root and both legs.")
 
 
 def _refuse_bad_id(project_id: str, given: str | None) -> None:
@@ -1073,8 +1081,7 @@ def _check_one_name(policy, name: str, role: str, declared_pins: set,
         raise Refusal(
             "naming-unclassified",
             f"{name!r} matches no family in the naming policy. "
-            "`<Project>` is one CamelCase token with no hyphen, "
-            "underscore, dot or space.",
+            f"`<Project>` is {PROJECT_NAME_RULE}.",
             "Remediation: re-run with a --project value of that form.",
         )
     if not accepts_role(found, role):

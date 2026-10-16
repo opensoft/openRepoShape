@@ -585,6 +585,14 @@ def _member_url(repository: str, local_remote_dir: Path | None) -> str:
                 f"{repo_basename(repository)}.git"))
 
 
+#: The rule a `--family` is held to, as `naming-unclassified` states it
+#: (`_classify_family_name`). `family-bad-id`'s derived remedy names it in
+#: the same words, so the person who follows it is not sent from one
+#: refusal to the other (#659).
+FAMILY_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot "
+                    "or space")
+
+
 def _classify_family_name(policy: NamingPolicy, name: str) -> None:
     """The family name against the policy, in the form a family declares.
 
@@ -598,9 +606,9 @@ def _classify_family_name(policy: NamingPolicy, name: str) -> None:
         raise Refusal(
             "naming-unclassified",
             f"{name!r} matches no family in the naming policy",
-            "Remediation: --family takes one CamelCase token with no hyphen, "
-            "underscore, dot or space — the same rule an assembly root's name "
-            "follows, because a holder is spelled like one.")
+            f"Remediation: --family takes {FAMILY_NAME_RULE} — the same rule "
+            "an assembly root's name follows, because a holder is spelled "
+            "like one.")
     if found.family != "family":
         raise Refusal(
             "naming-not-a-family",
@@ -1514,12 +1522,14 @@ FAMILY_ID_DERIVED_FROM = "--family lowercased"
 #: and, unless `--work-dir` is given, its family folder (`_landing`); the
 #: name is the one `_classify_family_name` reads against a policy whose
 #: forms take only ASCII letters, digits and hyphens, so "pass an explicit
-#: lowercase --id" led straight to `naming-unclassified`.
-FAMILY_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
+#: lowercase --id" led straight to `naming-unclassified`, and so would
+#: "change --family" to `North-Wind`. The derived remedy names the rule.
+PASSED_FAMILY_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
 DERIVED_FAMILY_ID_REMEDIATION = (
-    f"Remediation: change --family. The id is {FAMILY_ID_DERIVED_FROM}, and "
-    "an explicit --id would not change --family, which also names the "
-    "holder and, unless --work-dir is given, its family folder.")
+    f"Remediation: change --family to {FAMILY_NAME_RULE}. The id is "
+    f"{FAMILY_ID_DERIVED_FROM}, and an explicit --id would not change "
+    "--family, which also names the holder and, unless --work-dir is given, "
+    "its family folder.")
 
 
 def _refuse_bad_family_id(family_id: str, given: str | None) -> None:
@@ -1539,7 +1549,7 @@ def _refuse_bad_family_id(family_id: str, given: str | None) -> None:
     if given:
         raise Refusal("family-bad-id",
                       f"--id {family_id!r} must match {pattern}",
-                      FAMILY_ID_REMEDIATION)
+                      PASSED_FAMILY_ID_REMEDIATION)
     unset = "not given" if given is None else "empty"
     raise Refusal("family-bad-id",
                   f"--id ({unset}, so {FAMILY_ID_DERIVED_FROM}) is "
