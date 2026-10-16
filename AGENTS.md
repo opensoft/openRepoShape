@@ -371,7 +371,7 @@ that ship together already are.
 
 ```sh
 python3 scripts/family.py init --org <org> --family <Name> --into .. [--reuse-empty-repo]
-git -C <path> switch -c family/add-<project>   # a branch first: see 3
+git -C <path> switch -c family/add-<Project>   # a branch first: see 3
 python3 scripts/family.py add  --family-root <path> --member <org>/<Project>
 python3 scripts/family.py bump --family-root <path> --member <Project> --to <sha>
 python3 scripts/family.py siblings --family-root <path>

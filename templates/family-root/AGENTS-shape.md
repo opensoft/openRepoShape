@@ -24,7 +24,7 @@ Run openRepoShape's `scripts/family.py` FROM a checkout of the standard,
 against this holder:
 
 ```sh
-git -C <path> switch -c family/add-<project>   # a branch first: see below
+git -C <path> switch -c family/add-<Project>   # a branch first: see below
 python3 scripts/family.py add    --family-root <path> --member <org>/<Project>
 python3 scripts/family.py bump   --family-root <path> --member <Project> --to <40 hex> \
     --trailer "Lane: <name>" --trailer "Co-Authored-By: <who>"
