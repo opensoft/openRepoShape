@@ -433,7 +433,8 @@ def test_the_dry_runs_branch_hint_names_the_branch_the_real_runs_refusal_names(
     assert_nothing_changed(project, before)
     assert peel_line(tag, commit) in dry.stdout, "the dry run peeled the tag"
     assert "REFUSED bump-leg-on-tracking-branch" in real.stderr
-    hint = dry.stdout.splitlines()[-1]
+    # The hint is the last line but one: the sentence #647 adds is under it.
+    hint = dry.stdout.splitlines()[-2]
     assert "the real run needs a branch" in hint
     named_by_dry_run = SWITCH_BRANCH.search(hint).group(1)
     named_by_real_run = SWITCH_BRANCH.search(real.stderr).group(1)
