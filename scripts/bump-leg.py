@@ -1099,6 +1099,17 @@ def _ensure_root_clean(root: Path) -> None:
     """Refuse when the root has uncommitted TRACKED changes.
 
     Split from `cmd_bump` for #136.
+
+    THE ANSWER IS READ AS BYTES, AND DECODED ONLY TO BE SHOWN (#423). With
+    `core.quotePath=false` git prints a file name as the bytes it holds, and
+    a name saved under a legacy code page (`caf<e9>.yml`) is not UTF-8:
+    nobody did anything wrong, and `git_out`'s own strict decode raised
+    `UnicodeDecodeError` on it, a traceback, exit 1, `--dry-run` alike,
+    before the refusal this function exists to give. A byte that is not
+    UTF-8 is shown as `backslashreplace` shows it (`\\xe9`), which names the
+    byte as the quoted form git prints by default does (`\\351`), and which
+    no stream refuses to print. Every name that IS UTF-8 prints exactly as
+    it did.
     """
     # THE ROOT MUST BE CLEAN. Tracked changes only: an untracked scratch file
     # cannot reach a commit made with explicit pathspecs, and refusing one
@@ -1110,12 +1121,13 @@ def _ensure_root_clean(root: Path) -> None:
     # at a different commit than the gitlink is NOT, because that is a
     # half-finished bump and this one would land on top of it.
     dirt = git_out(["status", "--porcelain", "--untracked-files=no",
-                    "--ignore-submodules=untracked"], cwd=root)
+                    "--ignore-submodules=untracked"], cwd=root, binary=True)
     if dirt:
+        shown = dirt.decode("utf-8", "backslashreplace").strip()
         raise Refusal(
             "bump-leg-root-dirty",
             f"{root} has uncommitted changes:\n"
-            + "\n".join(f"    {line}" for line in dirt.splitlines()),
+            + "\n".join(f"    {line}" for line in shown.splitlines()),
             "Remediation: commit or stash them first. A lockstep commit that "
             "cannot be read as exactly one change is the thing the rule "
             "exists to keep readable.")

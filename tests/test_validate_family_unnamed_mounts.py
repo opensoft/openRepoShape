@@ -70,6 +70,7 @@ from test_family import (  # noqa: F401
     FAMILY, ORG, SPARE, family, family_module, holder, manifest, validate,
 )
 from test_family_add_refusals import git_section, gitmodules_with
+from test_validate_family_branch_step import BRANCH_LEFT
 from test_validate_family_member_path_glob import hand_edit
 
 MODES = pytest.mark.parametrize(
@@ -95,7 +96,7 @@ GITLINK_REMEDY = (
     "HEAD holds and the index no longer does, then mount it with the third, "
     "from a checkout of openRepoShape: family.py add writes its row and its "
     "gitlink in one commit, and names the object store git rm leaves under "
-    ".git/modules if one is still there.")
+    ".git/modules if one is still there. " + BRANCH_LEFT)
 
 
 def switch_for(holder, member: str) -> str:

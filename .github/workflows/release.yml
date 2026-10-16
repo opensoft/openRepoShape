@@ -1,0 +1,1277 @@
+name: release
+
+# ---------------------------------------------------------------------------
+# PUBLISH THE openreposhape WHEEL: TestPyPI, AN INSTALL CHECK ON THREE
+# SYSTEMS, THEN PyPI, IN ONE DISPATCHED RUN (#563, decision 5). Brett Heap
+# approved the design on #563 at 2026-10-15T13:32:51Z ("approve all six for
+# #563"). Adapted from opensoft/openDox-code's release.yml at c94878be: its
+# dispatch, its environment and approval checks, and its digest checks on
+# each side of each upload. This one builds a wheel only, from `git archive`
+# of the tagged commit, and refuses a commit whose own tree has not passed
+# the `tests` job this repository lands by.
+#
+# RELEASING TO PyPI. Brett Heap's own acts come first, once:
+#   - pypi.org: a pending trusted publisher for the project `openreposhape`,
+#     owner `opensoft`, repository `openRepoShape`, workflow `release.yml`,
+#     environment `pypi`; test.pypi.org: the same, environment `testpypi`.
+#     THE ENVIRONMENT IS REQUIRED in both, though the form calls it
+#     optional. A publisher that names none accepts a token from ANY job of
+#     a `release.yml` in this repository, so a branch's own copy of this
+#     file could drop `environment:` from an upload job and publish with no
+#     approval and no tag limit;
+#   - here: the environments `testpypi` and `pypi`, each with him as the
+#     required reviewer and a deployment limit to the tags `v*` alone;
+#   - recommended: a ruleset on the tags `v*` that lets only him create,
+#     move or delete one (see ACCEPTED LIMITS below).
+# Nothing is uploaded before them: the build job refuses every dispatch
+# until both environments exist and are limited so. Then, for each release:
+#   1. The release commit passes `tests` ON ITSELF, in a push or dispatch
+#      run of tests.yml. On main, the push run that landed it does that
+#      when that run finished green; one that failed does not, nor one
+#      that a later landing cancelled (each landing cancelled the one
+#      before until #593). Otherwise, and always on a `release/v<X.Y>`
+#      branch, which no push run tests: BEFORE TAGGING, dispatch tests.yml
+#      on a branch that points at the release commit, and wait for it:
+#        git push origin <release-commit>:refs/heads/<branch>
+#        gh workflow run tests.yml --ref <branch> -R opensoft/openRepoShape
+#      A `release/v<X.Y>` branch serves while it is still at that commit.
+#      `--ref main` tests main's CURRENT head, not an older commit. If the
+#      tag is pushed already and this workflow's gate refused it, dispatch
+#      on the tag, `gh workflow run tests.yml --ref v<version>`, wait for
+#      it, then re-run the release run. (That a tag's dispatch runs at the
+#      tag's commit is GitHub's documented behaviour, not yet seen here; a
+#      branch at the commit is the proven route.)
+#   2. Tag that commit, annotated, and push the tag:
+#        git tag -a v<version> <release-commit> -m "openRepoShape v<version>"
+#        git push origin refs/tags/v<version>
+#   3. Dispatch this workflow ON THE TAG, with the version:
+#        gh workflow run release.yml --ref v<version> -f version=<version> \
+#            -R opensoft/openRepoShape
+#   4. Approve the `testpypi` deployment. The install check then runs on
+#      three systems and on Python 3.9; approve the `pypi` deployment once
+#      it has passed.
+#   5. Only then `gh release create`, so the notes never name a version
+#      PyPI lacks.
+# A version is uploaded once. A bad upload is fixed by the next patch, never
+# by moving a tag (decision 4).
+#
+# DISPATCH ONLY. Nothing here runs on a push, a tag or a pull request: an
+# upload is an act Brett Heap approves. The version is the tag's (decision
+# 4): `v1.1.0` gives `1.1.0`, which the build writes into the stamp,
+# `openreposhape/_release.py`, with the tag, the commit and the digest. A
+# dispatch on a tag refuses unless that tag is `v<version>`, annotated, and
+# pointing at the run's own commit, and unless that commit is on `main` or
+# on the version's release branch, `release/v<major>.<minor>` (v1.0.1 was
+# cut from `release/v1.0`).
+#
+# A DISPATCH ON A BRANCH IS THE REHEARSAL, AND IT CANNOT DEPLOY. It builds
+# and runs every check: all of the build job's, and the install check on
+# all four legs, over the build's own wheel in place of TestPyPI's. Nothing
+# is uploaded. Both upload jobs run only on a `v*` tag (their `if:`), but
+# that is this copy's guard alone: a dispatch runs the dispatched ref's OWN
+# copy of this file, and a branch can carry a copy without it. The guard
+# GitHub applies to every copy is each environment's deployment limit, the
+# tags `v*` alone, so no branch can deploy to either. The build job refuses
+# the run when either environment lacks that limit or a required reviewer,
+# and each upload job reads both again at use time.
+#
+# ACCEPTED LIMITS, carried over from openDox-code's release.yml, where they
+# were accepted:
+#   - A deployment limit admits a tag by its NAME. Anyone who can push a
+#     `v*` tag can dispatch on it, and the run is that tag's own copy of
+#     this file, whatever it says. The checks here bind only where the tag
+#     carries the reviewed file.
+#   - The required reviewer's approval is therefore the last line, and lane
+#     sessions act as brettheap, the reviewer. An approval is a deliberate
+#     act of his, never a session's.
+#   - So a ruleset on the tags `v*` that lets only Brett Heap create, move
+#     or delete one is recommended, not required, and not checked here.
+#
+# FOUR JOBS, EACH GATED ON THE ONE BEFORE IT:
+#   build     the refusals below; then the wheel, built twice from two
+#             `git archive` extractions of the commit in two directories,
+#             compared byte for byte, checked against the commit's own
+#             files, and its sha256 recorded.
+#   testpypi  uploads those bytes to TestPyPI, in the `testpypi`
+#             environment, then requires TestPyPI to serve exactly that
+#             digest.
+#   install   on ubuntu, macOS and Windows, and on Python 3.9: pipx installs
+#             TestPyPI's file, taken by the recorded digest, with its one
+#             dependency from PyPI and never from TestPyPI, and the commands
+#             it placed are run.
+#   pypi      uploads the same bytes to PyPI, in the `pypi` environment,
+#             which waits for Brett Heap's approval after the install check,
+#             then requires PyPI to serve exactly the recorded digest.
+#
+# RE-RUN ONLY THE FAILED JOBS ("Re-run failed jobs"), never the whole run
+# and never a second dispatch of a version already uploaded. A re-run of a
+# failed job reuses the build's artifact and its recorded digest. A second
+# dispatch builds again, and its wheel is the same file only while the
+# locks, the runner's Python and the commit all stay the same; the index
+# keeps the first file under its name for good, and the upload jobs refuse
+# any other.
+#
+# NO PyPI TOKEN AND NO STORED SECRET, ANYWHERE. Both uploads use trusted
+# publishing (OIDC): `id-token: write` is granted to the two upload jobs and
+# to no other job. The one other credential is GitHub's automatic
+# GITHUB_TOKEN, read-only in every job, which `gh` uses to read this
+# repository's own API.
+#
+# EVERY ACTION IS PINNED BY COMMIT, with its release tag beside it, as
+# `tests.yml` pins them; checkout and setup-python at that file's own
+# commits. One limit carried over from openDox-code's workflow, where it was
+# accepted: pypa/gh-action-pypi-publish is a container action whose image
+# is pulled by a registry tag, so its commit pins the action's files and not
+# all the code an upload runs. The digest checks before and after each
+# upload bound what that could change.
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          The version to publish, X.Y.Z. Dispatch on the tag vX.Y.Z to
+          publish it; a dispatch on a branch is a rehearsal and uploads
+          nothing.
+        required: true
+        type: string
+
+# Nothing by default. Each job grants itself exactly what it uses.
+permissions: {}
+
+# One release at a time, and a running one is never cancelled halfway.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # `bash -eo pipefail`, on every runner, Windows' included.
+    shell: bash
+
+env:
+  # The input reaches every script through the environment, never pasted
+  # into one by an expression, so no input can become shell or Python.
+  VERSION: ${{ inputs.version }}
+  PYTHONUTF8: '1'
+
+jobs:
+  build:
+    name: build and verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read  # the checkout, the tag, main and the release branch, and the forge's tree listing
+      actions: read  # the commit's tests.yml runs and their jobs, and both environments' rules
+    outputs:
+      wheel: ${{ steps.record.outputs.wheel }}
+      wheel-sha256: ${{ steps.record.outputs.wheel-sha256 }}
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      # The commit alone: its tree, its time and its tag are all this job
+      # reads. The token is not left in the checkout's git config, where the
+      # build backend could find it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: '3.12'
+
+      # A FINAL RELEASE, X.Y.Z, in the form its file is named by: no leading
+      # zero, no pre-release, no local label. Never 0.0.0, the committed
+      # stamp's version, which is a build from a checkout and not a release
+      # (decision 4). The input is not echoed in a refusal before it is
+      # known to be plain.
+      - name: the version is a final release, and not the unstamped 0.0.0
+        run: |
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::the version input is not X.Y.Z: three numbers, no leading zero, nothing after them"
+            printf 'the input, quoted: %q\n' "$VERSION"
+            exit 1
+          fi
+          if [ "$VERSION" = 0.0.0 ]; then
+            echo "::error::0.0.0 is the committed stamp's version, a build from a checkout, never a release"
+            exit 1
+          fi
+          echo "version $VERSION, tag v$VERSION"
+
+      # THE TAG, READ FROM THE FORGE AND FROM GIT. On a tag, the run must be
+      # dispatched on `v<version>` itself, an ANNOTATED tag (a lightweight
+      # one records no tagger and no message), whose object names this
+      # run's commit directly. On a branch the run is the rehearsal: every
+      # check below still runs, and nothing can deploy.
+      - name: the dispatched ref is the annotated tag v<version> at this commit, or a branch to rehearse on
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$VERSION"
+          case "$GITHUB_REF" in
+            "refs/tags/$tag") ;;
+            refs/heads/*)
+              echo "::notice::REHEARSAL on the branch $GITHUB_REF_NAME at $GITHUB_SHA: every check runs, the install check installs the build's own wheel, and nothing is uploaded"
+              exit 0
+              ;;
+            *)
+              echo "::error::a release is dispatched on the tag $tag, or on a branch to rehearse, and this run names $GITHUB_REF"
+              exit 1
+              ;;
+          esac
+          object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" \
+              --jq 'select(.object.type == "tag") | .object.sha')" || object=
+          if [ -z "$object" ]; then
+            echo "::error::the forge holds no annotated tag $tag; a release tag is made with git tag -a"
+            exit 1
+          fi
+          read -r name type commit < <(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object" \
+              --jq '[.tag, .object.type, .object.sha] | @tsv') || true
+          if [ "$name" != "$tag" ] || [ "$type" != commit ] || [ "$commit" != "$GITHUB_SHA" ]; then
+            echo "::error::the tag object $object is named '$name' and points at the $type $commit; a release needs $tag pointing at this run's commit $GITHUB_SHA"
+            exit 1
+          fi
+          git fetch --quiet --no-tags --depth=1 origin "+refs/tags/$tag:refs/tags/$tag"
+          if [ "$(git cat-file -t "refs/tags/$tag")" != tag ] \
+              || [ "$(git rev-parse "refs/tags/$tag")" != "$object" ] \
+              || [ "$(git rev-parse "refs/tags/$tag^{commit}")" != "$GITHUB_SHA" ]; then
+            echo "::error::git's $tag is not the forge's annotated tag $object at $GITHUB_SHA"
+            exit 1
+          fi
+          echo "$tag: annotated, tag object $object, at $GITHUB_SHA"
+
+      # THE COMMIT IS ON main OR ON THE VERSION'S RELEASE BRANCH. A tag can be
+      # pushed at any commit; a release is cut from one that a reviewed branch
+      # holds, as `main` itself or an ancestor of it (`identical` or `ahead`).
+      # `release/v<major>.<minor>` is where a patch on an older line lands
+      # (v1.0.1 was cut from `release/v1.0`). The compare names
+      # `refs/heads/<branch>`: a bare name would resolve to a tag of that name
+      # first. A rehearsal on a branch has no release branch to be on.
+      - name: the commit is on main or on the version's release branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/*)
+              echo "a rehearsal on the branch $GITHUB_REF_NAME: no release branch to be on"
+              exit 0
+              ;;
+          esac
+          found=
+          for branch in main "release/v${VERSION%.*}"; do
+            status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...refs/heads/$branch" \
+                --jq .status 2>/dev/null)" || status=
+            case "$status" in
+              identical|ahead)
+                found="$branch"
+                echo "$GITHUB_SHA is on $branch ($status)"
+                break
+                ;;
+              *) echo "$GITHUB_SHA is not on $branch (compare: ${status:-no such branch})" ;;
+            esac
+          done
+          if [ -z "$found" ]; then
+            echo "::error::$GITHUB_SHA is on neither main nor release/v${VERSION%.*}; a release is cut from a commit one of them holds"
+            exit 1
+          fi
+
+      # THE CHECKOUT IS THIS COMMIT, AND CLEAN, before anything from it runs.
+      # The digest below is computed by the checkout's own
+      # `scripts/repo_shape.py`, and a file changed or added in the work tree
+      # would be code nobody reviewed. Ignored files count too.
+      - name: the checkout is this commit, and clean
+        run: |
+          head="$(git rev-parse HEAD)"
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::error::the checkout is at $head, and this run is at $GITHUB_SHA"
+            exit 1
+          fi
+          dirty="$(git status --porcelain=v1 --untracked-files=all --ignored=matching)"
+          if [ -n "$dirty" ]; then
+            echo "::error::the checkout is not clean, so the release would not be the commit's own bytes:"
+            printf '%s\n' "$dirty"
+            exit 1
+          fi
+          echo "HEAD is $GITHUB_SHA, and the work tree holds its files and nothing else"
+
+      # BOTH ENVIRONMENTS MUST ASK A REVIEWER AND ADMIT ONLY THE TAGS v*.
+      # GitHub creates an environment a job names if it does not exist yet,
+      # with no protection rule at all, so a dispatch made before Brett Heap
+      # configured them would upload with nobody approving. And a dispatch
+      # runs the dispatched ref's own copy of this file, so an environment
+      # any ref may deploy to would publish whatever a branch carries. Each
+      # environment must name a required reviewer, and its deployment limit
+      # must be exactly one rule, the tag pattern `v*`. Either gap refuses
+      # here, before anything is built.
+      - name: both environments ask a reviewer and admit only the tags v*
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+
+
+          def api(path):
+              done = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+              return json.loads(done.stdout) if done.returncode == 0 else None
+
+
+          problems = []
+          for environment in ("testpypi", "pypi"):
+              settings = api(f"repos/{repo}/environments/{environment}")
+              if settings is None:
+                  problems.append(f"the {environment} environment cannot be read: it does not "
+                                  "exist yet. Create it with a required reviewer and a "
+                                  "deployment limit to the tags v* first")
+                  continue
+              reviewers = [entry.get("reviewer", {}).get("login") or entry.get("reviewer", {}).get("slug")
+                           for rule in settings.get("protection_rules") or []
+                           if rule.get("type") == "required_reviewers"
+                           for entry in rule.get("reviewers") or []]
+              policy = settings.get("deployment_branch_policy") or {}
+              limits = api(f"repos/{repo}/environments/{environment}/deployment-branch-policies?per_page=100")
+              rules = sorted((p.get("type"), p.get("name")) for p in (limits or {}).get("branch_policies") or [])
+              if not reviewers:
+                  problems.append(f"the {environment} environment names no required reviewer, "
+                                  "so a deployment to it would not wait for an approval")
+              if policy.get("custom_branch_policies") is not True or rules != [("tag", "v*")]:
+                  problems.append(f"the {environment} environment's deployment limit is {rules} "
+                                  f"({policy!r}), not the one rule ('tag', 'v*'): a dispatch on "
+                                  "a branch runs that branch's own copy of this file")
+              else:
+                  print(f"{environment}: reviewers {reviewers}; only the tags v* can deploy")
+          for problem in problems:
+              print(f"::error::{problem}")
+          sys.exit(1 if problems else 0)
+          PY
+
+      # THE GATE THIS REPOSITORY LANDS BY, ON THIS COMMIT'S OWN TREE. Since
+      # #597, `.github/workflows/tests.yml` runs `tests` on every trigger.
+      # It must have passed in a run that tested THIS commit: a `push` or
+      # `workflow_dispatch` run whose head is the commit, so the push run
+      # that landed a commit on main counts when it finished green (a run a
+      # later landing cancelled does not; each refusal names the dispatch
+      # that answers it, as the header's step 1 does). A
+      # `pull_request` run is not counted, because it reports the PR's head
+      # but tests a merge of it with its base, another tree. The jobs are
+      # read from each run itself (`actions/runs/<id>/jobs`), never from the
+      # commit's check runs, which anything holding an Actions token can
+      # create inside that run's check suite. The gate NAMES the job it
+      # requires and never takes the set from what a run holds: a gate that
+      # adapts could not notice a job gone missing. Skipped jobs are passed
+      # over. Of the rest, none may still be running, and the newest to
+      # finish must have succeeded.
+      - name: the commit carries a passing tests job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+
+          repo, sha = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_SHA"]
+          gate, workflow = ("tests",), ".github/workflows/tests.yml"
+          remedy = (f"dispatch tests.yml on a branch that points at {sha} (`gh workflow run "
+                    "tests.yml --ref <branch>`), or on the tag once it is pushed (`gh workflow "
+                    f"run tests.yml --ref v{os.environ.get('VERSION', '<version>')}`), wait for "
+                    "it, then re-run this run; `--ref main` tests main's current head, not this "
+                    "commit")
+
+
+          def rows(path, key):
+              done = subprocess.run(["gh", "api", "--paginate", path, "--jq", f".{key}[]"],
+                                    capture_output=True, text=True)
+              if done.returncode != 0:
+                  sys.exit(f"::error::`gh api {path}` failed, so the checks on {sha} are "
+                           f"unknown: {done.stderr.strip()}")
+              return [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
+
+
+          runs = [run for run in rows(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100", "workflow_runs")
+                  if run.get("path") == workflow and run.get("head_sha") == sha
+                  and run.get("event") in ("push", "workflow_dispatch")]
+          checks = [job for run in runs
+                    for job in rows(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=all&per_page=100", "jobs")]
+          problems = []
+          for name in gate:
+              ran = [c for c in checks if c["name"] == name and c.get("conclusion") != "skipped"]
+              running = [c for c in ran if c["status"] != "completed"]
+              if running:
+                  problems.append(f"`{name}` is {running[0]['status']} on {sha} "
+                                  f"({running[0]['html_url']}); dispatch again once it ends")
+              elif not ran:
+                  problems.append(f"`{name}` has not run on {sha}: {remedy}")
+              else:
+                  newest = max(ran, key=lambda c: c["completed_at"])
+                  if newest["conclusion"] != "success":
+                      problems.append(f"`{name}`'s newest run on {sha} ended "
+                                      f"{newest['conclusion']} ({newest['html_url']}): {remedy}")
+                  else:
+                      print(f"{name}: success at {newest['completed_at']}, {newest['html_url']}")
+          for problem in problems:
+              print(f"::error::{problem}")
+          sys.exit(1 if problems else 0)
+          PY
+
+      # THE DIGEST THE STAMP CARRIES, computed by the checkout's OWN
+      # `scripts/repo_shape.py` (`tree_digest`, `sorted-ls-tree-r-v1`), the
+      # digest every pin this standard writes, and required to equal the same
+      # definition read from the forge's own tree listing
+      # (`tree_digest_from_gh`). It is also the definition the package
+      # checks a clone against (`standard.DIGEST_DEFINITION`).
+      - name: the commit's tree digest is the forge's
+        id: digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -I -B - <<'PY'
+          import os, sys
+          from pathlib import Path
+
+          here = Path.cwd()
+          sys.path[:0] = [str(here / "scripts"), str(here / "src")]
+          import repo_shape
+          from openreposhape import standard
+
+          sha, repo = os.environ["GITHUB_SHA"], os.environ["GITHUB_REPOSITORY"]
+          if repo_shape.TREE_DIGEST_DEFINITION != standard.DIGEST_DEFINITION:
+              sys.exit(f"::error::scripts/repo_shape.py digests by {repo_shape.TREE_DIGEST_DEFINITION}, "
+                       f"and the package checks {standard.DIGEST_DEFINITION}")
+          try:
+              local = repo_shape.tree_digest(here, sha)
+              forge = repo_shape.tree_digest_from_gh(repo, sha)
+          except repo_shape.Refusal as error:
+              sys.exit(f"::error::{error}")
+          if local != forge:
+              sys.exit(f"::error::{sha} digests to {local} here and to {forge} from the forge's "
+                       "tree listing; the release would not be the forge's commit")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"digest={local}\n")
+          print(f"{sha}: {repo_shape.TREE_DIGEST_DEFINITION} {local}, here and on the forge")
+          PY
+
+      # THE RELEASE TOOLS, FROM THEIR HASH LOCK, IN A VENV OF THEIR OWN:
+      # the `build` frontend, the `hatchling` backend at `pyproject.toml`'s
+      # own pin, and every requirement of either, each by digest, wheels
+      # only (`.github/release-build-requirements.txt` says why).
+      - name: install the release tools from their hash lock
+        run: |
+          python -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/python" -m pip install --disable-pip-version-check \
+              --no-cache-dir --only-binary :all: --require-hashes \
+              -r .github/release-build-requirements.txt
+          "$RUNNER_TEMP/tools/bin/python" -m pip list --disable-pip-version-check
+          python -VV
+
+      # FROM `git archive` OF THE COMMIT, TWICE, into two directories of
+      # different names and depths. The wheel is built from the commit's
+      # own tree, never from the checkout, and two builds that share no
+      # directory are what can show the bytes depend on the commit alone.
+      - name: extract the commit twice, into two directories
+        run: |
+          tree_a="$RUNNER_TEMP/a/openRepoShape"
+          tree_b="$RUNNER_TEMP/b/elsewhere/v$VERSION-src"
+          for tree in "$tree_a" "$tree_b"; do
+            mkdir -p "$tree"
+            git archive --format=tar "$GITHUB_SHA" | tar -x -f - -C "$tree"
+          done
+          {
+            echo "TREE_A=$tree_a"
+            echo "TREE_B=$tree_b"
+          } >> "$GITHUB_ENV"
+          diff -r "$tree_a" "$tree_b"
+          echo "$GITHUB_SHA extracted into $tree_a and $tree_b"
+
+      # THE STAMP, WRITTEN THE PACKAGE'S OWN WAY: the committed
+      # `src/openreposhape/_release.py`, each of its four assignments given
+      # the release's value, and nothing else changed. `pyproject.toml`
+      # reads VERSION from it (hatchling's version source), and
+      # `standard.read_stamp` reads all four and refuses a stamp that names
+      # part of a release. `tests/test_release_workflow.py` runs this very
+      # script against the committed file.
+      - name: write the stamp into both extractions
+        env:
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          python3 -I - "$TREE_A/src/openreposhape/_release.py" "$TREE_B/src/openreposhape/_release.py" <<'PY'
+          import ast, os, re, sys
+
+          number = r"(0|[1-9][0-9]*)"
+          release = {"VERSION": os.environ["VERSION"], "TAG": "v" + os.environ["VERSION"],
+                     "COMMIT": os.environ["GITHUB_SHA"], "DIGEST": os.environ["DIGEST"]}
+          shapes = {"VERSION": rf"{number}\.{number}\.{number}", "TAG": rf"v{number}\.{number}\.{number}",
+                    "COMMIT": r"[0-9a-f]{40}", "DIGEST": r"[0-9a-f]{64}"}
+          unstamped = {"VERSION": "0.0.0", "TAG": "", "COMMIT": "", "DIGEST": ""}
+          for name, value in release.items():
+              if not re.fullmatch(shapes[name], value) or value == unstamped[name]:
+                  sys.exit(f"::error::the stamp's {name} would be {value!r}, which is not a release's")
+          for path in sys.argv[1:]:
+              with open(path, encoding="utf-8", newline="") as handle:
+                  text = handle.read()
+              for name, value in release.items():
+                  text, count = re.subn(rf'^{name} = "{re.escape(unstamped[name])}"$',
+                                        f'{name} = "{value}"', text, flags=re.M)
+                  if count != 1:
+                      sys.exit(f"::error::{path} assigns {name} = \"{unstamped[name]}\" {count} "
+                               "times, not once: it is not the committed, unstamped stamp")
+              assigned = {node.targets[0].id: node.value.value for node in ast.parse(text).body
+                          if isinstance(node, ast.Assign) and len(node.targets) == 1
+                          and isinstance(node.targets[0], ast.Name)
+                          and isinstance(node.value, ast.Constant)}
+              if assigned != release:
+                  sys.exit(f"::error::{path} assigns {assigned} after stamping, not {release}")
+              with open(path, "w", encoding="utf-8", newline="") as handle:
+                  handle.write(text)
+              print(f"{path}: {release}")
+          PY
+
+      # TWICE, AT THE COMMIT'S OWN TIME, AND THE TWO MUST BE ONE FILE: the
+      # bytes depend on the commit and the locked tools, not on the
+      # directory built in. A wheel only: one pure file, its times from
+      # `SOURCE_DATE_EPOCH` (an sdist can come later). `--no-isolation`, so
+      # the backend is the hash-locked one, and `build` refuses a backend
+      # that does not satisfy `[build-system] requires`.
+      - name: build the wheel from each extraction, and the two are one file
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "$GITHUB_SHA")"
+          export SOURCE_DATE_EPOCH
+          wheel="openreposhape-$VERSION-py3-none-any.whl"
+          for side in a b; do
+            if [ "$side" = a ]; then tree="$TREE_A"; else tree="$TREE_B"; fi
+            (cd "$tree" && "$RUNNER_TEMP/tools/bin/python" -m build --wheel --no-isolation \
+                --outdir "$RUNNER_TEMP/dist-$side" .)
+            found="$(ls -A "$RUNNER_TEMP/dist-$side")"
+            if [ "$found" != "$wheel" ]; then
+              echo "::error::the build from $tree made '$found', and a release is exactly $wheel"
+              exit 1
+            fi
+          done
+          if ! cmp "$RUNNER_TEMP/dist-a/$wheel" "$RUNNER_TEMP/dist-b/$wheel"; then
+            echo "::error::two builds of $GITHUB_SHA, from two extractions in two directories, are not one file: the wheel depends on where it was built, and nothing is uploaded"
+            exit 1
+          fi
+          sha256sum "$RUNNER_TEMP/dist-a/$wheel" "$RUNNER_TEMP/dist-b/$wheel"
+          echo "SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH: two builds, one file"
+
+      # EVERY FILE IN THE WHEEL BUT THE STAMP AND THE METADATA IS THE
+      # COMMIT'S OWN, BYTE FOR BYTE, read from git: each module from
+      # `src/openreposhape/`, and `setup-project.py` from the root. Every
+      # file git tracks under `src/openreposhape/` is in it, and nothing else
+      # is. The stamp is the committed one with its four values written, and
+      # the metadata names this version, `pyproject.toml`'s dependencies and
+      # its five commands, and carries the commit's LICENSE.
+      - name: the wheel holds the commit's own files, byte for byte, and the stamp
+        env:
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          python3 -I - "$RUNNER_TEMP/dist-a/openreposhape-$VERSION-py3-none-any.whl" <<'PY'
+          import ast, configparser, email.parser, os, re, subprocess, sys, tomllib, zipfile
+
+          version, sha, digest = os.environ["VERSION"], os.environ["GITHUB_SHA"], os.environ["DIGEST"]
+          release = {"VERSION": version, "TAG": f"v{version}", "COMMIT": sha, "DIGEST": digest}
+          unstamped = {"VERSION": "0.0.0", "TAG": "", "COMMIT": "", "DIGEST": ""}
+          info, stamp = f"openreposhape-{version}.dist-info/", "openreposhape/_release.py"
+
+
+          def committed(path):
+              done = subprocess.run(["git", "cat-file", "blob", f"{sha}:{path}"], capture_output=True)
+              return done.stdout if done.returncode == 0 else None
+
+
+          def source_of(name):
+              if name == "openreposhape/setup-project.py":
+                  return "setup-project.py"
+              return "src/" + name if name.startswith("openreposhape/") else None
+
+
+          tracked = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", sha, "--",
+                                    "src/openreposhape/"], capture_output=True, check=True)
+          wanted = {p.decode()[len("src/"):] for p in tracked.stdout.split(b"\0") if p}
+          wanted.add("openreposhape/setup-project.py")
+          problems = []
+          with zipfile.ZipFile(sys.argv[1]) as wheel:
+              names = [n for n in wheel.namelist() if not n.endswith("/")]
+              if len(names) != len(set(names)):
+                  problems.append("the wheel names one file twice")
+              for name in sorted(set(names)):
+                  if name.startswith(info) or name == stamp:
+                      continue
+                  source = source_of(name)
+                  if source is None or committed(source) is None:
+                      problems.append(f"{name} is in the wheel, and the commit has no such file")
+                  elif wheel.read(name) != committed(source):
+                      problems.append(f"{name} in the wheel is not {source} at {sha}")
+                  else:
+                      print(f"{name} = {sha[:12]}:{source}")
+              for name in sorted(wanted - set(names)):
+                  problems.append(f"{name} is tracked and missing from the wheel")
+
+              base = committed("src/openreposhape/_release.py").decode().splitlines()
+              lines = wheel.read(stamp).decode().splitlines()
+              changed = {}
+              if len(base) != len(lines):
+                  problems.append("the stamp is not the committed _release.py, line for line")
+              for old, new in zip(base, lines):
+                  if old != new:
+                      found = re.fullmatch(r'([A-Z]+) = "([^"]*)"', new)
+                      name = found.group(1) if found else None
+                      if name not in release or old != f'{name} = "{unstamped[name]}"':
+                          problems.append(f"the stamp changes {old!r} to {new!r}")
+                      else:
+                          changed[name] = found.group(2)
+              assigned = {n.targets[0].id: n.value.value for n in ast.parse("\n".join(lines)).body
+                          if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)}
+              if changed != release or assigned != release:
+                  problems.append(f"the stamp assigns {assigned}, not {release}")
+              print(f"{stamp}: the committed file, with {sorted(changed)} written")
+
+              project = tomllib.loads(committed("pyproject.toml").decode())["project"]
+              meta = email.parser.BytesParser().parsebytes(wheel.read(info + "METADATA"))
+              shown = {"Name": meta["Name"], "Version": meta["Version"],
+                       "Requires-Python": meta["Requires-Python"],
+                       "Requires-Dist": sorted(meta.get_all("Requires-Dist") or [])}
+              declared = {"Name": project["name"], "Version": version,
+                          "Requires-Python": project["requires-python"],
+                          "Requires-Dist": sorted(project["dependencies"])}
+              if shown != declared:
+                  problems.append(f"the metadata says {shown}, and pyproject.toml {declared}")
+              entry_points = configparser.ConfigParser(delimiters=("=",))
+              entry_points.optionxform = str
+              entry_points.read_string(wheel.read(info + "entry_points.txt").decode())
+              if entry_points.sections() != ["console_scripts"]:
+                  problems.append(f"the wheel's entry points declare {entry_points.sections()}, "
+                                  "not ['console_scripts'] alone")
+              scripts = ({k: v.strip() for k, v in entry_points["console_scripts"].items()}
+                         if entry_points.has_section("console_scripts") else {})
+              if scripts != project["scripts"]:
+                  problems.append(f"the wheel's commands are {scripts}, not {project['scripts']}")
+              described = sorted(n[len(info):] for n in names if n.startswith(info))
+              if described != sorted(["METADATA", "WHEEL", "RECORD", "entry_points.txt",
+                                      "licenses/LICENSE"]):
+                  problems.append(f"the wheel's {info} holds {described}, not exactly METADATA, "
+                                  "WHEEL, RECORD, entry_points.txt and licenses/LICENSE")
+              if wheel.read(info + "licenses/LICENSE") != committed("LICENSE"):
+                  problems.append("the wheel's LICENSE is not the commit's")
+              print(f"metadata: {shown}; commands {sorted(scripts)}")
+          for problem in problems:
+              print(f"::error::{problem}")
+          sys.exit(1 if problems else 0)
+          PY
+
+      # THE DIGEST IS RECORDED HERE, and every later job checks the file it
+      # holds against it: before each upload, after each upload against what
+      # the index serves, and before the install check runs anything.
+      - name: record the wheel and its sha256
+        id: record
+        run: |
+          wheel="openreposhape-$VERSION-py3-none-any.whl"
+          {
+            echo "wheel=$wheel"
+            echo "wheel-sha256=$(sha256sum "$RUNNER_TEMP/dist-a/$wheel" | cut -d' ' -f1)"
+          } | tee -a "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: wheel
+          path: ${{ runner.temp }}/dist-a/
+          if-no-files-found: error
+
+  testpypi:
+    name: publish to TestPyPI
+    needs: build
+    # ON A v* TAG ONLY. A branch is the rehearsal, and both environments
+    # would refuse it anyway (the header says why both guards exist).
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/openreposhape/${{ inputs.version }}/
+    permissions:
+      id-token: write  # trusted publishing: the OIDC token TestPyPI accepts
+      actions: read  # this environment's rules and this run's approvals
+      contents: read  # the tag, read again
+    env:
+      WHEEL: ${{ needs.build.outputs.wheel }}
+      WHEEL_SHA256: ${{ needs.build.outputs.wheel-sha256 }}
+      INDEX: TestPyPI
+      JSON_BASE: https://test.pypi.org/pypi/openreposhape/
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: wheel
+          path: dist
+
+      - name: dist holds the wheel the build job verified, and nothing else
+        run: |
+          found="$(ls -A dist)"
+          if [ "$found" != "$WHEEL" ]; then
+            echo "::error::dist holds '$found', and the build job verified $WHEEL"
+            exit 1
+          fi
+          echo "$WHEEL_SHA256  dist/$WHEEL" | sha256sum --strict -c -
+
+      # AT USE TIME, the environment's rules again, and this run's approval.
+      # The build job's reading goes stale while the run waits: a rule
+      # removed meanwhile would let this job start with nobody approving it.
+      - name: this environment still asks a reviewer and admits only the tags v*, and this run's deployment to it was approved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT: testpypi
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+
+          repo, environment = os.environ["GITHUB_REPOSITORY"], os.environ["ENVIRONMENT"]
+
+
+          def api(path):
+              done = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+              if done.returncode != 0:
+                  sys.exit(f"::error::`gh api {path}` failed, so nothing is uploaded: {done.stderr.strip()}")
+              return json.loads(done.stdout)
+
+
+          settings = api(f"repos/{repo}/environments/{environment}")
+          reviewers = [rule for rule in settings.get("protection_rules") or []
+                       if rule.get("type") == "required_reviewers" and rule.get("reviewers")]
+          policy = settings.get("deployment_branch_policy") or {}
+          limits = api(f"repos/{repo}/environments/{environment}/deployment-branch-policies?per_page=100")
+          rules = sorted((p.get("type"), p.get("name")) for p in limits.get("branch_policies") or [])
+          if not reviewers:
+              sys.exit(f"::error::the {environment} environment names no required reviewer now")
+          if policy.get("custom_branch_policies") is not True or rules != [("tag", "v*")]:
+              sys.exit(f"::error::the {environment} environment's deployment limit is now {rules}, "
+                       "not the one rule ('tag', 'v*'), so nothing is uploaded")
+          approved = [review["user"]["login"]
+                      for review in api(f"repos/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}/approvals")
+                      if review.get("state") == "approved"
+                      and any(e.get("name") == environment for e in review.get("environments") or [])]
+          if not approved:
+              sys.exit(f"::error::this run holds no approval of a deployment to {environment}, "
+                       "so nothing is uploaded")
+          print(f"{environment}: a reviewer, the tags v* alone, and approved by {', '.join(approved)}")
+          PY
+
+      # THE TAG, AGAIN, RIGHT BEFORE THE UPLOAD. The run may have waited on
+      # an approval, and a tag can be moved or deleted meanwhile; an upload
+      # cannot be taken back.
+      - name: the tag v<version> still names this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
+              --jq 'select(.object.type == "tag") | .object.sha')" || object=
+          commit=
+          if [ -n "$object" ]; then
+            commit="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object" \
+                --jq 'select(.object.type == "commit") | .object.sha')" || commit=
+          fi
+          if [ "$commit" != "$GITHUB_SHA" ]; then
+            echo "::error::the annotated tag v$VERSION no longer names $GITHUB_SHA (it names '$commit'), so nothing is uploaded"
+            exit 1
+          fi
+          echo "v$VERSION still names $GITHUB_SHA"
+
+      # BEFORE THE UPLOAD, NOTHING ELSE HELD. skip-existing skips a file
+      # name the index already holds, so the index must hold no file of
+      # this version but the verified wheel, at its verified digest: an
+      # index never replaces a file. A 404 is a version with no file yet.
+      - name: the index holds no file of this version but the verified wheel
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, urllib.error, urllib.request
+
+          index, version = os.environ["INDEX"], os.environ["VERSION"]
+          url = f"{os.environ['JSON_BASE']}{version}/json"
+          wanted = {os.environ["WHEEL"]: os.environ["WHEEL_SHA256"]}
+          try:
+              with urllib.request.urlopen(url, timeout=30) as response:
+                  release = json.load(response)
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+              print(f"{index} holds no file of openreposhape {version} yet")
+              sys.exit(0)
+          held = {f["filename"]: f["digests"]["sha256"] for f in release["urls"]}
+          other = {name: digest for name, digest in held.items() if wanted.get(name) != digest}
+          if other:
+              sys.exit(f"::error::{index} already holds {other} for openreposhape {version}, "
+                       "which the build job did not verify, so nothing is uploaded")
+          yanked = sorted(f["filename"] for f in release["urls"] if f.get("yanked"))
+          if yanked:
+              sys.exit(f"::error::{index} holds {yanked} at the verified digest, but yanked; "
+                       "un-yank it on the index, or release a new version")
+          print(f"{index} holds {sorted(held)}, at the verified digest; skip-existing uploads nothing new")
+          PY
+
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+          print-hash: true
+
+      # AFTER THE UPLOAD, the index serves exactly the verified wheel, by
+      # digest, not yanked. Its JSON can lag an upload, so it is read up to
+      # 20 times, 15 seconds apart.
+      - name: the index serves exactly the verified wheel
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, time, urllib.error, urllib.request
+
+          index, version = os.environ["INDEX"], os.environ["VERSION"]
+          url = f"{os.environ['JSON_BASE']}{version}/json"
+          wanted = {os.environ["WHEEL"]: os.environ["WHEEL_SHA256"]}
+          served = None
+          for attempt in range(1, 21):
+              try:
+                  with urllib.request.urlopen(url, timeout=30) as response:
+                      release = json.load(response)
+                  served = {f["filename"]: f["digests"]["sha256"] for f in release["urls"]}
+                  if served == wanted:
+                      if any(f.get("yanked") for f in release["urls"]):
+                          sys.exit(f"::error::{index} serves the verified wheel, yanked")
+                      break
+                  print(f"read {attempt}: {index} serves {served} so far")
+              except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+                  code = getattr(error, "code", None)
+                  if code is not None and code != 404 and code < 500:
+                      raise
+                  print(f"read {attempt}: {url} did not answer yet ({error})")
+              time.sleep(15)
+          else:
+              sys.exit(f"::error::after 20 reads {index} serves {served}, and the build job "
+                       f"verified {wanted}")
+          print(f"{index} serves exactly the verified wheel: {served}")
+          PY
+
+  install:
+    name: install check (${{ matrix.os }}, Python ${{ matrix.python }})
+    needs: [build, testpypi]
+    # ON A TAG, AFTER TestPyPI HOLDS THE WHEEL. On a branch, the rehearsal,
+    # where the testpypi job is skipped, after the build alone, over the
+    # build's own wheel.
+    if: >-
+      ${{ !cancelled() && needs.build.result == 'success' &&
+      (needs.testpypi.result == 'success' ||
+      (needs.testpypi.result == 'skipped' && !startsWith(github.ref, 'refs/tags/'))) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read  # the checkout, for the pipx lock alone
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.x'
+          - os: macos-latest
+            python: '3.x'
+          - os: windows-latest
+            python: '3.x'
+          # The oldest Python the package supports (`requires-python`).
+          - os: ubuntu-latest
+            python: '3.9'
+    env:
+      WHEEL: ${{ needs.build.outputs.wheel }}
+      WHEEL_SHA256: ${{ needs.build.outputs.wheel-sha256 }}
+      DIGEST: ${{ needs.build.outputs.digest }}
+      # EVERY pip THIS JOB RUNS, pipx's own included, reads PyPI and no
+      # other index, so the wheel's dependency, git-filter-repo, can only
+      # come from PyPI. TestPyPI holds git-filter-repo 2.23.0 alone, and
+      # anyone can upload there.
+      PIP_INDEX_URL: https://pypi.org/simple/
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        id: python
+        with:
+          python-version: ${{ matrix.python }}
+
+      # FROM TestPyPI, BY THE RECORDED DIGEST: the file TestPyPI lists under
+      # the wheel's name, fetched from its file host, and kept only if its
+      # sha256 is the one the build job recorded (the step after this one).
+      - name: fetch the wheel from TestPyPI
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p "$RUNNER_TEMP/wheel"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 10 --retry-delay 15 --retry-all-errors \
+              -o "$RUNNER_TEMP/testpypi.json" "https://test.pypi.org/pypi/openreposhape/$VERSION/json"
+          url="$(python - "$RUNNER_TEMP/testpypi.json" <<'PY'
+          import json, os, sys, urllib.parse
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              files = json.load(handle)["urls"]
+          entries = [f for f in files if f["filename"] == os.environ["WHEEL"]
+                     and f["digests"]["sha256"] == os.environ["WHEEL_SHA256"]]
+          if len(entries) != 1:
+              sys.exit(f"TestPyPI lists {len(entries)} {os.environ['WHEEL']} at the recorded "
+                       f"digest, not one: {files}")
+          entry = entries[0]
+          parts = urllib.parse.urlsplit(entry["url"])
+          if parts.scheme != "https" or parts.hostname != "test-files.pythonhosted.org":
+              sys.exit(f"TestPyPI lists the wheel at {entry['url']}, not on its own file host")
+          print(entry["url"])
+          PY
+          )"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors \
+              -o "$RUNNER_TEMP/wheel/$WHEEL" "$url"
+          echo "fetched $url"
+
+      # THE REHEARSAL: no upload was made, so the build's own wheel.
+      - name: take the build's own wheel, on a branch (the rehearsal)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: wheel
+          path: ${{ runner.temp }}/wheel
+
+      - name: the wheel is the one the build job verified
+        run: |
+          python - <<'PY'
+          import hashlib, os, pathlib, sys
+
+          folder = pathlib.Path(os.environ["RUNNER_TEMP"]) / "wheel"
+          found, wheel = sorted(p.name for p in folder.iterdir()), os.environ["WHEEL"]
+          if found != [wheel]:
+              sys.exit(f"::error::{folder} holds {found}, and the build job verified {wheel}")
+          digest = hashlib.sha256((folder / wheel).read_bytes()).hexdigest()
+          if digest != os.environ["WHEEL_SHA256"]:
+              sys.exit(f"::error::{wheel} has sha256 {digest}, and the build job recorded "
+                       f"{os.environ['WHEEL_SHA256']}; nothing from it is run")
+          print(f"{wheel}: sha256 {digest}, the recorded digest")
+          PY
+
+      # NO git-filter-repo BEFORE THE INSTALL, on PATH or reachable by git,
+      # so the checks below can only pass by finding the one pipx installs
+      # beside the package.
+      - name: no git-filter-repo is on PATH, or reachable by git, before the install
+        run: |
+          if command -v git-filter-repo; then
+            echo "::error::git-filter-repo is on PATH already, so this job cannot show the package's commands finding their own"
+            exit 1
+          fi
+          if git filter-repo --version >/dev/null 2>&1; then
+            echo "::error::git already finds a git-filter-repo, so this job cannot show it finding the package's"
+            exit 1
+          fi
+          echo "no git-filter-repo before the install"
+
+      # pipx FROM ITS HASH LOCK, on this leg's Python, then the wheel into a
+      # fresh environment of pipx's, as a person installs it. Wheels only,
+      # so no package's setup script runs.
+      - name: pipx installs the wheel into a fresh environment, its dependency from PyPI
+        env:
+          PIPX_DEFAULT_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: |
+          python -m pip install --only-binary :all: --require-hashes \
+              -r .github/release-pipx-requirements.txt
+          pipx_home="$RUNNER_TEMP/pipx/home"
+          pipx_bin="$RUNNER_TEMP/pipx/bin"
+          {
+            echo "PIPX_HOME=$pipx_home"
+            echo "PIPX_BIN_DIR=$pipx_bin"
+          } >> "$GITHUB_ENV"
+          echo "$pipx_bin" >> "$GITHUB_PATH"
+          export PIPX_HOME="$pipx_home" PIPX_BIN_DIR="$pipx_bin"
+          python -m pipx --version
+          python -m pipx install --pip-args=--only-binary=:all: "$RUNNER_TEMP/wheel/$WHEEL"
+
+      # THE FIVE COMMANDS, AND NO OTHER, WITH THEIR CAPITALS. pipx exposes
+      # the package's own commands and not its dependency's; `openRepoShape`
+      # keeps its capitals on macOS and Windows, whose disks fold case
+      # (`.exe` on Windows, where pipx copies native launchers).
+      - name: pipx placed the five commands, openRepoShape with its capitals
+        run: |
+          python - <<'PY'
+          import json, os, shutil, subprocess, sys
+
+          names = sorted(["openRepoShape", "scaffold-project", "adopt-project", "update-shape",
+                          "shape-doctor"])
+          suffix = ".exe" if os.name == "nt" else ""
+          placed = sorted(os.listdir(os.environ["PIPX_BIN_DIR"]))
+          if placed != sorted(name + suffix for name in names):
+              sys.exit(f"::error::pipx placed {placed}, not the five commands {names}")
+          listing = json.loads(subprocess.run([sys.executable, "-m", "pipx", "list", "--json"],
+                                              capture_output=True, text=True, check=True).stdout)
+          package = listing["venvs"]["openreposhape"]["metadata"]["main_package"]
+          apps = sorted(a[: -len(suffix)] if suffix and a.endswith(suffix) else a
+                        for a in package["apps"])
+          if apps != names or package["package_version"] != os.environ["VERSION"]:
+              sys.exit(f"::error::pipx records openreposhape {package['package_version']} with "
+                       f"the commands {apps}")
+          found = shutil.which("openRepoShape")
+          if not found or not os.path.samefile(os.path.dirname(found), os.environ["PIPX_BIN_DIR"]):
+              sys.exit(f"::error::openRepoShape on PATH is {found!r}, not the one pipx placed")
+          print(f"pipx placed {placed}, for openreposhape {package['package_version']}; "
+                f"openRepoShape on PATH is {found}")
+          PY
+
+      - name: openRepoShape --version names the commit
+        run: |
+          cd "$RUNNER_TEMP"
+          openRepoShape --version | tee version.txt
+          python - version.txt <<'PY'
+          import os, re, sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              lines = handle.read().splitlines()
+          version, sha, digest = os.environ["VERSION"], os.environ["GITHUB_SHA"], os.environ["DIGEST"]
+          wanted = [rf"openRepoShape {re.escape(version)} \(.* @ {sha}\)", rf"\s+tag\s+v{re.escape(version)}",
+                    rf"\s+commit\s+{sha}", rf"\s+digest\s+{digest}( .*)?"]
+          missing = [w for w in wanted if not any(re.fullmatch(w, line) for line in lines)]
+          if missing or not re.fullmatch(wanted[0], lines[0]):
+              sys.exit(f"::error::openRepoShape --version does not name version {version}, tag "
+                       f"v{version}, commit {sha} and digest {digest}: {missing}")
+          print(f"--version names {version}, v{version}, {sha} and {digest}")
+          PY
+
+      # The preflight `setup-project.py` runs, from the copy the wheel
+      # carries, so it needs no clone. `--local-remote-dir` keeps `gh` out of
+      # it: this runner has no `gh` login to offer.
+      - name: openRepoShape --preflight runs
+        run: |
+          cd "$RUNNER_TEMP"
+          openRepoShape --preflight --local-remote-dir "$RUNNER_TEMP/no-remotes"
+
+      # THE FIRST RUN THAT CLONES: the standard, from github.com, at the
+      # stamped commit, checked against the stamped digest by the clone's
+      # own `scripts/repo_shape.py`. An empty repository is NOT A SHAPE ROOT
+      # (exit 2), and the machine row must find the git-filter-repo pipx put
+      # in the package's environment, through the PATH the package gives
+      # its children.
+      - name: openRepoShape --doctor over an empty repository finds git-filter-repo in its machine row
+        run: |
+          cd "$RUNNER_TEMP"
+          git init -q "$RUNNER_TEMP/empty"
+          status=0
+          openRepoShape --doctor "$RUNNER_TEMP/empty" --json > doctor.json || status=$?
+          if [ "$status" -ne 2 ]; then
+            echo "::error::openRepoShape --doctor over an empty repository exited $status, not 2 (NOT A SHAPE ROOT)"
+            cat doctor.json
+            exit 1
+          fi
+          python - doctor.json <<'PY'
+          import json, os, pathlib, sys
+
+          venv = pathlib.Path(os.environ["PIPX_HOME"]) / "venvs" / "openreposhape"
+          scripts = venv / ("Scripts" if os.name == "nt" else "bin")
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              report = json.load(handle)
+          [machine] = [row for row in report["rows"] if row["id"] == "machine"]
+          found = (machine.get("detail") or {}).get("git-filter-repo")
+          print(f"verdict {report['verdict']}; machine row: git-filter-repo at {found}")
+          if not found or not os.path.samefile(os.path.dirname(found), scripts):
+              sys.exit(f"::error::the doctor's machine row found git-filter-repo at {found!r}, "
+                       f"not in the package's environment, {scripts}")
+          PY
+
+      # GIT ITSELF FINDS IT TOO: `git filter-repo`, which adopt runs, with
+      # the PATH the package's own `standard.child_environment` gives every
+      # child. On Windows this is git for Windows finding
+      # `git-filter-repo.exe` in the pipx environment's `Scripts`.
+      - name: git finds git-filter-repo in the package's environment, on the PATH the package gives its children
+        run: |
+          cd "$RUNNER_TEMP"
+          venv="$PIPX_HOME/venvs/openreposhape"
+          venv_python="$venv/bin/python"
+          if [ ! -f "$venv_python" ]; then venv_python="$venv/Scripts/python.exe"; fi
+          "$venv_python" -I - <<'PY'
+          import os, shutil, subprocess, sys, sysconfig
+          from openreposhape import standard
+
+          env, scripts = standard.child_environment(), sysconfig.get_path("scripts")
+          found = shutil.which("git-filter-repo", path=env["PATH"])
+          if not found or not os.path.samefile(os.path.dirname(found), scripts):
+              sys.exit(f"::error::on the children's PATH git-filter-repo is {found!r}, not the one in {scripts}")
+          done = subprocess.run(["git", "filter-repo", "--version"], env=env,
+                                capture_output=True, text=True)
+          if done.returncode != 0:
+              sys.exit(f"::error::git filter-repo --version exited {done.returncode}: {done.stderr.strip()}")
+          print(f"git filter-repo --version: {done.stdout.strip()}, from {found}")
+          PY
+
+      - name: the four tool commands run from the clone
+        run: |
+          cd "$RUNNER_TEMP"
+          for tool in scaffold-project adopt-project update-shape shape-doctor; do
+            "$tool" --help > "help-$tool.txt"
+            echo "$tool --help: $(head -n 1 "help-$tool.txt")"
+          done
+
+      # NATIVE WINDOWS, AS A PERSON THERE TYPES IT: PowerShell finds
+      # `openRepoShape.exe` on PATH by the name with its capitals.
+      - name: PowerShell runs openRepoShape by its name (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-Location $env:RUNNER_TEMP
+          $command = Get-Command openRepoShape
+          "openRepoShape is $($command.Source)"
+          $out = & openRepoShape --version
+          if ($LASTEXITCODE -ne 0) { throw "openRepoShape --version exited $LASTEXITCODE" }
+          $out
+          if (-not (($out -join "`n") -match [regex]::Escape($env:GITHUB_SHA))) {
+            throw "openRepoShape --version does not name $env:GITHUB_SHA"
+          }
+
+  pypi:
+    name: publish to PyPI
+    needs: [build, testpypi, install]
+    # ON A v* TAG ONLY, and only after TestPyPI and every leg of the install
+    # check passed: with no status function in it, `if:` also requires
+    # every job above to have succeeded.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: pypi
+      url: https://pypi.org/project/openreposhape/${{ inputs.version }}/
+    permissions:
+      id-token: write  # trusted publishing: the OIDC token PyPI accepts
+      actions: read  # this environment's rules and this run's approvals
+      contents: read  # the tag, read again
+    env:
+      WHEEL: ${{ needs.build.outputs.wheel }}
+      WHEEL_SHA256: ${{ needs.build.outputs.wheel-sha256 }}
+      INDEX: PyPI
+      JSON_BASE: https://pypi.org/pypi/openreposhape/
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: wheel
+          path: dist
+
+      - name: dist holds the wheel the build job verified, and nothing else
+        run: |
+          found="$(ls -A dist)"
+          if [ "$found" != "$WHEEL" ]; then
+            echo "::error::dist holds '$found', and the build job verified $WHEEL"
+            exit 1
+          fi
+          echo "$WHEEL_SHA256  dist/$WHEEL" | sha256sum --strict -c -
+
+      - name: this environment still asks a reviewer and admits only the tags v*, and this run's deployment to it was approved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENVIRONMENT: pypi
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+
+          repo, environment = os.environ["GITHUB_REPOSITORY"], os.environ["ENVIRONMENT"]
+
+
+          def api(path):
+              done = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+              if done.returncode != 0:
+                  sys.exit(f"::error::`gh api {path}` failed, so nothing is uploaded: {done.stderr.strip()}")
+              return json.loads(done.stdout)
+
+
+          settings = api(f"repos/{repo}/environments/{environment}")
+          reviewers = [rule for rule in settings.get("protection_rules") or []
+                       if rule.get("type") == "required_reviewers" and rule.get("reviewers")]
+          policy = settings.get("deployment_branch_policy") or {}
+          limits = api(f"repos/{repo}/environments/{environment}/deployment-branch-policies?per_page=100")
+          rules = sorted((p.get("type"), p.get("name")) for p in limits.get("branch_policies") or [])
+          if not reviewers:
+              sys.exit(f"::error::the {environment} environment names no required reviewer now")
+          if policy.get("custom_branch_policies") is not True or rules != [("tag", "v*")]:
+              sys.exit(f"::error::the {environment} environment's deployment limit is now {rules}, "
+                       "not the one rule ('tag', 'v*'), so nothing is uploaded")
+          approved = [review["user"]["login"]
+                      for review in api(f"repos/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}/approvals")
+                      if review.get("state") == "approved"
+                      and any(e.get("name") == environment for e in review.get("environments") or [])]
+          if not approved:
+              sys.exit(f"::error::this run holds no approval of a deployment to {environment}, "
+                       "so nothing is uploaded")
+          print(f"{environment}: a reviewer, the tags v* alone, and approved by {', '.join(approved)}")
+          PY
+
+      - name: the tag v<version> still names this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" \
+              --jq 'select(.object.type == "tag") | .object.sha')" || object=
+          commit=
+          if [ -n "$object" ]; then
+            commit="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object" \
+                --jq 'select(.object.type == "commit") | .object.sha')" || commit=
+          fi
+          if [ "$commit" != "$GITHUB_SHA" ]; then
+            echo "::error::the annotated tag v$VERSION no longer names $GITHUB_SHA (it names '$commit'), so nothing is uploaded"
+            exit 1
+          fi
+          echo "v$VERSION still names $GITHUB_SHA"
+
+      - name: the index holds no file of this version but the verified wheel
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, urllib.error, urllib.request
+
+          index, version = os.environ["INDEX"], os.environ["VERSION"]
+          url = f"{os.environ['JSON_BASE']}{version}/json"
+          wanted = {os.environ["WHEEL"]: os.environ["WHEEL_SHA256"]}
+          try:
+              with urllib.request.urlopen(url, timeout=30) as response:
+                  release = json.load(response)
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+              print(f"{index} holds no file of openreposhape {version} yet")
+              sys.exit(0)
+          held = {f["filename"]: f["digests"]["sha256"] for f in release["urls"]}
+          other = {name: digest for name, digest in held.items() if wanted.get(name) != digest}
+          if other:
+              sys.exit(f"::error::{index} already holds {other} for openreposhape {version}, "
+                       "which the build job did not verify, so nothing is uploaded")
+          yanked = sorted(f["filename"] for f in release["urls"] if f.get("yanked"))
+          if yanked:
+              sys.exit(f"::error::{index} holds {yanked} at the verified digest, but yanked; "
+                       "un-yank it on the index, or release a new version")
+          print(f"{index} holds {sorted(held)}, at the verified digest; skip-existing uploads nothing new")
+          PY
+
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+        with:
+          skip-existing: true
+          print-hash: true
+
+      # AFTER THE UPLOAD, PyPI SERVES EXACTLY THE VERIFIED DIGEST: the
+      # bytes TestPyPI served and the install check ran.
+      - name: the index serves exactly the verified wheel
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, time, urllib.error, urllib.request
+
+          index, version = os.environ["INDEX"], os.environ["VERSION"]
+          url = f"{os.environ['JSON_BASE']}{version}/json"
+          wanted = {os.environ["WHEEL"]: os.environ["WHEEL_SHA256"]}
+          served = None
+          for attempt in range(1, 21):
+              try:
+                  with urllib.request.urlopen(url, timeout=30) as response:
+                      release = json.load(response)
+                  served = {f["filename"]: f["digests"]["sha256"] for f in release["urls"]}
+                  if served == wanted:
+                      if any(f.get("yanked") for f in release["urls"]):
+                          sys.exit(f"::error::{index} serves the verified wheel, yanked")
+                      break
+                  print(f"read {attempt}: {index} serves {served} so far")
+              except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+                  code = getattr(error, "code", None)
+                  if code is not None and code != 404 and code < 500:
+                      raise
+                  print(f"read {attempt}: {url} did not answer yet ({error})")
+              time.sleep(15)
+          else:
+              sys.exit(f"::error::after 20 reads {index} serves {served}, and the build job "
+                       f"verified {wanted}")
+          print(f"{index} serves exactly the verified wheel: {served}")
+          PY

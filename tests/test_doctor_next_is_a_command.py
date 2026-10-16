@@ -238,6 +238,17 @@ def _placement_plan(standard, project, holder, tmp_path):
     return rows_of(doctor(standard, project, "--json"))["placement"]
 
 
+def _placement_moved(standard, project, holder, tmp_path):
+    # A submodule moved since the adoption (#525): the spec leg holds it,
+    # and the row names the code leg, which holds none. Its NEXT is the
+    # doctor again, as `unreadable_next`'s is for a file only a person can
+    # mend, and its `why` gives both ways out.
+    from test_shape_doctor import record_submodules, stage_gitlink
+    stage_gitlink(project / "spec", "vendor/rules")
+    record_submodules(project, ("vendor/rules", "code"))
+    return rows_of(doctor(standard, project, "--json"))["placement"]
+
+
 def _agent_files_pinned(standard, project, holder, tmp_path):
     (project / "AGENTS-shape.md").unlink()
     return rows_of(doctor(standard, project, "--json"))["agent-files"]
@@ -645,6 +656,10 @@ CASES = {
         "writes the paths above as a plan to resolve by hand. Moving one is a "
         "pull request on each leg and a pin bump in the root, so this "
         "command makes neither"),
+    "check_placement-moved": (
+        _placement_moved,
+        "each submodule above is in a leg its row in project.yaml's "
+        "`submodules:` does not name"),
     "check_agent_files-pinned": (
         _agent_files_pinned,
         "the pin has a `files:` row for it, so it was deleted rather than "
