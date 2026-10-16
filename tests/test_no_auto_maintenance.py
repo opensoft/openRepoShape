@@ -86,6 +86,21 @@ def asked(*args: str, cwd: Path) -> str:
     return git("config", *args, cwd=cwd, check=False).stdout.strip()
 
 
+def probe_read_from_the_session_file(named, tmp_path, monkeypatch) -> str:
+    """`session_global_config(named)` written to a file that is the whole
+    global config for the rest of the test, read back with its includes: the
+    two settings are asserted, and what the `openreposhape.probe` key reads
+    is returned (empty where no included file sets it)."""
+    config = tmp_path / "session.gitconfig"
+    config.write_bytes(session_global_config(named))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    for key, value in NO_AUTO_MAINTENANCE:
+        assert asked("--global", "--includes", "--get", key,
+                     cwd=tmp_path) == value, key
+    return asked("--global", "--includes", "--get", "openreposhape.probe",
+                 cwd=tmp_path)
+
+
 @pytest.fixture
 def behind(tmp_path) -> Path:
     """A clone of a local bare remote that has moved on by a commit, as a
@@ -228,14 +243,8 @@ def test_where_home_is_unset_the_file_is_one_git_can_read(
         (under / "git" / "config").write_bytes(
             b"[openreposhape]\n\tprobe = xdg\n")
         monkeypatch.setenv("XDG_CONFIG_HOME", str(under))
-    config = tmp_path / "session.gitconfig"
-    config.write_bytes(session_global_config(None))
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
-    for key, value in NO_AUTO_MAINTENANCE:
-        assert asked("--global", "--includes", "--get", key,
-                     cwd=tmp_path) == value, key
-    assert asked("--global", "--includes", "--get", "openreposhape.probe",
-                 cwd=tmp_path) == ("xdg" if xdg else "")
+    assert probe_read_from_the_session_file(
+        None, tmp_path, monkeypatch) == ("xdg" if xdg else "")
 
 
 def test_an_empty_GIT_CONFIG_GLOBAL_is_no_global_config_and_includes_nothing(
@@ -248,14 +257,7 @@ def test_an_empty_GIT_CONFIG_GLOBAL_is_no_global_config_and_includes_nothing(
     (home / ".gitconfig").write_bytes(b"[openreposhape]\n\tprobe = home\n")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    config = tmp_path / "session.gitconfig"
-    config.write_bytes(session_global_config(""))
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
-    assert asked("--global", "--includes", "--get", "openreposhape.probe",
-                 cwd=tmp_path) == ""
-    for key, value in NO_AUTO_MAINTENANCE:
-        assert asked("--global", "--includes", "--get", key,
-                     cwd=tmp_path) == value, key
+    assert probe_read_from_the_session_file("", tmp_path, monkeypatch) == ""
 
 
 @pytest.fixture(scope="session")
