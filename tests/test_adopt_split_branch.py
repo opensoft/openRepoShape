@@ -50,6 +50,8 @@ UNREADABLE = "plan-gitmodules-unreadable"
 SPLIT_BRANCH = "adopt/three-repo-shape"
 PROJECT, ORG = "Northwind", "testorg"
 REMOTES, WORK = "remotes", "work"
+#: How a finding names the run that pushes the split into the source.
+LOCAL_RUN = "`execute --local-remote-dir`"
 #: A source `plan` asks no question about: `specs/` and `src/` classify
 #: themselves and `README.md` stays in the root.
 SMALL_TREE = {"README.md": "# Thing\n", "src/app/util.py": "VALUE = 1\n",
@@ -149,7 +151,7 @@ def test_check_finds_an_earlier_split_branch_in_the_source(tmp_path):
     found = findings(plan_for(source, tmp_path))
     head = git("rev-parse", "main", cwd=source).stdout.strip()
     assert found == [(BRANCH_EXISTS, left_behind(
-        f"the source {source}", "`execute --local-remote-dir`", old, head))]
+        f"the source {source}", LOCAL_RUN, old, head))]
 
 
 def test_check_says_how_to_go_on_once_after_its_findings(adopter, tmp_path):
@@ -213,36 +215,79 @@ BESIDE_IT = [f"{SPLIT_BRANCH}-old", "adopt/other", "adopt-three-repo-shape",
              "three-repo-shape"]
 
 
-def in_the_extraction(source: Path, name: str, at: str) -> str:
+#: Why a name is in git's way of the split branch, as a finding says it: a
+#: directory of it, or a name under it.
+DIRECTORY_CLASH = (": git holds no branch whose name is a directory of "
+                   "another's, or lies under it")
+
+
+def in_the_extraction(source: Path, name: str, at: str,
+                      why: str = DIRECTORY_CLASH) -> str:
     """`check`'s finding for a source branch `name` at `at` that git cannot
-    hold beside the split branch: about the extraction, which both runs
-    make."""
+    hold beside the split branch, for the reason `why`: about the
+    extraction, which both runs make."""
     return (f"the source {source} holds the branch `{name}`, at {at[:12]}. "
             "`execute`, with `--local-remote-dir` or without it, extracts a "
             "leg from a clone of the source with the plan's split branch "
             f"`{SPLIT_BRANCH}` checked out in it, after both leg repositories "
             f"were created, and `git filter-repo` cannot create `{name}` "
-            f"beside `{SPLIT_BRANCH}` there: git holds no branch whose name "
-            "is a directory of another's, or lies under it. Delete "
-            f"`{name}` there, or set `adopt_branch:` in the plan to a branch "
-            "git can create there.")
+            f"beside `{SPLIT_BRANCH}` there{why}. Delete `{name}` there, or "
+            "set `adopt_branch:` in the plan to a branch git can create "
+            "there.")
 
 
-@pytest.mark.parametrize("name", IN_THE_WAY)
+#: Names in git's way of the split branch only once case is ignored: a
+#: directory of it, the split branch itself and a name under it, each in
+#: another case. #457 reports `execute` making both legs on macOS and
+#: Windows before git refused such a name; on Linux, at bfed143, each
+#: checked `plan ok` and adopted. Ruled 2026-10-12: compared without case on
+#: every system.
+ADOPT_IN_ANOTHER_CASE = "Adopt"
+BUT_FOR_CASE = [ADOPT_IN_ANOTHER_CASE, SPLIT_BRANCH.upper(),
+                "Adopt/Three-Repo-Shape/old"]
+#: Why such a name is in the way, as a finding says it.
+CASE_CLASH = (" once case is ignored, as a macOS or Windows disk does: git "
+              "keeps each branch as a file named after it, and such a disk "
+              "keeps two paths that differ only by case as one. `check` and "
+              "`execute` refuse such a pair on every system")
+
+
+def pushed_beside(where: str, run: str, name: str, at: str,
+                  why: str | None = None) -> str:
+    """`check`'s finding for a branch `name` at `at`, held where `run`
+    pushes the split, that git cannot hold beside the split branch: in
+    git's own words, or for the reason `why`."""
+    why = why or (f": `'refs/heads/{name}' exists; cannot create "
+                  f"'refs/heads/{SPLIT_BRANCH}'`")
+    return (f"{where} holds the branch `{name}`, at {at[:12]}. {run} pushes "
+            f"its split commit to `{SPLIT_BRANCH}` there, after both leg "
+            "repositories were created and pushed, and git cannot create "
+            f"`{SPLIT_BRANCH}` beside `{name}`{why}. Delete `{name}` there, "
+            "or set `adopt_branch:` in the plan to a branch git can create "
+            "there.")
+
+
+@pytest.mark.parametrize(
+    "name, why", [(name, DIRECTORY_CLASH) for name in IN_THE_WAY]
+    + [(name, CASE_CLASH) for name in BUT_FOR_CASE],
+    ids=IN_THE_WAY + BUT_FOR_CASE)
 def test_a_branch_in_gits_way_of_the_split_branch_is_taken(adopter,
                                                            tmp_path,
                                                            monkeypatch,
-                                                           name):
+                                                           name, why):
     """Said as the extraction's failure, for both runs: the review of #320
     measured a run without `--local-remote-dir` failing there too, after
     both GitHub leg repositories were made, while this finding said it was
     about `execute --local-remote-dir` alone. `execute` refuses it with
-    `check`'s finding, word for word, before any leg exists."""
+    `check`'s finding, word for word, before any leg exists. The names in
+    the way only once case is ignored (#520's A4) were no finding on main,
+    and are refused the same way, saying why."""
     source = small_source(tmp_path)
     git("branch", name, cwd=source)
     at = git("rev-parse", name, cwd=source).stdout.strip()
     plan = plan_for(source, tmp_path)
-    assert findings(plan) == [(TAKEN, in_the_extraction(source, name, at))]
+    assert findings(plan) == [(TAKEN, in_the_extraction(source, name, at,
+                                                        why))]
     refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
     assert refusal.code == TAKEN
     assert refusal.remediation == adopter.SPLIT_BRANCH_TAKEN_REMEDIATION
@@ -543,28 +588,28 @@ def test_execute_refuses_a_repository_it_cannot_list(adopter, tmp_path,
     assert asked == []
 
 
+@pytest.mark.parametrize("name, why", [
+    ("adopt", None), (ADOPT_IN_ANOTHER_CASE, CASE_CLASH)],
+    ids=["in-the-way", "once-case-is-ignored"])
 def test_a_branch_in_gits_way_on_github_is_refused_in_the_pushs_words(
-        adopter, tmp_path, monkeypatch):
+        adopter, tmp_path, monkeypatch, name, why):
     """GitHub holds `adopt`, and the source does not: the push of the
     split would meet it there, so the finding is about the run that pushes
-    there, in git's own words."""
+    there, in git's own words. `Adopt` is in the way once case is ignored
+    (#520's A4), and is refused the same way, saying so."""
     source = small_source(tmp_path)
     plan = plan_for(source, tmp_path)
-    bare = a_github(tmp_path, monkeypatch, branches=("adopt",))
-    at = git("rev-parse", "adopt", cwd=bare).stdout.strip()
+    bare = a_github(tmp_path, monkeypatch, branches=(name,))
+    at = git("rev-parse", name, cwd=bare).stdout.strip()
     asked = no_gh(adopter, monkeypatch)
+    args = execute_args(plan, tmp_path, local=False)
     with pytest.raises(adopter.Refusal) as caught:
-        adopter.cmd_execute(execute_args(plan, tmp_path, local=False))
+        adopter.cmd_execute(args)
     assert caught.value.code == TAKEN
-    assert (f"  FINDING {TAKEN}: `{ORG}/{PROJECT}` on GitHub holds the "
-            f"branch `adopt`, at {at[:12]}. `execute` without "
-            "`--local-remote-dir` pushes its split commit to "
-            f"`{SPLIT_BRANCH}` there, after both leg repositories were "
-            "created and pushed, and git cannot create "
-            f"`{SPLIT_BRANCH}` beside `adopt`: `'refs/heads/adopt' exists; "
-            f"cannot create 'refs/heads/{SPLIT_BRANCH}'`. Delete `adopt` "
-            "there, or set `adopt_branch:` in the plan to a branch git can "
-            "create there.") in caught.value.detail.splitlines()
+    finding = f"  FINDING {TAKEN}: " + pushed_beside(
+        f"`{ORG}/{PROJECT}` on GitHub", "`execute` without "
+        "`--local-remote-dir`", name, at, why)
+    assert finding in caught.value.detail.splitlines(), caught.value.detail
     assert asked == []
 
 
@@ -738,6 +783,89 @@ def test_a_fetched_branch_the_split_push_fast_forwards_is_no_finding(
     assert findings(plan_for(source, tmp_path)) == []
 
 
+# --- a branch the source hides (#520) ----------------------------------------
+
+#: A branch in git's way of the split branch, hidden by the source's own
+#: `<knob>.hideRefs`, which `git ls-remote` and a clone of the source obey
+#: and a push into it does not: on main at bfed143 `check` said `plan ok`,
+#: and `execute --local-remote-dir` made both legs and failed at the push
+#: of the split, on git's ref lock. `transfer.hideRefs` hides the branch
+#: UNDER the split branch's name, since one that hid `adopt` would hide the
+#: split branch from that push too.
+UPLOADPACK = "uploadpack"
+HIDDEN = [pytest.param(UPLOADPACK, "adopt", id=UPLOADPACK),
+          pytest.param("transfer", f"{SPLIT_BRANCH}/old", id="transfer")]
+
+
+def hide(source: Path, knob: str, branch: str) -> None:
+    """`branch` hidden by the source's `<knob>.hideRefs`, appended to its
+    own `.git/config`, LF, as `git config --add` would write it."""
+    with (source / ".git" / "config").open("a", encoding="utf-8",
+                                           newline="\n") as handle:
+        handle.write(f"[{knob}]\n\thideRefs = refs/heads/{branch}\n")
+
+
+@pytest.mark.parametrize("knob, name", HIDDEN)
+def test_a_branch_the_source_hides_is_taken_where_the_split_is_pushed(
+        adopter, tmp_path, monkeypatch, knob, name):
+    """`_branches_at` read the source with `git ls-remote`, which leaves the
+    branch out. It reads a local repository's own refs now. The extraction's
+    clone never gets the branch, so the finding is about the push alone, in
+    the push's words, and `execute --local-remote-dir` refuses it before any
+    leg exists."""
+    source = small_source(tmp_path)
+    git("branch", name, cwd=source)
+    hide(source, knob, name)
+    at = git("rev-parse", name, cwd=source).stdout.strip()
+    plan = plan_for(source, tmp_path)
+    assert findings(plan) == [(TAKEN, pushed_beside(
+        f"the source {source}", LOCAL_RUN, name, at))]
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == TAKEN
+
+
+@pytest.mark.parametrize("knob, name", HIDDEN)
+def test_a_github_run_is_not_refused_for_a_branch_the_source_hides(
+        adopter, tmp_path, monkeypatch, knob, name):
+    """Without `--local-remote-dir` the split goes to GitHub, which holds no
+    such branch, and the extraction's clone of the source never gets it:
+    nothing stops this run. On main `execute` read the source's own refs for
+    the extraction and refused it, in words about a `git filter-repo` that
+    never meets the branch."""
+    source = small_source(tmp_path)
+    git("branch", name, cwd=source)
+    hide(source, knob, name)
+    plan = plan_for(source, tmp_path)
+    a_github(tmp_path, monkeypatch, branches=())
+    asked = no_gh(adopter, monkeypatch)
+    args = execute_args(plan, tmp_path, local=False)
+    with pytest.raises(Proceeded):
+        adopter.cmd_execute(args)
+    assert asked[0][:3] == ["gh", "repo", "create"]
+
+
+def test_an_earlier_split_branch_the_source_hides_is_found_and_refused(
+        adopter, tmp_path, monkeypatch):
+    """`execute` asked the source for the split branch an earlier run left
+    with `git ls-remote`, which leaves out one the source hides from a
+    fetch, and the push of the split still meets it there. `check` names it
+    as `execute --local-remote-dir`'s `adopt-branch-exists`, and `execute`
+    refuses it, before any leg exists."""
+    source = small_source(tmp_path)
+    old = split_branch_by_hand(source)
+    hide(source, UPLOADPACK, SPLIT_BRANCH)
+    head = git("rev-parse", "main", cwd=source).stdout.strip()
+    plan = plan_for(source, tmp_path)
+    assert findings(plan) == [(BRANCH_EXISTS, left_behind(
+        f"the source {source}", LOCAL_RUN, old, head))]
+    stop_at_the_legs(adopter, monkeypatch)
+    args = execute_args(plan, tmp_path)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(args)
+    assert caught.value.code == BRANCH_EXISTS
+    assert not (tmp_path / REMOTES).exists()
+
+
 # --- end to end -------------------------------------------------------------
 
 @needs_filter_repo
@@ -782,14 +910,19 @@ def test_the_issue_re_run_is_refused_and_runs_once_the_branch_is_gone(
 
 
 @needs_filter_repo
+@pytest.mark.parametrize("hidden", [False, True], ids=["seen", "hidden"])
 def test_a_source_branch_in_the_way_is_refused_and_runs_once_it_is_gone(
-        tmp_path):
+        tmp_path, hidden):
     """A source branch `adopt`: on main at ec4a7a0 `check` said `plan ok`
-    and `execute` made both legs and exited 2 at `git filter-repo`. Now
-    `check` names the branch, `execute` refuses before any leg exists, and
-    once the branch is deleted the same command adopts."""
+    and `execute` made both legs and exited 2 at `git filter-repo`. Hidden
+    by the source's `uploadpack.hideRefs`, on main at bfed143, `check` said
+    `plan ok` and `execute` made both legs and exited 2 at the push of the
+    split (#520). Now `check` names the branch, `execute` refuses before any
+    leg exists, and once the branch is deleted the same command adopts."""
     source = small_source(tmp_path)
     git("branch", "adopt", cwd=source)
+    if hidden:
+        hide(source, UPLOADPACK, "adopt")
     plan = plan_for(source, tmp_path)
     flags = ("--plan", str(plan), "--yes")
 
