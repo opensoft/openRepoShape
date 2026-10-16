@@ -818,9 +818,10 @@ def _append_eol_block(target: Path, result: "Materialized",
     A SYMLINK IS NOT WRITTEN THROUGH: what it leads to may be another file of
     the source's, or nothing in this repository, and git follows no
     `.gitattributes` that is a link anyway: a checkout reads only the link's
-    own text, the path it leads to, which names no attribute (#654). It is left as it is, and the
-    follow-up says so and lists the lines a regular file would need. A link
-    is one on the disk OR in git's index (`_tracked_as_link`)."""
+    own text, the path it leads to, which names no attribute (#654). It is
+    left as it is, and the follow-up says so and lists the lines a regular
+    file would need. A link is one on the disk OR in git's index
+    (`_tracked_as_link`)."""
     if (ATTRIBUTES, f"{collision_dir}/{ATTRIBUTES}") not in result.collisions:
         return
     path = target / ATTRIBUTES

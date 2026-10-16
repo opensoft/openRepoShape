@@ -7785,10 +7785,11 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
 # link, and a checkout reads only the link's own text, a path, which names
 # no attribute), is #471's follow-up, not this finding: its copies are asked
 # against the block that follow-up asks a regular file to hold, so a kept
-# nested file is still found, and the finding names that block's rule. Asked as a disk that keeps case does and again as one that ignores
-# it, as #262's findings are: there `core.ignorecase` folds git's patterns,
-# and a kept `.GitHub/.gitattributes` is read for `.github/`. A finding only
-# the second makes says so.
+# nested file is still found, and the finding names that block's rule.
+# Asked as a disk that keeps case does and again as one that ignores it, as
+# #262's findings are: there `core.ignorecase` folds git's patterns, and a
+# kept `.GitHub/.gitattributes` is read for `.github/`. A finding only the
+# second makes says so.
 
 #: `check`'s finding, and the code of `execute`'s refusal, for a kept
 #: `.gitattributes` below the root that outranks the root's line-ending rule
@@ -7799,6 +7800,12 @@ NESTED_ATTRIBUTES = "plan-nested-attributes"
 #: The copies the shape pins, in the pin's order: what `_materialize` lists
 #: in `Materialized.shape_files`, each at its own path or under `shape/`.
 PINNED_COPIES = (*COPIED_VERBATIM, *(rel for _, rel in COPIED_FROM_SHAPE))
+
+#: Where the materializer copies the shape's files from for the split,
+#: `materialize_assembly_root(SHAPE_ROOT, ...)`: the bytes each pinned copy
+#: lands with, and the shape's own `.gitattributes`. Not `ASSEMBLY_TEMPLATE`,
+#: which #181's gate reads and a test may point elsewhere (#654).
+SPLIT_TEMPLATE = SHAPE_ROOT / "templates" / "assembly-root"
 
 #: The attributes a checkout reads a file's line endings from. Git's
 #: `convert.c` reads `text` first, and `crlf`, its old spelling, only where
@@ -7989,7 +7996,7 @@ def _root_attributes(source: Source, walks: list, disk: _KeptTree,
     for the copies `names` outside `shape/` (#471); a kept one that is not a
     regular file gets no block, so it is asked as the block alone, the lines
     #471's follow-up asks a regular file in its place to hold."""
-    shapes = (ASSEMBLY_TEMPLATE / ATTRIBUTES).read_text(
+    shapes = (SPLIT_TEMPLATE / ATTRIBUTES).read_text(
         encoding="utf-8").encode("utf-8")
     walk = next((walk for walk in walks if walk.path == ATTRIBUTES), None)
     if walk is None or not walk.taken:
@@ -8585,7 +8592,7 @@ def _copy_bytes(name: str, makefile: str | None) -> bytes | None:
         if copied == rel:
             return (SHAPE_ROOT / shape_path).read_text(
                 encoding="utf-8").encode("utf-8")
-    text = (ASSEMBLY_TEMPLATE / rel).read_text(encoding="utf-8")
+    text = (SPLIT_TEMPLATE / rel).read_text(encoding="utf-8")
     if rel == SHAPE_MAKEFILE:
         if makefile is None:
             return None
@@ -8625,7 +8632,7 @@ def _copies_stored(asked: _SplitRehearsal, landings: list,
                       data).decode("ascii").strip()]
 
 
-def _named(paths: list[str]) -> str:
+def _named_and_counted(paths: list[str]) -> str:
     """Up to `NAMED_PATHS` of `paths`, each `_spelled`, and how many more."""
     named = [_spelled(path) for path in paths[:NAMED_PATHS]]
     if len(paths) > NAMED_PATHS:
@@ -8643,7 +8650,7 @@ def _stored_otherwise(paths: list[str]) -> tuple[str, str, str]:
         "1 file" if one else f"{len(paths)} files",
         f"this machine's `git add` would store {them} as other bytes than "
         f"{blob} once the split's checkout has written {them}: "
-        f"{_named(paths)}",
+        f"{_named_and_counted(paths)}",
         f"Commit {each} in the source as git stores it (`git add "
         "--renormalize -- <path>`, then commit), or change the rule that "
         f"reaches {them}, and re-run `plan`.")
@@ -8689,9 +8696,9 @@ def _copies_finding(copies: list[str], at_the_root: dict) -> str:
     return (f"FINDING {REENCODED_FILES}: the source's rules make this "
             f"machine's `git add` store {len(copies)} pinned shape "
             f"{'copy' if one else 'copies'} as other bytes than the split "
-            f"writes: {_named(copies)}. The split would commit {them} as "
-            f"{'a copy' if one else 'copies'} the shape's pin does not "
-            f"describe, and `execute` would say `adoption verified` over "
+            f"writes: {_named_and_counted(copies)}. The split would commit "
+            f"{them} as {'a copy' if one else 'copies'} the shape's pin does "
+            "not describe, and `execute` would say `adoption verified` over "
             f"{them}. Keep the rules off {them} with "
             f"{'the line' if one else 'these lines'} after them in the "
             f"source's root `{ATTRIBUTES}`: {_and_listed(lines)}, or narrow "

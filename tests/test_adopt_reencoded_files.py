@@ -56,6 +56,7 @@ DROP = "drop"
 CRLF = b"one\r\ntwo\r\n"
 TEXT_EOL_LF = b"* text eol=lf\n"
 TXT_ENCODING = b"*.txt working-tree-encoding=UTF-16LE\n"
+PY_UTF16_BOM = b"*.py working-tree-encoding=UTF-16LE-BOM\n"
 NOT_UTF8 = b"caf\xe9\n"
 EXPANDED_ID = b"$Id: deadbeef $\n"
 #: A filter this machine defines: its clean step uppercases.
@@ -146,8 +147,8 @@ FOUND = [
     pytest.param({ROOT_ATTRIBUTES: f"/scripts/*.py filter={UPPER}\n".encode()},
                  {}, UPPER_CLEAN, [(COPIES_GROUP, "5 pinned shape copies")],
                  id="copies-alone-under-a-filter"),
-    pytest.param({ROOT_ATTRIBUTES: b"*.py working-tree-encoding=UTF-16LE-BOM\n"},
-                 {}, (), [(REFUSED_GROUP, "from UTF-16LE-BOM to UTF-8`)")],
+    pytest.param({ROOT_ATTRIBUTES: PY_UTF16_BOM}, {}, (),
+                 [(REFUSED_GROUP, "from UTF-16LE-BOM to UTF-8`)")],
                  id="copies-refused-by-an-encoding"),
     pytest.param({ROOT_ATTRIBUTES: b"* working-tree-encoding=UTF-16LE\n"
                                    b".gitattributes -working-tree-encoding\n"},
@@ -328,8 +329,8 @@ def test_the_finding_names_ten_paths_and_counts_the_rest(tmp_path):
 def test_the_roots_own_attributes_is_the_d5a_question_alone(tmp_path):
     """The source's root `.gitattributes`, which the split writes into, is
     asked by `plan-attributes-reencoded` (#530's D5(a)), and named once."""
-    found = findings(raw_plan(tmp_path, {ROOT_ATTRIBUTES: b"* text eol=lf\r\n"},
-                              {}))
+    crlf_rules = {ROOT_ATTRIBUTES: b"* text eol=lf\r\n"}
+    found = findings(raw_plan(tmp_path, crlf_rules, {}))
     assert [code for code, _ in found] == [REENCODED], found
 
 
@@ -419,3 +420,36 @@ def test_a_malformed_plan_gets_findings_not_a_traceback(tmp_path, old, new):
     result = checked(plan, {})
     assert "Traceback" not in result.stderr, result.stderr
     assert result.returncode == 1, result.stderr
+
+
+def test_a_kept_file_named_shape_is_that_finding_alone(tmp_path):
+    """The root keeps its own `.gitattributes` and a FILE named `shape`,
+    where the shape's own `shape/.gitattributes` would go beside it:
+    `plan-root-blocks-shape-copy` names that (#262), and the question still
+    lays the split's root out, the kept file giving way in its index."""
+    source = make_source_repo(tmp_path / "Thing",
+                              tree={**SOURCE, "shape": "a file\n"}, edits=())
+    committed_raw(source, ROOT_ATTRIBUTES, TEXT_EOL_LF)
+    found = findings(planned(source, tmp_path, {"shape": ROOT}))
+    assert [code for code, _ in found] == ["plan-root-blocks-shape-copy"], \
+        found
+
+
+def test_the_root_is_asked_as_the_split_writes_it(monkeypatch, tmp_path):
+    """No rule of the source's own, and `core.autocrlf=true` with
+    `core.safecrlf=true`: the clone writes the kept `.gitignore` CRLF, the
+    split writes the shape's `* text=auto eol=lf` at the root, and its `git
+    add -A` refuses the file it would store as LF (replayed by hand with git
+    2.43). Asked under no root rule instead, the pinned copies would be the
+    ones refused. `execute` meets the mounts' own `.gitmodules` first, which
+    no question asks (measured: `LF would be replaced by CRLF in
+    .gitmodules`); the finding stands before any leg either way."""
+    plan = planned(make_source_repo(tmp_path / "Thing", tree=dict(SOURCE),
+                                    edits=()), tmp_path, {})
+    configure(monkeypatch, (("core.autocrlf", "true"), *SAFECRLF))
+    found = findings(plan)
+    assert [code for code, _ in found] == [REENCODED_FILES], found
+    assert found[0][1].startswith(
+        f"{REFUSED_GROUP}to store again what the plan keeps in the assembly "
+        "root, as the split's `git add -A` does (git said `fatal: CRLF would "
+        "be replaced by LF in .gitignore`)"), found
