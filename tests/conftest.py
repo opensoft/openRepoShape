@@ -25,6 +25,7 @@ fast.
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import os
 import re
@@ -35,6 +36,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
@@ -223,6 +225,102 @@ WINDOWS_SKIP = pytest.mark.skipif(
     os.name == "nt",
     reason="needs a POSIX shell and shebang execution; on Windows the entry "
            "point is setup-project.py (tests/test_setup_project_py.py)")
+
+
+def _git_for_windows() -> Path | None:
+    """Git for Windows' own directory, from the `git` that runs this suite.
+
+    `git --exec-path` answers `<root>/mingw64/libexec/git-core` there, and
+    `<root>/usr/bin/bash.exe` is its bash. None off Windows, and where that
+    git is some other build, with no such bash beside it.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        answer = subprocess.run(["git", "--exec-path"], capture_output=True,
+                                text=True, check=False).stdout.strip()
+    except OSError:
+        return None
+    parents = Path(answer).parents if answer else ()
+    if len(parents) < 3:
+        return None
+    root = parents[2]
+    return root if (root / "usr" / "bin" / "bash.exe").is_file() else None
+
+
+GIT_FOR_WINDOWS = _git_for_windows()
+
+#: THE BASH THAT `openRepoShape` AND `install.sh` ARE TESTED UNDER (#585).
+#: Off Windows, the `bash` on PATH. On Windows, Git Bash: Git for Windows'
+#: own `usr\bin\bash.exe`, found beside the git this suite runs and NEVER
+#: from PATH, because a bare `bash` there can be `System32\bash.exe`, the WSL
+#: launcher, and `subprocess` looks in System32 before it reads PATH at all.
+#: `usr\bin` and not `bin`: `bin\bash.exe`, which Git Bash's own shortcut
+#: runs, puts Git's `mingw64\bin` and `usr\bin` FIRST on PATH, ahead of a
+#: test's fake `curl`, and a test's own PATH of a few programs would hold
+#: every one of Git's. `git_bash_session` puts the two there behind the
+#: fakes instead. These suites wore `WINDOWS_SKIP` until then.
+if os.name == "nt":
+    BASH = (str(GIT_FOR_WINDOWS / "usr" / "bin" / "bash.exe")
+            if GIT_FOR_WINDOWS is not None else None)
+else:
+    BASH = shutil.which("bash")
+
+BASH_SKIP = pytest.mark.skipif(
+    BASH is None,
+    reason="needs bash: on Windows, Git for Windows' own usr\\bin\\bash.exe "
+           "beside the git on PATH, which this machine does not have")
+
+
+@functools.lru_cache(maxsize=None)
+def _cygpath(flag: str, path: str) -> str:
+    """Git for Windows' `cygpath <flag>`: the spelling bash itself uses."""
+    return subprocess.run(
+        [str(GIT_FOR_WINDOWS / "usr" / "bin" / "cygpath.exe"), flag, "--",
+         path], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def bash_path(path) -> str:
+    """`path` as `BASH` spells it, for its argv, its environment and what it
+    prints (#585): unchanged off Windows, and `/d/a/...` under Git Bash, from
+    its own `cygpath -u` — the spelling Git Bash gives `$HOME`, `$TMPDIR`,
+    `PATH` and `pwd`, and so the one a person there types."""
+    if GIT_FOR_WINDOWS is None:
+        return str(path)
+    return _cygpath("-u", str(path))
+
+
+def native_path(text: str) -> Path:
+    """The other way: a path `BASH` printed, as this interpreter opens it."""
+    if GIT_FOR_WINDOWS is None:
+        return Path(text)
+    return Path(_cygpath("-w", text))
+
+
+@pytest.fixture
+def git_bash_session(monkeypatch):
+    """PATH and `MSYSTEM` as Git Bash makes them, for a test that runs
+    `BASH` (#585); off Windows, nothing.
+
+    Git Bash puts Git's `mingw64\\bin` and `usr\\bin` ahead of the Windows
+    PATH, which is where a person there finds `mktemp`, `cp` and the bash
+    that `openRepoShape` runs `setup.sh` with, ahead of System32's WSL
+    launcher. Here they go ahead of `os.environ["PATH"]`, so a fake a test
+    puts first still comes first. Neither directory holds a `gh`, so the
+    session's gh guard still answers. The GitHub runner's own PATH already
+    holds both, and Git's `bin` before System32; Git for Windows' default
+    install puts only its `cmd` on PATH, and there, without this, `mktemp`
+    is not found and `bash` is the WSL launcher.
+    """
+    if GIT_FOR_WINDOWS is None:
+        return
+    # Git for Windows on ARM64 ships `clangarm64` where x64 has `mingw64`.
+    msystem = "clangarm64" if (GIT_FOR_WINDOWS / "clangarm64").is_dir() \
+        else "mingw64"
+    monkeypatch.setenv("PATH", os.pathsep.join([
+        str(GIT_FOR_WINDOWS / msystem / "bin"),
+        str(GIT_FOR_WINDOWS / "usr" / "bin"), os.environ.get("PATH", "")]))
+    monkeypatch.setenv("MSYSTEM", msystem.upper())
 
 
 def rmtree(path: Path) -> None:
@@ -920,6 +1018,48 @@ def pytest_runtest_teardown(item, nextitem):
     return result
 
 
+# --- the suite's own temporary directory (#461, #526) ------------------------
+#
+# A TOOL RUN WITHOUT A DIRECTORY OF ITS OWN WRITES IN THE SYSTEM TEMP FOLDER,
+# outside pytest's retention: `adopt-project.py` makes an
+# `openreposhape-adopt-*` work directory per `plan`, `check` and `execute`
+# given no `--work-dir`, and one run of `tests/test_adopt_pins.py` left 117 of
+# them in `/tmp` (15,206 in one container, 226,165 on another machine). So
+# the session points `TMPDIR` into its basetemp, where pytest keeps or removes
+# it with everything else, and the tool removes each one that holds nothing.
+# A test that gives a child a `TMPDIR` of its own still does: `run_script`
+# lays a caller's variables over `os.environ`.
+
+#: The directory `temporary_directory` points `TMPDIR` at, ONE level under
+#: the session's basetemp and not one per test: the Windows runner meets
+#: MAX_PATH where git writes beneath a deep path.
+TMPDIR_NAME = "tmpdir"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def temporary_directory(tmp_path_factory):
+    """`<basetemp>/tmpdir` as the system temp folder for the whole session:
+    `TMPDIR` for every child, however it is started, and `tempfile.tempdir`
+    for this process, where a test that loads `adopt-project.py` as a module
+    runs its `tempfile.mkdtemp`, and where `tempfile` keeps the folder it
+    found first whatever `TMPDIR` says later. `TMPDIR` alone, because
+    `tempfile` reads it first on every platform. Both are put back as they
+    were."""
+    directory = tmp_path_factory.getbasetemp() / TMPDIR_NAME
+    directory.mkdir(exist_ok=True)
+    before, cached = os.environ.get("TMPDIR"), tempfile.tempdir
+    os.environ["TMPDIR"] = str(directory)
+    tempfile.tempdir = str(directory)
+    try:
+        yield directory
+    finally:
+        tempfile.tempdir = cached
+        if before is None:
+            os.environ.pop("TMPDIR", None)
+        else:
+            os.environ["TMPDIR"] = before
+
+
 def assert_refuses_for_want_of_a_terminal(stderr: str) -> None:
     """What a run with no terminal prints where it would have asked (#476),
     held to ONE reading by every test that reaches it.
@@ -1073,8 +1213,12 @@ def assert_the_plan_refuses_a_remote_that_exists(run, tmp_path: Path) -> None:
     assert result.returncode == 2, result.stderr + result.stdout
     assert (f"REFUSED scaffold-remote-exists: {leg.resolve()} already exists "
             "and has commits" in result.stderr), result.stderr
-    assert "REFUSED: the plan could not be produced" in result.stderr
+    # THE PLAN WAS PRINTED BEFORE THE REMOTES WERE ASKED (#573), so it is
+    # refused, not "could not be produced" (#608, L2-37).
+    assert "REFUSED: the plan was refused (see above)." in result.stderr
+    assert "could not be produced" not in result.stderr, result.stderr
     assert "(5) the plan" in result.stdout, result.stdout
+    assert "\nproject      Sample" in result.stdout, result.stdout
     assert "--dry-run: nothing was created." not in result.stdout
     assert "(6) scaffold" not in result.stdout, "the run reached (6)"
     assert "This will create THREE repositories" not in result.stdout
@@ -1476,4 +1620,206 @@ def assert_an_upstream_origin_in_any_case_needs_an_org(run,
     assert result.returncode == 2, result.stderr + result.stdout
     assert "you are running from the upstream checkout" in result.stderr, (
         result.stderr)
+    assert not (tmp_path / "remotes").exists()
+
+
+# --- setup's step (3), (4) and (5) checks (#608) -----------------------------
+#
+# ONE READING, TWO ENTRY POINTS, as above: each helper takes the runner of the
+# file that calls it, and every run passes `--local-remote-dir`.
+
+#: What step (3) says a person can do about a parent folder nobody can write
+#: in, and about a path whose drive is not there.
+WRITE_IT = ("Choose another --into, or make it a folder you can write in, "
+            "then run this again.")
+DRIVE_WAY_OUT = ("Choose another --into on a drive that is there, then run "
+                 "this again.")
+
+#: Where the naming check can be asked about a chain, and what each makes of
+#: it: `(the product the project pins, what its own tree declares)`. `verified`
+#: is a link tree that declares the chain's next link; `broken` one that
+#: declares another product, which the plan refuses as `chain-not-declared`.
+CHAIN_LINK_TREES = {"verified": ("openXdox", "openDox"),
+                    "broken": ("openYdox", "openOther")}
+
+
+def a_folder_nobody_can_write_in(tmp_path: Path) -> Path:
+    """`tmp_path/shut`, an existing folder at mode 555, or a skip where this
+    account can make a folder in one anyway (root) or the platform has no such
+    mode (Windows). The test puts the mode back: pytest cannot delete it
+    otherwise."""
+    if os.name == "nt":
+        pytest.skip("a folder's mode does not stop Windows from writing in it")
+    shut = tmp_path / "shut"
+    shut.mkdir()
+    shut.chmod(0o555)
+    try:
+        (shut / "probe").mkdir()
+    except OSError:
+        return shut
+    (shut / "probe").rmdir()
+    shut.chmod(0o755)
+    pytest.skip("this account can make a folder in a folder at mode 555")
+
+
+def assert_a_parent_nobody_can_write_in_is_refused(run,
+                                                   tmp_path: Path) -> None:
+    """`--into <folder at mode 555>/work` is refused in step (3), naming the
+    folder and the reason the system gave, before the naming check, the plan
+    or any repository, and leaves the folder as it was. On main step (3)
+    asked only that what it found was a folder, so all three repositories were
+    created and step (7) refused `could not be made a folder (Permission
+    denied)`."""
+    shut = a_folder_nobody_can_write_in(tmp_path)
+    try:
+        into = shut / "work"
+        result = run("--project", "Sample", "--yes", "--org", "demoorg",
+                     "--local-remote-dir", str(tmp_path / "remotes"),
+                     "--into", str(into))
+        assert result.returncode == 2, result.stderr + result.stdout
+        assert ("REFUSED: %s is a folder you cannot write in (Permission "
+                "denied), and this project would be cloned inside it, at %s, "
+                "so the run stops here and nothing was created. %s"
+                % (os.path.abspath(str(shut)),
+                   os.path.abspath(str(into / "Sample")), WRITE_IT)
+                ) in result.stderr, result.stderr
+        assert "Traceback" not in result.stderr, result.stderr
+        assert "(3) project" in result.stdout, result.stdout
+        for later in ("(4) naming policy", "(5) the plan", "(6) scaffold"):
+            assert later not in result.stdout, f"the run reached {later}"
+        assert not (tmp_path / "remotes").exists()
+        assert list(shut.iterdir()) == []
+    finally:
+        shut.chmod(0o755)
+
+
+def assert_a_plan_that_never_printed_could_not_be_produced(
+        run, tmp_path: Path) -> None:
+    """A plan the scaffold refuses BEFORE it prints one - here a
+    `--tracking-branch` git will not create, passed through - keeps step
+    (5)'s words, `the plan could not be produced (see above).`: there is no
+    plan above to call refused (#608, L2-37). The refusal after a PRINTED plan
+    is `assert_the_plan_refuses_a_remote_that_exists`'s."""
+    result = run("--project", "Sample", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--tracking-branch", "a..b")
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "REFUSED scaffold-bad-tracking-branch:" in result.stderr
+    assert ("REFUSED: the plan could not be produced (see above)."
+            in result.stderr), result.stderr
+    assert "was refused" not in result.stderr, result.stderr
+    assert "(5) the plan" in result.stdout, result.stdout
+    assert "\nproject      Sample" not in result.stdout, result.stdout
+    assert not (tmp_path / "remotes").exists()
+    assert not (tmp_path / "work").exists()
+
+
+def assert_step_four_reads_a_chain_as_the_plan_does(run, tmp_path: Path,
+                                                    how: str) -> None:
+    """Step (4) is given the passthrough's `--pin-source` as the naming
+    check's `--link-source`, so the chain it reports on is the chain the plan
+    reads (#608, L2-25): a link tree that declares the next link shows
+    `[verified]`, as the plan has it, and one that declares another product
+    shows `[broken]`, which the plan then refuses as `chain-not-declared`. On
+    main step (4) showed both as `[declared-unverified]` with a WARNING that
+    the link's tree was not reachable, though the tree was named with
+    `--pin-source`."""
+    product, declares = CHAIN_LINK_TREES[how]
+    tree = tmp_path / "link"
+    tree.mkdir()
+    git("init", "-q", "-b", "main", cwd=tree)
+    (tree / "project.yaml").write_bytes(
+        ("schema_version: 1\nkind: project-manifest\n"
+         f"neutral_product_pins:\n  - {declares}\n").encode("utf-8"))
+    git("add", "project.yaml", cwd=tree)
+    git("commit", "-q", "-m", "seed", cwd=tree)
+    commit = git("rev-parse", "HEAD", cwd=tree).stdout.strip()
+    result = run("--project", "codexDox", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--pin", f"{product}@{commit}",
+                 "--referent-chain", f"{product},openDox",
+                 "--pin-source", str(tree))
+    assert result.returncode == 2, result.stderr + result.stdout
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert f"[{how}]" in step_four, step_four
+    assert "declared-unverified" not in step_four + result.stderr, (
+        step_four + result.stderr)
+    assert "NOTE --link-source" not in step_four + result.stderr
+    if how == "verified":
+        assert_refuses_for_want_of_a_terminal(result.stderr)
+    else:
+        assert "REFUSED chain-not-declared:" in result.stderr, result.stderr
+        assert (f"{product} declares {declares}, not openDox"
+                in step_four + result.stderr)
+    assert not (tmp_path / "remotes").exists()
+
+
+def assert_an_empty_pin_source_is_the_plans_to_refuse(run,
+                                                      tmp_path: Path) -> None:
+    """`--pin-source ''` is refused by the scaffold's plan as
+    `pin-source-no-path` (#570), so step (4) is given no `--link-source` for
+    it and leaves the value to step (5) (#608, rv608 on #623). On the merge of
+    #608 with #576 step (4) passed `--link-source=`, which the naming check
+    refuses as `link-source-no-path`, naming a flag the person never typed,
+    and the run ended there with exit 1 where the plan refuses the same value
+    with exit 2; passing `.` instead, as the scaffold's `Path('')` once read
+    it, made the naming check WARN about `--link-source`, `.` and a folder the
+    plan never reads. The naming check is given no source, so it says of the
+    chain what it says of any it cannot verify, `[declared-unverified]`, and
+    its hint there, `--link-source <product>=<path>`, one per holder it
+    cannot verify, is the one spelling of the flag in a run that never typed
+    it."""
+    result = run("--project", "codexDox", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--pin", "openXdox@" + "0123456789abcdef" * 2
+                 + "01234567", "--referent-chain", "openXdox,openDox",
+                 "--pin-source", "")
+    heard = result.stderr + result.stdout
+    assert "(5) the plan" in result.stdout, result.stdout
+    assert result.returncode == 2, heard
+    assert "REFUSED pin-source-no-path:" in result.stderr, result.stderr
+    assert "link-source-no-path" not in heard, heard
+    # The validator's own hint for a chain it cannot verify names the flag,
+    # `--link-source openXdox=<path>`, whatever the run typed, so it is the
+    # one spelling left out; a `--link-source` that is a REPORT is not.
+    assert "--link-source" not in re.sub(r"--link-source \w+=<path>", "",
+                                         heard), heard
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert "[declared-unverified]" in step_four, step_four
+    assert "do not satisfy the naming policy" not in result.stderr, (
+        result.stderr)
+    assert not (tmp_path / "remotes").exists()
+
+
+def assert_a_chain_of_one_link_has_no_source_to_note(run,
+                                                     tmp_path: Path) -> None:
+    """A chain of ONE link, which the plan accepts, has no holder whose
+    declaration a source could answer, so step (4) is not given the
+    `--pin-source` as a `--link-source`: the naming check would say `NOTE
+    --link-source ...: not used`, which the plan never prints for that chain
+    (#608, rv608 on #623)."""
+    source = tmp_path / "product"
+    source.mkdir()
+    git("init", "-q", "-b", "main", cwd=source)
+    (source / "README.md").write_bytes(b"# a neutral product\n")
+    git("add", "README.md", cwd=source)
+    git("commit", "-q", "-m", "seed", cwd=source)
+    commit = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    result = run("--project", "codexDox", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--pin", f"openDox@{commit}",
+                 "--referent-chain", "openDox", "--pin-source", str(source))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert_refuses_for_want_of_a_terminal(result.stderr)
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert "codexDox: domain-descendant" in step_four, step_four
+    assert "NOTE --link-source" not in step_four + result.stderr, (
+        step_four + result.stderr)
     assert not (tmp_path / "remotes").exists()
