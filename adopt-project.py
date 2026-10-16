@@ -8358,8 +8358,11 @@ def _reencoded_attributes_findings(plan: Plan, source: Source,
 #
 # GIT IS ASKED, AS THE SPLIT ASKS IT (`_SplitRehearsal`). A throwaway
 # repository borrows the source's objects (alternates: nothing is copied, and
-# the source is never written) and runs with this machine's config, as
-# `_stored_as_written` does. First, which rules reach which path: `git
+# no byte of the source changes, though where the question stores a blob the
+# source holds, git's object freshening sets the modification time of the
+# source's pack or loose object file that holds it to now) and runs with this
+# machine's config, as `_stored_as_written` does, with git-lfs's smudge
+# skipped. First, which rules reach which path: `git
 # check-attr --cached` of `BYTE_ATTRIBUTES`, over indexes `read-tree` makes of
 # the commit, once as the source holds its rules and once as the split's root
 # will (what goes to a leg or is dropped gone, the root's `.gitattributes` as
@@ -8450,7 +8453,11 @@ class _SplitRehearsal:
         self._scratch = Path(tempfile.mkdtemp(
             prefix="openreposhape-reencoded-"))
         self.work = self._scratch / "repository"
-        self._env = _inherited_env()
+        # git-lfs's smudge is skipped: each LFS file is checked out as its
+        # pointer, which git-lfs's clean stores as it is, so no LFS object is
+        # read, linked or fetched, and a blob under `filter=lfs` that is not
+        # a pointer is still stored otherwise and found.
+        self._env = {**_inherited_env(), "GIT_LFS_SKIP_SMUDGE": "1"}
 
     def __enter__(self) -> "_SplitRehearsal":
         try:
@@ -8763,7 +8770,6 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     spec, code = _plan_leg_paths(plan)
     makefile = (None if leg_path_problems(spec, code)
                 else adopt_makefile_block(spec[1], code[1]))
-    found: list[str] = []
     with _SplitRehearsal(source) as asked:
         reached, at_the_root = _rules_reaching(
             asked, source, tree, kept, written,
@@ -8795,14 +8801,25 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
             path for path, oid in asked.staged(STORED).items()
             if blobs.get(path, oid) != oid]
         copies_said, copies = _copies_stored(asked, landings, makefile)
+    return _grouped_findings(
+        sorted(stored, key=order.get), sorted(taken, key=order.get),
+        copies, at_the_root,
+        ((STORE_REFUSED, stored_said), (COPY_REFUSED, copies_said)))
+
+
+def _grouped_findings(stored: list[str], taken: list[str], copies: list[str],
+                      at_the_root: dict, refusals) -> list[str]:
+    """`_reencoded_files_findings`' lines, in `check`'s order: what the
+    root keeps, what goes to a leg or is dropped, the pinned copies, then
+    each of git's refusals `(step, what git said, or None)`."""
+    found = []
     if stored:
-        found.append(_kept_finding(sorted(stored, key=order.get)))
+        found.append(_kept_finding(stored))
     if taken:
-        found.append(_moved_finding(sorted(taken, key=order.get)))
+        found.append(_moved_finding(taken))
     if copies:
         found.append(_copies_finding(copies, at_the_root))
-    for step, said in ((STORE_REFUSED, stored_said),
-                       (COPY_REFUSED, copies_said)):
+    for step, said in refusals:
         if said is not None:
             found.append(_refused_finding(step, said))
     return found

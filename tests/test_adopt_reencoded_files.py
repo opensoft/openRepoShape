@@ -65,6 +65,17 @@ UPPER_CLEAN = ((f"filter.{UPPER}.clean", "tr a-z A-Z"),)
 #: A filter git must run, with no command to run on the way in.
 REQUIRED = "w654req"
 REQUIRED_ONLY = ((f"filter.{REQUIRED}.required", "true"),)
+#: A stand-in for git-lfs's required filter: its smudge fails, as git-lfs's
+#: does where it cannot reach the LFS objects, unless `GIT_LFS_SKIP_SMUDGE`
+#: is 1, when it passes the pointer through, as git-lfs does; its clean
+#: stores what it reads, as git-lfs's stores a pointer.
+FAKE_LFS = "w654lfs"
+FAKE_LFS_FILTER = (
+    (f"filter.{FAKE_LFS}.smudge", 'test "$GIT_LFS_SKIP_SMUDGE" = 1 && cat'),
+    (f"filter.{FAKE_LFS}.clean", "cat"),
+    (f"filter.{FAKE_LFS}.required", "true"))
+LFS_POINTER = (b"version https://git-lfs.github.com/spec/v1\n"
+               b"oid sha256:" + b"0" * 64 + b"\nsize 12\n")
 SAFECRLF = (("core.safecrlf", "true"),)
 #: Where each group of findings starts.
 KEPT_GROUP = "the plan keeps "
@@ -256,6 +267,21 @@ def test_what_the_split_stores_as_its_blob_adopts(monkeypatch, tmp_path,
     plan = raw_plan(tmp_path, files, answers)
     configure(monkeypatch, config)
     adopted_by_execute(plan, tmp_path)
+
+
+def test_git_lfs_smudge_is_skipped_in_the_question(monkeypatch, tmp_path):
+    """git-lfs's smudge reads the LFS objects, which the throwaway
+    repository has no remote to fetch, so the question runs with
+    `GIT_LFS_SKIP_SMUDGE=1`: an LFS file is checked out as its pointer, and
+    git-lfs's clean stores a pointer as it is. Without it, this stand-in's
+    required smudge fails, and `check` refused a source the split's own
+    clone checks out (#654's review, emulated: no git-lfs here)."""
+    plan = raw_plan(tmp_path,
+                    {ROOT_ATTRIBUTES: f"*.bin filter={FAKE_LFS}\n".encode(),
+                     "kept.bin": LFS_POINTER}, {"kept.bin": ROOT})
+    configure(monkeypatch, FAKE_LFS_FILTER)
+    monkeypatch.delenv("GIT_LFS_SKIP_SMUDGE", raising=False)
+    assert findings(plan) == []
 
 
 def test_the_kept_and_the_sent_findings_say_what_follows_and_the_way_out(
