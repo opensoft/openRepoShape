@@ -472,7 +472,7 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 62737be25d390db474337f76be2ebf6f13a1a90a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 9e46e177cc09dcaa3f0f1a420b3a5ec3623ded68 -->
 
       <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
@@ -612,7 +612,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 62737be25d390db474337f76be2ebf6f13a1a90a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 9e46e177cc09dcaa3f0f1a420b3a5ec3623ded68 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -710,21 +710,23 @@ sudo dnf install gh</code></pre></div>
       <div class="panel" role="tabpanel" id="panel-windows" aria-labelledby="tab-windows" tabindex="0">
         <div class="stack">
           <h4>What this machine needs</h4>
-          <p><strong>Python is the one manual install.</strong> Install Python 3.9 or newer from
+          <p><strong>Python is the one manual install the flow needs.</strong> Install Python 3.9 or newer from
           <a href="https://www.python.org/downloads/">python.org/downloads</a>, ticking <em>Add
           python.exe to PATH</em> &mdash; its own checkbox, and a different one from <em>py
           launcher</em>, which the installer ticks for you. Then <code>git</code> from
           <a href="https://git-scm.com/downloads">git-scm.com/downloads</a>, and <code>gh</code>
-          with <code>winget install --id GitHub.cli -e</code>. For the commands, <code>pipx</code>:
-          <code>python -m pip install --user pipx</code>, then <code>python -m pipx ensurepath</code>
-          and a new terminal.</p>
+          with <code>winget install --id GitHub.cli -e</code>. The commands need one more manual
+          install, <code>pipx</code>: <code>python -m pip install --user pipx</code>, then
+          <code>python -m pipx ensurepath</code> and a new terminal.</p>
           <h4>The tool offers the rest</h4>
           <p>The preflight names anything missing and, for <code>gh</code>, its login and its
           credential helper, prints the command for THIS machine and asks once &mdash; <code>Type yes to continue:</code> &mdash;
           then runs it and carries on. On Windows those offers are the winget ones:
           <code>winget install --id GitHub.cli -e</code> for <code>gh</code> and, only under
-          <code>py setup-project.py --preflight</code>, <code>winget install --id Git.Git -e</code>
-          for <code>git</code>: a run refuses a missing <code>git</code> before its preflight starts.
+          <code>py setup-project.py --preflight</code> or pipx&rsquo;s
+          <code>openRepoShape --preflight</code>, which runs the same preflight,
+          <code>winget install --id Git.Git -e</code> for <code>git</code>: a run refuses a missing
+          <code>git</code> before its preflight starts.
           In PowerShell the <code>openRepoShape</code> command comes from
           <code>pipx install openreposhape</code>, a native <code>openRepoShape.exe</code> beside
           four tool commands, and the two-liner below is the way in that installs nothing. Git
@@ -852,7 +854,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
             project.</p>
             <p data-platform="linux mac wsl"><strong>The second way, from PyPI,</strong> wherever
             <code>pipx</code> is (<code>sudo apt-get install -y pipx</code> on Debian and Ubuntu,
-            <code>brew install pipx</code> on macOS):</p>
+            <code>brew install pipx</code> on macOS, then <code>pipx ensurepath</code>):</p>
             <div data-platform="linux mac wsl" class="code" data-lang="sh"><pre><code>pipx install openreposhape</code></pre></div>
             <p data-platform="linux mac wsl">It places an <code>openRepoShape</code> with the same
             modes, in Python, whose <code>--install</code> refuses and names <code>pipx upgrade
@@ -870,17 +872,19 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
             <div data-platform="linux mac wsl" class="code" data-lang="sh"><pre><code>openRepoShape --preflight</code></pre></div>
             <div data-platform="win" class="code" data-lang="powershell"><pre><code>py setup-project.py --preflight</code></pre></div>
             <p data-platform="linux">It checks this machine, offers what is missing and creates nothing. It exits 0 when
-            everything is present and 1 when it is not; it exits 2 instead, before any check, when
-            <code>git</code> or a Python 3.9 or newer is missing.</p>
-            <p data-platform="mac">It exits 0 when everything is present and 1 when it is not, and creates nothing; it
-            exits 2 instead, before any check, when <code>git</code> or a Python 3.9 or newer is
-            missing. This is also where a <code>python3</code> below 3.9 is named.</p>
+            everything is present and 1 when it is not; the bash command exits 2 instead, before any
+            check, when <code>git</code> or a Python 3.9 or newer is missing.</p>
+            <p data-platform="mac">It exits 0 when everything is present and 1 when it is not, and creates nothing; the
+            bash command exits 2 instead, before any check, when <code>git</code> or a Python 3.9 or
+            newer is missing. This is also where a <code>python3</code> below 3.9 is named.</p>
             <p data-platform="win">It exits 0 when everything is present and 1 when it is not.
             <code>python setup-project.py --preflight</code> is the same command on a machine with no
             <code>py</code>: Python from the Microsoft Store installs <code>python</code> and no
-            launcher at all.</p>
-            <p data-platform="wsl">It exits 0 when everything is present and 1 when it is not; it exits 2
-            instead, before any check, when <code>git</code> or a Python 3.9 or newer is missing.</p>
+            launcher at all. With pipx&rsquo;s command, <code>openRepoShape --preflight</code> runs
+            the same check.</p>
+            <p data-platform="wsl">It exits 0 when everything is present and 1 when it is not; the bash command
+            exits 2 instead, before any check, when <code>git</code> or a Python 3.9 or newer is
+            missing.</p>
           </div></li>
 
           <li><div>
@@ -906,6 +910,8 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
             <code>scripts/bootstrap.py</code> &mdash; and <code>gh</code> is never called. On Windows
             the same flag goes on the Python entry point:</p>
             <div data-platform="win" class="code" data-lang="powershell"><pre><code>py setup-project.py Atlas --org &lt;your-org&gt; --local-remote-dir .\rehearsal</code></pre></div>
+            <p data-platform="win" class="sub">With pipx&rsquo;s command, the same flag on
+            <code>openRepoShape Atlas --org &lt;your-org&gt;</code>.</p>
             <div data-platform="linux mac wsl" class="code" data-lang="sh"><pre><code>openRepoShape Atlas --org &lt;your-org&gt; --local-remote-dir ./rehearsal</code></pre></div>
             <p data-platform="linux"><code>--local-remote-dir &lt;dir&gt;</code> runs the whole of the real thing against
             three BARE repositories in <code>&lt;dir&gt;</code>: the same preflight (where
@@ -965,7 +971,9 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
             and asks once, <code>Type yes to continue:</code>; type <code>yes</code>. Afterwards
             <code>./&lt;Project&gt;</code> is the cloned root.</p>
             <p data-platform="win"><code>python setup-project.py &lt;Project&gt; --org &lt;your-org&gt;</code> is the
-            same command on a machine with no <code>py</code>. <code>setup-project.py</code> is the
+            same command on a machine with no <code>py</code>, and pipx&rsquo;s
+            <code>openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code> the same run again.
+            <code>setup-project.py</code> is the
             flow itself, and <code>setup.sh</code> a shim over it: the same preflight, the same
             naming check, the same plan, the same one <code>yes</code>, the same self-bootstrap
             outside a checkout. It never needs <code>make</code> and never looks for a
@@ -1075,7 +1083,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 62737be25d390db474337f76be2ebf6f13a1a90a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 9e46e177cc09dcaa3f0f1a420b3a5ec3623ded68 -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1110,7 +1118,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 62737be25d390db474337f76be2ebf6f13a1a90a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 9e46e177cc09dcaa3f0f1a420b3a5ec3623ded68 -->
 
       <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
@@ -1168,7 +1176,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 62737be25d390db474337f76be2ebf6f13a1a90a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 9e46e177cc09dcaa3f0f1a420b3a5ec3623ded68 -->
 
       <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
 
@@ -1248,7 +1256,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="adopt">
 
-      <!-- reads README.md § Adopting an existing repository: blob 90e4174a22b55bd438a89cf8bac959496e1862b1 -->
+      <!-- reads README.md § Adopting an existing repository: blob 1d173e94974e6b1df0b25b0766e8f1655534fae8 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Adopting an existing repository</h2>
@@ -1262,14 +1270,11 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 #   ... a human or an AI answers every `review_required` entry in the plan
 ./adopt-project.py check   --plan adoption-plan.yaml
 ./adopt-project.py execute --plan adoption-plan.yaml --yes</code></pre></div>
-      <p><code>git filter-repo</code> is a <strong>hard dependency</strong> &mdash;
-      <code>pipx install git-filter-repo==2.47.0</code>, else
-      <code>uv tool install git-filter-repo==2.47.0</code>, else
-      <code>brew install git-filter-repo</code> or
-      <code>sudo pacman -S --needed git-filter-repo</code>, in <code>install.sh</code>&rsquo;s
-      order; <code>pipx install openreposhape</code> brings it for the
-      <code>adopt-project</code> it places. It is deliberately not vendored: history extraction has
-      one correct implementation, and a copy is a second one that drifts.</p>
+      <p><code>git filter-repo</code> is a <strong>hard dependency</strong>: the one-line install
+      installs it or prints the command for this machine, and
+      <code>pipx install openreposhape</code> brings it for its <code>adopt-project</code>. It is
+      deliberately not vendored: history extraction has one correct implementation, and a copy is
+      a second one that drifts.</p>
       <p><strong>Ambiguous is an answer, and no source line is overwritten.</strong>
       <code>contracts/path-classification.yaml</code> maps path globs to
       <code>spec | code | root | ambiguous</code>, first match wins, each with a reason. The fourth
@@ -1408,7 +1413,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 62737be25d390db474337f76be2ebf6f13a1a90a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 9e46e177cc09dcaa3f0f1a420b3a5ec3623ded68 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1508,7 +1513,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="current">
 
-      <!-- reads README.md § Keeping a project's shape current: blob 545639ebf5e9ab7837df5c012f216832dc7de56f -->
+      <!-- reads README.md § Keeping a project's shape current: blob bbf1ed1929bec2a845ab944282514edf2c427c11 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Keeping a project&rsquo;s shape current</h2>
@@ -1570,7 +1575,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doctor">
 
-      <!-- reads README.md § Keeping a project's shape current: blob 545639ebf5e9ab7837df5c012f216832dc7de56f -->
+      <!-- reads README.md § Keeping a project's shape current: blob bbf1ed1929bec2a845ab944282514edf2c427c11 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Is this repository compliant? <code>openRepoShape --doctor</code></h2>
@@ -1585,8 +1590,8 @@ openRepoShape --doctor                 # the repository you are standing in
       the one that writes at all, and it writes one file, at the path you give: a relative one
       lands in the directory you stand in, inside the repository when you stand there. It
       compares against the checkout it is RUN FROM, so the verdict is offline. Installed, it
-      clones the standard into a temporary directory and KEEPS it for the NEXT lines that name
-      it: its last line names it, safe to delete after they run.</p>
+      clones the standard and KEEPS the clone for the NEXT lines that name it: its last line
+      names it, safe to delete after they run.</p>
       <p>For an assembly root the rows are <strong>naming</strong>, <strong>manifest</strong> and
       <strong>pins</strong> (the project&rsquo;s OWN validators when it carries them &mdash; they
       are the pinned copies, which is the point &mdash; else the template copies, and the row says
@@ -1705,7 +1710,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 62737be25d390db474337f76be2ebf6f13a1a90a -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 9e46e177cc09dcaa3f0f1a420b3a5ec3623ded68 -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 
@@ -1860,7 +1865,7 @@ resume InkRouter                # on workstation B, and the estate is back</code
 
     <section id="layout">
 
-      <!-- reads README.md § Layout of this repository: blob 66186f8a28569ac0b1d4afb5f1c6917c45608796 -->
+      <!-- reads README.md § Layout of this repository: blob 9446cd710bf3a992751e12e318553b9b22914c21 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Layout of this repository</h2>
@@ -1875,10 +1880,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
         <dt>scripts/validate-repository-naming.py</dt><dd>answers the naming question for one name</dd>
         <dt>openRepoShape</dt><dd>installs itself as a command; runs setup.sh</dd>
         <dt>install.sh</dt><dd>the one-line install: a release, pinned</dd>
-        <dt>pyproject.toml</dt><dd>the openreposhape package: five commands</dd>
-        <dt>src/openreposhape/</dt><dd>its code, standard library only</dd>
+        <dt>src/openreposhape/</dt><dd>the pipx package (pyproject.toml); stdlib only</dd>
         <dt>setup.sh</dt><dd>the shim: find an interpreter, hand over</dd>
-        <dt>setup-project.py</dt><dd>THE FLOW, and the Windows way in (no bash there)</dd>
+        <dt>setup-project.py</dt><dd>THE FLOW, and a Windows way in from PowerShell</dd>
         <dt>scaffold-project.py</dt><dd>creates the three repositories and the pins</dd>
         <dt>adopt-project.py</dt><dd>converts an EXISTING repository in place</dd>
         <dt>update-shape.py</dt><dd>re-syncs a root&rsquo;s copies and re-pins</dd>
@@ -1900,9 +1904,9 @@ resume InkRouter                # on workstation B, and the estate is back</code
         <dt>scripts/render-cli-reference.py</dt><dd>renders docs/cli.md; never hand-edit that file</dd>
         <dt>tests/</dt><dd>pytest; scaffolds into bare repos in /tmp</dd>
       </dl>
-      <p><strong>Python 3 standard library only.</strong> No tool needs <code>pip</code>, a package
-      or an engineering-domain dependency &mdash; the shape must run where nothing can be installed
-      &mdash; and the <code>openreposhape</code> package is a second way in, never a requirement.
+      <p><strong>Python 3 standard library only.</strong> No tool needs <code>pip</code> or any
+      dependency, so the shape runs where nothing can be installed; the
+      <code>openreposhape</code> package is a second way in, never a requirement.
       <code>tests/test_repo_hygiene.py</code> enforces it. Changes to this repository are tested with
       <code>python3 -m pytest tests -q</code>, which scaffolds into bare repositories in a temporary
       directory; never by creating a real GitHub repository.</p>

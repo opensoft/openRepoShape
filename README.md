@@ -129,16 +129,10 @@ its own `contracts/shape-pin.yaml`, so a CRLF checkout reports drift in files
 nobody edited. The clone `setup-project.py` makes is configured correctly
 whatever the machine says; the global setting is for every clone after it.
 
-Then the commands, from PyPI, with `pipx` (where it is missing: `python -m pip
+Then `pipx install openreposhape` (where `pipx` is missing: `python -m pip
 install --user pipx`, then `python -m pipx ensurepath` and a new terminal):
-
-```powershell
-pipx install openreposhape
-openRepoShape <Project> --org <your-org>
-```
-
-Step 3 below says what that places. Or, installing nothing, two commands, run
-in the directory the new project should land in:
+step 3 says what it places, and step 4 runs it. Or, installing nothing, two
+commands, run in the directory the new project should land in:
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py
@@ -189,8 +183,8 @@ run the four steps below INSIDE the WSL shell.
 > `brew` the preflight names <https://brew.sh> and stops there. To check a
 > machine and stop, creating nothing, run `openRepoShape --preflight` —
 > `py setup-project.py --preflight` on Windows — which exits 0 when everything
-> is present and 1 when it is not (`openRepoShape --preflight` exits 2 when
-> `git` or a Python 3.9 or newer is missing).
+> is present and 1 when it is not (the bash `openRepoShape --preflight` exits
+> 2 when `git` or a Python 3.9 or newer is missing).
 
 **1. Install the GitHub CLI**, `gh`. The official instructions are at
 <https://cli.github.com/> (and <https://github.com/cli/cli#installation>):
@@ -284,19 +278,13 @@ things it does, one line each: install it, check the machine
 scaffold a project. Type any scaffold argument and you get the run you asked
 for, refusals and all.
 
-**The second way, from PyPI,** wherever `pipx` is (`sudo apt-get install -y
-pipx` on Debian and Ubuntu, `brew install pipx` on macOS):
-
-```sh
-pipx install openreposhape
-```
-
-It places an `openRepoShape` with the same modes and four commands that run the
-tools of those names, `scaffold-project`, `adopt-project`, `update-shape` and
-`shape-doctor`, with `git-filter-repo` 2.47.0 as their dependency. They run a
-clone of the standard at the release's commit, kept in your cache and checked
-against its digest before every run. `pipx upgrade openreposhape` upgrades
-them. Use one installer or the other: both place `~/.local/bin/openRepoShape`.
+**The second way, from PyPI:** `pipx install openreposhape`, wherever `pipx`
+is (`sudo apt-get install -y pipx` on Debian and Ubuntu, `brew install pipx` on
+macOS, then `pipx ensurepath`). It places the same `openRepoShape` (its
+`--install` refuses) and `scaffold-project`, `adopt-project`, `update-shape`
+and `shape-doctor`, with `git-filter-repo` 2.47.0; each runs a cached clone at
+the release's commit, digest-checked every run. `pipx upgrade openreposhape`
+upgrades. Use one installer, not both: each places `~/.local/bin/openRepoShape`.
 
 **4. Run it:**
 
@@ -788,11 +776,9 @@ only, and a tool needing a bypass cannot be used where it is needed.
 ./adopt-project.py execute --plan adoption-plan.yaml --yes
 ```
 
-`git filter-repo` is a **hard dependency** — `pipx install
-git-filter-repo==2.47.0`, else `uv tool install git-filter-repo==2.47.0`, else
-`brew install git-filter-repo` or `sudo pacman -S --needed git-filter-repo`, as
-`install.sh` does it; `pipx install openreposhape` brings it for the
-`adopt-project` it places. It is deliberately not vendored: history extraction
+`git filter-repo` is a **hard dependency**: step 3's one line installs it or
+prints the command for this machine, and `pipx install openreposhape` brings it
+for its `adopt-project`. It is deliberately not vendored: history extraction
 has one correct implementation, and a copy is a second one that drifts.
 
 ### The worked example: MedxEHR — 167 files, 25 commits, three arguments
@@ -1163,8 +1149,8 @@ openRepoShape --doctor                 # the repository you are standing in
 It **writes nothing into the repository but a `--placement-plan` file you name,
 and fetches nothing from it**, and it reimplements nothing: each row is a check
 this file documents. It compares against the checkout it is RUN FROM, so the
-verdict is offline. Installed, it KEEPS its temporary clone of the standard for
-the NEXT lines naming it: its last line names it, safe to delete after they run.
+verdict is offline. Installed, it KEEPS its clone of the standard for the NEXT
+lines naming it: its last line names it, safe to delete after they run.
 
 For an assembly root the rows are **naming** (this standard's own
 `contracts/repository-naming.yaml`), **manifest** and **pins** (the project's
@@ -1441,10 +1427,9 @@ scripts/shape_materialize.py      the ONE materializer, used by both tools
 scripts/validate-repository-naming.py
 openRepoShape                     installs itself as a command; runs setup.sh
 install.sh                        the one-line install: a release, pinned
-pyproject.toml                    the openreposhape package: five commands
-src/openreposhape/                its code, standard library only
+src/openreposhape/                the pipx package (pyproject.toml); stdlib only
 setup.sh                          the shim: find an interpreter, hand over
-setup-project.py                  THE FLOW, and the Windows way in (no bash there)
+setup-project.py                  THE FLOW, and a Windows way in from PowerShell
 scaffold-project.py               creates the three repositories and the pins
 adopt-project.py                  converts an EXISTING repository in place
 update-shape.py                   re-syncs a root's copies and re-pins
@@ -1467,10 +1452,9 @@ scripts/render-cli-reference.py   renders docs/cli.md; never hand-edit that file
 tests/                            pytest; scaffolds into bare repos in /tmp
 ```
 
-**Python 3 standard library only.** No tool needs `pip`, a package or an
-engineering-domain dependency — the shape must run where nothing can be
-installed — and the `openreposhape` package is a second way in, never a
-requirement. `tests/test_repo_hygiene.py` enforces it.
+**Python 3 standard library only.** No tool needs `pip` or any dependency, so
+the shape runs where nothing can be installed; the `openreposhape` package is a
+second way in, never a requirement. `tests/test_repo_hygiene.py` enforces it.
 
 ## Licence
 
