@@ -1769,9 +1769,9 @@ def assert_an_empty_pin_source_is_the_plans_to_refuse(run,
     it, made the naming check WARN about `--link-source`, `.` and a folder the
     plan never reads. The naming check is given no source, so it says of the
     chain what it says of any it cannot verify, `[declared-unverified]`, and
-    its hint there, `--link-source <product>=<path>`, one per holder it
-    cannot verify, is the one spelling of the flag in a run that never typed
-    it."""
+    its hint there offers the sources the plan reads, in the plan's words
+    (#661, L2-75): no line names `--link-source`, a flag the run never typed
+    and setup does not take."""
     result = run("--project", "codexDox", "--org", "demoorg",
                  "--local-remote-dir", str(tmp_path / "remotes"),
                  "--into", str(tmp_path / "work"),
@@ -1783,14 +1783,12 @@ def assert_an_empty_pin_source_is_the_plans_to_refuse(run,
     assert result.returncode == 2, heard
     assert "REFUSED pin-source-no-path:" in result.stderr, result.stderr
     assert "link-source-no-path" not in heard, heard
-    # The validator's own hint for a chain it cannot verify names the flag,
-    # `--link-source openXdox=<path>`, whatever the run typed, so it is the
-    # one spelling left out; a `--link-source` that is a REPORT is not.
-    assert "--link-source" not in re.sub(r"--link-source \w+=<path>", "",
-                                         heard), heard
+    assert "--link-source" not in heard, heard
     step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
         "(5) the plan", 1)[0]
     assert "[declared-unverified]" in step_four, step_four
+    assert f"not reachable here ({FIRST_LINK_WORDS})." in step_four, (
+        step_four)
     assert "do not satisfy the naming policy" not in result.stderr, (
         result.stderr)
     assert not (tmp_path / "remotes").exists()
@@ -1822,4 +1820,93 @@ def assert_a_chain_of_one_link_has_no_source_to_note(run,
     assert "codexDox: domain-descendant" in step_four, step_four
     assert "NOTE --link-source" not in step_four + result.stderr, (
         step_four + result.stderr)
+    assert not (tmp_path / "remotes").exists()
+
+
+#: What step (4) is asked to say of a chain (#661, L2-75): each case's
+#: passthrough after `--`, as `(--pin-source, --referent-chain, what the
+#: link tree declares, the variable set for the first link)`.
+STEP_FOUR_WORDS = {
+    "three-links-first-tree": ("tree", "openXdox,openYdox,openDox",
+                               "openYdox", False),
+    "three-links-no-source": ("", "openXdox,openYdox,openDox", None, False),
+    "blank": (" ", "openXdox,openDox", None, False),
+    "holds-an-equals": ("openXdox=layer", "openXdox,openDox", None, False),
+    "variable-first": ("tree", "openXdox,openDox", "openDox", True),
+}
+
+#: The scaffold's own words for the first link and a later one (#610).
+FIRST_LINK_WORDS = ("SHAPE_PIN_SOURCE_OPENXDOX, or a --pin-source clone of "
+                    "openXdox that holds its project.yaml, would let it be "
+                    "read")
+LATER_LINK_WORDS = "SHAPE_PIN_SOURCE_OPENYDOX would let it be read"
+
+
+def assert_step_four_speaks_in_the_plans_words(run, tmp_path: Path,
+                                               monkeypatch, case: str
+                                               ) -> None:
+    """Step (4) names no `--link-source`, a flag setup does not take (#661,
+    L2-75): a holder it cannot read is offered the sources step (5) reads,
+    in step (5)'s words, one offer per holder; a `--pin-source` it could not
+    read, or did not need, is named `--pin-source`; and a value holding
+    `=` is not said to have been read as a PATH. On main step (4) offered
+    `--link-source <link>=<path>` and labelled the source `(--link-source)`;
+    typed as printed, the offer ended step (5) in `unrecognized
+    arguments`."""
+    clear_ambient_pin_sources(monkeypatch)
+    source, chain, declares, variable = STEP_FOUR_WORDS[case]
+    commit = "0123456789abcdef" * 2 + "01234567"
+    if declares is not None:
+        tree = tmp_path / "openXdox"
+        tree.mkdir()
+        git("init", "-q", "-b", "main", cwd=tree)
+        (tree / "project.yaml").write_bytes(
+            ("schema_version: 1\nkind: project-manifest\n"
+             f"neutral_product_pins:\n  - {declares}\n").encode("utf-8"))
+        git("add", "project.yaml", cwd=tree)
+        git("commit", "-q", "-m", "seed", cwd=tree)
+        commit = git("rev-parse", "HEAD", cwd=tree).stdout.strip()
+        source = str(tree)
+        if variable:
+            monkeypatch.setenv("SHAPE_PIN_SOURCE_OPENXDOX", source)
+    result = run("--project", "codexDox", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--pin", f"openXdox@{commit}",
+                 "--referent-chain", chain, "--pin-source", source)
+    heard = result.stdout + result.stderr
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert "(5) the plan" in result.stdout, heard
+    assert result.returncode == 2, heard
+    assert "--link-source" not in step_four + result.stderr, heard
+    offered = [line.strip() for line in step_four.splitlines()
+               if line.strip().startswith("WARNING declared-unverified: ")]
+    if case == "three-links-first-tree":
+        assert offered == [
+            "WARNING declared-unverified: openYdox declaring a pin on openDox "
+            "is a fact in openYdox's own tree, which is not reachable here "
+            f"({LATER_LINK_WORDS}). The recorded chain still classifies."]
+        # One run says one fact one way: the plan's own WARNING.
+        assert offered[0] + "\n" in result.stderr, result.stderr
+    elif case == "three-links-no-source":
+        assert [line.partition("not reachable here (")[2] for line in offered
+                ] == [f"{FIRST_LINK_WORDS}). The recorded chain still "
+                      "classifies.",
+                      f"{LATER_LINK_WORDS}). The recorded chain still "
+                      "classifies."]
+        assert "REFUSED pin-source-no-path:" in result.stderr
+    elif case == "variable-first":
+        assert "[verified]" in step_four, step_four
+        assert (f"NOTE --pin-source {source}: not used — each link whose own "
+                "declaration is read had a more specific source "
+                "(SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout beside the "
+                "project).") in result.stderr, result.stderr
+    else:
+        assert (f"WARNING link-source-unreadable: {source} (--pin-source) "
+                "could not answer for openXdox: no such file or directory"
+                ) in result.stderr, result.stderr
+        assert "read as a PATH" not in result.stderr, result.stderr
+        assert offered and offered[0].endswith(
+            f"({FIRST_LINK_WORDS}). The recorded chain still classifies.")
     assert not (tmp_path / "remotes").exists()
