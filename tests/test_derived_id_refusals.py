@@ -47,7 +47,8 @@ TOOLS = {
                  "names": "the assembly root and both legs"},
     "family": {"command": (FAMILY, "init"), "who": "--created-by",
                "flag": "--family", "code": "family-bad-id",
-               "names": "the holder"},
+               "names": "the holder and, unless --work-dir is given, its "
+                        "family folder"},
 }
 PASSED_REMEDY = "Remediation: pass an explicit lowercase --id."
 
@@ -94,6 +95,17 @@ def refusal(tool: str, what: str, remedy: str) -> str:
     return f"REFUSED {TOOLS[tool]['code']}: {what}\n{remedy}\n"
 
 
+def assert_named_as_passed(tool: str, stderr: str, value: str) -> None:
+    """A passed `--id` gets none of a derived id's words, neither its label
+    ("not given") nor its remedy ("change --project"), and keeps today's
+    sentence and remedy, value as typed. The derived words are asked first,
+    so a run that gives a passed id either of them fails on that word."""
+    assert "not given" not in stderr
+    assert f"change {TOOLS[tool]['flag']}" not in stderr
+    assert refusal(tool, f"--id {value!r} must match {PATTERN}",
+                   PASSED_REMEDY) in stderr
+
+
 @pytest.mark.parametrize("tool", TOOLS)
 def test_a_derived_id_is_named_by_where_it_came_from_and_sent_to_that_flag(
         tmp_path, tool):
@@ -125,17 +137,13 @@ def test_a_passed_id_equal_to_the_derived_one_is_still_named_as_passed(
         tmp_path, tool):
     """Passed means typed, not "differs from the name lowercased"."""
     stderr = run_tool(tmp_path, tool, "North_Wind", "--id", "north_wind")
-    assert refusal(tool, f"--id 'north_wind' must match {PATTERN}",
-                   PASSED_REMEDY) in stderr
-    assert "derived" not in stderr
+    assert_named_as_passed(tool, stderr, "north_wind")
 
 
 @pytest.mark.parametrize("tool", TOOLS)
 def test_a_passed_bad_id_keeps_its_sentence_and_its_remedy(tmp_path, tool):
     stderr = run_tool(tmp_path, tool, "NorthWind", "--id", "Foo_Bar")
-    assert refusal(tool, f"--id 'Foo_Bar' must match {PATTERN}",
-                   PASSED_REMEDY) in stderr
-    assert "derived" not in stderr
+    assert_named_as_passed(tool, stderr, "Foo_Bar")
 
 
 def test_the_characters_a_derived_id_is_refused_for():

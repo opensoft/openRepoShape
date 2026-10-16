@@ -1510,15 +1510,16 @@ FAMILY_ID_DERIVED_FROM = "--family lowercased"
 #: How `family-bad-id` is told to go on (#659), in the words the scaffold
 #: gives `scaffold-bad-id` and `adopt-project.py plan` `adopt-bad-id`
 #: (#658). A `--id` the person passed is theirs to retype. An id `init`
-#: derived is `--family` lowercased, and `--family` also names the holder,
-#: which `_classify_family_name` reads itself against a policy whose forms
-#: take only ASCII letters, digits and hyphens, so "pass an explicit
+#: derived is `--family` lowercased, and `--family` also names the holder
+#: and, unless `--work-dir` is given, its family folder (`_landing`); the
+#: name is the one `_classify_family_name` reads against a policy whose
+#: forms take only ASCII letters, digits and hyphens, so "pass an explicit
 #: lowercase --id" led straight to `naming-unclassified`.
 FAMILY_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
 DERIVED_FAMILY_ID_REMEDIATION = (
     f"Remediation: change --family. The id is {FAMILY_ID_DERIVED_FROM}, and "
     "an explicit --id would not change --family, which also names the "
-    "holder.")
+    "holder and, unless --work-dir is given, its family folder.")
 
 
 def _refuse_bad_family_id(family_id: str, given: str | None) -> None:
