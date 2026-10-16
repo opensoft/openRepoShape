@@ -5980,7 +5980,8 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
     its line endings is refused here as `git rm` refuses it, and the refusal
     says so where `git add` would stage the index's own blob from it. With
     neither the index, HEAD nor the work tree holding a `.gitmodules`,
-    nothing is asked.
+    nothing is asked here; `remove` then asks `_checked_gitmodules_held`
+    (#611).
 
     `add` LEAVES A MISSING FILE TO GIT. `git submodule add` refuses to write
     a `.gitmodules` the work tree lacks while the index or HEAD holds one,
@@ -6172,6 +6173,75 @@ def _checked_one_section(root: Path, project: str, path: str) -> None:
         "and a section somebody wrote is not this tool's to drop or "
         f"rewrite. {which}, in a POSIX shell — {removal}, then `git add "
         f"{GITMODULES}` — and run the same command again.")
+
+
+def _checked_gitmodules_held(family: Family, path: str) -> None:
+    """`member-gitmodules-absent`: `remove` refuses, before any git command
+    that writes and under `--dry-run` alike, a holder that holds no
+    `.gitmodules` at all, in the work tree, the index or HEAD, while its
+    index records the member's gitlink at any stage (#611).
+
+    A HOLDER WHOSE HEAD LOST `.gitmodules`, as #407's commit left one. `git
+    rm` edits only a `.gitmodules` the work tree has, and `remove` commits
+    the file as `git rm` leaves it, so with none anywhere the commit's `git
+    add` died (`pathspec '.gitmodules' did not match any files`) after
+    `deinit` and `git rm` had emptied the member, and the rollback left its
+    directory empty; the dry run exited 0. `_checked_gitmodules_as_staged`
+    asks nothing here, since no copy exists to compare. It asks only where
+    none of the work tree, the index and HEAD holds a `.gitmodules`, and the
+    index records the member's gitlink at any stage: `deinit` and `git rm`
+    run on a merged or an unmerged gitlink alike, and with no `.gitmodules`
+    anywhere the commit cannot stage one.
+
+    REFUSED, NOT COMMITTED WITHOUT IT, as #407 refuses a `.gitmodules` the
+    work tree lacks: the holder is left byte for byte as it was. A clone
+    checks out none of its members, and the holder's own
+    `validate-family.py` finds `member-gitmodules-absent` for each, so the
+    remedy writes back, as `family.py add` writes one, the section of every
+    member whose gitlink the index records, this one included, which
+    `remove` then takes out as it always has. Staged, the file goes into
+    `remove`'s commit, as #407's untracked remedy has it, unless the person
+    commits it on its own first.
+    """
+    root = family.root
+    if os.path.lexists(root / GITMODULES):
+        return
+    records = _index_records(root)
+    if GITMODULES.encode() in records or _head_oid(root, GITMODULES):
+        return
+    gitlinks = {name.decode("utf-8", "surrogateescape")
+                for name, held in records.items()
+                if any(record.startswith(b"160000 ") for record in held)}
+    if path not in gitlinks:
+        return
+    sections = []
+    for row in family.members:
+        project = str(row.get("project") or "")
+        member = f"{MEMBERS_DIR}/{project}"
+        if not project or member not in gitlinks:
+            continue
+        url = _member_url(str(row.get("repository") or ""), None)
+        sections += [f"`git config -f {GITMODULES} "
+                     f"{shlex.quote(f'submodule.{member}.{key}')} "
+                     f"{shlex.quote(value)}`"
+                     for key, value in (("path", member), ("url", url))]
+    raise Refusal(
+        "member-gitmodules-absent",
+        f"the holder has no {GITMODULES}: neither the work tree, the index "
+        f"nor HEAD holds one, though the index records a gitlink at {path}. "
+        f"`git rm` edits only a {GITMODULES} the work tree has, and `remove` "
+        f"commits {GITMODULES} as `git rm` leaves it, so with none to commit "
+        f"it would fail after `git submodule deinit` and `git rm` had emptied "
+        f"{path}. A recursive clone of the holder checks out none of its "
+        "members, and its validate-family.py finds member-gitmodules-absent "
+        "for each. No git command that writes was run and nothing was "
+        "written.",
+        "Remediation: write back the section `family.py add` writes for "
+        "each member the index records, this one included, in a POSIX shell "
+        f"— {' and '.join(sections)} — then stage it, `git add -f "
+        f"{GITMODULES}` (`-f`, since an operator's excludes may match it), "
+        "and commit it on its own first if the command's commit should "
+        "carry only its own change, and run the same command again.")
 
 
 def _checked_index_unlocked(root: Path, path: str) -> None:
@@ -6368,6 +6438,9 @@ def cmd_remove(args) -> int:
     # carry a change nobody staged. Where the index holds a copy, every
     # reading of the work tree's file after this one reads that copy.
     _checked_gitmodules_as_staged(family.root, "remove")
+    # A holder that holds no `.gitmodules` anywhere, as one whose HEAD lost
+    # it does, is refused next (#611): the commit could not stage one.
+    _checked_gitmodules_held(family, path)
     # A `.gitmodules` that gives the path to a second submodule is refused
     # here, before any git command that writes (#360), so the dry run makes
     # the same refusal, as it makes every one above.
