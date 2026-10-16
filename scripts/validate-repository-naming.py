@@ -69,7 +69,8 @@ EXIT CODES, the same three in every validator this standard ships:
     0  every name classified (and, with `--project`, every declared role and
        the topic agreed with the classification)
     1  a FINDING: at least one name matches no family, or a leg's declared role
-       disagrees with the form of its name
+       disagrees with the form of its name, or (#443) `neutral_product_pins:`
+       or a leg's `naming.referent_chain:` is not a list
     2  a REFUSAL: the question could not be asked at all — the policy file is
        missing, unparsable, or not a naming policy, or a `--link-source`
        names no path
@@ -601,8 +602,31 @@ def _pins_from_project(data: dict) -> set[str]:
     `naming.referent_declared:` is a RECORD of a declaration, checked by
     `validate-manifest.py` against this list; reading it as a declaration here
     would let a claim vouch for itself.
+
+    A VALUE THAT IS NOT A LIST DECLARES NOTHING (#443), and
+    `_pins_field_findings` says so. Iterated as it stood, `5`, `true` or `1.5`
+    ended this gate, the first command of `make validate`, in a `TypeError`;
+    a scalar `openXdox` was read as the pins `X`, `d`, `e`, `n`, `o`, `p`,
+    `x`, and a mapping as its keys, and the names classified, exit 0.
     """
-    return {str(pin) for pin in (data.get("neutral_product_pins") or []) if pin}
+    declared = data.get("neutral_product_pins")
+    if not isinstance(declared, list):
+        return set()
+    return {str(pin) for pin in declared if pin}
+
+
+def _pins_field_findings(data: dict) -> list[str]:
+    """`validate-manifest.py`'s finding for a `neutral_product_pins:` that is
+    not a list, in its words (#443), so the first command of `make validate`
+    names the field where it used to end in a traceback, and every validator
+    that reads the field says the same sentence. Absent or null declares no
+    pin and is no finding; anything else that is not a list is one, `0`,
+    `false` and `''` included, as that validator says."""
+    declared = data.get("neutral_product_pins")
+    if declared is None or isinstance(declared, list):
+        return []
+    return [f"manifest-neutral-product-pins: neutral_product_pins is "
+            f"{declared!r}, expected a list of neutral product names"]
 
 
 def _chain_from_leg(leg: dict) -> tuple:
@@ -611,6 +635,12 @@ def _chain_from_leg(leg: dict) -> tuple:
     Read from the manifest and nowhere else: the chain is a declaration, and
     inferring one from the pins would be the classifier writing the record it
     then checks.
+
+    `validate-manifest.py`'s `_recorded_chain`, rule for rule (#443): a
+    string is a one-link chain, and anything else that is not a list records
+    no chain, which `_chain_field_findings` reports. This copy had the string
+    rule and not the list rule, so `5`, `true` or `1.5` ended the gate in a
+    `TypeError` and a mapping was read as a chain of its keys.
     """
     naming = leg.get("naming")
     if not isinstance(naming, dict):
@@ -618,7 +648,25 @@ def _chain_from_leg(leg: dict) -> tuple:
     recorded = naming.get(CHAIN_RECORD_FIELD)
     if isinstance(recorded, str):
         recorded = [recorded]
-    return tuple(str(link) for link in (recorded or []) if str(link).strip())
+    if not isinstance(recorded, list):
+        return ()
+    return tuple(str(link) for link in recorded if str(link).strip())
+
+
+def _chain_field_findings(leg: dict) -> list[str]:
+    """`validate-manifest.py`'s finding for a leg's `naming.referent_chain:`
+    that is neither a string nor a list, in its words (#443): the leg named
+    by its declared `role:`, as that validator names it. Absent or null
+    records no chain, and a string is one link, so neither is a finding."""
+    naming = leg.get("naming")
+    if not isinstance(naming, dict):
+        return []
+    recorded = naming.get(CHAIN_RECORD_FIELD)
+    if recorded is None or isinstance(recorded, (str, list)):
+        return []
+    return [f"naming-referent-chain: leg {leg.get('role')!r}: "
+            f"{CHAIN_RECORD_FIELD} is {recorded!r}, expected a list of "
+            "neutral-product names"]
 
 
 def _leg_target(policy: NamingPolicy, path: Path, leg, root: Path,
@@ -640,7 +688,10 @@ def _leg_target(policy: NamingPolicy, path: Path, leg, root: Path,
     target = Target(name, declared, pins, _chain_from_leg(leg), root)
     found = policy.classify(name, declared, pins, target.chain,
                             sources.link_pins(policy, target))
-    findings: list[str] = []
+    # A chain record that is not a list is said FIRST, where
+    # `validate-manifest.py` says it first, and the leg is classified as one
+    # that records no chain (#443).
+    findings: list[str] = _chain_field_findings(leg)
     # `declared_role` only wins where the NAME satisfies it, so a role that
     # disagrees with its own name still lands here rather than being made
     # true by declaring it.
@@ -723,7 +774,9 @@ def _targets_from_project(policy: NamingPolicy, path: Path, data: dict,
     pins = _pins_from_project(data)
     root = path.resolve().parent
     targets: list[Target] = []
-    findings: list[str] = []
+    # Pins that are not a list are said before any leg's finding, and every
+    # leg is classified as declaring none (#443).
+    findings: list[str] = _pins_field_findings(data)
     for leg in data.get("legs") or []:
         target, leg_findings = _leg_target(policy, path, leg, root, pins,
                                            sources)
