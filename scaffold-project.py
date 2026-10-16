@@ -59,7 +59,13 @@ scaffold pushes (#462): a reserved name, or what a run whose later push an
 organisation's ruleset refused left behind. It never deletes, rewrites or
 force-pushes a remote. `--dry-run` asks the same question of the three
 remotes and refuses `scaffold-remote-exists` as the real run does (#537), so
-`setup-project.py` refuses at the plan, before it asks for the yes.
+`setup-project.py` refuses at the plan, before it asks for the yes. Both
+runs ask it after the folders, and before either makes one (#609): a file
+where `--work-dir`, `--local-remote-dir` or a working tree must go, or a
+folder this user cannot write in, is `scaffold-folder-cannot-be-made` or
+`scaffold-target-exists`, never a traceback. Only gh's own not-found answer
+says a repository does not exist; any other `gh repo view` failure (a bad
+login, a rate limit, no network) is refused as `remote-unreadable`.
 
 EXIT CODES: 0 done · 1 nothing (dry run prints and exits 0) · 2 refusal.
 """
@@ -116,6 +122,13 @@ from shape_materialize import (  # noqa: E402
 # The project's own reader, and the writer of the double-quoted scalars it
 # reads back, asked of each `neutral_product_pins:` entry (#516).
 from repo_shape import YamlError, double_quoted, parse_yaml  # noqa: E402
+# What both runs ask before the first write, as `family.py init` asks it
+# (#609): each folder this run makes, each working tree it writes, and gh's
+# not-found answer as the one failure of `gh repo view` that means absent.
+from shape_materialize import (  # noqa: E402
+    make_folder, refuse_unless_not_found, refuse_unmakeable_folder,
+    target_in_the_way, target_remediation,
+)
 
 #: How a refusal names each value the manifest records (#258, #261). The leg
 #: paths are not here: `refuse_bad_leg_paths` asks for them (#179, #225).
@@ -170,6 +183,11 @@ def remote_is_empty(repository: str) -> bool | None:
     NO `gh` ON PATH IS `gh-not-found` (#537), and not a `FileNotFoundError`
     traceback: `--dry-run` asks this question too now, and before that a dry
     run needed no `gh` at all.
+
+    ONLY GH'S NOT-FOUND ANSWER IS "IT DOES NOT EXIST" (#609). Any failure of
+    `gh repo view` used to be, so a bad login, a rate limit or an outage
+    planned under `--dry-run` and sent the real run on to `gh repo create`;
+    `refuse_unless_not_found` refuses every other failure by name.
     """
     try:
         probe = subprocess.run(
@@ -180,6 +198,7 @@ def remote_is_empty(repository: str) -> bool | None:
         raise _gh_not_found(
             f"whether {repository} already exists on GitHub", exc) from exc
     if probe.returncode != 0:
+        refuse_unless_not_found(repository, probe)
         return None
     commits = subprocess.run(
         ["gh", "api", f"repos/{repository}/commits?per_page=1"],
@@ -306,10 +325,13 @@ def main(argv: list[str] | None = None) -> int:
                              "`contracts` holds several.")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the plan and ask, as the real run does, "
-                             "whether each of the three repositories already "
-                             "exists (`gh repo view` and its commit listing, "
-                             "or the bare repositories with "
-                             "--local-remote-dir), refusing what it refuses; "
+                             "whether each folder it makes can be made "
+                             "(--work-dir, the trees in it, "
+                             "--local-remote-dir) and whether each of the "
+                             "three repositories already exists (`gh repo "
+                             "view` and its commit listing, or the bare "
+                             "repositories with --local-remote-dir), "
+                             "refusing what it refuses; make no folder, "
                              "create no remote and push nothing")
     parser.add_argument("--local-remote-dir", type=Path, default=None,
                         help="create bare repositories here instead of calling "
@@ -1258,19 +1280,55 @@ def _print_plan_actions(args, topic: str, local: bool) -> None:
                              else f"gh repo edit --add-topic {topic}"))
 
 
+#: The code of every folder this run makes and cannot (#609).
+FOLDER_REFUSAL = "scaffold-folder-cannot-be-made"
+
+
 def _refuse_existing_trees(work_root: Path, names: dict) -> None:
     """(j) Refuse to write over a working tree that already has something in
     it. Split out of `_scaffold` for #138.
+
+    A FILE THERE IS REFUSED TOO (#609): `iterdir()` raised
+    `NotADirectoryError` on one, a traceback after `--dry-run` had exited 0.
+    `target_in_the_way` asks both, and makes nothing.
     """
     for role, name in names.items():
         target = work_root / name
-        if target.exists() and any(target.iterdir()):
+        why = target_in_the_way(target)
+        if why:
             raise Refusal(
                 "scaffold-target-exists",
-                f"{target} already exists and is not empty",
-                "Remediation: choose an empty --work-dir. There is no --force: "
-                "re-running over a live tree is not a scaffold.",
+                f"{target} already exists and {why}",
+                target_remediation(
+                    why,
+                    "Remediation: choose an empty --work-dir. There is no "
+                    "--force: re-running over a live tree is not a scaffold.",
+                    "--work-dir"),
             )
+
+
+def _refuse_unmakeable_folders(args, work_root: Path | None, names: dict,
+                               local: bool) -> None:
+    """(j′) Every folder this run makes, and each working tree it writes,
+    asked before anything is made, by the dry run and the real run alike
+    (#609): `--work-dir`, then the three trees in it, then
+    `--local-remote-dir`, the order the real run makes them in.
+
+    THE DRY RUN ASKED NONE OF IT. With a file where `--work-dir` or
+    `--local-remote-dir` goes, or where a tree goes, `--dry-run` exited 0
+    and the real run died in `mkdir` or `iterdir()` with a traceback. A
+    folder that cannot be made, because a file stands at it or above it or
+    this user cannot write where it goes, is `scaffold-folder-cannot-be-made`
+    now, and the real run's own `mkdir` is `make_folder`, which refuses the
+    same in the system's words. With no `--work-dir` the run makes a fresh
+    temporary directory, which nothing stands in.
+    """
+    if work_root is not None:
+        refuse_unmakeable_folder(FOLDER_REFUSAL, "--work-dir", work_root)
+        _refuse_existing_trees(work_root, names)
+    if local:
+        refuse_unmakeable_folder(FOLDER_REFUSAL, "--local-remote-dir",
+                                 args.local_remote_dir.resolve())
 
 
 def _create_remotes(args, values: dict, repositories: dict, urls: dict,
@@ -1799,25 +1857,18 @@ def _scaffold(args) -> int:
 
     _print_plan(args, values, names, repositories, urls, local, policy,
                 declared_pins, chain, link_pins, pins)
-    if args.dry_run:
-        # THE DRY RUN ASKS WHETHER THE REMOTES EXIST (#537), with the real
-        # run's own question, `_reusable_remotes`, and refuses what it
-        # refuses: `scaffold-remote-exists` used to come only from the real
-        # run, which `setup-project.py` starts after the yes. It READS: `gh
-        # repo view` and a commit listing, or the bare repositories on disk
-        # with `--local-remote-dir`, and for a leg that is not empty the one
-        # commit it holds, fetched into a temporary directory it deletes. It
-        # creates no remote and pushes nothing.
-        _reusable_remotes(names, urls, repositories, local,
-                          args.reuse_empty_repo, values, args.tracking_branch)
-        print("\n--dry-run: nothing was created.")
-        return 0
 
     # ---- refuse to write over anything that already exists ----------------
-    work_root = (args.work_dir.resolve() if args.work_dir
-                 else Path(tempfile.mkdtemp(prefix="openreposhape-")))
-    work_root.mkdir(parents=True, exist_ok=True)
-    _refuse_existing_trees(work_root, names)
+    # ONE QUESTION, ASKED BY BOTH RUNS BEFORE ANYTHING IS MADE (#537, #609):
+    # every folder this run makes and each tree it writes, then every
+    # remote. It READS: the folders, then `gh repo view` and a commit
+    # listing, or the bare repositories on disk with `--local-remote-dir`,
+    # and for a leg that is not empty the one commit it holds, fetched into a
+    # temporary directory it deletes. So `--dry-run` refuses what the real
+    # run refuses, which `setup-project.py` asks before the yes, and the
+    # real run makes no folder for a run it then refuses.
+    work_root = args.work_dir.resolve() if args.work_dir else None
+    _refuse_unmakeable_folders(args, work_root, names, local)
     # A REPOSITORY MAY ALREADY EXIST only with `--reuse-empty-repo`, and only
     # with ZERO commits, or, for a leg, with this scaffold's own seed as its
     # one commit (#462). An organisation that creates the repository first and
@@ -1827,11 +1878,20 @@ def _scaffold(args) -> int:
     # operator holding the bypass right. A root with commits is refused
     # exactly as before: that is a live project, and `adopt-project.py` is the
     # tool for one of those. See `_reusable_remotes`.
-    if local:
-        args.local_remote_dir.resolve().mkdir(parents=True, exist_ok=True)
     reused = _reusable_remotes(names, urls, repositories, local,
                                args.reuse_empty_repo, values,
                                args.tracking_branch)
+    if args.dry_run:
+        print("\n--dry-run: nothing was created.")
+        return 0
+
+    if work_root is None:
+        work_root = Path(tempfile.mkdtemp(prefix="openreposhape-"))
+    else:
+        make_folder(FOLDER_REFUSAL, "--work-dir", work_root)
+    if local:
+        make_folder(FOLDER_REFUSAL, "--local-remote-dir",
+                    args.local_remote_dir.resolve())
 
     standing = _create_remotes(args, values, repositories, urls, local, reused)
     _private_leg_note(args, repositories, local, standing)

@@ -2033,8 +2033,8 @@ def _spelled_character(char: str) -> str:
     return double_quoted(char)[1:-1]
 
 
-def cross_leg_references(source: "Source", entries: list["Entry"],
-                        spec_path: str, code_path: str) -> list[str]:
+def cross_leg_references(source: "Source",
+                        entries: list["Entry"]) -> list[str]:
     """Files that will move to the CODE leg and name a path in the SPEC leg.
 
     Found by asking git, not by guessing: `git grep -l` over the source commit,
@@ -2046,6 +2046,20 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
     the spec leg, and the code that reads them reads ACROSS the assembly root
     mount. The read is one relative path from the code leg — but only once
     somebody edits it, so the plan says which file and the human decides when.
+
+    IT NAMES THE TWO MOUNT KEYS, `legs.code_path` AND `legs.spec_path`, AND NO
+    PATH OF EITHER (#600), so it takes neither path. `plan` writes the list
+    once; `MOUNT_REMEDIATION` and `plan-leg-path-collides` ask a person to
+    change those keys afterwards; `check`, the split commit's message and the
+    pull request's body read the line back. It said `code/src/app/main.py` and
+    `../spec/contracts/` "relative to `code/`" for legs mounted elsewhere. The
+    file is named as the code leg holds it and the directory as the spec leg
+    does: both are paths in the SOURCE, which no edit of the plan moves. The
+    Makefile follow-up (#522's review, F1) and the tracking branch's (#493's
+    review, F3) are written the same way. The path from the code leg to the
+    spec leg's `contracts/`, which a person has then to work out from the two
+    mounts, is printed next to the CURRENT mounts by the two sentences that
+    name them (`contracts_from_code_leg`, #600's review, F1).
 
     EVERY NAME IS A NAME (#216). Both inputs are source paths, and git reads
     each as something else unless told not to. A spec directory passed bare
@@ -2097,14 +2111,14 @@ def cross_leg_references(source: "Source", entries: list["Entry"],
         # DOES read it under twenty of them is how a follow-up list stops
         # being read at all.
         hits.sort(key=lambda h: ("fixture" in h or h.startswith("tests/"), h))
-        across = spec_leg_from_code_leg(spec_path, code_path)
         for hit in hits[:8]:
             shown = "".join(map(_spelled_character, hit))
             out.append(
-                f"{code_path}/{shown} names `{named}`, which moves to the "
-                f"spec leg: it must read across the assembly root — "
-                f"`{across}/{named}` relative to `{code_path}/` — or "
-                "take the path from the environment")
+                f"{shown} in the code leg names `{named}`, which moves to "
+                "the spec leg: it must read across the assembly root — from "
+                "the code leg, where the plan's `legs.code_path` mounts it, "
+                f"to `{named}` in the spec leg, where `legs.spec_path` "
+                "mounts it — or take the path from the environment")
         if len(hits) > 8:
             out.append(f"… and {len(hits) - 8} more file(s) under the code leg "
                        f"naming `{named}`")
@@ -2122,6 +2136,10 @@ def spec_leg_from_code_leg(spec_path: str, code_path: str) -> str:
     while the code leg sits in the root: with `--spec-path legs/spec
     --code-path legs/code` it said `../legs/spec/contracts/` "relative to
     `legs/code/`", a path that leads to `legs/legs/spec`.
+
+    It is asked of the plan's CURRENT mounts, when a sentence that prints
+    them is rendered, and never of the two a plan was written with (#600's
+    review, F1): `contracts_from_code_leg` below.
 
     Both are canonical mount paths, asked by `plan` before it writes a
     follow-up and by `execute` before it mounts a leg: `/` between
@@ -2141,6 +2159,42 @@ def spec_leg_from_code_leg(spec_path: str, code_path: str) -> str:
     return "/".join([".."] * (len(code) - shared) + spec[shared:])
 
 
+def contracts_from_code_leg(spec_path, code_path, spec_leg_paths) -> str:
+    """What the two sentences that print the plan's CURRENT mounts end with
+    when the spec leg holds `contracts/`: ", so from the code leg the spec
+    leg's `contracts/` is `../spec/contracts/`", or "" when there is nothing
+    true to say (#600's review, F1).
+
+    THE READ-ACROSS FOLLOW-UP NAMES `legs.code_path` AND `legs.spec_path` AND
+    NO PATH, so no hand edit of either can contradict it, and it leaves the
+    path itself to the two mounts printed beside it. That path is the one
+    #522's review (auA-13) showed a person gets wrong for nested legs by
+    hand, and `CONTRACTS_DIR` is the root Makefile's alone. So it is printed
+    where the mounts are, computed from the values the surface itself prints:
+    `check`'s `mount the legs at X/ and Y/`, from the plan as it stands, and
+    the split message's `mounted back here at X/ and Y/`, from the mounts
+    `execute` made. It is never stored in `follow_ups:`, so it cannot go stale
+    between a hand edit and the next `check`, and it needs no `git grep`.
+
+    NOTHING, in three cases. No path of the spec leg is `contracts/` or lies
+    under it, so there is no `contracts/` to lead to (the Makefile follow-up's
+    own condition). A mount is not text, or the two are not mount paths
+    `execute` accepts, or they overlap or differ only in case: `check` says
+    so as a finding, and a path computed from two strings that are not two
+    mounts leads nowhere. `spec_leg_paths` are the paths the plan assigns to
+    the spec leg, as `_leg_paths` reads them.
+    """
+    if not any(path == "contracts/" or path.startswith("contracts/")
+               for path in spec_leg_paths):
+        return ""
+    if leg_path_problems(("legs.spec_path", spec_path),
+                         ("legs.code_path", code_path)):
+        return ""
+    across = spec_leg_from_code_leg(spec_path, code_path)
+    return (", so from the code leg the spec leg's `contracts/` is "
+            f"`{across}/contracts/`")
+
+
 def _search_by_hand(named: str, why: str) -> str:
     """The follow-up for a spec directory git did not search for: the
     reason, and what to look for instead."""
@@ -2151,7 +2205,6 @@ def _search_by_hand(named: str, why: str) -> str:
 
 
 def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
-                   spec_path: str, code_path: str,
                    collisions: list[str]) -> list[str]:
     """The code changes an in-place split MAKES NECESSARY, named in the plan.
 
@@ -2184,9 +2237,14 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
     `plan-leg-path-collides` both ask for a hand edit of it, so a path named
     here went on naming the old mount in the split commit's message, the
     pull request's own body, while the Makefile in that commit named the new
-    one (#522's review, F1).
+    one (#522's review, F1). So does the read-across line that
+    `cross_leg_references` writes, for both mounts, and this function takes
+    no mount path: no value of either key can reach a line it writes (#600).
+    The path from the code leg to the spec leg's `contracts/` is printed
+    beside the CURRENT mounts instead, where `check` and the split message
+    name them (`contracts_from_code_leg`).
     """
-    out = cross_leg_references(source, entries, spec_path, code_path)
+    out = cross_leg_references(source, entries)
     if any(e.leg == "spec" and (e.path == "contracts/"
                                 or e.path.startswith("contracts/"))
            for e in entries):
@@ -3303,6 +3361,24 @@ def _refuse_a_tracking_branch_the_remote_lacks(urls: dict, tracking: str,
         REMOTE_LACKS_REMEDIATION + (LOCAL_REMOTE_LACKS if local else ""))
 
 
+def _refuse_bad_id(project_id: str, project: str, passed: bool) -> None:
+    """`plan`'s refusal of an id the project's validators would not take
+    (`PROJECT_ID_RE`), in the words of where it came from. A `--id` the person
+    passed is named as the flag they typed, with the value as typed. One
+    `plan` derived from `--project` (lowercased, `FLAG_DEFAULTS`) is named as
+    derived, the way `_flag_named` names the tracking branch and the elector
+    it fills in (#529): `--id 'north_wind' must match` named a flag nobody
+    had passed (#601). The finding's code is the same for both."""
+    if PROJECT_ID_RE.match(project_id):
+        return
+    pattern = PROJECT_ID_RE.pattern
+    what = (f"--id {project_id!r} must match {pattern}" if passed
+            else f"the id derived from --project {project!r} (--id was not "
+                 f"given) is {project_id!r}, which must match {pattern}")
+    raise Refusal("adopt-bad-id", what,
+                  "Remediation: pass an explicit lowercase --id.")
+
+
 def _checked_plan_inputs(args, source: Source,
                          naming: NamingPolicy) -> tuple[dict, list]:
     """Every value the plan will RECORD, defaulted and checked before one of
@@ -3359,11 +3435,11 @@ def _checked_plan_inputs(args, source: Source,
                       _leg_collision_remediation(products))
     args.spec_path = checked_value(*spec)
     args.code_path = checked_value(*code)
+    # Whether `--id` was passed is read BEFORE it is filled in: a refusal of
+    # the id names where it came from (#601).
+    id_passed = "id" in flags_given
     args.id = args.id or args.project.lower()
-    if not PROJECT_ID_RE.match(args.id):
-        raise Refusal("adopt-bad-id",
-                      f"--id {args.id!r} must match {PROJECT_ID_RE.pattern}",
-                      "Remediation: pass an explicit lowercase --id.")
+    _refuse_bad_id(args.id, args.project, id_passed)
     # The organisation, given or read from the source's `origin`, and named
     # by which of the two it is should it be refused (#292, #427).
     org_given = bool(args.org)
@@ -3934,8 +4010,7 @@ def cmd_plan(args) -> int:
     materialized = _predict_collisions(
         implied, attributes_link=any(path == ATTRIBUTES and mode == SYMLINK_MODE
                                      for path, mode, _, _ in tree))
-    follow_ups = follow_ups_for(source, implied, names, args.spec_path,
-                                args.code_path, materialized)
+    follow_ups = follow_ups_for(source, implied, names, materialized)
     seeded = seeded_legs(assigned_paths(implied))
     entries = with_defaults(ask_about_refused_paths(
         ask_about_submodules(policy, ruled, tree), tree))
@@ -6803,10 +6878,14 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     mounts = [_plan_leg_path(plan, role) for role in EXTRACTED_LEGS]
     mounted = (f" at {_shown(mounts[0])}/ and {_shown(mounts[1])}/"
                if all(isinstance(mount, str) for mount in mounts) else "")
+    # Beside the mounts, the path the read-across follow-up leaves to them,
+    # from the mounts as the plan stands (#600's review, F1).
+    across = contracts_from_code_leg(mounts[0], mounts[1],
+                                     _leg_paths(plan)["spec"])
     print(f"  ONE split commit on branch "
           f"{_shown(str(plan.get('adopt_branch', ADOPT_BRANCH)))} "
           f"of {names['assembly']}: `git rm -r` those paths, mount the "
-          f"legs{mounted}")
+          f"legs{mounted}{across}")
     print(f"  {len(stays)} path(s) stay in the assembly root; "
           f"{len(drops)} dropped")
     # Each pin `execute` writes, as the plan records it (#273) and as the
@@ -10480,7 +10559,8 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
         "are NEW repositories extracted with `git filter-repo`, so every "
         "moved file keeps the commits that made it. Nothing was deleted: what "
         "leaves this tree arrives in a leg at the same path, mounted back "
-        f"here at {spec_path}/ and {code_path}/.",
+        f"here at {spec_path}/ and {code_path}/"
+        f"{contracts_from_code_leg(spec_path, code_path, paths_for['spec'])}.",
         "",
         f"MOVED TO THE SPEC LEG ({names['spec']} @ {leg_commits['spec'][:12]}):",
     ]
