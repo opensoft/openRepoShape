@@ -1698,6 +1698,12 @@ DISCARD_IT = "Move or delete it, then run this again."
 DISCARD_IT_IF_UNUSED = ("Move it, or delete it if nothing in it is yours, then "
                         "run this again.")
 KEEP_IT = "Move it, or choose another --into, then run this again."
+#: What step (3) says to do about a parent nobody can write in, and about a
+#: path whose drive is not there (#608).
+WRITE_IT = ("Choose another --into, or make it a folder you can write in, "
+            "then run this again.")
+DRIVE_WAY_OUT = ("Choose another --into on a drive that is there, then run "
+                 "this again.")
 
 
 def origin_recorded_in(clone: str) -> str:
@@ -1815,9 +1821,16 @@ def refuse_a_taken_clone_path(clone: str, project: str) -> None:
     `lexists` reads `<file>/<Project>` as absent: on main this passed, all
     three repositories were created, and step (7)'s `os.makedirs` ended the
     run in a `FileExistsError` traceback. `refuse_a_file_above` asks it here.
+
+    AND WHETHER THE CLONE CAN BE MADE THERE AT ALL (#608). A folder the
+    person cannot write in, or a Windows drive that is not there, passed
+    too: the three repositories were created and step (7) then refused
+    `could not be made a folder (Permission denied)`.
+    `refuse_a_parent_nobody_can_write_in` asks both here.
     """
     if not os.path.lexists(clone):
         refuse_a_file_above(clone)
+        refuse_a_parent_nobody_can_write_in(clone)
         return
     what, way_out = what_stands_at(clone, project)
     die(" ".join(part for part in (
@@ -1861,8 +1874,8 @@ def refuse_a_file_above(clone: str) -> None:
     The folders above the clone are made in step (7), by `os.makedirs`, and
     nothing exists yet: the first thing found on the way up from the clone's
     parent must be a folder (`isdir`, so a link to one is one), or there is
-    nowhere to make them. Nothing found at all is the case before, and is
-    left to the clone.
+    nowhere to make them. Nothing found at all is a drive that is not there,
+    and `refuse_a_parent_nobody_can_write_in` refuses that (#608).
     """
     above = nearest_entry(os.path.dirname(clone))
     if above is None or os.path.isdir(above):
@@ -1870,6 +1883,69 @@ def refuse_a_file_above(clone: str) -> None:
     die("%s is %s, and this project would be cloned inside it, at %s, so the "
         "run stops here and nothing was created. %s"
         % (above, what_blocks(above), clone, KEEP_IT))
+
+
+def drive_of(path: str) -> str:
+    r"""The drive, or the network share, `path` is on: `C:`, or
+    `\\server\share`; nothing on a POSIX host."""
+    return os.path.splitdrive(path)[0]
+
+
+def refuse_a_parent_nobody_can_write_in(clone: str) -> None:
+    """Refuse a clone path whose nearest folder the person cannot write in, or
+    whose drive is not there (#608, L2-26).
+
+    The clone is made in step (7), by `os.makedirs` and then `git clone`, in
+    the nearest folder that exists. Step (3) asked that this be a folder and
+    not whether the person can make one in it, so a parent at mode 555, a
+    read-only disk or an ACL that says no passed, and the run created all
+    three repositories before step (7) refused.
+
+    THE QUESTION IS ASKED BY DOING IT: a folder is made in the nearest
+    existing one and taken away again, which is what step (7) does and the
+    only answer that holds for a read-only file system, an ACL, a quota and
+    root alike - `os.access` says what the mode bits say, and on Windows
+    nothing about a folder at all. It leaves the disk as it found it; the
+    folder carries a name of its own so a person who finds one after a
+    killed run knows whose it was. Only the making is the question: the
+    taking away is best-effort, and says where the folder is when it fails.
+
+    A FILE standing there is `refuse_a_file_above`'s, which runs first and
+    has said so, so what is found here is a folder. NOTHING FOUND AT ALL,
+    `nearest_entry` None, is a Windows drive that is not there (a
+    disconnected network share, a letter nobody has): there is no folder to
+    ask, and step (7) would create the repositories before it found out.
+    The code is `die`'s, as for every refusal of step (3).
+    """
+    above = nearest_entry(os.path.dirname(clone))
+    if above is None:
+        drive = drive_of(clone)
+        die("%s, and this project would be cloned at %s, so the run stops "
+            "here and nothing was created. %s"
+            % (("The drive %s is not there" % drive) if drive
+               else "Not even the top of the path is there", clone,
+               DRIVE_WAY_OUT))
+    try:
+        probe = tempfile.mkdtemp(prefix=".openreposhape-write-probe-",
+                                 dir=above)
+    except OSError as exc:
+        die("%s is a folder you cannot write in (%s), and this project would "
+            "be cloned inside it, at %s, so the run stops here and nothing "
+            "was created. %s"
+            % (above, exc.strerror or exc.__class__.__name__, clone,
+               WRITE_IT))
+    # TAKING IT AWAY IS BEST-EFFORT. The refusal above is for a folder that
+    # could not be MADE; one that was made says the person can write here,
+    # and a failing `rmdir` (on Windows an indexer or an antivirus can hold a
+    # handle on a new folder for a moment) is no reason to say they cannot.
+    # The folder left behind is named instead, empty and the person's to
+    # delete.
+    try:
+        os.rmdir(probe)
+    except OSError as exc:
+        warn("%s, the folder made in %s to try it, could not be taken away "
+             "again (%s); it is empty, and yours to delete."
+             % (probe, above, exc.strerror or exc.__class__.__name__))
 
 
 # ---------------------------------------------------------------------------
@@ -1882,12 +1958,14 @@ def refuse_a_file_above(clone: str) -> None:
 #: scaffold's `--dry-run`; `--pin` has no shorter spelling, because
 #: `--pin-owner` and `--pin-source` share every one, and a prefix of
 #: `--referent-chain` shorter than `--referent` is one of `--reference`
-#: too. `tests/test_setup_project_py.py` holds each row to the
+#: too. `--pin-source`, read since #608 for the tree a chain's links are
+#: looked for in, is `--pin-s`: `--pin-owner` ends the sharing there.
+#: `tests/test_setup_project_py.py` holds each row to the
 #: scaffold's own `--help`. A word this reads that the scaffold finds
 #: ambiguous makes the scaffold's plan refuse, in step (5), before anything
 #: is created, so reading one too many is never a run the scaffold made.
 PASSED_FLAGS = {"--dry-run": "--d", "--pin": "--pin",
-                "--referent-chain": "--referent"}
+                "--referent-chain": "--referent", "--pin-source": "--pin-s"}
 
 
 def scaffold_words(passthrough: list) -> list:
@@ -1908,8 +1986,10 @@ def names_flag(word: str, flag: str) -> bool:
 def passed_values(passthrough: list, flag: str) -> list:
     """Every value the passthrough gives `flag`, in order: `flag=value`, or
     the word after `flag`. A value never starts with `-` in the second
-    spelling, because argparse reads such a word as a flag, so a word this
-    takes as `flag` is never somebody's value."""
+    spelling, because argparse reads such a word as a flag, so a word that
+    does is not this flag's value (`--pin --referent-chain x` gives `--pin`
+    none, and the scaffold's plan refuses it) and is read again as the flag
+    it is (#608, L2-27). The `=` spelling takes whatever follows it."""
     words = scaffold_words(passthrough)
     values = []
     for index, word in enumerate(words):
@@ -1917,7 +1997,7 @@ def passed_values(passthrough: list, flag: str) -> list:
             continue
         if "=" in word:
             values.append(word.split("=", 1)[1])
-        elif index + 1 < len(words):
+        elif index + 1 < len(words) and not words[index + 1].startswith("-"):
             values.append(words[index + 1])
     return values
 
@@ -1933,10 +2013,30 @@ def passes_a_dry_run(passthrough: list) -> bool:
                for word in scaffold_words(passthrough))
 
 
+def as_a_bare_link_source(path: str) -> str:
+    """`path` as the naming validator reads a `--link-source` that names no
+    product: it takes the text before the first `=` for a product when that
+    is a link of the chain, so `openXdox=layer`, which the scaffold reads as
+    the one path it is, would be read as `layer` for `openXdox`. A path that
+    starts `<word>=` is spelled `./<word>=`; one with a separator or a drive
+    before its first `=` cannot be a link's name, and stays as it is.
+
+    AN EMPTY PATH IS NEVER GIVEN TO IT. Since #570 the scaffold takes
+    `--pin-source` as text and refuses an exactly empty value as
+    `pin-source-no-path`, before anything exists (`pin_source_path`), so it
+    no longer reads `''` as the directory it runs in: `.` would be a folder
+    the plan never reads, and `--link-source=` is refused by the validator as
+    `link-source-no-path` (#576). Either would end step (4) naming a flag the
+    person never typed, where the plan refuses the value by name.
+    `naming_declarations` leaves an empty source out. A BLANK path is a path:
+    the scaffold reads `Path(' ')`, so it goes as it is."""
+    return "./" + path if re.match(r"[^/\\:=]+=", path) else path
+
+
 def naming_declarations(passthrough: list) -> list:
     """The naming validator's arguments for what the passthrough declares
     about the project (#538): the products of its `--pin`s, and its
-    `--referent-chain`.
+    `--referent-chain`, with the tree its links are read from (#608).
 
     A `<Domainx><Product>` name is a descendant only when the project pins
     its referent, and the scaffold judges the names with the pins it is
@@ -1948,13 +2048,41 @@ def naming_declarations(passthrough: list) -> list:
     Each is passed as `--flag=value`, so a value that starts with `-` stays
     a value to the validator; one the scaffold refuses is refused at the
     plan.
+
+    THE LINKS ARE VERIFIED FROM THE SAME TREE (#608, L2-25). The scaffold
+    reads a chain's links from the tree `--pin-source` names, and the naming
+    validator reads them from a `--link-source` it is given; step (4) was
+    given none, so a chain the plan verified showed
+    `[declared-unverified]` and a WARNING that the link's tree was not
+    reachable there, and one the tree broke showed no break at all. The LAST
+    `--pin-source`, as the scaffold keeps its last, goes as a bare
+    `--link-source` - and only WITH a chain of two links at least: the
+    scaffold reads the tree for the links alone, a chain of one link has no
+    holder whose declaration a source could answer, and a source no link
+    used is a NOTE the plan never prints.
+
+    AN EMPTY LAST `--pin-source` IS LEFT TO THE PLAN (#608, rv608 on #623).
+    Since #570 the scaffold refuses `--pin-source ''` as `pin-source-no-path`
+    before anything exists, so there is no tree it reads, and step (4) is
+    given no `--link-source` for it: it says nothing about a flag the person
+    never typed, and step (5)'s plan refuses the value by name, with exit 2.
+    The scaffold's own test is `not str(typed)` (`pin_source_path`), so a
+    BLANK value is a path and goes as it is, and the rule reads the LAST
+    value alone: `--pin-source src --pin-source ''` is empty,
+    `--pin-source '' --pin-source src` is not.
     """
     products = [name for name in (
         pin.strip().split("@", 1)[0].rsplit("/", 1)[-1]
         for pin in passed_values(passthrough, "--pin")) if name]
     chains = passed_values(passthrough, "--referent-chain")
+    sources = passed_values(passthrough, "--pin-source")
+    has_links = bool(chains) and sum(
+        1 for link in chains[-1].split(",") if link.strip()) > 1
+    names_a_source = bool(sources) and bool(str(sources[-1]))
     return ((["--pins=" + ",".join(products)] if products else [])
-            + (["--referent-chain=" + chains[-1]] if chains else []))
+            + (["--referent-chain=" + chains[-1]] if chains else [])
+            + (["--link-source=" + as_a_bare_link_source(sources[-1])]
+               if has_links and names_a_source else []))
 
 
 # ---------------------------------------------------------------------------
@@ -2039,6 +2167,58 @@ def scaffold_args(opts: Options, org: str) -> list:
     return args + list(opts.passthrough)
 
 
+#: What the scaffold's plan starts with, at the start of a line: the first
+#: thing `_print_plan` prints, and nothing printed before it begins so.
+PLAN_STARTS = "project      "
+
+#: What step (5) says when the plan did not go through (#608, L2-37): a plan
+#: the scaffold printed and then refused, a plan it never printed, and a plan
+#: that stopped the first time and not the second. The last names no plan, and
+#: no refusal, because the second run is all it has seen.
+PLAN_REFUSED = "the plan was refused (see above)."
+PLAN_NOT_PRODUCED = "the plan could not be produced (see above)."
+PLAN_STOPPED_ONCE = ("the scaffold stopped at the plan (see above). Asked a "
+                     "second time it did not stop, so the refusal did not "
+                     "happen again: run setup again.")
+
+
+def why_the_plan_did_not_go_through(shape_root: Path, plan: list,
+                                    planned: subprocess.CompletedProcess
+                                    ) -> str:
+    """What step (5) says of a scaffold `--dry-run`, `plan`, that exited
+    nonzero (#608, L2-37).
+
+    Since #573 the dry run prints the plan and THEN asks whether the remotes
+    exist, so a refusal can come either side of the plan, and "the plan could
+    not be produced (see above)" under a plan that is right there says
+    something false. The scaffold's output goes straight to the terminal, not
+    through this process, so the question is put once more, captured, and
+    only after a refusal: the dry run reads and creates nothing, a run that
+    printed and refused prints and refuses again, and a plan that went well
+    is never asked twice. Reading every run's plan through a pipe instead
+    would put each of them behind the child's buffering and its output
+    encoding, on every platform, to word one refusal. A child killed by a
+    signal refused nothing, and is not asked.
+
+    THE SECOND RUN IS NOT THE ONE THE PERSON SAW. The words describe what it
+    printed, and what is above is the first run's. A passing gh or network
+    failure before the plan, or a remote made between the two runs, makes the
+    first refuse and the second print the plan and exit 0: it refused
+    nothing, and neither "refused" nor "could not be produced" is known to be
+    true of what is above. So a second run that exits 0 gets its own words,
+    that the refusal did not happen again, and the person runs setup again.
+    """
+    if planned.returncode < 0:
+        return PLAN_NOT_PRODUCED
+    again = run(plan, cwd=shape_root, capture=True)
+    if again.returncode == 0:
+        return PLAN_STOPPED_ONCE
+    if any(line.startswith(PLAN_STARTS)
+           for line in (again.stdout or "").splitlines()):
+        return PLAN_REFUSED
+    return PLAN_NOT_PRODUCED
+
+
 def plan_and_confirm(opts: Options, shape_root: Path, org: str,
                      args: list, clone: str) -> bool:
     """The plan, then the one question. False when the run ends at the plan
@@ -2047,10 +2227,11 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
     to."""
     say("")
     say("(5) the plan")
-    planned = run([PYTHON, str(shape_root / SCAFFOLD), *args,
-                   "--dry-run"], cwd=shape_root)
+    plan = [PYTHON, str(shape_root / SCAFFOLD), *args, "--dry-run"]
+    planned = run(plan, cwd=shape_root)
     if planned.returncode != 0:
-        raise Refusal("the plan could not be produced (see above).",
+        raise Refusal(why_the_plan_did_not_go_through(shape_root, plan,
+                                                      planned),
                       shell_status(planned.returncode))
 
     # THE ONE THING THE RUN WRITES ON THIS DISK IS IN THE PLAN TOO (#498).
