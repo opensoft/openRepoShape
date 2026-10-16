@@ -10620,7 +10620,8 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
 
     counts, findings = _account_for(before, after, paths_for["drop"])
     findings += _shape_file_findings(assembly, split_commit)
-    findings += _split_manifest_findings(split_tree, before)
+    findings += _split_manifest_findings(split_tree, before,
+                                         paths_for["drop"])
     added = sorted(set(after) - set(before))
     for leg in ("spec", "code", "root", "drop"):
         note = " (seeded from template)" if leg in seeded else ""
@@ -10964,7 +10965,8 @@ def _mount_commit_findings(tree: list, mounts: dict[str, str],
             and oid != pushed[mounts[path]]]
 
 
-def _split_manifest_findings(tree: list, before: dict) -> list[str]:
+def _split_manifest_findings(tree: list, before: dict,
+                             drops: list[str]) -> list[str]:
     """`adopt-manifest-not-shape` when the root's `project.yaml` is not the
     shape's manifest (#389): the source's own entry is still there, or the
     manifest went beside the root's as `shape/project.yaml`, or both.
@@ -10986,11 +10988,22 @@ def _split_manifest_findings(tree: list, before: dict) -> list[str]:
     the shape's only when the source did not have that blob at that path: a
     source's own `shape/project.yaml`, kept where the root's `project.yaml`
     is the manifest, is a file like any other.
+
+    A `project.yaml` THE PLAN DROPS IS NOT THE SOURCE'S OWN AT THE ROOT,
+    whatever its bytes. `drops` is `paths_for["drop"]`, the list
+    `_mount_the_legs` has `git rm`ed before the shape writes anything, so
+    what is at `project.yaml` then is what the shape wrote: this asks what
+    the split did, not what `check` refused. Matched by blob alone, a source
+    file that held exactly the manifest this run renders, answered `drop`
+    (a plan `check` passes, and main verified), was called the source's own,
+    and the run failed after both legs were pushed (#389's review, R1). Only
+    that half is waived: the manifest beside it is a finding still.
     """
     entries = {path: (mode, oid) for path, mode, oid, _ in tree}
     copy = f"{COLLISION_DIR}/{SHAPE_MANIFEST}"
     mode, oid = entries.get(SHAPE_MANIFEST, ("", ""))
-    kept = bool(oid) and oid == before.get(SHAPE_MANIFEST)
+    dropped = SHAPE_MANIFEST in {path.rstrip("/") for path in drops}
+    kept = bool(oid) and oid == before.get(SHAPE_MANIFEST) and not dropped
     beside = copy in entries and entries[copy][1] != before.get(copy)
     if not (kept or beside):
         return []

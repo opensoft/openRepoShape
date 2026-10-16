@@ -114,6 +114,10 @@ MANIFEST_EXIT = (
     "`execute` refuses before any leg exists a plan that keeps a path of the "
     "source's at `project.yaml` in the root (`plan-root-blocks-manifest`) or "
     f"mounts a leg there (`plan-leg-path-collides`), {SPLIT_IS_WRONG}")
+#: Its first sentence for the manifest beside a root `project.yaml` that is
+#: not the source's own.
+BESIDE = (f"the shape's manifest is at `{MANIFEST_COPY}` in the root tree, "
+          f"where it is written only when the root already holds `{MANIFEST}`")
 
 
 def manifest_not_shape(said: str) -> str:
@@ -375,9 +379,7 @@ def test_the_manifest_beside_the_roots_project_yaml_is_a_finding(verify):
     verified, out, err = verify(
         root_files={MANIFEST_COPY: ROOT_FILES[MANIFEST]})
     assert verified == 1
-    assert findings(err) == [manifest_not_shape(
-        f"the shape's manifest is at `{MANIFEST_COPY}` in the root tree, "
-        f"where it is written only when the root already holds `{MANIFEST}`")]
+    assert findings(err) == [manifest_not_shape(BESIDE)]
     assert VERIFIED not in out
 
 
@@ -417,6 +419,24 @@ def test_what_else_the_root_holds_under_shape_still_verifies(
     assert verified == 0, err
     assert VERIFIED in out
     assert err == ""
+
+
+@pytest.mark.parametrize("beside", [False, True], ids=[
+    "the-manifest-at-the-root", "the-manifest-beside-it"])
+def test_a_dropped_project_yaml_is_never_the_sources_own(verify, beside):
+    """The plan dropped it, so the split `git rm`ed it before the shape
+    wrote, and what is at `project.yaml` is the shape's, whatever its bytes.
+    A source file that held exactly the manifest this run renders (here the
+    fixture's stand-in), answered `drop`, passes `check` and verified on
+    main; matched by blob alone, this check refused it as the source's own
+    (#389's review, R1). Only that half is waived: the manifest beside the
+    root's is a finding still."""
+    copy = {MANIFEST_COPY: ROOT_FILES[MANIFEST]} if beside else {}
+    verified, out, err = verify(source_files={MANIFEST: ROOT_FILES[MANIFEST]},
+                                root_files=copy, drop=(MANIFEST,))
+    assert verified == (1 if beside else 0), err
+    assert findings(err) == ([manifest_not_shape(BESIDE)] if beside else [])
+    assert (VERIFIED in out) == (not beside)
 
 
 #: `execute` REQUIRES `git filter-repo`; without it, the three tests below are
