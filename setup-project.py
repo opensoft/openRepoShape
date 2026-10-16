@@ -1477,7 +1477,19 @@ def resolve_project_and_elector(opts: Options, shape_root: Path) -> None:
     say("")
     say("(3) project")
     if not opts.project and can_ask():
-        opts.project = ask("  project name (ONE CamelCase token, e.g. Atlas): ")
+        typed = ask("  project name (ONE CamelCase token, e.g. Atlas): ")
+        # AN EMPTY LINE IS A NAME NOBODY TYPED, NOT A MISSING TERMINAL (#729):
+        # `can_ask()` above is the gate that refuses for want of one, so this
+        # refusal says what happened and does not print the usage text.
+        if not typed:
+            die("no project name was typed; nothing was created.")
+        # THE TYPED NAME IS HELD TO THE CHECK THE SAME NAME GETS AS `--project`
+        # or as the positional (#729), before anything builds a path from it:
+        # `..` leaves `--into`, an absolute name replaces it, and step (4)'s
+        # validator reads only the last part of what it is handed. `a b` and
+        # `Bad_Name` pass here on purpose (`NAME_RE` is permissive); step (4)
+        # is where the policy rules on those.
+        opts.project = checked_value("project name", typed)
     if not opts.project:
         usage(sys.stderr)
         die("no --project given, and no terminal to ask on.")
