@@ -58,7 +58,8 @@ NAMED_EXACTLY = (
 
 STRAIGHT_IN_A_FOLDER = (
     "For a holder straight in a folder (`~/projects/InkRouter`) the move "
-    "makes `~/InkRouter/InkRouter`, beside that folder, not inside it.")
+    "makes the family folder `~/InkRouter`, beside `~/projects`, and the "
+    "holder `~/InkRouter/InkRouter`, not `~/projects/InkRouter/InkRouter`.")
 
 #: What README and the handbook said before #578, which `make siblings` no
 #: longer does.

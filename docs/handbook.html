@@ -1282,7 +1282,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="families">
 
-      <!-- reads README.md § Families: a holder for projects that ship separately: blob dc85a9260a678cd19c4b991c9121cbda9338bced -->
+      <!-- reads README.md § Families: a holder for projects that ship separately: blob 0364c5794c46a00af51b13a2e1232e172638fe26 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Families: a holder for projects that ship separately</h2>
@@ -1344,11 +1344,13 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       every disk. When it is not, and no link of that name beside it leads to it,
       <code>make siblings</code> WARNS, prints the exact <code>mv</code> for a human to run and
       clones nothing until it is run, so the next run clones each member once. For a holder
-      straight in a folder (<code>~/projects/InkRouter</code>) the move makes
-      <code>~/InkRouter/InkRouter</code>, beside that folder, not inside it. A tool that relocated
-      the directory would do it out from under the shell, the editor and every agent lane standing
-      in it, and would break linked worktrees, whose <code>.git</code> files carry absolute paths
-      &mdash; an act by surprise, which is the one thing every refusal here exists to avoid.</p>
+      straight in a folder (<code>~/projects/InkRouter</code>) the move makes the family folder
+      <code>~/InkRouter</code>, beside <code>~/projects</code>, and the holder
+      <code>~/InkRouter/InkRouter</code>, not <code>~/projects/InkRouter/InkRouter</code>. A tool
+      that relocated the directory would do it out from under the shell, the editor and every
+      agent lane standing in it, and would break linked worktrees, whose <code>.git</code> files
+      carry absolute paths &mdash; an act by surprise, which is the one thing every refusal here
+      exists to avoid.</p>
       <p class="aside">Ruled by <strong>Brett Heap on 2026-09-09</strong> (issue #76): the plain
       folder, and the holder inside it at <code>&lt;Family&gt;/&lt;Family&gt;</code>.</p>
 

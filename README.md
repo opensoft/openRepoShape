@@ -915,11 +915,10 @@ repository, case included, on every disk. When it is not, and no link of that
 name beside it leads to it, `make siblings` WARNS, prints the exact `mv` for a
 human to run and clones nothing until it is run, so the next run clones each
 member once. For a holder straight in a folder (`~/projects/InkRouter`) the
-move makes `~/InkRouter/InkRouter`, beside that folder, not inside it.
+move makes the family folder `~/InkRouter`, beside `~/projects`, and the holder
+`~/InkRouter/InkRouter`, not `~/projects/InkRouter/InkRouter`.
 
 ### The InkRouter example
-
-Eight services, each its own project, one holder:
 
 ```
 InkRouter/                      the family FOLDER (see the layout above)
