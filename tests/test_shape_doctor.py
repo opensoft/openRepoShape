@@ -8264,7 +8264,10 @@ def test_a_submodule_in_the_other_leg_from_its_record_is_misplaced(
     like any other: in `misplaced`, counted in the verdict and the leg, named
     with the leg recorded, and an entry under `paths:` in the plan that the
     adoption's own reader accepts. Nothing else is in the wrong leg here, so
-    the reason is that one clause and no separator hangs after it.
+    the reason is that one clause and no separator hangs after it. The spec
+    leg holds no `.cursor`, so it has MOVED (#525): the clause says so, and
+    the NEXT is the doctor again with the hand edit in its WHY, not a plan
+    of the move already made -- though `--placement-plan` still writes one.
     """
     stage_gitlink(project / "code", ".cursor")
     record_submodules(project, (".cursor", "spec", "rules the spec reads"))
@@ -8281,7 +8284,7 @@ def test_a_submodule_in_the_other_leg_from_its_record_is_misplaced(
         "classified_as": "spec", "rule": None, "reason": reason,
         "confidence": "recorded", "question": None, "files": 1, "bytes": 0,
         "review_required": False, "direction": "spec in the code leg",
-        "submodule": True}]
+        "submodule": True, "moved": True}]
     [held] = row["detail"]["submodules"]
     assert held["placement"] == "misplaced", held
     assert held["recorded_leg"] == "spec", held
@@ -8291,10 +8294,11 @@ def test_a_submodule_in_the_other_leg_from_its_record_is_misplaced(
     code = [leg for leg in row["detail"]["legs"] if leg["role"] == "code"][0]
     assert code["misplaced"] == 1, code
     assert row["reason"] == (
-        "1 submodule(s) sit in a leg other than the one project.yaml's "
-        "`submodules:` records for them (#189): code/.cursor (recorded in "
-        f"the spec leg)  [{audited_legs(row)}]"), row["reason"]
-    assert "--placement-plan" in row["next"], row
+        "1 submodule(s) moved out of the leg project.yaml's `submodules:` "
+        "records for them, which no longer holds them (#525): code/.cursor "
+        f"(recorded in the spec leg)  [{audited_legs(row)}]"), row["reason"]
+    assert "--placement-plan" not in row["next"], row
+    assert row["why"] == doctor_module(standard).MOVED_BY_HAND, row
 
     adopt = adoption_module(standard)
     data = adopt.load_yaml(out)
