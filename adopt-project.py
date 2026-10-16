@@ -1060,6 +1060,30 @@ def _run_exact(command: list[str], cwd: Path | None = None) -> str:
     return proc.stdout.decode("utf-8", "replace").strip()
 
 
+def _git_out_exact(args: list[str], cwd: Path) -> str:
+    """`git_out(args, cwd)`, with each argument handed to git as the UTF-8
+    bytes it spells, under any locale (#653): what `_run_exact` is to `run`.
+
+    `git_out` is `scripts/repo_shape.py`'s, a shape copy every project
+    pins, and it hands git text: `Source.open`'s `git rev-parse` of a
+    default branch named `caf\\u00e9` raised `UnicodeEncodeError` under
+    `LC_ALL=C PYTHONUTF8=0`, and `plan`, `check` and `execute` died before
+    anything was said of the branch. So `git_out` itself wherever the locale
+    hands every argument alike, and elsewhere git is run here, and a git
+    that refuses is refused as `git_out` refuses it: `git-failed`, naming
+    the command as the person reads it.
+    """
+    if os.name == "nt" or all(map(_the_locale_hands_it_alike, args)):
+        return git_out(args, cwd=cwd)
+    proc = subprocess.run(["git", *map(_path_argument, args)], cwd=str(cwd),
+                          capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise Refusal("git-failed", "`git {}` in {} exited {}: {}".format(
+            " ".join(args), cwd, proc.returncode,
+            proc.stderr.decode("utf-8", "replace").strip()))
+    return proc.stdout.decode("utf-8").strip()
+
+
 def _one_line(text: str) -> str:
     """What git said, on one line: `check` prints one FINDING per line."""
     return " ".join(text.split())
@@ -1534,7 +1558,8 @@ class Source:
                     "name, or clone it yourself and pass the path.") from exc
             cloned = True
         branch = _default_branch(path)
-        commit = git_out(["rev-parse", branch], cwd=path).lower()
+        # The name as the bytes git keeps it, under any locale (#653).
+        commit = _git_out_exact(["rev-parse", branch], path).lower()
         return cls(path, repository, branch, commit, work_root, cloned)
 
     def tree(self) -> list[tuple[str, str, str, int]]:

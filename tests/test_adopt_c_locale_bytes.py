@@ -44,7 +44,8 @@ from pathlib import Path
 import pytest
 
 import test_adopt_github_exits as on_github
-from conftest import ADOPT, WINDOWS_SKIP, git, make_source_repo, run_script
+from conftest import (ADOPT, WINDOWS_SKIP, git, make_source_repo, run_script,
+                      write_plan)
 from test_adopt_git_rm_bytes import (C_LOCALE, NORTHWIND, SPLIT_BRANCH,
                                      c_locale_or_skip, needs_filter_repo,
                                      tree_bytes)
@@ -86,11 +87,11 @@ def unescaped(line: str) -> str:
 
 
 def said(result: subprocess.CompletedProcess) -> list[str]:
-    """Every FINDING and NOTE line a run printed, on either stream; a
-    refusal of `execute` indents each FINDING it repeats."""
+    """Every REFUSED, FINDING and NOTE line a run printed, on either
+    stream; a refusal of `execute` indents each FINDING it repeats."""
     lines = (result.stdout + result.stderr).splitlines()
     return [line.strip() for line in lines
-            if line.lstrip().startswith(("FINDING ", "NOTE "))]
+            if line.lstrip().startswith(("REFUSED ", "FINDING ", "NOTE "))]
 
 
 def assert_said_alike(c_locale, utf8_mode) -> None:
@@ -337,3 +338,61 @@ def test_execute_resolves_and_asks_a_relative_url_outside_ascii(tmp_path):
     adopted = executed(remotes, C_LOCALE, "work")
     assert adopted.returncode == 0, adopted.stderr + adopted.stdout
     assert VERIFIED in adopted.stdout
+
+
+# --- `Source.open`'s `git rev-parse` of the default branch ------------------
+
+
+#: A default branch whose name is UTF-8 and not ASCII (w425's probe).
+BRANCH = "café"
+
+
+def on_its_own_branch(base: Path) -> Path:
+    """A source on BRANCH, its only branch."""
+    return make_source_repo(base / NORTHWIND, on_github.SOURCE_TREE,
+                            branch=BRANCH, edits=())
+
+
+def its_branch_gone(base: Path) -> Path:
+    """A clone of a repository on BRANCH, whose `origin/HEAD` still names
+    BRANCH after the clone's own BRANCH was deleted: `git rev-parse` of the
+    name `_default_branch` reads finds nothing, and git refuses it."""
+    upstream = make_source_repo(base / ORG / NORTHWIND, on_github.SOURCE_TREE,
+                                branch=BRANCH, edits=())
+    source = base / NORTHWIND
+    git("clone", "-q", str(upstream), str(source), cwd=base)
+    git("checkout", "-q", "-b", "other", cwd=source)
+    git("branch", "-q", "-D", BRANCH, cwd=source)
+    return source
+
+
+@pytest.mark.parametrize("make_source, tracking", [
+    (on_its_own_branch, ()),
+    (on_its_own_branch, ("--tracking-branch", "main")),
+    (its_branch_gone, ("--tracking-branch", "main")),
+], ids=["tracked", "main", "gone"])
+def test_a_default_branch_outside_ascii_reads_as_in_utf_8_mode(
+        monkeypatch, tmp_path, make_source, tracking):
+    """On 9b8e1768, as on main, `plan` died with `UnicodeEncodeError` at
+    `Source.open`'s `git rev-parse café`, whatever it was told. Now under
+    the C locale it ends as in UTF-8 mode. Taking `café` as the tracking
+    branch (`tracked`), it is refused `unsafe-value` before any plan is
+    written. Told `--tracking-branch main` (`main`), it writes the plan
+    UTF-8 mode writes, byte for byte, and `check` finds `main` no branch of
+    the source, naming `café` as UTF-8 mode names it. Where git refuses
+    `café` (`gone`), the refusal is `git-failed`, naming the command as
+    UTF-8 mode's does."""
+    c_locale_or_skip()
+    source = make_source(tmp_path)
+    plans, runs = [], []
+    for locale in (C_LOCALE, UTF8_MODE):
+        plan = tmp_path / f"plan-{locale['PYTHONUTF8']}" / "adoption-plan.yaml"
+        plan.parent.mkdir()
+        with monkeypatch.context() as here:
+            in_the_locale(here, locale)
+            written = write_plan(source, plan, extra=tracking)
+        plans.append(plan.read_bytes() if written.returncode == 0 else None)
+        runs.append(checked(plan, locale) if written.returncode == 0
+                    else written)
+    assert plans[0] == plans[1]
+    assert_said_alike(*runs)
