@@ -30,6 +30,7 @@ No network and no GitHub: scaffolds dry-run, or into local bare remotes.
 
 from __future__ import annotations
 
+import ast
 import os
 import shutil
 import subprocess
@@ -40,7 +41,7 @@ import pytest
 from conftest import (REPO, SCAFFOLD, clear_ambient_pin_sources, git,
                       load_without_bytecode, run_script)
 from test_link_source_chain_defaults import (  # noqa: F401
-    manifest, pinned, scaffold, tree, validate_pins,
+    VALIDATOR, manifest, naming, pinned, scaffold, tree, validate_pins,
 )
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -51,7 +52,27 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import PLACEHOLDER_RE, shown_source  # noqa: E402
 
 TEMPLATE_AGENTS = REPO / "templates" / "assembly-root" / "AGENTS-shape.md"
+TEMPLATE_PINS = (REPO / "templates" / "assembly-root" / "scripts" /
+                 "validate-pins.py")
+TEMPLATE_FAMILY = (REPO / "templates" / "family-root" / "scripts" /
+                   "validate-family.py")
 POLICY = REPO / "contracts" / "repository-naming.yaml"
+
+#: What the pinned `AGENTS-shape.md` says of `CONTRACTS_DIR` (L2-33), with its
+#: hard wrapping undone: of an ADOPTED root, whose Makefile is the shape's
+#: unless the source kept one of its own (rv610's F1 on #634: then the block
+#: waits in `shape/Makefile`, and `make contracts-dir` has no rule at the
+#: root), and of a SCAFFOLDED one, whose legs are the scaffold's seed (F5).
+ADOPTED_SENTENCES = (
+    "Where this root was ADOPTED, the shape's Makefile exports "
+    "`CONTRACTS_DIR` once, as the `contracts/` of the spec leg at the path "
+    "`project.yaml` mounts it, and `make contracts-dir` prints it. Where the "
+    "source kept a Makefile of its own, that block waits in `shape/Makefile` "
+    "until the two are merged.")
+SCAFFOLDED_SENTENCE = (
+    "A SCAFFOLDED root's Makefile exports none: its legs start from the "
+    "scaffold's seed, with no `contracts/`, so nothing reads across them "
+    "yet.")
 
 #: A Windows file name holds no control character, so neither does a path
 #: one could mean there (`tests/test_pin_source_unreadable.py`'s mark).
@@ -110,12 +131,21 @@ def test_a_scaffolded_root_is_told_its_makefile_exports_none(project):
         encoding="utf-8")
     said = flat(project / "AGENTS-shape.md")
     assert "the root Makefile exports" not in said
-    assert ("A SCAFFOLDED root's Makefile exports none: its legs start "
-            "empty, so nothing reads across them yet.") in said
-    assert ("Where this root was ADOPTED, its Makefile exports "
-            "`CONTRACTS_DIR` once, as the `contracts/` of the spec leg at "
-            "the path `project.yaml` mounts it, and `make contracts-dir` "
-            "prints it.") in said
+    assert SCAFFOLDED_SENTENCE in said
+    assert ADOPTED_SENTENCES in said
+
+
+def test_a_scaffolded_roots_legs_start_from_the_seed_with_no_contracts(
+        project):
+    """F5 (rv610, #634). The sentence said the legs "start empty", and the
+    scaffold seeds both: a README, the assistant instructions, a `.gitignore`
+    and the leg's own folder. What it does not seed is a `contracts/`, which
+    is what "nothing reads across them yet" rests on."""
+    for leg, folder in (("spec", "requirements"), ("code", "src")):
+        seeded = {entry.name for entry in (project / leg).iterdir()}
+        assert {"README.md", "AGENTS.md", "CLAUDE.md", ".gitignore",
+                folder} <= seeded, (leg, sorted(seeded))
+        assert "contracts" not in seeded, (leg, sorted(seeded))
 
 
 @pytest.mark.skipif(shutil.which("make") is None or sys.platform == "win32",
@@ -194,15 +224,28 @@ def test_each_holder_is_offered_the_scaffolds_own_sources(scaffold_module):
         "openydox": "SHAPE_PIN_SOURCE_OPENYDOX would let it be read"}
 
 
-def test_a_shared_variable_is_offered_to_neither_link(scaffold_module):
+@pytest.mark.parametrize("first, keyed", [
+    pytest.param("open-x", "open-x", id="lowercase"),
+    pytest.param("Open-X", "open-x", id="mixed-case"),
+])
+def test_a_shared_variable_is_offered_to_neither_link(scaffold_module, first,
+                                                      keyed):
     """A hand-written chain whose two holders share one variable (#275):
     the scaffold reads it for neither, so the first is offered its
     `--pin-source` alone, and the second, which has no other source here,
-    is told so rather than offered one the scaffold would not read."""
+    is told so rather than offered one the scaffold would not read.
+
+    The MIXED-CASE pair is rv610's F4 on #634 (mutant B1): whether a link
+    shares its variable is asked of its `pin_product_key`, the name its pin
+    file carries, and not of the link as typed. Every name here was
+    lowercase, so `link in shared` passed for `pin_product_key(link) in
+    shared`, and `Open-X` was offered a variable the scaffold does not read
+    for it. The remedy stays keyed by the link casefolded, as the chain's
+    own lookup is."""
     assert scaffold_module._link_remedies(
-        ("open-x", "open_x", "openInk")) == {
-        "open-x": "a --pin-source clone of open-x that holds its "
-                  "project.yaml would let it be read",
+        (first, "open_x", "openInk")) == {
+        keyed: f"a --pin-source clone of {first} that holds its "
+               "project.yaml would let it be read",
         "open_x": "the scaffold reads no source for it: SHAPE_PIN_SOURCE_"
                   "OPEN_X is another link's too, and --pin-source is the "
                   "first link's tree alone"}
@@ -423,3 +466,127 @@ def test_a_printable_pin_source_is_named_as_typed(pinned, tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert notes(result) == [
         f"note --pin-source {typed}: not used — {MORE_SPECIFIC}."]
+
+
+# --- rv610's extra find (a): validate-pins.py's two other raw prints ---------
+
+@CONTROL_ARGV
+@pytest.mark.parametrize("name", CONTROL_NAMES)
+def test_an_unreadable_pin_source_and_its_directory_twin_are_spelled(
+        pinned, tmp_path, name):
+    """The `neutral-pin-source-unreadable` FINDING named the source it asked
+    as typed, and the line after it, for a keyed value that is ALSO a
+    directory whole (#295), named the value as typed twice: in the sentence
+    and in the `./` command. An ESC in either reached the terminal, and a
+    line break began a line of the value's choosing. Both are spelled as
+    L2-31's note spells a value, by the same local `_shown`.
+
+    Run from a directory where `openXdox=<name>` exists whole, so the keyed
+    reading wins and the other one is named."""
+    typed = f"openXdox={name}"
+    (tmp_path / typed).mkdir()
+    result = run_script(pinned["root"] / "scripts" / "validate-pins.py",
+                        "--pin-source", typed, cwd=tmp_path)
+    assert result.returncode == 1, result.stdout + result.stderr
+    everything = result.stdout + result.stderr
+    assert "\x1b" not in everything, everything
+    assert not [line for line in everything.splitlines()
+                if line.startswith("WARNING forged-line")], everything
+    assert ("FINDING neutral-pin-source-unreadable: contracts/openxdox-pin."
+            f"yaml: {name!r} (--pin-source openXdox=...) could not answer "
+            "for ") in result.stderr, result.stderr
+    assert (f"`{typed!r}` is also a directory; `--pin-source ./{typed!r}` "
+            "reads it as one.") in result.stderr, result.stderr
+
+
+def test_a_printable_unreadable_pin_source_is_named_as_typed(pinned,
+                                                             tmp_path):
+    """The control: a printable value is the bytes it always was."""
+    typed = "openXdox=x/openXdox"
+    (tmp_path / typed).mkdir(parents=True)
+    result = run_script(pinned["root"] / "scripts" / "validate-pins.py",
+                        "--pin-source", typed, cwd=tmp_path)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (f"FINDING neutral-pin-source-unreadable: contracts/openxdox-pin."
+            f"yaml: {os.path.join('x', 'openXdox')} (--pin-source "
+            "openXdox=...) could not answer for ") in result.stderr
+    assert ("`openXdox=x/openXdox` is also a directory; `--pin-source "
+            "./openXdox=x/openXdox` reads it as one.") in result.stderr
+
+
+# --- F6 (rv610, #634): the naming gate's line holds ONE spelling -------------
+
+def unreadable_link_source(tmp_path, name: str):
+    """The naming gate asked to read `openXdox` from a tree called `name`
+    whose `project.yaml` cannot be read as a declaration."""
+    bad = tmp_path / name
+    bad.mkdir()
+    (bad / "project.yaml").write_bytes(b"neutral_product_pins: 5\n")
+    result = naming(tmp_path, "--pins", "openXdox", "--referent-chain",
+                    "openXdox,openInk", "--link-source", f"openXdox={bad}",
+                    "codexInk")
+    return bad, result
+
+
+@CONTROL_ARGV
+@pytest.mark.parametrize("name", CONTROL_NAMES)
+def test_the_naming_gate_spells_the_link_source_as_it_spells_the_manifest(
+        tmp_path, name):
+    """`link-source-unreadable` named the tree it asked, then the reason,
+    which since #610 names the manifest with `shown_path`: one line, two
+    spellings, and a raw ESC still on stderr. The path before the reason is
+    spelled the same way now."""
+    bad, result = unreadable_link_source(tmp_path, name)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "\x1b" not in result.stdout + result.stderr, result.stderr
+    assert not [line for line in result.stderr.splitlines()
+                if line.startswith("WARNING forged-line")], result.stderr
+    assert ("WARNING link-source-unreadable: "
+            f"{shown_path(str(bad))} (--link-source openXdox=...) could not "
+            f"answer for openXdox: {shown_path(str(bad / 'project.yaml'))}: "
+            "neutral_product_pins is not a list\n") in result.stderr, (
+        result.stderr)
+    assert shown_path(str(bad)) == repr(str(bad))
+
+
+def test_the_naming_gate_names_a_printable_link_source_as_typed(tmp_path):
+    """The control: a printable tree is named byte for byte as it was."""
+    bad, result = unreadable_link_source(tmp_path, "plain")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ("WARNING link-source-unreadable: "
+            f"{bad} (--link-source openXdox=...) could not answer for "
+            f"openXdox: {bad / 'project.yaml'}: neutral_product_pins is not "
+            "a list\n") in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("path", [
+    "plain/dir", "x\x1b[31mRED", "a\nb", "a\rb", "caf\u00e9", "\udcff",
+    "tab\there", "",
+])
+def test_the_pinned_scripts_spell_a_path_as_the_library_does(path):
+    """`validate-pins.py` and `validate-repository-naming.py` each write
+    their own `_shown`, because a root whose `scripts/repo_shape.py` is
+    older than they are has no `shown_path` to import. Each must spell as
+    `shown_path` spells."""
+    for script, name in ((TEMPLATE_PINS, "pins"), (VALIDATOR, "naming")):
+        module = load_without_bytecode(script, f"pinned_copy_text_{name}")
+        assert module._shown(path) == shown_path(path), script
+
+
+@pytest.mark.parametrize("script", [TEMPLATE_PINS, VALIDATOR, TEMPLATE_FAMILY],
+                         ids=["validate-pins", "validate-repository-naming",
+                              "validate-family"])
+def test_no_pinned_script_imports_what_an_older_library_lacks(script):
+    """THE SKEW RULE. A root re-copies its pinned files one row at a time
+    (`update-shape.py apply --accept-local` keeps a copy), so a script may
+    meet a `repo_shape.py` older than itself. `shown_path` is new with this
+    bump (#610): a script that imported it would end in an `ImportError`
+    before it checked a pin, a name or a member."""
+    imported = {alias.name
+                for node in ast.walk(ast.parse(script.read_text(
+                    encoding="utf-8")))
+                if isinstance(node, ast.ImportFrom)
+                and node.module == "repo_shape"
+                for alias in node.names}
+    assert imported, f"{script.name} imports nothing from repo_shape?"
+    assert "shown_path" not in imported

@@ -44,6 +44,7 @@ from conftest import (ADOPT, REPO, clone_just_pushed, git, make_source_repo,
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
 from repo_shape import load_yaml  # noqa: E402
+from test_pinned_copy_text import ADOPTED_SENTENCES  # noqa: E402
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
@@ -215,17 +216,18 @@ def test_plan_names_the_read_across_from_where_the_code_leg_is(
 SPEC_PATH, CODE_PATH, ACROSS = "legs/spec", "impl/code", "../../legs/spec"
 
 
-def adopt_with_legs_mounted_away(base: Path, *, by_hand: bool) -> dict:
-    """One real adoption with both legs mounted away from their defaults, at
-    SPEC_PATH and CODE_PATH, and a recursive clone of its split branch. Its
-    own source: `execute` pushes the split branch into the repository it
-    adopts.
+def adopt_with_legs_mounted_away(base: Path, *, by_hand: bool,
+                                 tree: dict = TREE) -> dict:
+    """One real adoption of `tree` with both legs mounted away from their
+    defaults, at SPEC_PATH and CODE_PATH, and a recursive clone of its split
+    branch. Its own source: `execute` pushes the split branch into the
+    repository it adopts.
 
     `by_hand` plans with the DEFAULT paths and then edits `legs.spec_path` and
     `legs.code_path` in the plan, as `MOUNT_REMEDIATION` and
     `plan-leg-path-collides` ask a person to. Otherwise `plan` is given them.
     """
-    source = make_source_repo(base / "Thing", TREE, edits=EDITS)
+    source = make_source_repo(base / "Thing", tree, edits=EDITS)
     plan = base / "adoption-plan.yaml"
     follow_ups = planned_follow_ups(
         source, plan, *(("spec", "code") if by_hand else (SPEC_PATH, CODE_PATH)))
@@ -272,6 +274,19 @@ def adopted_by_hand(tmp_path_factory) -> dict:
         tmp_path_factory.mktemp("contracts-dir-by-hand"), by_hand=True)
 
 
+#: A root `Makefile` the source keeps: the `root-project-makefile` rule leaves
+#: it in the root, and the shape's Makefile lands beside it as `shape/Makefile`.
+OWN_MAKEFILE = "build:\n\t@echo the source's own build\n"
+
+
+@pytest.fixture(scope="module")
+def adopted_with_its_own_makefile(tmp_path_factory) -> dict:
+    """The adoption of a source that keeps a root Makefile of its own."""
+    return adopt_with_legs_mounted_away(
+        tmp_path_factory.mktemp("contracts-dir-own-makefile"), by_hand=False,
+        tree={**TREE, "Makefile": OWN_MAKEFILE})
+
+
 @needs_filter_repo
 def test_the_adopted_makefile_exports_the_spec_legs_contracts(adopted):
     """The split's Makefile (the shape's, at the root: the source kept none)
@@ -312,15 +327,52 @@ def test_the_pinned_agent_file_is_true_of_the_adopted_makefile(adopted):
         encoding="utf-8").split())
     assert "$(CURDIR)" not in said
     assert "spec/contracts" not in said
-    assert ("Where this root was ADOPTED, its Makefile exports "
-            "`CONTRACTS_DIR` once, as the `contracts/` of the spec leg at "
-            "the path `project.yaml` mounts it, and `make contracts-dir` "
-            "prints it.") in said
+    assert ADOPTED_SENTENCES in said
     (mounted,) = [str(leg["path"]) for leg in load_yaml(
         adopted["clone"] / "project.yaml")["legs"] if leg["role"] == "spec"]
     assert mounted == SPEC_PATH
     assert contracts_dir_line(adopted["makefile"].decode("utf-8")) == (
         f"CONTRACTS_DIR ?= $(CURDIR)/{mounted}/contracts")
+
+
+@needs_filter_repo
+@pytest.mark.skipif(shutil.which("make") is None or sys.platform == "win32",
+                    reason="needs make, and a POSIX `$(CURDIR)` spelling")
+def test_the_pinned_agent_file_says_where_a_kept_makefile_leaves_the_block(
+        adopted_with_its_own_makefile):
+    """F1 (rv610, #634). A source that keeps a root Makefile of its own keeps
+    it AT THE ROOT, with no `CONTRACTS_DIR`, so `make contracts-dir` there
+    has no rule: the block waits in `shape/Makefile`. The pinned
+    `AGENTS-shape.md` said the root's Makefile exports `CONTRACTS_DIR` and
+    `make contracts-dir` prints it. It now says the SHAPE's Makefile does,
+    and that the block waits in `shape/Makefile` where the source kept its
+    own."""
+    clone = adopted_with_its_own_makefile["clone"]
+    # The source's own bytes, whatever line ending `write_text` gave them.
+    assert adopted_with_its_own_makefile["makefile"].decode(
+        "utf-8").splitlines() == OWN_MAKEFILE.splitlines()
+    block = (clone / "shape" / "Makefile").read_text(encoding="utf-8")
+    assert contracts_dir_line(block) == (
+        f"CONTRACTS_DIR ?= $(CURDIR)/{SPEC_PATH}/contracts")
+    at_the_root = subprocess.run(
+        ["make", "--no-print-directory", "-s", "contracts-dir"],
+        cwd=str(clone), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", check=False)
+    assert at_the_root.returncode != 0, at_the_root.stdout
+    assert "No rule to make target 'contracts-dir'" in at_the_root.stderr, (
+        at_the_root.stderr)
+    # Where the block waits, the target prints the spec leg's `contracts/`.
+    in_the_shapes = subprocess.run(
+        ["make", "--no-print-directory", "-s", "-f", "shape/Makefile",
+         "contracts-dir"],
+        cwd=str(clone), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", check=False)
+    assert in_the_shapes.returncode == 0, in_the_shapes.stderr
+    assert Path(in_the_shapes.stdout.strip()) == (
+        clone.resolve() / SPEC_PATH / "contracts")
+    said = " ".join((clone / "AGENTS-shape.md").read_text(
+        encoding="utf-8").split())
+    assert ADOPTED_SENTENCES in said
 
 
 @needs_filter_repo

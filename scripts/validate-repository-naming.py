@@ -107,6 +107,19 @@ from repo_shape import (  # noqa: E402
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
 
 
+def _shown(path) -> str:
+    """A path as a line about it names it: as it is, unless a character in
+    it is not printable (`str.isprintable`), and then as Python's `repr`
+    spells it (#610). It is `repo_shape.shown_path`, which spells the
+    manifest in a `link-source-unreadable` reason, so one line holds one
+    spelling. Written here rather than imported: this file is copied into
+    every project and may meet a `scripts/repo_shape.py` older than itself,
+    which has no such name, and the gate would end in an `ImportError` before
+    it classified a name."""
+    text = str(path)
+    return text if text.isprintable() else repr(text)
+
+
 class Target:
     """One name to classify, with everything DECLARED about it.
 
@@ -327,8 +340,8 @@ class LinkSources:
                 continue
             path, how, why, links = self.unread[typed]
             lines.append(
-                f"link-source-unreadable: {path} ({how}) could not answer "
-                f"for {', '.join(links)}: {why}"
+                f"link-source-unreadable: {_shown(path)} ({how}) could not "
+                f"answer for {', '.join(links)}: {why}"
                 + "".join(f"\n  {line}" for line in (
                     self.read_as_path(typed), self._also_a_directory(typed))
                     if line))

@@ -163,13 +163,13 @@ def copy_edited(holder) -> None:
     target.write_bytes(target.read_bytes() + b"\n# edit\n")
 
 
-def gitlink_moved(holder) -> None:
-    """IRRS's gitlink moved alone, staged at an EMPTY commit past its pin,
-    so the pin's digest still recomputes: a lone
+def gitlink_moved(holder, member: str = "IRRS") -> None:
+    """`member`'s gitlink (IRRS's) moved alone, staged at an EMPTY commit
+    past its pin, so the pin's digest still recomputes: a lone
     `member-gitlink-mismatch`."""
     git("commit", "-q", "--allow-empty", "-m", "The member moved alone",
-        cwd=holder / "members" / "IRRS")
-    git("add", "--", "members/IRRS", cwd=holder)
+        cwd=holder / "members" / member)
+    git("add", "--", f"members/{member}", cwd=holder)
 
 
 def digest_written_wrong(holder) -> None:
@@ -287,6 +287,44 @@ def test_the_count_s_rule_names_the_holder_and_no_member(on_main):
                     "<commit>")
     assert switch == (f"git -C {shlex.quote(str(holder))} switch -c "
                       "family/bump-<Project>")
+
+
+@pytest.mark.parametrize("drop_id, word", [
+    pytest.param(False, "irrs", id="the-rows-id"),
+    pytest.param(True, "irrs2", id="no-id-so-the-project"),
+])
+def test_the_rule_names_the_rows_id_through_the_gate(family, on_main,
+                                                      drop_id, word):
+    """rv610's F3 on #634 (mutant A1: `_lockstep(root, project, project)`
+    at the call site). `test_the_rule_quotes_what_it_names` hands `_lockstep`
+    an id; this goes through the gate, which reads it from the row. A
+    member's `id:` is its own `project.yaml` id, which `--id` can make
+    anything, and every other row here says the project lowercased, so a
+    call site that passed the PROJECT passed the right word by accident.
+
+    `mount_twice`'s second row is the project `IRRS2` recording the id
+    `irrs`, and its gitlink is moved alone: the rule's `--member` is the
+    project, and its branch is the row's `id:` -- `family/bump-irrs`, not
+    `family/bump-irrs2`. Where the row records no `id:`, the project is the
+    word."""
+    holder = on_main
+    mount_twice(holder, family["remotes"])
+    if drop_id:
+        # IRRS2's row is the last in the file, so its `id:` is the last.
+        line = "    id: irrs\n"
+        head, dropped, tail = (holder / "family.yaml").read_text(
+            encoding="utf-8").rpartition(line)
+        assert dropped == line and line not in tail
+        (holder / "family.yaml").write_bytes((head + tail).encode("utf-8"))
+    gitlink_moved(holder, "IRRS2")
+    found = validate(holder)
+    assert found.returncode == 1, found.stdout + found.stderr
+    finding = found.stderr.split("FINDING member-gitlink-mismatch: ", 1)[1]
+    assert finding.startswith("members/IRRS2: "), finding
+    bump, switch = rule_commands(finding.split("\n\n", 1)[0])
+    assert shlex.split(switch) == switch_argv(holder, "bump", word)
+    assert shlex.split(bump)[3:7] == ["--family-root", str(holder),
+                                      "--member", "IRRS2"], bump
 
 
 @pytest.mark.parametrize("project,member_id,word", [

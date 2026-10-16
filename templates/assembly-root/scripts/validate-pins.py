@@ -1061,11 +1061,16 @@ def _also_a_directory(typed: str | None, sources: PinSources) -> str:
     existing directory whole (#295): the keyed reading won, and this is how
     to ask for the other one. `os.path.isdir`, which is False for every
     `OSError` on every Python, where `Path.is_dir` before 3.14 raised a name
-    too long out of the finding it was adding a line to."""
+    too long out of the finding it was adding a line to.
+
+    THE VALUE IS NAMED AS `_shown` NAMES IT, in the sentence and in the
+    command (#610): a value that is not printable is `repr`'d, as the "not
+    used" note names it."""
     if typed is None or sources.reading.get(typed) is None \
             or not os.path.isdir(typed):
         return ""
-    return (f"`{typed}` is also a directory; `--pin-source ./{typed}` "
+    named = _shown(typed)
+    return (f"`{named}` is also a directory; `--pin-source ./{named}` "
             "reads it as one.")
 
 
@@ -1093,7 +1098,7 @@ def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
         except Refusal as exc:
             report.finding(
                 "neutral-pin-source-unreadable",
-                f"{rel}: {source} ({how}) could not answer for "
+                f"{rel}: {_shown(str(source))} ({how}) could not answer for "
                 f"{repository} @ {commit}: {exc.detail}"
                 + "".join(f"\n  {line}" for line in (
                     sources.read_as_path(typed),
