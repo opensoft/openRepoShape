@@ -2587,9 +2587,12 @@ class Spelled(NamedTuple):
     index is a change to commit.
 
     A MEMBER'S OWN GITLINK (`RESTORE`, #646) has its row's path as `target`,
-    `committed` says whether the move leaves anything to commit, and
-    `recorded` is the commit it records, at which the move records it back;
-    `recorded` is empty for every other remedy."""
+    `committed` says whether the move leaves anything to commit, `recorded`
+    is the commit it records, at which the move records it back, and
+    `sparse` whether a sparse checkout keeps it off disk (`skip-worktree`),
+    which `git rm --cached --ignore-unmatch` passes over without a word
+    unless it is given `--sparse` too; `recorded` is empty, and `sparse`
+    false, for every other remedy."""
 
     name: str
     kind: str
@@ -2599,6 +2602,7 @@ class Spelled(NamedTuple):
     remedy: str
     committed: bool = False
     recorded: str = ""
+    sparse: bool = False
 
 
 def _folded(name: str) -> str:
@@ -2861,18 +2865,20 @@ def _members_spellings(root: Path, project: str,
     each `members:` row (`_rows_paths`).
 
     A MEMBER'S OWN GITLINK HELD IN THE WRONG CASE (#646) is moved back, never
-    taken out or renamed. Where the index holds no gitlink at a row's path,
-    a gitlink at a case variant of that path, in the index or in HEAD alone,
-    is that member's (`Members/<P>` for the row `members/<P>`, #363's state
-    after the fact). `git rm --cached` of it, or a committed `git mv` to
-    another name, took it away from its row, and `git mv` to the row's path
-    fails or misplaces it (`bad source`; `members/<P>/<P>`; `renaming ...
-    failed`), so it is `RESTORE`: taken out of the index and recorded at the
-    row's path, at the commit it records there, by `git update-index`, which
-    reads no disk, as `validate-family.py` gives the same move (#611). Where
-    the index does hold a gitlink at the row's path, one at a variant is a
-    second gitlink, and taking it out leaves the member where it is: it keeps
-    the remedy below.
+    taken out or renamed. Where the index holds nothing at or under a row's
+    path, a gitlink at a case variant of that path, in the index or in HEAD
+    alone, is that member's (`Members/<P>` for the row `members/<P>`, #363's
+    state after the fact). `git rm --cached` of it, or a committed `git mv`
+    to another name, took it away from its row, and `git mv` to the row's
+    path fails or misplaces it (`bad source`; `members/<P>/<P>`; `renaming
+    ... failed`), so it is `RESTORE`: taken out of the index and recorded at
+    the row's path, at the commit it records there, by `git update-index`,
+    which reads no disk, as `validate-family.py` gives the same move (#611).
+    An unmerged one is recorded at its stage 2, and is no member's own where
+    it has no gitlink there. Where the index does hold something at or
+    under the row's path, a gitlink at a variant is a second one, which
+    taking out leaves the member where it is, and the move would replace a
+    file there or fail on one under it: it keeps the remedy below.
 
     THE INDEX, the whole of it, as `_index_entries` reads it (#362). Each
     entry's remedy acts on `_spelled_target`'s path: renamed with `git mv`
@@ -2890,9 +2896,10 @@ def _members_spellings(root: Path, project: str,
     remedies act on one path.
     """
     canon = _members_dir_on_disk(root, on_disk)
-    listed = {name.decode("utf-8", "surrogateescape"): records[0].split()
+    listed = {name.decode("utf-8", "surrogateescape"):
+              [record.split() for record in records]
               for name, records in _index_records(root).items()}
-    indexed: dict[str, int] = {name: int(fields[0], 8)
+    indexed: dict[str, int] = {name: int(fields[0][0], 8)
                                for name, fields in listed.items()}
     gitlinks = {name for name, mode in indexed.items() if mode == 0o160000}
     occupied = frozenset(
@@ -2901,9 +2908,15 @@ def _members_spellings(root: Path, project: str,
         if first == MEMBERS_DIR and rest)
     head = _head_spellings(root)
     in_head = {name: oid for name, _, oid in head}
-    # Each row's path the index holds no gitlink at, by its folded spelling:
-    # a gitlink at another spelling of it is that member's own.
-    strays = {_folded(row): row for row in rows if row not in gitlinks}
+    # Each row's path the index holds nothing at or under, by its folded
+    # spelling: a gitlink at another spelling of it is that member's own.
+    # The move would replace a file there without a word, and a file under
+    # it would stop the move's second line after the first had taken the
+    # variant out (`appears as both a file and as a directory`; #646's
+    # review, N3).
+    strays = {_folded(row): row for row in rows
+              if not any(name == row or name.startswith(row + "/")
+                         for name in indexed)}
     found: list[Spelled] = []
     restored: list[str] = []
     sparse: set[str] | None = None
@@ -2913,16 +2926,25 @@ def _members_spellings(root: Path, project: str,
             continue
         target, mount = spelled
         kind = INDEX_ENTRY_KINDS.get(mode, "a file")
-        own = strays.get(_folded(name)) if mode == 0o160000 else None
+        # The record it is moved back at: its own, or, unmerged, the one at
+        # stage 2, the holder's own side, where git lists stage 1, the merge
+        # base, first (#646's review, N2). With no gitlink there, it is no
+        # member's own.
+        ours = next((fields for fields in listed[name]
+                     if fields[2] in (b"0", b"2")), None)
+        own = (strays.get(_folded(name))
+               if ours is not None and ours[0] == b"160000" else None)
         if own is not None:
             # The move leaves nothing to commit only where HEAD holds no
             # such variant and records the gitlink at the row's path
             # already, at this commit: a move to the variant, staged alone.
-            recorded = listed[name][1].decode("ascii")
+            recorded = ours[1].decode("ascii")
+            if sparse is None:
+                sparse = _skip_worktree(root)
             found.append(Spelled(_shown(name), kind, IN_INDEX, _shown(own),
                                  mount, RESTORE,
                                  name in in_head or in_head.get(own)
-                                 != recorded, recorded))
+                                 != recorded, recorded, name in sparse))
             continue
         if target != canon and _on_disk_as_named(
                 root, target, target != name or mode == 0o160000):
@@ -2990,8 +3012,10 @@ def _spellings_refusal(path: str, found: list[Spelled]) -> Refusal:
     THE MOVE BACK (#646) is `validate-family.py`'s for the same state
     (#611), in one line: `git rm -r --cached --ignore-unmatch` of every
     variant, which touches no file, and is no error where only HEAD holds
-    one; a `git update-index --add --cacheinfo` per row, at the commit the
-    variant records, the first found where a row has two, the index's
+    one, with `--sparse` where a sparse checkout keeps one off disk, since
+    without it git passes that one over, exit 0, and the index ends with two
+    gitlinks; a `git update-index --add --cacheinfo` per row, at the commit
+    the variant records, the first found where a row has two, the index's
     before HEAD's; and the commit, where it leaves one to make. Its closing
     sentences, after every other remedy, so that a `members/` moved back has
     taken the checkout with it, are the validator's too: where nothing is
@@ -3073,11 +3097,16 @@ def _spellings_refusal(path: str, found: list[Spelled]) -> Refusal:
             f"{shell_quoted(f'160000,{held[0].recorded},{row}', 'posix')}`"
             for row, held in moved.items())
         taken_out = " ".join(shell_quoted(name, "posix") for name in variants)
+        # `--sparse` only where a variant needs it, so that everywhere else
+        # the line is the validator's word for word (#646's review, S1).
+        flag = " --sparse" if any(spelled.sparse for held in moved.values()
+                                  for spelled in held) else ""
         parts.append(
             "move each member's gitlink held only under another spelling of "
             f"its row's path, {pairs}, to that path, at the commit it "
             "records, in the index alone, which touches no file (`git rm -r "
-            f"--cached --ignore-unmatch -- {taken_out}`, then {recorded})"
+            f"--cached{flag} --ignore-unmatch -- {taken_out}`, then "
+            f"{recorded})"
             + (", and commit that" if by[COMMIT] or any(
                 spelled.committed for held in moved.values()
                 for spelled in held) else ""))

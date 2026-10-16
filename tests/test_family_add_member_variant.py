@@ -38,6 +38,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -50,7 +51,7 @@ from test_family_add_refusals import (  # noqa: F401
 )
 from test_family_members_case_variants import (
     DIR_VARIANT, MOUNT, MOVE_BACK, added, commit_first, disk_as, disk_folds,
-    index_part, refused_untouched, remedy_of, renamed_members,
+    git_version, index_part, refused_untouched, remedy_of, renamed_members,
 )
 
 #: The member whose gitlink is moved into the wrong case, its row's path,
@@ -61,8 +62,10 @@ VARIANT = f"Members/{MEMBER}"
 OTHER_ROW = "members/IRSS"
 OTHER_VARIANT = "Members/IRSS"
 
-#: The three typed lines of the move, as the remedy prints them.
+#: The typed lines of the move, as the remedy prints them: the removal,
+#: with `--sparse` where a sparse checkout keeps the variant off disk.
 REMOVE = f"git rm -r --cached --ignore-unmatch -- {VARIANT}"
+REMOVE_SPARSE = f"git rm -r --cached --sparse --ignore-unmatch -- {VARIANT}"
 SUBMODULE = "git submodule update --init --recursive"
 MOVE_OUT = f"mv -- {VARIANT} ../Members-{MEMBER}"
 
@@ -72,9 +75,11 @@ def record(commit: str, row: str = ROW) -> str:
     return f"git update-index --add --cacheinfo 160000,{commit},{row}"
 
 
-def moved_back(rows: dict, commit: bool = True) -> tuple[str, list[str]]:
+def moved_back(rows: dict, commit: bool = True,
+               sparse: bool = False) -> tuple[str, list[str]]:
     """`(the part that moves each gitlink back, the closing parts)` of the
-    remedy, for `rows`, `{row path: ([its variants], the commit named)}`."""
+    remedy, for `rows`, `{row path: ([its variants], the commit named)}`;
+    `sparse` where a sparse checkout keeps a variant off disk."""
     variants = sorted(name for names, _ in rows.values() for name in names)
     pairs = " and ".join(f"`{name}` for the row {row}"
                          for row, (names, _) in sorted(rows.items())
@@ -84,8 +89,9 @@ def moved_back(rows: dict, commit: bool = True) -> tuple[str, list[str]]:
     move = ("move each member's gitlink held only under another spelling of "
             f"its row's path, {pairs}, to that path, at the commit it "
             "records, in the index alone, which touches no file (`git rm -r "
-            f"--cached --ignore-unmatch -- {' '.join(variants)}`, then "
-            f"{lines})" + (", and commit that" if commit else ""))
+            f"--cached{' --sparse' if sparse else ''} --ignore-unmatch -- "
+            f"{' '.join(variants)}`, then {lines})"
+            + (", and commit that" if commit else ""))
     moved = " and ".join(f"`mv -- {name} ../{name.replace('/', '-')}`"
                          for name in variants)
     return move, [
@@ -437,6 +443,62 @@ def head_only_and_on_disk(root: Path, remotes: Path) -> tuple:
             commit)
 
 
+def head_holding_both(root: Path, remotes: Path) -> tuple:
+    """HEAD records the gitlink at the row's path AND at the variant, at one
+    commit, and the index has the row's removal staged beside the variant:
+    HEAD's gitlink at the row's path is the move's commit already, but HEAD
+    still holds the variant, so the commit is printed. Without it `D
+    Members/IRRS` stays staged, and the next `add` refuses it as a pending
+    change (#646's review, S2)."""
+    commit = git("rev-parse", f"HEAD:{ROW}", cwd=root).stdout.strip()
+    git("update-index", "--add", "--cacheinfo", f"160000,{commit},{VARIANT}",
+        cwd=root)
+    git("commit", "-qm", "Both spellings", cwd=root)
+    git("rm", "-q", "--cached", "--", ROW, cwd=root)
+    return (in_the_index(VARIANT_SHOWN), remedy(commit),
+            [REMOVE, record(commit), "git commit"], commit)
+
+
+def kept_off_disk(root: Path, remotes: Path) -> tuple:
+    """The variant kept off disk by a sparse checkout (`skip-worktree`), as
+    #574's sparse case keeps its entry: `git rm --cached --ignore-unmatch`
+    alone passes it over, exit 0, and the move then left two gitlinks in
+    the index, so the removal says `--sparse` (#646's review, S1). Skipped
+    on the git versions #574's sparse case is skipped on."""
+    if git_version() < (2, 34):
+        pytest.skip("git's `--sparse` options are asked of git 2.34 or later")
+    commit = variant(root)
+    git("update-index", "--skip-worktree", "--", VARIANT, cwd=root)
+    move, closing = moved_back({ROW: ([VARIANT], commit)}, sparse=True)
+    return (in_the_index(VARIANT_SHOWN), remedy_of(move, *closing),
+            [REMOVE_SPARSE, record(commit), "git commit"], commit)
+
+
+def unmerged_at(root: Path, stages: dict[int, str]) -> None:
+    """The variant's gitlink at each of `stages`, `{stage: commit}`, and at
+    no stage 0, written as bytes by `update-index --index-info`."""
+    written = subprocess.run(
+        ["git", "update-index", "--index-info"], cwd=str(root),
+        input="".join(f"160000 {at} {stage}\t{VARIANT}\n"
+                      for stage, at in stages.items()).encode("ascii"),
+        capture_output=True, check=False)
+    assert written.returncode == 0, written.stderr
+
+
+def unmerged(root: Path, remotes: Path) -> tuple:
+    """The variant UNMERGED, at stages 1, 2 and 3 and at no stage 0, with no
+    merge or stash in progress, as a conflicted `git stash pop` leaves it:
+    moved back at stage 2's commit, the holder's own side and what HEAD
+    records there, never at stage 1's, the merge base, which git lists
+    first (#646's review, N2). The removal takes out every stage."""
+    commit = variant(root)
+    first = first_commit(root)
+    git("rm", "-q", "--cached", "--", VARIANT, cwd=root)
+    unmerged_at(root, {1: first, 2: commit, 3: first})
+    return (in_the_index(VARIANT_SHOWN), remedy(commit),
+            [REMOVE, record(commit), "git commit"], commit)
+
+
 #: `{state: (how it is made, from the holder and the remotes, returning
 #: (the refusal's two lines, what is typed, the member's commit), whether it
 #: needs two directories differing only in case)}`.
@@ -446,6 +508,10 @@ WITH_OTHERS = {
     "with nothing left to commit": (nothing_to_commit, False),
     "members/ renamed by hand": (members_renamed_by_hand, True),
     "HEAD alone, the checkout at the variant": (head_only_and_on_disk, True),
+    "HEAD holding both, the row's removal staged": (head_holding_both,
+                                                    False),
+    "kept off disk by a sparse checkout": (kept_off_disk, False),
+    "unmerged, with nothing in progress": (unmerged, False),
 }
 
 
@@ -574,11 +640,51 @@ def test_the_gitlink_is_recorded_at_the_commit_it_records(holder,
         move, *closing)
 
 
+def test_a_commit_the_row_does_not_pin_is_moved_not_bumped(family, holder,
+                                                            offline):
+    """THE VARIANT AT A COMMIT THE ROW DOES NOT PIN, its checkout at that
+    commit, as the holder records it, typed as printed: the member is at its
+    row's path at the commit it recorded, and nothing else changed, a move
+    and not a bump. The gate then names the drift the holder really has,
+    `member-gitlink-mismatch`, exit 1, whose own remedy is `bump`; and `add`
+    of another member still goes through (#646's review, S3)."""
+    _, commit = at_another_commit(holder)
+    git("checkout", "-q", "--detach", commit, cwd=holder / ROW)
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said == (in_the_index(VARIANT_SHOWN), remedy(commit))
+    assert typed_as_printed(holder, said[1]) == [REMOVE, record(commit),
+                                                 "git commit"]
+    registered(holder, family["root"], commit)
+    gate = validate(holder)
+    assert gate.returncode == 1, gate.stdout + gate.stderr
+    assert re.findall(r"^FINDING ([a-z-]+):", gate.stderr, re.M) == [
+        "member-gitlink-mismatch"]
+    assert f"{ROW}: gitlink {commit} != family.yaml pin " in gate.stderr
+    added(offline, holder, family["remotes"])
+
+
 def head_file(root: Path) -> None:
     """A FILE at the variant that HEAD alone holds: a pending change."""
     plant(root, "100644", VARIANT)
     git("commit", "-qm", "A file at the variant", cwd=root)
     git("rm", "-q", "--cached", "--", VARIANT, cwd=root)
+
+
+def beside_a_file_at(path: str):
+    """The variant's gitlink with a FILE at `path`, the row's path or under
+    it, in the index: the move would replace the one, and stop on the other
+    (`appears as both a file and as a directory`) once the variant was out
+    (#646's review, N3)."""
+    def make(root: Path) -> None:
+        plant(root, "100644", path)
+        plant(root, "160000", VARIANT)
+    return make
+
+
+def unmerged_theirs(root: Path) -> None:
+    """The variant unmerged with no gitlink at stage 2, the holder's own
+    side: no member's own (#646's review, N2)."""
+    unmerged_at(root, {1: "1" * 40, 3: "1" * 40})
 
 
 #: `{state: (how it is made after the row's gitlink leaves the index, what
@@ -596,6 +702,13 @@ OWN = {
         (IN_INDEX, VARIANT, "git rm -r --cached")),
     "a file at the variant in HEAD alone": (
         head_file, (HEAD_ONLY, VARIANT, "git commit")),
+    "a file at the row's path": (
+        beside_a_file_at(ROW), (IN_INDEX, VARIANT, "git rm -r --cached")),
+    "a file under the row's path": (
+        beside_a_file_at(f"{ROW}/x"),
+        (IN_INDEX, VARIANT, "git rm -r --cached")),
+    "unmerged, with no gitlink at stage 2": (
+        unmerged_theirs, (IN_INDEX, VARIANT, "git rm -r --cached")),
     "the member's own gitlink": (
         lambda root: plant(root, "160000", VARIANT),
         (IN_INDEX, ROW, "git update-index")),
@@ -606,9 +719,10 @@ OWN = {
 def test_only_the_members_own_gitlink_is_moved_back(holder, family_module,
                                                     state):
     """WHICH PATH IS THE MEMBER'S OWN: a gitlink at a case variant of a
-    row's path, where the index holds none at that path. A second gitlink
-    beside the row's, a file there, or a gitlink under it keeps #574's
-    remedy, which takes nothing away from the row."""
+    row's path, where the index holds nothing at or under that path. A
+    second gitlink beside the row's, a file at the variant, a gitlink under
+    it, a file at or under the row's path, or an unmerged variant with no
+    gitlink at stage 2 keeps #574's remedy."""
     make, (where, target, remedy_said) = OWN[state]
     if state != "a second gitlink beside the row's":
         git("rm", "-q", "--cached", "--", ROW, cwd=holder)
