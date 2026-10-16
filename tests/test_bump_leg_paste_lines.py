@@ -398,10 +398,11 @@ def test_pasting_the_status_line_reads_that_leg(make_root, bump_leg_module,
                                                 name):
     root, _ = make_root(name)
     leg = root.resolve() / "spec"
+    placement = bump_leg_module.leg_placement(leg)
     was = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
     with pytest.raises(bump_leg_module.LegNotAsFound) as raised:
-        bump_leg_module._restore_leg_if_moved(
-            leg, bump_leg_module.leg_placement(leg), was, b"not its status")
+        bump_leg_module._restore_leg_if_moved(leg, placement, was,
+                                              b"not its status")
 
     pasted = paste(status_remedy(str(raised.value)), root.parent)
     assert pasted.returncode == 0, pasted.stderr + pasted.stdout
