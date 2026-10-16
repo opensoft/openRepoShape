@@ -20,6 +20,14 @@ in for a missing org first, as `--org is '-'`, a value nobody passed -- and
 
 The runs are `test_adopt_template_values.py`'s: on a strict stdout, answered
 in bytes, and each read for a traceback.
+
+`_default_branch` asks `git symbolic-ref` which branch the source is on, and
+git keeps that name as bytes too (#425): `git branch caf<e9>` is legal. Read
+strictly, a HEAD or an `origin/HEAD` naming such a branch ended `plan`,
+`check` and `execute` in the same traceback, from `Source.open`. Now the byte
+is kept as a lone surrogate, and `plan` refuses the name as `unsafe-value`
+for `--tracking-branch` before any plan is written; `check` and `execute`
+name it too, or adopt past it when the plan tracks a branch that is text.
 """
 
 from __future__ import annotations
@@ -33,8 +41,8 @@ import pytest
 
 from conftest import REPO, git, make_source_repo
 from test_adopt_template_values import (ADOPT_REFUSED, PLAN_FILE, PLAN_OK,
-                                        PROJECT, REMOTES, VERIFIED, WORK,
-                                        adopted, answer,
+                                        PROJECT, REMOTES, SPLIT_BRANCH,
+                                        VERIFIED, WORK, adopted, answer,
                                         assert_no_traceback,
                                         assert_no_traceback_and_no_leg,
                                         checked, executed, needs_filter_repo,
@@ -292,6 +300,32 @@ def test_plan_records_the_elector_given_where_user_name_is_unset(tmp_path):
     assert load_yaml(tmp_path / PLAN_FILE)["elected_by"] == "Test Human"
 
 
+#: What `plan` says of a `--elected-by ''` the person passed (L2-53): the
+#: flag as typed, in the validator's words for an empty elector.
+EMPTY_ELECTOR = (b"REFUSED adopt-manifest-invalid: --elected-by is '', which "
+                 b"the project's own validate-manifest.py refuses: "
+                 b"manifest-elected-by: elected_by is empty.")
+
+
+@pytest.mark.parametrize("user_name", ["unset", "configured"])
+def test_plan_refuses_an_empty_elector_that_was_passed(tmp_path, user_name):
+    """L2-53. `--elected-by ''` was read as not passed: with a `git config
+    user.name` the plan recorded that name, exit 0, though `--help` says
+    "not blank"; with none, the refusal said `--elected-by (not given, so
+    `git config user.name`) is ''` of a flag the person passed. It is the
+    flag's own value now, refused by name as a blank one is (#261), and
+    `git config user.name` does not stand in for it."""
+    extra = (no_user_name(tmp_path, "unset") if user_name == "unset"
+             else global_user_name(tmp_path, b"Jose"))
+    source = make_source_repo(tmp_path / "Thing")
+    refused = by_git_config(tmp_path, source, extra, "--elected-by", "")
+    assert_no_traceback_and_no_leg(tmp_path, {"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert EMPTY_ELECTOR in refused.stderr, said(refused)
+    assert b"not given" not in refused.stderr, said(refused)
+    assert not (tmp_path / PLAN_FILE).exists()
+
+
 @pytest.mark.parametrize("name", [b"Jose", "José".encode("utf-8")],
                          ids=["ascii", "utf8"])
 def test_plan_records_a_user_name_that_is_utf8(tmp_path, name):
@@ -453,3 +487,173 @@ def test_a_utf8_clone_of_a_source_whose_path_is_not_utf8_adopts(tmp_path):
     assert_no_traceback(runs)
     assert runs["execute"].returncode == 0, said(runs["execute"])
     assert VERIFIED in runs["execute"].stdout, said(runs["execute"])
+
+
+# --- `git symbolic-ref`: the branch the source is on (#425) ------------------
+
+#: A branch git accepts and no UTF-8 text spells: `caf` and the byte 0xE9, as
+#: a Latin-1 terminal types `café`.
+NOT_UTF8_BRANCH = b"caf\xe9"
+#: The same name as `Source.branch` holds it, and as `sys.argv` and
+#: `os.environ` carry one on POSIX: the byte kept as a lone surrogate.
+BRANCH = NOT_UTF8_BRANCH.decode("utf-8", "surrogateescape")
+#: Where git can say that `BRANCH` is the source's default branch, in the
+#: order `_default_branch` asks: `refs/remotes/origin/HEAD`, then HEAD.
+ORIGIN_HEAD = "origin-head"
+by_where = pytest.mark.parametrize("where", [ORIGIN_HEAD, "head"])
+#: The flag that names the branch to track, so that the name that is not
+#: UTF-8 is only the one the source is read at.
+TRACKING = "--tracking-branch"
+
+#: What `plan` says of that default branch, which it would track (#479): the
+#: flag, where the value came from, and the byte spelled as the plan would
+#: write it. The refusal is `checked_value`'s, for the alphabet a branch may
+#: be written in, which a UTF-8 `café` fails alike.
+UNSAFE_BRANCH = (
+    b"REFUSED unsafe-value: --tracking-branch (not given, so the source's "
+    b"default branch) is 'caf\\udce9', which is not a value this tool will "
+    b"put on a `git` or `gh` command line\n")
+#: What `check` finds, and `execute` refuses, of a plan that tracks `main`
+#: once the source has no `main`: both branches, as the plan spells them.
+BRANCH_LOST = (
+    b"`tracking_branch` is `main`, which is no branch of the source (its "
+    b"branches: `caf\\udce9`; the source's default branch is `caf\\udce9`)")
+LOST_FINDING = b"FINDING plan-tracking-branch-missing: " + BRANCH_LOST
+LOST_REFUSAL = b"REFUSED plan-tracking-branch-missing: "
+
+
+def with_default_branch(source: Path, where: str) -> Path:
+    """`source`, on `main`, with `BRANCH` as its default branch where git
+    says one: `head` is its HEAD, and `origin-head` is
+    `refs/remotes/origin/HEAD`, with HEAD left on `main`. `BRANCH` is one
+    commit AHEAD of `main`, which is still a branch of the source: a plan
+    that read the wrong branch would adopt the wrong commit, and a
+    `--tracking-branch main` names a branch it has.
+
+    Skipped where no branch can be named with the byte 0xE9 (Windows, macOS's
+    APFS), or git here does not give the name back as it was written."""
+    ref = "refs/remotes/origin/HEAD" if where == ORIGIN_HEAD else "HEAD"
+    try:
+        git("switch", "-q", "-c", BRANCH, cwd=source)
+        git("commit", "-q", "--allow-empty", "-m", "One ahead", cwd=source)
+        if where == ORIGIN_HEAD:
+            git("switch", "-q", "main", cwd=source)
+            for name in (BRANCH, "main"):
+                git("update-ref", f"refs/remotes/origin/{name}", name,
+                    cwd=source)
+            git("symbolic-ref", ref, f"refs/remotes/origin/{BRANCH}",
+                cwd=source)
+    except (AssertionError, UnicodeError, OSError) as exc:
+        pytest.skip(f"no branch here is named {NOT_UTF8_BRANCH!r}: {exc!r}")
+    read = subprocess.run(["git", "symbolic-ref", ref], cwd=str(source),
+                          capture_output=True, check=False)
+    if not read.stdout.rstrip(b"\r\n").endswith(b"/" + NOT_UTF8_BRANCH):
+        pytest.skip(f"`git symbolic-ref {ref}` here is {read.stdout!r}")
+    return source
+
+
+def moved_to_a_branch_that_is_not_utf8(base: Path) -> Path:
+    """A source on `main`, planned and answered, whose `main` is then
+    renamed `BRANCH`: a plan that tracks a branch the source no longer has,
+    and a source whose HEAD is on one that is not UTF-8. Skipped as
+    `with_default_branch` is."""
+    source = make_source_repo(base / "Thing")
+    made = planned(base, source)
+    assert made.returncode == 0, said(made)
+    answer(base)
+    try:
+        git("branch", "-m", "main", BRANCH, cwd=source)
+    except (AssertionError, UnicodeError, OSError) as exc:
+        pytest.skip(f"no branch here is named {NOT_UTF8_BRANCH!r}: {exc!r}")
+    return source
+
+
+@by_where
+def test_plan_refuses_a_default_branch_that_is_not_utf8(tmp_path, where):
+    """The issue's `plan` rows: on the base, a HEAD or an `origin/HEAD` on
+    `caf<e9>` ended `plan` in a `UnicodeDecodeError` traceback from
+    `_default_branch`, exit 1, and wrote no plan. Now the name is kept as a
+    lone surrogate and refused as the `--tracking-branch` it would be,
+    before any plan is written."""
+    source = with_default_branch(make_source_repo(tmp_path / "Thing"), where)
+    refused = planned(tmp_path, source)
+    assert_no_traceback_and_no_leg(tmp_path, {"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert UNSAFE_BRANCH in refused.stderr, said(refused)
+    assert not (tmp_path / PLAN_FILE).exists()
+
+
+def test_check_finds_a_plans_branch_gone_for_one_that_is_not_utf8(tmp_path):
+    """The issue's `check` row: a plan written on `main`, then the source's
+    branch renamed `caf<e9>`. On the base `check` ended in the traceback,
+    from `Source.open`; now it finds what any other branch the source moved
+    to would be (`plan-tracking-branch-missing`), naming both."""
+    moved_to_a_branch_that_is_not_utf8(tmp_path)
+    found = checked(tmp_path)
+    assert_no_traceback({"check": found})
+    assert found.returncode == 1, said(found)
+    assert LOST_FINDING in found.stderr, said(found)
+
+
+@needs_filter_repo
+def test_execute_refuses_a_plans_branch_gone_for_one_that_is_not_utf8(
+        tmp_path):
+    """The issue's `execute` row: the same plan, and on the base the same
+    traceback, with the remote directory holding nothing. Now `execute`
+    refuses it with `check`'s finding, before any leg exists."""
+    moved_to_a_branch_that_is_not_utf8(tmp_path)
+    refused = executed(tmp_path)
+    assert_no_traceback_and_no_leg(tmp_path, {"execute": refused})
+    assert refused.returncode == 2, said(refused)
+    assert LOST_REFUSAL in refused.stderr, said(refused)
+    assert LOST_FINDING in refused.stderr, said(refused)
+
+
+def planned_past(base: Path, where: str) -> tuple[Path, dict]:
+    """`(source, runs)`: `plan --tracking-branch main` of a source whose
+    default branch is `BRANCH` (`with_default_branch`), the plan answered,
+    and `check`, each run there was. `main` is the branch to adopt into, so
+    nothing is asked of the name that is not UTF-8."""
+    source = with_default_branch(make_source_repo(base / "Thing"), where)
+    runs = {"plan": planned(base, source, TRACKING, "main")}
+    assert runs["plan"].returncode == 0, said(runs["plan"])
+    answer(base)
+    runs["check"] = checked(base)
+    return source, runs
+
+
+def tip_of(source: Path, ref: str) -> str:
+    """The commit `ref` names in `source`, as git spells it."""
+    return git("rev-parse", ref, cwd=source).stdout.strip()
+
+
+@by_where
+def test_plan_and_check_go_past_a_default_branch_that_is_not_utf8(tmp_path,
+                                                                  where):
+    """With the branch to track given, the default branch that is not UTF-8
+    is only the one the source is read at: `plan` records it as the plan
+    spells a byte (`\\udce9`) with ITS commit, which is not `main`'s, and
+    `check` finds no fault."""
+    source, runs = planned_past(tmp_path, where)
+    assert_no_traceback(runs)
+    plan = load_yaml(tmp_path / PLAN_FILE)
+    read_at = plan["source"]
+    assert read_at["default_branch"] == BRANCH
+    assert read_at["commit"] == tip_of(source, BRANCH)
+    assert plan["tracking_branch"] == "main"
+    assert runs["check"].returncode == 0, said(runs["check"])
+    assert PLAN_OK in runs["check"].stdout, said(runs["check"])
+
+
+@needs_filter_repo
+@by_where
+def test_execute_adopts_a_source_whose_default_branch_is_not_utf8(tmp_path,
+                                                                  where):
+    """The same plan, `execute`d: the source is read at `caf<e9>`, so the
+    split is made on ITS commit, and every source path is accounted for."""
+    source, runs = planned_past(tmp_path, where)
+    runs["execute"] = executed(tmp_path)
+    assert_no_traceback(runs)
+    assert runs["execute"].returncode == 0, said(runs["execute"])
+    assert VERIFIED in runs["execute"].stdout, said(runs["execute"])
+    assert tip_of(source, f"{SPLIT_BRANCH}^") == tip_of(source, BRANCH)
