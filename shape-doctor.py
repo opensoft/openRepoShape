@@ -279,15 +279,17 @@ invents a rule to fail somebody by is not believed the next time.
 EXIT CODES
     0  COMPLIANT: every row ok and the shape is current
     1  findings: the shape is behind, a copy has drifted, a validator is red,
-       a leg is off its pin, a manifest is there and does not load, or a
-       tracked path sits in a leg the path policy puts elsewhere -- or, for a
-       submodule, a leg other than the one `project.yaml` records for it
-       (#189) -- COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID
+       a leg is off its pin, a manifest is there and does not load, the index
+       holds an unmerged path (`INVALID (merge)`, #424), or a tracked path
+       sits in a leg the path policy puts elsewhere -- or, for a submodule, a
+       leg other than the one `project.yaml` records for it (#189) --
+       COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID
     2  NOT A SHAPE ROOT: neither `project.yaml` nor `family.yaml` is there
     3  usage or environment -- nothing here is a statement about the tree
        that was pointed at: no such root, this file is not sitting in a
        checkout of the standard, or THIS CHECKOUT cannot answer (a pin
-       naming a commit it does not carry)
+       naming a commit it does not carry, or its own naming policy not
+       loading, #678)
 
 THE VERDICT NAMES THE MOST SPECIFIC FINDING; THE TABLE NAMES EVERY ONE. Drift
 outranks a red validator on that line for one concrete reason: an edited shape
@@ -929,8 +931,12 @@ class ManifestKind:
 
 
 #: Where an assembly root keeps the naming policy `validate-manifest.py`
-#: reads, and a holder the one `validate-family.py` reads (#439).
+#: reads, and a holder the one `validate-family.py` reads (#439). The same
+#: path in the standard is the policy the `naming` rows read (#678).
 NAMING_COPY = "contracts/repository-naming.yaml"
+
+#: The standard's own naming script, the one both `naming` rows run (#410).
+NAMING_SCRIPT = "scripts/validate-repository-naming.py"
 
 
 def own_pins(ctx: Context) -> set:
@@ -2067,29 +2073,161 @@ def check_naming(ctx: Context) -> Row:
     a chain link it could not read, and the `manifest` row now carries
     `validate-manifest.py`'s WARNING for that same link (#448), so the fact
     is said once.
+
+    AND A CHECKOUT WHOSE OWN POLICY DOES NOT LOAD HAS NOT ANSWERED EITHER
+    (#678). The script refuses, exit 2, before it reads the project, when
+    this checkout's `contracts/repository-naming.yaml` does not load, and
+    `crashed` answers None for a printed `REFUSED`, so a compliant project
+    read `INVALID (naming)`, exit 1, "the naming policy is not satisfied
+    (exit 2)": a person failed for the checkout's file, in the wrong verb.
+    `run_naming_script` asks the question before it runs the script and reads
+    the script's own `REFUSED` for that file after, and the row is
+    `naming_policy_row`'s: CANNOT ANSWER, exit 3, as a crash is. Any other
+    exit 2 is the script refusing something else -- the project's own
+    `project.yaml`, say -- and is worded "refuses (exit 2)" as `validator_row`
+    words it, and stays a finding. Exit 1 is the finding it always was.
     """
     waiting = waiting_row(ctx, "naming", "naming",
                           "there are no leg names to classify")
     if waiting is not None:
         return waiting
-    script = ctx.shape / "scripts" / "validate-repository-naming.py"
-    code, quoted, whole = run_validator(
-        ctx, script,
-        ["--project", str(ctx.root / PROJECT_MANIFEST), "--quiet"])
-    detail = {"policy": (ctx.shape / "contracts" /
-                         "repository-naming.yaml").as_posix(), "exit": code}
+    script = ctx.shape / NAMING_SCRIPT
+    code, quoted, whole, refusal = run_naming_script(
+        ctx, script, ["--project", str(ctx.root / PROJECT_MANIFEST),
+                      "--quiet"])
+    detail = {"policy": (ctx.shape / NAMING_COPY).as_posix(), "exit": code}
     if code == 0:
         return Row("naming", "naming", OK,
                    "every leg name classifies, and each declared role agrees "
                    "with its form", None, detail)
     command = (f"{PYTHON} {quote_arg(script)} --explain --project "
                f"{quote_arg(ctx.root / PROJECT_MANIFEST)}")
+    if refusal is not None:
+        return naming_policy_row(refusal, command, detail)
     crash = crashed(code, whole)
     if crash is not None:
         return naming_crashed_row(code, crash, command, detail)
+    if code >= 2:
+        return Row("naming", "naming", FINDING,
+                   naming_refuses_words(code, quoted), command, detail)
     return Row("naming", "naming", FINDING,
                f"the naming policy is not satisfied (exit {code})"
                + (f": {quoted}" if quoted else ""), command, detail)
+
+
+def own_naming_policy_refusal(shape: Path) -> Refusal | None:
+    """The refusal THIS CHECKOUT's `contracts/repository-naming.yaml` gives
+    where it does not load, else None (#678).
+
+    `NamingPolicy.load` is the reader `validate-repository-naming.py` itself
+    calls before it reads a name, and a refusal from it is that script's exit
+    2. ONLY A REFUSAL IS ANSWERED HERE: a reader that raises anything else --
+    a pattern `re.compile` will not take -- is the script's crash, which
+    `crashed` says and `naming_crashed_row` words, so that exception is the
+    script's to raise and never this report's.
+    """
+    try:
+        NamingPolicy.load(shape / NAMING_COPY)
+    except Refusal as exc:
+        return exc
+    except Exception:  # noqa: BLE001 - the script's crash, for `crashed`
+        return None
+    return None
+
+
+def naming_script_refusal(shape: Path, whole: str) -> Refusal | None:
+    """The `REFUSED` line of the naming script's output that names THIS
+    CHECKOUT's policy file, as the `Refusal` it was printed from, else None
+    (#678).
+
+    A line is that script's `str(Refusal)`, `REFUSED <code>: <detail>`, and
+    `detail` opens with the path the loader was given, so the file is named
+    where the line holds this checkout's own. A `REFUSED` that names anything
+    else -- the project's `project.yaml`, a flag -- is about what the script
+    was asked and is not this.
+    """
+    policy = str(shape / NAMING_COPY)
+    for line in (line.strip() for line in whole.splitlines()):
+        if line.startswith("REFUSED ") and policy in line:
+            code, _, detail = line.removeprefix("REFUSED ").partition(": ")
+            return Refusal(code, detail)
+    return None
+
+
+def run_naming_script(ctx: Context, script: Path, args: list[str]) -> tuple:
+    """`(exit code, the line worth quoting, whole output, refusal)` for the
+    naming script, or, where this checkout's own policy does not load, the
+    refusal alone, with the script NOT RUN and no exit code (#678).
+
+    BOTH `naming` ROWS ASK THIS QUESTION AND NEITHER MAY ASK IT AFTER. The
+    script refuses before it reads the project or a name, so the answer it
+    would give is this checkout's, and a refusal read out of its output is
+    only the same question asked of a child. It is asked first and in
+    process, with the reader the script uses, and the output is read for it
+    as well, because a script that refuses naming that file after this
+    process read it fine is still this checkout's refusal (`refusal`).
+    """
+    refusal = own_naming_policy_refusal(ctx.shape)
+    if refusal is not None:
+        return None, "", "", refusal
+    code, quoted, whole = run_validator(ctx, script, args)
+    return (code, quoted, whole,
+            naming_script_refusal(ctx.shape, whole) if code == 2 else None)
+
+
+def naming_refuses_words(code: int, quoted: str) -> str:
+    """What the naming script's exit 2 reads as when it is not this
+    checkout's own policy refusing: "refuses", the verb `validator_row`
+    picks for any exit past 1, and not "is not satisfied", which is a
+    finding's (#678)."""
+    return (f"the standard's {NAMING_SCRIPT} refuses (exit {code})"
+            + (f": {quoted}" if quoted else ""))
+
+
+def naming_row_subject(names: list[str] | None) -> tuple:
+    """`(lead, whose, about)`: how a `naming` row that is about the
+    checkout's script or file says whose it is and what it is not saying
+    anything about -- the project's, in a root; given the `names`, this
+    directory's (#410, #678)."""
+    if names is None:
+        return "", "the project's", "the project"
+    return f"{', '.join(names)}: ", "this directory's", "what it is called"
+
+
+def naming_policy_row(refusal: Refusal, command: str, detail: dict,
+                      names: list[str] | None = None) -> Row:
+    """The `naming` row for a checkout whose own
+    `contracts/repository-naming.yaml` does not load (#678): `check_naming`'s,
+    or, given the `names` it classified, `check_not_a_root_naming`'s.
+
+    THAT FILE IS ALWAYS THIS CHECKOUT'S, never the project's, so this is what
+    a crash of the naming script is in `naming_crashed_row` (#410) and what
+    a crash of the standard's TEMPLATE validator is in `validator_row`
+    (#278): `detail.environment`, so an assembly root's verdict is CANNOT
+    ANSWER, exit 3, and the reason says nothing here is a statement about the
+    project. In a directory that is not a root the verdict stays NOT A SHAPE
+    ROOT, exit 2, as it does for a crash. It carries no `detail.crashed`: the
+    script did not crash, it refused, and `detail.refusal` is the loader's
+    own `code` and `detail`, as the `manifest` row's is.
+
+    THE LOADER'S OWN LINE, WHOLE, quoted from the refusal rather than from
+    the script's output, which `run_validator` cuts at 200 characters, and
+    here the line ends with the line number after a path of any length. The
+    NEXT is the script's own `--explain` line, which prints the same refusal
+    and exits 2; a refusal's remedy, where it has one, leads the `why`.
+    """
+    detail["environment"] = True
+    detail["refusal"] = {"code": refusal.code, "detail": refusal.detail}
+    lead, whose, about = naming_row_subject(names)
+    mend = ("the file belongs to the checkout of the standard this command is "
+            "run from and not to the project: repair it there, or run the "
+            "doctor from a clone of the standard whose own copy loads")
+    return Row("naming", "naming", FINDING,
+               f"{lead}the standard's {NAMING_COPY} does not load: "
+               f"{refusal_line(refusal)}; that file is this checkout's, not "
+               f"{whose}, so nothing here is a statement about {about}",
+               command, detail,
+               why=" ".join(filter(None, (remedy_as_why(refusal), mend))))
 
 
 def naming_crashed_row(code: int, crash: str, command: str, detail: dict,
@@ -2111,13 +2249,9 @@ def naming_crashed_row(code: int, crash: str, command: str, detail: dict,
     """
     detail["crashed"] = True
     detail["environment"] = True
-    if names is None:
-        lead, whose, about = "", "the project's", "the project"
-    else:
-        lead = f"{', '.join(names)}: "
-        whose, about = "this directory's", "what it is called"
+    lead, whose, about = naming_row_subject(names)
     return Row("naming", "naming", FINDING,
-               f"{lead}the standard's scripts/validate-repository-naming.py "
+               f"{lead}the standard's {NAMING_SCRIPT} "
                f"crashed before reaching a verdict (exit {code}): {crash}; "
                f"that script is this checkout's, not {whose}, so nothing "
                f"here is a statement about {about}", command, detail,
@@ -7751,7 +7885,7 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     on its own name alone, the same fact `the way in` row now reads it by
     (Copilot, PR #110).
     """
-    script = ctx.shape / "scripts" / "validate-repository-naming.py"
+    script = ctx.shape / NAMING_SCRIPT
     names = [ctx.root.name]
     remote = repo_local_origin_name(ctx.root)
     if remote and remote not in names:
@@ -7767,12 +7901,18 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     # exactly what was typed. `--` is argparse's own end-of-options marker,
     # not a shell's, and `scripts/validate-repository-naming.py`'s parser
     # accepts it because every `argparse.ArgumentParser` does by default.
-    code, quoted, whole = run_validator(ctx, script,
-                                        ["--explain", "--", *names])
+    code, quoted, whole, refusal = run_naming_script(
+        ctx, script, ["--explain", "--", *names])
     detail = {"names": names, "origin": remote, "exit": code,
               "explain": ascii_text(whole).strip().splitlines()[:40]}
     spelled = " ".join(quote_arg(name) for name in names)
     command = f"{PYTHON} {quote_arg(script)} --explain -- {spelled}"
+    # A CHECKOUT WHOSE OWN POLICY DOES NOT LOAD SAID NOTHING ABOUT THE NAME
+    # (#678). This row quoted the script's `REFUSED` as the name's finding;
+    # the verdict stays NOT A SHAPE ROOT, and the row says whose file it is,
+    # as `check_naming`'s does.
+    if refusal is not None:
+        return naming_policy_row(refusal, command, detail, names)
     # A SCRIPT THAT CRASHED SAID NOTHING ABOUT THE NAME (#410). A directory
     # whose name is not UTF-8 made the script raise as it printed that name,
     # and this row quoted `UnicodeEncodeError: ...` as the name's finding.
@@ -7781,6 +7921,10 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     crash = crashed(code, whole)
     if crash is not None:
         return naming_crashed_row(code, crash, command, detail, names)
+    if code >= 2:
+        return Row("naming", "naming", FINDING,
+                   f"{', '.join(names)}: {naming_refuses_words(code, quoted)}",
+                   command, detail)
     reason = f"{', '.join(names)}: " + (
         "classifies under the naming policy" if code == 0
         else (quoted or "matches no family in the policy"))
