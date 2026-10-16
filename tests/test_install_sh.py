@@ -24,14 +24,18 @@ installer runs is the real one. Every run sets `GH_TOKEN=bogus` and an empty
 `GH_CONFIG_DIR`, and its `TMPDIR` is a directory each test checks is empty
 again afterwards.
 
-WINDOWS_SKIP, for the reason `tests/test_openreposhape_command.py` gives: the
-installer and the command are bash, run where `bash` is a bash, and on
-Windows the way in is `setup-project.py`.
+On Windows it runs under Git Bash, as `tests/test_openreposhape_command.py`
+does (#585): `BASH` is Git for Windows' own, every path is spelled the way
+Git Bash spells it, and every script a fake writes has `\n` line ends. What
+a fake prints that bash reads into a variable, the redirect's headers and
+`gh`'s tag, is written as bytes, because Python on Windows ends a printed
+line with `\r\n` and `$(…)` keeps the `\r`.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
@@ -41,17 +45,15 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, WINDOWS_SKIP
-from test_openreposhape_command import COMMAND, INSTALL_NEEDS, command_env
+from conftest import BASH, BASH_SKIP, REPO, bash_path
+from test_openreposhape_command import (COMMAND, INSTALL_NEEDS, command_env,
+                                        put_on_path, write_script)
 
 INSTALLER = REPO / "install.sh"
 
-#: Bash by ABSOLUTE path: `subprocess` resolves a bare argv[0] against the
-#: child's `$PATH`, and the one each run builds holds only what it chose.
-BASH = shutil.which("bash")
-
-pytestmark = [pytest.mark.skipif(BASH is None, reason="install.sh is bash"),
-              WINDOWS_SKIP]
+#: `BASH` is by ABSOLUTE path: `subprocess` resolves a bare argv[0] against
+#: the child's `$PATH`, and the one each run builds holds only what it chose.
+pytestmark = [BASH_SKIP, pytest.mark.usefixtures("git_bash_session")]
 
 SLUG = "opensoft/openRepoShape"
 RELEASE = "v9.9.9"
@@ -101,9 +103,9 @@ def refuse(message):
 
 def launcher(directory, name):
     path = Path(directory) / name
-    path.write_text("#!/bin/sh\nexec %s %s %s \"$@\"\n" % (
-        shlex.quote(sys.executable), shlex.quote(str(Path(__file__))), name),
-        encoding="utf-8")
+    path.write_bytes(("#!/bin/sh\nexec %s %s %s \"$@\"\n" % (
+        shlex.quote(sys.executable), shlex.quote(str(Path(__file__))),
+        name)).encode("utf-8"))
     path.chmod(0o755)
 
 
@@ -116,9 +118,10 @@ def curl():
         location = NET["redirects"].get(url)
         if location is None:
             return refuse("curl: (22) The requested URL returned error: 404")
-        sys.stdout.write("HTTP/2 302 \r\n%s: %s\r\n"
-                         "content-length: 0\r\n\r\n"
-                         % (NET.get("location_header", "location"), location))
+        sys.stdout.buffer.write((
+            "HTTP/2 302 \r\n%s: %s\r\ncontent-length: 0\r\n\r\n"
+            % (NET.get("location_header", "location"), location)
+        ).encode("utf-8"))
         return 0
     served = NET["files"].get(url)
     if served is None:
@@ -134,7 +137,7 @@ def curl():
 def gh():
     if ARGS[:1] == ["api"] and ARGS[1].endswith("/releases/latest") \
             and NET.get("gh_latest"):
-        print(NET["gh_latest"])
+        sys.stdout.buffer.write((NET["gh_latest"] + "\n").encode("utf-8"))
         return 0
     return refuse("fake gh: no answer for: " + " ".join(ARGS))
 
@@ -195,7 +198,7 @@ class Net:
         for name in (*INSTALL_NEEDS, "bash"):
             real = shutil.which(name)
             assert real, f"this machine has no {name}, which the install needs"
-            (self.path / name).symlink_to(real)
+            put_on_path(self.path, name, real)
         for name in fakes:
             self.fake(name)
         self.temporary = tmp_path / "tmp"
@@ -208,10 +211,9 @@ class Net:
     def fake(self, name: str, directory: Path | None = None) -> Path:
         """A launcher for `name` into `FAKE`, on this `$PATH` by default."""
         path = (directory or self.path) / name
-        path.write_text(
-            f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
-            f"{shlex.quote(str(self.root / 'fake.py'))} {name} \"$@\"\n",
-            encoding="utf-8")
+        write_script(
+            path, f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
+            f"{shlex.quote(str(self.root / 'fake.py'))} {name} \"$@\"\n")
         path.chmod(0o755)
         return path
 
@@ -232,18 +234,30 @@ class Net:
                                             encoding="utf-8")
         gh_config = self.tmp_path / "gh-config"
         gh_config.mkdir(exist_ok=True)
-        piped = piped or script is not None
-        argv = [BASH, "-s", "--", *args] if piped \
-            else [BASH, str(INSTALLER), *args]
-        return subprocess.run(
-            argv, capture_output=True, text=True, check=False,
-            input=(script or INSTALLER.read_text(encoding="utf-8"))
-            if piped else "",
-            cwd=str(self.tmp_path), start_new_session=True,
-            env=command_env(home=self.tmp_path, setup_sh=None, env={
-                "PATH": str(self.path), "GH_TOKEN": "bogus",
-                "GH_CONFIG_DIR": str(gh_config),
-                "TMPDIR": str(self.temporary), **(env or {})}))
+        how = {"cwd": str(self.tmp_path), "start_new_session": True,
+               "env": command_env(home=self.tmp_path, setup_sh=None, env={
+                   "PATH": str(self.path), "GH_TOKEN": "bogus",
+                   "GH_CONFIG_DIR": str(gh_config),
+                   "TMPDIR": str(self.temporary), **(env or {})})}
+        if piped or script is not None:
+            return subprocess.run(
+                [BASH, "-s", "--", *args], capture_output=True, text=True,
+                check=False,
+                input=script or INSTALLER.read_text(encoding="utf-8"), **how)
+        argv = [BASH, bash_path(INSTALLER), *args]
+        if os.name == "nt" and any("\n" in arg for arg in args):
+            # A NEWLINE IN AN ARGUMENT DOES NOT CROSS INTO GIT BASH (#585).
+            # Windows hands a program one command line, Python quotes only
+            # an argument holding a space or a tab, and Git Bash splits the
+            # line at a newline too, so `v1\nforged` arrived as two
+            # versions. A person in Git Bash passes it from bash to bash,
+            # where nothing is split; here a bash takes the arguments from
+            # the environment, which keeps them whole, and hands them on.
+            how["env"].update((f"ARG{at}", arg) for at, arg in enumerate(args))
+            argv = [BASH, "-c", 'exec "$BASH" "$0" ' + " ".join(
+                f'"$ARG{at}"' for at in range(len(args))), argv[1]]
+        return subprocess.run(argv, capture_output=True, text=True,
+                              check=False, input="", **how)
 
     def calls(self) -> list:
         log = self.root / "calls.log"
@@ -292,7 +306,7 @@ def test_the_one_line_installs_the_newest_release_pinned_to_it(net):
     result = net.run(piped=True)
     assert result.returncode == 0, result.stdout + result.stderr
     net.installed(result)
-    target = net.bin / "openRepoShape"
+    target = bash_path(net.bin / "openRepoShape")
     steps = [
         f"release: {RELEASE}, the newest release of {SLUG} ({latest()})",
         f"fetch: {raw('openRepoShape')}",
@@ -433,7 +447,8 @@ def test_a_page_that_is_not_the_command_is_refused(net):
 
 def present_on_path(net):
     net.fake("git-filter-repo")
-    return f"git-filter-repo: already installed ({net.path}/git-filter-repo)"
+    return "git-filter-repo: already installed " \
+        f"({bash_path(net.path)}/git-filter-repo)"
 
 
 def answering_git(net):
@@ -518,7 +533,7 @@ def test_git_filter_repo_is_said_installed_or_printed(net, arrange):
             "to install it with. Only adopt-project.py needs it; before "
             "adopting a repository, ")
     assert lines.index(expected) < lines.index(
-        f"preflight: {net.bin}/openRepoShape --preflight")
+        f"preflight: {bash_path(net.bin)}/openRepoShape --preflight")
     assert not any(call.split()[0] in ("apt-get", "brew", "sudo")
                    for call in net.calls()), net.calls()
 
@@ -540,7 +555,7 @@ def test_a_preflight_that_does_not_pass_exits_one_with_the_command_placed(
     assert result.returncode == 1, result.stdout + result.stderr
     net.installed(result)
     assert f"done: openRepoShape {RELEASE} is installed at " \
-        f"{net.bin}/openRepoShape, {said}" in result.stdout
+        f"{bash_path(net.bin)}/openRepoShape, {said}" in result.stdout
 
 
 def test_a_variable_in_the_shell_is_named_and_the_preflight_runs_the_pin(net):
@@ -564,10 +579,10 @@ def test_the_same_line_again_changes_nothing_and_then_upgrades(net):
     assert net.run().returncode == 0
     again = net.run()
     assert again.returncode == 0, again.stdout + again.stderr
-    assert f"openRepoShape: already installed at {net.bin}/openRepoShape " \
-        "(unchanged)" in again.stdout
+    assert "openRepoShape: already installed at " \
+        f"{bash_path(net.bin)}/openRepoShape (unchanged)" in again.stdout
     assert f"openRepoShape: already pinned to {RELEASE} in " \
-        f"{net.bin}/openRepoShape.ref (unchanged)" in again.stdout
+        f"{bash_path(net.bin)}/openRepoShape.ref (unchanged)" in again.stdout
 
     net.config["redirects"][latest()] = tag_page("v10.0.0")
     net.serve("v10.0.0")
@@ -575,7 +590,7 @@ def test_the_same_line_again_changes_nothing_and_then_upgrades(net):
     assert upgrade.returncode == 0, upgrade.stdout + upgrade.stderr
     net.installed(upgrade, "v10.0.0")
     assert f"openRepoShape: pinned to v10.0.0 (was {RELEASE}), recorded in " \
-        f"{net.bin}/openRepoShape.ref" in upgrade.stdout
+        f"{bash_path(net.bin)}/openRepoShape.ref" in upgrade.stdout
 
 
 def test_a_release_whose_command_records_no_ref_exits_one(net):
@@ -584,12 +599,13 @@ def test_a_release_whose_command_records_no_ref_exits_one(net):
     preflight it ends with is still handed the release's tag, so it is not
     main's setup.sh that checks the machine."""
     old = net.root / "old-openRepoShape"
-    old.write_text(OLD_LAUNCHER, encoding="utf-8")
+    write_script(old, OLD_LAUNCHER)
     net.serve(RELEASE, launcher=old)
-    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": str(net.bin),
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": bash_path(net.bin),
                           "OPENREPOSHAPE_REPO": SLUG})
     assert result.returncode == 1, result.stdout + result.stderr
-    assert f"install: {net.bin}/openRepoShape does not stay on {RELEASE}: " \
+    assert f"install: {bash_path(net.bin)}/openRepoShape does not stay on " \
+        f"{RELEASE}: " \
         f"it says 'openRepoShape ({SLUG} @ main)' to --version." \
         in result.stdout
     assert "A release older than v1.0.1 cannot record the tag it was " \
@@ -623,10 +639,10 @@ def test_openreposhape_bin_dir_is_where_the_command_and_its_record_go(net):
     launcher puts it, and leaves `~/.local/bin` alone."""
     default = net.bin
     net.bin = net.tmp_path / "elsewhere"
-    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": str(net.bin)})
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": bash_path(net.bin)})
     assert result.returncode == 0, result.stdout + result.stderr
     net.installed(result)
-    assert f"preflight: {net.bin}/openRepoShape --preflight" \
+    assert f"preflight: {bash_path(net.bin)}/openRepoShape --preflight" \
         in result.stdout.splitlines()
     assert not default.exists()
 
@@ -741,7 +757,7 @@ def test_a_repository_that_is_not_an_owner_and_name_is_refused(net, value):
 
 def test_help_prints_the_one_line_and_exits_zero(tmp_path):
     result = subprocess.run(
-        [BASH, str(INSTALLER), "--help"], capture_output=True, text=True,
+        [BASH, bash_path(INSTALLER), "--help"], capture_output=True, text=True,
         check=False, input="",
         env=command_env(home=tmp_path, setup_sh=None,
                         env={"GH_TOKEN": "bogus",
