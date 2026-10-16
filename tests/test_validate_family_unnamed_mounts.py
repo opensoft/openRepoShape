@@ -538,7 +538,7 @@ def test_a_member_recorded_only_in_another_case_says_so_and_prints_no_command(
             "REFUSED member-gitlink-absent: no gitlink (mode 160000) "
             "recorded at 'members/IRSS'."), result.stderr
         assert result.stderr.splitlines()[-2:] == [
-            "    git rm -r --cached -- members/irss",
+            "    git rm -r --cached --ignore-unmatch -- members/irss",
             "    git update-index --add --cacheinfo "
             f"160000,{named},members/IRSS"], result.stderr
         return

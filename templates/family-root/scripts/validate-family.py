@@ -42,7 +42,8 @@ WHAT IS CHECKED
     finding and none of the three is asked of it: nothing read through a
     path the row may not have is a fact about the member (#367). A row
     whose gitlink is recorded only at a case variant of its path is refused
-    naming that variant, and the index move that puts it back (#611).
+    naming that variant, the index move that puts it back, and what to do
+    with a directory the variant leaves on disk (#611).
     And, across the rows, that no two record ONE `id`: that is one project
     pinned twice, however each row spelled its repository (#206). This one
     reads `family.yaml` alone, so `--no-members` asks it too.
@@ -60,12 +61,18 @@ WHAT IS CHECKED
     and what it says to do depends on which of the two is the member's own:
     it names no command that would un-register the member.
   - that a section of HEAD's `.gitmodules` gives the path of every row's
-    gitlink (#611, #407's decision 3). A recursive clone reads HEAD's file,
-    so a gitlink no section of it gives is left empty there, by CI and by
-    `make bootstrap`, though the holder it was committed in keeps its
-    checkout. It needs no member checked out, so `--no-members` asks it
-    too, and a member it names that is not checked out is not then refused
-    as uninitialized.
+    gitlink, the `member-gitmodules-absent` finding (#611, #407's decision
+    3). A recursive clone reads HEAD's file, so a gitlink no section of it
+    gives is left empty there, by CI and by `make bootstrap`, though the
+    holder it was committed in keeps its checkout. It needs no member
+    checked out, so `--no-members` asks it too, and a member it names that
+    is not checked out is not then refused as uninitialized. A
+    `.gitmodules` staged and not committed counts for nothing until it is
+    committed, since HEAD's file is the one a clone reads: a `family.py
+    add` staged and not committed is this finding for its own member; a
+    section taken out and staged, not committed, is no finding; and a file
+    put back and staged, not committed, in a holder whose HEAD lost it is
+    still this finding for every member.
   - the COPIED shape files, each against its `sha256` row in
     `contracts/shape-pin.yaml`. Editing a copy in place is drift and the exit
     is to carry it upstream, never to update the digest.
@@ -74,8 +81,10 @@ EXIT CODES
     0  the manifest is valid, every member is in lockstep, every copy matches
     1  a FINDING: drift a reviewer can act on
     2  a REFUSAL: the question could not be asked — no manifest, an
-       uninitialized member, an unreadable pin, no git to run. An
-       unanswerable question is never an implicit pass.
+       uninitialized member (but for one no section of HEAD's `.gitmodules`
+       gives: that is `member-gitmodules-absent`, exit 1), an unreadable
+       pin, no git to run. An unanswerable question is never an implicit
+       pass.
 """
 
 from __future__ import annotations
@@ -449,10 +458,26 @@ def _gitlink_in_another_case(path: str, commit: str, project: str,
     records the member once, at its own path. `member-gitlink-unnamed`
     prints no command for the same gitlink, since taking it out ALONE would
     un-register the member; these take it out and record it together.
+    `--ignore-unmatch`, since a variant whose removal is staged and not yet
+    committed is still named here, from HEAD, and the plain `git rm` of it
+    failed (`pathspec ... did not match`).
+
+    WHAT IS LEFT ON DISK. Where nothing is checked out at the row's path,
+    as in a fresh clone, `git submodule update --init --recursive` checks
+    the member out there once the move is committed. On a case-sensitive
+    disk a directory at a variant (the empty one a fresh clone leaves, or a
+    checkout) stays behind, untracked, and `family.py add` refuses it as
+    `family-members-dir-variant` (#574), so the text says to move it out of
+    the holder, by an `mv` with nothing to fill in. On macOS and Windows
+    that directory is the row's own, and the text says to leave it there.
     """
     found = ", ".join(f"{variant} (at {gitlinks[variant]})"
                       for variant in variants)
     taken_out = " ".join(shlex.quote(variant) for variant in variants)
+    moved = " and ".join(
+        f"`mv -- {shlex.quote(variant)} "
+        f"{shlex.quote('../' + variant.replace('/', '-'))}`"
+        for variant in variants)
     return Refusal(
         "member-gitlink-absent",
         f"no gitlink (mode 160000) recorded at {path!r}. {project} is named "
@@ -462,8 +487,16 @@ def _gitlink_in_another_case(path: str, commit: str, project: str,
         f"at {path}.",
         "Remediation: the member is recorded in the wrong case. Move its "
         "gitlink to the row's path, at the commit the row pins, in the index "
-        "alone, which touches no file, and commit that:\n"
-        f"    git rm -r --cached -- {taken_out}\n"
+        "alone, which touches no file, with the two lines below, and commit "
+        f"that. Where nothing is checked out at {path}, as in a fresh clone, "
+        "`git submodule update --init --recursive` then checks the member "
+        "out there. On a case-sensitive disk, as Linux's usually is, a "
+        f"directory left at {' or '.join(variants)} stays there, untracked, "
+        "and family.py add refuses it as family-members-dir-variant: move "
+        f"each one that is there out of the holder, {moved}. On macOS and "
+        "Windows it is the row's own directory, so leave it. The two "
+        "lines:\n"
+        f"    git rm -r --cached --ignore-unmatch -- {taken_out}\n"
         "    git update-index --add --cacheinfo "
         f"{shlex.quote(f'160000,{commit},{path}')}")
 
@@ -1342,6 +1375,11 @@ def _check_gitlinks_registered(root: Path, members: list,
     `member-path`'s, and one with no gitlink there is
     `member-gitlink-absent`'s (`gitlinks`, read as `recorded_gitlink` reads
     one). A holder with no members holds no gitlink and is asked nothing.
+    THREE SOURCES: the gitlinks from the index first, the rows from the
+    work tree's `family.yaml`, and the sections from HEAD alone, as #407's
+    decision 3 has it, so a `.gitmodules` staged and not committed counts
+    for nothing until it is committed (the module docstring gives the three
+    cases).
 
     The remedy writes the section as `family.py add` writes it, named after
     its path, with the url it gives a member, `https://github.com/` and the

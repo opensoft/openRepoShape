@@ -28,6 +28,12 @@ THE ISSUE'S FOUR LINES, each reproduced on main before this change:
   that HEAD holds and the index no longer does (#574), so it says to commit
   the removal between them now.
 
+AND THE STATES BESIDE THEM that the first round's review found: a member's
+gitlink held only at the conflict stages, which `remove` emptied as it
+emptied a merged one (its S1); a condition of each new check that no test
+held (its S2 and N5); and the variant move typed half way, or leaving a
+directory on a case-sensitive disk (its N1 and N2).
+
 THE SAME FAMILY, OFFLINE RULES AND READINGS as
 `test_family_remove_gitmodules.py` (#407), whose helpers are imported. Every
 remedy is typed as printed: split as a POSIX shell splits it, run with no
@@ -45,6 +51,8 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -54,19 +62,21 @@ from repo_shape import PYTHON
 #: The family fixture, its names, the offline environment and the readings
 #: of a holder, imported from the modules that own them rather than rebuilt.
 from test_family import (  # noqa: F401
-    FAMILY, NAME, ORG, SPARE, family, validate,
+    FAMILY, NAME, ORG, SPARE, family, manifest, validate,
 )
 from test_family_add_excludes import empty_holder  # noqa: F401
 from test_family_add_refusals import holder, offline  # noqa: F401
-from test_family_dry_run import isolated
+from test_family_dry_run import hand_edit_digest, isolated
 from test_family_member_path import MEMBER, OTHER, raw
 from test_family_remove_gitmodules import (
     deleted, edited, head_paths, left_out, ran, refused_alike,
     typed_as_printed, verb_args,
 )
 from test_scaffold_ignored_shape_files import excluding
+from test_validate_family_duplicates import EXACT, irrs_row, rewrite
 from test_validate_family_unnamed_mounts import (
-    commands, findings, spare_commits, stage_gitlink,
+    codes, commands, findings, spare_commits, stage_gitlink,
+    stage_unmerged_gitlink,
 )
 
 GITMODULES = ".gitmodules"
@@ -125,16 +135,17 @@ def remove_remedy(*projects: str) -> str:
 
 
 def absent(project: str, commit: str, *, held: bool,
-           with_url: bool = True) -> str:
+           with_url: bool = True, printed_url: str | None = None) -> str:
     """The `member-gitmodules-absent` finding for `project`'s gitlink at
     `commit`, WHOLE: its line and the commands under it. `held` is whether
     HEAD holds a `.gitmodules` at all; `with_url` whether the section to
-    write has no url of its own."""
+    write has no url of its own; `printed_url` the url line's value where
+    it is not `url(project)`."""
     path = f"members/{project}"
     lines = f"\n    git config -f .gitmodules submodule.{path}.path {path}"
     if with_url:
         lines += (f"\n    git config -f .gitmodules submodule.{path}.url "
-                  f"{url(project)}")
+                  f"{printed_url or url(project)}")
     return (f"FINDING member-gitmodules-absent: {path} is a gitlink at "
             f"{commit} that a row of members: names, and "
             + ("no section of HEAD's .gitmodules gives that path" if held
@@ -313,6 +324,54 @@ def test_remove_of_a_member_whose_section_alone_is_gone_runs_as_before(
     assert removed.returncode == 0, removed.stdout + removed.stderr
     assert head_paths(holder, env) == [f"members/{OTHER}"]
     assert_passes_in_every_mode(holder, 1)
+
+
+def test_remove_refuses_it_where_the_members_gitlink_is_unmerged(
+        family, holder, offline, tmp_path):
+    """THE REVIEW'S S1: HEAD lost `.gitmodules`, and MEMBER's gitlink is held
+    only at the conflict stages 1, 2 and 3 (`stage_unmerged_gitlink`).
+    `deinit` and `git rm` run on an unmerged gitlink as on a merged one, so
+    while the refusal asked only for one at stage 0, the dry run exited 0
+    and the real run emptied the mount and died at its commit. Both refuse
+    now, with the holder byte for byte as it was, the mount's files and the
+    three stages included. Typed as printed, the remedy writes both
+    sections back, and `remove` then commits."""
+    env = isolated(offline, tmp_path)
+    head_lost(holder, env)
+    path = f"members/{MEMBER}"
+    stage_unmerged_gitlink(holder, path, pinned(holder, MEMBER))
+    listed = raw(holder, env, "ls-files", "-s", "--", path).stdout
+    assert [line.split()[2] for line in listed.splitlines()] == [
+        b"1", b"2", b"3"], "premise: unmerged, no stage 0"
+    args = verb_args("remove", holder, family)
+
+    said, remediation = refused_alike(holder, env, args)
+
+    assert said == REMOVE_REFUSED.format(member=MEMBER)
+    assert remediation == remove_remedy(MEMBER, OTHER)
+    assert (holder / path / "project.yaml").is_file()
+    typed_as_printed(holder, env, remediation)
+    ran(holder, env, args)
+    assert head_paths(holder, env) == [f"members/{OTHER}"]
+    assert_passes_in_every_mode(holder, 1)
+
+
+def test_removes_remedy_names_only_members_whose_gitlink_is_indexed(
+        family, holder, offline, tmp_path):
+    """The remedy writes back the section of each member whose gitlink the
+    index records, and of no other. OTHER's gitlink taken out and its row
+    left: a section for it would register a path the holder records
+    nothing at, so the remedy writes MEMBER's section alone."""
+    env = isolated(offline, tmp_path)
+    head_lost(holder, env)
+    raw(holder, env, "rm", "-q", "--cached", "--", f"members/{OTHER}")
+    commit_all(holder, env, "OTHER's gitlink taken out")
+
+    said, remediation = refused_alike(holder, env,
+                                      verb_args("remove", holder, family))
+
+    assert said == REMOVE_REFUSED.format(member=MEMBER)
+    assert remediation == remove_remedy(MEMBER)
 
 
 # --- 571(c): a gitlink no section of HEAD's .gitmodules gives ---------------
@@ -499,6 +558,104 @@ def test_an_untracked_copy_put_back_is_still_a_finding_until_committed(
     assert_passes_in_every_mode(holder, 2)
 
 
+@pytest.mark.parametrize("extra", [(), ("--pins",)],
+                         ids=["members-checked", "pins"])
+def test_a_checked_out_member_it_names_still_has_its_tree_checked(
+        holder, offline, tmp_path, extra):
+    """Only a member it names that is NOT checked out stops after its
+    gitlink. One that is checked out is asked its tree as before: MEMBER's
+    digest edited by hand, in a holder whose HEAD lost `.gitmodules`, is
+    `member-digest-mismatch` beside the two `member-gitmodules-absent`."""
+    env = isolated(offline, tmp_path)
+    head_lost(holder, env)
+    hand_edit_digest(holder, env)
+
+    result = validate(holder, *extra)
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert codes(result) == ["member-gitmodules-absent"] * 2 + [
+        "member-digest-mismatch"]
+    assert findings(result)[2].startswith(
+        f"FINDING member-digest-mismatch: {MEMBER}: pin.tree_sha256 "
+        f"{'b' * 64}\n"), result.stderr
+
+
+@MODES
+def test_a_head_gitmodules_git_cannot_read_is_refused(holder, offline,
+                                                      tmp_path, extra):
+    """HEAD's `.gitmodules` committed broken, the work tree's mended and not
+    committed. A clone reads HEAD's, which git cannot read either, so the
+    gate refuses `gitmodules-unreadable` in every mode, saying to commit the
+    mended file, and never reads the broken file as one that gives no
+    section. Committed, the holder passes."""
+    env = isolated(offline, tmp_path)
+    mended = (holder / GITMODULES).read_bytes()
+    committed_gitmodules(holder, env,
+                         f'[submodule "members/{MEMBER}"\n\tpath = x\n'
+                         .encode("utf-8"))
+    (holder / GITMODULES).write_bytes(mended)
+
+    result = validate(holder, *extra)
+
+    assert result.returncode == 2, result.stderr + result.stdout
+    lines = result.stderr.splitlines()
+    assert lines[0].startswith(
+        "REFUSED gitmodules-unreadable: HEAD's .gitmodules could not be read "
+        "as git reads it: `git config -z --blob "), result.stderr
+    assert lines[-1] == (
+        "Remediation: git cannot read it either, so none of this holder's "
+        "submodules can be cloned from it. Mend the file by hand (`git config "
+        "-f .gitmodules --list` says where it breaks), commit it, then run "
+        "this again.")
+    staged_and_committed(holder, env, "Commit the mended .gitmodules")
+    assert_passes_in_every_mode(holder, 2)
+
+
+def test_a_repository_not_org_and_name_prints_the_url_placeholder(
+        holder, offline, tmp_path):
+    """The url line gives `https://github.com/<repository>.git`, the url
+    `family.py add` writes, only where the row's `repository:` is
+    `<org>/<Name>`. From any other value that would be a url nobody chose,
+    so the line prints `<url>` for the person to fill in."""
+    env = isolated(offline, tmp_path)
+    head_lost(holder, env)
+    rows = (holder / "family.yaml").read_bytes()
+    line = f"    repository: {ORG}/{MEMBER}\n".encode("utf-8")
+    assert rows.count(line) == 1, "fixture drift: MEMBER's repository line"
+    (holder / "family.yaml").write_bytes(rows.replace(
+        line, f"    repository: {MEMBER}\n".encode("utf-8")))
+
+    result = validate(holder, "--no-members")
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert findings(result) == [
+        absent(MEMBER, pinned(holder, MEMBER), held=False,
+               printed_url="<url>"),
+        absent(OTHER, pinned(holder, OTHER), held=False)]
+
+
+def test_a_row_written_twice_is_one_finding_per_path(holder, offline,
+                                                     tmp_path):
+    """MEMBER's row written twice in a holder whose HEAD lost `.gitmodules`:
+    `member-duplicate` once, and `member-gitmodules-absent` once per path,
+    not once per row."""
+    env = isolated(offline, tmp_path)
+    head_lost(holder, env)
+    row = irrs_row(holder)
+    assert row["project"] == MEMBER, "fixture drift: MEMBER is IRRS"
+    other = next(r for r in manifest(holder)["members"]
+                 if r["project"] == OTHER)
+    rewrite(holder, [row, dict(row), other])
+
+    result = validate(holder, "--no-members")
+
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert findings(result) == [
+        EXACT,
+        absent(MEMBER, pinned(holder, MEMBER), held=False),
+        absent(OTHER, pinned(holder, OTHER), held=False)]
+
+
 # --- 574/2: a gitlink recorded only at a case variant of the row's path -----
 
 def variant_refused(path: str, commit: str, variants: list[str],
@@ -508,6 +665,8 @@ def variant_refused(path: str, commit: str, variants: list[str],
     project = path.split("/", 1)[1]
     found = ", ".join(f"{variant} (at {gitlinks[variant]})"
                       for variant in variants)
+    moved = " and ".join(f"`mv -- {variant} ../{variant.replace('/', '-')}`"
+                         for variant in variants)
     return [
         f"REFUSED member-gitlink-absent: no gitlink (mode 160000) recorded at "
         f"'{path}'. {project} is named in family.yaml, and this repository "
@@ -516,9 +675,42 @@ def variant_refused(path: str, commit: str, variants: list[str],
         f"recursive clone checks out nothing at {path}.",
         "Remediation: the member is recorded in the wrong case. Move its "
         "gitlink to the row's path, at the commit the row pins, in the index "
-        "alone, which touches no file, and commit that:",
-        "    git rm -r --cached -- " + " ".join(variants),
+        "alone, which touches no file, with the two lines below, and commit "
+        f"that. Where nothing is checked out at {path}, as in a fresh clone, "
+        "`git submodule update --init --recursive` then checks the member "
+        "out there. On a case-sensitive disk, as Linux's usually is, a "
+        f"directory left at {' or '.join(variants)} stays there, untracked, "
+        "and family.py add refuses it as family-members-dir-variant: move "
+        f"each one that is there out of the holder, {moved}. On macOS and "
+        "Windows it is the row's own directory, so leave it. The two lines:",
+        "    git rm -r --cached --ignore-unmatch -- " + " ".join(variants),
         f"    git update-index --add --cacheinfo 160000,{commit},{path}"]
+
+
+def refused_at(root: Path, commit: str, variants: list[str]) -> list[str]:
+    """The members-checked gate in `root`, where MEMBER's gitlink is recorded
+    only at `variants`, at `commit`: exit 2, in `variant_refused`'s lines,
+    which it returns."""
+    result = validate(root)
+    assert result.returncode == 2, result.stderr + result.stdout
+    lines = result.stderr.splitlines()
+    assert lines == variant_refused(f"members/{MEMBER}", commit, variants,
+                                    dict.fromkeys(variants, commit))
+    return lines
+
+
+def moved_as_printed(root: Path, env: dict, lines: list[str],
+                     variants: list[str]) -> None:
+    """The refusal's two command lines typed as printed, and the commit it
+    says to make: HEAD then records MEMBER once, at its own path, and at
+    none of `variants`."""
+    for line in lines[2:]:
+        raw(root, env, *shlex.split(line)[1:])
+    commit_all(root, env, "Move the gitlink as printed")
+    listed = raw(root, env, "ls-tree", "-r", "--name-only", "HEAD").stdout
+    assert f"members/{MEMBER}\n".encode() in listed
+    for variant in variants:
+        assert f"{variant}\n".encode() not in listed
 
 
 def recorded_at(root: Path, env: dict, project: str,
@@ -551,21 +743,72 @@ def test_a_gitlink_only_at_a_case_variant_is_named_and_moved_as_printed(
     variants = sorted(spelling.format(p=MEMBER) for spelling in spellings)
     commit = recorded_at(holder, env, MEMBER, *variants)
 
-    result = validate(holder)
+    lines = refused_at(holder, commit, variants)
 
-    assert result.returncode == 2, result.stderr + result.stdout
-    lines = result.stderr.splitlines()
-    path = f"members/{MEMBER}"
-    assert lines == variant_refused(path, commit, variants,
-                                    dict.fromkeys(variants, commit))
-    for line in lines[2:]:
-        raw(holder, env, *shlex.split(line)[1:])
-    commit_all(holder, env, "Move the gitlink as printed")
-    listed = raw(holder, env, "ls-tree", "-r", "--name-only", "HEAD").stdout
-    assert f"{path}\n".encode() in listed
-    for variant in variants:
-        assert f"{variant}\n".encode() not in listed
+    moved_as_printed(holder, env, lines, variants)
     assert_passes_in_every_mode(holder, 2)
+
+
+@DISKS
+def test_a_variant_whose_removal_is_staged_is_moved_as_printed(
+        holder, offline, tmp_path, ignorecase):
+    """HALF REPAIRED (the review's N1): the variant's removal staged and not
+    committed. HEAD still records the gitlink there, so the refusal still
+    names it, and the plain `git rm -r --cached` of it failed, `pathspec
+    ... did not match`. With `--ignore-unmatch` the lines typed as printed
+    and committed move the gitlink, and the holder passes."""
+    env = on_disk(isolated(offline, tmp_path), ignorecase)
+    variant = f"Members/{MEMBER}"
+    commit = recorded_at(holder, env, MEMBER, variant)
+    raw(holder, env, "rm", "-q", "--cached", "--", variant)
+
+    lines = refused_at(holder, commit, [variant])
+
+    moved_as_printed(holder, env, lines, [variant])
+    assert_passes_in_every_mode(holder, 2)
+
+
+@pytest.fixture
+def case_sensitive_disk(tmp_path):
+    """Skips where `Members/` and `members/` would be one directory, as
+    macOS and Windows hold them by default (nothing is left behind there to
+    move), or where there is no `mv` to type."""
+    (tmp_path / "CaseProbe").mkdir()
+    if (tmp_path / "caseprobe").exists():
+        pytest.skip("this disk is case-insensitive: Members/IRRS is "
+                    "members/IRRS here, so no second directory can exist")
+    if shutil.which("mv") is None:
+        pytest.skip("no mv on PATH to type the printed line with")
+
+
+def test_a_variant_checkout_left_on_disk_is_moved_out_as_printed(
+        family, holder, offline, tmp_path, case_sensitive_disk):
+    """THE REVIEW'S N2, in its C3 layout: MEMBER's gitlink recorded only at
+    `Members/IRRS`, its checkout still at `members/IRRS`, and a second
+    checkout at `Members/IRRS`, as a case-sensitive disk can hold. The
+    index move leaves that directory on disk, untracked, where `family.py
+    add` refused any other member past it (`family-members-dir-variant`).
+    Every line the refusal prints, typed as printed: the two lines, their
+    commit, and the `mv` it gives for a case-sensitive disk. The gate then
+    passes in every mode, and SPARE is added."""
+    env = isolated(offline, tmp_path)
+    variant = f"Members/{MEMBER}"
+    commit = recorded_at(holder, env, MEMBER, variant)
+    raw(holder, env, "clone", "-q", "--no-checkout",
+        str(family["remotes"] / f"{MEMBER}.git"), variant)
+    raw(holder / variant, env, "checkout", "-q", "--detach", commit)
+
+    lines = refused_at(holder, commit, [variant])
+
+    moved_as_printed(holder, env, lines, [variant])
+    (move,) = re.findall(r"`(mv [^`]*)`", lines[1])
+    subprocess.run(shlex.split(move), cwd=str(holder), check=True)
+    assert not (holder / variant).exists()
+    assert (tmp_path / f"Members-{MEMBER}" / "project.yaml").is_file()
+    assert_passes_in_every_mode(holder, 2)
+    added = run_script(FAMILY, *verb_args("add", holder, family), env=env)
+    assert added.returncode == 0, added.stdout + added.stderr
+    assert_passes_in_every_mode(holder, 3)
 
 
 def test_a_fresh_clone_of_a_case_variant_says_it_too(family, holder, offline,
@@ -581,12 +824,7 @@ def test_a_fresh_clone_of_a_case_variant_says_it_too(family, holder, offline,
     cloned = clone_just_pushed(remote, clone, "w611/case", recurse=False)
     assert cloned.returncode == 0, cloned.stdout + cloned.stderr
 
-    result = validate(clone)
-
-    assert result.returncode == 2, result.stderr + result.stdout
-    variant = f"Members/{MEMBER}"
-    assert result.stderr.splitlines() == variant_refused(
-        f"members/{MEMBER}", commit, [variant], {variant: commit})
+    refused_at(clone, commit, [f"Members/{MEMBER}"])
 
 
 # --- 574/3: a hand mount's remedy commits the removal before the add ---------

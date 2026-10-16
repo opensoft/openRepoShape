@@ -5408,7 +5408,7 @@ def _checked_gitmodules_held(family: Family, path: str) -> None:
     """`member-gitmodules-absent`: `remove` refuses, before any git command
     that writes and under `--dry-run` alike, a holder that holds no
     `.gitmodules` at all, in the work tree, the index or HEAD, while its
-    index records the member's gitlink (#611).
+    index records the member's gitlink at any stage (#611).
 
     A HOLDER WHOSE HEAD LOST `.gitmodules`, as #407's commit left one. `git
     rm` edits only a `.gitmodules` the work tree has, and `remove` commits
@@ -5416,7 +5416,11 @@ def _checked_gitmodules_held(family: Family, path: str) -> None:
     add` died (`pathspec '.gitmodules' did not match any files`) after
     `deinit` and `git rm` had emptied the member, and the rollback left its
     directory empty; the dry run exited 0. `_checked_gitmodules_as_staged`
-    asks nothing here, since no copy exists to compare.
+    asks nothing here, since no copy exists to compare. It asks only where
+    none of the work tree, the index and HEAD holds a `.gitmodules`, and the
+    index records the member's gitlink at any stage: `deinit` and `git rm`
+    run on a merged or an unmerged gitlink alike, and with no `.gitmodules`
+    anywhere the commit cannot stage one.
 
     REFUSED, NOT COMMITTED WITHOUT IT, as #407 refuses a `.gitmodules` the
     work tree lacks: the holder is left byte for byte as it was. A clone
@@ -5436,9 +5440,7 @@ def _checked_gitmodules_held(family: Family, path: str) -> None:
         return
     gitlinks = {name.decode("utf-8", "surrogateescape")
                 for name, held in records.items()
-                if any(record.startswith(b"160000 ")
-                       and record.partition(b"\t")[0].endswith(b" 0")
-                       for record in held)}
+                if any(record.startswith(b"160000 ") for record in held)}
     if path not in gitlinks:
         return
     sections = []
