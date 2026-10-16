@@ -40,7 +40,10 @@ WHAT IS CHECKED
          project the row claims.
     A row whose `path:` is not `members/<Project>` is the `member-path`
     finding and none of the three is asked of it: nothing read through a
-    path the row may not have is a fact about the member (#367).
+    path the row may not have is a fact about the member (#367). A row
+    whose gitlink is recorded only at a case variant of its path is refused
+    naming that variant, the index move that puts it back, and what to do
+    with a directory the variant leaves on disk (#611).
     And, across the rows, that no two record ONE `id`: that is one project
     pinned twice, however each row spelled its repository (#206). This one
     reads `family.yaml` alone, so `--no-members` asks it too.
@@ -57,6 +60,19 @@ WHAT IS CHECKED
     asks them too. A path a row names in another case is still one of these,
     and what it says to do depends on which of the two is the member's own:
     it names no command that would un-register the member.
+  - that a section of HEAD's `.gitmodules` gives the path of every row's
+    gitlink, the `member-gitmodules-absent` finding (#611, #407's decision
+    3). A recursive clone reads HEAD's file, so a gitlink no section of it
+    gives is left empty there, by CI and by `make bootstrap`, though the
+    holder it was committed in keeps its checkout. It needs no member
+    checked out, so `--no-members` asks it too, and a member it names that
+    is not checked out is not then refused as uninitialized. A
+    `.gitmodules` staged and not committed counts for nothing until it is
+    committed, since HEAD's file is the one a clone reads: a `family.py
+    add` staged and not committed is this finding for its own member; a
+    section taken out and staged, not committed, is no finding; and a file
+    put back and staged, not committed, in a holder whose HEAD lost it is
+    still this finding for every member.
   - the COPIED shape files, each against its `sha256` row in
     `contracts/shape-pin.yaml`. Editing a copy in place is drift and the exit
     is to carry it upstream, never to update the digest.
@@ -65,8 +81,10 @@ EXIT CODES
     0  the manifest is valid, every member is in lockstep, every copy matches
     1  a FINDING: drift a reviewer can act on
     2  a REFUSAL: the question could not be asked — no manifest, an
-       uninitialized member, an unreadable pin, no git to run. An
-       unanswerable question is never an implicit pass.
+       uninitialized member (but for one no section of HEAD's `.gitmodules`
+       gives: that is `member-gitmodules-absent`, exit 1), an unreadable
+       pin, no git to run. An unanswerable question is never an implicit
+       pass.
 """
 
 from __future__ import annotations
@@ -97,12 +115,38 @@ DEFAULT_MEMBERS_DIR = "members"
 #: `ls-tree` spell its mode.
 GITLINK_MODE = b"160000"
 
-LOCKSTEP = (
-    "THE LOCKSTEP RULE: a member's gitlink and its `members[].pin.commit` in "
-    "`family.yaml` are ONE invariant. `scripts/family.py bump --member "
-    "<Project> --to <commit>` moves both in one commit; moving one alone is "
-    "what this refuses."
-)
+
+def _lockstep(root: Path, project: str | None = None,
+              member_id: str | None = None) -> str:
+    """THE LOCKSTEP RULE, with the `bump` that keeps it, for this holder.
+
+    THE `bump` IT NAMED COULD NOT RUN (#610). The rule said `scripts/
+    family.py bump --member <Project> --to <commit>`, with no `--family-root`,
+    which `bump` requires, and no branch, though since #487 a real `bump`
+    refuses the holder's tracking branch, where a person stands after
+    `init`. So it names this holder by its path, as `member-gitlink-absent`'s
+    `add` does, and the `git -C <holder> switch -c family/bump-<member>` that
+    makes a branch first, as #539's `_switch_line` gives `add` and `remove`.
+
+    `project` is the member a finding is about, its `--member`; the branch
+    word is its row's `id:`, or the project where the row records none, as
+    `family.py bump` suggests its own (which adds the commit's first twelve,
+    unknown here: the `--to` is the person's to choose). The closing count
+    names no member, since more than one may be out of step, and says
+    `PROJECT_PLACEHOLDER` in both places, as `_switch_line` does.
+    """
+    member = (PROJECT_PLACEHOLDER if project is None
+              else shlex.quote(project))
+    word = None if project is None else (member_id or project)
+    return (
+        "THE LOCKSTEP RULE: a member's gitlink and its `members[].pin.commit` "
+        f"in `{MANIFEST}` are ONE invariant. From a checkout of openRepoShape, "
+        f"`{PYTHON} scripts/family.py bump --family-root "
+        f"{shlex.quote(str(root))} --member {member} --to <commit>` moves both "
+        "in one commit, on a branch other than the holder's tracking branch, "
+        f"which it refuses (`{_switch_line(root, 'bump', word)}` makes one); "
+        f"moving one alone is what this refuses. {BRANCH_LEFT}")
+
 
 #: The findings THE LOCKSTEP RULE is about (#539): a member's gitlink and its
 #: pin out of step, and the pin's digest of the commit they name. The closing
@@ -400,7 +444,8 @@ def _pin_commit(pin: dict, project: str, report: Report) -> str:
 
 
 def _check_member_gitlink(root: Path, path: str, commit: str, project: str,
-                          report: Report) -> None:
+                          gitlinks: dict[str, str], report: Report,
+                          rule: str) -> None:
     """The submodule gitlink this repository records at `path`, against the
     pin — THE LOCKSTEP RULE. Split from `_check_member` for #137. Raises
     `Refusal` when there is no gitlink at all: a row naming a member this
@@ -408,9 +453,15 @@ def _check_member_gitlink(root: Path, path: str, commit: str, project: str,
     `git switch -c` that `add` needs first (#539) and the `add`, from a
     checkout of openRepoShape and naming this holder by its path, as the
     holder's other remedies do: `--family-root .` named the checkout the
-    line runs from."""
+    line runs from. Where `gitlinks` (`_member_gitlinks`) holds one at a
+    case variant of `path`, the refusal names that instead (#611)."""
     gitlink = recorded_gitlink(root, path)
     if gitlink is None:
+        variants = sorted(other for other in gitlinks if other != path
+                          and other.casefold() == path.casefold())
+        if variants:
+            raise _gitlink_in_another_case(path, commit, project, variants,
+                                           gitlinks)
         raise Refusal(
             "member-gitlink-absent",
             f"no gitlink (mode 160000) recorded at {path!r}. {project} is "
@@ -428,13 +479,76 @@ def _check_member_gitlink(root: Path, path: str, commit: str, project: str,
         report.finding(
             "member-gitlink-mismatch",
             f"{path}: gitlink {gitlink} != {MANIFEST} pin {commit}\n  "
-            + LOCKSTEP)
+            + rule)
     else:
         report.note(f"{path}: gitlink == pin {commit[:12]}")
 
 
+def _gitlink_in_another_case(path: str, commit: str, project: str,
+                             variants: list[str],
+                             gitlinks: dict[str, str]) -> Refusal:
+    """`member-gitlink-absent` for a row whose gitlink this repository
+    records only at a case variant of its path (#611, #363's item 3), as a
+    holder committed in #363's state does: `Members/<P>`, under a row and a
+    `.gitmodules` section that say `members/<P>`. A fresh clone checks out
+    nothing at the row's path, and the plain refusal's `family.py add`
+    cannot help: the row is there already.
+
+    EACH VARIANT IS NAMED, AND THE GITLINK IS MOVED IN THE INDEX ALONE, as
+    #574's remedies act on an index entry under another spelling of
+    `members/` (Brett Heap, 2026-10-14, "Refuse on every disk"): `git rm -r
+    --cached` takes each variant out and touches no file, and `git
+    update-index --cacheinfo` records the gitlink at the row's path, at the
+    commit the row pins, reading no disk either. So the two lines work on
+    every disk, wherever the checkout stands, and the commit after them
+    records the member once, at its own path. `member-gitlink-unnamed`
+    prints no command for the same gitlink, since taking it out ALONE would
+    un-register the member; these take it out and record it together.
+    `--ignore-unmatch`, since a variant whose removal is staged and not yet
+    committed is still named here, from HEAD, and the plain `git rm` of it
+    failed (`pathspec ... did not match`).
+
+    WHAT IS LEFT ON DISK. Where nothing is checked out at the row's path,
+    as in a fresh clone, `git submodule update --init --recursive` checks
+    the member out there once the move is committed. On a case-sensitive
+    disk a directory at a variant (the empty one a fresh clone leaves, or a
+    checkout) stays behind, untracked, and `family.py add` refuses it as
+    `family-members-dir-variant` (#574), so the text says to move it out of
+    the holder, by an `mv` with nothing to fill in. On macOS and Windows
+    that directory is the row's own, and the text says to leave it there.
+    """
+    found = ", ".join(f"{variant} (at {gitlinks[variant]})"
+                      for variant in variants)
+    taken_out = " ".join(shlex.quote(variant) for variant in variants)
+    moved = " and ".join(
+        f"`mv -- {shlex.quote(variant)} "
+        f"{shlex.quote('../' + variant.replace('/', '-'))}`"
+        for variant in variants)
+    return Refusal(
+        "member-gitlink-absent",
+        f"no gitlink (mode 160000) recorded at {path!r}. {project} is named "
+        f"in {MANIFEST}, and this repository records its gitlink only at a "
+        "case variant of that path, which macOS and Windows hold as one "
+        f"directory with it: {found}. A recursive clone checks out nothing "
+        f"at {path}.",
+        "Remediation: the member is recorded in the wrong case. Move its "
+        "gitlink to the row's path, at the commit the row pins, in the index "
+        "alone, which touches no file, with the two lines below, and commit "
+        f"that. Where nothing is checked out at {path}, as in a fresh clone, "
+        "`git submodule update --init --recursive` then checks the member "
+        "out there. On a case-sensitive disk, as Linux's usually is, a "
+        f"directory left at {' or '.join(variants)} stays there, untracked, "
+        "and family.py add refuses it as family-members-dir-variant: move "
+        f"each one that is there out of the holder, {moved}. On macOS and "
+        "Windows it is the row's own directory, so leave it. The two "
+        "lines:\n"
+        f"    git rm -r --cached --ignore-unmatch -- {taken_out}\n"
+        "    git update-index --add --cacheinfo "
+        f"{shlex.quote(f'160000,{commit},{path}')}")
+
+
 def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
-                       project: str, report: Report) -> None:
+                       project: str, report: Report, rule: str) -> None:
     """Is `member`'s own object store readable at `commit`, and does its
     digest match the pin? Split from `_check_member` for #137 — the two
     questions were already one comment block ("the digest and the identity")
@@ -481,12 +595,13 @@ def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
                 f"{project}: pin.tree_sha256 {recorded}\n"
                 f"       recomputed at {commit[:12]} {actual}\n"
                 "  The gitlink and the pin may agree on a commit whose bytes "
-                f"are not the bytes the pin was written against.\n  {LOCKSTEP}")
+                f"are not the bytes the pin was written against.\n  {rule}")
         else:
             report.note(f"{path}: tree digest recomputes ({recorded[:12]}…)")
 
 
-def _check_member(root: Path, row: dict, seen: dict, report: Report) -> None:
+def _check_member(root: Path, row: dict, seen: dict, report: Report,
+                  gitlinks: dict[str, str], unregistered: set[str]) -> None:
     """One member: the row itself, the gitlink, the digest, the identity.
 
     NOTHING IS READ THROUGH A PATH THE ROW MAY NOT HAVE (#367). A hand-edited
@@ -501,6 +616,14 @@ def _check_member(root: Path, row: dict, seen: dict, report: Report) -> None:
     The git each check runs is run inside `_git_runs`, which names the check
     when there is no git to run (#368); the identity check reads a file and
     runs none.
+
+    A MEMBER NO SECTION OF HEAD'S `.gitmodules` GIVES (`unregistered`, the
+    `member-gitmodules-absent` finding, #611) that is not checked out stops
+    after its gitlink. Refused `member-uninitialized`, it named `git
+    submodule update --init`, which exits 0 there and checks nothing out,
+    and the refusal dropped the finding that says why: the state a fresh
+    clone of a holder whose HEAD lost `.gitmodules` is in, and CI's. The
+    finding is made all the same, so the run still fails.
     """
     project = _member_project_name(row, seen, report)
     if project is None:
@@ -518,14 +641,19 @@ def _check_member(root: Path, row: dict, seen: dict, report: Report) -> None:
         return
 
     # ---- the gitlink -------------------------------------------------------
+    # THE LOCKSTEP RULE each finding below ends at names this member (#610).
+    rule = _lockstep(root, project, str(row.get("id") or project))
     with _git_runs(f"the gitlink recorded at {path} could not be read"):
-        _check_member_gitlink(root, path, commit, project, report)
+        _check_member_gitlink(root, path, commit, project, gitlinks, report,
+                              rule)
 
     # ---- the digest and the identity --------------------------------------
     member = root / path
+    if path in unregistered and not (member / ".git").exists():
+        return
     with _git_runs(f"{project}'s pinned commit and its tree digest could not "
                    f"be read in {path}"):
-        _check_member_tree(member, pin, path, commit, project, report)
+        _check_member_tree(member, pin, path, commit, project, report, rule)
     _check_member_identity(member, row, project, report)
 
 
@@ -841,6 +969,13 @@ def _gitmodules_sections(root: Path) -> dict[str, dict[str, str]]:
                 "holder's submodules can be cloned from it as it stands. Mend "
                 f"the file by hand (`git config -f {GITMODULES} --list` says "
                 "where it breaks), then run this again.") from exc
+    return _sections_listed(listed)
+
+
+def _sections_listed(listed: bytes) -> dict[str, dict[str, str]]:
+    """`{name: {key: value}}` of every `submodule` section in what `git
+    config -z --list` printed, each key in the order git lists it: one
+    reading for the work tree's `.gitmodules` and HEAD's (#611)."""
     sections: dict[str, dict[str, str]] = {}
     for record in listed.split(b"\0"):
         key, _, value = record.decode("utf-8",
@@ -850,6 +985,48 @@ def _gitmodules_sections(root: Path) -> dict[str, dict[str, str]]:
             sections.setdefault(section[len("submodule."):],
                                 {})[variable] = value
     return sections
+
+
+def _head_gitmodules(root: Path
+                     ) -> tuple[bool, dict[str, dict[str, str]]] | None:
+    """`(whether HEAD holds a .gitmodules, its sections)`, read as
+    `_gitmodules_sections` reads the work tree's, or None for a HEAD git
+    cannot list, a holder before its first commit, which a clone cannot
+    take either (#611).
+
+    HEAD'S, NOT THE WORK TREE'S: a recursive clone of this holder, and CI's
+    checkout, read the file HEAD holds. A work tree's copy nobody has
+    committed is no fact about what a clone gets, and neither is one a
+    sparse checkout leaves out of the work tree or a deletion nobody has
+    committed. HEAD's ROOT TREE is listed and the entry picked by name, with
+    no pathspec, as `_member_gitlinks` lists HEAD. One git cannot read is
+    `gitmodules-unreadable`, as the work tree's is.
+    """
+    with _git_runs(f"HEAD's {GITMODULES} could not be read as git reads it"):
+        try:
+            tree = git_out(["ls-tree", "-z", "HEAD"], cwd=root, binary=True)
+        except Refusal:
+            return None
+        blob = next((meta.split()[2].decode("ascii")
+                     for meta, _, name in (record.partition(b"\t")
+                                           for record in tree.split(b"\0"))
+                     if name == GITMODULES.encode()
+                     and meta.split()[1:2] == [b"blob"]), None)
+        if blob is None:
+            return False, {}
+        try:
+            listed = git_out(["config", "-z", "--blob", blob, "--list"],
+                             cwd=root, binary=True)
+        except Refusal as exc:
+            raise Refusal(
+                "gitmodules-unreadable",
+                f"HEAD's {GITMODULES} could not be read as git reads it: "
+                f"{exc.detail}",
+                "Remediation: git cannot read it either, so none of this "
+                "holder's submodules can be cloned from it. Mend the file by "
+                f"hand (`git config -f {GITMODULES} --list` says where it "
+                "breaks), commit it, then run this again.") from exc
+    return True, _sections_listed(listed)
 
 
 def _check_gitmodules_paths(sections: dict[str, dict[str, str]],
@@ -1098,7 +1275,10 @@ def _check_gitlinks_named(root: Path, gitlinks: dict[str, str],
     which refuses while its checkout holds changes, then mounted with
     `family.py add`: `add` cannot adopt an existing mount, and after `git rm
     --cached` alone it refuses the checkout left in the way
-    (`member-path-taken`). `add` then names the object store `git rm` leaves
+    (`member-path-taken`). The removal is committed between the two (#611):
+    `add` refuses a path under another spelling of `members/` that HEAD
+    holds and the index no longer does (#574), which an uncommitted `git rm
+    -- Members/<P>` leaves. `add` then names the object store `git rm` leaves
     in `.git/modules`, if it is still there. `--member` is quoted as the
     paths are, its project alone: `<org>` is the operator's to fill in.
     A BRANCH FIRST (#539): `add` refuses the holder's tracking branch
@@ -1138,11 +1318,13 @@ def _check_gitlinks_named(root: Path, gitlinks: dict[str, str],
             "with the first command below, since family.py add refuses the "
             "holder's tracking branch, take it out with the second, which "
             f"refuses while its checkout holds changes and takes its "
-            f"{GITMODULES} section out too, then mount it with the third, "
-            "from a checkout of openRepoShape: family.py add writes its row "
-            "and its gitlink in one commit, and names the object store git "
-            "rm leaves under .git/modules if one is still there. "
-            f"{BRANCH_LEFT}\n"
+            f"{GITMODULES} section out too, and commit that removal, since "
+            "family.py add refuses a path under another spelling of members/ "
+            "that HEAD holds and the index no longer does, then mount it "
+            "with the third, from a checkout of openRepoShape: family.py add "
+            "writes its row and its gitlink in one commit, and names the "
+            "object store git rm leaves under .git/modules if one is still "
+            f"there. {BRANCH_LEFT}\n"
             f"    {_switch_line(root, 'add', project)}\n"
             f"    git rm -- {shlex.quote(path)}\n"
             f"    {PYTHON} scripts/family.py add --family-root "
@@ -1221,6 +1403,78 @@ def _check_gitmodules_named(sections: dict[str, dict[str, str]],
             f"of them, then commit {GITMODULES}:{removal}")
 
 
+def _check_gitlinks_registered(root: Path, members: list,
+                               gitlinks: dict[str, str],
+                               report: Report) -> set[str]:
+    """Every row's gitlink is at a path a section of HEAD's `.gitmodules`
+    gives — the `member-gitmodules-absent` finding (#611, #407's decision
+    3). Returns the paths it was made for, of which `_check_member` asks no
+    checkout that is not there.
+
+    A recursive clone checks a gitlink out only where a section gives its
+    path, so a gitlink with none is left empty in every clone, by CI and by
+    `make bootstrap` there, whose `git submodule update` exits 0 and checks
+    nothing out. The holder the commit was made in keeps its checkout, and
+    its git config the registration, so every other check here passed it:
+    `family.py remove` committed a `.gitmodules` the work tree had lost
+    (#407) and the gate said `family ok`.
+
+    HEAD's file (`_head_gitmodules`), and the rows that `_check_member`
+    reads at their path: one whose `path:` is not `members/<project>` is
+    `member-path`'s, and one with no gitlink there is
+    `member-gitlink-absent`'s (`gitlinks`, read as `recorded_gitlink` reads
+    one). A holder with no members holds no gitlink and is asked nothing.
+    THREE SOURCES: the gitlinks from the index first, the rows from the
+    work tree's `family.yaml`, and the sections from HEAD alone, as #407's
+    decision 3 has it, so a `.gitmodules` staged and not committed counts
+    for nothing until it is committed (the module docstring gives the three
+    cases).
+
+    The remedy writes the section as `family.py add` writes it, named after
+    its path, with the url it gives a member, `https://github.com/` and the
+    row's `repository:`, or `<url>` where that is not `<org>/<Name>`. A
+    section of that name that has a url keeps it: only its path is written.
+    """
+    head = _head_gitmodules(root)
+    if head is None:
+        return set()
+    held, sections = head
+    given = {keys["path"] for keys in sections.values() if "path" in keys}
+    unregistered: set[str] = set()
+    for row in members:
+        project = row.get("project") if isinstance(row, dict) else None
+        if not isinstance(project, str) or not project:
+            continue
+        path = f"{DEFAULT_MEMBERS_DIR}/{project}"
+        if (str(row.get("path") or path) != path or path in unregistered
+                or path not in gitlinks or path in given):
+            continue
+        unregistered.add(path)
+        repository = row.get("repository")
+        keys = {"path": shlex.quote(path)}
+        if "url" not in sections.get(path, {}):
+            keys["url"] = (
+                shlex.quote(f"https://github.com/{repository}.git")
+                if isinstance(repository, str)
+                and QUALIFIED_RE.match(repository) else "<url>")
+        lines = "".join(
+            f"\n    git config -f {GITMODULES} "
+            f"{shlex.quote(f'submodule.{path}.{key}')} {value}"
+            for key, value in keys.items())
+        report.finding(
+            "member-gitmodules-absent",
+            f"{path} is a gitlink at {gitlinks[path]} that a row of members: "
+            "names, and "
+            + (f"no section of HEAD's {GITMODULES} gives that path" if held
+               else f"HEAD holds no {GITMODULES}")
+            + ", so a recursive clone of this holder checks out nothing "
+            "there, and neither does make bootstrap in that clone, whatever "
+            "checkout this holder has of it. Write its section back by hand, "
+            "in a POSIX shell, as family.py add writes one, then stage and "
+            f"commit {GITMODULES}:{lines}")
+    return unregistered
+
+
 def _check_members(root: Path, members: list, no_members: bool,
                   report: Report) -> None:
     """Every row in `members:`, or the `--no-members` skip line.
@@ -1229,7 +1483,8 @@ def _check_members(root: Path, members: list, no_members: bool,
     out comes first, so `--no-members` asks them too: the ones that read a
     file alone, `family.yaml`'s names (#331) and ids (#206) and the paths
     `.gitmodules` gives twice (#300), then the gitlinks and sections no row
-    names, which read the index and HEAD as well (#361).
+    names, which read the index and HEAD as well (#361), and the gitlinks
+    no section of HEAD's `.gitmodules` gives (#611).
     """
     _check_member_names_unique(members, report)
     _check_member_ids_unique(root, members, report)
@@ -1239,6 +1494,8 @@ def _check_members(root: Path, members: list, no_members: bool,
     gitlinks = _member_gitlinks(root)
     _check_gitlinks_named(root, gitlinks, named, report)
     _check_gitmodules_named(sections, gitlinks, named, report)
+    unregistered = _check_gitlinks_registered(root, members, gitlinks,
+                                              report)
     if no_members:
         print(f"  --  {len(members)} member(s) SKIPPED (--no-members): "
               "their gitlinks, digests and project ids are not checked "
@@ -1250,20 +1507,22 @@ def _check_members(root: Path, members: list, no_members: bool,
             report.finding("member-row",
                            f"a member is not a mapping: {row!r}")
             continue
-        _check_member(root, row, seen, report)
+        _check_member(root, row, seen, report, gitlinks, unregistered)
     if not members:
         report.note("no members yet: a family with none is empty, not "
                     "wrong")
 
 
-def _run_checks(args: argparse.Namespace, report: Report) -> tuple[dict, list]:
+def _run_checks(args: argparse.Namespace,
+                report: Report) -> tuple[Path, dict, list]:
     """Everything `main` used to run inside its own single `try`.
 
     Split from `main` for #137: lifting this whole body out from under
     `main`'s `try` removes a level of nesting from every branch inside it,
     which is where most of `main`'s cognitive complexity was. Raises
-    `Refusal` exactly as `main` always caught it; returns `(manifest,
-    members)`, which `main` still needs afterward for the final summary line.
+    `Refusal` exactly as `main` always caught it; returns `(root, manifest,
+    members)`, which `main` still needs afterward for the final summary
+    line, whose THE LOCKSTEP RULE names the holder (#610).
     """
     root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
     manifest_path = root / MANIFEST
@@ -1296,7 +1555,7 @@ def _run_checks(args: argparse.Namespace, report: Report) -> tuple[dict, list]:
     _check_members(root, members, args.no_members, report)
     if not args.pins:
         _check_shape_pin(root, manifest, report)
-    return manifest, members
+    return root, manifest, members
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1327,7 +1586,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report = Report()
     try:
-        manifest, members = _run_checks(args, report)
+        root, manifest, members = _run_checks(args, report)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -1343,7 +1602,7 @@ def main(argv: list[str] | None = None) -> int:
         # alone.
         rule = any(code in LOCKSTEP_CODES for code in report.codes)
         print(f"\n{len(report.findings)} finding(s) in {MANIFEST}."
-              + (f" {LOCKSTEP}" if rule else ""), file=sys.stderr)
+              + (f" {_lockstep(root)}" if rule else ""), file=sys.stderr)
         return 1
     print(f"family ok: {manifest.get('name')} ({manifest.get('id')}), "
           f"{len(members)} member(s)")
