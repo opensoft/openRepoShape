@@ -736,10 +736,12 @@ one is found — `--pin-source [PRODUCT=]<path>`, `SHAPE_PIN_SOURCE_<PRODUCT>` i
 the environment, or a checkout beside the assembly root named for the pinned
 repository — else by `gh api`, with the operator's `gh` credentials, when `gh`
 can read it. Finding neither is a named SKIP, exit 0: no checkout and no network
-does not make a descent a lie. A checkout that cannot answer is the finding
-`neutral-pin-source-unreadable`. `make bootstrap`, `bump-leg.py` and
-`update-shape.py apply` run this validator in the operator's environment, so
-each makes that call too; none takes `--pin-source`.
+does not make a descent a lie. A digest that recomputes differently is the
+finding `neutral-pin-digest-mismatch` (exit 1), and a checkout that cannot
+answer is the finding `neutral-pin-source-unreadable`; a declared pin file that
+is not there is the refusal `neutral-pin-missing` (exit 2). `make bootstrap`,
+`bump-leg.py` and `update-shape.py apply` run this validator in the operator's
+environment, so each makes that call too; none takes `--pin-source`.
 
 ### A neutral product may elect the shape and be its own assembly root
 
