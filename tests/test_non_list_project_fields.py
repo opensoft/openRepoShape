@@ -86,9 +86,10 @@ def pins_said(value) -> str:
             f"{value!r}, expected a list of neutral product names\n")
 
 
-def chain_said(value) -> str:
-    """`validate-manifest.py`'s sentence for the assembly leg's chain."""
-    return ("FINDING naming-referent-chain: leg 'assembly': referent_chain "
+def chain_said(value, role: str = "assembly") -> str:
+    """`validate-manifest.py`'s sentence for a leg's chain, the assembly
+    leg's unless `role` says another, as that gate names the leg."""
+    return (f"FINDING naming-referent-chain: leg {role!r}: referent_chain "
             f"is {value!r}, expected a list of neutral-product names\n")
 
 
@@ -106,11 +107,19 @@ def set_pins(project, spelled: str | None) -> None:
              spelled_as("neutral_product_pins", spelled))
 
 
-def set_chain(project, spelled: str) -> None:
-    """The assembly leg's `naming:` block, recording `referent_chain:`."""
-    edit(project, ASSEMBLY_NAMING,
-         ASSEMBLY_NAMING + "      "
-         + spelled_as("referent_chain", spelled) + "\n")
+#: The spec leg's `naming:` block, as the scaffold writes it: the leg a chain
+#: is recorded on is named in the sentence by this `role:`.
+SPEC_NAMING = ("    naming:\n"
+               "      form: project-leg\n"
+               "      role: spec\n"
+               "      also_matches: []\n")
+
+
+def set_chain(project, spelled: str, naming: str = ASSEMBLY_NAMING) -> None:
+    """A leg's `naming:` block, the assembly leg's unless `naming` says
+    another, recording `referent_chain:`."""
+    edit(project, naming,
+         naming + "      " + spelled_as("referent_chain", spelled) + "\n")
 
 
 def gate(project, which: str) -> subprocess.CompletedProcess:
@@ -235,6 +244,39 @@ def test_each_gate_that_reads_a_chain_says_one_that_is_not_a_list(
     manifest gate, naming the leg by its role, as that gate does."""
     set_chain(project, spelled)
     assert_said_once(gate(project, which), chain_said(value))
+
+
+@pytest.mark.parametrize("which", ["naming", "manifest"])
+def test_a_chain_on_the_spec_leg_is_said_with_the_spec_leg_named(project,
+                                                                 which):
+    """The sentence names the leg the chain is recorded on, by its declared
+    `role:`, in both gates: `5` on the SPEC leg says `leg 'spec'`, not the
+    assembly leg every other case here records it on."""
+    set_chain(project, "5", SPEC_NAMING)
+    assert_said_once(gate(project, which), chain_said(5, "spec"))
+
+
+def test_the_pins_sentence_is_said_before_the_chain_line_it_explains(project):
+    """THE ORDER a person reads it in (#443): a scalar `openXdox` in the pins
+    declares no pin, so a chain that begins at `openXdox` is said broken `(it
+    begins at openXdox, which is not in this project's neutral_product_pins:
+    ...)`. That line reads as false to someone who wrote
+    `neutral_product_pins: openXdox`, unless the sentence before it says
+    that the field is not a list. The pins sentence is said first, so it is."""
+    edit(project, 'repository: testorg/Atlas\n    path: "."',
+         'repository: testorg/codexDox\n    path: "."')
+    set_pins(project, "openXdox")
+    edit(project, ASSEMBLY_NAMING,
+         ASSEMBLY_NAMING.replace("also_matches: []",
+                                 "also_matches: [domain-descendant]")
+         + "      referent_chain: [openXdox, openDox]\n")
+    result = gate(project, "naming")
+    said = pins_said("openXdox")
+    assert_said_once(result, said)
+    broken = "the declared chain openXdox → openDox is broken"
+    assert broken in result.stderr, result.stderr
+    assert result.stderr.index(said) < result.stderr.index(broken), \
+        result.stderr
 
 
 #: `(field, YAML spelling or None for no key, {gate: exit})`: what main
