@@ -958,7 +958,9 @@ SUBMODULE_KEY_RE = re.compile(r"submodule\.(?P<name>.*)\.(?P<key>path|url)")
 GIT_CONFIG = "config"
 #: The `git` subcommand that prints one object: a source's `.gitmodules`
 #: and the target of a symlink it keeps in the root, and in the split commit
-#: a symlink's target and the shape pin.
+#: a symlink's target and the shape pin. With `--batch`, it prints the
+#: target of every symlink of the source whose blob is not empty, in one
+#: pass (#388).
 GIT_CAT_FILE = "cat-file"
 
 
@@ -3851,7 +3853,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
         print(line)
     for line in _kept_collision_notes(args, entries, tree):
         print(line)
-    for line in _empty_symlink_notes(tree):
+    for line in _empty_symlink_notes(tree, symlink_targets(source, tree)):
         print(line)
     for line in _tracking_branch_notes(args, source):
         print(line)
@@ -5971,7 +5973,8 @@ UNSAFE_PATH_REMEDIATION = (
 
 
 # ---------------------------------------------------------------------------
-# A symlink in the source whose target is empty (#303)
+# A symlink in the source whose target is empty (#303), or begins with a NUL
+# byte (#388)
 # ---------------------------------------------------------------------------
 #
 # A source tree can hold a symlink whose target is EMPTY: a `120000` entry
@@ -6004,14 +6007,32 @@ UNSAFE_PATH_REMEDIATION = (
 # plan the next machine cannot adopt. `drop` is not offered as the fix: it
 # is one only where symlinks are not made. The remediation is in the source.
 #
-# No target is read. `Source.tree()` lists each entry with `ls-tree -l`, and
-# the size of a symlink's blob is the length of its target, so an empty
-# target is a `120000` row of size 0, in a SHA-1 or a SHA-256 repository
-# alike. Only the commit being adopted is read: an empty symlink in the
+# A TARGET THAT BEGINS WITH A NUL BYTE IS EMPTY TOO (#388). git hands a
+# symlink's target to `symlink(2)` as a C string, which ends at its first
+# NUL, so `\0spec.md`, 8 bytes and not the empty blob, is the empty target
+# to Linux, and every run above went the same way: on main `check` said
+# `plan ok`, and with symlinks on `execute` failed in its first clone after
+# both leg repositories were created; with `core.symlinks` false it said
+# `adoption verified` over a spec leg whose own clone exits 128. It is the
+# same fact of the source, failing the same way, with the same remediation,
+# so it is the same finding, worded for its blob. A second code would give
+# one fault two names for every reader of this one to learn: `execute`'s
+# refusal, and the walk of #183, which says nothing of a link this finding
+# names. A NUL further on (`spec\0.md`) is another failure, a link git
+# makes to `spec`, and is not this one's to report.
+#
+# Size first, then the target. `Source.tree()` lists each entry with
+# `ls-tree -l`, and the size of a symlink's blob is the length of its
+# target, so an empty target is a `120000` row of size 0, in a SHA-1 or a
+# SHA-256 repository alike, and is not read. The target of every other link
+# is read in ONE `git cat-file --batch` over the blob ids the tree lists
+# (`symlink_targets`), so a source with no symlink of size 1 or more starts
+# no process for it. Only the commit being adopted is read: a symlink in the
 # history alone is never checked out by a clone, and `git filter-repo`
 # rewrites the history without a checkout.
 
-#: `check`'s finding for a symlink of the source's whose target is empty.
+#: `check`'s finding for a symlink of the source's whose target is empty, or
+#: begins with a NUL byte, which ends it (#388).
 EMPTY_SYMLINK = "plan-empty-symlink"
 #: How many of them `check` names one by one; past it, a count, as
 #: `plan-uncovered` counts the paths past its twentieth.
@@ -6029,48 +6050,110 @@ EMPTY_SYMLINK_REMEDIATION = (
     "`check` calls it `plan-stale` once the source has moved.")
 
 
-def empty_symlinks(tree: list) -> list[str]:
-    """The paths of `tree` (`Source.tree()`'s rows) that are symlinks with
-    an empty target: mode 120000, and a blob of size 0."""
-    return [path for path, mode, _, size in tree
-            if mode == SYMLINK_MODE and not size]
+def symlink_targets(source: Source, tree: list) -> dict[str, bytes]:
+    """The target of each symlink of `tree` (`Source.tree()`'s rows) whose
+    blob is not empty, as the bytes the blob holds, by blob id (#388).
+
+    ONE `git cat-file --batch` over the ids, each id once however many
+    links share it, and none at all when no link has a size: a link of size
+    0 has the empty target, which is known without reading it. Each object
+    comes back as `<id> <type> <size>`, a line feed, that many bytes and a
+    line feed, so it is cut by its size, and a target that holds a line feed
+    is read whole. An id git does not have comes back as `<id> missing` and
+    nothing else, and is left out: such a link is judged by its size alone.
+    """
+    oids = list(dict.fromkeys(oid for _, mode, oid, size in tree
+                              if mode == SYMLINK_MODE and size))
+    if not oids:
+        return {}
+    args = [GIT_CAT_FILE, "--batch"]
+    read = subprocess.run(["git", *args], cwd=source.path,
+                          input="".join(f"{oid}\n" for oid in oids).encode(),
+                          capture_output=True, check=False)
+    if read.returncode:
+        raise Refusal(
+            "git-failed",
+            f"`git {' '.join(args)}` in {source.path} exited "
+            f"{read.returncode}: "
+            f"{read.stderr.decode('utf-8', 'replace').strip()}")
+    targets: dict[str, bytes] = {}
+    out, at = read.stdout, 0
+    for oid in oids:
+        end = out.find(b"\n", at)
+        if end < 0:
+            break
+        header, at = out[at:end].split(), end + 1
+        if len(header) == 3:
+            size = int(header[2])
+            targets[oid] = out[at:at + size]
+            at += size + 1
+    return targets
 
 
-def _empty_symlink_sentence(path: str) -> str:
-    """What `check` says of the empty symlink at `path`, and `plan` notes."""
-    return (f"{_spelled(path)} is a symlink whose target is empty at the "
-            "source commit, and Linux cannot make a symlink to nothing. "
+def empty_symlinks(tree: list, targets: dict[str, bytes]) -> list[str]:
+    """The paths of `tree` (`Source.tree()`'s rows) that are symlinks whose
+    target is empty to Linux: mode 120000, and a blob of size 0 (#303), or
+    one whose target in `targets` (`symlink_targets`, by blob id) begins
+    with a NUL byte, which ends it there (#388)."""
+    return [path for path, mode, oid, size in tree
+            if mode == SYMLINK_MODE
+            and (not size or targets.get(oid, b"").startswith(b"\0"))]
+
+
+def _empty_symlink_sentence(path: str, nul: bool) -> str:
+    """What `check` says of the symlink at `path` whose target is empty,
+    or, with `nul`, begins with a NUL byte (#388), and `plan` notes."""
+    if nul:
+        target = ("begins with a NUL byte at the source commit; a symlink's "
+                  "target ends at its first NUL, so this one is empty too,")
+        held = "a plain file"
+    else:
+        target, held = "is empty at the source commit,", "an empty file"
+    return (f"{_spelled(path)} is a symlink whose target {target} and Linux "
+            "cannot make a symlink to nothing. "
             "There, where git makes symlinks by default, each clone "
             "`execute` makes of the source stops at it after both leg "
             "repositories were created, whatever the plan answers for it; "
-            "and where `core.symlinks` is false the clone holds it as an "
-            "empty file, and the leg or root the plan keeps it in then "
+            "and where `core.symlinks` is false the clone holds it as "
+            f"{held}, and the leg or root the plan keeps it in then "
             "cannot be cloned on Linux, where the root's own `validate` "
             "workflow runs")
 
 
-def _empty_symlink_findings(tree: list) -> tuple[list[str], list[str]]:
+def _empty_symlink_sentences(tree: list,
+                             targets: dict[str, bytes]) -> list[str]:
+    """`_empty_symlink_sentence` of each path `empty_symlinks` names, in its
+    order: one that has a size is there for its NUL."""
+    sized = {path for path, _, _, size in tree if size}
+    return [_empty_symlink_sentence(path, nul=path in sized)
+            for path in empty_symlinks(tree, targets)]
+
+
+def _empty_symlink_findings(tree: list, targets: dict[str, bytes]
+                            ) -> tuple[list[str], list[str]]:
     """A FINDING for each symlink of the source whose target is empty
-    (#303), as `check` prints it, the first EMPTY_SYMLINKS_NAMED one by one;
-    and what to print ONCE after every finding, as `_unsafe_path_findings`
-    does. Read from the tree alone: no answer of the plan's changes it."""
-    empty = empty_symlinks(tree)
-    found = [f"FINDING {EMPTY_SYMLINK}: {_empty_symlink_sentence(path)}."
-             for path in empty[:EMPTY_SYMLINKS_NAMED]]
-    if len(empty) > EMPTY_SYMLINKS_NAMED:
+    (#303) or begins with a NUL byte (#388), as `check` prints it, the first
+    EMPTY_SYMLINKS_NAMED one by one; and what to print ONCE after every
+    finding, as `_unsafe_path_findings` does. Read from the tree and the
+    targets (`symlink_targets`) alone: no answer of the plan's changes it."""
+    said = _empty_symlink_sentences(tree, targets)
+    found = [f"FINDING {EMPTY_SYMLINK}: {sentence}."
+             for sentence in said[:EMPTY_SYMLINKS_NAMED]]
+    if len(said) > EMPTY_SYMLINKS_NAMED:
         found.append(f"FINDING {EMPTY_SYMLINK}: … and "
-                     f"{len(empty) - EMPTY_SYMLINKS_NAMED} more symlinks "
-                     "whose target is empty")
+                     f"{len(said) - EMPTY_SYMLINKS_NAMED} more symlinks "
+                     "whose target is empty or begins with a NUL byte")
     return found, [EMPTY_SYMLINK_REMEDIATION] if found else []
 
 
-def _empty_symlink_notes(tree: list) -> list[str]:
-    """What `plan` says of each symlink of the source whose target is empty:
-    a NOTE in `check`'s words, and a line saying what follows. `plan` still
-    writes the plan, but no answer in it will pass `check`."""
+def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
+    """What `plan` says of each symlink of the source whose target is empty
+    or begins with a NUL byte: a NOTE in `check`'s words, and a line saying
+    what follows. `plan` still writes the plan, but no answer in it will
+    pass `check`."""
     notes: list[str] = []
-    for path in empty_symlinks(tree):
-        notes += [f"\nNOTE {_empty_symlink_sentence(path)}.",
+    for sentence in _empty_symlink_sentences(tree, targets):
+        notes += [f"\nNOTE {sentence}.",
                   f"     `check` reports this as `{EMPTY_SYMLINK}` and "
                   "`execute` refuses it, whatever the plan answers: give it "
                   "a target in the source, or remove it there, commit, and "
@@ -6078,14 +6161,15 @@ def _empty_symlink_notes(tree: list) -> list[str]:
     return notes
 
 
-def _source_path_findings(plan: Plan, tree: list
+def _source_path_findings(plan: Plan, tree: list, targets: dict[str, bytes]
                           ) -> tuple[list[str], list[str]]:
     """The findings `_entry_findings` lists first, about the source's own
     paths, and what to print once after every finding for them: each entry
     path `execute` will not extract (#196), then each symlink of the source
-    whose target is empty (#303)."""
+    whose target is empty (#303) or begins with a NUL byte (#388), its
+    target read from `targets` (`symlink_targets`)."""
     unsafe, unsafe_remediation = _unsafe_path_findings(plan)
-    empty, empty_remediation = _empty_symlink_findings(tree)
+    empty, empty_remediation = _empty_symlink_findings(tree, targets)
     return unsafe + empty, unsafe_remediation + empty_remediation
 
 
@@ -6245,7 +6329,8 @@ def _entry_findings(plan: Plan, source: Source,
     `plan-unsafe-path` for a plan that has one: a path that is a `git` option
     is refused as that, and never as the uncovered file it also leaves.
 
-    THEN THE SOURCE'S EMPTY SYMLINKS (#303), which no answer in the plan
+    THEN THE SOURCE'S EMPTY SYMLINKS (#303), a target that begins with a
+    NUL byte among them (#388), which no answer in the plan
     fixes: the fix is a commit in the source, and the fresh `plan` after it
     takes back every answer given before, so they are listed before the
     findings about those answers (`_source_path_findings`). Their
@@ -6288,7 +6373,8 @@ def _entry_findings(plan: Plan, source: Source,
     source, and is not also said to be missing from this one.
     """
     tree = source.tree()
-    unsafe, unsafe_remediation = _source_path_findings(plan, tree)
+    unsafe, unsafe_remediation = _source_path_findings(
+        plan, tree, symlink_targets(source, tree))
     findings = (unsafe
                 + _coverage_findings([str(e.get("path"))
                                       for e in plan.entries],
@@ -7198,7 +7284,9 @@ class _PlannedRoot:
             walk.problem = (f"it follows too many symlinks at {_spelled(at)}: "
                             f"{TOO_MANY_SYMLINKS}")
             return []
-        if not target:
+        if not target or target.startswith("\0"):
+            # A target that begins with NUL ends there, and is as empty to
+            # Linux as an empty one: `plan-empty-symlink` names both (#388).
             walk.empty = at
             walk.problem = (f"the symlink {_spelled(at)} has an empty target, "
                             "which leads nowhere")
@@ -7463,10 +7551,11 @@ def _root_symlink_findings(plan: Plan, source: Source,
     is a symlink AT a declared pin's file or AT the shape's own pin, #273's
     `plan-root-holds-pin` (`_links_at_a_pin`, #524).
 
-    A walk that stops at a symlink with an empty target is #303's to say:
-    `plan-empty-symlink` names every such symlink in the source, first in
-    `_entry_findings`' list, with the fix in the source, so it is not said
-    again here, wherever in the walk's chain that symlink is.
+    A walk that stops at a symlink with an empty target, or one that begins
+    with a NUL byte (#388), is #303's to say: `plan-empty-symlink` names
+    every such symlink in the source, first in `_entry_findings`' list, with
+    the fix in the source, so it is not said again here, wherever in the
+    walk's chain that symlink is.
 
     Where `git` checks a symlink out as a plain file, the link a reported
     walk meets first ABOVE its path is that file in the clone, and the
