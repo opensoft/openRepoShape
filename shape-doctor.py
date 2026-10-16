@@ -5899,6 +5899,44 @@ def walked_row(found, role: str, rel: str) -> dict:
     }
 
 
+def ask_about_a_record_only(adopt, policy, walked: list, mount: Path) -> list:
+    """`walked`, with a leg's top-level `single-repository.yaml` that is no
+    record asked the question the rules below the record's ask (#691).
+
+    `kind:` DECIDES, NOT THE NAME, as `adopt-project.py plan` reads it
+    (`ask_about_a_record_only`, #528) and as the Triad advisory does
+    (`shape_advisory.read_record`). The policy's rule for the record
+    (`adopt.RECORD_RULE`) tells the person the file records that the
+    repository stays single, and offers to drop it. A leg's file of that name
+    declaring `kind: release-config` is no such record: `plan` asked the
+    general question of it, and this row asked the record's on every run,
+    and named the record's rule on the entry an `answered_paths:` row
+    answered. So the record's rule stands only for a file `read_record`
+    finds to be the record, read in the leg as it is on this disk; any other
+    -- unreadable, or not on this disk, too -- is classified as if the policy
+    held no such rule, which for a top-level YAML file is the general
+    question, asked as before. A leg with no entry that rule gave is not read
+    at all.
+
+    THE VERDICT'S `leg` STAYS NONE EITHER WAY (#528), and the record's
+    `default:` is no more written here than it is for the question: what
+    changes is which question is asked, and which rule an answered entry
+    names, never the verdict.
+    """
+    if not any(found.path == shape_advisory.RECORD_FILE
+               and found.rule == adopt.RECORD_RULE for found in walked):
+        return walked
+    state, _, _ = shape_advisory.read_record(mount)
+    if state == shape_advisory.RECORD_SILENCES:
+        return walked
+    return [adopt.Entry(found.path, policy.classify_file(
+                found.path, skip=(adopt.RECORD_RULE,)),
+                found.files, found.bytes)
+            if found.path == shape_advisory.RECORD_FILE
+            and found.rule == adopt.RECORD_RULE else found
+            for found in walked]
+
+
 def walked_findings(walked: list, role: str, rel: str,
                     answered: str | None) -> tuple:
     """The walked paths of one leg in the wrong leg, the questions, and the
@@ -6063,7 +6101,8 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     kept = [(path, size) for path, size in files
             if path not in gitlinks
             and not any(regex.match(path) for regex in patterns)]
-    walked = adopt.walk(policy, kept)
+    walked = ask_about_a_record_only(adopt, policy,
+                                     adopt.walk(policy, kept), mount)
     submodules, wrong = leg_submodules(policy, role, rel, held, record)
     answered = gitmodules_the_record_answers(adopt, submodules, unwritable)
     misplaced, review, settled = walked_findings(walked, role, rel, answered)

@@ -18,7 +18,8 @@ and the question beside it; `check` passes it, and `execute` drops the file
 unless a person writes `root`. The verdict keeps `leg` None, so the doctor,
 which walks a leg with the same `walk`, still reads a leg's copy as a
 question. And `kind:` decides, not the name: a file of that name that is no
-record at the commit `plan` reads is asked the general question.
+record at the commit `plan` reads is asked the general question, and so is
+a leg's copy that is no record on the disk the doctor reads (#691).
 """
 
 from __future__ import annotations
@@ -354,6 +355,57 @@ def test_the_doctor_reads_a_legs_copy_as_a_question_and_not_misplaced(
     assert row["path"] == f"spec/{RECORD_FILE}"
     assert (row["rule"], row["classified_as"]) == (RULE, None)
     assert row["review_required"] is True
+
+
+# --- the doctor asks the record's question of a record only (#691) -----------
+
+@pytest.fixture(scope="module")
+def doctor():
+    return load_without_bytecode(REPO / "shape-doctor.py",
+                                 "shape_doctor_single_repository_record_leg")
+
+
+def leg_audited(adopter, doctor, tmp_path, text: str) -> tuple:
+    """`audit_leg`'s `(paths in the wrong leg, questions)` for a code leg
+    that holds `RECORD_FILE` with `text`, and the source file beside it."""
+    make_source_repo(tmp_path / "code", edits=(), tree={
+        "src/main.c": "int main(void) { return 0; }\n", RECORD_FILE: text})
+    _, misplaced, review, _, _ = doctor.audit_leg(
+        adopter, PathPolicy.load(POLICY), [], "code", "code", tmp_path, {},
+        {})
+    return misplaced, review
+
+
+@pytest.mark.parametrize("body", list(NOT_A_RECORD.values()),
+                         ids=list(NOT_A_RECORD))
+def test_the_doctor_asks_a_leg_file_that_is_no_record_the_general_question(
+        adopter, doctor, tmp_path, body):
+    """`plan` asks the general question of a file of that name that is no
+    record, and so does the placement row: it does not tell the person the
+    file records that the repository stays single."""
+    misplaced, review = leg_audited(adopter, doctor, tmp_path, body)
+    row, = review
+    general = PathPolicy.load(POLICY).classify_file("release.yaml")
+    assert misplaced == []
+    assert (row["path"], row["rule"], row["classified_as"]) == (
+        f"code/{RECORD_FILE}", GENERAL, None)
+    assert row["review_required"] is True
+    assert row["question"] == general.question
+    assert row["reason"] == general.reason
+
+
+@pytest.mark.parametrize("body", [RECORD, "kind: single-repository-record\n"],
+                         ids=["a full record", "the kind alone"])
+def test_the_doctor_keeps_the_records_question_for_a_record(
+        adopter, doctor, tmp_path, body):
+    """`kind:` decides, so a leg's copy that declares the record's kind, with
+    a field left out or none, is asked the record's question, whose text
+    names its default, as before."""
+    _, review = leg_audited(adopter, doctor, tmp_path, body)
+    row, = review
+    assert (row["rule"], row["classified_as"]) == (RULE, None)
+    assert row["question"] == record_question()
+    assert "(drop, the default" in row["question"]
 
 
 # --- what each answer does ----------------------------------------------------
