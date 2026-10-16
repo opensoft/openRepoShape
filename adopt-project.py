@@ -847,21 +847,22 @@ FALSE_WORD = "false"
 SEED_TEMPLATE = {"spec": "templates/spec-root", "code": "templates/code-root"}
 EXTRACTED_LEGS = ("spec", "code")
 
-#: In install.sh's order (#595): pipx, else the uv already there, else the
-#: platform's own package. Never `pip install --user`, which Debian 12,
-#: Ubuntu 23.04 and Arch refuse for their system Python (PEP 668). The
-#: openreposhape package depends on git-filter-repo and puts it on PATH for
-#: the `adopt-project` it places, but not for this file run by its path
-#: (#563).
+#: In install.sh's order (#595): with the pipx or uv already there, else
+#: brew's, else pipx from apt or dnf, else Arch's own package. No `pip
+#: install --user`: Debian 12, Ubuntu 23.04 and Arch mark their own Python
+#: externally managed (PEP 668) and refuse it. The openreposhape package
+#: depends on git-filter-repo and puts it on PATH for the `adopt-project` it
+#: places, but not for this file run by its path (#563).
 FILTER_REPO_HINT = (
     "Remediation: install it — `pipx install git-filter-repo==2.47.0`, or "
-    "`uv tool install git-filter-repo==2.47.0` where there is no pipx, or the "
-    "platform's own package (`brew install git-filter-repo`, `sudo pacman -S "
-    "--needed git-filter-repo`), never `pip install --user`; it is one file "
-    "on PATH named `git-filter-repo`. `pipx install openreposhape` brings it "
-    "for the `adopt-project` command it places. It is NOT vendored here on "
-    "purpose: history extraction has one correct implementation and a copy of "
-    "it is a second one that drifts."
+    "`uv tool install git-filter-repo==2.47.0` where there is no pipx; with "
+    "neither, `brew install git-filter-repo`, or `sudo apt-get install -y "
+    "pipx && pipx install git-filter-repo==2.47.0 && pipx ensurepath` (`dnf` "
+    "for `apt-get` on Fedora), or `sudo pacman -S --needed git-filter-repo` "
+    "on Arch; it is one file on PATH named `git-filter-repo`. `pipx install "
+    "openreposhape` brings it for the `adopt-project` command it places. It "
+    "is NOT vendored here on purpose: history extraction has one correct "
+    "implementation and a copy of it is a second one that drifts."
 )
 
 
