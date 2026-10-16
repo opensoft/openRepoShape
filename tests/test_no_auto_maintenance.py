@@ -19,7 +19,10 @@ none of them waits for a race and each holds on any git:
 - the `receive-pack` a push into a local remote starts, which never sees
   command scope, reads both settings off: a hook in the remote reports them;
 - the two are appended to the command scope the environment holds, and a
-  person's own global config is still read, in git's order, beneath them.
+  person's own global config is still read, in git's order, beneath them;
+- the file is one git can read where `HOME` is unset, and where
+  `GIT_CONFIG_GLOBAL` is empty, which is git's "no global config";
+- the fixture is in place before any session fixture builds a repository.
 """
 
 from __future__ import annotations
@@ -32,8 +35,8 @@ from pathlib import Path
 import pytest
 
 from conftest import (NO_AUTO_MAINTENANCE, ORG, PROJECT, SCAFFOLD,
-                      appended_to_command_scope, git, run_script,
-                      session_global_config)
+                      appended_to_command_scope, git, home_is_known,
+                      run_script, session_global_config)
 
 #: The verbs auto maintenance runs as: `git maintenance run --auto`, and
 #: `git gc --auto`, which a git started itself before `maintenance` existed.
@@ -143,9 +146,11 @@ def test_the_receive_pack_of_a_push_to_a_local_remote_reads_both_off(
     """Git starts `receive-pack` for a push to a path with no command scope,
     so only the session's global file reaches it. Its `post-receive` hook
     runs under it and writes down what git reads there. On the base it read
-    neither."""
+    neither. The remote's own `core.hooksPath` keeps the hook found where a
+    person's global config sets one of its own."""
     remote, work = tmp_path / "remote.git", tmp_path / "work"
     git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
+    git("config", "core.hooksPath", (remote / "hooks").as_posix(), cwd=remote)
     hook = remote / "hooks" / "post-receive"
     hook.write_bytes(
         b"#!/bin/sh\nfor key in gc.auto maintenance.auto; do\n"
@@ -185,8 +190,10 @@ def test_a_persons_own_global_config_is_still_read_beneath_the_two(
     two settings after it: a person's own values are read, and their own
     `maintenance.auto = true` does not turn maintenance back on. A case is
     skipped where the file includes another path in its place, which a test
-    cannot write: the session began with `GIT_CONFIG_GLOBAL` set, or, for
-    the second, with `XDG_CONFIG_HOME` set."""
+    cannot write: the session began with `GIT_CONFIG_GLOBAL` set, with
+    `HOME` unset, or, for the second, with `XDG_CONFIG_HOME` set."""
+    if not home_is_known():
+        pytest.skip("HOME was unset, and the file includes no `~/` path")
     if no_auto_maintenance.read_bytes() != session_global_config(None):
         pytest.skip("the session began with GIT_CONFIG_GLOBAL set, and its "
                     "file includes that one")
@@ -202,3 +209,73 @@ def test_a_persons_own_global_config_is_still_read_beneath_the_two(
     for key, value in NO_AUTO_MAINTENANCE:
         assert asked("--global", "--includes", "--get", key,
                      cwd=tmp_path) == value, key
+
+
+@pytest.mark.skipif(os.name == "nt",
+                    reason="Git for Windows finds a home of its own")
+@pytest.mark.parametrize("xdg", [False, True], ids=["no-xdg", "xdg"])
+def test_where_home_is_unset_the_file_is_one_git_can_read(
+        xdg, tmp_path, monkeypatch):
+    """With `HOME` unset git cannot expand a `~/` path, and an include of one
+    made every git the session started die `could not expand include path`
+    (a hermetic runner, `env -i`). The file leaves them out, and an
+    `XDG_CONFIG_HOME` that is set is still included."""
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    if xdg:
+        under = tmp_path / "xdg"
+        (under / "git").mkdir(parents=True)
+        (under / "git" / "config").write_bytes(
+            b"[openreposhape]\n\tprobe = xdg\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(under))
+    config = tmp_path / "session.gitconfig"
+    config.write_bytes(session_global_config(None))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    for key, value in NO_AUTO_MAINTENANCE:
+        assert asked("--global", "--includes", "--get", key,
+                     cwd=tmp_path) == value, key
+    assert asked("--global", "--includes", "--get", "openreposhape.probe",
+                 cwd=tmp_path) == ("xdg" if xdg else "")
+
+
+def test_an_empty_GIT_CONFIG_GLOBAL_is_no_global_config_and_includes_nothing(
+        tmp_path, monkeypatch):
+    """Git reads an empty `GIT_CONFIG_GLOBAL` as "no global config" (2.43),
+    and the file the fixture writes over it does not bring `~/.gitconfig`
+    back."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_bytes(b"[openreposhape]\n\tprobe = home\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    config = tmp_path / "session.gitconfig"
+    config.write_bytes(session_global_config(""))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    assert asked("--global", "--includes", "--get", "openreposhape.probe",
+                 cwd=tmp_path) == ""
+    for key, value in NO_AUTO_MAINTENANCE:
+        assert asked("--global", "--includes", "--get", key,
+                     cwd=tmp_path) == value, key
+
+
+@pytest.fixture(scope="session")
+def seen_by_a_session_fixture() -> dict:
+    """The session's two variables as a SESSION fixture sees them when it is
+    built, which is when a session fixture that makes a repository (`standard`,
+    `scaffolded`) makes it. Pytest builds the higher scope first, and within a
+    scope an autouse fixture first and then the arguments in order."""
+    return {name: os.environ.get(name)
+            for name in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_COUNT")}
+
+
+def test_the_settings_are_in_place_before_a_session_fixture_builds_a_repo(
+        seen_by_a_session_fixture, no_auto_maintenance):
+    """`no_auto_maintenance` at function scope, or without `autouse`, is
+    built after a session fixture and every test here but this one still
+    passes: the fixture must be session scope and autouse. A session fixture
+    sees the file and the count that the test sees."""
+    assert seen_by_a_session_fixture == {
+        name: os.environ.get(name)
+        for name in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_COUNT")}
+    assert seen_by_a_session_fixture["GIT_CONFIG_GLOBAL"] == \
+        str(no_auto_maintenance)
