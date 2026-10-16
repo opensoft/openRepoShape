@@ -34,8 +34,10 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import time
 
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
@@ -2589,9 +2591,9 @@ def installed(tmp_path) -> Path:
     return target
 
 
-def run_installed(standard: Path, tmp_path, *args,
-                  cwd: Path | None = None) -> subprocess.CompletedProcess:
-    """The installed command, cloning `standard` from a local PATH.
+def installed_env(standard: Path, tmp_path) -> dict:
+    """`shim_env` for the installed command cloning `standard` from a local
+    PATH, into `<tmp_path>/tmp`, which this makes.
 
     `$TMPDIR` is a directory of the test's own, both because the clone now
     OUTLIVES the run (#500) and must not outlive it in the machine's `/tmp`,
@@ -2599,12 +2601,17 @@ def run_installed(standard: Path, tmp_path, *args,
     """
     temporary = tmp_path / "tmp"
     temporary.mkdir(exist_ok=True)
+    return shim_env(tmp_path, OPENREPOSHAPE_REPO=str(standard),
+                    TMPDIR=str(temporary))
+
+
+def run_installed(standard: Path, tmp_path, *args,
+                  cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """The installed command, cloning `standard` (`installed_env`)."""
     return subprocess.run(
         ["bash", str(installed(tmp_path)), *args],
         capture_output=True, text=True, check=False, input="",
-        cwd=str(cwd or tmp_path),
-        env=shim_env(tmp_path, OPENREPOSHAPE_REPO=str(standard),
-                     TMPDIR=str(temporary)))
+        cwd=str(cwd or tmp_path), env=installed_env(standard, tmp_path))
 
 
 @WINDOWS_SKIP
@@ -2655,6 +2662,36 @@ def test_the_shim_from_stdin_clones_the_standard_first(standard, project,
     fetched_nothing(tmp_path, doctor_ran=True)
 
 
+def next_lines(text: str) -> list:
+    """Every NEXT command a printed report holds, in order."""
+    return [line.split("NEXT", 1)[1].strip() for line in text.splitlines()
+            if line.lstrip().startswith("NEXT ")]
+
+
+def named_in_the_clone(line: str, shape: Path) -> list:
+    """Every path a NEXT names under the kept clone `shape`, as the reader's
+    shell splits the line, each of which is still there."""
+    named = [Path(arg) for arg in pasted(line) if arg.startswith(str(shape))]
+    for path in named:
+        assert path.exists(), f"{line}\nnames {path}, which is gone"
+    return named
+
+
+def run_once_it_has_exited(line: str,
+                           tmp_path) -> subprocess.CompletedProcess:
+    """A NEXT run as pasted, after the command that printed it has exited,
+    with nothing to answer on and no terminal: it must not die with
+    `can't open file`, which is what a NEXT naming a removed clone did."""
+    proc = subprocess.run(pasted(line), capture_output=True, text=True,
+                          check=False, stdin=subprocess.DEVNULL,
+                          start_new_session=True, cwd=str(tmp_path),
+                          env={**shim_env(tmp_path),
+                               "PYTHONDONTWRITEBYTECODE": "1"})
+    assert "can't open file" not in proc.stdout + proc.stderr, (
+        line + "\n" + proc.stdout + proc.stderr)
+    return proc
+
+
 @WINDOWS_SKIP
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 def test_the_installed_doctors_next_lines_run_after_it_has_exited(
@@ -2679,30 +2716,234 @@ def test_the_installed_doctors_next_lines_run_after_it_has_exited(
     assert "DRIFTED (1 locally-modified)   (exit 1)" in result.stdout, \
         result.stdout
     fetched_nothing(tmp_path, doctor_ran=True)
-    kept = kept_by(result.stdout)
-    shape = kept / "shape"
-    nexts = [line.split("NEXT", 1)[1].strip()
-             for line in result.stdout.splitlines()
-             if line.lstrip().startswith("NEXT ")]
+    shape = kept_by(result.stdout) / "shape"
+    nexts = next_lines(result.stdout)
     from_the_clone = [line for line in nexts if str(shape) in line]
     assert any("update-shape.py" in line for line in from_the_clone), nexts
     for line in from_the_clone:
-        argv = pasted(line)
-        named = [Path(arg) for arg in argv if arg.startswith(str(shape))]
-        for path in named:
-            assert path.exists(), f"{line}\nnames {path}, which is gone"
-        proc = subprocess.run(argv, capture_output=True, text=True,
-                              check=False, stdin=subprocess.DEVNULL,
-                              start_new_session=True, cwd=str(tmp_path),
-                              env={**shim_env(tmp_path),
-                                   "PYTHONDONTWRITEBYTECODE": "1"})
-        assert "can't open file" not in proc.stdout + proc.stderr, (
-            line + "\n" + proc.stdout + proc.stderr)
-        if "update-shape.py" in argv[1]:
+        named_in_the_clone(line, shape)
+        proc = run_once_it_has_exited(line, tmp_path)
+        if "update-shape.py" in pasted(line)[1]:
             assert proc.returncode == 1, line + "\n" + proc.stdout \
                 + proc.stderr
             assert re.search(rf"locally-modified\s+{re.escape(DRIFT_TARGET)}",
                              proc.stdout), proc.stdout
+
+
+#: The files a plain repository's NEXT lines name in the kept clone that
+#: run as pasted (#545): the adoption, and the `machine` row's preflight,
+#: which every run here prints, its `gh` being `refusing_network`'s. The
+#: scaffold's `setup.sh` is named too, and asks for `<your-org>`.
+PLAIN_NEXTS_RUN = {"adopt-project.py", "setup-project.py"}
+PLAIN_NEXTS_NAMED = PLAIN_NEXTS_RUN | {"setup.sh"}
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_a_plain_repositorys_next_lines_outlive_the_installed_doctor(
+        standard, tmp_path):
+    """#680: the test above runs a DRIFTED project's NEXT lines, and since
+    #545 a git repository that is no shape root is told of both ways in, so
+    its report names three files in the kept clone that no test had run from
+    the installed form.
+
+    A repository with an `origin` that names its organisation, so the
+    adoption line needs no placeholder. Every path a NEXT names in the clone
+    is there once the command has exited, and each line that needs no
+    placeholder runs as pasted. The scaffold line asks for `<your-org>` and
+    creates three repositories, so its path is all that is checked.
+    """
+    here = an_origin_of(tmp_path / PROJECT,
+                        f"git@github.com:opensoft/{PROJECT}.git")
+    result = run_installed(standard, tmp_path, "--doctor", str(here))
+    assert result.returncode == 2, result.stdout + result.stderr
+    fetched_nothing(tmp_path, doctor_ran=True)
+    shape = kept_by(result.stdout) / "shape"
+    placeholder = doctor_module(standard).ORG_PLACEHOLDER
+    named, ran = set(), set()
+    for line in next_lines(result.stdout):
+        tools = {path.name for path in named_in_the_clone(line, shape)}
+        named |= tools
+        if placeholder not in line:
+            run_once_it_has_exited(line, tmp_path)
+            ran |= tools
+    assert PLAIN_NEXTS_NAMED <= named, named
+    assert PLAIN_NEXTS_RUN <= ran, ran
+
+
+# --- an interrupted run (#680) ----------------------------------------------
+#
+# The installed command keeps its clone once the doctor has run to its end,
+# and removes it when the doctor was ended by a signal. A signal sent to the
+# command's shell alone waits for the doctor: before #680 it ended the shell
+# at once, and the EXIT trap removed the clone under a doctor still running
+# from it. Each test runs a doctor that waits to be let go, in a session of
+# its own, and signals by the PIDs the run recorded, never by name.
+
+#: A `shape-doctor.py` that says it has started and then waits. It writes
+#: its pid and its parent's, the command's shell, to `started` in the
+#: `--root` it is handed, and waits for `release` there (a minute at most, so
+#: nothing outlives a test that failed). At its end it writes to `ended`
+#: whether its own file was still there, and prints a line, as a report
+#: would. A doctor a signal ended writes no `ended` at all.
+HELD_DOCTOR = """\
+import os, sys, time
+root = sys.argv[sys.argv.index("--root") + 1]
+with open(os.path.join(root, "started.part"), "w") as out:
+    out.write("%d %d" % (os.getpid(), os.getppid()))
+os.replace(os.path.join(root, "started.part"), os.path.join(root, "started"))
+deadline = time.monotonic() + 60
+while time.monotonic() < deadline:
+    if os.path.exists(os.path.join(root, "release")):
+        break
+    time.sleep(0.05)
+with open(os.path.join(root, "ended"), "w") as out:
+    out.write("present" if os.path.isfile(__file__) else "gone")
+print("the held doctor ran to its end")
+"""
+
+#: Run before `bash` replaces it: INT, TERM and HUP back to their defaults.
+#: A shell started with one IGNORED can neither trap nor reset it, and its
+#: doctor ignores it too, which is how `nohup` or a runner's background job
+#: would leave a run of these tests.
+DEFAULT_SIGNALS = (
+    "import os, signal, sys\n"
+    "for name in ('SIGINT', 'SIGTERM', 'SIGHUP'):\n"
+    "    signal.signal(getattr(signal, name), signal.SIG_DFL)\n"
+    "os.execvp(sys.argv[1], sys.argv[1:])\n")
+
+
+@pytest.fixture(scope="session")
+def held_standard(tmp_path_factory) -> Path:
+    """A standard whose one file is `HELD_DOCTOR`, as `shape-doctor.py`."""
+    dest = tmp_path_factory.mktemp("held") / "openRepoShape"
+    dest.mkdir()
+    (dest / DOCTOR).write_text(HELD_DOCTOR, encoding="utf-8")
+    git("init", "-q", "-b", "main", ".", cwd=dest)
+    commit_all(dest, "a doctor that waits to be let go")
+    return dest
+
+
+def let_go(root: Path) -> None:
+    """Lets the held doctor at `root` run to its end."""
+    (root / "release").write_text("", encoding="utf-8")
+
+
+def started_doctor(proc: subprocess.Popen, root: Path) -> int:
+    """The held doctor's pid, once it has said it started, as the child of
+    the command's own shell, which is `proc`."""
+    started = root / "started"
+    deadline = time.monotonic() + 120
+    while not started.exists():
+        assert proc.poll() is None, proc.communicate()
+        assert time.monotonic() < deadline, "the doctor never started"
+        time.sleep(0.05)
+    doctor, shell = (int(word) for word
+                     in started.read_text(encoding="utf-8").split())
+    assert shell == proc.pid, "the doctor is not the shell's own child"
+    return doctor
+
+
+@pytest.fixture
+def held_run(held_standard, tmp_path):
+    """Starts the installed command's `--doctor` over `<tmp_path>/root`,
+    cloning `held_standard`, in a session of its own, and hands back the
+    run and its doctor's pid once the doctor has started. At teardown a
+    doctor still held is let go, so no run a failed test started outlives
+    it."""
+    root = tmp_path / "root"
+    root.mkdir()
+    runs = []
+
+    def start() -> tuple:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", DEFAULT_SIGNALS, "bash",
+             str(installed(tmp_path)), "--doctor", str(root)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, cwd=str(tmp_path),
+            env=installed_env(held_standard, tmp_path),
+            start_new_session=True)
+        runs.append(proc)
+        return proc, started_doctor(proc, root)
+
+    yield SimpleNamespace(root=root, start=start)
+    let_go(root)
+    for proc in runs:
+        if proc.returncode is None:
+            proc.wait(timeout=120)
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize(("name", "to_the_shell"), [
+    pytest.param("SIGINT", True, id="INT-to-the-shell-and-the-doctor"),
+    pytest.param("SIGTERM", True, id="TERM-to-the-shell-and-the-doctor"),
+    pytest.param("SIGHUP", True, id="HUP-to-the-shell-and-the-doctor"),
+    pytest.param("SIGTERM", False, id="TERM-to-the-doctor-alone"),
+])
+def test_a_doctor_ended_by_a_signal_leaves_nothing(name, to_the_shell,
+                                                    held_run, tmp_path):
+    """A doctor ended by a signal printed no report, so the run leaves
+    nothing: no clone in `$TMPDIR` and no line naming one. A Ctrl-C, or a
+    terminal hanging up, signals the shell and the doctor together.
+
+    THE SHELL ENDS BY THE SIGNAL IT WAS SENT, which a shell reads as 128 +
+    its number in `$?`, so a shell loop running the command stops at a
+    Ctrl-C; `exit 130` would let the loop go on. Sent to the doctor alone,
+    the shell was sent nothing and exits with the doctor's status, which
+    bash gives as 128 + the signal, and still leaves nothing.
+    """
+    number = getattr(signal, name)
+    proc, doctor = held_run.start()
+    if to_the_shell:
+        os.kill(proc.pid, number)
+    os.kill(doctor, number)
+    out, err = proc.communicate(timeout=120)
+    assert proc.returncode == (-number if to_the_shell else 128 + number), \
+        out + err
+    assert KEPT not in out + err
+    assert list((tmp_path / "tmp").iterdir()) == [], "the clone was left"
+    assert not (held_run.root / "ended").exists(), (
+        "the doctor ran to its end, so the signal never reached it")
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize(("name", "ends_by_it"), [
+    pytest.param("SIGTERM", True, id="TERM"),
+    pytest.param("SIGHUP", True, id="HUP"),
+    pytest.param("SIGINT", False, id="INT"),
+])
+def test_a_signal_to_the_installed_doctors_shell_alone_waits_for_it(
+        name, ends_by_it, held_run, tmp_path):
+    """#680: a TERM or HUP sent to the command's shell alone (`kill <pid>`)
+    ended it at once, and the EXIT trap removed the clone while the doctor,
+    which nobody had signalled, still ran from it.
+
+    THE SHELL WAITS FOR THE DOCTOR NOW. While the doctor runs, the shell
+    and the clone are both still there; the doctor then runs to its end with
+    its own file in place, its report is out, and the clone is kept and
+    named on the last line, as any finished run's is. The shell then ends by
+    the TERM or HUP it was sent. An INT the doctor did not end by is the
+    doctor's business, as bash's own rule for SIGINT has it, so the shell
+    exits with the doctor's status, which here is 0.
+    """
+    number = getattr(signal, name)
+    proc, _doctor = held_run.start()
+    [clone] = (tmp_path / "tmp").iterdir()
+    os.kill(proc.pid, number)
+    time.sleep(0.5)
+    assert proc.poll() is None, "the shell ended while its doctor ran"
+    assert (clone / "shape" / DOCTOR).is_file(), (
+        "the clone was removed while its doctor ran from it")
+    let_go(held_run.root)
+    out, err = proc.communicate(timeout=120)
+    assert proc.returncode == (-number if ends_by_it else 0), out + err
+    assert (held_run.root / "ended").read_text(encoding="utf-8") == \
+        "present", "the doctor's own file was gone at its end"
+    assert "the held doctor ran to its end" in out, out + err
+    assert kept_by(out).resolve() == clone.resolve(), out
+    assert (clone / "shape" / DOCTOR).is_file(), "the named clone is gone"
 
 
 @WINDOWS_SKIP
