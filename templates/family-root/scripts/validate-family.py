@@ -127,7 +127,7 @@ def _lockstep(root: Path, project: str | None = None,
         f"{shlex.quote(str(root))} --member {member} --to <commit>` moves both "
         "in one commit, on a branch other than the holder's tracking branch, "
         f"which it refuses (`{_switch_line(root, 'bump', word)}` makes one); "
-        "moving one alone is what this refuses.")
+        f"moving one alone is what this refuses. {BRANCH_LEFT}")
 
 
 #: The findings THE LOCKSTEP RULE is about (#539): a member's gitlink and its
@@ -146,6 +146,23 @@ BRANCH_WORD_RE = re.compile(r"[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+)*")
 #: and in `--member` alike (#539).
 PROJECT_PLACEHOLDER = "<Project>"
 
+#: What a remedy that names `_switch_line` says at the end of its prose
+#: (#607): where an earlier act left that branch, `switch -c` fails `fatal: a
+#: branch named '<branch>' already exists` (exit 128). Another name comes
+#: first: it starts the branch where the holder stands now, which works in
+#: every state. The same command with `switch` for `switch -c` goes back to
+#: the old branch, which is right only where it holds work not merged yet;
+#: it keeps its commits, and nothing here names `switch -C`, which resets it.
+#: In words, not a second command: this report is read in CI too, where the
+#: checkout has none of the person's branches to ask about. `family.py`'s
+#: `BRANCH_LEFT`, word for word.
+BRANCH_LEFT = ("If `git switch -c` says that branch already exists, an "
+               "earlier act left it: give the branch another name, which "
+               "starts it where the holder stands, or, only if that branch "
+               "holds work not merged yet, the same command with `switch` "
+               "in place of `switch -c` goes back to it and keeps every "
+               "commit on it.")
+
 
 def _switch_line(root: Path, verb: str, name: str | None) -> str:
     """`git -C <holder> switch -c family/<verb>-<member>`: the branch
@@ -155,7 +172,9 @@ def _switch_line(root: Path, verb: str, name: str | None) -> str:
     `name` is the member's row `id:` for `remove` and its project for
     `add`, lowercased; None says `PROJECT_PLACEHOLDER`, the one the
     `--member` beside it says. POSIX-quoted, as every other line this file
-    prints is."""
+    prints is. Every remedy that names it ends its prose with `BRANCH_LEFT`
+    (#607); openRepoShape's own tests read this file's source and fail one
+    that does not."""
     if name is None:
         return (f"git -C {shlex.quote(str(root))} switch -c "
                 f"family/{verb}-{PROJECT_PLACEHOLDER}")
@@ -427,7 +446,7 @@ def _check_member_gitlink(root: Path, path: str, commit: str, project: str,
             "command below mounts and pins it in one commit, on a branch "
             "other than the holder's tracking branch, which it refuses, so "
             "the first makes one; a row with no submodule is a claim about a "
-            "tree that is not here.\n"
+            f"tree that is not here. {BRANCH_LEFT}\n"
             f"    {_switch_line(root, 'add', project)}\n"
             f"    {PYTHON} scripts/family.py add --family-root "
             f"{shlex.quote(str(root))} --member <org>/{shlex.quote(project)}")
@@ -812,7 +831,7 @@ def _check_member_ids_unique(root: Path, members: list,
             f"`{PYTHON} scripts/family.py remove "
             f"--family-root {shlex.quote(str(root))} --member "
             f"{shlex.quote(project)}` takes the later row, {project}, out; "
-            f"name {first} there instead to keep {project}.")
+            f"name {first} there instead to keep {project}. {BRANCH_LEFT}")
 
 
 def _gitmodules_sections(root: Path) -> dict[str, dict[str, str]]:
@@ -1150,7 +1169,8 @@ def _check_gitlinks_named(root: Path, gitlinks: dict[str, str],
             f"{GITMODULES} section out too, then mount it with the third, "
             "from a checkout of openRepoShape: family.py add writes its row "
             "and its gitlink in one commit, and names the object store git "
-            "rm leaves under .git/modules if one is still there.\n"
+            "rm leaves under .git/modules if one is still there. "
+            f"{BRANCH_LEFT}\n"
             f"    {_switch_line(root, 'add', project)}\n"
             f"    git rm -- {shlex.quote(path)}\n"
             f"    {PYTHON} scripts/family.py add --family-root "

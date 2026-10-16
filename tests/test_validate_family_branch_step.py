@@ -47,6 +47,16 @@ TEMPLATE = (REPO / "templates" / "family-root" / "scripts" /
 #: How the holder's THE LOCKSTEP RULE starts.
 RULE = "THE LOCKSTEP RULE: a member's gitlink and its `members[].pin.commit`"
 
+#: The sentence each remedy that names a `switch -c` ends its prose with
+#: where that branch exists already (#607), pinned as text, as `family.py`
+#: and the holder's validator both say it.
+BRANCH_LEFT = ("If `git switch -c` says that branch already exists, an "
+               "earlier act left it: give the branch another name, which "
+               "starts it where the holder stands, or, only if that branch "
+               "holds work not merged yet, the same command with `switch` "
+               "in place of `switch -c` goes back to it and keeps every "
+               "commit on it.")
+
 
 def gate_module(monkeypatch):
     """The template `validate-family.py`, loaded as a module. It puts its
@@ -143,7 +153,8 @@ def test_a_missing_gitlink_remedy_makes_the_branch_and_names_the_holder(
         "Remediation: from a checkout of openRepoShape, the second command "
         "below mounts and pins it in one commit, on a branch other than the "
         "holder's tracking branch, which it refuses, so the first makes one; "
-        "a row with no submodule is a claim about a tree that is not here.")
+        "a row with no submodule is a claim about a tree that is not here. "
+        + BRANCH_LEFT)
     switch, add = (line.strip() for line in lines[2:])
     assert lines[2:] == ["    " + switch, "    " + add], lines
     assert shlex.split(switch) == switch_argv(holder, "add", "IRRS")
