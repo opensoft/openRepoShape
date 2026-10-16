@@ -90,20 +90,24 @@ def a_chain_root(project, chain=("openXdox", "openDox")):
 @pytest.mark.parametrize("chain", [
     pytest.param(("openXdox", "openDox"), id="two-links"),
     pytest.param(("openXdox", "openYdox", "openDox"), id="three-links"),
+    pytest.param(("opensoft/openXdox", "openDox"), id="qualified"),
 ])
 def test_the_manifest_gate_offers_the_sources_it_reads(project, monkeypatch,
                                                        chain):
     """Each holder is offered its variable and a checkout beside the root,
-    in its own words, and nothing names `--link-source`."""
+    in its own words, and nothing names `--link-source`. A link recorded
+    `<org>/<name>` is the link `<name>`, as the chain's own reader takes it
+    (`_chain_links`): its entry, and the words, go by the name alone."""
     clear_ambient_pin_sources(monkeypatch)
     root = a_chain_root(project, chain)
     result = run_script(root / "scripts" / "validate-manifest.py", cwd=root)
     assert result.returncode == 0, result.stderr
     assert "manifest ok" in result.stdout
+    names = [link.rpartition("/")[2] for link in chain]
     assert manifest_warnings(result) == [
         UNREACHED.format(holder=holder, held=held,
                          offer=offer(OWN_OFFER, holder))
-        for holder, held in zip(chain, chain[1:])]
+        for holder, held in zip(names, names[1:])]
     assert "--link-source" not in result.stderr
 
 

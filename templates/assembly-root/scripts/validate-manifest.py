@@ -178,7 +178,8 @@ def _link_remedies(chain) -> dict[str, str]:
     `SHAPE_PIN_SOURCE_<LINK>`, unless another link of the chain shares the
     variable (#275), and a checkout beside this root (`resolve_link_source`'s
     rules 2 and 3, as `_chain_and_links` asks), so it offers those. Every
-    holder is offered both; the chain's end holds no pin and has no entry.
+    holder is offered both, or the checkout alone where another link shares
+    its variable; the chain's end holds no pin and has no entry.
 
     Keyed by `pin_product_key`, the key `_chain_link_findings` looks a
     holder's entry up by (#444), and the links are read as that function

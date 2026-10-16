@@ -1907,6 +1907,8 @@ def assert_step_four_speaks_in_the_plans_words(run, tmp_path: Path,
                 "could not answer for openXdox: no such file or directory"
                 ) in result.stderr, result.stderr
         assert "read as a PATH" not in result.stderr, result.stderr
-        assert offered and offered[0].endswith(
-            f"({FIRST_LINK_WORDS}). The recorded chain still classifies.")
+        assert offered, step_four
+        assert offered[0].endswith(
+            f"({FIRST_LINK_WORDS}). The recorded chain still classifies."
+        ), offered
     assert not (tmp_path / "remotes").exists()

@@ -66,13 +66,20 @@ empty one — is refused (#442): an empty path is the current directory, and
 `.` is how to mean that.
 
 A CALLER THAT PASSES A SOURCE FOR SOMEONE ELSE SAYS IT IN ITS OWN WORDS
-(#661). `--link-source-label=FLAG` names the bare PATH by the flag the person
-typed (setup's step (4) passes `--pin-source`), and no line then says it was
-read as a PATH. `--link-remedy LINK=TEXT` is what would let LINK's tree be
-read in that caller's sources, offered in place of this script's own for a
-link that is declared-unverified. A project's own runs pass neither. Every
-value and path this prints is named as it is, or as Python's `repr` spells it
-where a character in it is not printable (`_shown`).
+(#661). `--link-source-label=FLAG` is the flag the person typed for the bare
+PATH (setup's step (4) passes `--pin-source`): the `link-source-unreadable`
+WARNING and the "not used" NOTE name that value by FLAG, and neither says a
+value holding `=` was read as a PATH. The `link-source-no-path` REFUSED
+line, and the NOTE's advice to name the link (`--link-source <link>=PATH`)
+where the chains begin at more than one link, keep this script's own flag.
+`--link-remedy LINK=TEXT` is what would let LINK's tree be read in that
+caller's sources, offered in place of this script's own for a link that is
+declared-unverified. A project's own runs pass neither. Every `--link-source`
+value and path this prints, and the path of a `SHAPE_PIN_SOURCE_<PRODUCT>`
+or of a checkout beside the project it names, is named as it is, or as
+Python's `repr` spells it where a character in it is not printable
+(`_shown`). A caller's FLAG and the words it offers for a link, a chain
+link's name, and the `--project` and `--policy` paths are printed as given.
 
 EXIT CODES, the same three in every validator this standard ships:
     0  every name classified (and, with `--project`, every declared role and
@@ -1022,7 +1029,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="the caller's own name for the bare "
                              "--link-source it passes, such as --pin-source "
                              "(a FLAG that starts with - is given after an "
-                             "=): a line about that value names it by FLAG")
+                             "=): the link-source-unreadable WARNING and the "
+                             "not-used NOTE name that value by FLAG, and "
+                             "neither says a value holding = was read as a "
+                             "PATH")
     parser.add_argument("--link-remedy", action="append", default=[],
                         type=_link_remedy, metavar="LINK=TEXT",
                         help="the caller's words for what would let LINK's "

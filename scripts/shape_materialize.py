@@ -64,6 +64,9 @@ from repo_shape import YamlError, _strip_comment, parse_yaml  # noqa: E402
 # which products share a `SHAPE_PIN_SOURCE_<PRODUCT>` variable, the one answer
 # the project's own `validate-pins.py` reports on (#275), with two
 # declarations ONE product when they share a pin file (`pin_product_key`).
+# `scaffold_link_remedies` reads a chain with the same names: each link's
+# variable (`pin_source_env_name`), whether another link shares it
+# (`pin_source_env_shared`), and the link's name (`repo_basename`) (#661).
 from repo_shape import (  # noqa: E402
     GH_TREE_API, NEUTRAL_PRODUCT_OWNER, PIN_SOURCE_ENV_PREFIX,
     pin_product_key, pin_source_env_collisions, pin_source_env_name,
