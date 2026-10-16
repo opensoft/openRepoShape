@@ -84,7 +84,6 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
     git_out, link_pins_from_trees, repo_basename, shell_line, tree_digest,
@@ -98,6 +97,11 @@ from shape_materialize import (  # noqa: E402
 )
 # The leg-path rule `adopt-project.py` asks of its own paths (#179).
 from shape_materialize import refuse_bad_leg_paths  # noqa: E402
+# The root's visibility and the Free-plan secrets note, asked as `family.py`
+# asks them of its holder (#660).
+from shape_materialize import (  # noqa: E402
+    free_plan_secrets_note, repository_visibility,
+)
 # What the new project's own reader and `validate-manifest.py` would make of
 # the values written into its manifest, and whether a repository's name can
 # be a directory's: asked before anything is created (#258, #261).
@@ -218,8 +222,10 @@ def remote_is_empty(repository: str) -> bool | None:
 def remote_visibility(repository: str) -> str | None:
     """`<org>/<repo>`'s GitHub visibility (`private`, `public`, `internal`),
     lowercased, or None if it cannot be read — the repository does not exist,
-    or `gh` cannot see it. Never called for a `--local-remote-dir` repository:
-    a bare repository on disk has no visibility at all.
+    `gh` cannot see it, or it answered a word that is not one of the three.
+    It is `repository_visibility`, the reader `family.py` asks of its holder
+    (#660). Never called for a `--local-remote-dir` repository: a bare
+    repository on disk has no visibility at all.
 
     NO `gh` ON PATH IS `gh-not-found` (#537), as `remote_is_empty`'s is, and
     not a `FileNotFoundError` traceback: `--reuse-empty-repo` reads the root's
@@ -228,20 +234,10 @@ def remote_visibility(repository: str) -> str | None:
     has to come from here too or the run never reaches the one that has it.
     """
     try:
-        proc = subprocess.run(
-            ["gh", "repo", "view", repository, "--json", "visibility"],
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", check=False)
+        return repository_visibility(repository)
     except FileNotFoundError as exc:
         raise _gh_not_found(
             f"what visibility {repository} has on GitHub", exc) from exc
-    if proc.returncode != 0:
-        return None
-    try:
-        value = json.loads(proc.stdout).get("visibility")
-    except json.JSONDecodeError:
-        return None
-    return str(value).lower() if value else None
 
 
 def local_remote_is_empty(bare: Path) -> bool | None:
@@ -1295,11 +1291,14 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
     reused one what GitHub says of it. A reused leg's is what
     `_reused_leg_visibility` read, with its WARNING. The reused ROOT's is read
     here without one, because `_leg_visibility` has already said where the
-    run's flag disagrees with it.
+    run's flag disagrees with it, and is None where GitHub does not say
+    (#660): the run's `--visibility` is not the root's, so a public root
+    whose read failed was given the Free-plan hint as private, and
+    `_private_leg_note` says now that it could not be read.
     """
     display = values["PROJECT_NAME"]
     project_id = values["PROJECT_ID"]
-    standing: dict[str, str] = {}
+    standing: dict[str, str | None] = {}
     print("\ncreating remotes")
     for role in ("spec", "code", "assembly"):
         standing[role] = args.visibility
@@ -1308,8 +1307,7 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
                   + ("zero commits)" if reused[role] is None else
                      f"holding this scaffold's seed {reused[role][:12]})"))
             if not local and role == "assembly":
-                standing[role] = (remote_visibility(repositories[role])
-                                  or args.visibility)
+                standing[role] = remote_visibility(repositories[role])
             elif not local:
                 standing[role] = _reused_leg_visibility(args,
                                                         repositories[role])
@@ -1378,6 +1376,13 @@ def _private_leg_note(args, repositories: dict, local: bool,
     was told the secrets resolve to EMPTY because a leg is private, when the
     reason is that the root is. `adopt-project.py` goes by its root the same
     way.
+
+    WHAT GITHUB DOES NOT SAY IS SAID (#660), by `free_plan_secrets_note`,
+    which adopt and `family.py` ask too: a reused root whose visibility could
+    not be read (`standing` None) is `ROOT_VISIBILITY_UNREAD`, where it took
+    the run's `--visibility`, and a closed root whose organisation's plan
+    could not be read is `FREE_PLAN_UNREAD`, where it was silent as for a
+    paid plan.
     """
     closed = [role for role in ("spec", "code")
               if standing[role] in ("private", "internal")]
@@ -1395,12 +1400,10 @@ def _private_leg_note(args, repositories: dict, local: bool,
               "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
               f"PAT (contents:read on {which}, fallback) — or the `validate` "
               f"check cannot check {them} out.")
-        root_is_closed = standing["assembly"] in ("private", "internal")
-        hint = root_is_closed and free_plan_secret_hint(
-            args.org, repositories["assembly"],
-            f"{repositories['assembly']} is")
-        if hint:
-            print(hint)
+        note = free_plan_secrets_note(args.org, repositories["assembly"],
+                                      standing["assembly"])
+        if note:
+            print(note)
 
 
 def _take_held_seed(work: Path, url: str, seed: str, tracking: str) -> str:

@@ -170,7 +170,6 @@ import argparse
 import contextlib
 import datetime as _dt
 import itertools
-import json
 import os
 import re
 import shlex
@@ -184,7 +183,7 @@ SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from path_classify import PathPolicy, Verdict  # noqa: E402
 from repo_shape import (  # noqa: E402
-    free_plan_secret_hint, REMEDIATION,
+    REMEDIATION,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError,
     accepts_role, checked_value, double_quoted, git_out, load_yaml,
@@ -255,6 +254,12 @@ from shape_materialize import BOOTSTRAP  # noqa: E402
 # `run`'s own check of a command line, for the one command `run` cannot run:
 # `_git_rm`, whose path goes to git as the bytes the tree holds (#527).
 from shape_materialize import check_program  # noqa: E402
+# How a `gh repo view --json visibility` answer is read, and what the
+# Free-plan secrets note says of the root, as the scaffold and `family.py`
+# say it of theirs (#660).
+from shape_materialize import (  # noqa: E402
+    free_plan_secrets_note, visibility_in,
+)
 
 #: The naming policy this tool classifies leg names against. One constant,
 #: because three spellings of the same path is how the second one goes stale.
@@ -8963,19 +8968,6 @@ def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
         _free_plan_hint_by_the_root(plan, repositories["assembly"])
 
 
-#: What `execute` prints where GitHub would not say what visibility the
-#: adopted root has (#602): the question it could not answer, what the
-#: Free-plan hint would then say, and how to answer it. `{root}` is the root.
-ROOT_VISIBILITY_UNREAD = (
-    "NOTE this run could not read {root}'s visibility from GitHub, so it "
-    "cannot say whether the Free-plan secrets hint applies. It applies when "
-    "{root} is private or internal and its organisation is on the GitHub Free "
-    "plan: organisation secrets are then not delivered to it, so org-level "
-    "SHAPE_LEGS_APP_ID / SHAPE_LEGS_APP_PRIVATE_KEY resolve to EMPTY in its "
-    "`validate` workflow and must be set as REPOSITORY secrets on {root} "
-    "instead. `gh repo view {root} --json visibility` says which it is.")
-
-
 def _free_plan_hint_by_the_root(plan: Plan, root: str) -> None:
     """The Free-plan secrets hint, BY THE ADOPTED ROOT (#602).
 
@@ -8995,21 +8987,23 @@ def _free_plan_hint_by_the_root(plan: Plan, root: str) -> None:
     A ROOT WHOSE VISIBILITY CANNOT BE READ IS NOT GUESSED. Read as private,
     a public root would be given a false hint; read as public, a private one
     would lose a true one with nothing said. `ROOT_VISIBILITY_UNREAD` says
-    so instead, with the condition and the command that settles it. It asks
-    nothing of the organisation's plan: `free_plan_secret_hint` answers None
-    alike for a paid plan and for one it could not read, so its answer could
-    not tell "the hint does not apply" from a second unknown. It is a NOTE
-    and not a refusal, because both legs exist by now and the run goes on to
-    push them.
+    so instead, with the condition and the command that settles it, and
+    asks nothing of the organisation's plan: the NOTE names both
+    conditions, so it holds whatever the plan is. It is a NOTE and not a
+    refusal, because both legs exist by now and the run goes on to push
+    them.
+
+    NOR IS A PLAN THAT CANNOT BE READ (#660). `free_plan_secret_hint`
+    answered None alike for a paid plan and for one it could not read, so a
+    private root on an organisation whose plan the token could not see was
+    told nothing. `free_plan_secrets_note`, which the scaffold and
+    `family.py` ask too, and where `ROOT_VISIBILITY_UNREAD` now lives, says
+    `FREE_PLAN_UNREAD` there; the words adopt printed before are unchanged.
     """
-    seen = _root_visibility(root)
-    if seen in ("private", "internal"):
-        hint = free_plan_secret_hint(
-            plan.get("org", ""), root, f"{root} is")
-        if hint:
-            print(hint)
-    elif seen is None:
-        print(ROOT_VISIBILITY_UNREAD.format(root=root))
+    note = free_plan_secrets_note(plan.get("org", ""), root,
+                                  _root_visibility(root))
+    if note:
+        print(note)
 
 
 def _root_visibility(repository: str) -> str | None:
@@ -9017,19 +9011,16 @@ def _root_visibility(repository: str) -> str | None:
     None when it cannot be read: `gh repo view` failed (a repository the
     token cannot see, a rate limit, the network) or could not be started,
     or answered anything but one of GitHub's three visibilities. Never asked
-    under `--local-remote-dir`, whose root is the source on disk."""
+    under `--local-remote-dir`, whose root is the source on disk. The answer
+    is read by `visibility_in`, the reading the scaffold's and `family.py`'s
+    `repository_visibility` gives theirs (#660); `gh` is run here, by this
+    module's `run`, so a `gh` that cannot be started is unread too."""
     try:
         answer = run(["gh", "repo", "view", repository, "--json",
                       "visibility"])
     except (CommandFailed, OSError):
         return None
-    try:
-        value = json.loads(answer)
-    except ValueError:
-        return None
-    value = value.get("visibility") if isinstance(value, dict) else None
-    seen = value.lower() if isinstance(value, str) else None
-    return seen if seen in VISIBILITY_CHOICES else None
+    return visibility_in(answer)
 
 
 def _create_leg_remote(plan: Plan, names: dict, repositories: dict,

@@ -116,10 +116,12 @@ def test_no_gh_on_path_is_silent(tmp_path, monkeypatch):
 ])
 def test_every_creating_tool_calls_the_hint(tool, call):
     """All three creators, or the next org on Free hits it in the one place
-    that was missed."""
+    that was missed. Each asks `shape_materialize.free_plan_secrets_note`
+    since #660, which gives `FREE_PLAN_HINT` on a `free` plan and names a
+    plan it could not read, where `free_plan_secret_hint` was silent."""
     source = (REPO / tool).read_text()
-    assert "free_plan_secret_hint" in source, f"{tool} does not import it"
-    assert f"free_plan_secret_hint(\n            {call}" in source, \
+    assert "free_plan_secrets_note" in source, f"{tool} does not import it"
+    assert f"free_plan_secrets_note({call}," in source, \
         f"{tool} does not call it with its own org"
 
 
