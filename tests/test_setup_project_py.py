@@ -2396,18 +2396,19 @@ def test_a_dry_run_is_read_as_the_scaffold_reads_one(passthrough, dry):
       "C:\\src\\openXdox=layer"],
      ["--referent-chain=openXdox,openDox",
       "--link-source=C:\\src\\openXdox=layer"]),
-    # An EMPTY value is `.`: the scaffold's `Path('')` is `.`, which the
-    # naming check, run in the same folder, reads as the same directory, where
-    # `--link-source=` is refused as `link-source-no-path` for a flag the
-    # person never typed (#576 on main). The LAST value is the one that
+    # An EMPTY value is left to the plan: the scaffold refuses it as
+    # `pin-source-no-path` (#570), so no `--link-source` goes at all, where
+    # `--link-source=` is refused by the naming check as `link-source-no-path`
+    # (#576) and `--link-source=.` WARNs about a flag the person never typed
+    # and a folder the plan never reads. The LAST value is the one that
     # counts, empty or not, and a blank one is not an empty one.
     (["--referent-chain", "openXdox,openDox", "--pin-source", ""],
-     ["--referent-chain=openXdox,openDox", "--link-source=."]),
+     ["--referent-chain=openXdox,openDox"]),
     (["--referent-chain", "openXdox,openDox", "--pin-source="],
-     ["--referent-chain=openXdox,openDox", "--link-source=."]),
+     ["--referent-chain=openXdox,openDox"]),
     (["--referent-chain", "openXdox,openDox", "--pin-source", "src",
       "--pin-source", ""],
-     ["--referent-chain=openXdox,openDox", "--link-source=."]),
+     ["--referent-chain=openXdox,openDox"]),
     (["--referent-chain", "openXdox,openDox", "--pin-source", "",
       "--pin-source", "src"],
      ["--referent-chain=openXdox,openDox", "--link-source=src"]),

@@ -2021,15 +2021,15 @@ def as_a_bare_link_source(path: str) -> str:
     starts `<word>=` is spelled `./<word>=`; one with a separator or a drive
     before its first `=` cannot be a link's name, and stays as it is.
 
-    AN EMPTY PATH IS `.`, which is what the scaffold's `Path('')` is. The
-    validator refuses `--link-source=` as `link-source-no-path` (#576), for a
-    flag the person never typed, and ends step (4) with exit 1 where the plan
-    refuses the same value its own way, with exit 2. `.` is the folder the
-    scaffold reads it as - the validator runs in the same folder, the shape
-    checkout - so step (4) and the plan describe the same source. A BLANK
-    path is not empty: the scaffold reads `Path(' ')`, so it goes as it is."""
-    if not path:
-        return "."
+    AN EMPTY PATH IS NEVER GIVEN TO IT. Since #570 the scaffold takes
+    `--pin-source` as text and refuses an exactly empty value as
+    `pin-source-no-path`, before anything exists (`pin_source_path`), so it
+    no longer reads `''` as the directory it runs in: `.` would be a folder
+    the plan never reads, and `--link-source=` is refused by the validator as
+    `link-source-no-path` (#576). Either would end step (4) naming a flag the
+    person never typed, where the plan refuses the value by name.
+    `naming_declarations` leaves an empty source out. A BLANK path is a path:
+    the scaffold reads `Path(' ')`, so it goes as it is."""
     return "./" + path if re.match(r"[^/\\:=]+=", path) else path
 
 
@@ -2055,11 +2055,21 @@ def naming_declarations(passthrough: list) -> list:
     given none, so a chain the plan verified showed
     `[declared-unverified]` and a WARNING that the link's tree was not
     reachable there, and one the tree broke showed no break at all. The LAST
-    `--pin-source`, as the scaffold's `Path` keeps its last, goes as a bare
+    `--pin-source`, as the scaffold keeps its last, goes as a bare
     `--link-source` - and only WITH a chain of two links at least: the
     scaffold reads the tree for the links alone, a chain of one link has no
     holder whose declaration a source could answer, and a source no link
     used is a NOTE the plan never prints.
+
+    AN EMPTY LAST `--pin-source` IS LEFT TO THE PLAN (#608, rv608 on #623).
+    Since #570 the scaffold refuses `--pin-source ''` as `pin-source-no-path`
+    before anything exists, so there is no tree it reads, and step (4) is
+    given no `--link-source` for it: it says nothing about a flag the person
+    never typed, and step (5)'s plan refuses the value by name, with exit 2.
+    The scaffold's own test is `not str(typed)` (`pin_source_path`), so a
+    BLANK value is a path and goes as it is, and the rule reads the LAST
+    value alone: `--pin-source src --pin-source ''` is empty,
+    `--pin-source '' --pin-source src` is not.
     """
     products = [name for name in (
         pin.strip().split("@", 1)[0].rsplit("/", 1)[-1]
@@ -2068,10 +2078,11 @@ def naming_declarations(passthrough: list) -> list:
     sources = passed_values(passthrough, "--pin-source")
     has_links = bool(chains) and sum(
         1 for link in chains[-1].split(",") if link.strip()) > 1
+    names_a_source = bool(sources) and bool(str(sources[-1]))
     return ((["--pins=" + ",".join(products)] if products else [])
             + (["--referent-chain=" + chains[-1]] if chains else [])
             + (["--link-source=" + as_a_bare_link_source(sources[-1])]
-               if has_links and sources else []))
+               if has_links and names_a_source else []))
 
 
 # ---------------------------------------------------------------------------

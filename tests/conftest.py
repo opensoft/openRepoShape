@@ -1759,25 +1759,39 @@ def assert_step_four_reads_a_chain_as_the_plan_does(run, tmp_path: Path,
 
 def assert_an_empty_pin_source_is_the_plans_to_refuse(run,
                                                       tmp_path: Path) -> None:
-    """`--pin-source ''` is the scaffold's `Path('')`, which is `.`, so step
-    (4) passes the naming check `.` and lets the plan say what it makes of it
-    (#608, rv608 on #623). On the merge of #608 with #576 step (4) passed
-    `--link-source=`, which the naming check now refuses as
-    `link-source-no-path`, naming a flag the person never typed, and the run
-    ended there with exit 1 where the plan refuses the same value with exit
-    2."""
+    """`--pin-source ''` is refused by the scaffold's plan as
+    `pin-source-no-path` (#570), so step (4) is given no `--link-source` for
+    it and leaves the value to step (5) (#608, rv608 on #623). On the merge of
+    #608 with #576 step (4) passed `--link-source=`, which the naming check
+    refuses as `link-source-no-path`, naming a flag the person never typed,
+    and the run ended there with exit 1 where the plan refuses the same value
+    with exit 2; passing `.` instead, as the scaffold's `Path('')` once read
+    it, made the naming check WARN about `--link-source`, `.` and a folder the
+    plan never reads. The naming check is given no source, so it says of the
+    chain what it says of any it cannot verify, `[declared-unverified]`, and
+    its hint there, `--link-source <product>=<path>`, is the one place the
+    flag is named in a run that never typed it."""
     result = run("--project", "codexDox", "--org", "demoorg",
                  "--local-remote-dir", str(tmp_path / "remotes"),
                  "--into", str(tmp_path / "work"),
                  "--", "--pin", "openXdox@" + "0123456789abcdef" * 2
                  + "01234567", "--referent-chain", "openXdox,openDox",
                  "--pin-source", "")
-    assert "link-source-no-path" not in result.stderr + result.stdout, (
-        result.stderr + result.stdout)
-    assert "do not satisfy the naming policy" not in result.stderr
+    heard = result.stderr + result.stdout
     assert "(5) the plan" in result.stdout, result.stdout
-    assert result.returncode == 2, result.stderr + result.stdout
-    assert "REFUSED pin-source-unreadable:" in result.stderr, result.stderr
+    assert result.returncode == 2, heard
+    assert "REFUSED pin-source-no-path:" in result.stderr, result.stderr
+    assert "link-source-no-path" not in heard, heard
+    # The validator's own hint for a chain it cannot verify names the flag,
+    # `--link-source openXdox=<path>`, whatever the run typed, so it is the
+    # one spelling left out; a `--link-source` that is a REPORT is not.
+    assert "--link-source" not in re.sub(r"--link-source \w+=<path>", "",
+                                         heard), heard
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert "[declared-unverified]" in step_four, step_four
+    assert "do not satisfy the naming policy" not in result.stderr, (
+        result.stderr)
     assert not (tmp_path / "remotes").exists()
 
 
