@@ -73,27 +73,42 @@ BAD_DIRECTORIES = [
 BAD_IDS = [row[0] for row in BAD_DIRECTORIES]
 
 #: What the refusal tells a person to do, which is fixed text and is the same
-#: in every case: the way out is another directory, or GitHub.
+#: in every case: the way out is another directory, or GitHub. Since #693 it
+#: says that the URL is the RESOLVED path, so that a path typed as text that
+#: leads to one that is not is told where the fault is, and it names a lone
+#: surrogate among the reasons, as #282's remedy does.
 WHY_IT_IS_REFUSED = (
     "a byte that is not UTF-8 in the path (a directory named in a legacy "
-    "code page) cannot be written at all, a line break or a control "
-    "character would break or garble the line it is written into, and a "
-    "bidirectional embedding, override or isolate control would show the "
-    "rest of that line in another order than it is written.")
+    "code page), or a lone surrogate, cannot be written at all, a line break "
+    "or a control character would break or garble the line it is written "
+    "into, and a bidirectional embedding, override or isolate control would "
+    "show the rest of that line in another order than it is written.")
+THE_RESOLVED_PATH = (
+    "The clone URL is the path --local-remote-dir resolves to, so where the "
+    "path given is text and the URL named above is not, the fault is in what "
+    "it leads through: a symbolic link on it whose target is not text, or, "
+    "for a relative path, the directory it was given from. Rename or replace "
+    "the directory whose name is not text, or pass a path that does not lead "
+    "through it; renaming a link changes nothing. ")
+#: How a README prints the clone URL since #693: one word of a POSIX shell.
+QUOTED_NOT_ESCAPED = ("the clone URL in a `git clone` line, in quotes where a "
+                      "shell needs them but with no character escaped: ")
 SCAFFOLD_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
     "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
     "control character in it, a directory renamed or made anew, and run "
     "again; or scaffold against GitHub, without --local-remote-dir, where "
-    "the clone URL is `https://github.com/<org>/<name>.git`. The READMEs "
-    "print the clone URL as it stands: " + WHY_IT_IS_REFUSED)
+    "the clone URL is `https://github.com/<org>/<name>.git`. "
+    + THE_RESOLVED_PATH + "The READMEs print " + QUOTED_NOT_ESCAPED
+    + WHY_IT_IS_REFUSED)
 FAMILY_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
     "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
     "control character in it, a directory renamed or made anew, and run "
     "again; or run `init` against GitHub, without --local-remote-dir, where "
-    "the clone URL is `https://github.com/<org>/<Family>.git`. The holder's "
-    "`README.md` prints the clone URL as it stands: " + WHY_IT_IS_REFUSED)
+    "the clone URL is `https://github.com/<org>/<Family>.git`. "
+    + THE_RESOLVED_PATH + "The holder's `README.md` prints "
+    + QUOTED_NOT_ESCAPED + WHY_IT_IS_REFUSED)
 
 
 @pytest.fixture
@@ -332,7 +347,9 @@ def test_a_utf8_directory_still_plans_a_scaffold(scaffold, capsys, tmp_path):
 def test_a_utf8_directory_still_scaffolds(tmp_path):
     """End to end into local bare remotes under `<dir>/café`: exit 0, all
     three remotes made, and the assembly root's README prints the clone URL
-    exactly as it stands (read as the bytes the scaffold wrote)."""
+    with every character as it stands (read as the bytes the scaffold
+    wrote), in the single quotes `shell_quoted` gives a word holding `é`
+    (#693)."""
     cafe = tmp_path / "café"
     cafe.mkdir()
     work = tmp_path / "work"
@@ -343,7 +360,7 @@ def test_a_utf8_directory_still_scaffolds(tmp_path):
                                         f"{PROJECT}.git"]
     readme = (work / PROJECT / "README.md").read_bytes().decode("utf-8")
     url = str(cafe.resolve() / f"{PROJECT}.git")
-    assert f"git clone --recurse-submodules {url}\n" in readme
+    assert f"git clone --recurse-submodules '{url}'\n" in readme
 
 
 def test_a_utf8_directory_still_plans_a_family(capsys, tmp_path):
@@ -361,8 +378,8 @@ def test_a_utf8_directory_still_plans_a_family(capsys, tmp_path):
 
 def test_a_utf8_directory_still_creates_a_holder(tmp_path):
     """End to end into a local bare remote under `<dir>/café`: exit 0,
-    `Contoso.git` made, and the holder's README prints the clone URL as it
-    stands."""
+    `Contoso.git` made, and the holder's README prints the clone URL with
+    every character as it stands, in single quotes (#693)."""
     cafe = tmp_path / "café"
     cafe.mkdir()
     into = tmp_path / "into"
@@ -372,4 +389,4 @@ def test_a_utf8_directory_still_creates_a_holder(tmp_path):
     readme = (into / HOLDER / HOLDER / "README.md").read_bytes().decode(
         "utf-8")
     url = str(cafe.resolve() / f"{HOLDER}.git")
-    assert f"git clone --recurse-submodules {url}\n" in readme
+    assert f"git clone --recurse-submodules '{url}'\n" in readme
