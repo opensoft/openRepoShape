@@ -67,10 +67,13 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            #514 no line `execute` writes them into is) (#181), and
            the source's own submodules kept on one leg with their
            `.gitmodules`, registered there and never in the root, each
-           relative url naming the same repository from the leg as from the
-           source, and each url a leg keeps that names a place on this
-           machine's disk one where `git ls-remote` reaches a repository (a
-           url on a network is never asked, and a NOTE says so) (#418), no
+           relative url naming the same repository from the leg -- its
+           GitHub remote, or, given `--local-remote-dir`, the bare
+           repository `execute --local-remote-dir` would create there
+           (#417) -- as from the source, and each url a leg keeps that
+           names a place on this machine's disk one where `git ls-remote`
+           reaches a repository (a url on a network is never asked, and a
+           NOTE says so) (#418), no
            symlink kept in the root that the shape would write
            one of its files, or that file's copy under `shape/`, through
            where it cannot (one that dangles, loops, or leads out of the
@@ -108,8 +111,9 @@ without knowing whether the specification cites it. `execute` REFUSES while
 any `leg:` is still null, and on every other finding `check` reports, before
 it has created a leg repository or pushed anything -- a source submodule's
 relative url resolved again from the leg remotes it is about to create, which
-under `--local-remote-dir` are not the GitHub ones `check` resolves from, and
-asked there whether it answers, and
+under `--local-remote-dir` are the bare repositories `check` resolves from
+only when it is given the same `--local-remote-dir` (#417), and asked there
+whether it answers, and
 the place outside the assembly that a symlink kept at a path the shape writes
 leads to asked again of the disk, a climb from its own work directory.
 
@@ -4949,20 +4953,22 @@ RELATIVE_URL_REMEDIATION = (
     "assembly, the leg -- so it must name the same repository from the leg "
     "as from the source. Commit the submodule's absolute url in the source's "
     "`.gitmodules` and re-run `plan`, or `drop` the submodule: its "
-    "registration then stays behind in the leg, inert. `check` resolves it "
-    "from the GitHub remotes the plan's `org:` names and `execute` from the "
-    "remotes it is about to create, before it creates any; under "
-    "`--local-remote-dir` those are bare repositories on disk, where "
-    "`check`'s `plan ok` settles nothing about it.")
+    "registration then stays behind in the leg, inert. `check` and "
+    "`execute` resolve it from the leg remotes `execute` would create: the "
+    "GitHub repositories the plan's `org:` names, or, under "
+    "`--local-remote-dir`, the bare repositories there, which `check` asks "
+    "only when given the same `--local-remote-dir`. `execute` resolves it "
+    "again before it creates any leg.")
 
 
 class _FromTheLeg(str):
     """A FINDING about a RELATIVE url as git resolves it from a leg's
     remote: #190's, and #418's of one that answers nothing there. Under
     `--local-remote-dir` `execute` resolves it from the bare repositories it
-    would create, where `check` resolves it from GitHub's, so its refusal
-    says that the finding is its own (`_as_resolved_here`). A `str`, as
-    `InTheHistory` is, so that every reader takes it as the line it is."""
+    would create, which `check` resolves it from only when given the same
+    `--local-remote-dir` (#417), so its refusal says which `check` prints
+    it (`_as_resolved_here`). A `str`, as `InTheHistory` is, so that every
+    reader takes it as the line it is."""
 
 
 class _Resolution:
@@ -5128,13 +5134,15 @@ def _relative_url_findings(plan: Plan, source: Source, tree: list,
 
     THE LEG'S REMOTE IS THE ONE `execute` WOULD CREATE: under
     `local_remote_dir`, the bare repository there; otherwise the GitHub
-    repository the plan's `org:` and leg name give. `check` takes no
-    `--local-remote-dir`, so it decides on GitHub's, and `execute` decides
-    again on the remotes it is about to create, before it creates any. They
-    are read only when there is a relative url to resolve, and the NOTE
-    says, where `check` resolved them all alike, that it was GitHub's it
-    asked: a plan it passes can still be refused by `execute
-    --local-remote-dir`."""
+    repository the plan's `org:` and leg name give. `check` takes the same
+    `--local-remote-dir` (#417): given the one `execute` is given, it
+    decides on the same remotes, and without one on GitHub's; `execute`
+    decides again on the remotes it is about to create, before it creates
+    any. They are read only when there is a relative url to resolve, and
+    the NOTE says, where `check` resolved them all alike from GitHub's,
+    that it was GitHub's it asked: a plan it passes there can still be
+    refused by `execute --local-remote-dir`, as `check` given the same
+    directory finds."""
     leg, kept = _kept_relative_urls(plan.entries, tree, registered)
     if not kept:
         return [], [], {}
@@ -5167,7 +5175,8 @@ def _relative_url_findings(plan: Plan, source: Source, tree: list,
         f"as from the source: {'; '.join(alike)}. `execute "
         "--local-remote-dir` resolves it again from the bare repository it "
         "would create instead, and refuses there, before it creates any leg, "
-        "a url that names another repository."], from_the_leg
+        "a url that names another repository; `check`, given the same "
+        "`--local-remote-dir`, resolves it there too."], from_the_leg
 
 
 # ---------------------------------------------------------------------------
@@ -5218,8 +5227,9 @@ URL_ANSWERS_NOTHING_REMEDIATION = (
     "`drop` the submodule: its registration then stays behind in the leg, "
     "inert. `check` and `execute` ask, with `git ls-remote`, only a url "
     "that names a repository on this machine's disk; a relative one is "
-    "resolved from the leg's remote, which for `check` is on GitHub and for "
-    "`execute --local-remote-dir` is the bare repository it would create.")
+    "resolved from the leg's remote, which is on GitHub, or, under "
+    "`--local-remote-dir`, the bare repository `execute` would create "
+    "there.")
 #: What `_answers` holds `git ls-remote` to: the disk, and no transport
 #: that could reach a network.
 ON_THIS_DISK_ONLY = {"GIT_ALLOW_PROTOCOL": "file"}
@@ -5296,8 +5306,7 @@ def _first_words(failed: subprocess.CompletedProcess) -> str:
 
 def _unanswered_url_findings(plan: Plan, tree: list,
                              registered: Registrations | str,
-                             from_the_leg: dict[str, tuple[str, str]],
-                             local_remote_dir: Path | None
+                             from_the_leg: dict[str, tuple[str, str]]
                              ) -> tuple[list[str], list[str]]:
     """`(findings, notes)` for the url of each submodule the plan keeps in
     the leg its `.gitmodules` goes to (`_kept_urls`), as that leg resolves
@@ -5306,7 +5315,9 @@ def _unanswered_url_findings(plan: Plan, tree: list,
     tree's order, and the one NOTE `check` prints about those it did not
     ask. `from_the_leg` is `_relative_url_findings`' own: an absolute url
     is its own resolution, and a relative one not in it is that function's
-    finding and is not asked."""
+    finding and is not asked. The NOTE is the same whichever remotes a
+    relative url was resolved from: a url on a network is not asked under
+    `--local-remote-dir` either, and `check` given one names it (#417)."""
     leg, kept = _kept_urls(plan.entries, tree, registered)
     candidates = []
     for path, entry, url in kept:
@@ -5326,7 +5337,7 @@ def _unanswered_url_findings(plan: Plan, tree: list,
         elif said is not None:
             found.append(_answers_nothing(path, entry, leg, url, remote,
                                           there, said))
-    if not unasked or local_remote_dir is not None:
+    if not unasked:
         return found, []
     return found, [
         "NOTE `check` did not ask whether the url of each submodule the "
@@ -5397,7 +5408,7 @@ def _submodule_findings(plan: Plan, source: Source, tree: list,
     moved, notes, from_the_leg = _relative_url_findings(
         plan, source, tree, registered, local_remote_dir)
     unanswered, unasked = _unanswered_url_findings(
-        plan, tree, registered, from_the_leg, local_remote_dir)
+        plan, tree, registered, from_the_leg)
     return ((found, [SUBMODULE_REMEDIATION] if found else []),
             (moved + unanswered,
              ([RELATIVE_URL_REMEDIATION] if moved else [])
@@ -6226,10 +6237,12 @@ def _entry_findings(plan: Plan, source: Source,
     alone, to be refused again for the rest once that was fixed. Composed
     once, the two commands cannot differ about a plan -- but in the two
     places something outside the plan decides it. `local_remote_dir` is
-    `execute`'s, and a relative submodule url is resolved from the leg
-    remotes it names, where `check` has none and resolves from GitHub's
-    (#190). And two things about a symlink AT a shape path are asked of the
-    disk by each command when it runs (#183): whether anything is at the
+    the run's, and a relative submodule url is resolved from the leg
+    remotes it names, and from GitHub's without one (#190): `check` takes
+    the same `--local-remote-dir` as `execute` (#417), so the two differ
+    there only where they are given different ones. And two things about a
+    symlink AT a shape path are asked of the disk by each command when it
+    runs (#183): whether anything is at the
     place outside the assembly it leads to, a climb above the root from its
     own work directory; and whether `git` there checks it out as a symlink at
     all, or as a plain file the shape's copy goes beside. The second is asked
@@ -6394,9 +6407,10 @@ def _entry_findings(plan: Plan, source: Source,
 # cannot disagree about it, as #168 has them agree about every other finding.
 # A branch in the way is `plan-split-branch-taken` in both.
 #
-# WHERE `check` ASKS. It does not know whether `--local-remote-dir` will be
-# passed, so it asks the two places it can see without the network, and each
-# finding says which run it is about: the source's own branches, and, where
+# WHERE `check` ASKS. It does not know whether `execute` will be given
+# `--local-remote-dir`, and its own (#417) is not read here, so it asks the
+# two places it can see without the network, and each finding says which
+# run it is about: the source's own branches, and, where
 # the source's `origin` is the assembly repository, what that remote held
 # when the source last fetched it -- for an `org/repo` source, which
 # `Source.open` clones, when it was cloned. A source branch in the way is
@@ -8242,7 +8256,14 @@ def cmd_check(args) -> int:
     # a split branch the source keeps, and the branch is named first.
     taken, taken_remediation = _check_split_branch(plan, source)
     findings.extend(taken)
-    entry_findings, remediation, notes = _entry_findings(plan, source)
+    # The directory `execute --local-remote-dir` will be given: each relative
+    # submodule url is resolved from the bare repositories that run would
+    # create there, as it resolves them, and from GitHub's without one, and
+    # the topics line below is that run's (#417). Read as `work_dir` is, so
+    # a Namespace made without it has none.
+    local_remote_dir = getattr(args, "local_remote_dir", None)
+    entry_findings, remediation, notes = _entry_findings(plan, source,
+                                                         local_remote_dir)
     findings.extend(entry_findings)
     remediation = taken_remediation + remediation
 
@@ -8264,7 +8285,8 @@ def cmd_check(args) -> int:
         findings.append(f"FINDING {exc.code}: {exc.detail}")
 
     _print_what_will_happen(plan, source, names,
-                            naming.topic_for(plan.project_id))
+                            naming.topic_for(plan.project_id),
+                            local_remote_dir is not None)
 
     seeded = seeded_legs(assigned_paths(plan.entries))
     for line in seeding_warnings(seeded, plan.allowed_empty_legs()):
@@ -9310,7 +9332,8 @@ def _remote_urls(org: str, names: dict, local_remote_dir: Path | None,
                  source: Source) -> dict:
     """The url of each of the three repositories, by role: what `execute`
     pushes to, and what a relative submodule url kept in a leg is resolved
-    from (#190), which `check` asks with no `local_remote_dir`."""
+    from (#190), which `check` asks with the `local_remote_dir` it is given,
+    or none (#417)."""
     if local_remote_dir is None:
         return {role: f"https://github.com/{org}/{name}.git"
                 for role, name in names.items()}
@@ -9423,11 +9446,12 @@ def _refuse_what_check_finds(plan: Plan, source: Source,
 
     BUT FROM THE REMOTES THIS RUN WOULD CREATE (#190). A relative submodule
     url kept in a leg is resolved from that leg's remote, and under
-    `local_remote_dir` that is a bare repository `check` cannot know of: such
-    a finding is this run's own, and the refusal says so. A url `check` finds
-    from GitHub's remotes may name the same repository from these, and one it
-    passes may not; and one these resolve to a repository on this disk is
-    asked whether it answers (#418), which a url on GitHub never is.
+    `local_remote_dir` that is a bare repository `check` resolves it from
+    only when given the same `--local-remote-dir` (#417), and the refusal
+    says so. A url `check` finds from GitHub's remotes may name the same
+    repository from these, and one it passes there may not; and one these
+    resolve to a repository on this disk is asked whether it answers
+    (#418), which a url on GitHub never is.
     """
     findings, remediation, _ = _entry_findings(plan, source, local_remote_dir)
     if not findings:
@@ -9454,17 +9478,16 @@ def _refuse_what_check_finds(plan: Plan, source: Source,
 
 def _as_resolved_here(findings: list[str],
                       local_remote_dir: Path | None) -> str:
-    """What the refusal's first line adds when a finding in it is not one
-    `check` prints: a relative url resolved from `local_remote_dir`'s
-    remotes, where `check` resolves it from GitHub's -- #190's finding, or
-    #418's of one that answers nothing there (`_FromTheLeg`). Nothing
-    otherwise."""
+    """What the refusal's first line adds when a finding in it is one
+    `check` prints only when given this run's `--local-remote-dir` (#417):
+    a relative url resolved from `local_remote_dir`'s remotes -- #190's
+    finding, or #418's of one that answers nothing there (`_FromTheLeg`).
+    Nothing otherwise."""
     if local_remote_dir is None or not any(
             isinstance(finding, _FromTheLeg) for finding in findings):
         return ""
-    return (", but with each relative submodule url resolved from the leg "
-            "remotes this run would create under --local-remote-dir, where "
-            "`check` resolves it from GitHub's")
+    return (" given the same --local-remote-dir, with each relative submodule "
+            "url resolved from the leg remotes this run would create there")
 
 
 def _refuse_unconsented_seeding(args, plan: Plan, seeded: list) -> None:
@@ -10235,7 +10258,8 @@ def cmd_execute(args) -> int:
 # tool's own.
 #
 # THE CLONE URL IS `execute`'S OWN. Under `--local-remote-dir` it is the
-# source's path, and `check` has no such flag to know it will be written.
+# source's path, and `check` does not ask about it: its own
+# `--local-remote-dir` (#417) is not read for it.
 # Against GitHub it is `https://github.com/<org>/<name>.git`, and the path is
 # written nowhere. So `execute` refuses an unwritable one itself, right
 # after `_repository_urls`, and `plan` and `check` still pass a source
@@ -11685,6 +11709,14 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--plan", required=True)
     check.add_argument("--source", default=None,
                        help="override the source the plan names")
+    check.add_argument("--local-remote-dir", type=Path, default=None,
+                       help="the directory `execute --local-remote-dir` will "
+                            "be given (the TEST path): each relative "
+                            "submodule url the plan keeps in a leg is "
+                            "resolved from the bare repository `execute` "
+                            "would create there, as that run resolves it, "
+                            "and not from GitHub's. Nothing is created "
+                            "there.")
     check.add_argument("--work-dir", type=Path, default=None)
     check.set_defaults(func=cmd_check)
 

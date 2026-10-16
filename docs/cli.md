@@ -521,12 +521,20 @@ options:
 
 ```
 usage: adopt-project.py check [-h] --plan PLAN [--source SOURCE]
+                              [--local-remote-dir LOCAL_REMOTE_DIR]
                               [--work-dir WORK_DIR]
 
 options:
-  -h, --help           show this help message and exit
+  -h, --help            show this help message and exit
   --plan PLAN
-  --source SOURCE      override the source the plan names
+  --source SOURCE       override the source the plan names
+  --local-remote-dir LOCAL_REMOTE_DIR
+                        the directory `execute --local-remote-dir` will be
+                        given (the TEST path): each relative submodule url the
+                        plan keeps in a leg is resolved from the bare
+                        repository `execute` would create there, as that run
+                        resolves it, and not from GitHub's. Nothing is created
+                        there.
   --work-dir WORK_DIR
 ```
 
