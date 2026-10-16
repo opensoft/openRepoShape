@@ -350,6 +350,7 @@ def test_an_unloadable_naming_policy_cannot_answer_for_a_compliant_project(
     assert "tab used for indentation; that file is" in row["reason"], row
     assert row["reason"].endswith(NOT_THE_PROJECTS_FILE), row
     assert "naming policy is not satisfied" not in row["reason"], row
+    assert ", not to the project: repair it there" in row["why"], row
     assert result.returncode == 3, result.stdout + result.stderr
     assert payload["verdict"].startswith("CANNOT ANSWER (naming: "), payload
     module = doctor_module(standard)
@@ -390,6 +391,8 @@ def test_an_unloadable_naming_policy_leaves_a_directory_not_a_shape_root(
         "yaml-unparsable: "), row
     assert row["reason"].endswith(NOT_THIS_DIRECTORYS_FILE), row
     assert command_of(row)[-3:] == ["--explain", "--", "Atlas"], row["next"]
+    assert ", not to this directory: repair it there" in row["why"], row
+    assert "project" not in row["why"], row
     text = doctor(here, away)
     assert text.returncode == 2, text.stdout + text.stderr
     assert "NOT A SHAPE ROOT   (exit 2)" in text.stdout, text.stdout
@@ -433,31 +436,40 @@ def naming_script_says(standard: Path, tmp_path: Path, said: str) -> tuple:
     return here, said
 
 
+@pytest.mark.parametrize("said", [
+    pytest.param("REFUSED naming-no-target: no names given.", id="no-target"),
+    #: The policy's path is IN the line, past a prefix: a project whose own
+    #: path holds this checkout's. `naming_script_refusal` reads where the
+    #: detail STARTS, so this is not the checkout's file.
+    pytest.param("REFUSED manifest-unreadable: /nested{policy}/project.yaml: "
+                 "not a mapping", id="policy-path-inside-another"),
+])
 def test_an_exit_2_about_something_else_is_a_refusal_and_not_a_finding(
-        standard, project, tmp_path):
+        standard, project, tmp_path, said):
     """Any exit 2 that is not this checkout's policy is worded "refuses (exit
     2)", the verb `validator_row` picks, and never "is not satisfied", which
     is a finding's. It is still the project's or the name's: no
     `detail.environment`, so a root stays `INVALID (naming)`, exit 1, and a
     directory that is not a root stays NOT A SHAPE ROOT, exit 2.
     """
-    here, said = naming_script_says(
-        standard, tmp_path, "REFUSED naming-no-target: no names given.")
-    refuses = f"the standard's {NAMING_SCRIPT} refuses (exit 2): {said}"
+    here, said = naming_script_says(standard, tmp_path, said)
+    # The row quotes the script's line cut at 200 characters, and a path in a
+    # temporary directory can be most of that: its start is what is held.
+    start = f"the standard's {NAMING_SCRIPT} refuses (exit 2): {said[:60]}"
     result = doctor(here, project.resolve(), "--json")
     row = rows_of(result)["naming"]
     assert result.returncode == 1, result.stdout + result.stderr
     assert payload_of(result)["verdict"].startswith("INVALID ("), result.stdout
     assert "environment" not in row["detail"], row
     assert row["detail"]["exit"] == 2, row
-    assert row["reason"] == refuses, row
+    assert row["reason"].startswith(start), row
     away = tmp_path / "elsewhere" / "Atlas"
     away.mkdir(parents=True)
     result = doctor(here, away, "--json")
     row = rows_of(result)["naming"]
     assert result.returncode == 2, result.stdout + result.stderr
     assert "environment" not in row["detail"], row
-    assert row["reason"] == f"Atlas: {refuses}", row
+    assert row["reason"].startswith(f"Atlas: {start}"), row
 
 
 def test_a_refusal_naming_the_checkouts_policy_file_cannot_answer(
@@ -492,10 +504,12 @@ def test_a_naming_policy_that_raises_is_the_scripts_crash_not_the_doctors(
         standard, project, tmp_path):
     """A policy `NamingPolicy.load` does not REFUSE but raises on (a pattern
     `re.compile` will not take) is the script's crash, #410's, which the row
-    already says: CANNOT ANSWER, exit 3, with `detail.crashed`. The doctor
-    asks the loader first and in process, so it must not die of it: the
-    exception is the script's to raise, and the row is the crash row, not a
-    traceback with the exit code of a finding."""
+    already says: CANNOT ANSWER, exit 3, with `detail.crashed`. In a root the
+    doctor asks the loader first and in process, so it must not die of it
+    there: the exception is the script's to raise, and the row is the crash
+    row, not a traceback with the exit code of a finding. A directory that is
+    NOT a root is not asserted: `way_in_project` loads the same policy
+    unguarded and ends the doctor in that traceback (#707)."""
     here = standard_under(standard, tmp_path, "naming-policy-raises")
     policy = here / NAMING_POLICY
     body = policy.read_bytes()

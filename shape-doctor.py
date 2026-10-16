@@ -279,17 +279,24 @@ invents a rule to fail somebody by is not believed the next time.
 EXIT CODES
     0  COMPLIANT: every row ok and the shape is current
     1  findings: the shape is behind, a copy has drifted, a validator is red,
-       a leg is off its pin, a manifest is there and does not load, the index
-       holds an unmerged path (`INVALID (merge)`, #424), or a tracked path
-       sits in a leg the path policy puts elsewhere -- or, for a submodule, a
-       leg other than the one `project.yaml` records for it (#189) --
-       COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID
+       a leg is off its pin, a manifest is there and does not load, or a
+       tracked path sits in a leg the path policy puts elsewhere -- or, for a
+       submodule, a leg other than the one `project.yaml` records for it
+       (#189) -- COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID. INVALID
+       names each red row, and the rows it names are: `merge`, the index
+       holds an unmerged path (#424); `naming`, `manifest`, `pins` and
+       `family`, the gates; `manifest-kinds`, a `kind:`-bearing manifest
+       nothing here validates, in a root that never runs its gate or at a
+       path no gate reads (#327, #439); `agent-files`, a pinned agent file
+       that is gone; and any other row that is a FINDING
     2  NOT A SHAPE ROOT: neither `project.yaml` nor `family.yaml` is there
     3  usage or environment -- nothing here is a statement about the tree
        that was pointed at: no such root, this file is not sitting in a
        checkout of the standard, or THIS CHECKOUT cannot answer (a pin
-       naming a commit it does not carry, or its own naming policy not
-       loading, #678)
+       naming a commit it does not carry; a validator of its own that
+       crashed or cannot be given its `PYTHONPATH`, its template copy or its
+       naming script, #278, #410; or its own naming policy not loading,
+       #678)
 
 THE VERDICT NAMES THE MOST SPECIFIC FINDING; THE TABLE NAMES EVERY ONE. Drift
 outranks a red validator on that line for one concrete reason: an edited shape
@@ -2141,16 +2148,19 @@ def naming_script_refusal(shape: Path, whole: str) -> Refusal | None:
     (#678).
 
     A line is that script's `str(Refusal)`, `REFUSED <code>: <detail>`, and
-    `detail` opens with the path the loader was given, so the file is named
-    where the line holds this checkout's own. A `REFUSED` that names anything
-    else -- the project's `project.yaml`, a flag -- is about what the script
-    was asked and is not this.
+    the `detail` of a refusal about a file STARTS with the path the loader
+    was given, so the file is this checkout's where the detail starts with
+    its path and `: `. A path found anywhere else in a line is not that
+    file: a project whose own path holds this checkout's, a flag, the
+    `project.yaml` the script was asked to read -- each is about what the
+    script was asked, and is not this.
     """
-    policy = str(shape / NAMING_COPY)
+    policy = f"{shape / NAMING_COPY}: "
     for line in (line.strip() for line in whole.splitlines()):
-        if line.startswith("REFUSED ") and policy in line:
+        if line.startswith("REFUSED "):
             code, _, detail = line.removeprefix("REFUSED ").partition(": ")
-            return Refusal(code, detail)
+            if detail.startswith(policy):
+                return Refusal(code, detail)
     return None
 
 
@@ -2185,13 +2195,13 @@ def naming_refuses_words(code: int, quoted: str) -> str:
 
 
 def naming_row_subject(names: list[str] | None) -> tuple:
-    """`(lead, whose, about)`: how a `naming` row that is about the
-    checkout's script or file says whose it is and what it is not saying
-    anything about -- the project's, in a root; given the `names`, this
-    directory's (#410, #678)."""
+    """`(lead, owner, about)`: how a `naming` row about the checkout's own
+    script or file says what it does not belong to and what it is not saying
+    anything about -- the project, in a root; given the `names`, this
+    directory (#410, #678)."""
     if names is None:
-        return "", "the project's", "the project"
-    return f"{', '.join(names)}: ", "this directory's", "what it is called"
+        return "", "the project", "the project"
+    return f"{', '.join(names)}: ", "this directory", "what it is called"
 
 
 def naming_policy_row(refusal: Refusal, command: str, detail: dict,
@@ -2218,14 +2228,14 @@ def naming_policy_row(refusal: Refusal, command: str, detail: dict,
     """
     detail["environment"] = True
     detail["refusal"] = {"code": refusal.code, "detail": refusal.detail}
-    lead, whose, about = naming_row_subject(names)
+    lead, owner, about = naming_row_subject(names)
     mend = ("the file belongs to the checkout of the standard this command is "
-            "run from and not to the project: repair it there, or run the "
-            "doctor from a clone of the standard whose own copy loads")
+            f"run from, not to {owner}: repair it there, or run the doctor "
+            "from a clone of the standard whose own copy loads")
     return Row("naming", "naming", FINDING,
                f"{lead}the standard's {NAMING_COPY} does not load: "
                f"{refusal_line(refusal)}; that file is this checkout's, not "
-               f"{whose}, so nothing here is a statement about {about}",
+               f"{owner}'s, so nothing here is a statement about {about}",
                command, detail,
                why=" ".join(filter(None, (remedy_as_why(refusal), mend))))
 
@@ -2249,11 +2259,11 @@ def naming_crashed_row(code: int, crash: str, command: str, detail: dict,
     """
     detail["crashed"] = True
     detail["environment"] = True
-    lead, whose, about = naming_row_subject(names)
+    lead, owner, about = naming_row_subject(names)
     return Row("naming", "naming", FINDING,
                f"{lead}the standard's {NAMING_SCRIPT} "
                f"crashed before reaching a verdict (exit {code}): {crash}; "
-               f"that script is this checkout's, not {whose}, so nothing "
+               f"that script is this checkout's, not {owner}'s, so nothing "
                f"here is a statement about {about}", command, detail,
                why=CRASH_WHY)
 
