@@ -2815,29 +2815,9 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
             # confident tone (#217).
             capture_output=True, text=True, encoding="utf-8", check=False)
     except FileNotFoundError as exc:
-        raise Refusal(
-            "gh-not-found",
-            f"the `gh` CLI is not on PATH, so `gh api` cannot read "
-            f"{repository} @ {commit}: {exc}",
-            "Remediation: pass --pin-source <a local clone of that "
-            "repository> to compute the digest with no network at all, or "
-            "put `gh` on PATH and run this again (`openRepoShape "
-            "--preflight` names each missing prerequisite and offers to "
-            "install it, on a typed yes).",
-        ) from exc
+        raise _gh_not_on_path(repository, commit, exc) from exc
     if proc.returncode != 0:
-        raise Refusal(
-            "pin-unreadable",
-            f"`gh api` could not read {repository} @ {commit}: "
-            f"{proc.stderr.strip()}",
-            "Remediation: check the commit exists in that repository and that "
-            "`gh auth status` can see it. An unqualified --pin resolves under "
-            f"{NEUTRAL_PRODUCT_OWNER} by default (never the project's own "
-            "--org) — if this product actually lives under a different "
-            "owner, name it explicitly with --pin <owner>/<openProduct>@<sha> "
-            "or --pin-owner <owner>. You can also pass --pin-source <local "
-            "clone> to compute the digest with no network at all.",
-        )
+        raise _gh_could_not_read(repository, commit, proc.stderr.strip())
     try:
         payload = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
@@ -2861,6 +2841,194 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
         digest.update(record)
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def _gh_not_on_path(repository: str, commit: str,
+                    exc: FileNotFoundError) -> Refusal:
+    """`gh-not-found`, for a pin the forge was to be asked about: what
+    each `gh` read here refuses with when `subprocess` finds no `gh`."""
+    return Refusal(
+        "gh-not-found",
+        f"the `gh` CLI is not on PATH, so `gh api` cannot read "
+        f"{repository} @ {commit}: {exc}",
+        "Remediation: pass --pin-source <a local clone of that "
+        "repository> to compute the digest with no network at all, or "
+        "put `gh` on PATH and run this again (`openRepoShape "
+        "--preflight` names each missing prerequisite and offers to "
+        "install it, on a typed yes).")
+
+
+def _gh_could_not_read(repository: str, commit: str, why: str) -> Refusal:
+    """`pin-unreadable`, for a pin the forge did not answer for: what
+    each `gh` read here refuses with, `why` being what `gh` said."""
+    return Refusal(
+        "pin-unreadable",
+        f"`gh api` could not read {repository} @ {commit}: {why}",
+        "Remediation: check the commit exists in that repository and that "
+        "`gh auth status` can see it. An unqualified --pin resolves under "
+        f"{NEUTRAL_PRODUCT_OWNER} by default (never the project's own "
+        "--org) — if this product actually lives under a different "
+        "owner, name it explicitly with --pin <owner>/<openProduct>@<sha> "
+        "or --pin-owner <owner>. You can also pass --pin-source <local "
+        "clone> to compute the digest with no network at all.")
+
+
+# ---------------------------------------------------------------------------
+# What a pin's id names: an annotated tag's own id is peeled (#651)
+# ---------------------------------------------------------------------------
+#
+# `git rev-parse v1.2` prints a release tag's OWN id, 40 hex, so `PIN_ARG_RE`
+# takes it, and nothing after that asked what it was. `tree_digest` reads it
+# with `git ls-tree`, which peels a tag to its tree, so the digest was the
+# commit's, and `--pin openGlass@<the tag's id>` wrote the TAG's id as the
+# pin's `commit:`, under the pin file's own `revision_kind: commit` and "A
+# COMMIT, NEVER A TAG": in the scaffold, its `--dry-run` and `adopt-project.py
+# plan` alike. The root's `validate-pins.py` passed it, for the same reason,
+# and a tree's id went the same way.
+#
+# PEELED, as `bump-leg.py --to` (#534), `family.py add --at` and `family.py
+# bump --to` (#541, Brett Heap's ruling of 2026-10-14) peel one. A tag
+# object's id fixes its content, so it names one commit for ever and, unlike
+# a tag NAME, cannot be moved: it is as exact a pin as that commit. One line
+# says so, and every value after it, the digest, the plan and the pin file,
+# is the commit's. A tree, a blob or a tag of either names no commit at all,
+# and is refused `pin-not-a-commit`, naming which, in `bump-leg.py`'s words.
+#
+# ASKED WHERE THE DIGEST IS READ: `git cat-file -t` in the `--pin-source`
+# clone, or, with none, the forge's own GraphQL `object(oid:)`, whose
+# `__typename` names the same four kinds; a tag of a tag is followed to the
+# end. `adopt-project.py check` asks the clone `plan` read a digest from the
+# same question (`commit_in_clone`).
+
+#: What `git cat-file -t` calls the one kind a pin may name, and the one
+#: that is peeled to it.
+COMMIT_KIND, TAG_KIND = "commit", "tag"
+#: The forge's GraphQL `__typename` for each kind `git cat-file -t` names.
+GH_KINDS = {"Commit": COMMIT_KIND, "Tag": TAG_KIND, "Tree": "tree",
+            "Blob": "blob"}
+#: A whole object id, as the forge spells the one a tag names.
+OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}")
+#: What the forge is asked about a pin's id: what kind of object it is, and
+#: for a tag, the kind and id of what the tag names.
+GH_OBJECT_QUERY = (
+    "query($owner: String!, $name: String!, $oid: GitObjectID!) "
+    "{ repository(owner: $owner, name: $name) { object(oid: $oid) "
+    "{ __typename ... on Tag { target { __typename oid } } } } }")
+#: What `pin-not-a-commit` tells a person to pass instead.
+PIN_NOT_A_COMMIT_REMEDIATION = (
+    "Remediation: pass a commit -- `git log --format=%H` in a clone of the "
+    "product lists them -- or an annotated tag of one, whose own id is "
+    "peeled to the commit it names, as `bump-leg.py --to` peels one. A "
+    "tree's or a blob's id is part of a commit and never one, and a pin is "
+    "a commit or it is nothing.")
+
+
+def not_a_commit(kind: str, names: str | None) -> str:
+    """How an id that names no commit is said (#651), in `bump-leg.py`'s
+    words: `names a tree`, `is an annotated tag of a blob`, or `is an
+    annotated tag that names no commit`. `kind` is what the id is, and
+    `names` what the last tag it leads through names, if anything."""
+    if kind != TAG_KIND:
+        return f"names a {kind}"
+    if names in ("tree", "blob"):
+        return f"is an annotated tag of a {names}"
+    return "is an annotated tag that names no commit"
+
+
+def _git_answer(clone: Path, *args: str) -> str | None:
+    """What `git <args>` prints in `clone`, or None where it fails or
+    `subprocess` cannot enter `clone` at all."""
+    try:
+        proc = subprocess.run(["git", *args], cwd=str(clone),
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
+                              check=False)
+    except OSError:
+        return None
+    return (proc.stdout.strip() or None) if proc.returncode == 0 else None
+
+
+def commit_in_clone(clone: Path, oid: str) -> tuple[str, str]:
+    """`(commit, "")` for the commit `oid` names in the clone at `clone`
+    (#651): `oid` itself, or the commit an annotated tag's own id names,
+    peeled through a tag of a tag (`<id>^{}`). `(oid, why)` for an id that
+    names no commit, `why` as `not_a_commit` says it. And `(oid, "")` where
+    the clone cannot say, no object with that id or no clone there, which
+    the digest's reader then names in its own words
+    (`pin-source-unreadable`)."""
+    kind = _git_answer(clone, "cat-file", "-t", oid)
+    if kind in (None, COMMIT_KIND):
+        return oid, ""
+    names = None
+    if kind == TAG_KIND:
+        peeled = (_git_answer(clone, "rev-parse", "-q", "--verify",
+                              f"{oid}^{{}}") or "").lower()
+        names = (_git_answer(clone, "cat-file", "-t", peeled) if peeled
+                 else None)
+        if names == COMMIT_KIND:
+            return peeled, ""
+    return oid, not_a_commit(kind, names)
+
+
+def _gh_object(repository: str, commit: str, oid: str) -> dict:
+    """What the forge says `oid` is in `repository`, through `gh api
+    graphql`: `{"__typename": ..., "target": ...}`. A forge that cannot
+    answer, holds no such object, or answers with no kind this reads, is
+    `pin-unreadable` for the pin `commit`, as `pin_digest_from_gh` refuses
+    one; no `gh` on PATH is its `gh-not-found`."""
+    owner, name = repository.split("/", 1)
+    try:
+        proc = subprocess.run(
+            ["gh", "api", "graphql", "-f", f"query={GH_OBJECT_QUERY}",
+             "-f", f"owner={owner}", "-f", f"name={name}", "-f", f"oid={oid}"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except FileNotFoundError as exc:
+        raise _gh_not_on_path(repository, commit, exc) from exc
+    if proc.returncode != 0:
+        raise _gh_could_not_read(repository, commit, proc.stderr.strip())
+    try:
+        found = json.loads(proc.stdout)["data"]["repository"]["object"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise _gh_could_not_read(
+            repository, commit,
+            f"its answer about {oid} holds no `data.repository.object` "
+            f"({exc!r})") from exc
+    if found is None:
+        raise _gh_could_not_read(
+            repository, commit,
+            f"the forge holds no object {oid} in {repository}")
+    if not isinstance(found, dict) or found.get("__typename") not in GH_KINDS:
+        raise _gh_could_not_read(
+            repository, commit,
+            f"its answer about {oid} names no kind of object: {found!r}")
+    return found
+
+
+def commit_on_forge(repository: str, oid: str) -> tuple[str, str]:
+    """`commit_in_clone`'s answer, asked of the forge (#651): `(commit,
+    "")` for the commit `oid` names in `repository`, itself or the one its
+    annotated tags lead to, or `(oid, why)` for an id that names none. Each
+    tag in a tag of a tag is one more question; a tag that names a commit,
+    a tree or a blob is answered by the question that found it."""
+    found = _gh_object(repository, oid, oid)
+    kind = GH_KINDS[found["__typename"]]
+    names, seen = kind, {oid}
+    while names == TAG_KIND:
+        target = found.get("target")
+        target = target if isinstance(target, dict) else {}
+        peeled = str(target.get("oid") or "").lower()
+        names = GH_KINDS.get(target.get("__typename"))
+        if OBJECT_ID_RE.fullmatch(peeled) is None or peeled in seen:
+            names = None
+        elif names == COMMIT_KIND:
+            return peeled, ""
+        elif names == TAG_KIND:
+            seen.add(peeled)
+            found = _gh_object(repository, oid, peeled)
+    if kind == COMMIT_KIND:
+        return oid, ""
+    return oid, not_a_commit(kind, names)
 
 
 #: How a pin file says its digest was read (`digest_source:`): from a clone
@@ -2895,10 +3063,16 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
     values, `local-clone (<path>)`, so that `check` recomputes the digest in
     that clone (#449): the plan is a file on that machine, which nothing
     commits, and `execute` writes the pin file's field as this says it.
+
+    THE COMMIT IS THE ONE THE ID NAMES (#651), asked where the digest is
+    read, before it is (`_pinned_commit`): an annotated tag's own id is
+    peeled to its commit, and a tree's, a blob's or a tag of either is
+    refused `pin-not-a-commit`.
     """
     pins: dict[str, dict[str, str]] = {}
     for raw in args.pin:
         product, repository, commit = parse_pin(raw, args.pin_owner)
+        commit = _pinned_commit(args, raw, repository, commit)
         if args.pin_source is not None:
             digest = pin_digest_from_source(
                 _resolved_pin_source(args.pin_source), commit, repository)
@@ -2914,6 +3088,30 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
             "PIN_DIGEST_SOURCE": digest_source,
         }
     return pins
+
+
+def _pinned_commit(args, raw: str, repository: str, typed: str) -> str:
+    """The commit the `--pin` `raw`, whose id is `typed`, pins (#651), asked
+    where `declared_pin_values` reads its digest: in the `--pin-source`
+    clone, or of the forge. A peeled tag is said in one line on stdout, as
+    `bump-leg.py` says one, before the plan either tool prints; an id that
+    names no commit is `pin-not-a-commit`, before any digest is read, and
+    so before the scaffold creates anything or `plan` writes a plan."""
+    if args.pin_source is not None:
+        clone = _resolved_pin_source(args.pin_source)
+        commit, why = commit_in_clone(clone, typed)
+        where = f"the clone at {shown_source(clone)}"
+    else:
+        commit, why = commit_on_forge(repository, typed)
+        where = f"{repository} on the forge"
+    if why:
+        raise Refusal("pin-not-a-commit",
+                      f"--pin {raw.strip()} {why} in {where}, not a commit",
+                      PIN_NOT_A_COMMIT_REMEDIATION)
+    if commit != typed:
+        print(f"--pin {repository} @ {typed[:12]} is an annotated tag; it "
+              f"names commit {commit[:12]}, which is what the pin records")
+    return commit
 
 
 def declared_pin_products(args) -> dict[str, None]:

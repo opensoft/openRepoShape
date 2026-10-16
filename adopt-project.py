@@ -286,12 +286,15 @@ PATH_POLICY = SHAPE_ROOT / "contracts" / "path-classification.yaml"
 #: nothing commits, records where that clone is, `local-clone (<path>)`
 #: (`_as_planned`); the pin file `execute` commits says only how the digest
 #: was read, `local-clone` or `gh-api-tree-recursive`, and never where
-#: (`_recorded_pins`, #540).
+#: (`_recorded_pins`, #540). The commit `plan` records is the one the id
+#: names: an annotated tag's own id is peeled, and any other id that names
+#: no commit refused, and `check` asks the same clone that question
+#: (`commit_in_clone`, #651).
 from shape_materialize import (  # noqa: E402
-    DIGEST_FROM_CLONE, DIGEST_FROM_GH, PIN_ARG_RE, declared_pin_products,
-    declared_pin_values, neutral_pin_path, one_printable_line,
-    pin_collisions, pin_digest_from_source, pin_source_path,
-    pin_variable_collisions, refuse_an_unread_pin_source,
+    DIGEST_FROM_CLONE, DIGEST_FROM_GH, PIN_ARG_RE, commit_in_clone,
+    declared_pin_products, declared_pin_values, neutral_pin_path,
+    one_printable_line, pin_collisions, pin_digest_from_source,
+    pin_source_path, pin_variable_collisions, refuse_an_unread_pin_source,
     refuse_colliding_pins,
 )
 #: How `plan`'s refusals of a `--pin-source` begin their remediation.
@@ -316,9 +319,11 @@ PIN_MALFORMED = "plan-pin-malformed"
 PIN_COLLIDES = "plan-pin-collides"
 ROOT_HOLDS_PIN = "plan-root-holds-pin"
 #: And about a pin the clone `plan` read its digest from answers for
-#: otherwise, or cannot answer for at all, at the plan's commit (#449).
+#: otherwise, or cannot answer for at all, at the plan's commit (#449), or
+#: holds as something other than a commit (#651).
 PIN_DIGEST_MISMATCH = "plan-pin-digest-mismatch"
 PIN_SOURCE_UNREADABLE = "plan-pin-source-unreadable"
+PIN_NOT_A_COMMIT = "plan-pin-not-a-commit"
 #: How `plan` records where it read a digest (`_as_planned`): from a clone on
 #: this machine, `--pin-source` as typed, or from the forge.
 LOCAL_CLONE_RE = re.compile(r"local-clone \((?P<path>.+)\)")
@@ -551,11 +556,20 @@ def _recorded_pins(plan: "Plan") -> dict[str, dict[str, str]]:
 
 def _pin_files(plan: "Plan") -> list[tuple[str, str | None]]:
     """`(path, product)` for each pin file `execute` writes, in the order
-    `place` writes them: each declared pin's, once, then the shape's own
-    pin, whose product is None (#524)."""
-    return [*((neutral_pin_path(product), product)
-              for product in dict.fromkeys(_declared_pins(plan))),
-            (SHAPE_PIN, None)]
+    `place` writes them: each declared pin's, then the shape's own pin,
+    whose product is None (#524).
+
+    EACH PATH ONCE (#651, L1-06 of #457). Two declared pins at one file,
+    `openGlass` and `OpenGlass`, or one whose file is the shape's own pin,
+    a product named `Shape`, are `plan-pin-collides`; a path the root keeps
+    there was named by `plan-root-holds-pin` once for each pin, two lines
+    for one file. The file is the first pin's, and the shape's own where it
+    is the shape's pin, which `execute` writes there whatever is declared."""
+    files: dict[str, str | None] = {}
+    for product in _declared_pins(plan):
+        files.setdefault(neutral_pin_path(product), product)
+    files.pop(SHAPE_PIN, None)
+    return [*files.items(), (SHAPE_PIN, None)]
 
 
 def _kept_pin_findings(plan: "Plan", tree: list) -> list[str]:
@@ -699,7 +713,7 @@ def _a_partial_clone(clone: Path) -> bool:
     config, with no network. A path that is no clone is not one."""
     try:
         proc = subprocess.run(
-            ["git", "config", "--local", "--get-regexp",
+            ["git", GIT_CONFIG, "--local", "--get-regexp",
              r"^(extensions\.partialclone|remote\..*\.promisor)$"],
             cwd=str(clone), capture_output=True, check=False)
     except OSError:
@@ -739,11 +753,28 @@ def _why_not_rechecked(how: str) -> str | None:
 def _recomputed_pin_finding(said: str, values: dict) -> str | None:
     """The FINDING for a pin whose digest the clone `plan` read it from,
     still at its path, recomputes otherwise at the plan's commit or cannot
-    recompute there, with `plan`'s own reader; None where it recomputes."""
+    recompute there, with `plan`'s own reader; None where it recomputes.
+
+    THE COMMIT IS ASKED FIRST, as `plan` asks it (#651): a recorded id the
+    clone holds as an annotated tag, a tree or a blob is
+    `plan-pin-not-a-commit`. A tag's digest recomputes, because `git
+    ls-tree` peels it, so a plan whose `commit:` was a tag's id, written by
+    a `plan` from before #651 or edited in, checked ok and `execute` wrote
+    that id under the pin file's `revision_kind: commit`."""
     clone = _recorded_clone(values["PIN_DIGEST_SOURCE"])
     repository, commit, recorded = (values["PIN_REPOSITORY"],
                                     values["PIN_COMMIT"],
                                     values["PIN_TREE_SHA256"])
+    named, why = commit_in_clone(Path(clone), commit)
+    if why or named != commit:
+        return (f"FINDING {PIN_NOT_A_COMMIT}: {said} records `commit: "
+                f"{commit}`, which "
+                f"{why or f'is an annotated tag of commit {named}'} in the "
+                f"clone `plan` read its digest from, {_shown(clone)}"
+                f"{_read_from_here(clone)}, not a commit. The pin file "
+                "`execute` writes from it says `revision_kind: commit`, and "
+                "`plan` records the commit an annotated tag names and "
+                f"refuses an id that names none: {_pin_fix(repository)}.")
     try:
         actual = pin_digest_from_source(Path(clone), commit, repository)
     except Refusal as exc:
@@ -4773,7 +4804,14 @@ def _root_shape_findings(plan: Plan, tree: list) -> list[str]:
     first shape path it blocks and counting the rest. Asked of a disk that
     keeps case and then of one that ignores it; a finding the first disk
     already made is not made again, and one only the second makes says so,
-    and so does a copy only the second writes."""
+    and so does a copy only the second writes.
+
+    THE COPY OF THE SHAPE'S PIN IS NOT ASKED where the root holds the pin
+    itself (#651, L1-07 of #457). That is #524's `plan-root-holds-pin`
+    (`_kept_pin_findings`), and the copy under `shape/` is only its
+    consequence: with the kept path gone, the shape writes its pin at its
+    own path and nothing at the copy's. A path kept at the copy as well was
+    a second finding, `plan-root-blocks-shape-copy`, for one cause."""
     kept = _kept_in_root(plan.entries, tree)
     if not kept:
         return []
@@ -4785,7 +4823,9 @@ def _root_shape_findings(plan: Plan, tree: list) -> list[str]:
     blocked: dict[tuple, tuple[list, list, list, list]] = {}
     for disk in (keeps_case, _KeptTree(kept, fold=True)):
         for code, rel, copy, group, rows in _shape_blocks(disk):
-            if (code, rel, group) in seen:
+            if (code, rel, group) in seen or (
+                    code == ROOT_BLOCKS_COPY and rel == SHAPE_PIN
+                    and _holds_a_pin(disk, rel)):
                 continue
             seen.add((code, rel, group))
             rels, copies, _, folded = blocked.setdefault(
