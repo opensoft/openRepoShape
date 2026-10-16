@@ -12,9 +12,9 @@ name: tests
 # below runs the launcher's and the installer's suites, and nothing else, on
 # Windows under Git Bash.
 #
-# The `package` job at the end is the one job that reaches PyPI, and it runs
-# no pytest: building the openreposhape wheel and installing it with pipx
-# need the build backend and git-filter-repo from there (#563).
+# The `package` job at the end runs no pytest. It builds the openreposhape
+# wheel and installs it with pipx, so what it checks needs PyPI (the build
+# backend, git-filter-repo; #563). The other jobs take only test tools there.
 
 on:
   push:
