@@ -34,7 +34,6 @@ so there the record stays empty whatever happens). The end-to-end tests need
 
 from __future__ import annotations
 
-import errno
 import importlib.util
 import json
 import os
@@ -50,7 +49,8 @@ import pytest
 from conftest import (ADOPT, REPO, SCAFFOLD, SYNTHETIC_TREE, WINDOWS_SKIP,
                       as_human, cloned_just_pushed, findings, git,
                       make_source_repo, planned, refused_before_any_leg,
-                      resolve, rmtree, run_script)
+                      resolve, rmtree, run_script,
+                      skip_where_a_name_cannot_be_not_utf_8)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -853,22 +853,6 @@ def test_a_pin_source_check_would_refuse_is_refused_by_plan(
 #: The leaf of each `--pin-source` below, spelled so that a plan, a report
 #: and a refusal can be searched for it: none holds the word otherwise.
 UNREAD = "unreadclone"
-
-
-def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
-    """Skip, as `POSIX_NAMES` skips on Windows, on a filesystem that refuses
-    a file name that is not UTF-8: macOS answers EILSEQ ("Illegal byte
-    sequence"), so no clone can sit at such a path there. Asked of a
-    directory made under `directory`; any other error is the test's own."""
-    probe = directory / "probe\udcff"
-    try:
-        probe.mkdir()
-    except OSError as exc:
-        if exc.errno != errno.EILSEQ:
-            raise
-        pytest.skip("needs a file name that is not UTF-8, which this "
-                    "filesystem refuses (EILSEQ)")
-    probe.rmdir()
 
 
 @pytest.mark.parametrize("name, reason", [
