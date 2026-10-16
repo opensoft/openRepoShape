@@ -28,7 +28,15 @@ WHAT IT DOES, in order:
       branch is at the pin, behind it, ahead of it or not there at all, and
       whatever the branch or `origin` holds: a commit made there is on no
       branch, and a checkout would leave it only in the reflog, so bootstrap
-      says where the leg is instead. A branch no command can be given (a NUL,
+      says where the leg is instead, and so is one whose HEAD is on a ref
+      outside `refs/heads/`, where a commit lands on that ref (#704). A leg
+      with a merge, a cherry-pick, a revert, a rebase or an `am` in progress
+      is not moved at all: a checkout ends the first three, carrying what
+      they staged onto the branch, and leaves the last two to go on over
+      it, so the line names the operation and the commands that finish or
+      abort it (#704). A move git would make over an IGNORED file at a path
+      the pin tracks is refused, in git's words, as one over an untracked
+      file is. A branch no command can be given (a NUL,
       or a lone surrogate this system cannot encode) is never tried: the leg
       is left as it is and the line says why (#455); step (b)'s manifest
       validator names the key when the manifest holds it. Advancing a pin
@@ -51,7 +59,8 @@ WHAT IT DOES, in order:
       wallet-carried authority is not misconfigured, and a bootstrap that
       failed there would have made the layout load-bearing again.
 
-  (d) EXITS 0 unless a validator failed.
+  (d) EXITS 0 unless a validator failed, and 2 where git cannot be run,
+      refused `git-not-runnable` as the validators refuse it (#694).
 
 SCHEMA-NEUTRAL BY CONTRACT. A one-repository project runs the same command:
 step (a) is a no-op where there are no submodules, and steps (c) and (d) are
@@ -68,6 +77,8 @@ import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -96,6 +107,23 @@ REMOTE_TRACKING = "refs/remotes/"
 NOTHING_ELSE = ("          nothing else is tried; the recorded pin is "
                 "authoritative. Deal with what git said and run bootstrap "
                 "again.")
+#: What a leg's git dir holds while git has an operation in progress there,
+#: each with what step (a) calls it and the command that ends it, asked in
+#: this order (#704): the two rebases first, as git's own `status` asks
+#: them, since a pick a rebase stops on is the rebase's to finish or abort.
+IN_PROGRESS = (
+    ("rebase-apply/applying", "an `am`", "am"),
+    ("rebase-apply", "a rebase", "rebase"),
+    ("rebase-merge", "a rebase", "rebase"),
+    ("MERGE_HEAD", "a merge", "merge"),
+    ("CHERRY_PICK_HEAD", "a cherry-pick", "cherry-pick"),
+    ("REVERT_HEAD", "a revert", "revert"),
+)
+#: The remedy of the `git-not-runnable` refusal (#694).
+GIT_NOT_RUNNABLE = (
+    "Remediation: put git on PATH and run this again. Step (a) reads each "
+    "leg's pin and moves the leg through git, and the validators read the "
+    "pins through git, so without it nothing here can be placed or checked.")
 REGISTER_RELPATH = Path("governance") / "review-authority" / "register.yaml"
 VALIDATORS = (
     ("naming", ["scripts/validate-repository-naming.py", "--project",
@@ -120,6 +148,32 @@ def _try_git(args: list[str], cwd: Path) -> str | None:
         return git_out(args, cwd=cwd)
     except Refusal:
         return None
+
+
+@contextmanager
+def _git_runs(unread: str) -> Iterator[None]:
+    """`git-not-runnable`, exit 2, where git could not be STARTED in the
+    block (#694), with `unread` saying what was being done.
+
+    `git_out` and `_git_says` raise `OSError` then, and nothing here caught
+    it: `make bootstrap` with no git on PATH ended in a `FileNotFoundError`
+    traceback, exit 1, which is `bootstrap FAILED`'s code. The code and the
+    words are the validators'. Which `OSError` is git's is read as
+    `validate-pins.py` reads it, by NAME: one whose `filename` is `git`, or
+    a nameless `FileNotFoundError` or `PermissionError`, which is what
+    Windows raises for a program it cannot start. An error that names a
+    directory, which `subprocess` raises for a `cwd` it cannot enter, is
+    not git's, and goes on as it did.
+    """
+    try:
+        yield
+    except OSError as exc:
+        if exc.filename != "git" and (exc.filename is not None or not (
+                isinstance(exc, (FileNotFoundError, PermissionError)))):
+            raise
+        raise Refusal("git-not-runnable",
+                      f"{unread}: git could not be run "
+                      f"({exc.strerror or exc})", GIT_NOT_RUNNABLE) from exc
 
 
 def _argument_fault(branch: str) -> str | None:
@@ -263,8 +317,12 @@ def _check_out(sub: Path, branch: str,
     post-checkout hook's exit status is the checkout's own, so a hook that
     fails after HEAD has moved makes git exit non-zero over a checkout that
     happened, which is not a refusal.
+
+    `--no-overwrite-ignore` (#704): git's default overwrites an IGNORED
+    file at a path the branch tracks, silently, where it refuses an
+    untracked one; with it, git refuses both, in the same words.
     """
-    why = _git_says(["checkout", "-q", branch], sub)
+    why = _git_says(["checkout", "-q", "--no-overwrite-ignore", branch], sub)
     if _head_of(sub) == (pin, f"refs/heads/{branch}"):
         return True, why
     return False, why or [
@@ -279,12 +337,10 @@ def _move_and_check_out(sub: Path, branch: str,
     From the pin the branch is by then the commit already checked out, so
     no file in the leg changes, a local edit included. From another branch
     the checkout changes files, as `place_at_pin`'s does, and git refuses
-    it where a local change to a file that differs, or an untracked file, is
-    in the way: the branch has moved by then, and HEAD has not. It does not
-    refuse an IGNORED file at a path the pin tracks: git overwrites that,
-    as it does for `place_at_pin` and the on-branch `merge --ff-only`, and
-    it ends a merge in progress on the branch HEAD leaves (#458's to rule
-    on, #603).
+    it where a local change to a file that differs, or an untracked or
+    IGNORED file (#704), is in the way: the branch has moved by then, and
+    HEAD has not. A leg with an operation in progress is never brought
+    here: `checkout_tracking_branch` refuses it first (#704).
 
     Returns whether the branch moved, whether HEAD is on it at the pin, and
     git's lines (`None` when both steps exited 0). The checkout runs only
@@ -345,14 +401,16 @@ def _place_of(current: str | None) -> str:
 
 
 def _say_left(head: str | None, current: str, named: str) -> None:
-    """The line under `fast-forwarded` when the leg started on ANOTHER
-    branch, `current`, and is on the tracking branch `named` now (#603).
+    """The line under `fast-forwarded` (#603), or under `on <branch>`
+    (#704), when the leg started on ANOTHER branch, `current`, and is on
+    the tracking branch `named` now.
 
     The person is told, since their next commit lands on `named`. P9
-    (`place_at_pin`) says nothing of the branch it leaves; that is #458's.
-    `head` is `None` for a branch with no commit yet, which has no commit to
-    keep, so it is said so. Its own function, so that `fast_forward_to_pin`
-    stays within Sonar's cognitive-complexity limit (S3776).
+    (`place_at_pin`) used to say nothing of the branch it left, where T7
+    (`fast_forward_to_pin`) said it for the same move (#704). `head` is
+    `None` for a branch with no commit yet, which has no commit to keep, so
+    it is said so. Its own function, so that `fast_forward_to_pin` stays
+    within Sonar's cognitive-complexity limit (S3776).
     """
     kept = ("a branch with no commit yet" if head is None
             else "which keeps its commits")
@@ -373,12 +431,64 @@ def _say_neither(label: str, state: str, head: str | None,
     """The checkout is not one a move starts from: `state` says what the
     branch is to the pin, and the line names where the leg stands instead.
     Nothing moves. A commit made on a leg detached off the pin is on no
-    branch, so checking the branch out would leave it only in the reflog.
-    A leg on another branch is not said here (#603): that branch holds its
-    commits, so the leg is moved off it."""
+    branch, so checking the branch out would leave it only in the reflog,
+    and one made on a HEAD on a ref outside `refs/heads/` lands on that ref
+    (#704). A leg on another branch is not said here (#603): that branch
+    holds its commits, so the leg is moved off it."""
     print(f"  {label}: {state}, and the checkout is at {_short(head)} "
           f"({_place_of(current)}), which is neither")
     _say_keep()
+
+
+def _on_a_branch(current: str | None) -> bool:
+    """Whether HEAD is on a branch, `refs/heads/<name>`, one with no commit
+    yet included: the one checkout besides the pin a move starts from."""
+    return current is not None and current.startswith("refs/heads/")
+
+
+def _in_progress(sub: Path) -> tuple[str, str, str] | None:
+    """The `IN_PROGRESS` row of the operation git has in progress in the
+    leg, or `None` (#704).
+
+    Asked of the leg's own git dir, which `git rev-parse --git-dir` names
+    (a submodule's is under the root's `.git/modules/`, a linked
+    worktree's under the leg's `worktrees/`, and each operation's state is
+    that worktree's own). Read as bytes and decoded as the system decodes a
+    path, so no name of a directory can fail the read. A leg git names no
+    git dir for has nothing to read here, and the move after this says what
+    git says of it.
+    """
+    try:
+        said = git_out(["rev-parse", "--git-dir"], cwd=sub, binary=True)
+    except Refusal:
+        return None
+    gitdir = sub / os.fsdecode(said.rstrip(b"\r\n"))
+    for row in IN_PROGRESS:
+        if os.path.lexists(gitdir / row[0]):
+            return row
+    return None
+
+
+def _say_in_progress(label: str, path: str,
+                     row: tuple[str, str, str]) -> None:
+    """A leg with an operation in progress (#704): what is in progress,
+    that nothing moved, and the two commands that end it, the leg's path
+    shell-quoted, then spelled, as `move_back_to_pin` prints its command.
+
+    No move is made from here. A checkout of the tracking branch, even from
+    HEAD on it already or detached at the pin, ends a merge, a cherry-pick
+    or a revert, taking away the head file `--continue` reads and carrying
+    the staged result onto the branch, and it puts a rebase or an `am` on
+    the branch, which goes on from there; `merge --ff-only` refuses some of
+    them and not others. It is the operation's own to finish or abort, so
+    every such leg is refused alike, before any path of step (a) is
+    chosen."""
+    marker, doing, verb = row
+    command = f"git -C {spelled(shlex.quote(path))} {verb}"
+    print(f"  {label}: {doing} is in progress in the leg ({marker} is in its "
+          "git dir), so nothing moved")
+    print(f"          finish it (`{command} --continue`) or abort it "
+          f"(`{command} --abort`), then run bootstrap again.")
 
 
 def place_at_pin(sub: Path, label: str, branch: str, pin: str) -> None:
@@ -397,11 +507,16 @@ def place_at_pin(sub: Path, label: str, branch: str, pin: str) -> None:
     bootstrap, checked the branch out and printed `on <branch> at <pin>`
     over a commit that was then on no branch, held by HEAD's reflog alone.
     Detached AT the pin, or already on the branch, the checkout is as it was.
-    On ANOTHER branch it is as it was too: that branch holds its commits.
+    On ANOTHER branch it is as it was too: that branch holds its commits,
+    and the line under `on <branch>` now says the leg left it, as T7's does
+    (#704). A HEAD on a ref outside `refs/heads/` (`git symbolic-ref HEAD
+    refs/remotes/origin/main`) is left where it is, as T7 leaves it: a
+    commit made there lands on that ref, and this placed the leg while T7
+    said `which is neither` of the same HEAD (#704).
     """
     named = spelled(branch)
     head, current = _head_of(sub)
-    if current is None and head != pin:
+    if not (_on_a_branch(current) or (current is None and head == pin)):
         _say_neither(label, f"branch {named} is at the pin {_short(pin)}",
                      head, current)
         return
@@ -412,6 +527,8 @@ def place_at_pin(sub: Path, label: str, branch: str, pin: str) -> None:
                      f"{_short(pin)}, and git refused to check it out:", why)
         return
     print(f"  {label}: on {named} at {_short(pin)} (branch tip == pin)")
+    if current not in (None, f"refs/heads/{branch}"):
+        _say_left(head, current, named)
     _say_after(why, moved=not already)
 
 
@@ -428,7 +545,8 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
 
     - HEAD on the branch itself: `merge --ff-only`, which moves the working
       tree too, and moves nothing when a local change to a file the move
-      changes, or an untracked file, is in the way. `merge.autostash` is
+      changes, or an untracked file, is in the way, or an ignored one
+      (`--no-overwrite-ignore`, #704). `merge.autostash` is
       off for it: with it on, git stashes the change, moves the branch,
       applies the stash back into conflicts and exits 0, and the leg was
       left unmerged under a line saying it had been fast-forwarded. `-c`,
@@ -443,33 +561,36 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
       this checkout when it is AT the pin; leaving the leg for a branch
       BEHIND the pin was a difference nobody could explain (#458). The
       checkout changes files from here, so git can refuse it over a local
-      edit or an untracked file, and `_move_and_check_out` says what is
-      left then. A HEAD on a branch with no commit yet takes this path too,
-      as it does in `place_at_pin`. When the checkout is made, one line
-      under the `fast-forwarded` one says the leg left that branch, and
-      that it keeps its commits, since the next commit made in the leg is
-      on the tracking branch now. NO COMMIT IS LOST, BUT TWO THINGS ARE NOT
-      REFUSED, as in `place_at_pin`, in the missing-branch path and, for
-      the first, in the on-branch `merge --ff-only`: git overwrites an
-      IGNORED file at a path the pin tracks, and a merge in progress on the
-      other branch is ended, its `MERGE_HEAD` removed and its staged result
-      carried onto the tracking branch. Both are #458's to rule on.
+      edit or an untracked or ignored file, and `_move_and_check_out` says
+      what is left then. A HEAD on a branch with no commit yet takes this
+      path too, as it does in `place_at_pin`. When the checkout is made,
+      one line under the `fast-forwarded` one says the leg left that
+      branch, and that it keeps its commits, since the next commit made in
+      the leg is on the tracking branch now. NO COMMIT IS LOST, AND NOTHING
+      ELSE A PERSON HAS (#704): git used to overwrite an IGNORED file at a
+      path the pin tracks, here, in `place_at_pin`, in the missing-branch
+      path and in the on-branch `merge --ff-only`, and a checkout ended a
+      merge in progress on the other branch, its `MERGE_HEAD` removed and
+      its staged result carried onto the tracking branch. Every move now
+      refuses the first, and no leg with an operation in progress reaches
+      here (`_say_in_progress`).
 
     A LEG DETACHED OFF THE PIN IS LEFT WHERE IT IS: a commit made on the
     detached leg after the bump is on no branch, and checking the branch
     out would leave it only in the reflog. That is said, with what to do,
-    and nothing moves.
+    and nothing moves. So is a HEAD on a ref outside `refs/heads/`, which
+    `place_at_pin` now leaves too (#704).
 
     `label` is the leg as `checkout_tracking_branch` prints it, already
     spelled; the branch names and git's own lines are spelled here (#391).
     """
     named = spelled(branch)
     head, current = _head_of(sub)
-    other_branch = (current is not None and current.startswith("refs/heads/")
+    other_branch = (_on_a_branch(current)
                     and current != f"refs/heads/{branch}")
     if current == f"refs/heads/{branch}":
         why = _git_says(["-c", "merge.autostash=false", "merge", "--ff-only",
-                         "-q", pin], sub)
+                         "--no-overwrite-ignore", "-q", pin], sub)
         moved = placed = why is None
     elif other_branch or (current is None and head == pin):
         moved, placed, why = _move_and_check_out(sub, branch, pin)
@@ -564,8 +685,65 @@ def _stays(sub: Path, branch: str, pin: str) -> str:
     return f"at {_short(head)} ({_place_of(current)})"
 
 
+def create_at_pin(sub: Path, label: str, branch: str, pin: str,
+                  remote: str | None) -> None:
+    """Step (a) for a leg whose tracking branch IS NOT THERE: `checkout -b
+    <branch> <pin>`, from HEAD detached at the pin or on a branch, a branch
+    with no commit yet included.
+
+    A checkout git refuses is said in git's own words under the line that
+    says the branch could not be made (#704), with `--no-overwrite-ignore`,
+    so an IGNORED file at a path the pin tracks is refused as an untracked
+    one is, where git overwrote it silently. The line used to say `leaving
+    detached` of a leg on another branch, too; it says where the leg stays.
+    A HEAD on a ref outside `refs/heads/` is left where it is, as the
+    branch-at-the-pin and the behind-branch paths leave it (#704).
+    """
+    named = spelled(branch)
+    head, current = _head_of(sub)
+    if head is not None and current is None and head != pin:
+        # `checkout -b <branch> <pin>` from a leg detached anywhere else
+        # leaves the commit made there on no branch (#533), as placing a
+        # branch that exists would. The branch is not there to check
+        # out, so the way out names the pin alone. A HEAD git cannot
+        # read (the leg's gitdir is gone) is no commit to keep: the
+        # checkout below fails, and says it could not.
+        print(f"  {label}: branch {named} does not exist, and the "
+              f"checkout is at {_short(head)} (detached), which is not "
+              f"the pin {_short(pin)}")
+        _say_keep("the pin")
+        return
+    if current is not None and not _on_a_branch(current):
+        print(f"  {label}: branch {named} does not exist, and the checkout "
+              f"is at {_short(head)} ({_place_of(current)}), which is not a "
+              "branch")
+        _say_keep("the pin")
+        return
+    why = _git_says(["checkout", "-q", "--no-overwrite-ignore", "-b", branch,
+                     pin], sub)
+    if why is not None:
+        stays = "detached" if current is None else f"it {_place_of(current)}"
+        _say_refused(f"  {label}: could not create branch {branch!r} at "
+                     f"the pin {_short(pin)}; leaving {stays}", why)
+        return
+    if remote is not None:
+        _try_git(["branch", "-q", f"--set-upstream-to=origin/{branch}",
+                  branch], sub)
+    state = "at the pin"
+    if remote is not None and remote != pin:
+        state = (f"at the pin; origin/{named} is {_short(remote)}, which "
+                 f"the pin deliberately does NOT follow")
+    print(f"  {label}: branch {named} created at "
+          f"{_short(pin)} — {state}")
+
+
 def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
-    """Step (a) for one leg. Prints; never raises; never moves the pin."""
+    """Step (a) for one leg. Prints; never moves the pin; and never raises,
+    but an `OSError` where git cannot be started (#694), which
+    `_checkout_all_tracking_branches` turns into `git-not-runnable`.
+
+    A leg with an operation in progress is refused before any path is
+    chosen (`_say_in_progress`, #704), so no move below meets one."""
     path = str(leg.get("path") or "")
     sub = root / path
     # What is PRINTED of the leg is spelled (#391): `role`, `path` and `branch`
@@ -586,37 +764,16 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
                       f"refs/heads/{branch}"], sub)
     remote = _try_git(["rev-parse", "--verify", "--quiet",
                        f"refs/remotes/origin/{branch}"], sub)
+    doing = _in_progress(sub)
+    if doing is not None:
+        _say_in_progress(where, path, doing)
+        return
 
     if local is None:
         if pin is None:
             print(f"  {where}: no gitlink recorded; leaving as is")
-            return
-        head, current = _head_of(sub)
-        if head is not None and current is None and head != pin:
-            # `checkout -b <branch> <pin>` from a leg detached anywhere else
-            # leaves the commit made there on no branch (#533), as placing a
-            # branch that exists would. The branch is not there to check
-            # out, so the way out names the pin alone. A HEAD git cannot
-            # read (the leg's gitdir is gone) is no commit to keep: the
-            # checkout below fails, and says it could not.
-            print(f"  {where}: branch {named} does not exist, and the "
-                  f"checkout is at {_short(head)} (detached), which is not "
-                  f"the pin {_short(pin)}")
-            _say_keep("the pin")
-            return
-        if _try_git(["checkout", "-q", "-b", branch, pin], sub) is None:
-            print(f"  {where}: could not create branch {branch!r} at "
-                  f"the pin {_short(pin)}; leaving detached")
-            return
-        if remote is not None:
-            _try_git(["branch", "-q", f"--set-upstream-to=origin/{branch}",
-                      branch], sub)
-        state = "at the pin"
-        if remote is not None and remote != pin:
-            state = (f"at the pin; origin/{named} is {_short(remote)}, which "
-                     f"the pin deliberately does NOT follow")
-        print(f"  {where}: branch {named} created at "
-              f"{_short(pin)} — {state}")
+        else:
+            create_at_pin(sub, where, branch, pin, remote)
         return
 
     if local == pin:
@@ -647,7 +804,9 @@ def shape_upstream_notice(root: Path) -> None:
     be on this machine — a clone at `SHAPE_UPSTREAM_PATH`, or a tip somebody
     cached at `.shape-upstream-tip` — saying so costs nothing and closes the
     gap that had two projects updated by hand. Where it is not, this is silent:
-    an absent answer is not a finding, and it never fails the bootstrap.
+    an absent answer is not a finding, and it never fails the bootstrap. A
+    clone named there that git cannot be STARTED to read is no absent
+    answer but a machine with no git, refused `git-not-runnable` (#694).
     """
     pin_path = root / "contracts" / "shape-pin.yaml"
     if not pin_path.is_file():
@@ -662,7 +821,9 @@ def shape_upstream_notice(root: Path) -> None:
     tip = None
     upstream = os.environ.get(SHAPE_UPSTREAM_ENV)
     if upstream and Path(upstream).is_dir():
-        tip = _try_git(["rev-parse", "HEAD"], Path(upstream))
+        with _git_runs(f"the clone {SHAPE_UPSTREAM_ENV} names, "
+                       f"{spelled(upstream)}, could not be read"):
+            tip = _try_git(["rev-parse", "HEAD"], Path(upstream))
     if tip is None:
         cache = root / SHAPE_UPSTREAM_CACHE
         if cache.is_file():
@@ -831,7 +992,9 @@ def _checkout_all_tracking_branches(root: Path, sub_legs: list[dict],
                                     branch_arg: str | None) -> None:
     """Step (a): place every submodule leg on its tracking branch.
 
-    Split from `main` for #132.
+    Split from `main` for #132. Git that cannot be started is
+    `git-not-runnable`, naming the leg it met it at (#694): one fact about
+    the machine, so no leg after it is tried.
     """
     if not sub_legs:
         print("  no submodule legs declared. A one-repository project runs "
@@ -839,7 +1002,11 @@ def _checkout_all_tracking_branches(root: Path, sub_legs: list[dict],
         return
     branch = branch_arg or (manifest or {}).get("tracking_branch") or "main"
     for leg in sub_legs:
-        checkout_tracking_branch(root, leg, str(leg.get("branch") or branch))
+        with _git_runs(f"the {spelled(leg.get('role'))} leg at "
+                       f"{spelled(leg.get('path') or '')} could not be "
+                       "placed on its tracking branch"):
+            checkout_tracking_branch(root, leg,
+                                     str(leg.get("branch") or branch))
 
 
 def _run_neutral_validators(root: Path, manifest: dict | None,
@@ -893,11 +1060,19 @@ def main(argv: list[str] | None = None) -> int:
     name = (manifest or {}).get("name") or root.name
     print(f"bootstrap: {spelled(name)} ({spelled(root)})")
 
-    print("\n(a) legs on tracking branches, pins untouched")
-    _checkout_all_tracking_branches(root, sub_legs, manifest, args.branch)
+    try:
+        print("\n(a) legs on tracking branches, pins untouched")
+        _checkout_all_tracking_branches(root, sub_legs, manifest, args.branch)
 
-    print("\n(b) neutral validators")
-    failed = _run_neutral_validators(root, manifest, args.skip_validators)
+        print("\n(b) neutral validators")
+        failed = _run_neutral_validators(root, manifest, args.skip_validators)
+    except Refusal as exc:
+        # Only `git-not-runnable` reaches here (#694): nothing else in the
+        # two steps raises one. Stdout first, so a log of both streams
+        # reads in the order the run went.
+        sys.stdout.flush()
+        print(str(exc), file=sys.stderr)
+        return 2
 
     print("\n(c) review authority")
     read_authority(root, legs)

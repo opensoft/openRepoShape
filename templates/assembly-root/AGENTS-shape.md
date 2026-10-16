@@ -92,8 +92,8 @@ make park        commit, push and RECORD every open feature, so another
 make resume      recreate the parked features here, from that record
 ```
 
-`make bootstrap` places each leg on its tracking branch AT the pin where that
-loses no commit, and leaves one detached at any other commit, saying why. The
+`make bootstrap` places a leg on its tracking branch AT the pin only where that
+loses no commit, and otherwise leaves its checkout where it is, saying why. The
 line `authority is not wallet-carried in this org` is a report, not a fault.
 
 **`make park` BEFORE the human leaves a workstation; on the next one, clone,
