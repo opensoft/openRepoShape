@@ -349,44 +349,66 @@ def test_install_says_how_to_put_it_on_path(tmp_path):
 
 
 #: `$OPENREPOSHAPE_BIN_DIR` spelled for Windows, as a Git Bash user may type
-#: it, where a test needs a value that names no directory of its own (#649).
+#: it, in either slash (#649): where a test needs a value that names no
+#: directory of its own.
 WINDOWS_BIN_DIR = "D:\\tools\\bin"
+WINDOWS_BIN_DIR_SLASH = "D:/tools/bin"
+
+#: The two spellings a person types, for a test to run over both. Git Bash
+#: takes `D:\tools\bin` and `D:/tools/bin` alike, and `--install` has an arm
+#: for each.
+BIN_DIR_SPELLINGS = pytest.mark.parametrize("spelling",
+                                            ["backslash", "slash"])
 
 
-def fake_cygpath(directory: Path, answer: str | None) -> None:
-    """A `cygpath` in `directory` that spells `WINDOWS_BIN_DIR` as `answer`,
-    as Git Bash's own `cygpath -u` spells a drive path, or fails when
-    `answer` is None. Anything else it is asked fails."""
+def typed_bin_dir(bin_dir: Path, spelling: str) -> str:
+    """`$OPENREPOSHAPE_BIN_DIR` as a person types it for Windows, in
+    `spelling`, "backslash" or "slash". Off Windows it is `D:\\tools\\bin`
+    or `D:/tools/bin`, which name no directory of their own. On Windows it
+    is `bin_dir` itself, a real drive path under the test's directory, with
+    `str` for the backslash and `as_posix` for the slash: a command placed
+    where it should not be then lands where the test can see it, and never
+    on the machine's own `D:` drive."""
+    if os.name == "nt":
+        return bin_dir.as_posix() if spelling == "slash" else str(bin_dir)
+    return WINDOWS_BIN_DIR_SLASH if spelling == "slash" else WINDOWS_BIN_DIR
+
+
+def fake_cygpath(directory: Path, typed: str, answer: str | None) -> None:
+    """A `cygpath` in `directory` that spells `typed` as `answer`, as Git
+    Bash's own `cygpath -u` spells a drive path, or fails when `answer` is
+    None. Anything else it is asked fails."""
     directory.mkdir(exist_ok=True)
     answers = "" if answer is None else (
-        f'[ "$*" = {shlex.quote("-u -- " + WINDOWS_BIN_DIR)} ] && '
+        f'[ "$*" = {shlex.quote("-u -- " + typed)} ] && '
         f"printf '%s\\n' {shlex.quote(answer)} && exit 0\n")
     write_script(directory / "cygpath", f"#!/bin/sh\n{answers}exit 1\n")
     (directory / "cygpath").chmod(0o755)
 
 
+@BIN_DIR_SPELLINGS
 @pytest.mark.parametrize("on_path", [False, True],
                          ids=["not-on-path", "on-path"])
 def test_a_windows_spelled_bin_dir_is_spelled_the_way_bash_spells_it(
-        tmp_path, on_path):
-    """`OPENREPOSHAPE_BIN_DIR=D:\\tools\\bin` in Git Bash (#649).
+        tmp_path, on_path, spelling):
+    """`OPENREPOSHAPE_BIN_DIR=D:\\tools\\bin` or `D:/tools/bin` in Git Bash
+    (#649).
 
     `--install` named the directory as typed, so its PATH note printed
     `export PATH="D:\\tools\\bin:$PATH"`, which the drive's colon splits in
     two, and never found it on a `$PATH` holding `/d/tools/bin`. It is
     spelled with `cygpath -u` first, so every line names the directory as
     bash does, and the note is printed only when that directory is not on
-    `$PATH`. On Windows it is a real drive path and Git Bash's own
-    `cygpath`; elsewhere a fake answers as that one would.
+    `$PATH`. Both slashes are drive paths. On Windows it is a real drive
+    path and Git Bash's own `cygpath`; elsewhere a fake answers as that one
+    would.
     """
     bin_dir = tmp_path / "bin"
     spelled = bash_path(bin_dir)
+    typed = typed_bin_dir(bin_dir, spelling)
     path = os.environ["PATH"]
-    if os.name == "nt":
-        typed = str(bin_dir)
-    else:
-        typed = WINDOWS_BIN_DIR
-        fake_cygpath(tmp_path / "fake-path", spelled)
+    if os.name != "nt":
+        fake_cygpath(tmp_path / "fake-path", typed, spelled)
         path = f"{tmp_path / 'fake-path'}{os.pathsep}{path}"
     if on_path:
         path = f"{bin_dir}{os.pathsep}{path}"
@@ -402,24 +424,31 @@ def test_a_windows_spelled_bin_dir_is_spelled_the_way_bash_spells_it(
     assert typed not in result.stdout
 
 
-@pytest.mark.parametrize("failing_cygpath", [False, True],
-                         ids=["no-cygpath", "cygpath-fails"])
+@BIN_DIR_SPELLINGS
+@pytest.mark.parametrize("cygpath_there, answer", [
+    pytest.param(False, None, id="no-cygpath"),
+    pytest.param(True, None, id="cygpath-fails"),
+    pytest.param(True, WINDOWS_BIN_DIR_SLASH, id="cygpath-answers-a-drive"),
+])
 def test_a_windows_spelled_bin_dir_is_refused_where_no_cygpath_spells_it(
-        tmp_path, failing_cygpath):
-    """With no `cygpath` to spell it, or one that cannot, the drive's colon
-    would still split the directory on `$PATH`, so `--install` refuses
-    before it places anything, and says what to set instead (#649). The
-    `$PATH` is the machine report's own, which holds no `cygpath` but the
-    failing fake."""
+        tmp_path, cygpath_there, answer, spelling):
+    """With no `cygpath` to spell it, one that cannot, or one that answers
+    with a drive spelling again, the drive's colon would still split the
+    directory on `$PATH`, so `--install` refuses before it places anything,
+    and says what to set instead (#649). Either slash. The `$PATH` is the
+    machine report's own, which holds no `cygpath` but the fake. The typed
+    value is under `tmp_path` on Windows, so a refusal that regressed would
+    place the command where this test looks, and not on a real drive."""
     env = machine_path(tmp_path, ())
     env.pop("_log")
-    if failing_cygpath:
-        fake_cygpath(tmp_path / "machine-path", None)
+    typed = typed_bin_dir(tmp_path / "bin", spelling)
+    if cygpath_there:
+        fake_cygpath(tmp_path / "machine-path", typed, answer)
     result = run_cmd("--install", home=tmp_path, cwd=tmp_path,
-                     env={**env, "OPENREPOSHAPE_BIN_DIR": WINDOWS_BIN_DIR})
+                     env={**env, "OPENREPOSHAPE_BIN_DIR": typed})
     assert result.returncode == 2, result.stdout + result.stderr
     said = " ".join(result.stderr.split())
-    assert f"--install would place this command in '{WINDOWS_BIN_DIR}', " \
+    assert f"--install would place this command in '{typed}', " \
         "which is spelled for Windows" in said, said
     assert "Nothing was placed. Set $OPENREPOSHAPE_BIN_DIR to the directory " \
         "as this shell spells it, then run this again." in said, said

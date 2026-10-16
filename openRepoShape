@@ -321,9 +321,11 @@ collect_commands() {
 # (#649). Where Python came from python.org, Git Bash has `python` and no
 # `python3`, and this row said `python3 MISSING` while `--preflight` passed.
 # The row keeps its name and says `present, as python` there. Still a probe
-# and never a run, so the Microsoft Store's `python3` stub, like macOS's
-# Command Line Tools stubs, reads as present here: `--preflight` runs the
-# version check that tells a stub from a Python, and this report runs none.
+# and never a run, so what answers is never asked its version: the Microsoft
+# Store's `python3` stub and macOS's Command Line Tools stubs read as present
+# here, and so does a `python` that is Python 2, or older than 3.9, where
+# there is no `python3`. `--preflight` runs the version check, and this
+# report runs none.
 #
 # IT NEVER CHANGES THE EXIT CODE. A machine missing a prerequisite did not
 # make the copy that was just placed any less placed, and an install that
@@ -409,9 +411,10 @@ install_commands() {
 	# `D:\tools\bin` becomes `/d/tools/bin`. Kept as typed, every line below
 	# named it, and the PATH note printed `export PATH="D:\tools\bin:$PATH"`,
 	# which the drive's colon splits in two, and never found it on a `$PATH`
-	# that holds `/d/tools/bin`. Where no cygpath answers, the bash running
-	# this does not know the drive letter as a drive, and the value is
-	# refused: no line it could print about `$PATH` would work.
+	# that holds `/d/tools/bin`. Where no cygpath answers, nothing here can
+	# spell it as bash's `$PATH` needs it (and off Windows the drive letter is
+	# no drive at all), so the value is refused: no line it could print about
+	# `$PATH` would work.
 	case "$dir" in
 	[A-Za-z]:/* | [A-Za-z]:\\*)
 		if command -v cygpath >/dev/null 2>&1; then
