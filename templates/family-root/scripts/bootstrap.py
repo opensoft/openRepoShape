@@ -27,6 +27,18 @@ WHAT IT DOES, in order:
       refused to do anything because one member is unreachable would be worse
       than one that says which.
 
+      "every member and leg fetched" is said only where git exited 0 AND
+      every row's member is checked out (#648). A member left NOT CHECKED
+      OUT where no credential would check it out is said here instead, with
+      why, and fails the run (c): this holder records no gitlink at the
+      row's path (a gitlink recorded only in another case, #363), no
+      section of `.gitmodules` gives that path (a holder whose HEAD lost the
+      file, #611), or git exited 0 and checked nothing out there. Git exits
+      0 over the second where a recursive clone ran first, and 128 (`No url
+      found for submodule path`) in a plain clone, as it does for a missing
+      credential, so what the holder records is the test, never git's
+      words. The line names `validate-family.py`, which says what to commit.
+
   (b) RUNS EACH MEMBER'S OWN `make bootstrap`. Each member is a whole project
       and knows how to bootstrap itself — its legs onto their tracking
       branches at their pinned commits, its own validators, its own
@@ -35,9 +47,10 @@ WHAT IT DOES, in order:
       `--members-make validate` runs `make validate` instead, which is what
       the family Makefile's `validate` target uses.
 
-  (c) EXITS 0 unless a member's own command failed. A member that is not
-      checked out is REPORTED and skipped, not a failure: it is the state a
-      missing credential leaves, and it is already reported in (a).
+  (c) EXITS 0 unless a member's own command failed, or (a) left a member not
+      checked out that no credential would check out. Any other member that
+      is not checked out is REPORTED and skipped, not a failure: it is the
+      state a missing credential leaves, and it is already reported in (a).
 
 THE FAMILY CONFERS NOTHING and neither does this command. It fetches, it
 delegates, and it says what it could not reach.
@@ -54,10 +67,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
-    Refusal, escape_unencodable_stdout, find_repo_root, load_yaml, spelled,
+    PYTHON, Refusal, escape_unencodable_stdout, find_repo_root, git_out,
+    load_yaml, recorded_gitlink, spelled,
 )
 
 MANIFEST = "family.yaml"
+GITMODULES = ".gitmodules"
 DEFAULT_MEMBERS_DIR = "members"
 
 #: The two environment variables a leg/member credential may arrive in, in the
@@ -79,8 +94,13 @@ def credential() -> tuple[str, str]:
     return "none", ""
 
 
-def fetch_members(root: Path) -> bool:
-    """(a) `git submodule update --init --recursive`, authenticated or not."""
+def fetch_members(root: Path, rows: list[dict]) -> list[str]:
+    """(a) `git submodule update --init --recursive`, authenticated or not.
+
+    Returns a failure line for each of `rows` whose member it leaves not
+    checked out where no credential would check it out (`unfetchable`), for
+    the run to end FAILED on (#648); every member and leg is said to be
+    fetched only where there is none and git exited 0."""
     source, token = credential()
     args = ["git"]
     if token:
@@ -92,21 +112,83 @@ def fetch_members(root: Path) -> bool:
     sys.stdout.flush()
     proc = subprocess.run(args, cwd=str(root), capture_output=True, text=True,
                           encoding="utf-8", errors="replace", check=False)
-    if proc.returncode == 0:
+    if proc.returncode != 0:
+        # The token can appear in git's own error text (it is in the URL it
+        # tried), so the output is scrubbed before it is printed.
+        message = (proc.stderr + proc.stdout).strip()
+        if token:
+            message = message.replace(token, "<redacted>")
+        print(f"  FETCH INCOMPLETE (git exit {proc.returncode}) using "
+              f"credential source '{source}':\n{message}", file=sys.stderr)
+        print("  If the members are PRIVATE, set SHAPE_LEGS_TOKEN (a "
+              "fine-grained PAT with contents:read on them) or export an "
+              "App-minted SHAPE_LEGS_APP_TOKEN, then re-run. What did arrive "
+              "is bootstrapped below.", file=sys.stderr)
+    left = unfetchable(root, rows, proc.returncode == 0)
+    if left:
+        print("  NOT CHECKED OUT, and not for want of a credential: "
+              + ", ".join(f"{spelled(path)} ({why})" for _, path, why in left)
+              + f". `{PYTHON} scripts/validate-family.py` names the cause and "
+              "the commit that cures it.", file=sys.stderr)
+    elif proc.returncode == 0:
         print("  every member and leg fetched")
-        return True
-    # The token can appear in git's own error text (it is in the URL it tried),
-    # so the output is scrubbed before it is printed.
-    message = (proc.stderr + proc.stdout).strip()
-    if token:
-        message = message.replace(token, "<redacted>")
-    print(f"  FETCH INCOMPLETE (git exit {proc.returncode}) using credential "
-          f"source '{source}':\n{message}", file=sys.stderr)
-    print("  If the members are PRIVATE, set SHAPE_LEGS_TOKEN (a fine-grained "
-          "PAT with contents:read on them) or export an App-minted "
-          "SHAPE_LEGS_APP_TOKEN, then re-run. What did arrive is bootstrapped "
-          "below.", file=sys.stderr)
-    return False
+    return [f"{spelled(row.get('project') or '?')} (not checked out)"
+            for row, _, _ in left]
+
+
+def gitmodules_paths(root: Path) -> set[str]:
+    """Every path a section of `.gitmodules` gives, read as git reads it:
+    the work tree's file, the one `git submodule update` reads, which a
+    fresh clone takes from HEAD. None where there is no such file, or one
+    git cannot read: git has no url for any submodule then either."""
+    if not os.path.lexists(root / GITMODULES):
+        return set()
+    try:
+        listed = git_out(["config", "-z", "--file", GITMODULES, "--list"],
+                         cwd=root, binary=True)
+    except Refusal:
+        return set()
+    paths: set[str] = set()
+    for record in listed.split(b"\0"):
+        key, _, value = record.decode("utf-8",
+                                      "surrogateescape").partition("\n")
+        if key.startswith("submodule.") and key.endswith(".path"):
+            paths.add(value)
+    return paths
+
+
+def unfetchable(root: Path, rows: list[dict],
+                exited_0: bool) -> list[tuple[dict, str, str]]:
+    """`(row, path, why)` for each row whose member (a) left NOT CHECKED OUT
+    where no credential would check it out (#648), in row order.
+
+    Asked of this holder's own records, never of git's words: a row at
+    whose path the holder records no gitlink (`recorded_gitlink`,
+    as `validate-family.py`'s `member-gitlink-absent` reads one), or whose
+    gitlink no section of `.gitmodules` gives a path (as its
+    `member-gitmodules-absent` reads HEAD's file, which is the work tree's
+    in a clone); and, where git exited 0, any row at all, since git then
+    lacked nothing a credential gives. Any other row not checked out is the
+    missing credential's, and stays the skip it always was. A path two rows
+    give is said once."""
+    left: dict[str, dict] = {}
+    for row in rows:
+        if not (member_path(root, row) / ".git").exists():
+            left.setdefault(row_path(row), row)
+    if not left:
+        return []
+    given = gitmodules_paths(root)
+    found: list[tuple[dict, str, str]] = []
+    for path, row in left.items():
+        if recorded_gitlink(root, path) is None:
+            found.append((row, path, "no gitlink is recorded at that path"))
+        elif path not in given:
+            found.append((row, path, f"no section of {GITMODULES} gives that "
+                                     "path"))
+        elif exited_0:
+            found.append((row, path, "git exited 0 and checked nothing out "
+                                     "there"))
+    return found
 
 
 def members_of(root: Path) -> tuple[str, list[dict]]:
@@ -128,9 +210,14 @@ def members_of(root: Path) -> tuple[str, list[dict]]:
     return name, rows
 
 
+def row_path(row: dict) -> str:
+    """The path a row mounts its member at, as the holder spells it."""
+    return str(row.get("path")
+               or f"{DEFAULT_MEMBERS_DIR}/{row.get('project')}")
+
+
 def member_path(root: Path, row: dict) -> Path:
-    return root / str(row.get("path")
-                      or f"{DEFAULT_MEMBERS_DIR}/{row.get('project')}")
+    return root / row_path(row)
 
 
 def run_member_target(root: Path, row: dict, target: str) -> str | None:
@@ -187,13 +274,13 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(rows)} member(s)")
 
     print("\n(a) members and their legs")
+    failed: list[str] = []
     if args.no_fetch:
         print("  skipped (--no-fetch)")
     else:
-        fetch_members(root)
+        failed += fetch_members(root, rows)
 
     print(f"\n(b) each member's own `make {spelled(args.members_make)}`")
-    failed: list[str] = []
     if args.skip_members:
         print("  skipped (--skip-members)")
     elif not rows:
