@@ -75,6 +75,9 @@ from repo_shape import (  # noqa: E402
 # How a `--pin-source` that is not printable is named, the one spelling the
 # scaffold's chain WARNING gives it too (#610).
 from repo_shape import shown_path  # noqa: E402
+# What the Free-plan secrets hint goes by (#660): GitHub's three
+# visibilities, and the hint's own words, which stay in the pinned copy.
+from repo_shape import FREE_PLAN_HINT, VISIBILITY_CHOICES  # noqa: E402
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
 
@@ -1471,6 +1474,11 @@ def target_remediation(why: str, holds: str, choose: str) -> str:
 #: `FetchRepository` says the same when the API returns no repository).
 GH_NOT_FOUND_WORDS = "Could not resolve to a Repository"
 
+#: The same answer from `gh api`, which asks GitHub's REST API: gh prints a
+#: REST error as `gh: <message> (HTTP <status>)` on stderr, with exit 1, and
+#: GitHub's message for a 404 is `Not Found` (#660).
+GH_API_NOT_FOUND_WORDS = "Not Found (HTTP 404)"
+
 #: Said by every refusal of a `gh repo view` that failed otherwise.
 GH_UNREADABLE_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
@@ -1479,6 +1487,19 @@ GH_UNREADABLE_REMEDIATION = (
     "other failure says nothing about whether it is. Check `gh auth status` "
     "(`gh auth login` where it names a token that is missing, bad or "
     "expired), or let a rate limit or an outage pass, then run this again.")
+
+
+def gh_said_not_found(probe, words: str = GH_NOT_FOUND_WORDS) -> bool:
+    """Is `probe`, a finished `gh` command, gh's own answer that what it asked
+    for does not exist: exit 1 with gh's not-found `words` on stderr (#609)?
+
+    The ONE reading of that answer, `refuse_unless_not_found`'s, with the
+    words for each API gh asks: `GH_NOT_FOUND_WORDS` for `gh repo view`, and
+    `GH_API_NOT_FOUND_WORDS` for `gh api`, which `organisation_plan` asks
+    (#660). Every other failure, a bad login, a rate limit or an outage, is
+    not this answer, whatever else it says.
+    """
+    return probe.returncode == 1 and words in (probe.stderr or "")
 
 
 def refuse_unless_not_found(repository: str, probe) -> None:
@@ -1499,7 +1520,7 @@ def refuse_unless_not_found(repository: str, probe) -> None:
     `probe` is the finished `subprocess.CompletedProcess` of the command;
     one that exited 0 is not asked about here.
     """
-    if probe.returncode == 1 and GH_NOT_FOUND_WORDS in (probe.stderr or ""):
+    if gh_said_not_found(probe):
         return
     lines = [line.strip()
              for line in (probe.stderr or probe.stdout or "").splitlines()
@@ -1514,6 +1535,165 @@ def refuse_unless_not_found(repository: str, probe) -> None:
         f"`{command}` exited {probe.returncode}"
         + (f": {said}" if said else ""),
         GH_UNREADABLE_REMEDIATION)
+
+
+# ---------------------------------------------------------------------------
+# What the Free-plan secrets hint goes by (#602, #660)
+# ---------------------------------------------------------------------------
+#
+# The `validate` workflow that reads SHAPE_LEGS_APP_ID and
+# SHAPE_LEGS_APP_PRIVATE_KEY runs in ONE repository, the assembly root or the
+# family holder, and on the GitHub Free plan an organisation secret is
+# delivered only to a public repository. So `FREE_PLAN_HINT` holds when that
+# repository is private or internal AND its organisation is on Free: two
+# questions for GitHub, and either can go unanswered. AN UNANSWERED ONE IS
+# SAID, NEVER GUESSED. Guessing private gives a public repository a false
+# hint; guessing public, or a paid plan, hides a true one with nothing said.
+# `free_plan_secret_hint` in `repo_shape.py` answers None alike for a paid
+# plan and for one it could not read, as its docstring chooses, and that file
+# is a shape copy every project digest-pins; so the three creating tools ask
+# the plan here instead, and `FREE_PLAN_HINT`'s words are not changed.
+
+#: What a creating tool prints where GitHub would not say what visibility the
+#: repository its `validate` workflow runs in has (#602, from
+#: `adopt-project.py`, whose words these are; the scaffold's reused root and
+#: `family.py init`'s reused holder since #660): the question it could not
+#: answer, what the Free-plan hint would then say, and how to answer it.
+#: `{root}` is that repository.
+ROOT_VISIBILITY_UNREAD = (
+    "NOTE this run could not read {root}'s visibility from GitHub, so it "
+    "cannot say whether the Free-plan secrets hint applies. It applies when "
+    "{root} is private or internal and its organisation is on the GitHub Free "
+    "plan: organisation secrets are then not delivered to it, so org-level "
+    "SHAPE_LEGS_APP_ID / SHAPE_LEGS_APP_PRIVATE_KEY resolve to EMPTY in its "
+    "`validate` workflow and must be set as REPOSITORY secrets on {root} "
+    "instead. `gh repo view {root} --json visibility` says which it is.")
+
+#: The same where the repository is private or internal and GitHub would not
+#: name its organisation's plan (#660). `{visibility}` is the repository's.
+#: The last sentence rests on GitHub's REST page for `GET /orgs/{org}`: an
+#: organisation's full details are shown to its owners.
+FREE_PLAN_UNREAD = (
+    "NOTE this run could not read {org}'s plan from GitHub, so it cannot say "
+    "whether the Free-plan secrets hint applies. {root} is {visibility}, so "
+    "it applies when {org} is on the GitHub Free plan: organisation secrets "
+    "are then not delivered to {root}, so org-level SHAPE_LEGS_APP_ID / "
+    "SHAPE_LEGS_APP_PRIVATE_KEY resolve to EMPTY in its `validate` workflow "
+    "and must be set as REPOSITORY secrets on {root} instead. `gh api "
+    "orgs/{org} --jq .plan.name`, run with an owner's login, says which plan "
+    "it is on.")
+
+
+def visibility_in(answer: str) -> str | None:
+    """The visibility a `gh repo view --json visibility` answer names, one of
+    `VISIBILITY_CHOICES` in any case, or None for anything else: not JSON,
+    not an object, no field, or a word that is not one of GitHub's three.
+    `repository_visibility` reads its answer with it, and `adopt-project.py`'s
+    `_root_visibility` reads its own (#660)."""
+    try:
+        value = json.loads(answer)
+    except ValueError:
+        return None
+    value = value.get("visibility") if isinstance(value, dict) else None
+    seen = value.lower() if isinstance(value, str) else None
+    return seen if seen in VISIBILITY_CHOICES else None
+
+
+def repository_visibility(repository: str) -> str | None:
+    """`repository`'s visibility on GitHub, one of `VISIBILITY_CHOICES`, or
+    None when it cannot be read: `gh repo view` failed (a repository the
+    token cannot see, a rate limit, an outage such as an `HTTP 502`) or
+    answered anything `visibility_in` does not read as one of the three.
+
+    THE ONE READER of the scaffold and `family.py` (#660), on the model of
+    `adopt-project.py`'s `_root_visibility` (#602). A `gh` that cannot be
+    started is NOT answered here: its `OSError` reaches the caller, because
+    the scaffold refuses a missing `gh` as `gh-not-found` before it creates
+    anything (#537), and `family.py`, which asks only after `gh` has made or
+    edited the holder, takes it as unread. Never asked of a
+    `--local-remote-dir` repository, which has no visibility.
+    """
+    try:
+        answer = run(["gh", "repo", "view", repository, "--json",
+                      "visibility"])
+    except CommandFailed:
+        return None
+    return visibility_in(answer)
+
+
+def organisation_plan(org: str) -> str | None:
+    """`"free"` when GitHub names `org`'s plan `free` (in any case, around any
+    whitespace), `"other"` when it names another, `"not-an-organisation"`
+    when gh says there is no organisation `org`, and None when GitHub names
+    no plan (#660): `gh api orgs/<org>` failed otherwise (an organisation
+    the token cannot see, a rate limit, an outage) or could not be started,
+    or answered with no plan name, which is what `--jq .plan.name` prints
+    where the field is absent from what the token was shown.
+
+    NO ORGANISATION IS NOT AN UNREAD PLAN. GitHub answers `GET /orgs/<login>`
+    with 404 where `<login>` is not an organisation, which is what a
+    repository owned by a personal account gives, and a personal account
+    has no organisation secrets for the hint to be about. gh's not-found
+    answer is read by `gh_said_not_found`, the reading
+    `refuse_unless_not_found` gives `gh repo view` (#609), so every other
+    failure stays unread. The command is run here rather than by `run`,
+    because that reading is of the finished command's own stderr, which
+    `run` folds into one text with stdout.
+
+    `free_plan_secret_hint` reads the same field and answers None for every
+    case but `free`, as for a paid plan, so a private root whose plan could
+    not be read was told nothing, the silent failure its own docstring says
+    it exists for. Each creating tool asks this instead, through
+    `free_plan_secrets_note`, and names an unread plan.
+    """
+    try:
+        probe = subprocess.run(
+            ["gh", "api", f"orgs/{org}", "--jq", ".plan.name"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except OSError:
+        return None
+    if gh_said_not_found(probe, GH_API_NOT_FOUND_WORDS):
+        return "not-an-organisation"
+    if probe.returncode != 0:
+        return None
+    name = (probe.stdout or "").strip().lower()
+    if not name:
+        return None
+    return "free" if name == "free" else "other"
+
+
+def free_plan_secrets_note(org: str, root: str,
+                           visibility: str | None) -> str | None:
+    """What a creating tool prints about the Free-plan secrets of `root`, the
+    repository its `validate` workflow runs in, at `visibility` (None: GitHub
+    did not say), or None where nothing applies (#602, #660).
+
+    - Unread: `ROOT_VISIBILITY_UNREAD`, and the plan is not asked: that NOTE
+      names both conditions, so it holds whatever the plan is.
+    - Public: None. An organisation secret reaches it on every plan.
+    - Private or internal: the plan is asked. On `free` it is
+      `FREE_PLAN_HINT`, with `root` alone as the repository that is private,
+      as the scaffold and adopt name it since #602 and `family.py init` since
+      #660; where the plan is unread, `FREE_PLAN_UNREAD`; on any other
+      plan, and where the owner is not an organisation, None.
+
+    The scaffold passes the run's visibility for a root it created and
+    GitHub's for one it reused, adopt GitHub's for the root it adopted, and
+    `family.py` the run's for a holder it created and GitHub's for one it
+    reused.
+    """
+    if visibility is None:
+        return ROOT_VISIBILITY_UNREAD.format(root=root)
+    if visibility not in ("private", "internal"):
+        return None
+    plan = organisation_plan(org)
+    if plan == "free":
+        return FREE_PLAN_HINT.format(org=org, repo=root, what=f"{root} is")
+    if plan is None:
+        return FREE_PLAN_UNREAD.format(org=org, root=root,
+                                       visibility=visibility)
+    return None
 
 
 #: `-F -` reads the message from STDIN. Every argument is then a literal, and
@@ -2861,29 +3041,9 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
             # confident tone (#217).
             capture_output=True, text=True, encoding="utf-8", check=False)
     except FileNotFoundError as exc:
-        raise Refusal(
-            "gh-not-found",
-            f"the `gh` CLI is not on PATH, so `gh api` cannot read "
-            f"{repository} @ {commit}: {exc}",
-            "Remediation: pass --pin-source <a local clone of that "
-            "repository> to compute the digest with no network at all, or "
-            "put `gh` on PATH and run this again (`openRepoShape "
-            "--preflight` names each missing prerequisite and offers to "
-            "install it, on a typed yes).",
-        ) from exc
+        raise _gh_not_on_path(repository, commit, exc) from exc
     if proc.returncode != 0:
-        raise Refusal(
-            "pin-unreadable",
-            f"`gh api` could not read {repository} @ {commit}: "
-            f"{proc.stderr.strip()}",
-            "Remediation: check the commit exists in that repository and that "
-            "`gh auth status` can see it. An unqualified --pin resolves under "
-            f"{NEUTRAL_PRODUCT_OWNER} by default (never the project's own "
-            "--org) — if this product actually lives under a different "
-            "owner, name it explicitly with --pin <owner>/<openProduct>@<sha> "
-            "or --pin-owner <owner>. You can also pass --pin-source <local "
-            "clone> to compute the digest with no network at all.",
-        )
+        raise _gh_could_not_read(repository, commit, proc.stderr.strip())
     try:
         payload = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
@@ -2907,6 +3067,194 @@ def pin_digest_from_gh(repository: str, commit: str) -> str:
         digest.update(record)
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def _gh_not_on_path(repository: str, commit: str,
+                    exc: FileNotFoundError) -> Refusal:
+    """`gh-not-found`, for a pin the forge was to be asked about: what
+    each `gh` read here refuses with when `subprocess` finds no `gh`."""
+    return Refusal(
+        "gh-not-found",
+        f"the `gh` CLI is not on PATH, so `gh api` cannot read "
+        f"{repository} @ {commit}: {exc}",
+        "Remediation: pass --pin-source <a local clone of that "
+        "repository> to compute the digest with no network at all, or "
+        "put `gh` on PATH and run this again (`openRepoShape "
+        "--preflight` names each missing prerequisite and offers to "
+        "install it, on a typed yes).")
+
+
+def _gh_could_not_read(repository: str, commit: str, why: str) -> Refusal:
+    """`pin-unreadable`, for a pin the forge did not answer for: what
+    each `gh` read here refuses with, `why` being what `gh` said."""
+    return Refusal(
+        "pin-unreadable",
+        f"`gh api` could not read {repository} @ {commit}: {why}",
+        "Remediation: check the commit exists in that repository and that "
+        "`gh auth status` can see it. An unqualified --pin resolves under "
+        f"{NEUTRAL_PRODUCT_OWNER} by default (never the project's own "
+        "--org) — if this product actually lives under a different "
+        "owner, name it explicitly with --pin <owner>/<openProduct>@<sha> "
+        "or --pin-owner <owner>. You can also pass --pin-source <local "
+        "clone> to compute the digest with no network at all.")
+
+
+# ---------------------------------------------------------------------------
+# What a pin's id names: an annotated tag's own id is peeled (#651)
+# ---------------------------------------------------------------------------
+#
+# `git rev-parse v1.2` prints a release tag's OWN id, 40 hex, so `PIN_ARG_RE`
+# takes it, and nothing after that asked what it was. `tree_digest` reads it
+# with `git ls-tree`, which peels a tag to its tree, so the digest was the
+# commit's, and `--pin openGlass@<the tag's id>` wrote the TAG's id as the
+# pin's `commit:`, under the pin file's own `revision_kind: commit` and "A
+# COMMIT, NEVER A TAG": in the scaffold, its `--dry-run` and `adopt-project.py
+# plan` alike. The root's `validate-pins.py` passed it, for the same reason,
+# and a tree's id went the same way.
+#
+# PEELED, as `bump-leg.py --to` (#534), `family.py add --at` and `family.py
+# bump --to` (#541, Brett Heap's ruling of 2026-10-14) peel one. A tag
+# object's id fixes its content, so it names one commit for ever and, unlike
+# a tag NAME, cannot be moved: it is as exact a pin as that commit. One line
+# says so, and every value after it, the digest, the plan and the pin file,
+# is the commit's. A tree, a blob or a tag of either names no commit at all,
+# and is refused `pin-not-a-commit`, naming which, in `bump-leg.py`'s words.
+#
+# ASKED WHERE THE DIGEST IS READ: `git cat-file -t` in the `--pin-source`
+# clone, or, with none, the forge's own GraphQL `object(oid:)`, whose
+# `__typename` names the same four kinds; a tag of a tag is followed to the
+# end. `adopt-project.py check` asks the clone `plan` read a digest from the
+# same question (`commit_in_clone`).
+
+#: What `git cat-file -t` calls the one kind a pin may name, and the one
+#: that is peeled to it.
+COMMIT_KIND, TAG_KIND = "commit", "tag"
+#: The forge's GraphQL `__typename` for each kind `git cat-file -t` names.
+GH_KINDS = {"Commit": COMMIT_KIND, "Tag": TAG_KIND, "Tree": "tree",
+            "Blob": "blob"}
+#: A whole object id, as the forge spells the one a tag names.
+OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}")
+#: What the forge is asked about a pin's id: what kind of object it is, and
+#: for a tag, the kind and id of what the tag names.
+GH_OBJECT_QUERY = (
+    "query($owner: String!, $name: String!, $oid: GitObjectID!) "
+    "{ repository(owner: $owner, name: $name) { object(oid: $oid) "
+    "{ __typename ... on Tag { target { __typename oid } } } } }")
+#: What `pin-not-a-commit` tells a person to pass instead.
+PIN_NOT_A_COMMIT_REMEDIATION = (
+    "Remediation: pass a commit -- `git log --format=%H` in a clone of the "
+    "product lists them -- or an annotated tag of one, whose own id is "
+    "peeled to the commit it names, as `bump-leg.py --to` peels one. A "
+    "tree's or a blob's id is part of a commit and never one, and a pin is "
+    "a commit or it is nothing.")
+
+
+def not_a_commit(kind: str, names: str | None) -> str:
+    """How an id that names no commit is said (#651), in `bump-leg.py`'s
+    words: `names a tree`, `is an annotated tag of a blob`, or `is an
+    annotated tag that names no commit`. `kind` is what the id is, and
+    `names` what the last tag it leads through names, if anything."""
+    if kind != TAG_KIND:
+        return f"names a {kind}"
+    if names in ("tree", "blob"):
+        return f"is an annotated tag of a {names}"
+    return "is an annotated tag that names no commit"
+
+
+def _git_answer(clone: Path, *args: str) -> str | None:
+    """What `git <args>` prints in `clone`, or None where it fails or
+    `subprocess` cannot enter `clone` at all."""
+    try:
+        proc = subprocess.run(["git", *args], cwd=str(clone),
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
+                              check=False)
+    except OSError:
+        return None
+    return (proc.stdout.strip() or None) if proc.returncode == 0 else None
+
+
+def commit_in_clone(clone: Path, oid: str) -> tuple[str, str]:
+    """`(commit, "")` for the commit `oid` names in the clone at `clone`
+    (#651): `oid` itself, or the commit an annotated tag's own id names,
+    peeled through a tag of a tag (`<id>^{}`). `(oid, why)` for an id that
+    names no commit, `why` as `not_a_commit` says it. And `(oid, "")` where
+    the clone cannot say, no object with that id or no clone there, which
+    the digest's reader then names in its own words
+    (`pin-source-unreadable`)."""
+    kind = _git_answer(clone, "cat-file", "-t", oid)
+    if kind in (None, COMMIT_KIND):
+        return oid, ""
+    names = None
+    if kind == TAG_KIND:
+        peeled = (_git_answer(clone, "rev-parse", "-q", "--verify",
+                              f"{oid}^{{}}") or "").lower()
+        names = (_git_answer(clone, "cat-file", "-t", peeled) if peeled
+                 else None)
+        if names == COMMIT_KIND:
+            return peeled, ""
+    return oid, not_a_commit(kind, names)
+
+
+def _gh_object(repository: str, commit: str, oid: str) -> dict:
+    """What the forge says `oid` is in `repository`, through `gh api
+    graphql`: `{"__typename": ..., "target": ...}`. A forge that cannot
+    answer, holds no such object, or answers with no kind this reads, is
+    `pin-unreadable` for the pin `commit`, as `pin_digest_from_gh` refuses
+    one; no `gh` on PATH is its `gh-not-found`."""
+    owner, name = repository.split("/", 1)
+    try:
+        proc = subprocess.run(
+            ["gh", "api", "graphql", "-f", f"query={GH_OBJECT_QUERY}",
+             "-f", f"owner={owner}", "-f", f"name={name}", "-f", f"oid={oid}"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+    except FileNotFoundError as exc:
+        raise _gh_not_on_path(repository, commit, exc) from exc
+    if proc.returncode != 0:
+        raise _gh_could_not_read(repository, commit, proc.stderr.strip())
+    try:
+        found = json.loads(proc.stdout)["data"]["repository"]["object"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise _gh_could_not_read(
+            repository, commit,
+            f"its answer about {oid} holds no `data.repository.object` "
+            f"({exc!r})") from exc
+    if found is None:
+        raise _gh_could_not_read(
+            repository, commit,
+            f"the forge holds no object {oid} in {repository}")
+    if not isinstance(found, dict) or found.get("__typename") not in GH_KINDS:
+        raise _gh_could_not_read(
+            repository, commit,
+            f"its answer about {oid} names no kind of object: {found!r}")
+    return found
+
+
+def commit_on_forge(repository: str, oid: str) -> tuple[str, str]:
+    """`commit_in_clone`'s answer, asked of the forge (#651): `(commit,
+    "")` for the commit `oid` names in `repository`, itself or the one its
+    annotated tags lead to, or `(oid, why)` for an id that names none. Each
+    tag in a tag of a tag is one more question; a tag that names a commit,
+    a tree or a blob is answered by the question that found it."""
+    found = _gh_object(repository, oid, oid)
+    kind = GH_KINDS[found["__typename"]]
+    names, seen = kind, {oid}
+    while names == TAG_KIND:
+        target = found.get("target")
+        target = target if isinstance(target, dict) else {}
+        peeled = str(target.get("oid") or "").lower()
+        names = GH_KINDS.get(target.get("__typename"))
+        if OBJECT_ID_RE.fullmatch(peeled) is None or peeled in seen:
+            names = None
+        elif names == COMMIT_KIND:
+            return peeled, ""
+        elif names == TAG_KIND:
+            seen.add(peeled)
+            found = _gh_object(repository, oid, peeled)
+    if kind == COMMIT_KIND:
+        return oid, ""
+    return oid, not_a_commit(kind, names)
 
 
 #: How a pin file says its digest was read (`digest_source:`): from a clone
@@ -2941,10 +3289,16 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
     values, `local-clone (<path>)`, so that `check` recomputes the digest in
     that clone (#449): the plan is a file on that machine, which nothing
     commits, and `execute` writes the pin file's field as this says it.
+
+    THE COMMIT IS THE ONE THE ID NAMES (#651), asked where the digest is
+    read, before it is (`_pinned_commit`): an annotated tag's own id is
+    peeled to its commit, and a tree's, a blob's or a tag of either is
+    refused `pin-not-a-commit`.
     """
     pins: dict[str, dict[str, str]] = {}
     for raw in args.pin:
         product, repository, commit = parse_pin(raw, args.pin_owner)
+        commit = _pinned_commit(args, raw, repository, commit)
         if args.pin_source is not None:
             digest = pin_digest_from_source(
                 _resolved_pin_source(args.pin_source), commit, repository)
@@ -2960,6 +3314,30 @@ def declared_pin_values(args) -> dict[str, dict[str, str]]:
             "PIN_DIGEST_SOURCE": digest_source,
         }
     return pins
+
+
+def _pinned_commit(args, raw: str, repository: str, typed: str) -> str:
+    """The commit the `--pin` `raw`, whose id is `typed`, pins (#651), asked
+    where `declared_pin_values` reads its digest: in the `--pin-source`
+    clone, or of the forge. A peeled tag is said in one line on stdout, as
+    `bump-leg.py` says one, before the plan either tool prints; an id that
+    names no commit is `pin-not-a-commit`, before any digest is read, and
+    so before the scaffold creates anything or `plan` writes a plan."""
+    if args.pin_source is not None:
+        clone = _resolved_pin_source(args.pin_source)
+        commit, why = commit_in_clone(clone, typed)
+        where = f"the clone at {shown_source(clone)}"
+    else:
+        commit, why = commit_on_forge(repository, typed)
+        where = f"{repository} on the forge"
+    if why:
+        raise Refusal("pin-not-a-commit",
+                      f"--pin {raw.strip()} {why} in {where}, not a commit",
+                      PIN_NOT_A_COMMIT_REMEDIATION)
+    if commit != typed:
+        print(f"--pin {repository} @ {typed[:12]} is an annotated tag; it "
+              f"names commit {commit[:12]}, which is what the pin records")
+    return commit
 
 
 def declared_pin_products(args) -> dict[str, None]:

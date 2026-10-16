@@ -3649,20 +3649,26 @@ def test_a_sibling_with_this_members_id_but_another_origin_is_not_counted(
 
 #: What the `no working clone` note ends with, spelt out here and not
 #: imported from the doctor: a test that read the wording back from the thing
-#: under test would pass whatever it said.
+#: under test would pass whatever it said. EXACTLY, case included (#669):
+#: `siblings.py` compares the folder's name with `==` on every disk.
 PLACES_NOTE = (
-    "(`make siblings` places them when the holder is in a folder named after "
-    "its repository, or in one a link of that name beside it leads to; with "
-    "the holder anywhere else it clones nothing and prints the `mv` that "
-    "moves it into such a folder; the pinned copy under members/ is "
-    "detached by design)")
+    "(`make siblings` places them when the holder is in a folder named "
+    "exactly after its repository (case included), or in one a link of that "
+    "name beside it leads to; with the holder anywhere else it clones "
+    "nothing and prints the `mv` that moves it into such a folder; the "
+    "pinned copy under members/ is detached by design)")
+
+#: How the sentence about any other directory beside the holder goes on,
+#: after what stands there (#669).
+NOT_COUNTED = (
+    "so it is not counted as its working clone (`make siblings`, from a "
+    "holder in a folder named exactly after its repository (case "
+    "included), ")
 
 #: The same for a directory beside the holder that is a clone of another
 #: repository.
-STRANGER_NOTE = (
-    "so it is not counted as its working clone (`make siblings`, from a "
-    "holder in a folder named after its repository, calls the same "
-    "directory WRONG ORIGIN and leaves it exactly as it is)")
+STRANGER_NOTE = (NOT_COUNTED + "calls the same directory WRONG ORIGIN and "
+                 "leaves it exactly as it is)")
 
 
 @pytest.mark.parametrize("in_family_folder", [False, True],
@@ -3707,7 +3713,11 @@ def test_the_stranger_note_says_from_which_folder_make_siblings_calls_it(
     #578 it asks about the holder's parent folder first and stops before it
     looks at any member, so the sentence holds from a holder in a folder
     named after its repository (not the family's display `name:`) and says
-    so."""
+    so.
+
+    AND THE STRANGER IS NOT IN THE `places them` NOTE (#669). It was, so one
+    row said both that `make siblings` places IRRS and that it leaves IRRS
+    exactly as it is; this test pinned both on one row."""
     root, sibling = member_beside(holder, tmp_path)
     elsewhere = str(holder["base"] / "remotes" / f"{FAMILY_NAME}.git")
     git("remote", "set-url", "origin", elsewhere, cwd=sibling)
@@ -3715,11 +3725,218 @@ def test_the_stranger_note_says_from_which_folder_make_siblings_calls_it(
     assert row["detail"]["members"][0]["other_origin"] is not None, row
     assert STRANGER_NOTE in row["reason"], row["reason"]
     assert "(`make siblings` calls the same directory" not in row["reason"]
-    # It is said before the absence it explains, and the green note follows
-    # it on the same row.
-    assert PLACES_NOTE in row["reason"], row["reason"]
-    assert row["reason"].index(STRANGER_NOTE) < row["reason"].index(
-        PLACES_NOTE), row["reason"]
+    assert PLACES_NOTE not in row["reason"], row["reason"]
+    assert "no working clone beside the holder for" not in row["reason"], \
+        row["reason"]
+    assert row["detail"]["without_working_clone"] == [FAMILY_MEMBER], row
+
+
+# --- #669: what stands at `../<Project>`, in `make siblings`' order ---------
+#
+# `member_state` records it as `sibling`, in `siblings.py::place`'s order,
+# and the row says of each member what `make siblings` does with it. The
+# holder sits in its family folder here, so its own `make siblings
+# --dry-run` reaches the member and can be asked about the same directory.
+
+#: What the row says of each `sibling` state, spelt out here.
+SLOT_SAYS = {
+    "is-the-holder": ("is this holder itself, " + NOT_COUNTED
+                      + "calls the same directory IS THE HOLDER and leaves "
+                        "it exactly as it is)"),
+    "not-a-clone": ("is neither a git clone nor an empty folder, "
+                    + NOT_COUNTED
+                    + "calls the same directory NOT A CLONE and leaves it "
+                      "exactly as it is)"),
+    "absent": PLACES_NOTE,
+    "wrong-origin": STRANGER_NOTE,
+    "wrong-project": ("is a clone of the member's remote whose project.yaml "
+                      "and the family's row do not record the same id, "
+                      + NOT_COUNTED
+                      + "calls the same directory WRONG PROJECT and leaves "
+                        "it exactly as it is)"),
+    "unidentified": ("is a clone of the member's remote with no "
+                     "project.yaml that says it is this member, "
+                     + NOT_COUNTED
+                     + "fetches it as the member, and nothing else)"),
+    "working-clone": "each with a working clone beside the holder",
+}
+
+#: What the row says instead of a `not-a-clone` slot `make siblings` ends in
+#: a traceback on today (#735): what is there, and nothing of what `make
+#: siblings` does with it.
+UNREADABLE_SAYS = {
+    "file": "is a file, not a folder, so it is not counted as its working "
+            "clone",
+    "unlistable": "is a folder that cannot be listed, so it is not counted "
+                  "as its working clone",
+    "unenterable": "is a folder that cannot be listed, so it is not counted "
+                   "as its working clone",
+}
+
+#: The state the holder's own `scripts/siblings.py --dry-run` prints in its
+#: layout table for the same directory: the row's word where it refuses it,
+#: and what it does instead where it does not.
+DRY_RUN_SAYS = {
+    "is-the-holder": "IS THE HOLDER",
+    "not-a-clone": "NOT A CLONE",
+    "absent": "would clone",
+    "wrong-origin": "WRONG ORIGIN",
+    "wrong-project": "WRONG PROJECT",
+    "unidentified": "present, would fetch",
+    "working-clone": "present, would fetch",
+}
+
+#: A folder with a file in it whose mode then hides what is in it: one that
+#: can be entered and not listed (`711` is common for another user's
+#: directory), and one that can be neither.
+LOCKED = {"unlistable": 0o311, "unenterable": 0o000}
+LOCKED_HOLDS = pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
+    reason="a mode hides a folder's contents only on POSIX, from a user "
+           "who is not root")
+
+#: What is put at `../IRRS`, and the state the row records for it, for both
+#: tests below.
+SLOTS = [
+    pytest.param("holder", "is-the-holder", id="the-holder-itself"),
+    pytest.param("files", "not-a-clone", id="a-folder-with-files"),
+    pytest.param("nothing", "absent", id="nothing"),
+    pytest.param("empty", "absent", id="an-empty-folder"),
+    pytest.param("another-remote", "wrong-origin",
+                 id="the-member-from-another-remote"),
+    # `verify_sibling` asks the origin BEFORE the id, so a clone from another
+    # remote that declares another id is WRONG ORIGIN, not WRONG PROJECT.
+    pytest.param("another-remote-and-id", "wrong-origin",
+                 id="another-id-from-another-remote"),
+    pytest.param("another-repository", "wrong-origin",
+                 id="another-repository"),
+    pytest.param("another-id", "wrong-project",
+                 id="another-id-at-the-right-origin"),
+    pytest.param("no-manifest", "unidentified",
+                 id="no-project-yaml-at-the-right-origin"),
+    pytest.param("clone", "working-clone", id="the-working-clone"),
+]
+
+#: A file at `../IRRS`, which `make siblings` ends in a traceback on today
+#: (#735).
+A_FILE = ("file", "not-a-clone")
+
+
+def holder_with_slot(holder: dict, tmp_path: Path, slot: str) -> Path:
+    """A holder in its family folder, `<tmp>/InkRouter/InkRouter`, with
+    `slot` at `../IRRS`; the holder is returned.
+
+    `holder` puts the holder itself at `../IRRS`, so the member's slot IS
+    the holder, as for a member named after its own family. Every clone is
+    made from the url the holder mounts the member from, as `member_beside`
+    makes one, and then changed. A `LOCKED` slot is a folder with a file in
+    it, and its mode is the test's to take (`locked`).
+    """
+    folder = tmp_path / FAMILY_NAME
+    folder.mkdir()
+    root = folder / (FAMILY_MEMBER if slot == "holder" else FAMILY_NAME)
+    shutil.copytree(holder["root"], root, symlinks=True)
+    beside = folder / FAMILY_MEMBER
+    if slot in ("files", "empty", "another-repository", *LOCKED):
+        beside.mkdir()
+    if slot in ("files", *LOCKED):
+        (beside / "notes.txt").write_text("somebody's\n", encoding="utf-8")
+    elif slot == "file":
+        beside.write_text("somebody's\n", encoding="utf-8")
+    elif slot == "another-repository":
+        git("init", "-q", "-b", "main", ".", cwd=beside)
+    elif slot not in ("holder", "nothing", "empty"):
+        cloned_just_pushed(holder["base"] / "remotes" / f"{FAMILY_MEMBER}.git",
+                           beside, recurse=False)
+    if slot in ("another-remote", "another-remote-and-id"):
+        git("remote", "set-url", "origin",
+            str(holder["base"] / "remotes" / f"{FAMILY_NAME}.git"), cwd=beside)
+    if slot in ("another-id", "another-remote-and-id"):
+        manifest = beside / "project.yaml"
+        manifest.write_text(manifest.read_text(encoding="utf-8").replace(
+            'id: "irrs"', 'id: "somethingelse"'), encoding="utf-8")
+    elif slot == "no-manifest":
+        (beside / "project.yaml").unlink()
+    return root
+
+
+def locked(request, path: Path, slot: str) -> None:
+    """`path` given `LOCKED[slot]`'s mode, and its own back when the test
+    ends, so the basetemp can be removed."""
+    if slot in LOCKED:
+        path.chmod(LOCKED[slot])
+        request.addfinalizer(lambda: path.chmod(0o755))
+
+
+@pytest.mark.parametrize("slot, state", [
+    *SLOTS,
+    pytest.param(*A_FILE, id="a-file"),
+    pytest.param("unlistable", "not-a-clone", id="a-folder-it-cannot-list",
+                 marks=LOCKED_HOLDS),
+    pytest.param("unenterable", "not-a-clone",
+                 id="a-folder-it-cannot-enter", marks=LOCKED_HOLDS),
+])
+def test_the_row_says_what_make_siblings_does_with_each_slot(
+        standard, holder, tmp_path, request, slot, state):
+    """#669: ONE ROW PER SLOT STATE. `--json` carries the state as
+    `sibling`, so a caller need not parse the sentence; the sentence says,
+    of this member alone, what `make siblings` does with the directory, and
+    only an absent or empty slot is in the `places them` note. Every state
+    is still `ok` and `COMPLIANT`: where somebody keeps a checkout is the
+    workstation's layout, and `without_working_clone` keeps its meaning.
+
+    A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone`, and the
+    row says nothing of `make siblings` there, which ends in a traceback on
+    it today (#735). The folder was the review's MUST on #705: `iterdir`'s
+    `PermissionError` made the row a FINDING and the holder DRIFTED, exit
+    1, where main says COMPLIANT, exit 0."""
+    root = holder_with_slot(holder, tmp_path, slot)
+    locked(request, root.parent / FAMILY_MEMBER, slot)
+    result = doctor(standard, root, "--json")
+    row = rows_of(result)["members"]
+    assert row["detail"]["members"][0]["sibling"] == state, row
+    assert UNREADABLE_SAYS.get(slot, SLOT_SAYS[state]) in row["reason"], \
+        row["reason"]
+    assert (PLACES_NOTE in row["reason"]) is (state == "absent"), \
+        row["reason"]
+    assert ("`make siblings`" in row["reason"]) is (
+        slot not in UNREADABLE_SAYS and state != "working-clone"), \
+        row["reason"]
+    assert (row["detail"]["without_working_clone"] == []) is \
+        (state == "working-clone"), row
+    assert row["status"] == "ok", row
+    assert json.loads(result.stdout)["verdict"] == "COMPLIANT", result.stdout
+
+
+@pytest.mark.parametrize("slot, state", [
+    *SLOTS,
+    pytest.param(*A_FILE, id="a-file", marks=pytest.mark.xfail(
+        strict=True, raises=AssertionError,
+        reason="#735: `siblings.py:558` raises NotADirectoryError on a "
+               "file, so `make siblings` ends in a traceback")),
+])
+def test_make_siblings_dry_run_gives_the_rows_word_for_each_slot(
+        standard, holder, tmp_path, slot, state):
+    """#669: THE AGREEMENT. The holder's own `scripts/siblings.py
+    --dry-run`, run from its family folder, says of the member what the
+    row's `sibling` state says it does: the same word where it refuses the
+    directory, `would clone` where the row says it places it, and `present,
+    would fetch` where it fetches it as the member. The row restates
+    `place`'s order, and this is what keeps the two tools answering
+    together about one directory (#146). A FILE is held to it too, as a
+    strict xfail until #735 makes `make siblings` answer NOT A CLONE."""
+    root = holder_with_slot(holder, tmp_path, slot)
+    entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
+        "members"][0]
+    assert entry["sibling"] == state, entry
+    ran = run_script(root / "scripts" / "siblings.py", "--dry-run",
+                     cwd=root.parent)
+    assert "Traceback" not in ran.stderr, ran.stderr
+    said = [" ".join(line.split()) for line in ran.stdout.splitlines()
+            if line.split()[:2] == ["sibling", FAMILY_MEMBER]]
+    assert len(said) == 1, ran.stdout + ran.stderr
+    assert said[0].startswith(
+        f"sibling {FAMILY_MEMBER} {DRY_RUN_SAYS[entry['sibling']]} "), said
 
 
 def test_a_sibling_at_the_right_origin_with_another_id_is_not_the_member(
@@ -4417,7 +4634,7 @@ def test_working_clone_and_verify_sibling_ACCEPT_a_symlinked_mirror(
             "kind: project-manifest\nid: 7c9f1b2d\n"
             f"name: {FAMILY_MEMBER}\n", encoding="utf-8")
 
-        assert doctor.working_clone(work, row, mount) == (work.as_posix(),
+        assert doctor.working_clone(work, row, mount) == ("working-clone",
                                                           None), what
         sibling = siblings.Sibling(FAMILY_MEMBER, work)
         assert siblings.verify_sibling(
@@ -4428,7 +4645,8 @@ def test_working_clone_and_verify_sibling_ACCEPT_a_symlinked_mirror(
         # by both, so this is not a test that accepts everything
         git("remote", "set-url", "origin",
             str(tmp_path / "stranger" / "Other.git"), cwd=work)
-        assert doctor.working_clone(work, row, mount)[0] is None, what
+        assert doctor.working_clone(work, row, mount)[0] == \
+            "wrong-origin", what
         stranger = siblings.Sibling(FAMILY_MEMBER, work)
         assert siblings.verify_sibling(
             row, work, mount, row["repository"], stranger) is False, what
@@ -4477,7 +4695,8 @@ def test_working_clone_and_verify_sibling_agree_on_a_non_utf8_origin(
         assert siblings.verify_sibling(
             row, work, mount, row["repository"], sibling) is accepted, what
         assert doctor.working_clone(work, row, mount) == (
-            (work.as_posix(), None) if accepted else (None, read)), what
+            ("working-clone", None) if accepted
+            else ("wrong-origin", read)), what
 
 
 # --- the adversarial review on #96 ------------------------------------------

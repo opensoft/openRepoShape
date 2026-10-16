@@ -72,12 +72,16 @@ WHAT IS CHECKED
     `shape-doctor.py` holds each submodule a leg keeps to the row naming its
     path. A row whose `path` or `leg` is refused here holds nothing there.
   - `answered_paths`, OPTIONAL: the record an adoption writes of the leg each
-    entry covering a path the path policy asked about was answered into
-    (#525), in the same rows, except that a directory's `path` ends with
-    the one `/` the adoption plan wrote it with, and no row's path lies
-    under another's. `shape-doctor.py` takes a row as the answer to the
-    question it would ask again of that path in that leg. Neither record is
-    checked against the legs: this runs where they are not checked out.
+    entry covering a path the path policy asked about, or put in another
+    leg, was answered into (#525, #655), in the same rows, except that a
+    directory's `path` ends with the one `/` the adoption plan wrote it
+    with, and no row's path lies under another's. `shape-doctor.py` takes a
+    row as the answer for that path in that leg: not asked again, and not
+    misplaced. A directory's row answers for every file under it, one added
+    after the adoption too: nothing holds a file to `source_commit`.
+    Neither record is checked against the legs: this runs where they are
+    not checked out, so a directory's row written without its `/`, which
+    names a file, is the doctor's to say (#655).
 
 EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadable)
 """
@@ -920,16 +924,16 @@ def _record_row_findings(record: _Record, index: int, row,
 
 def _record_findings(manifest: dict, record: _Record) -> list[str]:
     """`submodules` or `answered_paths`, OPTIONAL: the leg each source
-    submodule (#189), or each path the policy asked about (#525), was
-    answered into when this project was adopted.
+    submodule (#189), or each path the policy asked about or put in another
+    leg (#525, #655), was answered into when this project was adopted.
 
     A RECORD IS CHECKED BECAUSE SOMETHING READS IT. `shape-doctor.py` holds
     every submodule a leg keeps to the row naming its path, and calls one in
     the other leg MISPLACED; it takes an answered path's row as the answer
-    to the question it would ask again of it. A row it could not read would
-    leave that submodule unchecked, or that question asked, and nothing
-    would say so. Absent is fine: a project with nothing to record has none,
-    and nor does one adopted before the record was written.
+    for it in that leg. A row it could not read would leave that submodule
+    unchecked, or that path asked about or misplaced, and nothing would say
+    so. Absent is fine: a project with nothing to record has none, and nor
+    does one adopted before the record was written.
     """
     rows = manifest.get(record.key)
     if rows is None:
