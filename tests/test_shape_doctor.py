@@ -10312,9 +10312,9 @@ def test_an_exported_pythonpath_does_not_reach_a_template_validator(
     # `sitecustomize`, so that case no longer shows here; the probe in
     # `test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given`
     # holds it, beside the root as well as inside it. Under `-S` this loop
-    # cannot fire. It is kept as a tripwire for a future removal of `-S`,
-    # which `test_run_validator_starts_every_child_with_no_site` (in
-    # `tests/test_doctor_validator_site.py`) is the test that holds.
+    # cannot fire. It is kept as a tripwire for a future removal of `-S`;
+    # `test_run_validator_starts_every_child_with_no_site` (in
+    # `tests/test_doctor_validator_site.py`) is the test that holds `-S`.
     reached = [name for name, other in rows.items()
                if "DECOY" in other["reason"]
                or "(exit 86)" in other["reason"]
