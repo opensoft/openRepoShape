@@ -677,15 +677,22 @@ def test_the_names_a_refusal_shows_are_told_apart_by_their_tails():
 
 def scaffold_against_a_fake_gh(tmp_path: Path, flag: str):
     """A scaffold with no `--local-remote-dir`, so it goes to the forge, with
-    a fake `gh` first on PATH that logs each call and answers no. Returns the
-    run and the log's path, which exists only if `gh` was asked."""
+    a fake `gh` first on PATH that logs each call and answers no: `repo
+    view` as GitHub answers for a repository it does not have, the one
+    failure the scaffold reads as "absent" (#609), and anything else with a
+    failure of its own. Returns the run and the log's path, which exists
+    only if `gh` was asked."""
     bin_dir, log = tmp_path / "bin", tmp_path / "gh.log"
     bin_dir.mkdir()
     shim = bin_dir / "gh"
     shim.write_text(textwrap.dedent("""\
         #!/bin/sh
         echo "$@" >> "$FAKE_GH_LOG"
-        echo "fake gh: no network here" >&2
+        case "$1 $2" in
+          "repo view") echo "GraphQL: Could not resolve to a Repository" \\
+                            "with the name '$3'. (repository)" >&2 ;;
+          *) echo "fake gh: no network here" >&2 ;;
+        esac
         exit 1
         """), encoding="utf-8")
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR)

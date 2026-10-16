@@ -321,10 +321,12 @@ options:
                         is refused before anything is created: `project.yaml`
                         is one, and `contracts` holds several.
   --dry-run             print the plan and ask, as the real run does, whether
-                        each of the three repositories already exists (`gh
-                        repo view` and its commit listing, or the bare
-                        repositories with --local-remote-dir), refusing what
-                        it refuses; create no remote and push nothing
+                        each folder it makes can be made (--work-dir, the
+                        trees in it, --local-remote-dir) and whether each of
+                        the three repositories already exists (`gh repo view`
+                        and its commit listing, or the bare repositories with
+                        --local-remote-dir), refusing what it refuses; make no
+                        folder, create no remote and push nothing
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
                         repo create` (the TEST path; no network)
@@ -771,10 +773,12 @@ options:
                         with --into.
   --no-push
   --dry-run             print the plan and ask, as the real run does, whether
-                        <org>/<Family> already exists (`gh repo view` and its
-                        commit listing; with --local-remote-dir, the bare
-                        repository), refusing what it refuses; make no folder,
-                        remote or repository
+                        each folder it makes can be made (the family folder or
+                        --work-dir, the holder in it, --local-remote-dir) and
+                        whether <org>/<Family> already exists (`gh repo view`
+                        and its commit listing; with --local-remote-dir, the
+                        bare repository), refusing what it refuses; make no
+                        folder, remote or repository
 ```
 
 #### `scripts/family.py add`
