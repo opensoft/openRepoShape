@@ -181,6 +181,9 @@ from shape_materialize import (  # noqa: E402
 # How every command this prints for a person to paste spells its paths
 # (#486), the quoting the holder's `scripts/siblings.py` uses too.
 from repo_shape import shell_line, shell_quoted  # noqa: E402
+# Whether a creator read from `git config user.name` is one line of text, the
+# question the scaffold and `adopt-project.py` ask of an elector (#426).
+from shape_materialize import unwritable_reason  # noqa: E402
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -1098,19 +1101,64 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     return family, family_id, topic
 
 
+#: What `family-unwritable-value` is told to do (#426), in the scaffold's
+#: words for the same refusal (`scaffold-unwritable-value`, #282).
+CREATOR_UNWRITABLE_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "`init` read the creator from `git config user.name`, because no "
+    "--created-by was given and GIT_AUTHOR_NAME names nobody: pass "
+    "--created-by 'Your Name', or correct that setting. git keeps it as the "
+    "bytes it was given, so a name saved in a legacy code page holds a byte "
+    "that is not UTF-8, which the manifest could keep only as a lone "
+    "surrogate, and that is no character; a line break or a control "
+    "character would break or garble the line the plan prints it on; and a "
+    "bidirectional embedding, override or isolate control would show the "
+    "rest of that line in another order than it is written.")
+
+
 def _creator_name(args) -> str:
     """Whoever `--created-by` (or the environment, or git config) says
     created this family — refused when nothing does.
 
     Split from `cmd_init` for #136: creating a family is a human's act and
     the manifest records whose.
+
+    A `git config user.name` THAT IS NOT TEXT IS REFUSED BY NAME (#426), as
+    the scaffold refuses the same setting (#282) and `adopt-project.py`'s
+    `plan` does (#292). git keeps the name as the bytes it was given, and one
+    saved in a legacy code page is not UTF-8: nobody did anything wrong.
+    `git_out`'s own strict decode raised `UnicodeDecodeError`, a traceback,
+    exit 1, under `--dry-run` too, naming neither the setting nor the flag
+    (`--created-by`) that gets past it. The setting is now read as bytes and
+    decoded as `sys.argv` and `os.environ` are, `surrogateescape`, so the
+    byte survives as a lone surrogate for `unwritable_reason` to name: the
+    one question the scaffold and adopt ask of the same name, so a name that
+    holds a line break, a control character or a bidi control is refused in
+    the same words as one that holds a byte that is not UTF-8. It is asked
+    here, before the holder's remote or work directory, and `--dry-run`
+    refuses alike. ONLY WHAT `git config user.name` ANSWERED IS ASKED: a
+    `--created-by` or a GIT_AUTHOR_NAME holding such a byte is another
+    question (#426 leaves it), and neither is read as git's answer.
     """
     created_by = args.created_by or (os.environ.get("GIT_AUTHOR_NAME") or "").strip()
     if not created_by:
         try:
-            created_by = git_out(["config", "user.name"], cwd=SHAPE_ROOT)
+            created_by = git_out(["config", "user.name"], cwd=SHAPE_ROOT,
+                                 binary=True).decode(
+                                     "utf-8", "surrogateescape").strip()
         except Refusal:
             created_by = ""
+        else:
+            reason = unwritable_reason(created_by)
+            if reason:
+                # Named as `_manifest_flags` (#307) names a creator no flag
+                # supplied, so the two refusals agree on who is meant.
+                raise Refusal(
+                    "family-unwritable-value",
+                    f"{_manifest_flags(args)['CREATED_BY']} is "
+                    f"{created_by!r}, which `init` records in the holder's "
+                    f"`family.yaml`, and {reason}.",
+                    CREATOR_UNWRITABLE_REMEDIATION)
     if not created_by:
         raise Refusal(
             "family-no-creator",
@@ -1138,10 +1186,18 @@ def _shape_snapshot() -> tuple[str, str]:
     it is dirty.
 
     Split from `cmd_init` for #136.
+
+    WHETHER THE CHECKOUT IS DIRTY IS ASKED OF GIT'S BYTES (#423). Only
+    whether `status --porcelain` printed anything is used, never what, so it
+    is not decoded at all. With `core.quotePath=false` git prints a file name
+    as the bytes it holds, and a name that is not UTF-8 made `git_out`'s
+    strict decode raise `UnicodeDecodeError`: a traceback, exit 1, before the
+    holder's remote existed, where this means to print the warning below and
+    go on.
     """
     shape_commit = git_out(["rev-parse", "HEAD"], cwd=SHAPE_ROOT).lower()
     shape_tree = tree_digest(SHAPE_ROOT, shape_commit)
-    if git_out(["status", "--porcelain"], cwd=SHAPE_ROOT):
+    if git_out(["status", "--porcelain"], cwd=SHAPE_ROOT, binary=True):
         print("WARNING the openRepoShape checkout is DIRTY. `commit:` and "
               f"`tree_sha256` will record {shape_commit[:12]}, which does NOT "
               "describe the bytes being copied. The per-file sha256 rows are "
