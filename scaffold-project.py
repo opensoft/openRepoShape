@@ -84,15 +84,9 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
     git_out, link_pins_from_trees, repo_basename, shell_line, tree_digest,
-)
-# The variable a chain link's tree is read through, and which links share
-# one, for the sources the scaffold offers a link it could not read (#610).
-from repo_shape import (  # noqa: E402
-    pin_product_key, pin_source_env_name, pin_source_env_shared,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
@@ -103,6 +97,11 @@ from shape_materialize import (  # noqa: E402
 )
 # The leg-path rule `adopt-project.py` asks of its own paths (#179).
 from shape_materialize import refuse_bad_leg_paths  # noqa: E402
+# The root's visibility and the Free-plan secrets note, asked as `family.py`
+# asks them of its holder (#660).
+from shape_materialize import (  # noqa: E402
+    free_plan_secrets_note, repository_visibility,
+)
 # What the new project's own reader and `validate-manifest.py` would make of
 # the values written into its manifest, and whether a repository's name can
 # be a directory's: asked before anything is created (#258, #261).
@@ -113,6 +112,11 @@ from shape_advisory import scaffold_lines  # noqa: E402
 # Whether `--elected-by`, `--reference` and `--name` are text a file can
 # hold: the question `adopt-project.py` asks of the same values (#282).
 from shape_materialize import unwritable_reason  # noqa: E402
+# The words a chain link that is not reachable is offered: what THIS tool
+# reads (#610), which setup's step (4) hands the naming gate too (#661).
+from shape_materialize import (  # noqa: E402
+    scaffold_link_remedies as _link_remedies,
+)
 # The shape half of the leg-path collision rule, which `adopt-project.py`
 # asks of its own mount paths (#172), imported as one unit (#197), with the
 # one spelling of the file a `--pin` adds to what the shape writes.
@@ -223,8 +227,10 @@ def remote_is_empty(repository: str) -> bool | None:
 def remote_visibility(repository: str) -> str | None:
     """`<org>/<repo>`'s GitHub visibility (`private`, `public`, `internal`),
     lowercased, or None if it cannot be read — the repository does not exist,
-    or `gh` cannot see it. Never called for a `--local-remote-dir` repository:
-    a bare repository on disk has no visibility at all.
+    `gh` cannot see it, or it answered a word that is not one of the three.
+    It is `repository_visibility`, the reader `family.py` asks of its holder
+    (#660). Never called for a `--local-remote-dir` repository: a bare
+    repository on disk has no visibility at all.
 
     NO `gh` ON PATH IS `gh-not-found` (#537), as `remote_is_empty`'s is, and
     not a `FileNotFoundError` traceback: `--reuse-empty-repo` reads the root's
@@ -233,20 +239,10 @@ def remote_visibility(repository: str) -> str | None:
     has to come from here too or the run never reaches the one that has it.
     """
     try:
-        proc = subprocess.run(
-            ["gh", "repo", "view", repository, "--json", "visibility"],
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", check=False)
+        return repository_visibility(repository)
     except FileNotFoundError as exc:
         raise _gh_not_found(
             f"what visibility {repository} has on GitHub", exc) from exc
-    if proc.returncode != 0:
-        return None
-    try:
-        value = json.loads(proc.stdout).get("visibility")
-    except json.JSONDecodeError:
-        return None
-    return str(value).lower() if value else None
 
 
 def local_remote_is_empty(bare: Path) -> bool | None:
@@ -703,7 +699,7 @@ def _refuse_unholdable_manifest(args, values: dict, policy) -> None:
     """
     flags = dict(MANIFEST_FLAGS)
     for key, flag, given, source in (
-            ("PROJECT_ID", "--id", args.id, "--project lowercased"),
+            ("PROJECT_ID", "--id", args.id, ID_DERIVED_FROM),
             ("PROJECT_NAME", "--name", args.name, "--project"),
             ("ELECTED_BY", "--elected-by", args.elected_by,
              "GIT_AUTHOR_NAME or `git config user.name`")):
@@ -772,6 +768,58 @@ def _identity(args, project: str) -> tuple[str, str, str, str, str]:
         ("--reference", reference, ROOT_MANIFEST_AND_README),
         ("--name", display, NAME_WRITTEN_INTO)))
     return project_id, display, elected_on, reference, elected_by
+
+
+#: Where `_identity` takes the id from when no `--id` is passed, as a
+#: sentence names it: in the label `_refuse_unholdable_manifest` gives a
+#: value no flag supplied, and in `scaffold-bad-id` (#659).
+ID_DERIVED_FROM = "--project lowercased"
+
+#: The rule a `--project` is held to, as `naming-unclassified` states it
+#: (`_check_one_name`). `scaffold-bad-id`'s derived remedy names it in the
+#: same words, so the person who follows it is not sent from one refusal to
+#: the other (#659).
+PROJECT_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot "
+                     "or space")
+
+#: How `scaffold-bad-id` is told to go on (#659), in the words
+#: `adopt-project.py plan` gives `adopt-bad-id` (#658). A `--id` the person
+#: passed is theirs to retype. An id `_identity` derived is `--project`
+#: lowercased, and `--project` also names the three repositories, which the
+#: naming policy reads itself: every form it holds takes only ASCII letters,
+#: digits and hyphens, so "pass an explicit lowercase --id" led straight to
+#: `naming-unclassified`, and so would "change --project" to `North-Wind`.
+#: The derived remedy names the rule.
+PASSED_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
+DERIVED_ID_REMEDIATION = (
+    f"Remediation: change --project to {PROJECT_NAME_RULE}. The id is "
+    f"{ID_DERIVED_FROM}, and an explicit --id would not change --project, "
+    "which also names the assembly root and both legs.")
+
+
+def _refuse_bad_id(project_id: str, given: str | None) -> None:
+    """`scaffold-bad-id`: an id the project's validators would not take
+    (`PROJECT_ID_RE`), named by where it came from (#659), as
+    `adopt-project.py plan` names `adopt-bad-id` (#658).
+
+    `given` is `--id` as parsed. One the person passed is named as the flag
+    they typed, value as typed, and keeps its remedy. With none, or an empty
+    one, `_identity` derived the id (`args.id or project.lower()`), and
+    `--id 'north_wind' must match` named a value nobody had typed: the flag
+    is named as `_refuse_unholdable_manifest` names one, by where its value
+    came from, and an empty `--id ''` as empty, because it was passed."""
+    if PROJECT_ID_RE.match(project_id):
+        return
+    pattern = PROJECT_ID_RE.pattern
+    if given:
+        raise Refusal("scaffold-bad-id",
+                      f"--id {project_id!r} must match {pattern}",
+                      PASSED_ID_REMEDIATION)
+    unset = "not given" if given is None else "empty"
+    raise Refusal("scaffold-bad-id",
+                  f"--id ({unset}, so {ID_DERIVED_FROM}) is {project_id!r}, "
+                  f"which must match {pattern}",
+                  DERIVED_ID_REMEDIATION)
 
 
 #: How a refusal names an elector `_elector` did not get from `--elected-by`
@@ -1006,48 +1054,6 @@ def _declaration(args) -> tuple[dict, set, tuple, dict]:
     return pins, declared_pins, chain, link_pins
 
 
-def _link_remedies(chain: tuple) -> dict[str, str]:
-    """What would let each chain link's own tree be read, in the scaffold's
-    own sources: `{pin_product_key(link): the words}` for the
-    `declared-unverified` WARNING about a tree that is not reachable (#610).
-
-    That warning offered "a sibling checkout, SHAPE_PIN_SOURCE_<LINK>, or
-    --link-source <link>=<path>": the naming validator's three, and two of
-    them the scaffold does not have. It has no `--link-source`, and it reads
-    no checkout beside anything (`link_pins_from_trees(chain, None, ...)`).
-    It reads `SHAPE_PIN_SOURCE_<LINK>` for every link, unless another link
-    of the chain shares the variable (#275), and its `--pin-source` for the
-    FIRST link alone (#441), the pinned product's clone. A later link that
-    shares its variable has neither, which only a hand-written chain can
-    hold, and the warning says so.
-
-    Keyed by `pin_product_key`, the key `_chain_link_findings` finds a
-    holder's entry by (#444). Keyed by `casefold()`, `openß` and `openss`,
-    two links of one chain, wrote one entry, and the first link was offered
-    the later one's words.
-    """
-    links = [repo_basename(link) for link in chain]
-    shared = pin_source_env_shared(links)
-    remedies: dict[str, str] = {}
-    for index, link in enumerate(links[:-1]):
-        key = pin_product_key(link)
-        sources = [] if key in shared else [pin_source_env_name(link)]
-        if not index:
-            sources.append(f"a --pin-source clone of {link} that holds its "
-                           "project.yaml")
-        if not sources:
-            remedies[key] = (
-                "the scaffold reads no source for it: "
-                f"{pin_source_env_name(link)} is another link's too, and "
-                "--pin-source is the first link's tree alone")
-        elif len(sources) == 1:
-            remedies[key] = f"{sources[0]} would let it be read"
-        else:
-            remedies[key] = (f"{sources[0]}, or {sources[1]}, "
-                             "would let it be read")
-    return remedies
-
-
 def _check_referent_chain(policy, assembly_name: str, declared_pins: set,
                           chain: tuple, link_pins: dict) -> None:
     """(d) A declared `--referent-chain` reaches the referent the name claims,
@@ -1080,8 +1086,7 @@ def _check_one_name(policy, name: str, role: str, declared_pins: set,
         raise Refusal(
             "naming-unclassified",
             f"{name!r} matches no family in the naming policy. "
-            "`<Project>` is one CamelCase token with no hyphen, "
-            "underscore, dot or space.",
+            f"`<Project>` is {PROJECT_NAME_RULE}.",
             "Remediation: re-run with a --project value of that form.",
         )
     if not accepts_role(found, role):
@@ -1346,11 +1351,14 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
     reused one what GitHub says of it. A reused leg's is what
     `_reused_leg_visibility` read, with its WARNING. The reused ROOT's is read
     here without one, because `_leg_visibility` has already said where the
-    run's flag disagrees with it.
+    run's flag disagrees with it, and is None where GitHub does not say
+    (#660): the run's `--visibility` is not the root's, so a public root
+    whose read failed was given the Free-plan hint as private, and
+    `_private_leg_note` says now that it could not be read.
     """
     display = values["PROJECT_NAME"]
     project_id = values["PROJECT_ID"]
-    standing: dict[str, str] = {}
+    standing: dict[str, str | None] = {}
     print("\ncreating remotes")
     for role in ("spec", "code", "assembly"):
         standing[role] = args.visibility
@@ -1359,8 +1367,7 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
                   + ("zero commits)" if reused[role] is None else
                      f"holding this scaffold's seed {reused[role][:12]})"))
             if not local and role == "assembly":
-                standing[role] = (remote_visibility(repositories[role])
-                                  or args.visibility)
+                standing[role] = remote_visibility(repositories[role])
             elif not local:
                 standing[role] = _reused_leg_visibility(args,
                                                         repositories[role])
@@ -1429,6 +1436,13 @@ def _private_leg_note(args, repositories: dict, local: bool,
     was told the secrets resolve to EMPTY because a leg is private, when the
     reason is that the root is. `adopt-project.py` goes by its root the same
     way.
+
+    WHAT GITHUB DOES NOT SAY IS SAID (#660), by `free_plan_secrets_note`,
+    which adopt and `family.py` ask too: a reused root whose visibility could
+    not be read (`standing` None) is `ROOT_VISIBILITY_UNREAD`, where it took
+    the run's `--visibility`, and a closed root whose organisation's plan
+    could not be read is `FREE_PLAN_UNREAD`, where it was silent as for a
+    paid plan.
     """
     closed = [role for role in ("spec", "code")
               if standing[role] in ("private", "internal")]
@@ -1446,12 +1460,10 @@ def _private_leg_note(args, repositories: dict, local: bool,
               "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
               f"PAT (contents:read on {which}, fallback) — or the `validate` "
               f"check cannot check {them} out.")
-        root_is_closed = standing["assembly"] in ("private", "internal")
-        hint = root_is_closed and free_plan_secret_hint(
-            args.org, repositories["assembly"],
-            f"{repositories['assembly']} is")
-        if hint:
-            print(hint)
+        note = free_plan_secrets_note(args.org, repositories["assembly"],
+                                      standing["assembly"])
+        if note:
+            print(note)
 
 
 def _take_held_seed(work: Path, url: str, seed: str, tracking: str) -> str:
@@ -1774,10 +1786,7 @@ def _scaffold(args) -> int:
     local, repositories, urls = _repository_urls(args, names)
     _refuse_an_unwritable_clone_url(local, urls["assembly"])
     policy = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
-    if not PROJECT_ID_RE.match(project_id):
-        raise Refusal("scaffold-bad-id",
-                      f"--id {project_id!r} must match {PROJECT_ID_RE.pattern}",
-                      "Remediation: pass an explicit lowercase --id.")
+    _refuse_bad_id(project_id, args.id)
     # WHAT THE PROJECT DECLARES ABOUT ITSELF, before any name is judged.
     # With no `--pin`, a descendant-form name is a claim with no referent and
     # the DECLARED ROLE wins. With `--pin openGlass@<sha>`, `MedxGlass` IS a

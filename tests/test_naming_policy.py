@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import errno
 import os
+import string
 import sys
 from pathlib import Path
 
@@ -17,8 +18,9 @@ from conftest import (
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
-    UNAMBIGUOUS_FORMS, LinkPins, NamingPolicy, Refusal, accepts_role,
-    link_manifest_lookup, link_pins_from_trees, parse_yaml,
+    PROJECT_ID_RE, SAFE_ARG_RE, UNAMBIGUOUS_FORMS, LinkPins, NamingPolicy,
+    Refusal, accepts_role, link_manifest_lookup, link_pins_from_trees,
+    parse_yaml,
 )
 from shape_materialize import naming_block  # noqa: E402
 
@@ -222,6 +224,34 @@ def test_counter_examples_do_not_match_their_family(policy, family_id):
 def test_unclassified_examples_match_no_family(policy):
     for name in policy.data["unclassified_examples"]:
         assert policy.classify(name) is None, f"{name} unexpectedly classified"
+
+
+#: What a `--project` or a `--family` can hold past `checked_value`
+#: (`SAFE_ARG_RE`) that no id takes once lowercased (`PROJECT_ID_RE`): the
+#: characters an id derived from the name is refused for.
+NO_ID_CHARACTERS = (".", "_", "/", "@", "+", "~")
+
+
+def test_those_are_the_characters_the_two_patterns_disagree_on():
+    """`NO_ID_CHARACTERS` is every character the two patterns disagree on,
+    so one either of them gains or loses is asked about below."""
+    between = sorted(c for c in string.printable
+                     if SAFE_ARG_RE.fullmatch(f"a{c}b")
+                     and not PROJECT_ID_RE.match(f"a{c}b".lower()))
+    assert between == sorted(NO_ID_CHARACTERS)
+
+
+@pytest.mark.parametrize("character", NO_ID_CHARACTERS)
+def test_no_root_or_family_name_holds_a_character_no_id_takes(policy,
+                                                              character):
+    """#658 and #659 tell a derived id refused for one of these characters
+    to change `--project` or `--family` to one CamelCase token, never to
+    pass an `--id`, and, in place, that the source cannot be adopted under
+    that name. That holds while the policy classifies no such name as an
+    assembly root or a family holder."""
+    name = f"North{character}Wind"
+    assert policy.classify(name, "assembly", set()) is None, name
+    assert policy.classify(name, "family") is None, name
 
 
 def test_overlaps_are_reported_not_hidden(policy):
@@ -2041,8 +2071,10 @@ def test_the_projects_own_manifest_gate_keeps_its_warning_for_a_tree_it_reached(
     own = run_script(project / "scripts" / "validate-manifest.py",
                      cwd=project)
     assert "Traceback" not in own.stderr, own.stderr
-    assert "which is not reachable here (a sibling checkout, " in (
-        own.stdout + own.stderr), own.stdout + own.stderr
+    assert ("which is not reachable here (SHAPE_PIN_SOURCE_OPENXDOX, or a "
+            "checkout of openXdox beside this root, would let it be read)"
+            ) in own.stdout + own.stderr, own.stdout + own.stderr
+    assert "--link-source" not in own.stdout + own.stderr
     assert "was reached" not in own.stdout + own.stderr
 
 
