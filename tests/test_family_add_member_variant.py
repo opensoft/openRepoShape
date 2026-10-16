@@ -540,10 +540,24 @@ def in_the_index_and_head(root: Path) -> tuple[list[str], str]:
     return [VARIANT, f"MEMBERS/{MEMBER}"], pinned
 
 
+def staged_at_another_commit(root: Path) -> tuple[list[str], str]:
+    """The move to the variant staged at another commit, HEAD still
+    recording the row's gitlink at its own: the index's commit is recorded,
+    never HEAD's, and the move has a commit to make, since HEAD's gitlink
+    at the row's path is another."""
+    first = first_commit(root)
+    git("rm", "-q", "--cached", "--", ROW, cwd=root)
+    git("update-index", "--add", "--cacheinfo", f"160000,{first},{VARIANT}",
+        cwd=root)
+    return [VARIANT], first
+
+
 COMMITS = {
     "the variant at a commit the row does not pin": at_another_commit,
     "two variants in the index": twice_in_the_index,
     "one in the index, one in HEAD alone": in_the_index_and_head,
+    "staged at another commit, HEAD keeping the row's": (
+        staged_at_another_commit),
 }
 
 
