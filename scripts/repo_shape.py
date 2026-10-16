@@ -208,10 +208,14 @@ class YamlError(Exception):
 # explicit key and is refused as a block line opening `? ` is, and an empty
 # value (`{k: }`, `{k:}`) is null as a block `k:` is.
 #
-# AN INDICATOR OPENS NO PLAIN SCALAR, AND A FLOW ENTRY IS NEVER EMPTY (#392,
-# #393), which is what YAML says and PyYAML refuses: `k: ]` is not the text
-# `]`, and `k: [,a]` is not `['a']`. See `_scalar`, `_refuse_entry_indicator`
-# and `_split_flow`.
+# THESE INDICATORS OPEN NO PLAIN SCALAR, AND A FLOW ENTRY IS NEVER EMPTY
+# (#392, #393), which is what YAML says and PyYAML refuses: `]`, `}`, `,`, `@`,
+# a backtick and `%` open no plain scalar, nor does a lone `?`, `-` or `:`, and
+# a flow entry opens with none of `:`, `#`, `- ` and `? `. So `k: ]` is not the
+# text `]`, and `k: [,a]` is not `['a']`. These are not refused, and still read
+# as text where PyYAML refuses them: `k: - a`, `k: : a`, a block key such as
+# `@a: 1`, and `|` or `>` opening a plain scalar. See `_scalar`,
+# `_refuse_entry_indicator` and `_split_flow`.
 
 _DASH_RE = re.compile(r"^-(\s+|$)")
 
@@ -607,11 +611,13 @@ def _flow_value(text: str, item: bool = False) -> Any:
     `[a: b]` as `[{'a': 'b'}]`, and this read the string `'a: b'`. It is
     refused, not read as YAML reads it, because no file this reader serves
     can hold one. Every flow sequence in them is a list of names
-    (`neutral_product_pins`, a plan's `pins` and `allow_empty_legs`,
-    `also_matches`, `referent_chain`), where a mapping would reach the tool
-    as a name -- `{'openGlass': 'x'}` -- and every list of mappings (`legs`,
-    `members`, `files`, `submodules`, a plan's entries, a policy's rules)
-    has rows of two keys or more, which a single pair cannot spell. So
+    (`neutral_product_pins`, `allow_empty_legs`, `also_matches`,
+    `referent_chain`), where a mapping would reach the tool as a name --
+    `{'openGlass': 'x'}` -- and every list of mappings (`legs`, `members`,
+    `files`, `submodules`, a policy's rules, and a plan's entries and
+    `pins`, whose rows are `product`, `repository`, `commit`, `tree_sha256`
+    and `digest_source`) has rows of two keys or more, which a single pair
+    cannot spell. So
     `pins: [openGlass: x]` is a typo, refused as one. `{a: b}` in a sequence
     is a flow mapping and reads, and `[a:b]` is the text `a:b`, as before.
     """
