@@ -6526,6 +6526,13 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     the record answers into this leg, which are returned apart, and
     `unslashed_rows` names the rows for this leg that name a directory
     without its `/`.
+
+    AND A LEG'S `single-repository.yaml` IS ASKED THE RECORD'S QUESTION ONLY
+    WHERE IT IS THE RECORD (#691). The walk asks it by name; `plan`'s own
+    `ask_about_a_record_only` reads the file's `kind:` and gives any other
+    the general question. It is called here over the leg's INDEX, which is
+    what this row lists, so a file edited or deleted on disk and a link are
+    read as `plan` reads them.
     """
     entry = {"role": role, "path": rel}
     mount = root / rel
@@ -6562,7 +6569,11 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     kept = [(path, size) for path, size in files
             if path not in gitlinks
             and not any(regex.match(path) for regex in patterns)]
-    walked = adopt.walk(policy, kept)
+    # `plan`'s own `ask_about_a_record_only` (#528, #691), over the leg's
+    # INDEX -- `""` is git's `:<path>`, the index `leg_tracked_files`
+    # lists -- so a link is read as its blob and never followed.
+    walked = adopt.ask_about_a_record_only(
+        policy, adopt.walk(policy, kept), adopt.Source(mount, None, "", ""))
     submodules, wrong = leg_submodules(policy, role, rel, held, record)
     answered = gitmodules_the_record_answers(adopt, submodules, unwritable)
     misplaced, review, settled = walked_findings(walked, role, rel, answered)
