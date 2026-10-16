@@ -909,10 +909,11 @@ def _refuse_malformed_chain_links(policy, chain: tuple) -> None:
 
     The FIRST and LAST links are left to the checks that already anchor them:
     the first must be a `--pin` product and the last the referent the name
-    claims, both compared casefolded because a pin names WHICH repository, not
-    how it was typed. Each must casefold to a name this run already holds
-    (`[A-Za-z0-9_.-]`, or `open<Product>`), so neither can carry a `#`, a
-    quote, a bracket, a comma or a space.
+    claims, both compared by `pin_product_key`, the pin file's own fold
+    (#444), because a pin names WHICH product, not how it was typed. Each
+    must fold to a name this run already holds (`[A-Za-z0-9_.-]`, or
+    `open<Product>`), so neither can carry a `#`, a quote, a bracket, a comma
+    or a space.
 
     Asked before `_declaration`, so before `gh api` reads a pin's tree and
     before `--dry-run` returns: a dry run refuses exactly as the real run
