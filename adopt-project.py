@@ -6397,11 +6397,14 @@ def _entry_findings(plan: Plan, source: Source,
         plan, () if tracking is None
         or _a_branch_execute_writes(source, TRACKING_KEY, str(tracking))
         else (MANIFEST_FIELDS[TRACKING_KEY],))
+    # One answer to whether git checks a symlink out as one, for the two
+    # questions whose walks may need it on any source (#654).
+    probe = _SymlinkProbe(source.work_root)
     return (findings + misread + split
-            + _root_symlink_findings(plan, source, tree)
+            + _root_symlink_findings(plan, source, tree, probe)
             + _nested_attributes_findings(plan, source, tree)
             + _reencoded_attributes_findings(plan, source, tree)
-            + _reencoded_files_findings(plan, source, tree)
+            + _reencoded_files_findings(plan, source, tree, probe)
             + unwritable_findings + value_findings + names
             + tracking_findings + moved + field_findings,
             unsafe_remediation
@@ -7525,8 +7528,8 @@ def _holds_a_pin(disk: _KeptTree, rel: str) -> bool:
                for row in ([at] if at else disk.under(rel)))
 
 
-def _root_symlink_findings(plan: Plan, source: Source,
-                           tree: list) -> list[str]:
+def _root_symlink_findings(plan: Plan, source: Source, tree: list,
+                           probe: _SymlinkProbe | None = None) -> list[str]:
     """A FINDING for each symlink the plan keeps in the root that a path the
     shape writes runs through and cannot be written through (#178, #183).
 
@@ -7560,12 +7563,16 @@ def _root_symlink_findings(plan: Plan, source: Source,
     a link the walk follows into something the root keeps is still no
     finding of this check's: `execute` refuses it after this list, as
     `adopt-symlinks-off`.
+
+    `probe` is `_entry_findings`' one probe, which `plan-file-reencoded`'s
+    walks share, so git is asked that once (#654).
     """
     findings: list[str] = []
     if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
         return findings
     seen = _links_at_a_copy(plan, tree) | _links_at_a_pin(plan, tree)
-    probe = _SymlinkProbe(source.work_root)
+    if probe is None:
+        probe = _SymlinkProbe(source.work_root)
     for fold in (False, True):
         for walk in _PlannedRoot(plan, source, tree, probe=probe,
                                  fold=fold).walks():
@@ -8499,6 +8506,18 @@ class _SplitRehearsal:
         return [_git_path(path)
                 for path in self.asked(args, index).split(b"\0") if path]
 
+    def staged(self, index: str) -> dict[str, str]:
+        """`{path: oid}` for each entry `index` holds, read from the index
+        alone: comparing it with a commit instead (`diff-index`) makes git
+        read the `.gitmodules` the checkout wrote for each gitlink the
+        commit holds, and die on one it cannot parse."""
+        staged = {}
+        for entry in self.asked(["ls-files", "-s", "-z"], index).split(b"\0"):
+            head, _, path = entry.partition(b"\t")
+            if path:
+                staged[_git_path(path)] = head.split()[1].decode("ascii")
+        return staged
+
     def hold(self, index: str, rows) -> None:
         """An index with no stat data, holding `rows`: `(path, mode, oid)`.
         Git trusts none of it, and reads each file again."""
@@ -8621,11 +8640,7 @@ def _copies_stored(asked: _SplitRehearsal, landings: list,
                          STORED, b"".join(_nul(path) for path, _ in placed))
     if said is not None:
         return said, []
-    staged = {}
-    for entry in asked.asked(["ls-files", "-s", "-z"], STORED).split(b"\0"):
-        head, _, path = entry.partition(b"\t")
-        if path:
-            staged[_git_path(path)] = head.split()[1].decode("ascii")
+    staged = asked.staged(STORED)
     return None, [landed for landed, data in placed
                   if staged.get(landed) != asked.asked(
                       ["hash-object", "--no-filters", "--stdin"], STORED,
@@ -8712,13 +8727,15 @@ def _refused_finding(step: tuple[str, str], said: str) -> str:
             f"after the leg repositories exist. {way_out}")
 
 
-def _reencoded_files_findings(plan: Plan, source: Source,
-                              tree: list) -> list[str]:
+def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
+                              probe: _SymlinkProbe | None = None
+                              ) -> list[str]:
     """A FINDING for each group of files the plan keeps or moves, and of
     pinned copies, that this machine's git would store as other bytes than
     the split expects, then one for each of git's refusals (#654). The
     source's own root `.gitattributes`, kept as a file, is #530's D5(a)
-    question, and is not asked again."""
+    question, and is not asked again. `probe` is `_entry_findings`' one
+    probe, shared with `_root_symlink_findings`."""
     kept_rows = _kept_in_root(plan.entries, tree)
     kept = {path for path, _, _ in kept_rows}
     disk = _KeptTree(kept_rows, False)
@@ -8730,8 +8747,9 @@ def _reencoded_files_findings(plan: Plan, source: Source,
     rules = [(path, mode, oid) for path, mode, oid, _ in tree
              if mode in (*FILE_MODES, SYMLINK_MODE)
              and path.rsplit("/", 1)[-1].casefold() == ATTRIBUTES]
-    walks = _PlannedRoot(plan, source, tree,
-                         probe=_SymlinkProbe(source.work_root)).walks()
+    if probe is None:
+        probe = _SymlinkProbe(source.work_root)
+    walks = _PlannedRoot(plan, source, tree, probe=probe).walks()
     landings = _pinned_landings(walks)
     names = [name for name, _ in landings]
     written = _root_attributes(source, walks, disk, tree, names)
@@ -8760,15 +8778,14 @@ def _reencoded_files_findings(plan: Plan, source: Source,
             _as_the_split_writes(asked, rules, kept, own, written, names)
         except OSError:
             return [_moved_finding(taken)] if taken else []
-        asked.hold(STORED, {*[row for row in wanted if row[0] in kept],
-                            *[row for row in rules
-                              if row[0] in kept and row[0] != own]})
+        held = {*[row for row in wanted if row[0] in kept],
+                *[row for row in rules if row[0] in kept and row[0] != own]}
+        asked.hold(STORED, held)
         stored_said = asked.refused(["add", "-u"], STORED)
+        blobs = {path: oid for path, _, oid in held}
         stored = [] if stored_said is not None else [
-            path for path in asked.listed(
-                ["diff-index", "--cached", "--name-only", "-z",
-                 "--diff-filter=M", source.commit], STORED)
-            if path in kept and path != own]
+            path for path, oid in asked.staged(STORED).items()
+            if blobs.get(path, oid) != oid]
         copies_said, copies = _copies_stored(asked, landings, makefile)
     if stored:
         found.append(_kept_finding(sorted(stored, key=order.get)))

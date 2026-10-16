@@ -41,9 +41,9 @@ import pytest
 
 from conftest import (ADOPT, findings, make_source_repo, planned,
                       refused_before_any_leg)
-from test_adopt_nested_attributes import (EMPTY_TREE, REENCODED, ROOT,
-                                          ROOT_ATTRIBUTES, SOURCE,
-                                          adopted_by_execute, checked,
+from test_adopt_nested_attributes import (EMPTY_TREE, GITHUB_ATTRIBUTES,
+                                          REENCODED, ROOT, ROOT_ATTRIBUTES,
+                                          SOURCE, adopted_by_execute, checked,
                                           command_scope, committed_raw,
                                           needs_filter_repo)
 
@@ -212,9 +212,11 @@ def test_execute_refuses_it_before_any_leg_exists(adopter, monkeypatch,
 #: `text`, a CRLF blob with no rule under `core.autocrlf=true` (which
 #: `git add --renormalize` would have re-stored), a filter with no driver
 #: here, a file sent to a leg under an encoding, valid or not (the mount's
-#: `git rm` reads a conversion git cannot make as no change), and pinned
+#: `git rm` reads a conversion git cannot make as no change), pinned
 #: scripts under `*.py text eol=crlf` with `core.safecrlf=true`, which the
-#: block the split appends keeps LF.
+#: block the split appends keeps LF, and a kept `.github/workflows/` whose
+#: filter rule's `.github/.gitattributes` goes to a leg: the mount's `git
+#: rm` takes the rule away before the split's `git add` reads the files.
 STORED_AS_THEIR_BLOBS = [
     pytest.param({ROOT_ATTRIBUTES: b"* text=auto\n", NOTES: CRLF},
                  {NOTES: ROOT}, (), id="crlf-under-text-auto"),
@@ -231,6 +233,9 @@ STORED_AS_THEIR_BLOBS = [
                  (), id="sent-bytes-the-encoding-refuses"),
     pytest.param({ROOT_ATTRIBUTES: b"*.py text eol=crlf\n"}, {}, SAFECRLF,
                  id="copies-the-block-keeps-lf-under-safecrlf"),
+    pytest.param({GITHUB_ATTRIBUTES: f"*.yml filter={UPPER}\n".encode()},
+                 {GITHUB_ATTRIBUTES: CODE, ".github/workflows/": ROOT},
+                 UPPER_CLEAN, id="kept-where-the-rule-goes-to-a-leg"),
 ]
 
 
