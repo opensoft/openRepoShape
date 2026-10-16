@@ -952,7 +952,7 @@ at the right commit. **A family pins assembly roots, never legs**:
 the GitHub App or `SHAPE_LEGS_TOKEN` credential the workflow does, as a member
 is a private assembly root mounting two private legs — then runs each member's
 own `make bootstrap`; `make validate` runs the family validator, then each
-member's. One it lacks a credential for is reported and skipped, not a failure.
+member's. `make bootstrap` reports and skips one it lacks a credential for.
 
 The holder carries the same COPY pin an assembly root does, so
 `update-shape.py` re-syncs it the same way; it mirrors into `family.yaml`

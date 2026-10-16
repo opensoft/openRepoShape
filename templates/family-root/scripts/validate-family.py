@@ -64,9 +64,10 @@ WHAT IS CHECKED
     asks them too. A path a row names in another case is still one of these,
     and what it says to do depends on which of the two is the member's own:
     it names no command that would un-register the member, and for a member
-    recorded only in the wrong case it names the index move that records it
-    at its row's path, as the row's own refusal does members checked
-    (#648).
+    recorded only in the wrong case, where its row's path is its canonical
+    `members/<Project>` and its pin a 40-hex commit, it names the index move
+    that records it at that path, as the row's own refusal does members
+    checked (#648).
   - that a section of HEAD's `.gitmodules` gives the path of every row's
     gitlink, the `member-gitmodules-absent` finding (#611, #407's decision
     3). A recursive clone reads HEAD's file, so a gitlink no section of it

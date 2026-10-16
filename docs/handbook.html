@@ -1282,7 +1282,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="families">
 
-      <!-- reads README.md § Families: a holder for projects that ship separately: blob c40baa828dcac568fc4d0cedb9fb4be3e32e6e43 -->
+      <!-- reads README.md § Families: a holder for projects that ship separately: blob b3d19092bb6ee8f0e5809133efda8c7d1e870dc7 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Families: a holder for projects that ship separately</h2>
@@ -1375,8 +1375,8 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       resolving the same GitHub App or <code>SHAPE_LEGS_TOKEN</code> credential the workflow does
       &mdash; and then runs each member&rsquo;s own <code>make bootstrap</code>.
       <code>make validate</code> runs the family validator and then each member&rsquo;s own
-      <code>make validate</code>. A member it lacks a credential for is reported and skipped, not
-      a failure. The holder carries the same COPY pin an assembly root does, so
+      <code>make validate</code>. A member <code>make bootstrap</code> lacks a credential for is
+      reported and skipped, not a failure. The holder carries the same COPY pin an assembly root does, so
       <a href="#current"><code>update-shape.py</code></a> re-syncs it the same way; it mirrors into
       <code>family.yaml</code> instead of <code>project.yaml</code> and must leave
       <code>validate-family.py</code> green.</p>
