@@ -545,32 +545,40 @@ options:
 
 ```
 usage: adopt-project.py check [-h] --plan PLAN [--source SOURCE]
+                              [--local-remote-dir LOCAL_REMOTE_DIR]
                               [--work-dir WORK_DIR]
 
 options:
-  -h, --help           show this help message and exit
+  -h, --help            show this help message and exit
   --plan PLAN
-  --source SOURCE      override the source the plan names, read as `plan
-                       --source` reads it. Without it, the plan's
-                       `source.local_path` is read; where that is a clone
-                       `plan` made (`source.cloned: true`) and is gone or no
-                       longer whole, its `source.repository` is cloned again,
-                       and any other `local_path` that is gone is refused as
-                       `plan-source-gone`.
-  --work-dir WORK_DIR  where `check` works: an `org/repo` --source, or the
-                       plan's `source.repository` where the clone `plan` made
-                       is gone or no longer whole, is cloned there. Give the
-                       one `execute` will be given. Default: a new directory
-                       in the system temp folder, removed when the run ends if
-                       it holds no file. A --work-dir you give is made where
-                       it is missing, and nothing in it is removed but a clone
-                       `check` made there, unless it is the clone the plan
-                       records. One this user cannot write in is a finding,
-                       `adopt-work-dir-unwritable`, and is refused under that
-                       code where the source would be cloned into it or cannot
-                       be opened, as one that cannot be made is. One that
-                       already holds `source-readonly/<repo>`, where a source
-                       is cloned, is refused as `adopt-work-dir-occupied`.
+  --source SOURCE       override the source the plan names, read as `plan
+                        --source` reads it. Without it, the plan's
+                        `source.local_path` is read; where that is a clone
+                        `plan` made (`source.cloned: true`) and is gone or no
+                        longer whole, its `source.repository` is cloned again,
+                        and any other `local_path` that is gone is refused as
+                        `plan-source-gone`.
+  --local-remote-dir LOCAL_REMOTE_DIR
+                        the directory `execute --local-remote-dir` will be
+                        given (the TEST path): each relative submodule url the
+                        plan keeps in a leg is resolved from the bare
+                        repository `execute` would create there, as that run
+                        resolves it, and not from GitHub's. Nothing is created
+                        there.
+  --work-dir WORK_DIR   where `check` works: an `org/repo` --source, or the
+                        plan's `source.repository` where the clone `plan` made
+                        is gone or no longer whole, is cloned there. Give the
+                        one `execute` will be given. Default: a new directory
+                        in the system temp folder, removed when the run ends
+                        if it holds no file. A --work-dir you give is made
+                        where it is missing, and nothing in it is removed but
+                        a clone `check` made there, unless the plan records
+                        it. One this user cannot write in is a finding,
+                        `adopt-work-dir-unwritable`, and is refused under that
+                        code where a source would be cloned into it or cannot
+                        be opened, as one that cannot be made is. One that
+                        already holds `source-readonly/<repo>`, where a source
+                        is cloned, is refused as `adopt-work-dir-occupied`.
 ```
 
 #### `adopt-project.py execute`
@@ -955,7 +963,9 @@ usage: validate-repository-naming.py [-h] [--policy POLICY]
                                      [--pins PINS]
                                      [--referent-chain REFERENT_CHAIN]
                                      [--link-source [PRODUCT=]PATH]
-                                     [--explain] [--quiet] [names ...]
+                                     [--link-source-label FLAG]
+                                     [--link-remedy LINK=TEXT] [--explain]
+                                     [--quiet] [names ...]
 
 Classify repository names against `contracts/repository-naming.yaml`.
 
@@ -1008,6 +1018,17 @@ options:
                         declared-unverified, and a source that cannot be read
                         is named with the system's reason: both are warnings
                         and not findings, an explicit source included.
+  --link-source-label FLAG
+                        the caller's own name for the bare --link-source it
+                        passes, such as --pin-source (a FLAG that starts with
+                        - is given after an =): the link-source-unreadable
+                        WARNING and the not-used NOTE name that value by FLAG,
+                        and neither says a value holding = was read as a PATH
+  --link-remedy LINK=TEXT
+                        the caller's words for what would let LINK's tree be
+                        read, offered in place of this script's own where that
+                        link is declared-unverified. Repeatable; the last
+                        value for a link wins.
   --explain             print every family each name satisfies, why one of
                         them won, and what the others are recorded as
   --quiet

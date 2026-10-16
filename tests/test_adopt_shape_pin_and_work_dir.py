@@ -46,10 +46,11 @@ import pytest
 
 from conftest import ADOPT, run_script
 from test_adopt_root_symlinks import (  # noqa: F401
-    A_PIN, CASE_ASIDE, CONTRACTS, GITHUB, PIN_NAME, README, REAL_CONTRACTS,
-    REMOTES, ROOT, ROOT_HOLDS_PIN, SHAPE_PIN, WORK, WORK_FLAG, adopter,
-    check, declare, execute_args, links_as_links, no_filter_repo_probe,
-    no_leg_was_created, planned, refused_by, ticked, unwritable_work,
+    A_PIN, CASE_ASIDE, CONTRACTS, GITHUB, GLASS, PIN_FILE, PIN_NAME, README,
+    REAL_CONTRACTS, REMOTES, ROOT, ROOT_HOLDS_PIN, SHAPE_PIN, WORK, WORK_FLAG,
+    adopter, check, declare, execute_args, links_as_links,
+    no_filter_repo_probe, no_leg_was_created, pin_row, planned, refused_by,
+    ticked, unwritable_work,
 )
 
 WORK_DIR_UNWRITABLE = "adopt-work-dir-unwritable"
@@ -119,11 +120,15 @@ def test_a_path_kept_at_the_shapes_pin_is_found_and_refused_before_any_leg(
         adopter, no_filter_repo_probe, tmp_path, pinned, path, where,
         aside):
     """The source's `contracts/` answered `root` keeps its own
-    `contracts/shape-pin.yaml`, a case twin of it, or a directory of that
-    name. `place` finds it there and writes the shape's pin beside it, under
-    `shape/`, so the root's `contracts/shape-pin.yaml` is the source's. With
-    a pin declared or without, `check` names it once, and `execute` refuses
-    with that line before any leg exists."""
+    `contracts/shape-pin.yaml`, a directory of that name, or a case twin of
+    it. `place` finds the first two there and writes the shape's pin beside
+    them, under `shape/`, so the root's `contracts/shape-pin.yaml` is the
+    source's. It finds the twin there only on a disk that ignores case, as
+    macOS's and Windows's do, and the assembly is cloned on those too; on a
+    disk that keeps case the twin stands beside the shape's pin, which is
+    why the finding says `once case is ignored` of it. With a pin declared
+    or without, `check` names it once, and `execute` refuses with that line
+    before any leg exists."""
     files, legs = REAL_CONTRACTS
     _, plan = planned(tmp_path, {**files, path: MINE}, {}, legs)
     if pinned:
@@ -183,6 +188,60 @@ def test_execute_refuses_the_issues_link_and_makes_no_leg(tmp_path):
     assert f"\n  {held(A_SYMLINK, SHAPE_PIN)}\n" in result.stderr
     assert result.stderr.startswith(f"REFUSED {ROOT_HOLDS_PIN}: ")
     assert not remotes.exists()
+
+
+# ---------------------------------------------------------------------------
+# One kept file, one finding (#651: L1-06 and L1-07 of #457)
+# ---------------------------------------------------------------------------
+
+#: `(the source's file at a pin's path, the plan's pins, what the one
+#: finding says `execute` writes there)`.
+ONE_FILE_TWO_PINS = [
+    pytest.param(SHAPE_PIN, "pins:\n" + pin_row("Shape"),
+                 "the shape's own pin", id="a-product-named-shape"),
+    pytest.param(PIN_FILE, "pins:\n" + pin_row(GLASS) + pin_row("OpenGlass"),
+                 f"the pin the plan declares on `{GLASS}`",
+                 id="two-products-one-file"),
+]
+
+
+@pytest.mark.parametrize(("kept", "block", "written"), ONE_FILE_TWO_PINS)
+def test_a_kept_file_two_pins_are_written_at_is_named_once(
+        adopter, no_filter_repo_probe, tmp_path, kept, block, written):
+    """L1-06. A `pins:` edited to write two pins at one file is already
+    `plan-pin-collides`: a product named `Shape`, whose file is the shape's
+    own pin, or `openGlass` with `OpenGlass`. A file the root keeps there
+    was named by `plan-root-holds-pin` once for each pin. It is one file,
+    and one line names it, in `check` and in `execute`'s refusal."""
+    files, legs = REAL_CONTRACTS
+    _, plan = planned(tmp_path, {**files, kept: MINE}, {}, legs)
+    declare(plan, block)
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    said = [line for line in finding_lines(checked)
+            if line.startswith(f"FINDING {ROOT_HOLDS_PIN}: ")]
+    assert len(said) == 1, checked.stderr
+    assert f"where `execute` writes {written}" in said[0], said[0]
+    refusal = refused_by(adopter, execute_args(tmp_path, plan))
+    assert refusal.detail.count(f"FINDING {ROOT_HOLDS_PIN}: ") == 1, \
+        refusal.detail
+    no_leg_was_created(tmp_path)
+
+
+def test_the_shapes_pin_and_its_copy_kept_are_one_finding(
+        adopter, no_filter_repo_probe, tmp_path):
+    """L1-07. The root keeps `contracts/shape-pin.yaml` and
+    `shape/contracts/shape-pin.yaml`. The shape's pin would be written
+    beside the first, at the second, so #262's `plan-root-blocks-shape-copy`
+    named the second and `plan-root-holds-pin` the first: two findings, one
+    cause. With the first gone the shape writes its pin at its own path and
+    nothing at the second, so the one finding is the first's, and `execute`
+    refuses with that line alone."""
+    files, legs = REAL_CONTRACTS
+    _, plan = planned(tmp_path,
+                      {**files, SHAPE_PIN: MINE, f"shape/{SHAPE_PIN}": MINE},
+                      {}, {**legs, "shape/": ROOT})
+    refused_alone(adopter, tmp_path, plan, held(A_FILE, SHAPE_PIN))
 
 
 # ---------------------------------------------------------------------------

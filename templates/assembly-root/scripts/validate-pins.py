@@ -548,33 +548,111 @@ def _reference_repairs(root: Path, role, gitlink: str,
         gitlink, reference)
 
 
+class Back(NamedTuple):
+    """The one leg whose gitlink is off its pin while another leg is out of
+    step (#677): its path, the commit its gitlink names, and whether its
+    own `pin-digest-mismatch` stands, which is recomputed at the pin's
+    commit and so outlasts the gitlink put back there."""
+
+    path: str
+    gitlink: str
+    digest: bool
+
+
+def _digest_stands(report: Report, role) -> bool:
+    """Whether the leg `role`'s own `pin-digest-mismatch` was found."""
+    return any(one.role == role and one.reference is None
+               for one in report.curable)
+
+
+def _put_back(paths: list[str]) -> str:
+    """The step by hand a held-back line waits on while two legs are out of
+    step (#478, #677): one of `paths`' gitlinks back at its pin, or the
+    commit that moved them undone. No `bump-leg.py` line takes it, since
+    the other leg rolls that line back.
+
+    A LEG'S WORKFLOW REFERENCES GO BACK WITH ITS GITLINK: a reference moved
+    with it stays at the move, and stands as that leg's finding beside the
+    other leg's, which holds the next line back and asks for this step
+    again. AN UNDO IS FOLLOWED BY `git submodule update` over the legs: it
+    puts the gitlink back and leaves the leg checked out at the move, a
+    root `bump-leg.py` refuses as dirty."""
+    one = len(paths) == 1
+    which, moved = (f"{paths[0]}'s", "it") if one else ("one leg's", "them")
+    legs = " ".join(shlex.quote(path) for path in paths)
+    return (f"put {which} gitlink back at its pin (check that leg out at the "
+            "pin's commit and commit its gitlink in this root, with every "
+            "workflow reference to its repository at that commit too), or "
+            f"undo the commit that moved {moved} and run `git submodule "
+            f"update -- {legs}` in this root")
+
+
+def _held_then(lines: str, whom: str, back: Back | None,
+               other_legs: dict | None) -> str:
+    """What a held-back finding says comes after its first step: `lines`
+    for `whom`. Never a line while `back`'s own digest stands, since two
+    legs are then out of step with no gitlink off; and in the gitlink's own
+    finding (`other_legs`), how its move is kept if it was meant: the
+    whole commit, which is the only `--to` `bump-leg.py` takes."""
+    if back is not None and back.digest:
+        return (f"names no line while {back.path}'s own pin-digest-mismatch "
+                "stands.")
+    if back is not None and other_legs:
+        after = ("after that line" if lines.endswith("line")
+                 else "after one of them")
+        return (f"names {lines} for {whom}, and if {back.path}'s move was "
+                f"meant, bumping {back.path} to {back.gitlink} {after} keeps "
+                "it.")
+    return f"names {lines} for {whom}."
+
+
 def _gitlink_repairs_held_back(paths: list[str], others: list[str],
-                               lines: str = "the two bump-leg.py lines"
+                               lines: str = "the two bump-leg.py lines",
+                               back: Back | None = None,
+                               other_legs: dict[str, list[str]] | None = None
                                ) -> str:
     """Why a `pin-gitlink-mismatch` names no command, and what comes first
     (#478): `bump-leg.py` runs this validator before it commits and rolls
     the bump back when it is red, so no single line commits while another
     leg is off its pin or another finding stands. A `pin-digest-mismatch`
     held back by another finding says the same, naming `lines`, the one
-    line it would end on (#539)."""
-    what, first = [], []
+    line it would end on (#539).
+
+    `others` are findings no bump clears, and they are cleared first.
+    ANOTHER LEG'S DIGEST OR WORKFLOW REFERENCE IS NOT ONE (#677): a bump of
+    THAT leg clears it, and is rolled back while `back`, the one leg whose
+    gitlink is off its pin, stays off, as a bump of `back` is while that
+    finding stands. "First clear that finding" named a step no line could
+    take, so both findings name the step two gitlinks off their pins name,
+    by hand, for `back`. The gitlink's own finding is given `other_legs`,
+    `{path: codes}`, and `lines` are then that leg's; the other leg's
+    finding names its own `lines`, for itself by its path, since "that leg"
+    would read as `back`. `_held_then` says what follows.
+    """
+    what, first, whom = [], [], "that leg"
+    if len(paths) > 1:
+        what.append(" and ".join(paths) + (" are both" if len(paths) == 2
+                                           else " are all")
+                    + " off their pins")
+        whom = "the leg that is left"
+    elif other_legs:
+        whom = " and ".join(other_legs)
+    elif back is not None:
+        what.append(f"{back.path} is off its pin")
+        whom = paths[0]
+    what += [f"{path} is out of step too ({', '.join(codes)})"
+             for path, codes in (other_legs or {}).items()]
     if others:
         what.append("this validator also reports " + ", ".join(others))
         first.append("clear " + ("that finding" if len(others) == 1
                                  else "those findings"))
-    if len(paths) > 1:
-        what.insert(0, " and ".join(paths) + (" are both" if len(paths) == 2
-                                              else " are all")
-                    + " off their pins")
-        first.append("put one leg's gitlink back at its pin (check that leg "
-                     "out at the pin's commit and commit its gitlink in this "
-                     "root), or undo the commit that moved them")
+    if len(paths) > 1 or back is not None:
+        first.append(_put_back(paths if len(paths) > 1 else [back.path]))
     return ("No single bump-leg.py line can commit while "
             + " and ".join(what) + ": bump-leg.py moves one leg and runs "
             "this validator before it commits, rolling the bump back when it "
             "is red. First " + ", and ".join(first) + "; this validator then "
-            f"names {lines} for "
-            + ("the leg that is left." if len(paths) > 1 else "that leg."))
+            + _held_then(lines, whom, back, other_legs))
 
 
 def _has_own_gate(root: Path) -> bool:
@@ -593,7 +671,9 @@ def _end_gitlink_mismatches(root: Path, report: Report) -> object:
     named only where they can commit: ONE leg's gitlink is off its pin, and
     every other finding is one a bump of that leg clears (`Report.finding`'s
     `leg`). Two legs off, or any other finding, and either line is rolled
-    back, so the finding names none and says what comes first instead.
+    back, so the finding names none and says what comes first instead:
+    another leg's digest or workflow reference is that leg's to clear, and
+    what comes first is this gitlink, put back by hand (#677).
 
     ONLY OVER A ROOT THAT HAS THIS GATE OF ITS OWN. `bump-leg.py` runs the
     root's `scripts/validate-pins.py` and skips an absent one, so this copy
@@ -604,20 +684,40 @@ def _end_gitlink_mismatches(root: Path, report: Report) -> object:
     if not report.mismatches or not _has_own_gate(root):
         return None
     roles = [role for _, role, _, _, _ in report.mismatches]
-    others: list[str] = []
-    for code, leg in report.cleared_by:
-        if (leg is None or leg not in roles) and code not in others:
-            others.append(code)
-    if len(report.mismatches) == 1 and not others:
+    others = _out_of_step(report)[1]
+    other_legs = _other_legs(report, roles)
+    if len(report.mismatches) == 1 and not others and not other_legs:
         index, role, _, gitlink, commit = report.mismatches[0]
         report.findings[index] += "\n  " + _gitlink_repairs(root, role,
                                                             gitlink, commit)
         return role
-    why = _gitlink_repairs_held_back(
-        [path for _, _, path, _, _ in report.mismatches], others)
+    paths = [path for _, _, path, _, _ in report.mismatches]
+    lines, back = "the two bump-leg.py lines", None
+    if other_legs:
+        lines = ("the bump-leg.py line" if all(
+            code == "pin-digest-mismatch" for codes in other_legs.values()
+            for code in codes) else "the bump-leg.py lines")
+        _, role, path, gitlink, _ = report.mismatches[0]
+        back = Back(path, gitlink, _digest_stands(report, role))
+    why = _gitlink_repairs_held_back(paths, others, lines, back, other_legs)
     for index, *_ in report.mismatches:
         report.findings[index] += "\n  " + why
     return None
+
+
+def _other_legs(report: Report, roles: list) -> dict[str, list[str]]:
+    """`{path: codes}` for each leg not in `roles` whose own digest or
+    workflow reference is out of step, a finding only a bump of THAT leg
+    clears, each code once and in the order found (#677)."""
+    found: dict[str, list[str]] = {}
+    for one in report.curable:
+        if one.role is None or one.role in roles:
+            continue
+        codes = found.setdefault(one.path, [])
+        code = report.cleared_by[one.index][0]
+        if code not in codes:
+            codes.append(code)
+    return found
 
 
 def _end_curable_findings(root: Path, report: Report, named) -> None:
@@ -639,15 +739,21 @@ def _end_curable_findings(root: Path, report: Report, named) -> None:
     no other leg is out of step, the finding says to clear that first, in
     the words a held-back `pin-gitlink-mismatch` uses. Where the leg's own
     gitlink is off its pin, that finding's lines clear this one too, and
-    this says so where they are named. Where ANOTHER leg is out of step too,
-    no line can commit and the finding ends at THE LOCKSTEP RULE, as it did
-    before: no bump-leg.py line clears either leg's finding first, so there
-    is no first step this could name that the other's would not contradict.
+    this says so where they are named. Where ANOTHER leg's gitlink is off
+    its pin, the step that comes first is putting it back by hand, and the
+    finding says so in the words the gitlink's own uses, then names this
+    leg's lines (#677), or, where that leg's own digest stands too, that it
+    names none. Where another leg's own digest or reference is out of step
+    with no gitlink off, no line can commit and the finding ends at THE
+    LOCKSTEP RULE, as it did before: no bump-leg.py line clears either
+    leg's finding first, so there is no first step this could name that
+    the other's would not contradict.
     """
     if not report.curable or not _has_own_gate(root):
         return
     legs, untagged = _out_of_step(report)
-    off = {role for _, role, _, _, _ in report.mismatches}
+    off = {role: Back(path, gitlink, _digest_stands(report, role))
+           for _, role, path, gitlink, _ in report.mismatches}
     for one in report.curable:
         ending = _curable_ending(root, one, legs, untagged, off, named)
         if ending:
@@ -669,18 +775,23 @@ def _out_of_step(report: Report) -> tuple[list, list[str]]:
 
 
 def _curable_ending(root: Path, one: Curable, legs: list,
-                    untagged: list[str], off: set, named) -> str:
-    """What `_end_curable_findings` adds to the finding `one`, or `""`."""
+                    untagged: list[str], off: dict, named) -> str:
+    """What `_end_curable_findings` adds to the finding `one`, or `""`.
+    `off` is `{role: Back}` of each leg whose gitlink is off its pin."""
     if one.role in off:
         return (f"Either bump-leg.py line under {one.path}'s "
                 "pin-gitlink-mismatch above clears this finding too."
                 if one.role == named else "")
-    if one.role is None or legs != [one.role]:
+    # Every other leg out of step, as the `Back` of its gitlink off its pin,
+    # or None where that leg's own digest or reference is out of step.
+    back = [off.get(leg) for leg in legs if leg != one.role]
+    if one.role is None or len(back) > 1 or None in back:
         return ""
-    if untagged:
+    if untagged or back:
         return _gitlink_repairs_held_back(
             [one.path], untagged, "the bump-leg.py line"
-            if one.reference is None else "the two bump-leg.py lines")
+            if one.reference is None else "the two bump-leg.py lines",
+            back[0] if back else None)
     if one.reference is None:
         return _digest_repair(root, one.role, one.commit)
     return _reference_repairs(root, one.role, one.commit, one.reference)
