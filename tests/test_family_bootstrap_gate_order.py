@@ -29,17 +29,16 @@ Every remedy is typed as printed. The case-variant states are index records
 and commits, never two directories whose names differ only in case, and
 the holder's own are asked again with `core.ignorecase=true`. A clone's
 checkout is git's: on a disk that folds case, `Members/<P>` IS the row's
-directory, so the `mv` the text gives for a case-sensitive disk is typed
-only where the disk holds the two apart, as the text says.
+directory, and the guarded `mv` the text gives, typed in a POSIX shell,
+moves nothing there; it moves the directory out only where the disk holds
+the two apart (#681).
 """
 
 from __future__ import annotations
 
 import itertools
 import os
-import re
 import shlex
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -50,8 +49,8 @@ from test_family import NAME, family, validate  # noqa: F401
 from test_family_add_refusals import holder, offline  # noqa: F401
 from test_family_dry_run import isolated
 from test_family_head_lost_gitmodules import (
-    DISKS, assert_passes_in_every_mode, commit_all, head_lost, on_disk,
-    pinned, recorded_at, variant_refused,
+    DISKS, GUARDED_MOVE, assert_passes_in_every_mode, commit_all, head_lost,
+    on_disk, pinned, recorded_at, typed_in_sh, variant_refused,
 )
 from test_family_member_path import MEMBER, OTHER, raw
 from test_validate_family_unnamed_mounts import (
@@ -165,19 +164,21 @@ def type_line(root: Path, env: dict, line: str) -> None:
 
 
 def moved_out_where_apart(root: Path, remediation: str) -> None:
-    """Each backticked `mv` the text gives for a case-sensitive disk, typed
-    as printed where the disk holds its source apart from the row's own
-    directory, as the text says; on a disk that folds case it is the row's
-    directory, and the text says to leave it."""
-    for move in re.findall(r"`(mv -- [^`]*)`", remediation):
-        argv = shlex.split(move)
+    """Each backticked guarded `mv` the text gives, typed as printed in a
+    POSIX shell for each directory that is there, as the text says: it
+    moves the directory out where the disk holds it apart from the row's
+    own, and moves nothing where the disk folds the two names into one
+    directory, the row's (#681)."""
+    for move in GUARDED_MOVE.findall(remediation):
+        argv = shlex.split(move.rsplit(" || ", 1)[1])
         source = root / argv[2]
         own = root / "members" / argv[2].split("/", 1)[1]
-        if not source.exists() or (own.exists()
-                                   and os.path.samefile(source, own)):
+        if not source.exists():
             continue
-        subprocess.run(argv, cwd=str(root), check=True)
-        assert not source.exists()
+        apart = not (own.exists() and os.path.samefile(source, own))
+        typed = typed_in_sh(root, move)
+        assert typed.returncode == 0, typed.stderr
+        assert source.exists() is not apart
 
 
 # --- (a) bootstrap -----------------------------------------------------------

@@ -9,11 +9,13 @@ the holder gate's remedies named `add` or `remove` and no branch, so each
 cost one refusal first: `member-duplicate-id`'s `remove`, a hand mount's
 `member-gitlink-unnamed` `add` (run as printed in
 `tests/test_validate_family_unnamed_mounts.py`, now from the tracking
-branch), and `member-gitlink-absent`'s `add`. Each now names `git -C
-<holder> switch -c family/<act>-<member>` first, the branch `family.py`
-suggests and the holder's docs show, POSIX-quoted as every line this gate
-prints is, and the `add` of `member-gitlink-absent` names the holder by its
-path, where `--family-root .` named the checkout the line runs from.
+branch), and `member-gitlink-absent`'s `add`. Each named `git -C <holder>
+switch -c family/<act>-<member>` first, the branch `family.py` suggests and
+the holder's docs show, POSIX-quoted as every line this gate prints is.
+Since #681 `member-gitlink-absent` names no `add`, which refuses the row
+that is there, and so no branch: it names the index and `.gitmodules`
+lines that put the gitlink back, typed in
+`tests/test_validate_family_remedies_typed.py`.
 
 THE COUNT. The report ended `<n> finding(s) in family.yaml.` and THE
 LOCKSTEP RULE whatever was found; it ends at the rule only where a member's
@@ -133,15 +135,13 @@ def test_the_duplicate_id_remedy_makes_the_branch_then_removes(family,
     assert validate(holder).returncode == 0
 
 
-# --- member-gitlink-absent: the branch, then the add, naming the holder -----
+# --- member-gitlink-absent: no add, so no branch (#681) ---------------------
 
-def test_a_missing_gitlink_remedy_makes_the_branch_and_names_the_holder(
-        on_main):
-    """The refusal's two lines: the `switch` that makes `family.py`'s
-    branch for the `add`, and the `add` from a checkout of openRepoShape,
-    `--family-root` this holder by its path rather than `.`, which names
-    the checkout the line runs from. The `switch`, run as printed, puts
-    the holder on that branch."""
+def test_a_missing_gitlink_remedy_names_no_add_and_no_branch(on_main):
+    """`family.py add` refuses a row that is there
+    (`member-already-present`), so the refusal names neither it nor the
+    branch it would need. Every line it prints is a `git` line typed in
+    the holder."""
     holder = on_main
     git("rm", "-r", "-q", "-f", "--", "members/IRRS", cwd=holder)
     git("commit", "-qm", "Drop the gitlink but keep the row", cwd=holder)
@@ -149,21 +149,9 @@ def test_a_missing_gitlink_remedy_makes_the_branch_and_names_the_holder(
     assert result.returncode == 2, result.stdout + result.stderr
     lines = result.stderr.splitlines()
     assert lines[0].startswith("REFUSED member-gitlink-absent: "), lines
-    assert lines[1] == (
-        "Remediation: from a checkout of openRepoShape, the second command "
-        "below mounts and pins it in one commit, on a branch other than the "
-        "holder's tracking branch, which it refuses, so the first makes one; "
-        "a row with no submodule is a claim about a tree that is not here. "
-        + BRANCH_LEFT)
-    switch, add = (line.strip() for line in lines[2:])
-    assert lines[2:] == ["    " + switch, "    " + add], lines
-    assert shlex.split(switch) == switch_argv(holder, "add", "IRRS")
-    assert shlex.split(add) == [PYTHON, "scripts/family.py", "add",
-                                "--family-root", str(holder), "--member",
-                                "<org>/IRRS"], add
-    git(*shlex.split(switch)[1:], cwd=holder.parent)
-    assert git("symbolic-ref", "--short", "HEAD",
-               cwd=holder).stdout.strip() == "family/add-irrs"
+    assert "switch -c" not in result.stderr, result.stderr
+    assert "scripts/family.py add" not in result.stderr, result.stderr
+    assert [shlex.split(line)[0] for line in lines[2:]] == ["git"] * 3
 
 
 # --- the count ends at the rule only where it applies -----------------------

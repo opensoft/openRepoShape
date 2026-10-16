@@ -665,8 +665,11 @@ def variant_refused(path: str, commit: str, variants: list[str],
     project = path.split("/", 1)[1]
     found = ", ".join(f"{variant} (at {gitlinks[variant]})"
                       for variant in variants)
-    moved = " and ".join(f"`mv -- {variant} ../{variant.replace('/', '-')}`"
+    moved = " and ".join(f"`[ {variant} -ef {path} ] || [ -e {variant}/.git ] "
+                         f"|| mv -- {variant} ../{variant.replace('/', '-')}`"
                          for variant in variants)
+    stores = " or ".join(f".git/modules/{variant}" for variant in variants)
+    status = " or ".join(f"`git -C {variant} status`" for variant in variants)
     return [
         f"REFUSED member-gitlink-absent: no gitlink (mode 160000) recorded at "
         f"'{path}'. {project} is named in family.yaml, and this repository "
@@ -678,11 +681,19 @@ def variant_refused(path: str, commit: str, variants: list[str],
         "alone, which touches no file, with the two lines below, and commit "
         f"that. Where nothing is checked out at {path}, as in a fresh clone, "
         "`git submodule update --init --recursive` then checks the member "
-        "out there. On a case-sensitive disk, as Linux's usually is, a "
-        f"directory left at {' or '.join(variants)} stays there, untracked, "
-        "and family.py add refuses it as family-members-dir-variant: move "
-        f"each one that is there out of the holder, {moved}. On macOS and "
-        "Windows it is the row's own directory, so leave it. The two lines:",
+        f"out there. A directory left at {' or '.join(variants)} is the "
+        "row's own where the disk folds case, as macOS's and Windows' "
+        "usually do and a Linux mount can (WSL's /mnt/c). Where the disk "
+        "holds the two apart it stays there, untracked, and family.py add "
+        "refuses it as family-members-dir-variant: move each one that is "
+        f"there out of the holder, {moved}, which moves nothing where the "
+        "two names are one directory or where it holds a .git entry, a "
+        "checkout. A checkout git submodule add made there holds a .git "
+        "file naming this holder's .git/modules/ by a path relative to it, "
+        "which a move would leave pointing nowhere; its commits are kept in "
+        f"{stores}, whatever becomes of the directory, and only what is not "
+        f"committed is in the directory alone ({status} shows it). Delete a "
+        "checkout by hand once nothing it holds is needed. The two lines:",
         "    git rm -r --cached --ignore-unmatch -- " + " ".join(variants),
         f"    git update-index --add --cacheinfo 160000,{commit},{path}"]
 
@@ -781,28 +792,43 @@ def case_sensitive_disk(tmp_path):
         pytest.skip("no mv on PATH to type the printed line with")
 
 
-def test_a_variant_checkout_left_on_disk_is_moved_out_as_printed(
+#: The guarded `mv` the variant refusal gives for each variant, backticked:
+#: two shell tests, then the move (#681).
+GUARDED_MOVE = re.compile(r"`(\[ [^`]* \|\| mv -- [^`]*)`")
+
+
+def typed_in_sh(root: Path, line: str) -> subprocess.CompletedProcess:
+    """`line` typed as printed, in a POSIX shell standing in `root`."""
+    return subprocess.run(["sh", "-c", line], cwd=str(root),
+                          capture_output=True, check=False)
+
+
+def test_a_variant_directory_left_on_disk_is_moved_out_as_printed(
         family, holder, offline, tmp_path, case_sensitive_disk):
     """THE REVIEW'S N2, in its C3 layout: MEMBER's gitlink recorded only at
     `Members/IRRS`, its checkout still at `members/IRRS`, and a second
-    checkout at `Members/IRRS`, as a case-sensitive disk can hold. The
-    index move leaves that directory on disk, untracked, where `family.py
-    add` refused any other member past it (`family-members-dir-variant`).
-    Every line the refusal prints, typed as printed: the two lines, their
-    commit, and the `mv` it gives for a case-sensitive disk. The gate then
-    passes in every mode, and SPARE is added."""
+    directory at `Members/IRRS` holding the member's files, as a
+    case-sensitive disk can hold. The index move leaves that directory on
+    disk, untracked, where `family.py add` refused any other member past it
+    (`family-members-dir-variant`). Every line the refusal prints, typed as
+    printed: the two lines, their commit, and the guarded `mv`, in a POSIX
+    shell. A plain directory, apart from the row's and with no `.git`
+    entry, is moved out (a checkout is not since #681:
+    `tests/test_validate_family_remedies_typed.py`). The gate then passes
+    in every mode, and SPARE is added."""
     env = isolated(offline, tmp_path)
     variant = f"Members/{MEMBER}"
     commit = recorded_at(holder, env, MEMBER, variant)
-    raw(holder, env, "clone", "-q", "--no-checkout",
-        str(family["remotes"] / f"{MEMBER}.git"), variant)
-    raw(holder / variant, env, "checkout", "-q", "--detach", commit)
+    (holder / variant).mkdir(parents=True)
+    (holder / variant / "project.yaml").write_bytes(
+        (holder / "members" / MEMBER / "project.yaml").read_bytes())
 
     lines = refused_at(holder, commit, [variant])
 
     moved_as_printed(holder, env, lines, [variant])
-    (move,) = re.findall(r"`(mv [^`]*)`", lines[1])
-    subprocess.run(shlex.split(move), cwd=str(holder), check=True)
+    (move,) = GUARDED_MOVE.findall(lines[1])
+    typed = typed_in_sh(holder, move)
+    assert typed.returncode == 0, typed.stderr
     assert not (holder / variant).exists()
     assert (tmp_path / f"Members-{MEMBER}" / "project.yaml").is_file()
     assert_passes_in_every_mode(holder, 2)
