@@ -1334,8 +1334,18 @@ def _seed_legs(args, values: dict, names: dict, repositories: dict,
         leg_digests[role] = tree_digest(work, commit)
         if not args.no_push:
             try:
-                run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
-                    cwd=work)
+                # THE BRANCH BY ITS FULL REFNAME (#421). A bare `<branch>`
+                # is a REFSPEC, and a leading `+` in a refspec means FORCE:
+                # `--tracking-branch +x`, a name `git check-ref-format
+                # --branch` accepts and `git init -b` creates, was read as
+                # the forced push of a local branch `x` and died `src refspec
+                # x does not match any`, after all three remotes existed.
+                # `HEAD:refs/heads/<branch>` names both sides in full, so
+                # every name git accepts is pushed as the branch it is, and
+                # `-u` still records `origin/<branch>` as its upstream.
+                # `adopt-project.py` pushes `HEAD:refs/heads/<branch>` too.
+                run(["git", "push", "-q", "-u", "origin",
+                     f"HEAD:refs/heads/{args.tracking_branch}"], cwd=work)
             except CommandFailed as exc:
                 print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
                 print(RULESET_HINT.format(repo=repositories[role],
@@ -1450,8 +1460,10 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
     run(["git", "remote", "add", "origin", urls["assembly"]], cwd=assembly)
     if not args.no_push:
         try:
-            run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
-                cwd=assembly)
+            # By full refname, as the legs are pushed (`_seed_legs`, #421): a
+            # bare `+x` is a forced refspec, not the branch named `+x`.
+            run(["git", "push", "-q", "-u", "origin",
+                 f"HEAD:refs/heads/{args.tracking_branch}"], cwd=assembly)
         except CommandFailed as exc:
             print(exc.loudly("pushing the assembly root"), file=sys.stderr)
             print(RULESET_HINT.format(repo=repositories["assembly"],

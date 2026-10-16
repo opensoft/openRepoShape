@@ -1763,8 +1763,17 @@ def _create_holder_worktree(args, work: Path, values: dict, shape_commit: str,
     if args.no_push:
         return None
     try:
-        run(["git", "push", "-q", "-u", "origin", args.tracking_branch],
-            cwd=work)
+        # THE BRANCH BY ITS FULL REFNAME (#421). A bare `<branch>` is a
+        # REFSPEC, and a leading `+` in one means FORCE: `--tracking-branch
+        # +x`, a name `git check-ref-format --branch` accepts and `git init
+        # -b` creates, was read as the forced push of a local branch `x` and
+        # died `src refspec x does not match any`, after `gh repo create` had
+        # made the holder. `HEAD:refs/heads/<branch>` names both sides in
+        # full, so every name git accepts is pushed as the branch it is, and
+        # `-u` still records `origin/<branch>` as its upstream. The same
+        # spelling `scaffold-project.py` pushes its three repositories with.
+        run(["git", "push", "-q", "-u", "origin",
+             f"HEAD:refs/heads/{args.tracking_branch}"], cwd=work)
     except CommandFailed as exc:
         print(exc.loudly("pushing the family holder"), file=sys.stderr)
         print(FAMILY_RULESET_HINT.format(repo=repository,
