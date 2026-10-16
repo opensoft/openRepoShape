@@ -3693,7 +3693,12 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    `merge` row lists it unmerged all the same. So the `why`
                    says that the other side's pin calls it a copy and the
                    pin taken here does not, and that a person merges it by
-                   hand, keeping the hunks git merged. The `--accept-local`
+                   hand, keeping the hunks git merged. Where the pin taken
+                   here does not read, it says that instead, and nothing of
+                   whose file the copy becomes; where one side deleted the
+                   copy, it says a person keeps or deletes it, as there are
+                   no hunks to keep (`other_sides_copies`, review of PR
+                   #736). The `--accept-local`
                    sentence is not for it, and is said only where a copy the
                    kept pin has a row for is left: `apply` refuses the flag
                    on a path the pin has no row for. In the `manifest kinds`
@@ -3818,13 +3823,15 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                     f"{what} whole" if b"3" in pin_stages and side == "--ours"
                     else f"only that side of the merge holds a {what}. Take "
                     "it whole")
-            lines, copies, other_side, taken, partial = [], [], [], [], False
+            lines, copies, other_side, taken = [], [], [], []
+            partial, kept_reads = False, True
             if pin == SHAPE_PIN:
                 lines = sorted(name for name in (kind.manifest, us.README)
                                if name in stages)
                 # Both pins say what is a copy, and the kept one what can be
                 # taken: a copy only the other side's is never taken (#687).
-                kept = set(pin_at(ctx, f":{stage.decode()}") or ())
+                held = pin_at(ctx, f":{stage.decode()}")
+                kept_reads, kept = held is not None, set(held or ())
                 other = set(pin_at(ctx, ":3" if stage == b"2" else ":2")
                             or ())
                 copies = sorted(name for name in kept if name in stages)
@@ -3883,19 +3890,7 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                              "check calls it both, as update-conflict, and "
                              "either refusal asks for --accept-local on that "
                              "path")
-                if other_side:
-                    many = len(other_side) > 1
-                    said.append(
-                        f"{' and '.join(other_side)} "
-                        + ("are" if many else "is")
-                        + " conflicted too, and the other side's pin calls "
-                        + ("them copies" if many else "it a copy")
-                        + " where the pin taken here does not, so neither "
-                        "side is taken whole: once the merge is finished "
-                        + ("each" if many else "it")
-                        + " is the project's own file, and a person merges "
-                        + ("each" if many else "it")
-                        + " by hand, keeping the hunks git merged")
+                said += other_sides_copies(other_side, stages, kept_reads)
             if said:
                 then = ". " + ". ".join(said) + ". Then finish"
             return "unmerged", (
@@ -3952,6 +3947,52 @@ def pin_restore(ctx: Context, detail: dict | None = None,
             f"Commit that rather than editing the {what}"
             + gitlink_left_behind(ctx, before, pin))
     return "none", None, None
+
+
+def other_sides_copies(names: list, stages: dict, kept_reads: bool) -> list:
+    """The sentences of a conflicted shape pin's `why` for `names`, the
+    files conflicted beside it that only the side NOT taken has `files:`
+    rows for (#687): never taken, and a person's to resolve. `stages` is
+    `{path: {stage: mode}}`, as `pin_restore` reads `ls-files -u`, and
+    `kept_reads` whether the pin taken here reads as one.
+
+    WHAT IS KNOWN, AND NOTHING ELSE (review of PR #736). Where the pin
+    taken here reads, it has no row for them, so once the merge is finished
+    each is the project's own file, and the sentence says so. Where it does
+    not read, nothing says whose file each becomes, so the sentence says
+    only that it does not read.
+
+    ONE SENTENCE FOR THE FILES BOTH SIDES HOLD, ANOTHER FOR THOSE ONE SIDE
+    DELETED. Both sides' stages are there for a content conflict, an
+    add/add included, and a person merges the file by hand, keeping the
+    hunks git merged. A delete/modify conflict holds one of them alone, and
+    has no hunks to keep: a person keeps the file or deletes it.
+    """
+    said = []
+    for deleted in (False, True):
+        group = [name for name in names
+                 if deleted != ({b"2", b"3"} <= set(stages.get(name, ())))]
+        if not group:
+            continue
+        many = len(group) > 1
+        each = "each" if many else "it"
+        sentence = (
+            f"{' and '.join(group)} {'are' if many else 'is'} conflicted "
+            "too, and the other side's pin calls "
+            + ("them copies" if many else "it a copy")
+            + (" where the pin taken here does not" if kept_reads
+               else " while the pin taken here does not read as a pin")
+            + (f", and one side deleted {each}" if deleted else "")
+            + ", so neither side is taken whole: ")
+        if kept_reads:
+            sentence += (f"once the merge is finished {each} is the "
+                         "project's own file"
+                         + (" if kept" if deleted else "") + ", and ")
+        said.append(sentence + (
+            f"a person keeps or deletes {each} by hand" if deleted
+            else f"a person merges {each} by hand, keeping the hunks git "
+            "merged"))
+    return said
 
 
 def taken_with_the_pin(ctx: Context, kind, copies: list,
@@ -4269,12 +4310,16 @@ def unreadable_next(ctx: Context, unreadable: list,
 
     WHAT THE SHAPE PIN'S MERGE LEAVES TO A PERSON IS SAID HERE TOO (#485).
     While the shape pin does not read, no row says what is a copy, so a
-    copy conflicted beside it is not `tool_written`. The side of the merge
-    `pin_restore` takes does say, and its `why` gives each such copy to a
-    person. That copy's case is `unmerged`, the one it has once the pin
-    reads, and not `project`, and `detail` gets the `left_for_a_person`
-    the `shape currency` row's has, so both rows say the same of the same
-    command. A copy that command takes whole with the pin, proved tool
+    copy conflicted beside it is not `tool_written`. The two sides of the
+    merge do say, and `pin_restore`'s `why` gives each such copy to a
+    person. That copy's case is `unmerged`, and not `project`, and
+    `detail` gets the `left_for_a_person` the `shape currency` row's has,
+    so both rows say the same of the same command. Where the pin taken
+    here has a row for the copy, `unmerged` is the case it has once the
+    pin reads. A copy under `contracts/` that only the other side's pin
+    lists (#687) is `project` then, as the pin taken here has no row for
+    it: `unmerged` is its case only while the pin is conflicted and the
+    `why` names it. A copy the NEXT takes whole with the pin, proved tool
     output on both sides (#547), is `unmerged` too, and `detail` gets the
     `taken_with_the_pin` that row's has: the command overwrites it, and
     `project` would say git was not asked about a file the NEXT puts back.

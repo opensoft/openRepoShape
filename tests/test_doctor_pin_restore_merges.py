@@ -19,7 +19,9 @@ standard's checkout is a partial clone, stay a person's (review of PR #586).
 A copy only the other side's pin has a row for -- a row the kept pin lost,
 or an add/add where one side's `apply --add` took a file the standard added
 and the other wrote its own -- is never taken either, and the `why` and
-`left_for_a_person` name it for a person (#687).
+`left_for_a_person` name it for a person (#687). Beside a kept pin that
+does not read, or where one side deleted it, the `why` says only what is
+known: no owner, and no hunks to keep (review of PR #736).
 
 L2-9. A slip amended into `bump-leg.py`'s own commit leaves the commit
 before it holding the pin for the OLD leg commit. Putting that pin back is
@@ -603,8 +605,11 @@ def restaged(root: Path, rel: str, stages: dict) -> None:
                    cwd=str(root), input=data, capture_output=True, check=True)
 
 
-def assert_only_bootstrap_is_taken(rows: dict,
-                                   said: str = f"{MAKEFILE} is a copy {LEFT}"
+#: What the `why` says of the Makefile where the kept side's pin has its row.
+A_COPY_LEFT = f"{MAKEFILE} is a copy {LEFT}"
+
+
+def assert_only_bootstrap_is_taken(rows: dict, said: str = A_COPY_LEFT
                                    ) -> dict:
     """Both rows name the pin and `scripts/bootstrap.py`, taken; the
     Makefile goes to a person with `project.yaml`, and the `why` says
@@ -658,15 +663,63 @@ def test_a_copy_whose_mode_one_side_changed_is_left_to_a_person(
     assert_only_bootstrap_is_taken(rows)
 
 
+def a_pin_restaged(root: Path, number: int, changed) -> None:
+    """Stage `number` of the conflicted shape pin restaged as `changed`
+    makes it of the bytes the merge left there."""
+    stages = index_stages(root, SHAPE_PIN)
+    mode, oid = stages[number]
+    blob = subprocess.run(["git", "cat-file", "blob", oid], cwd=str(root),
+                          capture_output=True, check=True).stdout
+    held = changed(blob)
+    written = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                             cwd=str(root), input=held,
+                             capture_output=True, check=True)
+    stages[number] = (mode, written.stdout.decode("ascii").strip())
+    restaged(root, SHAPE_PIN, stages)
+    assert stage_of(root, number, SHAPE_PIN) == held
+
+
+def a_pin_without_a_row(root: Path, number: int, rel: str) -> None:
+    """Stage `number` of the conflicted shape pin restaged without `rel`'s
+    `files:` row, and every other byte of it as the merge left it."""
+    row = (rb'(?m)^  - path: ' + re.escape(rel.encode())
+           + rb'\n    sha256: "[0-9a-f]{64}"\n')
+
+    def without(blob: bytes) -> bytes:
+        held, count = re.subn(row, b"", blob)
+        assert count == 1, blob
+        return held
+
+    a_pin_restaged(root, number, without)
+
+
+#: What the `why` says of the Makefile one side deleted where only the
+#: other side's pin has its row (review of PR #736): no hunks to keep.
+OTHER_SIDES_DELETED = (
+    f"{MAKEFILE} is conflicted too, and the other side's pin calls it a "
+    "copy where the pin taken here does not, and one side deleted it, so "
+    "neither side is taken whole: once the merge is finished it is the "
+    "project's own file if kept, and a person keeps or deletes it by hand. "
+    "Then finish")
+
+
+@pytest.mark.parametrize("kept_row", [
+    pytest.param(True, id="the-kept-pin-has-its-row"),
+    pytest.param(False, id="only-the-other-sides-pin-has-its-row"),
+])
 def test_a_copy_one_side_deleted_is_left_to_a_person(standard, project,
-                                                     tmp_path):
+                                                     tmp_path, kept_row):
     """shape/a re-pins to C2 and then deletes its Makefile; shape/b
     re-pins to C3. Merged, the Makefile is a delete/modify conflict:
     stages 1 and 2, no stage 3, and shape/a's pin still has its row. No
     side's absence proves anything, so the Makefile is a person's -- taken
     whole as ours, the NEXT would drop the other side's deletion -- and
     bootstrap.py is still taken. Run, the NEXT leaves the Makefile
-    unmerged, as the merge left it."""
+    unmerged, as the merge left it.
+
+    With the kept side's pin restaged without the Makefile's row, only the
+    other side's pin calls it a copy (#687), and the `why` says a person
+    keeps or deletes it, since a deletion leaves no hunks to keep."""
     root = under_an_awkward_name(project, tmp_path)
     moved, c2, c3, _frozen = the_standard_moved(
         standard, tmp_path, UPSTREAM_TARGET, BOOTSTRAP_SOURCE)
@@ -678,29 +731,13 @@ def test_a_copy_one_side_deleted_is_left_to_a_person(standard, project,
     assert f"UD {MAKEFILE}" in status, status
     assert f"UU {SHAPE_PIN}" in status, status
     assert sorted(index_stages(root, MAKEFILE)) == [1, 2]
+    if not kept_row:
+        a_pin_without_a_row(root, 2, MAKEFILE)
     _verdict, rows = rows_from(moved, root)
-    currency = assert_only_bootstrap_is_taken(rows)
+    currency = assert_only_bootstrap_is_taken(
+        rows, A_COPY_LEFT if kept_row else OTHER_SIDES_DELETED)
     run_pasted(currency["next"])
     assert sorted(index_stages(root, MAKEFILE)) == [1, 2]
-
-
-def a_pin_without_a_row(root: Path, number: int, rel: str) -> None:
-    """Stage `number` of the conflicted shape pin restaged without `rel`'s
-    `files:` row, and every other byte of it as the merge left it."""
-    stages = index_stages(root, SHAPE_PIN)
-    mode, oid = stages[number]
-    blob = subprocess.run(["git", "cat-file", "blob", oid], cwd=str(root),
-                          capture_output=True, check=True).stdout
-    row = (rb'(?m)^  - path: ' + re.escape(rel.encode())
-           + rb'\n    sha256: "[0-9a-f]{64}"\n')
-    without, count = re.subn(row, b"", blob)
-    assert count == 1, blob
-    written = subprocess.run(["git", "hash-object", "-w", "--stdin"],
-                             cwd=str(root), input=without,
-                             capture_output=True, check=True)
-    stages[number] = (mode, written.stdout.decode("ascii").strip())
-    restaged(root, SHAPE_PIN, stages)
-    assert stage_of(root, number, SHAPE_PIN) == without
 
 
 def test_a_copy_the_other_sides_pin_has_no_row_for_is_left_to_a_person(
@@ -748,14 +785,34 @@ def test_a_copy_only_the_other_sides_pin_has_a_row_for_is_named(both_pure):
     assert (root / MAKEFILE).read_bytes() == held
 
 
+#: What the `why` says of the two copies, by what the kept side's pin says
+#: of them: no rows for either, or nothing, as it does not read (review of
+#: PR #736), where nothing says whose file each becomes.
+TOGETHER = {
+    "rows-gone": "where the pin taken here does not, so neither side is "
+                 "taken whole: once the merge is finished each is the "
+                 "project's own file, and a person merges each by hand, "
+                 "keeping the hunks git merged. Then finish",
+    "unreadable": "while the pin taken here does not read as a pin, so "
+                  "neither side is taken whole: a person merges each by "
+                  "hand, keeping the hunks git merged. Then finish",
+}
+
+
+@pytest.mark.parametrize("kept", sorted(TOGETHER))
 def test_copies_only_the_other_sides_pin_has_rows_for_are_named_together(
-        both_pure):
-    """The mirror with both copies' rows gone from the kept side's pin:
-    nothing is taken with the pin, and the `why` names the two in one
-    sentence."""
+        both_pure, kept):
+    """The mirror with both copies' rows gone from the kept side's pin, or
+    with that pin restaged as `files: [`, which does not read, while the
+    other side's reads: nothing is taken with the pin, and the `why` names
+    the two in one sentence, which says whose file each becomes only where
+    the pin taken here reads."""
     root = both_pure["root"]
-    for rel in (MAKEFILE, BOOTSTRAP):
-        a_pin_without_a_row(root, 2, rel)
+    if kept == "unreadable":
+        a_pin_restaged(root, 2, lambda _blob: b"files: [\n")
+    else:
+        for rel in (MAKEFILE, BOOTSTRAP):
+            a_pin_without_a_row(root, 2, rel)
     _verdict, rows = rows_from(both_pure["moved"], root)
     currency = assert_both_rows_name_it(rows)
     assert pasted(currency["next"])[3:] == [
@@ -763,10 +820,8 @@ def test_copies_only_the_other_sides_pin_has_rows_for_are_named_together(
     assert currency["detail"]["left_for_a_person"] == [
         MAKEFILE, "project.yaml", BOOTSTRAP], currency["detail"]
     assert f"{MAKEFILE} and {BOOTSTRAP} are conflicted too, and the other " \
-        "side's pin calls them copies where the pin taken here does not, " \
-        "so neither side is taken whole: once the merge is finished each " \
-        "is the project's own file, and a person merges each by hand" \
-        in currency["why"], currency["why"]
+        f"side's pin calls them copies {TOGETHER[kept]}" in currency["why"], \
+        currency["why"]
 
 
 def test_a_naming_copy_only_the_other_sides_pin_has_a_row_for_is_named(
