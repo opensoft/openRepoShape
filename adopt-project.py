@@ -228,12 +228,20 @@ from shape_materialize import (  # noqa: E402
 # Whether a value this tool writes into a file is text a file can hold
 # (#255), asked beside `one_printable_line`, the trailer's question.
 from shape_materialize import unwritable_reason  # noqa: E402
-# Whether git creates a tracking branch as it is written (#283), asked only
-# of one the project's loader misreads (`_a_branch_git_creates`, #181).
-from shape_materialize import branch_problem  # noqa: E402
+# Whether git creates a tracking branch as it is written (#283), asked of one
+# the project's loader misreads (`_a_branch_git_creates`, #181), of `plan`'s
+# `--tracking-branch`, and of both branch names a plan gives `execute`
+# (`_branch_name_refusal`, #420, #520). `BRANCH_REMEDIATION` is the remedy
+# it gives a name git judged, worded for a flag.
+from shape_materialize import (  # noqa: E402
+    BRANCH_REMEDIATION, branch_problem, refuse_bad_branch,
+)
 # The shape's bootstrap script, which its `make bootstrap` runs: where it
 # went beside one the source kept decides what NEXT can name (#480).
 from shape_materialize import BOOTSTRAP  # noqa: E402
+# `run`'s own check of a command line, for the one command `run` cannot run:
+# `_git_rm`, whose path goes to git as the bytes the tree holds (#527).
+from shape_materialize import check_program  # noqa: E402
 
 #: The naming policy this tool classifies leg names against. One constant,
 #: because three spellings of the same path is how the second one goes stale.
@@ -948,6 +956,32 @@ def _git_path(raw: bytes) -> str:
     gitlink and its `.gitmodules` registration are compared as strings, so
     both are decoded here."""
     return raw.decode("utf-8", "surrogateescape")
+
+
+def _path_argument(path: str) -> str | bytes:
+    """A path `_git_path` decoded, as `subprocess` must be handed it for git
+    to receive the bytes the tree holds, under any locale (#527).
+
+    BYTES ON POSIX: `_git_path` undone, UTF-8 with `surrogateescape`, so the
+    NFC and the NFD spelling of a name stay two paths, and a byte that is
+    not UTF-8 is that byte again. Handed a `str`, `subprocess` encodes it
+    with the filesystem encoding, which is the locale's codec when Python is
+    not in UTF-8 mode: under `LC_ALL=C PYTHONUTF8=0` that is ASCII, and
+    `git rm` of `caf\\u00e9.md` raised `UnicodeEncodeError` after both legs
+    were pushed. A `bytes` argument reaches the command line as it is.
+
+    TEXT ON WINDOWS, as before. `subprocess` hands `CreateProcessW` the
+    command line as UTF-16, which no locale codec touches, and git for
+    Windows turns it into the UTF-8 its index holds. Python would turn a
+    `bytes` argument back into text there first, with `os.fsdecode`
+    (`subprocess.list2cmdline`), which raises on a byte that is not UTF-8.
+
+    ONLY FOR A PATH READ FROM GIT. A path read from the disk -- `Path`,
+    `os.readlink`, `Path.resolve` -- is text `os.fsdecode` made, and the
+    `os.fsencode` that `subprocess` applies to it gives back the same bytes
+    in any locale, so `_stage_the_split` hands git such paths as they are.
+    """
+    return path if os.name == "nt" else path.encode("utf-8", "surrogateescape")
 
 
 def _one_line(text: str) -> str:
@@ -2967,13 +3001,14 @@ def _pushed_in_every_mode(source: Source, tracking: str) -> bool:
     What GitHub has NOW is `execute`'s to ask (`git ls-remote`, before any
     leg): `check` asks nothing of the network, as #479 has it, and reads
     what the clone remembers. The source's own branches are asked as
-    `execute --local-remote-dir` asks them, of the source as a remote
-    (`_branches_at`); one that cannot be listed is no branch `execute`
-    pushes to there."""
+    `execute --local-remote-dir` asks them, of the source as a remote, with
+    `git ls-remote` (`_branches_a_clone_gets`); one that cannot be listed is
+    no branch `execute` pushes to there."""
     if _tracking_branch_problem(source, TRACKING_KEY, tracking) is not None:
         return False
     try:
-        return tracking in _branches_at(str(source.path), source.path)
+        return tracking in _branches_a_clone_gets(str(source.path),
+                                                  source.path)
     except (CommandFailed, OSError):
         return False
 
@@ -3277,9 +3312,15 @@ def _checked_plan_inputs(args, source: Source,
     # A default this tool filled in is named by where it came from, as
     # `--elected-by` is below, and not as a flag the person never passed.
     given = args.tracking_branch is not None
+    tracking = _flag_named(TRACKING_KEY, {TRACKING_KEY} if given else set())
     args.tracking_branch = checked_value(
-        _flag_named(TRACKING_KEY, {TRACKING_KEY} if given else set()),
-        args.tracking_branch if given else source.branch)
+        tracking, args.tracking_branch if given else source.branch)
+    # Then git's own question (#420): a name inside that alphabet that git
+    # will not create (`a..b`, `~`, `x.lock`, `a/`) is refused here, in git's
+    # words, and is not written for `check` to find it no branch of the
+    # source and the plan to be written again.
+    refuse_bad_branch("adopt-bad-tracking-branch", tracking,
+                      args.tracking_branch)
     # The ONE question first -- spelling, Git's and Windows's names, then the
     # alphabet `checked_value` allows -- so `spec/` is refused here with the
     # spelling to retype, before a plan that `check` and `execute` would have
@@ -5793,6 +5834,87 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
     return found, [UNSAFE_PATH_REMEDIATION] if found else []
 
 
+# ---------------------------------------------------------------------------
+# The two branch names a plan gives `execute` (#420, #520)
+# ---------------------------------------------------------------------------
+#
+# `execute` hands two plan values to git as branch names: `adopt_branch:`,
+# the split branch, which each extraction's clone checks out and the split
+# is pushed to, and `tracking_branch:`, the branch both legs are pushed to.
+# `_checked_plan_values` holds each to `checked_value`'s alphabet, which
+# keeps an option off a command line and is wider than the names git
+# creates. Measured on main at bfed143: an `adopt_branch:` edited to `a..b`,
+# `~`, `x.lock` or `a/` checked `plan ok`, and `execute --local-remote-dir`
+# made both legs and died at the extraction's `git checkout -B`, the
+# corrected plan then meeting `leg-remote-exists`; a name outside the
+# alphabet that git accepts (`a=b`) checked `plan ok`, and `execute` refused
+# it as `unsafe-value` (L2-1 on #457). A `tracking_branch:` git refuses was
+# found since #479, as `plan-tracking-branch-missing`, a sentence about the
+# source's branches that named no rule.
+#
+# So `check` asks both, as `execute` reads them: the constant `ADOPT_BRANCH`
+# and `main` where the key is absent, and `str` of whatever the file holds.
+# Each is held to the alphabet first, and a name outside it is `execute`'s
+# own refusal, `unsafe-value`, in its own words; a name inside it is asked of
+# git with #283's `refuse_bad_branch`, under the key's own code. ONE FINDING
+# PER VALUE: a name outside the alphabet is not asked of git, and no other
+# question is asked about a name found here (`_check_split_branch`, and
+# `plan-tracking-branch-missing` in `_entry_findings`). `execute` refuses
+# `unsafe-value` in `_checked_plan_values`, as it always did, and git's
+# verdict among `check`'s other findings in `_refuse_what_check_finds`, both
+# before any leg exists. `plan` refuses its own `--tracking-branch` the same
+# way, as `adopt-bad-tracking-branch`, before it writes a plan.
+
+#: Each branch name `execute` hands git, in the order `_checked_plan_values`
+#: asks them: `(key, what execute reads where the key is absent, the code
+#: check finds a name git will not create under)`.
+SPLIT_BRANCH_KEY = ("adopt_branch", ADOPT_BRANCH, "plan-bad-adopt-branch")
+BRANCH_KEYS = (SPLIT_BRANCH_KEY,
+               (TRACKING_KEY, "main", "plan-bad-tracking-branch"))
+#: What `check` says once after a finding git made about either name: the
+#: remedy `refuse_bad_branch` gives a name git judged is worded for a flag.
+BRANCH_NAME_REMEDIATION = (
+    "Remediation: set each branch name a finding names to one git creates, "
+    "such as `main` or `release/1.2`, in the plan, and run `check` again: "
+    "`git check-ref-format --branch <name>` prints such a name back as it "
+    "is written, and `git help check-ref-format` lists every rule.")
+
+
+def _branch_name_refusal(plan: Plan, key: str, default: str,
+                         code: str) -> Refusal | None:
+    """Why `execute` will not hand git the plan's `key` as a branch name, as
+    the refusal `check` reports, or None: `checked_value`'s, `execute`'s own,
+    for a name outside its alphabet, and otherwise git's verdict under
+    `code`. The value is `execute`'s (`_checked_plan_values`): `default`
+    where the key is absent, and `str` of what the file holds."""
+    value = plan.get(key, default)
+    try:
+        checked_value(key, value)
+        refuse_bad_branch(code, key, value)
+    except Refusal as exc:
+        return exc
+    return None
+
+
+def _branch_name_findings(plan: Plan) -> tuple[list[str], list[str], set]:
+    """`_branch_name_refusal` of each of `BRANCH_KEYS`, as `check` prints
+    them, in `execute`'s order; what it prints once after them; and the
+    keys they name, which nothing else asks about."""
+    found, remedies, named = [], [], set()
+    for key, default, code in BRANCH_KEYS:
+        refusal = _branch_name_refusal(plan, key, default, code)
+        if refusal is None:
+            continue
+        found.append(f"FINDING {refusal.code}: {refusal.detail}")
+        named.add(key)
+        remedy = (BRANCH_NAME_REMEDIATION
+                  if refusal.remediation == BRANCH_REMEDIATION
+                  else refusal.remediation)
+        if remedy not in remedies:
+            remedies.append(remedy)
+    return found, remedies, named
+
+
 def _entry_findings(plan: Plan, source: Source,
                     local_remote_dir: Path | None = None
                     ) -> tuple[list[str], list[str], list[str]]:
@@ -5808,10 +5930,13 @@ def _entry_findings(plan: Plan, source: Source,
     be written through (#178, #183), then each value `execute` writes into
     a file that no file can hold (#255), then what the project's own
     `validate-manifest.py` would refuse of the values `execute` writes into
-    its manifest (#261), then a tracking branch that is no branch of the
-    source (#479), then each relative url of a kept submodule that names
-    another repository from its leg (#190), and last each plan value
-    `execute` reads late and `_plan_field_findings` asks about (#293, #294).
+    its manifest (#261), then the split branch's name and the tracking
+    branch's, in that order, the order `execute` asks them, each held to
+    `checked_value`'s alphabet and otherwise asked of git (#420, #520), then
+    a tracking branch that is no branch of the source (#479), then each
+    relative url of a kept submodule that names another repository from its
+    leg (#190), and last each plan value `execute` reads late and
+    `_plan_field_findings` asks about (#293, #294).
 
     ONE LIST, read by `check` and by `execute`'s `_refuse_what_check_finds`.
     #168 and #166 each added findings to `check` and a refusal to `execute`
@@ -5878,6 +6003,9 @@ def _entry_findings(plan: Plan, source: Source,
     remote `origin` has, which `execute --local-remote-dir` refuses, is
     named by neither (`_a_branch_execute_writes`); and a pin is named only
     where the plan's `pins:` has no finding of #273's (`_plan_fields`).
+    And a tracking branch whose NAME is wrong is that finding alone (#520):
+    one outside the alphabet or one git will not create is no branch of any
+    source, and is not also said to be missing from this one.
     """
     tree = source.tree()
     unsafe, unsafe_remediation = _source_path_findings(plan, tree)
@@ -5895,8 +6023,10 @@ def _entry_findings(plan: Plan, source: Source,
     unwritable_findings, unwritable_remediation = _value_findings(plan)
     value_findings, value_remediation = _manifest_findings(plan)
     field_findings, field_remediation = _plan_field_findings(plan)
-    tracking_findings, tracking_remediation = _tracking_branch_findings(
-        plan, source)
+    names, names_remediation, misnamed = _branch_name_findings(plan)
+    tracking_findings, tracking_remediation = (
+        ([], []) if TRACKING_KEY in misnamed
+        else _tracking_branch_findings(plan, source))
     # Asked after the validator, whose judgement it follows, and of the
     # tracking branch only where `execute` pushes the legs to it in every
     # mode (`_a_branch_execute_writes`, #479), so that a branch the source
@@ -5910,12 +6040,13 @@ def _entry_findings(plan: Plan, source: Source,
         else (MANIFEST_FIELDS[TRACKING_KEY],))
     return (findings + misread + split
             + _root_symlink_findings(plan, source, tree)
-            + unwritable_findings + value_findings + tracking_findings
-            + moved + field_findings,
+            + unwritable_findings + value_findings + names
+            + tracking_findings + moved + field_findings,
             unsafe_remediation
             + ([MANIFEST_MISREAD_REMEDIATION] if misread else [])
             + split_remediation + unwritable_remediation + value_remediation
-            + tracking_remediation + moved_remediation + field_remediation,
+            + names_remediation + tracking_remediation + moved_remediation
+            + field_remediation,
             pin_notes + notes)
 
 
@@ -5950,6 +6081,28 @@ def _entry_findings(plan: Plan, source: Source,
 #
 # So `check` reports both, and `execute` refuses the second, before any leg
 # exists, as `plan-split-branch-taken`.
+#
+# ONCE CASE IS IGNORED TOO (#520's A4; ruled 2026-10-12: on every system).
+# Git keeps a branch as a file named after it, and a macOS or Windows disk
+# keeps `Adopt` and `adopt` as one path, so a source branch `Adopt`, or one
+# that is the split branch in another case, passed `check` there and
+# `execute` made both legs before git refused it (#457). `_in_the_way`
+# compares as a leg's mount path is compared (`path_overlap`), and a finding
+# about a name in the way only once case is ignored says so. It is refused
+# on Linux too, where git would hold the pair: one plan is then not good on
+# one machine and refused after both legs exist on another.
+#
+# A BRANCH THE SOURCE HIDES (#520). A local repository's branches were read
+# with `git ls-remote`, which asks `git upload-pack`, and that leaves out a
+# branch hidden by `uploadpack.hideRefs` or `transfer.hideRefs`: `check` said
+# `plan ok`, and `execute --local-remote-dir` made both legs before the push
+# of the split met the branch on git's ref lock, measured on main at bfed143
+# with git 2.43. A push into a repository meets its own refs, so those are
+# what `_branches_at` reads of a local one, with `git for-each-ref`. A clone
+# of it obeys the setting, as `ls-remote` does, so the extraction never
+# meets such a branch: a source branch the clone gets is about either run,
+# and one the source hides is about the push into it alone
+# (`_places_in_the_source`).
 #
 # ONE CODE FOR ONE SITUATION. `check`'s finding for the split branch itself
 # is `adopt-branch-exists`: the code `execute` refuses that branch under, and
@@ -6034,11 +6187,22 @@ SPLIT_BRANCH_REMEDIATION = (
 SPLIT_BRANCH_TAKEN_REMEDIATION = (
     "Remediation: no leg repository was created and nothing was pushed. Git "
     "holds no branch whose name is a directory of another's, or lies under "
-    "it, so the plan's split branch cannot be made beside a branch named "
-    "above, where it is named. Delete that branch there, once neither it "
-    "nor a pull request from it is wanted, or set `adopt_branch:` in the "
-    "plan to a name git can create there, then run `check` and `execute` "
-    "again.")
+    "it, and a macOS or Windows disk holds none whose name is another's, or "
+    "such a name, in another case, so the plan's split branch cannot be made "
+    "beside a branch named above, where it is named. Delete that branch "
+    "there, once neither it nor a pull request from it is wanted, or set "
+    "`adopt_branch:` in the plan to a name git can create there, then run "
+    "`check` and `execute` again.")
+#: Why a branch is in git's way of the split branch only once case is
+#: ignored, said after `CASE_ASIDE` in a finding (#520's A4).
+SPLIT_BRANCH_CASE_CLASH = (
+    ": git keeps each branch as a file named after it, and such a disk keeps "
+    "two paths that differ only by case as one. `check` and `execute` refuse "
+    "such a pair on every system")
+#: The listing `git for-each-ref` prints of a repository's own branches, in
+#: the shape `git ls-remote` prints them: `<commit> TAB <ref>`.
+REF_LISTING = "--format=%(objectname)%09%(refname)"
+BRANCH_REFS = "refs/heads/"
 
 
 def _listed_branches(raw: bytes, prefix: str) -> dict[str, str]:
@@ -6055,29 +6219,55 @@ def _listed_branches(raw: bytes, prefix: str) -> dict[str, str]:
     return out
 
 
-def _branches_at(url: str, cwd: Path) -> dict[str, str]:
-    """Every branch of the repository at `url`, as a push to it meets them:
-    `git ls-remote --heads`. One that cannot be listed fails as `run` fails
-    a command, `CommandFailed`, and in `execute` before any leg exists:
-    `_refuse_a_split_branch_left_behind` has just listed the same
-    repository, and a failure there is the same."""
-    args = ["git", *FILE_PROTOCOL, "ls-remote", "--heads", "--", url]
+def _listed_by(args: list[str], cwd: Path) -> dict[str, str]:
+    """`_listed_branches` of the branches `args` prints in `cwd`. A listing
+    that fails raises as `run` fails a command, `CommandFailed`."""
     listed = subprocess.run(args, cwd=cwd, capture_output=True, check=False)
     if listed.returncode:
         raise CommandFailed(args, cwd, listed.returncode,
                             listed.stderr.decode("utf-8", "replace"))
-    return _listed_branches(listed.stdout, "refs/heads/")
+    return _listed_branches(listed.stdout, BRANCH_REFS)
+
+
+def _branches_at(url: str, cwd: Path) -> dict[str, str]:
+    """Every branch of the repository at `url`, as a push to it meets them.
+    A LOCAL path's are its own refs, `git for-each-ref` (#520): `git
+    ls-remote` leaves out a branch the repository hides with `hideRefs`, and
+    a push into it meets that branch all the same. Any other url is listed
+    with `git ls-remote --heads`, as the push will meet it
+    (`_branches_a_clone_gets`). One that cannot be listed fails as `run`
+    fails a command, `CommandFailed`, and in `execute` before any leg
+    exists: `_refuse_a_split_branch_left_behind` has just asked the same
+    repository, and a failure there is the same."""
+    if remote_is_a_path(url):
+        return _listed_by(["git", "for-each-ref", REF_LISTING, BRANCH_REFS],
+                          Path(url))
+    return _branches_a_clone_gets(url, cwd)
+
+
+def _branches_a_clone_gets(url: str, cwd: Path) -> dict[str, str]:
+    """The branches the repository at `url` gives a fetch or a clone: `git
+    ls-remote --heads`, which leaves out one it hides with `hideRefs`. Of a
+    local source, these are the branches `_extract_leg`'s `git clone` gets,
+    and so the ones its `git filter-repo` meets."""
+    return _listed_by(["git", *FILE_PROTOCOL, "ls-remote", "--heads", "--",
+                       url], cwd)
 
 
 def _in_the_way(branches: dict[str, str], branch: str) -> list[tuple]:
-    """`(name, commit)` of each of `branches` that stops `refs/heads/<branch>`
-    being created as a new branch: `branch` itself, first, then each whose
-    name is a directory of it or lies under it, which git cannot hold beside
-    it."""
-    return sorted(((name, commit) for name, commit in branches.items()
-                   if name == branch or name.startswith(branch + "/")
-                   or branch.startswith(name + "/")),
-                  key=lambda found: (found[0] != branch, found[0]))
+    """`(name, commit, aside)` of each of `branches` that stops
+    `refs/heads/<branch>` being created as a new branch: `branch` itself,
+    first, then each whose name is a directory of it or lies under it, which
+    git cannot hold beside it. COMPARED WITHOUT CASE TOO (#520's A4), as a
+    leg's mount path is (`path_overlap`): `aside` is `CASE_ASIDE` for a name
+    in the way only once case is ignored, and empty for one that is in the
+    way on every disk."""
+    found = []
+    for name, commit in branches.items():
+        overlap = _overlap(branch, name)
+        if overlap:
+            found.append((name, commit, overlap[1]))
+    return sorted(found, key=lambda each: (each[0] != branch, each[0]))
 
 
 def _left_behind(where: str, run: str, branch: str, commit: str,
@@ -6097,39 +6287,45 @@ def _left_behind(where: str, run: str, branch: str, commit: str,
             "`adopt_branch:` in the plan to a name no branch has there.")
 
 
-def _taken(where: str, run: str, branch: str, name: str,
-           commit: str) -> str:
+def _taken(where: str, run: str, branch: str, name: str, commit: str,
+           aside: str = "") -> str:
     """One `plan-split-branch-taken` finding about the push: `where` holds
     the branch `name`, at `commit`, which git cannot hold beside the split
-    branch `branch`, and `run` pushes the split there."""
+    branch `branch` (once case is ignored, where `aside` says so), and `run`
+    pushes the split there."""
     split, held = _spelled(branch), _spelled(name)
     # git's own words, each name spelled as `_spelled` spells it, so a
-    # backtick a branch name may hold cannot end the quotation.
+    # backtick a branch name may hold cannot end the quotation. A disk that
+    # ignores case is not measured here, so it is not quoted.
+    why = (aside + SPLIT_BRANCH_CASE_CLASH if aside else
+           f": `'refs/heads/{held[1:-1]}' exists; cannot create "
+           f"'refs/heads/{split[1:-1]}'`")
     return (f"{where} holds the branch {held}, at {commit[:12]}. {run} "
             f"pushes its split commit to {split} there, after both leg "
             "repositories were created and pushed, and git cannot create "
-            f"{split} beside {held}: `'refs/heads/{held[1:-1]}' exists; "
-            f"cannot create 'refs/heads/{split[1:-1]}'`. Delete {held} "
-            "there, or set `adopt_branch:` in the plan to a branch git can "
-            "create there.")
+            f"{split} beside {held}{why}. Delete {held} there, or set "
+            "`adopt_branch:` in the plan to a branch git can create there.")
 
 
-def _in_the_extraction(where: str, branch: str, name: str,
-                       commit: str) -> str:
+def _in_the_extraction(where: str, branch: str, name: str, commit: str,
+                       aside: str = "") -> str:
     """One `plan-split-branch-taken` finding: the source, `where`, holds the
     branch `name` at `commit`, which git cannot hold beside the split branch
-    `branch`, and `_extract_leg`'s `git filter-repo` makes each branch of
-    the source a branch of a clone where `branch` is checked out. Either
-    run extracts, so the finding is about both."""
+    `branch` (once case is ignored, where `aside` says so), and
+    `_extract_leg`'s `git filter-repo` makes each branch of the source a
+    branch of a clone where `branch` is checked out. Either run extracts, so
+    the finding is about both."""
     split, held = _spelled(branch), _spelled(name)
+    why = (aside + SPLIT_BRANCH_CASE_CLASH if aside else
+           ": git holds no branch whose name is a directory of another's, or "
+           "lies under it")
     return (f"{where} holds the branch {held}, at {commit[:12]}. "
             f"{EITHER_RUN} extracts a leg from a clone of the source with "
             f"the plan's split branch {split} checked out in it, after both "
             "leg repositories were created, and `git filter-repo` cannot "
-            f"create {held} beside {split} there: git holds no branch whose "
-            "name is a directory of another's, or lies under it. Delete "
-            f"{held} there, or set `adopt_branch:` in the plan to a branch "
-            "git can create there.")
+            f"create {held} beside {split} there{why}. Delete {held} there, "
+            "or set `adopt_branch:` in the plan to a branch git can create "
+            "there.")
 
 
 def _split_branch_findings(branch: str | None, places: list,
@@ -6152,14 +6348,15 @@ def _split_branch_findings(branch: str | None, places: list,
     and nothing is asked about it here."""
     found = []
     for where, pushed_by, extracted, branches in (places if branch else []):
-        for name, commit in _in_the_way(branches, branch):
+        for name, commit, aside in _in_the_way(branches, branch):
             if name != branch and extracted:
                 found.append(f"FINDING {SPLIT_BRANCH_TAKEN}: "
                              + _in_the_extraction(where, branch, name,
-                                                  commit))
+                                                  commit, aside))
             elif name != branch and pushed_by:
                 found.append(f"FINDING {SPLIT_BRANCH_TAKEN}: "
-                             + _taken(where, pushed_by, branch, name, commit))
+                             + _taken(where, pushed_by, branch, name, commit,
+                                      aside))
             elif (name == branch and pushed_by and source is not None
                   and not _in_the_history_of(source, commit)):
                 found.append(f"FINDING {SPLIT_BRANCH_EXISTS}: "
@@ -6187,19 +6384,39 @@ def _branches_in(path: Path, refs: str) -> dict[str, str]:
     """`_listed_branches` of the refs under `refs` in the repository at
     `path`, read from it with `git for-each-ref`: no network."""
     return _listed_branches(
-        git_out(["for-each-ref", "--format=%(objectname)%09%(refname)",
-                 refs], cwd=path, binary=True), refs)
+        git_out(["for-each-ref", REF_LISTING, refs], cwd=path, binary=True),
+        refs)
+
+
+def _places_in_the_source(where: str, path: Path, extracting: bool) -> list:
+    """The source at `path`, named `where`, as the place a run with
+    `--local-remote-dir` pushes the split to, `(where, pushed_by, extracted,
+    branches)`, as `_split_branch_findings` asks it: its own branches, as
+    the push meets them (`_branches_at`). While `extracting`, those a clone
+    of it gets (`_branches_a_clone_gets`) are met by either run's extraction
+    too, and one it hides from a clone with `hideRefs` (#520) is met by the
+    push alone, a second place, so a finding about it is about that run."""
+    branches = _branches_at(str(path), path)
+    if not extracting:
+        return [(where, LOCAL_RUN, False, branches)]
+    cloned = _branches_a_clone_gets(str(path), path)
+    return [(where, LOCAL_RUN, True,
+             {name: tip for name, tip in branches.items() if name in cloned}),
+            (where, LOCAL_RUN, False,
+             {name: tip for name, tip in branches.items()
+              if name not in cloned})]
 
 
 def _places_check_asks(plan: Plan, source: Source, extracting: bool) -> list:
     """The places `check` asks for the split branch, `(where, pushed_by,
     extracted, branches)`: the source, which a run with `--local-remote-dir`
-    pushes to and either run extracts from while `extracting`, and, where
-    the source's `origin` is the assembly repository, that repository's
-    branches as the source last fetched them, which a run without it pushes
-    to. `check` reads no network for either."""
-    places = [(f"the source {_shown(str(source.path))}", LOCAL_RUN,
-               extracting, _branches_at(str(source.path), source.path))]
+    pushes to and either run extracts from while `extracting`
+    (`_places_in_the_source`), and, where the source's `origin` is the
+    assembly repository, that repository's branches as the source last
+    fetched them, which a run without it pushes to. `check` reads no
+    network for either."""
+    places = _places_in_the_source(f"the source {_shown(str(source.path))}",
+                                   source.path, extracting)
     assembly = _assembly_repository(plan)
     if assembly and (source.repository or "").lower() == assembly.lower():
         places.append((f"`{assembly}` on GitHub, as the source's `origin` "
@@ -6212,14 +6429,14 @@ def _check_split_branch(plan: Plan, source: Source
                         ) -> tuple[list[str], list[str]]:
     """`_split_branch_findings` as `check` asks it, the split branch's own
     name included, and what to print ONCE after every finding, as
-    `_submodule_findings` returns it. A split branch that is not a value
-    `execute` puts on a command line is not asked about: it is `execute`'s
-    refusal `unsafe-value`, before any leg exists."""
-    try:
-        branch = checked_value("adopt_branch",
-                               plan.get("adopt_branch", ADOPT_BRANCH))
-    except Refusal:
+    `_submodule_findings` returns it. A split branch whose name `execute`
+    will not hand git is not asked about (#520): `_entry_findings` names it,
+    as `unsafe-value` or `plan-bad-adopt-branch`, and `execute` refuses it
+    before any leg exists."""
+    if _branch_name_refusal(plan, *SPLIT_BRANCH_KEY) is not None:
         return [], []
+    key, default, _ = SPLIT_BRANCH_KEY
+    branch = checked_value(key, plan.get(key, default))
     extracting = _extracts_a_leg(assigned_paths(plan.entries))
     found = _split_branch_findings(
         branch, _places_check_asks(plan, source, extracting), source)
@@ -6241,22 +6458,24 @@ def _refuse_a_branch_in_the_split_branchs_way(
     nothing then.
 
     Under `--local-remote-dir` the split is pushed to the source, which is
-    also what the extraction clones: one listing, `git ls-remote --heads`,
-    as the push will meet it, and each finding is `check`'s, word for word.
-    Without it, the source's own branches are asked for the extraction,
-    reading no network, and each finding is `check`'s, word for word; then
-    the assembly repository on GitHub, as the push will meet it, which
-    `check` reads as the source's `origin` last fetched it, if at all.
+    also what the extraction clones: the places `check` asks there
+    (`_places_in_the_source`), its own branches as the push meets them and
+    those a clone of it gets, and each finding is `check`'s, word for word.
+    Without it, the branches a clone of the source gets are asked for the
+    extraction, reading no network, and each finding is `check`'s, word for
+    word: a branch the source hides from a clone (#520) is met by no part
+    of this run. Then the assembly repository on GitHub, as the push will
+    meet it, which `check` reads as the source's `origin` last fetched it,
+    if at all.
     """
     if local and any(Path(urls[role]).exists() for role in EXTRACTED_LEGS):
         return
     the_source = f"the source {_shown(str(source.path))}"
     if local:
-        places = [(the_source, LOCAL_RUN, extracting,
-                   _branches_at(urls["assembly"], source.path))]
+        places = _places_in_the_source(the_source, source.path, extracting)
     else:
         places = [(the_source, None, True,
-                   _branches_in(source.path, "refs/heads/"))
+                   _branches_a_clone_gets(str(source.path), source.path))
                   ] if extracting else []
         places.append((f"`{repositories['assembly']}` on GitHub", GITHUB_RUN,
                        False, _branches_at(urls["assembly"], source.path)))
@@ -7704,6 +7923,16 @@ def _in_the_history_of(source: Source, tip: str) -> bool:
     return asked.returncode == 0
 
 
+def _tip_at(url: str, branch: str) -> str | None:
+    """The commit the repository at `url` has `branch` at, as `git ls-remote`
+    reads it now, or None where it has no such branch."""
+    ref = f"refs/heads/{branch}"
+    listed = run(["git", "ls-remote", url, ref])
+    tips = [line.split("\t")[0] for line in listed.splitlines()
+            if line.split("\t")[-1] == ref]
+    return tips[0] if tips else None
+
+
 def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
                                        branch: str, local: bool) -> None:
     """Refuse a run whose split branch is already on the assembly, BEFORE a
@@ -7715,8 +7944,11 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
     a failed verification prescribed, into fresh legs, created and pushed
     two more legs and was then refused at the split push, every time:
     against GitHub, two more real repositories per attempt. The branch is
-    asked of the very remote the split is pushed to, with `git ls-remote`,
-    so the answer is the push's own.
+    asked of the very remote the split is pushed to, with `git ls-remote`
+    (`_tip_at`), so the answer is the push's own; under `--local-remote-dir`
+    that remote is the source, whose own refs are read (`_branches_at`), so
+    that one it hides from `git ls-remote` with `hideRefs`, which `check`
+    finds, is refused too (#520): the push into it meets that branch.
 
     ONLY A BRANCH THE PUSH CANNOT FAST-FORWARD IS REFUSED (#188's review,
     N1). One at the source commit, or behind it, is moved forward by the
@@ -7738,17 +7970,17 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
     """
     if local and any(Path(urls[role]).exists() for role in EXTRACTED_LEGS):
         return
-    ref = f"refs/heads/{branch}"
-    listed = run(["git", "ls-remote", urls["assembly"], ref])
-    tips = [line.split("\t")[0] for line in listed.splitlines()
-            if line.split("\t")[-1] == ref]
-    if not tips or _in_the_history_of(source, tips[0]):
+    # Under `--local-remote-dir` the push goes into the source, and meets its
+    # own refs, a branch it hides from `git ls-remote` too (#520).
+    tip = (_branches_at(urls["assembly"], source.path).get(branch) if local
+           else _tip_at(urls["assembly"], branch))
+    if tip is None or _in_the_history_of(source, tip):
         return
     raise Refusal(
         "adopt-branch-exists",
         f"{_spelled(urls['assembly'])} already has {_spelled(branch)}, the "
         "branch this adoption pushes its split commit to, at "
-        f"{tips[0][:12]}: neither the source commit {source.commit[:12]} nor "
+        f"{tip[:12]}: neither the source commit {source.commit[:12]} nor "
         "a commit behind it",
         "Remediation: no leg repository was created and nothing was pushed. "
         "The split commit is made on top of the source commit, git moves a "
@@ -8086,6 +8318,33 @@ def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
                             "directory")
 
 
+#: `git rm` of one path the split moves to a leg or drops, up to the path.
+#: `--literal-pathspecs` (#196): after `--` a path is no option, but it is
+#: still a pathspec, where `*` and `?` are wildcards and a leading `:` is
+#: magic -- `git rm -- ':!keep.md'` removes every other path in the tree.
+GIT_RM = ("git", "--literal-pathspecs", "rm", "-r", "-q", "--")
+
+
+def _git_rm(assembly: Path, path: str) -> None:
+    """`git rm` of `path`, an entry's path as the plan holds it, in the
+    assembly: what `run` does, with `path` handed to git as the bytes the
+    tree holds (`_path_argument`, #527).
+
+    `run` takes only text (`check_program`), so this asks `check_program` of
+    the command as the person reads it, and a git that refuses raises
+    `CommandFailed` with that command, as `run` raises it: what `execute`
+    reports after both legs exist is unchanged.
+    """
+    command = [*GIT_RM, path]
+    check_program(command)
+    proc = subprocess.run([*GIT_RM, _path_argument(path)], cwd=str(assembly),
+                          capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise CommandFailed(command, assembly, proc.returncode,
+                            (proc.stderr + proc.stdout).decode("utf-8",
+                                                               "replace"))
+
+
 def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
                     paths_for: dict, spec_path: str, code_path: str) -> None:
     """(c, first half) `git rm` what moved, then mount the two legs.
@@ -8093,17 +8352,16 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     The submodule is added from the LEG'S WORKING TREE and its recorded URL is
     then rewritten to the canonical remote, exactly as the scaffold does: the
     adoption never depends on a push having propagated.
+
+    Each path is the source tree's, so `_git_rm` hands it to git as the bytes
+    the tree holds (#527). The mount paths are `checked_value`s, ASCII.
     """
     removed = sorted((p.rstrip("/") for p in (paths_for["spec"]
                                               + paths_for["code"]
                                               + paths_for["drop"])),
                      key=lambda p: (p != GITMODULES, p))
-    # `--literal-pathspecs` (#196): after `--` a path is no option, but it is
-    # still a pathspec, where `*` and `?` are wildcards and a leading `:` is
-    # magic -- `git rm -- ':!keep.md'` removes every other path in the tree.
     for path in removed:
-        run(["git", "--literal-pathspecs", "rm", "-r", "-q", "--", path],
-            cwd=assembly)
+        _git_rm(assembly, path)
     # The plan moved (or dropped) the source's own .gitmodules, so its deletion
     # is staged, and `git submodule add` refuses to write into a file the index
     # says is going away. Give the assembly a fresh, EMPTY, staged one for its
@@ -8159,6 +8417,10 @@ def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
     `(spec_path, code_path, branch, tracking)`.
 
     Split out of `cmd_execute` for #138, in the order the refusals came in.
+    A branch name `checked_value` refuses is `check`'s finding too, in the
+    same words (`_branch_name_refusal`, #520); one inside its alphabet that
+    git will not create is refused with `check`'s other findings, by
+    `_refuse_what_check_finds`, and before any leg exists as well.
     """
     spec_leg, code_leg = _plan_leg_paths(plan)
     # Before ANY leg exists: `check` finds a bad path and `execute` refuses it
@@ -8298,7 +8560,10 @@ def _refuse_what_check_finds(plan: Plan, source: Source,
     to lack. A VALUE THAT IS AN OPTION AND A PATH THAT IS A FACT ARE TWO
     TESTS (#196). A leg's mount path, a branch, a repository name and the
     organisation are options: `checked_value` refuses them as `unsafe-value`
-    in `_checked_plan_values` and `_repository_urls`, before this runs. An
+    in `_checked_plan_values` and `_repository_urls`, before this runs, and
+    a branch name inside its alphabet that git will not create is one of
+    `check`'s findings, refused here (`plan-bad-adopt-branch`,
+    `plan-bad-tracking-branch`, #520). An
     entry's path is a fact of the source, judged by `entry_path_problem` as
     `check`'s own finding `plan-unsafe-path`, which `_entry_findings` lists
     FIRST: a path that is a `git` option is refused as that, and never as the
@@ -10355,7 +10620,10 @@ def main(argv: list[str] | None = None) -> int:
                            "plan records as `source.default_branch`). "
                            "`check` finds, and `execute` refuses before any "
                            "leg exists, one that is no branch of the source "
-                           "(`plan-tracking-branch-missing`).")
+                           "(`plan-tracking-branch-missing`), and `plan` "
+                           "refuses one git will not create as a branch "
+                           "(`adopt-bad-tracking-branch`) and writes no "
+                           "plan.")
     plan.add_argument("--spec-path", default="spec",
                       help=_leg_path_help("spec", "spec"))
     plan.add_argument("--code-path", default="code",
