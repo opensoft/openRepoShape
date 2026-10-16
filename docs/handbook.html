@@ -472,9 +472,9 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
-      <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
+      <!-- reads README.md § The three legs: blob cce66b56eec9dffdd5a1a23bdd8e58d57f90b12e -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -610,7 +610,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -1048,7 +1048,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1063,7 +1063,9 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
       <div class="out"><pre><code>NOTHING has been rolled back. What already exists is listed above; delete it by hand if you want a clean re-run</code></pre></div>
       <p>&mdash; and it is no less true of a failure anywhere else.</p>
       <ul class="plain">
-        <li>A second run is refused while they exist, and there is no <code>--force</code>.</li>
+        <li>A second run is refused while they exist, at the plan, before the <code>yes</code>: the
+        plan is the scaffold&rsquo;s <code>--dry-run</code>, which asks whether each of the three
+        already exists. There is no <code>--force</code>.</li>
         <li>Delete what was created with <code>gh repo delete &lt;org&gt;/&lt;name&gt;</code>, which
         needs the <code>delete_repo</code> scope (<code>gh auth refresh -s delete_repo</code>). Or
         scaffold under a different <code>--project</code>, or re-run with
@@ -1083,9 +1085,9 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
-      <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
+      <!-- reads README.md § The three legs: blob cce66b56eec9dffdd5a1a23bdd8e58d57f90b12e -->
 
       <p class="eyebrow">Setup</p>
       <h2>Reading private legs in CI</h2>
@@ -1106,10 +1108,14 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       <code>SHAPE_LEGS_TOKEN</code> PAT, <code>contents:read</code> on the LEGS ONLY.</p>
       <div class="code" data-lang="sh"><pre><code>gh secret set SHAPE_LEGS_TOKEN --org &lt;your-org&gt; --body '&lt;token&gt;'</code></pre></div>
       <p><strong>On the Free plan, use <code>--repo</code>, not <code>--org</code>.</strong> GitHub
-      delivers org secrets only to PUBLIC repositories, so on a private one
-      <code>secrets.SHAPE_LEGS_APP_ID</code> is silently empty and <code>validate</code> goes GREEN
-      with the pin check skipped. Set both per repository, or upgrade to Team; the creating tools
-      check and say so. Both <code>scaffold-project.py</code> and
+      delivers org secrets only to PUBLIC repositories, and <code>validate</code> runs in the root,
+      so on a private or internal root <code>secrets.SHAPE_LEGS_APP_ID</code> is silently empty and
+      <code>validate</code> goes GREEN with the pin check skipped. Set both on the root, or
+      upgrade to Team; a public root takes org secrets registered with
+      <code>--visibility selected</code> and the root in <code>--repos</code>, or
+      <code>all</code>, which shows them to every repository (the commands above default to
+      <code>private</code>). The creating tools check and say so. Both
+      <code>scaffold-project.py</code> and
       <code>adopt-project.py execute</code> print a one-line reminder &mdash; App first &mdash; when
       they create a private or internal leg.</p>
       <ul class="plain">
@@ -1141,9 +1147,9 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
-      <!-- reads README.md § The three legs: blob 39ec2c2372920177b6f7dcfb821b917eadc34314 -->
+      <!-- reads README.md § The three legs: blob cce66b56eec9dffdd5a1a23bdd8e58d57f90b12e -->
 
       <p class="eyebrow">Reference</p>
       <h2>The three legs, and naming</h2>
@@ -1221,7 +1227,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="adopt">
 
-      <!-- reads README.md § Adopting an existing repository: blob a768fa1b4fe592c0a9dde7c6abb415e8af37d99c -->
+      <!-- reads README.md § Adopting an existing repository: blob ca4b6731cf6de1caeac426eeff5eb7184c53f562 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Adopting an existing repository</h2>
@@ -1244,7 +1250,12 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       <code>spec | code | root | ambiguous</code>, first match wins, each with a reason. The fourth
       class is not a failure: those entries get <code>leg: null</code>,
       <code>review_required: true</code> and the QUESTION, and <code>execute</code> refuses while
-      any remain, because an unanswered question is never an implicit <code>root</code>. A shape
+      any remain, because an unanswered question is never an implicit <code>root</code>. One
+      question comes answered: a source&rsquo;s own <code>single-repository.yaml</code> record is
+      written <code>leg: drop</code>, its rule&rsquo;s default, still
+      <code>review_required: true</code> with its question beside it, and <code>execute</code>
+      takes it as written, so it drops the record unless a person changes <code>leg:</code> (the
+      question offers <code>root</code>). A shape
       file whose name the source already holds &mdash; <code>README.md</code>,
       <code>Makefile</code>, <code>.gitignore</code> &mdash; is written under <code>shape/</code> and
       the collision becomes a follow-up for a human to merge, and a root
@@ -1271,7 +1282,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="families">
 
-      <!-- reads README.md § Families: a holder for projects that ship separately: blob c40baa828dcac568fc4d0cedb9fb4be3e32e6e43 -->
+      <!-- reads README.md § Families: a holder for projects that ship separately: blob b3d19092bb6ee8f0e5809133efda8c7d1e870dc7 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Families: a holder for projects that ship separately</h2>
@@ -1364,8 +1375,8 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       resolving the same GitHub App or <code>SHAPE_LEGS_TOKEN</code> credential the workflow does
       &mdash; and then runs each member&rsquo;s own <code>make bootstrap</code>.
       <code>make validate</code> runs the family validator and then each member&rsquo;s own
-      <code>make validate</code>. A member it lacks a credential for is reported and skipped, not
-      a failure. The holder carries the same COPY pin an assembly root does, so
+      <code>make validate</code>. A member <code>make bootstrap</code> lacks a credential for is
+      reported and skipped, not a failure. The holder carries the same COPY pin an assembly root does, so
       <a href="#current"><code>update-shape.py</code></a> re-syncs it the same way; it mirrors into
       <code>family.yaml</code> instead of <code>project.yaml</code> and must leave
       <code>validate-family.py</code> green.</p>
@@ -1377,7 +1388,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1674,7 +1685,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob badbb6b273215042ba0e8ae167fd760dc25430ee -->
+      <!-- reads README.md § Starting a project in a new organisation: blob dd174d763a931052478f2fd15a7f22535524f6f4 -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 

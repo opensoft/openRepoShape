@@ -251,6 +251,28 @@ def test_an_org_read_from_origin_is_refused_by_where_it_came_from(
     assert not (tmp_path / PLAN).exists()
 
 
+@pytest.mark.parametrize("org, named", [(None, ORG_FROM_ORIGIN),
+                                        ("~x", "--org")],
+                         ids=["read-from-origin", "passed"])
+def test_an_org_the_validator_refuses_is_named_by_where_it_came_from(
+        tmp_path, org, named):
+    """L1-39, #427's pattern in the validator's refusal: a url can end in an
+    organisation `checked_value` takes and the project's own validator
+    refuses, `~x`, and with no `--org` that refusal said `--org is '~x'`, a
+    flag nobody passed. It names the value by where it came from, in the
+    words `checked_value`'s refusal above uses; a `--org ~x` that was
+    passed is named as the flag."""
+    source = with_origin(tmp_path, f"https://example.invalid/~x/{OTHER}.git")
+
+    refused = planned(tmp_path, source, OTHER, org)
+
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert refused.stderr.splitlines()[0].startswith(
+        f"REFUSED adopt-manifest-invalid: {named} is '~x', which the "
+        "project's own validate-manifest.py refuses: "), refused.stderr
+    assert not (tmp_path / PLAN).exists()
+
+
 @pytest.mark.parametrize("directory", ["caf\u00e9", "my repos"],
                          ids=["not-ascii", "space"])
 def test_a_path_origin_names_no_organisation(tmp_path, directory):
