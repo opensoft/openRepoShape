@@ -537,23 +537,31 @@ options:
 
 ```
 usage: adopt-project.py check [-h] --plan PLAN [--source SOURCE]
+                              [--local-remote-dir LOCAL_REMOTE_DIR]
                               [--work-dir WORK_DIR]
 
 options:
-  -h, --help           show this help message and exit
+  -h, --help            show this help message and exit
   --plan PLAN
-  --source SOURCE      override the source the plan names
-  --work-dir WORK_DIR  where `check` works: an `org/repo` --source, or the
-                       plan's `source.repository` where its recorded clone is
-                       gone, is cloned there. Give the one `execute` will be
-                       given. Default: a new directory in the system temp
-                       folder, removed when the run ends if it holds no file.
-                       A --work-dir you give is made where it is missing, and
-                       nothing in it is removed. One this user cannot write in
-                       is a finding, `adopt-work-dir-unwritable`, and is
-                       refused under that code where the source would be
-                       cloned into it or cannot be opened, as one that cannot
-                       be made is.
+  --source SOURCE       override the source the plan names
+  --local-remote-dir LOCAL_REMOTE_DIR
+                        the directory `execute --local-remote-dir` will be
+                        given (the TEST path): each relative submodule url the
+                        plan keeps in a leg is resolved from the bare
+                        repository `execute` would create there, as that run
+                        resolves it, and not from GitHub's. Nothing is created
+                        there.
+  --work-dir WORK_DIR   where `check` works: an `org/repo` --source, or the
+                        plan's `source.repository` where its recorded clone is
+                        gone, is cloned there. Give the one `execute` will be
+                        given. Default: a new directory in the system temp
+                        folder, removed when the run ends if it holds no file.
+                        A --work-dir you give is made where it is missing, and
+                        nothing in it is removed. One this user cannot write
+                        in is a finding, `adopt-work-dir-unwritable`, and is
+                        refused under that code where the source would be
+                        cloned into it or cannot be opened, as one that cannot
+                        be made is.
 ```
 
 #### `adopt-project.py execute`
