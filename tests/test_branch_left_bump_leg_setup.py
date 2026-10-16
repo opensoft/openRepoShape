@@ -15,8 +15,11 @@ refusals of `_branch_to_bump_from` (`bump-leg-on-tracking-branch`,
 SAME sentence under that line, `bump-leg.py` with "the project" where the
 others say "the holder". No command line changes.
 
-THE TEXT IS PINNED HERE, as a person, an agent and a holder's CI read it, and
-each tool's own constant is held to it: one rule, in the same words.
+THE TEXT IS PINNED AS TEXT, as a person, an agent and a holder's CI read it:
+the holder's words in `test_validate_family_branch_step.py`, the project's in
+`test_bump_leg_paste_lines.py` beside the lines it follows. Each tool's own
+constant is held to them by `test_the_tools_say_the_same_words` in
+`test_family_switch_branch_exists.py`: one rule, in the same words.
 
 THE PROOF IS THE PRINTED LINE, TYPED. In a real local project (`bump-leg.py`)
 and a real local holder (the family block), an earlier act leaves the branch
@@ -34,37 +37,26 @@ Nothing here pushes.
 
 from __future__ import annotations
 
-import importlib.util
-import re
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from conftest import PROJECT, REPO, cloned_just_pushed, git
-from test_bump_leg import bump, bump_leg_module  # noqa: F401
+from conftest import PROJECT, cloned_just_pushed, git
+from test_bump_leg import bump
 from test_bump_leg_paste_lines import (
     BRANCH_LEFT_PROJECT, detached_remedy, switch_argv, tracking_remedy, words,
 )
 from test_family import ORG, SPARE, family  # noqa: F401
 from test_family_printed_quoting import FOLDERS, host_words
+from test_family_switch_branch_exists import (
+    head, leave_branch, on_branch, refused_as_left, type_other_name, typed,
+    without_c,
+)
 from test_family_tracking_branch import (  # noqa: F401
     act, on_main, suggested,
 )
-from test_setup_project_py import run_entry
-
-SETUP = REPO / "setup-project.py"
-
-#: The sentence of `family.py` and the holder's `validate-family.py` (#607),
-#: pinned as text. `bump-leg.py` says the same sentence with a project where
-#: this has a holder: `BRANCH_LEFT_PROJECT`, pinned in
-#: `test_bump_leg_paste_lines.py` beside the lines it follows.
-BRANCH_LEFT_HOLDER = (
-    "If `git switch -c` says that branch already exists, an earlier act left "
-    "it: give the branch another name, which starts it where the holder "
-    "stands, or, only if that branch holds work not merged yet, the same "
-    "command with `switch` in place of `switch -c` goes back to it and keeps "
-    "every commit on it.")
+from test_setup_project_py import entry_point_module, run_entry
+from test_validate_family_branch_step import BRANCH_LEFT as BRANCH_LEFT_HOLDER
 
 #: Where the advanced spec commit is pushed. Not another module's branch: the
 #: bare remotes are session-scoped, and a second, different commit pushed to
@@ -102,25 +94,9 @@ def advanced(scaffolded, tmp_path_factory) -> str:
     return git("rev-parse", "HEAD", cwd=work).stdout.strip()
 
 
-def setup_module():
-    """`setup-project.py` as a module (the name has a hyphen in it)."""
-    spec = importlib.util.spec_from_file_location("setup_branch_left", SETUP)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 # --- the text, one rule ---------------------------------------------------------
 
-def test_bump_leg_says_the_sentence_with_the_project(bump_leg_module):
-    assert bump_leg_module.BRANCH_LEFT == BRANCH_LEFT_PROJECT
-
-
-def test_setup_says_the_sentence_with_the_holder():
-    assert setup_module().BRANCH_LEFT == BRANCH_LEFT_HOLDER
-
-
-def test_the_two_texts_differ_in_the_one_word_only():
+def test_the_two_pinned_texts_differ_in_the_one_word_only():
     assert BRANCH_LEFT_HOLDER.count("the holder") == 1
     assert BRANCH_LEFT_HOLDER.replace("the holder", "the project") == \
         BRANCH_LEFT_PROJECT
@@ -128,71 +104,12 @@ def test_the_two_texts_differ_in_the_one_word_only():
 
 # --- what is typed ------------------------------------------------------------
 
-def head(root: Path) -> str:
-    return git("rev-parse", "HEAD", cwd=root).stdout.strip()
-
-
-def on_branch(root: Path) -> str:
-    return git("symbolic-ref", "--short", "-q", "HEAD", cwd=root,
-               check=False).stdout.strip()
-
-
-def typed(argv: list[str]) -> subprocess.CompletedProcess:
-    """`argv` run as a person runs the line it was read from."""
-    return subprocess.run(argv, capture_output=True, text=True, check=False)
-
-
-def without_c(argv: list[str]) -> list[str]:
-    """The same command with `switch` in place of `switch -c`, as the
-    sentence says."""
-    assert argv.count("-c") == 1, argv
-    return [word for word in argv if word != "-c"]
-
-
-def leave_branch(root: Path, branch: str) -> str:
-    """What an earlier act leaves: `branch`, made from the root's HEAD and
-    holding one commit of its own, while the root stays where it stands.
-    Written with `commit-tree` and `update-ref`, so nothing is checked out.
-    Returns that commit."""
-    earlier = git("commit-tree", "-p", "HEAD", "-m", "An earlier act's work",
-                  "HEAD^{tree}", cwd=root).stdout.strip()
-    git("update-ref", f"refs/heads/{branch}", earlier, cwd=root)
-    return earlier
-
-
-def refused_as_left(root: Path, switch: list[str], branch: str) -> None:
-    """The printed `switch -c`, typed where `branch` is there: git's `fatal:
-    a branch named ... already exists`, exit 128, and nothing changed."""
-    before = head(root)
-    stood_on = on_branch(root)
-    made = typed(switch)
-    assert made.returncode == 128, made.stderr
-    assert re.search(rf"fatal: a branch named '{re.escape(branch)}' "
-                     "already exists", made.stderr, re.I), made.stderr
-    assert head(root) == before
-    assert on_branch(root) == stood_on
-
-
 def type_where_none_is_left(root: Path, switch: list[str],
                             branch: str) -> None:
     """The control: with no such branch, the printed line makes it."""
     made = typed(switch)
     assert made.returncode == 0, made.stderr
     assert on_branch(root) == branch
-
-
-def type_another_name(root: Path, switch: list[str], branch: str) -> str:
-    """The printed line where `branch` is there (refused), then with another
-    name: the new branch starts where the root stands. Returns its name."""
-    assert switch[-1] == branch, switch
-    refused_as_left(root, switch, branch)
-    other = f"{branch}-2"
-    before = head(root)
-    made = typed([*switch[:-1], other])
-    assert made.returncode == 0, made.stderr
-    assert head(root) == before
-    assert on_branch(root) == other
-    return other
 
 
 def type_going_back(root: Path, switch: list[str], branch: str,
@@ -285,7 +202,7 @@ def test_another_name_works_where_an_earlier_bump_left_the_branch(
     put_where(kind, project)
     leave_branch(project, branch)
     switch, _ = printed(kind, project, scaffolded, advanced)
-    other = type_another_name(project, switch, branch)
+    other = type_other_name(project, switch, branch)
     before = head(project)
     done = bump(project, scaffolded, advanced)
     assert done.returncode == 0, done.stderr + done.stdout
@@ -319,12 +236,12 @@ def test_going_back_works_where_an_earlier_bump_left_the_branch(
 def family_block(landing, capsys, project: str = "Sample",
                  org: str = "demoorg") -> list[str]:
     """What `family_next_command` prints for `landing`, line by line."""
-    setup_module().family_next_command(project, org, landing)
+    entry_point_module().family_next_command(project, org, landing)
     return capsys.readouterr().out.splitlines()
 
 
 def landing_for(holder: Path):
-    return setup_module().Landing(holder.parent, holder.name, holder)
+    return entry_point_module().Landing(holder.parent, holder.name, holder)
 
 
 @pytest.mark.parametrize("folder", FOLDERS)
@@ -393,7 +310,7 @@ def test_another_name_works_where_an_earlier_try_left_the_family_branch(
     holder = on_main
     switch = setup_switch(holder, capsys)
     leave_branch(holder, switch[-1])
-    other = type_another_name(holder, switch, switch[-1])
+    other = type_other_name(holder, switch, switch[-1])
     before = head(holder)
     done = act(family, holder, "add")
     assert done.returncode == 0, done.stdout + done.stderr
