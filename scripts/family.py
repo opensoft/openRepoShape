@@ -181,6 +181,10 @@ from shape_materialize import (  # noqa: E402
 # How every command this prints for a person to paste spells its paths
 # (#486), the quoting the holder's `scripts/siblings.py` uses too.
 from repo_shape import shell_line, shell_quoted  # noqa: E402
+# Whether the holder's clone URL, under `--local-remote-dir`, is text a file
+# can hold: the question `adopt-project.py` and the scaffold ask of theirs
+# (#255, #433).
+from shape_materialize import unwritable_reason  # noqa: E402
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -1133,6 +1137,54 @@ def _holder_remote(args, family: str) -> tuple[bool, str, str]:
     return local, repository, url
 
 
+#: What a `family-unwritable-value` is told to do (#433): another directory,
+#: or GitHub, as the scaffold's twin says (`CLONE_URL_REMEDIATION`).
+CLONE_URL_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
+    "control character in it, a directory renamed or made anew, and run "
+    "again; or run `init` against GitHub, without --local-remote-dir, where "
+    "the clone URL is `https://github.com/<org>/<Family>.git`. The holder's "
+    "`README.md` prints the clone URL as it stands: a byte that is not UTF-8 "
+    "in the path (a directory named in a legacy code page) cannot be "
+    "written at all, a line break or a control character would break or "
+    "garble the line it is written into, and a bidirectional embedding, "
+    "override or isolate control would show the rest of that line in "
+    "another order than it is written.")
+
+
+def _refuse_an_unwritable_clone_url(local: bool, url: str) -> None:
+    """Refuse the holder's clone URL when no file can hold it, before any
+    remote or folder exists, as `adopt-project.py` (#255) and the scaffold
+    (#433) refuse theirs.
+
+    Only a local one can be refused: under `--local-remote-dir` the URL is
+    the bare repository's own path, which `templates/family-root/README.md`
+    prints (`git clone --recurse-submodules {{CLONE_URL}}`); against GitHub
+    it is `https://github.com/<org>/<Family>.git`, ASCII by construction. A
+    directory whose name is not UTF-8 reaches `sys.argv` as a string with a
+    lone surrogate, and `write_lf` encodes strictly, so `init` raised
+    `UnicodeEncodeError` in `materialize_family_root` after `<Family>.git`
+    existed and the family folder was made, while `--dry-run` exited 0 and
+    said nothing (#433). One bidi override or a line break in the path was
+    written into the README raw.
+
+    The code is this tool's own, `family-unwritable-value`, for the question
+    `adopt-unwritable-value` and `scaffold-unwritable-value` answer:
+    `unwritable_reason`, the one `shape_materialize` keeps for all three.
+    """
+    if not local:
+        return
+    reason = unwritable_reason(url)
+    if reason:
+        raise Refusal(
+            "family-unwritable-value",
+            "under --local-remote-dir the holder's clone URL is the bare "
+            f"repository's own path, {url!r}, which `init` writes into the "
+            f"holder's `README.md`, and {reason}.",
+            CLONE_URL_REMEDIATION)
+
+
 def _shape_snapshot() -> tuple[str, str]:
     """`(shape_commit, shape_tree)` of this checkout, warning to stderr when
     it is dirty.
@@ -1768,6 +1820,7 @@ def cmd_init(args) -> int:
     family, family_id, topic = _checked_family_identity(args)
     created_by = _creator_name(args)
     local, repository, url = _holder_remote(args, family)
+    _refuse_an_unwritable_clone_url(local, url)
     shape_commit, shape_tree = _shape_snapshot()
     values = _template_values(args, family, family_id, repository, url,
                               created_by, shape_commit, shape_tree)
