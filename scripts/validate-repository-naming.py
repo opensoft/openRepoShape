@@ -145,7 +145,16 @@ class LinkSources:
     directory.
     That is `validate-pins.py`'s reading of `--pin-source` (#295), with a
     chain link where that file has a declared pin, so the two copied tools
-    read `[PRODUCT=]PATH` one way.
+    read `[PRODUCT=]PATH` one way OVER ASCII ONLY (#444). Outside it they part
+    company: `PinSources` (`templates/assembly-root/scripts/validate-pins.py`
+    `:831`, `:845`, `:848-849` and `:912`) still keys `--pin-source PRODUCT=`
+    by `casefold()`, so `--pin-source openss=` answers for a declared `openß`
+    where `--link-source openss=` no longer answers for the link `openß`. It
+    is left, and the issue leaves it as its own change, because a pin's digest
+    stops a wrong source from passing: `validate-pins.py` checks it, a wrong
+    source cannot match it, and so that reading can turn a wrong source into
+    a finding and never into a pass. The follow-up is on #459's checklist
+    (the shipped validators and the helpers they share).
 
     WHAT EACH VALUE CAME TO. Every lookup records what it asked
     (`link_pins_from_trees(..., tried=)`), so once every name is classified a

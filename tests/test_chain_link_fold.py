@@ -23,13 +23,15 @@ below:
      no link, `openß` is declared-unverified, and the value is noted;
   G  `link_pins_from_trees` kept one entry for the pair; now two.
 
-The same fold decided three more answers, measured beside the issue's on
+The same fold decided four more answers, measured beside the issue's on
 main 8f453d0 and tested here: a direct pin on `openGlaß` reached
 `openGlass` (H); two chains beginning at `openß` and `openss` counted
 one first link, so a bare `--link-source` was read as both products' trees
-(I, #441's rule); and `scaffold-project.py --pin openss@<sha>
+(I, #441's rule); `scaffold-project.py --pin openss@<sha>
 --referent-chain openß,openInk` planned a descendant through a link no
-pin file names (K).
+pin file names (K); and a chain ENDING at `openGlaß` reached the referent
+`openGlass` for `codexGlass`, in the naming gate and in a real scaffold
+alike, which created all three repositories (L).
 
 The answers that do not move are held too: an ASCII chain, a chain spelled
 `openß` throughout, and links that differ from a declaration by ASCII
@@ -38,9 +40,8 @@ and `casefold()` make the same groups, and `lower()` only ever splits a group
 `casefold()` makes, so no name GitHub, `--pin` or the naming policy can spell
 answers differently.
 
-Every run is made from a directory of its own under `tmp_path`, every
-manifest is written as bytes, and every name is written here as an escape so
-this file stays ASCII.
+Every run is made from a directory of its own under `tmp_path`, and every
+manifest is written as bytes.
 """
 
 from __future__ import annotations
@@ -65,6 +66,9 @@ from repo_shape import link_pins_from_trees, pin_product_key  # noqa: E402
 #: `contracts/openss-pin.yaml`, that `casefold()` took for one product.
 SHARP = "openß"
 SS = "openss"
+#: The referent `codexGlass` needs is `openGlass`; `openGlaß` is another pin
+#: file, which `casefold()` took for it.
+GLASS_SHARP = "openGlaß"
 CODEX_INK_DESCENDS = "codexInk                         domain-descendant/assembly"
 CODEX_INK_DOES_NOT = ("codexInk                         project-leg/assembly"
                       "   also_matches domain-descendant")
@@ -76,9 +80,9 @@ def keyed(*pairs: tuple[str, Path]) -> list[str]:
             for arg in ("--link-source", f"{key}={path}")]
 
 
-def broken(chain: str, detail: str) -> str:
-    """The FINDING the naming gate prints for `codexInk`'s broken chain."""
-    return (f"FINDING codexInk: the declared chain {chain} is broken "
+def broken(chain: str, detail: str, name: str = "codexInk") -> str:
+    """The FINDING the naming gate prints for `name`'s broken chain."""
+    return (f"FINDING {name}: the declared chain {chain} is broken "
             f"({detail})\n")
 
 
@@ -152,6 +156,30 @@ def test_a_chain_must_begin_at_the_pin_file_the_project_holds(ink):
                  f"it begins at {SHARP}, which is not in this project's "
                  "`neutral_product_pins:` — the first entry is the pin this "
                  "project actually holds"))
+
+
+def test_a_chain_must_end_at_the_pin_file_the_name_claims(tmp_path):
+    """ROW L. `codexGlass` pins `openXdox`, records `openXdox -> openGlaß`,
+    and `openXdox`'s own tree declares `openGlaß`. `openGlass` is the
+    referent the name claims, `contracts/openglass-pin.yaml`, and the chain
+    ends at another pin file. It was `domain-descendant`, exit 0; the chain is
+    broken at its end now, and the finding says what the name would need. The
+    keyed source is never read, because a chain broken in its shape reads no
+    link (#338), and it is NOTEd so."""
+    root = project(tmp_path / "ws" / "codexGlass", "openXdox",
+                   f"openXdox, {GLASS_SHARP}")
+    held = tree(tmp_path / "trees" / "openXdox", GLASS_SHARP)
+    result = naming(root, "--project", "project.yaml",
+                    *keyed(("openXdox", held)))
+    assert result.returncode == 1, result.stderr
+    assert (f"{'codexGlass':<32} project-leg/assembly   also_matches "
+            "domain-descendant") in result.stdout, result.stdout
+    assert result.stderr == (
+        f"NOTE --link-source openXdox={held}: not used — no name classified "
+        "here reads openXdox's own declaration.\n"
+        + broken(f"openXdox → {GLASS_SHARP}",
+                 f"it ends at {GLASS_SHARP}, but codexGlass would need "
+                 "openGlass or openxGlass", "codexGlass"))
 
 
 def test_a_source_keyed_by_the_other_spelling_answers_for_no_link(ink):
@@ -277,16 +305,17 @@ def test_chains_beginning_at_both_spellings_read_a_bare_tree_for_neither(
 
 # --- the scaffold -----------------------------------------------------------
 
-def scaffold_pinning(tmp_path: Path, product: str, chain: str, *args: str):
-    """`scaffold-project.py` for `codexSoft/codexInk`, pinning `product` at a
-    commit of a checkout declaring `openInk`, which is its `--pin-source`,
+def scaffold_pinning(tmp_path: Path, product: str, chain: str, *args: str,
+                     name: str = "codexInk", declares: str = "openInk"):
+    """`scaffold-project.py` for `codexSoft/<name>`, pinning `product` at a
+    commit of a checkout declaring `declares`, which is its `--pin-source`,
     and recording `chain`. Remotes and the work tree go under `tmp_path`."""
-    source = tree(tmp_path / "src", "openInk")
+    source = tree(tmp_path / "src", declares)
     for step in (("init", "-q", "-b", "main"), ("add", "-A"),
                  ("commit", "-qm", "seed")):
         git(*step, cwd=source)
     commit = git("rev-parse", "HEAD", cwd=source).stdout.strip()
-    return run_script(SCAFFOLD, "--org", "codexSoft", "--project", "codexInk",
+    return run_script(SCAFFOLD, "--org", "codexSoft", "--project", name,
                       "--elected-by", "Test Human", "--elected-on",
                       "2026-09-05", "--pin", f"{product}@{commit}",
                       "--pin-source", str(source), "--referent-chain", chain,
@@ -311,6 +340,33 @@ def test_the_scaffold_refuses_a_chain_beginning_at_another_pin_file(
         f"declared chain {SHARP} → openInk is broken (it begins at {SHARP}, "
         "which is not in this project's `neutral_product_pins:` — the first "
         "entry is the pin this project actually holds)\n"
+        "Remediation: the first entry is the product this project PINS "
+        "(pass it as --pin <product>@<40 hex>) and the last is the "
+        "`open<Product>` the name claims; every link between them is "
+        "declared by that link's own project.yaml.\n")
+    assert not (tmp_path / "remotes").exists()
+    assert not (tmp_path / "work").exists()
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real"])
+def test_the_scaffold_refuses_a_chain_ending_at_another_pin_file(
+        tmp_path, dry_run):
+    """ROW L. `codexGlass` pins `openXdox`, whose `--pin-source` declares
+    `openGlaß`, and `--referent-chain openXdox,openGlaß` ends at a pin file
+    that is not `openGlass`'s. The dry run planned a descendant reaching
+    `openGlass` through the chain, and the REAL run created all three
+    repositories and recorded `referent_chain: [openXdox, openGlaß]`. Both
+    runs now refuse `chain-not-declared` before anything is created."""
+    result = scaffold_pinning(tmp_path, "openXdox",
+                              f"openXdox,{GLASS_SHARP}",
+                              *(["--dry-run"] if dry_run else []),
+                              name="codexGlass", declares=GLASS_SHARP)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert result.stderr == (
+        f"REFUSED chain-not-declared: --referent-chain openXdox,"
+        f"{GLASS_SHARP}: the declared chain openXdox → {GLASS_SHARP} is "
+        f"broken (it ends at {GLASS_SHARP}, but codexGlass would need "
+        "openGlass or openxGlass)\n"
         "Remediation: the first entry is the product this project PINS "
         "(pass it as --pin <product>@<40 hex>) and the last is the "
         "`open<Product>` the name claims; every link between them is "
