@@ -25,6 +25,7 @@ fast.
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import os
 import re
@@ -223,6 +224,102 @@ WINDOWS_SKIP = pytest.mark.skipif(
     os.name == "nt",
     reason="needs a POSIX shell and shebang execution; on Windows the entry "
            "point is setup-project.py (tests/test_setup_project_py.py)")
+
+
+def _git_for_windows() -> Path | None:
+    """Git for Windows' own directory, from the `git` that runs this suite.
+
+    `git --exec-path` answers `<root>/mingw64/libexec/git-core` there, and
+    `<root>/usr/bin/bash.exe` is its bash. None off Windows, and where that
+    git is some other build, with no such bash beside it.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        answer = subprocess.run(["git", "--exec-path"], capture_output=True,
+                                text=True, check=False).stdout.strip()
+    except OSError:
+        return None
+    parents = Path(answer).parents if answer else ()
+    if len(parents) < 3:
+        return None
+    root = parents[2]
+    return root if (root / "usr" / "bin" / "bash.exe").is_file() else None
+
+
+GIT_FOR_WINDOWS = _git_for_windows()
+
+#: THE BASH THAT `openRepoShape` AND `install.sh` ARE TESTED UNDER (#585).
+#: Off Windows, the `bash` on PATH. On Windows, Git Bash: Git for Windows'
+#: own `usr\bin\bash.exe`, found beside the git this suite runs and NEVER
+#: from PATH, because a bare `bash` there can be `System32\bash.exe`, the WSL
+#: launcher, and `subprocess` looks in System32 before it reads PATH at all.
+#: `usr\bin` and not `bin`: `bin\bash.exe`, which Git Bash's own shortcut
+#: runs, puts Git's `mingw64\bin` and `usr\bin` FIRST on PATH, ahead of a
+#: test's fake `curl`, and a test's own PATH of a few programs would hold
+#: every one of Git's. `git_bash_session` puts the two there behind the
+#: fakes instead. These suites wore `WINDOWS_SKIP` until then.
+if os.name == "nt":
+    BASH = (str(GIT_FOR_WINDOWS / "usr" / "bin" / "bash.exe")
+            if GIT_FOR_WINDOWS is not None else None)
+else:
+    BASH = shutil.which("bash")
+
+BASH_SKIP = pytest.mark.skipif(
+    BASH is None,
+    reason="needs bash: on Windows, Git for Windows' own usr\\bin\\bash.exe "
+           "beside the git on PATH, which this machine does not have")
+
+
+@functools.lru_cache(maxsize=None)
+def _cygpath(flag: str, path: str) -> str:
+    """Git for Windows' `cygpath <flag>`: the spelling bash itself uses."""
+    return subprocess.run(
+        [str(GIT_FOR_WINDOWS / "usr" / "bin" / "cygpath.exe"), flag, "--",
+         path], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def bash_path(path) -> str:
+    """`path` as `BASH` spells it, for its argv, its environment and what it
+    prints (#585): unchanged off Windows, and `/d/a/...` under Git Bash, from
+    its own `cygpath -u` — the spelling Git Bash gives `$HOME`, `$TMPDIR`,
+    `PATH` and `pwd`, and so the one a person there types."""
+    if GIT_FOR_WINDOWS is None:
+        return str(path)
+    return _cygpath("-u", str(path))
+
+
+def native_path(text: str) -> Path:
+    """The other way: a path `BASH` printed, as this interpreter opens it."""
+    if GIT_FOR_WINDOWS is None:
+        return Path(text)
+    return Path(_cygpath("-w", text))
+
+
+@pytest.fixture
+def git_bash_session(monkeypatch):
+    """PATH and `MSYSTEM` as Git Bash makes them, for a test that runs
+    `BASH` (#585); off Windows, nothing.
+
+    Git Bash puts Git's `mingw64\\bin` and `usr\\bin` ahead of the Windows
+    PATH, which is where a person there finds `mktemp`, `cp` and the bash
+    that `openRepoShape` runs `setup.sh` with, ahead of System32's WSL
+    launcher. Here they go ahead of `os.environ["PATH"]`, so a fake a test
+    puts first still comes first. Neither directory holds a `gh`, so the
+    session's gh guard still answers. The GitHub runner's own PATH already
+    holds both, and Git's `bin` before System32; Git for Windows' default
+    install puts only its `cmd` on PATH, and there, without this, `mktemp`
+    is not found and `bash` is the WSL launcher.
+    """
+    if GIT_FOR_WINDOWS is None:
+        return
+    # Git for Windows on ARM64 ships `clangarm64` where x64 has `mingw64`.
+    msystem = "clangarm64" if (GIT_FOR_WINDOWS / "clangarm64").is_dir() \
+        else "mingw64"
+    monkeypatch.setenv("PATH", os.pathsep.join([
+        str(GIT_FOR_WINDOWS / msystem / "bin"),
+        str(GIT_FOR_WINDOWS / "usr" / "bin"), os.environ.get("PATH", "")]))
+    monkeypatch.setenv("MSYSTEM", msystem.upper())
 
 
 def rmtree(path: Path) -> None:
