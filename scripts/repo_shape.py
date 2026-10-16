@@ -907,6 +907,21 @@ def git_out(args: list[str], cwd: Path, binary: bool = False,
     own. A git that cannot be STARTED (none on PATH) raises `OSError` from
     here, never a refusal: whether that is a question the caller cannot
     answer is the caller's to say (#368).
+
+    THE REFUSAL'S TWO UNTRUSTED PARTS ARE SPELLED (#610), because it is
+    printed as a line, and a root's `validate-pins.py` prints it inside the
+    `neutral-pin-source-unreadable` FINDING. `cwd` is a person's path, named
+    with `shown_path`: as it is, unless a character in it is not printable.
+    What git printed is `spelled`, as ONE line. git echoes the paths it
+    reads (`invalid gitfile format: <cwd>/.git`, `not a git repository:
+    <gitdir>`, `detected dubious ownership in repository at '<cwd>'`) and
+    passes a line break through, so a folder named with a line break, then
+    `WARNING forged-line: ...`, began a line the tool never printed; a git
+    that does not replace a control character (2.43 does, with `?`) hands
+    an ESC, a CR or a BEL to the terminal as well. A line break git itself
+    printed between two lines of its message is `\\n` here, because it
+    cannot be told from a path's. Printable text, UTF-8 included, is
+    unchanged. `args`, which the caller wrote, are named as they were.
     """
     proc = subprocess.run(
         ["git", *args], cwd=str(cwd), capture_output=True, check=False,
@@ -916,8 +931,8 @@ def git_out(args: list[str], cwd: Path, binary: bool = False,
         raise Refusal(
             "git-failed",
             "`git {}` in {} exited {}: {}".format(
-                " ".join(args), cwd, proc.returncode,
-                proc.stderr.decode("utf-8", "replace").strip(),
+                " ".join(args), shown_path(cwd), proc.returncode,
+                spelled(proc.stderr.decode("utf-8", "replace").strip()),
             ),
         )
     return proc.stdout if binary else proc.stdout.decode("utf-8").strip()

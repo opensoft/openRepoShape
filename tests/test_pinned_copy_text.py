@@ -24,6 +24,11 @@ runs against, and the adopted half of L2-33 in
     spells it: `repr` where the path is not printable.
   * L2-31. The root's `validate-pins.py` named an unused `--pin-source` as
     typed in its "not used" note. It is spelled the same way.
+  * rv634r's R1 on #634. `repo_shape.git_out`'s `git-failed` detail, which a
+    root's `validate-pins.py` prints inside `neutral-pin-source-unreadable`,
+    named the folder git ran in as it was and passed git's own stderr
+    through, and git echoes the paths it reads. Both are spelled, in the
+    library, so no pinned script changes.
 
 No network and no GitHub: scaffolds dry-run, or into local bare remotes.
 """
@@ -46,8 +51,8 @@ from test_link_source_chain_defaults import (  # noqa: F401
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
-    LinkPins, NamingPolicy, link_declarations, link_pins_from_trees,
-    shown_path,
+    LinkPins, NamingPolicy, Refusal, git_out, link_declarations,
+    link_pins_from_trees, shown_path,
 )
 from shape_materialize import PLACEHOLDER_RE, shown_source  # noqa: E402
 
@@ -512,6 +517,169 @@ def test_a_printable_unreadable_pin_source_is_named_as_typed(pinned,
             "openXdox=...) could not answer for ") in result.stderr
     assert ("`openXdox=x/openXdox` is also a directory; `--pin-source "
             "./openXdox=x/openXdox` reads it as one.") in result.stderr
+
+
+# --- rv634r's R1 (#634): the git detail validate-pins.py prints -------------
+
+#: What a `--pin-source` can be NAMED, each a way text reaches a terminal that
+#: a plain name does not: an ESC, a line break beginning a forged line, a
+#: carriage return, and an OSC title sequence ended by BEL.
+SOURCE_NAMES = [
+    pytest.param("x\x1b[31mRED", id="esc"),
+    pytest.param("a\nWARNING forged-line: pwned\nb", id="forged-line"),
+    pytest.param("a\rWARNING forged-line: pwned", id="cr"),
+    pytest.param("t\x1b]0;owned\x07z", id="bel"),
+]
+
+#: A commit no repository here holds, for the stub git's line.
+NO_SUCH_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+#: A `git` that is not on this machine: it answers every command with the
+#: bytes beside it on stderr and exit 128. A real git replaces a control
+#: character in what it echoes (2.43 does, with `?`) and passes a line break
+#: through, so only a stub holds the rest to the library, whatever git the
+#: machine has.
+STUB_GIT = pytest.mark.skipif(
+    os.name == "nt", reason="the stub git is a `sh` script")
+
+
+def reached_the_terminal(result) -> list[str]:
+    """What a run printed that a terminal would not show as it is, and what a
+    person would read as a line the tool did not print: each character but a
+    line break that `str.isprintable` refuses, and each line that begins
+    with the forged text. `run_script` reads text with universal newlines,
+    so a raw CR arrives as a line break and the forged line it began is what
+    shows it."""
+    everything = result.stdout + result.stderr
+    return [
+        *(repr(char) for char in sorted(set(everything))
+          if char != "\n" and not char.isprintable()),
+        *(line for line in everything.splitlines()
+          if line.lstrip().startswith("WARNING forged-line")),
+    ]
+
+
+def stub_git(tmp_path, monkeypatch, stderr: bytes):
+    """A `git` first on PATH that prints `stderr` and exits 128."""
+    stub = tmp_path / "stub-git-bin"
+    stub.mkdir()
+    (stub / "git").write_text(
+        '#!/bin/sh\ncat "$(dirname "$0")/stderr.bin" >&2\nexit 128\n',
+        encoding="utf-8")
+    (stub / "git").chmod(0o755)
+    (stub / "stderr.bin").write_bytes(stderr)
+    monkeypatch.setenv("PATH", f"{stub}{os.pathsep}{os.environ['PATH']}")
+
+
+@CONTROL_ARGV
+@pytest.mark.parametrize("name", SOURCE_NAMES)
+def test_a_pin_source_that_is_not_a_repository_is_named_spelled(pinned,
+                                                                tmp_path, name):
+    """THE FINDING'S LAST WORD. `--pin-source <dir>`, where `<dir>` exists and
+    is no repository, printed `exc.detail`, and `git_out` built that with the
+    folder it ran in as it was: an ESC reached stderr, and a line break
+    began a line of the folder's choosing. rv634r measured it on the root
+    this fixture scaffolds."""
+    source = tmp_path / f"bare-{name}"
+    source.mkdir()
+    commit = git("rev-parse", "HEAD", cwd=pinned["product"]).stdout.strip()
+    result = validate_pins(pinned, "--pin-source", str(source))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert reached_the_terminal(result) == [], result.stderr
+    assert (f"@ {commit}: `git ls-tree -r -z {commit}` in "
+            f"{shown_path(str(source))} exited 128: fatal: ") in (
+        result.stderr), result.stderr
+
+
+@CONTROL_ARGV
+@pytest.mark.parametrize("name", SOURCE_NAMES)
+def test_what_git_says_of_a_pin_source_is_spelled_too(pinned, tmp_path, name):
+    """A `.git` that is not a gitfile: git answers `invalid gitfile format:
+    <the folder>/.git`, so what it printed holds the folder's name, and a git
+    passes a line break through. Spelling the folder where `git_out` names
+    it is not enough: the second copy, in git's own words, began the forged
+    line."""
+    source = tmp_path / f"broken-{name}"
+    source.mkdir()
+    (source / ".git").write_text("this is not a gitfile\n", encoding="utf-8")
+    result = validate_pins(pinned, "--pin-source", str(source))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert reached_the_terminal(result) == [], result.stderr
+    assert "exited 128: fatal: invalid gitfile format: " in result.stderr, (
+        result.stderr)
+
+
+@pytest.mark.parametrize("name", ["plain", "caf\u00e9"])
+def test_a_printable_pin_source_that_is_not_a_repository_is_named_as_typed(
+        pinned, tmp_path, name):
+    """The control: a printable folder, UTF-8 included, is named byte for
+    byte, with no quotes."""
+    source = tmp_path / name
+    source.mkdir()
+    commit = git("rev-parse", "HEAD", cwd=pinned["product"]).stdout.strip()
+    result = validate_pins(pinned, "--pin-source", str(source))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (f"@ {commit}: `git ls-tree -r -z {commit}` in {source} "
+            "exited 128: fatal: ") in result.stderr, result.stderr
+
+
+@STUB_GIT
+@pytest.mark.parametrize("name", SOURCE_NAMES)
+def test_git_out_names_the_folder_it_ran_in_spelled(tmp_path, monkeypatch,
+                                                    name):
+    """`git_out`'s `git-failed` detail, for every caller: the folder is named
+    with `shown_path`, as `repr` where it is not printable."""
+    stub_git(tmp_path, monkeypatch, b"fatal: no\n")
+    folder = tmp_path / name
+    folder.mkdir()
+    with pytest.raises(Refusal) as caught:
+        git_out(["ls-tree", "-r", "-z", NO_SUCH_COMMIT], cwd=folder)
+    assert caught.value.code == "git-failed"
+    assert caught.value.detail == (
+        f"`git ls-tree -r -z {NO_SUCH_COMMIT}` in {shown_path(str(folder))} "
+        "exited 128: fatal: no")
+    assert caught.value.detail.isprintable(), caught.value.detail
+
+
+#: What git can print, and the one line the detail holds it as: a control
+#: character, a line break and a C1 control as the escape Python spells
+#: them, and every printable character as it was.
+STDERR_SPELLINGS = [
+    pytest.param(b"fatal: bad \x1b[31mRED\x1b[0m",
+                 "fatal: bad \\x1b[31mRED\\x1b[0m", id="esc"),
+    pytest.param(b"fatal: invalid gitfile format: /x/a\nWARNING forged-line: "
+                 b"pwned\nb/.git\n",
+                 "fatal: invalid gitfile format: /x/a\\nWARNING forged-line: "
+                 "pwned\\nb/.git", id="forged-line"),
+    pytest.param(b"fatal: a\rWARNING forged-line: pwned",
+                 "fatal: a\\rWARNING forged-line: pwned", id="cr"),
+    pytest.param(b"fatal: t\x1b]0;owned\x07z",
+                 "fatal: t\\x1b]0;owned\\x07z", id="bel"),
+    pytest.param("fatal: x\u009b31my".encode("utf-8"),
+                 "fatal: x\\x9b31my", id="c1-csi"),
+    pytest.param(b"error: first line\nfatal: second line\n",
+                 "error: first line\\nfatal: second line", id="two-lines"),
+    pytest.param("fatal: caf\u00e9 is not a repository (C:\\x\\y)"
+                 .encode("utf-8"),
+                 "fatal: caf\u00e9 is not a repository (C:\\x\\y)",
+                 id="printable-unchanged"),
+]
+
+
+@STUB_GIT
+@pytest.mark.parametrize("stderr,spelled_as", STDERR_SPELLINGS)
+def test_git_out_spells_what_git_printed_as_one_line(tmp_path, monkeypatch,
+                                                     stderr, spelled_as):
+    """git echoes the paths it reads and passes a line break through, and a
+    git that does not replace a control character passes that through too.
+    The detail names what git printed as one line, whatever git is on the
+    machine."""
+    stub_git(tmp_path, monkeypatch, stderr)
+    with pytest.raises(Refusal) as caught:
+        git_out(["ls-tree", "-r", "-z", NO_SUCH_COMMIT], cwd=tmp_path)
+    assert caught.value.detail == (
+        f"`git ls-tree -r -z {NO_SUCH_COMMIT}` in {tmp_path} exited 128: "
+        f"{spelled_as}")
 
 
 # --- F6 (rv610, #634): the naming gate's line holds ONE spelling -------------
