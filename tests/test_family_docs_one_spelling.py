@@ -42,9 +42,13 @@ out by hand). The never is true of the normal path, where `add`, `bump` and
 `remove` rewrite the block; the remedies are for a holder already in a repair
 state. So each doc keeps its never and names the validator's repair beside
 it, and says whose commit that is; the shape doc, which has the room, names
-both cases. The validator's remedies are read from the validator, so a remedy
-that stops telling the person to edit a row fails here and takes the docs'
-exception with it.
+both cases. Each passage is held WHOLE (`PASSAGES`), as `ONE_SPELLING` is: the
+words a never needs to be an exception, "but for a row repair", are the ones a
+one-word edit turns back into the contradiction. The validator's remedies are
+read from the validator, `member-gitlink-absent` as the refusal it raises, so
+a remedy that stops telling the person to edit a row fails here and takes the
+docs' exception with it, and so does a copy of `RESTORE_ROW`'s words that no
+longer says what the constant does.
 """
 
 from __future__ import annotations
@@ -97,22 +101,42 @@ HOLDER_README = "templates/family-root/README.md"
 SHAPE_DOC = "templates/family-root/AGENTS-shape.md"
 HOLDER_DOCS = [HOLDER_README, SHAPE_DOC]
 
+#: How the shape doc's layout paragraph names the folder (#763): after the
+#: holder's repository, which the holder's README says at `:66-70` is what
+#: `{{FAMILY}}` is, and not "the family", which `--name` makes a display name.
+SHAPE_LAYOUT = "a plain folder named after this holder's repository"
+
 #: What the holder's docs said of the folder before #763: a match that reads
 #: as case-insensitive, where `siblings.py` compares the name exactly.
 BEFORE_763 = "not named after the family"
 
-#: The sentence each doc says the normal path in: the tool rewrites the block.
-NEVER_HAND_EDIT = {
-    "AGENTS.md": "Never hand-edit `family.yaml`'s `members:` block",
-    SHAPE_DOC: "Do not hand-edit the `members:` block",
+#: The folder rule's subject and its "must", with the words every place says
+#: it in: the standard's README and the handbook, and the holder's README and
+#: `AGENTS-shape.md` (#763). "named EXACTLY ..." alone would pass a doc that
+#: said the folder "need not be" named so.
+FOLDER_RULE = "parent folder must be " + NAMED_EXACTLY
+
+#: Each doc's whole passage on hand-editing `members:`, from its never to
+#: whose commit a repair is (#763). A WHOLE SENTENCE, as `ONE_SPELLING` is: the
+#: never is an exception, for a row repair `validate-family.py` names, and a
+#: doc that kept every word of it but turned the "but for" into "not even for",
+#: or the repair into another thing, would say what the validator's remedies
+#: say not to do. `AGENTS.md` is at its line cap, so its passage is the
+#: shorter; the shape doc names both of the validator's cases.
+PASSAGES = {
+    "AGENTS.md": (
+        "Never hand-edit `family.yaml`'s `members:` block, which the tool "
+        "rewrites wholesale, but for a row repair `validate-family.py` "
+        "names; the commit is then the person's."),
+    SHAPE_DOC: (
+        "Do not hand-edit the `members:` block — the tool rewrites it "
+        "wholesale — but for a row repair that `validate-family.py` names "
+        "in a holder already in a repair state: put back, as git last had "
+        "it, a row deleted or whose `path:` was edited by hand (`git log -p "
+        "-- family.yaml` shows the change), or take out the row of a member "
+        "that is to go (`member-gitlink-absent`); the commit is then the "
+        "person's."),
 }
-
-#: How both docs end the clause that names the validator's repair.
-WHOSE_COMMIT = "the commit is then the person's"
-
-#: The longest a doc may take between its never and whose commit a repair is
-#: for the two to be one passage and not a never with a stray phrase far below.
-PASSAGE_LIMIT = 700
 
 #: The validator's two remedies that tell a person to edit a row by hand, and
 #: the words of each that the shape doc takes its two cases from. `RESTORE_ROW`
@@ -187,14 +211,18 @@ def test_the_move_for_a_holder_straight_in_a_folder_is_one_level_up(path):
     assert STRAIGHT_IN_A_FOLDER in shown(path)
 
 
-@pytest.mark.parametrize("path", HOLDER_DOCS)
-def test_the_holders_own_docs_say_the_folder_is_named_exactly(path):
-    assert NAMED_EXACTLY in shown(path)
+@pytest.mark.parametrize("path", README_AND_HANDBOOK + HOLDER_DOCS)
+def test_the_four_places_say_the_folder_rule_in_the_same_words(path):
+    assert FOLDER_RULE in shown(path)
 
 
 @pytest.mark.parametrize("path", HOLDER_DOCS)
 def test_the_holders_own_docs_no_longer_say_not_named_after_the_family(path):
     assert BEFORE_763 not in shown(path)
+
+
+def test_the_shape_docs_layout_names_the_folder_after_the_repository():
+    assert SHAPE_LAYOUT in shown(SHAPE_DOC)
 
 
 @functools.cache
@@ -203,69 +231,62 @@ def validator():
     return load_without_bytecode(VALIDATOR, "validate_family_hand_repair_docs")
 
 
-def hand_edit_passage(path: str) -> str:
-    """What `path` says from its never to whose commit a repair is, on one
-    line: the passage that has to hold the validator's repair, found by the
-    words of the never and the words that close the clause."""
-    said = shown(path)
-    start = said.find(NEVER_HAND_EDIT[path])
-    assert start >= 0, f"{path} no longer says never to hand-edit `members:`"
-    end = said.find(WHOSE_COMMIT, start)
-    assert end >= 0, (
-        f"{path} says never to hand-edit `members:` and not whose commit "
-        f"a repair the validator names is ({WHOSE_COMMIT!r})")
-    passage = said[start:end + len(WHOSE_COMMIT)]
-    assert len(passage) <= PASSAGE_LIMIT, (
-        f"{path}: the never and {WHOSE_COMMIT!r} are {len(passage)} "
-        f"characters apart, more than one passage")
-    return passage
-
-
-@pytest.mark.parametrize("path", NEVER_HAND_EDIT)
-def test_each_doc_keeps_its_never_for_the_tool_rewriting_the_block(path):
-    assert "wholesale" in hand_edit_passage(path)
-
-
-@pytest.mark.parametrize("path", NEVER_HAND_EDIT)
-def test_the_never_names_the_repair_the_validator_makes_of_a_row(path):
-    passage = hand_edit_passage(path)
-    assert "validate-family.py" in passage
-    assert "repair" in passage
+@pytest.mark.parametrize("path", PASSAGES)
+def test_each_doc_says_its_hand_edit_passage_whole(path):
+    assert PASSAGES[path] in shown(path)
 
 
 @pytest.mark.parametrize("case", [RESTORE_ROW_CASE, ROW_OUT_CASE,
                                   GITLINK_ABSENT])
-def test_the_shape_doc_names_both_of_the_validators_cases(case):
-    assert case in hand_edit_passage(SHAPE_DOC)
+def test_the_shape_doc_passage_names_both_of_the_validators_cases(case):
+    assert case in PASSAGES[SHAPE_DOC]
 
 
 @pytest.fixture
-def remedies(tmp_path, monkeypatch) -> dict[str, str]:
-    """The text of the validator's two remedies, as it prints them: the
-    constant `RESTORE_ROW`, and what `member-gitlink-absent` is given for a
-    row whose gitlink is not there (no repository is needed: HEAD's
-    `.gitmodules` is then unreadable, and the remedy writes the section)."""
+def refusal(tmp_path, monkeypatch):
+    """The refusal the validator raises for a row whose gitlink is not there,
+    through `_check_member_gitlink`, which gives it its code and its remedy
+    (no repository is needed: HEAD is then unlistable, `recorded_gitlink`
+    finds none and the remedy writes the `.gitmodules` section)."""
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     module = validator()
-    put_back = module._gitlink_put_back(tmp_path, "members/IRQS", "0" * 40,
-                                        "acme/IRQS")
-    return {"RESTORE_ROW": module.RESTORE_ROW,
-            GITLINK_ABSENT: put_back}
+    with pytest.raises(module.Refusal) as caught:
+        module._check_member_gitlink(tmp_path, "members/IRQS", "0" * 40,
+                                     "IRQS", "acme/IRQS", {}, None, "rule")
+    return caught.value
 
 
-@pytest.mark.parametrize("remedy, case", [("RESTORE_ROW", RESTORE_ROW_CASE),
-                                          (GITLINK_ABSENT, ROW_OUT_CASE)])
-def test_each_remedy_still_tells_the_person_to_edit_a_row_by_hand(
-        remedies, remedy, case):
-    text = " ".join(remedies[remedy].split())
-    assert re.search(REMEDY_SENTENCES[remedy], text), (
-        f"{remedy} no longer tells a person to edit a row by hand: the "
+def test_member_gitlink_absent_is_raised_telling_the_person_to_edit_the_row(
+        refusal):
+    assert refusal.code == GITLINK_ABSENT
+    text = " ".join(str(refusal).split())
+    assert re.search(REMEDY_SENTENCES[GITLINK_ABSENT], text), (
+        f"{GITLINK_ABSENT} no longer tells a person to edit a row by hand: "
+        "the docs' exception for the validator's repair goes with it")
+    assert ROW_OUT_CASE in text
+
+
+def test_restore_row_still_tells_the_person_to_edit_a_row_by_hand():
+    text = " ".join(validator().RESTORE_ROW.split())
+    assert re.search(REMEDY_SENTENCES["RESTORE_ROW"], text), (
+        "RESTORE_ROW no longer tells a person to edit a row by hand: the "
         "docs' exception for the validator's repair goes with it")
-    assert case in text
+    assert RESTORE_ROW_CASE in text
 
 
-def test_member_gitlink_absent_is_a_code_the_validator_prints():
+def test_every_inline_copy_of_restore_rows_words_is_what_the_constant_says():
+    """`gitmodules-path-unnamed` spells the first words of `RESTORE_ROW` out in
+    its own text, not through the constant, so a change to one that missed the
+    other would send a person two ways. Each string the validator holds that
+    begins as `RESTORE_ROW` does is read against it."""
     source = VALIDATOR.read_text(encoding="utf-8")
-    held = {node.value for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)}
-    assert GITLINK_ABSENT in held
+    constant = " ".join(validator().RESTORE_ROW.split())
+    opening = constant[:len("If its row was deleted")]
+    copies = [" ".join(node.value.split())
+              for node in ast.walk(ast.parse(source))
+              if isinstance(node, ast.Constant)
+              and isinstance(node.value, str)
+              and node.value.strip().startswith(opening)]
+    assert len(copies) >= 2, "the constant and its inline copy"
+    for copy in copies:
+        assert constant.startswith(copy.rstrip("."))
