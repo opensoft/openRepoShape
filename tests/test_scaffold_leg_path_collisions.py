@@ -53,6 +53,7 @@ from shape_materialize import (  # noqa: E402
     CASE_ASIDE, PLACEHOLDER_RE, assembly_root_paths, materialize_assembly_root,
     neutral_pin_path,
 )
+from test_adopt_pins import asked_what  # noqa: E402
 
 PROJECT = "Northwind"
 UTF8 = "utf-8"
@@ -583,8 +584,11 @@ def test_no_gh_command_runs_before_the_refusal(tmp_path):
     control = run_script(SCAFFOLD, *common, env=env)
     assert control.returncode == 2, control.stdout + control.stderr
     assert "pin-unreadable" in control.stderr
-    assert log.read_text(encoding=UTF8).startswith(
-        "api repos/opensoft/openGlass")
+    # It reaches `gh`, and only to READ: its one call is the GraphQL query
+    # asking the forge what the pin's id names (#651), which the stub
+    # refuses, so no other `gh` command runs.
+    assert log.read_text(encoding=UTF8).splitlines() == [
+        asked_what("1" * 40)]
 
 
 def test_a_pair_that_collides_with_nothing_still_scaffolds(tmp_path):
