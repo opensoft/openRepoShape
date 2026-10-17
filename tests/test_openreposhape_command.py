@@ -597,38 +597,193 @@ def test_a_pasted_path_note_reaches_an_interactive_bash_as_printed(
     assert reached.read_text(encoding="utf-8") == f"{parent}/{name}:/sentinel"
 
 
+#: Control characters, typed as their numbers: no escape sequence is written
+#: into this file, because a tool that writes it may write the raw character
+#: (U+009B is the C1 "control sequence introducer" a terminal runs).
+ESCAPE = chr(0x1B)
+DELETE = chr(0x7F)
+C1_CSI = chr(0x9B)
+#: A lone 0xE9 byte, which no UTF-8 text holds, as Python hands one to a
+#: child's environment (the byte comes back through `surrogateescape`).
+NOT_UTF8 = chr(0xDCE9)
+
+HOLDS_A_COLON = "holds a ':'"
+HOLDS_A_CONTROL_CHARACTER = "holds a control character"
+
+#: How `--install`'s two refusals end, and how install.sh's do (#760): the
+#: remedy is the same sentence in both, less the verb.
+COMMAND_REFUSAL_ENDS = (
+    "Nothing was placed. Set $OPENREPOSHAPE_BIN_DIR to a directory without "
+    "one, then run this again.")
+
 #: What `--install` refuses, before it places anything: a directory no line
 #: about `$PATH` can name, and what its refusal says. `{d}` is `tmp_path` as
-#: bash spells it. The newline's refusal never echoes the value.
+#: bash spells it. A control character is refused FIRST and its refusal
+#: never echoes the value, so every control value ends in `forged`, which
+#: shows in no output when the refusal is right; a colon's refusal names the
+#: directory, which holds no control character by then (#667, #760).
 UNNAMEABLE_BIN_DIRS = [
-    pytest.param("{d}/a:b/bin", "holds a ':'", id="a-colon"),
-    pytest.param("{d}/bin:{d}/other", "holds a ':'", id="two-directories"),
-    pytest.param("D:tools", "holds a ':'", id="a-drive-relative-name"),
-    pytest.param("{d}/a\nforged/bin",
-                 "holds a newline", id="a-newline"),
-    pytest.param("D:\\tools\nforged\\bin",
-                 "holds a newline", id="a-drive-spelling-and-a-newline"),
+    pytest.param("{d}/a:b/bin", HOLDS_A_COLON, id="a-colon"),
+    pytest.param("{d}/bin:{d}/other", HOLDS_A_COLON, id="two-directories"),
+    pytest.param("D:tools", HOLDS_A_COLON, id="a-drive-relative-name"),
+    pytest.param("{d}/a\nforged/bin", HOLDS_A_CONTROL_CHARACTER,
+                 id="a-newline"),
+    pytest.param("{d}/a\rforged/bin", HOLDS_A_CONTROL_CHARACTER,
+                 id="a-carriage-return"),
+    pytest.param("{d}/a" + ESCAPE + "[31mforged/bin",
+                 HOLDS_A_CONTROL_CHARACTER, id="an-escape"),
+    pytest.param("{d}/a\tforged/bin", HOLDS_A_CONTROL_CHARACTER,
+                 id="a-tab"),
+    pytest.param("{d}/a" + DELETE + "forged/bin", HOLDS_A_CONTROL_CHARACTER,
+                 id="a-delete"),
+    pytest.param("D:\\tools\nforged\\bin", HOLDS_A_CONTROL_CHARACTER,
+                 id="a-drive-spelling-and-a-newline"),
+    pytest.param("D:\\tools" + ESCAPE + "forged\\bin",
+                 HOLDS_A_CONTROL_CHARACTER,
+                 id="a-drive-spelling-and-an-escape"),
+    pytest.param("{d}/a:b" + ESCAPE + "forged/bin",
+                 HOLDS_A_CONTROL_CHARACTER, id="a-colon-and-an-escape"),
 ]
+
+#: Windows names no file with a control character in it, or with a `:`
+#: beyond the drive's.
+NO_FILE_NAMED_SO = pytest.mark.skipif(
+    os.name == "nt", reason="a Windows file name holds no control character")
+
+#: The two locales a value is tried under: `C` reads one byte at a time, and
+#: `C.UTF-8` reads UTF-8 text where it is valid (#760).
+LOCALES = ["C", "C.UTF-8"]
+
+NO_NON_ASCII_INTO_GIT_BASH = pytest.mark.skipif(
+    os.name == "nt", reason="a non-ASCII value through the environment into "
+    "Git Bash is not run here")
+
+
+def assert_a_bin_dir_is_refused(result, typed: str, said: str,
+                                ending: str) -> None:
+    """`result` is a refusal, exit 2, of `typed`, a directory no line about
+    `$PATH` can name (#667, #760), saying `said` and ending as `ending`
+    does. A colon's refusal names the directory; nothing else does, and no
+    control character, and no `forged` tail, reaches either stream."""
+    assert result.returncode == 2, result.stdout + result.stderr
+    said_in_full = " ".join(result.stderr.split())
+    assert said in said_in_full, said_in_full
+    assert ending in said_in_full, said_in_full
+    if said == HOLDS_A_COLON:
+        assert f"'{typed}', which {said}" in said_in_full, said_in_full
+    for stream in (result.stdout, result.stderr):
+        assert "forged" not in stream, stream
+        assert ESCAPE not in stream, stream
+        assert DELETE not in stream, stream
+        assert C1_CSI not in stream, stream
+    assert result.stdout == ""
 
 
 @pytest.mark.parametrize("value, said", UNNAMEABLE_BIN_DIRS)
 def test_a_bin_dir_no_path_line_can_name_is_refused_before_it_places_anything(
         tmp_path, value, said):
-    """A `:` splits a `$PATH` and a newline breaks the note's line in two, so
-    no `export PATH` line could name such a directory (#667): refused with
-    exit 2 beside the Windows spelling's refusal, before a file is placed or
-    a directory made, and saying what to set instead. A newline is refused
-    first and the value is never echoed, so it cannot forge a line."""
-    result = run_cmd("--install", home=tmp_path, cwd=tmp_path, env={
-        "OPENREPOSHAPE_BIN_DIR": value.format(d=bash_path(tmp_path))})
-    assert result.returncode == 2, result.stdout + result.stderr
-    said_in_full = " ".join(result.stderr.split())
-    assert said in said_in_full, said_in_full
-    assert "Nothing was placed. Set $OPENREPOSHAPE_BIN_DIR to a directory " \
-        "without one, then run this again." in said_in_full, said_in_full
-    assert "forged" not in result.stderr
-    assert result.stdout == ""
+    """A `:` splits a `$PATH`, a newline breaks the note's line in two, a
+    carriage return rewrites it on the terminal and an escape is the
+    terminal's to act on, so no `export PATH` line could name such a
+    directory (#667, #760): refused with exit 2 beside the Windows
+    spelling's refusal, before a file is placed or a directory made, and
+    saying what to set instead. Every control character is refused first,
+    ahead of the Windows spelling and the colon, and the value is never
+    echoed, so it cannot forge a line or reach the terminal."""
+    typed = value.format(d=bash_path(tmp_path))
+    result = run_cmd("--install", home=tmp_path, cwd=tmp_path,
+                     env={"OPENREPOSHAPE_BIN_DIR": typed})
+    assert_a_bin_dir_is_refused(result, typed, said, COMMAND_REFUSAL_ENDS)
     assert list(tmp_path.iterdir()) == []
+
+
+#: Names no arm refuses, in either locale (#760): an e with an acute accent;
+#: U+00A0, a no-break space, whose bytes `0xC2 0xA0` come right after the
+#: C1 range's last (`0xC2 0x9F`); and U+2028 and U+2029, which `[[:cntrl:]]`
+#: alone matches under a UTF-8 locale and not under `C`. The arm runs under
+#: `C`, so it answers alike in both, and neither is a control a terminal
+#: acts on (a line that holds one prints as it is).
+NOT_CONTROLS = [
+    pytest.param("caf" + chr(0xE9), id="an-e-acute"),
+    pytest.param("a" + chr(0xA0) + "b", id="a-no-break-space"),
+    pytest.param("a" + chr(0x2028) + "b", id="a-line-separator"),
+    pytest.param("a" + chr(0x2029) + "b", id="a-paragraph-separator"),
+]
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("name", NOT_CONTROLS)
+def test_a_bin_dir_with_an_unprinted_letter_is_placed(
+        tmp_path, locale, name):
+    """The refusal is `[[:cntrl:]]` and not `[![:print:]]` (#760): under
+    `LC_ALL=C` the two bytes of an e with an acute accent are not
+    printable, so the second would refuse a directory called `caf` and
+    that letter for a fault it has not got. It is placed, in either
+    locale, and so is a no-break space, whose first byte is the C1
+    controls' (`0xC2`) and whose second is the one past them, and so are
+    U+2028 and U+2029, which only a UTF-8 locale's `[[:cntrl:]]` matches."""
+    result = run_cmd("--install", home=tmp_path, cwd=tmp_path, env={
+        "OPENREPOSHAPE_BIN_DIR": f"{bash_path(tmp_path)}/{name}",
+        "LC_ALL": locale})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / name / "openRepoShape").read_bytes() \
+        == COMMAND.read_bytes()
+
+
+#: A C1 control (U+0080 to U+009F) is two bytes in UTF-8, `0xC2` and a byte
+#: from `0x80` to `0x9F`, and a terminal that reads the two as one acts on
+#: it (#760). Each is refused in every locale, and whatever else the value
+#: holds: under a UTF-8 locale `[[:cntrl:]]` matches a C1 control only in a
+#: value that is valid UTF-8, and a lone `0xE9` byte before it makes bash
+#: match byte by byte. The first and the last of the range are named, so an
+#: arm that stops one short at either end is caught, and a colon beside the
+#: control shows the control arm comes first.
+C1_BIN_DIRS = [
+    pytest.param("{d}/a" + C1_CSI + "forged/bin", id="a-c1-csi"),
+    pytest.param("{d}/a" + chr(0x80) + "forged/bin", id="the-first-c1-control"),
+    pytest.param("{d}/a" + chr(0x9F) + "forged/bin", id="the-last-c1-control"),
+    pytest.param("{d}/caf" + NOT_UTF8 + C1_CSI + "31mforged/bin",
+                 id="a-byte-that-is-not-utf-8-then-a-c1-csi"),
+    pytest.param("{d}/a:caf" + NOT_UTF8 + C1_CSI + "31mforged/bin",
+                 id="a-colon-then-a-byte-that-is-not-utf-8-and-a-c1-csi"),
+]
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("value", C1_BIN_DIRS)
+def test_a_c1_control_is_refused_in_every_locale_whatever_else_the_value_holds(
+        tmp_path, value, locale):
+    """Refused as an escape is, exit 2, nothing placed, and never echoed:
+    under `C`, where `[[:cntrl:]]` reads the two bytes one at a time and
+    matches neither, and under `C.UTF-8`, where a byte that is not UTF-8
+    anywhere in the value makes bash match byte by byte (#760)."""
+    typed = value.format(d=bash_path(tmp_path))
+    result = run_cmd("--install", home=tmp_path, cwd=tmp_path,
+                     env={"OPENREPOSHAPE_BIN_DIR": typed, "LC_ALL": locale})
+    assert_a_bin_dir_is_refused(result, typed, HOLDS_A_CONTROL_CHARACTER,
+                                COMMAND_REFUSAL_ENDS)
+    assert list(tmp_path.iterdir()) == []
+
+
+@NO_FILE_NAMED_SO
+def test_a_control_character_is_refused_before_a_link_in_it_names_it(
+        tmp_path):
+    """The symlink refusal (#563) names `$dir/openRepoShape`, so a directory
+    holding a carriage return that already has pipx's link in it would
+    have the refusal print the value as typed (#760): the control character
+    is refused first, and the link stays as it was."""
+    bin_dir = tmp_path / "a\rforged" / "bin"
+    bin_dir.mkdir(parents=True)
+    link = bin_dir / "openRepoShape"
+    link.symlink_to(tmp_path / "nowhere")
+    result = run_cmd("--install", home=tmp_path, cwd=tmp_path,
+                     env={"OPENREPOSHAPE_BIN_DIR": str(bin_dir)})
+    assert_a_bin_dir_is_refused(result, str(bin_dir),
+                                HOLDS_A_CONTROL_CHARACTER,
+                                COMMAND_REFUSAL_ENDS)
+    assert link.is_symlink()
 
 
 @POSIX_NAME
