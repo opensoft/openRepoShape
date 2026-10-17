@@ -40,7 +40,8 @@ SENTENCE = re.compile(r"Printed commands are quoted for a POSIX shell.*?, "
                       r"on Windows\.")
 
 #: The quoters whose answer follows the host: PowerShell's dialect where
-#: `os.name` is `nt`, `sh`'s elsewhere.
+#: `host_shell_dialect` answers `nt` (Windows, no `MSYSTEM`), `sh`'s
+#: elsewhere, Git Bash included (#711).
 HOST_QUOTERS = {"quote_arg", "shell_quoted", "shell_line", "shell_word"}
 
 #: A tool the sentence names for ALL its lines: any function of it may call
@@ -280,3 +281,160 @@ def test_a_suffixless_python_file_is_scanned_and_another_language_is_not():
     assert not is_python_source("openRepoShape", b"#!/usr/bin/env bash\n")
     assert not is_python_source("README.md", b"# Title\n")
     assert "bootstrap" in tool_sources()
+
+
+# --- the one question, asked by every quoter that follows the host (#711) ---
+
+#: The functions that call a host-dialect quoter and still read `os.name`,
+#: each for something that is not the shell. Any other such function has
+#: skipped `host_shell_dialect`, the question every host-dialect quoter asks
+#: (`scripts/repo_shape.py`'s, and `setup-project.py`'s copy), and under Git
+#: Bash, where `os.name` is `nt` too, it chooses PowerShell's dialect.
+READS_OS_NAME_FOR_THE_MACHINE = {
+    # The entry point and the interpreter: `python setup-project.py` on a
+    # Windows machine, from PowerShell and from Git Bash alike. Its quoting
+    # asks the question.
+    "shape-doctor.py": {"scaffold_command"},
+}
+
+
+def scopes(tree: ast.AST) -> dict:
+    """Every node of `tree` mapped to the function it is in, named as
+    `host_calls` names one: the innermost `def`, `Class.method` for a
+    method, `""` outside any. A `def` maps to its own name."""
+    scope = {tree: ""}
+    for node in ast.walk(tree):         # breadth first: a parent comes first
+        inner = scope[node]
+        for child in ast.iter_child_nodes(node):
+            named = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                       ast.ClassDef))
+            scope[child] = (f"{inner}.{child.name}" if inner else
+                            child.name) if named else inner
+    return scope
+
+
+def os_name_readers(tree: ast.AST, scope: dict) -> set:
+    """The functions of `tree` that read `os.name`, `<module>` outside
+    any."""
+    return {scope[node] or "<module>" for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and node.attr == "name"
+            and isinstance(node.value, ast.Name) and node.value.id == "os"}
+
+
+def calls_to(tree: ast.AST, scope: dict, names: set) -> set:
+    """The functions of `tree` that call one of `names` the way `host_call`
+    counts a call: not one that forces `sh`'s dialect."""
+    return {scope[node] or "<module>" for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and host_call(node, names)}
+
+
+def line_builders(tree: ast.AST, scope: dict) -> set:
+    """The names of the functions of `tree` that take a `platform` and hand
+    it on to a host-dialect quoter, or to another such function: the
+    doctor's `copy_command`, `scaffold_command`, `validator_command` and
+    the rest of the lines it builds (#711). Given no `platform`, each
+    answers for the host, so a caller that hands one `os.name` skips the
+    question as surely as one that hands it to `quote_arg`. Found within one
+    file: a builder imported from another is not one here."""
+    taking = [(node.name, scope[node]) for node in ast.walk(tree)
+              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+              and "platform" in {arg.arg for arg in (
+                  *node.args.posonlyargs, *node.args.args,
+                  *node.args.kwonlyargs)}]
+    builders = set()
+    while True:
+        calling = calls_to(tree, scope, quoter_names(tree) | builders)
+        found = {name for name, where in taking if where in calling}
+        if found <= builders:
+            return builders
+        builders |= found
+
+
+def skips_the_question(relative: str, source: str) -> set:
+    """The functions of `source` that quote for the host, are a host-dialect
+    quoter, call a line builder (`line_builders`) or are one, and read
+    `os.name` themselves, less the ones `READS_OS_NAME_FOR_THE_MACHINE`
+    names for `relative`."""
+    tree = ast.parse(source, filename=relative)
+    scope = scopes(tree)
+    builders = line_builders(tree, scope)
+    quoting = calls_to(tree, scope, quoter_names(tree) | builders)
+    quoting |= {scope[node] for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name in HOST_QUOTERS | builders}
+    return (quoting & os_name_readers(tree, scope)) - \
+        READS_OS_NAME_FOR_THE_MACHINE.get(relative, set())
+
+
+def test_every_host_dialect_quoter_and_caller_asks_the_one_question():
+    """A function that quotes for the host, is a quoter that follows it, or
+    builds or calls a line that does (`line_builders`), reads which shell
+    that is from `host_shell_dialect`, never from `os.name` (#711): a new
+    caller that branched on `os.name`, or passed it as the `platform`, would
+    hand Git Bash PowerShell's quoting.
+
+    WHAT IT DOES NOT SEE, each a way to choose the dialect without reading
+    `os.name` as an attribute in such a function: a branch on
+    `sys.platform`; `from os import name`, or `os.name` under any other
+    spelling; a module constant built from `os.name` (`WINDOWS = os.name ==
+    "nt"`) and read in the function; a line builder imported from another
+    file; and a branch on `os.name` in a function that calls no quoter and
+    no builder. A quoter that is a method is seen, by its `Class.method`
+    name."""
+    skipping = {}
+    for relative, source in tool_sources().items():
+        found = skips_the_question(relative, source)
+        if found:
+            skipping[relative] = sorted(found)
+    assert skipping == {}, (
+        "these functions quote for the host and read `os.name` themselves: "
+        f"{skipping}. Ask `host_shell_dialect()` (`scripts/repo_shape.py`, or "
+        "`setup-project.py`'s copy) for the shell, or, where `os.name` "
+        "answers something else, name the function and what in "
+        "READS_OS_NAME_FOR_THE_MACHINE.")
+
+
+def test_reading_os_name_beside_a_host_quoter_skips_the_question():
+    source = ("import os\n"
+              "from repo_shape import host_shell_dialect, shell_line\n"
+              "def a(w):\n    return shell_line(w, os.name)\n"
+              "def b(w):\n    return shell_line(w, host_shell_dialect())\n"
+              "def c():\n    return os.name\n"
+              "def shell_word(v):\n    return v if os.name == 'nt' else v\n"
+              "class Plan:\n    def line(self, w):\n"
+              "        target = 'nt' if os.name == 'nt' else 'posix'\n"
+              "        return shell_line(w, target)\n"
+              "def scaffold_command(w):\n"
+              "    return shell_line(w) if os.name == 'nt' else ''\n"
+              "class Q:\n    def quote_arg(self, v):\n"
+              "        return v if os.name == 'nt' else v\n")
+    assert skips_the_question("scripts/x.py", source) == {
+        "a", "shell_word", "Plan.line", "scaffold_command", "Q.quote_arg"}
+    assert skips_the_question("shape-doctor.py", source) == {
+        "a", "shell_word", "Plan.line", "Q.quote_arg"}
+
+
+def test_os_name_handed_to_a_line_builder_skips_the_question():
+    """`copy_command(s, d, os.name)` hands Git Bash `Copy-Item`: a line
+    builder is a quoter here, and so is a function that hands its
+    `platform` on to one. A call that forces `"posix"` is not a host call,
+    and a builder this file does not define is not one."""
+    row = "import os\ndef a(s, d):\n    return copy_command(s, d, os.name)\n"
+    builders = ("def copy_command(source, target, platform=None):\n"
+                "    return quote_arg(source, platform)\n"
+                "def notes(s, platform=None):\n"
+                "    return copy_command(s, s, platform)\n"
+                "def b(s):\n    return notes(s, os.name)\n"
+                "def c(s):\n"
+                "    return notes(s, 'posix') if os.name == 'nt' else ''\n")
+    assert skips_the_question("scripts/x.py", row) == set()
+    assert skips_the_question("scripts/x.py", row + builders) == {"a", "b"}
+    doctor = (REPO / "shape-doctor.py").read_text(encoding="utf-8")
+    tree = ast.parse(doctor)
+    assert {"restore_from_head", "validator_command", "bump_leg_command",
+            "checkout_notes", "kept_branch_line", "submodule_update_next",
+            "lane_trailer_command", "copy_command", "scaffold_command"} <= \
+        line_builders(tree, scopes(tree))
+    assert skips_the_question(
+        "shape-doctor.py", doctor + "\n\n" + row.replace("a(", "a_row(")) \
+        == {"a_row"}
