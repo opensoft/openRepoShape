@@ -20,10 +20,18 @@ refused as `adopt-out-unwritable`; a write that fails anyway (a race, a full
 disk) is the same refusal, and `plan written to` is printed as soon as the
 file is.
 
+THE QUESTION HAS NO SIDE EFFECT. A first version made the real `--out` file
+and removed it again, and opened one that was there to append to it, which
+blocks for ever on a named pipe. It is now asked with `os.path` and
+`os.access` alone, so a pipe or a device is refused by name without being
+opened (`test_an_out_that_is_not_a_regular_file...`, which fails by timeout
+on the old question), and what `os.access` cannot see (an ACL, a read-only
+mount, a full disk, being root) is the write's backstop.
+
 A folder the run itself makes is not asked for: `--work-dir` is made where it
-is missing, and an `--out` at or below it is written there. `chmod` keeps
-neither root nor a Windows user from writing, so the tests of a folder or a
-file nobody can write skip where it does not.
+is missing, and an `--out` below it is written there. `chmod` keeps neither
+root nor a Windows user from writing, so the tests of a folder or a file
+nobody can write skip where it does not.
 """
 
 from __future__ import annotations
@@ -33,6 +41,7 @@ import importlib.util
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -151,9 +160,8 @@ def test_an_out_in_a_folder_nobody_can_write_in_is_refused_first(
     out = unwritable_work / PLAN_FILE
     refused_before_any_work(
         tmp_path, gh_guard, source, str(out),
-        refusal(str(out), "a file cannot be made in the folder it goes in, "
-                f"{where(unwritable_work)}: making it failed "
-                f"({reason_text(errno.EACCES)})"))
+        refusal(str(out), "this user cannot write in the folder it goes in, "
+                f"{where(unwritable_work)}"))
     assert not out.exists()
 
 
@@ -163,9 +171,8 @@ def test_the_default_out_in_a_current_directory_nobody_can_write_in_is_refused(
     current directory, which this user cannot write in."""
     refused_before_any_work(
         tmp_path, gh_guard, source, "",
-        refusal(PLAN_FILE, "a file cannot be made in the folder it goes in, "
-                f"{where(unwritable_work)}: making it failed "
-                f"({reason_text(errno.EACCES)})"),
+        refusal(PLAN_FILE, "this user cannot write in the folder it goes in, "
+                f"{where(unwritable_work)}"),
         cwd=unwritable_work)
     assert not (unwritable_work / PLAN_FILE).exists()
 
@@ -195,11 +202,71 @@ def test_a_plan_file_nobody_can_write_is_refused_first_and_kept(
             pytest.skip("chmod cannot keep this user from writing a file")
         refused_before_any_work(
             tmp_path, gh_guard, source, str(out),
-            refusal(str(out), "the file already there cannot be written "
-                    f"({reason_text(errno.EACCES)})"))
+            refusal(str(out), "the file already there cannot be written: "
+                    "this user has no write permission on it"))
         assert out.read_text() == MINE
     finally:
         out.chmod(0o600)
+
+
+def an_unsearchable_folder_under(tmp_path: Path) -> Path:
+    """A folder with no permission at all, or a skip where `chmod` cannot
+    take it away (root, Windows)."""
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+    sealed.chmod(0)
+    if os.access(sealed, os.X_OK):
+        sealed.chmod(0o700)
+        pytest.skip("chmod cannot keep this user from searching a folder")
+    return sealed
+
+
+def test_an_out_under_a_folder_nobody_can_search_is_refused_first(
+        tmp_path, gh_guard, source):
+    """The folder `--out` goes in cannot even be looked at: said, with the
+    system's reason, and not taken for a folder that is missing."""
+    sealed = an_unsearchable_folder_under(tmp_path)
+    try:
+        out = sealed / "sub" / PLAN_FILE
+        refused_before_any_work(
+            tmp_path, gh_guard, source, str(out),
+            refusal(str(out), f"the folder it goes in, {where(out.parent)}, "
+                    f"cannot be reached ({reason_text(errno.EACCES)})"))
+    finally:
+        sealed.chmod(0o700)
+
+
+def a_pipe_or_a_device(tmp_path: Path, kind: str) -> Path:
+    """A named pipe nobody reads, or `/dev/full`, or a skip where there is
+    none."""
+    if kind == "pipe":
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("this platform makes no named pipe")
+        made = tmp_path / "a-pipe"
+        os.mkfifo(made)
+        return made
+    if not os.path.exists("/dev/full"):
+        pytest.skip("this machine has no /dev/full")
+    return Path("/dev/full")
+
+
+@pytest.mark.parametrize("kind", ["pipe", "device"])
+def test_an_out_that_is_not_a_regular_file_is_refused_without_opening_it(
+        tmp_path, source, kind):
+    """A named pipe with no reader blocks whatever opens it, as the first
+    question did to see whether it could append; `/dev/full` accepts the
+    open and refuses every byte. The plan is a regular file, and neither is
+    asked for a byte. A timeout is the failure of a question that opens."""
+    out = a_pipe_or_a_device(tmp_path, kind)
+    result = subprocess.run(
+        [sys.executable, str(ADOPT), "plan", "--source", str(source),
+         *PLANNED, OUT_FLAG, str(out)], capture_output=True, text=True,
+        stdin=subprocess.DEVNULL, timeout=60, check=False)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert result.stderr == refusal(
+        str(out), "what is already there is not a regular file, and the "
+        "plan is one")
+    assert result.stdout == ""
 
 
 def test_a_folder_that_asks_nothing_of_the_write_is_planned_into(
@@ -255,43 +322,46 @@ def adopter():
     return module
 
 
-def test_a_folder_that_goes_after_the_question_is_the_same_refusal(
-        adopter, monkeypatch, capsys, tmp_path, source):
-    """A race: the folder was there when `--out` was asked, and is gone
-    when the plan is written. In this process, so that the write itself is
-    the thing that fails."""
-    out = tmp_path / "soon-gone" / PLAN_FILE
-    out.parent.mkdir()
+def refused_at_the_write(adopter, monkeypatch, capsys, source: Path,
+                         out: Path, error: OSError, then=None) -> None:
+    """`plan` in this process, its `write_lf` made to raise `error` (after
+    running `then`, a change in the folder), so that the write itself is the
+    thing that fails: exit 2, the same refusal, no traceback, and no `plan
+    written to`."""
+    def fails(_path, _text):
+        if then:
+            then()
+        raise error
 
-    def gone(path, _text):
-        out.parent.rmdir()
-        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT),
-                                str(path))
-
-    monkeypatch.setattr(adopter, "write_lf", gone)
+    monkeypatch.setattr(adopter, "write_lf", fails)
     capsys.readouterr()
     code = adopter.main(["plan", "--source", str(source), *PLANNED,
                          OUT_FLAG, str(out)])
     said = capsys.readouterr()
     assert code == 2, said.err + said.out
     assert said.err == refusal(
-        str(out), f"writing it failed ({reason_text(errno.ENOENT)})",
-        FIX + CUT_SHORT)
+        str(out), f"writing it failed ({error.strerror})", FIX + CUT_SHORT)
     assert WRITTEN not in said.out
 
 
-@pytest.mark.skipif(not os.path.exists("/dev/full"),
-                    reason="this machine has no /dev/full")
-def test_a_full_disk_is_the_same_refusal_and_no_traceback(source):
-    """`/dev/full` accepts the open and refuses every byte: no space left.
-    It is a file that can be written, as far as the question can tell."""
-    result = plan_of(str(source), OUT_FLAG, "/dev/full")
-    assert result.returncode == 2, result.stderr + result.stdout
-    assert "Traceback" not in result.stderr
-    assert result.stderr == refusal(
-        "/dev/full", f"writing it failed ({reason_text(errno.ENOSPC)})",
-        FIX + CUT_SHORT)
-    assert WRITTEN not in result.stdout
+def test_a_folder_that_goes_after_the_question_is_the_same_refusal(
+        adopter, monkeypatch, capsys, tmp_path, source):
+    """A race: the folder was there when `--out` was asked, and is gone
+    when the plan is written."""
+    out = tmp_path / "soon-gone" / PLAN_FILE
+    out.parent.mkdir()
+    gone = FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT))
+    refused_at_the_write(adopter, monkeypatch, capsys, source, out, gone,
+                         then=out.parent.rmdir)
+
+
+def test_a_full_disk_is_the_same_refusal_and_no_traceback(
+        adopter, monkeypatch, capsys, tmp_path, source):
+    """No space left on the device: the file opened and the bytes did not
+    go, which no question asked first can see."""
+    full = OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+    refused_at_the_write(adopter, monkeypatch, capsys, source,
+                         tmp_path / PLAN_FILE, full)
 
 
 # ---------------------------------------------------------------------------

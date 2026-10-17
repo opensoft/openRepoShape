@@ -4427,44 +4427,59 @@ def _out_is_made_by_this_run(args, out: Path) -> bool:
 
 
 def _why_out_cannot_be_written(args, out: Path) -> str | None:
-    """Why the plan cannot be written at `out`, or None: a file made there
-    and removed again (or, where one is already there, opened to be added
-    to and left as it is), which is what the write itself needs.
+    """Why the plan cannot be written at `out`, or None. THE QUESTION HAS NO
+    SIDE EFFECT: nothing is made, opened or removed, because a probe that
+    made the file would leave one where a later step refuses, and one that
+    opened a file that is there would block on a pipe. It is asked of the
+    file system with `os.path` and `os.access` alone, which answer False
+    rather than raise.
 
-    A FOLDER IS REFUSED FIRST, whatever the system says of opening it: on
-    Windows that is a `PermissionError`, which would read as a folder this
-    user cannot write in. The probe is the file the plan will be, so what
-    the folder's mode, a read-only mount, a name too long for it and a file
-    in the way each say is said by the system and quoted. A file that
-    appeared since, or a symlink to nothing, is left to the write, which
-    follows it as it always did. A folder below the `--work-dir` that is not
-    there is left to the write too, since this run may make it, and the
-    backstop (`_write_the_plan`) refuses it where it does not."""
-    if out.is_dir():
+    A FOLDER IS REFUSED FIRST, and so is anything there that is not a
+    regular file (a pipe, a device, a socket): the plan is a file `write_lf`
+    makes and fills. `os.access` is what a person's permissions say, and not
+    what an ACL, a read-only mount, a full disk or being root say, so
+    `_write_the_plan` refuses, under the same code, whatever it cannot see.
+    A symlink to nothing is left to the write, which follows it as it always
+    did. A folder below the `--work-dir` that is not there is left to the
+    write too, since this run may make it."""
+    if os.path.isdir(out):
         return "it is a folder, and the plan is one file"
-    existed = out.exists()
+    if os.path.exists(out):
+        return _why_the_file_there_is_no_plan(out)
+    return _why_the_folder_holds_no_plan(args, out)
+
+
+def _why_the_file_there_is_no_plan(out: Path) -> str | None:
+    """Why what is at `out` cannot be rewritten as the plan, or None."""
+    if not os.path.isfile(out):
+        return ("what is already there is not a regular file, and the plan "
+                "is one")
+    if not os.access(out, os.W_OK):
+        return ("the file already there cannot be written: this user has "
+                "no write permission on it")
+    return None
+
+
+def _why_the_folder_holds_no_plan(args, out: Path) -> str | None:
+    """Why a new file cannot be made in the folder `out` goes in, or None:
+    it is missing (unless the `--work-dir` makes it), it is a file or lies
+    under one, it cannot be reached, or this user may not write in it."""
+    folder, where = out.parent, _out_folder(out)
     try:
-        with out.open("ab" if existed else "xb"):
-            pass
-    except FileExistsError:
-        return None
+        found = os.stat(folder)
     except FileNotFoundError:
         if _out_is_made_by_this_run(args, out):
             return None
-        return f"the folder it goes in, {_out_folder(out)}, does not exist"
+        return f"the folder it goes in, {where}, does not exist"
     except NotADirectoryError:
-        return (f"the folder it goes in, {_out_folder(out)}, is a file or "
-                "lies under one")
+        return f"the folder it goes in, {where}, is a file or lies under one"
     except OSError as exc:
-        if existed:
-            return ("the file already there cannot be written "
-                    f"({exc.strerror or exc})")
-        return ("a file cannot be made in the folder it goes in, "
-                f"{_out_folder(out)}: making it failed "
+        return (f"the folder it goes in, {where}, cannot be reached "
                 f"({exc.strerror or exc})")
-    if not existed:
-        with contextlib.suppress(OSError):
-            out.unlink()
+    if not stat.S_ISDIR(found.st_mode):
+        return f"the folder it goes in, {where}, is a file or lies under one"
+    if not os.access(folder, os.W_OK | os.X_OK):
+        return f"this user cannot write in the folder it goes in, {where}"
     return None
 
 
@@ -13414,8 +13429,9 @@ def main(argv: list[str] | None = None) -> int:
                            "(default: `adoption-plan.yaml` in the current "
                            "directory). Any other is refused as "
                            "`adopt-out-unwritable`, and no plan is written: "
-                           "a folder, or a file in a folder that is missing "
-                           "or that nobody can write in. That is asked "
+                           "a folder, a pipe or a device, or a file in a "
+                           "folder that is missing or that nobody can write "
+                           "in. That is asked "
                            "before the source is read or cloned and before "
                            "a work directory is made, and a write that fails "
                            "all the same is refused as the same code. A "
