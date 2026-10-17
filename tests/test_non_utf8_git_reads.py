@@ -161,7 +161,8 @@ def refused_dirty(project: Path, scaffolded: dict, to: str, shown: str,
     assert result.returncode == 2, output
     assert "REFUSED bump-leg-root-dirty: " in result.stderr, output
     assert f"{project} has uncommitted changes:\n" in result.stderr, output
-    assert f"    M {shown}" in result.stderr.splitlines(), output
+    # Four spaces, then git's own ` M` (#672: its leading space is kept).
+    assert f"     M {shown}" in result.stderr.splitlines(), output
     assert "Remediation: commit or stash them first." in result.stderr
     assert "Traceback" not in output, output
     assert "UnicodeDecodeError" not in output, output
@@ -212,7 +213,7 @@ def test_a_name_that_is_utf8_under_quote_path_false_is_still_refused(
     output = result.stderr + result.stdout
     assert result.returncode == 2, output
     assert "REFUSED bump-leg-root-dirty: " in result.stderr, output
-    assert any(line.startswith("    M .github/workflows/caf")
+    assert any(line.startswith("     M .github/workflows/caf")
                and line.endswith(".yml")
                for line in result.stderr.splitlines()), output
     assert "Traceback" not in output, output
@@ -229,7 +230,7 @@ def test_the_refusal_names_every_dirty_file_whatever_its_bytes(
     result = bump(project, scaffolded, advanced)
     lines = result.stderr.splitlines()
     assert result.returncode == 2, result.stderr
-    assert r"    M .github/workflows/caf\xe9.yml" in lines, result.stderr
+    assert r"     M .github/workflows/caf\xe9.yml" in lines, result.stderr
     assert any(line.rstrip().endswith("M README.md") for line in lines), (
         result.stderr)
     assert "Traceback" not in result.stderr

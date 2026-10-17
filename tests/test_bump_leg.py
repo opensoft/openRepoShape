@@ -232,10 +232,14 @@ def test_the_message_and_the_next_step_are_a_pull_request(project, scaffolded,
     assert tree_digest(project / "spec", advanced) in body
     assert "validate-pins.py" in body
 
-    assert f"push -u origin {WORKING_BRANCH}" in result.stdout
+    # THE BRANCH BY ITS FULL REFNAME (#672): a bare name is a refspec.
+    pushed = f"refs/heads/{WORKING_BRANCH}"
+    assert f"push -u origin {pushed}:{pushed}" in result.stdout
     assert "pull request" in result.stdout
-    assert "push -u origin main" not in result.stdout, (
-        "never a direct push to the default branch")
+    for default in ("main", "refs/heads/main"):
+        assert f"push -u origin {default}" not in result.stdout, (
+            "never a direct push to the default branch")
+        assert f":{default}" not in result.stdout
 
 
 def test_bumping_to_the_commit_already_pinned_does_nothing(project, scaffolded):
