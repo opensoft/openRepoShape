@@ -32,9 +32,12 @@ over local bare remotes, one dry run, and imports.
 
 from __future__ import annotations
 
+import importlib.util
 import re
+import shlex
 import shutil
 import sys
+import unicodedata
 
 import pytest
 
@@ -432,6 +435,35 @@ def test_a_quoted_items_value_holding_a_bracket_keeps_301s_words(
         f"in YAML: {value!r}")
 
 
+#: `(document, the item, what PyYAML reads)`: a quoted key whose value is a
+#: flow collection, a single pair to YAML.
+OPENS_A_COLLECTION = [
+    pytest.param('k: ["a": [b]]', '"a": [b]', {"k": [{"a": ["b"]}]},
+                 id="a-sequence"),
+    pytest.param('k: ["a": {b: c}]', '"a": {b: c}',
+                 {"k": [{"a": {"b": "c"}}]}, id="a-mapping"),
+    pytest.param("k: ['a': [b, c]]", "'a': [b, c]",
+                 {"k": [{"a": ["b", "c"]}]}, id="single-quoted"),
+]
+
+
+@pytest.mark.parametrize("text, entry, pyyaml_reads", OPENS_A_COLLECTION)
+def test_a_quoted_items_value_that_opens_a_collection_keeps_the_pair_words(
+        text, entry, pyyaml_reads):
+    """RV823's round-1 NIT-1: the bracket test asked of a quoted item's
+    value named `[b]` as a plain scalar holding `[`. It is a flow sequence,
+    so the item is the single pair YAML reads, refused in the words main
+    gives it, which this reader does not support."""
+    assert refusal_words(text) == f"{PAIR}: {entry!r}"
+
+
+@NEEDS_PYYAML
+@pytest.mark.parametrize("text, entry, pyyaml_reads", OPENS_A_COLLECTION)
+def test_pyyaml_reads_a_quoted_key_and_a_collection_as_one_pair(
+        text, entry, pyyaml_reads):
+    assert stock(text) == pyyaml_reads
+
+
 # --- L4-153: a template line the reader refuses -----------------------------
 
 #: What the leg-path rule says the project's reader makes of a bare `@x`.
@@ -513,8 +545,11 @@ def test_the_docstrings_example_is_one_the_reader_reads(
 #
 # The reader now reads `tracking_branch: main` followed by U+00A0 as PyYAML
 # reads it, `'main\xa0'`, where main read `'main'`. git takes that name, so
-# the four readers of a branch refuse it as `siblings.py` does: a character
-# that does not print or is white space.
+# the four readers of a branch refuse a character that does not print or is
+# white space, the rule of `validate-manifest.py`'s `_branch_finding`
+# (`siblings.py` asks `isprintable` alone). bump-leg and update-shape refuse
+# nothing else (Brett Heap's option A on RV823's SHOULD-1, 2026-10-17): a
+# name git creates and the root's gate passes is read as it is.
 
 #: `(the YAML line's value, bare as a person types it, the code point named)`.
 UNSEEN_BRANCHES = [
@@ -524,7 +559,40 @@ UNSEEN_BRANCHES = [
                  id="main-and-an-ideographic-space"),
     pytest.param("a\N{ZERO WIDTH JOINER}b", "U+200D",
                  id="a-zero-width-joiner"),
+    # The one character `isspace` adds to `isprintable` (RV823's MR3): git
+    # refuses `a b` too, so the refusal costs no name git would make.
+    pytest.param("a b", "U+0020", id="an-ascii-space"),
 ]
+
+#: Names git creates and the root's own gate passes, which bump-leg and
+#: update-shape read as they are (option A). #823's first fix round read
+#: them through `checked_value`, whose pattern refused each, exit 2.
+READABLE_BRANCHES = [
+    pytest.param("feature/\N{CJK UNIFIED IDEOGRAPH-65E5}"
+                 "\N{CJK UNIFIED IDEOGRAPH-672C}", id="cjk"),
+    pytest.param("d\N{LATIN SMALL LETTER E WITH ACUTE}veloppement",
+                 id="an-accent-nfc"),
+    pytest.param("de\N{COMBINING ACUTE ACCENT}veloppement",
+                 id="an-accent-nfd"),
+    pytest.param("a&b", id="an-ampersand"),
+]
+
+
+def test_the_two_spellings_of_the_accent_are_two_names():
+    """NFC and NFD are both asked because git keeps the bytes it is given:
+    the two are one word to a reader and two branches to git."""
+    nfc, nfd = (row.values[0] for row in READABLE_BRANCHES[1:3])
+    assert nfc != nfd
+    assert unicodedata.normalize("NFC", nfd) == nfc
+
+
+def unseen_refusal(value: str, point: str) -> str:
+    """How bump-leg and update-shape refuse such a name (`readable_branch`),
+    in `validate-manifest.py`'s words."""
+    return (f"REFUSED unseen-branch: tracking_branch is {value!r}, which "
+            f"holds {point}, a character that does not print or is white "
+            "space: a person reading the name cannot tell it from the name "
+            "without it")
 
 #: What `validate-manifest.py` says after the code point.
 UNSEEN_WHY = ("a character that does not print or is white space: a person "
@@ -587,7 +655,8 @@ def test_bootstrap_makes_no_ref_of_a_tracking_branch_no_person_can_see(
     before = legs_state(project)
     code, out, err = run(bootstrap_of(project), encoding=ENCODING,
                          tmp_path=tmp_path, cwd=project)
-    assert code == 1 and "Traceback" not in err, out + err
+    assert code == 1, out + err
+    assert "Traceback" not in err, err
     assert step_a(out) == (not_placed("spec", value, point)
                            + not_placed("code", value, point)), out
     assert "bootstrap FAILED: manifest (exit 1)" in err, err
@@ -600,7 +669,8 @@ def test_bootstrap_makes_no_ref_of_a_legs_branch_no_person_can_see(
     before = legs_state(project)
     code, out, err = run(bootstrap_of(project), encoding=ENCODING,
                          tmp_path=tmp_path, cwd=project)
-    assert code == 1 and "Traceback" not in err, out + err
+    assert code == 1, out + err
+    assert "Traceback" not in err, err
     assert step_a(out) == not_placed("spec", "main\xa0", "U+00A0") + [
         f"  [code] code: on main at {pin12(project, 'code')} "
         "(branch tip == pin)"], out
@@ -646,18 +716,40 @@ def test_bump_leg_refuses_a_tracking_branch_no_person_can_see(
         dry_run):
     """On #823's first head, on `main`: exit 0, a commit on `main`, and a
     NEXT line pushing it, where `bump-leg-on-tracking-branch` was owed.
-    `checked_value` refuses it now, before anything is fetched or written."""
+    `readable_branch` refuses it now, before anything is fetched or
+    written."""
     head = committed_tracking(project, value)
     pin = git("rev-parse", "HEAD:spec", cwd=project).stdout
     result = bump(project, scaffolded, advanced, *dry_run)
     assert result.returncode == 2, result.stdout + result.stderr
-    assert result.stderr.startswith(
-        f"REFUSED unsafe-value: tracking_branch is {value!r}, which is not a "
-        "value this tool will put on a `git` or `gh` command line"), (
-            result.stderr)
+    assert result.stderr.startswith(unseen_refusal(value, point)), (
+        result.stderr)
     assert git("rev-parse", "HEAD", cwd=project).stdout.strip() == head
     assert git("rev-parse", "HEAD:spec", cwd=project).stdout == pin
     assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+@pytest.mark.parametrize("dry_run", [(), ("--dry-run",)],
+                         ids=["real-run", "dry-run"])
+@pytest.mark.parametrize("value", READABLE_BRANCHES)
+def test_bump_leg_takes_a_tracking_branch_a_person_can_read(
+        project, scaffolded, advanced, value, dry_run):
+    """Option A: only what no person can see is refused. Read through
+    `checked_value` (#823's first fix round) each of these was `unsafe-value`,
+    exit 2, though bump-leg only compares and prints the name. On `main`,
+    which is not the tracking branch, the bump goes ahead: the dry run
+    changes nothing, and the real run moves the pin in a commit on `main`."""
+    head = committed_tracking(project, value)
+    result = bump(project, scaffolded, advanced, *dry_run)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "REFUSED" not in result.stderr, result.stderr
+    now = git("rev-parse", "HEAD", cwd=project).stdout.strip()
+    if dry_run:
+        assert now == head
+    else:
+        assert git("rev-parse", "HEAD^", cwd=project).stdout.strip() == head
+        assert git("rev-parse", "HEAD:spec",
+                   cwd=project).stdout.strip() == advanced
 
 
 @pytest.fixture(scope="module")
@@ -686,8 +778,8 @@ def test_update_shape_never_commits_onto_a_tracking_branch_no_one_can_see(
     """`apply --branch main` on `main`, `tracking_branch: main` followed by
     U+00A0. On #823's first head the guard compared `'main'` with
     `'main\xa0'`, found them different, and committed the shape update onto
-    `main`. Now `checked_value` refuses the value, and the ledger rolls the
-    rewrite back: the pin, HEAD and the tree are as they were."""
+    `main`. Now `readable_branch` refuses the value, and the ledger rolls
+    the rewrite back: the pin, HEAD and the tree are as they were."""
     root = tmp_path / "Atlas"
     shutil.copytree(older_validator["clone"], root, symlinks=True)
     head = committed_tracking(root, "main\xa0")
@@ -695,10 +787,70 @@ def test_update_shape_never_commits_onto_a_tracking_branch_no_one_can_see(
                         "--upstream", str(older_validator["upstream"]),
                         "--at", older_validator["b"], "--branch", "main")
     assert result.returncode == 2, result.stdout + result.stderr
-    assert ("REFUSED unsafe-value: tracking_branch is 'main\\xa0', which is "
-            "not a value this tool will put on a `git` or `gh` command line"
-            in result.stderr), result.stderr
+    assert unseen_refusal("main\xa0", "U+00A0") in result.stderr, (
+        result.stderr)
     assert git("rev-parse", "HEAD", cwd=root).stdout.strip() == head
     pinned = load_yaml(root / "contracts" / "shape-pin.yaml")["commit"]
     assert pinned.lower() == older_validator["a"]
     assert git("status", "--porcelain", cwd=root).stdout == ""
+
+
+@pytest.mark.parametrize("value", READABLE_BRANCHES)
+def test_update_shape_takes_a_tracking_branch_a_person_can_read(
+        older_validator, tmp_path, value):
+    """Option A, on a root: `apply --branch shape/x` commits the update on
+    `shape/x` and hands a person a `gh pr create` whose base, as a shell
+    reads it, is the name the manifest holds. Read through `checked_value`
+    (#823's first fix round) each was `unsafe-value` and rolled back."""
+    root = tmp_path / "Atlas"
+    shutil.copytree(older_validator["clone"], root, symlinks=True)
+    committed_tracking(root, value)
+    result = run_script(UPDATE, "apply", "--root", str(root), "--yes",
+                        "--upstream", str(older_validator["upstream"]),
+                        "--at", older_validator["b"], "--branch", "shape/x")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "\n  committed on shape/x: " in result.stdout, result.stdout
+    assert git("rev-parse", "--abbrev-ref", "HEAD",
+               cwd=root).stdout.strip() == "shape/x"
+    line = next(line for line in result.stdout.split("\n")
+                if line.startswith("NEXT  "))
+    words = shlex.split(line.partition(" && ")[2])
+    assert words[words.index("--base") + 1] == value, line
+
+
+@pytest.fixture(scope="module")
+def update_shape_module():
+    """`update-shape.py` as a module, so `tracking_branch_of` is asked in
+    this process, under a name of its own."""
+    spec = importlib.util.spec_from_file_location("update_shape_spaces",
+                                                  UPDATE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("value", READABLE_BRANCHES)
+def test_tracking_branch_of_reads_a_name_a_person_can_read_as_it_is(
+        update_shape_module, value):
+    manifest = {"tracking_branch": value}
+    assert update_shape_module.tracking_branch_of(manifest) == value
+
+
+@pytest.mark.parametrize("value, point", UNSEEN_BRANCHES)
+def test_tracking_branch_of_refuses_a_name_no_person_can_see(
+        update_shape_module, value, point):
+    with pytest.raises(update_shape_module.Refusal) as refused:
+        update_shape_module.tracking_branch_of({"tracking_branch": value})
+    assert str(refused.value).startswith(unseen_refusal(value, point)), (
+        refused.value)
+
+
+def test_tracking_branch_of_refuses_a_leading_dash(update_shape_module):
+    """`gh pr create --base` is handed the name as one argument, where one
+    that begins with `-` could be read as an option; git creates no branch
+    whose name begins with one."""
+    with pytest.raises(update_shape_module.Refusal) as refused:
+        update_shape_module.tracking_branch_of({"tracking_branch": "-x"})
+    assert str(refused.value).startswith(
+        "REFUSED unsafe-value: tracking_branch is '-x', which begins with "
+        "`-`"), refused.value

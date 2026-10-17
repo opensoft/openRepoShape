@@ -471,7 +471,8 @@ def test_a_branch_no_person_can_see_is_refused_spelled(project, tmp_path):
     code, out, err = run(bootstrap_of(project), "--skip-validators",
                          encoding="utf-8:strict", tmp_path=tmp_path,
                          cwd=project)
-    assert code == 0 and "Traceback" not in err, out + err
+    assert code == 0, out + err
+    assert "Traceback" not in err, err
     assert "\N{LINE SEPARATOR}" not in out, out
     for leg in ("spec", "code"):
         assert (f"  [{leg}] {leg}: could not create branch tb\\" "u2028x: "

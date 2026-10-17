@@ -535,12 +535,12 @@ def test_the_branch_is_spelled_in_the_lines_that_name_it(root):
             f"{new[:12]}, the pin") in printed()
 
 
-@pytest.mark.skip(reason=(
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
     "#710: step (a) reads a branch's upstream with a strict UTF-8 decode, "
     "so an upstream named with the byte 0xff, the one name that does not "
     "print and still reaches git since #715, ends it in a "
-    "UnicodeDecodeError. #824 fixes that; whichever of #823 and #824 "
-    "lands second drops this skip in its merge round."))
+    "UnicodeDecodeError. #824 fixes that. Strict, so the merge round that "
+    "brings #823 and #824 together sees it pass and drops this mark."))
 def test_the_branch_and_its_upstream_are_spelled_in_the_move_back(root):
     """The line that moves a branch back names the branch, its upstream and
     a command with both in it; each is spelled (#391). The state is built

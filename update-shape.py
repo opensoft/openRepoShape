@@ -163,7 +163,7 @@ sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, PYTHON, TREE_DIGEST_DEFINITION, Refusal, YamlError,
     checked_value, die, file_sha256, git_out, load_yaml, parse_yaml,
-    tree_digest,
+    readable_branch, tree_digest,
 )
 # The reader's own rule for where a comment starts, by its private name on
 # purpose: `shape_materialize` imports it the same way and says why (#380). A
@@ -2424,15 +2424,19 @@ def tracking_branch_of(manifest: dict | None) -> str:
     is never asked: a base taken from the network could disagree with the
     one the `--branch` refusal and `--pr` read from the manifest.
 
-    READ THROUGH `checked_value`, as `bump-leg.py` and `family.py` read it
-    (#715). Compared raw, `tracking_branch: main` followed by U+00A0, which
-    the reader reads as YAML does since #715, was not `main`, so
+    READ THROUGH `readable_branch`, as `bump-leg.py` reads it (#715).
+    Compared raw, `tracking_branch: main` followed by U+00A0, which the
+    reader reads as YAML does since #715, was not `main`, so
     `apply --branch main` committed onto `main` where the root's own
-    validators passed. A name `checked_value` refuses is `unsafe-value`,
-    and inside `apply` the ledger rolls the rewrite back.
+    validators passed. A name holding a character that does not print or is
+    white space is now `unseen-branch`, and one that begins with `-`, which
+    `gh pr create --base` could read as an option, is `unsafe-value`; inside
+    `apply` the ledger rolls the rewrite back. Any other name is taken as it
+    is: `a&b` is quoted into the line `next_line` prints (#209), and a name
+    in any script is one git creates and the root's gate passes.
     """
-    return checked_value("tracking_branch",
-                         (manifest or {}).get("tracking_branch") or "main")
+    return readable_branch("tracking_branch",
+                           (manifest or {}).get("tracking_branch") or "main")
 
 
 def pull_request_repository(manifest: dict | None,
