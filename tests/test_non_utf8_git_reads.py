@@ -96,19 +96,23 @@ def make_file(path: Path, data: bytes = b"on: [push]\n") -> None:
     is asked FIRST: NTFS most likely takes the surrogate, and the file would
     then not be the one the test means). A name that is UTF-8 is written.
 
-    Two answers are the system's: a file name encoding that cannot spell
-    the name (`UnicodeError`: ASCII under `LC_ALL=C`) and a disk that
-    refuses the name (EILSEQ: macOS). Every other `OSError`, a full disk
-    (ENOSPC), a read-only one (EROFS) or a folder nobody can write in
-    (EACCES), is the test's own and is raised (#834)."""
+    Two answers are the system's, each skipped on a reason of its own: a
+    file name encoding that cannot spell the name (`UnicodeError`: ASCII
+    under `LC_ALL=C`) and a disk that refuses the name (EILSEQ: macOS).
+    Every other `OSError`, a full disk (ENOSPC), a read-only one (EROFS)
+    or a folder nobody can write in (EACCES), is the test's own and is
+    raised (#834)."""
     skip_where_fsencode_gives_a_surrogate_no_byte(path.name)
     try:
         path.write_bytes(data)
-    except (OSError, UnicodeError) as exc:
-        if isinstance(exc, OSError) and exc.errno != errno.EILSEQ:
+    except UnicodeError as exc:
+        pytest.skip("this system's file name encoding cannot spell "
+                    f"{path.name!r}: {exc}")
+    except OSError as exc:
+        if exc.errno != errno.EILSEQ:
             raise
-        pytest.skip("this filesystem cannot hold a file name that is not "
-                    f"UTF-8: {exc}")
+        pytest.skip("this filesystem refuses a file name that is not "
+                    f"UTF-8 (EILSEQ): {exc}")
 
 
 def test_make_file_skips_where_fsencode_makes_no_byte_and_writes_nothing(
