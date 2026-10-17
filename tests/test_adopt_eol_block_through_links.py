@@ -10,13 +10,16 @@ under the source's `* text=auto eol=crlf` a clone wrote that copy with CRLF,
 and `validate-pins.py` exited 1 with `shape-copy-drift` after `execute` had
 said `adoption verified`.
 
-Every place that writes or reads the block now names the tracked path: the
-materializer's append and the verification's count of the file
-(`tests/test_adopt_attributes_eol_block.py` holds both on hand-made trees),
-and the root `check` asks git about, for a nested `.gitattributes` and for
-what this machine's `git add` stores, both here. A source with no symlinked
-directory gets the same block, byte for byte, and one with
-`core.symlinks=false` is still refused first.
+Every place that writes or reads the block now names the tracked path, and
+then the pinned one where they differ: the materializer's append and the
+verification's count of the file (`tests/test_adopt_attributes_eol_block.py`
+holds both on hand-made trees), and the root `check` asks git about, for a
+nested `.gitattributes` and for what this machine's `git add` stores, both
+here. The pinned line governs the copy once a person replaces the link with
+what it points at, as `update-shape.py` asks: a fresh clone of that is LF
+too, as on main (#844's review). A source with no symlinked directory gets
+the same block, byte for byte, and one with `core.symlinks=false` is still
+refused first.
 
 `update-shape.py` writes no line of the block through a link: `apply`
 refuses a pinned copy reached through one (`update-rewrite-symlink`, #286)
@@ -163,9 +166,11 @@ def test_check_asks_git_add_about_the_copy_where_git_tracks_it(tmp_path):
     file that `eol=crlf` reaches. The root's own rule says that of every
     file, and the block's line takes the copy out of it: named by the link's
     spelling, it did not, and `check` reported `plan-file-reencoded` for
-    `ci/workflows/validate.yml`, a refusal of git's that the split itself
-    would not meet. The source's `.gitattributes` keeps itself LF, so it is
-    no finding of its own."""
+    `ci/workflows/validate.yml`, which the split's add of the copy would not
+    meet. The source's `.gitattributes` keeps itself LF, so it is no finding
+    of its own. (`execute` still stops later under this setting, at `git
+    submodule add` over `.gitmodules`, as main does for the same source with
+    no link.)"""
     source = source_keeping(tmp_path, LINK, {
         ATTRIBUTES: CRLF_RULE + b"/.gitattributes text eol=lf\n"},
         on_disk=False)
@@ -207,19 +212,28 @@ def pinned_rows(source: Path) -> list[str]:
 @needs_filter_repo
 def test_execute_verifies_a_block_that_names_the_tracked_path(adopted):
     """The source's bytes, then one line per pinned copy outside `shape/`
-    in the pin's order, the workflow named where git tracks it. With no
-    link that is each pin row's own path: the block main writes, byte for
-    byte. The pin row keeps the path the copy was written at."""
+    in the pin's order, the workflow named where git tracks it and then by
+    its pin row. With no link that is each pin row's own path: the block
+    main writes, byte for byte. The pin row keeps the path the copy was
+    written at."""
     result = adopted.result
     assert result.returncode == 0, result.stderr + result.stdout
     assert "adoption verified" in result.stdout
     rows = pinned_rows(adopted.source)
     assert WORKFLOW in rows
-    where = TRACKED if adopted.links else WORKFLOW
-    named = [where if row == WORKFLOW else row for row in rows
-             if not row.startswith("shape/")]
+    lines = [TRACKED, WORKFLOW] if adopted.links else [WORKFLOW]
+    named = [name for row in rows if not row.startswith("shape/")
+             for name in (lines if row == WORKFLOW else [row])]
     shown = git("show", f"{BRANCH}:{ATTRIBUTES}", cwd=adopted.source)
     assert shown.stdout == CRLF_RULE.decode(UTF8) + eol_block(named)
+    copies = sum(not row.startswith("shape/") for row in rows)
+    said = f"a `text eol=lf` line for each of {copies} pinned copies"
+    if adopted.links:
+        said += (", and 1 more under the pinned path of each copy written "
+                 "through a symlink, which governs it once the link is "
+                 "replaced")
+    assert f"  appended to {ATTRIBUTES}: {said}, so every checkout keeps " \
+           "their bytes (#471)" in result.stdout, result.stdout
 
 
 @needs_filter_repo
@@ -256,6 +270,28 @@ def test_update_shape_writes_no_line_through_the_link(adopted, tmp_path):
     assert applied.returncode != 0, applied.stdout
     assert "update-rewrite-symlink" in applied.stderr, applied.stderr
     assert (clone / ATTRIBUTES).read_bytes() == before
+
+
+@needs_filter_repo
+def test_the_clone_stays_lf_once_the_link_is_replaced(adopted, tmp_path):
+    """`update-shape.py` refuses to rewrite a copy reached through the link
+    until it is replaced with what it points at. A person who does that,
+    commits and clones afresh gets the workflow as a file at
+    `.github/workflows/validate.yml`, which the block's pinned line governs:
+    LF, and `validate-pins.py` exits 0, as on main (#844's review). Naming
+    the tracked path alone, the clone wrote it with CRLF and drifted."""
+    if not adopted.links:
+        pytest.skip("only a root that keeps a link has one to replace")
+    clone = cloned_just_pushed(adopted.source, tmp_path / PROJECT, BRANCH)
+    for link in adopted.links:
+        git("rm", "-q", "--", link, cwd=clone)
+    git("mv", "--", "ci", ".github", cwd=clone)
+    committed(clone, "Replace the link with what it points at")
+    fresh = cloned_just_pushed(clone, tmp_path / "fresh")
+    assert b"\r\n" in (fresh / README).read_bytes(), "no CRLF: tests nothing"
+    assert b"\r\n" not in (fresh / WORKFLOW).read_bytes()
+    pins = run_script(fresh / "scripts" / "validate-pins.py", cwd=fresh)
+    assert pins.returncode == 0, pins.stdout + pins.stderr
 
 
 @needs_filter_repo

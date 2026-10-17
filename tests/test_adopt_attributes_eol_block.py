@@ -22,9 +22,10 @@ adopts such a source end to end and clones it with a checkout that writes
 CRLF; `tests/test_update_shape_add.py` extends the block with `--add`.
 
 Each copy is named by the path git tracks: one written through a symlinked
-directory the root keeps, `.github -> ci`, is named where the link leads
-(#807), and `tests/test_adopt_eol_block_through_links.py` adopts such a
-source end to end.
+directory the root keeps, `.github -> ci`, is named where the link leads,
+then by its pinned path (#807), and
+`tests/test_adopt_eol_block_through_links.py` adopts such a source end to
+end.
 """
 
 from __future__ import annotations
@@ -128,13 +129,15 @@ def test_copies_under_shape_are_left_to_the_shapes_own_file():
 
 
 def test_each_copy_is_named_where_git_tracks_it():
-    """A copy written through `.github -> ci` is tracked at `ci/`, and a
-    line naming the link's spelling governs nothing (#807)."""
+    """A copy written through `.github -> ci` is tracked at `ci/`, where a
+    line naming only the link's spelling governs nothing; that spelling
+    follows, and governs the copy once the link is replaced with what it
+    points at (#807)."""
     pinned = ["Makefile", WORKFLOW, f"{COLLISION_DIR}/{ATTRIBUTES}"]
     tracked = {WORKFLOW: TRACKED_WORKFLOW,
                f"{COLLISION_DIR}/{ATTRIBUTES}": ATTRIBUTES}
     assert eol_block_paths(pinned, COLLISION_DIR, tracked) == [
-        "Makefile", TRACKED_WORKFLOW]
+        "Makefile", TRACKED_WORKFLOW, WORKFLOW]
 
 
 @pytest.mark.parametrize("tracked", [
@@ -142,7 +145,7 @@ def test_each_copy_is_named_where_git_tracks_it():
     ids=["not-mapped", "led-nowhere", "no-literal-name"])
 def test_a_copy_tracked_nowhere_nameable_keeps_its_pinned_path(tracked):
     """Where the links lead out of the root or cannot be followed, or to a
-    name no line can spell, the line is today's."""
+    name no line can spell, the pinned line alone is today's."""
     assert eol_block_paths([WORKFLOW], COLLISION_DIR, tracked) == [WORKFLOW]
 
 
@@ -285,8 +288,9 @@ def test_a_copy_written_through_a_link_is_named_where_git_tracks_it(tmp_path,
                                                                   links):
     """The root keeps `.github -> ci`, or a chain to it: the shape writes its
     workflow through the link, git tracks it at `ci/workflows/validate.yml`,
-    and that is its line. The pin's row keeps the path it was written at,
-    which a clone opens through the same link (#807)."""
+    and that is its line, before the one for the path it was written at. The
+    pin's row keeps that path, which a clone opens through the same link
+    (#807)."""
     target = target_holding(tmp_path, {ATTRIBUTES: OWN,
                                        "ci/workflows/ci.yml": b"on: [push]\n"})
     for link, to in links.items():
@@ -301,6 +305,8 @@ def test_a_copy_written_through_a_link_is_named_where_git_tracks_it(tmp_path,
     named = eol_block_paths(result.shape_files, COLLISION_DIR,
                             {WORKFLOW: TRACKED_WORKFLOW})
     assert result.eol_block == named
+    at = named.index(TRACKED_WORKFLOW)
+    assert named[at + 1] == WORKFLOW
     assert (target / ATTRIBUTES).read_bytes() == with_eol_block(OWN, named)
 
 
@@ -520,13 +526,14 @@ def test_the_pin_is_read_through_a_link_the_root_kept(adopter, tmp_path):
 def test_a_copy_written_through_a_link_is_counted_where_git_tracks_it(
         adopter, tmp_path, links):
     """The split keeps `.github -> ci`, or a chain to it, and the workflow
-    at `ci/`: the block the materializer wrote names it there, and the
-    verification reads the same path through the split's links (#807)."""
+    at `ci/`: the block the materializer wrote names it there, then by its
+    pinned path, and the verification reads the same path through the
+    split's links (#807)."""
     lines, findings, _, oid, after = accounted(
         adopter, tmp_path, with_eol_block(OWN, [*ROOT_COPIES,
-                                                TRACKED_WORKFLOW]),
+                                                TRACKED_WORKFLOW, WORKFLOW]),
         links=links, workflow=TRACKED_WORKFLOW)
-    assert (lines, findings) == (3, [])
+    assert (lines, findings) == (4, [])
     assert after[ATTRIBUTES] == [f"root:{oid}"]
 
 

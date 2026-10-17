@@ -8671,9 +8671,10 @@ def _root_attributes(source: Source, walks: list, disk: _KeptTree,
     as `{path: bytes}`. Where the root keeps none, the shape's own. Where it
     keeps one, the shape's goes beside it and the split appends the block
     for the copies `names` outside `shape/` (#471), each named where `walks`
-    land it, the path git tracks (#807); a kept one that is not a regular
-    file gets no block, so it is asked as the block alone, the lines #471's
-    follow-up asks a regular file in its place to hold."""
+    land it, the path git tracks, and by its own name where that differs
+    (#807); a kept one that is not a regular file gets no block, so it is
+    asked as the block alone, the lines #471's follow-up asks a regular file
+    in its place to hold."""
     shapes = (SPLIT_TEMPLATE / ATTRIBUTES).read_text(
         encoding="utf-8").encode("utf-8")
     walk = next((walk for walk in walks if walk.path == ATTRIBUTES), None)
@@ -9269,7 +9270,8 @@ def _as_the_split_writes(asked: _SplitRehearsal, rules: list, kept: set[str],
     shape's own where the root keeps none; and the shape's beside it, where
     the root keeps nothing there (`plan-root-blocks-shape-copy` names what
     it keeps, #262). The block names each pinned copy of `landings`
-    (`_pinned_landings`') where it lands, the path git tracks (#807)."""
+    (`_pinned_landings`') where it lands, the path git tracks, and by its own
+    name where that differs (#807)."""
     for path, _, _ in rules:
         if path not in kept:
             asked.work.joinpath(*path.split("/")).unlink(missing_ok=True)
@@ -11469,10 +11471,9 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
             print(f"  beside  {actual} (the source already has {intended}; "
                   "nothing was overwritten)")
         if materialized.eol_block:
-            print(f"  appended to {ATTRIBUTES}: a `text eol=lf` line for "
-                  f"each of {len(materialized.eol_block)} pinned copies, so "
-                  "every checkout keeps their bytes (#471); none of its own "
-                  "lines was changed")
+            print(f"  appended to {ATTRIBUTES}: "
+                  f"{_appended_lines(materialized)}, so every checkout keeps "
+                  "their bytes (#471); none of its own lines was changed")
 
         follow_ups = _plan_follow_ups(plan)
         message = _split_message(names, paths_for, leg_commits, spec_path,
@@ -12062,6 +12063,20 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
     return findings + root_findings
 
 
+def _appended_lines(materialized: Materialized) -> str:
+    """What `execute` says it appended to the source's `.gitattributes`: a
+    line for each pinned copy outside `shape/`, and the second line each
+    copy written through a symlink has under its pinned path (#807)."""
+    copies = len(eol_block_paths(materialized.shape_files, COLLISION_DIR))
+    said = f"a `text eol=lf` line for each of {copies} pinned copies"
+    second = len(materialized.eol_block) - copies
+    if second:
+        said += (f", and {second} more under the pinned path of each copy "
+                 "written through a symlink, which governs it once the link "
+                 "is replaced")
+    return said
+
+
 def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
                         before: dict, after: dict) -> int:
     """Count the source's `.gitattributes` as landed in the root when the
@@ -12087,8 +12102,9 @@ def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
     was `adopt-lost` where main verified it (#471's review, SHOULD-3). A pin
     neither can read counts nothing here, and `_shape_file_findings` reports
     it. Each copy the block names is named where the split's symlinks lead
-    its pinned path (`_SplitTree.tracked_at`), as the materializer named it:
-    the path git tracks (#807).
+    its pinned path (`_SplitTree.tracked_at`), the path git tracks, and then
+    by that pinned path where it differs, as the materializer named it
+    (#807).
     """
     source_oid = before.get(ATTRIBUTES)
     landed = after.get(ATTRIBUTES, [])
