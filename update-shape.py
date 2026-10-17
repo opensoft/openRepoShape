@@ -2331,17 +2331,25 @@ def current_branch(root: Path) -> str | None:
     `v1.0.0` this read `heads/v1.0.0`: `commit_on_branch` refused `--branch
     v1.0.0` as a branch that "is not the current branch ('heads/v1.0.0' is
     checked out)", and `_awaits_its_pull_request` never knew its re-run. So
-    the ref is read whole and `refs/heads/` taken off, as
+    the ref is read whole and `refs/heads/` taken off by `_branch_of`, as
     `Rollback.new_branch` takes it off; a HEAD attached anywhere else is on
     no branch, as a detached one is.
     """
     proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
                           cwd=str(root), capture_output=True, text=True,
                           encoding="utf-8", errors="replace", check=False)
-    head = proc.stdout.strip()
-    if not head.startswith("refs/heads/"):
+    return _branch_of(proc.stdout.strip())
+
+
+def _branch_of(ref: str | None) -> str | None:
+    """The branch the full ref `ref` names, `refs/heads/` taken off, or None
+    where it names none: a detached HEAD, or one attached outside
+    `refs/heads/`. One spelling for `current_branch` and
+    `Rollback.new_branch` (#674)."""
+    prefix = "refs/heads/"
+    if not ref or not ref.startswith(prefix):
         return None
-    return head[len("refs/heads/"):] or None
+    return ref[len(prefix):] or None
 
 
 BRANCH_REMEDIATION = (
@@ -2841,9 +2849,7 @@ class Rollback:
         that is `heads/main`, and `git checkout heads/main` DETACHES HEAD
         rather than returning to the branch.
         """
-        head = _symbolic_head(self.root)
-        start = (head[len("refs/heads/"):]
-                 if head and head.startswith("refs/heads/") else None)
+        start = _branch_of(_symbolic_head(self.root))
         commit = run(["git", "rev-parse", "HEAD"], cwd=self.root)
         self.branch = (branch, start, commit)
         run(["git", "checkout", "-q", "-b", branch], cwd=self.root)
@@ -4534,8 +4540,9 @@ def _land(root: Path, args, paths: list[str], added: list[str], target: str,
     # with `--accept-local` at the pinned commit, rewrites the manifest with
     # the bytes it had, so this said `project.yaml` of a commit without it.
     # Asked of the plumbing, `-z` so no name comes back quoted, `--root` so
-    # a first commit lists its files too. Should git not answer, the line
-    # keeps the paths it was asked to commit, as it always printed.
+    # a first commit lists its files too. Should git not answer, or list
+    # nothing, the line keeps the paths it was asked to commit, as it always
+    # printed.
     held = _git_answer(root, ["diff-tree", "--root", "--no-commit-id", "-r",
                               "--name-only", "--no-renames", "-z", "HEAD"])
     named = [path for path in (held or "").split("\0") if path]

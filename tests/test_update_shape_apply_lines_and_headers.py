@@ -220,10 +220,10 @@ def test_a_line_that_is_no_files_header_to_the_reader_is_still_counted_none(
     before = with_header(make_pin("assembly shape pin", OLD_COMMIT, OLD_TREE,
                                   OLD_ROWS), "files", header)
 
+    rows = [update_shape.Row(path, digest) for path, digest in NEW_ROWS]
+
     with pytest.raises(Refusal) as caught:
-        update_shape.rewrite_shape_pin(
-            before, NEW_COMMIT, NEW_TREE,
-            [update_shape.Row(path, digest) for path, digest in NEW_ROWS])
+        update_shape.rewrite_shape_pin(before, NEW_COMMIT, NEW_TREE, rows)
 
     assert caught.value.code == "update-pin-unrecognised"
     assert "has 0 `files` line(s) where exactly one was expected" in \
