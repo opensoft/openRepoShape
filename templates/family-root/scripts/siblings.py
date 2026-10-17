@@ -457,6 +457,45 @@ def project_id(path: Path) -> str | None:
     return str(data.get("id")) if isinstance(data, dict) else None
 
 
+def holds_git(path: Path) -> bool:
+    """Does `path` hold a `.git`? False where that cannot be asked (#735):
+    in a folder that cannot be entered (mode `000`), Python 3.12's
+    `Path.exists` raises `PermissionError`, and `make siblings` and `make
+    park` ended in that traceback."""
+    try:
+        return (path / ".git").exists()
+    except OSError:
+        return False
+
+
+def not_a_clone(target: Path) -> tuple[str, str] | None:
+    """`(what stands at target, what kind of thing it is)` for a `target`
+    with no `.git` that this command will not write into, in the words its
+    `NOT A CLONE` finding says it in; None for nothing at all, or an empty
+    folder, which a clone goes into.
+
+    A FILE, OR A FOLDER THAT CANNOT BE LISTED, IS NOT A CLONE TOO (#735).
+    Only a folder with something in it was asked about, and `iterdir`
+    raised on the other two: `NotADirectoryError` for a file, and
+    `PermissionError` for a folder that can be entered and not listed (mode
+    `0311`; `711` is common for another user's directory) or cannot be
+    entered at all. Each ended `make siblings` in a traceback, exit 1, and
+    the members after it were never placed. Nothing can tell that such a
+    folder is empty, and `git clone` refuses one it cannot read. The words
+    are the ones the doctor's `members` row says of the same two slots.
+    """
+    try:
+        if not target.exists():
+            return None
+        if not target.is_dir():
+            return "is a file, not a folder", "file"
+        if any(target.iterdir()):
+            return "exists, is not empty and is not a git clone", "directory"
+        return None
+    except OSError:
+        return "is a folder that cannot be listed", "directory"
+
+
 def verify_sibling(row: dict, target: Path, url: str, repository: str,
                    sibling: Sibling) -> bool:
     """Is the clone at `target` the member this row names?
@@ -554,14 +593,15 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
             f"the two are not the same path, then re-run.")
         return sibling
 
-    present = (target / ".git").exists()
-    if not present and target.exists() and any(target.iterdir()):
+    present = holds_git(target)
+    occupied = None if present else not_a_clone(target)
+    if occupied:
+        found, thing = occupied
         sibling.state = "NOT A CLONE"
         sibling.finding = (
-            f"{who}: {at} exists, is not empty and is not a git "
-            "clone, so this command will not write into it. Move it aside or "
-            "name the directory something else; nothing here overwrites a "
-            "directory somebody made.")
+            f"{who}: {at} {found}, so this command will not write into it. "
+            f"Move it aside or name the {thing} something else; nothing here "
+            f"overwrites a {thing} somebody made.")
         return sibling
 
     if not present:
@@ -725,7 +765,7 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
             "holder keeps its name) so the two are not the same path.")
         return sibling
 
-    if not (path / ".git").exists():
+    if not holds_git(path):
         sibling.state = "SKIPPED no clone"
         sibling.finding = (
             f"{who}: skipped: no working clone at {at}; run `make "

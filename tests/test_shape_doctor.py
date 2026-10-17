@@ -4002,9 +4002,9 @@ SLOT_SAYS = {
     "working-clone": "each with a working clone beside the holder",
 }
 
-#: What the row says instead of a `not-a-clone` slot `make siblings` ends in
-#: a traceback on today (#735): what is there, and nothing of what `make
-#: siblings` does with it.
+#: What the row says instead of a `not-a-clone` slot that a holder's pinned
+#: `siblings.py` from before #735 ends in a traceback on: what is there, and
+#: nothing of what `make siblings` does with it.
 UNREADABLE_SAYS = {
     "file": "is a file, not a folder, so it is not counted as its working "
             "clone",
@@ -4058,9 +4058,15 @@ SLOTS = [
     pytest.param("clone", "working-clone", id="the-working-clone"),
 ]
 
-#: A file at `../IRRS`, which `make siblings` ends in a traceback on today
-#: (#735).
-A_FILE = ("file", "not-a-clone")
+#: A file at `../IRRS`, and the two `LOCKED` folders: `not-a-clone`, and the
+#: slots `make siblings` ended in a traceback on before #735.
+UNREADABLE_SLOTS = [
+    pytest.param("file", "not-a-clone", id="a-file"),
+    pytest.param("unlistable", "not-a-clone", id="a-folder-it-cannot-list",
+                 marks=LOCKED_HOLDS),
+    pytest.param("unenterable", "not-a-clone",
+                 id="a-folder-it-cannot-enter", marks=LOCKED_HOLDS),
+]
 
 
 def holder_with_slot(holder: dict, tmp_path: Path, slot: str) -> Path:
@@ -4109,14 +4115,7 @@ def locked(request, path: Path, slot: str) -> None:
         request.addfinalizer(lambda: path.chmod(0o755))
 
 
-@pytest.mark.parametrize("slot, state", [
-    *SLOTS,
-    pytest.param(*A_FILE, id="a-file"),
-    pytest.param("unlistable", "not-a-clone", id="a-folder-it-cannot-list",
-                 marks=LOCKED_HOLDS),
-    pytest.param("unenterable", "not-a-clone",
-                 id="a-folder-it-cannot-enter", marks=LOCKED_HOLDS),
-])
+@pytest.mark.parametrize("slot, state", [*SLOTS, *UNREADABLE_SLOTS])
 def test_the_row_says_what_make_siblings_does_with_each_slot(
         standard, holder, tmp_path, request, slot, state):
     """#669: ONE ROW PER SLOT STATE. `--json` carries the state as
@@ -4127,10 +4126,10 @@ def test_the_row_says_what_make_siblings_does_with_each_slot(
     workstation's layout, and `without_working_clone` keeps its meaning.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone`, and the
-    row says nothing of `make siblings` there, which ends in a traceback on
-    it today (#735). The folder was the review's MUST on #705: `iterdir`'s
-    `PermissionError` made the row a FINDING and the holder DRIFTED, exit
-    1, where main says COMPLIANT, exit 0."""
+    row says nothing of `make siblings` there, which a holder's pinned copy
+    from before #735 ends in a traceback on. The folder was the review's
+    MUST on #705: `iterdir`'s `PermissionError` made the row a FINDING and
+    the holder DRIFTED, exit 1, where main says COMPLIANT, exit 0."""
     root = holder_with_slot(holder, tmp_path, slot)
     locked(request, root.parent / FAMILY_MEMBER, slot)
     result = doctor(standard, root, "--json")
@@ -4149,24 +4148,20 @@ def test_the_row_says_what_make_siblings_does_with_each_slot(
     assert json.loads(result.stdout)["verdict"] == "COMPLIANT", result.stdout
 
 
-@pytest.mark.parametrize("slot, state", [
-    *SLOTS,
-    pytest.param(*A_FILE, id="a-file", marks=pytest.mark.xfail(
-        strict=True, raises=AssertionError,
-        reason="#735: `siblings.py:558` raises NotADirectoryError on a "
-               "file, so `make siblings` ends in a traceback")),
-])
+@pytest.mark.parametrize("slot, state", [*SLOTS, *UNREADABLE_SLOTS])
 def test_make_siblings_dry_run_gives_the_rows_word_for_each_slot(
-        standard, holder, tmp_path, slot, state):
+        standard, holder, tmp_path, request, slot, state):
     """#669: THE AGREEMENT. The holder's own `scripts/siblings.py
     --dry-run`, run from its family folder, says of the member what the
     row's `sibling` state says it does: the same word where it refuses the
     directory, `would clone` where the row says it places it, and `present,
     would fetch` where it fetches it as the member. The row restates
     `place`'s order, and this is what keeps the two tools answering
-    together about one directory (#146). A FILE is held to it too, as a
-    strict xfail until #735 makes `make siblings` answer NOT A CLONE."""
+    together about one directory (#146). A FILE, and a folder that cannot
+    be listed or entered, are held to it too: `make siblings` ended in a
+    traceback on each, and since #735 calls each NOT A CLONE."""
     root = holder_with_slot(holder, tmp_path, slot)
+    locked(request, root.parent / FAMILY_MEMBER, slot)
     entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
         "members"][0]
     assert entry["sibling"] == state, entry
