@@ -86,7 +86,9 @@ EXIT CODES, the same three in every validator this standard ships:
        the topic agreed with the classification)
     1  a FINDING: at least one name matches no family, or a leg's declared role
        disagrees with the form of its name, or (#443) `neutral_product_pins:`
-       or a leg's `naming.referent_chain:` is not a list
+       or a leg's `naming.referent_chain:` is not a list, or (#714) `legs:`
+       is missing, empty or not a list, or an entry of the first two is not
+       a name
     2  a REFUSAL: the question could not be asked at all — the policy file is
        missing, unparsable, or not a naming policy, or a `--link-source`
        names no path
@@ -136,6 +138,26 @@ def _shown(path) -> str:
     it classified a name."""
     text = str(path)
     return text if text.isprintable() else repr(text)
+
+
+def _not_a_name(entry) -> str | None:
+    """Why a `neutral_product_pins:` entry or a `naming.referent_chain:`
+    link is not a name, or None where it is one (#714).
+
+    `validate-manifest.py`'s `_not_a_name`, word for word, so every gate
+    that reads the two fields says one sentence. A name is text
+    (`validate-pins.py`'s `neutral-pin-entry-malformed` asks the same), it
+    is not blank (a blank link was always no link), and every character in
+    it is printable (`str.isprintable`, `_shown`'s rule). `[5]` was the pin
+    `'5'`, and a link holding ESC was a name this gate classified with,
+    exit 0, and printed raw in `--explain`'s CHAIN line."""
+    if not isinstance(entry, str):
+        return "it is not text"
+    if not entry.strip():
+        return "it is blank"
+    if not entry.isprintable():
+        return "it holds a character that is not printable"
+    return None
 
 
 def _library_takes_remedies() -> bool:
@@ -685,11 +707,16 @@ def _pins_from_project(data: dict) -> set[str]:
     ended this gate, the first command of `make validate`, in a `TypeError`;
     a scalar `openXdox` was read as the pins `X`, `d`, `e`, `n`, `o`, `p`,
     `x`, and a mapping as its keys, and the names classified, exit 0.
+
+    AN ENTRY THAT IS NOT A NAME DECLARES NOTHING (#714), and the others are
+    still declared, as `validate-pins.py` checks the rest past an entry it
+    calls malformed. `_not_a_name` is the rule, and `_pins_field_findings`
+    names each such entry.
     """
     declared = data.get("neutral_product_pins")
     if not isinstance(declared, list):
         return set()
-    return {str(pin) for pin in declared if pin}
+    return {pin for pin in declared if _not_a_name(pin) is None}
 
 
 def _pins_field_findings(data: dict) -> list[str]:
@@ -698,12 +725,22 @@ def _pins_field_findings(data: dict) -> list[str]:
     names the field where it used to end in a traceback, and every validator
     that reads the field says the same sentence. Absent or null declares no
     pin and is no finding; anything else that is not a list is one, `0`,
-    `false` and `''` included, as that validator says."""
+    `false` and `''` included, as that validator says. In a list, each
+    entry that is not a name is one too, with why (#714)."""
     declared = data.get("neutral_product_pins")
-    if declared is None or isinstance(declared, list):
+    if declared is None:
         return []
-    return [f"manifest-neutral-product-pins: neutral_product_pins is "
-            f"{declared!r}, expected a list of neutral product names"]
+    if not isinstance(declared, list):
+        return [f"manifest-neutral-product-pins: neutral_product_pins is "
+                f"{declared!r}, expected a list of neutral product names"]
+    findings = []
+    for pin in declared:
+        why = _not_a_name(pin)
+        if why is not None:
+            findings.append(
+                f"manifest-neutral-product-pins: neutral_product_pins entry "
+                f"{pin!r} is not a neutral product name: {why}")
+    return findings
 
 
 def _chain_from_leg(leg: dict) -> tuple:
@@ -718,32 +755,54 @@ def _chain_from_leg(leg: dict) -> tuple:
     no chain, which `_chain_field_findings` reports. This copy had the string
     rule and not the list rule, so `5`, `true` or `1.5` ended the gate in a
     `TypeError` and a mapping was read as a chain of its keys.
+
+    A CHAIN WITH A LINK THAT IS NOT A NAME RECORDS NO CHAIN (#714), as one
+    that is not a list records none: `_not_a_name` is the rule, and
+    `_chain_field_findings` names the link. `[5]` was the link `'5'`, and
+    `"\\x1b[31mRED"` a link this gate classified with, exit 0. Dropping the
+    one link would ask about a chain nobody recorded. A blank string is the
+    empty record it always was.
     """
     naming = leg.get("naming")
     if not isinstance(naming, dict):
         return ()
     recorded = naming.get(CHAIN_RECORD_FIELD)
     if isinstance(recorded, str):
-        recorded = [recorded]
-    if not isinstance(recorded, list):
+        recorded = [recorded] if recorded.strip() else []
+    if not isinstance(recorded, list) or any(
+            _not_a_name(link) is not None for link in recorded):
         return ()
-    return tuple(str(link) for link in recorded if str(link).strip())
+    return tuple(recorded)
 
 
 def _chain_field_findings(leg: dict) -> list[str]:
     """`validate-manifest.py`'s finding for a leg's `naming.referent_chain:`
     that is neither a string nor a list, in its words (#443): the leg named
     by its declared `role:`, as that validator names it. Absent or null
-    records no chain, and a string is one link, so neither is a finding."""
+    records no chain, and a string is one link, so neither is a finding.
+    Each link that is not a name is one, with why (#714); a blank string is
+    no link and no finding."""
     naming = leg.get("naming")
     if not isinstance(naming, dict):
         return []
     recorded = naming.get(CHAIN_RECORD_FIELD)
-    if recorded is None or isinstance(recorded, (str, list)):
+    if recorded is None:
         return []
-    return [f"naming-referent-chain: leg {leg.get('role')!r}: "
-            f"{CHAIN_RECORD_FIELD} is {recorded!r}, expected a list of "
-            "neutral-product names"]
+    if isinstance(recorded, str):
+        recorded = [recorded] if recorded.strip() else []
+    if not isinstance(recorded, list):
+        return [f"naming-referent-chain: leg {leg.get('role')!r}: "
+                f"{CHAIN_RECORD_FIELD} is {recorded!r}, expected a list of "
+                "neutral-product names"]
+    findings = []
+    for link in recorded:
+        why = _not_a_name(link)
+        if why is not None:
+            findings.append(
+                f"naming-referent-chain: leg {leg.get('role')!r}: "
+                f"{CHAIN_RECORD_FIELD} link {link!r} is not a neutral-product "
+                f"name: {why}")
+    return findings
 
 
 def _leg_target(policy: NamingPolicy, path: Path, leg, root: Path,
@@ -806,11 +865,44 @@ def _project_manifest(path: Path) -> dict:
     return data
 
 
+def _project_legs(data: dict) -> list:
+    """The manifest's `legs:` where it is a list, and `[]` where it is not
+    (#714): a value that is not a list names no leg, as
+    `validate-manifest.py` reads it, and `_legs_field_findings` says so.
+    Iterated as `data.get("legs") or []`, `5` or `true` ended the gate in a
+    `TypeError` before any name was classified, and a scalar `openXdox` or
+    a mapping was walked one character, or one key, at a time: no leg was a
+    target, and the gate read names from stdin instead, which waited on a
+    pipe left open."""
+    legs = data.get("legs")
+    return legs if isinstance(legs, list) else []
+
+
+def _legs_field_findings(data: dict) -> list[str]:
+    """`validate-manifest.py`'s finding for a `legs:` that is not a list, or
+    that is absent, null or `[]`, in its words (#714); `validate-pins.py`
+    says the first too.
+
+    A MANIFEST THAT NAMES NO LEG IS THAT FINDING, NOT `naming-no-target`
+    (lane 4's ruling on #714). The refusal said "Pass names, `--project
+    project.yaml`, or names on stdin" to a run that had passed
+    `--project project.yaml`, and under `--project` this gate no longer
+    reads stdin, so two of its three offers were no way out. The manifest
+    is what is wrong, and `validate-manifest.py` says so, exit 1."""
+    legs = data.get("legs")
+    if isinstance(legs, list) and legs:
+        return []
+    if legs is None or isinstance(legs, list):
+        return ["manifest-legs: legs is missing or empty"]
+    return [f"manifest-legs: legs is {legs!r}, expected a list of `role:`, "
+            "`repository:` and `path:` mappings"]
+
+
 def _project_leg_chains(data: dict) -> list[tuple[str, tuple]]:
     """`(name, the chain it records)` for each leg `_leg_target` makes a
     target of, and no other."""
     return [(repo_basename(str(leg["repository"])), _chain_from_leg(leg))
-            for leg in data.get("legs") or []
+            for leg in _project_legs(data)
             if isinstance(leg, dict) and "repository" in leg]
 
 
@@ -852,9 +944,11 @@ def _targets_from_project(policy: NamingPolicy, path: Path, data: dict,
     root = path.resolve().parent
     targets: list[Target] = []
     # Pins that are not a list are said before any leg's finding, and every
-    # leg is classified as declaring none (#443).
+    # leg is classified as declaring none (#443). Legs that are not a list
+    # are said next, and name no leg (#714).
     findings: list[str] = _pins_field_findings(data)
-    for leg in data.get("legs") or []:
+    findings.extend(_legs_field_findings(data))
+    for leg in _project_legs(data):
         target, leg_findings = _leg_target(policy, path, leg, root, pins,
                                            sources)
         if target is not None:
@@ -872,9 +966,39 @@ def _targets_from_stdin(role: str | None, pins: set, chain: tuple,
 
     Split from `main` for #136: reading the stdin fallback is its own
     question, asked only once `main` has decided no other source answered.
+
+    A BYTE THAT IS NOT UTF-8 IS READ AS THE NAME ARGV READS (#714). A
+    `strict` stdin, which `PYTHONIOENCODING=utf-8` gives (the doctor sets it
+    for its children), ended the run in a `UnicodeDecodeError` on
+    `Atl\\xffas`; read with `surrogateescape`, as `os.fsdecode` reads an
+    argument, it is `Atl\\udcffas` and reaches `naming-unclassified`. Any
+    other handler, one somebody chose, is left alone.
     """
+    if getattr(sys.stdin, "errors", None) == "strict":
+        try:
+            sys.stdin.reconfigure(errors="surrogateescape")
+        except (AttributeError, ValueError, OSError):
+            pass
     return [Target(repo_basename(line.strip()), role, pins, chain, here)
             for line in sys.stdin if line.strip()]
+
+
+def _escape_what_stdout_cannot_encode() -> None:
+    """A character stdout cannot encode is printed escaped (#714), as
+    `validate-pins.py`'s `_emit_report` prints it (#295): a `strict` or
+    `surrogateescape` stdout, the two that raise, becomes
+    `backslashreplace`, the handler stderr already has, and any other
+    handler is left alone. A name that is not UTF-8 (`Atl\\udcffas`, from
+    the byte `\\xff`) ended `--explain` and the plain listing in a
+    `UnicodeEncodeError` under `PYTHONIOENCODING=utf-8`, which the doctor
+    gives its children, where `--quiet` said `naming-unclassified`. This
+    script runs on its own too, so the doctor setting another handler for
+    its child would not be enough."""
+    if getattr(sys.stdout, "errors", None) in ("strict", "surrogateescape"):
+        try:
+            sys.stdout.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError, OSError):
+            pass
 
 
 def _print_classification(name: str, found: Classification | None) -> None:
@@ -1045,6 +1169,7 @@ def main(argv: list[str] | None = None) -> int:
                              "of them won, and what the others are recorded as")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
+    _escape_what_stdout_cannot_encode()
 
     try:
         policy = NamingPolicy.load(args.policy)
@@ -1080,9 +1205,18 @@ def main(argv: list[str] | None = None) -> int:
         extra, findings = _targets_from_project(policy, args.project, data,
                                                 sources)
         targets.extend(extra)
-    if not targets and not sys.stdin.isatty():
+    # UNDER `--project`, STDIN IS NEVER READ (#714). The manifest is the
+    # question; a manifest that names no leg, or whose `legs:` is not a
+    # list, read names from a stdin that is not a terminal, and a pipe left
+    # open (a parent that holds it) made the gate wait forever.
+    # A finding with no name to classify is still said, exit 1, and under
+    # `--project` a run with no target always has one (`legs:` missing,
+    # empty or not a list, or a leg with no `repository:`): the
+    # `no names given` refusal is for a run without `--project` that found
+    # nothing to ask.
+    if not targets and data is None and not sys.stdin.isatty():
         targets = _targets_from_stdin(args.role, cli_pins, cli_chain, here)
-    if not targets:
+    if not targets and not findings:
         print("REFUSED naming-no-target: no names given. Pass names, "
               "`--project project.yaml`, or names on stdin.", file=sys.stderr)
         return 2
