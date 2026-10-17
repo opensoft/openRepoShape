@@ -242,6 +242,8 @@ SPELLINGS = {
     # form with no scheme as neither a path nor a name.
     "www-url": f"https://www.github.com/{REPOSITORY}",
     "www-no-scheme": f"WWW.GitHub.com/{REPOSITORY}",
+    # `.git` dropped in any case, as `.git` is (#831's review, F2).
+    "dot-git-upper-case": f"{REPOSITORY}.GIT",
 }
 
 
@@ -271,6 +273,10 @@ NAMES_NO_REPOSITORY = {
     # clone into `source-readonly/.git`, and refused `source-unclonable`
     # with a remedy about `gh auth status`.
     "dot-git-repository": (f"{ORG}/.git", NEITHER),
+    # ... in any case, as GitHub and a disk that ignores case read it (#831's
+    # review, F2): on main and before it, `gh` was handed each of these.
+    "dot-git-upper-case": (f"{ORG}/.GIT", NEITHER),
+    "dot-git-mixed-case": (f"{ORG}/.Git.git", NEITHER),
     "url-dot-git-repository": (f"https://github.com/{ORG}/.git.git",
                                NO_OWNER_REPO),
     # Controls: `.` and `..` name no repository either, whatever `.git`
@@ -780,8 +786,9 @@ TOP_LEVEL_REMEDY = (
     "`git rev-parse --show-toplevel` prints in any directory of it, or its "
     "`org/repo`.")
 README = "README.md"
-#: A path inside the local source that is no top level: a file, a directory.
-INSIDE = {"file": README, "directory": "src"}
+#: A path inside the local source that is no top level: a file, a directory
+#: of its work tree, a directory of its git directory.
+INSIDE = {"file": README, "directory": "src", "git-directory": ".git/objects"}
 #: A `~user` no machine running the suite has, which bash passes through as
 #: typed, and `os.path.expanduser` leaves as typed.
 NO_SUCH_USER = "~no-such-user-796/Thing"
@@ -855,9 +862,18 @@ def not_top_level(named: str, source: Path, inside: str) -> str:
     if inside == INSIDE["file"]:
         return (f"{NOT_TOP_LEVEL}{named} is not a directory, and "
                 f"{TOP_LEVEL_ONLY}")
+    if inside == INSIDE["git-directory"]:
+        return in_a_git_directory(named, source / ".git")
     return (f"{NOT_TOP_LEVEL}{named} is `{inside}/` inside the repository at "
             f"{spelled(os.path.realpath(source))}, and {TOP_LEVEL_ONLY}: read "
             f"from there, it would be only what is under `{inside}/`")
+
+
+def in_a_git_directory(named: str, git_dir: Path) -> str:
+    """The first line of `source-not-top-level` for a directory inside
+    `git_dir`, which the refusal calls `named`."""
+    return (f"{NOT_TOP_LEVEL}{named} is inside the git directory "
+            f"{spelled(os.path.realpath(git_dir))}, and {TOP_LEVEL_ONLY}")
 
 
 def local_path_now(adopter, plan: Path, value: str) -> None:
@@ -916,6 +932,65 @@ def test_dot_in_a_directory_inside_the_repository_is_refused(
     assert code == 2, err
     assert err.splitlines()[0] == not_top_level(
         "--source '.'", source, INSIDE["directory"])
+    nothing_was_made(tmp_path, calls)
+
+
+def git_directories(source: Path, tmp_path: Path) -> dict[str, Path]:
+    """The git directories of `source`'s repository: its own `.git`, a bare
+    clone of it, and a linked worktree's."""
+    bare = tmp_path / "bare.git"
+    git("clone", "-q", "--bare", str(source), str(bare), cwd=tmp_path)
+    git("worktree", "add", "-q", str(tmp_path / "wt"), "-b", "wt", cwd=source)
+    return {"dot-git": source / ".git", "bare": bare,
+            "worktree": source / ".git" / "worktrees" / "wt"}
+
+
+@pytest.mark.parametrize("which", ["dot-git", "bare", "worktree"])
+def test_a_git_directory_itself_is_read_whole(adopter, monkeypatch, capsys,
+                                              tmp_path, which):
+    """The controls of #831's review, F1: a git directory is a repository's
+    own, and is read whole, as on main."""
+    calls = no_github(adopter, monkeypatch, tmp_path)
+    given = git_directories(local_source(tmp_path), tmp_path)[which]
+    plan = tmp_path / PLAN
+    code, _, err = run(adopter, capsys, *plan_args(str(given), plan))
+    assert code == 0, err
+    assert recorded(plan)["local_path"] == os.path.realpath(given)
+    assert calls == []
+
+
+def test_a_directory_inside_a_bare_repository_is_refused(
+        adopter, monkeypatch, capsys, tmp_path):
+    """#831's review, F1: inside a git directory `--show-prefix` prints
+    nothing, so `plan` planned the whole repository from `<bare>.git/refs`,
+    exit 0, and recorded that directory, which `check` and `execute` could
+    not read as a repository. `.git/objects` is in `INSIDE`."""
+    calls = no_github(adopter, monkeypatch, tmp_path)
+    bare = git_directories(local_source(tmp_path), tmp_path)["bare"]
+    given = str(bare / "refs")
+    code, _, err = run(adopter, capsys, *plan_args(given, tmp_path / AGAIN))
+    assert code == 2, err
+    assert err.splitlines() == [
+        in_a_git_directory(f"--source {given!r}", bare), TOP_LEVEL_REMEDY]
+    nothing_was_made(tmp_path, calls)
+
+
+@pytest.mark.parametrize("command", [CHECK, EXECUTE])
+def test_an_empty_recorded_local_path_is_refused_and_never_cloned(
+        adopter, monkeypatch, capsys, tmp_path, command):
+    """#831's review, F3, L1-96's cause in the plan: on main `if
+    local_path:` read `local_path: ""` as none, and the plan's
+    `source.repository` was cloned from GitHub, though `plan` made no clone
+    of it."""
+    _, plan, calls = planned_here(adopter, monkeypatch, capsys, tmp_path)
+    local_path_now(adopter, plan, "")
+    code, _, err = run(adopter, capsys, command, PLAN_FLAG, str(plan),
+                       *remotes(tmp_path))
+    assert code == 2, err
+    assert err.splitlines()[:2] == [
+        f"{GONE_REFUSED}the plan's `source.local_path` is empty: it names no "
+        "path, and an empty path would be read as the directory this runs in",
+        GONE_REMEDY]
     nothing_was_made(tmp_path, calls)
 
 

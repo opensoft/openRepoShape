@@ -1555,8 +1555,13 @@ GITHUB_HOST = "github.com"
 #: The refusal of a `--source` that is both a path here and a GitHub name.
 SOURCE_AMBIGUOUS = "source-ambiguous"
 #: The refusal of a plan's `source.local_path` that is gone, or no longer a
-#: whole clone, where nothing clones it again.
+#: whole clone, where nothing clones it again, or that names no path; and
+#: its way out.
 PLAN_SOURCE_GONE = "plan-source-gone"
+PLAN_SOURCE_GONE_REMEDY = (
+    "Remediation: pass the source again with --source: the path its clone is "
+    "at now; or, where `plan` cloned it from GitHub, the `org/repo` it "
+    "cloned, which clones it again. Either is held to the plan's `commit:`.")
 #: The refusal of a `--source` that names nothing, as `Source.open` words it.
 SOURCE_UNRESOLVABLE = "source-unresolvable"
 #: The refusal of a local source that is no repository's top-level
@@ -1603,17 +1608,20 @@ def _github_name(written: str) -> str | None:
     GitHub owner does, nor `-`, which gh's parser reads as an option: `-u/x`
     set its `--upstream-remote-name` (S8705). Case is kept as typed.
 
-    NOR IS THE REPOSITORY `.git` (#796), as `owner/.git` and
-    `owner/.git.git` leave it: on main `gh` was handed `owner/.git`, to clone
-    into `source-readonly/.git`, and refused it `source-unclonable`, with a
-    remedy about `gh auth status`."""
+    NOR IS THE REPOSITORY `.git` (#796), in any case, as `owner/.git`,
+    `owner/.GIT` and `owner/.git.git` leave it: on main `gh` was handed
+    `owner/.git`, to clone into `source-readonly/.git`, and refused it
+    `source-unclonable`, with a remedy about `gh auth status`. GitHub reads
+    a repository's name without regard to case, and so does a disk that
+    ignores case, where `source-readonly/.GIT` is `source-readonly/.git`;
+    so the trailing `.git` is dropped in any case too."""
     segments = [part for part in written.split("/") if part]
     if len(segments) != 2:
         return None
     owner, repo = segments
-    if repo.endswith(".git") and len(repo) > len(".git"):
+    if repo.lower().endswith(".git") and len(repo) > len(".git"):
         repo = repo[:-len(".git")]
-    if owner.startswith(("-", ".")) or repo == ".git" or not all(
+    if owner.startswith(("-", ".")) or repo.lower() == ".git" or not all(
             GITHUB_SEGMENT_RE.fullmatch(part) and part not in (".", "..")
             for part in (owner, repo)):
         return None
@@ -1736,12 +1744,20 @@ def _top_level(path: Path, named: str) -> Path:
 
     BEFORE GIT READS ANYTHING ELSE IN IT. A file is asked of the disk, and
     git is never run in it: `subprocess` raised `NotADirectoryError` for
-    one, a traceback. A directory is asked `git rev-parse --show-prefix`,
-    which prints nothing at the top level, of a work tree or a bare
-    repository, and the path of the directory below it otherwise; only
-    then is `--show-toplevel` asked, for the refusal to name. A directory
-    git reads no repository from is refused `git-failed` here, in git's own
-    words, as a later read refused it on main. On main a directory inside a
+    one, a traceback. A directory is asked `git rev-parse
+    --is-inside-git-dir` first: a git directory itself (`<repo>/.git`, a
+    bare repository, `.git/modules/<m>`, `.git/worktrees/<w>`) is read
+    whole, as on main, and a directory below one (`.git/objects`, a bare
+    repository's `refs/`) is refused, naming the git directory `git
+    rev-parse --absolute-git-dir` gives. On main `plan` planned the whole
+    repository from `.git/objects`, exit 0, and recorded that directory,
+    which `check` then refused at `git ls-remote` of it, and `execute` as
+    `adopt-remote-unreadable`. Then `git rev-parse --show-prefix`, which
+    prints nothing at the top level, of a work tree or a git directory, and
+    the path of the directory below it otherwise; only then is
+    `--show-toplevel` asked, for the refusal to name. A directory git reads
+    no repository from is refused `git-failed` here, in git's own words, as
+    a later read refused it on main. On main a directory inside a
     repository was read as the source: `git ls-tree` there lists what is
     under it alone, so `plan` planned that, exit 0, and the plan recorded
     it."""
@@ -1750,6 +1766,14 @@ def _top_level(path: Path, named: str) -> Path:
         raise Refusal(SOURCE_NOT_TOP_LEVEL,
                       f"{named} is not a directory, and {TOP_LEVEL_ONLY}",
                       TOP_LEVEL_REMEDY)
+    if git_out(["rev-parse", "--is-inside-git-dir"], cwd=resolved) == "true":
+        git_dir = os.fsdecode(git_out(["rev-parse", "--absolute-git-dir"],
+                                      cwd=resolved, binary=True).rstrip(b"\n"))
+        if Path(os.path.realpath(git_dir)) != resolved:
+            raise Refusal(
+                SOURCE_NOT_TOP_LEVEL,
+                f"{named} is inside the git directory {_spelled(git_dir)}, "
+                f"and {TOP_LEVEL_ONLY}", TOP_LEVEL_REMEDY)
     prefix = os.fsdecode(git_out(["rev-parse", "--show-prefix"],
                                  cwd=resolved, binary=True).rstrip(b"\n"))
     if prefix:
@@ -4766,10 +4790,20 @@ class Plan:
 
         AN EMPTY `override` IS ONE GIVEN (#796), and `Source.open` refuses
         it: on main `check --source ''` and `execute --source ''` dropped it
-        and read the plan's own source."""
+        and read the plan's own source. So is an empty `local_path:`, which
+        no `plan` writes, refused as `plan-source-gone`: on main it was read
+        as no `local_path` at all, and the plan's `source.repository` was
+        cloned from GitHub, a path the person gave or a gitlab clone's
+        `origin` included, which `_recorded_source` never clones again."""
         if override is not None:
             return Source.open(override, work_root, unwritable, made, done)
         local_path = self.source.get("local_path")
+        if local_path == "":
+            raise Refusal(
+                PLAN_SOURCE_GONE,
+                "the plan's `source.local_path` is empty: it names no path, "
+                "and an empty path would be read as the directory this runs "
+                "in", PLAN_SOURCE_GONE_REMEDY)
         if local_path:
             return self._recorded_source(str(local_path), work_root,
                                          unwritable, made, done)
@@ -4882,11 +4916,7 @@ class Plan:
         return Refusal(
             PLAN_SOURCE_GONE,
             f"the plan's `source.local_path`, {_spelled(local_path)}, "
-            f"{state}, and {why}",
-            "Remediation: pass the source again with --source: the path its "
-            "clone is at now; or, where `plan` cloned it from GitHub, the "
-            "`org/repo` it cloned, which clones it again. Either is held to "
-            "the plan's `commit:`.")
+            f"{state}, and {why}", PLAN_SOURCE_GONE_REMEDY)
 
     def names(self) -> dict[str, str]:
         """The three repository names the plan declares, validated as values.
