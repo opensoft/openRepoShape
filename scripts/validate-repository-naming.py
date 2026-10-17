@@ -65,6 +65,22 @@ PATH is read for none of them. A value that names no path — `PRODUCT=`, or an
 empty one — is refused (#442): an empty path is the current directory, and
 `.` is how to mean that.
 
+A CALLER THAT PASSES A SOURCE FOR SOMEONE ELSE SAYS IT IN ITS OWN WORDS
+(#661). `--link-source-label=FLAG` is the flag the person typed for the bare
+PATH (setup's step (4) passes `--pin-source`): the `link-source-unreadable`
+WARNING and the "not used" NOTE name that value by FLAG, and neither says a
+value holding `=` was read as a PATH. The `link-source-no-path` REFUSED
+line, and the NOTE's advice to name the link (`--link-source <link>=PATH`)
+where the chains begin at more than one link, keep this script's own flag.
+`--link-remedy LINK=TEXT` is what would let LINK's tree be read in that
+caller's sources, offered in place of this script's own for a link that is
+declared-unverified. A project's own runs pass neither. Every `--link-source`
+value and path this prints, and the path of a `SHAPE_PIN_SOURCE_<PRODUCT>`
+or of a checkout beside the project it names, is named as it is, or as
+Python's `repr` spells it where a character in it is not printable
+(`_shown`). A caller's FLAG and the words it offers for a link, a chain
+link's name, and the `--project` and `--policy` paths are printed as given.
+
 EXIT CODES, the same three in every validator this standard ships:
     0  every name classified (and, with `--project`, every declared role and
        the topic agreed with the classification)
@@ -94,6 +110,7 @@ workflow that treats the second as the first.
 from __future__ import annotations
 
 import argparse
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -106,6 +123,43 @@ from repo_shape import (  # noqa: E402
 )
 
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
+
+
+def _shown(path) -> str:
+    """A path as a line about it names it: as it is, unless a character in
+    it is not printable (`str.isprintable`), and then as Python's `repr`
+    spells it (#610). It is `repo_shape.shown_path`, which spells the
+    manifest in a `link-source-unreadable` reason, so one line holds one
+    spelling. Written here rather than imported: this file is copied into
+    every project and may meet a `scripts/repo_shape.py` older than itself,
+    which has no such name, and the gate would end in an `ImportError` before
+    it classified a name."""
+    text = str(path)
+    return text if text.isprintable() else repr(text)
+
+
+def _library_takes_remedies() -> bool:
+    """Does this root's `scripts/repo_shape.py` take `remedies=`? The
+    skew rule `validate-manifest.py` states (#661): an older library has
+    none, and passing it would end the gate in a `TypeError`."""
+    try:
+        return "remedies" in inspect.signature(
+            link_pins_from_trees).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _link_remedy(value: str) -> tuple[str, str]:
+    """One `--link-remedy LINK=TEXT`: the link, by `repo_basename`, and
+    the words. The text before the first `=` is the link; a value with no
+    `=`, no link or no words is refused, exit 2."""
+    link, sep, text = value.partition("=")
+    link = repo_basename(link.strip())
+    if not (sep and link and text.strip()):
+        raise argparse.ArgumentTypeError(
+            f"{_shown(value)} is not LINK=TEXT: name a chain link, then `=`, "
+            "then the words for what would let its tree be read")
+    return link, text
 
 
 class Target:
@@ -147,9 +201,10 @@ class LinkSources:
     That is `validate-pins.py`'s reading of `--pin-source` (#295), with a
     chain link where that file has a declared pin, so the two copied tools
     read `[PRODUCT=]PATH` one way OVER ASCII ONLY (#444). Outside it they part
-    company: `PinSources` (`templates/assembly-root/scripts/validate-pins.py`
-    `:831`, `:845`, `:848-849` and `:912`) still keys `--pin-source PRODUCT=`
-    by `casefold()`, so `--pin-source openss=` answers for a declared `openß`
+    company: `templates/assembly-root/scripts/validate-pins.py` still keys
+    `--pin-source PRODUCT=` by `casefold()`, in `PinSources.__init__`, which
+    builds the table, and in `resolve_neutral_pin_source`, which looks a pin
+    up in it, so `--pin-source openss=` answers for a declared `openß`
     where `--link-source openss=` no longer answers for the link `openß`. It
     is left, and the issue leaves it as its own change, because a pin's digest
     stops a wrong source from passing: `validate-pins.py` checks it, a wrong
@@ -189,7 +244,15 @@ class LinkSources:
     products' trees.
     """
 
-    def __init__(self, values: list[str], links, firsts=()) -> None:
+    def __init__(self, values: list[str], links, firsts=(),
+                 label: str | None = None, remedies=()) -> None:
+        #: The caller's own name for the bare PATH it passes, or None
+        #: (`--link-source-label`, #661).
+        self.label = label
+        #: `{pin_product_key(link): the caller's words}` from
+        #: `--link-remedy`, the last value given for a link wins (#661).
+        self.remedies: dict[str, str] = {
+            pin_product_key(link): text for link, text in remedies}
         #: Every link of every chain this run reads, in its first spelling.
         self.links: list[str] = []
         names: dict[str, str] = {}
@@ -262,10 +325,12 @@ class LinkSources:
             first = repo_basename(str(target.chain[0]))
             self.firsts.setdefault(pin_product_key(first), first)
         tried: dict = {}
+        offered = ({"remedies": self.remedies}
+                   if self.remedies and _library_takes_remedies() else {})
         found = link_pins_from_trees(
             target.chain, target.root,
             {key: path for key, (_typed, path) in self.keyed.items()},
-            self._bare_path(), tried=tried)
+            self._bare_path(), tried=tried, **offered)
         # ONLY A LINK THAT HOLDS A PIN COUNTS. The lookup asks for every link,
         # the last one too, but only a holder's own declaration is ever read
         # (`_chain_link_findings`): a source asked only for the chain's end
@@ -303,11 +368,15 @@ class LinkSources:
             if why is None:
                 self.used.add(typed)
                 return
+            if rule == "bare" and self.label:
+                how = self.label
             links = self.unread.setdefault(typed, (path, how, why, []))[3]
         elif why is None or (rule == "sibling" and why in (
                 LINK_SOURCE_ABSENT, LINK_SOURCE_NO_MANIFEST)):
             return
         else:
+            # A checkout beside the project is named in `how` too (#661).
+            how = how.replace(str(path), _shown(path))
             links = self.unanswered.setdefault((path, how, why), [])
         if link not in links:
             links.append(link)
@@ -317,10 +386,10 @@ class LinkSources:
         or `""` — the only trace in the run of a mistyped link name. Nothing
         when no chain names a link: the note has already said so."""
         if self.reading.get(typed) is not None or "=" not in typed \
-                or not self.links:
+                or not self.links or self.label:
             return ""
         key = typed.partition("=")[0]
-        what = f"`{key}` is not" if key else "nothing before its `=` is"
+        what = f"`{_shown(key)}` is not" if key else "nothing before its `=` is"
         return (f"It was read as a PATH: {what} a link of a referent chain "
                 f"here (links: {', '.join(self.links)}).")
 
@@ -331,7 +400,8 @@ class LinkSources:
         `OSError` on every Python."""
         if self.reading.get(typed) is None or not os.path.isdir(typed):
             return ""
-        return (f"`{typed}` is also a directory; `--link-source ./{typed}` "
+        named = _shown(typed)
+        return (f"`{named}` is also a directory; `--link-source ./{named}` "
                 "reads it as one.")
 
     def unread_lines(self) -> list[str]:
@@ -346,14 +416,14 @@ class LinkSources:
                 continue
             path, how, why, links = self.unread[typed]
             lines.append(
-                f"link-source-unreadable: {path} ({how}) could not answer "
-                f"for {', '.join(links)}: {why}"
+                f"link-source-unreadable: {_shown(path)} ({how}) could not "
+                f"answer for {', '.join(links)}: {why}"
                 + "".join(f"\n  {line}" for line in (
                     self.read_as_path(typed), self._also_a_directory(typed))
                     if line))
         for (path, how, why), links in self.unanswered.items():
-            lines.append(f"link-source-unreadable: {path} ({how}) could not "
-                         f"answer for {', '.join(links)}: {why}")
+            lines.append(f"link-source-unreadable: {_shown(path)} ({how}) "
+                         f"could not answer for {', '.join(links)}: {why}")
         return lines
 
     def no_path_refusal(self) -> str:
@@ -361,7 +431,7 @@ class LinkSources:
         each by the link it is keyed to, or `""` when there is none."""
         if not self.no_path:
             return ""
-        said = [f"`--link-source {typed}` names no path for "
+        said = [f"`--link-source {_shown(typed)}` names no path for "
                 f"{self.reading[typed]}" if typed
                 else "`--link-source ''` names no path"
                 for typed in self.no_path]
@@ -380,7 +450,8 @@ class LinkSources:
             return ("a bare PATH is one first link's tree, and the chains "
                     "read here begin at " + ", ".join(self.firsts.values())
                     + ": name the link it is, as --link-source <link>=PATH")
-        sources = ("a more specific source (a keyed --link-source, "
+        keyed = "" if self.label else "a keyed --link-source, "
+        sources = (f"a more specific source ({keyed}"
                    "SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout beside the "
                    "project)")
         if self.asked <= set(self.firsts):
@@ -399,9 +470,10 @@ class LinkSources:
         for typed, link in self.reading.items():
             if typed in self.used or typed in self.unread:
                 continue
+            flag = self._flag(link)
             later = self.replaced.get(typed)
             if later is not None:
-                why = f"the later `--link-source {later}` replaced it"
+                why = f"the later `{flag} {_shown(later)}` replaced it"
             elif link is not None:
                 why = f"no name classified here reads {link}'s own declaration"
             elif not self.links:
@@ -412,9 +484,14 @@ class LinkSources:
             else:
                 why = self._not_asked_why()
             lines.append(" ".join(filter(None, (
-                f"--link-source {typed}: not used — {why}.",
+                f"{flag} {_shown(typed)}: not used — {why}.",
                 self.read_as_path(typed)))))
         return lines
+
+    def _flag(self, link: str | None) -> str:
+        """The flag a value is named by: `--link-source`, or for a bare
+        PATH the caller's label where it gave one (#661)."""
+        return self.label if link is None and self.label else "--link-source"
 
 
 def _no_family_lines(policy: NamingPolicy, name: str) -> list[str]:
@@ -947,6 +1024,22 @@ def main(argv: list[str] | None = None) -> int:
                              "a source that cannot be read is named with the "
                              "system's reason: both are warnings and not "
                              "findings, an explicit source included.")
+    parser.add_argument("--link-source-label", default=None,
+                        metavar="FLAG",
+                        help="the caller's own name for the bare "
+                             "--link-source it passes, such as --pin-source "
+                             "(a FLAG that starts with - is given after an "
+                             "=): the link-source-unreadable WARNING and the "
+                             "not-used NOTE name that value by FLAG, and "
+                             "neither says a value holding = was read as a "
+                             "PATH")
+    parser.add_argument("--link-remedy", action="append", default=[],
+                        type=_link_remedy, metavar="LINK=TEXT",
+                        help="the caller's words for what would let LINK's "
+                             "tree be read, offered in place of this "
+                             "script's own where that link is "
+                             "declared-unverified. Repeatable; the last "
+                             "value for a link wins.")
     parser.add_argument("--explain", action="store_true",
                         help="print every family each name satisfies, why one "
                              "of them won, and what the others are recorded as")
@@ -978,7 +1071,8 @@ def main(argv: list[str] | None = None) -> int:
     # reads is known and before any name is classified (#338, #441).
     sources = LinkSources(args.link_source, [
         *cli_chain, *(_project_chain_links(data) if data is not None
-                      else ())], _first_links_read(policy, targets, data))
+                      else ())], _first_links_read(policy, targets, data),
+        args.link_source_label, args.link_remedy)
     if sources.no_path:
         print(sources.no_path_refusal(), file=sys.stderr)
         return 2

@@ -113,15 +113,23 @@ def stub_gh(directory: Path) -> dict:
     """A `gh` that records its arguments in `gh.log` beside it and exits 97,
     and the environment that puts it first on PATH; with `GH_STUB_TREE`
     set, it prints that file and exits 0 instead, as `gh api` prints a
-    tree listing."""
+    tree listing; and with `GH_STUB_OBJECTS` set, it answers `gh api
+    graphql` from that file (`forge_objects`), as the forge says what an
+    id names (#651)."""
     bin_dir = directory / "fakebin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
     gh.write_text(textwrap.dedent("""\
         #!/usr/bin/env python3
-        import os, sys
+        import json, os, sys
         with open(os.environ["GH_STUB_LOG"], "a", encoding="utf-8") as log:
             log.write(" ".join(sys.argv[1:]) + "\\n")
+        objects = os.environ.get("GH_STUB_OBJECTS")
+        if objects and sys.argv[1:3] == ["api", "graphql"]:
+            with open(objects, encoding="utf-8") as known:
+                found = json.load(known).get(sys.argv[-1].split("=", 1)[1])
+            print(json.dumps({"data": {"repository": {"object": found}}}))
+            sys.exit(0)
         tree = os.environ.get("GH_STUB_TREE")
         if tree:
             with open(tree, encoding="utf-8") as listing:
@@ -138,6 +146,36 @@ def stub_gh(directory: Path) -> dict:
 def gh_calls(env: dict) -> str:
     log = Path(env["GH_STUB_LOG"])
     return log.read_text(encoding=UTF8) if log.exists() else ""
+
+
+def forge_objects(path: Path, objects: dict) -> Path:
+    """`objects`, each oid and what the forge's GraphQL `object(oid:)`
+    answers for it, written at `path` for the stub `gh`
+    (`GH_STUB_OBJECTS`)."""
+    path.write_text(json.dumps(objects), encoding=UTF8)
+    return path
+
+
+def tree_listing(path: Path, product: Path, commit: str) -> Path:
+    """The forge's recursive tree listing of `product` at `commit`, written
+    at `path` for the stub `gh` (`GH_STUB_TREE`): one row per `git ls-tree
+    -r` line, as `git/trees/<commit>?recursive=1` answers."""
+    rows = []
+    for line in git("ls-tree", "-r", commit, cwd=product).stdout.splitlines():
+        head, name = line.split("\t", 1)
+        mode, kind, sha = head.split()
+        rows.append({"mode": mode, "type": kind, "sha": sha, "path": name})
+    path.write_text(json.dumps({"tree": rows, "truncated": False}),
+                    encoding=UTF8)
+    return path
+
+
+def asked_what(oid: str, repository: str = "opensoft/openGlass") -> str:
+    """The `gh` call, as the stub logs it, that asks the forge what `oid`
+    names in `repository` (#651)."""
+    owner, name = repository.split("/")
+    return (f"api graphql -f query={shape_materialize.GH_OBJECT_QUERY} "
+            f"-f owner={owner} -f name={name} -f oid={oid}")
 
 
 @pytest.fixture
@@ -646,25 +684,22 @@ def test_with_no_pin_source_plan_reads_the_digest_from_gh(source_repo,
                                                           tmp_path, glass,
                                                           gh_env):
     """The scaffold's other way to the digest: `gh api` over the forge's
-    tree listing, under `opensoft` for an unqualified name. The stub answers
-    with the stand-in's own tree, so the recorded digest is the one a clone
-    gives; and when the forge does not answer, the refusal is the
-    scaffold's, and no plan is written."""
+    tree listing, under `opensoft` for an unqualified name, once the forge
+    has said the id is a commit (#651). The stub answers with the
+    stand-in's own tree, so the recorded digest is the one a clone gives;
+    and when the forge does not answer, the refusal is the scaffold's, and
+    no plan is written."""
     path, commit, _ = glass
-    listing = git("ls-tree", "-r", commit, cwd=path).stdout.splitlines()
-    rows = []
-    for line in listing:
-        head, name = line.split("\t", 1)
-        mode, kind, sha = head.split()
-        rows.append({"mode": mode, "type": kind, "sha": sha, "path": name})
-    tree = tmp_path / "tree.json"
-    tree.write_text(json.dumps({"tree": rows, "truncated": False}),
-                    encoding=UTF8)
+    tree = tree_listing(tmp_path / "tree.json", path, commit)
+    objects = forge_objects(tmp_path / "objects.json",
+                            {commit: {"__typename": "Commit"}})
     out = tmp_path / "plan.yaml"
     result = plan_with(source_repo, out, f"openGlass@{commit}",
-                       env={**gh_env, "GH_STUB_TREE": str(tree)})
+                       env={**gh_env, "GH_STUB_TREE": str(tree),
+                            "GH_STUB_OBJECTS": str(objects)})
     assert result.returncode == 0, result.stdout + result.stderr
     assert gh_calls(gh_env).splitlines() == [
+        asked_what(commit),
         f"api repos/opensoft/openGlass/git/trees/{commit}?recursive=1"]
     pin = load_yaml(out)["pins"][0]
     assert pin["tree_sha256"] == tree_digest(path, commit)
