@@ -10,14 +10,23 @@ finding of its own: the root keeps no gitlink but the two mounts, so the
 check FAILS CLOSED on one rather than trusting `check`'s refusals to have
 kept it out.
 
-EVERY TEST BUT THE LAST TWO CALLS `_verify` DIRECTLY on hand-made commits,
+THE ROOT'S `project.yaml` IS THE SHAPE'S MANIFEST, or the run fails (#389).
+`check` finds, and `execute` refuses before any leg exists, a plan that keeps
+the source's own `project.yaml` in the root (#305), and that refusal was all
+there was: `_verify` asked nothing about the manifest, so with it taken away
+the run wrote the shape's manifest beside the source's file as
+`shape/project.yaml` and said `adoption verified` over an assembly the doctor
+calls NOT A SHAPE ROOT. That is a finding of its own now, which fails closed
+as the gitlink checks do.
+
+EVERY TEST BUT THE LAST THREE CALLS `_verify` DIRECTLY on hand-made commits,
 their gitlinks written with `git update-index --cacheinfo 160000,...`. No `git
 filter-repo` is involved, so a machine that has none still runs all of
-those. The last two run `execute`, so they need `git filter-repo` and are
+those. The last three run `execute`, so they need `git filter-repo` and are
 skipped without it, as every `execute` test is: one proves `cmd_execute` hands
 `_verify` the PLAN'S mount paths and that the assembly clones and bootstraps
-from them, the other that a source submodule a broken plan check let into the
-root fails the run.
+from them, the other two that a source submodule, and the source's own
+`project.yaml`, that a broken plan check let into the root fail the run.
 """
 
 from __future__ import annotations
@@ -30,8 +39,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, clone_just_pushed, git,
-                      make_source_repo, resolve, run_script, write_plan)
+from conftest import (ADOPT, FILE_PROTOCOL, REPO, SYNTHETIC_TREE,
+                      clone_just_pushed, git, make_source_repo, resolve,
+                      run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from shape_materialize import SHAPE_REPOSITORY  # noqa: E402
@@ -90,6 +100,40 @@ ROOT_EXIT = ("`execute` refuses before any leg exists a plan that keeps a "
              "or leaves one with no leg (`plan-unresolved`, "
              f"`plan-uncovered`, `plan-bad-leg`), {SPLIT_IS_WRONG}")
 
+#: The shape's manifest, the source's own file of that name, and where
+#: `execute` writes the manifest when the root already holds one (#389).
+MANIFEST = "project.yaml"
+THEIRS = "name: theirs\n"
+MANIFEST_COPY = f"shape/{MANIFEST}"
+#: What `adopt-manifest-not-shape` says after its first sentence: since #305
+#: and #172 no plan `execute` runs keeps a path of the source's at
+#: `project.yaml` or mounts a leg there.
+MANIFEST_EXIT = (
+    "`shape-doctor.py`, the root's validators and `make bootstrap` read the "
+    "manifest at `project.yaml` itself, and no copy stands in for it; "
+    "`execute` refuses before any leg exists a plan that keeps a path of the "
+    "source's at `project.yaml` in the root (`plan-root-blocks-manifest`) or "
+    f"mounts a leg there (`plan-leg-path-collides`), {SPLIT_IS_WRONG}")
+#: Its first sentence for the manifest beside a root `project.yaml` that is
+#: not the source's own.
+BESIDE = (f"the shape's manifest is at `{MANIFEST_COPY}` in the root tree, "
+          f"where it is written only when the root already holds `{MANIFEST}`")
+
+
+def manifest_not_shape(said: str) -> str:
+    """The `adopt-manifest-not-shape` finding whose first sentence is
+    `said`."""
+    return f"FINDING adopt-manifest-not-shape: {said}. {MANIFEST_EXIT}"
+
+
+def kept_manifest(oid: str, beside: bool) -> str:
+    """The finding for the source's own `project.yaml` at `oid` left in the
+    root, with the shape's manifest `beside` it or not."""
+    return manifest_not_shape(
+        f"`{MANIFEST}` in the root tree is the source's own file "
+        f"({oid[:12]}), not the shape's manifest"
+        + (f", which is beside it as `{MANIFEST_COPY}`" if beside else ""))
+
 
 def root_submodule(path: str, sha: str) -> str:
     """The `adopt-root-submodule` finding for the source's own `path`."""
@@ -135,13 +179,16 @@ def verify(adopter, tmp_path, capsys):
     files; `mounts` is where the plan mounts each leg, which is what
     `_verify` is told and where the root gets that leg's gitlink unless
     `mounted_at` names another path for it; `unmount` names a leg whose mount
-    gitlink the root does NOT get, and `root_files` adds to the root's files.
-    Returns `(exit, out, err)`.
+    gitlink the root does NOT get, and `root_files` and `source_files` add
+    to the root's files and the source's. Returns `(exit, out, err)`.
     """
     def run(source=None, code=None, root=None, unmount=(), root_files=None,
-            drop=(), mounts=DEFAULT_MOUNTS, mounted_at=None):
+            drop=(), mounts=DEFAULT_MOUNTS, mounted_at=None,
+            source_files=None):
         source_path = tmp_path / "source"
-        source_commit = commit(source_path, SOURCE_FILES, source)
+        source_commit = commit(source_path,
+                               {**SOURCE_FILES, **(source_files or {})},
+                               source)
         work = tmp_path / "work"
         heads = {role: commit(work / NAMES[role], LEG_FILES[role],
                               code if role == "code" else None)
@@ -324,7 +371,75 @@ def test_a_spec_gitlink_not_where_the_plan_spells_the_mount_is_two_findings(
             "above names another exit.\n") in err
 
 
-#: `execute` REQUIRES `git filter-repo`; without it, the two tests below are
+def test_the_manifest_beside_the_roots_project_yaml_is_a_finding(verify):
+    """`execute` writes the manifest to `shape/project.yaml` only when the
+    root already holds `project.yaml`, so the root's is not the manifest,
+    whatever it is: a leg mounted there (#172), a case twin on a disk that
+    ignores case. The fixture's root holds a stand-in no source path is."""
+    verified, out, err = verify(
+        root_files={MANIFEST_COPY: ROOT_FILES[MANIFEST]})
+    assert verified == 1
+    assert findings(err) == [manifest_not_shape(BESIDE)]
+    assert VERIFIED not in out
+
+
+@pytest.mark.parametrize("beside", [True, False], ids=[
+    "the-manifest-beside-it", "the-manifest-nowhere"])
+def test_the_sources_own_project_yaml_in_the_root_is_a_finding(
+        verify, tmp_path, beside):
+    """Counted `root`, where it is, AND refused: every source path is in
+    exactly one place, and the root still reads the source's file where the
+    manifest belongs. Beside it is #305's split. With no copy beside it, it
+    is the split a kept symlink at `project.yaml` that leads nowhere makes:
+    the manifest is written through the link, and the root keeps the link,
+    a file here, which the check does not tell apart."""
+    copy = {MANIFEST_COPY: ROOT_FILES[MANIFEST]} if beside else {}
+    verified, out, err = verify(source_files={MANIFEST: THEIRS},
+                                root_files={MANIFEST: THEIRS, **copy})
+    own = git("rev-parse", f"HEAD:{MANIFEST}",
+              cwd=tmp_path / "source").stdout.strip()
+    assert verified == 1
+    assert row(out, "root") == "root       2 of 4 source paths"
+    assert findings(err) == [kept_manifest(own, beside)]
+    assert VERIFIED not in out
+
+
+@pytest.mark.parametrize("source_files, root_files", [
+    (None, {"shape/README.md": "# The shape's README\n"}),
+    ({MANIFEST_COPY: THEIRS}, {MANIFEST_COPY: THEIRS}),
+], ids=["the-copy-of-a-kept-readme", "the-sources-own-shape-project-yaml"])
+def test_what_else_the_root_holds_under_shape_still_verifies(
+        verify, source_files, root_files):
+    """Not over-refused. A kept `README.md` with the shape's copy beside it
+    is the designed follow-up merge; the source's own `shape/project.yaml`,
+    kept where the root's `project.yaml` is the manifest, is no copy the
+    shape wrote."""
+    verified, out, err = verify(source_files=source_files,
+                                root_files=root_files)
+    assert verified == 0, err
+    assert VERIFIED in out
+    assert err == ""
+
+
+@pytest.mark.parametrize("beside", [False, True], ids=[
+    "the-manifest-at-the-root", "the-manifest-beside-it"])
+def test_a_dropped_project_yaml_is_never_the_sources_own(verify, beside):
+    """The plan dropped it, so the split `git rm`ed it before the shape
+    wrote, and what is at `project.yaml` is the shape's, whatever its bytes.
+    A source file that held exactly the manifest this run renders (here the
+    fixture's stand-in), answered `drop`, passes `check` and verified on
+    main; matched by blob alone, this check refused it as the source's own
+    (#389's review, R1). Only that half is waived: the manifest beside the
+    root's is a finding still."""
+    copy = {MANIFEST_COPY: ROOT_FILES[MANIFEST]} if beside else {}
+    verified, out, err = verify(source_files={MANIFEST: ROOT_FILES[MANIFEST]},
+                                root_files=copy, drop=(MANIFEST,))
+    assert verified == (1 if beside else 0), err
+    assert findings(err) == ([manifest_not_shape(BESIDE)] if beside else [])
+    assert (VERIFIED in out) == (not beside)
+
+
+#: `execute` REQUIRES `git filter-repo`; without it, the three tests below are
 #: skipped, as every `execute` test in this suite is.
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
@@ -388,6 +503,30 @@ def test_execute_verifies_the_mounts_where_the_plan_puts_them(tmp_path):
     assert "NOT INITIALIZED" not in bootstrapped.stdout
 
 
+def checked_plan(source: Path, tmp_path: Path, answers: tuple):
+    """`plan` of `source` with ANSWERS and `answers` written in, and what
+    `check` says of it: `(plan, check's result)`."""
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan)
+    assert written.returncode == 0, written.stderr + written.stdout
+    for path, leg in (*ANSWERS, *answers):
+        resolve(plan, path, leg)
+    return plan, run_script(ADOPT, "check", "--plan", str(plan))
+
+
+def execute_past_check(adopter, monkeypatch, capsys, tmp_path: Path,
+                       plan: Path):
+    """`execute` of `plan` with `check`'s refusals taken away, as a
+    regression in a plan check would take them: `(exit, out, err)`."""
+    monkeypatch.setattr(adopter, "_refuse_what_check_finds",
+                        lambda *_: None)
+    exit_code = adopter.cmd_execute(Namespace(
+        plan=str(plan), source=None, local_remote_dir=tmp_path / "remotes",
+        allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
+    out, err = capsys.readouterr()
+    return exit_code, out, err
+
+
 @needs_filter_repo
 def test_execute_fails_a_source_submodule_the_plan_checks_let_into_the_root(
         adopter, tmp_path, capsys, monkeypatch):
@@ -411,23 +550,46 @@ def test_execute_fails_a_source_submodule_the_plan_checks_let_into_the_root(
         "user.email=source@invalid.example", "commit", "-qm",
         "Pin a dependency", cwd=source)
     pinned = git("rev-parse", f"HEAD:{SUBMODULE}", cwd=source).stdout.strip()
-    plan = tmp_path / "adoption-plan.yaml"
-    written = write_plan(source, plan)
-    assert written.returncode == 0, written.stderr + written.stdout
-    for path, leg in (*ANSWERS, (".gitmodules", "code"),
-                      ("upstream/", "root")):
-        resolve(plan, path, leg)
-    checked = run_script(ADOPT, "check", "--plan", str(plan))
+    plan, checked = checked_plan(source, tmp_path, ((".gitmodules", "code"),
+                                                    ("upstream/", "root")))
     assert checked.returncode == 1
     assert (f"FINDING plan-submodule-root: `{SUBMODULE}` (entry "
             "`upstream/`) has leg: root") in checked.stderr
 
-    monkeypatch.setattr(adopter, "_refuse_what_check_finds",
-                        lambda *_: None)
-    exit_code = adopter.cmd_execute(Namespace(
-        plan=str(plan), source=None, local_remote_dir=tmp_path / "remotes",
-        allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
-    out, err = capsys.readouterr()
+    exit_code, out, err = execute_past_check(adopter, monkeypatch, capsys,
+                                             tmp_path, plan)
     assert exit_code == 1, out + err
     assert findings(err) == [root_submodule(SUBMODULE, pinned)]
+    assert VERIFIED not in out
+
+
+@needs_filter_repo
+def test_execute_fails_a_source_manifest_the_plan_checks_let_into_the_root(
+        adopter, tmp_path, capsys, monkeypatch):
+    """#305's run, with its refusal taken away (#389).
+
+    `project.yaml` answered `root` is `plan-root-blocks-manifest`, which
+    `check` finds and `execute` refuses before any leg exists. Taken away,
+    the run writes the shape's manifest beside the source's own file as
+    `shape/project.yaml`, and on main it said `adoption verified` over a
+    root whose `project.yaml` the doctor reads as NOT A SHAPE ROOT. The
+    shape's other copies beside a kept file (`shape/README.md`,
+    `shape/Makefile`, `shape/AGENTS.md`) are the designed follow-up, and
+    no finding.
+    """
+    source = make_source_repo(tmp_path / "Thing",
+                              tree={**SYNTHETIC_TREE, MANIFEST: THEIRS})
+    own = git("rev-parse", f"HEAD:{MANIFEST}", cwd=source).stdout.strip()
+    plan, checked = checked_plan(source, tmp_path, ((MANIFEST, "root"),))
+    assert checked.returncode == 1
+    assert "FINDING plan-root-blocks-manifest: the plan keeps the file " \
+        f"`{MANIFEST}` in the assembly root, " in checked.stderr
+
+    exit_code, out, err = execute_past_check(adopter, monkeypatch, capsys,
+                                             tmp_path, plan)
+    assert exit_code == 1, out + err
+    assert f"  beside  {MANIFEST_COPY} (the source already has " \
+        f"{MANIFEST}; nothing was overwritten)" in out
+    assert "  beside  shape/README.md (" in out
+    assert findings(err) == [kept_manifest(own, beside=True)]
     assert VERIFIED not in out
