@@ -194,6 +194,14 @@ from repo_shape import shell_line, shell_quoted  # noqa: E402
 # holder's clone URL under `--local-remote-dir` (#255, #433). It is the
 # question the scaffold and `adopt-project.py` ask of theirs.
 from shape_materialize import unwritable_reason  # noqa: E402
+# Whether `--family` names a folder a Windows disk can make (#688): the rule
+# the scaffold and `adopt-project.py` hold a leg's mount path to, asked of a
+# path of one segment.
+from shape_materialize import _unmountable_reason  # noqa: E402
+# How a refusal quotes the words git echoes of a value it refused (#688): as
+# a path is quoted (#610), as it is when printable and as Python's `repr`
+# spells it when it is not.
+from repo_shape import shown_path  # noqa: E402
 # A reused holder's own visibility and the Free-plan secrets note, asked as
 # the scaffold asks them of its root (#660).
 from shape_materialize import (  # noqa: E402
@@ -622,6 +630,50 @@ def _classify_family_name(policy: NamingPolicy, name: str) -> None:
             "Remediation: --family takes one CamelCase token. An "
             "`open<Product>` or `<X>-Install` name is unambiguous by "
             "construction and cannot be declared into a holder.")
+
+
+#: What `family-bad-holder-name` is told to do (#688).
+HOLDER_NAME_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "Choose another --family. It names the holder, its repository and the "
+    "folder it is cloned into and, unless --work-dir is given, the family "
+    "folder around it, which `make siblings` looks for by that very name; "
+    "and a holder is cloned on Windows too, where no file or folder can be "
+    "called a device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, "
+    "`LPT1`-`LPT9`, in any case, with or without an extension), and a name "
+    "ending in a dot or a space is made under another name. There is no "
+    "--force.")
+
+
+def _refuse_an_unholdable_holder_name(family: str) -> None:
+    """`--family` names a folder a Windows disk can make, or this refuses
+    as `family-bad-holder-name` (#688), before anything exists and under
+    `--dry-run` alike.
+
+    `init` makes the holder at `<into>/<Family>/<Family>` (`--work-dir`:
+    `<dir>/<Family>`), its bare repository under `--local-remote-dir` is
+    `<Family>.git`, and `make siblings` goes on only in a family folder named
+    exactly `--family` (#543). `CON`, `Nul`, `com1` and the other device
+    names are each one CamelCase token, which is all the naming policy asks,
+    so `init` made and pushed a holder that no Windows disk could clone: it
+    can make no file or folder of that name, with or without an extension.
+
+    THE QUESTION IS THE LEG PATH RULE'S (`_unmountable_reason`), the one the
+    scaffold and `adopt-project.py` ask of a leg's mount path, asked of a
+    path of one segment, in its own words. It is asked after
+    `_classify_family_name` on purpose: the policy's token holds no `.`, no
+    `~` and no space, so a device name is the only answer the rule can give
+    here, and the names it also refuses (a trailing dot or space, `.git`,
+    `git~1`, `.gitmodules`) are refused before it, as `unsafe-value`,
+    `family-bad-id` or `naming-unclassified`, as they always were.
+    """
+    reason = _unmountable_reason(family)
+    if reason:
+        raise Refusal(
+            "family-bad-holder-name",
+            f"--family is {family!r}, which names the holder and the folders "
+            f"`init` makes for it, and {reason}.",
+            HOLDER_NAME_REMEDIATION)
 
 
 def _read_member_project(path: Path, project: str, repository: str,
@@ -1593,23 +1645,150 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     _refuse_bad_family_id(family_id, args.id)
     policy = NamingPolicy.load(NAMING_POLICY)
     _classify_family_name(policy, family)
+    _refuse_an_unholdable_holder_name(family)
     topic = policy.topic_for(family_id)
     return family, family_id, topic
 
 
+#: Why a creator `unwritable_reason` refuses cannot be recorded (#426): how
+#: each remediation below ends.
+CREATOR_UNWRITABLE_WHY = (
+    "which the manifest could keep only as a lone surrogate, and that is no "
+    "character; a line break or a control character would break or garble "
+    "the line the plan prints it on; and a bidirectional embedding, override "
+    "or isolate control would show the rest of that line in another order "
+    "than it is written.")
+
 #: What `family-unwritable-value` is told to do (#426), in the scaffold's
-#: words for the same refusal (`scaffold-unwritable-value`, #282).
-CREATOR_UNWRITABLE_REMEDIATION = (
+#: words for the same refusal (`scaffold-unwritable-value`, #282), BY WHERE
+#: `_creator_name` READ THE CREATOR (#688). Each names the flag, the variable
+#: or the setting that supplied the name, so the person corrects the one that
+#: did; the setting's is the words #426 gave it.
+CREATOR_UNWRITABLE_REMEDIATIONS = {
+    "--created-by": (
+        "Remediation: nothing was created, and `--dry-run` refuses the same. "
+        "Pass --created-by again, retyped. A byte that is not UTF-8 reaches "
+        "a command line from a terminal or a script whose encoding is not "
+        "the locale's, " + CREATOR_UNWRITABLE_WHY),
+    "GIT_AUTHOR_NAME": (
+        "Remediation: nothing was created, and `--dry-run` refuses the same. "
+        "`init` read the creator from GIT_AUTHOR_NAME, because no "
+        "--created-by was given: correct that variable, or unset it, for git "
+        "makes the holder's first commit as it too; --created-by 'Your Name' "
+        "changes only who `family.yaml` records. The environment keeps it as "
+        "the bytes it was given, so a name set in a legacy code page holds a "
+        "byte that is not UTF-8, " + CREATOR_UNWRITABLE_WHY),
+    "`git config user.name`": (
+        "Remediation: nothing was created, and `--dry-run` refuses the same. "
+        "`init` read the creator from `git config user.name`, because no "
+        "--created-by was given and GIT_AUTHOR_NAME names nobody: pass "
+        "--created-by 'Your Name', or correct that setting. git keeps it as "
+        "the bytes it was given, so a name saved in a legacy code page holds "
+        "a byte that is not UTF-8, " + CREATOR_UNWRITABLE_WHY),
+}
+
+#: The variables git makes the holder's first commit with, by role, and the
+#: identity `git var` names for that role (#688). `env_commit` gives a name
+#: or an address that is unset or empty a fallback of its own, and passes a
+#: date on as it stands.
+COMMIT_IDENTITY = (
+    ("author", "GIT_AUTHOR_IDENT",
+     ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE")),
+    ("committer", "GIT_COMMITTER_IDENT",
+     ("GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE")),
+)
+
+#: A name and an address git takes, standing in for one the person left
+#: unset or empty, where `env_commit` puts its fallback: git is then asked
+#: about the person's own variables, beside values it accepts. Each is
+#: spelled once, and neither is the fallback `env_commit` or `commit_on_branch`
+#: spells: the answer does not depend on which acceptable value stands in, and
+#: a third copy of a fallback would be one more to keep in step with them.
+COMMIT_STAND_IN_NAME = "identity check"
+COMMIT_STAND_IN_EMAIL = "identity-check@openreposhape.invalid"
+COMMIT_IDENTITY_STAND_IN = {
+    "GIT_AUTHOR_NAME": COMMIT_STAND_IN_NAME,
+    "GIT_AUTHOR_EMAIL": COMMIT_STAND_IN_EMAIL,
+    "GIT_COMMITTER_NAME": COMMIT_STAND_IN_NAME,
+    "GIT_COMMITTER_EMAIL": COMMIT_STAND_IN_EMAIL,
+}
+
+#: What `family-bad-commit-identity` is told to do (#688).
+COMMIT_IDENTITY_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
-    "`init` read the creator from `git config user.name`, because no "
-    "--created-by was given and GIT_AUTHOR_NAME names nobody: pass "
-    "--created-by 'Your Name', or correct that setting. git keeps it as the "
-    "bytes it was given, so a name saved in a legacy code page holds a byte "
-    "that is not UTF-8, which the manifest could keep only as a lone "
-    "surrogate, and that is no character; a line break or a control "
-    "character would break or garble the line the plan prints it on; and a "
-    "bidirectional embedding, override or isolate control would show the "
-    "rest of that line in another order than it is written.")
+    "Correct each variable named, or unset it, and run again. `init` makes "
+    "the holder's first commit with them only after the holder's remote and "
+    "work directory exist, and git would refuse them there. Unset or empty, "
+    "a name or an address is `init`'s own and a date is the moment of the "
+    "commit; --created-by sets who `family.yaml` records, not who git makes "
+    "the commit as.")
+
+
+def _refuse_an_unusable_commit_identity() -> None:
+    """The author and the committer git will make the holder's first commit
+    as are ones git accepts, or this refuses as `family-bad-commit-identity`
+    (#688), before anything exists and under `--dry-run` alike.
+
+    `_creator_name` passes over a GIT_AUTHOR_NAME of whitespace alone and
+    reads `git config user.name`, so `family.yaml` was written from a good
+    name. But `env_commit` replaces a variable only when it is unset or
+    empty, so `git commit` was handed the whitespace, and refused it (`fatal:
+    name consists only of disallowed characters`), exit 2, after the holder's
+    remote and work directory existed. A GIT_COMMITTER_NAME of whitespace, a
+    name of nothing but `<>`, and a GIT_AUTHOR_DATE or GIT_COMMITTER_DATE git
+    cannot read failed at the same commit in the same way.
+
+    GIT'S OWN ANSWER, as `refuse_bad_branch` asks git of a branch (#283):
+    `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT` build the
+    identity by the rules `git commit` applies, so the question is no copy
+    of git's rules that could fall behind them. Each role is asked with the
+    person's own variables and `COMMIT_IDENTITY_STAND_IN` where `env_commit`
+    would put its fallback, and only a role the person set a variable of:
+    the stand-ins alone are an identity git takes. Asked of NO repository,
+    from an empty directory, as `_ask_git_branch` asks: no repository's
+    config plays a part, as none but the new holder's does at the commit,
+    and `refuse_bad_branch` has just had an answer from git there, so a
+    refusal here is about the variables. The detail names every variable of
+    the role the person set, with git's own words, which say which one.
+    Git echoes a value it refuses (`fatal: invalid date format: <the date>`)
+    as it was given, a line break and a bidi control included, so its words
+    are quoted by `shown_path` (#610): as they are when printable, as
+    Python's `repr` spells them when not. Raw, a `GIT_AUTHOR_DATE` holding a
+    line break began a line of its own choosing in the refusal.
+
+    `cmd_init` ASKS IT AFTER THE QUESTIONS ABOUT WHAT IT WRITES, before the
+    landing, the plan and anything made: the clone URL's refusal (#433)
+    still comes before any process but `git check-ref-format`, and the
+    manifest's (#307) before `run` is reached.
+    """
+    problems = []
+    for role, ident, variables in COMMIT_IDENTITY:
+        given = [f"{key} {os.environ[key]!r}" for key in variables
+                 if os.environ.get(key)]
+        if not given:
+            continue
+        identity = {key: os.environ.get(key) or stand_in
+                    for key, stand_in in COMMIT_IDENTITY_STAND_IN.items()
+                    if key in variables}
+        nowhere = tempfile.mkdtemp(prefix="openreposhape-ident-")
+        try:
+            run(["git", f"--git-dir={nowhere}", "var", ident],
+                cwd=Path(nowhere), env=identity)
+        except CommandFailed as exc:
+            listed = (f"{', '.join(given[:-1])} and {given[-1]}"
+                      if len(given) > 1 else given[0])
+            # Git echoes a value it refuses (a date) as it was given, so its
+            # words are spelled as a path is (#610), never printed raw.
+            problems.append(
+                f"git refuses the {role} the holder's first commit would be "
+                f"made as, from {listed} (`git var {ident}`: "
+                f"{shown_path(exc.output)})")
+        finally:
+            # Empty: git writes nothing there (`_ask_git_branch`'s reason).
+            shutil.rmtree(nowhere, ignore_errors=True)
+    if problems:
+        raise Refusal("family-bad-commit-identity", "; ".join(problems) + ".",
+                      COMMIT_IDENTITY_REMEDIATION)
 
 
 def _creator_name(args) -> str:
@@ -1632,29 +1811,54 @@ def _creator_name(args) -> str:
     holds a line break, a control character or a bidi control is refused in
     the same words as one that holds a byte that is not UTF-8. It is asked
     here, before the holder's remote or work directory, and `--dry-run`
-    refuses alike. ONLY WHAT `git config user.name` ANSWERED IS ASKED: a
-    `--created-by` or a GIT_AUTHOR_NAME holding such a byte is another
-    question (#426 leaves it), and neither is read as git's answer.
+    refuses alike.
+
+    WHATEVER ANSWERED IS ASKED (#688). #426 asked only what `git config
+    user.name` answered, so the same name was refused from the setting and
+    accepted from `--created-by` or GIT_AUTHOR_NAME: `--created-by
+    $'Ada\\nLovelace' --dry-run` exited 0 with the plan's `created by` line
+    broken in two, and one holding U+202E exited 0. The scaffold asks its
+    elector whatever the source (`_identity`), and so does this now, once,
+    of the name that answered. The detail names the creator as
+    `_manifest_flags` (#307) names it, so this refusal and
+    `family-manifest-invalid` agree on who is meant; the remediation names
+    the flag, the variable or the setting that answered
+    (`CREATOR_UNWRITABLE_REMEDIATIONS`), for that is the one to correct.
+
+    GIT_AUTHOR_NAME is also who git makes the holder's first commit as, and
+    a blank one passed over here is not passed over there: `cmd_init` asks
+    git about that later (`_refuse_an_unusable_commit_identity`, #688).
+    THE REMEDIES ARE EXITS THAT WORK (Brett Heap's ruling, "Offer only exits
+    that work"): the variable's own says to correct or unset it, not to pass
+    `--created-by`, which changes only who `family.yaml` records and leaves
+    git to refuse the same variable at the commit; and where the variable is
+    set but blank and nothing else names a creator, the refusal says that
+    variable is there and is the cause, instead of "no GIT_AUTHOR_NAME", and
+    tells the person to unset it AND pass `--created-by`.
     """
-    created_by = args.created_by or (os.environ.get("GIT_AUTHOR_NAME") or "").strip()
+    created_by, source = args.created_by, "--created-by"
+    blank_variable = False
     if not created_by:
+        named = os.environ.get("GIT_AUTHOR_NAME") or ""
+        created_by, source = named.strip(), "GIT_AUTHOR_NAME"
+        blank_variable = bool(named) and not created_by
+    if not created_by:
+        source = "`git config user.name`"
         try:
             created_by = git_out(["config", "user.name"], cwd=SHAPE_ROOT,
                                  binary=True).decode(
                                      "utf-8", "surrogateescape").strip()
         except Refusal:
             created_by = ""
-        else:
-            reason = unwritable_reason(created_by)
-            if reason:
-                # Named as `_manifest_flags` (#307) names a creator no flag
-                # supplied, so the two refusals agree on who is meant.
-                raise Refusal(
-                    "family-unwritable-value",
-                    f"{_manifest_flags(args)['CREATED_BY']} is "
-                    f"{created_by!r}, which `init` records in the holder's "
-                    f"`family.yaml`, and {reason}.",
-                    CREATOR_UNWRITABLE_REMEDIATION)
+    if not created_by and blank_variable:
+        raise Refusal(
+            "family-no-creator",
+            "no --created-by, a GIT_AUTHOR_NAME of whitespace alone, and no "
+            "`git config user.name`. Creating a family is a human's act and "
+            "the manifest records whose.",
+            "Remediation: unset GIT_AUTHOR_NAME, which git would make the "
+            "holder's first commit as and refuses, and re-run with "
+            "--created-by 'Your Name'.")
     if not created_by:
         raise Refusal(
             "family-no-creator",
@@ -1662,6 +1866,13 @@ def _creator_name(args) -> str:
             "user.name`. Creating a family is a human's act and the manifest "
             "records whose.",
             "Remediation: re-run with --created-by 'Your Name'.")
+    reason = unwritable_reason(created_by)
+    if reason:
+        raise Refusal(
+            "family-unwritable-value",
+            f"{_manifest_flags(args)['CREATED_BY']} is {created_by!r}, which "
+            f"`init` records in the holder's `family.yaml`, and {reason}.",
+            CREATOR_UNWRITABLE_REMEDIATIONS[source])
     return created_by
 
 
@@ -2574,6 +2785,9 @@ def cmd_init(args) -> int:
     # own reader and `validate-family.py`, before the plan is printed, so a
     # `--dry-run` refuses what the real run would, and before `gh repo create`.
     refuse_unholdable_manifest(args, values)
+    # AND THE IDENTITY GIT WILL MAKE THE FIRST COMMIT AS (#688), asked of git
+    # here, before the landing and the plan, so `--dry-run` refuses it too.
+    _refuse_an_unusable_commit_identity()
 
     folder, holder = _checked_landing(args, family)
     _print_init_plan(values, repository, url, shape_commit, shape_tree,
