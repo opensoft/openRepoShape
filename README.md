@@ -1212,13 +1212,12 @@ it is a statement about the tree you pointed at: no such path, a refused
 partial clone missing what is compared, a read that fails, a validator of its
 own that crashed or could not be run, or its own naming policy not loading.
 **Drift outranks a red validator** on the verdict line, deliberately — an edited
-shape copy is exactly what makes `validate-pins.py` red, so `INVALID (pins)`
-would send the reader at the symptom while the fix is `update-shape.py`; the
-pins row still prints its own next command. `MISPLACED` sits between the two: a
-path in the wrong leg is a fact about the shape no validator, pin or manifest
-here can see. **An unfinished merge outranks all three**, as `INVALID (merge)`:
-the conflict is what turns the other rows red, and no fix commits until it is
-finished.
+shape copy is what makes `validate-pins.py` red, so `INVALID (pins)` would send
+the reader at the symptom while the fix is `update-shape.py`; the pins row still
+prints its own next command. `MISPLACED` sits between the two: a path in the
+wrong leg is a fact no validator, pin or manifest here can see.
+**An unfinished merge outranks all three**, as `INVALID (merge)`: the conflict
+is what turns the other rows red, and no fix commits until it is finished.
 `--json` is the same report as one object on stdout, each row carrying its `id`.
 
 **`placement` is the row that reads what is *inside* the legs.** Brett Heap,
