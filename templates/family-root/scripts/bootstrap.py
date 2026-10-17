@@ -58,8 +58,9 @@ WHAT IT DOES, in order:
       the line says to write its section back.
 
   (b) RUNS EACH MEMBER'S OWN `make bootstrap`. Each member is a whole project
-      and knows how to bootstrap itself — its legs onto their tracking
-      branches at their pinned commits, its own validators, its own
+      and knows how to bootstrap itself — it puts its legs on their
+      tracking branches at their pins where that loses no commit, and says
+      why where it does not; its own validators; its own
       review-authority readout. This command does not reimplement any of
       that; it walks the members `family.yaml` names and calls theirs.
       `--members-make validate` runs `make validate` instead, which is what
@@ -69,6 +70,9 @@ WHAT IT DOES, in order:
       checked out that no credential would check out. Any other member that
       is not checked out is REPORTED and skipped, not a failure: it is the
       state a missing credential leaves, and it is already reported in (a).
+      Where (a) cannot start git, the run STOPS there, exit 2, refused
+      `git-not-runnable` as `validate-family.py` refuses it (#694): each
+      member's own bootstrap runs git too, so (b) would only say it again.
 
 THE FAMILY CONFERS NOTHING and neither does this command. It fetches, it
 delegates, and it says what it could not reach.
@@ -133,7 +137,8 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     Returns a failure line for each of `rows` whose member it leaves not
     checked out where no credential would check it out (`unfetchable`), for
     the run to end FAILED on (#648); every member and leg is said to be
-    fetched only where there is none and git exited 0."""
+    fetched only where there is none and git exited 0. Raises the
+    `git-not-runnable` refusal where git cannot be started (#694)."""
     source, token = credential()
     args = ["git"]
     if token:
@@ -143,8 +148,15 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     args += ["submodule", "update", "--init", "--recursive"]
     print(f"  credential source: {source}")
     sys.stdout.flush()
-    proc = subprocess.run(args, cwd=str(root), capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", check=False)
+    try:
+        proc = subprocess.run(args, cwd=str(root), capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              check=False)
+    except OSError as exc:
+        refusal = git_not_started(exc)
+        if refusal is None:
+            raise
+        raise refusal from exc
     if proc.returncode != 0:
         # The token can appear in git's own error text (it is in the URL it
         # tried), so the output is scrubbed before it is printed.
@@ -169,6 +181,31 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
         print("  every member and leg fetched")
     return [f"{spelled(row.get('project') or '?')} (not checked out)"
             for row, _, _ in left]
+
+
+def git_not_started(exc: OSError) -> Refusal | None:
+    """The `git-not-runnable` refusal for an `OSError` that says git could
+    not be STARTED (#694), else `None`, and the error goes on as it did.
+
+    Nothing caught one: `make bootstrap` with no git on PATH ended (a) in a
+    `FileNotFoundError` traceback, exit 1, the code of `family bootstrap
+    FAILED`, though nothing had failed. Git's is told by its NAME, as
+    `validate-pins.py` tells it: a `filename` of `git`, or none at all on a
+    `FileNotFoundError` or a `PermissionError`, as Windows raises them; one
+    naming a directory is not git's. The code, and the remedy's first
+    sentence, are `validate-family.py`'s."""
+    nameless = exc.filename is None and isinstance(
+        exc, (FileNotFoundError, PermissionError))
+    if exc.filename != "git" and not nameless:
+        return None
+    return Refusal(
+        "git-not-runnable",
+        f"the members could not be fetched: git could not be run "
+        f"({exc.strerror or exc})",
+        "Remediation: put git on PATH and run this again. Step (a) fetches "
+        "every member through git, and each member's own bootstrap places "
+        "its legs through git too, so without it nothing here can be "
+        "fetched or bootstrapped.")
 
 
 def cures(left: list[tuple[dict, str, str]], stopper: str | None,
@@ -513,7 +550,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_fetch:
         print("  skipped (--no-fetch)")
     else:
-        failed += fetch_members(root, rows)
+        try:
+            failed += fetch_members(root, rows)
+        except Refusal as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
 
     print(f"\n(b) each member's own `make {spelled(args.members_make)}`")
     if args.skip_members:

@@ -50,8 +50,9 @@ from test_family_add_refusals import (  # noqa: F401
     family_module, holder, offline, plant, refusal,
 )
 from test_family_members_case_variants import (
-    DIR_VARIANT, MOUNT, MOVE_BACK, added, commit_first, disk_as, disk_folds,
-    git_version, index_part, refused_untouched, remedy_of, renamed_members,
+    DIR_VARIANT, MOUNT, MOVE_BACK, NEEDS_GIT_2_34, added, commit_first,
+    disk_as, disk_folds, git_version, index_part, refused_untouched,
+    remedy_of, renamed_members,
 )
 
 #: The member whose gitlink is moved into the wrong case, its row's path,
@@ -90,7 +91,8 @@ def moved_back(rows: dict, commit: bool = True,
             f"its row's path, {pairs}, to that path, at the commit it "
             "records, in the index alone, which touches no file (`git rm -r "
             f"--cached{' --sparse' if sparse else ''} --ignore-unmatch -- "
-            f"{' '.join(variants)}`, then {lines})"
+            f"{' '.join(variants)}`, "
+            + (f"{NEEDS_GIT_2_34}, " if sparse else "") + f"then {lines})"
             + (", and commit that" if commit else ""))
     moved = " and ".join(f"`mv -- {name} ../{name.replace('/', '-')}`"
                          for name in variants)
