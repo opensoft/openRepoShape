@@ -1029,23 +1029,88 @@ def test_a_partial_clone_of_the_standard_proves_nothing_and_fetches_nothing(
 #: The name one side gives its Makefile, which no pin has a row for.
 RENAMED = "build.mk"
 
-#: Each rename's merge: the side that renames the Makefile, the side that
-#: deletes it (none where the other side keeps it), the stages the merge
-#: leaves at the new name, and what the `why` then says of it.
+
+def renamed(old: str, new: str, line: bytes = b""):
+    """An act on a branch: `old` renamed to `new`, `line` appended there,
+    committed."""
+    def act(root: Path) -> None:
+        git("mv", "--", old, new, cwd=root)
+        if line:
+            (root / new).write_bytes((root / new).read_bytes() + line)
+            git("add", "--", new, cwd=root)
+        commit_in(root, f"{old} renamed to {new}")
+    return act
+
+
+def deleted(old: str):
+    """An act on a branch: `old` removed, committed."""
+    def act(root: Path) -> None:
+        git("rm", "-q", "--", old, cwd=root)
+        commit_in(root, f"{old} removed")
+    return act
+
+
+def edited(path: str, line: bytes):
+    """An act on a branch: `line` appended to `path`, committed."""
+    def act(root: Path) -> None:
+        (root / path).write_bytes((root / path).read_bytes() + line)
+        git("add", "--", path, cwd=root)
+        commit_in(root, f"a line in {path}")
+    return act
+
+
+def merged_after(standard: Path, project: Path, tmp_path: Path, acts: dict,
+                 twin: tuple | None = None) -> tuple:
+    """`(root, the standard moved on)`: (a)'s two applies, each followed
+    on its branch by `acts[branch]`, then shape/b merging shape/a. `twin`,
+    `(path, copy)`, is a file of the project's own that main gains first,
+    the copy's committed blob byte for byte."""
+    root = under_an_awkward_name(project, tmp_path)
+    moved, c2, c3, _frozen = the_standard_moved(
+        standard, tmp_path, UPSTREAM_TARGET, BOOTSTRAP_SOURCE)
+    if twin:
+        path, copy = twin
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_bytes(blob_at(root, f"HEAD:{copy}"))
+        git("add", "--", path, cwd=root)
+        commit_in(root, f"the project's own {path}, with {copy}'s bytes")
+    for commit, branch in ((c2, "shape/a"), (c3, "shape/b")):
+        apply_on(moved, root, commit, branch)
+        if branch in acts:
+            acts[branch](root)
+    merge_a_into_b(root)
+    return root, moved
+
+
+def blob_at(root: Path, spec: str) -> bytes:
+    """The blob `git cat-file` reads at `spec`, as bytes."""
+    return subprocess.run(["git", "cat-file", "blob", spec], cwd=str(root),
+                          capture_output=True, check=True).stdout
+
+
+#: Each rename's merge: what each side does after its `apply`, the stages
+#: the merge leaves at the new name, and what the `why` then says of it.
 RENAMES = {
     "renamed-on-the-side-ours-takes": (
-        "shape/b", None, [1, 2, 3],
+        {"shape/b": renamed(MAKEFILE, RENAMED)}, [1, 2, 3],
         "so neither side is taken whole: a person merges it by hand, "
         "keeping the hunks git merged"),
     "renamed-on-the-other-side": (
-        "shape/a", None, [1, 2, 3],
+        {"shape/a": renamed(MAKEFILE, RENAMED)}, [1, 2, 3],
         "so neither side is taken whole: a person merges it by hand, "
         "keeping the hunks git merged"),
     "renamed-on-one-side-deleted-on-the-other": (
-        "shape/b", "shape/a", [1, 2],
+        {"shape/b": renamed(MAKEFILE, RENAMED), "shape/a": deleted(MAKEFILE)},
+        [1, 2],
         "and one side alone holds it, so neither side is taken whole: a "
         "person keeps or deletes it by hand"),
 }
+
+#: What the `why` adds where the pin taken here lists the old name, and
+#: what the doctor says once the merge is finished (review of PR #781).
+STILL_LISTED = ("The pin taken here still lists Makefile, so this doctor "
+                "reports it missing once the merge is finished, unless it is "
+                "renamed back")
 
 
 @pytest.mark.parametrize("merge", sorted(RENAMES))
@@ -1058,20 +1123,13 @@ def test_a_copy_renamed_on_one_side_is_named_for_a_person(
     only the `merge` row listed it (#753). Its stage 1 is the merge base's
     own Makefile, so the `why` now names build.mk as renamed from that copy
     and gives it to a person, and the NEXT never takes it; bootstrap.py is
-    still taken. Run, the NEXT leaves build.mk as the merge left it."""
-    renamer, deleter, held, tail = RENAMES[merge]
-    root = under_an_awkward_name(project, tmp_path)
-    moved, c2, c3, _frozen = the_standard_moved(
-        standard, tmp_path, UPSTREAM_TARGET, BOOTSTRAP_SOURCE)
-    for commit, branch in ((c2, "shape/a"), (c3, "shape/b")):
-        apply_on(moved, root, commit, branch)
-        if branch == renamer:
-            git("mv", "--", MAKEFILE, RENAMED, cwd=root)
-            commit_in(root, f"the project's Makefile renamed to {RENAMED}")
-        if branch == deleter:
-            git("rm", "-q", "--", MAKEFILE, cwd=root)
-            commit_in(root, "the project's Makefile removed")
-    merge_a_into_b(root)
+    still taken. Run, the NEXT leaves build.mk as the merge left it.
+
+    The pin taken here still lists the Makefile, and the `why` says what
+    the doctor says once the merge is finished with build.mk kept: the
+    Makefile missing (review of PR #781)."""
+    acts, held, tail = RENAMES[merge]
+    root, moved = merged_after(standard, project, tmp_path, acts)
     assert sorted(index_stages(root, RENAMED)) == held
     _verdict, rows = rows_from(moved, root)
     currency = assert_both_rows_name_it(rows)
@@ -1081,8 +1139,50 @@ def test_a_copy_renamed_on_one_side_is_named_for_a_person(
         RENAMED, "project.yaml"], currency["detail"]
     assert f"{RENAMED}, renamed from the copy {MAKEFILE}, is conflicted " \
         f"too, and no pin has a row for it under its new name, {tail}. " \
-        "Then finish" in currency["why"], currency["why"]
+        f"{STILL_LISTED}. Then finish" in currency["why"], currency["why"]
     before = (root / RENAMED).read_bytes()
     run_pasted(currency["next"])
     assert sorted(index_stages(root, RENAMED)) == held
     assert (root / RENAMED).read_bytes() == before
+    (root / RENAMED).write_bytes(stage_of(root, 2, RENAMED))
+    merge_by_ours(root, tmp_path, "project.yaml")
+    git("add", "--", SHAPE_PIN, BOOTSTRAP, RENAMED, "project.yaml", cwd=root)
+    commit_in(root, "merge shape/a, build.mk kept")
+    verdict, _rows = rows_from(moved, root)
+    assert verdict == "DRIFTED (1 copy-missing)", verdict
+
+
+#: A file of the project's own that holds a copy's bytes in the merge base,
+#: the path the merge then conflicts at, and what each side does (review
+#: of PR #781): the own file renamed, or the copy renamed beside it.
+TWINS = {
+    "the-projects-own-file-renamed": (
+        ("tools/bootstrap.py", BOOTSTRAP), "tools/boot.py",
+        {"shape/a": edited("tools/bootstrap.py", C2_LINE),
+         "shape/b": renamed("tools/bootstrap.py", "tools/boot.py",
+                            C3_LINE)}),
+    "the-copy-renamed-beside-its-twin": (
+        ("tools/Makefile.orig", MAKEFILE), RENAMED,
+        {"shape/b": renamed(MAKEFILE, RENAMED)}),
+}
+
+
+@pytest.mark.parametrize("merge", sorted(TWINS))
+def test_a_blob_two_paths_of_the_base_hold_names_no_rename(
+        standard, project, tmp_path, merge):
+    """The merge base holds a file of the project's own byte for byte as a
+    copy. Renamed on one side and edited on the other, that file conflicts
+    under its new name with the copy's blob as stage 1, and #781's first
+    head named it a rename of the copy, though a file of the project's own
+    is never named. The copy renamed beside such a twin holds a blob two
+    paths share as well. One blob, two paths: neither is called a rename,
+    and the new name is not named, as before #753 (review of PR #781)."""
+    twin, new, acts = TWINS[merge]
+    root, moved = merged_after(standard, project, tmp_path, acts, twin)
+    assert sorted(index_stages(root, new)) == [1, 2, 3]
+    assert stage_of(root, 1, new) == blob_at(root, f"main:{twin[1]}")
+    _verdict, rows = rows_from(moved, root)
+    currency = assert_both_rows_name_it(rows)
+    assert new not in currency["detail"].get("left_for_a_person", []), \
+        currency["detail"]
+    assert new not in currency["why"], currency["why"]
