@@ -815,9 +815,20 @@ def _leg_target(policy: NamingPolicy, path: Path, leg, root: Path,
     walks every leg in the manifest. `(None, [finding])` is a leg with no
     `repository:` to classify at all — the same case the loop's own `finding`
     list has always carried, now returned instead of appended in place.
+
+    AN ENTRY THAT IS NOT A MAPPING IS `validate-manifest.py`'S `manifest-leg`
+    FINDING, in its words (#714), as `validate-pins.py` says it too: `5`
+    was "a leg has no `repository:`", which is not what is wrong with it. A
+    mapping with no `repository:` still says that, and names the manifest
+    relative to the project root, spelled by `_shown`: the `--project` path
+    was printed raw, as given, and the doctor gives it as its root joined
+    to `project.yaml`.
     """
-    if not isinstance(leg, dict) or "repository" not in leg:
-        return None, [f"{path}: a leg has no `repository:`"]
+    if not isinstance(leg, dict):
+        return None, [f"manifest-leg: a leg is not a mapping: {leg!r}"]
+    if "repository" not in leg:
+        manifest = _shown(path.resolve().relative_to(root).as_posix())
+        return None, [f"{manifest}: a leg has no `repository:`"]
     name = repo_basename(str(leg["repository"]))
     declared = leg.get("role")
     declared = str(declared) if declared else None

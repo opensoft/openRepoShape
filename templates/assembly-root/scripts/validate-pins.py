@@ -1505,8 +1505,15 @@ def _load_legs_to_check(root: Path, report: Report
     was walked one character, or one key, at a time, found no leg, and was
     refused `manifest-no-legs` with the lockstep remedy, which says to run
     `git submodule update`: nothing to do with the cause. The shape pin and
-    the neutral-product pins are still checked. Absent, null or `[]` is
-    still that refusal.
+    the neutral-product pins are still checked. A refusal one of them makes
+    is printed alone, as every refusal here is, so the finding is not
+    printed then. Absent, null or `[]` is still that refusal.
+
+    AN ENTRY THAT IS NOT A MAPPING IS `validate-manifest.py`'S `manifest-leg`
+    FINDING, in its words (#714), as the naming gate says it too, and the
+    refusal is chosen only where no entry was one: `legs: [5]` was refused
+    `manifest-no-legs` with that same remedy, where the other two gates
+    found the entry.
     """
     manifest_path = root / "project.yaml"
     if not manifest_path.is_file():
@@ -1526,9 +1533,13 @@ def _load_legs_to_check(root: Path, report: Report
             f"legs is {declared!r}, expected a list of `role:`, "
             "`repository:` and `path:` mappings")
         return manifest, []
+    not_mappings = [leg for leg in (declared or [])
+                    if not isinstance(leg, dict)]
+    for leg in not_mappings:
+        report.finding("manifest-leg", f"a leg is not a mapping: {leg!r}")
     legs = [leg for leg in (declared or [])
             if isinstance(leg, dict) and leg.get("role") != "assembly"]
-    if not legs:
+    if not legs and not not_mappings:
         raise Refusal("manifest-no-legs",
                       f"{manifest_path}: no non-assembly legs declared")
     return manifest, legs

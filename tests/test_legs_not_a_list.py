@@ -23,6 +23,11 @@ names no leg (absent, null or `[]`) is `validate-manifest.py`'s `legs is
 missing or empty` in the naming gate too, exit 1 (lane 4's ruling), and not
 `REFUSED naming-no-target`, whose offers of `--project` and of names on stdin
 were no way out under `--project`. Without `--project` that refusal stands.
+`validate-pins.py` still refuses a manifest that names no leg
+`manifest-no-legs`, exit 2: it has nothing to check. A list holding an entry
+that is not a mapping (`[5]`) is `validate-manifest.py`'s `manifest-leg: a leg
+is not a mapping: 5` in all three gates, where the naming gate said "a leg has
+no `repository:`" and `validate-pins.py` refused `manifest-no-legs`.
 
 AN ENTRY THAT IS NOT A NAME (#443 left `[5]` and `[[a]]` unexamined) was read
 with `str()`: `[5]` was the pin or the link `'5'`, and a link holding ESC,
@@ -63,7 +68,7 @@ from conftest import REPO, run_script
 from test_manifest_validator import edit
 from test_non_list_project_fields import (  # noqa: F401
     GATES, NOT_A_LIST, SPEC_NAMING, assert_said_once, chain_said, gate,
-    readers, set_chain, set_pins, spelled_as,
+    pins_said, readers, set_chain, set_pins, spelled_as,
 )
 
 NAMING_SCRIPT = REPO / "scripts" / "validate-repository-naming.py"
@@ -161,7 +166,7 @@ def test_each_gate_says_legs_that_are_not_a_list_in_one_sentence(
     pytest.param(None, LEGS_MISSING, id="absent"),
     pytest.param("", LEGS_MISSING, id="null"),
     pytest.param("[]", LEGS_MISSING, id="empty-list"),
-    pytest.param("[5]", "FINDING project.yaml: a leg has no `repository:`",
+    pytest.param("[5]", "FINDING manifest-leg: a leg is not a mapping: 5\n",
                  id="a-leg-that-is-not-a-mapping"),
 ])
 def test_the_naming_gate_never_waits_on_a_stdin_left_open(project, spelled,
@@ -193,6 +198,111 @@ def test_a_manifest_that_names_no_leg_is_said_alike(project, which, spelled):
     naming gate as from the manifest gate."""
     set_legs(project, spelled)
     assert_said_once(gate(project, which), LEGS_MISSING)
+
+
+@pytest.mark.parametrize("spelled", [
+    pytest.param(None, id="absent"),
+    pytest.param("", id="null"),
+    pytest.param("[]", id="empty-list"),
+])
+def test_validate_pins_still_refuses_a_manifest_that_names_no_leg(
+        project, spelled):
+    """KEPT (lane 4's ruling on RV826's S2): where the other two gates say
+    `legs is missing or empty`, exit 1, `validate-pins.py` still refuses a
+    manifest that names no leg `manifest-no-legs`, exit 2, and says no
+    `manifest-legs` finding. Its `git submodule update` remedy cannot add a
+    leg; that is for #460's checklist."""
+    set_legs(project, spelled)
+    result = gate(project, "pins")
+    out = result.stdout + result.stderr
+    assert result.returncode == 2, out
+    assert "Traceback" not in out, out
+    assert "REFUSED manifest-no-legs: " in result.stderr, out
+    assert "manifest-legs" not in result.stderr, out
+
+
+#: `(YAML spelling, the entry as read)`: a `legs:` list holding an entry
+#: that is not a mapping.
+NOT_MAPPINGS = [
+    pytest.param("[5]", 5, id="number"),
+    pytest.param("[openXdox]", "openXdox", id="string"),
+    pytest.param("[[a]]", ["a"], id="list"),
+    pytest.param("[null]", None, id="null"),
+]
+
+
+@pytest.mark.parametrize("which", ["naming", "manifest", "pins"])
+@pytest.mark.parametrize("spelled,entry", NOT_MAPPINGS)
+def test_each_gate_says_a_leg_that_is_not_a_mapping_in_one_sentence(
+        project, which, spelled, entry):
+    """RV826's S3: `legs: [5]` was three answers. The naming gate said "a
+    leg has no `repository:`", untrue of `5`, and `validate-pins.py`
+    refused `manifest-no-legs` with the `git submodule update` remedy. Now
+    each gate says `validate-manifest.py`'s `manifest-leg` line, exit 1."""
+    set_legs(project, spelled)
+    result = gate(project, which)
+    assert_said_once(
+        result, f"FINDING manifest-leg: a leg is not a mapping: {entry!r}\n")
+    for wrong in ("manifest-no-legs", "git submodule update", "a leg has no"):
+        assert wrong not in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("named,said", [
+    pytest.param("project.yaml", "project.yaml", id="as-scaffolded"),
+    pytest.param("pro\x1bject.yaml", "'pro\\x1bject.yaml'", id="esc",
+                 marks=pytest.mark.skipif(
+                     sys.platform == "win32",
+                     reason="a Windows file name holds no control "
+                            "character")),
+])
+def test_a_leg_with_no_repository_names_the_manifest_relative_and_spelled(
+        project, tmp_path, named, said):
+    """RV826's S3: a mapping with no `repository:` names the manifest
+    relative to the project root, through `_shown`. The `--project` path was
+    printed raw, as given: in full from another directory, and with an ESC
+    in it reaching the terminal."""
+    set_legs(project, "[{role: spec}]")
+    manifest = project / named
+    if named != "project.yaml":
+        (project / "project.yaml").rename(manifest)
+    script, *_ = GATES["naming"]
+    result = run_script(project / script, "--project", str(manifest),
+                        cwd=tmp_path)
+    assert_said_once(result, f"FINDING {said}: a leg has no `repository:`\n")
+    assert str(project) not in result.stderr, result.stderr
+    assert "\x1b" not in result.stderr, result.stderr
+
+
+#: `(gate, legs:, neutral_product_pins:, the sentences in the order said)`:
+#: each gate's own order, pinned as it is (RV826's N1).
+ORDERS = [
+    pytest.param("naming", "[]", "[5]",
+                 [entry_said("pins", 5, NOT_TEXT), LEGS_MISSING],
+                 id="naming-pins-then-legs"),
+    pytest.param("pins", "5", "5", [legs_said(5), pins_said(5)],
+                 id="pins-legs-then-pins"),
+    pytest.param("manifest", "[]", "[5]", [LEGS_MISSING],
+                 id="manifest-legs-alone"),
+]
+
+
+@pytest.mark.parametrize("which,legs,pins,said", ORDERS)
+def test_each_gate_says_the_two_fields_in_its_own_order(
+        project, which, legs, pins, said):
+    """THE ORDER (RV826's N1), as each gate says it: the naming gate says
+    the pins before the legs, `validate-pins.py` the legs before the pins,
+    and `validate-manifest.py` stops at `legs:`, so it gives one finding
+    where the naming gate gives two."""
+    set_legs(project, legs)
+    set_pins(project, pins)
+    result = gate(project, which)
+    for line in said:
+        assert_said_once(result, line)
+    at = [result.stderr.index(line) for line in said]
+    assert at == sorted(at), result.stderr
+    if which == "manifest":
+        assert "manifest-neutral-product-pins" not in result.stderr
+        assert "\n1 finding(s) in " in result.stderr, result.stderr
 
 
 def test_without_project_no_name_is_still_refused_naming_no_target(tmp_path):
@@ -250,7 +360,7 @@ NOT_NAMES = [
     pytest.param("  ", BLANK, id="spaces"),
     pytest.param(ESC, NOT_PRINTABLE, id="esc"),
     pytest.param(NOT_UTF8, NOT_PRINTABLE, id="lone-surrogate"),
-    pytest.param("open‮Xdox", NOT_PRINTABLE, id="bidi-control"),
+    pytest.param("open\u202eXdox", NOT_PRINTABLE, id="bidi-control"),
     pytest.param("open\nXdox", NOT_PRINTABLE, id="newline"),
 ]
 
@@ -308,7 +418,8 @@ ENTRIES_IN_A_GATE = [
                  id="chain-esc"),
     pytest.param("chain", "[5]", 5, NOT_TEXT, id="chain-number"),
     pytest.param("chain", "[[a]]", ["a"], NOT_TEXT, id="chain-list"),
-    pytest.param("chain", "[{a: b}]", {"a": "b"}, NOT_TEXT, id="chain-mapping"),
+    pytest.param("chain", "[{a: b}]", {"a": "b"}, NOT_TEXT,
+                 id="chain-mapping"),
     pytest.param("chain", "[true]", True, NOT_TEXT, id="chain-true"),
     pytest.param("chain", "[openXdox, '']", "", BLANK, id="chain-empty-link"),
     pytest.param("pins", '["\\x1b[31mRED"]', ESC, NOT_PRINTABLE,
@@ -380,6 +491,11 @@ def test_the_chain_sentence_is_said_before_the_legs_other_finding(
 #: A strict UTF-8 stdout and stdin, as the doctor gives its children.
 STRICT_UTF8 = {"PYTHONIOENCODING": "utf-8"}
 
+NOT_UTF8_ON_ARGV = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a name that is not UTF-8 reaches argv only as bytes, which a "
+           "Windows command line does not hold")
+
 
 def assert_not_utf8_is_unclassified(result) -> None:
     """Exit 1, no traceback, and the name spelled as `\\udcff` where it is
@@ -390,9 +506,7 @@ def assert_not_utf8_is_unclassified(result) -> None:
     assert "FINDING naming-unclassified: Atl\\udcffas\n" in result.stderr, out
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="a name that is not UTF-8 reaches argv only as "
-                           "bytes, which a Windows command line does not hold")
+@NOT_UTF8_ON_ARGV
 @pytest.mark.parametrize("flags", [
     pytest.param(("--explain",), id="explain"),
     pytest.param((), id="plain-listing"),
@@ -407,6 +521,22 @@ def test_a_name_that_is_not_utf8_prints_escaped_to_a_strict_stdout(
                         env=STRICT_UTF8)
     assert_not_utf8_is_unclassified(result)
     assert "Atl\\udcffas" in result.stdout, result.stdout
+
+
+@NOT_UTF8_ON_ARGV
+def test_a_surrogateescape_stdout_writes_the_name_escaped_too(tmp_path):
+    """RV826's S1: a `surrogateescape` stdout, the one `C.UTF-8` gives and
+    here asked for by name, wrote the name's byte back raw, `\\xff`. It is
+    `backslashreplace` now, as `validate-pins.py`'s `_emit_report` makes it,
+    so the listing spells the name as stderr's `naming-unclassified` does.
+    Read as bytes: a raw byte is what is asked about."""
+    result = subprocess.run(
+        [sys.executable, str(NAMING_SCRIPT), NOT_UTF8], cwd=str(tmp_path),
+        env={**os.environ, "PYTHONIOENCODING": "utf-8:surrogateescape"},
+        stdin=subprocess.DEVNULL, capture_output=True, check=False)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert b"Atl\\udcffas" in result.stdout, result.stdout
+    assert b"\xff" not in result.stdout, result.stdout
 
 
 @pytest.mark.parametrize("flags", [

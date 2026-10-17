@@ -458,27 +458,28 @@ QUOTED_DOMAIN_USER = f"'\"{DOMAIN_USER}\"'"
 
 #: `(flag, value, plan key, what the project's loader reads)`: values the
 #: project's loader misreads on a line written bare, the branch as
-#: `tracking_branch:` was before #259 (`bare_template`) and a pin's product
-#: as an item of the manifest's `neutral_product_pins:` list was before #514
-#: (`bare_pins`). At 76a6153 `--tracking-branch true` and `--pin null` went
-#: through `execute` to `adoption verified`, the legs pushed on one branch
-#: and put on another by the first bootstrap, and the pin gone; before #514
-#: `--pin 007@<commit>` did, over a root whose own `validate-pins.py` refused
-#: `entry 7`. The project's own validator, which reads the shipped
-#: templates, makes no finding about any of them, and each branch is one the
-#: source has (`holding`), so each is #181's, at `plan` and in a plan. Since
-#: #273 a `--pin` is `<product>@<40 hex>` and a plan's pin a whole one
-#: (`flag_args`, `whole_pin`): the value is the pin's product. On the
-#: templates shipped since #259, and since #514 for the pins, each reads back
-#: as typed (`READ_BACK`), so these rows ask the rule's own answer, in this
-#: process.
+#: `tracking_branch:` was before #259 (`bare_template`). At 76a6153
+#: `--tracking-branch true` went through `execute` to `adoption verified`,
+#: the legs pushed on one branch and put on another by the first bootstrap.
+#: The project's own validator, which reads the shipped templates, makes no
+#: finding about any of them, and each branch is one the source has
+#: (`holding`), so each is #181's, at `plan` and in a plan. On the templates
+#: shipped since #259 each reads back as typed (`READ_BACK`), so these rows
+#: ask the rule's own answer, in this process.
+#:
+#: A pin's product, an item of the manifest's `neutral_product_pins:` list
+#: written bare as before #514 (`bare_pins`), was a row here until #714. At
+#: 76a6153 `--pin null` went through `execute` with the pin gone, and before
+#: #514 `--pin 007@<commit>` did, over a root whose own `validate-pins.py`
+#: refused `entry 7`. Since #714 the project's own `validate-manifest.py`
+#: refuses an entry that is not text, so each is the validator's alone
+#: (`PINS_NOT_TEXT`). Since #273 a `--pin` is `<product>@<40 hex>` and a
+#: plan's pin a whole one (`flag_args`, `whole_pin`): the value is the pin's
+#: product.
 REFUSED = [
     (TRACKING_FLAG, "true", TRACKING_KEY, TRUE_READ),
     (TRACKING_FLAG, "null", TRACKING_KEY, NO_VALUE),
     (TRACKING_FLAG, "007", TRACKING_KEY, SEVEN_READ),
-    (PIN_FLAG, "null", PINS_KEY, NO_VALUE),
-    (PIN_FLAG, "True", PINS_KEY, TRUE_READ),
-    (PIN_FLAG, "007", PINS_KEY, SEVEN_READ),
 ]
 #: #181's, as `plan` is given it, and as a plan carries it.
 PLANNED = [(flag, value, reading) for flag, value, _, reading in REFUSED]
@@ -734,6 +735,55 @@ def test_plan_refuses_a_value_the_projects_loader_would_misread(
 #: How a refusal or a finding in the validator's words goes on, once it has
 #: named the value.
 VALIDATOR_REFUSES = "which the project's own validate-manifest.py refuses: "
+
+
+#: `(--pin value, what the project's loader reads of the bare item)`. These
+#: were `REFUSED`'s pin rows, #181's; since #714 the project's own
+#: `validate-manifest.py` refuses a `neutral_product_pins:` entry that is not
+#: text, so each is the validator's alone (rv181f's G1), at `plan`, in a plan
+#: and at `execute`.
+PINS_NOT_TEXT = [("null", None), ("True", True), ("007", 7)]
+
+
+def pin_not_text(read) -> str:
+    """The validator's sentence for a pin entry that is not text (#714)."""
+    return (f"manifest-neutral-product-pins: neutral_product_pins entry "
+            f"{read!r} is not a neutral product name: it is not text")
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("value, read", PINS_NOT_TEXT,
+                         ids=[value for value, _ in PINS_NOT_TEXT])
+def test_a_bare_pin_that_is_not_text_is_the_validators_alone(
+        adopter, answered_copy, glass, bare_template, bare_pins, tmp_path,
+        capsys, value, read):
+    """`plan` refuses it `adopt-manifest-invalid`, `check` says it once as
+    `plan-manifest-invalid`, and `execute` refuses it before any leg
+    exists, in the validator's words and never as #181's misread."""
+    source, text = answered_copy
+    plan = tmp_path / PLAN_FILE
+    code, _, stderr = run_here(adopter, capsys, *plan_argv(
+        source, plan, tmp_path, *flag_args(source, glass, PIN_FLAG, value)))
+    assert code == 2, stderr
+    assert stderr.startswith("REFUSED adopt-manifest-invalid: "), stderr
+    assert pin_not_text(read) in stderr, stderr
+    assert MISREAD_CODE not in stderr, stderr
+    assert not plan.exists()
+    carrying(plan, text, PINS_KEY, adopter.y(value))
+    code, stdout, stderr = run_here(adopter, capsys, "check", PLAN_OPTION,
+                                    str(plan))
+    assert code == 1, stdout + stderr
+    (line,) = judged_lines(stderr)
+    assert line == INVALID_FINDING + (
+        "the manifest this run would write is one the project's own "
+        f"validate-manifest.py refuses: {pin_not_text(read)}."), stderr
+    code, stdout, stderr = run_here(adopter, capsys,
+                                    *execute_argv(plan, tmp_path))
+    assert code == 2, stdout + stderr
+    assert stderr.startswith("REFUSED plan-manifest-invalid: "), stderr
+    assert MISREAD_FINDING not in stderr, stderr
+    assert not (tmp_path / REMOTES).exists()
+    assert SPLIT_BRANCH not in branches_of(source)
 
 
 @pytest.fixture
