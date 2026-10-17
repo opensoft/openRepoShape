@@ -649,7 +649,7 @@ CASES = {
     "unloaded_manifest_row-restore": (
         _unloaded_manifest_restore,
         "it puts back the scripts/repo_shape.py HEAD holds, the copy this "
-        "project committed and scripts/validate-manifest.py imports, where "
+        "root committed and scripts/validate-manifest.py imports, where "
         "update-shape.py apply would copy a newer one"),
     "validator_row-crashed-restore": (
         _validator_crashed_restore,
