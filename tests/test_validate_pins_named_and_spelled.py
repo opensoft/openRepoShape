@@ -327,6 +327,7 @@ def test_a_checkout_beside_the_root_this_user_cannot_search_cannot_answer(
     `neutral-pin-source-unreadable` finding names it and the system's
     reason, and the run goes on."""
     clear_ambient_pin_sources(monkeypatch)
+    no_gh_api(validator, monkeypatch)
     sibling = beside_the_root(project)
     report = validator.Report()
     sources = validator.PinSources([], ["openXdox"])
@@ -593,6 +594,15 @@ def report_text(report) -> str:
 def no_git(*_args, **_kwargs):
     """A git that is not there, as `subprocess` names it."""
     raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), "git")
+
+
+def no_gh_api(validator, monkeypatch) -> None:
+    """`tree_digest_from_gh` refusing, as a machine with no `gh` does: no
+    row here asks GitHub, even under a mutant that passes a source over."""
+    def no_gh(*_args, **_kwargs):
+        raise validator.Refusal("gh-not-found", "no gh here")
+
+    monkeypatch.setattr(validator, "tree_digest_from_gh", no_gh)
 
 
 def gitlink(validator, monkeypatch, answer) -> None:
@@ -900,11 +910,7 @@ def recompute(v, root, mp, product, repository, sources, shared=frozenset()):
     """`_recompute_neutral_pin_digest`'s report, with no ambient variable
     and no `gh` to answer."""
     clear_ambient_pin_sources(mp)
-
-    def no_gh(*_args, **_kwargs):
-        raise v.Refusal("gh-not-found", "no gh here")
-
-    mp.setattr(v, "tree_digest_from_gh", no_gh)
+    no_gh_api(v, mp)
     report = v.Report()
     v._recompute_neutral_pin_digest(root, product, repository, COMMIT, "rel",
                                     sources, report, shared)
