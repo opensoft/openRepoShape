@@ -123,8 +123,16 @@ USAGE
 # THE REPOSITORY, AS AN OWNER/NAME, because every URL below is built from it.
 # The launcher also takes a URL or a path in this variable, for the clone
 # setup.sh makes; there is no release at either, so this refuses them by
-# name. A control character is refused before anything is echoed.
+# name. A control character is refused before anything is echoed, and
+# before it a character a terminal draws as something other than itself
+# (#837), named by its code point: first, because `[![:print:]]` is the
+# locale's, matching every byte past ASCII under `C` and none of those
+# characters under a UTF-8 locale, where the refusal below would echo them.
 checked_repo() {
+	local misdrawn
+	misdrawn="$(LC_ALL=C; misdrawn_characters "$REPO")"
+	[ -z "$misdrawn" ] ||
+		die "\$OPENREPOSHAPE_REPO holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. It must be an owner/name on github.com, such as opensoft/openRepoShape."
 	case "$REPO" in
 	*[![:print:]]*) die "\$OPENREPOSHAPE_REPO carries a control character; it must be an owner/name on github.com, such as opensoft/openRepoShape." ;;
 	esac
@@ -140,14 +148,19 @@ checked_repo() {
 # THE LAUNCHER'S `checked_ref`, TRANSCRIBED: the version reaches a URL here
 # and `git checkout` once the command runs, so it is held to the same three
 # checks in the same order (length, then a control character, then the
-# shape, which is the only one that echoes it), plus the empty value. Not
-# shared, because this file arrives alone down a pipe.
+# shape, which is the only one that echoes it), plus the empty value, and,
+# between the length and the control character, a character a terminal
+# draws as something other than itself, as the launcher's `ref_fault` has
+# it (#837). Not shared, because this file arrives alone down a pipe.
 checked_version() {
-	local ref="$1" what="$2"
+	local ref="$1" what="$2" misdrawn
 	[ -n "$ref" ] || die "$what is empty. Name a release, such as v1.0.1, or none for the newest."
 	if [ "${#ref}" -gt 255 ]; then
 		die "$what is ${#ref} characters long; a release tag, branch or commit is at most 255 characters."
 	fi
+	misdrawn="$(LC_ALL=C; misdrawn_characters "$ref")"
+	[ -z "$misdrawn" ] ||
+		die "$what holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. No release tag, branch or commit holds one."
 	case "$ref" in
 	*[![:print:]]*) die "$what carries a control character, which is not a release tag, branch or commit." ;;
 	esac
@@ -196,10 +209,16 @@ latest_from_redirect() {
 				return 0
 				;;
 			esac
-			case "$value" in
-			*[![:print:]]*) FAULT="it redirects to a location that names no release" ;;
-			*) FAULT="it redirects to $value, which names no release" ;;
-			esac
+			# The location is named only when it is text a terminal draws as
+			# it is: no control character, and no character it draws as
+			# something other than itself (#837).
+			FAULT="it redirects to a location that names no release"
+			if [ -z "$(LC_ALL=C; misdrawn_characters "$value")" ]; then
+				case "$value" in
+				*[![:print:]]*) ;;
+				*) FAULT="it redirects to $value, which names no release" ;;
+				esac
+			fi
 			return 1
 			;;
 		esac
@@ -341,9 +360,13 @@ filter_repo_step() {
 # WHICH OF THEM "$1" HOLDS (#837): the launcher's `MISDRAWN_CHARACTERS` and
 # `misdrawn_characters`, copied as they are, for the reason the control
 # check in `main` is copied: this file arrives alone down a pipe. The
-# launcher says why these characters and no others, and
+# launcher says why these characters and no others, and which forms of
+# UTF-8 the function builds (two, three and four bytes), and
 # `tests/test_openreposhape_command.py` holds the two copies to one text.
-MISDRAWN_CHARACTERS=(00AD 061C 200B 200E-200F 2028-202E 2060-206F FEFF)
+# `main` asks it of the directory, of an option, `checked_repo` of the
+# repository, `checked_version` of a version and `latest_from_redirect`
+# of the location it reads, each before any line prints the value.
+MISDRAWN_CHARACTERS=(00AD 061C 200B 200E-200F 2028-202E 2060-206F FEFF FFF9-FFFB 1D173-1D17A E0001)
 
 misdrawn_characters() {
 	local value="$1" entry code last bytes name found=""
@@ -354,8 +377,12 @@ misdrawn_characters() {
 			if [ "$code" -lt 2048 ]; then
 				printf -v bytes '\\0%o\\0%o' $((0xC0 | (code >> 6))) \
 					$((0x80 | (code & 63)))
-			else
+			elif [ "$code" -lt 65536 ]; then
 				printf -v bytes '\\0%o\\0%o\\0%o' $((0xE0 | (code >> 12))) \
+					$((0x80 | ((code >> 6) & 63))) $((0x80 | (code & 63)))
+			else
+				printf -v bytes '\\0%o\\0%o\\0%o\\0%o' \
+					$((0xF0 | (code >> 18))) $((0x80 | ((code >> 12) & 63))) \
 					$((0x80 | ((code >> 6) & 63))) $((0x80 | (code & 63)))
 			fi
 			printf -v bytes '%b' "$bytes"
@@ -387,6 +414,9 @@ main() {
 		-h | --help) usage; exit 0 ;;
 		--) shift; continue ;;
 		-*)
+			misdrawn="$(LC_ALL=C; misdrawn_characters "$1")"
+			[ -z "$misdrawn" ] ||
+				die "an option holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. The one argument is a version, such as v1.0.1; with none, the newest release."
 			case "$1" in
 			*[![:print:]]*) die "an option carries a control character. The one argument is a version, such as v1.0.1; with none, the newest release." ;;
 			esac
@@ -434,7 +464,7 @@ main() {
 	# and says nothing else of the value.
 	misdrawn="$(LC_ALL=C; misdrawn_characters "$bin_dir")"
 	[ -z "$misdrawn" ] ||
-		die "the directory to install into holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, ends a line or reorders the text around it, so no line about \$PATH can print the name as it reads. Nothing was installed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this line again."
+		die "the directory to install into holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it, so no line about \$PATH can print the name as it reads. Nothing was installed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this line again."
 	# A WINDOWS SPELLING IS SPELLED THE WAY BASH SPELLS IT, THE COMMAND'S OWN
 	# RULE (#667, after #649), before it is named in a line or looked at: a
 	# value typed `D:\tools\bin` was echoed as typed, in the `install:`,

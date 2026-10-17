@@ -53,9 +53,11 @@ from test_openreposhape_command import (BIN_DIR_SPELLINGS, COMMAND,
                                         LOCALES, NO_FILE_NAMED_SO,
                                         NO_NON_ASCII_INTO_GIT_BASH,
                                         NOT_CONTROLS,
-                                        REFUSED_IN_EVERY_LOCALE,
+                                        REFUSED_IN_EVERY_LOCALE, RLO,
                                         UNNAMEABLE_BIN_DIRS,
                                         assert_a_bin_dir_is_refused,
+                                        assert_refused_saying,
+                                        drawn_as_another,
                                         command_env, machine_path,
                                         put_cygpath, put_on_path, run_cmd,
                                         typed_bin_dir, write_script)
@@ -970,6 +972,62 @@ def test_the_installer_refuses_in_every_locale_before_any_request(
     assert net.calls() == [], net.calls()
     assert_a_bin_dir_is_refused(result, typed, said, INSTALLER_REFUSAL_ENDS)
     net.refused(result)
+
+
+# A version, an option, the repository, the newest release's tag or the
+# location github.com redirects to, holding U+202E (#837). Each arranges
+# `net` and returns the arguments, the environment, what the refusal says,
+# and whether the value comes from the network, so that the run asks it.
+
+def a_version(net):
+    return (("v1" + RLO + "forged",), {},
+            f"the version {drawn_as_another('U+202E')}.", False)
+
+
+def an_option(net):
+    return (("-x" + RLO + "forged",), {},
+            f"an option {drawn_as_another('U+202E')}.", False)
+
+
+def the_repository(net):
+    return ((), {"OPENREPOSHAPE_REPO": "acme/x" + RLO + "forged"},
+            f"$OPENREPOSHAPE_REPO {drawn_as_another('U+202E')}.", False)
+
+
+def the_newest_tag(net):
+    net.config["redirects"][latest()] = tag_page("v1" + RLO + "forged")
+    return ((), {}, "the newest release's tag "
+            f"{drawn_as_another('U+202E')}.", True)
+
+
+def a_location(net):
+    net.config["redirects"][latest()] = (
+        f"https://github.com/{SLUG}/releases/" + RLO + "forged")
+    return ((), {}, "it redirects to a location that names no release",
+            True)
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("arrange", [a_version, an_option, the_repository,
+                                     the_newest_tag, a_location],
+                         ids=lambda arrange: arrange.__name__)
+def test_the_installer_refuses_a_value_drawn_as_another_unechoed(
+        net, arrange, locale):
+    """`checked_repo`, `checked_version`, the option check and the
+    redirect's reading held their value to `[![:print:]]`, which a UTF-8
+    locale's U+202E passes, and the refusal or fault after it printed the
+    value as typed (#837). Each now looks for a character of `MISDRAWN`
+    first and names it by its code point, under `C` and `C.UTF-8` alike:
+    exit 2, nothing placed, nothing fetched, no request at all where the
+    value is not the network's, and neither stream holds the value."""
+    args, env, said, asks = arrange(net)
+    result = net.run(*args, env={**env, "LC_ALL": locale})
+    assert_refused_saying(result, said)
+    net.refused(result)
+    calls = net.calls()
+    assert not any("-fsSL" in call for call in calls), calls
+    assert bool(calls) is asks, calls
 
 
 #: A curl that RUNS, in either script: tab-indented, alone or as the value
