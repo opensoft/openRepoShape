@@ -57,7 +57,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import clone_just_pushed, run_script
+from conftest import appended_to_command_scope, clone_just_pushed, run_script
 from repo_shape import PYTHON
 #: The family fixture, its names, the offline environment and the readings
 #: of a holder, imported from the modules that own them rather than rebuilt.
@@ -93,11 +93,10 @@ DISKS = pytest.mark.parametrize("ignorecase", ["false", "true"],
 
 def on_disk(env: dict, ignorecase: str) -> dict:
     """`env` with `core.ignorecase` set to `ignorecase`, one more
-    `GIT_CONFIG_*` entry after the ones it already holds."""
-    index = int(env.get("GIT_CONFIG_COUNT", "0"))
-    return {**env, "GIT_CONFIG_COUNT": str(index + 1),
-            f"GIT_CONFIG_KEY_{index}": "core.ignorecase",
-            f"GIT_CONFIG_VALUE_{index}": ignorecase}
+    `GIT_CONFIG_*` entry after the ones it already holds
+    (`appended_to_command_scope`)."""
+    return {**env, **appended_to_command_scope(
+        env, [("core.ignorecase", ignorecase)])}
 
 
 def url(project: str) -> str:

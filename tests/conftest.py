@@ -266,7 +266,8 @@ def submodule_update_through_git(root: Path, remotes: Path,
 # suite copies is made, or pushed to, that way today.
 # `tests/test_no_auto_maintenance.py` holds both scopes to account, and fails a
 # test file that sets `GIT_CONFIG_COUNT` to a number of its own instead of
-# appending (#758).
+# appending (#758), or works one out by hand (#835). The one place that does
+# is `appended_to_command_scope`, below.
 
 #: The two settings, in the order they are appended and written.
 NO_AUTO_MAINTENANCE = (("gc.auto", "0"), ("maintenance.auto", "false"))
