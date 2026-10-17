@@ -242,7 +242,7 @@ def _workflow_unreadable(files: list[_Unreadable]) -> Refusal:
         "workflow it skipped could hide a `@<sha>` reference that is out of "
         "lockstep, which is what it exists to find, and a lossy read would "
         "call green a tree that the project's other readers refuse. "
-        + advice + "Then run the same command again.")
+        + advice + RUN_AGAIN)
 
 
 #: The `OSError`s that `Path.is_file()` and `Path.is_dir()` answered False to
@@ -309,8 +309,17 @@ OTHER_REASON = (
     "user can open back in its place, or take away one nobody wants, and make "
     "sure nothing is changing the directory while this runs. ")
 
+#: The sentence every refusal of a file or directory this validator cannot
+#: read ends on, said once (#712).
+RUN_AGAIN = "Then run the same command again."
 
-def _unreadable_file(code: str, named: str, exc: OSError) -> Refusal:
+#: What this validator reads, as `_unreadable_file`'s remedy says it.
+FILES_READ = ("each leg's pin, the shape pin, each neutral-product pin, "
+              "project.yaml and every copy the shape pin lists")
+
+
+def _unreadable_file(code: str, named: str, exc: OSError,
+                     reads: str = FILES_READ) -> Refusal:
     """The refusal for a pin, the manifest or a pinned shape copy that this
     validator must read and the operating system will not let it (#712):
     its `stat` refused (a `contracts/` this user cannot search) or its open
@@ -325,7 +334,8 @@ def _unreadable_file(code: str, named: str, exc: OSError) -> Refusal:
     THE ADVICE FOLLOWS THE CAUSE, in `bump-leg.py`'s words for the same
     file (#383): a permission (`PermissionError`, which is `EACCES` and
     `EPERM`) is put right by the mode or the owner, and any other cause is
-    `OTHER_REASON`, which is not told to `chmod`.
+    `OTHER_REASON`, which is not told to `chmod`. `reads` names what the
+    validator reads, a leg's checkout where that is what it cannot reach.
     """
     advice = (
         "Make what this user may not open readable by this user: `chmod u+r` "
@@ -334,11 +344,8 @@ def _unreadable_file(code: str, named: str, exc: OSError) -> Refusal:
         if isinstance(exc, PermissionError) else OTHER_REASON)
     return Refusal(
         code, _cannot_read(named, exc),
-        "Remediation: this validator reads each leg's pin, the shape pin, "
-        "each neutral-product pin, project.yaml and every copy the shape pin "
-        "lists, and one it cannot read is a question it cannot answer, never "
-        "a pass. "
-        + advice + "Then run the same command again.")
+        f"Remediation: this validator reads {reads}, and one it cannot read "
+        "is a question it cannot answer, never a pass. " + advice + RUN_AGAIN)
 
 
 def _is_file(root: Path, path: Path, code: str = "yaml-unreadable",
@@ -359,6 +366,23 @@ def _is_file(root: Path, path: Path, code: str = "yaml-unreadable",
     except OSError as exc:
         raise _unreadable_file(code, named or _named(root, path),
                                exc) from exc
+    except ValueError:
+        return False
+
+
+def _is_there(path: Path) -> bool:
+    """Whether anything is at `path` (a checkout's `.git`, a file or a
+    directory), asked as `_is_a` asks it, raising the `OSError` of a `stat`
+    the operating system refused (#712, after RV827's S1).
+
+    NOT `Path.exists()`, which raised a refused `stat` out of the run up to
+    Python 3.13, so a leg checkout or a checkout beside the root that this
+    user cannot search ended in a `PermissionError` traceback, and which
+    answers False to it from 3.14, so the leg read as an uninitialized
+    submodule. A name the system cannot take at all is nothing there, as
+    `exists()` answered it."""
+    try:
+        return _is_a(path, lambda _mode: True)
     except ValueError:
         return False
 
@@ -422,8 +446,7 @@ def _workflows_unlistable(root: Path, workflows: Path,
         "neither skips one nor reads one lossily: a workflow it skipped "
         "could hide a `@<sha>` reference that is out of lockstep, which is "
         "what it exists to find, and a directory it cannot list is one whose "
-        "workflows it cannot read. " + advice
-        + "Then run the same command again.")
+        "workflows it cannot read. " + advice + RUN_AGAIN)
 
 
 def _workflow_refs(root: Path) -> list[tuple[Path, str, str]]:
@@ -981,10 +1004,22 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
     agree on a commit may still disagree on that commit's bytes. A mismatch
     is one `bump-leg.py` clears, since it recomputes the digest (#478). The
     leg's path is spelled in every line (#712).
+
+    A CHECKOUT THIS USER CANNOT SEARCH IS REFUSED BY NAME (#712, after
+    RV827's S1), `pin-submodule-unreadable`, naming its `.git`: the digest
+    cannot be recomputed, and the leg is not uninitialized, which is what
+    Python 3.14's `exists()` would have said of it.
     """
     submodule = root / path
     named = _shown(path)
-    if not (submodule / ".git").exists():
+    try:
+        initialized = _is_there(submodule / ".git")
+    except OSError as exc:
+        raise _unreadable_file(
+            "pin-submodule-unreadable", _named(root, submodule / ".git"), exc,
+            "each leg's checkout, to recompute its pinned tree digest from "
+            "the leg's own objects") from exc
+    if not initialized:
         raise Refusal(
             "pin-submodule-uninitialized",
             f"{named} is not an initialized submodule checkout, so the pinned "
@@ -1317,6 +1352,12 @@ def resolve_neutral_pin_source(root: Path, product: str, repository: str,
     `(None, None, None)` when nothing above answers; the caller's next step
     is `gh api`, and after that, a SKIP. `how` is printed, so the product
     and the sibling's path in it are spelled (#712).
+
+    A CHECKOUT BESIDE THE ROOT THAT THIS USER CANNOT SEARCH IS THE SOURCE
+    (#712, after RV827's S1): something is there, so it answers, and
+    `_digest_from_source` names why it cannot, a finding. `exists()` raised
+    its `PermissionError` out of the run up to Python 3.13, and from 3.14
+    would have passed it over for `gh api`.
     """
     keyed = sources.keyed.get(pin_product_key(product))
     if keyed is not None:
@@ -1327,7 +1368,11 @@ def resolve_neutral_pin_source(root: Path, product: str, repository: str,
     if env_value:
         return Path(env_value), f"${env_name}", None
     sibling = root.parent / repo_basename(repository)
-    if (sibling / ".git").exists():
+    try:
+        beside = _is_there(sibling / ".git")
+    except OSError:
+        beside = True
+    if beside:
         return sibling, f"sibling checkout ({_shown(str(sibling))})", None
     if sources.bare is not None:
         typed, path = sources.bare

@@ -107,7 +107,7 @@ ON_DISK = pytest.mark.skipif(
 #: byte that is not UTF-8, as `surrogateescape` keeps one.
 UNPRINTABLE = [
     pytest.param("a\nb", id="newline"),
-    pytest.param("rev‮elif", id="bidi-control"),
+    pytest.param("rev\u202eelif", id="bidi-control"),
     pytest.param("c1\u0085x", id="c1-control"),
     pytest.param("x\x1b[31mRED", id="esc"),
     pytest.param("und\udcffx", id="undecodable-byte"),
@@ -136,8 +136,9 @@ def refusal_of_the_run(validator, project: Path, values=()):
     """The `Refusal` the gate's checks raise over `project`, failing the test
     if they finish or raise anything else. The class is the project's own
     copy's, which is the one its `main()` catches (SonarCloud S5958)."""
+    report, given = validator.Report(), list(values)
     with pytest.raises(validator.Refusal) as caught:
-        validator._run_all_checks(project, validator.Report(), list(values))
+        validator._run_all_checks(project, report, given)
     return caught.value
 
 
@@ -235,6 +236,9 @@ def test_a_refused_stat_is_refused_by_name_on_every_python(
         id="leg-pin"),
     pytest.param(lambda v, root: v._check_neutral_pin_entry_and_load(
         root, "a\x00b", v.Report()), "neutral-pin-missing", id="neutral-pin"),
+    pytest.param(lambda v, root: v._check_pin_digest(
+        root, "a\x00b", COMMIT, {}, "rel", v.Report()),
+        "pin-submodule-uninitialized", id="leg-checkout"),
 ])
 def test_a_name_the_system_cannot_take_is_still_no_file(validator, project,
                                                         call, code):
@@ -245,6 +249,119 @@ def test_a_name_the_system_cannot_take_is_still_no_file(validator, project,
         call(validator, project)
     assert caught.value.code == code
     assert "\\x00" in caught.value.detail, caught.value.detail
+
+
+#: What the refusal of a leg checkout this user cannot search says first.
+CHECKOUT_READS = (
+    "Remediation: this validator reads each leg's checkout, to recompute its "
+    "pinned tree digest from the leg's own objects, and one it cannot read "
+    "is a question it cannot answer, never a pass. ")
+
+
+@CANNOT_RUN_AS_ROOT
+@pytest.mark.parametrize("mode", [0, stat.S_IRUSR], ids=["000", "r--"])
+def test_a_leg_checkout_the_gate_cannot_search_is_refused_by_name(project,
+                                                                   mode):
+    """RV827'S S1, THE LEG: with `spec/` at 000 or r--, `exists()` on its
+    `.git` raised `PermissionError` out of the run, exit 1, on 3.11 to 3.13,
+    and on 3.14 would have called the leg an uninitialized submodule. It is
+    `pin-submodule-unreadable`, naming the `.git` it could not reach, with
+    the permission advice, and nothing is written."""
+    before = tree_bytes(project)
+    with mode_of(project, "spec", mode):
+        result = validate(project)
+    assert result.stderr == (
+        "REFUSED pin-submodule-unreadable: spec/.git: cannot be read "
+        f"(Permission denied)\n{CHECKOUT_READS}{PERMISSION}{AGAIN}\n"), \
+        result.stderr
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert tree_bytes(project) == before, "a validator writes nothing"
+
+
+@pytest.mark.parametrize("failure, advice", [
+    pytest.param(PermissionError(errno.EACCES, "Permission denied"),
+                 PERMISSION, id="permission"),
+    pytest.param(os_error(errno.EIO), OTHER, id="io-error"),
+])
+def test_a_leg_checkout_whose_stat_is_refused_is_refused_on_every_python(
+        validator, project, monkeypatch, failure, advice):
+    """The same leg, in-process, so on every Python, as root and on Windows:
+    `refused_stat` answers as Python 3.14's `exists()` does, which is what
+    read the leg as uninitialized. Each cause has its advice."""
+    failing(monkeypatch, "stat", {".git": failure})
+    monkeypatch.setattr(Path, "exists", lambda self: False)
+    refusal = refusal_of_the_run(validator, project)
+    assert refusal.code == "pin-submodule-unreadable"
+    assert refusal.detail == (
+        f"spec/.git: cannot be read ({failure.strerror})")
+    assert refusal.remediation == CHECKOUT_READS + advice + AGAIN
+
+
+def beside_the_root(project: Path) -> Path:
+    """`../openXdox`, the checkout a declared `openXdox` pin is looked for
+    beside the root, holding a `.git`."""
+    sibling = project.parent / "openXdox"
+    (sibling / ".git").mkdir(parents=True)
+    return sibling
+
+
+def test_a_checkout_beside_the_root_whose_stat_is_refused_is_the_source(
+        validator, project, monkeypatch):
+    """RV827'S S1, THE SIBLING, on every Python: something is at
+    `../openXdox`, so it is the source, where `exists()` raised its
+    `PermissionError` out of the run up to 3.13 and from 3.14 would have
+    passed it over for `gh api`."""
+    clear_ambient_pin_sources(monkeypatch)
+    sibling = beside_the_root(project)
+    refused_stat(monkeypatch, ".git")
+    found = validator.resolve_neutral_pin_source(
+        project, "openXdox", "testorg/openXdox",
+        validator.PinSources([], ["openXdox"]))
+    assert found == (sibling, f"sibling checkout ({sibling})", None)
+
+
+@CANNOT_RUN_AS_ROOT
+def test_a_checkout_beside_the_root_this_user_cannot_search_cannot_answer(
+        validator, project, monkeypatch):
+    """With `../openXdox` at 000, the source cannot answer: the pin's
+    `neutral-pin-source-unreadable` finding names it and the system's
+    reason, and the run goes on."""
+    clear_ambient_pin_sources(monkeypatch)
+    sibling = beside_the_root(project)
+    report = validator.Report()
+    sources = validator.PinSources([], ["openXdox"])
+    with mode_of(project.parent, "openXdox", 0):
+        found = validator._recompute_neutral_pin_digest(
+            project, "openXdox", "testorg/openXdox", COMMIT, "rel", sources,
+            report)
+    assert found is None
+    assert report.findings[0].startswith(
+        f"FINDING neutral-pin-source-unreadable: rel: {sibling} (sibling "
+        f"checkout ({sibling})) could not answer for testorg/openXdox @ "
+        f"{COMMIT}: Permission denied\n"), report.findings
+
+
+@pytest.mark.parametrize("call, code, pin", [
+    pytest.param(lambda v, root, name: v._load_leg_pin(
+        root, name, "spec", "o/r", v.Report()), "pin-missing",
+        lambda name: f"{name}-pin.yaml", id="leg-role"),
+    pytest.param(lambda v, root, name: v._check_neutral_pin_entry_and_load(
+        root, name, v.Report()), "neutral-pin-missing",
+        lambda name: f"{name.lower()}-pin.yaml", id="neutral-product"),
+])
+def test_a_name_spelled_as_an_absolute_path_is_refused_by_name(
+        validator, project, call, code, pin):
+    """RV827'S S2: a role or a product spelled as an absolute path puts its
+    pin outside the root, where `relative_to` raised a `ValueError` out of
+    the run, exit 1. It is the missing pin's refusal, naming the path whole:
+    `_named`'s fallback."""
+    name = str(project.parent / "nonexistent-w712" / "x")
+    with pytest.raises(validator.Refusal) as caught:
+        call(validator, project, name)
+    assert caught.value.code == code
+    assert caught.value.detail.endswith(
+        f"{project / 'contracts' / pin(name)} does not exist"), \
+        caught.value.detail
 
 
 # --- L4-104: every file named relative to the root ---------------------------
@@ -488,15 +605,17 @@ def gitlink(validator, monkeypatch, answer) -> None:
 
 
 def initialized(monkeypatch, value: str) -> None:
-    """The leg at `value` is a checkout: its `.git` is there."""
-    real = Path.exists
+    """The leg at `value` is a checkout: a `stat` of its `.git`, which is
+    what `_is_there` asks, finds a directory, on any platform."""
+    real = Path.stat
+    found = os.stat_result((stat.S_IFDIR | 0o755,) + (0,) * 9)
 
-    def exists(self, *args, **kwargs):
+    def answer(self, *args, **kwargs):
         if self.name == ".git" and self.parent.name == value:
-            return True
+            return found
         return real(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "exists", exists)
+    monkeypatch.setattr(Path, "stat", answer)
 
 
 def valid_pin(validator) -> dict:
@@ -598,19 +717,24 @@ def gitlink_note(v, root, mp, value):
     return report_text(report), [value]
 
 
-def digest_text(v, root, value, pin=None) -> str:
-    return refusal_text(v, v._check_pin_digest, root, value, COMMIT,
+def digest_text(v, root, value, code: str, pin=None) -> str:
+    """`_check_pin_digest`'s refusal for the leg at `value`, which must be
+    `code`'s: a row spelled in another refusal would test nothing."""
+    text = refusal_text(v, v._check_pin_digest, root, value, COMMIT,
                         pin or {}, "rel", v.Report())
+    assert text.startswith(f"REFUSED {code}: "), text
+    return text
 
 
 def digest_uninitialized(v, root, mp, value):
-    return digest_text(v, root, value), [value]
+    return digest_text(v, root, value, "pin-submodule-uninitialized"), [
+        value]
 
 
 def digest_lookup_unrun(v, root, mp, value):
     initialized(mp, value)
     mp.setattr(v, "git_out", no_git)
-    return digest_text(v, root, value), [value]
+    return digest_text(v, root, value, "git-not-runnable"), [value]
 
 
 def digest_commit_unresolvable(v, root, mp, value):
@@ -620,14 +744,15 @@ def digest_commit_unresolvable(v, root, mp, value):
         raise v.Refusal("git-failed", "it said no")
 
     mp.setattr(v, "git_out", refused_by_git)
-    return digest_text(v, root, value), [value]
+    return digest_text(v, root, value, "pin-commit-unresolvable"), [value]
 
 
 def digest_recompute_unrun(v, root, mp, value):
     initialized(mp, value)
     mp.setattr(v, "git_out", lambda *_args, **_kwargs: "")
     mp.setattr(v, "tree_digest", no_git)
-    return digest_text(v, root, value, valid_pin(v)), [value]
+    return digest_text(v, root, value, "git-not-runnable",
+                       valid_pin(v)), [value]
 
 
 def digest_note(v, root, mp, value):
