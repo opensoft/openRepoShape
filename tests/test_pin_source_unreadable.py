@@ -41,7 +41,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, ORG, REPO, SCAFFOLD, git, make_source_repo, run_script
+from conftest import (ADOPT, ORG, REPO, SCAFFOLD, git, make_source_repo,
+                      run_script, skip_where_a_name_cannot_be_not_utf_8)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml, parse_yaml, tree_digest  # noqa: E402
@@ -592,22 +593,6 @@ CLONE_NAMES = [
 ]
 
 
-def skip_where_no_file_name_is_not_utf_8(directory: Path) -> None:
-    """Skip, as a Windows command line skips, where the filesystem refuses
-    a file name that is not UTF-8, so that no clone can sit at one: macOS
-    answers EILSEQ ("Illegal byte sequence"). Asked by making one under
-    `directory`; any other error is the test's to report."""
-    probe = directory / "probe\udcff"
-    try:
-        probe.mkdir()
-    except OSError as exc:
-        if exc.errno != errno.EILSEQ:
-            raise
-        pytest.skip("needs a file name that is not UTF-8, which this "
-                    "filesystem refuses (EILSEQ)")
-    probe.rmdir()
-
-
 @pytest.mark.parametrize("name", CLONE_NAMES)
 def test_the_pin_file_says_how_the_digest_was_read_and_not_where(
         name, tmp_path, adoptable, glass):
@@ -618,7 +603,7 @@ def test_the_pin_file_says_how_the_digest_was_read_and_not_where(
     --all`, read as bytes)."""
     product, commit = glass
     if "\udcff" in name:
-        skip_where_no_file_name_is_not_utf_8(tmp_path)
+        skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     clones = tmp_path / "clones"
     shutil.copytree(product, clones / name, symlinks=True)
     result = run("scaffold-run", tmp_path, adoptable, str(clones / name),

@@ -472,6 +472,23 @@ def test_child_env_never_lets_a_child_reach_the_network(monkeypatch):
     assert generator_module().child_env()["GIT_ALLOW_PROTOCOL"] == "file"
 
 
+def test_child_env_leaves_no_bytecode_in_the_trees_it_runs(monkeypatch):
+    """`PYTHONDONTWRITEBYTECODE=1` in every child, whatever the caller had
+    (#665): the template's `siblings.py` imports `bootstrap` from its own
+    directory, so a `--help` child that may write bytecode leaves a
+    `bootstrap.*.pyc` under `templates/family-root/scripts/`, which git
+    ignores and which nothing reads today. Two checks: the variable is in the
+    environment, and an interpreter started under that environment really
+    does not write bytecode, so the assertion does not rest on the name alone."""
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+    env = generator_module().child_env()
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    proc = subprocess.run(
+        [sys.executable, "-c", "import sys; print(sys.dont_write_bytecode)"],
+        env=env, capture_output=True, check=False)
+    assert proc.stdout.strip() == b"True", proc.stderr
+
+
 def test_the_generators_checkout_test_is_the_shims_own():
     """The question `require_a_checkout` asks is `setup.sh`'s
     `is_shape_checkout`, read from the shim and not guessed: the top level

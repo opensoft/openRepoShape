@@ -1824,6 +1824,14 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     gate can import in CI either. ONE RULE FOR EVERY CHILD, as the `env`
     block is: the flag does not ask which script it starts.
 
+    THAT IS TRUE OF AN UNEDITED COPY ONLY. A root whose own copy of a
+    validator gained an `import yaml` read `passes` here while `site` was on,
+    wherever the doctor's interpreter could import it, and now reads
+    `crashed before reaching a verdict (exit 1): ModuleNotFoundError: No
+    module named 'yaml'`, which is the crash its own CI gets, because
+    `validate.yml` installs nothing. That row is a fair answer for that root,
+    and `-S` stays as it is: it does not ask whether a copy was edited.
+
     WHICH AGREEMENT THE ROW KEEPS (#306, #342): the row reports the
     project's own GATE as CI runs it, with no inherited `PYTHONPATH` and no
     `site`; it does not predict what a pasted line prints in the reader's
