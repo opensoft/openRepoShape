@@ -228,10 +228,39 @@ DOTDOT_COMPONENT = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
 #: N`, exit 128, and a bare `branch` crashes it) (#733).
 VALUED_KEYS = ("path", "url", "ignore", "update", "branch")
 
+#: A boolean as git reads one in `.gitmodules` (`git_config_bool`): one of
+#: these words in any case, or an integer as `strtoimax` reads it, base 0,
+#: times 1024 per `k`, `m` or `g`, that fits an `int` (#733).
+GIT_BOOL_WORDS = ("", "true", "yes", "on", "false", "no", "off")
+GIT_INT = re.compile(r"[+-]?(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)"
+                     r"([kKmMgG]?)")
+
 
 # ---------------------------------------------------------------------------
 # where a member comes from
 # ---------------------------------------------------------------------------
+
+
+def git_dies_on(field: str, value: str) -> bool:
+    """Whether git `die()`s on this value of a `.gitmodules` key, and so
+    reads no submodule at all (#733), as the doctor's `members` row asks
+    it: an `update` other than these four (`!command` included), a
+    `shallow` that is no boolean, a `fetchRecurseSubmodules` that is
+    neither a boolean nor `on-demand`. git lists a key in lower case."""
+    if field == "update":
+        return value not in ("none", "checkout", "rebase", "merge")
+    if (field not in ("shallow", "fetchrecursesubmodules")
+            or value.lower() in GIT_BOOL_WORDS
+            or (field == "fetchrecursesubmodules" and value == "on-demand")):
+        return False
+    number = GIT_INT.fullmatch(value)
+    if number is None:
+        return True
+    digits, unit = number.groups()
+    base = 16 if digits[:2] in ("0x", "0X") else 8 if digits[0] == "0" else 10
+    # " kmg".index: no unit is 1024 ** 0, `k` 1024 ** 1, and so on.
+    return int(digits, base) * 1024 ** " kmg".index(unit.lower() or " ") \
+        >= 2 ** 31
 
 
 def submodule_urls(root: Path) -> dict[str, str]:
@@ -249,7 +278,8 @@ def submodule_urls(root: Path) -> dict[str, str]:
     `members` row reads the same file: a section whose name is empty or
     holds a `..` component is ignored whole (`DOTDOT_COMPONENT`); a `path`
     or `url` beginning with `-` is ignored, that key alone; a key of
-    `VALUED_KEYS` given with no value at all refuses the whole file, `{}`;
+    `VALUED_KEYS` given with no value at all, or a value git dies on
+    (`git_dies_on`), refuses the whole file, `{}`;
     and a section with no `path` mounts nothing, so its name is not read as
     one. git names no url for any of these: `git submodule init` says `No
     url found` or `bad config line`, and a clone made from the url would be
@@ -273,7 +303,7 @@ def submodule_urls(root: Path) -> dict[str, str]:
         name, field = ".".join(parts[1:-1]), parts[-1]
         if not name or DOTDOT_COMPONENT.search(name):
             continue
-        if not valued and field in VALUED_KEYS:
+        if (not valued and field in VALUED_KEYS) or git_dies_on(field, value):
             return {}
         if value.startswith("-"):
             continue

@@ -1501,6 +1501,12 @@ def test_414_3_a_gitmodules_deleted_from_the_working_tree_alone_is_read(
 UNMERGED = tuple(b'[submodule "p"]\n\tpath = p\n\turl = /r/%s.git\n' % side
                  for side in (b"base", b"ours", b"theirs"))
 
+#: `p`'s section in an index copy, with a url HEAD's copy does not give, and
+#: a section after it with a bare `url`: git reads an index or HEAD copy up
+#: to its first bad line and keeps what it read before (#733).
+P_IN_THE_INDEX = b'[submodule "p"]\n\tpath = p\n\turl = /r/index.git\n'
+BARE_URL = b'[submodule "q"]\n\tpath = q\n\turl\n'
+
 #: What the index holds in place of `.gitmodules`, for a root whose working
 #: tree has none and whose HEAD's copy gives the mount `p` its url, and the
 #: `(name, url)` git then finds for `p` (#668). None stages no copy.
@@ -1511,6 +1517,18 @@ INDEX_COPIES = [
     pytest.param(b'[submodule "p"\n\tpath = p\n', (None, None),
                  id="unparsable"),
     pytest.param(UNMERGED, (None, None), id="unmerged"),
+    pytest.param(P_IN_THE_INDEX + BARE_URL, ("p", "/r/index.git"),
+                 id="bare-url-after-the-path"),
+    pytest.param(BARE_URL + P_IN_THE_INDEX, (None, None),
+                 id="bare-url-before-the-path"),
+    pytest.param(P_IN_THE_INDEX + b'[submodule "q"\n', ("p", "/r/index.git"),
+                 id="unparsable-after-the-path"),
+    pytest.param(P_IN_THE_INDEX + b'[submodule "q"]\n\tupdate = !echo\n',
+                 (None, None), id="a-value-git-dies-on"),
+    pytest.param(P_IN_THE_INDEX + BARE_URL + b"\tupdate = !echo\n",
+                 ("p", "/r/index.git"), id="dies-on-past-a-bare-url"),
+    pytest.param(P_IN_THE_INDEX + b'[submodule "q"]\n\tpath = q\n\tbranch\n',
+                 ("p", "/r/index.git"), id="bare-branch-after-the-path"),
 ]
 
 
@@ -1559,9 +1577,17 @@ def url_git_finds(root: Path, rel: str, name: str | None = None
                   ) -> str | None:
     """The url `git submodule init -- <rel>` copies into the root's config
     for the submodule NAMED `name` (`rel` by default), or None where git
-    stops at `No url found` or refuses the file, exiting non-zero."""
+    stops at `No url found` or refuses the file, exiting non-zero.
+
+    A git that CRASHES answers nothing, and the test is skipped: git 2.43
+    does on a bare `branch` (`xstrdup(NULL)`, exit 139), where git 2.55
+    stops there as at any other bare key (#733)."""
     init = subprocess.run(["git", "submodule", "init", "--", rel],
                           cwd=str(root), capture_output=True, check=False)
+    if init.returncode < 0 or init.returncode > 128:
+        pytest.skip(f"this git crashed on `submodule init` (exit "
+                    f"{init.returncode}), as git 2.43 does on a bare "
+                    "`branch`: it gives no answer to compare")
     if init.returncode != 0:
         return None
     return git("config", "--get", f"submodule.{name or rel}.url",
@@ -1584,6 +1610,11 @@ def test_668_with_none_in_the_working_tree_the_first_copy_alone_is_read(
       on to HEAD's copy named a url and handed over a line that exits 128.
     - an unmerged `.gitmodules`: no url, for git reads no copy at all while
       it is unmerged (#733). Reading HEAD's named a url there.
+    - an index copy git stops reading at a bad line: a bare valued key, or
+      a line it cannot parse. The section before the line keeps its url,
+      and one after it has none (#733).
+    - a value git dies on (`git_dies_on`): no url for any path, unless git
+      stopped reading before it.
     """
     gitmodules_in_head_and_index(tmp_path, index_copy)
     assert doctor_module(standard).gitmodules_entry(tmp_path, "p") == found
@@ -1606,7 +1637,9 @@ def test_733_while_gitmodules_is_unmerged_a_resolved_copy_is_not_read(
 #: `.gitmodules` files for a gitlink at `p` that git reads otherwise than as
 #: they are written, each with the `(name, url)` git then finds for `p`, as
 #: `git submodule init` says (#733). The controls git reads as written are
-#: `a..b`, a bare `shallow` and a bare key in a section git ignores.
+#: `a..b`, a plain `path = -p`, a bare `shallow`, a bare key in a section
+#: git ignores, and each value of `update`, `shallow` and
+#: `fetchRecurseSubmodules` git takes (`git_dies_on`) or ignores.
 GIT_SKIPS = [
     pytest.param(b'[submodule ""]\n\tpath = p\n\turl = /r/u.git\n',
                  (None, None), id="empty-name"),
@@ -1642,6 +1675,22 @@ GIT_SKIPS = [
     pytest.param(b'[submodule "../evil"]\n\tpath\n[submodule "q"]\n'
                  b"\tpath = p\n\turl = /r/u.git\n", ("q", "/r/u.git"),
                  id="bare-path-in-an-ignored-section"),
+    *(pytest.param(b'[submodule "p"]\n\tpath = p\n\turl = /r/p.git\n'
+                   b'[submodule "%s"]\n\t%s\n' % (section, line), found,
+                   id=label)
+      for section, line, found, label in (
+          (b"q", b"update = !echo", (None, None), "update-command"),
+          (b"q", b"update = Merge", (None, None), "update-unknown"),
+          (b"q", b"update = rebase", ("p", "/r/p.git"), "update-rebase"),
+          (b"q", b"shallow = maybe", (None, None), "shallow-no-boolean"),
+          (b"q", b"shallow = 2k", ("p", "/r/p.git"), "shallow-an-integer"),
+          (b"q", b"shallow = 2g", (None, None), "shallow-past-an-int"),
+          (b"q", b"fetchRecurseSubmodules = sometimes", (None, None),
+           "fetch-recurse-no-boolean"),
+          (b"q", b"fetchRecurseSubmodules = on-demand", ("p", "/r/p.git"),
+           "fetch-recurse-on-demand"),
+          (b"../evil", b"update = !echo", ("p", "/r/p.git"),
+           "update-command-in-an-ignored-section"))),
 ]
 
 
