@@ -41,8 +41,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ORG, PROJECT, PTY_SKIP, SCAFFOLD, WINDOWS_SKIP, git,
-                      rmtree, run_in_a_terminal, run_script)
+from conftest import (ORG, PROJECT, PTY_SKIP, SCAFFOLD, WINDOWS_SKIP,
+                      appended_to_command_scope, git, rmtree,
+                      run_in_a_terminal, run_script)
 from test_ruleset_hint_tracking_branch import refusing, template  # noqa: F401
 
 LEGS = ("spec", "code")
@@ -568,11 +569,13 @@ def git_reads_github_from(base: str) -> dict:
     """What makes git read `https://github.com/<ORG>/` at `base` instead,
     with no credential helper and no askpass program, so git answers a leg
     as it would with no login of its own. The prefix is longer than an
-    operator's own `https://github.com/` rewrite, so it wins over one."""
-    return {"GIT_CONFIG_COUNT": "2",
-            "GIT_CONFIG_KEY_0": f"url.{base}.insteadOf",
-            "GIT_CONFIG_VALUE_0": f"https://github.com/{ORG}/",
-            "GIT_CONFIG_KEY_1": "credential.helper", "GIT_CONFIG_VALUE_1": "",
+    operator's own `https://github.com/` rewrite, so it wins over one. The two
+    entries are appended, when this is called, to the command scope the
+    environment holds."""
+    return {**appended_to_command_scope(
+                os.environ, [(f"url.{base}.insteadOf",
+                              f"https://github.com/{ORG}/"),
+                             ("credential.helper", "")]),
             "GIT_ASKPASS": ""}
 
 

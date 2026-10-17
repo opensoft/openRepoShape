@@ -49,7 +49,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import cloned_just_pushed, git, run_script
+from conftest import (appended_to_command_scope, cloned_just_pushed, git,
+                      run_script)
 #: The trailer lines a lane's run lands, from the file that owns them.
 from test_commit_trailers import TRAILERS, trailers_of
 #: The family fixture, its names and the offline environment, imported from
@@ -71,25 +72,34 @@ from test_family_member_path import (
 )
 from test_family_member_path import isolated as member_path_env
 
-#: GIT'S AUTOMATIC MAINTENANCE, OFF for every git this module starts, through
-#: git's `GIT_CONFIG_COUNT` protocol and never a global file. A `git commit`
-#: may start `git maintenance run --auto` in the background (a newer git on
-#: the macOS runner does), and it took `.git/objects/maintenance.lock` while
-#: a test snapshotted the holder and released it before the comparison: five
-#: `objects changed` failures on PR #345's first macOS run, none of them the
-#: tool's. With it off, no background job packs or locks objects mid-test.
-NO_MAINTENANCE = {"GIT_CONFIG_COUNT": "3",
-                  "GIT_CONFIG_KEY_0": "maintenance.auto",
-                  "GIT_CONFIG_VALUE_0": "false",
-                  "GIT_CONFIG_KEY_1": "gc.auto", "GIT_CONFIG_VALUE_1": "0",
-                  "GIT_CONFIG_KEY_2": "gc.autoDetach",
-                  "GIT_CONFIG_VALUE_2": "false"}
+#: GIT'S AUTOMATIC MAINTENANCE, OFF for the gits `isolated()` below hands an
+#: environment to: `family.py`'s children and the snapshot's gits. A `git
+#: commit` may start `git maintenance run --auto` in the background (a newer
+#: git on the macOS runner does), and it took `.git/objects/maintenance.lock`
+#: while a test snapshotted the holder and released it before the
+#: comparison: five `objects changed` failures on PR #345's first macOS run,
+#: none of them the tool's. With it off, no background job packs or locks
+#: objects mid-test.
+#:
+#: These are the `(key, value)` entries `isolated()` appends to git's command
+#: scope (`GIT_CONFIG_COUNT`) at the call, after the ones the environment
+#: holds. `isolated()` also names a global config of its own
+#: (`member_path_env`'s `excluding()`), which takes the session's file away
+#: from these gits, so the command scope is what keeps maintenance off for
+#: them. The module's own setup commits go through `conftest.git`, which
+#: passes no `env=` and inherits `os.environ`: the session fixture
+#: (`no_auto_maintenance`, #645) keeps maintenance off for those, in both
+#: scopes, and this constant does not reach them.
+NO_MAINTENANCE = (("maintenance.auto", "false"), ("gc.auto", "0"),
+                  ("gc.autoDetach", "false"))
 
 
 def isolated(offline, tmp_path: Path) -> dict:
     """`test_family_member_path.isolated`'s offline, identity-carrying
-    environment, with git's automatic maintenance off (`NO_MAINTENANCE`)."""
-    return {**member_path_env(offline, tmp_path), **NO_MAINTENANCE}
+    environment, with git's automatic maintenance off (`NO_MAINTENANCE`),
+    appended to the command scope `os.environ` holds when this is called."""
+    return {**member_path_env(offline, tmp_path),
+            **appended_to_command_scope(os.environ, NO_MAINTENANCE)}
 
 
 #: The header `bump --dry-run` prints above the row it would write.
