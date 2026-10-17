@@ -1744,7 +1744,9 @@ def test_a_manifest_its_reader_refuses_is_the_validators_alone(
                            "write is a file the project's own YAML reader "
                            "refuses: "), stderr
     assert stderr.count("Remediation: ") == 1, stderr
-    assert VALIDATOR_REMEDIATION_START in stderr, stderr
+    # The words are the reader's, and since #708 so is the remedy.
+    assert adopter.MANIFEST_UNREADABLE_REMEDIATION in stderr, stderr
+    assert VALIDATOR_REMEDIATION_START not in stderr, stderr
 
 
 #: A leg path the validator refuses as text, which its finding about the
