@@ -55,6 +55,15 @@ WHAT IS CHECKED
     clone fetches that path from only one of them, so the other is a url
     the next edit can make the one. It reads that file alone, so
     `--no-members` asks it too.
+  - that no section of `.gitmodules` gives a value git dies on as it reads
+    the file, before `git submodule update` checks out any member, the
+    `gitmodules-value-refused` finding (#768): a `path`, `url`, `update`,
+    `ignore` or `branch` with no value, an `update` other than `none`,
+    `checkout`, `rebase` or `merge`, a `shallow` that is no boolean, or a
+    `fetchRecurseSubmodules` that is neither a boolean nor `on-demand`. It
+    reads the work tree's file and HEAD's, so `--no-members` asks it too,
+    and where it is found no member that is not checked out is refused as
+    uninitialized: git checked none out.
   - the REVERSE of every member check (#361): that each gitlink this
     repository records in `members/` (the index at stage 0, else HEAD), and
     each path a `.gitmodules` section gives, is a path some row names. A
@@ -90,9 +99,10 @@ EXIT CODES
     1  a FINDING: drift a reviewer can act on
     2  a REFUSAL: the question could not be asked — no manifest, an
        uninitialized member (but for one no section of HEAD's `.gitmodules`
-       gives: that is `member-gitmodules-absent`, exit 1), an unreadable
-       pin, no git to run. An unanswerable question is never an implicit
-       pass.
+       gives, and any while `.gitmodules` gives a value git dies on: those
+       are `member-gitmodules-absent` and `gitmodules-value-refused`, exit
+       1), an unreadable pin, no git to run. An unanswerable question is
+       never an implicit pass.
 """
 
 from __future__ import annotations
@@ -111,7 +121,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, PROJECT_ID_RE, PYTHON, SHA256_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, file_sha256, find_repo_root,
-    git_out, load_yaml, recorded_gitlink, repo_basename, tree_digest,
+    git_out, load_yaml, recorded_gitlink, repo_basename, spelled,
+    tree_digest,
 )
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -994,12 +1005,20 @@ def _gitmodules_sections(root: Path) -> dict[str, dict[str, str]]:
     not read: the missing git is one fact about the machine, and every check
     here that meets it says so under one code.
     """
+    return _sections_listed(_gitmodules_listed(root))
+
+
+def _gitmodules_listed(root: Path) -> bytes:
+    """What `git config -z --file .gitmodules --list` prints of the work
+    tree's file, or nothing where there is none, read as
+    `_gitmodules_sections` says: what it and `_check_gitmodules_values`
+    read (#768)."""
     if not os.path.lexists(root / GITMODULES):
-        return {}
+        return b""
     with _git_runs(f"{GITMODULES} could not be read as git reads it"):
         try:
-            listed = git_out(["config", "-z", "--file", GITMODULES, "--list"],
-                             cwd=root, binary=True)
+            return git_out(["config", "-z", "--file", GITMODULES, "--list"],
+                           cwd=root, binary=True)
         except Refusal as exc:
             raise Refusal(
                 "gitmodules-unreadable",
@@ -1009,7 +1028,6 @@ def _gitmodules_sections(root: Path) -> dict[str, dict[str, str]]:
                 "holder's submodules can be cloned from it as it stands. Mend "
                 f"the file by hand (`git config -f {GITMODULES} --list` says "
                 "where it breaks), then run this again.") from exc
-    return _sections_listed(listed)
 
 
 def _sections_listed(listed: bytes) -> dict[str, dict[str, str]]:
@@ -1042,6 +1060,14 @@ def _head_gitmodules(root: Path
     no pathspec, as `_member_gitlinks` lists HEAD. One git cannot read is
     `gitmodules-unreadable`, as the work tree's is.
     """
+    head = _head_listed(root)
+    return None if head is None else (head[0], _sections_listed(head[1]))
+
+
+def _head_listed(root: Path) -> tuple[bool, bytes] | None:
+    """`(whether HEAD holds a .gitmodules, what `git config -z --blob
+    <its blob> --list` prints of it)`, read as `_head_gitmodules` says:
+    what it and `_check_gitmodules_values` read (#768)."""
     with _git_runs(f"HEAD's {GITMODULES} could not be read as git reads it"):
         try:
             tree = git_out(["ls-tree", "-z", "HEAD"], cwd=root, binary=True)
@@ -1053,10 +1079,10 @@ def _head_gitmodules(root: Path
                      if name == GITMODULES.encode()
                      and meta.split()[1:2] == [b"blob"]), None)
         if blob is None:
-            return False, {}
+            return False, b""
         try:
-            listed = git_out(["config", "-z", "--blob", blob, "--list"],
-                             cwd=root, binary=True)
+            return True, git_out(["config", "-z", "--blob", blob, "--list"],
+                                 cwd=root, binary=True)
         except Refusal as exc:
             raise Refusal(
                 "gitmodules-unreadable",
@@ -1066,7 +1092,185 @@ def _head_gitmodules(root: Path
                 "holder's submodules can be cloned from it. Mend the file by "
                 f"hand (`git config -f {GITMODULES} --list` says where it "
                 "breaks), commit it, then run this again.") from exc
-    return True, _sections_listed(listed)
+
+
+#: Where `gitmodules-value-refused` says a value is, by whether the work
+#: tree's file and HEAD's give it (#768).
+GIVEN_WHERE = {(True, True): "here and in HEAD, which a clone reads",
+               (True, False): "in the work tree, not in HEAD",
+               (False, True): "in HEAD, which a clone reads, not in the "
+                              "work tree"}
+
+#: What git takes for a `submodule.<name>.<key>` whose value it dies on as
+#: it reads `.gitmodules` (#768), as `gitmodules-value-refused` says it.
+GIT_TAKES = {"update": "one of `none`, `checkout`, `rebase` or `merge`",
+             "shallow": "a boolean, `true` or `false`",
+             "fetchrecursesubmodules": "a boolean or `on-demand`",
+             "ignore": "one of `untracked`, `dirty`, `all` or `none`",
+             "path": "a path", "url": "a url", "branch": "a branch name"}
+
+
+def _check_gitmodules_values(root: Path, members: list,
+                             report: Report) -> tuple[bool, bool]:
+    """No section of `.gitmodules` gives a value git dies on as it reads
+    the file, the `gitmodules-value-refused` finding (#768). Returns
+    whether the work tree's file gives one, and whether the work tree's
+    or HEAD's does.
+
+    Git 2.43 dies reading such a file, before `git submodule update`
+    checks out any member, so `make bootstrap` checks none out either. In
+    a plain clone the members modes refused `member-uninitialized` for the
+    first row, naming that same update, and `--no-members` said `family
+    ok`. The rules are `parse_config`'s in git's submodule-config.c
+    (`_values_refused`). The work tree's file is read, which git reads
+    here, and HEAD's, which a clone reads, as `member-gitmodules-absent`
+    reads it: no member needs to be checked out, so every mode asks it.
+    One finding for each key, naming each value git dies on there.
+
+    The remedy is by key, one command to a line, on the work tree's file,
+    as `gitmodules-path-unnamed` takes a key out: `--unset-all` takes out
+    every line of it, since git reads a section without one, and
+    `.gitmodules` is then committed where HEAD's gives it too. A member's
+    own section gets its `path` or `url` written back, as it last gave
+    one, or else as `family.py add` writes it, named after its path, with
+    `https://github.com/` and the row's `repository:` (`_written_back`).
+    Where HEAD's file alone gives the value, the work tree's is what to
+    commit, and where the work tree has no `.gitmodules`, the first such
+    finding puts HEAD's back first."""
+    present = os.path.lexists(root / GITMODULES)
+    here = _submodule_entries(_gitmodules_listed(root))
+    head = _head_listed(root)
+    there = _submodule_entries(head[1]) if head else []
+    in_work = _values_refused(root, here)
+    in_head = _values_refused(root, there)
+    rows = {f"{DEFAULT_MEMBERS_DIR}/{row['project']}": row.get("repository")
+            for row in members if isinstance(row, dict)
+            and isinstance(row.get("project"), str) and row["project"]}
+    put_back = present
+    for name, key in dict.fromkeys([*in_work, *in_head]):
+        full = f"submodule.{name}.{key}"
+        values = dict.fromkeys([*in_work.get((name, key), []),
+                                *in_head.get((name, key), [])])
+        where = GIVEN_WHERE[(name, key) in in_work, (name, key) in in_head]
+        said = (f"{GITMODULES} gives `{spelled(full)}` " + " and ".join(
+            "no value" if value is None else f"the value `{spelled(value)}`"
+            for value in values) + f" {where}, and git dies reading a file "
+            "that does, before `git submodule update` checks out any "
+            "member, so neither that nor make bootstrap checks one out. Git "
+            f"takes {GIT_TAKES[key]} for that key.")
+        if present and (name, key) not in in_work:
+            report.finding("gitmodules-value-refused",
+                           f"{said} Stage and commit the work tree's "
+                           f"{GITMODULES}, which does not give it.")
+            continue
+        lines = [] if put_back else [f"git checkout HEAD -- {GITMODULES}"]
+        lines.append(f"git config -f {GITMODULES} --unset-all "
+                     f"{shlex.quote(full)}")
+        back = _written_back(name, key, here if present else there, rows)
+        if back is not None:
+            lines.append(f"git config -f {GITMODULES} {shlex.quote(full)} "
+                         f"{back}")
+        report.finding(
+            "gitmodules-value-refused",
+            f"{said} "
+            + ("" if put_back else f"The work tree holds no {GITMODULES}, "
+               "so the first line below puts HEAD's back. ")
+            + "Take the key out"
+            + (f" and write its {key} back" if back is not None else "")
+            + " by hand, in a POSIX shell"
+            + (f", then stage and commit {GITMODULES}"
+               if (name, key) in in_head else "")
+            + ":" + "".join(f"\n    {line}" for line in lines))
+        put_back = True
+    return bool(in_work), bool(in_work or in_head)
+
+
+def _submodule_entries(listed: bytes) -> list[tuple[str, str, str | None]]:
+    """`(name, key, value)` for each `submodule.<name>.<key>` in what `git
+    config -z --list` printed, in file order, None for a key with no value
+    (#768). A section git ignores whole, whose name is empty or has a `..`
+    component, split on `/` and on a backslash, gives none."""
+    entries: list[tuple[str, str, str | None]] = []
+    for record in listed.split(b"\0"):
+        key, valued, value = record.decode("utf-8",
+                                           "surrogateescape").partition("\n")
+        section, _, variable = key.rpartition(".")
+        name = section[len("submodule."):]
+        if (section.startswith("submodule.") and name
+                and ".." not in name.replace("\\", "/").split("/")):
+            entries.append((name, variable, value if valued else None))
+    return entries
+
+
+def _values_refused(root: Path, entries: list[tuple[str, str, str | None]]
+                    ) -> dict[tuple[str, str], list[str | None]]:
+    """`{(name, key): [each value]}` of `entries` (`_submodule_entries`)
+    that git 2.43 dies on as it reads `.gitmodules` (#768), as
+    `parse_config` in its submodule-config.c reads a key: a `path`, `url`,
+    `update` or `ignore` with no value (`bad config line`), a `branch`
+    with none (it crashes), an `update` other than `none`, `checkout`,
+    `rebase` or `merge`, in that case, a `!command` included (`invalid
+    value`), a `shallow` that is no boolean, and a `fetchrecursesubmodules`
+    that is neither a boolean nor `on-demand`, as git itself reads a
+    boolean (`git config --type=bool`). An `ignore` git does not know is
+    a warning, and any other key takes any value."""
+    refused: dict[tuple[str, str], list[str | None]] = {}
+    for name, key, value in entries:
+        if value is None:
+            dies = key in {"path", "url", "update", "ignore", "branch"}
+        elif key == "update":
+            dies = value not in {"none", "checkout", "rebase", "merge"}
+        else:
+            dies = (key == "shallow" or (key == "fetchrecursesubmodules"
+                                         and value != "on-demand")
+                    ) and not _git_takes_bool(root, value)
+        if dies:
+            refused.setdefault((name, key), []).append(value)
+    return refused
+
+
+def _git_takes_bool(root: Path, value: str) -> bool:
+    """Whether git reads `value` as a boolean, asked of git itself (`git
+    config --type=bool`), which reads `shallow` and
+    `fetchRecurseSubmodules` so (#768)."""
+    with _git_runs(f"a value in {GITMODULES} could not be read as git "
+                   "reads a boolean"):
+        try:
+            git_out(["-c", f"probe.value={value}", "config", "--type=bool",
+                     "--get", "probe.value"], cwd=root)
+        except Refusal:
+            return False
+    return True
+
+
+def _written_back(name: str, key: str,
+                  entries: list[tuple[str, str, str | None]],
+                  rows: dict[str, object]) -> str | None:
+    """What `gitmodules-value-refused` writes back for the `path` or `url`
+    of the section `name` once its key is out (#768), POSIX-quoted, or None
+    for any other key, and for a section whose path no row's
+    `members/<project>` is: the value the section last gave it that git
+    takes, or else, as `family.py add` writes a section named after its
+    path, that path, or `https://github.com/` and the row's `repository:`,
+    `<url>` where that is not `<org>/<Name>`. The section's path is the one
+    it last gave, or its name where it gave none."""
+    if key not in {"path", "url"}:
+        return None
+    gave = {wanted: [value for section, variable, value in entries
+                     if section == name and variable == wanted and value
+                     and not value.startswith("-")]
+            for wanted in ("path", "url")}
+    path = gave["path"][-1] if gave["path"] else name
+    if path not in rows:
+        return None
+    if gave[key]:
+        return shlex.quote(gave[key][-1])
+    if key == "path":
+        return shlex.quote(path)
+    repository = rows[path]
+    return (shlex.quote(f"https://github.com/{repository}.git")
+            if isinstance(repository, str) and QUALIFIED_RE.match(repository)
+            else "<url>")
 
 
 def _check_gitmodules_paths(sections: dict[str, dict[str, str]],
@@ -1560,10 +1764,23 @@ def _check_members(root: Path, members: list, no_members: bool,
     `member-uninitialized`, naming that same update, and the later row's
     `member-gitlink-absent`, which names the move that cures both, was
     never reached.
+
+    A VALUE GIT DIES ON IN `.gitmodules` (#768) is asked first of the
+    checks that read that file, and where the work tree's file gives one,
+    `gitmodules-path-twice` and `gitmodules-path-unnamed` read nothing from
+    it, as git reads nothing: no command they would print for a section
+    then meets one of its own lines. Where
+    either file gives one, git checks out no member, so a member that is
+    not checked out is asked nothing, as one `member-gitmodules-absent`
+    names: the finding fails the run, where `member-uninitialized` named
+    the update that dies.
     """
     _check_member_names_unique(members, report)
     _check_member_ids_unique(root, members, report)
     sections = _gitmodules_sections(root)
+    refused_here, refused = _check_gitmodules_values(root, members, report)
+    if refused_here:
+        sections = {}
     _check_gitmodules_paths(sections, report)
     named = _row_paths(members)
     gitlinks = _member_gitlinks(root)
@@ -1587,7 +1804,8 @@ def _check_members(root: Path, members: list, no_members: bool,
         if asked is not None:
             gitlinked.append(asked)
     for asked in gitlinked:
-        _check_member_checkout(root, asked, report, unregistered)
+        _check_member_checkout(root, asked, report,
+                               set(gitlinks) if refused else unregistered)
     if not members:
         report.note("no members yet: a family with none is empty, not "
                     "wrong")
