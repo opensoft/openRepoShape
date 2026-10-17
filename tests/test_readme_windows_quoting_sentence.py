@@ -117,25 +117,39 @@ def test_the_handbooks_windows_panel_says_the_same_words():
         f"what README's \"Windows, natively\" says:\n  {sentence}")
 
 
+def alias_of(node: ast.AST):
+    """`(name, value)` for `name = value` and `name: type = value`, the two
+    statements that give a name to what `value` is (`value` is None in a
+    bare `name: type`, which names nothing); None for any other node. A
+    chained, tuple or walrus assignment is not one (#759)."""
+    if (isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)):
+        return node.targets[0].id, node.value
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return node.target.id, node.value
+    return None
+
+
 def quoter_names(tree: ast.AST) -> set:
     """The names a host-dialect quoter answers to in this module: the four of
     `HOST_QUOTERS`, and every other name bound to one, by `from repo_shape
     import shell_line as joined` or by `joined = shell_line` (or
-    `... = repo_shape.shell_line`), however many steps it takes (#665)."""
+    `joined: object = shell_line`, or `... = repo_shape.shell_line`), however
+    many steps it takes (#665, #759)."""
     names = set(HOST_QUOTERS)
     while True:
         before = len(names)
         for node in ast.walk(tree):
+            statement = alias_of(node)
             if isinstance(node, ast.ImportFrom):
                 names.update(alias.asname for alias in node.names
                              if alias.asname and alias.name in names)
-            elif (isinstance(node, ast.Assign) and len(node.targets) == 1
-                  and isinstance(node.targets[0], ast.Name)):
-                value = node.value
+            elif statement is not None:
+                name, value = statement
                 bound = value.id if isinstance(value, ast.Name) else getattr(
                     value, "attr", None)
                 if bound in names:
-                    names.add(node.targets[0].id)
+                    names.add(name)
         if len(names) == before:
             return names
 
@@ -146,7 +160,17 @@ def host_calls(source: str, filename: str = "<tool>") -> list:
     a `posix=True` keyword. `function` is the innermost `def` the call is
     in (`Class.method` for a method), or `<module>`. A quoter handed on as a
     value (`map(shell_quoted, words)`) is a use as a call is, and is seen
-    (`host_values`, #759)."""
+    (`host_values`, #759).
+
+    WHAT IT DOES NOT SEE: a name given to a quoter by a tuple (`a, b =
+    shell_line, shell_word`), a chained assignment (`a = b = shell_line`), a
+    walrus (`(q := shell_line)`) or a conditional (`q = shell_line if x else
+    repr`). The quoter is counted at that statement, once, and the calls of
+    the new name are not seen, so `q(x) + q(y)` is one use and not two. A
+    plain or annotated assignment (`q = shell_line`, `q: object =
+    shell_line`) is followed instead, and each call of `q` is the use. A
+    quoter named by `getattr(repo_shape, "shell_line")` or
+    `globals()["shell_line"]` is a string here, not a name."""
     tree = ast.parse(source, filename=filename)
     quoters = quoter_names(tree)
     found = []
@@ -199,22 +223,29 @@ def host_values(tree: ast.AST, quoters: set) -> list:
         while isinstance(parent, (ast.keyword, ast.Starred)):
             parent = parents.get(parent)
         if isinstance(parent, ast.Call):
-            handed_on = parent.func is not node and not names_posix(parent)
+            handed_on = (parent.func is not node
+                         and not names_posix(parent, node))
         else:
-            handed_on = not (isinstance(parent, ast.Assign)
-                             and parent.value is node
-                             and len(parent.targets) == 1
-                             and isinstance(parent.targets[0], ast.Name))
+            alias = alias_of(parent)
+            handed_on = alias is None or alias[1] is not node
         if handed_on:
             found.append((function_of(node, parents), node.lineno))
     return found
 
 
-def names_posix(call: ast.Call) -> bool:
-    """`host_call`'s test of a call, for a call that takes the quoter as an
-    argument: a `'posix'` argument, or a `platform=` or `posix=` keyword."""
+def names_posix(call: ast.Call, quoter: ast.AST) -> bool:
+    """`host_call`'s test of a call, for a call that takes `quoter` as an
+    argument: a `'posix'` argument after the one the quoter would quote (the
+    quoter, its value, then its platform: `functools.partial(shell_quoted,
+    'x', 'posix')`), or a `platform=` or `posix=` keyword. `functools.partial(
+    quote_arg, 'posix')` binds the VALUE `'posix'` and quotes it for the host.
+    A quoter handed as a keyword (`key=shell_quoted`) has no place among the
+    arguments, so each of them is read."""
+    placed = next((at for at, arg in enumerate(call.args) if arg is quoter),
+                  None)
+    after = call.args if placed is None else call.args[placed + 2:]
     return any(isinstance(arg, ast.Constant) and arg.value == "posix"
-               for arg in call.args) or any(
+               for arg in after) or any(
         isinstance(kw.value, ast.Constant)
         and (kw.value.value == "posix" or kw.value.value is True)
         for kw in call.keywords if kw.arg in ("platform", "posix"))
@@ -332,6 +363,17 @@ VALUE_USES = {
     "list": "def f():\n    return [shell_line, repr]\n",
     "default": "def f(quote=quote_arg):\n    return quote\n",
     "returned": "def f():\n    return shell_line\n",
+    # The alias statement is not a use only where `quoter_names` follows it:
+    # one that stores the quoter on an object, or names it twice, is the use.
+    "stored on an object": "def f(self):\n    self.quote = shell_line\n",
+    "chained alias": "def f():\n    a = b = shell_quoted\n    return a, b\n",
+    # `partial(quote_arg, 'posix')` binds the VALUE 'posix', not the platform.
+    "partial of the value 'posix'": (
+        "import functools\n"
+        "def f():\n    return functools.partial(quote_arg, 'posix')\n"),
+    # A name read in an annotation is still a read; only the VALUE a statement
+    # assigns is the alias.
+    "annotation": "def f():\n    quote: shell_quoted = None\n",
 }
 
 #: What is not a use: `sh`'s dialect asked for, the alias statement, a string
@@ -345,7 +387,11 @@ NOT_USES = {
                    "functools.partial(shell_line, posix=True)\n"),
     "posix keyword beside the quoter in a keyword":
         "def f(w):\n    return sorted(w, key=shell_quoted, posix=True)\n",
+    "posix argument beside the quoter in a keyword":
+        "def f(w):\n    return apply(w, 'posix', key=shell_quoted)\n",
     "alias statement": "def f():\n    quote = shell_quoted\n",
+    "annotated alias statement":
+        "def f():\n    quote: object = shell_quoted\n",
     "string": "def f():\n    return 'shell_line'\n",
     "other name": "def f(w):\n    return map(repr, w)\n",
 }
@@ -363,6 +409,39 @@ def test_a_quoter_handed_on_as_a_value_is_a_host_use(form):
 @pytest.mark.parametrize("form", sorted(NOT_USES))
 def test_what_is_not_a_use_of_a_host_quoter_is_not_one(form):
     assert host_calls(NOT_USES[form]) == [], form
+
+
+def test_a_quoter_aliased_with_an_annotation_is_counted_at_each_call():
+    """`q: object = shell_quoted` names the quoter as `q = shell_quoted`
+    does, so each call of `q` is the use and the statement is not: a count
+    of two is two, and one of the two switched to `'posix'` is one."""
+    source = ("def f(x, y):\n    q: object = shell_quoted\n"
+              "    a = q(x)\n    return a + q(y)\n")
+    assert host_calls(source) == [("f", 3), ("f", 4)]
+    assert host_calls(source.replace("q(y)", "q(y, 'posix')")) == [("f", 3)]
+
+
+#: The names a quoter is given that `quoter_names` does not follow, and the
+#: uses it counts instead: the statement, once for each quoter it names
+#: (`host_calls`' docstring says what it does not see).
+NOT_FOLLOWED = {
+    "a tuple": ("def f(x, y):\n    a, b = shell_line, shell_word\n"
+                "    return a(x) + b(y)\n", [("f", 2), ("f", 2)]),
+    "a chained assignment": (
+        "def f(x, y):\n    a = b = shell_line\n    return a(x) + b(y)\n",
+        [("f", 2)]),
+    "a walrus": ("def f(x, y):\n    return (q := shell_line)(x) + q(y)\n",
+                 [("f", 2)]),
+    "a conditional": (
+        "def f(x, y):\n    q = shell_line if x else repr\n"
+        "    return q(x) + q(y)\n", [("f", 2)]),
+}
+
+
+@pytest.mark.parametrize("form", sorted(NOT_FOLLOWED))
+def test_an_alias_the_walk_does_not_follow_is_counted_at_its_statement(form):
+    source, uses = NOT_FOLLOWED[form]
+    assert host_calls(source) == uses, form
 
 
 def test_a_value_use_names_its_tool_and_function():
@@ -395,6 +474,14 @@ def test_a_method_is_named_with_its_class():
               "class Plan:\n    def line(self):\n"
               "        return repo_shape.shell_line(['git'])\n")
     assert host_calls(source) == [("Plan.line", 4)]
+
+
+def test_a_value_use_in_a_method_is_named_with_its_class():
+    """A value use in a method is named as a call in it is, `Plan.line` and
+    not `line` (`test_a_method_is_named_with_its_class`)."""
+    source = ("class Plan:\n    def line(self, w):\n"
+              "        return map(shell_quoted, w)\n")
+    assert host_calls(source) == [("Plan.line", 3)]
 
 
 def test_only_the_two_quoter_bodies_of_repo_shape_are_exempt():
