@@ -146,13 +146,16 @@ class Rule:
 
     `urls` are the urls git registers, in the order of the file; none where it
     reads none of the file. `refused` is the cause the steps name where git
-    refuses the whole file, and `unmerged` leaves `.gitmodules` unmerged in
-    the index with the file in the working tree as it is.
+    refuses the whole file, and `named` what that message names of the file:
+    the key git stops at as the step prints it (`%` escaped), or its line.
+    `unmerged` leaves `.gitmodules` unmerged in the index with the file in the
+    working tree as it is, and a `gitmodules` of None writes no file at all.
     """
-    gitmodules: str
+    gitmodules: str | None
     paths: tuple
     urls: tuple
     refused: str = ""
+    named: str = ""
     unmerged: bool = False
 
 
@@ -167,7 +170,8 @@ def holder_of(tmp_path: Path, gitmodules: str, paths=(), unmerged=False,
     work = tmp_path / name
     work.mkdir()
     git("init", "-q", cwd=work)
-    (work / ".gitmodules").write_bytes(gitmodules.encode("utf-8"))
+    if gitmodules is not None:
+        (work / ".gitmodules").write_bytes(gitmodules.encode("utf-8"))
     for path in paths:
         git("update-index", "--add", "--cacheinfo", f"160000,{GITLINK},{path}",
             cwd=work)
@@ -197,10 +201,11 @@ def accepted(*keys: str) -> Rule:
                 (*(acme(name.upper()) for name in names), OK_URL))
 
 
-def refusing(cause: str, *keys: str) -> Rule:
+def refusing(cause: str, *keys: str, named: str, name: str = "q") -> Rule:
     """`ok`, then a mounted section holding `keys`: git refuses the whole
-    file for them, `ok` and all, and the steps say `cause`."""
-    return Rule(OK + mounted("q", acme("Q"), *keys), ("ok", "q"), (), cause)
+    file for them, `ok` and all, and the steps say `cause`, naming `named`."""
+    return Rule(OK + mounted(name, acme("Q"), *keys), ("ok", name), (), cause,
+                named)
 
 
 NO_VALUE = " key with no value"
@@ -234,33 +239,64 @@ RULES = {
     "a section with no path": Rule(
         section("np", f"url = {acme('Nowhere')}") + OK, ("np", "ok"),
         (OK_URL,)),
+    "a url given twice, the later beginning with a dash": Rule(
+        mounted("later", acme("Early"), "url = -x") + OK, ("later", "ok"),
+        (acme("Early"), OK_URL)),
+    "a path given twice, the later beginning with a dash": Rule(
+        section("lp", "path = lp", f"url = {acme('LP')}", "path = -p") + OK,
+        ("lp", "ok"), (acme("LP"), OK_URL)),
+    "no gitmodules at all": Rule(None, (), ()),
     "a gitmodules left unmerged": Rule(OK, ("ok",), (), unmerged=True),
+    "a bare ignore in a section named with a backslash": Rule(
+        section("..\\\\x", "ignore") + OK, ("ok",), (OK_URL,)),
     "a bare key where git ignores the section": Rule(
         section("", "url") + section("../x", "path") + '[remote "r"]\n\turl\n'
         + OK, ("ok",), (OK_URL,)),
     "a file git cannot parse": Rule(
-        OK + '[submodule "x"\n', ("ok",), (), "git cannot parse .gitmodules"),
-    "a path with no value": refusing("path" + NO_VALUE, "path"),
-    "a url with no value": refusing("url" + NO_VALUE, "url"),
-    "an ignore with no value": refusing("ignore" + NO_VALUE, "ignore"),
-    "an update with no value": refusing("update" + NO_VALUE, "update"),
-    "a branch with no value": refusing("branch" + NO_VALUE, "branch"),
-    "an update git dies on": refusing(UPDATE, "update = bogus"),
-    "an update that is a command": refusing(UPDATE, "update = !echo hi"),
+        OK + '[submodule "x"\n', ("ok",), (), "a line git cannot parse",
+        "bad config line 5 in file .gitmodules"),
+    "a path with no value": refusing(
+        "a path" + NO_VALUE, "path", named="submodule.q.path"),
+    "a url with no value": refusing(
+        "a url" + NO_VALUE, "url", named="submodule.q.url"),
+    "an ignore with no value": refusing(
+        "an ignore" + NO_VALUE, "ignore", named="submodule.q.ignore"),
+    "an update with no value": refusing(
+        "an update" + NO_VALUE, "update", named="submodule.q.update"),
+    "a branch with no value": refusing(
+        "a branch" + NO_VALUE, "branch", named="submodule.q.branch"),
+    "an update git dies on": refusing(
+        UPDATE, "update = bogus", named="submodule.q.update"),
+    "an update that is a command": refusing(
+        UPDATE, "update = !echo hi", named="submodule.q.update"),
+    "an update in a section named with a percent sign": refusing(
+        UPDATE, "update = bogus", name="p%q", named="submodule.p%25q.update"),
     "each update git accepts": accepted(
         "update = checkout", "update = merge", "update = rebase",
         "update = none"),
-    "a shallow git dies on": refusing(SHALLOW, "shallow = maybe"),
+    "a shallow git dies on": refusing(
+        SHALLOW, "shallow = maybe", named="submodule.q.shallow"),
     "each shallow git accepts": accepted(
         "shallow = true", "shallow = no", "shallow = 1", "shallow = 0x10",
         "shallow = ", "shallow"),
     "a fetchRecurseSubmodules git dies on": refusing(
-        FETCH, "fetchRecurseSubmodules = sometimes"),
+        FETCH, "fetchRecurseSubmodules = sometimes",
+        named="submodule.q.fetchrecursesubmodules"),
+    "a fetchRecurseSubmodules spelt On-Demand": refusing(
+        FETCH, "fetchRecurseSubmodules = On-Demand",
+        named="submodule.q.fetchrecursesubmodules"),
     "each fetchRecurseSubmodules git accepts": accepted(
         "fetchRecurseSubmodules = on-demand", "fetchRecurseSubmodules = true",
         "fetchRecurseSubmodules = 2", "fetchRecurseSubmodules"),
 }
 EACH_RULE = pytest.mark.parametrize("rule_id", sorted(RULES))
+#: Each step with each row, but for the failing step with a file git refuses:
+#: the fetch step exits 1 on one, so the failing step is never reached with
+#: it, and it carries no refusal of its own.
+EACH_STEP_AND_RULE = pytest.mark.parametrize("step, rule_id", [
+    (step, rule_id) for rule_id in sorted(RULES)
+    for step in ("names", "fetch", "fail")
+    if not (step == "fail" and RULES[rule_id].refused)])
 
 
 def run_step(template: str, step: str, holder: Path, tmp_path: Path):
@@ -432,8 +468,7 @@ def expected_of(step: str, rule: Rule) -> list:
 
 
 @WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
-@EACH_RULE
-@EACH_STEP
+@EACH_STEP_AND_RULE
 @EACH_TEMPLATE
 def test_each_step_reads_what_git_reads(template, step, rule_id, tmp_path):
     rule = RULES[rule_id]
@@ -443,8 +478,7 @@ def test_each_step_reads_what_git_reads(template, step, rule_id, tmp_path):
 
 
 @WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
-@EACH_RULE
-@EACH_STEP
+@EACH_STEP_AND_RULE
 @EACH_TEMPLATE
 def test_each_step_exits_as_expected_and_prints_nothing_on_stderr(
         template, step, rule_id, tmp_path):
@@ -461,9 +495,9 @@ def test_each_step_exits_as_expected_and_prints_nothing_on_stderr(
 @WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
 @pytest.mark.parametrize("rule_id", sorted(
     rule_id for rule_id, rule in RULES.items() if rule.refused))
-@EACH_STEP
+@pytest.mark.parametrize("step", ["names", "fetch"])
 @EACH_TEMPLATE
-def test_a_file_git_refuses_whole_is_named_with_its_cause(
+def test_a_file_git_refuses_whole_is_named_with_its_cause_and_its_key(
         template, step, rule_id, tmp_path):
     rule = RULES[rule_id]
     work = holder_of(tmp_path, rule.gitmodules, rule.paths)
@@ -471,3 +505,27 @@ def test_a_file_git_refuses_whole_is_named_with_its_cause(
     causes = [line for line in result.stdout.split("\n")
               if line.startswith("::error::") and rule.refused in line]
     assert len(causes) == 1
+    assert rule.named in causes[0]
+
+
+@WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
+@EACH_TEMPLATE
+def test_the_fetch_step_gives_no_credential_advice_for_a_file_git_refuses(
+        template, tmp_path):
+    rule = RULES["a url with no value"]
+    work = holder_of(tmp_path, rule.gitmodules, rule.paths)
+    result, _ = run_step(template, "fetch", work, tmp_path)
+    assert "submodule checkout failed" not in result.stdout
+
+
+@WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
+@EACH_TEMPLATE
+def test_the_fetch_step_gives_its_credential_advice_before_it_lists_the_urls(
+        template, holder, tmp_path):
+    result, _ = run_step(template, "fetch", holder, tmp_path)
+    lines = result.stdout.split("\n")
+    advice = next(n for n, line in enumerate(lines)
+                  if line.startswith("::warning::submodule checkout failed"))
+    first = next(n for n, line in enumerate(lines)
+                 if line.startswith("::warning::  "))
+    assert advice < first
