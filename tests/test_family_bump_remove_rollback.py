@@ -429,13 +429,16 @@ def test_a_remove_dry_run_under_a_held_index_lock_is_unchanged(
 # --- refusals a dry run asks first are asked first (#365) -----------------
 
 def comment_on_members(root: Path, env: dict) -> None:
-    """A comment on the `members:` line, uncommitted: YAML reads past it and
-    the line rewrite does not (`family-members-unrecognised`)."""
+    """A comment on the `members:` line, committed: YAML reads past it and
+    the line rewrite does not (`family-members-unrecognised`). Committed,
+    since the verbs refuse a `family.yaml` holding a change HEAD does not
+    first (#684)."""
     manifest_path = root / "family.yaml"
     text = manifest_path.read_bytes()
     assert text.count(b"\nmembers:\n") == 1, "fixture drift"
     manifest_path.write_bytes(text.replace(
         b"\nmembers:\n", b"\nmembers:  # edited by hand\n"))
+    raw(root, env, "commit", "-q", "-m", "A hand edit", "--", "family.yaml")
 
 
 @pytest.mark.parametrize("verb", ["remove", "bump"])

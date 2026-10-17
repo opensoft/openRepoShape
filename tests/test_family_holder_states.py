@@ -18,10 +18,24 @@ review lines on #459: E1, E2, E3, E5 and N4).
 - **A merge conflicted in `family.yaml` itself** (N4). `yaml-unparsable`
   keeps its code and its line, and gains a remediation naming the merge
   and its exits; asked only once the parse has failed.
-- **A `members` file HEAD holds and the index no longer does** (E1): the
-  move #612's own remedy names, staged and not committed, or a removal
-  staged. `add` went through and its commit took `D members` into itself;
-  now it is refused before the member is read.
+- **A `members` file HEAD holds and the work tree no longer does** (E1):
+  the move #612's own remedy names, staged and not committed, or a removal
+  staged; or the file deleted and the deletion not staged. `add` went
+  through and its commit took `D members` into itself; now it is refused
+  before the member is read. The unstaged deletion is taken out of the
+  index with `git rm --cached` and the removal committed: the issue's `git
+  mv` fails there (the premise, measured here).
+- **A `family.yaml` holding a change HEAD does not** (#459's line from
+  #571's review, on Brett Heap's word relayed by lane 5 on #473 at
+  2026-10-16T13:56:50Z, "refuse a dirty `family.yaml`"). `add`, `bump` and
+  `remove` commit the file as the work tree has it, so a comment line
+  edited by hand went into their commit; each now refuses it, staged or
+  not, and git's two ways out, typed as printed, let the command run.
+  `member-path`'s remedy says to commit a row put back by hand, so it no
+  longer leads into this refusal.
+
+#612's review E4 (reftable) is NOT here: this host's git is 2.43, and
+the issue asks for it to be measured on git 2.45 or later first.
 
 THE PROOF IS #612's, with the helpers of `test_family_refuse_up_front.py`:
 exit 2 and one REFUSED paragraph, nothing on stdout (no member was read),
@@ -46,7 +60,7 @@ from test_family import FAMILY, ORG, SPARE, family, family_module  # noqa: F401
 from test_family_add_excludes import empty_holder  # noqa: F401
 from test_family_add_refusals import holder, offline, refusal  # noqa: F401
 from test_family_dry_run import add, add_state, assert_add_as_it_was, isolated
-from test_family_member_path import MEMBER, raw
+from test_family_member_path import GLOB, MEMBER, hand_edit, raw
 #: #612's proof of a refusal before the first write, and its states.
 from test_family_refuse_up_front import (
     NOTES, VERBS, assert_refused_alike, commit_file, head_of, mark_of,
@@ -410,7 +424,7 @@ def test_a_family_yaml_outside_any_repository_keeps_its_refusal(
     assert ran.stderr == unparsable_line(plain, 2) + "\n", ran.stderr
 
 
-# --- a members file HEAD holds and the index no longer does (E1) ------------
+# --- a members file HEAD holds and the work tree no longer does (E1) --------
 
 MOVED_LINE = (
     "REFUSED member-path-unaddable: git would add the mount path "
@@ -426,11 +440,63 @@ MOVED_REMEDY = (
     "first (`git commit`), since the add's own commit names .gitmodules, "
     f"members/{SPARE} and family.yaml alone, and run the same command "
     "again.")
+DELETED_LINE = (
+    "REFUSED member-path-unaddable: git would add the mount path "
+    f"members/{SPARE} and take `members` out of the holder with it: "
+    "`members` is a file HEAD and the index hold and the work tree no "
+    "longer does, its deletion not staged, and the add's mount, putting a "
+    "directory where the file was, would take it out of the index, and its "
+    "commit would take that deletion into itself (`D members`). No git "
+    "command that writes was run and nothing was written.")
+DELETED_REMEDY = (
+    "Remediation: every member is mounted under members/, which must be a "
+    "plain directory of the holder's own. Take the file out of the index, "
+    "which touches no file (`git rm --cached -- members`), and commit the "
+    "removal on its own first (`git commit`), since the add's own commit "
+    f"names .gitmodules, members/{SPARE} and family.yaml alone, and run the "
+    "same command again.")
 
 #: `{id: the git command that leaves the tracked file staged away}`: the
 #: move #612's remedy names, and the file's removal.
 STAGED_AWAY = {"git mv": ("mv", "--", "members", "members-file"),
                "git rm": ("rm", "-q", "--", "members")}
+
+#: What is at `members` once the file is deleted and the deletion is not
+#: staged: nothing, or a directory a hand made there with a file of the
+#: person's in it, which `git checkout -- members` would take away.
+LEFT_THERE = {"nothing": None, "a-directory": "NOTES.txt"}
+
+
+def a_members_file(root: Path, env: dict) -> None:
+    """A FILE named `members`, committed: what `_members_is_a_file` refuses
+    while it is on disk."""
+    (root / "members").write_bytes(b"a file where the directory goes\n")
+    raw(root, env, "add", "-f", "--", "members")
+    raw(root, env, "commit", "-q", "-m", "a file named members")
+
+
+def add_refused(family, root: Path, env: dict, dry_run: bool, line: str,
+                remedy: str) -> None:
+    """`add`, or its dry run, refused with `line` and `remedy` before the
+    member is read: nothing on stdout, and the holder as it was."""
+    before = add_state(root, env)
+    ran = add(root, env, family["remotes"],
+              *(("--dry-run",) if dry_run else ()))
+    assert ran.returncode == 2, ran.stdout + ran.stderr
+    assert ran.stdout == ""
+    assert refusal(ran.stderr) == (line, remedy)
+    assert_add_as_it_was(root, env, before)
+
+
+def adds_its_own_three_paths(family, root: Path, env: dict) -> None:
+    """`add` once the remedy is typed: exit 0 and a commit of `.gitmodules`,
+    `family.yaml` and the mount, and of nothing else (no `D members`)."""
+    done = add(root, env, family["remotes"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    shown = raw(root, env, "show", "--name-status", "--format=", "HEAD"
+                ).stdout.decode().split("\n")
+    assert sorted(entry.split("\t")[1] for entry in shown if entry) == [
+        ".gitmodules", MANIFEST, f"members/{SPARE}"], shown
 
 
 @pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
@@ -447,28 +513,205 @@ def test_add_refuses_a_members_file_whose_move_is_staged_not_committed(
     and leaves nothing staged."""
     holder = empty_holder
     env = isolated(offline, tmp_path)
-    (holder / "members").write_bytes(b"a file where the directory goes\n")
-    raw(holder, env, "add", "-f", "--", "members")
-    raw(holder, env, "commit", "-q", "-m", "a file named members")
+    a_members_file(holder, env)
     raw(holder, env, *change)
     assert not os.path.lexists(holder / "members"), "premise: not on disk"
     assert b"\tmembers\0" not in raw(holder, env, "ls-files", "-s", "-z"
                                      ).stdout, "premise: not in the index"
-    before = add_state(holder, env)
-    extra = ("--dry-run",) if dry_run else ()
-    ran = add(holder, env, family["remotes"], *extra)
-    assert ran.returncode == 2, ran.stdout + ran.stderr
-    assert ran.stdout == ""
-    line, remedy = refusal(ran.stderr)
-    assert line == MOVED_LINE
-    assert remedy == MOVED_REMEDY
-    assert_add_as_it_was(holder, env, before)
+    add_refused(family, holder, env, dry_run, MOVED_LINE, MOVED_REMEDY)
 
     raw(holder, env, "commit", "-q", "-m", "the change, on its own")
-    done = add(holder, env, family["remotes"])
-    assert done.returncode == 0, done.stdout + done.stderr
-    shown = raw(holder, env, "show", "--name-status", "--format=", "HEAD"
-                ).stdout.decode().split("\n")
-    assert sorted(entry.split("\t")[1] for entry in shown if entry) == [
-        ".gitmodules", MANIFEST, f"members/{SPARE}"], shown
+    adds_its_own_three_paths(family, holder, env)
     assert raw(holder, env, "status", "--porcelain").stdout == b""
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+@pytest.mark.parametrize("left", LEFT_THERE.values(), ids=LEFT_THERE)
+def test_add_refuses_a_members_file_deleted_and_the_deletion_not_staged(
+        family, empty_holder, offline, tmp_path, left, dry_run):
+    """E1's OTHER HALF: the tracked `members` file deleted from disk, the
+    deletion not staged, and nothing at `members` but, it may be, a
+    directory a hand made there. The index still holds the file, and the
+    `git mv` the issue proposed fails there, exit 128, changing nothing
+    (premises, measured here). `add` went through and its commit took `D
+    members`; now `member-path-unaddable`, nothing on stdout, the holder as
+    it was. Typed as printed, `git rm --cached -- members` and the commit
+    of the removal, `add` makes its commit of its own three paths alone,
+    and the person's directory and the file in it are still there."""
+    holder = empty_holder
+    env = isolated(offline, tmp_path)
+    a_members_file(holder, env)
+    (holder / "members").unlink()
+    if left is not None:
+        (holder / "members").mkdir()
+        (holder / "members" / left).write_bytes(b"the person's own\n")
+    assert b"\tmembers\0" in raw(holder, env, "ls-files", "-s", "-z"
+                                 ).stdout, "premise: the index holds it"
+    status = raw(holder, env, "status", "--porcelain").stdout
+    moved = raw(holder, env, "mv", "--", "members", "members-file",
+                check=False)
+    assert moved.returncode == 128, moved.stderr
+    assert raw(holder, env, "status", "--porcelain").stdout == status
+    add_refused(family, holder, env, dry_run, DELETED_LINE, DELETED_REMEDY)
+
+    raw(holder, env, "rm", "-q", "--cached", "--", "members")
+    raw(holder, env, "commit", "-q", "-m", "the removal, on its own")
+    adds_its_own_three_paths(family, holder, env)
+    if left is None:
+        assert raw(holder, env, "status", "--porcelain").stdout == b""
+    else:
+        assert (holder / "members" / left).read_bytes() == \
+            b"the person's own\n"
+        assert raw(holder, env, "status", "--porcelain").stdout == (
+            f"?? members/{left}\n".encode())
+
+
+# --- a family.yaml holding a change HEAD does not (#459's line 66) ----------
+
+#: The line's own example, a hand edit outside `members:`: a comment line,
+#: put first in the file, where no verb's rewrite of `members:` reaches.
+COMMENT = b"# a comment line, edited by hand\n"
+
+#: What the refusal says of each way the file holds such a change.
+SAID_UNSTAGED = ("git lists the work tree's copy as modified, a change "
+                 "nobody has staged")
+SAID_STAGED = "a change to it is staged and not committed"
+SAID_UNMERGED = "it is unmerged in the index"
+SAID_DELETION = "its deletion is staged, so the index holds no copy"
+
+UNCOMMITTED_REMEDY = (
+    "Remediation: which change to keep is a person's to say. To keep it, "
+    "commit it on its own first, `git commit -- family.yaml`; to drop it, "
+    "put back HEAD's copy, in the index and the work tree, `git checkout "
+    "HEAD -- family.yaml`. Then run the same command again.")
+
+#: The remedy's two ways out, as printed.
+KEEP = ("commit", "-q", "-m", "the hand edit, on its own", "--", MANIFEST)
+DROP = ("checkout", "HEAD", "--", MANIFEST)
+
+
+def uncommitted_said(verb: str, *said: str) -> tuple:
+    """`(the REFUSED line as a pattern, the remediation)` of
+    `family-manifest-uncommitted` for `verb`, saying each of `said`."""
+    line = (
+        "REFUSED family-manifest-uncommitted: family.yaml holds a change "
+        f"HEAD does not: {', and '.join(said)}. `{verb}` rewrites "
+        "family.yaml as the work tree has it and commits it, so that change "
+        "would go into the command's commit beside its own. No git command "
+        "that writes was run and nothing was written.")
+    return re.compile(re.escape(line)), UNCOMMITTED_REMEDY
+
+
+def commented(root: Path, comment: bytes = COMMENT) -> None:
+    """`comment` written first in `family.yaml` by hand, not staged."""
+    manifest = root / MANIFEST
+    manifest.write_bytes(comment + manifest.read_bytes())
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_an_unstaged_hand_edit_to_family_yaml_is_refused_in_both_runs(
+        family, holder, offline, tmp_path, verb):
+    """THE LINE'S CASE: a comment line edited into `family.yaml` by hand
+    and never staged went into the verb's commit beside its own row. Each
+    verb now refuses it, in both runs alike, nothing on stdout, the holder
+    as it was and the edit still in the work tree. Typed as printed, `git
+    commit -- family.yaml` commits the edit on its own, and the verb then
+    makes its one commit on top: the comment is the person's commit's, and
+    the verb's commit leaves it as it was."""
+    env = isolated(offline, tmp_path)
+    commented(holder)
+    assert_refused_alike(verb, family, holder, env,
+                         uncommitted_said(verb, SAID_UNSTAGED))
+    assert (holder / MANIFEST).read_bytes().startswith(COMMENT)
+    raw(holder, env, *KEEP)
+    runs_after(verb, family, holder, env)
+    for commit in ("HEAD~1", "HEAD"):
+        assert raw(holder, env, "show", f"{commit}:{MANIFEST}"
+                   ).stdout.startswith(COMMENT), commit
+
+
+def staged(root: Path, env: dict) -> None:
+    """The comment, staged and not committed."""
+    commented(root)
+    raw(root, env, "add", "--", MANIFEST)
+
+
+def staged_then_edited(root: Path, env: dict) -> None:
+    """The comment staged, and a second one written after it, not staged."""
+    staged(root, env)
+    commented(root, b"# and another\n")
+
+
+def deletion_staged(root: Path, env: dict) -> None:
+    """`git rm --cached -- family.yaml`: the copy on disk is HEAD's, and the
+    index holds none."""
+    raw(root, env, "rm", "-q", "--cached", "--", MANIFEST)
+
+
+def unmerged(root: Path, env: dict) -> None:
+    """`family.yaml` unmerged with NO ACT in progress, as a `git stash pop`
+    that conflicted leaves it (git keeps no `MERGE_HEAD` for it, the
+    premise), resolved in the work tree by hand, both lines kept, and not
+    staged."""
+    commented(root, b"# stashed\n")
+    raw(root, env, "stash", "-q")
+    commented(root, b"# committed\n")
+    raw(root, env, "commit", "-q", "-m", "a comment", "--", MANIFEST)
+    popped = raw(root, env, "stash", "pop", check=False)
+    assert popped.returncode != 0, popped.stdout
+    assert not os.path.lexists(mark_of(root, env, "MERGE_HEAD")), "premise"
+    (root / MANIFEST).write_bytes(
+        b"# stashed\n" + raw(root, env, "show", f"HEAD:{MANIFEST}").stdout)
+
+
+#: `{id: (how the holder gets the change, what the refusal says of it, the
+#: way out typed)}`.
+STATES = {
+    "staged": (staged, (SAID_STAGED,), DROP),
+    "staged-then-edited": (staged_then_edited,
+                           (SAID_STAGED, SAID_UNSTAGED), KEEP),
+    "deletion-staged": (deletion_staged, (SAID_DELETION,), DROP),
+    "unmerged": (unmerged, (SAID_UNMERGED,), KEEP),
+}
+
+
+@pytest.mark.parametrize("set_up, said, typed", STATES.values(), ids=STATES)
+def test_a_change_to_family_yaml_in_the_index_is_refused_too(
+        family, holder, offline, tmp_path, set_up, said, typed):
+    """A CHANGE STAGED AND NOT COMMITTED IS REFUSED AS WELL, since the
+    commit takes the work tree's copy all the same: staged, staged and then
+    edited again, a deletion staged over HEAD's own copy, and a copy left
+    unmerged with no act in progress. `remove` refuses each in both runs
+    alike, saying which it is, with the holder as it was; the way out typed
+    as printed lets it run."""
+    env = isolated(offline, tmp_path)
+    set_up(holder, env)
+    assert_refused_alike("remove", family, holder, env,
+                         uncommitted_said("remove", *said))
+    raw(holder, env, *typed)
+    runs_after("remove", family, holder, env)
+
+
+def test_a_row_put_back_as_member_path_says_is_committed_and_the_verb_runs(
+        family, holder, offline, tmp_path):
+    """THE REMEDY THAT EDITS `family.yaml` NO LONGER LEADS INTO THIS
+    REFUSAL. A `path:` edited by hand AND COMMITTED is `member-path`'s,
+    whose remedy now says to commit the row put back. Typed so, the verb
+    runs; put back and not committed, it is refused as uncommitted."""
+    env = isolated(offline, tmp_path)
+    good = (holder / MANIFEST).read_bytes()
+    hand_edit(holder, MEMBER, GLOB)
+    raw(holder, env, "commit", "-q", "-m", "a hand edit", "--", MANIFEST)
+    ran = run_verb("remove", family, holder, env)
+    assert ran.returncode == 2, ran.stdout + ran.stderr
+    assert refusal(ran.stderr)[1] == (
+        "Remediation: this tool writes that field itself, so a different "
+        f"value is a hand edit. Put `path: members/{MEMBER}` back in "
+        "family.yaml and commit that, or `git checkout -- family.yaml` if "
+        "the edit is not committed, then run the same command again.")
+    (holder / MANIFEST).write_bytes(good)
+    assert_refused_alike("remove", family, holder, env,
+                         uncommitted_said("remove", SAID_UNSTAGED))
+    raw(holder, env, "commit", "-q", "-m", "the row put back", "--",
+        MANIFEST)
+    runs_after("remove", family, holder, env)
