@@ -90,7 +90,14 @@ with; it never runs `git submodule add` and writes nothing of the holder's.
 question the real run asks before it creates the holder (#537): `gh repo
 view` and the commit listing, or the bare repository with
 `--local-remote-dir`. It refuses `family-remote-exists` as the real run does,
-and makes no folder, remote or repository.
+and makes no folder, remote or repository. Both runs ask it after whether
+each folder `init` makes can be made and the holder written (#609), and
+before the real run makes the family folder, so a refusal leaves none: a file
+where a folder must go, or a folder this user cannot write in, is
+`family-folder-cannot-be-made` or `family-target-exists`, never a traceback.
+Only gh's own not-found answer says the holder does not exist; any other
+`gh repo view` failure (a bad login, a rate limit, no network) is refused as
+`remote-unreadable`.
 
 WHAT ONLY THE WRITE ITSELF CAN ANSWER IS NOT ASKED. A member whose local
 changes `git checkout` would refuse to overwrite gets exit 0 and a row from
@@ -159,7 +166,6 @@ from typing import NamedTuple
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    free_plan_secret_hint,
     COMMIT_RE, PROJECT_ID_RE, PYTHON, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError, checked_value,
     double_quoted, git_out, load_yaml, parse_yaml, recorded_gitlink,
@@ -168,8 +174,10 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     FAMILY_RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, env_commit, escape_what_stdout_cannot_encode,
-    force_stage, inherited_child_environment, materialize_family_root,
-    refuse_bad_branch, run, stage_written, trailer_line, write_lf,
+    force_stage, inherited_child_environment, make_folder,
+    materialize_family_root, refuse_bad_branch, refuse_unless_not_found,
+    refuse_unmakeable_folder, run, stage_written, target_in_the_way,
+    target_remediation, trailer_line, write_lf,
 )
 # What `init` asks of the holder's own reader and validator before it creates
 # anything (#307), imported as its own unit and not added to the lists above.
@@ -186,6 +194,11 @@ from repo_shape import shell_line, shell_quoted  # noqa: E402
 # holder's clone URL under `--local-remote-dir` (#255, #433). It is the
 # question the scaffold and `adopt-project.py` ask of theirs.
 from shape_materialize import unwritable_reason  # noqa: E402
+# A reused holder's own visibility and the Free-plan secrets note, asked as
+# the scaffold asks them of its root (#660).
+from shape_materialize import (  # noqa: E402
+    free_plan_secrets_note, repository_visibility,
+)
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -576,6 +589,14 @@ def _member_url(repository: str, local_remote_dir: Path | None) -> str:
                 f"{repo_basename(repository)}.git"))
 
 
+#: The rule a `--family` is held to, as `naming-unclassified` states it
+#: (`_classify_family_name`). `family-bad-id`'s derived remedy names it in
+#: the same words, so the person who follows it is not sent from one
+#: refusal to the other (#659).
+FAMILY_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot "
+                    "or space")
+
+
 def _classify_family_name(policy: NamingPolicy, name: str) -> None:
     """The family name against the policy, in the form a family declares.
 
@@ -589,9 +610,9 @@ def _classify_family_name(policy: NamingPolicy, name: str) -> None:
         raise Refusal(
             "naming-unclassified",
             f"{name!r} matches no family in the naming policy",
-            "Remediation: --family takes one CamelCase token with no hyphen, "
-            "underscore, dot or space — the same rule an assembly root's name "
-            "follows, because a holder is spelled like one.")
+            f"Remediation: --family takes {FAMILY_NAME_RULE} — the same rule "
+            "an assembly root's name follows, because a holder is spelled "
+            "like one.")
     if found.family != "family":
         raise Refusal(
             "naming-not-a-family",
@@ -710,21 +731,44 @@ def _switch_command(root: Path, branch: str) -> str:
     return shell_line(["git", "-C", root, "switch", "-c", branch])
 
 
+#: What every remedy that names `_switch_command` says next (#607): where an
+#: earlier act left that branch, `switch -c` fails `fatal: a branch named
+#: '<branch>' already exists` (exit 128). ANOTHER NAME COMES FIRST, because a
+#: new branch starts where the holder stands now, which works in every
+#: state. Going back to the old branch is right only where it holds work not
+#: merged yet: one left behind a main that has moved on makes the act collide
+#: with what main took in since, or find its member already there, and a
+#: commit made on a detached HEAD is left behind by any `git switch <branch>`.
+#: `git switch` keeps the branch's commits and refuses to overwrite a changed
+#: file; nothing here names `switch -C`, which resets the branch.
+#: IN WORDS, NOT A SECOND COMMAND: no one line works in both states in every
+#: shell this file quotes for (PowerShell 5.1 has no `||`), and README lists
+#: the kinds of line printed for PowerShell. The holder's
+#: `validate-family.py` says the same words.
+BRANCH_LEFT = ("If `git switch -c` says that branch already exists, an "
+               "earlier act left it: give the branch another name, which "
+               "starts it where the holder stands, or, only if that branch "
+               "holds work not merged yet, the same command with `switch` "
+               "in place of `switch -c` goes back to it and keeps every "
+               "commit on it.")
+
+
 def _checked_branch(family: "Family", verb: str, suggested: str) -> str:
     """The branch `verb`'s ONE commit lands on: the one the holder stands
     on, refused when that is the holder's tracking branch or there is none
     (#487). Asked by the real run, after the refusals about the arguments
     and the holder and before the member is read or anything is written;
-    `--dry-run` asks `_branch_said` instead."""
+    `--dry-run` asks `_branch_said` instead. The remedy's `switch -c` is
+    followed by `BRANCH_LEFT`, for a holder that has the branch (#607)."""
     branch = _holder_branch(family.root)
     if branch is not None and branch != family.tracking():
         return branch
     remedy = ("Remediation: these organisations are pull-request only, so "
               "make a branch for the change and run the same command "
               f"again:\n    {_switch_command(family.root, suggested)}\n"
-              "then push that branch and open a pull request, as the NEXT "
-              "line the command ends with says. `--dry-run` runs on any "
-              "branch.")
+              f"{BRANCH_LEFT}\nThen push that branch and open a pull "
+              "request, as the NEXT line the command ends with says. "
+              "`--dry-run` runs on any branch.")
     if branch is None:
         raise Refusal(
             "family-holder-detached",
@@ -743,7 +787,8 @@ def _checked_branch(family: "Family", verb: str, suggested: str) -> str:
 def _branch_said(family: "Family", verb: str, suggested: str) -> list[str]:
     """The `branch` line a dry run prints (#487): where the real run's
     commit lands, or that the real run refuses here, by its code, and the
-    command that makes a branch, on a line of its own."""
+    command that makes a branch, on a line of its own, then `BRANCH_LEFT`
+    as the real run's remedy says it (#607)."""
     branch = _holder_branch(family.root)
     tracking = family.tracking()
     if branch is not None and branch != tracking:
@@ -755,7 +800,8 @@ def _branch_said(family: "Family", verb: str, suggested: str) -> list[str]:
                     f"{branch} is the holder's tracking branch"))
     return [f"branch       {where}, where a real {verb} refuses ({code}); "
             "make a branch first:",
-            f"             {_switch_command(family.root, suggested)}"]
+            f"             {_switch_command(family.root, suggested)}",
+            f"             {BRANCH_LEFT}"]
 
 
 # ---------------------------------------------------------------------------
@@ -1266,6 +1312,12 @@ def _remote_is_empty(repository: str) -> bool | None:
     NO `gh` ON PATH IS `gh-not-found` (#537), as `pin_digest_from_gh` names
     it, and not a `FileNotFoundError` traceback: `init --dry-run` asks this
     question too now, and before that a dry run needed no `gh` at all.
+
+    ONLY GH'S NOT-FOUND ANSWER IS "IT DOES NOT EXIST" (#609), as the
+    scaffold's `remote_is_empty` reads it. Any failure of `gh repo view` used
+    to be, so with a bad login `init --dry-run` exited 0 and the real run
+    made its family folder and failed at `gh repo create`;
+    `refuse_unless_not_found` refuses every other failure by name.
     """
     try:
         probe = subprocess.run(
@@ -1282,6 +1334,7 @@ def _remote_is_empty(repository: str) -> bool | None:
             "create`. `openRepoShape --preflight` names each missing "
             "prerequisite and offers to install it, on a typed yes.") from exc
     if probe.returncode != 0:
+        refuse_unless_not_found(repository, probe)
         return None
     commits = subprocess.run(
         ["gh", "api", f"repos/{repository}/commits?per_page=1"],
@@ -1442,7 +1495,11 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     if args.work_dir is not None:
         return None, args.work_dir.expanduser().resolve() / family
     into = (args.into or Path.cwd()).expanduser().resolve()
-    if into.name == family and (into / family / MANIFEST).is_file():
+    # `os.path.isfile`, which answers False for a holder this user cannot
+    # search: `Path.is_file()` raised `PermissionError` there, a traceback
+    # before the question about the holder (`_refuse_a_taken_holder`) that
+    # names it (#609's rule: a refusal by name, never a traceback).
+    if into.name == family and os.path.isfile(into / family / MANIFEST):
         raise Refusal(
             "family-holder-already-here",
             f"{into} is already the {family} family folder and its holder "
@@ -1455,6 +1512,53 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     if args.into is None:
         _refuse_landing_in_standard(into, holder, family)
     return folder, holder
+
+
+#: Where `init` takes the id from when no `--id` is passed, as a sentence
+#: names it: in the label `_manifest_flags` gives a value no flag supplied,
+#: and in `family-bad-id` (#659).
+FAMILY_ID_DERIVED_FROM = "--family lowercased"
+
+#: How `family-bad-id` is told to go on (#659), in the words the scaffold
+#: gives `scaffold-bad-id` and `adopt-project.py plan` `adopt-bad-id`
+#: (#658). A `--id` the person passed is theirs to retype. An id `init`
+#: derived is `--family` lowercased, and `--family` also names the holder
+#: and, unless `--work-dir` is given, its family folder (`_landing`); the
+#: name is the one `_classify_family_name` reads against a policy whose
+#: forms take only ASCII letters, digits and hyphens, so "pass an explicit
+#: lowercase --id" led straight to `naming-unclassified`, and so would
+#: "change --family" to `North-Wind`. The derived remedy names the rule.
+PASSED_FAMILY_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
+DERIVED_FAMILY_ID_REMEDIATION = (
+    f"Remediation: change --family to {FAMILY_NAME_RULE}. The id is "
+    f"{FAMILY_ID_DERIVED_FROM}, and an explicit --id would not change "
+    "--family, which also names the holder and, unless --work-dir is given, "
+    "its family folder.")
+
+
+def _refuse_bad_family_id(family_id: str, given: str | None) -> None:
+    """`family-bad-id`: an id `validate-family.py` would not take
+    (`PROJECT_ID_RE`), named by where it came from (#659), as the scaffold
+    names `scaffold-bad-id`.
+
+    `given` is `--id` as parsed. One the person passed is named as the flag
+    they typed, value as typed, and keeps its remedy. With none, or an empty
+    one, the id is `--family` lowercased (`args.id or family.lower()`), and
+    `--id 'north_wind' must match` named a value nobody had typed: the flag
+    is named as `_manifest_flags` names one, by where its value came from,
+    and an empty `--id ''` as empty, because it was passed."""
+    if PROJECT_ID_RE.match(family_id):
+        return
+    pattern = PROJECT_ID_RE.pattern
+    if given:
+        raise Refusal("family-bad-id",
+                      f"--id {family_id!r} must match {pattern}",
+                      PASSED_FAMILY_ID_REMEDIATION)
+    unset = "not given" if given is None else "empty"
+    raise Refusal("family-bad-id",
+                  f"--id ({unset}, so {FAMILY_ID_DERIVED_FROM}) is "
+                  f"{family_id!r}, which must match {pattern}",
+                  DERIVED_FAMILY_ID_REMEDIATION)
 
 
 def _checked_family_identity(args) -> tuple[str, str, str]:
@@ -1478,10 +1582,7 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     refuse_bad_branch("family-bad-tracking-branch", "--tracking-branch",
                       args.tracking_branch)
     family_id = checked_value("--id", args.id or family.lower())
-    if not PROJECT_ID_RE.match(family_id):
-        raise Refusal("family-bad-id",
-                      f"--id {family_id!r} must match {PROJECT_ID_RE.pattern}",
-                      "Remediation: pass an explicit lowercase --id.")
+    _refuse_bad_family_id(family_id, args.id)
     policy = NamingPolicy.load(NAMING_POLICY)
     _classify_family_name(policy, family)
     topic = policy.topic_for(family_id)
@@ -1715,24 +1816,81 @@ def _print_init_plan(values: dict, repository: str, url: str,
                              else f"gh repo edit --add-topic {topic}"))
 
 
-def _prepare_landing_dir(folder: Path | None, holder: Path) -> Path:
-    """Make the landing directory, refused if the holder's target already
-    exists and is not empty.
+#: The code of every folder `init` makes and cannot (#609).
+FOLDER_REFUSAL = "family-folder-cannot-be-made"
 
-    Split from `cmd_init` for #136.
+
+def _landing_folder(folder: Path | None, holder: Path) -> tuple[Path, str]:
+    """`(the folder init makes the holder in, how the person names it)`:
+    the family folder, or with `--work-dir` that directory itself."""
+    if folder is None:
+        return holder.parent, "--work-dir"
+    return folder, "the family folder"
+
+
+def _landing_flag(folder: Path | None) -> str:
+    """The flag the person landed `init` by: `--work-dir` where there is no
+    family folder, `--into` otherwise."""
+    return "--work-dir" if folder is None else "--into"
+
+
+def _refuse_a_taken_holder(folder: Path | None, holder: Path) -> None:
+    """`family-target-exists`: something already stands where the holder
+    goes, a folder that holds anything or, since #609, a file, which
+    `iterdir()` met with a `NotADirectoryError` traceback, or an empty folder
+    this user cannot write in (L2-60), whose remediation names the flag the
+    person landed by: `--work-dir` where there is no family folder, `--into`
+    otherwise."""
+    why = target_in_the_way(holder)
+    if why:
+        raise Refusal(
+            "family-target-exists", f"{holder} already exists and {why}",
+            target_remediation(
+                why,
+                "Remediation: choose another --into (or an empty "
+                "--work-dir); if that IS the holder, it is already a family "
+                "and `family.py add` is what grows it. There is no --force.",
+                _landing_flag(folder)))
+
+
+def _refuse_unmakeable_landing(args, folder: Path | None, holder: Path,
+                               local: bool) -> None:
+    """Every folder `init` makes, and the holder it writes, asked before
+    anything is made, by the dry run and the real run alike (#609): the
+    family folder (or `--work-dir`), the holder in it, `--local-remote-dir`.
+
+    THE DRY RUN ASKED NONE OF IT. With a file where the family folder, the
+    holder or `--local-remote-dir` goes, `init --dry-run` exited 0 and the
+    real run died in `mkdir` or `iterdir()` with a traceback. A folder that
+    cannot be made, because a file stands at it or above it or this user
+    cannot write where it goes, is `family-folder-cannot-be-made` now, and
+    the real run's own `mkdir` is `make_folder`, which refuses the same in
+    the system's words.
+    """
+    landing, named = _landing_folder(folder, holder)
+    refuse_unmakeable_folder(FOLDER_REFUSAL, named, landing,
+                             _landing_flag(folder))
+    _refuse_a_taken_holder(folder, holder)
+    if local:
+        refuse_unmakeable_folder(FOLDER_REFUSAL, "--local-remote-dir",
+                                 args.local_remote_dir.resolve())
+
+
+def _prepare_landing_dir(folder: Path | None, holder: Path) -> Path:
+    """Make the landing directory, refused if something already stands
+    where the holder goes (`_refuse_a_taken_holder`).
+
+    Split from `cmd_init` for #136. Run only after `_refuse_unmakeable_landing`
+    and `_checked_reuse` have said yes (#609), so a refused run leaves no
+    folder; the holder is asked again, as it stands once the folder is made.
     """
     # `mkdir -p` on the FOLDER, which is fine if it is already there — a
     # family folder somebody made by hand, or one a scaffolded member already
     # landed in, is exactly the case this is supposed to join.
-    work = holder
-    (folder or work.parent).mkdir(parents=True, exist_ok=True)
-    if work.exists() and any(work.iterdir()):
-        raise Refusal(
-            "family-target-exists", f"{work} already exists and is not empty",
-            "Remediation: choose another --into (or an empty --work-dir); if "
-            "that IS the holder, it is already a family and `family.py add` "
-            "is what grows it. There is no --force.")
-    return work
+    landing, named = _landing_folder(folder, holder)
+    make_folder(FOLDER_REFUSAL, named, landing)
+    _refuse_a_taken_holder(folder, holder)
+    return holder
 
 
 def _checked_reuse(reuse_empty_repo: bool, local: bool, url: str,
@@ -1776,7 +1934,7 @@ def _create_holder_remote(args, values: dict, local: bool, url: str,
     if reuse:
         return
     if local:
-        Path(url).parent.mkdir(parents=True, exist_ok=True)
+        make_folder(FOLDER_REFUSAL, "--local-remote-dir", Path(url).parent)
         run(["git", "init", "-q", "--bare", "-b", args.tracking_branch, url])
         print(f"  bare  {url}")
     else:
@@ -1834,27 +1992,53 @@ def _create_holder_worktree(args, work: Path, values: dict, shape_commit: str,
     return None
 
 
-def _finish_holder_remote(args, repository: str, topic: str,
-                          local: bool) -> None:
-    """Set the holder's topic and print the private-visibility secrets hint.
+def _finish_holder_remote(args, repository: str, topic: str, local: bool,
+                          reuse: bool) -> None:
+    """Set the holder's topic and print the private-visibility NOTE and the
+    Free-plan secrets note.
 
     Neither applies to a local (no-network) remote. Split from `cmd_init`
     for #136.
+
+    BY THE HOLDER AS IT STANDS (#660). The holder is the repository whose
+    `validate` workflow reads the secrets. One this run created has the
+    run's `--visibility`; one `--reuse-empty-repo` reused keeps its own,
+    which `--visibility` never touched, and GitHub is asked for it
+    (`repository_visibility`). Both lines went by `--visibility` alone, so
+    a public holder reused under the default `private` was called private
+    and given the Free-plan hint. A reused holder whose visibility GitHub
+    does not give is `ROOT_VISIBILITY_UNREAD` and gets no NOTE: whether it
+    is private is the very question that went unanswered.
+
+    NO MEMBER IS NAMED THAT DOES NOT EXIST (#660). `init` mounts none, and
+    `add` mounts a member of any visibility, so the NOTE's "and its members
+    will be too" said what nothing here decides, and the hint's "<holder>
+    and its members are private" named members there are not. The hint
+    names the holder alone, as the scaffold's and adopt's name the root
+    (#602), and the NOTE says which members need the credential: those added
+    later that are private or internal.
     """
     if local:
         return
     run(["gh", "repo", "edit", repository, "--add-topic", topic])
     print(f"  topic     {topic} set on the holder")
-    if args.visibility in ("private", "internal"):
-        print(f"NOTE {repository} is {args.visibility} and its members will "
-              "be too: give it a way to read them — a GitHub App "
+    visibility = args.visibility
+    if reuse:
+        # `gh` has just set the topic, so an `OSError` here is no missing
+        # `gh` to refuse, only a visibility this run could not read.
+        try:
+            visibility = repository_visibility(repository)
+        except OSError:
+            visibility = None
+    if visibility in ("private", "internal"):
+        print(f"NOTE {repository} is {visibility}: give it a way to read the "
+              "members you add that are private or internal — a GitHub App "
               "(SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or "
               "a SHAPE_LEGS_TOKEN PAT with contents:read on the members AND "
               "their legs — or the `validate` check cannot check them out.")
-        hint = free_plan_secret_hint(
-            args.org, repository, f"{repository} and its members are")
-        if hint:
-            print(hint)
+    note = free_plan_secrets_note(args.org, repository, visibility)
+    if note:
+        print(note)
 
 
 def _print_next_steps(args, work: Path, folder: Path | None) -> None:
@@ -1862,7 +2046,9 @@ def _print_next_steps(args, work: Path, folder: Path | None) -> None:
 
     Split from `cmd_init` for #136. A BRANCH FIRST (#487): the holder stands
     on its tracking branch, where `add` refuses to commit, so the block
-    opens with the `git switch -c` that makes the branch `add` suggests.
+    opens with the `git switch -c` that makes a branch for it. Its member
+    is `<Project>`, the one placeholder the `--member` under it says
+    (#607); `add`'s own refusal names the branch lowercased.
 
     ONE COMMAND A LINE, `cd` apart from `make siblings`: Windows PowerShell
     5.1, the shell `setup-project.py` documents, rejects `&&` between two
@@ -1888,7 +2074,7 @@ def _print_next_steps(args, work: Path, folder: Path | None) -> None:
     print(f"""
 NEXT STEPS
 
-    {switch} family/add-<project>
+    {switch} family/add-<Project>
     {_add_command(work, args.org)}
     cd {shell_quoted(work)}
     make siblings
@@ -2228,7 +2414,7 @@ def _manifest_flags(args) -> dict:
     from, so that a refusal does not point at a flag nobody typed."""
     flags = dict(MANIFEST_FLAGS)
     for key, flag, given, source in (
-            ("FAMILY_ID", "--id", args.id, "--family lowercased"),
+            ("FAMILY_ID", "--id", args.id, FAMILY_ID_DERIVED_FROM),
             ("FAMILY_NAME", "--name", args.name, "--family"),
             ("CREATED_BY", "--created-by", args.created_by,
              "GIT_AUTHOR_NAME or `git config user.name`"),
@@ -2282,19 +2468,21 @@ def cmd_init(args) -> int:
     folder, holder = _checked_landing(args, family)
     _print_init_plan(values, repository, url, shape_commit, shape_tree,
                      folder, holder, local, topic, args.reuse_empty_repo)
+    # ONE QUESTION, ASKED BY BOTH RUNS BEFORE ANYTHING IS MADE (#537, #609):
+    # every folder `init` makes and the holder it writes, then whether the
+    # holder's remote exists, with the real run's own `_checked_reuse`. It
+    # READS: the folders, then a `gh repo view` and a commit listing, or the
+    # bare repository on disk with `--local-remote-dir`. So `--dry-run`
+    # refuses what the real run refuses, and the real run asks it all
+    # before `_prepare_landing_dir` makes the family folder: a refusal left
+    # that folder empty behind it (#537's first line).
+    _refuse_unmakeable_landing(args, folder, holder, local)
+    reuse = _checked_reuse(args.reuse_empty_repo, local, url, repository)
     if args.dry_run:
-        # THE DRY RUN ASKS WHETHER THE HOLDER'S REMOTE EXISTS (#537), with
-        # the real run's own question, `_checked_reuse`, and refuses what it
-        # refuses: `family-remote-exists` used to come only from the real
-        # run, after `_prepare_landing_dir` had made the family folder. It
-        # READS, a `gh repo view` and a commit listing, or the bare
-        # repository on disk with `--local-remote-dir`, and creates nothing.
-        _checked_reuse(args.reuse_empty_repo, local, url, repository)
         print("\n--dry-run: nothing was created.")
         return 0
 
     work = _prepare_landing_dir(folder, holder)
-    reuse = _checked_reuse(args.reuse_empty_repo, local, url, repository)
     _create_holder_remote(args, values, local, url, repository, reuse)
 
     code = _create_holder_worktree(args, work, values, shape_commit,
@@ -2303,7 +2491,7 @@ def cmd_init(args) -> int:
         return code
     head = git_out(["rev-parse", "HEAD"], cwd=work)[:12]
     print(f"  holder    {head} -> {url}")
-    _finish_holder_remote(args, repository, topic, local)
+    _finish_holder_remote(args, repository, topic, local, reuse)
     _print_next_steps(args, work, folder)
     return 0
 
@@ -5874,7 +6062,8 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
     its line endings is refused here as `git rm` refuses it, and the refusal
     says so where `git add` would stage the index's own blob from it. With
     neither the index, HEAD nor the work tree holding a `.gitmodules`,
-    nothing is asked.
+    nothing is asked here; `remove` then asks `_checked_gitmodules_held`
+    (#611).
 
     `add` LEAVES A MISSING FILE TO GIT. `git submodule add` refuses to write
     a `.gitmodules` the work tree lacks while the index or HEAD holds one,
@@ -6066,6 +6255,75 @@ def _checked_one_section(root: Path, project: str, path: str) -> None:
         "and a section somebody wrote is not this tool's to drop or "
         f"rewrite. {which}, in a POSIX shell — {removal}, then `git add "
         f"{GITMODULES}` — and run the same command again.")
+
+
+def _checked_gitmodules_held(family: Family, path: str) -> None:
+    """`member-gitmodules-absent`: `remove` refuses, before any git command
+    that writes and under `--dry-run` alike, a holder that holds no
+    `.gitmodules` at all, in the work tree, the index or HEAD, while its
+    index records the member's gitlink at any stage (#611).
+
+    A HOLDER WHOSE HEAD LOST `.gitmodules`, as #407's commit left one. `git
+    rm` edits only a `.gitmodules` the work tree has, and `remove` commits
+    the file as `git rm` leaves it, so with none anywhere the commit's `git
+    add` died (`pathspec '.gitmodules' did not match any files`) after
+    `deinit` and `git rm` had emptied the member, and the rollback left its
+    directory empty; the dry run exited 0. `_checked_gitmodules_as_staged`
+    asks nothing here, since no copy exists to compare. It asks only where
+    none of the work tree, the index and HEAD holds a `.gitmodules`, and the
+    index records the member's gitlink at any stage: `deinit` and `git rm`
+    run on a merged or an unmerged gitlink alike, and with no `.gitmodules`
+    anywhere the commit cannot stage one.
+
+    REFUSED, NOT COMMITTED WITHOUT IT, as #407 refuses a `.gitmodules` the
+    work tree lacks: the holder is left byte for byte as it was. A clone
+    checks out none of its members, and the holder's own
+    `validate-family.py` finds `member-gitmodules-absent` for each, so the
+    remedy writes back, as `family.py add` writes one, the section of every
+    member whose gitlink the index records, this one included, which
+    `remove` then takes out as it always has. Staged, the file goes into
+    `remove`'s commit, as #407's untracked remedy has it, unless the person
+    commits it on its own first.
+    """
+    root = family.root
+    if os.path.lexists(root / GITMODULES):
+        return
+    records = _index_records(root)
+    if GITMODULES.encode() in records or _head_oid(root, GITMODULES):
+        return
+    gitlinks = {name.decode("utf-8", "surrogateescape")
+                for name, held in records.items()
+                if any(record.startswith(b"160000 ") for record in held)}
+    if path not in gitlinks:
+        return
+    sections = []
+    for row in family.members:
+        project = str(row.get("project") or "")
+        member = f"{MEMBERS_DIR}/{project}"
+        if not project or member not in gitlinks:
+            continue
+        url = _member_url(str(row.get("repository") or ""), None)
+        sections += [f"`git config -f {GITMODULES} "
+                     f"{shlex.quote(f'submodule.{member}.{key}')} "
+                     f"{shlex.quote(value)}`"
+                     for key, value in (("path", member), ("url", url))]
+    raise Refusal(
+        "member-gitmodules-absent",
+        f"the holder has no {GITMODULES}: neither the work tree, the index "
+        f"nor HEAD holds one, though the index records a gitlink at {path}. "
+        f"`git rm` edits only a {GITMODULES} the work tree has, and `remove` "
+        f"commits {GITMODULES} as `git rm` leaves it, so with none to commit "
+        f"it would fail after `git submodule deinit` and `git rm` had emptied "
+        f"{path}. A recursive clone of the holder checks out none of its "
+        "members, and its validate-family.py finds member-gitmodules-absent "
+        "for each. No git command that writes was run and nothing was "
+        "written.",
+        "Remediation: write back the section `family.py add` writes for "
+        "each member the index records, this one included, in a POSIX shell "
+        f"— {' and '.join(sections)} — then stage it, `git add -f "
+        f"{GITMODULES}` (`-f`, since an operator's excludes may match it), "
+        "and commit it on its own first if the command's commit should "
+        "carry only its own change, and run the same command again.")
 
 
 def _checked_index_unlocked(root: Path, path: str) -> None:
@@ -6262,6 +6520,9 @@ def cmd_remove(args) -> int:
     # carry a change nobody staged. Where the index holds a copy, every
     # reading of the work tree's file after this one reads that copy.
     _checked_gitmodules_as_staged(family.root, "remove")
+    # A holder that holds no `.gitmodules` anywhere, as one whose HEAD lost
+    # it does, is refused next (#611): the commit could not stage one.
+    _checked_gitmodules_held(family, path)
     # A `.gitmodules` that gives the path to a second submodule is refused
     # here, before any git command that writes (#360), so the dry run makes
     # the same refusal, as it makes every one above.
@@ -6436,11 +6697,13 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--no-push", action="store_true")
     init.add_argument("--dry-run", action="store_true",
                       help="print the plan and ask, as the real run does, "
-                           "whether <org>/<Family> already exists (`gh repo "
-                           "view` and its commit listing; with "
-                           "--local-remote-dir, the bare repository), "
-                           "refusing what it refuses; make no folder, "
-                           "remote or repository")
+                           "whether each folder it makes can be made (the "
+                           "family folder or --work-dir, the holder in it, "
+                           "--local-remote-dir) and whether <org>/<Family> "
+                           "already exists (`gh repo view` and its commit "
+                           "listing; with --local-remote-dir, the bare "
+                           "repository), refusing what it refuses; make no "
+                           "folder, remote or repository")
     init.set_defaults(func=cmd_init)
 
     add = subparsers.add_parser(
