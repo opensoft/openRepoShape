@@ -8,7 +8,9 @@ and said `adoption verified`, and the assembly's `git clone
 --recurse-submodules` then failed wherever the dependency did not sit beside
 the leg. `check` now resolves it from both places, as git does, and finds it
 where the two differ; `execute` resolves it again from the remotes it would
-create and refuses it before it creates any.
+create and refuses it before it creates any. Given the `--local-remote-dir`
+`execute` is given, `check` resolves from the same bare repositories, and
+the two give one verdict (#417).
 
 No network: a GitHub url here is only ever a string git resolves against.
 Every repository is local, and the end-to-end tests clone from disk.
@@ -83,7 +85,8 @@ REMOTES = "remotes"
 #: The source's remote beside them, as `git remote add origin
 #: ../remotes/Thing.git` writes it from `<tmp>/Thing`: RELATIVE.
 RELATIVE_ORIGIN = f"../{REMOTES}/{THING_REMOTE}"
-#: The code leg's GitHub remote, as `check` resolves from it.
+#: The code leg's GitHub remote, as `check` with no `--local-remote-dir`
+#: resolves from it.
 CODE_LEG = "https://github.com/{org}/" + THING + "-code.git"
 #: The code leg's bare remote, as `execute --local-remote-dir` names it.
 CODE_BARE = f"{THING}-code.git"
@@ -183,14 +186,26 @@ def in_another_org(plan: Path, org: str) -> Path:
     return plan
 
 
-def check(plan: Path):
-    return run_script(ADOPT, "check", "--plan", str(plan))
+def check(plan: Path, remotes: Path | None = None):
+    """`check` of `plan`; given `remotes`, `check --local-remote-dir
+    <remotes>` (#417), which resolves each relative url from the bare
+    repositories `execute --local-remote-dir <remotes>` would create."""
+    given = () if remotes is None else ("--local-remote-dir", str(remotes))
+    return run_script(ADOPT, "check", "--plan", str(plan), *given)
 
 
 def found(stderr: str) -> list[tuple[str, str]]:
     """`(code, detail)` for each `FINDING <code>: <detail>` line."""
     return [tuple(line.split(" ", 1)[1].split(": ", 1))
             for line in stderr.splitlines() if line.startswith("FINDING ")]
+
+
+def finding_lines(text: str) -> list[str]:
+    """Each `FINDING` line of `text`, as `check` prints it: a refusal of
+    `execute`'s lists `check`'s lines under its first, each indented by
+    two spaces."""
+    return [line.removeprefix("  ") for line in text.splitlines()
+            if line.removeprefix("  ").startswith("FINDING ")]
 
 
 def notes(stdout: str) -> list[str]:
@@ -227,7 +242,9 @@ def alike(org: str, *resolved: tuple[str, str, str]) -> str:
                         for url, path, to in resolved)
             + ". `execute --local-remote-dir` resolves it again from the bare "
             "repository it would create instead, and refuses there, before "
-            "it creates any leg, a url that names another repository.")
+            "it creates any leg, a url that names another repository; "
+            "`check`, given the same `--local-remote-dir`, resolves it there "
+            "too.")
 
 
 #: `from the <leg> leg, at `<remote>`, to `<url>`; ` in a finding.
@@ -487,20 +504,23 @@ def refusal_of(adopter, plan: Path, tmp_path: Path,
 ], ids=["https", "scp", "scp-other-case", "dotdot-dotdot"])
 def test_execute_resolves_again_from_the_remotes_it_would_create(
         adopter, tmp_path, monkeypatch, origin, url, org):
-    """(c) `check` cannot know where `execute` will make the legs, so it
-    resolves from GitHub's, where these plans name one repository from both
-    and pass, and says so. `execute --local-remote-dir` resolves again from
-    the bare repositories it would make there, where they do not, and
-    refuses before it makes any -- saying the finding is its own and not one
-    `check` printed, and that `check`'s `plan ok` settles nothing here."""
+    """(c) `check` with no `--local-remote-dir` resolves from GitHub's
+    remotes, where these plans name one repository from both and pass, and
+    says so. `execute --local-remote-dir` resolves again from the bare
+    repositories it would make there, where they do not, and refuses before
+    it makes any -- saying that `check` prints the finding given the same
+    `--local-remote-dir`, which it does, line for line, making nothing
+    (#417)."""
     source = source_with(tmp_path, url, origin)
     plan = planned(source, tmp_path, org)
     checked = check(plan)
     passes(checked)
     assert len(notes(checked.stdout)) == 1
+    remotes = tmp_path / REMOTES
+    given = check(plan, remotes)
+    assert given.returncode == 1, given.stderr + given.stdout
     # Every refusal here comes before the tool would be used.
     monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
-    remotes = tmp_path / REMOTES
     with pytest.raises(adopter.Refusal) as caught:
         adopter.cmd_execute(Namespace(
             plan=str(plan), source=None, local_remote_dir=remotes,
@@ -509,17 +529,18 @@ def test_execute_resolves_again_from_the_remotes_it_would_create(
     assert refusal.code == RELATIVE
     first, finding = refusal.detail.splitlines()
     assert first == (
-        f"1 finding(s) in {plan}, as `check` prints them, but with each "
-        "relative submodule url resolved from the leg remotes this run would "
-        "create under --local-remote-dir, where `check` resolves it from "
-        "GitHub's:")
+        f"1 finding(s) in {plan}, as `check` prints them given the same "
+        "--local-remote-dir, with each relative submodule url resolved from "
+        "the leg remotes this run would create there:")
+    assert finding_lines(given.stderr) == finding_lines(refusal.detail)
     leg = adopter._spelled(str(remotes.resolve() / CODE_BARE))
     assert finding.startswith(f"  FINDING {RELATIVE}: the submodule "
                               f"`{DEPENDENCY}` (entry `{UPSTREAM}`)"), finding
     assert f", and from the code leg, at {leg}, to " in finding
     assert refusal.remediation.endswith(
         "\n" + adopter.RELATIVE_URL_REMEDIATION)
-    assert "`check`'s `plan ok` settles nothing" in refusal.remediation
+    assert ("which `check` asks only when given the same "
+            "`--local-remote-dir`") in refusal.remediation
     assert "no leg repository was created" in refusal.remediation
     assert not remotes.exists()
 
@@ -594,16 +615,23 @@ def test_a_relative_origin_resolves_from_the_source_working_tree(
     which name it too, so nothing is refused, as on main. With the legs
     anywhere else it names another repository and is refused, and the
     finding names the directory git opens and says why. The same remote
-    spelled absolute resolves to an absolute path, said as before."""
+    spelled absolute resolves to an absolute path, said as before. `check`
+    given either directory says what `execute` given it says (#417)."""
     remotes = tmp_path / REMOTES
     origin = RELATIVE_ORIGIN if relative else str(remotes / THING_REMOTE)
     source = source_with(tmp_path, SIBLING, origin, remotes / "dependency")
     plan = planned(source, tmp_path, its_org(origin))
     assert refusal_of(adopter, plan, tmp_path, remotes) is None
+    given = check(plan, remotes)
+    passes(given)
+    # It checks for the run that skips the topics, and says so as that run.
+    assert "  topics skipped for local remotes" in given.stdout.splitlines()
 
     elsewhere = tmp_path / "elsewhere"
     refusal = refusal_of(adopter, plan, tmp_path, elsewhere)
     assert refusal is not None and refusal.code == RELATIVE
+    assert finding_lines(check(plan, elsewhere).stderr) \
+        == finding_lines(refusal.detail)
     [_, finding] = refusal.detail.splitlines()
     if relative:
         which = f"{ITS_ORIGIN}, relative to its working tree"
@@ -647,11 +675,12 @@ def clone_the_split(source: Path, clone: Path):
 def test_execute_refuses_a_relative_url_its_leg_resolves_elsewhere(
         tmp_path, url, leg, there):
     """A source with no remote of its own, as the re-verifier built it:
-    `check` finds it from GitHub's remotes, and `execute --local-remote-dir`
-    from the bare ones it would make. On main both passed, `execute` said
-    `adoption verified`, and the assembly's recursive clone exited 1. Now
-    `execute` exits 2 before the remotes directory exists, and the source
-    is untouched -- from either leg, and for `..\\` as for `../`."""
+    `check` with no `--local-remote-dir` finds it from GitHub's remotes, and
+    `execute --local-remote-dir` from the bare ones it would make. On main
+    both passed, `execute` said `adoption verified`, and the assembly's
+    recursive clone exited 1. Now `execute` exits 2 before the remotes
+    directory exists, and the source is untouched -- from either leg, and
+    for `..\\` as for `../`."""
     source = source_with(tmp_path, url)
     head = git("rev-parse", "HEAD", cwd=source).stdout
     plan = planned(source, tmp_path, answers={GITMODULES: leg, UPSTREAM: leg})
@@ -711,14 +740,14 @@ def test_the_remediation_adopts_and_clones(tmp_path):
 def test_a_relative_url_its_leg_resolves_alike_adopts_and_clones(
         tmp_path, url, origin, legs):
     """(a) end to end. The source's `origin` and the legs are local, in a
-    layout where its relative url names the dependency from both: `check`,
-    which resolves from GitHub's remotes, finds it, and `execute`, which
-    resolves from the ones it makes, adopts and verifies, and the assembly's
-    `git clone --recurse-submodules` and `bootstrap.py` both exit 0 with the
-    dependency checked out in the leg, whose `.gitmodules` still says what
-    the source committed. An `origin` beginning `..` is written as it
-    stands, relative to the source's working tree; any other is a path in
-    the remotes directory."""
+    layout where its relative url names the dependency from both: `check`
+    with no `--local-remote-dir`, which resolves from GitHub's remotes, finds
+    it, and `execute`, which resolves from the ones it makes, adopts and
+    verifies, and the assembly's `git clone --recurse-submodules` and
+    `bootstrap.py` both exit 0 with the dependency checked out in the leg,
+    whose `.gitmodules` still says what the source committed. An `origin`
+    beginning `..` is written as it stands, relative to the source's working
+    tree; any other is a path in the remotes directory."""
     remotes = tmp_path / REMOTES
     dependency = remotes / "dependency"
     origin = origin if origin.startswith("..") else str(remotes / origin)
@@ -738,3 +767,48 @@ def test_a_relative_url_its_leg_resolves_alike_adopts_and_clones(
     bootstrapped = run_script(clone / "scripts/bootstrap.py", cwd=clone)
     assert bootstrapped.returncode == 0, (bootstrapped.stderr
                                           + bootstrapped.stdout)
+
+
+# --- `check --local-remote-dir`, on the remotes `execute` would create ------
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("local", [True, False],
+                         ids=["A-local-origin", "B-github-origin"])
+def test_check_and_execute_given_one_local_remote_dir_agree(tmp_path, local):
+    """#417's two layouts, end to end as the issue ran them: `../dependency`
+    both times, and the dependency beside the legs `execute
+    --local-remote-dir` makes. A: the source's `origin` is there too, so the
+    url names one repository from the source and from a leg there. B: the
+    `origin` is on GitHub, and the url names another repository from a leg
+    there. `check` with no `--local-remote-dir` resolves from GitHub's
+    remotes and says the opposite in each: a finding over an adoption that
+    verifies in A, and `plan ok` over one `execute` refuses in B. Given the
+    directory `execute` is given, `check` says what `execute` says: in A it
+    passes, `execute` verifies and the assembly's recursive clone checks the
+    dependency out in the leg; in B it finds what `execute` refuses, line
+    for line, and neither makes a leg."""
+    remotes = tmp_path / REMOTES
+    origin = str(remotes / THING_REMOTE) if local else HTTPS_ORIGIN
+    source = source_with(tmp_path, SIBLING, origin, remotes / "dependency")
+    plan = planned(source, tmp_path, its_org(origin) if local else ORG)
+    on_github = check(plan)
+    given = check(plan, remotes)
+    result = execute(plan, tmp_path / WORK, remotes)
+    assert finding_lines(given.stderr) == finding_lines(result.stderr)
+    assert [code for code, _ in found(on_github.stderr)] \
+        == ([RELATIVE] if local else [])
+    if not local:
+        assert [code for code, _ in found(given.stderr)] == [RELATIVE]
+        assert (given.returncode, result.returncode) == (1, 2), \
+            given.stderr + result.stderr
+        assert not (remotes / CODE_BARE).exists()
+        return
+    passes(given)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert VERIFIED in result.stdout
+    clone = tmp_path / "clone"
+    cloned = clone_the_split(source, clone)
+    assert cloned.returncode == 0, cloned.stderr
+    assert (clone / "code" / DEPENDENCY / VALUE).read_text() \
+        == DEPENDENCY_TREE[VALUE]

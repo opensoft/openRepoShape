@@ -105,8 +105,8 @@ def gone(local_path: str) -> str:
     """The NOTE `check` and `execute` print when they clone `REPOSITORY`
     again, its recorded clone at `local_path` being gone."""
     return (f"{GONE}{spelled(local_path)}, no longer exists, so its "
-            f"`source.repository`, {REPOSITORY}, is cloned again, as "
-            f"`--source {REPOSITORY}` would clone it.")
+            f"`source.repository`, {REPOSITORY}, is cloned again from "
+            "GitHub, as `plan` cloned it.")
 
 
 def adopt(temporary: Path, *args: str) -> subprocess.CompletedProcess:

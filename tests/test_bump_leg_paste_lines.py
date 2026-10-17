@@ -51,6 +51,16 @@ from test_bump_leg import (  # noqa: F401
 #: a name already taken is refused as non-fast-forward.
 ADVANCE_BRANCH = "bump-leg-paste-lines-advance"
 
+#: The sentence each of the three lines is followed by (#647), pinned as text:
+#: `family.py`'s and the holder's `BRANCH_LEFT` (#607) with a project where
+#: they have a holder. Imported by the tests that read these lines' bytes.
+BRANCH_LEFT_PROJECT = (
+    "If `git switch -c` says that branch already exists, an earlier act left "
+    "it: give the branch another name, which starts it where the project "
+    "stands, or, only if that branch holds work not merged yet, the same "
+    "command with `switch` in place of `switch -c` goes back to it and keeps "
+    "every commit on it.")
+
 #: A directory name each way a path breaks a line pasted bare: a space (two
 #: arguments), an apostrophe (a quotation nothing closes), a `$` (an
 #: expansion).
@@ -225,11 +235,13 @@ def test_an_exact_remedy_is_the_line_shlex_spells(make_root, scaffolded,
     tracking = bump(root, scaffolded, advanced)
     assert tracking.stderr.endswith(
         "will not make a commit whose only next step is a push to the "
-        f"default branch. Run:\n    {line}\nand re-run.\n"), tracking.stderr
+        f"default branch. Run:\n    {line}\nand re-run.\n"
+        f"{BRANCH_LEFT_PROJECT}\n"), tracking.stderr
 
     git("checkout", "-q", "--detach", cwd=root)
     detached = bump(root, scaffolded, advanced)
-    assert detached.stderr.endswith(f"Remediation: `{line}` and re-run.\n"), \
+    assert detached.stderr.endswith(
+        f"Remediation: `{line}` and re-run.\n{BRANCH_LEFT_PROJECT}\n"), \
         detached.stderr
 
 
@@ -398,10 +410,11 @@ def test_pasting_the_status_line_reads_that_leg(make_root, bump_leg_module,
                                                 name):
     root, _ = make_root(name)
     leg = root.resolve() / "spec"
+    placement = bump_leg_module.leg_placement(leg)
     was = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
     with pytest.raises(bump_leg_module.LegNotAsFound) as raised:
-        bump_leg_module._restore_leg_if_moved(
-            leg, bump_leg_module.leg_placement(leg), was, b"not its status")
+        bump_leg_module._restore_leg_if_moved(leg, placement, was,
+                                              b"not its status")
 
     pasted = paste(status_remedy(str(raised.value)), root.parent)
     assert pasted.returncode == 0, pasted.stderr + pasted.stdout
