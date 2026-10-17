@@ -157,7 +157,8 @@ def moved_back(rows: dict, commit: bool = True, sparse: bool = False,
         "mount can (WSL's /mnt/c)",
         "where the disk holds the two apart it stays there, untracked, and "
         "add refuses it as family-members-dir-variant: move each one that is "
-        f"there out of the holder, in a POSIX shell, {moved}, which moves "
+        "there out of the holder, in a POSIX shell (Git Bash on Windows), "
+        f"{moved}, which moves "
         "nothing where nothing is there, where the two names are one "
         "directory or where it holds a .git entry, a checkout",
         "a checkout there that git submodule add or git mv made holds a .git "
