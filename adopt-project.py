@@ -1559,6 +1559,19 @@ SOURCE_AMBIGUOUS = "source-ambiguous"
 PLAN_SOURCE_GONE = "plan-source-gone"
 #: The refusal of a `--source` that names nothing, as `Source.open` words it.
 SOURCE_UNRESOLVABLE = "source-unresolvable"
+#: The refusal of a local source that is no repository's top-level
+#: directory: a file, or a directory inside a repository (#796).
+SOURCE_NOT_TOP_LEVEL = "source-not-top-level"
+#: What `source-not-top-level` says a source is, and its way out, for a
+#: `--source` and a plan's `source.local_path` alike.
+TOP_LEVEL_ONLY = "a source is the top-level directory of a repository"
+TOP_LEVEL_REMEDY = (
+    "Remediation: pass --source the repository's top-level directory, which "
+    "`git rev-parse --show-toplevel` prints in any directory of it, or its "
+    "`org/repo`.")
+#: GitHub's host as a browser's address bar spells it, read as
+#: `GITHUB_HOST` (#796): on main it was refused as another host.
+WWW_GITHUB_HOST = f"www.{GITHUB_HOST}"
 #: One segment of a GitHub `owner/repo` as `gh` reads it. `.` and `..` match
 #: it and are refused apart, so the clone directory is always one name.
 GITHUB_SEGMENT_RE = re.compile(r"[A-Za-z0-9_.-]+")
@@ -1567,11 +1580,13 @@ GITHUB_SEGMENT_RE = re.compile(r"[A-Za-z0-9_.-]+")
 PATH_SPELLING_RE = re.compile(r"[/~]|\.{1,2}(?:[/\\]|$)|\\\\")
 #: A `--source` written as a URL that names a repository on a host: a scheme
 #: and its host, git's `user@host:` form, or `github.com/` with no scheme,
-#: which `gh` itself reads as `HOST/OWNER/REPO`. `path` is the rest.
+#: which `gh` itself reads as `HOST/OWNER/REPO`, or `www.github.com/` (#796).
+#: `path` is the rest.
 SOURCE_URL_RE = re.compile(
     r"(?:(?:https?|ssh|git)://(?:[^@/]+@)?(?P<host>[^/:@]+)(?::\d*)?/"
     r"|[^@/:]+@(?P<scp>[^/:]+):"
-    r"|(?P<bare>github\.com)/)(?P<path>.*)", re.IGNORECASE | re.DOTALL)
+    r"|(?P<bare>(?:www\.)?github\.com)/)(?P<path>.*)",
+    re.IGNORECASE | re.DOTALL)
 
 
 def _github_name(written: str) -> str | None:
@@ -1586,14 +1601,19 @@ def _github_name(written: str) -> str | None:
     auth status`. Two segments must be left, each one `gh` takes, neither
     `.` nor `..`, and the owner beginning with neither `.`, which no
     GitHub owner does, nor `-`, which gh's parser reads as an option: `-u/x`
-    set its `--upstream-remote-name` (S8705). Case is kept as typed."""
+    set its `--upstream-remote-name` (S8705). Case is kept as typed.
+
+    NOR IS THE REPOSITORY `.git` (#796), as `owner/.git` and
+    `owner/.git.git` leave it: on main `gh` was handed `owner/.git`, to clone
+    into `source-readonly/.git`, and refused it `source-unclonable`, with a
+    remedy about `gh auth status`."""
     segments = [part for part in written.split("/") if part]
     if len(segments) != 2:
         return None
     owner, repo = segments
     if repo.endswith(".git") and len(repo) > len(".git"):
         repo = repo[:-len(".git")]
-    if owner.startswith(("-", ".")) or not all(
+    if owner.startswith(("-", ".")) or repo == ".git" or not all(
             GITHUB_SEGMENT_RE.fullmatch(part) and part not in (".", "..")
             for part in (owner, repo)):
         return None
@@ -1616,8 +1636,11 @@ def _repository_in_url(spec: str, url: re.Match, candidate: Path) -> str:
     """The `owner/repo` a url `--source` names (`SOURCE_URL_RE`'s `url`):
     refused where its host is not GitHub's, where it names no `owner/repo`,
     and, for `github.com/<owner>/<repo>` written with no scheme, where it is
-    a path here as well (`candidate`), as `_source_spec` refuses a name."""
+    a path here as well (`candidate`), as `_source_spec` refuses a name.
+    `www.github.com` is GitHub's host, as a browser spells it (#796)."""
     host = (url["host"] or url["scp"] or url["bare"]).lower()
+    if host == WWW_GITHUB_HOST:
+        host = GITHUB_HOST
     name = _github_name(url["path"])
     if host != GITHUB_HOST:
         raise Refusal(
@@ -1661,8 +1684,29 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     TEXT (#255), which `_github_name` never reads as one, NOR ONE THAT BEGINS
     WITH `-`, the first argument `gh repo clone` is given, which gh's own
     parser reads as an option. A one-segment name (`Atlas`) is a path, as on
-    main, where it never reached `gh`."""
-    candidate = Path(spec).expanduser()
+    main, where it never reached `gh`.
+
+    A PATH IS A REPOSITORY'S TOP-LEVEL DIRECTORY, OR IT IS REFUSED (#796),
+    by name and before git reads anything else in it: the path is given
+    back resolved by `_top_level`. On main a file ended `plan`, `check` and
+    `execute` in a `NotADirectoryError` traceback, and a directory inside a
+    repository, or `.` run in one, was planned, exit 0, holding only what
+    is under it. An EMPTY value names no path, and is refused as
+    `pin-source-no-path` refuses an empty `--pin-source`: as a `Path` it is
+    `.`, so `--source "$SRC"` with `SRC` unset planned the directory it ran
+    in. A `~user` is expanded as `os.path.expanduser` expands it, which
+    leaves one this machine has not as typed, a path that is not there:
+    `Path.expanduser` raised `RuntimeError` for one mistyped user name,
+    which bash passes through unchanged."""
+    if not spec:
+        raise Refusal(
+            SOURCE_UNRESOLVABLE,
+            "--source '' names no path: an empty one would be read as the "
+            "directory this runs in",
+            "Remediation: pass the repository's top-level directory (`.` for "
+            "this directory), or its `org/repo`. Without --source, `check` "
+            "and `execute` read the plan's own source.")
+    candidate = Path(os.path.expanduser(spec))
     written_as_a_path = bool(PATH_SPELLING_RE.match(spec)
                              or WINDOWS_ABSOLUTE_RE.match(spec))
     url = None if written_as_a_path else SOURCE_URL_RE.fullmatch(spec)
@@ -1673,7 +1717,7 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     if candidate.exists():
         if name is not None:
             raise _ambiguous(spec, name)
-        return candidate, None
+        return _top_level(candidate, f"--source {spec!r}"), None
     if name is None:
         raise Refusal(
             SOURCE_UNRESOLVABLE,
@@ -1681,6 +1725,43 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
             "`org/repo` name",
             "Remediation: pass a local clone's path, or `org/repo`.")
     return None, name
+
+
+def _top_level(path: Path, named: str) -> Path:
+    """`path`, a local source that exists, resolved, where it is the
+    top-level directory of a repository; refused as `source-not-top-level`
+    where it is not a directory, or is a directory inside a repository
+    (#796). `named` is how the refusal names it: `--source '<it>'`, or the
+    plan's `source.local_path`, which `Plan._recorded_source` reads.
+
+    BEFORE GIT READS ANYTHING ELSE IN IT. A file is asked of the disk, and
+    git is never run in it: `subprocess` raised `NotADirectoryError` for
+    one, a traceback. A directory is asked `git rev-parse --show-prefix`,
+    which prints nothing at the top level, of a work tree or a bare
+    repository, and the path of the directory below it otherwise; only
+    then is `--show-toplevel` asked, for the refusal to name. A directory
+    git reads no repository from is refused `git-failed` here, in git's own
+    words, as a later read refused it on main. On main a directory inside a
+    repository was read as the source: `git ls-tree` there lists what is
+    under it alone, so `plan` planned that, exit 0, and the plan recorded
+    it."""
+    resolved = Path(os.path.realpath(path))
+    if not resolved.is_dir():
+        raise Refusal(SOURCE_NOT_TOP_LEVEL,
+                      f"{named} is not a directory, and {TOP_LEVEL_ONLY}",
+                      TOP_LEVEL_REMEDY)
+    prefix = os.fsdecode(git_out(["rev-parse", "--show-prefix"],
+                                 cwd=resolved, binary=True).rstrip(b"\n"))
+    if prefix:
+        top = os.fsdecode(git_out(["rev-parse", "--show-toplevel"],
+                                  cwd=resolved, binary=True).rstrip(b"\n"))
+        raise Refusal(
+            SOURCE_NOT_TOP_LEVEL,
+            f"{named} is {_spelled(prefix)} inside the repository at "
+            f"{_spelled(top)}, and {TOP_LEVEL_ONLY}: read from there, it "
+            f"would be only what is under {_spelled(prefix)}",
+            TOP_LEVEL_REMEDY)
+    return resolved
 
 
 def _occupied_clone_target(work_root: Path, path: Path, repository: str,
@@ -1765,7 +1846,16 @@ class Source:
         """`spec`, a `--source`, as `_source_spec` reads it: a local path,
         read in place, or a GitHub repository, cloned (`clone`, which takes
         `unwritable`, `made` and `done`)."""
-        path, repository = _source_spec(spec)
+        return cls.of(_source_spec(spec), work_root, unwritable, made, done)
+
+    @classmethod
+    def of(cls, named: tuple[Path | None, str | None], work_root: Path,
+           unwritable: str | None = None, made: list | None = None,
+           done: str = "") -> "Source":
+        """The source `named` names, `_source_spec`'s answer, which `plan`
+        asks before it makes its work directory (#796): the top-level
+        directory it gave back, read in place, or the repository, cloned."""
+        path, repository = named
         if repository is not None:
             return cls.clone(repository, work_root, unwritable, made,
                              done=done)
@@ -1774,8 +1864,8 @@ class Source:
     @classmethod
     def in_place(cls, path: Path, work_root: Path) -> "Source":
         """The repository at `path`, read where it is, named by its
-        `origin`."""
-        path = path.expanduser().resolve()
+        `origin`. `path` is a top-level directory `_top_level` gave back,
+        resolved (#796)."""
         return cls._at(path, _remote_repository(path), work_root, False)
 
     @classmethod
@@ -1838,17 +1928,35 @@ class Source:
         return cls(path, repository, branch, commit, work_root, cloned)
 
     def tree(self) -> list[tuple[str, str, str, int]]:
-        """(path, mode, blob sha, size) for every file at the pinned commit."""
-        raw = git_out(["ls-tree", "-r", "-l", "-z", self.commit],
-                      cwd=self.path, binary=True)
+        """(path, mode, blob sha, size) for every file at the pinned commit.
+
+        A SIZE IS `-` OR DIGITS, OR THE SOURCE HAS LOST AN OBJECT (#796).
+        `git ls-tree -l` prints `BAD` for the size of a blob it cannot read
+        and still exits 0, and on main `int('BAD')` ended `plan`, `check`
+        and `execute` in a `ValueError` traceback. It is refused, naming
+        the path and `git fsck`, which names every object a repository
+        lacks."""
+        command = ["ls-tree", "-r", "-l", "-z", self.commit]
+        raw = git_out(command, cwd=self.path, binary=True)
         out = []
         for record in raw.split(b"\x00"):
             if not record:
                 continue
             head, _, path = record.partition(b"\t")
             mode, kind, oid, size = head.decode().split(maxsplit=3)
+            size = size.strip()
+            if size != "-" and not (size.isascii() and size.isdigit()):
+                raise Refusal(
+                    "git-failed",
+                    f"`git {' '.join(command)}` in {shown_path(self.path)} "
+                    f"gives no size for {_spelled(_git_path(path))}, whose "
+                    f"blob {oid} it cannot read: it prints {_spelled(size)}",
+                    f"Remediation: run `git fsck` in "
+                    f"{shown_path(self.path)}: it names each object the "
+                    "repository lacks. Restore them, or pass a clone that "
+                    "holds them all, and run the command again.")
             out.append((_git_path(path), mode, oid,
-                        0 if size.strip() == "-" else int(size)))
+                        0 if size == "-" else int(size)))
             del kind
         return sorted(out)
 
@@ -4338,9 +4446,9 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     a question printed above a summary table is a question that gets scrolled
     past.
     """
-    print(f"source     {source.repository or _shown(str(source.path))} @ "
-          f"{source.commit[:12]} ({source.branch}), "
-          f"{len(tree)} files, {source.commit_count()} commits")
+    print(f"source     {_source_named(source)} @ {source.commit[:12]} "
+          f"({source.branch}), {len(tree)} files, "
+          f"{source.commit_count()} commits")
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
     # Each pin as the scaffold's plan prints it: what is pinned, at which
     # commit and digest, the file `execute` writes, and how the digest was
@@ -4386,6 +4494,20 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
             print(f"  {_shown(entry.path)}\n      {entry.question}")
 
 
+def _source_named(source: Source) -> str:
+    """The source as `plan`'s `source` line names it. A clone `plan` made
+    is its repository. A source read in place is its directory, with the
+    repository its `origin` names beside it (#796): on main the line named
+    only that repository, so it read the same whatever directory of it was
+    read, a directory inside it included."""
+    if source.cloned:
+        return str(source.repository)
+    where = _shown(str(source.path))
+    if source.repository:
+        where += f" (origin: {_shown(source.repository)})"
+    return where
+
+
 def cmd_plan(args) -> int:
     # A `--pin-source` that names no path, `''`, which as a `Path` is the
     # directory this runs in, one no `--pin` will read, and one `plan` cannot
@@ -4403,15 +4525,22 @@ def cmd_plan(args) -> int:
                                 nothing_made=PLAN_NOT_WRITTEN)
     if args.pin and args.pin_source is not None:
         _refuse_an_unrecordable_pin_source(args.pin_source)
+    # What `--source` names, next, before the work directory is made
+    # (#796): every refusal of it that needs none -- an empty value, a path
+    # that is no repository's top level, a name `gh` cannot clone -- is
+    # asked here, and only `git rev-parse` has run in a local source. On
+    # main a file ended `plan` in a traceback after the `--work-dir` it was
+    # given had been made, and that directory stayed.
+    named = _source_spec(args.source)
     work_root = _work_root(args)
     # An `org/repo` source is cloned into the work directory, so one this
     # user cannot write in is refused before the clone, as `check` refuses
     # it (#650); a local source is read in place, and writes nothing there.
     # The clone goes on `args.clones`, and `_leave_the_clones` removes it
     # unless this run ends having written the plan that records it (#652).
-    source = Source.open(args.source, work_root,
-                         _unwritable_work_dir(args, work_root),
-                         getattr(args, "clones", None))
+    source = Source.of(named, work_root,
+                       _unwritable_work_dir(args, work_root),
+                       getattr(args, "clones", None))
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
     naming = NamingPolicy.load(NAMING_POLICY)
 
@@ -4633,8 +4762,12 @@ class Plan:
         A RECORDED NAME IS ALWAYS CLONED FROM GITHUB, never read as a
         directory here (#652): on main `check`, run where `./acme/Atlas`
         existed, said the plan's repository is cloned again and read that
-        directory instead."""
-        if override:
+        directory instead.
+
+        AN EMPTY `override` IS ONE GIVEN (#796), and `Source.open` refuses
+        it: on main `check --source ''` and `execute --source ''` dropped it
+        and read the plan's own source."""
+        if override is not None:
             return Source.open(override, work_root, unwritable, made, done)
         local_path = self.source.get("local_path")
         if local_path:
@@ -4694,12 +4827,21 @@ class Plan:
         Where the clone would land on the plan's own clone, no longer whole
         (the same `--work-dir`), it is refused, and nothing there is
         removed; where that path is free, the clone made there is the one
-        the plan records, and is not on `made`."""
-        path = Path(local_path).expanduser()
+        the plan records, and is not on `made`.
+
+        A PATH THE PERSON GAVE IS HELD TO BEING A REPOSITORY'S TOP LEVEL, as
+        `--source` is (`_top_level`, #796), and refused by its key: a file
+        ended `check` and `execute` in a traceback, and a directory inside a
+        repository was read as the source. A `~user` this machine has not is
+        a path that is not there (`os.path.expanduser`): `Path.expanduser`
+        raised `RuntimeError` for it."""
+        path = Path(os.path.expanduser(local_path))
         there = path.exists()
         if self.source.get("cloned") is not True:
             if there:
-                return Source.in_place(path, work_root)
+                return Source.in_place(_top_level(
+                    path, f"the plan's `source.local_path`, "
+                          f"{_spelled(local_path)},"), work_root)
             raise self._gone(local_path, "names nothing that exists",
                              "the plan does not record it as a clone `plan` "
                              "made (`source.cloned` is not `true`), so "
@@ -4707,7 +4849,7 @@ class Plan:
         broken = _not_a_whole_clone(path, self.source_commit) if there \
             else None
         if there and broken is None:
-            return Source.in_place(path, work_root)
+            return Source.in_place(Path(os.path.realpath(path)), work_root)
         state = (f"is a clone `plan` made that is no longer whole ({broken})"
                  if there else "no longer exists")
         repository = self._recorded_repository()
@@ -13188,13 +13330,15 @@ CLONE_TARGET_HELD = ("One that already holds `source-readonly/<repo>`, where "
                      "a source is cloned, is refused as "
                      "`adopt-work-dir-occupied`.")
 #: `--source`'s help on `check` and `execute`: how the source is read with
-#: it and without it (#652).
+#: it and without it (#652), and a recorded path refused (#796).
 SOURCE_OVERRIDE_HELP = (
     "override the source the plan names, read as `plan --source` reads it. "
     "Without it, the plan's `source.local_path` is read; where that is a "
     "clone `plan` made (`source.cloned: true`) and is gone or no longer "
     "whole, its `source.repository` is cloned again, and any other "
-    "`local_path` that is gone is refused as `plan-source-gone`.")
+    "`local_path` that is gone is refused as `plan-source-gone`; one that "
+    "is a file, or a directory inside a repository, as "
+    "`source-not-top-level`.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -13213,7 +13357,14 @@ def main(argv: list[str] | None = None) -> int:
                            "too. `source-ambiguous` refuses a name that is "
                            "also a path here, as `acme/Atlas` is beside a "
                            "directory `acme/Atlas`: pass `./acme/Atlas` for "
-                           "the directory, or the url for the repository.")
+                           "the directory, or the url for the repository. "
+                           "The path is a repository's top-level directory "
+                           "(`git rev-parse --show-toplevel` prints it): "
+                           "`source-not-top-level` refuses a file, or a "
+                           "directory inside a repository. "
+                           "`source-unresolvable` refuses an empty value, "
+                           "and one that is neither a path that exists nor "
+                           "an `org/repo`.")
     plan.add_argument("--project", required=True,
                       help="the assembly-root name; for an in-place adoption "
                            "it is the source repository's own name")
