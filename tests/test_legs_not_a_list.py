@@ -221,28 +221,33 @@ def test_validate_pins_still_refuses_a_manifest_that_names_no_leg(
     assert "manifest-legs" not in result.stderr, out
 
 
-#: `(YAML spelling, the entry as read)`: a `legs:` list holding an entry
-#: that is not a mapping.
+#: `(YAML spelling, the entries as read)`: a `legs:` list holding entries
+#: that are not mappings, one, or two in one list (RV826's NIT 1: a gate
+#: that said only the first of them passed every other row).
 NOT_MAPPINGS = [
-    pytest.param("[5]", 5, id="number"),
-    pytest.param("[openXdox]", "openXdox", id="string"),
-    pytest.param("[[a]]", ["a"], id="list"),
-    pytest.param("[null]", None, id="null"),
+    pytest.param("[5]", [5], id="number"),
+    pytest.param("[openXdox]", ["openXdox"], id="string"),
+    pytest.param("[[a]]", [["a"]], id="list"),
+    pytest.param("[null]", [None], id="null"),
+    pytest.param("[5, openXdox]", [5, "openXdox"], id="two-entries"),
 ]
 
 
 @pytest.mark.parametrize("which", ["naming", "manifest", "pins"])
-@pytest.mark.parametrize("spelled,entry", NOT_MAPPINGS)
+@pytest.mark.parametrize("spelled,entries", NOT_MAPPINGS)
 def test_each_gate_says_a_leg_that_is_not_a_mapping_in_one_sentence(
-        project, which, spelled, entry):
+        project, which, spelled, entries):
     """RV826's S3: `legs: [5]` was three answers. The naming gate said "a
     leg has no `repository:`", untrue of `5`, and `validate-pins.py`
     refused `manifest-no-legs` with the `git submodule update` remedy. Now
-    each gate says `validate-manifest.py`'s `manifest-leg` line, exit 1."""
+    each gate says `validate-manifest.py`'s `manifest-leg` line, exit 1,
+    once for each entry that is not a mapping."""
     set_legs(project, spelled)
     result = gate(project, which)
-    assert_said_once(
-        result, f"FINDING manifest-leg: a leg is not a mapping: {entry!r}\n")
+    for entry in entries:
+        assert_said_once(
+            result,
+            f"FINDING manifest-leg: a leg is not a mapping: {entry!r}\n")
     for wrong in ("manifest-no-legs", "git submodule update", "a leg has no"):
         assert wrong not in result.stderr, result.stderr
 
