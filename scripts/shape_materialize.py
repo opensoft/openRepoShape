@@ -159,11 +159,11 @@ def escape_what_stdout_cannot_encode(stream=None) -> None:
     file it is, and two names that differ only outside the code page do not
     both print as `??.md`. (A backslash is not escaped, so a name that holds
     the six characters `\\u65e5` prints as one holding `日` does.) ONCE, AT
-    THE START OF `main()`, and not at each `print`: `shape-doctor.py`'s
-    `ascii_text` and `shape_advisory.printable` flatten their own text to
-    ASCII on every console, which a name cannot afford -- it would change
-    what a UTF-8 terminal shows -- and a guard at each site is a guard the
-    next `print` goes without.
+    THE START OF `main()`, and not at each `print`: `shape_advisory.printable`
+    flattens its own text to ASCII on every console, as `shape-doctor.py`'s
+    `ascii_text` did until #785, which a name cannot afford -- it would
+    change what a UTF-8 terminal shows -- and a guard at each site is a
+    guard the next `print` goes without.
 
     GUARDED, because failing to set a handler is no reason to refuse the
     run: a stream a caller replaced may have no `reconfigure`, a closed or
