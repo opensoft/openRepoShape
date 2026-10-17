@@ -280,6 +280,8 @@ def test_a_split_branch_git_will_not_create_makes_no_leg_and_the_fix_adopts(
 #: Where git says which branch the source is on: its HEAD, or the default
 #: branch its remote `origin` names, `refs/remotes/origin/HEAD`.
 WHERE = pytest.mark.parametrize("where", ["head", "origin-head"])
+#: A branch of the source's own that is named like a remote-tracking one.
+ORIGIN_X = "origin/x"
 
 
 def planned_at(source: Path, base: Path) -> dict:
@@ -302,15 +304,15 @@ def test_a_head_on_a_branch_named_like_a_remote_ones_is_read_there(tmp_path):
     `refs/heads/` alone now."""
     source = make_source_repo(tmp_path / "Northwind", tree=TREE, edits=())
     git("branch", "x", cwd=source)
-    git("switch", "-q", "-c", "origin/x", cwd=source)
+    git("switch", "-q", "-c", ORIGIN_X, cwd=source)
     git("commit", "-q", "--allow-empty", "-m", "Ahead of x", cwd=source)
 
     written = planned_at(source, tmp_path)
 
-    assert written["source"]["default_branch"] == "origin/x"
+    assert written["source"]["default_branch"] == ORIGIN_X
     assert written["source"]["commit"] == commit_of(source,
-                                                    "refs/heads/origin/x")
-    assert written["tracking_branch"] == "origin/x"
+                                                    f"refs/heads/{ORIGIN_X}")
+    assert written["tracking_branch"] == ORIGIN_X
 
 
 @WHERE

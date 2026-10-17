@@ -303,6 +303,9 @@ OR_TRACK_ANOTHER = ("run `plan` with `--tracking-branch` naming a branch "
                     "the source has, and the source is read at that branch")
 #: What `check` says once it reads the source where `plan` did.
 PLAN_OK = "\nplan ok\n"
+#: The flag that names the branch to track, and the plan `write_plan` writes.
+TRACKING = "--tracking-branch"
+PLAN_NAME = "adoption-plan.yaml"
 
 
 def cloned_with(tmp_path, branch: str) -> Path:
@@ -335,7 +338,7 @@ def test_a_clone_of_another_branch_is_refused_by_name_with_both_ways_through(
     both ways through; and the first, `main` made the source's own, plans
     the source at it."""
     source = cloned_with(tmp_path, "dev")
-    plan = tmp_path / "adoption-plan.yaml"
+    plan = tmp_path / PLAN_NAME
 
     result = write_plan(source, plan)
 
@@ -361,7 +364,7 @@ def test_a_clone_of_another_branch_is_read_at_the_tracking_branch_given(
     and `check` reads it where `plan` did."""
     source = cloned_with(tmp_path, "dev")
 
-    result, plan = planned(tmp_path, source, "--tracking-branch", "dev")
+    result, plan = planned(tmp_path, source, TRACKING, "dev")
 
     written = load_yaml(plan)
     assert written["source"]["default_branch"] == "dev", written["source"]
@@ -411,7 +414,7 @@ def test_a_default_branch_with_no_commit_is_read_at_the_tracking_branch(
     else:
         git("switch", "-q", "--orphan", "new", cwd=source)
 
-    _, plan = planned(tmp_path / "plan", source, "--tracking-branch", "trunk")
+    _, plan = planned(tmp_path / "plan", source, TRACKING, "trunk")
 
     written = load_yaml(plan)
     assert written["source"]["default_branch"] == "trunk", written["source"]
@@ -426,7 +429,7 @@ def test_a_clone_of_another_branch_is_adopted_at_the_tracking_branch(
     """`execute` of that plan reads the source where `plan` did, and the
     split is made on `dev`'s commit, which is not `main`'s."""
     source = cloned_with(tmp_path, "dev")
-    _, plan = planned(tmp_path, source, "--tracking-branch", "dev")
+    _, plan = planned(tmp_path, source, TRACKING, "dev")
 
     result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
                         "--local-remote-dir", str(tmp_path / "remotes"),
@@ -448,7 +451,7 @@ def test_a_default_branch_outside_the_alphabet_names_the_way_past_it(
     `plan` reads the source at `café` and `check` finds nothing."""
     source = make_source_repo(tmp_path / "Northwind", tree=TREE, edits=(),
                               branch="café")
-    plan = tmp_path / "adoption-plan.yaml"
+    plan = tmp_path / PLAN_NAME
 
     result = write_plan(source, plan)
 
@@ -460,7 +463,7 @@ def test_a_default_branch_outside_the_alphabet_names_the_way_past_it(
             "pass it: `--tracking-branch main`.") in said, said
     assert not plan.exists()
     git("branch", "main", cwd=source)
-    _, plan = planned(tmp_path / "past", source, "--tracking-branch", "main")
+    _, plan = planned(tmp_path / "past", source, TRACKING, "main")
     written = load_yaml(plan)
     assert written["source"]["default_branch"] == "café", written["source"]
     assert written["tracking_branch"] == "main"
