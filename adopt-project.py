@@ -127,7 +127,13 @@ that is not `YYYY-MM-DD`, an organisation name it cannot hold, a `visibility`
 other than `private`, `public` or `internal` -- asking the validator itself,
 loaded from the template it ships, and not a copy of its rules. A name that
 cannot be a directory's (a `--project` that makes a repository name of 256
-bytes with its `.git`) is refused the same way.
+bytes with its `.git`) is refused the same way. Without `--local-remote-dir`
+`execute` also refuses, before either leg exists, what GitHub will not take
+(#838): a leg's name over GitHub's 100 characters (`adopt-name-too-long`), an
+`org:` over the 39 it keeps an organisation's name to (`adopt-org-too-long`),
+and an id whose `xf-project-<id>` topic is over its 50
+(`adopt-topic-too-long`), which `gh repo edit --add-topic` refused only once
+both legs and the split were pushed.
 
 WHY `git filter-repo` AND NOT A VENDORED COPY. Extracting history correctly is
 a solved problem with one correct implementation, and a vendored copy of it
@@ -243,6 +249,13 @@ from shape_materialize import (  # noqa: E402
     KIND_UNREADABLE, MANIFEST_INVALID_REMEDIATION,
     MANIFEST_UNREADABLE_REMEDIATION, manifest_judged, manifest_value_problems,
     refuse_manifest_values, refuse_unstorable_names,
+)
+# What GitHub keeps a repository's name, a topic and an organisation's name
+# to, asked by `execute` before either leg exists where GitHub is (#838).
+from shape_materialize import (  # noqa: E402
+    GITHUB_ID_MAX, GITHUB_NAME_MAX, GITHUB_OWNER_MAX, GITHUB_PROJECT_MAX,
+    GITHUB_TOPIC_MAX, refuse_a_topic_github_cannot_set,
+    refuse_an_owner_github_cannot_have,
 )
 # Whether a value this tool writes into a file is text a file can hold
 # (#255), asked beside `one_printable_line`, the trailer's question.
@@ -10713,12 +10726,49 @@ def _repository_urls(args, plan: Plan, names: dict,
     # under `--local-remote-dir` a bare `<name>.git` for the two new legs. A
     # name of 247 to 250 characters passed every check and died in
     # `Path.exists` with `File name too long`, a traceback, before any leg
-    # existed (#261).
+    # existed (#261). Without it the two legs are GitHub repositories, which
+    # GitHub keeps to 100 characters, under an organisation it keeps to 39:
+    # either passed to the first `gh repo create` (#838).
+    legs = [names["spec"], names["code"]]
     refuse_unstorable_names(
-        "adopt-name-too-long", list(names.values()),
-        [names["spec"], names["code"]] if local else [])
+        "adopt-name-too-long", list(names.values()), legs if local else [],
+        [] if local else legs)
+    if not local:
+        refuse_an_owner_github_cannot_have(
+            "adopt-org-too-long", org, f"{plan.path}: `org:`",
+            ORG_REMEDIATION)
     return (local, repositories,
             _remote_urls(org, names, args.local_remote_dir, source))
+
+
+#: How `adopt-org-too-long` and `adopt-topic-too-long` are told to go on
+#: (#838): the plan's own key, or `plan` again with the flag that writes it.
+#: Neither is a leg: `execute` refuses both before it makes one.
+ORG_REMEDIATION = (
+    "Remediation: no repository was created. Fix `org:` in the plan, or "
+    "re-run `plan` with --org, as GitHub spells the organisation, the "
+    "`<org>` of `https://github.com/<org>`: GitHub gives no user or "
+    f"organisation a name of more than {GITHUB_OWNER_MAX} characters.")
+TOPIC_REMEDIATION = (
+    "Remediation: no repository was created. Fix `id:` in the plan, or "
+    f"re-run `plan` with an explicit --id, of at most {GITHUB_ID_MAX} "
+    "characters: the id need not be the project's name lowercased, and the "
+    "name, which the assembly root already has, stays as it is.")
+
+
+def _refuse_a_topic_github_cannot_set(plan: Plan, topic: str) -> None:
+    """`adopt-topic-too-long`: an id whose `xf-project-<id>` topic GitHub
+    will not set (#838), refused before `_confirm` and before either leg
+    exists. `_set_the_topic` sets it on all three only once both legs and
+    the split are pushed, so an id over 39 characters, which a project name
+    of 40 or more gives by default, ended the run there, exit 2, with the
+    adoption pushed and the topic unset. Asked in GitHub mode alone: under
+    `--local-remote-dir` no topic is set. The id is named by where it came
+    from, `id:` or `DERIVED_ID`, as `_id_field` names it."""
+    named = "`id:`" if plan.get("id") is not None else DERIVED_ID
+    refuse_a_topic_github_cannot_set(
+        "adopt-topic-too-long", topic, plan.project_id,
+        f"{plan.path}: {named}", TOPIC_REMEDIATION)
 
 
 def _remote_urls(org: str, names: dict, local_remote_dir: Path | None,
@@ -11575,6 +11625,8 @@ def cmd_execute(args) -> int:
     for line in plan.seeding_record_disagreements(seeded):
         print(line)
     topic = naming.topic_for(plan.project_id)
+    if not local:
+        _refuse_a_topic_github_cannot_set(plan, topic)
     print(_topics_line(topic, local))
     _confirm(args, plan, names)
 
@@ -13253,7 +13305,11 @@ def main(argv: list[str] | None = None) -> int:
                            "the directory, or the url for the repository.")
     plan.add_argument("--project", required=True,
                       help="the assembly-root name; for an in-place adoption "
-                           "it is the source repository's own name")
+                           "it is the source repository's own name. "
+                           f"`execute` refuses one over {GITHUB_PROJECT_MAX} "
+                           "characters without --local-remote-dir: GitHub "
+                           "keeps a leg's name, `<Project>-spec`, to "
+                           f"{GITHUB_NAME_MAX}.")
     plan.add_argument("--org", default=None,
                       help="the organisation the source repository is in, "
                            "which the plan records as `org:` (default: the "
@@ -13261,8 +13317,17 @@ def main(argv: list[str] | None = None) -> int:
                            "one a local source's `origin` url names). A "
                            "source whose `origin` is a path, or that has "
                            "none, names no organisation: `plan` refuses "
-                           "it as `adopt-no-org` unless --org is given.")
-    plan.add_argument("--id", default=None)
+                           "it as `adopt-no-org` unless --org is given. "
+                           f"`execute` refuses one over {GITHUB_OWNER_MAX} "
+                           "characters without --local-remote-dir, GitHub's "
+                           "limit on an organisation's name.")
+    plan.add_argument("--id", default=None,
+                      help="lowercase project id (default: --project "
+                           f"lowercased). `execute` refuses one over "
+                           f"{GITHUB_ID_MAX} characters without "
+                           "--local-remote-dir: GitHub keeps a topic to "
+                           f"{GITHUB_TOPIC_MAX}, and the topic is "
+                           "`xf-project-<id>`.")
     plan.add_argument("--visibility", choices=VISIBILITY_CHOICES,
                       default="private")
     plan.add_argument("--elected-by", default=None,
