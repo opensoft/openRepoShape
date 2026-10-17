@@ -57,16 +57,15 @@ other branch keeps its commits, so the move loses no commit: `branch -f` moves
 the tracking branch to the pin and the checkout puts the leg on it, as from the
 pin; the other branch is not touched. One line under the `fast-forwarded` one
 says the leg left that branch and that it keeps its commits (or has none yet),
-since the next commit made in the leg is on the tracking branch now; no other
-start prints it, and nor does a refusal. From another branch the checkout
-changes files, so git can refuse it over a local edit or an untracked file,
-which a checkout from the pin never meets: the branch is then left at the pin
-and HEAD where it was, and the next run meets the branch-at-the-pin state. Two
-things are NOT refused, as in the branch-at-the-pin and missing-branch cases
-(#458's to rule on): an IGNORED file at a path the pin tracks is overwritten,
-and a merge in progress on the other branch is ended, its `MERGE_HEAD` removed
-and its staged result carried onto `main`. A leg detached at a commit that is
-not the pin is still left, whatever it holds.
+since the next commit made in the leg is on the tracking branch now; the
+branch-at-the-pin path prints it under `on main` too (#704), and no other start
+prints it, nor does a refusal. From another branch the checkout changes files,
+so git can refuse it over a local edit or an untracked file, which a checkout
+from the pin never meets: the branch is then left at the pin and HEAD where it
+was, and the next run meets the branch-at-the-pin state. An IGNORED file in the
+way and an operation in progress are refused too, on every path (#704):
+`tests/test_bootstrap_leg_moves.py`. A leg detached at a commit that is not the
+pin is still left, whatever it holds.
 
 EACH TEST GOES THE WAY A PERSON DOES: a scaffold into bare repositories on
 disk, cloned recursively and bootstrapped, so each leg is on `main` at its
@@ -879,7 +878,9 @@ def test_a_leg_on_another_branch_with_its_own_branch_at_the_pin_is_as_it_was(
     is made. `fast_forward_to_pin` did not do the same for a branch BEHIND
     the pin until #603 (D1, option A of its checklist triage) made the two
     one rule: the T7 tests at the end of this module are this test's twins
-    for a branch behind the pin."""
+    for a branch behind the pin. The line under `on main` says the leg left
+    `elsewhere`, as T7's does under `fast-forwarded`; it said nothing of the
+    branch, and the next commit was on `main` unannounced (#704)."""
     leg, new = branch_at_the_new_pin(root, bootstrapped["remotes"], tmp_path,
                                      "advance-other-branch")
     git("checkout", "-q", "-b", "elsewhere", cwd=leg)
@@ -887,8 +888,8 @@ def test_a_leg_on_another_branch_with_its_own_branch_at_the_pin_is_as_it_was(
 
     result = bootstrap(root)
     assert result.returncode == 0, result.stderr + result.stdout
-    assert f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n" in (
-        result.stdout), result.stdout
+    assert (f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n"
+            + left_branch()) in result.stdout, result.stdout
     assert head_ref(leg) == MAIN and rev(leg) == new
     assert rev(leg, "refs/heads/elsewhere") != new, "its commit is on it"
 
@@ -1288,9 +1289,8 @@ def test_a_checkout_off_another_branch_git_refuses_leaves_main_at_the_pin(
 
     git("checkout", "-q", "--", EDITED, cwd=leg)
     again = skip_validators(root)
-    assert f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n" in (
-        again.stdout), again.stdout
-    assert LEFT not in again.stdout, "P9 says nothing of the branch it left"
+    assert (f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n"
+            + left_branch()) in again.stdout, "P9 says the branch it left"
     assert head_ref(leg) == MAIN and rev(leg) == new
 
 
@@ -1331,8 +1331,8 @@ def test_a_leg_on_a_branch_with_no_commit_yet_is_placed_as_on_any_branch(
     """HEAD on a branch with NO COMMIT YET (`git switch --orphan`): there is
     no commit to keep, and `place_at_pin` checks `main` out from it, so a
     `main` behind the pin does the same (#603). The four lines side by side:
-    free, `main` goes to the pin and the leg onto it, T7 says the leg left a
-    branch with no commit yet and P9 says nothing of it; with an untracked
+    free, `main` goes to the pin and the leg onto it, and T7 and P9 both say
+    the leg left a branch with no commit yet (P9 since #704); with an untracked
     file in the way, git refuses the checkout, HEAD stays on the unborn
     branch, `main` is at the pin and nothing is said of the leg leaving."""
     old = rev(root / "spec")
@@ -1365,11 +1365,9 @@ def test_a_leg_on_a_branch_with_no_commit_yet_is_placed_as_on_any_branch(
         assert (leg / ADDED).read_bytes() == b"mine\n"
         assert LEFT not in result.stdout
     else:
-        assert ((fast_forwarded(old, new) + left_branch("orphan", True)
-                 if where == "behind" else
+        assert ((fast_forwarded(old, new) if where == "behind" else
                  f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n")
-                in result.stdout), result.stdout
-        assert (LEFT in result.stdout) == (where == "behind")
+                + left_branch("orphan", True) in result.stdout), result.stdout
         assert head_ref(leg) == MAIN and rev(leg) == new
         assert git("status", "--porcelain", cwd=leg).stdout == ""
 

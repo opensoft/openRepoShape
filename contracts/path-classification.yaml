@@ -299,8 +299,7 @@ rules:
       Requirements, decisions, contracts and governance prose — what the
       project has DECIDED, as opposed to what it currently runs. `contracts/`
       is here by the 2026-09-02 ruling even where the code reads it: the code
-      reads across the assembly-root mount (`spec/contracts` from the root,
-      `../spec/contracts` from `code/`), which is what the legs are mounted
+      reads across the assembly-root mount, which is what the legs are mounted
       for.
 
   # -- the implementation leg ----------------------------------------------
@@ -442,14 +441,15 @@ rules:
   # the file blocks nothing the shape writes and no validator, gate or
   # doctor row reads it. As for the rules above, what `execute` does is said
   # of a repository WHEN IT IS ADOPTED: `shape-doctor.py --placement-plan`
-  # prints this question too, by name, for a leg already split, and reads
-  # the leg's copy as a question, because the verdict's leg stays null.
+  # prints this question too, for a leg already split, and reads the leg's
+  # copy as a question, because the verdict's leg stays null.
   #
   # `kind:` DECIDES, NOT THE NAME, as it does for the advisory. `plan` asks
   # this question only of a file that declares `kind:
-  # single-repository-record` at the commit it plans. One of this name that
-  # declares anything else, or does not parse, is no record, and is asked
-  # the general question below as any other top-level data file is.
+  # single-repository-record` at the commit it plans, and the doctor only
+  # of a leg's copy that declares it in the leg's index (#691). One of this
+  # name that declares anything else, or does not parse, is no record, and
+  # is asked the general question below as any other top-level data file is.
   - id: ambiguous-single-repository-record
     paths:
       - "single-repository.yaml"

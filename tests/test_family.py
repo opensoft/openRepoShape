@@ -683,7 +683,7 @@ def test_validate_refuses_a_missing_gitlink(holder):
     result = validate(holder)
     assert result.returncode == 2
     assert "member-gitlink-absent" in result.stderr
-    assert "family.py add" in result.stderr
+    assert "git update-index --add --cacheinfo 160000," in result.stderr
 
 
 def test_validate_finds_a_pin_that_disagrees_with_the_gitlink(holder):
@@ -1049,10 +1049,11 @@ def test_bump_to_the_commit_already_pinned_ignores_what_the_member_holds(
 
 def test_bump_to_the_commit_already_pinned_leaves_an_uncommitted_edit_alone(
         holder):
-    """The rewrite equals `HEAD`, so there is nothing to record, and what the
-    working copy held before is put back: an uncommitted edit to the `members:`
-    block is not this run's to discard, however wrong it is. `git status` says
-    the same before and after."""
+    """An uncommitted edit to the `members:` block is not this run's to
+    discard, however wrong it is. The rewrite equals `HEAD`, so there would be
+    nothing to record; since #684 `bump` refuses the edit before that, as a
+    `family.yaml` holding a change HEAD does not, and leaves it where it is.
+    `git status` says the same before and after."""
     pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
     manifest_path = holder / "family.yaml"
     manifest_path.write_text(manifest_path.read_text().replace(
@@ -1064,8 +1065,9 @@ def test_bump_to_the_commit_already_pinned_leaves_an_uncommitted_edit_alone(
     result = run_script(FAMILY, "bump", "--family-root", str(holder),
                         "--member", "IRRS", "--to", pinned)
 
-    assert result.returncode == 1, result.stderr + result.stdout
-    assert nothing_to_do_line("IRRS", pinned) in result.stdout
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert result.stdout == ""
+    assert result.stderr.startswith("REFUSED family-manifest-uncommitted: ")
     assert manifest_path.read_bytes() == edited
     assert git("status", "--porcelain", cwd=holder).stdout == status
 
@@ -1113,7 +1115,13 @@ def test_bump_finishes_a_bump_an_earlier_run_staged_and_did_not_commit(holder):
     commit: a run that wrote the row and staged both paths and then died
     before `git commit` — a hook that refused, a lock — leaves exactly this.
     Reading `was == --to` as "nothing to do" would call the half-finished bump
-    done and leave the commit for somebody to make by hand (#210)."""
+    done and leave the commit for somebody to make by hand (#210). Since #684
+    the staged `family.yaml` is refused first, as a change HEAD does not hold,
+    and with the gitlink staged beside it the refusal names one way out
+    alone: `git checkout HEAD -- family.yaml`, which leaves the gitlink
+    staged, and the same bump then finishes in ONE commit of both paths.
+    (`git commit -- family.yaml` would commit the row without its
+    gitlink.)"""
     member = holder / "members" / "IRRS"
     before = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
     after = commit_in_member(member)
@@ -1123,9 +1131,16 @@ def test_bump_finishes_a_bump_an_earlier_run_staged_and_did_not_commit(holder):
     manifest_path.write_text(text.replace(before, after, 1))
     git("add", "--", "members/IRRS", "family.yaml", cwd=holder)
     head = git("rev-parse", "HEAD", cwd=holder).stdout.strip()
+    args = ["bump", "--family-root", str(holder), "--member", "IRRS", "--to",
+            after]
 
-    result = run_script(FAMILY, "bump", "--family-root", str(holder),
-                        "--member", "IRRS", "--to", after)
+    refused = run_script(FAMILY, *args)
+    assert refused.returncode == 2, refused.stderr + refused.stdout
+    assert refused.stderr.startswith("REFUSED family-manifest-uncommitted: ")
+    assert ("Remediation: the index also stages a gitlink under members/ "
+            in refused.stderr), refused.stderr
+    git("checkout", "HEAD", "--", "family.yaml", cwd=holder)
+    result = run_script(FAMILY, *args)
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert "nothing to do" not in result.stdout

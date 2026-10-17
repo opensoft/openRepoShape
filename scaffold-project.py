@@ -59,7 +59,13 @@ scaffold pushes (#462): a reserved name, or what a run whose later push an
 organisation's ruleset refused left behind. It never deletes, rewrites or
 force-pushes a remote. `--dry-run` asks the same question of the three
 remotes and refuses `scaffold-remote-exists` as the real run does (#537), so
-`setup-project.py` refuses at the plan, before it asks for the yes.
+`setup-project.py` refuses at the plan, before it asks for the yes. Both
+runs ask it after the folders, and before either makes one (#609): a file
+where `--work-dir`, `--local-remote-dir` or a working tree must go, or a
+folder this user cannot write in, is `scaffold-folder-cannot-be-made` or
+`scaffold-target-exists`, never a traceback. Only gh's own not-found answer
+says a repository does not exist; any other `gh repo view` failure (a bad
+login, a rate limit, no network) is refused as `remote-unreadable`.
 
 EXIT CODES: 0 done · 1 nothing (dry run prints and exits 0) · 2 refusal.
 """
@@ -78,7 +84,6 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    free_plan_secret_hint,
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
     git_out, link_pins_from_trees, repo_basename, shell_line, tree_digest,
@@ -92,6 +97,11 @@ from shape_materialize import (  # noqa: E402
 )
 # The leg-path rule `adopt-project.py` asks of its own paths (#179).
 from shape_materialize import refuse_bad_leg_paths  # noqa: E402
+# The root's visibility and the Free-plan secrets note, asked as `family.py`
+# asks them of its holder (#660).
+from shape_materialize import (  # noqa: E402
+    free_plan_secrets_note, repository_visibility,
+)
 # What the new project's own reader and `validate-manifest.py` would make of
 # the values written into its manifest, and whether a repository's name can
 # be a directory's: asked before anything is created (#258, #261).
@@ -102,6 +112,11 @@ from shape_advisory import scaffold_lines  # noqa: E402
 # Whether `--elected-by`, `--reference` and `--name` are text a file can
 # hold: the question `adopt-project.py` asks of the same values (#282).
 from shape_materialize import unwritable_reason  # noqa: E402
+# The words a chain link that is not reachable is offered: what THIS tool
+# reads (#610), which setup's step (4) hands the naming gate too (#661).
+from shape_materialize import (  # noqa: E402
+    scaffold_link_remedies as _link_remedies,
+)
 # The shape half of the leg-path collision rule, which `adopt-project.py`
 # asks of its own mount paths (#172), imported as one unit (#197), with the
 # one spelling of the file a `--pin` adds to what the shape writes.
@@ -111,6 +126,16 @@ from shape_materialize import (  # noqa: E402
 # The project's own reader, and the writer of the double-quoted scalars it
 # reads back, asked of each `neutral_product_pins:` entry (#516).
 from repo_shape import YamlError, double_quoted, parse_yaml  # noqa: E402
+# What both runs ask before the first write, as `family.py init` asks it
+# (#609): each folder this run makes, each working tree it writes, and gh's
+# not-found answer as the one failure of `gh repo view` that means absent.
+from shape_materialize import (  # noqa: E402
+    make_folder, refuse_unless_not_found, refuse_unmakeable_folder,
+    shown_source, target_in_the_way, target_remediation,
+)
+# How the READMEs' `git clone` line spells the clone URL, one word (#693),
+# in the quoting `shell_line` gives the NEXT STEPS clone (#486).
+from repo_shape import shell_quoted  # noqa: E402
 
 #: How a refusal names each value the manifest records (#258, #261). The leg
 #: paths are not here: `refuse_bad_leg_paths` asks for them (#179, #225).
@@ -165,6 +190,11 @@ def remote_is_empty(repository: str) -> bool | None:
     NO `gh` ON PATH IS `gh-not-found` (#537), and not a `FileNotFoundError`
     traceback: `--dry-run` asks this question too now, and before that a dry
     run needed no `gh` at all.
+
+    ONLY GH'S NOT-FOUND ANSWER IS "IT DOES NOT EXIST" (#609). Any failure of
+    `gh repo view` used to be, so a bad login, a rate limit or an outage
+    planned under `--dry-run` and sent the real run on to `gh repo create`;
+    `refuse_unless_not_found` refuses every other failure by name.
     """
     try:
         probe = subprocess.run(
@@ -175,6 +205,7 @@ def remote_is_empty(repository: str) -> bool | None:
         raise _gh_not_found(
             f"whether {repository} already exists on GitHub", exc) from exc
     if probe.returncode != 0:
+        refuse_unless_not_found(repository, probe)
         return None
     commits = subprocess.run(
         ["gh", "api", f"repos/{repository}/commits?per_page=1"],
@@ -199,8 +230,10 @@ def remote_is_empty(repository: str) -> bool | None:
 def remote_visibility(repository: str) -> str | None:
     """`<org>/<repo>`'s GitHub visibility (`private`, `public`, `internal`),
     lowercased, or None if it cannot be read — the repository does not exist,
-    or `gh` cannot see it. Never called for a `--local-remote-dir` repository:
-    a bare repository on disk has no visibility at all.
+    `gh` cannot see it, or it answered a word that is not one of the three.
+    It is `repository_visibility`, the reader `family.py` asks of its holder
+    (#660). Never called for a `--local-remote-dir` repository: a bare
+    repository on disk has no visibility at all.
 
     NO `gh` ON PATH IS `gh-not-found` (#537), as `remote_is_empty`'s is, and
     not a `FileNotFoundError` traceback: `--reuse-empty-repo` reads the root's
@@ -209,20 +242,10 @@ def remote_visibility(repository: str) -> str | None:
     has to come from here too or the run never reaches the one that has it.
     """
     try:
-        proc = subprocess.run(
-            ["gh", "repo", "view", repository, "--json", "visibility"],
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", check=False)
+        return repository_visibility(repository)
     except FileNotFoundError as exc:
         raise _gh_not_found(
             f"what visibility {repository} has on GitHub", exc) from exc
-    if proc.returncode != 0:
-        return None
-    try:
-        value = json.loads(proc.stdout).get("visibility")
-    except json.JSONDecodeError:
-        return None
-    return str(value).lower() if value else None
 
 
 def local_remote_is_empty(bare: Path) -> bool | None:
@@ -301,10 +324,13 @@ def main(argv: list[str] | None = None) -> int:
                              "`contracts` holds several.")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the plan and ask, as the real run does, "
-                             "whether each of the three repositories already "
-                             "exists (`gh repo view` and its commit listing, "
-                             "or the bare repositories with "
-                             "--local-remote-dir), refusing what it refuses; "
+                             "whether each folder it makes can be made "
+                             "(--work-dir, the trees in it, "
+                             "--local-remote-dir) and whether each of the "
+                             "three repositories already exists (`gh repo "
+                             "view` and its commit listing, or the bare "
+                             "repositories with --local-remote-dir), "
+                             "refusing what it refuses; make no folder, "
                              "create no remote and push nothing")
     parser.add_argument("--local-remote-dir", type=Path, default=None,
                         help="create bare repositories here instead of calling "
@@ -676,7 +702,7 @@ def _refuse_unholdable_manifest(args, values: dict, policy) -> None:
     """
     flags = dict(MANIFEST_FLAGS)
     for key, flag, given, source in (
-            ("PROJECT_ID", "--id", args.id, "--project lowercased"),
+            ("PROJECT_ID", "--id", args.id, ID_DERIVED_FROM),
             ("PROJECT_NAME", "--name", args.name, "--project"),
             ("ELECTED_BY", "--elected-by", args.elected_by,
              "GIT_AUTHOR_NAME or `git config user.name`")):
@@ -745,6 +771,58 @@ def _identity(args, project: str) -> tuple[str, str, str, str, str]:
         ("--reference", reference, ROOT_MANIFEST_AND_README),
         ("--name", display, NAME_WRITTEN_INTO)))
     return project_id, display, elected_on, reference, elected_by
+
+
+#: Where `_identity` takes the id from when no `--id` is passed, as a
+#: sentence names it: in the label `_refuse_unholdable_manifest` gives a
+#: value no flag supplied, and in `scaffold-bad-id` (#659).
+ID_DERIVED_FROM = "--project lowercased"
+
+#: The rule a `--project` is held to, as `naming-unclassified` states it
+#: (`_check_one_name`). `scaffold-bad-id`'s derived remedy names it in the
+#: same words, so the person who follows it is not sent from one refusal to
+#: the other (#659).
+PROJECT_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot "
+                     "or space")
+
+#: How `scaffold-bad-id` is told to go on (#659), in the words
+#: `adopt-project.py plan` gives `adopt-bad-id` (#658). A `--id` the person
+#: passed is theirs to retype. An id `_identity` derived is `--project`
+#: lowercased, and `--project` also names the three repositories, which the
+#: naming policy reads itself: every form it holds takes only ASCII letters,
+#: digits and hyphens, so "pass an explicit lowercase --id" led straight to
+#: `naming-unclassified`, and so would "change --project" to `North-Wind`.
+#: The derived remedy names the rule.
+PASSED_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
+DERIVED_ID_REMEDIATION = (
+    f"Remediation: change --project to {PROJECT_NAME_RULE}. The id is "
+    f"{ID_DERIVED_FROM}, and an explicit --id would not change --project, "
+    "which also names the assembly root and both legs.")
+
+
+def _refuse_bad_id(project_id: str, given: str | None) -> None:
+    """`scaffold-bad-id`: an id the project's validators would not take
+    (`PROJECT_ID_RE`), named by where it came from (#659), as
+    `adopt-project.py plan` names `adopt-bad-id` (#658).
+
+    `given` is `--id` as parsed. One the person passed is named as the flag
+    they typed, value as typed, and keeps its remedy. With none, or an empty
+    one, `_identity` derived the id (`args.id or project.lower()`), and
+    `--id 'north_wind' must match` named a value nobody had typed: the flag
+    is named as `_refuse_unholdable_manifest` names one, by where its value
+    came from, and an empty `--id ''` as empty, because it was passed."""
+    if PROJECT_ID_RE.match(project_id):
+        return
+    pattern = PROJECT_ID_RE.pattern
+    if given:
+        raise Refusal("scaffold-bad-id",
+                      f"--id {project_id!r} must match {pattern}",
+                      PASSED_ID_REMEDIATION)
+    unset = "not given" if given is None else "empty"
+    raise Refusal("scaffold-bad-id",
+                  f"--id ({unset}, so {ID_DERIVED_FROM}) is {project_id!r}, "
+                  f"which must match {pattern}",
+                  DERIVED_ID_REMEDIATION)
 
 
 #: How a refusal names an elector `_elector` did not get from `--elected-by`
@@ -827,18 +905,34 @@ def _refuse_unwritable_values(fields) -> None:
 #: What a `scaffold-unwritable-value` for the clone URL is told to do (#433).
 #: It is not `UNWRITABLE_REMEDIATION`, which says to retype a value: the path
 #: is a directory, so the way out is another directory, or GitHub.
+#:
+#: THE URL IS THE PATH `--local-remote-dir` RESOLVES TO (#693), so one typed
+#: as text can lead through a symbolic link to a directory whose name is not,
+#: or be relative to one; told only to pass a path that is "one line of UTF-8
+#: text", which it was, a person renames the link and is refused again, so
+#: the remedy says where the fault is. And as `UNWRITABLE_REMEDIATION` says
+#: (#282), a lone surrogate, which a Windows name can hold, cannot be
+#: written either: the READMEs quote the URL for a shell (#693) and write
+#: every character of it as itself but an apostrophe.
 CLONE_URL_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
     "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
     "control character in it, a directory renamed or made anew, and run "
     "again; or scaffold against GitHub, without --local-remote-dir, where "
-    "the clone URL is `https://github.com/<org>/<name>.git`. The READMEs "
-    "print the clone URL as it stands: a byte that is not UTF-8 in the path "
-    "(a directory named in a legacy code page) cannot be written at all, a "
-    "line break or a control character would break or garble the line it is "
-    "written into, and a bidirectional embedding, override or isolate "
-    "control would show the rest of that line in another order than it is "
-    "written.")
+    "the clone URL is `https://github.com/<org>/<name>.git`. The clone URL "
+    "is the path --local-remote-dir resolves to, so where the path given is "
+    "text and the URL named above is not, the fault is in what it leads "
+    "through: a symbolic link on it whose target is not text, or, for a "
+    "relative path, the directory it was given from. Rename or replace the "
+    "directory whose name is not text, or pass a path that does not lead "
+    "through it; renaming a link changes nothing. The READMEs print the "
+    "clone URL in a `git clone` line, in quotes where a shell needs them, "
+    "every character but an apostrophe written as itself: a byte that is "
+    "not UTF-8 in the path (a directory named in a legacy code page), or a "
+    "lone surrogate, cannot be written at all, a line break or a control "
+    "character would break or garble the line it is written into, and a "
+    "bidirectional embedding, override or isolate control would show the "
+    "rest of that line in another order than it is written.")
 
 
 def _refuse_an_unwritable_clone_url(local: bool, url: str) -> None:
@@ -966,12 +1060,16 @@ def _declaration(args) -> tuple[dict, set, tuple, dict]:
     too, and the warning says that tree could not be READ, with why, rather
     than that it "is not reachable here" (#338): the scaffold prints no other
     line about a source, so `with_reasons` is asked for here.
+
+    A tree that is not reachable is offered the sources THIS TOOL reads
+    (`_link_remedies`, #610), never the naming validator's.
     """
     pins = declared_pin_values(args)
     declared_pins: set[str] = set(pins)
     chain = referent_chain_links(args.referent_chain)
-    link_pins = link_pins_from_trees(chain, None, {}, args.pin_source,
-                                     with_reasons=True) if chain else {}
+    link_pins = link_pins_from_trees(
+        chain, None, {}, args.pin_source, with_reasons=True,
+        remedies=_link_remedies(chain)) if chain else {}
     return pins, declared_pins, chain, link_pins
 
 
@@ -1007,8 +1105,7 @@ def _check_one_name(policy, name: str, role: str, declared_pins: set,
         raise Refusal(
             "naming-unclassified",
             f"{name!r} matches no family in the naming policy. "
-            "`<Project>` is one CamelCase token with no hyphen, "
-            "underscore, dot or space.",
+            f"`<Project>` is {PROJECT_NAME_RULE}.",
             "Remediation: re-run with a --project value of that form.",
         )
     if not accepts_role(found, role):
@@ -1207,19 +1304,55 @@ def _print_plan_actions(args, topic: str, local: bool) -> None:
                              else f"gh repo edit --add-topic {topic}"))
 
 
+#: The code of every folder this run makes and cannot (#609).
+FOLDER_REFUSAL = "scaffold-folder-cannot-be-made"
+
+
 def _refuse_existing_trees(work_root: Path, names: dict) -> None:
     """(j) Refuse to write over a working tree that already has something in
     it. Split out of `_scaffold` for #138.
+
+    A FILE THERE IS REFUSED TOO (#609): `iterdir()` raised
+    `NotADirectoryError` on one, a traceback after `--dry-run` had exited 0.
+    `target_in_the_way` asks both, and makes nothing.
     """
     for role, name in names.items():
         target = work_root / name
-        if target.exists() and any(target.iterdir()):
+        why = target_in_the_way(target)
+        if why:
             raise Refusal(
                 "scaffold-target-exists",
-                f"{target} already exists and is not empty",
-                "Remediation: choose an empty --work-dir. There is no --force: "
-                "re-running over a live tree is not a scaffold.",
+                f"{shown_source(target)} already exists and {why}",
+                target_remediation(
+                    why,
+                    "Remediation: choose an empty --work-dir. There is no "
+                    "--force: re-running over a live tree is not a scaffold.",
+                    "--work-dir"),
             )
+
+
+def _refuse_unmakeable_folders(args, work_root: Path | None, names: dict,
+                               local: bool) -> None:
+    """(j′) Every folder this run makes, and each working tree it writes,
+    asked before anything is made, by the dry run and the real run alike
+    (#609): `--work-dir`, then the three trees in it, then
+    `--local-remote-dir`, the order the real run makes them in.
+
+    THE DRY RUN ASKED NONE OF IT. With a file where `--work-dir` or
+    `--local-remote-dir` goes, or where a tree goes, `--dry-run` exited 0
+    and the real run died in `mkdir` or `iterdir()` with a traceback. A
+    folder that cannot be made, because a file stands at it or above it or
+    this user cannot write where it goes, is `scaffold-folder-cannot-be-made`
+    now, and the real run's own `mkdir` is `make_folder`, which refuses the
+    same in the system's words. With no `--work-dir` the run makes a fresh
+    temporary directory, which nothing stands in.
+    """
+    if work_root is not None:
+        refuse_unmakeable_folder(FOLDER_REFUSAL, "--work-dir", work_root)
+        _refuse_existing_trees(work_root, names)
+    if local:
+        refuse_unmakeable_folder(FOLDER_REFUSAL, "--local-remote-dir",
+                                 args.local_remote_dir.resolve())
 
 
 def _create_remotes(args, values: dict, repositories: dict, urls: dict,
@@ -1237,11 +1370,14 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
     reused one what GitHub says of it. A reused leg's is what
     `_reused_leg_visibility` read, with its WARNING. The reused ROOT's is read
     here without one, because `_leg_visibility` has already said where the
-    run's flag disagrees with it.
+    run's flag disagrees with it, and is None where GitHub does not say
+    (#660): the run's `--visibility` is not the root's, so a public root
+    whose read failed was given the Free-plan hint as private, and
+    `_private_leg_note` says now that it could not be read.
     """
     display = values["PROJECT_NAME"]
     project_id = values["PROJECT_ID"]
-    standing: dict[str, str] = {}
+    standing: dict[str, str | None] = {}
     print("\ncreating remotes")
     for role in ("spec", "code", "assembly"):
         standing[role] = args.visibility
@@ -1250,8 +1386,7 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
                   + ("zero commits)" if reused[role] is None else
                      f"holding this scaffold's seed {reused[role][:12]})"))
             if not local and role == "assembly":
-                standing[role] = (remote_visibility(repositories[role])
-                                  or args.visibility)
+                standing[role] = remote_visibility(repositories[role])
             elif not local:
                 standing[role] = _reused_leg_visibility(args,
                                                         repositories[role])
@@ -1315,7 +1450,18 @@ def _private_leg_note(args, repositories: dict, local: bool,
     public root, new or reused, receives the organisation's secrets, and a
     hint that they "resolve to EMPTY" is false of it however private a leg
     is. The per-leg NOTE above stays, since a public root still needs a
-    credential to read a private leg.
+    credential to read a private leg. AND IT NAMES THE ROOT (#602): it said
+    the closed legs were private, so a public run over a reused private root
+    was told the secrets resolve to EMPTY because a leg is private, when the
+    reason is that the root is. `adopt-project.py` goes by its root the same
+    way.
+
+    WHAT GITHUB DOES NOT SAY IS SAID (#660), by `free_plan_secrets_note`,
+    which adopt and `family.py` ask too: a reused root whose visibility could
+    not be read (`standing` None) is `ROOT_VISIBILITY_UNREAD`, where it took
+    the run's `--visibility`, and a closed root whose organisation's plan
+    could not be read is `FREE_PLAN_UNREAD`, where it was silent as for a
+    paid plan.
     """
     closed = [role for role in ("spec", "code")
               if standing[role] in ("private", "internal")]
@@ -1333,11 +1479,10 @@ def _private_leg_note(args, repositories: dict, local: bool,
               "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
               f"PAT (contents:read on {which}, fallback) — or the `validate` "
               f"check cannot check {them} out.")
-        root_is_closed = standing["assembly"] in ("private", "internal")
-        hint = root_is_closed and free_plan_secret_hint(
-            args.org, repositories["assembly"], f"{who} {are}")
-        if hint:
-            print(hint)
+        note = free_plan_secrets_note(args.org, repositories["assembly"],
+                                      standing["assembly"])
+        if note:
+            print(note)
 
 
 def _take_held_seed(work: Path, url: str, seed: str, tracking: str) -> str:
@@ -1660,10 +1805,7 @@ def _scaffold(args) -> int:
     local, repositories, urls = _repository_urls(args, names)
     _refuse_an_unwritable_clone_url(local, urls["assembly"])
     policy = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
-    if not PROJECT_ID_RE.match(project_id):
-        raise Refusal("scaffold-bad-id",
-                      f"--id {project_id!r} must match {PROJECT_ID_RE.pattern}",
-                      "Remediation: pass an explicit lowercase --id.")
+    _refuse_bad_id(project_id, args.id)
     # WHAT THE PROJECT DECLARES ABOUT ITSELF, before any name is judged.
     # With no `--pin`, a descendant-form name is a claim with no referent and
     # the DECLARED ROLE wins. With `--pin openGlass@<sha>`, `MedxGlass` IS a
@@ -1731,8 +1873,14 @@ def _scaffold(args) -> int:
         "SHAPE_COMMIT": shape_commit,
         "SHAPE_TREE_SHA256": shape_tree,
         "DIGEST_DEFINITION": TREE_DIGEST_DEFINITION,
-        "CLONE_URL": urls["assembly"],
-        "ASSEMBLY_CLONE_URL": urls["assembly"],
+        # ONE WORD OF A COMMAND A PERSON PASTES (#693): every README prints
+        # it in `git clone --recurse-submodules <url>`, and under
+        # `--local-remote-dir` it is a path, which was rendered raw, so one
+        # under `a b/` split the line when pasted. POSIX quoting whatever the
+        # host, as `_next_steps_clone` prints it (#532): a README is a
+        # committed file read on every OS. A GitHub URL is left bare.
+        "CLONE_URL": shell_quoted(urls["assembly"], "posix"),
+        "ASSEMBLY_CLONE_URL": shell_quoted(urls["assembly"], "posix"),
         "NEUTRAL_PRODUCT_PINS": _neutral_product_pins(pins),
         "ASSEMBLY_NAMING": naming_block(policy, names["assembly"], "assembly",
                                         declared_pins, chain=chain),
@@ -1748,25 +1896,18 @@ def _scaffold(args) -> int:
 
     _print_plan(args, values, names, repositories, urls, local, policy,
                 declared_pins, chain, link_pins, pins)
-    if args.dry_run:
-        # THE DRY RUN ASKS WHETHER THE REMOTES EXIST (#537), with the real
-        # run's own question, `_reusable_remotes`, and refuses what it
-        # refuses: `scaffold-remote-exists` used to come only from the real
-        # run, which `setup-project.py` starts after the yes. It READS: `gh
-        # repo view` and a commit listing, or the bare repositories on disk
-        # with `--local-remote-dir`, and for a leg that is not empty the one
-        # commit it holds, fetched into a temporary directory it deletes. It
-        # creates no remote and pushes nothing.
-        _reusable_remotes(names, urls, repositories, local,
-                          args.reuse_empty_repo, values, args.tracking_branch)
-        print("\n--dry-run: nothing was created.")
-        return 0
 
     # ---- refuse to write over anything that already exists ----------------
-    work_root = (args.work_dir.resolve() if args.work_dir
-                 else Path(tempfile.mkdtemp(prefix="openreposhape-")))
-    work_root.mkdir(parents=True, exist_ok=True)
-    _refuse_existing_trees(work_root, names)
+    # ONE QUESTION, ASKED BY BOTH RUNS BEFORE ANYTHING IS MADE (#537, #609):
+    # every folder this run makes and each tree it writes, then every
+    # remote. It READS: the folders, then `gh repo view` and a commit
+    # listing, or the bare repositories on disk with `--local-remote-dir`,
+    # and for a leg that is not empty the one commit it holds, fetched into a
+    # temporary directory it deletes. So `--dry-run` refuses what the real
+    # run refuses, which `setup-project.py` asks before the yes, and the
+    # real run makes no folder for a run it then refuses.
+    work_root = args.work_dir.resolve() if args.work_dir else None
+    _refuse_unmakeable_folders(args, work_root, names, local)
     # A REPOSITORY MAY ALREADY EXIST only with `--reuse-empty-repo`, and only
     # with ZERO commits, or, for a leg, with this scaffold's own seed as its
     # one commit (#462). An organisation that creates the repository first and
@@ -1776,11 +1917,20 @@ def _scaffold(args) -> int:
     # operator holding the bypass right. A root with commits is refused
     # exactly as before: that is a live project, and `adopt-project.py` is the
     # tool for one of those. See `_reusable_remotes`.
-    if local:
-        args.local_remote_dir.resolve().mkdir(parents=True, exist_ok=True)
     reused = _reusable_remotes(names, urls, repositories, local,
                                args.reuse_empty_repo, values,
                                args.tracking_branch)
+    if args.dry_run:
+        print("\n--dry-run: nothing was created.")
+        return 0
+
+    if work_root is None:
+        work_root = Path(tempfile.mkdtemp(prefix="openreposhape-"))
+    else:
+        make_folder(FOLDER_REFUSAL, "--work-dir", work_root)
+    if local:
+        make_folder(FOLDER_REFUSAL, "--local-remote-dir",
+                    args.local_remote_dir.resolve())
 
     standing = _create_remotes(args, values, repositories, urls, local, reused)
     _private_leg_note(args, repositories, local, standing)

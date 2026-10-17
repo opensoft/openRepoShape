@@ -207,6 +207,8 @@ def test_check_names_the_kept_file_the_copies_and_the_lines(
     assert f"the pinned cop{'ies' if len(lines) > 1 else 'y'} {copies}:" \
         in detail
     assert where in detail
+    assert "so its rules outrank the root's line-ending rule for the pinned " \
+        "cop" in detail
     assert "shape-copy-drift" in detail
     for line in lines:
         assert line in detail, line
@@ -245,6 +247,9 @@ def test_a_root_attributes_symlink_still_has_its_copies_outranked(tmp_path):
                              {**KEEP_GITHUB, "config/": ROOT}))
     assert [code for code, _ in found] == [NESTED], found
     assert f"`{VALIDATE_LINE}`" in found[0][1]
+    assert ("so its rules outrank the line-ending rule #471's follow-up asks "
+            "a regular root `.gitattributes` to hold (the root's is a "
+            "symlink, which gives none) for the pinned copy") in found[0][1]
 
 
 def test_a_kept_symlink_is_read_as_its_target_text(tmp_path):
@@ -539,10 +544,26 @@ def test_an_encoding_the_root_attributes_is_not_in_is_found(tmp_path):
     """`* working-tree-encoding=UTF-16LE` reaches the root's own
     `.gitattributes`, which is UTF-8: `git add` stores it decoded as
     UTF-16, or refuses it, as the length of what the split writes falls.
-    Either is found, before any leg; at 2423eaa2 `execute` died after both."""
+    Either is found, before any leg; at 2423eaa2 `execute` died after both,
+    at mounting the legs (#654's L1-12), and `git add --renormalize` stages
+    the encoded bytes, which git reads no rule from: the finding says so,
+    and names the line that keeps the rule off the file. The files its
+    rules reach are `plan-file-reencoded`'s, after it."""
     found = findings(root_attributes_plan(
         tmp_path, b"* working-tree-encoding=UTF-16LE\n"))
-    assert [code for code, _ in found] == [REENCODED], found
+    assert [code for code, _ in found][0] == REENCODED, found
+    assert {code for code, _ in found[1:]} == {"plan-file-reencoded"}, found
+    detail = found[0][1]
+    assert ("a `working-tree-encoding` rule reaches that file itself: the "
+            "split's checkout writes it in that encoding, git then reads no "
+            "rule from it, and the files its rules reach are stored again as "
+            "other bytes, so the mount's `git rm` refuses those sent to a "
+            "leg, at mounting the legs, after both legs exist.") in detail
+    assert ("`git add --renormalize -- .gitattributes` is no way out: it "
+            "stores the encoded bytes, which git reads no rule from. Keep the "
+            "rule off the file with the line `.gitattributes "
+            "-working-tree-encoding` after it, or narrow the rule, commit, "
+            "and re-run `plan`.") in detail
 
 
 #: Root `.gitattributes` blobs `git add` stores as the split writes them: a

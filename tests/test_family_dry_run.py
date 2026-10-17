@@ -787,15 +787,12 @@ def test_a_dry_run_asks_the_manifest_refusal_the_real_run_asks_first_too(
     ask it after, with the holder changed). The dry run asks it too, exit 2,
     before anything is written. The hand edit is the one
     `test_family_add_refusals.py` makes: a comment on the `members:` line,
-    which YAML reads past and the line rewrite does not, left uncommitted.
-    The real runs are held to the same holder in
+    which YAML reads past and the line rewrite does not, committed, since
+    the verbs refuse a `family.yaml` holding a change HEAD does not first
+    (#684). The real runs are held to the same holder in
     `test_family_bump_remove_rollback.py`."""
     env = isolated(offline, tmp_path)
-    manifest_path = holder / "family.yaml"
-    text = manifest_path.read_bytes().decode("utf-8")
-    assert text.count("\nmembers:\n") == 1, "fixture drift"
-    manifest_path.write_bytes(text.replace(
-        "\nmembers:\n", "\nmembers:  # edited by hand\n").encode("utf-8"))
+    a_members_line_edited_by_hand(holder)
     before = state(holder, env)
     extra = ["--to", older(family)] if verb == "bump" else []
 
@@ -1052,12 +1049,15 @@ def a_cached_store(root: Path) -> None:
 
 def a_members_line_edited_by_hand(root: Path) -> None:
     """A comment on the `members:` line, which YAML reads past and the line
-    rewrite does not, left uncommitted."""
+    rewrite does not, committed: the verbs refuse a `family.yaml` holding a
+    change HEAD does not before this (#684)."""
     manifest_path = root / "family.yaml"
     text = manifest_path.read_bytes().decode("utf-8")
     assert text.count("\nmembers:\n") == 1, "fixture drift"
     manifest_path.write_bytes(text.replace(
         "\nmembers:\n", "\nmembers:  # edited by hand\n").encode("utf-8"))
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "A hand edit", "--", "family.yaml", cwd=root)
 
 
 def a_renamed_copy_of_a_member(root: Path) -> Path:

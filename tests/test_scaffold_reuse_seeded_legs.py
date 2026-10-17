@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import http.server
 import importlib.util
+import json
 import os
 import re
 import stat
@@ -309,7 +310,13 @@ def test_a_leg_somebody_else_made_is_refused(tmp_path):
 #: `FAKE_GH_FULL` names it too (`org/name,...`), when its commit listing has
 #: one commit; it answers `repo create` and `repo edit` with success, answers
 #: `api orgs/<org>` with `FAKE_GH_PLAN` when that is set (the Free-plan hint
-#: asks it for `.plan.name`), and logs every call.
+#: asks it for `.plan.name`), and with `FAKE_GH_PLAN_ERROR` on stderr and
+#: exit 1 when that is, answers `repo view` of each repository that
+#: `FAKE_GH_VIEW_ERRORS` (JSON, `{"org/name": "stderr text"}`) names with that
+#: text and exit 1, known or not (a 401, where an unknown one is not-found),
+#: answers only `repo view --json visibility` of each that
+#: `FAKE_GH_VISIBILITY_ERRORS` names so (an `HTTP 502` after `--json name`
+#: found it), and logs every call.
 FAKE_GH = textwrap.dedent("""\
     #!/usr/bin/env python3
     import json
@@ -322,19 +329,31 @@ FAKE_GH = textwrap.dedent("""\
     KNOWN = dict(pair.split("=") for pair in
                  os.environ["FAKE_GH_REPOS"].split(",") if pair)
     FULL = os.environ.get("FAKE_GH_FULL", "").split(",")
+    ERRORS = json.loads(os.environ.get("FAKE_GH_VIEW_ERRORS", "{}"))
+    UNSEEN = json.loads(os.environ.get("FAKE_GH_VISIBILITY_ERRORS", "{}"))
 
     if argv[:2] == ["repo", "view"]:
         repo = argv[2]
+        fields = (argv[argv.index("--json") + 1].split(",")
+                  if "--json" in argv else [])
+        if repo in UNSEEN and "visibility" in fields:
+            ERRORS[repo] = UNSEEN[repo]
+        if repo in ERRORS:
+            print(ERRORS[repo], file=sys.stderr)
+            sys.exit(1)
         if repo not in KNOWN:
             print("GraphQL: Could not resolve to a Repository", file=sys.stderr)
             sys.exit(1)
-        fields = argv[argv.index("--json") + 1].split(",")
         out = {}
         if "name" in fields:
             out["name"] = repo.rsplit("/", 1)[-1]
         if "visibility" in fields:
             out["visibility"] = KNOWN[repo]
         print(json.dumps(out))
+    elif (argv[:1] == ["api"] and argv[1].startswith("orgs/")
+          and "FAKE_GH_PLAN_ERROR" in os.environ):
+        print(os.environ["FAKE_GH_PLAN_ERROR"], file=sys.stderr)
+        sys.exit(1)
     elif (argv[:1] == ["api"] and argv[1].startswith("orgs/")
           and "FAKE_GH_PLAN" in os.environ):
         print(os.environ["FAKE_GH_PLAN"])
@@ -349,12 +368,18 @@ FAKE_GH = textwrap.dedent("""\
     """)
 
 
-def fake_gh(tmp_path, repos: dict, full=(),
-            plan: str | None = None) -> tuple[dict, Path]:
+def fake_gh(tmp_path, repos: dict, full=(), plan: str | None = None,
+            view_errors: dict | None = None, *,
+            visibility_errors: dict | None = None,
+            plan_error: str | None = None) -> tuple[dict, Path]:
     """`FAKE_GH` first on PATH, knowing `repos` (`{name: VISIBILITY}`, each
-    under `ORG`) and holding commits in each of `full`, and naming `plan` as
-    the organisation's GitHub plan when one is given: the environment for the
-    run, and the log of every call. Nothing it answers reaches GitHub."""
+    under `ORG`) and holding commits in each of `full`, naming `plan` as the
+    organisation's GitHub plan when one is given, or failing that question
+    with the text `plan_error`, and failing `repo view` of each name in
+    `view_errors` (`{name: stderr text}`, each under `ORG`) with that text,
+    or only its `--json visibility` for each name in `visibility_errors`:
+    the environment for the run, and the log of every call. Nothing it
+    answers reaches GitHub."""
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir()
     gh = fakebin / "gh"
@@ -369,6 +394,13 @@ def fake_gh(tmp_path, repos: dict, full=(),
            "FAKE_GH_FULL": ",".join(f"{ORG}/{name}" for name in full)}
     if plan is not None:
         env["FAKE_GH_PLAN"] = plan
+    if plan_error is not None:
+        env["FAKE_GH_PLAN_ERROR"] = plan_error
+    for key, errors in (("FAKE_GH_VIEW_ERRORS", view_errors),
+                        ("FAKE_GH_VISIBILITY_ERRORS", visibility_errors)):
+        if errors:
+            env[key] = json.dumps(
+                {f"{ORG}/{name}": text for name, text in errors.items()})
     return env, log
 
 
@@ -472,8 +504,12 @@ def test_the_visibility_text_follows_each_leg_as_it_stands(
 #: runs. On the Free plan an organisation secret reaches only a public
 #: repository, so the hint is true when the root is private or internal and
 #: false when it is public, whatever a leg is. `None` is no hint; otherwise
-#: the legs it names, as `FREE_PLAN_HINT` puts them before " private, so".
-BOTH_LEGS = f"{SPEC_REPO} and {CODE_REPO} are"
+#: the repository it names as the reason, as `FREE_PLAN_HINT` puts it before
+#: " private, so": the root (#602), where it named the closed legs.
+ROOT_IS = f"{ORG}/{PROJECT} is"
+#: What the hint named as its reason before #602, which no row may print.
+LEG_SUBJECTS = (f"{SPEC_REPO} is", f"{CODE_REPO} is",
+                f"{SPEC_REPO} and {CODE_REPO} are")
 
 
 @WINDOWS_SKIP
@@ -495,16 +531,17 @@ BOTH_LEGS = f"{SPEC_REPO} and {CODE_REPO} are"
      None),
     # And the other way: a public run over a root that is private on GitHub.
     ({PROJECT: "PRIVATE", f"{PROJECT}-code": "PRIVATE"},
-     ("--visibility", "public"), "free", f"{CODE_REPO} is"),
+     ("--visibility", "public"), "free", ROOT_IS),
     # An internal root is closed too, and its run creates the spec leg
     # internal.
     ({PROJECT: "INTERNAL", f"{PROJECT}-code": "PRIVATE"}, (), "free",
-     BOTH_LEGS),
+     ROOT_IS),
     # Controls: a private root with both legs private, reused and created
-    # new, says it as it always did; and a paid plan says nothing.
+    # new, gets the hint as before, with the root as its subject (#602 moved
+    # only that); and a paid plan says nothing.
     ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PRIVATE",
-      f"{PROJECT}-code": "PRIVATE"}, (), "free", BOTH_LEGS),
-    ({}, (), "free", BOTH_LEGS),
+      f"{PROJECT}-code": "PRIVATE"}, (), "free", ROOT_IS),
+    ({}, (), "free", ROOT_IS),
     ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PRIVATE",
       f"{PROJECT}-code": "PRIVATE"}, (), "team", None),
 ], ids=["public-run-new-root", "public-root-reused",
@@ -521,7 +558,9 @@ def test_the_free_plan_hint_goes_by_the_root_as_it_stands(
     in every case a leg is closed, since a public root still needs a
     credential to read a private leg; the hint only when the root, as it
     stands, is private or internal: GitHub's for a reused root, else the
-    run's."""
+    run's. #602: and it names the root as the repository that is private,
+    where it named the closed legs, which are not why the secrets resolve to
+    EMPTY."""
     env, _log = fake_gh(tmp_path, repos, plan=plan)
     result = on_github(tmp_path, "--reuse-empty-repo", *flags, env=env)
     assert result.returncode == 0, result.stderr + result.stdout
@@ -533,6 +572,8 @@ def test_the_free_plan_hint_goes_by_the_root_as_it_stands(
         assert f"NOTE {ORG} is on the GitHub FREE plan" in printed, printed
         assert f"{named} private, so org-level" in printed, printed
         assert printed.count("resolve to EMPTY") == 1, printed
+    for subject in LEG_SUBJECTS:
+        assert f"{subject} private, so" not in printed, printed
 
 
 # --- a leg that gh sees and git cannot read (#542) --------------------------

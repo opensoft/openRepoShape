@@ -39,10 +39,13 @@ holds three things, and the code before #277 fails each of them:
     leaves none -- each beside a line the doctor printed before #277, pasted
     the same way, so the harness is shown to see the defect it guards;
   * an AST GUARD over `shape-doctor.py`: no string that is not a docstring
-    holds a tail -- two or more blanks, or a tab, then `#` and a blank --
-    except `placement_plan_leg`'s YAML comment lines and the one `placement
-    plan written to` line in `report`, where that text is not a NEXT. It is
-    what turns a tail landed later, by any lane, into a red test.
+    holds a tail -- two or more blanks, or a tab, then `#`, a blank after
+    it or not, or a `#` that opens the text after a part that is not a
+    constant -- except `placement_plan_leg`'s YAML comment lines and the one
+    `placement plan written to` line in `report`, where that text is not a
+    NEXT. A string is read whole, across `+` and the pieces of an f-string
+    (#679). It is what turns a tail landed later, by any lane, into a red
+    test.
 
 The fixtures are `tests/test_shape_doctor.py`'s, imported rather than rebuilt
 (the precedent is `tests/test_family_add_refusals.py`); importing a fixture
@@ -106,7 +109,7 @@ from test_doctor_legs_members_next import (
 )
 #: Doctor B's crashing validator and unloaded manifest (#278, #298), from the
 #: module that owns them.
-from test_doctor_validator_rows import crashing, unloaded
+from test_doctor_validator_rows import crashing, lost_gate, unloaded
 
 
 # --- making each converted row print its NEXT -------------------------------
@@ -308,6 +311,13 @@ def _unloaded_manifest_restore(standard, project, holder, tmp_path):
     root, row_id, _refusal = unloaded("project", project, holder, tmp_path,
                                       "tree")
     return rows_of(doctor(standard, root, "--json"))[row_id]
+
+
+def _validator_crashed_restore(standard, project, holder, tmp_path):
+    # An own gate that crashed for want of the `repo_shape.py` it lost, which
+    # HEAD still holds: the same restore line, on a valid manifest (#697).
+    root = lost_gate("manifest", project, holder, tmp_path)
+    return rows_of(doctor(standard, root, "--json"))["manifest"]
 
 
 def _pin_row(standard, root, restore):
@@ -629,6 +639,11 @@ CASES = {
         "it puts back the scripts/repo_shape.py HEAD holds, the copy this "
         "project committed and scripts/validate-manifest.py imports, where "
         "update-shape.py apply would copy a newer one"),
+    "validator_row-crashed-restore": (
+        _validator_crashed_restore,
+        "it puts back the scripts/repo_shape.py HEAD holds, the copy this "
+        "project committed and scripts/validate-manifest.py imports, where "
+        "update-shape.py apply would copy a newer one. Then run `"),
     "check_legs": (
         _legs,
         "checks each leg out at the commit this repository records for it, "
@@ -1148,10 +1163,14 @@ def test_the_rows_guard_finds_a_backtick_or_a_remediation_in_a_next():
 
 # --- the guard: no tail comes back -------------------------------------------
 
-#: What the guard calls a tail: two or more blanks, or a tab, then `#` and a
-#: blank. The house spelling was three spaces; two, or a tab, is the same
-#: comment to a shell, and the same word to an interactive zsh.
-TAIL = re.compile(r"(?:[ \t]{2,}|\t)#[ \t]")
+#: What the guard calls a tail: two or more blanks, or a tab, then `#`. The
+#: house spelling was three spaces and a blank after the `#`; two, or a tab,
+#: is the same comment to a shell, and the same word to an interactive zsh,
+#: and so is a `#` with no blank after it, which zsh pastes as the first
+#: character of an argument (#277, #679). A `#` that opens the literal text
+#: after a part that is not a constant -- `f"{command}{pad}# x"` -- is a tail
+#: too (`tail_runs`), because that part may be the blanks.
+TAIL = re.compile(r"(?:[ \t]{2,}|\t)#")
 
 #: The strings that may hold one, by the def they are written in -- its
 #: whole path from the module, so a nested def or a method that shares the
@@ -1169,13 +1188,59 @@ TAIL_ALLOWED = {
 }
 
 
-def tails_in(source: str) -> list[tuple[int, str, str]]:
-    """`(line, def, text)` for every string constant in `source` that holds
-    a `TAIL` and is not a docstring, by the path of the defs it is written
-    in (`outer/inner`, or `<module>`).
+def pieces_of(node: ast.AST, parts: set[int]) -> list[str | None]:
+    """A string expression read whole: its parts left to right, each the text
+    of a constant, or `None` for a part that is not one -- a name, a call, a
+    formatted value, a `*`.
 
-    The pieces of an f-string are constants too, so a tail spelled after a
-    `{command}` is found like any other.
+    A `+` chain is read through to its ends and so is an f-string, so a tail
+    spelled across them is one string here, as it is where it is printed.
+    Every node read is added to `parts`, so that the walk does not read one
+    of its pieces again on its own.
+    """
+    parts.add(id(node))
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.JoinedStr):
+        return [piece for value in node.values
+                for piece in pieces_of(value, parts)]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return pieces_of(node.left, parts) + pieces_of(node.right, parts)
+    if isinstance(node, ast.FormattedValue) and node.format_spec:
+        # `{value:{width}#x}`: the spec's `#` is a flag, not a comment.
+        parts.add(id(node.format_spec))
+    return [None]
+
+
+def tail_runs(pieces: list[str | None]) -> list[str]:
+    """The runs of constant text in `pieces`, each between two parts that are
+    not constants, that hold a `TAIL`, or that open with a `#` straight after
+    such a part: it may be the blanks that make the tail.
+    """
+    runs: list[str] = []
+    run, led = "", False
+    for piece in [*pieces, None]:
+        if piece is not None:
+            run += piece
+            continue
+        if TAIL.search(run) or (led and run.startswith("#")):
+            runs.append(run)
+        run, led = "", True
+    return runs
+
+
+def tails_in(source: str) -> list[tuple[int, str, str]]:
+    """`(line, def, text)` for every run of constant text in `source` that
+    holds a tail (`tail_runs`) and is not a docstring, by the path of the defs
+    it is written in (`outer/inner`, or `<module>`); the line is where the
+    string expression begins.
+
+    Each string expression is read whole (`pieces_of`): the pieces of an
+    f-string and the ends of a `+` chain are one string, so a tail spelled
+    after a `{command}`, or split between two constants, is found like any
+    other. A run is the text between two parts that are not constants, so
+    `TAIL_ALLOWED` names the same text it did when each constant was read
+    alone.
     """
     tree = ast.parse(source)
     docstrings = set()
@@ -1188,6 +1253,7 @@ def tails_in(source: str) -> list[tuple[int, str, str]]:
                     isinstance(first.value.value, str):
                 docstrings.add(id(first.value))
     found: list[tuple[int, str, str]] = []
+    parts: set[int] = set()
 
     def visit(node, owner: str) -> None:
         for child in ast.iter_child_nodes(node):
@@ -1196,10 +1262,11 @@ def tails_in(source: str) -> list[tuple[int, str, str]]:
                 visit(child, child.name if owner == "<module>"
                       else f"{owner}/{child.name}")
                 continue
-            if isinstance(child, ast.Constant) and \
-                    isinstance(child.value, str) and \
-                    id(child) not in docstrings and TAIL.search(child.value):
-                found.append((child.lineno, owner, child.value))
+            if isinstance(child, (ast.Constant, ast.JoinedStr, ast.BinOp)) \
+                    and id(child) not in docstrings \
+                    and id(child) not in parts:
+                found.extend((child.lineno, owner, run) for run in
+                             tail_runs(pieces_of(child, parts)))
             visit(child, owner)
 
     visit(tree, "<module>")
@@ -1223,10 +1290,14 @@ def test_no_string_in_the_doctor_ends_a_command_with_a_comment():
 
     THE SCANNER IS SHOWN TO SEE ONE FIRST, on samples spelled the ways a
     tail can be -- three spaces after an f-string's `{command}`, two spaces,
-    a tab, a second tail in `report` beside its allowed line, and one in a
-    nested def that shares the name `report` -- beside a docstring that
-    mentions one and must not count. And both allowed strings are found in
-    the real file, so the guard is reading the strings it should.
+    a tab, three spaces and a `#` with no blank after it (#679), a tail
+    split across `+` (#679), one that opens with the `#` after a formatted
+    value (#679), a second tail in `report` beside its allowed line, and one
+    in a nested def that shares the name `report` -- beside a docstring that
+    mentions one, a `#` with nothing before it, one blank and a format
+    spec's `#` flag, none of which may count. And the real file yields
+    exactly the allowed pair -- `placement_plan_leg`'s YAML comment and the
+    one line in `report` -- so the guard is reading the strings it should.
     """
     sample = ('def builder(command):\n'
               '    """Its docstring may say `   # x`."""\n'
@@ -1235,6 +1306,15 @@ def test_no_string_in_the_doctor_ends_a_command_with_a_comment():
               '    return command + "  # two spaces"\n'
               'def tab(command):\n'
               '    return command + "\\t# a tab"\n'
+              'def unspaced(command):\n'
+              '    return command + "   #x"\n'
+              'def split(command):\n'
+              '    return command + "   " + "# x"\n'
+              'def led(command, pad):\n'
+              '    return f"{command}{pad}# x"\n'
+              'def quiet(command, width):\n'
+              '    lines = ["# a line of YAML", f"{command} # one blank"]\n'
+              '    return lines, f"{command:{width}#x}"\n'
               'def report(plan):\n'
               f'    print(f"{{plan}}{TAIL_ALLOWED["report"]}")\n'
               '    print(f"{plan}   # a second one")\n'
@@ -1245,15 +1325,16 @@ def test_no_string_in_the_doctor_ends_a_command_with_a_comment():
     assert [(owner, text) for _, owner, text in
             disallowed(tails_in(sample))] == [
         ("builder", "   # a tail"), ("two", "  # two spaces"),
-        ("tab", "\t# a tab"), ("report", "   # a second one"),
+        ("tab", "\t# a tab"), ("unspaced", "   #x"), ("split", "   # x"),
+        ("led", "# x"), ("report", "   # a second one"),
         ("outer/report", "x   # nested")]
 
     found = tails_in((REPO / DOCTOR).read_text(encoding="utf-8"))
     outside = disallowed(found)
     assert not outside, (
-        f"{DOCTOR} builds a string with a `   # ` tail at {outside}; an "
+        f"{DOCTOR} builds a string with a `   #` tail at {outside}; an "
         "interactive zsh reads that `#` as a word and runs what follows it "
         "(#277). Pass the sentence as the row's `why=` instead.")
     assert {owner for _, owner, _ in found} == set(TAIL_ALLOWED), found
-    assert TAIL_ALLOWED["report"] in [text for _, owner, text in found
-                                      if owner == "report"], found
+    assert [text for _, owner, text in found if owner == "report"] == [
+        TAIL_ALLOWED["report"]], found

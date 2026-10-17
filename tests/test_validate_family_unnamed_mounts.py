@@ -28,7 +28,9 @@ case variant (`members/irss`, the row saying `members/IRSS`) is recorded in
 the wrong case: the same command, run in either, takes the member's own
 record out of the index, after which `--no-members`, the run a private
 family's CI falls back to, says `family ok` over a member that is no longer
-there. Those two print no command.
+there. Those two print no such command: the first none, and the second,
+since #648, the index move members mode prints, which records the member
+at its row's path as it takes the variant out.
 
 When a hand mount's gitlink says to `git rm` it, its section finding says that
 the `git rm` takes the section out too and prints no `--unset-all` line: run
@@ -68,6 +70,7 @@ from test_family import (  # noqa: F401
     FAMILY, ORG, SPARE, family, family_module, holder, manifest, validate,
 )
 from test_family_add_refusals import git_section, gitmodules_with
+from test_validate_family_branch_step import BRANCH_LEFT
 from test_validate_family_member_path_glob import hand_edit
 
 MODES = pytest.mark.parametrize(
@@ -88,10 +91,12 @@ GITLINK_REMEDY = (
     "was mounted by hand, make a branch with the first command below, since "
     "family.py add refuses the holder's tracking branch, take it out with "
     "the second, which refuses while its checkout holds changes and takes "
-    "its .gitmodules section out too, then mount it with the third, from a "
-    "checkout of openRepoShape: family.py add writes its row and its gitlink "
-    "in one commit, and names the object store git rm leaves under "
-    ".git/modules if one is still there.")
+    "its .gitmodules section out too, and commit that removal, since "
+    "family.py add refuses a path under another spelling of members/ that "
+    "HEAD holds and the index no longer does, then mount it with the third, "
+    "from a checkout of openRepoShape: family.py add writes its row and its "
+    "gitlink in one commit, and names the object store git rm leaves under "
+    ".git/modules if one is still there. " + BRANCH_LEFT)
 
 
 def switch_for(holder, member: str) -> str:
@@ -510,35 +515,46 @@ def test_a_row_hand_edited_into_a_case_variant_of_its_mount_is_the_edit(
 
 
 @MODES
-def test_a_member_recorded_only_in_another_case_says_so_and_prints_no_command(
+def test_a_member_recorded_only_in_another_case_says_so_and_prints_the_move(
         holder, extra):
     """STATE (ii), REVIEW SHOULD-1: IRSS's row is canonical, and the only
     gitlink the holder records for it is at `members/irss`. `git rm --cached`
     of that took the member's only record out, and `--no-members` then said
     `family ok` over a holder that records one gitlink fewer than it has rows.
-    It says the member is recorded in the wrong case instead, and sends the
-    operator to git's history, as every other unnamed gitlink does.
+    It says the member is recorded in the wrong case instead.
 
     Members checked, the row's own gitlink is read at its exact path, finds
     none and is the refusal `member-gitlink-absent`, which prints no finding,
     so only `--no-members` shows the finding; a git that matched the pathspec
     in any case would find the variant and print it, so either is accepted
-    there, and what no run may do is print a command."""
+    there. What no run may do is print a command that takes the gitlink out
+    ALONE: since #611 the refusal names the variant and prints the move that
+    takes it out of the index and records it at the row's path together
+    (`tests/test_family_head_lost_gitmodules.py` types it), and since #648
+    the finding prints the same two lines
+    (`tests/test_family_bootstrap_gate_order.py` types them)."""
     named = record_in_another_case(holder, "IRSS", "members/irss")
     result = validate(holder, *extra)
-    assert "git rm" not in result.stderr + result.stdout
     assert "--unset-all" not in result.stderr + result.stdout
+    move = [
+        "    git rm -r --cached --ignore-unmatch -- members/irss",
+        f"    git update-index --add --cacheinfo 160000,{named},members/IRSS"]
     if result.returncode == 2:
         assert extra != ("--no-members",), result.stderr
         assert result.stderr.startswith(
             "REFUSED member-gitlink-absent: no gitlink (mode 160000) "
             "recorded at 'members/IRSS'."), result.stderr
+        assert result.stderr.splitlines()[-2:] == move, result.stderr
         return
     assert result.returncode == 1, result.stderr + result.stdout
     (gitlink,) = findings(result)
-    assert gitlink == GITLINK_SAID.format(
-        path="members/irss", commit=named) + WRONG_CASE.format(
-            row_path="members/IRSS", project="IRSS", what="gitlink")
+    said = GITLINK_SAID.format(path="members/irss", commit=named) + (
+        VARIANT.format(row_path="members/IRSS", project="IRSS"))
+    assert gitlink.startswith(
+        said + " The member is recorded in the wrong case. Move its gitlink "
+        "to the row's path, at the commit the row pins, in the index "
+        "alone, "), gitlink
+    assert gitlink.splitlines()[1:] == move, gitlink
 
 
 @MODES
@@ -546,13 +562,20 @@ def test_a_sections_only_path_in_another_case_says_so_and_prints_no_command(
         holder, extra):
     """The section's own state (ii): IRSS's row is canonical, its gitlink is
     where it belongs, and the ONLY section that registers it gives
-    `members/irss`. `--unset-all` of that left the member with no section."""
+    `members/irss`. `--unset-all` of that left the member with no section.
+    Since #611 no section of HEAD's file giving `members/IRSS` is
+    `member-gitmodules-absent` beside it, whose one line writes the path
+    back into that section and keeps its url."""
     url = url_of(holder, "IRSS")
     with_path_replaced(holder, b"\tpath = members/IRSS\n",
                        b"\tpath = members/irss\n")
     result = validate(holder, *extra)
     assert result.returncode == 1, result.stderr + result.stdout
-    (section,) = findings(result)
+    section, unregistered = findings(result)
+    assert unregistered.startswith(
+        "FINDING member-gitmodules-absent: members/IRSS is a gitlink at ")
+    assert commands(unregistered) == [
+        "git config -f .gitmodules submodule.members/IRSS.path members/IRSS"]
     assert section == SECTION_SAID.format(
         path="members/irss", name="members/IRSS", url=f"url {url}"
     ) + WRONG_CASE.format(row_path="members/IRSS", project="IRSS",
@@ -685,7 +708,8 @@ def test_a_hand_mount_is_taken_out_and_added_back_as_printed(family, holder):
     """ROW (a) FOR REAL, and the gitlink's remedy run as printed, from the
     holder's TRACKING BRANCH, where `init` leaves it and `add` refuses to
     commit (#487): the first line makes the branch `add` suggests (#539).
-    `git rm` takes the checkout and its section out; `family.py add`, run
+    `git rm` takes the checkout and its section out, and the removal is
+    committed, as the text says since #611; `family.py add`, run
     as printed with the org filled in, then refuses `member-git-dir-cached`
     for the object store `git rm` leaves, as the remedy says it will name;
     with that gone, the same `add` mounts and pins the member with its row
@@ -707,6 +731,7 @@ def test_a_hand_mount_is_taken_out_and_added_back_as_printed(family, holder):
     assert commands(findings(result)[1]) == []
     git(*shlex.split(switch)[1:], cwd=holder.parent)
     git(*shlex.split(rm)[1:], cwd=holder)
+    commit(holder, "Take the hand mount out, as printed")
     assert not (holder / "members" / SPARE).exists()
     assert f"members/{SPARE}" not in (holder / ".gitmodules").read_text(
         encoding="utf-8")

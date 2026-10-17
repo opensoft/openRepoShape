@@ -54,11 +54,11 @@ UNASKED = ("NOTE `check` did not ask whether the url of each submodule the "
 THERE_RE = re.compile(r", to `((?:[^`\\]|\\.)*)`, the repository it names "
                       r"from the source, ")
 #: What `execute --local-remote-dir`'s refusal adds to its first line when a
-#: finding in it resolved a relative url from the remotes it would create.
+#: finding in it resolved a relative url from the remotes it would create,
+#: as `check` given the same directory does (#417).
 FROM_THE_LOCAL_LEGS = (
-    ", but with each relative submodule url resolved from the leg remotes "
-    "this run would create under --local-remote-dir, where `check` resolves "
-    "it from GitHub's:")
+    " given the same --local-remote-dir, with each relative submodule url "
+    "resolved from the leg remotes this run would create there:")
 #: Both platforms' answer for a url that names a drive.
 ON_WINDOWS = os.name == "nt"
 #: Where the tests' `insteadOf` sends a path, and the url the guard is
@@ -178,6 +178,10 @@ def test_execute_refuses_a_relative_url_that_names_nothing_from_either_side(
     assert finding.endswith(CLONE_FAILS), finding
     assert refusal.remediation.endswith(
         "\n" + adopter.URL_ANSWERS_NOTHING_REMEDIATION)
+    # Where a relative url is resolved from is said of the run, not of the
+    # command: `check` given this directory resolves it here too (#417).
+    assert ("which is on GitHub, or, under `--local-remote-dir`, the bare "
+            "repository `execute` would create there.") in refusal.remediation
     assert "no leg repository was created" in refusal.remediation
 
     elsewhere = refusal_of(adopter, plan, tmp_path, tmp_path / "elsewhere")
@@ -249,6 +253,24 @@ def test_check_notes_each_url_it_does_not_ask(adopter, tmp_path, monkeypatch):
     loaded = adopter.Plan.load(plan)
     adopter._entry_findings(loaded, loaded.open_source(None, tmp_path / WORK))
     assert asked == []
+
+
+def test_check_given_local_remotes_still_notes_a_url_on_a_network(tmp_path):
+    """`check --local-remote-dir` resolves a relative url from the bare
+    repositories `execute` would create there, which are on this disk, and
+    asks it there (#417); a url on a network it never asks, as without the
+    flag, and it names that url in the NOTE all the same."""
+    remotes = tmp_path / REMOTES
+    origin = str(remotes / THING_REMOTE)
+    second = "https://github.com/testorg/second.git"
+    plan = planned(source_with(tmp_path, SIBLING, origin,
+                               remotes / "dependency", second=second),
+                   tmp_path, its_org(origin),
+                   answers={**BOTH_IN_CODE, EXTRA: "code"})
+    result = check(plan, remotes)
+    passes(result)
+    assert unasked_notes(result.stdout) == [unasked_note(
+        f"`{second}` of `extra/second`")]
 
 
 def test_a_path_this_machine_rewrites_to_a_network_is_not_asked(

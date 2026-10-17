@@ -45,6 +45,16 @@ from conftest import (DECLARATIONS, DRY_RUNS, FILE_ABOVE_THE_CLONE,
                       assert_the_scaffold_leaves_its_next_steps_to_setup,
                       assert_the_upstream_org_is_refused_in_any_case)
 
+from conftest import (CHAIN_LINK_TREES,
+                      assert_a_parent_nobody_can_write_in_is_refused,
+                      assert_a_plan_that_never_printed_could_not_be_produced,
+                      assert_step_four_reads_a_chain_as_the_plan_does,
+                      assert_a_chain_of_one_link_has_no_source_to_note,
+                      assert_an_empty_pin_source_is_the_plans_to_refuse)
+
+from conftest import (STEP_FOUR_WORDS,
+                      assert_step_four_speaks_in_the_plans_words)
+
 SETUP = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
@@ -502,6 +512,29 @@ def test_the_upstream_org_is_refused_in_any_case(tmp_path, org):
 
 def test_an_upstream_origin_in_any_case_needs_an_org(tmp_path):
     assert_an_upstream_origin_in_any_case_needs_an_org(run_setup, tmp_path)
+
+
+# --- #608, through the shim: each is `conftest`'s helper of that name -------
+
+def test_a_parent_nobody_can_write_in_is_refused(tmp_path):
+    assert_a_parent_nobody_can_write_in_is_refused(run_setup, tmp_path)
+
+
+def test_a_plan_that_never_printed_could_not_be_produced(tmp_path):
+    assert_a_plan_that_never_printed_could_not_be_produced(run_setup, tmp_path)
+
+
+@pytest.mark.parametrize("how", CHAIN_LINK_TREES)
+def test_step_four_reads_a_chain_as_the_plan_does(tmp_path, how):
+    assert_step_four_reads_a_chain_as_the_plan_does(run_setup, tmp_path, how)
+
+
+def test_an_empty_pin_source_is_the_plans_to_refuse(tmp_path):
+    assert_an_empty_pin_source_is_the_plans_to_refuse(run_setup, tmp_path)
+
+
+def test_a_chain_of_one_link_has_no_source_to_note(tmp_path):
+    assert_a_chain_of_one_link_has_no_source_to_note(run_setup, tmp_path)
 
 
 # --- self-bootstrap ---------------------------------------------------------
@@ -1117,3 +1150,9 @@ def test_the_one_liners_preflight_offers_are_asked_at_the_terminal(tmp_path,
     calls = (stub / "calls.log").read_text(encoding="utf-8").splitlines()
     logins = [call for call in calls if call.startswith("auth login|")]
     assert logins == ([] if typed == "no" else ["auth login|terminal"]), calls
+
+
+@pytest.mark.parametrize("case", STEP_FOUR_WORDS)
+def test_step_four_speaks_in_the_plans_words(tmp_path, monkeypatch, case):
+    assert_step_four_speaks_in_the_plans_words(run_setup, tmp_path,
+                                               monkeypatch, case)
