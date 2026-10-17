@@ -680,7 +680,7 @@ def test_validate_refuses_a_missing_gitlink(holder):
     result = validate(holder)
     assert result.returncode == 2
     assert "member-gitlink-absent" in result.stderr
-    assert "family.py add" in result.stderr
+    assert "git update-index --add --cacheinfo 160000," in result.stderr
 
 
 def test_validate_finds_a_pin_that_disagrees_with_the_gitlink(holder):
