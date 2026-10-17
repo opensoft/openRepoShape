@@ -83,7 +83,7 @@ from test_validate_family_branch_step import (
 )
 from test_validate_family_unnamed_mounts import (
     GITLINK_SAID, GITLINK_SAID_FETCHED, VARIANT, codes, commands, findings,
-    spare_commits, stage_gitlink,
+    spare_commits, stage_gitlink, stage_unmerged_gitlink,
 )
 
 MEMBER, OTHER = MEMBERS
@@ -120,6 +120,20 @@ def type_all(root: Path, env: dict, lines: list[str]) -> None:
     """Every printed command line, typed as printed."""
     for line in lines:
         type_line(root, env, line.strip())
+
+
+def refused_and_unnamed(root: Path, commit: str,
+                        expected: list[str]) -> list[str]:
+    """The members-checked refusal in `root`, which must be `expected`,
+    and `--no-members`, whose one finding must be the same move as
+    `member-gitlink-unnamed` (`unnamed_as_moved`) for MEMBER's gitlink at
+    `commit`: the refusal's lines."""
+    lines = refused_lines(root)
+    assert lines == expected
+    fallback = validate(root, "--no-members")
+    assert findings(fallback) == [unnamed_as_moved(VARIANT_PATH, commit,
+                                                   expected)]
+    return lines
 
 
 # --- (e): a `git mv` to a variant, moved back with its section ---------------
@@ -229,11 +243,8 @@ def test_a_variant_no_section_gives_is_moved_with_its_section_written(
                                {VARIANT_PATH: commit}, section=section,
                                section_said=SECTION_WRITTEN)
 
-    lines = refused_lines(holder)
+    lines = refused_and_unnamed(holder, commit, expected)
 
-    assert lines == expected
-    assert findings(validate(holder, "--no-members")) == [
-        unnamed_as_moved(VARIANT_PATH, commit, expected)]
     type_all(holder, env, lines[2:])
     commit_all(holder, env, "Move the gitlink back, as printed")
     assert_passes_in_every_mode(holder, 2)
@@ -272,12 +283,38 @@ def test_a_variant_a_sparse_checkout_keeps_off_disk_is_moved_with_sparse(
                                {VARIANT_PATH: commit},
                                sparse=(VARIANT_PATH,))
 
-    lines = refused_lines(holder)
+    lines = refused_and_unnamed(holder, commit, expected)
 
-    assert lines == expected
-    fallback = validate(holder, "--no-members")
-    assert findings(fallback) == [unnamed_as_moved(VARIANT_PATH, commit,
-                                                   expected)]
+    type_all(holder, env, lines[2:])
+    commit_all(holder, env, "Move the gitlink back, as printed")
+    listed = raw(holder, env, "ls-files", "-s").stdout.decode()
+    assert [line.split("\t")[1] for line in listed.splitlines()
+            if line.startswith("160000 ")] == [ROW, f"members/{OTHER}"]
+    assert_passes_in_every_mode(holder, 2)
+
+
+def test_a_sparse_checkout_keeping_another_directory_off_disk_is_no_sparse(
+        holder, offline, tmp_path):
+    """rv820's SHOULD 3: a non-cone sparse checkout keeps `notes/`, which the
+    gate never reads, off disk, and the variant on it. The refusal, and
+    `--no-members`, print no `--sparse` and name nothing kept off disk;
+    typed as printed and committed, the index records the member once, at
+    its row's path, and the gate passes in every mode."""
+    env = isolated(offline, tmp_path)
+    (holder / "notes").mkdir()
+    (holder / "notes" / "kept.md").write_bytes(b"kept off disk\n")
+    raw(holder, env, "add", "--", "notes/kept.md")
+    commit_all(holder, env, "A directory the gate never reads")
+    commit = recorded_at(holder, env, MEMBER, VARIANT_PATH)
+    raw(holder, env, "sparse-checkout", "set", "--no-cone", "/*", "!/notes/")
+    assert raw(holder, env, "ls-files", "-t", "--", "notes/kept.md",
+               VARIANT_PATH).stdout == (
+        f"H {VARIANT_PATH}\nS notes/kept.md\n".encode()), "premise"
+    expected = variant_refused(ROW, commit, [VARIANT_PATH],
+                               {VARIANT_PATH: commit})
+
+    lines = refused_and_unnamed(holder, commit, expected)
+
     type_all(holder, env, lines[2:])
     commit_all(holder, env, "Move the gitlink back, as printed")
     listed = raw(holder, env, "ls-files", "-s").stdout.decode()
@@ -288,19 +325,28 @@ def test_a_variant_a_sparse_checkout_keeps_off_disk_is_moved_with_sparse(
 
 # --- (g): an entry the index holds at or under the row's path ----------------
 
-#: A file at the row's path, and one under it.
-IN_THE_WAY = {"at": (ROW,), "under": (f"{ROW}/notes",)}
+#: A file at the row's path, one under it, and seven under it, of which the
+#: text names five: `(the entries, what the text names under the path)`.
+IN_THE_WAY = {
+    "at": ((ROW,), None),
+    "under": ((f"{ROW}/notes",), f"{ROW}/notes"),
+    "seven": (tuple(f"{ROW}/note{n}" for n in range(7)),
+              f"{ROW}/note0, {ROW}/note1, {ROW}/note2, {ROW}/note3, "
+              f"{ROW}/note4 and 2 more"),
+}
 
 
-@pytest.mark.parametrize("entries", IN_THE_WAY.values(), ids=IN_THE_WAY)
+@pytest.mark.parametrize("entries, named", IN_THE_WAY.values(),
+                         ids=IN_THE_WAY)
 def test_an_entry_in_the_way_is_moved_aside_first_as_printed(
-        family, holder, offline, tmp_path, entries):
+        family, holder, offline, tmp_path, entries, named):
     """THE ISSUE'S (g). The checkout taken away and a file committed at
     `members/IRRS`, or under it, beside the variant's gitlink. The refusal,
-    and `--no-members`, name the entry and the committed `git mv` that
-    moves it aside first. Typed as printed, `<new name>` filled in, then
-    the two lines and their commit, the update checks the member out, the
-    file is kept at its new name, and the gate passes in every mode."""
+    and `--no-members`, name the entry, or the first five of seven and how
+    many more (rv820's NIT 6), and the committed `git mv` that moves it
+    aside first. Typed as printed, `<new name>` filled in, then the two
+    lines and their commit, the update checks the member out, the files
+    are kept at their new name, and the gate passes in every mode."""
     env = fetching(isolated(offline, tmp_path))
     commit = recorded_at(holder, env, MEMBER, VARIANT_PATH)
     rmtree(holder / ROW)
@@ -311,21 +357,17 @@ def test_an_entry_in_the_way_is_moved_aside_first_as_printed(
     commit_all(holder, env, "A file in the way")
     aside = (f"The index holds an entry at {ROW} that is no gitlink, which "
              "the move's second line replaces without a word"
-             if entries == (ROW,) else
-             f"The index holds {', '.join(entries)} under {ROW}, at which "
-             "the move's second line stops (appears as both a file and as a "
-             "directory) after the first has taken the variant out") + (
+             if named is None else
+             f"The index holds {named} under {ROW}, at which the move's "
+             "second line stops (appears as both a file and as a directory) "
+             "after the first has taken the variant out") + (
         f". Move it aside first, `git mv -- {ROW} <new name>`, a new name "
         "outside members/, and commit that move on its own. ")
     expected = variant_refused(ROW, commit, [VARIANT_PATH],
                                {VARIANT_PATH: commit}, aside=aside)
 
-    lines = refused_lines(holder)
+    lines = refused_and_unnamed(holder, commit, expected)
 
-    assert lines == expected
-    fallback = validate(holder, "--no-members")
-    assert findings(fallback) == [unnamed_as_moved(VARIANT_PATH, commit,
-                                                   expected)]
     (moved,) = re.findall(r"`(git mv -- [^`]*)`", lines[1])
     type_line(holder, env, moved.replace("<new name>", f"{MEMBER}-aside"))
     commit_all(holder, env, "Move the file aside, as printed")
@@ -336,6 +378,57 @@ def test_an_entry_in_the_way_is_moved_aside_first_as_printed(
                f"{MEMBER}-aside").stdout.decode().splitlines()
     assert kept == [entry.replace(ROW, f"{MEMBER}-aside")
                     for entry in entries]
+    assert_passes_in_every_mode(holder, 2)
+
+
+def test_an_entry_beside_the_rows_path_is_not_in_the_way(
+        holder, offline, tmp_path):
+    """rv820's SHOULD 3: a file committed at `members/IRRS-notes`, beside the
+    variant's gitlink, is not at or under `members/IRRS` as git compares
+    paths, so the refusal, and `--no-members`, move nothing aside. Typed as
+    printed and committed, the file stays where it is, and the gate passes
+    in every mode."""
+    env = isolated(offline, tmp_path)
+    commit = recorded_at(holder, env, MEMBER, VARIANT_PATH)
+    beside = f"{ROW}-notes"
+    (holder / beside).write_bytes(b"a file\n")
+    raw(holder, env, "add", "--", beside)
+    commit_all(holder, env, "A file beside the row's path")
+    expected = variant_refused(ROW, commit, [VARIANT_PATH],
+                               {VARIANT_PATH: commit})
+
+    lines = refused_and_unnamed(holder, commit, expected)
+
+    type_all(holder, env, lines[2:])
+    commit_all(holder, env, "Move the gitlink back, as printed")
+    assert raw(holder, env, "ls-files", "-s", "--", ROW).stdout == (
+        f"160000 {commit} 0\t{ROW}\n".encode())
+    assert raw(holder, env, "ls-files", "--", beside).stdout == (
+        f"{beside}\n".encode())
+    assert_passes_in_every_mode(holder, 2)
+
+
+def test_a_gitlink_a_merge_left_unmerged_at_the_rows_path_is_replaced(
+        holder, offline, tmp_path):
+    """rv820's NIT 5: the row's path held at stages 1, 2 and 3 alone, as a
+    conflicted merge of the member's gitlink leaves it, beside the
+    variant's gitlink. The move's second line replaces the three stages,
+    so nothing is said to be in the way; typed as printed and committed,
+    the index records the member once, at stage 0, and the gate passes in
+    every mode."""
+    env = isolated(offline, tmp_path)
+    commit = recorded_at(holder, env, MEMBER, VARIANT_PATH)
+    stage_unmerged_gitlink(holder, ROW, commit)
+    expected = variant_refused(ROW, commit, [VARIANT_PATH],
+                               {VARIANT_PATH: commit})
+
+    lines = refused_lines(holder)
+
+    assert lines == expected
+    type_all(holder, env, lines[2:])
+    commit_all(holder, env, "Move the gitlink back, as printed")
+    assert raw(holder, env, "ls-files", "-s", "--", ROW).stdout == (
+        f"160000 {commit} 0\t{ROW}\n".encode())
     assert_passes_in_every_mode(holder, 2)
 
 
@@ -439,6 +532,23 @@ def test_a_staged_removal_once_committed_is_member_gitlink_absent(
 
     assert lines[0].startswith("REFUSED member-gitlink-absent: "), lines
     assert "member-gitlink-removal-staged" not in "\n".join(lines)
+
+
+def test_a_staged_removal_head_gives_no_section_for_puts_none_back(
+        on_main, offline, tmp_path):
+    """rv820's NIT 6: no section of HEAD's `.gitmodules` gives the row's
+    path (taken out by hand and committed), and the gitlink's removal is
+    staged. The finding prints the reset alone, and no `git checkout HEAD
+    -- .gitmodules`, which would put back no section."""
+    env = isolated(offline, tmp_path)
+    without_section(on_main, env, MEMBER)
+    commit = pinned(on_main, MEMBER)
+    raw(on_main, env, *TAKEN["git-rm-cached"], ROW)
+
+    staged = [found for found in findings(validate(on_main, "--no-members"))
+              if found.startswith("FINDING member-gitlink-removal-staged: ")]
+
+    assert staged == [removal_staged(on_main, commit, "git-rm-cached")]
 
 
 # --- member-commit-unresolvable ---------------------------------------------
@@ -736,6 +846,87 @@ def test_a_url_an_earlier_init_registered_keeps_the_plain_remedy(
     assert (clone / f"members/{OTHER}" / "project.yaml").is_file()
 
 
+#: How `.gitmodules` is gone from a work tree, and what git's submodule
+#: commands then read in its place, with the line that puts it back:
+#: deleted and not staged, and its deletion staged (rv820's SHOULD 2).
+GONE = {
+    "deleted": ("the index's", "git checkout -- .gitmodules"),
+    "deletion-staged": ("HEAD's, as the index holds none",
+                        "git checkout HEAD -- .gitmodules"),
+}
+
+
+def gone(root: Path, env: dict, how: str) -> None:
+    """`.gitmodules` taken out of `root`'s work tree, as `how` (`GONE`)
+    says."""
+    if how == "deleted":
+        (root / ".gitmodules").unlink()
+    else:
+        raw(root, env, "rm", "-q", "--", ".gitmodules")
+
+
+@pytest.mark.parametrize("how", GONE)
+def test_a_plain_clone_whose_gitmodules_is_gone_keeps_the_plain_remedy(
+        family, holder, offline, tmp_path, how):
+    """rv820's SHOULD 2: a plain clone of a good holder whose `.gitmodules`
+    is gone from the work tree. Git reads the index's, or HEAD's, so its
+    update stops nowhere: the refusal names the update alone, where it
+    said git stopped at the first row and printed a cure that, written
+    with `git config -f`, made a file of that one section. The update then
+    checks both members out."""
+    env = fetching(isolated(offline, tmp_path))
+    clone = cloned(holder, env, family, tmp_path, recurse=False)
+    gone(clone, env, how)
+
+    for extra in ((), ("--pins",)):
+        assert refused_lines(clone, *extra) == [
+            UNINITIALIZED, f"Remediation: {UPDATE}"], extra
+    raw(clone, env, "submodule", "update", "--init", "--recursive")
+    assert (clone / ROW / "project.yaml").is_file()
+    assert (clone / f"members/{OTHER}" / "project.yaml").is_file()
+
+
+@pytest.mark.parametrize("how", GONE)
+def test_a_url_less_section_whose_gitmodules_is_gone_is_put_back_first(
+        family, holder, offline, tmp_path, how):
+    """rv820's SHOULD 2, where git does stop: rv648's U1 in a plain clone
+    whose `.gitmodules` is gone from the work tree. Git reads the index's,
+    or HEAD's, and stops at OTHER's section, which gives no url; the
+    refusal names that path, not the first row's, and the `git checkout`
+    that puts the file back before the cure. Done as it says and
+    committed, HEAD's `.gitmodules` keeps MEMBER's section, the update
+    checks both members out, and the gate passes in every mode."""
+    env = fetching(isolated(offline, tmp_path))
+    stopper = url_less(holder, env, family)
+    clone = cloned(holder, env, family, tmp_path, recurse=False)
+    gone(clone, env, how)
+    died = raw(clone, env, "submodule", "update", "--init", "--recursive",
+               check=False)
+    assert died.returncode == 128, died.stderr
+    assert (f"No url found for submodule path '{stopper}'".encode()
+            in died.stderr)
+    whose, put_back = GONE[how]
+
+    for extra in ((), ("--pins",)):
+        assert refused_lines(clone, *extra) == [
+            UNINITIALIZED,
+            f"Remediation: `git submodule update --init` stops at {stopper}, "
+            "a gitlink it has no url for (No url found for submodule path, "
+            "exit 128), before it checks out any member. .gitmodules is gone "
+            f"from the work tree, so git reads {whose}: `{put_back}` puts it "
+            "back first, so that what follows keeps every other section. "
+            f"{SECTION_CURE.format(path=stopper)} Then {UPDATE}"], extra
+
+    type_line(clone, env, put_back)
+    cured_as_printed(clone, env, stopper, SECTION_CURE.format(path=stopper))
+    kept = raw(clone, env, "show", "HEAD:.gitmodules").stdout
+    assert f'[submodule "{ROW}"]\n\tpath = {ROW}\n\turl = '.encode() in kept, (
+        kept)
+    raw(clone, env, *github_to(family["remotes"]), "submodule", "update",
+        "--init", "--recursive")
+    assert_passes_in_every_mode(clone, 2)
+
+
 #: U1's own finding, whole, for OTHER's section in this fixture.
 URL_ABSENT = (
     f"FINDING member-gitmodules-url-absent: members/{OTHER} is a gitlink at "
@@ -769,6 +960,40 @@ def test_a_section_with_no_url_is_a_finding_in_every_mode(
     type_all(holder, env, commands(findings(result)[0]))
     raw(holder, env, "add", "--", ".gitmodules")
     commit_all(holder, env, "OTHER's url written back, as printed")
+    assert_passes_in_every_mode(holder, 2)
+
+
+@pytest.mark.parametrize("how", GONE)
+def test_a_section_with_no_url_whose_gitmodules_is_gone_is_put_back_first(
+        family, holder, offline, tmp_path, how):
+    """U1 in its holder, with `.gitmodules` gone from the work tree: the
+    finding's line, `git config -f`, would make a file of that one key, so
+    a line before it puts the file back from where git reads it (rv820's
+    SHOULD 2). In every mode; typed as printed, staged and committed,
+    HEAD's file keeps MEMBER's section, and the gate passes in every
+    mode."""
+    env = isolated(offline, tmp_path)
+    url_less(holder, env, family)
+    gone(holder, env, how)
+    whose, put_back = GONE[how]
+    said = "then stage and commit .gitmodules:\n"
+    expected = URL_ABSENT.format(commit=pinned(holder, OTHER))
+    assert expected.count(said) == 1
+    expected = expected.replace(
+        said, "then stage and commit .gitmodules, which is gone from the "
+        f"work tree: the first line puts back {whose}, so that every other "
+        f"section stays:\n    {put_back}\n")
+
+    for extra in ((), ("--pins",), ("--no-members",)):
+        result = validate(holder, *extra)
+        assert result.returncode == 1, (extra, result.stdout + result.stderr)
+        assert findings(result) == [expected], extra
+
+    type_all(holder, env, commands(expected))
+    raw(holder, env, "add", "--", ".gitmodules")
+    commit_all(holder, env, "OTHER's url written back, as printed")
+    assert f'[submodule "{ROW}"]'.encode() in raw(
+        holder, env, "show", "HEAD:.gitmodules").stdout
     assert_passes_in_every_mode(holder, 2)
 
 
@@ -831,3 +1056,28 @@ def test_a_recursive_clone_of_a_hand_mount_with_its_section_fetches_it(
                   if found.startswith("FINDING member-gitlink-unnamed: ")]
     assert finding.startswith(GITLINK_SAID_FETCHED.format(path=hand,
                                                           commit=commit))
+
+
+def test_a_hand_mount_whose_section_gives_no_url_is_checked_out_nowhere(
+        family, holder, offline, tmp_path):
+    """rv820's SHOULD 3: a hand mount `git submodule add` made, whose
+    section's url was then taken out and committed. A section gives its
+    path and none a url, so `--no-members` says a recursive clone checks
+    out nothing at it, as for one no section gives, and not that a
+    recursive clone fetches it."""
+    env = fetching(isolated(offline, tmp_path))
+    hand = f"members/{SPARE}"
+    raw(holder, env, "submodule", "add", "-q", "--",
+        str(family["remotes"] / f"{SPARE}.git"), hand)
+    raw(holder, env, "config", "-f", ".gitmodules", "--unset",
+        f"submodule.{hand}.url")
+    raw(holder, env, "add", "--", ".gitmodules")
+    commit_all(holder, env, "Mount IRQS by hand, its url taken out")
+    commit = raw(holder, env, "rev-parse",
+                 f"HEAD:{hand}").stdout.decode("ascii").strip()
+
+    (finding,) = [found for found in findings(validate(holder, "--no-members"))
+                  if found.startswith("FINDING member-gitlink-unnamed: ")]
+
+    assert finding.startswith(GITLINK_SAID.format(path=hand,
+                                                  commit=commit)), finding

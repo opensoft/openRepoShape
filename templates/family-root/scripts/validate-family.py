@@ -635,9 +635,13 @@ def _move_context(root: Path, path: str, variants: list[str],
     under it (`'members/<P>' appears as both a file and as a directory`,
     exit 128) after the line before it had taken the variant out, which
     left the member un-registered. Every entry at or under the path, as
-    git compares paths, but those a merge left unmerged, which the move
-    resolves. The whole index, with no pathspec, as `_member_gitlinks`
-    lists it.
+    git compares paths, but those a merge left unmerged: at the path the
+    move's second line replaces them, stages 1 to 3, as it replaces one at
+    stage 0; under it, it leaves them beside the gitlink, and the commit
+    after it refuses them (`Committing is not possible because you have
+    unmerged files`, exit 128), so neither is lost without a word (git 2.43
+    and 2.47.1, rv820's NIT 5). The whole index, with no pathspec, as
+    `_member_gitlinks` lists it.
 
     THE SECTION ((e)): `git mv members/<P> Members/<P>` rewrites its
     section's `path` to the variant, under the name it had, so the move
@@ -1334,6 +1338,44 @@ def _head_gitmodules(root: Path
     return True, _sections_listed(listed)
 
 
+#: Where git's submodule commands read `.gitmodules` from when the work
+#: tree's is gone from disk, in git's order (`config_from_gitmodules`):
+#: `(the name git resolves, the line that puts the work tree's back from
+#: it, whose it is)`.
+GITMODULES_SOURCES = (
+    (f":{GITMODULES}", f"git checkout -- {GITMODULES}", "the index's"),
+    (f"HEAD:{GITMODULES}", f"git checkout HEAD -- {GITMODULES}",
+     "HEAD's, as the index holds none"),
+)
+
+
+def _gitmodules_put_back(root: Path) -> tuple[str, str, str]:
+    """Where the work tree's `.gitmodules` is gone from disk, the one git's
+    submodule commands read in its place, as `(the name git resolves, the
+    line that puts the work tree's back from it, whose it is)`; three empty
+    strings where the work tree holds one, or nothing does (#762, rv820's
+    SHOULD 2).
+
+    GIT'S ORDER (`GITMODULES_SOURCES`): `:.gitmodules`, the index's at stage
+    0, then `HEAD:.gitmodules`, each resolved here as git resolves it, with
+    `git rev-parse --verify --quiet`. A file deleted and not staged, or
+    whose deletion is staged, leaves git every section it read before; a
+    cure that wrote one with `git config -f` made a file of that section
+    alone, which staged and committed dropped every other, so the line puts
+    the file back first.
+    """
+    if os.path.lexists(root / GITMODULES):
+        return "", "", ""
+    with _git_runs(f"where git reads {GITMODULES} from could not be read"):
+        for spec, line, whose in GITMODULES_SOURCES:
+            try:
+                git_out(["rev-parse", "--verify", "--quiet", spec], cwd=root)
+            except Refusal:
+                continue
+            return spec, line, whose
+    return "", "", ""
+
+
 def _check_gitmodules_paths(sections: dict[str, dict[str, str]],
                             report: Report) -> None:
     """No two sections of `.gitmodules` give ONE path (#300).
@@ -1905,8 +1947,8 @@ def _check_gitlinks_registered(root: Path, members: list,
                 or path not in gitlinks):
             continue
         if path in given:
-            if given[path] == 1 and _url_absent(path, gitlinks[path], row,
-                                                sections, report):
+            if given[path] == 1 and _url_absent(root, path, gitlinks[path],
+                                                row, sections, report):
                 unregistered.add(path)
             continue
         unregistered.add(path)
@@ -1925,13 +1967,16 @@ def _check_gitlinks_registered(root: Path, members: list,
     return unregistered
 
 
-def _url_absent(path: str, commit: str, row: dict,
+def _url_absent(root: Path, path: str, commit: str, row: dict,
                 sections: dict[str, dict[str, str]], report: Report) -> bool:
     """`member-gitmodules-url-absent` where the one section of HEAD's
     `.gitmodules` (`sections`) that gives `path` gives no url (#762); True
     where it was made. The url written is the one `family.py add` writes,
     `https://github.com/` and the row's `repository:`, or `<url>` where
-    that is not `<org>/<Name>`, as `_section_lines` writes it."""
+    that is not `<org>/<Name>`, as `_section_lines` writes it. Where the
+    work tree's file is gone from disk, a line before it puts that back
+    (`_gitmodules_put_back`), since `git config -f` would make a file of
+    that one key, and staged it dropped every other section."""
     name = next(name for name, keys in sections.items()
                 if keys.get("path") == path)
     if "url" in sections[name]:
@@ -1940,6 +1985,7 @@ def _url_absent(path: str, commit: str, row: dict,
     url = (shlex.quote(f"https://github.com/{repository}.git")
            if isinstance(repository, str) and QUALIFIED_RE.match(repository)
            else "<url>")
+    _, put_back, whose = _gitmodules_put_back(root)
     report.finding(
         "member-gitmodules-url-absent",
         f"{path} is a gitlink at {commit} that a row of members: names, and "
@@ -1949,8 +1995,11 @@ def _url_absent(path: str, commit: str, row: dict,
         "path, exit 128) before it checks out any member, as make "
         "bootstrap's does, and a recursive clone checks out nothing there. "
         "Write its url back by hand, in a POSIX shell, as family.py add "
-        f"writes one, then stage and commit {GITMODULES}:\n"
-        f"    git config -f {GITMODULES} "
+        f"writes one, then stage and commit {GITMODULES}"
+        + (f", which is gone from the work tree: the first line puts back "
+           f"{whose}, so that every other section stays:\n    {put_back}"
+           if put_back else ":")
+        + f"\n    git config -f {GITMODULES} "
         f"{shlex.quote(f'submodule.{name}.url')} {url}")
     return True
 
@@ -2003,35 +2052,55 @@ def _check_removals_staged(root: Path, members: list,
                 or path not in removed):
             continue
         staged.add(path)
-        lines = [(f"git reset -q -- {shlex.quote(path)}", "its gitlink")]
-        if path in in_head and path not in in_worktree:
-            lines.append((f"git checkout HEAD -- {GITMODULES}",
-                          f"the {GITMODULES} section git rm took out, "
-                          "putting that file back as HEAD has it and "
-                          "dropping any other change to it"))
-        if not (root / path / ".git").exists():
-            lines.append(("git submodule update --init --recursive -- "
-                          f"{shlex.quote(path)}", "its checkout"))
-        member_id = str(row.get("id") or project)
-        remove = (f"{PYTHON} scripts/family.py remove --family-root "
-                  f"{shlex.quote(str(root))} --member {shlex.quote(project)}")
-        commands = "\n    ".join(line for line, _ in lines)
-        report.finding(
-            "member-gitlink-removal-staged",
-            f"{path} is a gitlink at {gitlinks[path]} that a row of members: "
-            "names and HEAD records, and the index holds nothing at that "
-            "path: its removal is staged and not committed, so the next "
-            "commit un-registers the member under its row, and this gate "
-            "then refuses member-gitlink-absent. If the member is to stay, "
-            + _put_back_said([said for _, said in lines])
-            + ", and nothing is left to commit. If it is to go, put it back "
-            "the same way, then take it out with family.py remove, from a "
-            "checkout of openRepoShape, which takes its row, its gitlink and "
-            "its section out in one commit, on a branch other than the "
-            "holder's tracking branch, which it refuses "
-            f"(`{_switch_line(root, 'remove', member_id)}` makes one): "
-            f"`{remove}`. {BRANCH_LEFT}\n    {commands}")
+        lines = _put_back_lines(root, path, path in in_head
+                                and path not in in_worktree)
+        report.finding("member-gitlink-removal-staged", _removal_staged_said(
+            root, row, project, path, gitlinks[path], lines))
     return staged
+
+
+def _put_back_lines(root: Path, path: str,
+                    section_taken: bool) -> list[tuple[str, str]]:
+    """The lines `member-gitlink-removal-staged` prints that keep the member
+    at `path`, each with what it puts back (#762): its gitlink; the section
+    a plain `git rm` took out of the work tree's `.gitmodules`, where
+    `section_taken` (HEAD's file gives the path and the work tree's does
+    not); and its checkout, where none is there."""
+    lines = [(f"git reset -q -- {shlex.quote(path)}", "its gitlink")]
+    if section_taken:
+        lines.append((f"git checkout HEAD -- {GITMODULES}",
+                      f"the {GITMODULES} section git rm took out, "
+                      "putting that file back as HEAD has it and "
+                      "dropping any other change to it"))
+    if not (root / path / ".git").exists():
+        lines.append(("git submodule update --init --recursive -- "
+                      f"{shlex.quote(path)}", "its checkout"))
+    return lines
+
+
+def _removal_staged_said(root: Path, row: dict, project: str, path: str,
+                         commit: str, lines: list[tuple[str, str]]) -> str:
+    """`member-gitlink-removal-staged`'s text for the row naming `project`,
+    whose gitlink at `path` is at `commit` in HEAD, with `lines`
+    (`_put_back_lines`) below it (#762)."""
+    member_id = str(row.get("id") or project)
+    remove = (f"{PYTHON} scripts/family.py remove --family-root "
+              f"{shlex.quote(str(root))} --member {shlex.quote(project)}")
+    commands = "\n    ".join(line for line, _ in lines)
+    return (
+        f"{path} is a gitlink at {commit} that a row of members: names and "
+        "HEAD records, and the index holds nothing at that path: its removal "
+        "is staged and not committed, so the next commit un-registers the "
+        "member under its row, and this gate then refuses "
+        "member-gitlink-absent. If the member is to stay, "
+        + _put_back_said([said for _, said in lines])
+        + ", and nothing is left to commit. If it is to go, put it back the "
+        "same way, then take it out with family.py remove, from a checkout "
+        "of openRepoShape, which takes its row, its gitlink and its section "
+        "out in one commit, on a branch other than the holder's tracking "
+        "branch, which it refuses "
+        f"(`{_switch_line(root, 'remove', member_id)}` makes one): "
+        f"`{remove}`. {BRANCH_LEFT}\n    {commands}")
 
 
 def _put_back_said(put: list[str]) -> str:
@@ -2056,42 +2125,68 @@ def _init_stop_said(root: Path, sections: dict[str, dict[str, str]],
     the update the refusal named died the same way, at a stray case
     variant, a member mounted by hand, a section with no url, or a gitlink
     outside `members/`. Asked as the family bootstrap's `init_stop` asks it
-    (#648), more simply: of the index, the work tree's `.gitmodules`
-    (`sections`, which git's init reads) and this holder's git config.
-    Every gitlink, but where the config sets `submodule.active`, as a
-    recursive clone does, only those a section gives a path; one whose
-    section, the last that gives its path, has no url, and the config none
-    (`submodule.<name>.url`, as an earlier init writes it), stops it. What
-    bootstrap also keeps of git's own parser (a name or a value git
-    ignores, a `.gitmodules` a merge left unmerged) is not read here; where
-    nothing is found the plain remedy stands.
+    (#648), more simply (`_init_stopper`): of the index, the `.gitmodules`
+    git's init reads and this holder's git config. Every gitlink, but where
+    the config sets `submodule.active`, as a recursive clone does, only
+    those a section gives a path; one whose section, the last that gives
+    its path, has no url, and the config none (`submodule.<name>.url`, as
+    an earlier init writes it), stops it. What bootstrap also keeps of
+    git's own parser (a name or a value git ignores, a `.gitmodules` a
+    merge left unmerged) is not read here; where nothing is found the plain
+    remedy stands.
+
+    THE `.gitmodules` GIT READS is the work tree's (`sections`) where it is
+    on disk, and where it is gone from disk the index's, else HEAD's
+    (`_gitmodules_put_back`, rv820's SHOULD 2): read from the work tree
+    alone, a plain clone whose file was deleted and not staged was said to
+    stop at its first row, where git's update read the index's and checked
+    both members out. Where git reads the index's or HEAD's, the line that
+    puts the work tree's back comes first, so that the cure keeps every
+    other section, and `--no-members`, which reads the work tree's, names
+    what the cure says it names.
 
     THE CURE IS BOOTSTRAP'S FOR THE SAME GITLINK (`cures`), word for word
-    but for the path, printed as this file prints one: `--no-members` for
-    a path two sections give or a gitlink in `members/` no row names, the
-    section written back for a row's own path (`named`), and `git rm
-    --cached` for a gitlink outside `members/`, which no mode here reads.
+    but for the path, printed as this file prints one (`_init_stop_cure`).
     """
+    spec, put_back, whose = _gitmodules_put_back(root)
     with _git_runs("the gitlinks git submodule update asks could not be "
                    "listed"):
         try:
-            index = git_out(["ls-files", "-s", "-z"], cwd=root, binary=True)
+            if spec:
+                sections = _sections_listed(git_out(
+                    ["config", "-z", "--blob", spec, "--list"], cwd=root,
+                    binary=True))
+            stopper = _init_stopper(root, sections)
         except Refusal:
             return ""
-        try:
-            listed = git_out(["config", "-z", "--get-regexp",
-                              r"^submodule\."], cwd=root, binary=True)
-        except Refusal:
-            listed = b""
+    if stopper is None:
+        return ""
+    restore = (f"{GITMODULES} is gone from the work tree, so git reads "
+               f"{whose}: `{put_back}` puts it back first, so that what "
+               "follows keeps every other section. " if put_back else "")
+    return (f"`git submodule update --init` stops at {stopper}, a gitlink it "
+            "has no url for (No url found for submodule path, exit 128), "
+            f"before it checks out any member. {restore}"
+            f"{_init_stop_cure(stopper, sections, named)} Then ")
+
+
+def _init_stopper(root: Path,
+                  sections: dict[str, dict[str, str]]) -> str | None:
+    """The gitlink `git submodule update --init` stops at, the first in
+    index order, or None, as `_init_stop_said` asks it: of the index,
+    `sections` (the `.gitmodules` git's init reads) and this holder's git
+    config. A config git lists nothing of (`--get-regexp` exits 1) holds
+    none; an index git cannot list raises `Refusal`."""
+    index = git_out(["ls-files", "-s", "-z"], cwd=root, binary=True)
+    try:
+        listed = git_out(["config", "-z", "--get-regexp", r"^submodule\."],
+                         cwd=root, binary=True)
+    except Refusal:
+        listed = b""
     config = {record.decode("utf-8", "surrogateescape").partition("\n")[0]
               for record in listed.split(b"\0")}
-    read: dict[str, str] = {}
-    for name, keys in sections.items():
-        if "path" in keys:
-            read[keys["path"]] = name
-    given = Counter(keys["path"] for keys in sections.values()
-                    if "path" in keys)
-    stopper = None
+    read = {keys["path"]: name for name, keys in sections.items()
+            if "path" in keys}
     for record in index.split(b"\0"):
         meta, _, entry = record.partition(b"\t")
         if meta.split()[:1] != [GITLINK_MODE]:
@@ -2102,29 +2197,34 @@ def _init_stop_said(root: Path, sections: dict[str, dict[str, str]],
             continue
         if name is None or ("url" not in sections[name]
                             and f"submodule.{name}.url" not in config):
-            stopper = path
-            break
-    if stopper is None:
-        return ""
+            return path
+    return None
+
+
+def _init_stop_cure(stopper: str, sections: dict[str, dict[str, str]],
+                    named: dict[str, RowPath]) -> str:
+    """Bootstrap's cure (`cures`) for `stopper`, the gitlink git's init
+    stops at, as `_init_stop_said` prints it: `--no-members` for a path two
+    of `sections` give or a gitlink in `members/` no row names, the section
+    written back for a row's own path (`named`), and `git rm --cached` for
+    a gitlink outside `members/`, which no mode here reads."""
+    given = Counter(keys["path"] for keys in sections.values()
+                    if "path" in keys)
     if given[stopper] > 1:
-        cure = (f"`{PYTHON} scripts/validate-family.py --no-members` names "
+        return (f"`{PYTHON} scripts/validate-family.py --no-members` names "
                 f"each path more than one section of {GITMODULES} gives, and "
                 "how to take the others out.")
-    elif stopper in named:
-        cure = (f"Write the section of {GITMODULES} for {stopper} back as "
+    if stopper in named:
+        return (f"Write the section of {GITMODULES} for {stopper} back as "
                 "`family.py add` writes one, with its path and url, and "
                 f"commit {GITMODULES}.")
-    elif stopper.split("/", 1)[0].casefold() == DEFAULT_MEMBERS_DIR:
-        cure = (f"`{PYTHON} scripts/validate-family.py --no-members` names "
+    if stopper.split("/", 1)[0].casefold() == DEFAULT_MEMBERS_DIR:
+        return (f"`{PYTHON} scripts/validate-family.py --no-members` names "
                 f"each gitlink in {DEFAULT_MEMBERS_DIR}/ that no row names, "
                 "and the commit that cures it.")
-    else:
-        removal = shlex.join(["git", "rm", "--cached", "--", stopper])
-        cure = (f"No row names {stopper} and no clone can check it out: "
-                f"`{removal}` takes its gitlink out, then commit that.")
-    return (f"`git submodule update --init` stops at {stopper}, a gitlink it "
-            "has no url for (No url found for submodule path, exit 128), "
-            f"before it checks out any member. {cure} Then ")
+    removal = shlex.join(["git", "rm", "--cached", "--", stopper])
+    return (f"No row names {stopper} and no clone can check it out: "
+            f"`{removal}` takes its gitlink out, then commit that.")
 
 
 def _check_members(root: Path, members: list, no_members: bool,
