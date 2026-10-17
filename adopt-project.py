@@ -240,9 +240,9 @@ from shape_materialize import (  # noqa: E402
 # into its manifest, and whether a repository's name can be a directory's:
 # asked of the plan's values by `plan`, `check` and `execute` (#261).
 from shape_materialize import (  # noqa: E402
-    MANIFEST_INVALID_REMEDIATION, MANIFEST_UNREADABLE_REMEDIATION,
-    manifest_judged, manifest_value_problems, refuse_manifest_values,
-    refuse_unstorable_names,
+    KIND_UNREADABLE, MANIFEST_INVALID_REMEDIATION,
+    MANIFEST_UNREADABLE_REMEDIATION, manifest_judged, manifest_value_problems,
+    refuse_manifest_values, refuse_unstorable_names,
 )
 # Whether a value this tool writes into a file is text a file can hold
 # (#255), asked beside `one_printable_line`, the trailer's question.
@@ -4228,7 +4228,7 @@ def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
     # Where the project's own YAML reader refuses the manifest, the words
     # are the reader's, and so is the remedy (#708).
     remedy = (MANIFEST_UNREADABLE_REMEDIATION
-              if problems[0][0] == "unreadable"
+              if problems[0][0] == KIND_UNREADABLE
               else MANIFEST_INVALID_REMEDIATION)
     return ([f"FINDING plan-manifest-invalid: {sentence}"
              for _, sentence in problems],

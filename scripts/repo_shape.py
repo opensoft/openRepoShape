@@ -596,7 +596,7 @@ def _refuse_flow_indicator(text: str) -> None:
                         f"which ends it in YAML: {text!r}")
 
 
-def _refuse_entry_indicator(text: str) -> None:
+def _refuse_entry_indicator(text: str, remedy: bool = True) -> None:
     """Refuse a flow ENTRY -- an item of a flow sequence, or an entry of a
     flow mapping, whose key it opens -- that opens with an indicator (#392).
 
@@ -617,7 +617,10 @@ def _refuse_entry_indicator(text: str) -> None:
     first, after = text[:1], text[1:2]
     if (first in ":#@`%" or first in "-?" and after in (" ", "\t")
             or text == "?"):
-        raise _indicator_refusal(text)
+        refusal = _indicator_refusal(text)
+        if not remedy:
+            refusal.remediation = ""
+        raise refusal
 
 
 def _flow_value(text: str, item: bool = False) -> Any:
@@ -704,7 +707,9 @@ def _split_key_flow(text: str) -> tuple[str, str] | None:
     refuses both. `_refuse_flow_indicator` refuses them; a quoted key is
     still text.
     """
-    _refuse_entry_indicator(text)
+    # A MAPPING ENTRY opens its KEY: quoting the whole entry, as the
+    # remedy would spell it, reads as an entry without a key (#708).
+    _refuse_entry_indicator(text, remedy=False)
     kv = _split_key(text)
     if kv is not None and not text.startswith(('"', "'")):
         _refuse_flow_indicator(kv[0])

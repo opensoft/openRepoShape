@@ -107,7 +107,20 @@ def test_the_remedys_own_spelling_checks_clean(world):
     assert spelled == f'"{BACKTICKED}"'
     result = check(edited(world, ANSWERED, f"resolution: {spelled}"))
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "REFUSED" not in result.stderr and "FINDING" not in result.stderr
+    assert "REFUSED" not in result.stderr
+    assert "FINDING" not in result.stderr
+
+
+@pytest.mark.parametrize("body", [
+    "k: {@a: b}\n", "k: {`a`: b}\n", "k: {: a}\n", "k: {? a: b}\n",
+    "k: [x, {%a: 1}]\n", "k: {#a: 1}\n"])
+def test_a_flow_mapping_key_is_not_told_to_quote_the_whole_entry(body):
+    """Lane 1's review of #817: an entry of a flow mapping opens its KEY, and
+    the whole entry double-quoted (`{"@a: b"}`) reads as an entry without a
+    key, refused again. So such a refusal carries no remedy, and no line."""
+    with pytest.raises(YamlError) as caught:
+        parse_yaml(body)
+    assert caught.value.remediation == ""
 
 
 #: `(file, the line the refusal names, the value its remedy is spelled for)`:

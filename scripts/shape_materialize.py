@@ -4690,6 +4690,15 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
         values, policy, what, template_dir, ignore, not_text)]
 
 
+#: The kinds of problem `manifest_value_problems` names, each spelled once
+#: (#708): a value the project's reader reads back as something else, one
+#: its validator refuses, and a manifest the reader refuses before the
+#: validator can be asked, which `refuse_manifest_values` refuses under the
+#: code `invalid` still.
+KIND_MISREAD, KIND_INVALID, KIND_UNREADABLE = (
+    "misread", "invalid", "unreadable")
+
+
 def _invalid_problems(values: dict, policy: NamingPolicy, what: dict,
                       template_dir: Path, ignore: tuple,
                       not_text: tuple) -> list[tuple[str, str]]:
@@ -4700,9 +4709,9 @@ def _invalid_problems(values: dict, policy: NamingPolicy, what: dict,
     (`MANIFEST_UNREADABLE_REMEDIATION`)."""
     notes = _validator_notes(values, policy, template_dir, ignore)
     if isinstance(notes, YamlError):
-        return [("unreadable", sentence) for sentence
+        return [(KIND_UNREADABLE, sentence) for sentence
                 in _unread_sentences(values, what, template_dir, notes)]
-    return [("invalid", sentence)
+    return [(KIND_INVALID, sentence)
             for sentence in _sentences_of(notes, values, what, not_text)]
 
 
@@ -4837,6 +4846,11 @@ MANIFEST_UNREADABLE_REMEDIATION = (
     "project's own YAML reader's, which refuses the manifest this run would "
     "write before its validate-manifest.py can be asked, and a project "
     "whose manifest it refuses is one whose first bootstrap would fail.")
+#: The remedy for each kind of problem, so a refusal names it by its kind
+#: (#708), with no conditional nested in another.
+KIND_REMEDIATIONS = {KIND_MISREAD: MANIFEST_MISREAD_REMEDIATION,
+                     KIND_INVALID: MANIFEST_INVALID_REMEDIATION,
+                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION}
 
 
 def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
@@ -4857,7 +4871,7 @@ def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
     if misreads:
         misread = manifest_misreads(values, what, template_dir)
         if misread:
-            return [("misread", sentence) for sentence in misread]
+            return [(KIND_MISREAD, sentence) for sentence in misread]
     return _invalid_problems(values, policy, what, template_dir, ignore,
                              not_text)
 
@@ -4876,13 +4890,10 @@ def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,
                                        misreads=misreads)
     if problems:
         kind = problems[0][0]
-        remedy = (MANIFEST_MISREAD_REMEDIATION if kind == "misread"
-                  else MANIFEST_UNREADABLE_REMEDIATION if kind == "unreadable"
-                  else MANIFEST_INVALID_REMEDIATION)
-        raise Refusal(f"{prefix}-manifest-"
-                      f"{'misread' if kind == 'misread' else 'invalid'}",
+        code = KIND_MISREAD if kind == KIND_MISREAD else KIND_INVALID
+        raise Refusal(f"{prefix}-manifest-{code}",
                       " ".join(sentence for _, sentence in problems),
-                      f"{remedy} {tail}")
+                      f"{KIND_REMEDIATIONS[kind]} {tail}")
 
 
 # ---------------------------------------------------------------------------
