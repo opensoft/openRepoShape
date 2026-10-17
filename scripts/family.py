@@ -3275,6 +3275,10 @@ IN_HEAD_ONLY = "in HEAD and no longer in the index"
 #: row's path, where HEAD records the member's gitlink at that path and the
 #: index holds it nowhere: its removal staged (#761, rv685's candidate 1).
 IN_GITMODULES = "in .gitmodules, its gitlink's removal staged"
+#: A section of `.gitmodules` that gives a member another spelling of its
+#: row's path, where the index records the member's gitlink at that path
+#: already, as a hand edit or #646's old move back leaves it (#840).
+IN_SECTION = "in .gitmodules, its gitlink at its row's path"
 ON_DISK = "on disk and untracked"
 
 #: What the remedy does to a path `_members_spellings` found, in the order
@@ -3292,23 +3296,40 @@ ON_DISK = "on disk and untracked"
 #: index holds (Codex's P2 1 on #828). What is on disk and untracked is
 #: moved out of the way, but for a checkout, which a move would leave
 #: pointing nowhere, and which is deleted by hand (#761); a `members/` a
-#: hand renamed is moved back.
+#: hand renamed is moved back. #840 adds four: a symbolic link at a
+#: spelling the index holds entries under, moved out of the way FIRST,
+#: since git goes through it (`LINK_OUT`); a checkout git does not track
+#: inside a directory a `git mv` or `mv` below moves, deleted by hand before
+#: that move (`CHECKOUT_FIRST`); a section of `.gitmodules` pointed back at
+#: its row's path where the index records the gitlink there already
+#: (`POINT_BACK`); and an UNMERGED entry in the way of a move back, taken
+#: out of the index, every stage, with what of it is on disk moved out of
+#: the way (`ASIDE_UNMERGED`, `ASIDE_UNMERGED_MV`), since `git mv` refuses
+#: a conflicted entry.
+LINK_OUT = "mv link"
 COMMIT = "git commit"
+CHECKOUT_FIRST = "by hand, first"
 RENAME = "git mv"
 RENAME_SPARSE = "git mv --sparse"
 UNSTAGE = "git rm -r --cached"
+POINT_BACK = "git config -f"
 RENAME_BACK = "git mv back"
 ASIDE = "git mv aside"
 ASIDE_SPARSE = "git mv --sparse aside"
 ASIDE_OUT = "git rm -r --cached aside"
+ASIDE_UNMERGED = "git rm -r --cached unmerged aside"
+ASIDE_UNMERGED_MV = "git rm -r --cached and mv unmerged aside"
 RESTORE = "git update-index"
 MOVE = "mv"
 CHECKOUT = "by hand"
 MOVE_BACK = "mv back"
-REMEDY_ORDER = (COMMIT, RENAME, RENAME_SPARSE, UNSTAGE, RENAME_BACK, ASIDE,
-                ASIDE_SPARSE, ASIDE_OUT, RESTORE, MOVE, CHECKOUT, MOVE_BACK)
+REMEDY_ORDER = (LINK_OUT, COMMIT, CHECKOUT_FIRST, RENAME, RENAME_SPARSE,
+                UNSTAGE, POINT_BACK, RENAME_BACK, ASIDE, ASIDE_SPARSE,
+                ASIDE_OUT, ASIDE_UNMERGED, ASIDE_UNMERGED_MV, RESTORE, MOVE,
+                CHECKOUT, MOVE_BACK)
 #: Each remedy that sets aside what is in the way of a move back (#761).
-SET_ASIDE = (ASIDE, ASIDE_SPARSE, ASIDE_OUT)
+SET_ASIDE = (ASIDE, ASIDE_SPARSE, ASIDE_OUT, ASIDE_UNMERGED,
+             ASIDE_UNMERGED_MV)
 
 #: What a `--sparse` the remedy prints needs (#685). `git rm --sparse` came
 #: with git 2.34. `git mv` took `--sparse` in 2.34 too, but there it still
@@ -3393,7 +3414,16 @@ class Spelled(NamedTuple):
     back through, and `put_back` says whether the disk lacks this entry,
     which is put back first, since `git mv` of a directory refuses any
     entry under it that is not on disk (`bad source`); `through` is empty,
-    and `put_back` false, for every other remedy."""
+    and `put_back` false, for every other remedy.
+
+    #840's FOUR. A section found `IN_SECTION` (`POINT_BACK`) is named by the
+    path it gives, `kind` `a section`, with its row's path as `target`, its
+    name in `sections`, and `committed` saying whether HEAD's section gives
+    another path. A symbolic link moved out of the way first (`LINK_OUT`)
+    and a checkout deleted before a move takes it (`CHECKOUT_FIRST`) are
+    found `ON_DISK`, each its own `target`. An unmerged entry set aside
+    (`ASIDE_UNMERGED`, or `ASIDE_UNMERGED_MV` where it is on disk as the
+    index holds it) is its own `target` too."""
 
     name: str
     kind: str
@@ -3423,7 +3453,8 @@ def _shown(name: str) -> str:
 
 
 def _spelled_target(name: str, project: str,
-                    occupied: frozenset[str] = frozenset()
+                    occupied: frozenset[str] = frozenset(),
+                    rows: frozenset[str] = frozenset()
                     ) -> tuple[str, bool] | None:
     """`(the path a remedy acts on, whether it is at or under a case variant
     of members/<project>)` for a path `name`, `/`-separated as git spells
@@ -3439,7 +3470,11 @@ def _spelled_target(name: str, project: str,
     entry folds to a name `members/` itself tracks (`occupied`, folded), it
     is that name's directory on such a disk, so the remedy acts on `name`
     alone. Under `members/` itself only a case variant of the mount path is
-    one (`members/irqs`), and its remedy acts on that. The mount path itself,
+    one (`members/irqs`), and its remedy acts on that, and so is a case
+    variant of the path of a `members:` row (`rows`, its exact paths) that
+    is no row's own path (`members/irrs` beside the row `members/IRRS`,
+    #840): one path with it on macOS and Windows, which a clone there
+    cannot hold beside the member's checkout. The mount path itself,
     `members/<project>` exactly, is no variant: what is there is
     `member-path-taken`'s first two questions."""
     first, _, rest = name.partition("/")
@@ -3453,8 +3488,11 @@ def _spelled_target(name: str, project: str,
         if not mount and _folded(second) in occupied:
             return name, False
         return f"{first}/{second}", mount
-    if mount and second != project:
-        return f"{first}/{second}", True
+    here = f"{first}/{second}"
+    if mount and second != project or not mount and rest and (
+            here not in rows
+            and _folded(here) in {_folded(row) for row in rows}):
+        return here, mount
     return None
 
 
@@ -3534,11 +3572,13 @@ def _on_disk_as_named(root: Path, name: str, directory: bool) -> bool:
     in its parent's listing, exactly, so a disk that folds case cannot
     answer for another entry: on macOS an index entry `Members` (a file) is
     not the holder's `members/` directory, and `git mv` of it would move
-    that directory and every member in it. A link is no directory here."""
+    that directory and every member in it. A link is no directory here, and
+    nothing BEYOND a link is on disk in the holder (#840): it is where the
+    link points, which `LINK_OUT` moves out of the way first."""
     here = root
-    for part in name.split("/"):
+    for depth, part in enumerate(name.split("/")):
         try:
-            if part not in os.listdir(here):
+            if part not in os.listdir(here) or depth and os.path.islink(here):
                 return False
         except OSError:
             return False
@@ -3559,16 +3599,18 @@ def _skip_worktree(root: Path) -> set[str]:
 def _disk_spellings(
         root: Path, on_disk: dict[str, tuple[str, list[str] | None]],
         project: str, canon: str | None,
-        gitlinks: set[str]) -> list[tuple[str, str, str]]:
+        gitlinks: set[str],
+        rows: frozenset[str] = frozenset()) -> list[tuple[str, str, str]]:
     """`[(path, kind, remedy)]` of what the disk holds at or under a
     spelling of `members/` other than `members/` itself, or at a case
     variant of the mount path, from `_members_on_disk`'s listing; `canon` is
-    `_members_dir_on_disk`'s answer, and `gitlinks` every gitlink the index
-    holds.
+    `_members_dir_on_disk`'s answer, `gitlinks` every gitlink the index
+    holds, and `rows` each `members:` row's path.
 
     - In `members/` ITSELF, under whichever spelling this disk keeps it,
       each entry that is a case variant of `<project>` (`members/irqs`,
-      `Members/irqs` where `Members` is that directory), moved.
+      `Members/irqs` where `Members` is that directory), or of a row's path
+      and no row's own (`members/irrs`, #840), moved.
     - A spelling that is not a directory, a link to one included, or a
       directory nobody may list, is named and moved itself: what is behind a
       link is not entered, and `members` itself as a link is not judged
@@ -3593,8 +3635,8 @@ def _disk_spellings(
                               _disk_kind(root / name / entry),
                               _moved_or_kept(root / name / entry))
                              for entry in entries or ()
-                             if _folded(entry) == _folded(project)
-                             and entry != project)
+                             if _spelled_target(f"{MEMBERS_DIR}/{entry}",
+                                                project, rows=rows))
             continue
         if kind != "a directory" or entries is None:
             found.append((name, kind, MOVE))
@@ -3820,7 +3862,18 @@ def _members_spellings(root: Path, project: str,
     `members/<project>`: in the index, in HEAD and no longer in the index,
     and on disk untracked (#362, #363, #364), each with the remedy that acts
     on it. `on_disk` is `_members_on_disk`'s listing, and `rows` the path of
-    each `members:` row (`_rows_paths`).
+    each `members:` row (`_rows_paths`), a case variant of which under
+    `members/` itself, and no row's own path, is one too (`members/irrs`
+    beside the row `members/IRRS`, #840): nothing named it and `add` went
+    through, in the index, in HEAD or on disk, and the member's own gitlink
+    there is moved back as below.
+
+    #840 ADDS THREE MORE, each where a printed command failed or misled as
+    typed: a section of `.gitmodules` giving a member another spelling of
+    its row's path beside its gitlink at that path (`_sections_astray`); a
+    symbolic link the index holds entries under, which git goes through
+    (`_disk_found`); and a checkout git does not track inside a directory a
+    `git mv` or `mv` moves (`_checkouts_in_the_way`).
 
     A MEMBER'S OWN GITLINK HELD IN THE WRONG CASE (#646) is moved back, never
     taken out or renamed. Where the index holds nothing at or under a row's
@@ -3843,8 +3896,9 @@ def _members_spellings(root: Path, project: str,
     or at `members` itself (`appears as both a file and as a directory`,
     exit 128, after the removal took the variant out), and #574's remedy
     takes the member's gitlink out instead. So where the index holds only
-    files and links at or under a row's path, each at stage 0, a gitlink at
-    a variant is still the member's own, and each of those entries is set
+    files and links at or under a row's path, at any stage (an unmerged one
+    is taken out of the index, every stage, #840), a gitlink at a variant
+    is still the member's own, and each of those entries is set
     aside first (`SET_ASIDE`, `_set_aside`), as is a file or link the index
     holds at `members` itself wherever a gitlink is moved back: renamed with
     `git mv` where it is on disk as the index holds it, as
@@ -3922,7 +3976,7 @@ def _members_spellings(root: Path, project: str,
     restored: list[str] = []
     moved: set[str] = set()
     for name, mode in indexed.items():
-        spelled = _spelled_target(name, project, occupied)
+        spelled = _spelled_target(name, project, occupied, rows)
         if spelled is None:
             continue
         target, mount = spelled
@@ -3961,7 +4015,7 @@ def _members_spellings(root: Path, project: str,
         found.append(Spelled(_shown(name), kind, IN_INDEX, _shown(target),
                              mount, remedy, name in in_head, sparse=out))
     for name, kind, oid in head:
-        spelled = _spelled_target(name, project, occupied)
+        spelled = _spelled_target(name, project, occupied, rows)
         if spelled is None or name in indexed:
             continue
         own = owners.get(_folded(name)) if kind == gitlink else None
@@ -3980,12 +4034,13 @@ def _members_spellings(root: Path, project: str,
     staged_out = [row for row in sorted(strays.values()) if row not in moved
                   and row in in_head and (row, gitlink, in_head[row]) in head]
     staged, gone = _sections_restored(root, found, moved, staged_out,
-                                      in_head, project)
+                                      in_head, project, rows)
     found.extend(staged)
     # What the disk holds where its section says is the move's to name too.
     restored.extend(gone)
-    found.extend(_in_the_way(root, indexed, head, moved,
+    found.extend(_in_the_way(root, listed, head, moved,
                              (blocked, at_members), sparse))
+    found.extend(_sections_astray(root, rows, indexed))
     renamed = _renamed_with_git(root, found, listed, canon, left_out()
                                 if any(spelled.remedy == RESTORE
                                        for spelled in found) else frozenset())
@@ -4003,16 +4058,11 @@ def _members_spellings(root: Path, project: str,
     # What the disk holds at a gitlink moved back from HEAD is the move's to
     # name, as what it holds at an index entry is the index's, and what it
     # holds under a `members/` renamed with `git mv` goes back with it.
-    for path, kind, remedy in _disk_spellings(root, on_disk, project, canon,
-                                              gitlinks):
-        if any(name == path or path.startswith(name + "/")
-               or (remedy in (MOVE, CHECKOUT)
-                   and name.startswith(path + "/"))
-               for name in [*indexed, *restored,
-                            *([renamed[0]] if renamed else [])]):
-            continue
-        found.append(Spelled(_shown(path), kind, ON_DISK, _shown(path),
-                             _spelled_target(path, project)[1], remedy))
+    found.extend(_disk_found(root, (on_disk, canon, gitlinks), project, rows,
+                             [*indexed, *restored,
+                              *([renamed[0]] if renamed else [])]))
+    # A checkout inside a directory a `git mv` or `mv` moves (#840).
+    found.extend(_checkouts_in_the_way(root, found, gitlinks, project, rows))
     return found
 
 
@@ -4042,7 +4092,7 @@ class _SparseAsked:
         return self._out
 
 
-def _in_the_way(root: Path, indexed: dict[str, int],
+def _in_the_way(root: Path, listed: dict[str, list],
                 head: list[tuple[str, str, str]], moved: set[str],
                 held: tuple[dict[str, list[str]], str | None],
                 sparse: _SparseAsked) -> list[Spelled]:
@@ -4050,9 +4100,11 @@ def _in_the_way(root: Path, indexed: dict[str, int],
     `moved`, set aside first (`_set_aside`, #761): what the index holds at
     or under each of those rows, and a file or link at `members`, as
     `_rows_held` found them (`held`), wherever a gitlink is moved back, and
-    nothing where none is. `head` is `_head_spellings`'s. HEAD's gitlink at
-    a row's path, which the move puts back, is no change for the removal of
-    what stands there to leave to commit."""
+    nothing where none is. `listed` is every index entry's records, of which
+    one held at a stage other than 0 is unmerged (#840), and `head` is
+    `_head_spellings`'s. HEAD's gitlink at a row's path, which the move puts
+    back, is no change for the removal of what stands there to leave to
+    commit."""
     blocked, at_members = held
     if not moved:
         return []
@@ -4063,8 +4115,11 @@ def _in_the_way(root: Path, indexed: dict[str, int],
     gitlink = INDEX_ENTRY_KINDS[0o160000]
     kept = {name: oid for name, kind, oid in head
             if kind != gitlink or name not in moved}
-    return _set_aside(root, indexed, kept, names, sparse.marked(),
-                      sparse.left_out())
+    unmerged = frozenset(name for name in names
+                         if any(fields[2] != b"0" for fields in listed[name]))
+    return _set_aside(root, {name: int(listed[name][0][0], 8)
+                             for name in names}, kept, names, sparse.marked(),
+                      sparse.left_out(), unmerged)
 
 
 def _rows_held(rows: frozenset[str], indexed: dict[str, int],
@@ -4077,18 +4132,21 @@ def _rows_held(rows: frozenset[str], indexed: dict[str, int],
       spelling, where a gitlink at another spelling of it is that member's
       own (#646);
     - each row's path the index holds files and links alone at or under,
-      each at stage 0, with those entries, which are set aside before the
-      move back (#761);
-    - `members` where the index holds a file or link there at stage 0,
-      which no `members/<P>` can sit beside, else None.
+      at every stage it holds each at, with those entries, which are set
+      aside before the move back (#761);
+    - `members` where the index holds a file or link there, at every stage
+      it holds it at, which no `members/<P>` can sit beside, else None.
 
     Whatever a sparse checkout says of an entry in the way, the gitlink is
     still the member's own: `_set_aside` gives the entry the `--sparse` git
-    needs (Codex's P2 1 on #828)."""
-    def merged_file(name: str) -> bool:
-        """A file or link the index holds at stage 0 alone."""
-        return indexed[name] != 0o160000 and all(
-            fields[2] == b"0" for fields in listed[name])
+    needs (Codex's P2 1 on #828). AN UNMERGED ONE IS IN THE WAY TOO (#840,
+    rv828's SHOULD 3): passed by, the gitlink at the variant kept #574's
+    `git mv`, which took it away from its row, and the commit after it
+    failed (`Committing is not possible because you have unmerged files`);
+    `_set_aside` takes it out of the index, every stage, as git allows."""
+    def file_or_link(name: str) -> bool:
+        """A file or link at every stage the index holds it at."""
+        return all(fields[0] != b"160000" for fields in listed[name])
 
     strays: dict[str, str] = {}
     blocked: dict[str, list[str]] = {}
@@ -4097,16 +4155,17 @@ def _rows_held(rows: frozenset[str], indexed: dict[str, int],
                 if name == row or name.startswith(row + "/")]
         if not held:
             strays[_folded(row)] = row
-        elif all(merged_file(name) for name in held):
+        elif all(file_or_link(name) for name in held):
             blocked[row] = held
     at_members = (MEMBERS_DIR if MEMBERS_DIR in indexed
-                  and merged_file(MEMBERS_DIR) else None)
+                  and file_or_link(MEMBERS_DIR) else None)
     return strays, blocked, at_members
 
 
 def _sections_restored(root: Path, found: list[Spelled], moved: set[str],
                        staged_out: list[str], in_head: dict[str, str],
-                       project: str) -> tuple[list[Spelled], list[str]]:
+                       project: str, rows: frozenset[str] = frozenset()
+                       ) -> tuple[list[Spelled], list[str]]:
     """Each section of `.gitmodules` that gives a member moved back another
     spelling of its row's path, named on the member's `RESTORE` in `found`
     (which this updates in place), and an `IN_GITMODULES` move for each row
@@ -4114,7 +4173,8 @@ def _sections_restored(root: Path, found: list[Spelled], moved: set[str],
     holds nowhere, where a section gives it another spelling: returned, with
     the path each such section gives, as git spells it (#761). `moved` is
     the rows a `RESTORE` in `found` moves back to, which this adds those
-    rows to.
+    rows to, and `rows` every `members:` row's path, of which a section's
+    path under `members/` itself may be a variant (#840).
 
     The file is the one `_submodule_paths` reads, the work tree's where
     there is one, which is the one `git config -f .gitmodules` edits; one
@@ -4140,16 +4200,16 @@ def _sections_restored(root: Path, found: list[Spelled], moved: set[str],
     gone: list[str] = []
     for row in staged_out:
         variants = sorted({given[name][0] for name in giving(row)
-                           if _spelled_target(given[name][0], project)
-                           is not None})
+                           if _spelled_target(given[name][0], project,
+                                              rows=rows) is not None})
         if variants:
             moved.add(row)
             gone.extend(variants)
             added.append(Spelled(
                 _shown(variants[0]), INDEX_ENTRY_KINDS[0o160000],
                 IN_GITMODULES, _shown(row),
-                _spelled_target(variants[0], project)[1], RESTORE, False,
-                in_head[row]))
+                _spelled_target(variants[0], project, rows=rows)[1], RESTORE,
+                False, in_head[row]))
     for index, spelled in enumerate([*found, *added]):
         if spelled.remedy != RESTORE:
             continue
@@ -4189,7 +4249,8 @@ def _head_section_paths(root: Path) -> dict[str, str]:
 
 def _set_aside(root: Path, indexed: dict[str, int], in_head: dict[str, str],
                names: list[str], marked: frozenset[str],
-               left_out: frozenset[str]) -> list[Spelled]:
+               left_out: frozenset[str],
+               unmerged: frozenset[str] = frozenset()) -> list[Spelled]:
     """One of `SET_ASIDE` for each of `names`, an entry the index holds at
     or under a row's path that a gitlink is moved back to, or at `members`
     itself (#761), by the rule `_members_spellings` names what the index
@@ -4214,20 +4275,165 @@ def _set_aside(root: Path, indexed: dict[str, int], in_head: dict[str, str],
     refuse it (`exist outside of your sparse-checkout definition`, exit 1),
     and `git mv --sparse` takes it. Left out and off disk, `git rm --cached`
     refuses it the same way, `git mv` with or without `--sparse` says `bad
-    source` (exit 128), and `git rm --cached --sparse` takes it."""
+    source` (exit 128), and `git rm --cached --sparse` takes it.
+
+    AN UNMERGED ONE (`unmerged`, #840, rv828's SHOULD 3), which `git mv`
+    refuses (`conflicted`, exit 128), is taken out of the index, every
+    stage, with `git rm -r --cached`, which git allows there and which
+    touches no file (`ASIDE_UNMERGED`), and where it is on disk as the index
+    holds it, it is then moved out of the way with `mv`
+    (`ASIDE_UNMERGED_MV`): measured on git 2.43, a file left at the row's
+    path made the update fail (`could not create directories for
+    members/<P>/.git`), and one left under it stayed in the member's
+    checkout, which `git status` then lists as modified. Its removal leaves
+    a change to commit where `in_head` holds it."""
     aside = []
     for name in names:
-        on = _on_disk_as_named(root, name, False)
-        if on:
-            remedy = ASIDE_SPARSE if name in left_out else ASIDE
-        else:
-            remedy = ASIDE_SPARSE if name in marked else ASIDE_OUT
+        remedy = _aside_remedy(_on_disk_as_named(root, name, False), name,
+                               (marked, left_out, unmerged))
         aside.append(Spelled(
             _shown(name), INDEX_ENTRY_KINDS.get(indexed[name], "a file"),
             IN_INDEX, _shown(name), False, remedy,
-            remedy != ASIDE_OUT or name in in_head,
+            remedy in (ASIDE, ASIDE_SPARSE) or name in in_head,
             sparse=remedy == ASIDE_OUT and name in left_out))
     return aside
+
+
+def _aside_remedy(on: bool, name: str,
+                  sets: tuple[frozenset[str], frozenset[str], frozenset[str]]
+                  ) -> str:
+    """Which of `SET_ASIDE` `_set_aside` gives `name`, on disk as the index
+    holds it where `on`; `sets` is what a sparse checkout marks, what its
+    rules leave out, and what the index holds unmerged (#840)."""
+    marked, left_out, unmerged = sets
+    if name in unmerged:
+        return ASIDE_UNMERGED_MV if on else ASIDE_UNMERGED
+    if on:
+        return ASIDE_SPARSE if name in left_out else ASIDE
+    return ASIDE_SPARSE if name in marked else ASIDE_OUT
+
+
+def _sections_astray(root: Path, rows: frozenset[str],
+                     indexed: dict[str, int]) -> list[Spelled]:
+    """`POINT_BACK` for each section of `.gitmodules` that gives a member
+    another spelling of its row's path, `IN_SECTION`, where the index
+    records the member's gitlink at that path already (#840), from the file
+    `_submodule_paths` reads, the one `git config -f .gitmodules` edits.
+
+    A HAND EDIT, OR #646'S OLD MOVE BACK, LEAVES IT: the gitlink back at
+    `members/<P>` and the section still saying `Members/<P>`. Nothing at
+    another spelling is in the index, HEAD or the disk, so `add` went
+    through and committed that `.gitmodules` beside the new member, and the
+    gate refused it in every mode (`gitmodules-path-unnamed`, and
+    `member-gitmodules-absent` once committed: a recursive clone checks the
+    member out nowhere). The line that points it back is the gate's own
+    (`member-gitmodules-absent`'s `git config -f .gitmodules
+    submodule.<name>.path <row path>`), and pointing it back is a change to
+    commit where HEAD's section gives another path. A member moved back
+    (`RESTORE`) has its sections on its own move (`_sections_restored`); its
+    gitlink is not at its row's path, so it is not one of these."""
+    held = [row for row in sorted(rows) if indexed.get(row) == 0o160000]
+    if not held:
+        return []
+    try:
+        given = _submodule_paths(root)
+    except Refusal:
+        return []
+    head = _head_section_paths(root)
+    return [Spelled(_shown(path), "a section", IN_SECTION, _shown(row), False,
+                    POINT_BACK, head.get(name) != row, sections=(name,))
+            for row in held for name, (path, _, _) in sorted(given.items())
+            if path != row and _folded(path) == _folded(row)]
+
+
+def _disk_found(root: Path,
+                listing: tuple[dict[str, tuple[str, list[str] | None]],
+                               str | None, set[str]],
+                project: str, rows: frozenset[str],
+                named: list[str]) -> list[Spelled]:
+    """What the disk holds that `_members_spellings` names, by
+    `_disk_spellings` over `listing` (`_members_on_disk`'s listing,
+    `_members_dir_on_disk`'s answer and every gitlink the index holds): a
+    path one of `named` (the index's entries, the gitlinks moved back from
+    HEAD, a `members/` renamed with `git mv`) is at or above is theirs to
+    name, and so is one moved out of the way that one of them is under.
+
+    BUT A SYMBOLIC LINK ONE OF THEM IS UNDER IS NAMED FIRST (`LINK_OUT`,
+    #840, rv685's round-3 candidate 3). `git rm --cached` of a gitlink under
+    a link goes through it, to a checkout whose `.git` file names its store
+    by a path relative to where the link points, and fails (`fatal: not a
+    git repository: Members/IRRS/../../.git/modules/members/IRRS`, exit 128,
+    measured on git 2.43 with `Members` a link to a directory outside the
+    holder), and `git mv` of a file under it moves that file in from where
+    the link points. Moved out of the way first, the link takes nothing
+    with it, and every line after it acts on the index alone
+    (`_on_disk_as_named` takes nothing beyond a link for on disk)."""
+    on_disk, canon, gitlinks = listing
+    found = []
+    for path, kind, remedy in _disk_spellings(root, on_disk, project, canon,
+                                              gitlinks, rows):
+        if any(name == path or path.startswith(name + "/") for name in named):
+            continue
+        under = any(name.startswith(path + "/") for name in named)
+        if under and kind == "a symlink":
+            remedy = LINK_OUT
+        elif under and remedy in (MOVE, CHECKOUT):
+            continue
+        found.append(Spelled(_shown(path), kind, ON_DISK, _shown(path),
+                             _spelled_target(path, project, rows=rows)[1],
+                             remedy))
+    return found
+
+
+def _checkouts_in_the_way(root: Path, found: list[Spelled],
+                          gitlinks: set[str], project: str,
+                          rows: frozenset[str]) -> list[Spelled]:
+    """`CHECKOUT_FIRST` for each checkout git does not track inside a
+    directory that a `git mv` (`RENAME`) or an `mv` (`MOVE`) in `found`
+    moves (#840, w761's candidate on #828).
+
+    `git mv` OF A DIRECTORY MOVES IT WHOLE, untracked files and all, and so
+    does `mv`. Measured on git 2.43: a committed `Members/X/notes` and a
+    checkout `git submodule add` made at `Members/X/Y`, then taken out of
+    the index; #574's `git mv -- Members/X <new name>` typed as printed
+    moved the checkout too, and `git -C <new name>/Y status` then said
+    `fatal: not a git repository`, its `.git` file naming its store by a
+    path relative to where it was, as #681's N-1 measured for a plain `mv`.
+    So each is named before the move, to be deleted by hand once nothing
+    only it holds is needed, as `CHECKOUT` names one found on disk: its
+    commits are kept in that store. A checkout the index records (a gitlink)
+    is moved by `git mv` with its `.git` file mended, measured, and is not
+    named; one at the moved path itself is that path's own, and is not
+    entered."""
+    moved = sorted({spelled.target for spelled in found
+                    if spelled.remedy in (RENAME, MOVE)})
+    return [Spelled(_shown(path), "a directory", ON_DISK, _shown(path),
+                    _spelled_target(path, project, rows=rows)[1],
+                    CHECKOUT_FIRST)
+            for target in moved
+            for path in _checkouts_under(root, target, gitlinks)]
+
+
+def _checkouts_under(root: Path, target: str,
+                     gitlinks: set[str]) -> list[str]:
+    """Every directory strictly under `target`, not through a link, that
+    holds a `.git` FILE and is no gitlink the index holds, as a path from
+    `root`; none where `target` is no directory or is a repository itself.
+    A directory holding a `.git` entry of any kind is not entered."""
+    top = root / target
+    if os.path.islink(top) or not top.is_dir() or os.path.lexists(
+            top / ".git"):
+        return []
+    found = []
+    # `os.walk` lists a link to a directory and never enters it.
+    for here, dirs, _ in os.walk(top):
+        held = {name for name in dirs
+                if os.path.lexists(os.path.join(here, name, ".git"))}
+        dirs[:] = sorted(set(dirs) - held)
+        found.extend(Path(here, name).relative_to(root).as_posix()
+                     for name in held
+                     if _moved_or_kept(Path(here, name)) == CHECKOUT)
+    return sorted(name for name in found if name not in gitlinks)
 
 
 #: How the work tree's `.gitmodules` stands beside the index's copy, as
@@ -4235,21 +4441,31 @@ def _set_aside(root: Path, indexed: dict[str, int], in_head: dict[str, str],
 GITMODULES_MODIFIED = "modified"
 GITMODULES_MISSING = "missing"
 GITMODULES_UNMERGED = "unmerged"
+#: HEAD holds one and its deletion is staged, and the work tree has none
+#: (`GITMODULES_DELETED`) or one git does not track (`GITMODULES_UNTRACKED`)
+#: (#840).
+GITMODULES_DELETED = "deleted"
+GITMODULES_UNTRACKED = "untracked"
 
 
 def _gitmodules_beside(root: Path) -> str:
     """How the work tree's `.gitmodules` stands beside the index's copy, told
     apart as `_checked_gitmodules_as_staged` tells them apart, for the
-    remedies `_spellings_refusal` prints where the index holds a gitlink
-    (#685): `GITMODULES_UNMERGED` where the index holds it at a stage other
-    than 0; `GITMODULES_MISSING` where the index holds it at stage 0 and the
-    work tree has none; `GITMODULES_MODIFIED` where both hold one and git
-    lists it as modified (`git ls-files -m`, which lists a missing one too);
-    else empty: none in the index, one a sparse checkout keeps off disk
+    remedies `_spellings_refusal` prints (#685): `GITMODULES_UNMERGED` where
+    the index holds it at a stage other than 0; `GITMODULES_DELETED` and
+    `GITMODULES_UNTRACKED` where HEAD holds one and the index none, its
+    deletion staged, and the work tree none or one (#840);
+    `GITMODULES_MISSING` where the index holds it at stage 0 and the work
+    tree has none; `GITMODULES_MODIFIED` where both hold one and git lists
+    it as modified (`git ls-files -m`, which lists a missing one too); else
+    empty: none in the index or HEAD, one a sparse checkout keeps off disk
     (`gitmodules-sparse`'s), or one as the index holds it."""
     records = _gitmodules_in_index(root)
     if any(stage for _, _, stage in records):
         return GITMODULES_UNMERGED
+    if not records and _head_oid(root, GITMODULES) is not None:
+        return (GITMODULES_UNTRACKED if os.path.lexists(root / GITMODULES)
+                else GITMODULES_DELETED)
     if not records or records[0][0].upper() == "S":
         return ""
     if not os.path.lexists(root / GITMODULES):
@@ -4262,7 +4478,7 @@ def _gitmodules_beside(root: Path) -> str:
 
 #: The order `_spellings_refusal` names its groups in. Its remedies run in
 #: `REMEDY_ORDER`: a pending change in HEAD is committed first.
-SPELLED_ORDER = (IN_INDEX, IN_HEAD_ONLY, IN_GITMODULES, ON_DISK)
+SPELLED_ORDER = (IN_INDEX, IN_HEAD_ONLY, IN_GITMODULES, IN_SECTION, ON_DISK)
 
 
 def _spellings_refusal(path: str, found: list[Spelled],
@@ -4276,13 +4492,21 @@ def _spellings_refusal(path: str, found: list[Spelled],
     path, as #318 refuses one in the index; `family-members-dir-variant`
     where every one is under a spelling of `members/` alone: a fault of the
     holder's `members/` directory (`members_dir`, as `family.yaml` names
-    it), which no member can be added past.
+    it), which no member can be added past. A case variant of a row's path
+    under `members/` itself (#840) is that code's too, and its first
+    sentence says so (`_lead`).
 
     THE REMEDIES RUN IN `REMEDY_ORDER`, and each command names one entry, so
-    no command takes another's path from under it: `git commit` first for
-    what HEAD holds and the index no longer does, since the add's own commit
-    names three paths; then `git mv`, `git mv --sparse` and `git rm -r
-    --cached` for what the index holds, and a commit; then, for a
+    no command takes another's path from under it: a symbolic link the
+    index holds entries under moved out of the way first (#840), since git
+    goes through it; `git commit` for what HEAD holds and the index no
+    longer does, since the add's own commit names three paths; a checkout
+    git does not track inside a directory a `git mv` or `mv` below moves,
+    deleted by hand before that move (#840); then `git mv`, `git mv
+    --sparse` and `git rm -r --cached` for what the index holds, and a
+    commit; then each section of `.gitmodules` pointed back at its row's
+    path where the index records the gitlink there already (#840), and a
+    commit where HEAD's section moved; then, for a
     `members/` renamed with `git mv` (#685), what puts back an entry under
     it that the disk lacks, the `git mv` of it to a free name and of that
     to `members`, and a commit; then what is in the way of the move back set
@@ -4303,8 +4527,9 @@ def _spellings_refusal(path: str, found: list[Spelled],
     1 on #828).
 
     THE WORK TREE'S `.gitmodules` (`gitmodules`, `_gitmodules_beside`'s
-    answer, which `_checked_mount_path` passes only where the index holds a
-    gitlink this refusal names) comes first (#685):
+    answer, which `_gitmodules_first` passes, the first two only where a
+    remedy runs `git mv` or `git rm` of a gitlink or points a section back)
+    comes first (#685):
     - A change to it nobody has staged (`GITMODULES_MODIFIED`) is staged:
       `git mv` and `git rm` of a gitlink refuse to run beside one (`Please
       stage your changes to .gitmodules or stash them to proceed`).
@@ -4314,8 +4539,14 @@ def _spellings_refusal(path: str, found: list[Spelled],
       of the file would stage its deletion, which the printed commit would
       then take out of HEAD with every member's section (#685's review,
       MUST-A).
+    - A deletion staged while HEAD holds one, the work tree lacking it too
+      (`GITMODULES_DELETED`, #840), is put back from HEAD (`git checkout
+      HEAD -- .gitmodules`): any commit printed here would take the file,
+      and every member's section, out of HEAD.
     `gitmodules-unstaged`, which says the same of the file, is asked after
-    this refusal; an unmerged copy is its to name first.
+    this refusal; an unmerged copy, or a deletion staged beside a copy git
+    does not track, is its to name first, and an unmerged copy the work
+    tree lacks too is `gitmodules-missing`'s (`_gitmodules_first`, #840).
 
     THE MOVE BACK (#646) is `validate-family.py`'s for the same state
     (#611), in one line: `git rm -r --cached --ignore-unmatch` of every
@@ -4352,7 +4583,9 @@ def _spellings_refusal(path: str, found: list[Spelled],
     the member out at the row's path, points that store's `core.worktree`
     there: `git -C <variant> status` then printed the row's clean checkout
     and not the variant's own uncommitted file. Read before the update, it
-    names that file, so the checkout is weighed and deleted first.
+    names that file, so the checkout is weighed and deleted first. A
+    section pointed back with no move back closes on the same update, for a
+    fresh clone, which checks the member out nowhere until it is (#840).
     """
     mount = any(spelled.mount for spelled in found)
     groups = []
@@ -4371,17 +4604,9 @@ def _spellings_refusal(path: str, found: list[Spelled],
                           if spelled.remedy == remedy})
           for remedy in REMEDY_ORDER}
 
-    parts = []
-    if gitmodules == GITMODULES_MODIFIED:
-        parts.append(
-            f"stage the change to {GITMODULES} that nobody has staged, or "
-            "set it aside, since `git mv` and `git rm` of a gitlink refuse "
-            f"to run beside one (`git add -- {GITMODULES}`)")
-    elif gitmodules == GITMODULES_MISSING:
-        parts.append(
-            f"put back the copy of {GITMODULES} the index holds, which the "
-            "work tree lacks, since git edits each member's section there "
-            f"(`git checkout -- {GITMODULES}`)")
+    # What `.gitmodules` needs first, then a link git would go through
+    # (#840), before any line that names a path under it.
+    parts = [*_gitmodules_part(gitmodules), *_link_part(by)]
     if by[COMMIT]:
         named = ", ".join(f"`{target}`" for target in by[COMMIT])
         parts.append(
@@ -4390,6 +4615,8 @@ def _spellings_refusal(path: str, found: list[Spelled],
             f"HEAD would keep {named} beside the member, or, with "
             "`core.ignorecase` set, record the member's gitlink in that "
             "spelling")
+    # A checkout inside a directory moved below, before that move (#840).
+    parts.extend(_checkout_first_part(by))
     index = []
     if by[RENAME]:
         index.append("rename what the index holds with `git mv`, entry by "
@@ -4421,6 +4648,9 @@ def _spellings_refusal(path: str, found: list[Spelled],
             "the rename" if renamed else "the removal")
     if index:
         parts.append(", ".join(index))
+    # A section astray beside a gitlink at its row's path (#840), pointed
+    # back before what is set aside, whose commit is the move's.
+    parts.extend(_point_back_part(found, by))
     # A `members/` RENAMED WITH `git mv` (#685), one spelling at most: what
     # puts back an entry under it the disk lacks, then the two `git mv`s.
     for target in by[RENAME_BACK]:
@@ -4479,13 +4709,7 @@ def _spellings_refusal(path: str, found: list[Spelled],
     said = "; ".join(parts)
     return Refusal(
         "member-path-taken" if mount else "family-members-dir-variant",
-        (f"the family root holds a case variant of {path}, the same path on "
-         "a case-insensitive disk, though no `members:` row names it"
-         if mount else
-         f"the family root holds a path at or under another spelling of "
-         f"{MEMBERS_DIR}/, which a case-insensitive disk takes for "
-         f"{MEMBERS_DIR}/ itself")
-        + " — " + "; ".join(groups),
+        _lead(path, found, mount) + " — " + "; ".join(groups),
         f"Remediation: every member is mounted under {MEMBERS_DIR}/, and a "
         "holder keeps that directory in one spelling on every disk. "
         + said[:1].upper() + said[1:] + "; then re-run.")
@@ -4497,6 +4721,131 @@ def _each(command: str, targets: list[str]) -> str:
     return " and ".join(
         f"`{command} -- {shell_quoted(target, 'posix')} <new name>`"
         for target in targets)
+
+
+def _lead(path: str, found: list[Spelled], mount: bool) -> str:
+    """What `_spellings_refusal` says the holder holds, before the places:
+    a case variant of the mount path `path` (`mount`); a path at or under
+    another spelling of `members/`; a case variant of a row's path under
+    `members/` itself (#840); or the last two together. What is set aside is
+    at a row's path or at `members`, no spelling of either, and says
+    nothing here."""
+    if mount:
+        return (f"the family root holds a case variant of {path}, the same "
+                "path on a case-insensitive disk, though no `members:` row "
+                "names it")
+    firsts = {spelled.name.partition("/")[0] for spelled in found
+              if spelled.remedy not in SET_ASIDE}
+    row = (f"a case variant of the path of a `members:` row under "
+           f"{MEMBERS_DIR}/, the same path as that row's on a "
+           "case-insensitive disk")
+    if firsts == {MEMBERS_DIR}:
+        return f"the family root holds {row}"
+    return (f"the family root holds a path at or under another spelling of "
+            f"{MEMBERS_DIR}/, which a case-insensitive disk takes for "
+            f"{MEMBERS_DIR}/ itself"
+            + (f", and {row}" if MEMBERS_DIR in firsts else ""))
+
+
+def _gitmodules_part(gitmodules: str) -> list[str]:
+    """`_spellings_refusal`'s first part, for the work tree's `.gitmodules`
+    as `_gitmodules_beside` found it (`gitmodules`), or empty: a change
+    nobody has staged, staged (#685); a copy the work tree lacks, put back
+    from the index (#685); a deletion staged while HEAD holds one, put back
+    from HEAD, as `remove`'s `gitmodules-missing` puts it back (#840).
+    A list, empty or of one, as each part helper here returns."""
+    said = {
+        GITMODULES_MODIFIED: (
+            f"stage the change to {GITMODULES} that nobody has staged, or set "
+            "it aside, since `git mv` and `git rm` of a gitlink refuse to run "
+            f"beside one (`git add -- {GITMODULES}`)"),
+        GITMODULES_MISSING: (
+            f"put back the copy of {GITMODULES} the index holds, which the "
+            "work tree lacks, since git edits each member's section there "
+            f"(`git checkout -- {GITMODULES}`)"),
+        GITMODULES_DELETED: (
+            f"put back HEAD's copy of {GITMODULES}, in the index and the work "
+            "tree, since its deletion is staged and the work tree lacks it: "
+            "git edits each member's section there, and any commit would "
+            "take the deletion, and every member's section with it, out of "
+            f"HEAD (`git checkout HEAD -- {GITMODULES}`)"),
+    }.get(gitmodules)
+    return [said] if said else []
+
+
+def _link_part(by: dict[str, list[str]]) -> list[str]:
+    """`_spellings_refusal`'s part that moves a symbolic link the index
+    holds entries under out of the way first (`LINK_OUT`, #840), or empty;
+    `by` is its targets by remedy. In the words `member-path-unaddable` has
+    for `members` itself: a plain directory of the holder's own."""
+    if not by[LINK_OUT]:
+        return []
+    return ["move each symbolic link that the index holds entries under out "
+            f"of the way first ({_each(MOVE, by[LINK_OUT])}), which moves the "
+            f"link and not what it names: every member is mounted under "
+            f"{MEMBERS_DIR}/, which must be a plain directory of the holder's "
+            "own, and git goes through the link, where `git rm --cached` of a "
+            "gitlink under it fails (`not a git repository`), since a "
+            "checkout where it points names its store by a path relative to "
+            "it"]
+
+
+def _checkout_first_part(by: dict[str, list[str]]) -> list[str]:
+    """`_spellings_refusal`'s part that names each checkout inside a
+    directory a `git mv` or `mv` below moves, to be deleted by hand first
+    (`CHECKOUT_FIRST`, #840), or empty; `by` is its targets by remedy."""
+    if not by[CHECKOUT_FIRST]:
+        return []
+    named = " and ".join(f"`{target}`" for target in by[CHECKOUT_FIRST])
+    status = " or ".join(f"`git -C {shell_quoted(target, 'posix')} status`"
+                         for target in by[CHECKOUT_FIRST])
+    return ["first delete by hand each checkout git does not track inside a "
+            f"directory moved below, {named}, once nothing only it holds is "
+            "needed: git mv and mv of a directory move everything in it, "
+            "and would leave the checkout's .git file, which names its store "
+            "by a path relative to it, pointing nowhere, while its commits are "
+            "kept in that store, so only what is not committed is in it alone "
+            f"({status} shows it)"]
+
+
+def _point_back_part(found: list[Spelled], by: dict[str, list[str]]
+                     ) -> list[str]:
+    """`_spellings_refusal`'s part that points back each section found
+    `IN_SECTION` (`POINT_BACK`, #840), or empty; `by` is its targets by
+    remedy. The commit where HEAD's section gives another path, or a
+    pending change committed first leaves HEAD's that way."""
+    pointed = sorted({(name, spelled.target) for spelled in found
+                      if spelled.remedy == POINT_BACK
+                      for name in spelled.sections})
+    if not pointed:
+        return []
+    committed = bool(by[COMMIT]) or any(
+        spelled.committed for spelled in found if spelled.remedy == POINT_BACK)
+    return [f"point each section of {GITMODULES} that gives a member another "
+            "spelling of its row's path back at that path, where the index "
+            "records the member's gitlink there already, since add would "
+            f"commit that {GITMODULES} beside the new member and a recursive "
+            "clone finds no section for the member's path "
+            f"({_section_lines(pointed)}, then `git add -- {GITMODULES}`)"
+            + (", and commit that" if committed else "")]
+
+
+def _section_lines(pointed: list[tuple[str, str]]) -> str:
+    """The `git config -f .gitmodules submodule.<name>.path <row path>`
+    line for each `(name, row path)` in `pointed`, as the gate prints it
+    (`member-gitmodules-absent`), each quoted for a POSIX shell (#761)."""
+    return " and ".join(
+        f"`git config -f {GITMODULES} "
+        f"{shell_quoted(f'submodule.{name}.path', 'posix')} "
+        f"{shell_quoted(row, 'posix')}`" for name, row in pointed)
+
+
+def _update_sentence(rows: list[str]) -> str:
+    """The update that checks each member out at its row's path in `rows`
+    where nothing is checked out there, as in a fresh clone (#761), last."""
+    return (f"then, where nothing is checked out at {' or '.join(rows)}, as "
+            "in a fresh clone, `git submodule update --init --recursive` "
+            "checks the member out there")
 
 
 def _set_aside_part(found: list[Spelled], by: dict[str, list[str]]) -> str:
@@ -4524,6 +4873,16 @@ def _set_aside_part(found: list[Spelled], by: dict[str, list[str]]) -> str:
                    f"touches no file (`{UNSTAGE}{' --sparse' if out else ''} "
                    f"-- {quoted}`" + (f", {SPARSE_RM_GIT}" if out else "")
                    + ")")
+    # Unmerged (#840): every stage out of the index, then the file moved.
+    unmerged = sorted({*by[ASIDE_UNMERGED], *by[ASIDE_UNMERGED_MV]})
+    if unmerged:
+        quoted = " ".join(shell_quoted(target, "posix") for target in unmerged)
+        how.append("take each that is unmerged out of the index, every stage, "
+                   "which touches no file, since `git mv` refuses a conflicted "
+                   f"entry (`{UNSTAGE} -- {quoted}`)"
+                   + (", then move what of it is on disk out of the way ("
+                      f"{_each(MOVE, by[ASIDE_UNMERGED_MV])})"
+                      if by[ASIDE_UNMERGED_MV] else ""))
     named = ", ".join(f"`{spelled.name}` ({spelled.kind})"
                       for spelled in aside)
     return ("set aside first what the index holds in the way of the move of a "
@@ -4541,12 +4900,16 @@ def _move_back_parts(found: list[Spelled], by: dict[str, list[str]]
     ones; `by` is its targets by remedy. Per row, every variant found, the
     index's before HEAD's, the first of which names the commit; the move is
     committed where it, a pending change or what is set aside leaves a
-    change to commit."""
+    change to commit. Each row a section is pointed back to (`POINT_BACK`,
+    #840) is checked out by the same closing update."""
     moved = {row: [spelled for spelled in found
                    if spelled.remedy == RESTORE and spelled.target == row]
              for row in by[RESTORE]}
     if not moved:
-        return "", []
+        # A section pointed back with no move back closes on the update
+        # alone, for a fresh clone (#840).
+        return "", ([_update_sentence(by[POINT_BACK])] if by[POINT_BACK]
+                    else [])
     variants = sorted(spelled.name for held in moved.values()
                       for spelled in held)
     committed = bool(by[COMMIT]) or any(
@@ -4554,8 +4917,11 @@ def _move_back_parts(found: list[Spelled], by: dict[str, list[str]]
         if spelled.remedy == RESTORE or spelled.remedy in SET_ASIDE)
     rows = {spelled.name: row for row, held in moved.items()
             for spelled in held}
+    # A section pointed back beside the move (#840) is checked out by the
+    # same update.
     return (_move_back_line(moved, variants, committed),
-            _closing_sentences(variants, rows, list(moved)))
+            _closing_sentences(variants, rows,
+                               sorted({*moved, *by[POINT_BACK]})))
 
 
 def _move_back_line(moved: dict[str, list[Spelled]], variants: list[str],
@@ -4590,10 +4956,7 @@ def _move_back_line(moved: dict[str, list[Spelled]], variants: list[str],
     # Each section a `git mv` of a mount left naming the variant (#761).
     pointed = sorted({(name, row) for row, held in moved.items()
                       for spelled in held for name in spelled.sections})
-    sections = " and ".join(
-        f"`git config -f {GITMODULES} "
-        f"{shell_quoted(f'submodule.{name}.path', 'posix')} "
-        f"{shell_quoted(row, 'posix')}`" for name, row in pointed)
+    sections = _section_lines(pointed)
     moves = []
     if pairs:
         moves.append("move each member's gitlink held only under another "
@@ -4668,9 +5031,7 @@ def _closing_sentences(variants: list[str], rows: dict[str, str],
         f"commits there and nowhere else, and {unpushed} lists the ones not "
         "pushed: move it out of the holder whole, by hand, rather than delete "
         "it",
-        f"then, where nothing is checked out at {' or '.join(moved)}, as in a "
-        "fresh clone, `git submodule update --init --recursive` checks the "
-        "member out there"]
+        _update_sentence(moved)]
 
 
 def _submodule_paths(
@@ -4839,10 +5200,36 @@ def _members_is_a_file(root: Path, path: str) -> Refusal:
     that commit (`A .gitmodules`, `M family.yaml`, `D members`, `A
     members/<Project>`) and leaves the new name staged alone (`A
     members-file`), which is half a move in the holder's history (#612's
-    review, N3). One git does not track is moved with `mv`."""
-    tracked = any(name == MEMBERS_DIR
-                  for name, _ in _index_entries(root, MEMBERS_DIR))
-    move = ("git mv" if tracked else "mv")
+    review, N3). One git does not track is moved with `mv`.
+
+    ONE THE INDEX HOLDS UNMERGED (#840, rv828's SHOULD 3), which `git mv`
+    refuses (`fatal: conflicted, source=members`, exit 128, measured on git
+    2.43), is taken out of the index, every stage, with `git rm --cached`,
+    which touches no file, and then moved with `mv`; the removal is
+    committed on its own first where HEAD holds the file, as
+    `_members_file_left_in_head` would ask next."""
+    records = _index_records(root).get(MEMBERS_DIR.encode(), [])
+    tracked = bool(records)
+    unmerged = any(record.split()[2] != b"0" for record in records)
+    if unmerged:
+        try:
+            in_head = any(name == MEMBERS_DIR and kind == "a file"
+                          for name, kind, _ in _tree_entries(root, "HEAD"))
+        except Refusal:
+            in_head = False
+        move = (f"take it out of the index, every stage, which touches no "
+                f"file, since `git mv` refuses a conflicted entry (`git rm "
+                f"--cached -- {MEMBERS_DIR}`), then move it aside, `mv -- "
+                f"{MEMBERS_DIR} <new name>`"
+                + (", and commit the removal on its own first, since the "
+                   f"add's own commit names {GITMODULES}, {path} and "
+                   f"{MANIFEST} alone" if in_head else ""))
+    else:
+        move = (f"move the file aside, `{'git mv' if tracked else 'mv'} -- "
+                f"{MEMBERS_DIR} <new name>`"
+                + (", and commit the move on its own first, since the add's "
+                   f"own commit names {GITMODULES}, {path} and {MANIFEST} "
+                   "alone" if tracked else ""))
     return Refusal(
         "member-path-unaddable",
         f"git will not add the mount path {path}: `{MEMBERS_DIR}` is "
@@ -4852,12 +5239,47 @@ def _members_is_a_file(root: Path, path: str) -> Refusal:
         "after the member was read. No git command that writes was run and "
         "nothing was written.",
         f"Remediation: every member is mounted under {MEMBERS_DIR}/, which "
-        "must be a plain directory of the holder's own. Move the file "
-        f"aside, `{move} -- {MEMBERS_DIR} <new name>`"
-        + (", and commit the move on its own first, since the add's own "
-           f"commit names {GITMODULES}, {path} and {MANIFEST} alone"
-           if tracked else "")
-        + ", and run the same command again.")
+        f"must be a plain directory of the holder's own. {move[0].upper()}"
+        f"{move[1:]}, and run the same command again.")
+
+
+def _gitmodules_first(root: Path, spelled: list[Spelled]) -> str:
+    """What `_spellings_refusal` says first of the work tree's `.gitmodules`
+    for what `_members_spellings` found (`spelled`), as `_gitmodules_beside`
+    tells it apart, or a refusal of its own that comes first.
+
+    WHERE A REMEDY RUNS `git mv` OR `git rm` OF A GITLINK (#685), OR POINTS A
+    SECTION BACK WITH `git config -f` (#761), a change to the file nobody
+    has staged is staged first, and a copy the work tree lacks put back from
+    the index. So is a copy a sparse checkout marks, as `gitmodules-sparse`,
+    where a section is pointed back: `git config -f` would write a new file
+    of that one line, which `git add` then refuses.
+
+    WHEREVER ANYTHING IS FOUND, since every commit the remedy prints meets
+    them (#840): an unmerged copy is `gitmodules-unstaged`'s to name, with
+    its own restore, first, git cannot rewrite it, nor read conflict
+    markers, and a `git add` of it stages them, and one the work tree lacks
+    too is `gitmodules-missing`'s, as `remove` names it: typed as printed,
+    the rename back's commit failed (`Committing is not possible because
+    you have unmerged files`, measured on git 2.43). A deletion staged while
+    HEAD holds one is put back from HEAD first, `GITMODULES_DELETED`: typed
+    as printed, the rename back's commit took it, and every member's
+    section, out of HEAD, and the gate found `member-gitmodules-absent` for
+    each member. With a copy in the work tree that git does not track, which
+    copy to keep is the person's, so `gitmodules-unstaged` names it first:
+    the move back's commit took the deletion as well."""
+    beside = _gitmodules_beside(root)
+    pointed = any(spelled_one.sections for spelled_one in spelled)
+    if beside in (GITMODULES_UNMERGED, GITMODULES_UNTRACKED) or pointed and any(
+            tag.upper() == "S" for tag, _, _ in _gitmodules_in_index(root)):
+        _checked_gitmodules_as_staged(root, "add", spelled=True)
+        return ""
+    if beside in (GITMODULES_MODIFIED, GITMODULES_MISSING) and not (
+            pointed or any(spelled_one.where == IN_INDEX
+                           and spelled_one.kind == INDEX_ENTRY_KINDS[0o160000]
+                           for spelled_one in spelled)):
+        return ""
+    return beside
 
 
 def _rows_paths(rows: list[dict]) -> frozenset[str]:
@@ -5029,25 +5451,8 @@ def _checked_mount_path(root: Path, project: str, path: str,
             + "re-run.")
     spelled = _members_spellings(root, project, on_disk, rows)
     if spelled:
-        # The work tree's `.gitmodules`, where a remedy runs `git mv` or `git
-        # rm` of a gitlink (#685), or points a section back with `git config
-        # -f` (#761). An unmerged copy is `gitmodules-unstaged`'s to name,
-        # with its own restore, first: git cannot rewrite it, nor read
-        # conflict markers, and a `git add` of it stages them. So is one a
-        # sparse checkout marks, as `gitmodules-sparse`, where a section is
-        # pointed back: `git config -f` would write a new file of that one
-        # line, which `git add` then refuses.
-        pointed = any(spelled_one.sections for spelled_one in spelled)
-        beside = _gitmodules_beside(root) if pointed or any(
-            spelled_one.where == IN_INDEX
-            and spelled_one.kind == INDEX_ENTRY_KINDS[0o160000]
-            for spelled_one in spelled) else ""
-        if beside == GITMODULES_UNMERGED or pointed and any(
-                tag.upper() == "S" for tag, _, _
-                in _gitmodules_in_index(root)):
-            _checked_gitmodules_as_staged(root, "add")
-            beside = ""
-        raise _spellings_refusal(path, spelled, beside)
+        raise _spellings_refusal(path, spelled,
+                                 _gitmodules_first(root, spelled))
     # A DIRECTORY NO LISTING COULD READ hides nothing: `lexists` asks the
     # path itself, as it always did, after every listing has answered.
     if os.path.lexists(root / path):
@@ -7743,7 +8148,23 @@ def _stages_as(root: Path, blob: str) -> bool:
     return hashed.decode("ascii").strip() == blob
 
 
-def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
+#: What `gitmodules-missing` says of each verb (#407), `add`'s before a
+#: spelling remedy alone (#840).
+MISSING_SAID = {
+    "add": (f"The remedy for what `add` found under another spelling of "
+            f"{MEMBERS_DIR}/ edits each member's section in the work tree's "
+            f"{GITMODULES}, and its commit fails while an entry is unmerged "
+            "(`Committing is not possible because you have unmerged files`)"),
+    "remove": (f"`git rm` edits only a {GITMODULES} the work tree has, and "
+               f"`remove` commits {GITMODULES} as the work tree has it: "
+               f"committed as it stands, {GITMODULES} would leave HEAD, and "
+               "every other member's section with it, so that a recursive "
+               "clone of the holder leaves each of them empty"),
+}
+
+
+def _checked_gitmodules_as_staged(root: Path, verb: str,
+                                  spelled: bool = False) -> None:
     """`gitmodules-missing`, `gitmodules-unstaged` and `gitmodules-sparse`
     (#407): `verb` refuses, before any git command that writes and under
     `--dry-run` alike, a work tree's `.gitmodules` that is not the copy the
@@ -7800,7 +8221,12 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
     a `.gitmodules` the work tree lacks while the index or HEAD holds one,
     before it writes anything, and `add --dry-run` names that refusal in a
     note (`_add_dry_run`). A sparse checkout's is refused here first, where
-    the restore that note prints would not work.
+    the restore that note prints would not work. BUT NOT BEFORE A SPELLING
+    REMEDY (`spelled`, #840): `_gitmodules_first` asks this of an unmerged
+    copy before `_spellings_refusal`, whose printed commit git refuses while
+    one is unmerged, and that copy missing from the work tree too is
+    `gitmodules-missing`'s, with the restore git takes there, as for
+    `remove`.
     """
     records = _gitmodules_in_index(root)
     stages = {stage for _, _, stage in records}
@@ -7838,7 +8264,7 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
     staged = 0 in stages
     unmerged = bool(stages - {0})
     if not on_disk:
-        if verb == "add":
+        if verb == "add" and not spelled:
             return
         if unmerged:
             held = ("the index holds one unmerged"
@@ -7873,13 +8299,9 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
                         f"tree, `git checkout HEAD -- {GITMODULES}`")
         raise Refusal(
             "gitmodules-missing",
-            f"{GITMODULES} is not in the work tree, though {held}. `git rm` "
-            f"edits only a {GITMODULES} the work tree has, and `remove` "
-            f"commits {GITMODULES} as the work tree has it: committed as it "
-            f"stands, {GITMODULES} would leave HEAD, and every other "
-            "member's section with it, so that a recursive clone of the "
-            "holder leaves each of them empty. No git command that writes "
-            "was run and nothing was written.",
+            f"{GITMODULES} is not in the work tree, though {held}. "
+            f"{MISSING_SAID[verb]}. No git command that writes was run and "
+            "nothing was written.",
             f"Remediation: {put_back}, and run the same command again.")
     keep_or_drop = (
         "which change to keep is a person's to say. To commit the work "

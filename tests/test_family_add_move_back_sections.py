@@ -222,10 +222,13 @@ def test_a_sparse_gitmodules_is_named_first_where_a_section_is_pointed_back(
 # --- 2. (g) and 3. (h): what is in the way, set aside first ------------------
 
 def set_aside(entries: list[str], kinds: dict, renamed=(), out=(),
-              sparse=(), out_sparse: bool = False) -> str:
+              sparse=(), out_sparse: bool = False, unmerged=(),
+              moved=()) -> str:
     """The part of the remedy that sets `entries` aside: `renamed` with `git
     mv`, `sparse` with `git mv --sparse`, `out` taken out of the index, with
-    `--sparse` where `out_sparse` (Codex's P2 on #828)."""
+    `--sparse` where `out_sparse` (Codex's P2 on #828), and `unmerged` taken
+    out of the index, every stage, those of them in `moved` then moved with
+    `mv` (#840)."""
     how = []
     if renamed:
         how.append("rename each that is on disk as the index holds it with "
@@ -241,6 +244,14 @@ def set_aside(entries: list[str], kinds: dict, renamed=(), out=(),
                    "touches no file (`git rm -r --cached"
                    f"{' --sparse' if out_sparse else ''} -- {' '.join(out)}`"
                    + (f", {NEEDS_GIT_2_34}" if out_sparse else "") + ")")
+    if unmerged:
+        how.append("take each that is unmerged out of the index, every stage, "
+                   "which touches no file, since `git mv` refuses a conflicted "
+                   f"entry (`git rm -r --cached -- {' '.join(unmerged)}`)"
+                   + (", then move what of it is on disk out of the way ("
+                      + " and ".join(f"`mv -- {name} <new name>`"
+                                     for name in moved) + ")"
+                      if moved else ""))
     named = ", ".join(f"`{name}` ({kinds.get(name, 'a file')})"
                       for name in entries)
     return ("set aside first what the index holds in the way of the move of "
