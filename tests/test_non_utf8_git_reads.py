@@ -43,6 +43,7 @@ checkout.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import subprocess
@@ -93,11 +94,19 @@ def make_file(path: Path, data: bytes = b"on: [push]\n") -> None:
     system that carries the byte and a filesystem that stores it (Linux does;
     APFS refuses it, and on Windows `os.fsencode` makes no byte of it, which
     is asked FIRST: NTFS most likely takes the surrogate, and the file would
-    then not be the one the test means). A name that is UTF-8 is written."""
+    then not be the one the test means). A name that is UTF-8 is written.
+
+    Two answers are the system's: a file name encoding that cannot spell
+    the name (`UnicodeError`: ASCII under `LC_ALL=C`) and a disk that
+    refuses the name (EILSEQ: macOS). Every other `OSError`, a full disk
+    (ENOSPC), a read-only one (EROFS) or a folder nobody can write in
+    (EACCES), is the test's own and is raised (#834)."""
     skip_where_fsencode_gives_a_surrogate_no_byte(path.name)
     try:
         path.write_bytes(data)
     except (OSError, UnicodeError) as exc:
+        if isinstance(exc, OSError) and exc.errno != errno.EILSEQ:
+            raise
         pytest.skip("this filesystem cannot hold a file name that is not "
                     f"UTF-8: {exc}")
 

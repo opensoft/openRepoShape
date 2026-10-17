@@ -279,17 +279,19 @@ def test_make_files_utf8_name_test_skips_where_the_encoding_is_ascii(
 def test_a_write_the_disk_refuses_still_fails_the_make_file_test(
         tmp_path, monkeypatch, code):
     """The name is plain UTF-8, so a refused write is the disk's and not the
-    encoding's: the test FAILS on its assert, as it does without this change.
-    A skip on `make_file`'s own "filesystem" reason would end it SKIPPED, and
-    no run fails on that."""
+    encoding's: `make_file` raises it (#834), and the test FAILS on it. A
+    skip on `make_file`'s own "filesystem" reason would end it SKIPPED, and
+    no run fails on that; before #834 it did skip, and the test failed on
+    its assert that the call is not a skip."""
     non_utf8_git_reads.skip_where_the_environment_cannot_carry(
         non_utf8_git_reads.UTF8)
 
     def write_bytes(self, data):
         raise OSError(code, os.strerror(code), str(self))
     monkeypatch.setattr(Path, "write_bytes", write_bytes)
-    with pytest.raises(AssertionError):
+    with pytest.raises(OSError) as raised:
         fail_where_the_caller_ends(MAKE_FILE_TEST, tmp_path, monkeypatch)
+    assert raised.value.errno == code
 
 
 @pytest.mark.parametrize("value", ["Jos\u00e9", "Mehr\u200cdad", "\u202eevil"],

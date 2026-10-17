@@ -306,12 +306,12 @@ def test_execute_refuses_a_local_source_directory_holding_a_bidi_control(
     """A source under a directory whose name begins with U+202E RIGHT-TO-LEFT
     OVERRIDE: on main `execute` adopted it, and the shape's README showed
     the rest of its `git clone` line reversed. Now it is refused as the
-    byte is, and moving the source adopts."""
+    byte is, and moving the source adopts. The directory is made with no
+    guard: U+202E is valid text, which a POSIX disk, NTFS and APFS hold
+    (read, not run on the last two), so an error of the disk is the
+    test's own and is raised, not skipped (#834)."""
     parent = tmp_path / "\u202ecaf"
-    try:
-        parent.mkdir()
-    except OSError as exc:
-        pytest.skip(f"no directory here is named '\\u202ecaf': {exc!r}")
+    parent.mkdir()
     refused_then_moved(tmp_path, parent, b"a bidirectional control")
 
 

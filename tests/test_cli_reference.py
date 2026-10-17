@@ -49,7 +49,8 @@ import sys
 
 import pytest
 
-from conftest import REPO, WINDOWS_SKIP, git
+from conftest import (REPO, WINDOWS_SKIP, git,
+                      skip_where_a_name_cannot_be_not_utf_8)
 
 REFERENCE = REPO / "docs" / "cli.md"
 GENERATOR = REPO / "scripts" / "render-cli-reference.py"
@@ -642,12 +643,9 @@ def test_a_checkout_whose_path_ends_in_a_space_is_a_checkout(tmp_path):
 
 @WINDOWS_SKIP
 def test_a_checkout_whose_path_is_not_utf8_is_a_checkout(tmp_path):
+    skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     parent = tmp_path / os.fsdecode(b"bad\xffname")
-    try:
-        parent.mkdir()
-    except OSError as error:
-        pytest.skip(f"this file system cannot hold a name that is not UTF-8: "
-                    f"{error}")
+    parent.mkdir()
     tree = a_checkout_at(parent / "openRepoShape")
     with pytest.raises(UnicodeDecodeError):
         os.fsencode(tree).decode("utf-8")
