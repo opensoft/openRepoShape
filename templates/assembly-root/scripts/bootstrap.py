@@ -41,7 +41,12 @@ WHAT IT DOES, in order:
       file is. A branch no command can be given (a NUL,
       or a lone surrogate this system cannot encode) is never tried: the leg
       is left as it is and the line says why (#455); step (b)'s manifest
-      validator names the key when the manifest holds it. Advancing a pin
+      validator names the key when the manifest holds it. Nor is a branch
+      holding a character this system's encoding cannot write: that name
+      is good, so its line says to run bootstrap under a UTF-8 locale
+      (#710). Every name git prints back is read as bytes and decoded as
+      the system decodes a name it is given, so it reaches git again as
+      the bytes it was (#710). Advancing a pin
       remains an explicit commit in this repository — see `README.md`, "The
       lockstep invariant". This is why `.gitmodules` carries no `branch=`:
       that would buy the same ergonomics by weakening the pin, and then "what
@@ -131,6 +136,10 @@ GIT_NOT_RUNNABLE = (
     "Remediation: put git on PATH and run this again. Step (a) reads each "
     "leg's pin and moves the leg through git, and the validators read the "
     "pins through git, so without it nothing here can be placed or checked.")
+#: What `_argument_fault` calls a character this system's encoding cannot
+#: write (#710): the one fault of a name that is good, so `_say_not_tried`
+#: gives it a line of its own.
+UNWRITABLE = "a character this system's encoding cannot write"
 REGISTER_RELPATH = Path("governance") / "review-authority" / "register.yaml"
 VALIDATORS = (
     ("naming", ["scripts/validate-repository-naming.py", "--project",
@@ -151,8 +160,31 @@ def _run(root: Path, args: list[str]) -> int:
 
 
 def _try_git(args: list[str], cwd: Path) -> str | None:
+    """What `git <args>` printed in `cwd`, stripped, or `None` where git
+    exited non-zero.
+
+    STEP (a)'S ONE DECODE RULE (#710). What git prints is read as BYTES and
+    decoded as this system decodes a name it is given (`os.fsdecode`), as
+    `_head_of` and `_in_progress` read theirs: the inverse of the
+    `os.fsencode` that `subprocess` applies to each argument, so a name git
+    prints reaches git again as the same bytes, under any POSIX locale; on
+    Windows both are UTF-8, which is what git for Windows writes a ref name
+    in. Through `git_out`'s strict UTF-8, `_upstream_holding` ended `make
+    bootstrap` in a `UnicodeDecodeError` traceback over an upstream named
+    with a byte that is not UTF-8 (`refs/remotes/origin/a<ff>b`), and, under
+    an `ascii` encoding (`LC_ALL=C PYTHONUTF8=0`), in a `UnicodeEncodeError`
+    over one named in UTF-8, since the text it read could not be handed
+    back to `rev-parse`. `git_out` itself keeps its strict decode: the
+    readers of `origin`'s URL in `shape-doctor.py` and `shape_advisory.py`
+    take its `UnicodeDecodeError` to mean the URL names nothing (#385).
+
+    The BYTES are stripped, of the ASCII whitespace git ends a line with,
+    and not the text: `str.strip` also takes away a U+00A0 or a U+3000 that
+    ends a name, so `refs/remotes/origin/a<U+00A0>` was read as `.../a`, and
+    a branch with no commit of its own past the pin was not moved back.
+    """
     try:
-        return git_out(args, cwd=cwd)
+        return os.fsdecode(git_out(args, cwd=cwd, binary=True).strip())
     except Refusal:
         return None
 
@@ -199,8 +231,18 @@ def _argument_fault(branch: str) -> str | None:
     exception `_try_git` would then have to swallow: a `UnicodeDecodeError`,
     which `git_out` raises over output that is not UTF-8, is a `ValueError`
     too, and catching that there would read a leg whose HEAD is on such a
-    branch as detached. Only a NUL and a lone surrogate are looked for; a
-    character the system's encoding merely lacks is not this fix's.
+    branch as detached.
+
+    A CHARACTER THIS SYSTEM'S ENCODING CANNOT WRITE IS A FAULT TOO (#710,
+    Brett Heap's ruling (a) on L4-124), named `UNWRITABLE`. Under
+    `LC_ALL=C PYTHONUTF8=0` the encoding is `ascii`, and
+    `tracking_branch: "feature/日本"`, which `validate-manifest.py` passes
+    and git takes under a UTF-8 locale, ended step (a) in a
+    `UnicodeEncodeError` traceback from `subprocess.py`. The name is good,
+    so it is asked only once the name holds neither a NUL nor a lone
+    surrogate: a line saying the name is good is then true. The leg is left
+    as it is, and `_say_not_tried` says how to run bootstrap so that the
+    system can write the name.
 
     A surrogate that is ONE BYTE of a name is not refused. POSIX spells a name
     that is not UTF-8 with U+DC80 to U+DCFF and `os.fsencode` writes each back
@@ -216,6 +258,9 @@ def _argument_fault(branch: str) -> str | None:
             return "U+0000, a NUL"
         if "\ud800" <= char <= "\udfff" and _fsencoded_length(char) != 1:
             return f"U+{ord(char):04X}, a lone surrogate"
+    for char in branch:
+        if _fsencoded_length(char) == 0:
+            return f"U+{ord(char):04X}, {UNWRITABLE}"
     return None
 
 
@@ -230,10 +275,22 @@ def _fsencoded_length(char: str) -> int:
 def _say_not_tried(where: str, named: str, fault: str) -> None:
     """A branch `_argument_fault` found: no command was run with it. The leg
     stays where it is, and the line says which of the three places the
-    person's value can have come from holds it (#455)."""
+    person's value can have come from holds it (#455).
+
+    A character this system's encoding cannot write (`UNWRITABLE`, #710)
+    has its own line, as Brett Heap ruled on L4-124: the name is good, so
+    "give that one a name git can create" would be wrong. It says so, names
+    the encoding (`sys.getfilesystemencoding()`, the one `os.fsencode`
+    writes with) and gives the two ways to run bootstrap under UTF-8, which
+    writes every character: a UTF-8 locale, or Python's UTF-8 mode."""
     print(f"  {where}: could not create branch {named}: it holds {fault}, "
           "which no command can be given as an argument; the leg is left as "
           "it is")
+    if fault.endswith(UNWRITABLE):
+        print("          the name is good, and this system's encoding, "
+              f"{sys.getfilesystemencoding()}, cannot write it: run bootstrap "
+              "again under `LC_ALL=C.UTF-8`, or with `PYTHONUTF8=1`.")
+        return
     print("          the branch is the leg's `branch:`, else `--branch`, else "
           "`tracking_branch`. Give that one a name git can create and run "
           "bootstrap again.")
@@ -301,7 +358,10 @@ def _upstream_holding(sub: Path, branch: str, local: str) -> str | None:
     remote-tracking ref is not there (never fetched, or pruned) and one
     whose tip is not the upstream's. The two are compared by object id.
     `for-each-ref` names the upstream whether or not its ref exists, and
-    takes the branch after `refs/heads/`, where git reads no option.
+    takes the branch after `refs/heads/`, where git reads no option. Its
+    name is read by `_try_git`'s rule, so an upstream named with a byte
+    that is not UTF-8, or in UTF-8 under an `ascii` encoding, is the same
+    ref when `rev-parse` is handed it, and no longer a traceback (#710).
     """
     upstream = _try_git(["for-each-ref", "--format=%(upstream)",
                          f"refs/heads/{branch}"], sub)
