@@ -10094,22 +10094,26 @@ def test_the_interpreter_named_is_the_asked_for_platforms(platform, expected):
 CURLY_APOSTROPHE = "O\u2019Neill"
 
 
-def test_a_curly_apostrophe_is_normalized_before_it_is_quoted():
-    """`quote_arg` must ascii-normalize FIRST, or `Row.__init__` breaks it.
+@pytest.mark.parametrize(("platform", "spelled"), [
+    ("posix", r"$'O\342\200\231Neill'"),
+    ("nt", "('O' + [char]0x2019 + 'Neill')"),
+])
+def test_a_curly_apostrophe_is_escaped_where_the_row_cannot_reach_it(
+        platform, spelled):
+    """`quote_arg` must leave `Row.__init__` nothing to change in a value.
 
     `Row.__init__` runs `ascii_text` again, after quoting, over the whole
     assembled command -- so a curly apostrophe that reached this function
     unconverted came back out of THAT pass as a bare, undoubled one, on the
     far side of the quoting it sat inside. `'O'Neill'` is an unterminated
     quotation to `sh`, and PowerShell's own verbatim string is exactly as
-    broken by an apostrophe that never got doubled. Normalizing here first
-    means the value quoted is already plain ASCII, so that later pass has
-    nothing left to do.
+    broken by an apostrophe that never got doubled (Copilot, PR #102). It was
+    flattened to `'` here first, which named another path; it is ESCAPED
+    now, in ASCII the later pass leaves alone, and stands for this one
+    (#785, `tests/test_doctor_non_ascii_paths.py` runs it).
     """
     module = doctor_module(REPO)
-    posix = module.quote_arg(CURLY_APOSTROPHE, "posix")
-    assert shlex.split(posix) == ["O'Neill"], posix
-    assert module.quote_arg(CURLY_APOSTROPHE, "nt") == "'O''Neill'"
+    assert module.quote_arg(CURLY_APOSTROPHE, platform) == spelled
 
 
 def test_a_trailing_newline_is_quoted_not_waved_through():

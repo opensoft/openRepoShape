@@ -333,9 +333,14 @@ line. An unfinished merge outranks all three, for the reason drift outranks a
 red validator: the conflict it leaves is what turns the other rows red, and
 none of their fixes can be committed until it is finished.
 
-STANDARD LIBRARY ONLY, like everything else shipped here. Printed text is
-ASCII: a verdict a cp1252 console cannot render is a verdict nobody reads, and
-this tool is run on every platform the standard supports.
+STANDARD LIBRARY ONLY, like everything else shipped here. The report's own
+words are ASCII: a verdict a cp1252 console cannot render is a verdict nobody
+reads, and this tool is run on every platform the standard supports. A NAME
+is not the report's own words (#785): a path printed in a command is spelled
+so that the reader's shell turns it back into that path, as itself where the
+output can show it and escaped where it cannot (`quote_arg`), and a sentence
+shows it as itself where the output can and with `?` where it cannot
+(`ascii_text`).
 """
 
 from __future__ import annotations
@@ -420,7 +425,8 @@ try:
     #: reason, in place of a copy of `plan`'s regex (`origin_org`, #521).
     #: `spelled` is how `siblings.py` prints the values that row quotes (#673).
     from repo_shape import (  # noqa: E402
-        COMMIT_RE, NamingPolicy, PYTHON, Refusal, accepts_role, git_out,
+        COMMIT_RE, NamingPolicy, POWERSHELL_SINGLE_QUOTES, PYTHON,
+        Refusal, accepts_role, git_out,
         load_yaml, recorded_gitlink, redacted, remote_local_path,
         resolved_remote, same_repository, spelled, url_repository,
     )
@@ -662,20 +668,82 @@ EVERYWHERE = (
 )
 
 
-def ascii_text(text: str) -> str:
-    """`text` with the typography this repository is written in flattened.
+#: The typography this repository's prose is written in, and the ASCII
+#: `ascii_text` spells each one with. `quote_arg` never prints one of them as
+#: itself in a value (#785): `Row.__init__` passes every command and every
+#: `why` through `ascii_text`, which would make the value another path.
+FLATTENED = {"—": "--", "–": "-", "‘": "'", "’": "'", "“": '"', "”": '"',
+             "…": "...", "\N{NO-BREAK SPACE}": " "}
+
+
+def printed_encoding(encoding: str | None = None) -> str:
+    """`encoding`, or the one the report is printed in: `sys.stdout`'s, which
+    `pythonw` and a stream a caller replaced may not have (#785)."""
+    return encoding or getattr(sys.stdout, "encoding", None) or "utf-8"
+
+
+def prints_as_itself(char: str, encoding: str) -> bool:
+    """Whether a report written in `encoding` shows `char` as itself (#785):
+    a printable character that `ascii_text` does not flatten, and that the
+    encoding writes and reads back unchanged.
+
+    PRINTABLE, because a control, a line separator or a bidirectional mark
+    is not seen as itself on any terminal: it moves the line it is printed
+    on, and a reader cannot copy what they cannot see. And not U+FFFD, the
+    mark a lossy read leaves where a byte did not decode, which a row has
+    printed as `?` since #385: it stands for no character a path holds."""
+    if (char in FLATTENED or char == "\N{REPLACEMENT CHARACTER}"
+            or not char.isprintable()):
+        return False
+    try:
+        return char.encode(encoding).decode(encoding) == char
+    except (UnicodeError, LookupError):
+        return False
+
+
+def ascii_text(text: str, encoding: str | None = None) -> str:
+    """`text` with the typography this repository is written in flattened,
+    and each character the report cannot show as itself replaced by `?`.
 
     Validator output is quoted into rows, and this repository's prose is full
     of em dashes, curly quotes and ellipses. A Windows console in the machine's
-    ANSI code page raises on the first of them, in the middle of a report whose
+    ANSI code page raised on the first of them, in the middle of a report whose
     whole job is to be read -- so the few characters that actually occur are
-    spelled out and anything else is replaced rather than raised on.
+    spelled out in ASCII on every console.
+
+    ANY OTHER CHARACTER IS REPLACED ONLY WHERE IT CANNOT BE SHOWN (#785). It
+    was replaced on every console, so `é` was `?` under a UTF-8 locale, whose
+    terminal shows it, and so was every character of a path `quote_arg` had
+    quoted for a command: a keep line named `caf?`, which is not there. Now a
+    character is kept where `prints_as_itself` says `encoding` (the report's
+    own when None, `printed_encoding`) shows it, and is `?` elsewhere, as
+    every one was: an ASCII console still reads an ASCII report, and a UTF-8
+    one reads the name. A value `quote_arg` spelled holds no character this
+    changes, so this pass leaves it whole.
     """
-    for source, target in (("—", "--"), ("–", "-"), ("‘", "'"),
-                           ("’", "'"), ("“", '"'), ("”", '"'),
-                           ("…", "..."), (" ", " ")):
+    for source, target in FLATTENED.items():
         text = text.replace(source, target)
-    return text.encode("ascii", "replace").decode("ascii")
+    encoding = printed_encoding(encoding)
+    return "".join(char if char.isascii() or prints_as_itself(char, encoding)
+                   else "?" for char in text)
+
+
+def path_bytes(char: str) -> bytes:
+    """The bytes one character of a path stands for on a POSIX disk (#785).
+
+    A byte of a name that is not in the encoding it was read with is carried
+    by `surrogateescape` as U+DC80..U+DCFF, how `os.fsdecode` reads a path
+    and how this file reads one git prints, and stands for that byte. Any
+    other character is in the filesystem encoding, which is how Python names
+    a path on disk, or in UTF-8 where that encoding has no such character,
+    which is how git wrote a name it printed (`LC_ALL=C` with Python's
+    UTF-8 mode off makes the filesystem encoding ASCII)."""
+    if 0xDC80 <= ord(char) <= 0xDCFF:
+        return bytes([ord(char) - 0xDC00])
+    try:
+        return char.encode(sys.getfilesystemencoding())
+    except UnicodeEncodeError:
+        return char.encode("utf-8", "surrogatepass")
 
 
 #: A value `sh` needs no quoting for: letters, digits, and the punctuation a
@@ -703,7 +771,7 @@ UNQUOTED_NT = re.compile(r"^[A-Za-z0-9_./:%+=\\-]+$")
 
 
 def quote_arg(value, platform: str | None = None, *,
-              always: bool = False) -> str:
+              always: bool = False, encoding: str | None = None) -> str:
     # A RAW docstring, because the Windows examples below are Windows paths:
     # `C:\Users\...` is a `\U` escape to the interpreter, and a docstring that
     # had to spell a reader's path with doubled backslashes would be a
@@ -760,20 +828,38 @@ def quote_arg(value, platform: str | None = None, *,
     become an argument to `git`, where every command is a list run with
     `shell=False` and the threat is argument injection, not a shell.
 
-    AND IT NORMALIZES BEFORE IT QUOTES, NOT AFTER. `Row.__init__` runs
-    `ascii_text` again, over the WHOLE assembled `next_command`, once every
-    value in it already sits quoted -- so a curly apostrophe that reached
-    this function unconverted came out the far side of THAT pass as a bare,
-    undoubled one, breaking the very quoting it sat inside (Copilot, PR
-    #102): `'O'Neill'` is an unterminated quotation to `sh`, and an
-    un-doubled apostrophe is exactly as broken to PowerShell's own verbatim
-    string. Normalizing HERE first leaves that later pass nothing to touch:
-    `ascii_text` maps this repository's own typography to ASCII, so calling
-    it twice on an already-ASCII string is a no-op. What the reader then sees
-    is the ASCII FLATTENING of their path rather than its own bytes -- which
-    is this file's PURE ASCII rule, stated at the top and true of every other
-    string in the report, and a command that names a path plainly and is
-    refused by name beats one no shell will parse.
+    A VALUE THAT IS NOT ASCII IS SPELLED AS THE PATH IT IS (#785). It was
+    flattened to ASCII first (Copilot, PR #102), because `Row.__init__`
+    runs `ascii_text` again over the whole assembled command, and a curly
+    apostrophe that pass found came out of it bare, breaking the quoting it
+    sat in. But the flattening named another path: every character that is
+    not ASCII became `?`, so a keep line under `Projets/Équipe` named
+    `Projets/?quipe`, which is not there, and the pasted line failed. Now
+    each character of such a value is one of two things:
+
+    - ITSELF, inside the quoting above, where `prints_as_itself` says the
+      report shows it: printable, not one of the typography `ascii_text`
+      flattens, and written by `encoding` (the report's own when None,
+      `printed_encoding`) -- for `sh`, as the very bytes the path holds
+      (`path_bytes`), so that what a terminal shows is what it pastes back;
+    - ESCAPED otherwise, and then the whole value is spelled that way. For
+      `sh` that is `$'...'`, every byte of such a character a three-digit
+      octal escape (`$'caf\303\251'`, `$'caf\351'` for a name that is not
+      UTF-8), which bash, zsh, ksh and a POSIX.1-2024 `sh` turn back into
+      those bytes; dash 0.5.12 (Ubuntu's `/bin/sh`, whose login shell is
+      bash) reads the `$` as itself. For PowerShell, which has no escape
+      inside a verbatim string, it is an expression in parentheses,
+      `('C:\Users\' + [char]0x00C9 + 'quipe')`, which is one argument to a
+      native command and a value to assign alike (`powershell_expression`).
+      On Windows that is rare: Python writes a console as UTF-8, which shows
+      every printable character, and only a stdout redirected to a file or a
+      pipe is in the ANSI code page.
+
+    So `ascii_text`'s later pass finds nothing in a value to change, and a
+    row's `--json` carries the same command its table line does: a
+    character that is itself there is written by `json.dumps` as an escape
+    that decodes to it, and a JSON reader runs what the table shows. A
+    value made of ASCII is quoted exactly as before.
 
     AND THE ALPHABET CHECK MUST COVER THE VALUE WHOLE. `$` is content to
     match just before a trailing newline, so `.match` alone waved a value
@@ -806,10 +892,11 @@ def quote_arg(value, platform: str | None = None, *,
     answer. PowerShell's dialect is NOT changed: it expands no `=word`, so
     `UNQUOTED_NT` keeps its bare `=`, as in any other place in a word.
     """
-    # ASCII first, so the alphabet check and the quoting below it both see
-    # what `Row.__init__` will (Copilot, PR #102); see the docstring above.
-    text = ascii_text(str(value))
+    text = str(value)
     windows = (os.name if platform is None else platform) == "nt"
+    if not text.isascii():
+        # Never bare: neither alphabet holds a character that is not ASCII.
+        return quoted_beyond_ascii(text, windows, printed_encoding(encoding))
     # `.fullmatch`, not `.match`: a pattern ending in `$` still matches just
     # before a trailing newline, so `.match` alone would call "Atlas\n" bare
     # (Copilot, PR #102). And a leading `=` is never bare for `sh` (#532).
@@ -825,6 +912,65 @@ def quote_arg(value, platform: str | None = None, *,
     # report can see through, and both come back out of `shlex.split` as the
     # value that went in -- which is what `tests/test_shape_doctor.py` asserts.
     return "'" + text.replace("'", "'\\''") + "'"
+
+
+def quoted_beyond_ascii(text: str, windows: bool, encoding: str) -> str:
+    """`quote_arg` for a value holding a character that is not ASCII (#785):
+    quoted as any other value where every such character `prints_as_itself`
+    -- for `sh`, as the bytes the path holds -- and escaped whole where one
+    does not. See `quote_arg`'s docstring."""
+    def shown(char: str) -> bool:
+        if char.isascii():
+            return True
+        if not prints_as_itself(char, encoding):
+            return False
+        return windows or char.encode(encoding) == path_bytes(char)
+    if all(shown(char) for char in text):
+        if windows:
+            return powershell_verbatim(text)
+        return "'" + text.replace("'", "'\\''") + "'"
+    if windows:
+        return powershell_expression(text, shown)
+    return "$'" + "".join(
+        char if char.isascii() and char.isprintable() and char not in "\\'"
+        else "".join(f"\\{byte:03o}" for byte in path_bytes(char))
+        for char in text) + "'"
+
+
+def powershell_verbatim(text: str) -> str:
+    """`text` in PowerShell's verbatim string, each of the single quotes
+    PowerShell reads as one doubled, as `repo_shape.shell_quoted` doubles
+    them: the curly ones end the string too (#486)."""
+    return "'" + "".join(char * 2 if char in POWERSHELL_SINGLE_QUOTES
+                         else char for char in text) + "'"
+
+
+def powershell_expression(text: str, shown) -> str:
+    """`text` as a PowerShell expression, `('...' + [char]0x00C9 + '...')`,
+    where a character of it is not `shown` (#785).
+
+    Each such character is a `[char]` of each of its UTF-16 code units, and
+    the characters between them are verbatim strings, joined by `+`. The
+    FIRST operand is always a string -- `''` where the value starts with an
+    escaped character -- because `+` on two `[char]`s adds them as numbers,
+    and a string on the left makes every `+` after it a concatenation. A
+    printable ASCII character is always shown; a control is escaped too, as
+    it is in `sh`'s `$'...'`."""
+    parts, run = [], ""
+    for char in text:
+        if char.isprintable() and shown(char):
+            run += char
+            continue
+        if run or not parts:
+            parts.append(powershell_verbatim(run))
+            run = ""
+        units = char.encode("utf-16-le", "surrogatepass")
+        for at in range(0, len(units), 2):
+            unit = int.from_bytes(units[at:at + 2], "little")
+            parts.append(f"[char]0x{unit:04X}")
+    if run:
+        parts.append(powershell_verbatim(run))
+    return "(" + " + ".join(parts) + ")"
 
 
 # ---------------------------------------------------------------------------
@@ -853,9 +999,10 @@ class Row:
         self.label = label
         self.status = status
         self.reason = ascii_text(reason)
-        # `quote_arg` ascii-normalizes every value it quotes BEFORE it
-        # quotes it (Copilot, PR #102), so this pass has nothing left to do
-        # to a `next_command` already built from it -- it only does its
+        # `quote_arg` spells every value it quotes in characters this pass
+        # keeps -- each one itself only where `ascii_text` keeps it, and the
+        # value escaped otherwise (#785) -- so this pass has nothing to do
+        # to a value in a `next_command` or a `why`. It only does its
         # ordinary job, flattening this repository's own typography, on the
         # literal words a caller wrote around those values.
         self.next_command = ascii_text(next_command) if next_command else None
