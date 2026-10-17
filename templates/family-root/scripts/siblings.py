@@ -434,11 +434,21 @@ def said_of_url(text: str, url: str | None) -> str:
     nothing is, where the url prints as it is. `place` relays git's text
     twice, and both go through here: the clone's, with the member's url,
     and a failed fetch's, with the origin of a clone made from such a url.
+
+    A URL LONGER THAN GIT'S MESSAGE is quoted cut short, in neither form (a
+    message is formatted into 4096 bytes), so the forged line survived the
+    replacement: where the text holds neither, each of its lines is spelled
+    and every line after the first is indented, which no FINDING line is.
     """
     if not url or spelled(url) == url:
         return text
     quoted = "".join("?" if (char < " " or char == "\x7f")
                      and char not in "\t\n" else char for char in url)
+    if url not in text and quoted not in text:
+        # git cuts a message at 4096 bytes, so a long url is quoted in
+        # neither form: each line is spelled, and none after the first
+        # starts a line of this output.
+        return "\n    ".join(spelled(line) for line in text.split("\n"))
     for form in dict.fromkeys((url, quoted)):
         text = text.replace(form, spelled(url))
     return text

@@ -516,6 +516,20 @@ def test_a_url_holding_a_line_feed_forges_no_finding_line(family, tmp_path,
     assert not NEVER_RAW & set(result.stderr), result.stderr
 
 
+def test_a_url_longer_than_gits_message_forges_no_finding_line(family,
+                                                               tmp_path):
+    """git writes a `die` message into 4096 bytes, so a url longer than that
+    is quoted cut short, in neither form `said_of_url` looks for."""
+    url = (b'"/r/nowhere\\nFINDING ' + KEPT.encode() + b': forged/'
+           + b"/".join([b"a" * 200] * 30) + b'"')
+    result = siblings_over_url(family, tmp_path, url)
+    assert result.returncode == 1, result.stdout + result.stderr
+    findings = [line for line in result.stderr.split("\n")
+                if line.startswith("FINDING ")]
+    assert findings == [f"FINDING {BENT}: git clone exited 128:"], \
+        result.stderr
+
+
 @pytest.mark.parametrize("url, shown", FORGED_URLS.values(),
                          ids=list(FORGED_URLS))
 def test_the_clone_failure_names_a_line_feed_url_spelled(family, tmp_path,
