@@ -4,7 +4,7 @@ a printed `FINDING` or `REFUSED`, anything else non-zero is a crash, and a
 pass that printed `WARNING` or `  note ` lines is a `note` (#410, #448, with
 #447 and #460's pins-note line riding along).
 
-FOUR WAYS A ROW STILL SAID MORE, OR LESS, THAN THE CHILD DID.
+FIVE WAYS A ROW STILL SAID MORE, OR LESS, THAN THE CHILD DID.
 
 - #447: `crashed()` needed a `Traceback` line, so a validator killed by a
   signal (a negative exit), ended by `os._exit(1)` with nothing printed,
@@ -15,6 +15,10 @@ FOUR WAYS A ROW STILL SAID MORE, OR LESS, THAN THE CHILD DID.
   standard whose own naming script crashed made a compliant project
   `INVALID (naming)`, and a directory whose name is not UTF-8 got the
   script's `UnicodeEncodeError` quoted as a finding about the name.
+- #678: a checkout whose own `contracts/repository-naming.yaml` does not load
+  made the naming script refuse, exit 2, before it read the project, and a
+  `REFUSED` is a verdict to `crashed()`, so a compliant project read `INVALID
+  (naming)`, exit 1, "the naming policy is not satisfied (exit 2)".
 - #448: `validate-manifest.py`'s `WARNING naming-referent-chain` on exit 0
   appeared nowhere in the report, and a red manifest row quoted that WARNING
   as its reason when an earlier leg printed it before a later leg's FINDING.
@@ -36,6 +40,7 @@ logging stub first on `PATH`, ahead of the session guard, and is
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -56,11 +61,19 @@ from test_doctor_validator_rows import (  # noqa: F401
 )
 
 NAMING_SCRIPT = "scripts/validate-repository-naming.py"
+NAMING_POLICY = "contracts/repository-naming.yaml"
 #: What every crash row says, the validators' and the naming rows' alike.
 CRASHED = "crashed before reaching a verdict"
 #: The tail #410's ruling gives a crashed naming script's row in a root.
 NOT_THE_PROJECTS = ("that script is this checkout's, not the project's, so "
                     "nothing here is a statement about the project")
+#: The tails #678 gives a checkout's own policy that does not load, in a root
+#: and in a directory that is not one.
+NOT_THE_PROJECTS_FILE = ("that file is this checkout's, not the project's, so "
+                         "nothing here is a statement about the project")
+NOT_THIS_DIRECTORYS_FILE = ("that file is this checkout's, not this "
+                            "directory's, so nothing here is a statement "
+                            "about what it is called")
 
 
 def command_of(row: dict) -> list:
@@ -290,6 +303,229 @@ def test_a_crashed_naming_script_leaves_a_directory_not_a_shape_root(
     assert text.returncode == 2, text.stdout + text.stderr
     assert "NOT A SHAPE ROOT   (exit 2)" in text.stdout, text.stdout
     assert "shape-doctor-cannot-answer" not in text.stderr, text.stderr
+
+
+# --- #678: a checkout whose own naming policy does not load -----------------
+
+def naming_policy_refuses(standard: Path, tmp_path: Path) -> Path:
+    """A COPY of the standard, history and all, whose own naming policy
+    gained one tab-indented line: the file `NamingPolicy.load` refuses with
+    `yaml-unparsable`, and the `validate-repository-naming.py` that reads it
+    first exits 2 before it reads a name. Bytes, not `write_text`: the line
+    is added to what the file holds, line endings and all."""
+    here = standard_under(standard, tmp_path, "naming-policy")
+    policy = here / NAMING_POLICY
+    policy.write_bytes(policy.read_bytes() + b"\n\ttab: indented\n")
+    return here
+
+
+def test_an_unloadable_naming_policy_cannot_answer_for_a_compliant_project(
+        standard, project, tmp_path):
+    """(1) of the issue: the project reads `ok` from a clean checkout, and
+    from a copy whose own policy has a tab line it is CANNOT ANSWER, exit 3,
+    never `INVALID (naming)`.
+
+    The row is a FINDING with `detail.environment`, no `detail.crashed`
+    (the script refused, it did not crash), and the loader's own refusal
+    quoted whole, ending on the line number the 200-character cut of the
+    script's output would have lost after a long path. It names the FILE as
+    this checkout's and not the project's. Its NEXT is the script's own
+    `--explain` line, and run it prints that refusal and exits 2.
+    """
+    root = project.resolve()
+    control = rows_of(doctor(standard, root, "--json"))["naming"]
+    assert control["status"] == "ok", control
+    here = naming_policy_refuses(standard, tmp_path)
+    result = doctor(here, root, "--json")
+    payload = payload_of(result)
+    row = rows_of(result)["naming"]
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["environment"] is True, row
+    assert "crashed" not in row["detail"], row
+    assert row["detail"]["exit"] is None, row
+    assert row["detail"]["refusal"]["code"] == "yaml-unparsable", row
+    assert row["reason"].startswith(
+        f"the standard's {NAMING_POLICY} does not load: REFUSED "
+        "yaml-unparsable: "), row
+    assert "tab used for indentation; that file is" in row["reason"], row
+    assert row["reason"].endswith(NOT_THE_PROJECTS_FILE), row
+    assert "naming policy is not satisfied" not in row["reason"], row
+    assert ", not to the project: repair it there" in row["why"], row
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert payload["verdict"].startswith("CANNOT ANSWER (naming: "), payload
+    module = doctor_module(standard)
+    assert row["next"] == (
+        f"{module.PYTHON} {module.quote_arg(here.resolve() / NAMING_SCRIPT)} "
+        f"--explain --project {module.quote_arg(root / 'project.yaml')}"), \
+        row["next"]
+    ran = run_argv(command_of(row))
+    assert ran.returncode == 2, ran.stdout + ran.stderr
+    assert "tab used for indentation" in ran.stdout + ran.stderr
+    text = doctor(here, root)
+    assert text.returncode == 3, text.stdout + text.stderr
+    assert "REFUSED shape-doctor-cannot-answer: " in text.stderr, text.stderr
+
+
+def test_an_unloadable_naming_policy_leaves_a_directory_not_a_shape_root(
+        standard, tmp_path):
+    """(2) of the issue: the same copy asked about a directory that is not a
+    root. The verdict stays NOT A SHAPE ROOT, exit 2, and the row says the
+    same as a root's, about the directory: the file is this checkout's and
+    not this directory's, so nothing here is a statement about what it is
+    called. THE TEXT REPORT PRINTS NO `shape-doctor-cannot-answer`: one
+    under a NOT A SHAPE ROOT verdict would contradict the line above it.
+    """
+    here = naming_policy_refuses(standard, tmp_path)
+    away = tmp_path / "elsewhere" / "Atlas"
+    away.mkdir(parents=True)
+    result = doctor(here, away, "--json")
+    payload = payload_of(result)
+    row = rows_of(result)["naming"]
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert payload["verdict"] == "NOT A SHAPE ROOT", payload
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["environment"] is True, row
+    assert "crashed" not in row["detail"], row
+    assert row["reason"].startswith(
+        f"Atlas: the standard's {NAMING_POLICY} does not load: REFUSED "
+        "yaml-unparsable: "), row
+    assert row["reason"].endswith(NOT_THIS_DIRECTORYS_FILE), row
+    assert command_of(row)[-3:] == ["--explain", "--", "Atlas"], row["next"]
+    assert ", not to this directory: repair it there" in row["why"], row
+    assert "project" not in row["why"], row
+    text = doctor(here, away)
+    assert text.returncode == 2, text.stdout + text.stderr
+    assert "NOT A SHAPE ROOT   (exit 2)" in text.stdout, text.stdout
+    assert "shape-doctor-cannot-answer" not in text.stderr, text.stderr
+
+
+def test_a_leg_name_that_does_not_classify_is_still_invalid_naming(
+        standard, project):
+    """(3) of the issue, THE CONTROL: with the standard's policy intact, a
+    leg whose name classifies under no family is a finding about the
+    project, `INVALID`, exit 1, in the verb a finding has, with no
+    `detail.environment`. What moved is the checkout's file, not this."""
+    manifest = project / "project.yaml"
+    changed, count = re.subn(rb"/Atlas-code(?=\r?\n)", b"/Atlas_code",
+                             manifest.read_bytes())
+    assert count == 1, changed
+    manifest.write_bytes(changed)
+    result = doctor(standard, project.resolve(), "--json")
+    row = rows_of(result)["naming"]
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert payload_of(result)["verdict"].startswith("INVALID ("), result.stdout
+    assert row["status"] == "FINDING", row
+    assert "environment" not in row["detail"], row
+    assert row["detail"]["exit"] == 1, row
+    assert row["reason"].startswith(
+        "the naming policy is not satisfied (exit 1): FINDING "
+        "naming-unclassified"), row
+
+
+def naming_script_says(standard: Path, tmp_path: Path, said: str) -> tuple:
+    """`(a COPY of the standard, what its naming script says)`: the script
+    prints `said` on stderr and exits 2 -- a refusal the stock script gives
+    for something other than the policy, or, naming the policy file as
+    `{policy}` where `said` has it, one it gives for a file this checkout's
+    own reader took as loading."""
+    here = standard_under(standard, tmp_path, "naming-says")
+    said = said.replace("{policy}", str(here.resolve() / NAMING_POLICY))
+    (here / NAMING_SCRIPT).write_text(
+        f"import sys\nprint({said!r}, file=sys.stderr)\nsys.exit(2)\n",
+        encoding="utf-8")
+    return here, said
+
+
+@pytest.mark.parametrize("said", [
+    pytest.param("REFUSED naming-no-target: no names given.", id="no-target"),
+    #: The policy's path is IN the line, past a prefix: a project whose own
+    #: path holds this checkout's. `naming_script_refusal` reads where the
+    #: detail STARTS, so this is not the checkout's file.
+    pytest.param("REFUSED manifest-unreadable: /nested{policy}/project.yaml: "
+                 "not a mapping", id="policy-path-inside-another"),
+])
+def test_an_exit_2_about_something_else_is_a_refusal_and_not_a_finding(
+        standard, project, tmp_path, said):
+    """Any exit 2 that is not this checkout's policy is worded "refuses (exit
+    2)", the verb `validator_row` picks, and never "is not satisfied", which
+    is a finding's. It is still the project's or the name's: no
+    `detail.environment`, so a root stays `INVALID (naming)`, exit 1, and a
+    directory that is not a root stays NOT A SHAPE ROOT, exit 2.
+    """
+    here, said = naming_script_says(standard, tmp_path, said)
+    # The row quotes the script's line cut at 200 characters, and a path in a
+    # temporary directory can be most of that: its start is what is held.
+    start = f"the standard's {NAMING_SCRIPT} refuses (exit 2): {said[:60]}"
+    result = doctor(here, project.resolve(), "--json")
+    row = rows_of(result)["naming"]
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert payload_of(result)["verdict"].startswith("INVALID ("), result.stdout
+    assert "environment" not in row["detail"], row
+    assert row["detail"]["exit"] == 2, row
+    assert row["reason"].startswith(start), row
+    away = tmp_path / "elsewhere" / "Atlas"
+    away.mkdir(parents=True)
+    result = doctor(here, away, "--json")
+    row = rows_of(result)["naming"]
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "environment" not in row["detail"], row
+    assert row["reason"].startswith(f"Atlas: {start}"), row
+
+
+def test_a_refusal_naming_the_checkouts_policy_file_cannot_answer(
+        standard, project, tmp_path):
+    """The other half of "or where the script's REFUSED names that file": the
+    policy loads here, in the doctor's own process, and the script still
+    refuses it, naming it, past a WARNING printed first. The row is the same
+    environment row, now with the script's exit 2, in a root (CANNOT ANSWER,
+    exit 3) and in a directory that is not one (NOT A SHAPE ROOT, exit 2)."""
+    here, said = naming_script_says(
+        standard, tmp_path,
+        "WARNING w: a note\nREFUSED yaml-unparsable: {policy}: line 3: boom")
+    detail = said.splitlines()[1].removeprefix("REFUSED yaml-unparsable: ")
+    result = doctor(here, project.resolve(), "--json")
+    row = rows_of(result)["naming"]
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert row["detail"]["environment"] is True, row
+    assert row["detail"]["exit"] == 2, row
+    assert row["detail"]["refusal"] == {"code": "yaml-unparsable",
+                                        "detail": detail}, row
+    assert row["reason"].endswith(NOT_THE_PROJECTS_FILE), row
+    away = tmp_path / "elsewhere" / "Atlas"
+    away.mkdir(parents=True)
+    result = doctor(here, away, "--json")
+    row = rows_of(result)["naming"]
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert row["detail"]["environment"] is True, row
+    assert row["reason"].endswith(NOT_THIS_DIRECTORYS_FILE), row
+
+
+def test_a_naming_policy_that_raises_is_the_scripts_crash_not_the_doctors(
+        standard, project, tmp_path):
+    """A policy `NamingPolicy.load` does not REFUSE but raises on (a pattern
+    `re.compile` will not take) is the script's crash, #410's, which the row
+    already says: CANNOT ANSWER, exit 3, with `detail.crashed`. In a root the
+    doctor asks the loader first and in process, so it must not die of it
+    there: the exception is the script's to raise, and the row is the crash
+    row, not a traceback with the exit code of a finding. A directory that is
+    NOT a root is not asserted: `way_in_project` loads the same policy
+    unguarded and ends the doctor in that traceback (#707)."""
+    here = standard_under(standard, tmp_path, "naming-policy-raises")
+    policy = here / NAMING_POLICY
+    body = policy.read_bytes()
+    assert body.count(b'pattern: "^open(?:') == 1, body
+    policy.write_bytes(body.replace(b'pattern: "^open(?:',
+                                    b'pattern: "(^open(?:'))
+    with pytest.raises(re.error):
+        doctor_module(here).NamingPolicy.load(policy)
+    result = doctor(here, project.resolve(), "--json")
+    row = rows_of(result)["naming"]
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    assert row["detail"]["crashed"] is True, row
+    assert row["detail"]["environment"] is True, row
+    assert f"the standard's {NAMING_SCRIPT} {CRASHED} (exit 1): " in \
+        row["reason"], row
 
 
 @WINDOWS_SKIP
