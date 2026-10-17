@@ -1531,7 +1531,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="current">
 
-      <!-- reads README.md § Keeping a project's shape current: blob bbf1ed1929bec2a845ab944282514edf2c427c11 -->
+      <!-- reads README.md § Keeping a project's shape current: blob 4e64189616e4d9653b31a40cdce63f428c299935 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Keeping a project&rsquo;s shape current</h2>
@@ -1593,7 +1593,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doctor">
 
-      <!-- reads README.md § Keeping a project's shape current: blob bbf1ed1929bec2a845ab944282514edf2c427c11 -->
+      <!-- reads README.md § Keeping a project's shape current: blob 4e64189616e4d9653b31a40cdce63f428c299935 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Is this repository compliant? <code>openRepoShape --doctor</code></h2>
@@ -1656,8 +1656,9 @@ openRepoShape --doctor                 # the repository you are standing in
       <p>Exit 3 is usage or environment (a flag argparse rejects is exit 2) &mdash; nothing about
       it is a statement about the tree you pointed at: no such path, a refused
       <code>--placement-plan</code>, a <code>shape-doctor.py</code> not in a checkout of the
-      standard, or a pin naming a commit <em>this</em> checkout does not carry
-      (<code>CANNOT ANSWER</code>). <strong>Drift outranks a red validator</strong> on the
+      standard, or <em>this</em> checkout unable to answer (<code>CANNOT ANSWER</code>): a
+      pin&rsquo;s commit it lacks, a partial clone missing what is compared, a read that fails, a
+      crashed validator of its own, or its own naming policy not loading. <strong>Drift outranks a red validator</strong> on the
       verdict line, deliberately: an edited shape copy is exactly what makes
       <code>validate-pins.py</code> red, so answering <code>INVALID (pins)</code> would send the
       reader at the symptom while the fix is <code>update-shape.py</code>. The pins row is printed

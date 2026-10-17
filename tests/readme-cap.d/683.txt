@@ -1,0 +1,11 @@
++1
+2026-10-17
+One line for the doctor's exit 3 (#683, landed in #742, and RV-f's N4 on
+it): README's list of what makes `shape-doctor.py` exit 3 named only a pin
+whose commit this checkout does not carry, where the doctor's own EXIT
+CODES list, which #742 extended, says THIS CHECKOUT cannot answer for four
+more reasons: a partial clone lacking what the comparison reads (#683), a
+read of it that fails, a crashed validator of its own (#278, #410) and its
+own naming policy not loading (#678). A reader who gets `CANNOT ANSWER`
+from a partial clone looks the exit up here, and the list now has it. The
+sentence was reworded to cost one line, not three.
