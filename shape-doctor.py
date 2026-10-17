@@ -5088,6 +5088,14 @@ def git_bytes(text: str) -> str | bytes:
     and one named `caf\\xe9` too. THE TEXT ITSELF ON WINDOWS, whose command
     line is text: `subprocess` would have to decode bytes there, and a byte
     that is not UTF-8 is not text to it.
+
+    SO ON WINDOWS A NAME THAT IS NOT UTF-8 IS STILL NOT FOUND: Git for
+    Windows' `xwcstoutf` turns the lone surrogate into the bytes ED B3 A9,
+    not E9. A UTF-8 name is found there. What would find the other is a
+    lookup with no name on the command line: read the root's config with
+    `git config -z --list` and match the key's bytes in Python, and build
+    the kept repository's path from `git rev-parse --git-common-dir`,
+    `modules/` and the name's bytes.
     """
     if os.name == "nt":
         return text
