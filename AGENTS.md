@@ -265,8 +265,8 @@ its last line names that directory, the human's to delete once those have run.
    never changes the verdict: it says whether THIS workstation can run the fixes
    the other rows named. Relay a missing prerequisite; `openRepoShape
    --preflight` offers only the `gh` set-up, and the human types that yes.
-7. `--json` is the same report as one object, alone on stdout, each row
-   carrying its `id`, for acting on a row. A `next` with `$'…'` needs bash.
+7. `--json` is the same report as one object, alone on stdout, each row with
+   its `id`, to act on a row. A `next` with `$'…'` needs bash or zsh, not `sh`.
 
 ## Updating a project's shape
 

@@ -940,16 +940,27 @@ def quoted_beyond_ascii(text: str, windows: bool, encoding: str) -> str:
     byte of its own, and a report in UTF-8 -- `--json` -- could not show
     it. Those bytes are read again as UTF-8, which joins each run that
     spells a character into that character and leaves every other byte as
-    it was, so `path_bytes` gives the same bytes either way. A value that
-    holds a surrogate `surrogateescape` never makes (outside
-    U+DC80..U+DCFF) cannot be written back to bytes like that, and is left
-    as it is: such a character is not printable, so it is escaped."""
+    it was. A value that holds a surrogate `surrogateescape` never makes
+    (outside U+DC80..U+DCFF) cannot be written back to bytes like that, and
+    is left as it is: such a character is not printable, so it is escaped.
+
+    AND THE JOINED NAME IS KEPT ONLY WHERE IT NAMES THE SAME BYTES (review
+    M1 on PR #792, round 2). `path_bytes` writes a joined character in the
+    filesystem encoding, which is ASCII or UTF-8 under `C` and gives the
+    bytes back; but under a legacy multibyte one -- EUC-JP, Big5, EUC-KR --
+    a directory named `日` in UTF-8 (`\\xe6\\x97\\xa5`) is read in as three
+    escaped bytes, and the joined `日` is written `\\xc6\\xfc` in EUC-JP:
+    another directory. So the join is checked byte for byte against the
+    value as it was read, and the escaped bytes stay where it differs."""
     if not windows:
         try:
-            text = text.encode("utf-8", "surrogateescape").decode(
+            joined = text.encode("utf-8", "surrogateescape").decode(
                 "utf-8", "surrogateescape")
         except UnicodeEncodeError:
-            pass
+            joined = text
+        if (b"".join(map(path_bytes, joined))
+                == b"".join(map(path_bytes, text))):
+            text = joined
 
     def shown(char: str) -> bool:
         if char.isascii():

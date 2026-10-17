@@ -131,6 +131,31 @@ def test_785_a_value_is_spelled_for_sh(module, value, encoding, spelling):
     assert module.quote_arg(value, "posix", encoding=encoding) == spelling
 
 
+#: A legacy multibyte filesystem encoding, and a character it holds that a
+#: directory may be named in UTF-8 instead: the joined character would be
+#: written in that encoding, as other bytes (review M1 on PR #792).
+LEGACY = [pytest.param("euc_jp", "日", id="euc-jp"),
+          pytest.param("big5", "日", id="big5"),
+          pytest.param("euc_kr", "€", id="euc-kr")]
+
+
+@pytest.mark.parametrize("report", ["filesystem", "utf-8"])
+@pytest.mark.parametrize(("filesystem", "char"), LEGACY)
+def test_785_a_utf_8_name_under_a_legacy_filesystem_keeps_its_bytes(
+        module, monkeypatch, report, filesystem, char):
+    """The UTF-8 bytes of `char`, read in as escaped bytes under that
+    filesystem encoding, stay those bytes in the table (written in that
+    encoding) and in `--json` (in UTF-8): never `char` itself, whose
+    `path_bytes` there are another directory's."""
+    monkeypatch.setattr(sys, "getfilesystemencoding", lambda: filesystem)
+    raw = char.encode("utf-8")
+    value = "/srv/" + raw.decode(filesystem, "surrogateescape")
+    escaped = "".join(f"\\{byte:03o}" for byte in raw)
+    encoding = filesystem if report == "filesystem" else report
+    assert module.quote_arg(value, "posix", encoding=encoding) == (
+        f"$'/srv/{escaped}'")
+
+
 @pytest.mark.parametrize(("value", "encoding", "spelling"), WINDOWS_CASES)
 def test_785_a_value_is_spelled_for_powershell(module, value, encoding,
                                                spelling):
@@ -352,14 +377,23 @@ def test_785_the_members_next_names_the_real_root(standard, holder, tmp_path,
     assert word == root
 
 
+#: The cells dash can run, which are the ones that show a UTF-8 name as
+#: itself: the table under a UTF-8 locale and under `C`, where Python's UTF-8
+#: mode is on, and `--json` under every stdout (review N1 on PR #792, both
+#: rounds).
+DASH_CELLS = [*(pytest.param("table", *cell.values, id=f"table-{cell.id}")
+                for cell in LOCALES[:2]),
+              *(pytest.param("json", *cell.values, id=f"json-{cell.id}")
+                for cell in STDOUTS)]
+
+
 @WINDOWS_SKIP
-@pytest.mark.parametrize("source", SOURCES)
-@pytest.mark.parametrize(("codeset", "changes"), LOCALES[:2])
+@pytest.mark.parametrize(("source", "codeset", "changes"), DASH_CELLS)
 def test_785_dash_runs_a_next_that_shows_the_name_as_itself(
         standard, holder, tmp_path, source, codeset, changes):
     """dash has no `$'...'`, as README says, so the lines it can run are
-    the ones that show a name as itself: a UTF-8 name, under a UTF-8 locale
-    or `C`, where Python's UTF-8 mode is on (review N1 on PR #792)."""
+    the ones that show a name as itself: a UTF-8 name, in the table where
+    stdout can show it, and in `--json` whatever stdout is."""
     if shutil.which("dash") is None:
         pytest.skip("no dash here")
     word, root = next_root(standard, holder, tmp_path,
