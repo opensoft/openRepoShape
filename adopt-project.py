@@ -11284,6 +11284,24 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
     again by `ask_about_submodules` and `ask_about_refused_paths` as `plan`
     asks them. A question of the walk above is recorded as before.
 
+    AND AGAINST WHAT EACH LEG'S OWN WALK SAYS (#801). The doctor walks a
+    leg, not the source, and `walk` folds a directory by the files under
+    it in THAT leg. A person who splits by hand a directory the source's
+    walk folds leaves each leg part of it, and a part may fold another way
+    or not at all: `engine/` is 3 of 4 `.py`, exactly the 75%
+    `extension_majority:`, so it folds to code; `engine/c.py` answered
+    `spec` leaves the code leg's `engine/` 2 of 3, which does not fold, and
+    there `engine/x.md` is spec by its own extension. So `walk` is run
+    again over each leg's own files, the paths `_answered_legs` keeps in
+    it, gitlinks left out, as the doctor runs it over the leg, and each
+    entry covering a path that walk does not put in that leg is recorded
+    too, a question or a path it puts elsewhere. That walk keeps the files
+    the doctor sets aside in every leg (its `everywhere_patterns`: names
+    at the top of a leg, and `.github/`), which change how no other
+    directory folds. A plan left as `plan` wrote it keeps each such part
+    whole in its leg, where it folds as it did in the source, so this adds
+    no row to it.
+
     A SOURCE WITH NO SUCH ENTRY GETS "" and so the `project.yaml` it always
     got, byte for byte.
     """
@@ -11296,14 +11314,31 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
             policy, [(path, size) for path, _, _, size in tree]), tree),
         tree)}
     answered = _answered_legs(entries, [path for path, _ in files])
+    in_its_leg = _walked_in_each_leg(policy, files, answered)
     kept = sorted({entry: leg for path, (leg, entry) in answered.items()
                    if leg in EXTRACTED_LEGS and entry != GITMODULES
-                   and leg != _walked_leg(called, path)
-                   and (_walked_leg(called, path) is None
-                        or leg != _walked_leg(shown, path))}.items())
+                   and (leg != in_its_leg.get(path)
+                        or (leg != _walked_leg(called, path)
+                            and (_walked_leg(called, path) is None
+                                 or leg != _walked_leg(shown, path))))
+                   }.items())
     return _record_block(ANSWER_RECORD_PREAMBLE,
                          [(entry, leg, entry) for entry, leg in kept],
                          entries, commit)
+
+
+def _walked_in_each_leg(policy: PathPolicy, files: list,
+                        answered: dict) -> dict:
+    """`{path: leg}` for each of `files` that `answered` keeps in a leg:
+    the leg `walk` gives it over THAT leg's files alone, as the doctor
+    walks the leg after the split; None for a question (#801)."""
+    out: dict = {}
+    for role in EXTRACTED_LEGS:
+        held = [(path, size) for path, size in files
+                if path in answered and answered[path][0] == role]
+        called = {entry.path: entry.leg for entry in walk(policy, held)}
+        out.update((path, _walked_leg(called, path)) for path, _ in held)
+    return out
 
 
 def _walked_leg(called: dict, path: str) -> str | None:
