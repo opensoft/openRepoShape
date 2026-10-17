@@ -882,7 +882,10 @@ def shape_upstream_notice(root: Path) -> None:
     if tip is None:
         cache = root / SHAPE_UPSTREAM_CACHE
         if cache.is_file():
-            tip = cache.read_text(encoding="utf-8").strip()
+            # `utf-8-sig` takes off the byte-order mark a Windows editor may
+            # start the file with (#855). `strip()` keeps U+FEFF, so a marked
+            # tip read as no commit and the notice said nothing.
+            tip = cache.read_text(encoding="utf-8-sig").strip()
     if not tip or not COMMIT_40.match(tip):
         return
     if tip.lower() == pinned:

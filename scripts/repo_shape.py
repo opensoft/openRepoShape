@@ -1036,9 +1036,34 @@ def _block_value(text: str, line: int) -> Any:
         raise
 
 
+#: U+FEFF, the BYTE-ORDER MARK, which a Windows editor may start a file a
+#: person saved with (#855): `parse_yaml` takes it off.
+BYTE_ORDER_MARK = "\ufeff"
+
+
 def parse_yaml(text: str) -> Any:
-    """Parse the supported YAML subset. Raises `YamlError` on anything else."""
-    recs = _tokenise(text)
+    """Parse the supported YAML subset. Raises `YamlError` on anything else.
+
+    A BYTE-ORDER MARK AT THE START IS NO PART OF THE TEXT (#855), and every
+    one there is taken off. YAML 1.2.2 allows a mark at the start of a
+    document and none inside one (5.2; 9.1.1's `l-document-prefix` is a
+    mark, then comment lines). Kept, it was the first character of the
+    first key, so a `project.yaml` that says `schema_version: 1` was
+    `schema_version is None` to `validate-manifest.py`, and a file whose
+    first line is a comment was refused at line 1.
+
+    HERE, NOT IN `load_yaml`'S DECODE, because one file read two ways is
+    worse than either answer. The readers of a pin at a commit
+    (`shape-doctor.py`'s `pin_at`, `update-shape.py`'s `_committed_pin`,
+    `adopt-project.py`'s `_pinned_shape_paths`) and `pin_values_in` hand
+    this the text of no file `load_yaml` read: with the mark taken off
+    there alone, `pin_at` read a pin every validator reads as broken, and
+    the doctor's NEXT put back the pin from before it. Every mark goes, as
+    `shape_advisory.py` takes them off, so the two agree. `load_yaml` still
+    decodes as `utf-8`, so the byte its refusal names is counted from the
+    file's first byte, the mark's three included. The tools write no mark.
+    """
+    recs = _tokenise(text.lstrip(BYTE_ORDER_MARK))
     if not recs:
         return None
     value, end = _parse_nodes(recs, 0, recs[0].indent)
