@@ -10708,23 +10708,26 @@ def test_an_exported_pythonpath_does_not_stand_in_for_a_lost_repo_shape(
 #: `sitecustomize.py` that ends any VALIDATOR with a distinctive exit, and a
 #: `repo_shape.py` that raises when it is imported.
 #:
-#: THE `sitecustomize.py` IS WHAT DOES THE WORK, and it catches every way the
-#: directory can reach a validator. `PYTHONPATH` entries come ahead of the
-#: standard library and of site-packages, so the first `sitecustomize` on a
-#: child's path is this one wherever the directory sits in the value -- in
-#: front of the standard's `scripts/`, behind it, or alone -- and it ends the
-#: child at start-up, before a single import. Python imports ONE
-#: `sitecustomize`, the first it finds, and the doctor is not that child: its
-#: own script is not `validate-*`, so it runs on.
+#: THE `sitecustomize.py` DOES NOTHING SINCE `-S` (#342). `run_validator`
+#: starts every child as `[sys.executable, "-S", script, ...]`, so no child
+#: runs `site` and none imports a `sitecustomize`, this one or any other.
+#: Before `-S` it was what did the work: `PYTHONPATH` entries come ahead of
+#: the standard library and of site-packages, so the first `sitecustomize` on
+#: a child's path was this one wherever the directory sat in the value, and
+#: it ended the child at start-up, before a single import. It would fire
+#: again only for a child started without `-S`.
 #:
-#: A `repo_shape.py` ALONE CANNOT TELL PREPENDING FROM REPLACING: the
-#: standard's `scripts/` comes first in a prepended value, so the standard's
-#: `repo_shape` wins the import and the decoy behind it is never read. The
-#: raising `repo_shape.py` decides an outcome only where `sitecustomize` does
-#: not load from the path (site customisation off, or an earlier
-#: `sitecustomize` ahead of this one), and there it is what a child that put
-#: the operator's directory FIRST would import. It is a fallback, and no test
-#: here depends on it.
+#: WHAT HOLDS REPLACE-NOT-PREPEND AND THE S1 CASE NOW IS
+#: `test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given`,
+#: which asks the child what `PYTHONPATH` it got. A `run_validator` that puts
+#: the standard's `scripts/` in front of the operator's value, or that keeps
+#: the variable for the callers that pass none (#306 review S1), passes THIS
+#: test, in all three cases, and is killed by that one. This test holds the
+#: template row's real verdict under an exported `PYTHONPATH`, end to end.
+#: The raising `repo_shape.py` is the part of it that still bites: a child
+#: that put the operator's directory AHEAD of the standard's `scripts/` would
+#: import it, because the template's own directory has no `repo_shape.py`
+#: beside it, and that child fails this test.
 DECOY_REPO_SHAPE = (
     "raise ImportError(\"the operator's repo_shape.py was imported by a "
     "validator\")\n")
@@ -10769,15 +10772,19 @@ def test_an_exported_pythonpath_does_not_reach_a_template_validator(
     for leaked in ("DECOY", "operator's repo_shape", "ImportError"):
         assert leaked not in row["reason"], row
 
-    # AND NO OTHER ROW OF THE RUN REACHED THE DECOY. The row above is the one
+    # AND NO OTHER ROW OF THE RUN QUOTES THE DECOY. The row above is the one
     # that passes a directory; the `naming` rows and the machine's preflight
-    # pass none. On main every row whose validator the decoy reached said so,
-    # and this catches any row that reaches it, which is how it catches a
-    # `run_validator` that kept the variable for the callers that pass none
-    # (#306 review S1): popped only for a script inside the root, or with the
-    # `else` dropped, the `naming` row reads `FINDING ... (exit 86): DECOY`
-    # while `manifest` reads the real finding. So no row may quote the decoy
-    # or say it exited 86, whichever caller handed it the variable.
+    # pass none. Before `-S` this is how the test caught a `run_validator`
+    # that kept the variable for the callers that pass none (#306 review S1):
+    # popped only for a script inside the root, or with the `else` dropped,
+    # the `naming` row read `FINDING ... (exit 86): DECOY` while `manifest`
+    # read the real finding. Since `-S` no child imports the decoy's
+    # `sitecustomize`, so that case no longer shows here; the probe in
+    # `test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given`
+    # holds it, beside the root as well as inside it. Under `-S` this loop
+    # cannot fire. It is kept as a tripwire for a future removal of `-S`;
+    # `test_run_validator_starts_every_child_with_no_site` (in
+    # `tests/test_doctor_validator_site.py`) is the test that holds `-S`.
     reached = [name for name, other in rows.items()
                if "DECOY" in other["reason"]
                or "(exit 86)" in other["reason"]
@@ -10814,8 +10821,8 @@ def test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given(
     caller sees it, and it holds the callers which pass no `pythonpath` by
     where its probe lies: beside the root, as the standard's own naming and
     preflight scripts do, as well as inside it. Those scripts need nothing
-    from the variable, so only a probe like this one, or (b)'s decoy, can see
-    that they have none.
+    from the variable, so only a probe like this one can see that they have
+    none (the decoy of (b) could before `-S`, #342).
     """
     module = doctor_module(standard)
     if exported is None:
