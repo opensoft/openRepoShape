@@ -1704,6 +1704,9 @@ def _occupied_clone_target(work_root: Path, path: Path, repository: str,
               f"{_spelled(held)}, {empty}where this run clones {repository}, "
               f"and {why}")
     remedy = f"Pass {ANOTHER_WORK_DIR}"
+    if empty:
+        remedy += (f" Or, where no run is using {_spelled(held)}, delete it: "
+                   "a run that was killed can leave it empty.")
     if taken:
         detail = f"{taken}; and {detail}"
         remedy = (f"It is no longer a whole clone: delete {_spelled(held)} "
@@ -1723,9 +1726,15 @@ WORK_DIR_SHARED = "adopt-work-dir-shared"
 #: The way out of a `--work-dir` that holds something in the clone's way.
 ANOTHER_WORK_DIR = ("a --work-dir that does not hold it, or none: without "
                     "one, each run makes a new one.")
-#: The way out of a `--work-dir` another user can rename entries in.
-WORK_DIR_OWN = ("Pass a --work-dir this user owns and no other user can write "
-                "in, or none: without one, each run makes a new one.")
+#: The way out of a `--work-dir` another user can rename entries in, or
+#: rename it from a directory above it.
+WORK_DIR_OWN = ("Pass a --work-dir this user owns, that no other user can "
+                "write in, and that has no directory above it another user "
+                "can rename in, or none: without one, each run makes a new "
+                "one.")
+#: How a refusal names a file it found where it looked (#803: one spelling
+#: for the three refusals that say it).
+A_FILE = "a file"
 #: Whether `_remove_a_tree` removes a clone relative to a descriptor of the
 #: `source-readonly/` it was made in, never through its path (#803): what
 #: `shutil.rmtree(dir_fd=)` does from Python 3.11, where this platform's
@@ -1783,18 +1792,86 @@ def _owner(uid: int) -> str:
 def _shared_with_another_user(status: os.stat_result) -> str | None:
     """Why another user can rename or replace what is in the directory
     `status` describes, an `os.lstat`, in words; None where nobody else can
-    (#803). Another user owns it; or every user can write in it, and its
-    sticky bit, which keeps each entry to its owner as in `/tmp`, is not
-    set. GROUP WRITE IS NOT ASKED: under `umask 002` every directory a user
-    makes is group-writable, for a group of that user alone. NOR IS ANYTHING
-    ON WINDOWS, where neither the owner nor the mode bits say it."""
+    (#803). A user other than this one or root owns it; or every user can
+    write in it, and its sticky bit, which keeps each entry to its owner as
+    in `/tmp`, is not set. ROOT IS TRUSTED, as OpenSSH's StrictModes trusts
+    it: root can do anything here anyway, and a directory an earlier `sudo`
+    run left is then `adopt-work-dir-unwritable`, which is true, and not a
+    claim that another user could write in it. GROUP WRITE IS NOT ASKED:
+    under `umask 002` every directory a user makes is group-writable, for a
+    group of that user alone. NOR IS ANYTHING ON WINDOWS, where neither the
+    owner nor the mode bits say it."""
     if not hasattr(os, "geteuid"):
         return None
-    if status.st_uid != os.geteuid():
-        return f"is owned by {_owner(status.st_uid)}, not by this user"
+    if status.st_uid not in (os.geteuid(), 0):
+        return (f"is owned by {_owner(status.st_uid)}, not by this user or "
+                "root")
     if status.st_mode & stat.S_IWOTH and not status.st_mode & stat.S_ISVTX:
         return "can be written in by every user, without the sticky bit"
     return None
+
+
+def _made_0755(path: Path, parents: bool = True) -> None:
+    """`path` made a directory where it is missing, and each missing
+    directory above it, as `Path.mkdir(parents=True, exist_ok=True)` makes
+    them and fails, but each with `os.mkdir(..., 0o755)` (#803): under
+    `umask 000` a work directory made 0777 would be refused as
+    `adopt-work-dir-shared` by the run that made it. The umask still narrows
+    it: under `umask 077` it is 0700. One another run made meanwhile is
+    taken, and is asked with the others above the work directory."""
+    try:
+        os.mkdir(path, 0o755)
+    except FileNotFoundError:
+        if not parents or path.parent == path:
+            raise
+        _made_0755(path.parent)
+        _made_0755(path, parents=False)
+    except OSError:
+        if not path.is_dir():
+            raise
+
+
+def _shared_above(root: Path) -> tuple[Path, str] | None:
+    """The first directory above `root`, from `/` down, that another user
+    can rename in (`_shared_with_another_user`), and why; None where there is
+    none, asked down to the deepest one that exists (#803). `root` is the
+    real path `_work_root` read, so each of these is a directory, never a
+    symlink, and from then on the run uses `root` alone.
+
+    THIS IS THE RULE OpenSSH's StrictModes HOLDS `authorized_keys` TO, but
+    for two things: the sticky bit counts, which is what keeps `/tmp` open,
+    and group write is not asked. A user who can rename in a directory above
+    the work directory can swap the work directory itself between this
+    run's claim and the identity it reads, so that the removal is held to
+    that user's directory (#843's review: a second process won 5 of 20 runs
+    on Python 3.12), and git's own cleanup of a failed clone removes by
+    path."""
+    if not hasattr(os, "geteuid"):
+        return None
+    for above in reversed(root.parents):
+        try:
+            status = os.lstat(above)
+        except OSError:
+            return None
+        shared = _shared_with_another_user(status)
+        if shared:
+            return above, shared
+    return None
+
+
+def _refuse_a_shared_chain(root: Path, done: str) -> None:
+    """`adopt-work-dir-shared` for a `--work-dir` that has a directory above
+    it another user can rename in (`_shared_above`), naming that directory
+    and why."""
+    found = _shared_above(root)
+    if found:
+        above, shared = found
+        raise _shared_work_dir(
+            f"--work-dir {_spelled(str(root))} is under "
+            f"{_spelled(str(above))}, which {shared}, so another user could "
+            f"rename {_spelled(str(root))}, or a directory between them, and "
+            "turn this run's removal onto another directory", done,
+            WORK_DIR_OWN)
 
 
 def _shared_work_dir(detail: str, done: str, remedy: str) -> Refusal:
@@ -1812,7 +1889,7 @@ def _what_is_there(held: Path, status: os.stat_result, leads: str) -> str:
             return f"a symlink to {_spelled(os.readlink(held))}"
         return "a symlink"
     if stat.S_ISREG(status.st_mode):
-        return "a file"
+        return A_FILE
     if stat.S_ISDIR(status.st_mode):
         return f"a directory that leads to {_spelled(leads)}"
     return "neither a file nor a directory"
@@ -1880,7 +1957,7 @@ def _made_source_readonly(work_root: Path, parent: Path, repository: str,
     if os.path.lexists(parent):
         return False
     try:
-        os.makedirs(work_root, exist_ok=True)
+        _made_0755(work_root)
         os.mkdir(parent, 0o755)
         return True
     except FileExistsError:
@@ -2024,10 +2101,13 @@ class Source:
         there is refused, an empty one included; and this run then makes it
         with an exclusive `mkdir` (`_claimed`). Only that `_Claim` goes on
         `made`, and `_remove_a_tree` removes only the directory it names.
-        `execute` lists none and keeps its clone, but where `gh` fails it
-        removes the directory its own `mkdir` made, after the same checks,
-        so that the run given the same --work-dir again is not refused at
-        an empty directory."""
+        `execute` lists none and keeps its clone, but where the clone ends
+        any other way than in a clone -- `gh` failing, Ctrl-C, no `gh` at
+        all -- it removes the directory its own `mkdir` made, after the same
+        checks, and then raises what ended it: so that the run given the
+        same --work-dir again is not refused at an empty directory. Only a
+        kill or a power loss can still leave one, and its refusal says to
+        delete it where no run is using it."""
         path = work_root / SOURCE_READONLY / repository.split("/")[1]
         if unwritable:
             raise _work_dir_refusal(unwritable)
@@ -2042,14 +2122,16 @@ class Source:
         claim = _claimed(work_root, path, repository, done)
         if made is not None:
             made.append(claim)
-        print(f"cloning {repository} (read only) into {path}")
         try:
+            print(f"cloning {repository} (read only) into {path}")
             run(["gh", "repo", "clone", repository, str(path), "--",
                  "--quiet"])
-        except CommandFailed as exc:
+        except BaseException as exc:
             if made is None:
                 with contextlib.suppress(OSError, _NotTheClone):
                     _remove_a_tree(claim)
+            if not isinstance(exc, CommandFailed):
+                raise
             raise Refusal(
                 "source-unclonable",
                 f"could not clone {repository}: {exc.output.strip()[:400]}",
@@ -4863,8 +4945,9 @@ class Plan:
         existed, said the plan's repository is cloned again and read that
         directory instead."""
         if override:
-            return self._kept_at_the_record(
-                Source.open(override, work_root, unwritable, made, done), made)
+            source = Source.open(override, work_root, unwritable, made, done)
+            self._keep_the_clone_at_the_record(made)
+            return source
         local_path = self.source.get("local_path")
         if local_path:
             return self._recorded_source(str(local_path), work_root,
@@ -4877,22 +4960,21 @@ class Plan:
         return Source.clone(repository, work_root, unwritable, made,
                             done=done)
 
-    def _kept_at_the_record(self, source: Source,
-                            made: list | None) -> Source:
-        """`source`, read from `--source`, with the clone this run made of it
-        taken off `made` where it is at the plan's own `source.local_path`
-        (#803, #457's L1-97): it is the plan's source again, as the clone
-        `_recorded_source` makes there is. On main `check` removed it, and
-        the next run cloned it once more."""
+    def _keep_the_clone_at_the_record(self, made: list | None) -> None:
+        """Take off `made` the clone this run made from `--source` where it
+        is at the plan's own `source.local_path` (#803, #457's L1-97): it is
+        the plan's source again, as the clone `_recorded_source` makes there
+        is. On main `check` removed it, and the next run cloned it once
+        more."""
         record = self.source.get("local_path")
-        if made and record:
-            try:
-                at = os.path.realpath(os.path.expanduser(str(record)))
-            except (OSError, ValueError):
-                return source
-            made[:] = [claim for claim in made
-                       if not _same_spelling(claim.made_at, at)]
-        return source
+        if not (made and record):
+            return
+        try:
+            at = os.path.realpath(os.path.expanduser(str(record)))
+        except (OSError, ValueError):
+            return
+        made[:] = [claim for claim in made
+                   if not _same_spelling(claim.made_at, at)]
 
     def _recorded_repository(self) -> str | None:
         """The plan's `source.repository` as `_github_name` reads it, or None
@@ -8344,7 +8426,7 @@ class _PlannedRoot:
         landed = _spelled(walk.landed)
         is_dir = (os.path.isdir(walk.landed) if walk.outside
                   else self._is_dir(walk.landed))
-        what = "a directory" if is_dir else "a file"
+        what = "a directory" if is_dir else A_FILE
         return (f"it lands on {landed}, {what} that is already there, where "
                 "the shape's copy cannot be written")
 
@@ -10685,7 +10767,7 @@ def _index_entries(assembly: Path,
     for record in raw.split(b"\x00"):
         if record:
             head, _, name = record.partition(b"\t")
-            kind = INDEX_ENTRY_KINDS.get(int(head.split()[0], 8), "a file")
+            kind = INDEX_ENTRY_KINDS.get(int(head.split()[0], 8), A_FILE)
             entries.append((kind, name.decode("utf-8",
                                               "surrogateescape")))
     return entries
@@ -13210,20 +13292,27 @@ def _work_root(args, done: str = "") -> Path:
     can write in without the sticky bit (`_shared_with_another_user`), as
     `adopt-work-dir-shared`. There another user could replace the clone
     `plan` reads, or turn the clone's removal onto a directory of theirs
-    (#457's L1-99), or the legs `execute` builds. Asked with `os.lstat` of
-    the real path; never on Windows."""
+    (#457's L1-99), or the legs `execute` builds. So is one under a
+    directory another user can rename in (`_shared_above`): asked of the
+    directories that exist BEFORE any is made, so that a refused run makes
+    nothing, and again after. Asked with `os.lstat` of the real path, which
+    is the one path the run uses from then on; never on Windows. Each
+    directory made here is 0755 whatever the umask (`_made_0755`). The
+    default work directory is not asked: `tempfile.mkdtemp` makes it 0700."""
     if not getattr(args, "work_dir", None):
         root = Path(tempfile.mkdtemp(prefix="openreposhape-adopt-"))
         args.made_work_root = root
         return root
     root = Path(os.path.realpath(args.work_dir))
+    _refuse_a_shared_chain(root, done)
     try:
-        root.mkdir(parents=True, exist_ok=True)
+        _made_0755(root)
         status = os.lstat(root)
     except OSError as exc:
         raise _work_dir_refusal(
             f"--work-dir {_spelled(str(root))} cannot be made: making it a "
             f"directory failed ({exc.strerror or exc})", done) from None
+    _refuse_a_shared_chain(root, done)
     shared = _shared_with_another_user(status)
     if shared:
         raise _shared_work_dir(
@@ -13394,12 +13483,13 @@ def _remove_a_tree(claim: _Claim) -> None:
     the identity of each directory, `st_dev` and `st_ino` read right after
     this run's `mkdir`, is asked of what is there, never through a symlink.
     Where `FD_REMOVAL` holds, the removal is relative to the descriptor of
-    the `source-readonly/` so asked, so nothing renamed after the check
-    redirects it. Elsewhere, by path after the same checks, only someone
-    who can rename in the work directory, in its `source-readonly/` or in a
-    directory above them could swap one between the check and the
-    removal; `_work_root` and `_source_readonly_refusal` refuse the first
-    two before anything is made there."""
+    the `source-readonly/` so asked, so no rename of `source-readonly/` or
+    above it after the check redirects it. Elsewhere it is by path, after
+    the same checks. Either way, only someone who can rename in the work
+    directory, in its `source-readonly/` or in a directory above them could
+    swap one, and `_work_root` and `_source_readonly_refusal` refuse all
+    three before anything is made there: but for group write, which is not
+    asked, and on Windows, where nothing is."""
     if FD_REMOVAL:
         _remove_through_a_descriptor(claim)
     else:
@@ -13440,7 +13530,8 @@ def _leave_the_clones(args) -> None:
     has written it (`args.plan_written`), whatever ends the run after, its
     report cut short by a closed pipe or Ctrl-C included (#652's review,
     F2). `check` does not list a clone it made at the plan's own
-    `local_path` (`Plan._recorded_source`, `Plan._kept_at_the_record`).
+    `local_path` (`Plan._recorded_source`,
+    `Plan._keep_the_clone_at_the_record`).
     `execute` lists none: under `--local-remote-dir` its clone IS the
     assembly the split is pushed into, and the deletion command
     `adopt-branch-exists` prints runs in it; the work directory it made is
@@ -13568,9 +13659,10 @@ def _work_dir_help(does: str, refused: str, but: str = "") -> str:
 #: What `_work_root` refuses in all three commands, said in each one's
 #: `--work-dir` help (#803).
 WORK_DIR_SHARED_HELP = (
-    "Except on Windows, one that another user owns, or that every user can "
-    "write in without the sticky bit, is refused as `adopt-work-dir-shared` "
-    "before anything is made in it.")
+    "Except on Windows, `adopt-work-dir-shared` refuses, before anything is "
+    "made, one that a user other than this one or root owns or every user "
+    "can write in without the sticky bit, one under such a directory, and "
+    "one whose `source-readonly` is one.")
 
 
 #: What a work directory that holds the clone's directory is refused as, in

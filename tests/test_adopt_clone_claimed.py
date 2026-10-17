@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import errno
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -36,14 +37,15 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, WINDOWS_SKIP, rmtree, spelled
+from conftest import ADOPT, WINDOWS_SKIP, make_source_repo, rmtree, spelled
 from test_adopt_source_clone_record import (  # noqa: F401
     MINE, OCCUPIED, SOURCE_READONLY, WORK, WORK_FLAG, clone_dir, modes_hold,
     on_github, plan_args, run, symlinks_are_made,
 )
 from test_adopt_temp_work_roots import (  # noqa: F401
-    CHECK, EXECUTE, LOCAL_REMOTE_DIR, ORG, PLAN, PLAN_FLAG, PLAN_VERB, PROJECT,
-    REMOTES, REPOSITORY, SOURCE_FLAG, adopter, planned_from_github,
+    CHECK, EXECUTE, LOCAL_REMOTE_DIR, ORG, OUT, PLAN, PLAN_FLAG, PLAN_VERB,
+    PLANNED, PROJECT, REMOTES, REPOSITORY, SMALL_TREE, SOURCE_FLAG, adopter,
+    planned_from_github,
 )
 
 SHARED = "REFUSED adopt-work-dir-shared: "
@@ -55,8 +57,13 @@ ANOTHER = ("Pass a --work-dir that does not hold it, or none: without one, "
            "each run makes a new one.")
 WRITABLE = ("Pass a --work-dir this user can write in, or none: without one, "
             "each run makes a new one.")
-OWN = ("Pass a --work-dir this user owns and no other user can write in, or "
+OWN = ("Pass a --work-dir this user owns, that no other user can write in, "
+       "and that has no directory above it another user can rename in, or "
        "none: without one, each run makes a new one.")
+#: Why a directory above the work directory is refused, after its reason.
+RENAMES_ABOVE = ("or a directory between them, and turn this run's removal "
+                 "onto another directory")
+NOT_THEIRS = ", not by this user or root, so another user could "
 EVERY_USER = "can be written in by every user, without the sticky bit"
 #: The NOTE for a clone the run made and did not remove, up to its path.
 NOT_REMOVED = "NOTE the clone this run made, "
@@ -154,9 +161,11 @@ def test_a_swap_after_the_checks_removes_only_the_runs_own_clone(
     removes the run's own clone, moved aside, and nothing through the link.
     Where the removal is by path (Python 3.9 and 3.10, and Windows) this
     window stays open, and the test cannot close it."""
-    if not getattr(adopter, "FD_REMOVAL", True):
-        pytest.skip("this Python removes a clone by its path: the window "
+    if sys.version_info < (3, 11) or os.name == "nt" \
+            or not shutil.rmtree.avoids_symlink_attacks:
+        pytest.skip("this platform removes a clone by its path: the window "
                     "between the check and the removal stays open")
+    assert adopter.FD_REMOVAL
     planned = planned_from_github(adopter, monkeypatch, tmp_path)
     symlinks_are_made(tmp_path)
     work, aside = tmp_path / WORK, tmp_path / "aside"
@@ -286,7 +295,9 @@ def test_an_empty_directory_where_the_clone_goes_is_refused_and_kept(
         f"`{SOURCE_READONLY}/{PROJECT}`, an empty directory, where this run "
         f"clones {REPOSITORY}, and a run clones only into a directory it has "
         "just made, so that it never takes another run's for its own\n"
-        f"Remediation: {ANOTHER}\n")
+        f"Remediation: {ANOTHER} Or, where no run is using "
+        f"`{SOURCE_READONLY}/{PROJECT}`, delete it: a run that was killed can "
+        "leave it empty.\n")
     assert calls == []
     assert clone_dir(work).is_dir()
 
@@ -310,6 +321,42 @@ def test_execute_whose_clone_fails_removes_what_it_made_and_no_more(
         assert code == 2, err
         assert err.startswith(UNCLONABLE), err
     assert sorted(os.listdir(work)) == ["mine.txt"]
+
+
+CUT_SHORT = {
+    "ctrl-c": KeyboardInterrupt,
+    "no-gh": lambda: FileNotFoundError(errno.ENOENT, "No such file or "
+                                       "directory", "gh"),
+}
+
+
+@pytest.mark.parametrize("cut", list(CUT_SHORT.values()), ids=list(CUT_SHORT))
+def test_execute_whose_clone_is_cut_short_leaves_no_claim(
+        adopter, monkeypatch, capsys, tmp_path, cut):
+    """Ctrl-C during the clone, or no `gh` on PATH: `execute` removes the
+    directory its own `mkdir` made and raises what ended it, so the same
+    command run again reaches `gh`. On #803's first head it ended only a
+    `CommandFailed` so, and the run again was refused at an empty
+    directory (#843's review, finding 2)."""
+    planned = planned_from_github(adopter, monkeypatch, tmp_path)
+    work = tmp_path / WORK
+    stand_in = adopter.run
+
+    def cut_short(args, *rest, **keywords):
+        if args[0] == "gh":
+            raise cut()
+        return stand_in(args, *rest, **keywords)
+
+    argv = [EXECUTE, PLAN_FLAG, str(planned.plan), SOURCE_FLAG, REPOSITORY,
+            WORK_FLAG, str(work), LOCAL_REMOTE_DIR, str(tmp_path / REMOTES)]
+    monkeypatch.setattr(adopter, "run", cut_short)
+    with pytest.raises(type(cut())):
+        adopter.main(argv)
+    assert not os.path.lexists(work / SOURCE_READONLY)
+    monkeypatch.setattr(adopter, "run", stand_in)
+    code, _, err = run(adopter, capsys, *argv)
+    assert "REFUSED adopt-unconfirmed: " in err, err
+    assert len(planned.calls) == 2
 
 
 # --- L1-97: the plan's own record is kept -------------------------------------
@@ -494,14 +541,15 @@ def test_a_source_readonly_every_user_can_write_in_is_refused(
 @posix_only
 def test_the_sticky_bit_keeps_each_entry_to_its_owner(
         adopter, monkeypatch, capsys, tmp_path):
-    """The control: a work directory and a `source-readonly` every user can
-    write in, each with the sticky bit, as `/tmp` is. Nobody but this user
-    can rename what this run makes there, so both are used, and the clone
+    """The control: a work directory, the directory above it and its
+    `source-readonly`, each one every user can write in with the sticky
+    bit, as `/tmp` is, and each entry this user's. Nobody but this user
+    can rename what this run makes there, so all are used, and the clone
     removed."""
     planned = planned_from_github(adopter, monkeypatch, tmp_path)
-    work = tmp_path / WORK
+    work = tmp_path / "sticky" / WORK
     (work / SOURCE_READONLY).mkdir(parents=True)
-    for path in (work, work / SOURCE_READONLY):
+    for path in (work.parent, work, work / SOURCE_READONLY):
         os.chmod(path, 0o1777)
     code, _, err = run(adopter, capsys, *checked_with_source(planned, work))
     assert code == 0, err
@@ -509,26 +557,34 @@ def test_the_sticky_bit_keeps_each_entry_to_its_owner(
     assert len(planned.calls) == 2
 
 
-def owned_by_another(adopter, monkeypatch, path: Path) -> int:
-    """`path` owned by another user: given away where this test runs as
-    root, and otherwise told so by `os.lstat` for that path alone. The
-    other user's id."""
-    other = os.geteuid() + 1 if os.geteuid() else 65534
-    if os.geteuid() == 0:
-        os.chown(path, other, -1)
-        return other
+def told_of(monkeypatch, path: Path, uid: int, mode: int | None = None):
+    """`os.lstat` of `path` alone says `uid` owns it, and, where given, that
+    its mode is `mode`: an owner this test cannot make."""
     lstat, which = os.lstat, os.path.realpath(path)
 
-    def as_another_owns_it(target, *args, **keywords):
+    def as_told(target, *args, **keywords):
         status = lstat(target, *args, **keywords)
         if keywords.get("dir_fd") is None and not args \
                 and os.fspath(target) == which:
             fields = list(status[:10])
-            fields[4] = other
+            fields[4] = uid
+            if mode is not None:
+                fields[0] = stat.S_IFMT(status.st_mode) | mode
             return os.stat_result(fields)
         return status
 
-    monkeypatch.setattr(os, "lstat", as_another_owns_it)
+    monkeypatch.setattr(os, "lstat", as_told)
+
+
+def owned_by_another(adopter, monkeypatch, path: Path) -> int:
+    """`path` owned by another user, neither this one nor root: given away
+    where this test runs as root, and otherwise told so by `os.lstat`. The
+    other user's id."""
+    other = os.geteuid() + 1 if os.geteuid() else 65534
+    if os.geteuid() == 0:
+        os.chown(path, other, -1)
+    else:
+        told_of(monkeypatch, path, other)
     return other
 
 
@@ -548,8 +604,8 @@ def test_a_source_readonly_another_user_owns_is_refused(
         f"{SHARED}--work-dir {spelled(real(work))} holds `{SOURCE_READONLY}`, "
         "which is owned by "), err
     assert err.endswith(
-        ", not by this user, so another user could rename or replace the "
-        f"clone this run makes in it\nRemediation: {ANOTHER}\n"), err
+        f"{NOT_THEIRS}rename or replace the clone this run makes in it\n"
+        f"Remediation: {ANOTHER}\n"), err
     assert len(planned.calls) == 1
 
 
@@ -565,8 +621,8 @@ def test_a_work_dir_another_user_owns_is_refused(
     assert err.startswith(
         f"{SHARED}--work-dir {spelled(real(work))} is owned by "), err
     assert err.endswith(
-        ", not by this user, so another user could rename or replace what "
-        f"this run makes in it\nRemediation: {OWN}\n"), err
+        f"{NOT_THEIRS}rename or replace what this run makes in it\n"
+        f"Remediation: {OWN}\n"), err
     assert os.listdir(work) == []
     assert len(planned.calls) == 1
 
@@ -600,3 +656,186 @@ def test_a_mode_this_run_makes_lets_no_other_user_write(
     assert code == 0, err
     assert len(calls) == 1
     assert set(seen.values()) == {0}
+
+
+# --- #843's review, finding 1: every directory above the work directory ------
+
+def under(base: Path, mode: int) -> tuple[Path, Path]:
+    """`base/shared/mid/work`, not made, under `base/shared` at `mode` and
+    `base/shared/mid` at 0755: (the directory above, the work directory)."""
+    shared = base / "shared"
+    (shared / "mid").mkdir(parents=True)
+    os.chmod(shared, mode)
+    return shared, shared / "mid" / WORK
+
+
+def renamed_above(work: Path, above: Path, why: str) -> str:
+    return (f"{SHARED}--work-dir {spelled(real(work))} is under "
+            f"{spelled(real(above))}, which {why}, so another user could "
+            f"rename {spelled(real(work))}, {RENAMES_ABOVE}")
+
+
+@posix_only
+@pytest.mark.parametrize("command", [PLAN_VERB, CHECK, EXECUTE])
+def test_a_directory_above_the_work_dir_every_user_can_write_in_is_refused(
+        adopter, monkeypatch, capsys, tmp_path, command):
+    """Two levels up, at 0777 with no sticky bit: another user could swap
+    the work directory between this run's claim and the identity it reads,
+    or under git's cleanup of a failed clone. Refused by name, with nothing
+    made, the missing work directory included. On #803's first head each
+    command used it."""
+    planned = planned_from_github(adopter, monkeypatch, tmp_path)
+    shared, work = under(tmp_path, 0o777)
+    done = NOTHING_PUSHED if command == EXECUTE else ""
+    code, _, err = run(adopter, capsys,
+                       *argv_for(command, planned, work, tmp_path))
+    assert code == 2, err
+    assert err == (f"{renamed_above(work, shared, EVERY_USER)}\n"
+                   f"Remediation: {done}{OWN}\n")
+    assert os.listdir(work.parent) == []
+    assert len(planned.calls) == 1
+
+
+@posix_only
+def test_a_directory_above_another_user_owns_is_refused(
+        adopter, monkeypatch, capsys, tmp_path):
+    planned = planned_from_github(adopter, monkeypatch, tmp_path)
+    shared, work = under(tmp_path, 0o755)
+    owned_by_another(adopter, monkeypatch, shared)
+    code, _, err = run(adopter, capsys, *checked_with_source(planned, work))
+    assert code == 2, err
+    assert err.startswith(f"{SHARED}--work-dir {spelled(real(work))} is "
+                          f"under {spelled(real(shared))}, which is owned "
+                          "by "), err
+    assert err.endswith(f"{NOT_THEIRS}rename {spelled(real(work))}, "
+                        f"{RENAMES_ABOVE}\nRemediation: {OWN}\n"), err
+    assert not os.path.lexists(work)
+
+
+@posix_only
+def test_a_root_owned_directory_above_the_work_dir_is_used(
+        adopter, monkeypatch, capsys, tmp_path):
+    """Root is trusted, as OpenSSH's StrictModes trusts it: `/` and
+    `/home` are root's. Emulated with `os.lstat` telling uid 0."""
+    planned = planned_from_github(adopter, monkeypatch, tmp_path)
+    above, work = under(tmp_path, 0o755)
+    told_of(monkeypatch, above, 0)
+    code, _, err = run(adopter, capsys, *checked_with_source(planned, work))
+    assert code == 0, err
+    assert os.listdir(work) == []
+
+
+@posix_only
+def test_a_work_dir_given_through_a_link_in_a_shared_directory_is_its_target(
+        adopter, monkeypatch, capsys, tmp_path):
+    """The link sits in a directory every user can write in; its target is
+    in a chain nobody else can rename in. The run uses the target alone
+    from then on, so it is used, and the clone removed there."""
+    planned = planned_from_github(adopter, monkeypatch, tmp_path)
+    symlinks_are_made(tmp_path)
+    shared, _ = under(tmp_path, 0o777)
+    target = tmp_path / "safe" / WORK
+    target.mkdir(parents=True)
+    os.symlink(target, shared / "link", target_is_directory=True)
+    code, _, err = run(adopter, capsys,
+                       *checked_with_source(planned, shared / "link"))
+    assert code == 0, err
+    assert os.listdir(target) == []
+
+
+@posix_only
+def test_a_work_dir_swapped_from_a_shared_directory_above_loses_nothing(
+        adopter, monkeypatch, capsys, tmp_path):
+    """#843's review, reproduced in process: right after the claim's
+    `mkdir`, the work directory is renamed and a symlink to `victimroot/`
+    put in its place, from the 0777 directory above it. On #803's first
+    head the claim recorded the victim's directory, and the removal
+    removed `victimroot/source-readonly/Thing` with its file. Now the run
+    is refused before anything is made, and the swap never happens."""
+    planned = planned_from_github(adopter, monkeypatch, tmp_path)
+    symlinks_are_made(tmp_path)
+    shared, work = under(tmp_path, 0o777)
+    work.mkdir()
+    victimroot = tmp_path / "victimroot"
+    victim_holding(victimroot)
+    os.rename(victimroot / "victim", victimroot / SOURCE_READONLY)
+    precious = victimroot / SOURCE_READONLY / PROJECT / PRECIOUS
+    mkdir = os.mkdir
+
+    def swapped_after(path, *args, **keywords):
+        mkdir(path, *args, **keywords)
+        if os.path.basename(path) == PROJECT \
+                and not os.path.lexists(f"{work}.real"):
+            os.rename(work, f"{work}.real")
+            os.symlink(victimroot, work, target_is_directory=True)
+
+    monkeypatch.setattr(os, "mkdir", swapped_after)
+    code, _, err = run(adopter, capsys, *checked_with_source(planned, work))
+    assert code == 2, err
+    assert err.startswith(renamed_above(work, shared, EVERY_USER)), err
+    assert precious.read_text(encoding="utf-8") == MINE
+    assert not os.path.lexists(f"{work}.real")
+
+
+# --- #843's review, finding 3: root is trusted ---------------------------------
+
+@posix_only
+def test_a_sticky_work_dir_root_owns_is_used(
+        adopter, monkeypatch, capsys, tmp_path):
+    """`--work-dir /tmp`, emulated here: root's, at 1777. On #803's first
+    head it was refused as owned by `root`, though the sticky bit keeps
+    every entry to its owner."""
+    planned = planned_from_github(adopter, monkeypatch, tmp_path)
+    work = tmp_path / "root-tmp"
+    work.mkdir()
+    os.chmod(work, 0o1777)
+    told_of(monkeypatch, work, 0)
+    code, _, err = run(adopter, capsys, *checked_with_source(planned, work))
+    assert code == 0, err
+    assert os.listdir(work) == []
+
+
+@posix_only
+def test_a_work_dir_root_owns_and_this_user_cannot_write_in_says_so(
+        adopter, monkeypatch, capsys, tmp_path, modes_hold):
+    """Root's, at 0755, as an earlier `sudo` run leaves one: the true
+    refusal, `adopt-work-dir-unwritable`, as on main. On #803's first head
+    it was `adopt-work-dir-shared`, which said another user could write
+    there."""
+    calls = on_github(adopter, monkeypatch, tmp_path)
+    work = tmp_path / "root-made"
+    work.mkdir()
+    os.chmod(work, 0o555)
+    told_of(monkeypatch, work, 0, 0o755)
+    try:
+        code, _, err = run(adopter, capsys, *plan_args(
+            REPOSITORY, tmp_path / PLAN, WORK_FLAG, str(work)))
+    finally:
+        os.chmod(work, 0o755)
+    assert code == 2, err
+    assert err.startswith(f"{UNWRITABLE}--work-dir {spelled(real(work))} "
+                          "cannot be written: "), err
+    assert calls == []
+
+
+# --- #843's review, finding 5: every directory a run makes is 0755 ------------
+
+@posix_only
+def test_a_work_dir_made_under_umask_000_is_made_0755_and_used(tmp_path):
+    """A missing, deep `--work-dir`, made by a `plan` under `umask 000`:
+    each directory it makes is 0755, so the run that made them uses them.
+    On #803's first head they were made 0777, and that run refused its own
+    work directory as `adopt-work-dir-shared`."""
+    source = make_source_repo(tmp_path / PROJECT, tree=SMALL_TREE, edits=())
+    made = tmp_path / "made"
+    work = made / "deep" / WORK
+    result = subprocess.run(  # noqa: S603 - this interpreter, this tool
+        ["/bin/sh", "-c", 'umask 000 && exec "$0" "$@"', sys.executable,
+         str(ADOPT), PLAN_VERB, SOURCE_FLAG, str(source), *PLANNED, OUT,
+         str(tmp_path / PLAN), WORK_FLAG, str(work)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        check=False)
+    assert result.returncode == 0, result.stderr
+    modes = {path: stat.S_IMODE(os.lstat(path).st_mode)
+             for path in (made, made / "deep", work)}
+    assert set(modes.values()) == {0o755}, modes
