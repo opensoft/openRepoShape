@@ -352,13 +352,17 @@ def test_the_warning_spells_the_family_it_names(family, tmp_path):
 
 #: Section NAMES, as the bytes between the header's quotes, each holding a
 #: character a reading of git's listing has cut at: a space, a dot, a quote
-#: (escaped in the header) and an `=` (lane 3's `members/a=b`). The same four
-#: as #668's corpus for the doctor.
+#: (escaped in the header) and an `=` (lane 3's `members/a=b`), the same four
+#: as #668's corpus for the doctor; then lane 3's two more on #690
+#: (issuecomment-6232404184 and -6232689453): the name `a=b` as it wrote it,
+#: whole, and a CR, which `str.splitlines` cut a key at where git keeps it.
 NAMES = [
     pytest.param(b"members/My IRRS", id="space"),
     pytest.param(b"members/IRRS.v2", id="dot"),
     pytest.param(b'members/\\"IRRS\\"', id="quote"),
     pytest.param(b"members/a=b", id="equals"),
+    pytest.param(b"a=b", id="equals-bare"),
+    pytest.param(b"members/q\rx", id="cr"),
 ]
 #: A url through a directory holding each line break `str.splitlines` knows
 #: besides `\n` and `\r`, all of which git keeps in a value: VT, FF, FS, GS,
@@ -409,6 +413,36 @@ def test_a_url_holding_a_line_break_git_keeps_is_read_whole(placement,
     assert placement.submodule_urls(tmp_path) == {"members/IRRS": url}
 
 
+def test_a_cr_in_a_section_name_cuts_no_key_of_its_section(placement,
+                                                           tmp_path):
+    """Lane 3's second case on #690 (issuecomment-6232689453): `[submodule
+    "q\\rx"]` holding `update = bogus`. `str.splitlines` cut the listing at
+    the CR, `submodule.q` from `x.path`, so the section was read as no
+    section at all and the `update` git refuses never reached a reader that
+    looks for it (lane 3's #733). Git keeps the key whole, and so does the
+    `-z` reading: the section with the CR is read exactly as the same
+    section without it. What the reading then does with a value git refuses
+    is #733's rule, not this one, so the two files are compared, not the
+    urls pinned."""
+    irrs = (b'[submodule "members/IRRS"]\n\tpath = members/IRRS\n'
+            b"\turl = /r/IRRS.git\n")
+    body = b"\tpath = members/q\n\turl = /r/q.git\n\tupdate = bogus\n"
+    read = {}
+    for label, name in (("cr", b"q\rx"), ("plain", b"qx")):
+        folder = tmp_path / label
+        folder.mkdir()
+        (folder / ".gitmodules").write_bytes(
+            irrs + b'[submodule "' + name + b'"]\n' + body)
+        # Git has the section whole: each key by its exact name, CR and all.
+        for field, expect in (("url", "/r/q.git"), ("update", "bogus")):
+            got = git("config", "-f", ".gitmodules", "--get",
+                      f"submodule.{name.decode('ascii')}.{field}",
+                      cwd=folder)
+            assert got.stdout.rstrip("\n") == expect, (label, field)
+        read[label] = placement.submodule_urls(folder)
+    assert read["cr"] == read["plain"], read
+
+
 def test_make_siblings_clones_from_a_url_holding_nel(family, tmp_path):
     """A real run, the member's remote at `caf<NEL>e/IRRS.git`: cut at the
     NEL, the clone of `<t>/caf` failed (`CLONE FAILED`). It now clones from
@@ -439,17 +473,19 @@ def test_make_siblings_clones_from_a_url_holding_nel(family, tmp_path):
     assert not NEVER_RAW & set(result.stdout), result.stdout
 
 
+@pytest.mark.parametrize("name", ["members/a=b", "a=b"])
 def test_a_section_named_with_an_equals_sign_mounts_from_gitmodules(
-        family, tmp_path):
-    """Lane 3's `[submodule "members/a=b"]`: no url was read for it, so the
-    dry run named `https://github.com/InkRouter/IRRS.git (family.yaml
-    repository:)`, the remote this holder is not pinned against. It now
-    names the url `.gitmodules` gives. A dry run, so the old reading never
-    asks GitHub."""
+        family, tmp_path, name):
+    """Lane 3's `[submodule "members/a=b"]`, and `[submodule "a=b"]` as it
+    asked for the row on #690 (issuecomment-6232404184): no url was read for
+    it, so the dry run named `https://github.com/InkRouter/IRRS.git
+    (family.yaml repository:)`, the remote this holder is not pinned
+    against. It now names the url `.gitmodules` gives, as git, the doctor and
+    CI mount it. A dry run, so the old reading never asks GitHub."""
     holder = holder_in(family, tmp_path / NAME)
     url = gitmodules_url(holder, BENT)
     edit(holder / ".gitmodules", f'[submodule "members/{BENT}"]',
-         '[submodule "members/a=b"]')
+         f'[submodule "{name}"]')
     result = siblings(holder, "--dry-run")
     assert result.returncode == 0, result.stdout + result.stderr
     assert (f"  [{BENT}] would clone {url} (.gitmodules) -> "
