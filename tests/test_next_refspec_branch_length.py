@@ -33,6 +33,15 @@ helper `scaffold-project.py`, `family.py init` and `adopt-project.py` ask,
 refuses it before anything exists, `--dry-run` too. Where this disk makes the
 name, git is held to the same rows.
 
+THE TWO LIMITS ARE REACHED THROUGH THE TOOLS. `checked_value` admits only an
+ASCII alphabet, up to 255 characters, so a FIRST part of 251 to 253 bytes
+(`<253 a's>/x` is 255 characters) reaches the helper, and `scaffold-project.py`
+and `family.py init` complete a run with it: the reason the limit is 255 for
+a part before the last and not the issue's 250 throughout. And
+`adopt-project.py` asks the helper of `adopt_branch:` as well as
+`tracking_branch:`: on main a split branch of 251 checked `plan ok`, and
+`execute` made both leg repositories before git died on it.
+
 THE SAME FAMILY AS `tests/test_family.py`, in `on_main`'s private copy of the
 holder on its tracking branch, its `origin` made over to a bare repository
 of the test's own so no other test sees a branch pushed here.
@@ -49,8 +58,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import REPO, findings, git, write_plan
-from test_adopt_branch_names import TRACKING_KEY, with_branch, world  # noqa: F401
+from conftest import REPO, findings, git, refused_before_any_leg, write_plan
+from test_adopt_branch_names import (  # noqa: F401
+    SPLIT_KEY, TRACKING_KEY, adopter, with_branch, world,
+)
 from test_family import family, family_module, validate  # noqa: F401
 from test_family_printed_quoting import host_words
 from test_family_tracking_branch import (  # noqa: F401
@@ -218,6 +229,15 @@ def test_a_name_the_disk_cannot_hold_says_which_part_and_how_long(name, words):
     assert "at most 250 bytes" in remedy
     assert "255" in remedy
     assert "no length limit" in remedy
+    # What it says of how git stores the name: each part before the last is a
+    # directory, only the last is the file (and is locked as `<last>.lock`),
+    # and git fails when it first writes the branch, not at "the first commit".
+    assert "each part before the last a directory and the last part the file" \
+        in remedy
+    assert "`<last part>.lock`" in remedy
+    assert "line above says is too long" in remedy
+    assert "when it first writes the branch" in remedy
+    assert "first commit" not in remedy
 
 
 @pytest.mark.skipif(os.name == "nt", reason="a Windows path of this length is "
@@ -275,9 +295,16 @@ def test_family_init_refuses_a_tracking_branch_over_250_before_anything_is_made(
     assert_family_made_nothing(tmp_path)
 
 
-def test_a_dry_run_with_250_still_passes_in_both_tools(tmp_path):
-    """The other side of the row: 250 is held, so a plan is printed."""
-    name = A * 250
+#: Names the tools complete a run with: 250 bytes, and `<253 a's>/x`, 255
+#: characters, a first part over 250 that `checked_value` admits.
+COMPLETED = [pytest.param(A * 250, id="250-bytes"),
+             pytest.param(A * 253 + "/x", id="253-then-x")]
+
+
+@pytest.mark.parametrize("name", COMPLETED)
+def test_a_dry_run_with_a_name_the_disk_holds_still_passes_in_both_tools(
+        tmp_path, name):
+    """The other side of the row: the name is held, so a plan is printed."""
     for run in (scaffold, family_init):
         result = run(tmp_path, f"--tracking-branch={name}", dry_run=True)
         assert result.returncode == 0, result.stderr + result.stdout
@@ -286,13 +313,15 @@ def test_a_dry_run_with_250_still_passes_in_both_tools(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason="a Windows path of this length is "
                     "refused whatever the tool says")
+@pytest.mark.parametrize("name", COMPLETED)
 @pytest.mark.parametrize("tool, remote", [(scaffold, "Atlas.git"),
                                           (family_init, "Contoso.git")])
-def test_a_real_run_with_250_makes_every_remote_and_pushes_the_branch(
-        tmp_path, tool, remote):
+def test_a_real_run_with_a_name_the_disk_holds_makes_every_remote_and_pushes_it(
+        tmp_path, tool, remote, name):
     """THE CONTROL FOR THE LIMIT: where the check lets a name through, the run
-    goes to its end and the remote holds exactly that branch."""
-    name = A * 250
+    goes to its end and the remote holds exactly that branch. `<253 a's>/x` is
+    the row the 255 for a part before the last rests on: refusing it, as the
+    issue's 250 throughout would, refuses a name both tools complete with."""
     result = tool(tmp_path, f"--tracking-branch={name}")
     assert result.returncode == 0, result.stderr + result.stdout
     bare = tmp_path / "remotes" / remote
@@ -323,3 +352,29 @@ def test_adopt_refuses_the_same_name_in_plan_and_in_check(world, tmp_path):
     assert detail == (
         f"{TRACKING_KEY} is {shown(name)!r}, which is not a branch name git "
         "will create: it is 251 bytes long, and may be at most 250")
+
+
+#: `adopt_branch:` and a `/`-separated name whose last part is over the limit.
+SPLIT_NAMES = [pytest.param(A * 251, id="251-bytes"),
+               pytest.param("x/" + A * 251, id="last-part-251")]
+
+
+@pytest.mark.parametrize("name", SPLIT_NAMES)
+def test_adopt_refuses_a_long_split_branch_in_check_and_before_any_leg(
+        adopter, world, tmp_path, monkeypatch, name):
+    """THE SPLIT BRANCH, `adopt_branch:`, is asked the same helper. On main a
+    plan edited to a part over 250 checked `plan ok`, and `execute` made both
+    leg repositories (`Northwind-spec.git`, `Northwind-code.git`) and died in
+    the extraction, `...-spec/.git/refs/heads/aaa....lock': File name too
+    long`, with nothing rolled back. Now `check` finds `plan-bad-adopt-branch`
+    once, and `execute` refuses it as that finding before any leg exists: the
+    directory the legs go in is never made."""
+    plan = with_branch(world, tmp_path, SPLIT_KEY, name)
+    ((code, detail),) = findings(plan)
+    which = "it" if "/" not in name else "its last part"
+    assert code == "plan-bad-adopt-branch"
+    assert detail == (
+        f"{SPLIT_KEY} is {shown(name)!r}, which is not a branch name git will "
+        f"create: {which} is 251 bytes long, and may be at most 250")
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == "plan-bad-adopt-branch"

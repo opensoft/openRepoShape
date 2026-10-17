@@ -1208,13 +1208,14 @@ BRANCH_LOCK_SUFFIX = ".lock"
 #: prints it as it stands. `BRANCH_REMEDIATION` would send the person to
 #: `git check-ref-format --branch`, which accepts every such name.
 BRANCH_LENGTH_REMEDIATION = (
-    "Remediation: shorten the part the name above says is too long. Git "
-    "makes each part of a branch name a directory, and the last one a file "
-    f"as well, named `<part>{BRANCH_LOCK_SUFFIX}` while it locks the ref, "
-    "and a disk keeps a file or directory name to 255 bytes: the last part "
-    "may be at most 250 bytes and every other part at most 255. "
-    "`git check-ref-format` has no length limit, so it accepts such a name "
-    "and the first commit is where git fails.")
+    "Remediation: shorten the part of the name the line above says is too "
+    "long. Git keeps a branch as a file under `.git/refs/heads/`, each part "
+    "before the last a directory and the last part the file, and it locks "
+    f"the branch by first creating `<last part>{BRANCH_LOCK_SUFFIX}` beside "
+    "it; most disks keep a file or directory name to 255 bytes, so the last "
+    "part may be at most 250 bytes and every other part at most 255. "
+    "`git check-ref-format` has no length limit, so it accepts such a name, "
+    "and git fails only when it first writes the branch.")
 
 
 def _ask_git_branch(name: str) -> str:
@@ -1295,8 +1296,9 @@ def _branch_length_verdict(what: str, text: str) -> tuple[str | None, str]:
     already made: `fatal: cannot lock ref 'HEAD': Unable to create
     '.../refs/heads/aaa....lock': File name too long`. The limit is the
     disk's, not git's, so it is the one question here that is written down
-    and not asked of git. Each part of the name is a directory under
-    `refs/heads/` and the last one is also the file `<part>.lock`, so the
+    and not asked of git. Git keeps a branch as a file under `refs/heads/`:
+    each part before the last is a directory and the last part is the file,
+    which git locks by first creating `<last part>.lock` beside it. So the
     last part may be at most `NAME_MAX - len(".lock")` = 250 bytes and any
     other part `NAME_MAX` = 255 (measured: `<255 a's>/x` and `x/<250 a's>`
     are created, `x/<251 a's>` and `<251 a's>` are not). BYTES, as
