@@ -534,9 +534,14 @@ options:
                         but the clone, when `plan` writes no plan that records
                         it. One that cannot be made, or that this user cannot
                         write in when a source is cloned into it, is refused
-                        as `adopt-work-dir-unwritable`. One that already holds
-                        `source-readonly/<repo>`, where a source is cloned, is
-                        refused as `adopt-work-dir-occupied`.
+                        as `adopt-work-dir-unwritable`. Where a source is
+                        cloned, one whose `source-readonly` is a file or a
+                        symlink, or holds `<repo>` already, even empty, is
+                        refused as `adopt-work-dir-occupied`. Except on
+                        Windows, one that another user owns, or that every
+                        user can write in without the sticky bit, is refused
+                        as `adopt-work-dir-shared` before anything is made in
+                        it.
 ```
 
 #### `adopt-project.py check`
@@ -576,9 +581,14 @@ options:
                         it. One this user cannot write in is a finding,
                         `adopt-work-dir-unwritable`, and is refused under that
                         code where a source would be cloned into it or cannot
-                        be opened, as one that cannot be made is. One that
-                        already holds `source-readonly/<repo>`, where a source
-                        is cloned, is refused as `adopt-work-dir-occupied`.
+                        be opened, as one that cannot be made is. Where a
+                        source is cloned, one whose `source-readonly` is a
+                        file or a symlink, or holds `<repo>` already, even
+                        empty, is refused as `adopt-work-dir-occupied`. Except
+                        on Windows, one that another user owns, or that every
+                        user can write in without the sticky bit, is refused
+                        as `adopt-work-dir-shared` before anything is made in
+                        it.
 ```
 
 #### `adopt-project.py execute`
@@ -622,7 +632,10 @@ options:
                         refused as `adopt-work-dir-occupied`, and one that
                         cannot be made, or that this user cannot write in, as
                         `adopt-work-dir-unwritable`, before any leg repository
-                        exists.
+                        exists. Except on Windows, one that another user owns,
+                        or that every user can write in without the sticky
+                        bit, is refused as `adopt-work-dir-shared` before
+                        anything is made in it.
 ```
 
 ### `update-shape.py`

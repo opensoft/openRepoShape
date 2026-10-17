@@ -174,6 +174,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as _dt
+import errno
 import itertools
 import os
 import re
@@ -184,6 +185,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
@@ -1692,23 +1694,235 @@ def _occupied_clone_target(work_root: Path, path: Path, repository: str,
     first in the way out as its other early refusals say it; `execute` keeps
     the clone it makes, so the way out says that too."""
     held = path.relative_to(work_root).as_posix()
+    # An empty directory is refused too, since #803: the run that made it
+    # may be cloning into it now (#457's L1-98).
+    empty = "" if _holds_something(path) else "an empty directory, "
+    why = ("a run clones only into a directory it has just made, so that it "
+           "never takes another run's for its own" if empty else
+           "`git clone` clones only into a directory that is new or empty")
     detail = (f"--work-dir {_spelled(str(work_root))} already holds "
-              f"{_spelled(held)}, where this run clones {repository}, and "
-              "`git clone` clones only into a directory that is new or empty")
-    another = ("a --work-dir that does not hold it, or none: without one, "
-               "each run makes a new one.")
-    remedy = f"Pass {another}"
+              f"{_spelled(held)}, {empty}where this run clones {repository}, "
+              f"and {why}")
+    remedy = f"Pass {ANOTHER_WORK_DIR}"
     if taken:
         detail = f"{taken}; and {detail}"
         remedy = (f"It is no longer a whole clone: delete {_spelled(held)} "
                   "and run the command again, which clones it there anew; "
-                  f"or pass {another}")
+                  f"or pass {ANOTHER_WORK_DIR}")
     if done:
         remedy += (" An earlier `execute` given this --work-dir keeps the "
                    "clone it made there: where that is what it holds, delete "
                    "it once nothing in it is needed.")
     return Refusal("adopt-work-dir-occupied", detail,
                    f"Remediation: {done}{remedy}")
+
+
+#: The refusal of a `--work-dir`, or of the `source-readonly/` in it, that
+#: another user can rename or replace entries in (#803).
+WORK_DIR_SHARED = "adopt-work-dir-shared"
+#: The way out of a `--work-dir` that holds something in the clone's way.
+ANOTHER_WORK_DIR = ("a --work-dir that does not hold it, or none: without "
+                    "one, each run makes a new one.")
+#: The way out of a `--work-dir` another user can rename entries in.
+WORK_DIR_OWN = ("Pass a --work-dir this user owns and no other user can write "
+                "in, or none: without one, each run makes a new one.")
+#: Whether `_remove_a_tree` removes a clone relative to a descriptor of the
+#: `source-readonly/` it was made in, never through its path (#803): what
+#: `shutil.rmtree(dir_fd=)` does from Python 3.11, where this platform's
+#: `rmtree` walks by descriptor (`avoids_symlink_attacks`): Linux and macOS,
+#: never Windows.
+FD_REMOVAL = (sys.version_info >= (3, 11)
+              and shutil.rmtree.avoids_symlink_attacks
+              and hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW"))
+#: Why a clone this run made is not removed where its path leads to another
+#: directory now (`_NotTheClone`).
+NOT_THE_CLONE = ("what that path leads to now is not the directory this run "
+                 "made, so nothing is removed through it")
+
+
+class _Claim(NamedTuple):
+    """The directory `Source.clone` made for a clone, with an exclusive
+    `mkdir`, and what `_remove_a_tree` holds its removal to (#803): its
+    path as the run spells it; its real path and its identity (`st_dev`,
+    `st_ino`), read right after the `mkdir`; the identity of the
+    `source-readonly/` it is in; and whether this run made that too."""
+    path: Path
+    made_at: str
+    identity: tuple
+    parent_identity: tuple
+    made_parent: bool
+
+
+class _NotTheClone(Exception):
+    """A clone's path that no longer leads to the directory this run made,
+    and why, in words (#803). Nothing is removed through it."""
+
+
+def _identity(status: os.stat_result) -> tuple:
+    return status.st_dev, status.st_ino
+
+
+def _same_spelling(path: str, other: str) -> bool:
+    """Whether two real paths name one entry as this platform compares
+    names: `os.path.normcase` on both, so that on Windows the disk's case,
+    `Source-Readonly` as `ntpath.realpath` returns it, is the recorded
+    `source-readonly` (#803, #457's L1-102)."""
+    return os.path.normcase(path) == os.path.normcase(other)
+
+
+def _owner(uid: int) -> str:
+    """The user `uid` names, in backticks, or the id where none does. POSIX
+    only, as `_shared_with_another_user` asks it."""
+    import pwd
+    try:
+        return _spelled(pwd.getpwuid(uid).pw_name)
+    except KeyError:
+        return f"user id {uid}"
+
+
+def _shared_with_another_user(status: os.stat_result) -> str | None:
+    """Why another user can rename or replace what is in the directory
+    `status` describes, an `os.lstat`, in words; None where nobody else can
+    (#803). Another user owns it; or every user can write in it, and its
+    sticky bit, which keeps each entry to its owner as in `/tmp`, is not
+    set. GROUP WRITE IS NOT ASKED: under `umask 002` every directory a user
+    makes is group-writable, for a group of that user alone. NOR IS ANYTHING
+    ON WINDOWS, where neither the owner nor the mode bits say it."""
+    if not hasattr(os, "geteuid"):
+        return None
+    if status.st_uid != os.geteuid():
+        return f"is owned by {_owner(status.st_uid)}, not by this user"
+    if status.st_mode & stat.S_IWOTH and not status.st_mode & stat.S_ISVTX:
+        return "can be written in by every user, without the sticky bit"
+    return None
+
+
+def _shared_work_dir(detail: str, done: str, remedy: str) -> Refusal:
+    """`adopt-work-dir-shared` for `detail`; `done` is said first in the way
+    out, as `_work_dir_refusal` says it."""
+    return Refusal(WORK_DIR_SHARED, detail, f"Remediation: {done}{remedy}")
+
+
+def _what_is_there(held: Path, status: os.stat_result, leads: str) -> str:
+    """What is at `held`, a `source-readonly` that is no directory of the
+    work directory's own, in words: a symlink and what it holds, a file, or
+    a directory that leads elsewhere, as a Windows junction does."""
+    if stat.S_ISLNK(status.st_mode):
+        with contextlib.suppress(OSError):
+            return f"a symlink to {_spelled(os.readlink(held))}"
+        return "a symlink"
+    if stat.S_ISREG(status.st_mode):
+        return "a file"
+    if stat.S_ISDIR(status.st_mode):
+        return f"a directory that leads to {_spelled(leads)}"
+    return "neither a file nor a directory"
+
+
+def _source_readonly_refusal(work_root: Path, repository: str,
+                             done: str) -> Refusal | None:
+    """Why `<work_root>/source-readonly` cannot hold the clone of
+    `repository`, as the refusal; None where it can, or is not there yet
+    (#803). Asked before the NOTE, and before anything is made there.
+
+    It must be a directory of the work directory's own: no symlink, which
+    leads the clone and its removal elsewhere (#457's L1-99), and no file,
+    which ended each command in a `FileExistsError` traceback (L1-65), both
+    `adopt-work-dir-occupied`. No other user may be able to rename in it
+    (`_shared_with_another_user`): in a work directory every user can write
+    in, the user who made it first owns the clone's parent, and could turn
+    the clone, or its removal, onto another directory. That is
+    `adopt-work-dir-shared`. And this user must be able to make the clone's
+    directory in it, or it is `adopt-work-dir-unwritable`."""
+    held = work_root / SOURCE_READONLY
+    shown = _spelled(str(work_root))
+    try:
+        status = os.lstat(held)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return _work_dir_refusal(
+            f"--work-dir {shown} cannot hold `{SOURCE_READONLY}`, where this "
+            f"run clones {repository}: reading it failed "
+            f"({exc.strerror or exc})", done)
+    leads = os.path.realpath(held)
+    if not stat.S_ISDIR(status.st_mode) or not _same_spelling(
+            leads, os.path.join(os.path.realpath(work_root), SOURCE_READONLY)):
+        return Refusal(
+            "adopt-work-dir-occupied",
+            f"--work-dir {shown} already holds `{SOURCE_READONLY}`, "
+            f"{_what_is_there(held, status, leads)}, where this run clones "
+            f"{repository} into a directory of its own",
+            f"Remediation: {done}Pass {ANOTHER_WORK_DIR}")
+    shared = _shared_with_another_user(status)
+    if shared:
+        return _shared_work_dir(
+            f"--work-dir {shown} holds `{SOURCE_READONLY}`, which {shared}, "
+            "so another user could rename or replace the clone this run "
+            "makes in it", done, f"Pass {ANOTHER_WORK_DIR}")
+    if not os.access(held, os.W_OK | os.X_OK):
+        return _work_dir_refusal(
+            f"--work-dir {shown} holds `{SOURCE_READONLY}`, where this run "
+            f"clones {repository}, and this user cannot make a directory in "
+            "it", done)
+    return None
+
+
+def _made_source_readonly(work_root: Path, parent: Path, repository: str,
+                          done: str) -> bool:
+    """Make `parent`, `source-readonly/`, where nothing is there, and say
+    whether this run made it (#803). One another run made meanwhile is
+    asked as `_source_readonly_refusal` asks it, and any other failure is
+    `adopt-work-dir-unwritable`, by name, where it was a traceback (#457's
+    L1-65). Made 0755 whatever the umask: under `umask 0` it would be one
+    every user can rename in."""
+    if os.path.lexists(parent):
+        return False
+    try:
+        os.mkdir(parent, 0o755)
+        return True
+    except FileExistsError:
+        refused = _source_readonly_refusal(work_root, repository, done)
+    except OSError as exc:
+        refused = _work_dir_refusal(
+            f"--work-dir {_spelled(str(work_root))} cannot hold "
+            f"`{SOURCE_READONLY}`, where this run clones {repository}: "
+            f"making it failed ({exc.strerror or exc})", done)
+    if refused:
+        raise refused
+    return False
+
+
+def _claimed(work_root: Path, path: Path, repository: str,
+             done: str) -> _Claim:
+    """`path`, the directory `repository` is cloned into, made by THIS run
+    with an exclusive `mkdir` before `gh` runs (`git clone` clones into an
+    empty directory), and `source-readonly/` above it where it is not there:
+    the claim `_remove_a_tree` holds a removal to (#803).
+
+    ON MAIN THE TARGET WAS LISTED WHERE IT DID NOT EXIST YET, and made by
+    `git clone`. So two runs given one `--work-dir` could both list it: the
+    one whose clone failed removed the other's, which that run's plan
+    recorded (#457's L1-98). Now the `mkdir` decides which run it is, and
+    one made meanwhile by another run is refused as
+    `adopt-work-dir-occupied`. Made 0755 whatever the umask."""
+    made_parent = _made_source_readonly(work_root, path.parent, repository,
+                                        done)
+    try:
+        os.mkdir(path, 0o755)
+    except OSError as exc:
+        if made_parent:
+            with contextlib.suppress(OSError):
+                os.rmdir(path.parent)
+        if isinstance(exc, FileExistsError):
+            raise _occupied_clone_target(work_root, path, repository,
+                                         done=done) from None
+        raise _work_dir_refusal(
+            f"--work-dir {_spelled(str(work_root))} holds "
+            f"`{SOURCE_READONLY}`, where this run clones {repository}, and "
+            f"making `{path.name}` in it failed ({exc.strerror or exc})",
+            done) from None
+    return _Claim(path, os.path.realpath(path), _identity(os.lstat(path)),
+                  _identity(os.lstat(path.parent)), made_parent)
 
 
 def _not_a_whole_clone(path: Path, commit: str) -> str | None:
@@ -1790,8 +2004,9 @@ class Source:
         (`_unwritable_work_dir`), or None. It is refused as
         `adopt-work-dir-unwritable` before any directory is made or any clone
         is said (#650): `plan` ended in a PermissionError traceback at
-        `source-readonly`. Then a target that already holds something is
-        refused as `adopt-work-dir-occupied` (#652): `git clone` refuses it,
+        `source-readonly`. Then a target that is already there is refused as
+        `adopt-work-dir-occupied` (#652, #803): `git clone` refuses one that
+        holds something,
         and the refusal was `source-unclonable` with a remedy about `gh auth
         status`. `taken` is what that refusal says first, when the occupant
         is the plan's own clone (`Plan.open_source`), and `done` what
@@ -1799,29 +2014,39 @@ class Source:
         that says why the plan's clone is made again, printed.
 
         `made` is the list a command keeps of the clones it made, for
-        `_leave_the_clones`: the target is put on it before `gh` runs, where
-        it did not exist, with the REAL path it has now, which is the only
-        path `_leave_the_clones` will remove, and whether this run made
-        `source-readonly/` too."""
+        `_leave_the_clones`. THE TARGET IS CLAIMED BEFORE `gh` RUNS (#803):
+        `source-readonly/` must be a directory of the work directory's own
+        that no other user can rename in (`_source_readonly_refusal`), asked
+        with the writable check and before the NOTE; ANY target already
+        there is refused, an empty one included; and this run then makes it
+        with an exclusive `mkdir` (`_claimed`). Only that `_Claim` goes on
+        `made`, and `_remove_a_tree` removes only the directory it names.
+        `execute` lists none and keeps its clone, but where `gh` fails it
+        removes the directory its own `mkdir` made, after the same checks,
+        so that the run given the same --work-dir again is not refused at
+        an empty directory."""
         path = work_root / SOURCE_READONLY / repository.split("/")[1]
         if unwritable:
             raise _work_dir_refusal(unwritable)
-        if _holds_something(path):
+        refused = _source_readonly_refusal(work_root, repository, done)
+        if refused:
+            raise refused
+        if os.path.lexists(path):
             raise _occupied_clone_target(work_root, path, repository, taken,
                                          done)
         if note:
             print(note)
-        made_parent = not os.path.lexists(path.parent)
-        if made is not None and not os.path.lexists(path):
-            made.append((path, os.path.join(os.path.realpath(work_root),
-                                            SOURCE_READONLY, path.name),
-                         made_parent))
-        path.parent.mkdir(parents=True, exist_ok=True)
+        claim = _claimed(work_root, path, repository, done)
+        if made is not None:
+            made.append(claim)
         print(f"cloning {repository} (read only) into {path}")
         try:
             run(["gh", "repo", "clone", repository, str(path), "--",
                  "--quiet"])
         except CommandFailed as exc:
+            if made is None:
+                with contextlib.suppress(OSError, _NotTheClone):
+                    _remove_a_tree(claim)
             raise Refusal(
                 "source-unclonable",
                 f"could not clone {repository}: {exc.output.strip()[:400]}",
@@ -4635,7 +4860,8 @@ class Plan:
         existed, said the plan's repository is cloned again and read that
         directory instead."""
         if override:
-            return Source.open(override, work_root, unwritable, made, done)
+            return self._kept_at_the_record(
+                Source.open(override, work_root, unwritable, made, done), made)
         local_path = self.source.get("local_path")
         if local_path:
             return self._recorded_source(str(local_path), work_root,
@@ -4647,6 +4873,23 @@ class Plan:
                           "nor a repository")
         return Source.clone(repository, work_root, unwritable, made,
                             done=done)
+
+    def _kept_at_the_record(self, source: Source,
+                            made: list | None) -> Source:
+        """`source`, read from `--source`, with the clone this run made of it
+        taken off `made` where it is at the plan's own `source.local_path`
+        (#803, #457's L1-97): it is the plan's source again, as the clone
+        `_recorded_source` makes there is. On main `check` removed it, and
+        the next run cloned it once more."""
+        record = self.source.get("local_path")
+        if made and record:
+            try:
+                at = os.path.realpath(os.path.expanduser(str(record)))
+            except (OSError, ValueError):
+                return source
+            made[:] = [claim for claim in made
+                       if not _same_spelling(claim.made_at, at)]
+        return source
 
     def _recorded_repository(self) -> str | None:
         """The plan's `source.repository` as `_github_name` reads it, or None
@@ -12957,7 +13200,15 @@ def _work_root(args, done: str = "") -> Path:
     1, and on a loop Python 3.12's `Path.resolve` raised RuntimeError
     first; `os.path.realpath` is the same reading without that raise. The
     code and the way out are #524's, for one this user cannot write in;
-    `done` is what the refusing command left as it was, said first."""
+    `done` is what the refusing command left as it was, said first.
+
+    A `--work-dir` ANOTHER USER CAN RENAME IN IS REFUSED NEXT, before
+    anything is made in it (#803): one another user owns, or one every user
+    can write in without the sticky bit (`_shared_with_another_user`), as
+    `adopt-work-dir-shared`. There another user could replace the clone
+    `plan` reads, or turn the clone's removal onto a directory of theirs
+    (#457's L1-99), or the legs `execute` builds. Asked with `os.lstat` of
+    the real path; never on Windows."""
     if not getattr(args, "work_dir", None):
         root = Path(tempfile.mkdtemp(prefix="openreposhape-adopt-"))
         args.made_work_root = root
@@ -12965,10 +13216,17 @@ def _work_root(args, done: str = "") -> Path:
     root = Path(os.path.realpath(args.work_dir))
     try:
         root.mkdir(parents=True, exist_ok=True)
+        status = os.lstat(root)
     except OSError as exc:
         raise _work_dir_refusal(
             f"--work-dir {_spelled(str(root))} cannot be made: making it a "
             f"directory failed ({exc.strerror or exc})", done) from None
+    shared = _shared_with_another_user(status)
+    if shared:
+        raise _shared_work_dir(
+            f"--work-dir {_spelled(str(root))} {shared}, so another user "
+            "could rename or replace what this run makes in it", done,
+            WORK_DIR_OWN)
     return root
 
 
@@ -13011,33 +13269,161 @@ def _removed_if_it_holds_no_file(root: Path) -> bool:
     return True
 
 
-def _remove_a_tree(path: Path) -> None:
-    """`shutil.rmtree` of `path`. What git wrote READ-ONLY, a clone's packs
-    and loose objects, Windows refuses to unlink: a file or directory whose
-    unlink or rmdir fails gets its write bit ADDED, and is removed again.
-    Every other failure is raised as it was, and no mode is ever lowered
-    (#652's review, F4): the handler once set the mode to exactly
-    `S_IWRITE`, taking read and search away, and called whatever function
-    failed, `os.open` included, which ended in a TypeError traceback. A
-    symlink is never changed, since `chmod` would follow it. The handler's
-    keyword is `onexc` from Python 3.12, whose `onerror` warns."""
-    def writable_then_removed(remove, target, error):
-        if remove not in (os.unlink, os.remove, os.rmdir) \
-                or os.path.islink(target):
-            raise error if isinstance(error, BaseException) else error[1]
-        os.chmod(target, stat.S_IMODE(os.lstat(target).st_mode)
-                 | stat.S_IWRITE)
-        remove(target)
+def _writable_then_removed(remove, target, error) -> None:
+    """`shutil.rmtree`'s handler where a clone is removed by path. What git
+    wrote READ-ONLY, a clone's packs and loose objects, Windows refuses to
+    unlink: a file or directory whose unlink or rmdir fails gets its write
+    bit ADDED, and is removed again. Every other failure is raised as it
+    was, and no mode is ever lowered (#652's review, F4): the handler once
+    set the mode to exactly `S_IWRITE`, taking read and search away, and
+    called whatever function failed, `os.open` included, which ended in a
+    TypeError traceback. A symlink is never changed, since `chmod` would
+    follow it."""
+    if remove not in (os.unlink, os.remove, os.rmdir) \
+            or os.path.islink(target):
+        raise error if isinstance(error, BaseException) else error[1]
+    os.chmod(target, stat.S_IMODE(os.lstat(target).st_mode) | stat.S_IWRITE)
+    remove(target)
 
-    keyword = "onexc" if sys.version_info >= (3, 12) else "onerror"
-    shutil.rmtree(path, **{keyword: writable_then_removed})
+
+#: The keyword `_writable_then_removed` is given as: `onexc` from Python
+#: 3.12, whose `onerror` warns.
+REMOVAL_HANDLER = "onexc" if sys.version_info >= (3, 12) else "onerror"
+
+
+def _opened_directory(path: str) -> int | None:
+    """A descriptor of the directory at `path`, opened without following a
+    symlink there; None where nothing is there. A symlink or anything else
+    that is no directory is `_NotTheClone`."""
+    try:
+        return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise _NotTheClone(NOT_THE_CLONE) from None
+        raise
+
+
+def _status_at(where: str, dir_fd: int | None) -> os.stat_result | None:
+    """`os.lstat` of `where`, in the directory `dir_fd` where one is given;
+    None where nothing is there. A path through something that is no
+    directory is `_NotTheClone`."""
+    try:
+        return os.lstat(where, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    except NotADirectoryError:
+        raise _NotTheClone(NOT_THE_CLONE) from None
+
+
+def _held_to(status: os.stat_result, identity: tuple) -> None:
+    """`_NotTheClone` where `status`, an `lstat`, is not the directory
+    `identity` names: a symlink never is."""
+    if not stat.S_ISDIR(status.st_mode) or _identity(status) != identity:
+        raise _NotTheClone(NOT_THE_CLONE)
+
+
+def _removed_if_still(parent: str, identity: tuple) -> None:
+    """`os.rmdir` of `source-readonly/`, made by this run, where it is still
+    that directory and empty; and silently not, as on main (#652)."""
+    above, name = os.path.split(parent)
+    with contextlib.suppress(OSError, _NotTheClone):
+        held = _opened_directory(above) if FD_REMOVAL else None
+        where = name if held is not None else parent
+        try:
+            status = _status_at(where, held)
+            if status is not None:
+                _held_to(status, identity)
+                os.rmdir(where, dir_fd=held)
+        finally:
+            if held is not None:
+                os.close(held)
+
+
+def _remove_through_a_descriptor(claim: _Claim) -> None:
+    """`_remove_a_tree` where `FD_REMOVAL` holds: `source-readonly/` opened
+    once, never through a symlink, and held to its identity; the clone's
+    directory asked and removed relative to that descriptor alone."""
+    parent, name = os.path.split(claim.made_at)
+    held = _opened_directory(parent)
+    if held is None:
+        return
+    try:
+        _held_to(os.fstat(held), claim.parent_identity)
+        status = _status_at(name, held)
+        if status is not None:
+            _held_to(status, claim.identity)
+            shutil.rmtree(name, dir_fd=held)
+    finally:
+        os.close(held)
+    if claim.made_parent:
+        _removed_if_still(parent, claim.parent_identity)
+
+
+def _remove_by_path(claim: _Claim) -> None:
+    """`_remove_a_tree` where no removal by descriptor is had: Python 3.9
+    and 3.10, and Windows. The same checks, each with `os.lstat`, then
+    `shutil.rmtree` of the path, with `_writable_then_removed`."""
+    parent = os.path.dirname(claim.made_at)
+    status = _status_at(parent, None)
+    if status is not None:
+        _held_to(status, claim.parent_identity)
+        status = _status_at(claim.made_at, None)
+    if status is not None:
+        _held_to(status, claim.identity)
+        shutil.rmtree(claim.made_at,
+                      **{REMOVAL_HANDLER: _writable_then_removed})
+    if claim.made_parent:
+        _removed_if_still(parent, claim.parent_identity)
+
+
+def _remove_a_tree(claim: _Claim) -> None:
+    """Remove the directory `claim` names, and `source-readonly/` where
+    this run made that too, each only where it is still the directory this
+    run made (#803). Nothing at the path any more is nothing to remove;
+    anything else there is `_NotTheClone`, and nothing is removed through
+    it.
+
+    ON MAIN THE REAL PATH WAS ASKED, AND THEN THE PATH REMOVED: a
+    `source-readonly` swapped for a symlink between the two removed the
+    directory of that name wherever the link led (#457's L1-99 (b)). Now
+    the identity of each directory, `st_dev` and `st_ino` read right after
+    this run's `mkdir`, is asked of what is there, never through a symlink.
+    Where `FD_REMOVAL` holds, the removal is relative to the descriptor of
+    the `source-readonly/` so asked, so nothing renamed after the check
+    redirects it. Elsewhere, by path after the same checks, only someone
+    who can rename in the work directory, in its `source-readonly/` or in a
+    directory above them could swap one between the check and the
+    removal; `_work_root` and `_source_readonly_refusal` refuse the first
+    two before anything is made there."""
+    if FD_REMOVAL:
+        _remove_through_a_descriptor(claim)
+    else:
+        _remove_by_path(claim)
+
+
+def _why_kept(claim: _Claim) -> str | None:
+    """Remove the clone `claim` names (`_remove_a_tree`), and say why it is
+    not removed, in the words its NOTE ends with; None where it is."""
+    now = os.path.realpath(claim.path)
+    if not _same_spelling(now, claim.made_at):
+        return (f"is not removed: that path now leads to {_spelled(now)}, so "
+                "nothing is removed through it")
+    try:
+        _remove_a_tree(claim)
+    except _NotTheClone as kept:
+        return f"is not removed: {kept}"
+    except OSError as exc:
+        return (f"is kept: removing it failed ({exc.strerror or exc}). Delete "
+                "it once nothing in it is needed")
+    return None
 
 
 def _leave_the_clones(args) -> None:
     """Remove each clone of a source this command made that no plan records
-    (#652), however the command ended: `args.clones`, which `Source.clone`
-    fills for `plan` and `check`, each with the real path it had when it was
-    made and whether this run made `source-readonly/` too.
+    (#652), however the command ended: `args.clones`, the `_Claim` of each
+    directory `Source.clone` made for `plan` and `check`.
 
     ON MAIN EACH STAYED, and nothing said so: the clone `check --source
     <org/repo>` made, the one `check` made again where the plan's was gone,
@@ -13050,40 +13436,34 @@ def _leave_the_clones(args) -> None:
     WHAT IS NEVER REMOVED. A clone that a written plan records: once `plan`
     has written it (`args.plan_written`), whatever ends the run after, its
     report cut short by a closed pipe or Ctrl-C included (#652's review,
-    F2). `check` does not list a clone it made again at the plan's own
-    `local_path` (`Plan._recorded_source`). `execute` lists none: under
-    `--local-remote-dir` its clone IS the assembly the split is pushed into,
-    and the deletion command `adopt-branch-exists` prints runs in it; the
-    work directory it made is named on its last line (`_leave_the_work_root`).
-    A path is listed only where it did not exist before this run, so nothing
-    a person or an earlier run put there is. And a path is removed only
-    where its real path is still the one it had when it was made, so
-    nothing outside that work directory's own `source-readonly/` is: not
-    through a symlink or a junction there before the run, and not through
-    one put there during it, at the work directory or below (F1).
+    F2). `check` does not list a clone it made at the plan's own
+    `local_path` (`Plan._recorded_source`, `Plan._kept_at_the_record`).
+    `execute` lists none: under `--local-remote-dir` its clone IS the
+    assembly the split is pushed into, and the deletion command
+    `adopt-branch-exists` prints runs in it; the work directory it made is
+    named on its last line (`_leave_the_work_root`). A directory is listed
+    only where this run's own `mkdir` made it (#803), so nothing a person,
+    an earlier run or another run put there is. And it is removed only
+    where its path still leads to it, compared as the platform compares
+    names (#803), and where it is still the directory this run made
+    (`_remove_a_tree`), so nothing outside the work directory's own
+    `source-readonly/` is: not through a symlink or a junction there
+    before the run, and not through one put there during it.
 
-    A CLONE THAT CANNOT BE REMOVED IS NAMED, in a NOTE on stderr, and kept.
-    Nothing here raises: an exception the command raised reaches the
-    caller as it was, and the exit is the command's (F4)."""
+    A CLONE NOT REMOVED IS NAMED, in a NOTE on stderr: one that cannot be
+    removed, which is kept, and since #803 one whose path no longer leads
+    to it, where on main the skip said nothing (#457's L1-99 (a)). Nothing
+    here raises: an exception the command raised reaches the caller as it
+    was, and the exit is the command's (F4)."""
     if getattr(args, "plan_written", False):
         return
-    for path, made_at, made_parent in getattr(args, "clones", None) or ():
-        if os.path.realpath(path) != made_at:
-            continue
-        try:
-            if os.path.isdir(made_at):
-                _remove_a_tree(Path(made_at))
-        except OSError as exc:
+    for claim in getattr(args, "clones", None) or ():
+        why = _why_kept(claim)
+        if why:
             _flush_stdout()
             with contextlib.suppress(OSError, UnicodeError):
-                print(f"NOTE the clone this run made, {_spelled(made_at)}, "
-                      f"is kept: removing it failed ({exc.strerror or exc}). "
-                      "Delete it once nothing in it is needed.",
-                      file=sys.stderr)
-            continue
-        if made_parent:
-            with contextlib.suppress(OSError):
-                os.rmdir(os.path.dirname(made_at))
+                print(f"NOTE the clone this run made, "
+                      f"{_spelled(claim.made_at)}, {why}.", file=sys.stderr)
 
 
 def _leave_the_work_root(args, succeeded: bool) -> None:
@@ -13179,14 +13559,22 @@ def _work_dir_help(does: str, refused: str, but: str = "") -> str:
     return (f"{does} Default: a new directory in the system temp folder, "
             "removed when the run ends if it holds no file. A --work-dir "
             "you give is made where it is missing, and nothing in it is "
-            f"removed{but}. {refused}")
+            f"removed{but}. {refused} {WORK_DIR_SHARED_HELP}")
+
+
+#: What `_work_root` refuses in all three commands, said in each one's
+#: `--work-dir` help (#803).
+WORK_DIR_SHARED_HELP = (
+    "Except on Windows, one that another user owns, or that every user can "
+    "write in without the sticky bit, is refused as `adopt-work-dir-shared` "
+    "before anything is made in it.")
 
 
 #: What a work directory that holds the clone's directory is refused as, in
 #: `plan`'s and `check`'s `--work-dir` help (#652).
-CLONE_TARGET_HELD = ("One that already holds `source-readonly/<repo>`, where "
-                     "a source is cloned, is refused as "
-                     "`adopt-work-dir-occupied`.")
+CLONE_TARGET_HELD = ("Where a source is cloned, one whose `source-readonly` "
+                     "is a file or a symlink, or holds `<repo>` already, even "
+                     "empty, is refused as `adopt-work-dir-occupied`.")
 #: `--source`'s help on `check` and `execute`: how the source is read with
 #: it and without it (#652).
 SOURCE_OVERRIDE_HELP = (

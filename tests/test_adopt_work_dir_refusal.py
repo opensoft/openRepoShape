@@ -59,9 +59,11 @@ AGAIN = "again.yaml"
 MINE = "mine\n"
 #: Each command's codes for a `--work-dir`, which its help names.
 WORK_DIR_OCCUPIED = "adopt-work-dir-occupied"
-WORK_DIR_CODES = {PLAN_VERB: (WORK_DIR_UNWRITABLE, WORK_DIR_OCCUPIED),
-                  CHECK: (WORK_DIR_UNWRITABLE, WORK_DIR_OCCUPIED),
-                  EXECUTE: (WORK_DIR_UNWRITABLE, WORK_DIR_OCCUPIED)}
+#: One another user owns, or every user can write in (#803).
+WORK_DIR_SHARED = "adopt-work-dir-shared"
+WORK_DIR_CODES = {
+    command: (WORK_DIR_UNWRITABLE, WORK_DIR_OCCUPIED, WORK_DIR_SHARED)
+    for command in COMMANDS}
 NO_ORG = "adopt-no-org"
 #: How the NOTE about a recorded clone that is gone begins.
 GONE = "NOTE the plan's `source.local_path`, "

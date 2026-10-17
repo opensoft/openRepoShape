@@ -535,7 +535,10 @@ def test_plan_into_a_work_dir_holding_its_clone_is_refused_by_name(
 def test_a_clone_reached_through_a_symlink_is_never_removed(
         adopter, monkeypatch, capsys, tmp_path):
     """Nothing outside the work directory's own `source-readonly/` goes: a
-    `source-readonly` that is a symlink leads somewhere else."""
+    `source-readonly` that is a symlink leads somewhere else, so no clone
+    is made through it (#803). Until #803 the clone was made there and
+    kept, and nothing said so (#457's L1-99 (a)); the link's target is
+    named."""
     planned = planned_from_github(adopter, monkeypatch, tmp_path)
     work, elsewhere = tmp_path / WORK, tmp_path / "elsewhere"
     work.mkdir()
@@ -544,9 +547,15 @@ def test_a_clone_reached_through_a_symlink_is_never_removed(
         os.symlink(elsewhere, work / SOURCE_READONLY, target_is_directory=True)
     except OSError:
         pytest.skip("this machine makes no symlink")
-    assert run(adopter, capsys, CHECK, PLAN_FLAG, str(planned.plan),
-               SOURCE_FLAG, REPOSITORY, WORK_FLAG, str(work))[0] == 0
-    assert (elsewhere / PROJECT / ".git").is_dir()
+    code, _, err = run(adopter, capsys, CHECK, PLAN_FLAG, str(planned.plan),
+                       SOURCE_FLAG, REPOSITORY, WORK_FLAG, str(work))
+    assert code == 2, err
+    assert err.startswith(
+        f"{OCCUPIED}--work-dir {spelled(os.path.realpath(work))} already "
+        f"holds `{SOURCE_READONLY}`, a symlink to {spelled(elsewhere)}, where "
+        f"this run clones {REPOSITORY} into a directory of its own\n"), err
+    assert len(planned.calls) == 1
+    assert os.listdir(elsewhere) == []
 
 
 def test_a_clone_is_removed_where_a_read_only_file_cannot_be_unlinked(
@@ -566,6 +575,8 @@ def test_a_clone_is_removed_where_a_read_only_file_cannot_be_unlinked(
 
     monkeypatch.setattr(os, "unlink", as_windows)
     monkeypatch.setattr(os, "remove", as_windows)
+    # Nor, as on Windows, any removal by descriptor (#803).
+    monkeypatch.setattr(adopter, "FD_REMOVAL", False, raising=False)
     code, _, err = run(adopter, capsys, CHECK, PLAN_FLAG, str(planned.plan),
                        SOURCE_FLAG, REPOSITORY)
     assert code == 0, err
