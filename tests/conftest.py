@@ -296,6 +296,47 @@ def appended_to_command_scope(environ: Mapping[str, str],
     return added
 
 
+#: The two entries a Windows job holds, under keys no config of a machine this
+#: runs on sets.
+JOB_ENTRIES = [("test.heldone", "one"), ("test.heldtwo", "two")]
+
+
+def put_job_and_session_entries(monkeypatch) -> None:
+    """The environment holds, for the rest of the test, what the Windows job
+    sets (`JOB_ENTRIES`) and what the session fixture appends after them (the
+    two settings of `NO_AUTO_MAINTENANCE`), as a test that reads the
+    environment at its call finds it. `GIT_CONFIG_PARAMETERS` is taken away
+    first: git lists its entries after the count's, and a run started under
+    `git -c` holds some."""
+    monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)
+    held = appended_to_command_scope({}, JOB_ENTRIES)
+    for name, value in {**held, **appended_to_command_scope(
+            held, NO_AUTO_MAINTENANCE)}.items():
+        monkeypatch.setenv(name, value)
+
+
+def command_line_entries(listing: str) -> list:
+    """`key=value` of each entry in the command scope of a `git config
+    --show-origin --list` listing, in git's order."""
+    return [line.split("\t", 1)[1] for line in listing.splitlines()
+            if line.startswith("command line:")]
+
+
+def command_scope_at(environ: Mapping[str, str], cwd: Path) -> list:
+    """The entries git reads from its command scope under `environ` laid over
+    this process's own (`command_line_entries` of `git config --show-origin
+    --list`, run in `cwd` and read, never written). `GIT_CONFIG_PARAMETERS`
+    is taken away, as `put_job_and_session_entries` does."""
+    laid = {name: value for name, value in os.environ.items()
+            if name != "GIT_CONFIG_PARAMETERS"}
+    shown = subprocess.run(
+        ["git", "config", "--show-origin", "--list"], cwd=str(cwd),
+        env={**laid, **environ}, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False)
+    assert shown.returncode == 0, shown.stderr + shown.stdout
+    return command_line_entries(shown.stdout)
+
+
 def home_is_known() -> bool:
     """Whether git can expand a `~/` path: `HOME` is set, or this is Windows,
     where Git for Windows finds a home of its own."""

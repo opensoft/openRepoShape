@@ -23,7 +23,9 @@ WHAT IS MEASURED, on a pasted `submodule update --init` of an empty mount:
   `submodule.<name>.url` the superproject records, keep the plain path.
 
 Each test here asks one of those of git, and the last holds every `paste` of
-`test_doctor_legs_members_next.py` to handing the remotes it can clone from.
+`test_doctor_legs_members_next.py` to handing the remotes of a fixture its test
+takes: a call of `remotes_of` on `holder` or `scaffolded_here`, not a count of
+the arguments.
 """
 
 from __future__ import annotations
@@ -35,8 +37,9 @@ from pathlib import Path
 import pytest
 
 from conftest import (NO_AUTO_MAINTENANCE, WINDOWS_SKIP,
-                      appended_to_command_scope, assert_read_through_git,
-                      assert_store_read_through_git, git, insteadof_entries)
+                      assert_read_through_git, assert_store_read_through_git,
+                      command_line_entries, git, insteadof_entries,
+                      put_job_and_session_entries)
 from test_doctor_legs_members_next import (
     FAMILY_MEMBER, holder_copy, holder_without, make_empty_mount,
     member_unbootstrapped, paste, remotes_of, row_of)
@@ -123,21 +126,13 @@ def test_the_rewrite_follows_the_entries_the_environment_holds(
     """The Windows job's two entries and the session's two settings, put in
     the environment after the doctor tests were imported, come first; then
     `protocol.file.allow`; then each `insteadOf` entry `read_through_git`
-    would add, in its order. `GIT_CONFIG_PARAMETERS` is taken away first:
-    git lists its entries after the count's."""
-    monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)
-    held = appended_to_command_scope(
-        {}, [("test.heldone", "one"), ("test.heldtwo", "two")])
-    for name, value in {**held, **appended_to_command_scope(
-            held, NO_AUTO_MAINTENANCE)}.items():
-        monkeypatch.setenv(name, value)
+    would add, in its order. (`put_job_and_session_entries` puts the first
+    four there.)"""
+    put_job_and_session_entries(monkeypatch)
     remotes = remotes_of(scaffolded_here)
     shown = paste({"next": "git config --show-origin --list"},
                   tmp_path / "elsewhere", remotes)
     assert shown.returncode == 0, shown.stderr + shown.stdout
-    from_the_command_line = [
-        line.split("\t", 1)[1] for line in shown.stdout.splitlines()
-        if line.startswith("command line:")]
 
     def as_listed(key: str, value: str) -> str:
         """git lists the variable name lower-cased, and the URL in the
@@ -145,7 +140,7 @@ def test_the_rewrite_follows_the_entries_the_environment_holds(
         section, _, name = key.rpartition(".")
         return f"{section}.{name.lower()}={value}"
 
-    assert from_the_command_line == [
+    assert command_line_entries(shown.stdout) == [
         "test.heldone=one", "test.heldtwo=two",
         *(f"{key}={value}" for key, value in NO_AUTO_MAINTENANCE),
         "protocol.file.allow=always",
@@ -153,13 +148,56 @@ def test_the_rewrite_follows_the_entries_the_environment_holds(
           for key, prefix in insteadof_entries(remotes))]
 
 
+#: The session fixtures whose remotes a pasted root was made from.
+REMOTE_FIXTURES = ("holder", "scaffolded_here")
+
+
+def remotes_fixture(call: ast.Call, params: frozenset):
+    """The fixture a `paste` call hands the remotes of: the name `remotes_of`
+    is called on in its third argument, or its `remotes=`, where that name is
+    one of `REMOTE_FIXTURES` and a parameter of the function the call is in.
+    None for anything else: no third argument, `None`, another call, an
+    expression on the call, or a name the test does not take."""
+    given = call.args[2:3] or [keyword.value for keyword in call.keywords
+                               if keyword.arg == "remotes"]
+    if not given or not isinstance(given[0], ast.Call):
+        return None
+    handed = given[0]
+    if not (isinstance(handed.func, ast.Name)
+            and handed.func.id == "remotes_of"
+            and len(handed.args) == 1 and not handed.keywords
+            and isinstance(handed.args[0], ast.Name)):
+        return None
+    fixture = handed.args[0].id
+    if fixture in REMOTE_FIXTURES and fixture in params:
+        return fixture
+    return None
+
+
 def pastes_in(path: Path) -> list:
-    """Each call of `paste` in the Python file at `path`, as `(line, number of
-    arguments it is given)`: positional ones and keywords alike."""
-    return [(node.lineno, len(node.args) + len(node.keywords))
-            for node in ast.walk(ast.parse(path.read_bytes()))
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "paste"]
+    """Each call of `paste` in the Python file at `path`, as `(line,
+    fixture)` (`remotes_fixture`), in the order of the lines."""
+    found = []
+
+    def visit(node, params: frozenset) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            params = frozenset(
+                arg.arg for arg in (*node.args.posonlyargs, *node.args.args,
+                                    *node.args.kwonlyargs))
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "paste"):
+            found.append((node.lineno, remotes_fixture(node, params)))
+        for child in ast.iter_child_nodes(node):
+            visit(child, params)
+
+    visit(ast.parse(path.read_bytes()), frozenset())
+    return sorted(found, key=lambda each: each[0])
+
+
+def pastes_without_remotes(path: Path) -> list:
+    """The line of each `paste` in the file at `path` that is not handed the
+    remotes of a fixture its test takes (`remotes_fixture`)."""
+    return [line for line, fixture in pastes_in(path) if fixture is None]
 
 
 def test_every_paste_of_the_doctor_tests_is_handed_the_remotes():
@@ -167,22 +205,67 @@ def test_every_paste_of_the_doctor_tests_is_handed_the_remotes():
     so the rewrite is the only way its clone of a mount is read through git,
     and a call that leaves it out is not told apart from one that is by any
     test of the line. Every `paste` in `test_doctor_legs_members_next.py`
-    names the remotes the root was made from (`remotes_of`)."""
-    found = pastes_in(Path(__file__).resolve().parent
-                      / "test_doctor_legs_members_next.py")
-    assert found, "no `paste` call was found: the walk reads the wrong file"
-    assert [line for line, given in found if given < 3] == []
+    names the remotes of a fixture its test takes, `remotes_of(holder)` or
+    `remotes_of(scaffolded_here)`: a count of its arguments would let `None`
+    through."""
+    doctor = (Path(__file__).resolve().parent
+              / "test_doctor_legs_members_next.py")
+    assert pastes_in(doctor), (
+        "no `paste` call was found: the walk reads the wrong file")
+    assert pastes_without_remotes(doctor) == []
+
+
+def test_the_walk_lists_the_pastes_that_are_not_handed_the_remotes(tmp_path):
+    walked = tmp_path / "walked.py"
+    walked.write_bytes(
+        b"def test_a(holder):\n"
+        b"    paste(row, cwd, remotes_of(holder))\n"
+        b"    paste(row, cwd, None)\n"
+        b"    paste(row, cwd)\n")
+    assert pastes_without_remotes(walked) == [3, 4]
+
+
+#: `paste` calls in a test that takes `holder`, `scaffolded_here` and
+#: `tmp_path`, as `(source, what the walk names)`.
+HANDS = [
+    ("paste(row, cwd)", None),
+    ("paste(row, cwd, None)", None),
+    ("paste(row, cwd, remotes=None)", None),
+    ("paste(row, cwd, remotes_of(holder))", "holder"),
+    ("paste(row, cwd, remotes=remotes_of(scaffolded_here))",
+     "scaffolded_here"),
+    ("x = paste(row_of(a, b, 'legs'), cwd,\n          remotes_of(holder))",
+     "holder"),
+    ("paste(row, cwd, remotes)", None),
+    ("paste(row, cwd, other(holder))", None),
+    ("paste(row, cwd, remotes_of(holder) / 'x')", None),
+    ("paste(row, cwd, remotes_of(holder, 1))", None),
+    ("paste(row, cwd, remotes_of(tmp_path))", None),
+    ("paste(row, cwd, remotes_of(project))", None),
+]
+
+
+@pytest.mark.parametrize("hand, expected", HANDS, ids=[
+    "without", "none", "keyword-none", "holder", "keyword", "over-two-lines",
+    "a-name", "another-call", "an-expression", "two-arguments",
+    "a-parameter-that-is-not-a-remote-fixture",
+    "a-name-that-is-not-a-remote-fixture"])
+def test_the_walk_names_the_fixture_each_paste_is_handed(
+        tmp_path, hand, expected):
+    walked = tmp_path / "walked.py"
+    walked.write_bytes(("def test_x(holder, scaffolded_here, tmp_path):\n"
+                        "    " + hand + "\n").encode("utf-8"))
+    assert pastes_in(walked) == [(2, expected)]
 
 
 @pytest.mark.parametrize("source, expected", [
-    ("paste(row, cwd)", [(1, 2)]),
-    ("paste(row, cwd, remotes_of(holder))", [(1, 3)]),
-    ("paste(row, cwd, remotes=remotes)", [(1, 3)]),
-    ("x = paste(row_of(a, b, 'legs'), cwd,\n          remotes_of(here))",
-     [(1, 3)]),
     ("pasted(row, cwd)", []),
-], ids=["without", "positional", "keyword", "over-two-lines", "other-name"])
-def test_the_walk_counts_what_each_paste_is_given(tmp_path, source, expected):
+    ("paste(row, cwd, remotes_of(holder))", [(1, None)]),
+    ("def a(holder):\n    def b(scaffolded_here):\n"
+     "        paste(r, c, remotes_of(holder))\n"
+     "    paste(r, c, remotes_of(holder))\n", [(3, None), (4, "holder")]),
+], ids=["other-name", "outside-a-function", "the-nearest-function"])
+def test_the_walk_reads_the_function_a_paste_is_in(tmp_path, source, expected):
     walked = tmp_path / "walked.py"
     walked.write_bytes(source.encode("utf-8"))
     assert pastes_in(walked) == expected

@@ -74,8 +74,10 @@ def paste_env(remotes: Path | None = None) -> dict:
     for the directory resolved, which is how `.gitmodules` records each url.
     A mount a pasted `git submodule update --init` clones from a plain path
     gets git's LOCAL clone, which links the remote's loose objects one file
-    at a time (#440); the rewrite sends it through `upload-pack`, which reads
-    the object store, and the clone's `origin` keeps the plain path.
+    at a time (#440) and starts `upload-pack` only to list the refs. With the
+    rewrite the objects arrive as a pack (`pack-objects`, `index-pack`) that
+    `upload-pack` reads from the object store, and the clone's `origin` keeps
+    the plain path.
 
     BUILT AT THE CALL, from the `os.environ` of that moment, and the file
     protocol is APPENDED to the `GIT_CONFIG_COUNT` entries it holds
@@ -129,9 +131,10 @@ def paste(row: dict, cwd: Path,
           remotes: Path | None = None) -> subprocess.CompletedProcess:
     """The row's NEXT exactly as it was printed, in a POSIX shell, from a
     directory that is not the root, under `paste_env(remotes)`: every
-    caller that pastes a root made from the fixtures hands `remotes`
-    (`remotes_of`), and `tests/test_doctor_paste_through_git.py` holds each
-    of them to it."""
+    caller that pastes a root made from the fixtures hands `remotes`, as
+    `remotes_of(holder)` or `remotes_of(scaffolded_here)` on a fixture its
+    test takes, and `tests/test_doctor_paste_through_git.py` holds each of
+    them to that."""
     cwd.mkdir(exist_ok=True)
     return subprocess.run(["sh", "-c", row["next"]], cwd=str(cwd),
                           capture_output=True, text=True, encoding="utf-8",

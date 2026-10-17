@@ -41,8 +41,10 @@ from pathlib import Path
 import pytest
 
 from conftest import (NO_AUTO_MAINTENANCE, ORG, PROJECT, SCAFFOLD,
-                      WINDOWS_SKIP, appended_to_command_scope, git,
-                      home_is_known, run_script, session_global_config)
+                      WINDOWS_SKIP, appended_to_command_scope,
+                      command_line_entries, command_scope_at, git,
+                      home_is_known, put_job_and_session_entries, run_script,
+                      session_global_config)
 from test_doctor_legs_members_next import paste
 
 #: The verbs auto maintenance runs as: `git maintenance run --auto`, and
@@ -308,21 +310,12 @@ def test_a_pasted_line_keeps_the_entries_the_environment_holds_at_the_call(
     `protocol.file.allow` the paste adds for its own sake, and reads the two
     settings from the session's global file too. On the base it listed that
     one alone, and no global file: the import-time copy held none of it.
-    `GIT_CONFIG_PARAMETERS` is taken away first: git lists its entries
-    after the count's, and a run started under `git -c` holds some."""
-    monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)
-    held = appended_to_command_scope(
-        {}, [("test.heldone", "one"), ("test.heldtwo", "two")])
-    for name, value in {**held, **appended_to_command_scope(
-            held, NO_AUTO_MAINTENANCE)}.items():
-        monkeypatch.setenv(name, value)
+    (`put_job_and_session_entries` puts them there.)"""
+    put_job_and_session_entries(monkeypatch)
     shown = paste({"next": "git config --show-origin --list"},
                   tmp_path / "elsewhere")
     assert shown.returncode == 0, shown.stderr + shown.stdout
-    from_the_command_line = [
-        line.split("\t", 1)[1] for line in shown.stdout.splitlines()
-        if line.startswith("command line:")]
-    assert from_the_command_line == [
+    assert command_line_entries(shown.stdout) == [
         "test.heldone=one", "test.heldtwo=two",
         *(f"{key}={value}" for key, value in NO_AUTO_MAINTENANCE),
         "protocol.file.allow=always"]
@@ -331,24 +324,37 @@ def test_a_pasted_line_keeps_the_entries_the_environment_holds_at_the_call(
             shown.stdout.splitlines()
 
 
+def test_the_helpers_put_git_config_parameters_aside(monkeypatch, tmp_path):
+    """A run started under `git -c` holds `GIT_CONFIG_PARAMETERS`, which git
+    lists after the count's entries: the control is git, listing it. The
+    helper that puts the job's and the session's entries in the environment
+    takes it away, and so does the one that reads the command scope."""
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'probe.param'='p'")
+    listed = git("config", "--show-origin", "--list", cwd=tmp_path).stdout
+    assert "probe.param=p" in command_line_entries(listed)
+    assert "probe.param=p" not in command_scope_at({}, tmp_path)
+    put_job_and_session_entries(monkeypatch)
+    assert "GIT_CONFIG_PARAMETERS" not in os.environ
+
+
 #: The files beside this one (every `.py`, `conftest.py` and the helper
 #: modules too) that may set a count of their own, and how many times: a count
 #: written out as a number, worked out (`str(held + 1)`), or counted from
 #: nothing (`appended_to_command_scope({}, ...)`).
 #: - `conftest.py` works its count out ONCE, in `appended_to_command_scope`:
-#:   the one place that does, so that no other has to (#835).
+#:   the one place that does, so that no other has to (#835). It counts from
+#:   nothing once too, for the job's two entries
+#:   (`put_job_and_session_entries`).
 #: - The rest are tests that BUILD an environment holding entries, to see that
 #:   the code under test keeps them: this file's test of
-#:   `appended_to_command_scope` writes its two out, and the test above starts
-#:   from none; `test_adopt_git_reads.py` and `test_clone_just_pushed.py` do
-#:   the same for `command_scope` and for `read_through_git`, and
+#:   `appended_to_command_scope` writes its two out;
+#:   `test_adopt_git_reads.py` and `test_clone_just_pushed.py` do the same for
+#:   `command_scope` and for `read_through_git`, and
 #:   `test_family_config_appends.py` for the family tests' three helpers, from
-#:   a job's two entries and from an empty count, and
-#:   `test_doctor_paste_through_git.py` for `paste()`'s rewrite.
-OWN_COUNTS = {"conftest.py": 1, "test_no_auto_maintenance.py": 2,
+#:   a job's two entries and from an empty count.
+OWN_COUNTS = {"conftest.py": 2, "test_no_auto_maintenance.py": 1,
               "test_adopt_git_reads.py": 1, "test_clone_just_pushed.py": 1,
-              "test_family_config_appends.py": 2,
-              "test_doctor_paste_through_git.py": 1}
+              "test_family_config_appends.py": 2}
 
 COUNT = "GIT_CONFIG_COUNT"
 APPENDER = "appended_to_command_scope"
@@ -486,11 +492,19 @@ def counts_set_to_a_number(source: bytes) -> list:
     call or arithmetic is one worked out, and a value held in a name, read by
     subscript or returned by any other call is not read. The read half of an
     append (`int(env.get("GIT_CONFIG_COUNT", "0"))`) sets nothing and is not
-    one of them; the count it works out is."""
+    one of them; the count it works out is. Nor is a dict that is an operand
+    of a comparison (`assert added == {"GIT_CONFIG_COUNT": str(held + 1)}`):
+    it is the value a test expects, and it sets nothing."""
     tree = ast.parse(source)
     names = names_of_the_count(tree)
+    expected = {id(operand) for node in ast.walk(tree)
+                if isinstance(node, ast.Compare)
+                for operand in (node.left, *node.comparators)
+                if isinstance(operand, ast.Dict)}
     lines = []
     for node in ast.walk(tree):
+        if id(node) in expected:
+            continue
         reader = READERS.get(type(node))
         if reader:
             lines += reader(node, names)
@@ -520,12 +534,18 @@ def counts_set_to_a_number(source: bytes) -> list:
     '{"GIT_CONFIG_COUNT": "{}".format(held + 1)}',
     '{"GIT_CONFIG_COUNT": "%d" % (held + 1)}',
     'CONFIG_COUNT = "GIT_CONFIG_COUNT"; env[CONFIG_COUNT] = str(held + 1)',
+    'assert run(env={"GIT_CONFIG_COUNT": "1"}).returncode == 0',
+    'assert run({"GIT_CONFIG_COUNT": str(held + 1)})',
+    'sent = {"GIT_CONFIG_COUNT": "1"}; assert env == sent',
+    'assert x == {"GIT_CONFIG_COUNT": "1"} or run({"GIT_CONFIG_COUNT": "2"})',
 ], ids=["dict", "keyword", "setenv", "a-bare-setenv", "setdefault", "putenv",
         "subscript", "nothing", "a-name-bound-to-it", "an-annotated-name",
         "a-name-by-subscript", "appended-to-nothing", "through-a-module",
         "worked-out", "worked-out-keyword", "worked-out-setenv",
         "str-in-a-setenv", "worked-out-subscript", "an-f-string",
-        "a-format-call", "a-percent-format", "worked-out-in-a-bound-name"])
+        "a-format-call", "a-percent-format", "worked-out-in-a-bound-name",
+        "a-dict-in-a-call-in-an-assert", "a-dict-in-an-assert-not-compared",
+        "a-dict-set-before-the-comparison", "the-dict-that-is-not-compared"])
 def test_the_scan_sees_each_way_a_test_can_set_a_count(source):
     assert counts_set_to_a_number(source.encode("utf-8")) == [1]
 
@@ -575,12 +595,18 @@ def test_the_scan_names_each_helper_that_worked_its_count_out(name):
     '"GIT_CONFIG_COUNT is 1"',
     'KEY = "GIT_CONFIG_KEY_0"; env = {KEY: "1"}',
     '{"GIT_CONFIG_KEY_0": str(held + 1)}',
+    '{"GIT_CONFIG_COUNT": count_of(env)}',
     'appended_to_command_scope(os.environ, [("k", "v")])',
     'appended_to_command_scope(held, [("k", "v")])',
+    'assert added == {"GIT_CONFIG_COUNT": str(held + 1), "A": "b"}',
+    'assert {"GIT_CONFIG_COUNT": "2"} == added',
+    'same = env != {"GIT_CONFIG_COUNT": str(saved)}',
 ], ids=["a-splat", "a-read-with-a-default", "a-name", "a-name-in-a-dict",
         "a-subscript", "a-get-call", "a-sentence",
         "a-name-bound-to-another-key", "arithmetic-for-another-key",
-        "appended-to-the-environment", "appended-to-a-name"])
+        "a-call-by-a-bare-name", "appended-to-the-environment",
+        "appended-to-a-name", "an-expected-dict-worked-out",
+        "an-expected-dict-on-the-left", "a-dict-compared-with-not-equal"])
 def test_the_scan_leaves_what_it_does_not_read(source):
     """A value held in a name, read by subscript or returned by a call that
     does not build a string is not read, and nor is a key that is not the
@@ -617,17 +643,21 @@ def test_the_walk_reads_every_python_file_and_holds_each_to_its_count(
         "test_no_auto_maintenance.py": [1, 2, 3]}
 
 
-def test_the_walk_lets_conftest_work_its_count_out_once_and_no_one_else(
+def test_the_walk_lets_conftest_hold_its_two_counts_and_no_one_else_a_sum(
         tmp_path):
     """`conftest.py` holds the one place a count is worked out
-    (`appended_to_command_scope`): a second is named, and so is the file
-    that loses it, and a helper module that works one out is named too."""
+    (`appended_to_command_scope`) and the one that counts from nothing
+    (`put_job_and_session_entries`): a third is named, and so is the file
+    that loses either, and a helper module that works one out is named too."""
     worked = b'{"GIT_CONFIG_COUNT": str(held + 1)}\n'
-    (tmp_path / "conftest.py").write_bytes(worked)
+    from_nothing = b'appended_to_command_scope({}, [])\n'
+    (tmp_path / "conftest.py").write_bytes(worked + from_nothing)
     (tmp_path / "gh_guard.py").write_bytes(worked)
     assert files_off_their_count(tmp_path) == {"gh_guard.py": [1]}
-    (tmp_path / "conftest.py").write_bytes(worked * 2)
-    assert files_off_their_count(tmp_path)["conftest.py"] == [1, 2]
+    (tmp_path / "conftest.py").write_bytes(worked + from_nothing + worked)
+    assert files_off_their_count(tmp_path)["conftest.py"] == [1, 2, 3]
+    (tmp_path / "conftest.py").write_bytes(worked)
+    assert files_off_their_count(tmp_path)["conftest.py"] == [1]
     (tmp_path / "conftest.py").write_bytes(b"")
     assert files_off_their_count(tmp_path)["conftest.py"] == []
 

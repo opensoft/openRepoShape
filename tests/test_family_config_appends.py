@@ -19,27 +19,27 @@ none of them repeats it, and these tests hold what each returns:
 from __future__ import annotations
 
 import os
-import subprocess
-from pathlib import Path
 
 import pytest
 
-from conftest import appended_to_command_scope
+from conftest import JOB_ENTRIES, appended_to_command_scope, command_scope_at
 import test_family_add_spellings_remedies as spellings
 from test_family_bootstrap_gate_order import with_config
 from test_family_head_lost_gitmodules import on_disk
 
-#: The two entries a job holds, under keys no config of a machine this runs
-#: on sets, and an empty count. Each is built on purpose, to see that the
-#: helper keeps what it is given (`OWN_COUNTS` allows this file the two).
-HELD = appended_to_command_scope(
-    {}, [("test.heldone", "one"), ("test.heldtwo", "two")])
+#: The two entries a job holds (`JOB_ENTRIES`), and an empty count. Each is
+#: built on purpose, to see that the helper keeps what it is given
+#: (`OWN_COUNTS` allows this file the two).
+HELD = appended_to_command_scope({}, JOB_ENTRIES)
 EMPTY = {"GIT_CONFIG_COUNT": ""}
 
 #: The helpers that take an environment and return it with one more entry:
-#: each as a call of `env`, and the `key=value` it adds.
+#: each as a call of `env`, and the `key=value` it adds. `on_disk` is given
+#: both values the disks of the family tests (`DISKS`) give it.
 ADDERS = {
     "on_disk": (lambda env: on_disk(env, "true"), "core.ignorecase=true"),
+    "on_disk-false": (lambda env: on_disk(env, "false"),
+                      "core.ignorecase=false"),
     "with_config": (lambda env: with_config(env, "test.added", "yes"),
                     "test.added=yes"),
 }
@@ -48,29 +48,13 @@ ADDERS = {
 FILE_ALLOWED = "protocol.file.allow=always"
 
 
-def in_command_scope(environ: dict, tmp_path: Path) -> list:
-    """`key=value` of each entry git reads from the command scope under
-    `environ`, in git's order, from `git config --show-origin --list`.
-    `GIT_CONFIG_PARAMETERS` is taken away: git lists its entries after the
-    count's, and a run started under `git -c` holds some."""
-    laid = {name: value for name, value in os.environ.items()
-            if name != "GIT_CONFIG_PARAMETERS"}
-    shown = subprocess.run(
-        ["git", "config", "--show-origin", "--list"], cwd=str(tmp_path),
-        env={**laid, **environ}, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", check=False)
-    assert shown.returncode == 0, shown.stderr + shown.stdout
-    return [line.split("\t", 1)[1] for line in shown.stdout.splitlines()
-            if line.startswith("command line:")]
-
-
 @pytest.mark.parametrize("helper", ADDERS)
 def test_a_helper_adds_one_entry_after_the_two_a_job_holds(helper, tmp_path):
     adder, added = ADDERS[helper]
     assert HELD["GIT_CONFIG_COUNT"] == "2", HELD
     env = adder(HELD)
     assert env["GIT_CONFIG_COUNT"] == "3", env
-    assert in_command_scope(env, tmp_path) == [
+    assert command_scope_at(env, tmp_path) == [
         "test.heldone=one", "test.heldtwo=two", added]
 
 
@@ -102,7 +86,7 @@ def test_the_typing_helper_adds_one_entry_for_the_typing_alone(
     monkeypatch.setattr(spellings, "typed_as_printed", typing)
     assert spellings.typed_with_local_remotes(
         monkeypatch, tmp_path, "said") == ["typed"]
-    assert in_command_scope(seen, tmp_path) == (
+    assert command_scope_at(seen, tmp_path) == (
         ["test.heldone=one", "test.heldtwo=two", FILE_ALLOWED]
         if held == "two" else [FILE_ALLOWED])
     assert dict(os.environ) == before
