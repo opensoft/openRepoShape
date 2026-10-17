@@ -166,7 +166,6 @@ from typing import NamedTuple
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    free_plan_secret_hint,
     COMMIT_RE, PROJECT_ID_RE, PYTHON, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError, checked_value,
     double_quoted, git_out, load_yaml, parse_yaml, recorded_gitlink,
@@ -199,6 +198,11 @@ from shape_materialize import unwritable_reason  # noqa: E402
 # the scaffold and `adopt-project.py` hold a leg's mount path to, asked of a
 # path of one segment.
 from shape_materialize import _unmountable_reason  # noqa: E402
+# A reused holder's own visibility and the Free-plan secrets note, asked as
+# the scaffold asks them of its root (#660).
+from shape_materialize import (  # noqa: E402
+    free_plan_secrets_note, repository_visibility,
+)
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -589,6 +593,14 @@ def _member_url(repository: str, local_remote_dir: Path | None) -> str:
                 f"{repo_basename(repository)}.git"))
 
 
+#: The rule a `--family` is held to, as `naming-unclassified` states it
+#: (`_classify_family_name`). `family-bad-id`'s derived remedy names it in
+#: the same words, so the person who follows it is not sent from one
+#: refusal to the other (#659).
+FAMILY_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot "
+                    "or space")
+
+
 def _classify_family_name(policy: NamingPolicy, name: str) -> None:
     """The family name against the policy, in the form a family declares.
 
@@ -602,9 +614,9 @@ def _classify_family_name(policy: NamingPolicy, name: str) -> None:
         raise Refusal(
             "naming-unclassified",
             f"{name!r} matches no family in the naming policy",
-            "Remediation: --family takes one CamelCase token with no hyphen, "
-            "underscore, dot or space — the same rule an assembly root's name "
-            "follows, because a holder is spelled like one.")
+            f"Remediation: --family takes {FAMILY_NAME_RULE} — the same rule "
+            "an assembly root's name follows, because a holder is spelled "
+            "like one.")
     if found.family != "family":
         raise Refusal(
             "naming-not-a-family",
@@ -1550,6 +1562,53 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     return folder, holder
 
 
+#: Where `init` takes the id from when no `--id` is passed, as a sentence
+#: names it: in the label `_manifest_flags` gives a value no flag supplied,
+#: and in `family-bad-id` (#659).
+FAMILY_ID_DERIVED_FROM = "--family lowercased"
+
+#: How `family-bad-id` is told to go on (#659), in the words the scaffold
+#: gives `scaffold-bad-id` and `adopt-project.py plan` `adopt-bad-id`
+#: (#658). A `--id` the person passed is theirs to retype. An id `init`
+#: derived is `--family` lowercased, and `--family` also names the holder
+#: and, unless `--work-dir` is given, its family folder (`_landing`); the
+#: name is the one `_classify_family_name` reads against a policy whose
+#: forms take only ASCII letters, digits and hyphens, so "pass an explicit
+#: lowercase --id" led straight to `naming-unclassified`, and so would
+#: "change --family" to `North-Wind`. The derived remedy names the rule.
+PASSED_FAMILY_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
+DERIVED_FAMILY_ID_REMEDIATION = (
+    f"Remediation: change --family to {FAMILY_NAME_RULE}. The id is "
+    f"{FAMILY_ID_DERIVED_FROM}, and an explicit --id would not change "
+    "--family, which also names the holder and, unless --work-dir is given, "
+    "its family folder.")
+
+
+def _refuse_bad_family_id(family_id: str, given: str | None) -> None:
+    """`family-bad-id`: an id `validate-family.py` would not take
+    (`PROJECT_ID_RE`), named by where it came from (#659), as the scaffold
+    names `scaffold-bad-id`.
+
+    `given` is `--id` as parsed. One the person passed is named as the flag
+    they typed, value as typed, and keeps its remedy. With none, or an empty
+    one, the id is `--family` lowercased (`args.id or family.lower()`), and
+    `--id 'north_wind' must match` named a value nobody had typed: the flag
+    is named as `_manifest_flags` names one, by where its value came from,
+    and an empty `--id ''` as empty, because it was passed."""
+    if PROJECT_ID_RE.match(family_id):
+        return
+    pattern = PROJECT_ID_RE.pattern
+    if given:
+        raise Refusal("family-bad-id",
+                      f"--id {family_id!r} must match {pattern}",
+                      PASSED_FAMILY_ID_REMEDIATION)
+    unset = "not given" if given is None else "empty"
+    raise Refusal("family-bad-id",
+                  f"--id ({unset}, so {FAMILY_ID_DERIVED_FROM}) is "
+                  f"{family_id!r}, which must match {pattern}",
+                  DERIVED_FAMILY_ID_REMEDIATION)
+
+
 def _checked_family_identity(args) -> tuple[str, str, str]:
     """`(family, family_id, topic)` — every name check `init` makes before
     it decides where anything lands.
@@ -1571,10 +1630,7 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     refuse_bad_branch("family-bad-tracking-branch", "--tracking-branch",
                       args.tracking_branch)
     family_id = checked_value("--id", args.id or family.lower())
-    if not PROJECT_ID_RE.match(family_id):
-        raise Refusal("family-bad-id",
-                      f"--id {family_id!r} must match {PROJECT_ID_RE.pattern}",
-                      "Remediation: pass an explicit lowercase --id.")
+    _refuse_bad_family_id(family_id, args.id)
     policy = NamingPolicy.load(NAMING_POLICY)
     _classify_family_name(policy, family)
     _refuse_an_unholdable_holder_name(family)
@@ -2111,27 +2167,53 @@ def _create_holder_worktree(args, work: Path, values: dict, shape_commit: str,
     return None
 
 
-def _finish_holder_remote(args, repository: str, topic: str,
-                          local: bool) -> None:
-    """Set the holder's topic and print the private-visibility secrets hint.
+def _finish_holder_remote(args, repository: str, topic: str, local: bool,
+                          reuse: bool) -> None:
+    """Set the holder's topic and print the private-visibility NOTE and the
+    Free-plan secrets note.
 
     Neither applies to a local (no-network) remote. Split from `cmd_init`
     for #136.
+
+    BY THE HOLDER AS IT STANDS (#660). The holder is the repository whose
+    `validate` workflow reads the secrets. One this run created has the
+    run's `--visibility`; one `--reuse-empty-repo` reused keeps its own,
+    which `--visibility` never touched, and GitHub is asked for it
+    (`repository_visibility`). Both lines went by `--visibility` alone, so
+    a public holder reused under the default `private` was called private
+    and given the Free-plan hint. A reused holder whose visibility GitHub
+    does not give is `ROOT_VISIBILITY_UNREAD` and gets no NOTE: whether it
+    is private is the very question that went unanswered.
+
+    NO MEMBER IS NAMED THAT DOES NOT EXIST (#660). `init` mounts none, and
+    `add` mounts a member of any visibility, so the NOTE's "and its members
+    will be too" said what nothing here decides, and the hint's "<holder>
+    and its members are private" named members there are not. The hint
+    names the holder alone, as the scaffold's and adopt's name the root
+    (#602), and the NOTE says which members need the credential: those added
+    later that are private or internal.
     """
     if local:
         return
     run(["gh", "repo", "edit", repository, "--add-topic", topic])
     print(f"  topic     {topic} set on the holder")
-    if args.visibility in ("private", "internal"):
-        print(f"NOTE {repository} is {args.visibility} and its members will "
-              "be too: give it a way to read them — a GitHub App "
+    visibility = args.visibility
+    if reuse:
+        # `gh` has just set the topic, so an `OSError` here is no missing
+        # `gh` to refuse, only a visibility this run could not read.
+        try:
+            visibility = repository_visibility(repository)
+        except OSError:
+            visibility = None
+    if visibility in ("private", "internal"):
+        print(f"NOTE {repository} is {visibility}: give it a way to read the "
+              "members you add that are private or internal — a GitHub App "
               "(SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or "
               "a SHAPE_LEGS_TOKEN PAT with contents:read on the members AND "
               "their legs — or the `validate` check cannot check them out.")
-        hint = free_plan_secret_hint(
-            args.org, repository, f"{repository} and its members are")
-        if hint:
-            print(hint)
+    note = free_plan_secrets_note(args.org, repository, visibility)
+    if note:
+        print(note)
 
 
 def _print_next_steps(args, work: Path, folder: Path | None) -> None:
@@ -2507,7 +2589,7 @@ def _manifest_flags(args) -> dict:
     from, so that a refusal does not point at a flag nobody typed."""
     flags = dict(MANIFEST_FLAGS)
     for key, flag, given, source in (
-            ("FAMILY_ID", "--id", args.id, "--family lowercased"),
+            ("FAMILY_ID", "--id", args.id, FAMILY_ID_DERIVED_FROM),
             ("FAMILY_NAME", "--name", args.name, "--family"),
             ("CREATED_BY", "--created-by", args.created_by,
              "GIT_AUTHOR_NAME or `git config user.name`"),
@@ -2587,7 +2669,7 @@ def cmd_init(args) -> int:
         return code
     head = git_out(["rev-parse", "HEAD"], cwd=work)[:12]
     print(f"  holder    {head} -> {url}")
-    _finish_holder_remote(args, repository, topic, local)
+    _finish_holder_remote(args, repository, topic, local, reuse)
     _print_next_steps(args, work, folder)
     return 0
 
