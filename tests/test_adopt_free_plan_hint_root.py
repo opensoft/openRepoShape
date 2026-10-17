@@ -80,13 +80,16 @@ def adopter():
 def create_the_legs(adopter, monkeypatch, capsys, tmp_path, repos: dict, *,
                     plan: str | None = "free", visibility: str = "private",
                     local: bool = False,
-                    view_errors: dict | None = None) -> tuple[str, list]:
+                    view_errors: dict | None = None,
+                    **stub) -> tuple[str, list]:
     """`_create_leg_remotes` for `NAMES` under `ORG`, as `cmd_execute` calls
     it, with the stub `gh` knowing `repos` (`{name: VISIBILITY}`), naming
     `plan` as the organisation's plan and failing `repo view` of each name in
-    `view_errors` (`{name: stderr text}`). Returns what it printed and the
-    `gh` calls it made, each as its arguments joined by spaces."""
-    env, log = fake_gh(tmp_path, repos, plan=plan, view_errors=view_errors)
+    `view_errors` (`{name: stderr text}`), and taking `fake_gh`'s other
+    keywords as `stub`. Returns what it printed and the `gh` calls it made,
+    each as its arguments joined by spaces."""
+    env, log = fake_gh(tmp_path, repos, plan=plan, view_errors=view_errors,
+                       **stub)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     if local:

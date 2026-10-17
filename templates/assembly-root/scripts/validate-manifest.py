@@ -72,12 +72,16 @@ WHAT IS CHECKED
     `shape-doctor.py` holds each submodule a leg keeps to the row naming its
     path. A row whose `path` or `leg` is refused here holds nothing there.
   - `answered_paths`, OPTIONAL: the record an adoption writes of the leg each
-    entry covering a path the path policy asked about was answered into
-    (#525), in the same rows, except that a directory's `path` ends with
-    the one `/` the adoption plan wrote it with, and no row's path lies
-    under another's. `shape-doctor.py` takes a row as the answer to the
-    question it would ask again of that path in that leg. Neither record is
-    checked against the legs: this runs where they are not checked out.
+    entry covering a path the path policy asked about, or put in another
+    leg, was answered into (#525, #655), in the same rows, except that a
+    directory's `path` ends with the one `/` the adoption plan wrote it
+    with, and no row's path lies under another's. `shape-doctor.py` takes a
+    row as the answer for that path in that leg: not asked again, and not
+    misplaced. A directory's row answers for every file under it, one added
+    after the adoption too: nothing holds a file to `source_commit`.
+    Neither record is checked against the legs: this runs where they are
+    not checked out, so a directory's row written without its `/`, which
+    names a file, is the doctor's to say (#655).
 
 EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadable)
 """
@@ -85,6 +89,7 @@ EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadabl
 from __future__ import annotations
 
 import argparse
+import inspect
 import re
 import sys
 from pathlib import Path
@@ -94,7 +99,8 @@ from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, COMMIT_RE, PATH_NOT_CANONICAL, PROJECT_ID_RE,
     SHA256_RE, TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES, NamingPolicy,
     Refusal, accepts_role, find_repo_root, link_pins_from_trees, load_yaml,
-    path_spelling_fault, repo_basename,
+    path_spelling_fault, pin_product_key, pin_source_env_name,
+    pin_source_env_shared, repo_basename,
 )
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -150,9 +156,68 @@ def _chain_and_links(naming, root: Path | None) -> tuple[tuple, dict]:
     pin on `openDox` is a fact in openXdox's tree; a checkout beside this root
     (or `SHAPE_PIN_SOURCE_<PRODUCT>`) is read when there is one, and its
     absence is a warning, never a failure. Nothing here goes to a host.
+
+    THE WARNING OFFERS WHAT THIS READS (#661): `_link_remedies`,
+    handed over only where `link_pins_from_trees` takes `remedies=`
+    (`_library_takes_remedies`).
     """
     chain = _recorded_chain(naming) if isinstance(naming, dict) else ()
-    return chain, (link_pins_from_trees(chain, root) if chain else {})
+    if not chain:
+        return chain, {}
+    offered = ({"remedies": _link_remedies(chain)}
+               if _library_takes_remedies() else {})
+    return chain, link_pins_from_trees(chain, root, **offered)
+
+
+def _link_remedies(chain) -> dict[str, str]:
+    """What would let each chain link's own tree be read, in THIS
+    validator's sources: `{pin_product_key(link): the words}`, for the
+    `declared-unverified` WARNING about a tree that is not reachable
+    (#661).
+
+    The library's own words are the naming gate's: "a sibling checkout,
+    SHAPE_PIN_SOURCE_<LINK>, or --link-source <link>=<path>". This file
+    takes `--root`, `--policy` and `--quiet` and no `--link-source`, so the
+    offer was a flag it refuses as `unrecognized arguments`. It reads
+    `SHAPE_PIN_SOURCE_<LINK>`, unless another link of the chain shares the
+    variable (#275), and a checkout beside this root (`resolve_link_source`'s
+    rules 2 and 3, as `_chain_and_links` asks), so it offers those. Every
+    holder is offered both, or the checkout alone where another link shares
+    its variable; the chain's end holds no pin and has no entry.
+
+    Keyed by `pin_product_key`, the key `_chain_link_findings` looks a
+    holder's entry up by (#444), and the links are read as that function
+    reads them: by `repo_basename`, a blank entry dropped.
+    """
+    links = [repo_basename(str(link)) for link in chain if str(link).strip()]
+    shared = pin_source_env_shared(links)
+    remedies: dict[str, str] = {}
+    for link in links[:-1]:
+        beside = f"a checkout of {link} beside this root"
+        if pin_product_key(link) in shared:
+            words = f"{beside} would let it be read"
+        else:
+            words = (f"{pin_source_env_name(link)}, or {beside}, would let "
+                     "it be read")
+        remedies[pin_product_key(link)] = words
+    return remedies
+
+
+def _library_takes_remedies() -> bool:
+    """Does this root's `scripts/repo_shape.py` take `remedies=`?
+
+    THE SKEW RULE (#661). This file is copied into every project and
+    may run beside a `repo_shape.py` older than itself (a half-applied
+    update, `update-shape.py apply --accept-local`). Before #610 the library
+    had no `remedies=`, and passing it ended this validator in a `TypeError`
+    before it checked a leg. So it is passed only where the function's own
+    signature names it, and an older library's warning keeps that library's
+    words."""
+    try:
+        return "remedies" in inspect.signature(
+            link_pins_from_trees).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _naming_chain_field_finding(leg_role, naming: dict) -> list[str]:
@@ -859,16 +924,16 @@ def _record_row_findings(record: _Record, index: int, row,
 
 def _record_findings(manifest: dict, record: _Record) -> list[str]:
     """`submodules` or `answered_paths`, OPTIONAL: the leg each source
-    submodule (#189), or each path the policy asked about (#525), was
-    answered into when this project was adopted.
+    submodule (#189), or each path the policy asked about or put in another
+    leg (#525, #655), was answered into when this project was adopted.
 
     A RECORD IS CHECKED BECAUSE SOMETHING READS IT. `shape-doctor.py` holds
     every submodule a leg keeps to the row naming its path, and calls one in
     the other leg MISPLACED; it takes an answered path's row as the answer
-    to the question it would ask again of it. A row it could not read would
-    leave that submodule unchecked, or that question asked, and nothing
-    would say so. Absent is fine: a project with nothing to record has none,
-    and nor does one adopted before the record was written.
+    for it in that leg. A row it could not read would leave that submodule
+    unchecked, or that path asked about or misplaced, and nothing would say
+    so. Absent is fine: a project with nothing to record has none, and nor
+    does one adopted before the record was written.
     """
     rows = manifest.get(record.key)
     if rows is None:
