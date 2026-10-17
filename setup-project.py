@@ -382,14 +382,17 @@ WHY_LOCK = ("It ends in `.lock`, the name git gives the lock file it writes "
 #: sibling `repo_shape.checked_value` prints its own. `PATH_RE` has no row: it
 #: refuses only an empty value and a control character, and both are named
 #: before a pattern is asked; a pattern with no row is still named, as the
-#: sibling names it, by `why_refused`.
+#: sibling names it, by `why_refused`. The words say ASCII because the
+#: patterns are: "letters" and "spaces" alone describe `Caf\xe9` and a
+#: no-break space as values that pass (rv811).
 WHY_PATTERN = {
-    NAME_RE: ("It is not spellable as a name: a letter or a digit first, "
-              "then letters, digits, spaces and `._'()&,+@-`, at most 255 "
-              "characters in all (`%s`)." % NAME_RE.pattern),
-    REF_RE: ("It is not spellable as a ref: a letter or a digit first, then "
-             "letters, digits and `._/-`, at most 255 characters in all "
-             "(`%s`)." % REF_RE.pattern),
+    NAME_RE: ("It is not spellable as a name: an ASCII letter or digit "
+              "first, then ASCII letters, digits, the space and "
+              "`._'()&,+@-`, at most 255 characters in all (`%s`)."
+              % NAME_RE.pattern),
+    REF_RE: ("It is not spellable as a ref: an ASCII letter or digit first, "
+             "then ASCII letters, digits and `._/-`, at most 255 characters "
+             "in all (`%s`)." % REF_RE.pattern),
 }
 
 
@@ -1586,8 +1589,16 @@ def ask_for_the_project_name(local_mode: bool) -> str:
     slip of the thumb, and the run ends at the first mistake with no second
     ask, so the prompt takes it off; an argv value is deliberate and is held
     as typed. A line of nothing but spaces is then an empty line.
+
+    ONLY THE SPACE COMES OFF, NOT EVERY KIND OF WHITESPACE. `str.strip()`
+    with no argument also took off a tab, a form feed, `\\x1c` to `\\x1f`, a
+    no-break space and the ideographic space, so the prompt accepted each of
+    them where `--project` refuses it, as a control character or by the
+    pattern (rv811). Now only the space comes off, and the rest reach
+    `checked_value` as they were typed.
     """
-    typed = ask("  project name (ONE CamelCase token, e.g. Atlas): ").strip()
+    typed = ask("  project name (ONE CamelCase token, e.g. Atlas): ")
+    typed = typed.strip(" ")
     if not typed:
         die("no project name was typed; nothing was created.")
     return checked_project_length(

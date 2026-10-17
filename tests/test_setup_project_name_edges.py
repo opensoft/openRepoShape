@@ -20,7 +20,8 @@ Three things were left, each measured on #729's head:
 * `Atlas ` passed `NAME_RE` where ` Atlas` was refused, and step (4) judged
   `Atlas -spec` with no space shown anywhere. The prompt now takes the spaces
   off the ends of what was typed; an argv value is deliberate and is held as
-  typed.
+  typed. Only the space comes off: a tab, a no-break space or any other
+  whitespace is refused at the prompt as `--project` refuses it.
 
 POSIX only where a run needs a terminal or a `gh` stub (`PTY_SKIP`).
 """
@@ -37,7 +38,7 @@ import pytest
 
 from conftest import PTY_SKIP, REPO, run_in_a_terminal
 from test_setup_project_py import (SETUP_PROJECT, entry_point_module,
-                                   run_entry, terminal_env)
+                                   piped, run_entry, terminal_env)
 from test_setup_project_typed_name import (BELL, LNEXT, NAMING_POLICY, PROMPT,
                                            the_refusal)
 
@@ -52,11 +53,11 @@ CONTROL = ("It holds a control character, which the quotation shows as an "
            "escape: a newline ends a line in every terminal and log this "
            "output reaches, so a value carrying one could print a line that "
            "reads as this tool's own.")
-NAME = ("It is not spellable as a name: a letter or a digit first, then "
-        "letters, digits, spaces and `._'()&,+@-`, at most 255 characters in "
-        "all (`^[A-Za-z0-9][A-Za-z0-9 ._'()&,+@-]{0,254}$`).")
-REF = ("It is not spellable as a ref: a letter or a digit first, then "
-       "letters, digits and `._/-`, at most 255 characters in all "
+NAME = ("It is not spellable as a name: an ASCII letter or digit first, "
+        "then ASCII letters, digits, the space and `._'()&,+@-`, at most 255 "
+        "characters in all (`^[A-Za-z0-9][A-Za-z0-9 ._'()&,+@-]{0,254}$`).")
+REF = ("It is not spellable as a ref: an ASCII letter or digit first, then "
+       "ASCII letters, digits and `._/-`, at most 255 characters in all "
        "(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$`).")
 RANGE = ("It holds `..`, which git reads as a revision range and not as a "
          "ref.")
@@ -67,6 +68,22 @@ LOCK = ("It ends in `.lock`, the name git gives the lock file it writes "
 NOT_THE_DASH = ("starts with", "option to git", "reads its own arguments")
 
 ACCENTED = "Caf\u00e9"
+
+#: Whitespace that is not the space. `str.strip()` took each off a typed name
+#: where `--project` refuses the same value (rv811), as a control character
+#: or by the name pattern. Only the space comes off at the prompt, so each is
+#: refused on every way in, for the same reason.
+NOT_THE_SPACE = {
+    "tab-after": ("Atlas\t", CONTROL),
+    "tab-before": ("\tAtlas", CONTROL),
+    "vertical-tab": ("Atlas\x0b", CONTROL),
+    "form-feed": ("Atlas\x0c", CONTROL),
+    "file-separator": ("\x1cAtlas", CONTROL),
+    "unit-separator": ("\x1fAtlas", CONTROL),
+    "no-break-space": ("Atlas\xa0", NAME),
+    "next-line": ("Atlas\x85", NAME),
+    "ideographic-space": ("Atlas\u3000", NAME),
+}
 
 #: Each refusal: the argv that carries the value (`{}` is the value), the
 #: value, how the refusal names it, and the reason it gives. A value that
@@ -100,6 +117,8 @@ REFUSALS = {
     "ref-dash": (("--shape-ref", "{}"), "-x", "--shape-ref", DASH),
     "ref-range": (("--shape-ref", "{}"), "a..b", "--shape-ref", RANGE),
     "ref-lock": (("--shape-ref", "{}"), "topic.lock", "--shape-ref", LOCK),
+    **{"project-" + case: (("--project", "{}"), value, "--project", why)
+       for case, (value, why) in NOT_THE_SPACE.items()},
 }
 
 
@@ -138,6 +157,7 @@ TYPED = {
     "trailing-slash": ("Atlas/", NAME),
     "accented": (ACCENTED, NAME),
     "long": ("x" * 256, NAME),
+    **NOT_THE_SPACE,
 }
 
 
@@ -182,15 +202,26 @@ def flags_for(tmp_path, local):
               if local else []), "--", "--dry-run"]
 
 
-def at_the_prompt(tmp_path, typed, local=True):
-    """Setup asked for its project at a terminal and answered `typed`."""
+def typed_as_text(typed):
+    """`typed` as keys at a terminal in canonical mode: ^V before each
+    control character, so the terminal takes it as text and not as an edit
+    or a signal (the file separator alone is the quit key, Ctrl-\\)."""
+    return "".join(LNEXT + char if ord(char) < 0x20 or char == "\x7f"
+                   else char for char in typed)
+
+
+def at_the_prompt(tmp_path, typed, local=True, entry="py"):
+    """Setup asked for its project at a terminal and answered `typed`.
+    `entry` is the file run directly, or that file with its stdin a pipe,
+    when the answer is read from the controlling terminal."""
     env = terminal_env()
     env.update(gh_that_is_signed_in(tmp_path))
+    flags = flags_for(tmp_path, local)
+    argv = {"py": [sys.executable, str(SETUP_PROJECT), *flags],
+            "piped": piped("", *flags)}[entry]
     status, screen, answered = run_in_a_terminal(
-        [sys.executable, str(SETUP_PROJECT), *flags_for(tmp_path, local)],
-        cwd=REPO, env=env,
-        answers=[typed.replace(BELL, LNEXT + BELL) + "\n"], prompt=PROMPT,
-        timeout=60)
+        argv, cwd=REPO, env=env, answers=[typed_as_text(typed) + "\n"],
+        prompt=PROMPT, timeout=60)
     assert answered == 1, f"it never asked for a project name:\n{screen}"
     return status, screen
 
@@ -201,10 +232,12 @@ def assert_nothing_was_made(tmp_path):
 
 
 @PTY_SKIP
+@pytest.mark.parametrize("entry", ["py", "piped"])
 @pytest.mark.parametrize("case", TYPED)
-def test_a_typed_name_is_refused_with_the_check_it_failed(tmp_path, case):
+def test_a_typed_name_is_refused_with_the_check_it_failed(tmp_path, case,
+                                                          entry):
     value, why = TYPED[case]
-    status, screen = at_the_prompt(tmp_path, value)
+    status, screen = at_the_prompt(tmp_path, value, entry=entry)
     assert status == 2, f"status {status}:\n{screen}"
     assert the_refusal(screen) == (
         "REFUSED: " + FIRST.format(what="project name", shown=ascii(value))
@@ -240,7 +273,7 @@ def a_run_for(tmp_path, project, local, positional=False, late_local=False):
     """The project given on the command line, and `-- --dry-run`."""
     flags = flags_for(tmp_path, local)
     if late_local:
-        flags = [f for f in flags_for(tmp_path, False)]
+        flags = flags_for(tmp_path, False)
         flags[flags.index("--"):flags.index("--")] = [
             "--local-remote-dir", str(tmp_path / "remotes")]
     given = [project] if positional else ["--project", project]
@@ -386,10 +419,21 @@ def test_an_argv_name_is_held_as_typed(tmp_path):
 
 # --- the sentences say what the checks are -------------------------------------
 
+def above_ascii_taken(pattern, letter):
+    """Every character above ASCII that `pattern` takes first or after
+    `letter`: none, as the sentences' "ASCII" says. A walk over
+    `string.printable` alone cannot see an accented letter (rv811)."""
+    return [hex(code) for code in range(0x80, sys.maxunicode + 1)
+            if pattern.fullmatch(letter + chr(code))
+            or pattern.fullmatch(chr(code) + letter)]
+
+
 def test_the_name_sentence_says_what_the_pattern_holds():
     """The words and the pattern cannot drift: every printable character is
-    in the sentence's list exactly when `NAME_RE` takes it after a letter."""
+    in the sentence's list exactly when `NAME_RE` takes it after a letter,
+    and no character above ASCII is taken anywhere."""
     module = entry_point_module()
+    assert above_ascii_taken(module.NAME_RE, "A") == []
     said = set(string.ascii_letters + string.digits + " ._'()&,+@-")
     for char in string.printable:
         if char in "\r\n\x0b\x0c":
@@ -405,6 +449,7 @@ def test_the_name_sentence_says_what_the_pattern_holds():
 
 def test_the_ref_sentence_says_what_the_pattern_holds():
     module = entry_point_module()
+    assert above_ascii_taken(module.REF_RE, "a") == []
     said = set(string.ascii_letters + string.digits + "._/-")
     for char in string.printable:
         if char in "\r\n\x0b\x0c":
@@ -413,6 +458,15 @@ def test_the_ref_sentence_says_what_the_pattern_holds():
             repr(char)
     assert module.REF_RE.fullmatch("a" * 255)
     assert not module.REF_RE.fullmatch("a" * 256)
+
+
+def test_a_ref_is_refused_for_lock_only_at_its_end():
+    """A ref that ends in `.lock` is refused; `topic.locked` and `a.lockb`
+    hold it inside a word, are refs git checks out (`git check-ref-format
+    --branch` takes both), and go on."""
+    module = entry_point_module()
+    for text in ("topic.locked", "a.lockb"):
+        assert module.checked_ref("--shape-ref", text) == text
 
 
 def test_a_pattern_with_no_words_is_named_as_the_sibling_names_it():
