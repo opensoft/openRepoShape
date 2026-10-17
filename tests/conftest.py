@@ -1130,6 +1130,44 @@ def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
     probe.rmdir()
 
 
+#: A branch git makes and no text can spell (#765): `caf` and the byte 0xE9,
+#: Latin-1's e-acute, a UTF-8 lead byte with nothing after it. Built with
+#: `chr`, not `os.fsdecode`, which raises on Windows, where this module
+#: must still import.
+NOT_UTF_8_BRANCH = "caf" + chr(0xDCE9)
+
+
+def git_answer_bytes(repo: Path, *args: str) -> bytes:
+    """`git <args>` in `repo`, its stdout as the bytes git wrote, whatever
+    the exit: `git` above decodes as text, which a name that is not UTF-8
+    fails."""
+    return subprocess.run(["git", *args], cwd=str(repo), capture_output=True,
+                          check=False).stdout
+
+
+def held_by_git(repo: Path) -> dict:
+    """What a refusal must leave in `repo` as it was, as bytes (#765): the
+    commit HEAD names, the ref it is attached to, every ref and its commit,
+    the index and the status."""
+    return {"head": git_answer_bytes(repo, "rev-parse", "HEAD"),
+            "attached": git_answer_bytes(repo, "symbolic-ref", "-q", "HEAD"),
+            "refs": git_answer_bytes(repo, "for-each-ref",
+                                     "--format=%(objectname) %(refname)"),
+            "index": git_answer_bytes(repo, "ls-files", "--stage", "-z"),
+            "status": git_answer_bytes(repo, "status", "--porcelain", "-z")}
+
+
+def on_a_branch_that_is_not_utf_8(repo: Path) -> dict:
+    """`repo` switched to a new branch `NOT_UTF_8_BRANCH` where HEAD is, or
+    the test skipped where this system cannot make the name
+    (`skip_where_a_name_cannot_be_not_utf_8`); returns `held_by_git(repo)`
+    on it."""
+    skip_where_a_name_cannot_be_not_utf_8(repo)
+    subprocess.run(["git", "switch", "-q", "-c", NOT_UTF_8_BRANCH],
+                   cwd=str(repo), capture_output=True, check=True)
+    return held_by_git(repo)
+
+
 def windows_fsencode(text: str | bytes) -> bytes:
     """`os.fsencode` as Windows has it: UTF-8 with `surrogatepass`, so every
     lone surrogate is the three bytes of a sequence that is not UTF-8. Bytes

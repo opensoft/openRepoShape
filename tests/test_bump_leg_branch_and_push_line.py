@@ -32,6 +32,10 @@ FIVE LINES, EACH MEASURED ON MAIN BEFORE THE FIX:
     they already refuse it exits 0 and the real run ends
     `bump-leg-validators-red`. Its closing paragraph says so.
 
+AND THE BRANCH'S BYTES (#765): the name is read as git wrote it, so a
+trailing no-break space stays on it, and a name that is not UTF-8 is refused
+by name (`bump-leg-branch-not-utf8`) where `errors="replace"` read another.
+
 NO NETWORK, NO `gh`: the bare remotes are the session's own, and every root
 here pushes to a private copy of its remote (`make_root`), so a push reaches
 nothing another test reads. Every printed line is run as the argv a POSIX
@@ -47,7 +51,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FILE_PROTOCOL, PROJECT, REPO, cloned_just_pushed, git
+from conftest import (FILE_PROTOCOL, NOT_UTF_8_BRANCH, PROJECT, REPO,
+                      cloned_just_pushed, git, held_by_git,
+                      on_a_branch_that_is_not_utf_8)
 # A fixture is used by being named in this module's namespace, which is what
 # the imports of `bump_leg_module` and `make_root` are for.
 from test_bump_leg import (  # noqa: F401
@@ -232,16 +238,23 @@ def test_a_branch_beside_a_tag_of_its_name_is_pushed_by_its_full_ref(
     assert upstream_of(root, "v1") == "refs/remotes/origin/v1"
 
 
+@pytest.mark.parametrize("neighbour", ["feat", "main"],
+                         ids=["beside-a-branch", "beside-the-tracking-branch"])
 def test_a_branch_ending_in_a_no_break_space_is_pushed_as_itself(
-        make_root, scaffolded, advanced):
+        make_root, scaffolded, advanced, neighbour):
     """`feat<U+00A0>` beside a branch `feat`: `strip()` took the no-break
     space off the name it read, so the bump committed on `feat<U+00A0>` and
     the line pushed `feat`, the other branch, at the commit before the bump
-    (rv672's S2). Only git's newline is taken off now: the line names the
-    branch the bump committed on, and run, pushes that commit."""
+    (rv672's S2). And `main<U+00A0>` beside the tracking branch `main` read
+    as `main`, so the bump was refused `bump-leg-on-tracking-branch` on a
+    branch that is not it (#765). Only git's newline is taken off now: the
+    line names the branch the bump committed on, and run, pushes that
+    commit, leaving origin's neighbour where it was."""
     root, remote = make_root("plain")
-    name = "feat\u00a0"
-    git("branch", "feat", cwd=root)
+    name = neighbour + chr(0xA0)
+    if neighbour != "main":
+        git("branch", neighbour, cwd=root)
+    was = head_of(remote, f"refs/heads/{neighbour}")
     git("checkout", "-q", "-b", name, cwd=root)
 
     result = bump(root, scaffolded, advanced)
@@ -252,7 +265,32 @@ def test_a_branch_ending_in_a_no_break_space_is_pushed_as_itself(
     pushed = run_the_line(line, root.parent)
     assert pushed.returncode == 0, pushed.stderr + pushed.stdout
     assert head_of(remote, f"refs/heads/{name}") == head_of(root)
-    assert head_of(remote, "refs/heads/feat") == "", "`feat` was not pushed"
+    assert head_of(remote, f"refs/heads/{neighbour}") == was, (
+        f"`{neighbour}` was not pushed")
+
+
+@pytest.mark.parametrize("extra", [(), ("--dry-run",)],
+                         ids=["bump", "dry-run"])
+def test_a_branch_named_with_a_byte_that_is_not_utf8_is_refused_by_name(
+        project, scaffolded, advanced, extra):
+    """`caf<0xE9>` (#765): decoded with `errors="replace"`, it read as
+    `caf<U+FFFD>`, a branch nobody has, so the bump committed on `caf<0xE9>`
+    and the line named `caf<U+FFFD>` on both sides, which pasted fails `src
+    refspec ... does not match any`. Refused by name now, the dry run alike,
+    before the fetch: no line names the branch but the refusal, which says
+    how to rename it, and the root and its refs are as they were."""
+    before = on_a_branch_that_is_not_utf_8(project)
+
+    result = bump(project, scaffolded, advanced, *extra)
+
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert (f"REFUSED bump-leg-branch-not-utf8: {project.resolve()} is on "
+            f"the branch {NOT_UTF_8_BRANCH!r}, whose name is not UTF-8"
+            in result.stderr), result.stderr
+    assert result.stderr.rstrip().endswith(" branch -m <a new name>"), (
+        result.stderr)
+    assert result.stdout == ""
+    assert held_by_git(project) == before
 
 
 # --- the dirty root, spelled -------------------------------------------------

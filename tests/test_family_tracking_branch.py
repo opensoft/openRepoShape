@@ -25,6 +25,10 @@ the dialect `repo_shape.shell_quoted` speaks there) and run; the act is run
 again and goes through; its NEXT is split and run, and the holder's remote
 then has the branch at the commit the act wrote.
 
+THE BRANCH IS READ AS GIT WROTE IT (#765): a trailing no-break space stays
+on it, and a name that is not UTF-8 is refused by name
+(`family-branch-not-utf8`), since no line could spell it.
+
 THE SAME FAMILY AS `test_family.py`, in a private copy put back on its
 tracking branch, which is where `init` leaves a holder. The remote a push
 reaches is this module's own instance of the fixture's, and every branch a
@@ -38,7 +42,8 @@ import subprocess
 
 import pytest
 
-from conftest import REPO, git, run_script
+from conftest import (NOT_UTF_8_BRANCH, REPO, git, held_by_git,
+                      on_a_branch_that_is_not_utf_8, run_script)
 #: The family fixture, its names and the work branch it grows the holder on,
 #: imported from the module that owns them.
 from test_family import (  # noqa: F401
@@ -196,6 +201,59 @@ def test_a_holder_on_no_branch_is_refused_too(family, on_main):
     assert remedy_switch(refused.stderr) == [
         "git", "-C", str(holder), "switch", "-c", suggested(family, "add")]
     assert snapshot(holder) == before
+
+
+def test_a_branch_ending_in_a_no_break_space_is_pushed_as_itself(family,
+                                                                on_main):
+    """`feat<U+00A0>` beside a branch `feat` (#765): `strip()` read the
+    holder's branch as `feat`, so the act committed on `feat<U+00A0>` and
+    its NEXT pushed `feat`, the other branch, which holds no such commit.
+    Read as git wrote it, the NEXT names the branch the commit is on, and
+    run, pushes that commit there and leaves `feat` alone."""
+    holder = on_main
+    name = "feat" + chr(0xA0)
+    git("branch", "feat", cwd=holder)
+    git("switch", "-q", "-c", name, cwd=holder)
+
+    done = act(family, holder, "remove")
+    assert done.returncode == 0, done.stdout + done.stderr
+    push, _ = next_push(done.stdout)
+    assert push == ["git", "-C", str(holder), "push", "-u", "origin",
+                    refspec(name)]
+    remote = family["remotes"] / f"{NAME}.git"
+    pushed = subprocess.run(push, capture_output=True, text=True, check=False)
+    try:
+        assert pushed.returncode == 0, pushed.stderr
+        assert git("rev-parse", f"refs/heads/{name}", cwd=remote).stdout == \
+            git("rev-parse", "HEAD", cwd=holder).stdout
+        assert git("rev-parse", "--verify", "-q", "refs/heads/feat",
+                   cwd=remote, check=False).stdout == ""
+    finally:
+        git("push", "-q", "origin", "--delete", name, cwd=holder,
+            check=False)
+
+
+@pytest.mark.parametrize("verb", ["add", "bump", "remove"])
+def test_a_branch_named_with_a_byte_that_is_not_utf8_is_refused_by_name(
+        family, on_main, verb):
+    """`caf<0xE9>` (#765): no line can spell it, and the act committed on it
+    and printed a NEXT holding the lone surrogate Python keeps the byte as,
+    which a stream refuses or writes as text no shell turns back into the
+    byte. Refused by name now, before the member is read, with how to
+    rename it: no NEXT, and the holder and its refs as they were."""
+    holder = on_main
+    before = on_a_branch_that_is_not_utf_8(holder)
+
+    refused = act(family, holder, verb)
+
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert refused.stdout == ""
+    assert (f"REFUSED family-branch-not-utf8: {holder} is on the branch "
+            f"{NOT_UTF_8_BRANCH!r}, whose name is not UTF-8"
+            in refused.stderr), refused.stderr
+    assert refused.stderr.rstrip().endswith(" branch -m <a new name>"), (
+        refused.stderr)
+    assert held_by_git(holder) == before
 
 
 @pytest.mark.parametrize("verb", ["add", "bump", "remove"])

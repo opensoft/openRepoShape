@@ -30,6 +30,10 @@ FOUR CASES, each measured on main before the fix:
     `update-manifest-no-shape`, "has no `shape:` block". The headers are found
     with the reader's own `_split_key` now, and written back as they were.
 
+AND THE BRANCH HEAD IS ON, READ AS GIT WROTE IT (#765): a trailing no-break
+space stays on it, and a name that is not UTF-8 is refused by name
+(`update-branch-not-utf8`) before the first write of a `--branch` run.
+
 THE HARNESSES ARE THE NEIGHBOURS'.
 `tests/test_update_shape_partial_rollback.py` gives the upstream (A, B above
 it, C above that), the project cut at A into local bare remotes, and the
@@ -55,7 +59,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, WINDOWS_SKIP, git, run_script
+from conftest import (NOT_UTF_8_BRANCH, REPO, WINDOWS_SKIP, git, held_by_git,
+                      on_a_branch_that_is_not_utf_8, run_script)
 from test_pin_rewrite_layout import MANIFEST as MANIFEST_TEXT
 from test_pin_rewrite_layout import (NEW_COMMIT, NEW_ROWS, NEW_TREE,
                                      OLD_COMMIT, OLD_ROWS, OLD_TREE, make_pin,
@@ -346,14 +351,20 @@ def test_a_run_that_only_drops_merged_away_rows_says_it_committed_the_pin(
 # ---------------------------------------------------------------------------
 
 
-def tagged(root: Path, tmp_path: Path) -> Path:
-    """`root` with a tag `v1.0.0` at HEAD, pushing to an EMPTY bare remote of
-    this test's own: the bare remote."""
-    git("tag", TAGGED, cwd=root)
+def own_remote(root: Path, tmp_path: Path) -> Path:
+    """`root` pushing to an EMPTY bare remote of this test's own: the bare
+    remote."""
     remote = tmp_path / "own-remote.git"
     git("init", "-q", "--bare", str(remote), cwd=tmp_path)
     git("remote", "set-url", "origin", str(remote), cwd=root)
     return remote
+
+
+def tagged(root: Path, tmp_path: Path) -> Path:
+    """`root` with a tag `v1.0.0` at HEAD, pushing to `own_remote`: the bare
+    remote."""
+    git("tag", TAGGED, cwd=root)
+    return own_remote(root, tmp_path)
 
 
 def on_the_remote(remote: Path) -> str | None:
@@ -484,6 +495,58 @@ def test_a_pr_rerun_on_a_branch_named_like_a_tag_opens_the_missing_one(
     assert "nothing to do" not in second.stdout
     assert f"pull request {URL}" in second.stdout
     assert gh.calls() == [listing(TAGGED), create]
+
+
+# ---------------------------------------------------------------------------
+# The branch HEAD is on, read as git wrote it (#765)
+# ---------------------------------------------------------------------------
+
+
+def test_a_branch_ending_in_a_no_break_space_is_not_taken_for_its_neighbour(
+        standard, root, tmp_path):
+    """`feat<U+00A0>` checked out beside `feat`, and `--branch feat --push`:
+    `strip()` read HEAD as `feat`, so the run took `feat` for the branch
+    checked out, committed onto `feat<U+00A0>` and pushed `feat`, which
+    holds no re-pin. Read as git wrote it, `feat` is a branch that exists
+    and is not checked out: refused `update-branch-exists`, naming the
+    branch HEAD is on, with both where they were and nothing pushed."""
+    remote = own_remote(root, tmp_path)
+    name = "feat" + chr(0xA0)
+    git("branch", "feat", cwd=root)
+    git("switch", "-q", "-c", name, cwd=root)
+    before = held_by_git(root)
+
+    result = apply(standard, root, "b", "--branch", "feat", "--push")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert ("REFUSED update-branch-exists: --branch feat already exists and "
+            f"is not the current branch ({name!r} is checked out)"
+            in result.stderr), result.stderr
+    assert held_by_git(root) == before
+    assert git("for-each-ref", cwd=remote).stdout == ""
+
+
+def test_a_branch_named_with_a_byte_that_is_not_utf8_is_refused_first(
+        standard, root, tmp_path):
+    """HEAD on `caf<0xE9>` (#765): `errors="replace"` read it as
+    `caf<U+FFFD>`, a branch nobody has, which the lines that name the branch
+    HEAD is on then named. Refused by name now, before the first write, so
+    there is nothing to roll back, with how to rename it, the root and its
+    refs as they were, and nothing pushed."""
+    remote = own_remote(root, tmp_path)
+    before = on_a_branch_that_is_not_utf_8(root)
+
+    result = apply(standard, root, "b", "--branch", BRANCH, "--push")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (f"REFUSED update-branch-not-utf8: {root} is on the branch "
+            f"{NOT_UTF_8_BRANCH!r}, whose name is not UTF-8"
+            in result.stderr), result.stderr
+    assert result.stderr.rstrip().endswith(" branch -m <a new name>"), (
+        result.stderr)
+    assert "ROLLED BACK" not in result.stderr, "refused before any write"
+    assert held_by_git(root) == before
+    assert git("for-each-ref", cwd=remote).stdout == ""
 
 
 # ---------------------------------------------------------------------------
