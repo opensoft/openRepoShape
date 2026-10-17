@@ -13,9 +13,10 @@ which was false (the manifest has the block) and whose remedy, "add it",
 would have given the manifest a second `shape:` key.
 
 Both headers are now found with the reader's own `_strip_comment`, at column
-0, and the line is written back as it was. That is the whole claim: the
-reader's rule for a comment, and nothing about how else a key may be spelled
-(a quoted `"files":` or `files :` is not found, as it was not before).
+0, and the line is written back as it was. That is this file's claim: the
+reader's rule for a comment. The reader's rule for a key came after, in #674:
+a quoted `"files":` or `files :` is found too, which
+`tests/test_update_shape_apply_lines_and_headers.py` holds.
 
 TWO LEVELS, as the issue's reproduction asks for the second and #380's tests
 for the first: the rewrites called in-process on the text the scaffold
