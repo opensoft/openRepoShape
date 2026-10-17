@@ -3568,6 +3568,17 @@ def _refuse_conflicts(rows: list[Row], accepted: set) -> None:
             conflict_remediation(conflicts))
 
 
+def upstream_show(target: str, source: str) -> str:
+    """`git show <target>:<source>`, the command a remedy names for the
+    upstream's bytes of a copy, QUOTED for a POSIX shell as #588 (#532)
+    quoted the other printed paths (#675). A plain path prints the bytes it
+    always printed, since `shlex.join` leaves a word of `[\\w@%+=:,./-]`
+    alone; a source path holding a blank or a `'` was two arguments, a git
+    exit 128, or a quotation `sh` never saw closed, and is one argument now.
+    """
+    return shlex.join(["git", "show", f"{target}:{source}"])
+
+
 def merge_by_hand(rows: list[Row]) -> str:
     """What `update-conflict` tells the rows it can name a merge for: `both`,
     and the two states that cannot be compared. The words it always printed,
@@ -3583,9 +3594,9 @@ def merge_by_hand(rows: list[Row]) -> str:
     command each, by the path in the root they are for. A row that is not
     `both` is named no command, because none reads: `unmapped` has no
     upstream file, and an `upstream-removed` one is gone at the target, where
-    `git show` would fail.
+    `git show` would fail. Each command is `upstream_show`'s, quoted.
     """
-    shows = [(row.path, f"git show {row.target}:{row.source}")
+    shows = [(row.path, upstream_show(row.target, row.source))
              for row in rows
              if row.state == BOTH and row.source and row.target]
     if len(shows) == 1:
@@ -3733,12 +3744,14 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
     written, so nothing is rolled back, and nobody is asked for a yes to a
     run that would leave a copy that cannot start.
 
-    UNLESS AN IMPORTER IS ONE OF THE VALIDATORS. `kind.validators` are what
+    UNLESS A VALIDATOR MEETS THE LINE ITSELF. `kind.validators` are what
     `_refuse_red_validators` runs after the writes, so a validator that
     imports a name its module lacks, whether this run writes the validator
-    or keeps it, goes red there, and the run is rolled back. This still
-    refuses it first, before the yes and before a byte is written, but says
-    the validators pass only when no importer it names is one of them: a
+    or keeps it, goes red there, and the run is rolled back; and so does
+    one that imports such an importer, or takes the same name from the
+    same module (#675). This still refuses it first, before the yes and
+    before a byte is written, but says the validators pass only where
+    `_validators_meet` finds none of them meeting a line it names: a
     clause that is false of one line in the list is false.
 
     WHAT IS ASKED, AND OF WHAT: BOTH DIRECTIONS, between a KEPT copy, a
@@ -3783,9 +3796,13 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
     answer after the writes, as they did before #536, and roll the run back
     where a validator is the copy that cannot import. A name bound by `:=`,
     a `match` capture, `type X =` or a `global` declared in a function is
-    read as defined (`_bound_at` says what it reads as a binding). A name
-    bound only through `globals()`, `setattr` on the module or `exec` reads
-    as missing: refused where a kept module binds it that way (#536), or
+    read as defined (`_bound_at` says what it reads as a binding). One
+    bound, or imported, only where Python never runs it, under `if
+    TYPE_CHECKING:`, `if False:` or `if 0:`, or after an unconditional
+    `raise` in its block, is not read at all (#675); the rest of what
+    never runs is read as running. A name bound only through `globals()`,
+    `setattr` on the module or `exec` reads as missing: refused where a
+    kept module binds it that way (#536), or
     where the written bytes do and the bytes on disk bound it plainly
     (#604). One bound and then deleted (`NAME = 1`, then `del NAME`) reads
     as defined, so that copy's `ImportError` is still its first run's to
@@ -3799,7 +3816,8 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
     pairs = sorted(_kept_copies_lacking(root, written, kept)
                    + _kept_copies_importing_dropped(root, written, kept))
     if pairs:
-        raise _missing_name_refusal(pairs, kept, target, kind)
+        raise _missing_name_refusal(
+            pairs, kept, target, _validators_meet(root, written, pairs, kind))
 
 
 #: Which side of a pair `update-accept-local-missing-name` names is the
@@ -3910,15 +3928,49 @@ def _names_dropped(root: Path, path: str, data: bytes | None) -> set[str]:
     return now - after
 
 
+def _validators_meet(root: Path, written: dict, pairs: list,
+                     kind: Kind) -> bool:
+    """Would one of `kind.validators` stop on a line's `ImportError` itself
+    when `_refuse_red_validators` runs it after the writes (#536, #604,
+    #675)? Where one would, the refusal must not say the validators pass.
+
+    Asked of each validator as this run leaves it, the bytes it writes
+    there or else the bytes on disk, by `_names_imported`, the reading
+    the lines themselves are made by. A validator meets a line where it is
+    the line's importer; where it imports anything from a line's importer,
+    which stops on its own import before the validator gets a name; or
+    where it takes from a line's module a name that line says the module
+    lacks. A validator that takes OTHER names from a line's module passes,
+    as every shipped one does: each takes from `repo_shape` only names
+    `repo_shape.py` defines, so no shipped copy reaches this today. What
+    `_names_imported` cannot read, a star import or `import M`, is not
+    found here either.
+    """
+    importers = {pair.importer for pair in pairs}
+    lacking = {(pair.module, name) for pair in pairs for name in pair.names}
+    for validator in kind.validators:
+        if validator in importers:
+            return True
+        data = written.get(validator)
+        taken = (_imports_on_disk(root, validator) if data is None
+                 else _names_imported(data))
+        for module, names in taken.items():
+            beside = _module_beside(validator, module)
+            if beside in importers or any((beside, name) in lacking
+                                          for name in names):
+                return True
+    return False
+
+
 def _missing_name_refusal(pairs: list, kept: dict, target: str,
-                          kind: Kind) -> Refusal:
+                          validated: bool) -> Refusal:
     """The one `update-accept-local-missing-name` refusal, one line per
     pair, in either direction (#536, #604). Every sentence in it is true
     of every line it lists, whichever side of the line is the kept copy;
-    the validators clause is said only where no importer named is one of
-    them, as `_refuse_kept_copies_missing_names` says why.
+    the validators clause is said only where `validated`, which
+    `_validators_meet` answers, is false, as
+    `_refuse_kept_copies_missing_names` says why.
     """
-    validated = any(pair.importer in kind.validators for pair in pairs)
     return Refusal(
         "update-accept-local-missing-name",
         "--accept-local keeps this project's own bytes of a copy that "
@@ -3951,12 +4003,13 @@ def _missing_name_remediation(pairs: list, kept: dict, target: str) -> str:
     again with the same `--accept-local`; or drop the edit, so the
     upstream's copy is taken. Each change names the lines it settles, so
     neither is read as settling the other's. `--accept-local` is named in
-    prose, and no NEXT line passes it.
+    prose, and no NEXT line passes it. The upstream's bytes are named by
+    `upstream_show`, quoted, since #604 made a kept copy any `.py` path.
     """
     named = sorted({pair.module if pair.side == KEPT_MODULE else pair.importer
                     for pair in pairs})
-    upstreams = "; ".join(f"`git show {target}:{kept[path].source}` for "
-                          f"{path}" for path in named)
+    upstreams = "; ".join(f"`{upstream_show(target, kept[path].source)}` "
+                          f"for {path}" for path in named)
     both = [path for path in named if kept[path].state == BOTH]
     sides = {pair.side for pair in pairs}
     changes = []
@@ -4038,9 +4091,11 @@ def _names_imported(data: bytes) -> dict[str, set[str]]:
     A STAR IMPORT NAMES NOTHING, so it adds no name, and an `import <module>`
     is not read: which attributes it uses is not something `ast` says.
 
-    A NAME THE COPY ITSELF ANSWERS FOR IS NOT TAKEN. Nothing inside an `if
-    TYPE_CHECKING:` body is, since it never runs. Inside the body of a
-    `try` that catches the `ImportError` a missing name raises
+    A NAME THE COPY ITSELF ANSWERS FOR IS NOT TAKEN, NOR ONE PYTHON NEVER
+    REACHES. Nothing inside an `if` body that never runs is (`_never_runs`:
+    `if TYPE_CHECKING:`, `if False:`, `if 0:`), nor an import after an
+    unconditional `raise` in its own block (`_reached`, #675). Inside the
+    body of a `try` that catches the `ImportError` a missing name raises
     (`_catches_import_error`), a name is still taken unless the first
     handler that catches it binds that same local name itself, its `as`
     name else the name, as `_bound_at` reads a binding: that is the copy's
@@ -4074,7 +4129,8 @@ def _imports_with_fallbacks(module: ast.Module):
     innermost `try` around it, in its own scope, binds, since that handler
     is the one that catches it. Empty outside any such `try`.
     """
-    pending = [(statement, frozenset()) for statement in module.body]
+    pending = [(statement, frozenset())
+               for statement in _reached(module.body)]
     while pending:
         node, answered = pending.pop()
         if isinstance(node, ast.ImportFrom):
@@ -4086,15 +4142,17 @@ def _blocks_inside(node: ast.AST, answered: frozenset) -> list:
     """The clauses directly inside `node`, each with the names a fallback
     answers there: `_fallback_in` for `node`'s own `body`, and what `node`
     found for the rest, since a `try`'s handlers, `else` and `finally` are
-    outside its own guard. An `if TYPE_CHECKING:` body is not entered.
+    outside its own guard. The body of an `if` that `_never_runs` is not
+    entered, only its `else`, and no block past its first `raise`
+    (`_reached`, #675).
     """
-    if isinstance(node, ast.If) and _is_type_checking(node.test):
-        return [(clause, answered) for clause in node.orelse]
+    if isinstance(node, ast.If) and _never_runs(node.test):
+        return [(clause, answered) for clause in _reached(node.orelse)]
     inside = _fallback_in(node, answered)
     return [(clause, inside if field == "body" else answered)
             for field, value in ast.iter_fields(node)
             if isinstance(value, list)
-            for clause in value if isinstance(clause, _BLOCKS)]
+            for clause in _reached(value) if isinstance(clause, _BLOCKS)]
 
 
 def _fallback_in(node: ast.AST, answered: frozenset) -> frozenset:
@@ -4128,6 +4186,28 @@ def _is_type_checking(test: ast.expr) -> bool:
     return ((isinstance(test, ast.Name) and test.id == "TYPE_CHECKING")
             or (isinstance(test, ast.Attribute)
                 and test.attr == "TYPE_CHECKING"))
+
+
+def _never_runs(test: ast.expr) -> bool:
+    """Is `test` an `if` test whose body never runs (#675)? `TYPE_CHECKING`
+    (`_is_type_checking`), and a false constant: `if False:`, `if 0:`, `if
+    None:`. Any other test is read as one that may be true.
+    """
+    return _is_type_checking(test) or (isinstance(test, ast.Constant)
+                                       and not test.value)
+
+
+def _reached(block: list) -> list:
+    """`block` up to and including its first unconditional `raise`, after
+    which no statement in the same block runs (#675): `raise RuntimeError`
+    then `NEW = 1` in a `try` body binds nothing, whatever the handler
+    does. Only a list of statements holds a `raise`, so any other list a
+    node carries comes back whole.
+    """
+    for at, node in enumerate(block):
+        if isinstance(node, ast.Raise):
+            return block[:at + 1]
+    return block
 
 
 def _names_defined(path: Path) -> set[str] | None:
@@ -4191,6 +4271,17 @@ def _bound_at(statements: list) -> set[str]:
     stand, and never inside a function, class or lambda body, which bind
     names of their own scope.
 
+    NOR WHAT PYTHON NEVER RUNS (#675): the body of an `if` whose test is
+    `TYPE_CHECKING` or a false constant (`_never_runs`: `if False:`, `if
+    0:`), whose `else` is read; and a statement after an unconditional
+    `raise` in its own block (`_reached`), a `try` body's among them. A
+    binding there is not a binding, so a written module whose only `NEW`
+    sits there drops it, and a kept one lacks it. The rest of what never
+    runs is read as running: `while False:`, a test that is false only
+    once evaluated, the `else` of a `try` whose body always raises, a
+    statement after a call that exits. What this cannot tell, it does not
+    refuse.
+
     NOT READ: a name bound through `globals()`, `setattr` on the module or
     `exec`, which reads as missing; and `del`, so a name bound and then
     deleted reads as bound.
@@ -4202,14 +4293,22 @@ def _bound_at(statements: list) -> set[str]:
 def _same_scope(statements: list):
     """Every node under `statements` that runs in their own scope. A `def`,
     `class` or `lambda` is yielded, since its name is bound there, and not
-    entered.
+    entered. Nor is what never runs (#675): of an `if` that `_never_runs`,
+    only the `else` is entered, and no block past its first `raise`
+    (`_reached`).
     """
-    pending = list(statements)
+    pending = list(_reached(statements))
     while pending:
         node = pending.pop()
         yield node
-        if not isinstance(node, _SCOPES):
-            pending.extend(ast.iter_child_nodes(node))
+        if isinstance(node, ast.If) and _never_runs(node.test):
+            pending.extend(_reached(node.orelse))
+        elif not isinstance(node, _SCOPES):
+            pending.extend(child for _, value in ast.iter_fields(node)
+                           for child in (_reached(value)
+                                         if isinstance(value, list)
+                                         else [value])
+                           if isinstance(child, ast.AST))
 
 
 def _names_bound(node: ast.AST) -> set[str]:
