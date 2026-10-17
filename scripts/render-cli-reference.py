@@ -287,6 +287,13 @@ def child_env() -> dict:
     If that ever stops being true, git refuses the transport, the tool's
     `--help` exits non-zero, and `capture_help` turns that into a refusal
     naming the tool — the regression fails closed, offline.
+
+    `PYTHONDONTWRITEBYTECODE=1` (#665): the template's `siblings.py` does
+    `from bootstrap import ...` from its own directory, so a `--help` child
+    that may write bytecode leaves a `__pycache__/bootstrap.*.pyc` inside
+    `templates/family-root/scripts/`, ignored by git and so silent in
+    `git status`. A person who runs this generator gets the same tree as the
+    test that runs it.
     """
     env = dict(os.environ)
     env.pop("LINES", None)
@@ -298,6 +305,7 @@ def child_env() -> dict:
         "PYTHONPATH": str(REPO / "scripts"),
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
         "NO_COLOR": "1",
         "TERM": "dumb",
         "LC_ALL": "C",
