@@ -944,9 +944,10 @@ REBASE_HEAD_NAMES = {"rebase-merge": "rebase-merge/head-name",
 
 
 def _rebase_unreadable(mark: str) -> tuple:
-    """`(what, finish, abort, effect)` for a `mark` directory that holds no
-    `head-name` (`REBASE_HEAD_NAMES`)."""
-    return ("a rebase", None, "git rebase --quit",
+    """`(finish, abort, effect)` for a `mark` directory that holds no
+    `head-name` (`REBASE_HEAD_NAMES`); what it is, a rebase, is its row's in
+    `OPERATION_MARKS`."""
+    return (None, "git rebase --quit",
             "git does not refuse that, and the commit would land beside a "
             f"`{mark}/` directory that holds no `head-name`, so git can read "
             "no rebase from it and `git rebase --continue` and `--abort` both "
@@ -1017,7 +1018,7 @@ def _operation_in_progress(
             what, finish, abort, effect = AM_OPERATION
         elif mark in REBASE_HEAD_NAMES and not os.path.lexists(
                 marks[REBASE_HEAD_NAMES[mark]]):
-            what, finish, abort, effect = _rebase_unreadable(mark)
+            finish, abort, effect = _rebase_unreadable(mark)
         return what, mark, where, finish, abort, effect
     if os.path.lexists(marks[SEQUENCER]):
         what, finish, abort, effect = _sequence_act(marks[SEQUENCER_TODO])
@@ -1233,18 +1234,21 @@ def _checked_manifest_committed(root: Path, verb: str) -> None:
     records = [record.partition(b"\t")[0].split()
                for record in index.get(MANIFEST.encode(), [])]
     merged = [(mode, oid) for mode, oid, stage in records if stage == b"0"]
-    if len(merged) != len(records):
-        # `ls-files -m` lists an unmerged path once for each stage the work
-        # tree's copy differs from, which says nothing more.
+    unmerged = len(merged) != len(records)
+    if unmerged:
         said = ["it is unmerged in the index"]
+    elif not merged:
+        said = ["its deletion is staged, so the index holds no copy"]
+    elif merged != [head]:
+        said = ["a change to it is staged and not committed"]
     else:
-        said = ([] if merged == [head] else
-                ["a change to it is staged and not committed"] if merged else
-                ["its deletion is staged, so the index holds no copy"])
-        if MANIFEST.encode() in _git_bytes(["ls-files", "-m", "-z"],
-                                           root).split(b"\0"):
-            said.append("git lists the work tree's copy as modified, a "
-                        "change nobody has staged")
+        said = []
+    # `ls-files -m` lists an unmerged path once for each stage the work
+    # tree's copy differs from, which says nothing more.
+    if not unmerged and MANIFEST.encode() in _git_bytes(
+            ["ls-files", "-m", "-z"], root).split(b"\0"):
+        said.append("git lists the work tree's copy as modified, a change "
+                    "nobody has staged")
     if not said:
         return
     raise Refusal(
