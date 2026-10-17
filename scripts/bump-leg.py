@@ -1146,10 +1146,29 @@ def _switch_command(root: Path, role: str, commit: str) -> str:
     root, which always holds a backslash, prints in single quotes, as
     `shlex` spells it. They are lines for a POSIX shell (Git Bash, or WSL2
     on Windows), as `update-shape.py`'s are, and README's "Windows,
-    natively" says so.
+    natively" says so. Each of the three is followed by `BRANCH_LEFT`, for a
+    root that has the branch already (#647).
     """
     return shlex.join(["git", "-C", str(root), "switch", "-c",
                        f"bump/{role}-{commit[:12]}"])
+
+
+#: What every place that names `_switch_command` says under it (#647): where
+#: an earlier act left that branch, `switch -c` fails `fatal: a branch named
+#: '<branch>' already exists` (exit 128), and nothing said what to do next.
+#: Another name comes first, because a new branch starts where the project
+#: stands now; going back to the old branch is right only where it holds work
+#: not merged yet, and `git switch` keeps its commits. IN WORDS, NOT A SECOND
+#: COMMAND, as `family.py` and the holder's `validate-family.py` say it: no
+#: line of ours changes, so none needs quoting, and the three tools follow one
+#: rule. THE SAME SENTENCE as their `BRANCH_LEFT` (#607), word for word, with
+#: "the project" where they say "the holder".
+BRANCH_LEFT = ("If `git switch -c` says that branch already exists, an "
+               "earlier act left it: give the branch another name, which "
+               "starts it where the project stands, or, only if that branch "
+               "holds work not merged yet, the same command with `switch` "
+               "in place of `switch -c` goes back to it and keeps every "
+               "commit on it.")
 
 
 def _branch_to_bump_from(root: Path, project: "Project", role: str,
@@ -1163,7 +1182,8 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
     commit, so on the tracking branch it is let through and ends by naming
     the branch the real run needs (#477); a root on no branch at all is
     refused either way. Both refusals name that branch's `switch -c`
-    through `_switch_command`, quoted (#532).
+    through `_switch_command`, quoted (#532), and end with `BRANCH_LEFT`, the
+    sentence for a root that has that branch already (#647).
     """
     branch = current_branch(root)
     if branch is None:
@@ -1172,7 +1192,7 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
             f"{root} is not on a branch, so there is no branch to push and "
             "open a pull request from",
             f"Remediation: `{_switch_command(root, role, commit)}` and "
-            "re-run.")
+            f"re-run.\n{BRANCH_LEFT}")
     if branch == project.tracking and not dry_run:
         raise Refusal(
             "bump-leg-on-tracking-branch",
@@ -1181,7 +1201,8 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
             "Remediation: these organisations are pull-request only, so this "
             "will not make a commit whose only next step is a push to the "
             "default branch. Run:\n    "
-            f"{_switch_command(root, role, commit)}\nand re-run.")
+            f"{_switch_command(root, role, commit)}\nand re-run.\n"
+            f"{BRANCH_LEFT}")
     return branch
 
 
@@ -1670,11 +1691,13 @@ def cmd_bump(args) -> int:
               "untouched.")
         if branch == project.tracking:
             # LAST, after everything a dry run on a branch prints, so that
-            # line is the whole of the difference between the two (#477).
-            # The command is quoted, so a root under `My Projects/` pastes.
+            # line and the sentence under it are the whole of the difference
+            # between the two (#477, #647). The command is quoted, so a root
+            # under `My Projects/` pastes.
             print(f"\nthe real run needs a branch: {root} is on {branch!r}, "
                   "the tracking branch. Create one first with: "
                   + _switch_command(root, role, asked))
+            print(BRANCH_LEFT)
         return 0
 
     # ---- the rewrite and the commit, remembered byte for byte so a failure
