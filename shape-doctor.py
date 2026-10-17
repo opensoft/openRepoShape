@@ -3859,7 +3859,8 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    hunks, as git merged none there, so it leaves `copies`,
                    and the `why` says it is gone on both sides and names
                    each new name a side's own commit holds the base's blob
-                   of it at, saying where a side's is not proved
+                   of it at, or the bytes that commit's own pin row for it
+                   records, saying where a side's is not proved
                    (`copies_renamed_twice`, `twice_renamed_copies`). Where
                    the pin taken here still lists a copy renamed on one side
                    or both, the `why` says this doctor reports it missing
@@ -4012,7 +4013,12 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                            if name not in named}
                 held = base_holders(ctx) if gone or unnamed else {}
                 renamed = copies_renamed(kept | other, unnamed, held)
-                twice = copies_renamed_twice(ctx, gone, stages, held)
+                # A path a pin has a row for is named as that, never as a
+                # copy's new name too (review of PR #789).
+                twice = copies_renamed_twice(
+                    ctx, gone, {name: held_at for name, held_at
+                                in stages.items() if name not in named},
+                    held)
                 # A read of a partial clone can fetch: prove nothing there.
                 partial = bool(copies) and partial_clone(ctx.shape)
                 if not partial:
@@ -4035,10 +4041,9 @@ def pin_restore(ctx: Context, detail: dict | None = None,
             if lines or copies or other_side or renamed or twice:
                 if detail is not None:
                     detail["left_for_a_person"] = sorted(
-                        lines + copies + other_side + list(renamed)
-                        + list(twice) + [path for went in twice.values()
-                                         for paths in went.values()
-                                         for path in paths])
+                        {*lines, *copies, *other_side, *renamed, *twice,
+                         *(path for went in twice.values()
+                           for paths in went.values() for path in paths)})
                 if lines:
                     said.append(
                         f"{' and '.join(lines)} "
@@ -4259,30 +4264,76 @@ def copies_renamed_twice(ctx: Context, gone: dict, stages: dict,
     of the copy's three versions to both new names, so where a side edited
     the copy no stage holds the base's blob.
 
-    THE BLOB THE SIDE ITSELF COMMITTED IS THE EVIDENCE. A path added by
-    one side alone is that side's new name for the copy where the commit
-    that side records (`HEAD`, `MERGE_HEAD`) holds at that path the merge
-    base's blob of the copy, object for object, and no other path of the
-    base holds that blob (`base_holders`, as #781 weighs one). A side whose
-    commit holds an edit there is not proved: no similarity index is
-    guessed at, and git's merged content, the same at both names, is not
-    taken for a pairing. Where git cannot name the base, nothing is proved.
+    THE BYTES THE SIDE ITSELF COMMITTED ARE THE EVIDENCE (`side_moved_it`).
+    A path added by one side alone is that side's new name for the copy
+    where the commit that side records (`HEAD`, `MERGE_HEAD`) holds at that
+    path the merge base's blob of the copy, object for object, or the bytes
+    whose sha256 that same commit's own shape pin records in its row for
+    the copy (review of PR #789): where the standard moved the copy between
+    the two pins, each side's `apply` rewrote it, and neither commit holds
+    the base's blob. A side whose commit holds an edit there is not proved:
+    no similarity index is guessed at, and git's merged content, the same
+    at both names, is not taken for a pairing.
+
+    NO OTHER PATH OF THE BASE HOLDS THOSE BYTES, as #781 weighs a blob
+    (`base_holders`): the base's blob of the copy is held there by the
+    copy alone, and bytes the base did not hold at the copy are held there
+    by no path at all. So a path of the base holding the very bytes a side
+    holds at its new name proves that name nothing, while a twin of the
+    copy's old bytes does not stand in the way of bytes the standard moved
+    it to. Where git cannot name the base, nothing is proved.
+
+    Only a path no pin has a row for is a candidate: `pin_restore` names
+    the others as what their rows say, never as a new name too (review of
+    PR #789). Several proved paths on one side were not reached in that
+    review: git pairs one new name per side with the rename, and another
+    path a side copies the copy to is added cleanly, never conflicted. The
+    `[paths]` keeps them all, should git ever give more.
     """
+    if not gone:
+        return {}
     added = sorted(name for name, held_at in stages.items()
                    if set(held_at) in ({b"2"}, {b"3"}))
+    pinned = {number: pinned_sha256(ctx, commit)
+              for number, commit in COMMIT_OF_STAGE.items()}
     twice: dict[str, dict] = {}
     for copy, blob in sorted(gone.items()):
         found: dict[bytes, list] = {}
-        if held.get(blob) == [copy]:
-            for path in added:
-                number = next(iter(stages[path]))
-                committed = git_answer(
-                    ["rev-parse", "-q", "--verify",
-                     f"{COMMIT_OF_STAGE[number]}:./{path}"], ctx.root)
-                if committed == blob.decode("ascii"):
-                    found.setdefault(number, []).append(path)
+        for path in added:
+            number = next(iter(stages[path]))
+            if held and side_moved_it(
+                    ctx, f"{COMMIT_OF_STAGE[number]}:./{path}", copy, blob,
+                    pinned[number].get(copy), held):
+                found.setdefault(number, []).append(path)
         twice[copy] = found
     return twice
+
+
+def pinned_sha256(ctx: Context, rev: str) -> dict:
+    """`{path: sha256}` of the `files:` rows of the shape pin `rev` holds,
+    read by `pin_at` through `read_pin`'s checks, or `{}` where it does not
+    read; a row with no `sha256:` maps to ''."""
+    read = pin_at(ctx, rev, whole=True)
+    return {row.path: row.recorded for row in read[1]} if read else {}
+
+
+def side_moved_it(ctx: Context, spec: str, copy: str, blob: bytes,
+                  recorded: str | None, held: dict) -> bool:
+    """Whether `spec`, `<commit>:./<path>` of one side of the merge, holds
+    the copy `copy` moved there, by `copies_renamed_twice`'s evidence: the
+    merge base's blob of the copy, `blob`, which the base `held` holds at
+    the copy alone, or bytes the base holds at no path whose sha256 is
+    `recorded`, that side's pin row for the copy."""
+    committed = git_answer(["rev-parse", "-q", "--verify", spec], ctx.root)
+    if committed is None:
+        return False
+    if committed.encode("ascii") == blob:
+        return held.get(blob) == [copy]
+    if not recorded or committed.encode("ascii") in held:
+        return False
+    data = git_answer(["cat-file", "blob", spec], ctx.root, binary=True)
+    return (data is not None
+            and ctx.update_shape().file_bytes_sha256(data) == recorded)
 
 
 def twice_renamed_copies(twice: dict, stage: bytes) -> list:
@@ -4299,7 +4350,7 @@ def twice_renamed_copies(twice: dict, stage: bytes) -> list:
         start = f"{copy} is gone on both sides of the merge"
         if not found:
             said.append(f"{start}, and where either side put it is not "
-                        "proved here, so nothing is taken whole: a person "
+                        "proved here, so neither name is taken: a person "
                         "settles where it goes, by hand")
             continue
         renames = " and ".join(
@@ -4309,13 +4360,13 @@ def twice_renamed_copies(twice: dict, stage: bytes) -> list:
                else "names")
         if len(found) > 1:
             said.append(f"{start}, renamed {renames}, and no pin lists the "
-                        f"new {new}, so nothing is taken whole: a person "
+                        f"new {new}, so neither name is taken: a person "
                         "keeps one name, or both, by hand")
             continue
         unproved = next(number for number in sides if number not in found)
         said.append(f"{start}, renamed {renames}, and no pin lists the new "
                     f"{new}; where {sides[unproved]} put it is not proved "
-                    "here, so nothing is taken whole: a person settles where "
+                    "here, so neither name is taken: a person settles where "
                     "it goes, by hand")
     return said
 
