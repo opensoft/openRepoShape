@@ -90,16 +90,19 @@ THE_RESOLVED_PATH = (
     "for a relative path, the directory it was given from. Rename or replace "
     "the directory whose name is not text, or pass a path that does not lead "
     "through it; renaming a link changes nothing. ")
-#: How a README prints the clone URL since #693: one word of a POSIX shell.
-QUOTED_NOT_ESCAPED = ("the clone URL in a `git clone` line, in quotes where a "
-                      "shell needs them but with no character escaped: ")
+#: How a README prints the clone URL since #693: one word of a POSIX shell,
+#: in quotes where one is needed, an apostrophe the only character written as
+#: something else.
+QUOTED_ONE_WORD = ("the clone URL in a `git clone` line, in quotes where a "
+                   "shell needs them, every character but an apostrophe "
+                   "written as itself: ")
 SCAFFOLD_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
     "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
     "control character in it, a directory renamed or made anew, and run "
     "again; or scaffold against GitHub, without --local-remote-dir, where "
     "the clone URL is `https://github.com/<org>/<name>.git`. "
-    + THE_RESOLVED_PATH + "The READMEs print " + QUOTED_NOT_ESCAPED
+    + THE_RESOLVED_PATH + "The READMEs print " + QUOTED_ONE_WORD
     + WHY_IT_IS_REFUSED)
 FAMILY_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
@@ -108,7 +111,7 @@ FAMILY_REMEDIATION = (
     "again; or run `init` against GitHub, without --local-remote-dir, where "
     "the clone URL is `https://github.com/<org>/<Family>.git`. "
     + THE_RESOLVED_PATH + "The holder's `README.md` prints "
-    + QUOTED_NOT_ESCAPED + WHY_IT_IS_REFUSED)
+    + QUOTED_ONE_WORD + WHY_IT_IS_REFUSED)
 
 
 @pytest.fixture

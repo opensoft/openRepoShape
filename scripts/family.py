@@ -1681,10 +1681,17 @@ def _holder_remote(args, family: str) -> tuple[bool, str, str]:
 #: the path that was typed. Told only to pass a path that is "one line of
 #: UTF-8 text", which it already was, a person renames the link and is
 #: refused again, so this says where the fault is.
+#:
+#: WHAT THE DIRECTORY MUST HOLD IS THE CALLER'S (`{holding}`, #693). `init`
+#: makes the holder's bare repository there, so a directory made anew is a
+#: way out of its refusal. `add` reads the member's bare `<Project>.git`
+#: from it (`_probe_member`), so a new, empty directory is refused again
+#: with `does not exist`: its remedy says the directory must hold the
+#: repository, renamed or moved, as lane 1's review of #812 measured.
 LOCAL_REMOTE_DIR_REMEDY = (
     "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
-    "control character in it, a directory renamed or made anew, and run "
-    "again; or run `{verb}` against GitHub, without --local-remote-dir, "
+    "control character in it{holding}, and run again; or run `{verb}` "
+    "against GitHub, without --local-remote-dir, "
     "where the clone URL is `https://github.com/<org>/<{name}>.git`. The "
     "clone URL is the path --local-remote-dir resolves to, so where the path "
     "given is text and the URL named above is not, the fault is in what it "
@@ -1695,20 +1702,22 @@ LOCAL_REMOTE_DIR_REMEDY = (
 
 #: What a `family-unwritable-value` for the holder's clone URL is told to do
 #: (#433). The holder's `README.md` quotes the URL for a shell (#693) and
-#: escapes no character of it, so a lone surrogate, which a Windows name can
-#: hold, cannot be written either, as #282's `UNWRITABLE_REMEDIATION` in
-#: `scaffold-project.py` says (#693).
+#: writes every character of it as itself but an apostrophe, so a lone
+#: surrogate, which a Windows name can hold, cannot be written either, as
+#: #282's `UNWRITABLE_REMEDIATION` in `scaffold-project.py` says (#693).
 CLONE_URL_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
-    + LOCAL_REMOTE_DIR_REMEDY.format(verb="init", name="Family")
+    + LOCAL_REMOTE_DIR_REMEDY.format(
+        verb="init", name="Family",
+        holding=", a directory renamed or made anew")
     + " The holder's `README.md` prints the clone URL in a `git clone` "
-    "line, in quotes where a shell needs them but with no character "
-    "escaped: a byte that is not UTF-8 in the path (a directory named in a "
-    "legacy code page), or a lone surrogate, cannot be written at all, a "
-    "line break or a control character would break or garble the line it "
-    "is written into, and a bidirectional embedding, override or isolate "
-    "control would show the rest of that line in another order than it is "
-    "written.")
+    "line, in quotes where a shell needs them, every character but an "
+    "apostrophe written as itself: a byte that is not UTF-8 in the path (a "
+    "directory named in a legacy code page), or a lone surrogate, cannot be "
+    "written at all, a line break or a control character would break or "
+    "garble the line it is written into, and a bidirectional embedding, "
+    "override or isolate control would show the rest of that line in "
+    "another order than it is written.")
 
 #: What a `family-unwritable-value` for a member's clone URL is told to do
 #: (#693). `git submodule add` records the URL in the holder's `.gitmodules`
@@ -1719,7 +1728,11 @@ CLONE_URL_REMEDIATION = (
 #: and a bidi override came back as themselves.
 MEMBER_URL_REMEDIATION = (
     "Remediation: `--dry-run` refuses the same. "
-    + LOCAL_REMOTE_DIR_REMEDY.format(verb="add", name="Project")
+    + LOCAL_REMOTE_DIR_REMEDY.format(
+        verb="add", name="Project",
+        holding=" and that holds the member's bare repository "
+                "`<Project>.git`, its directory renamed or the repository "
+                "moved")
     + " The holder's `.gitmodules` records the clone URL as git is given "
     "it, and the holder's `make siblings` reads it back as UTF-8 text, a "
     "line a value: a byte that is not UTF-8 in the path (a directory named "
@@ -1834,9 +1847,10 @@ def _template_values(args, family: str, family_id: str, repository: str,
     holding `$`, `'`, `;` or `&` broke it too. It is spelled by
     `shell_quoted` in the POSIX dialect whatever the host, since the README
     is a committed file read on every OS and pasted commands are for a POSIX
-    shell (#532); a GitHub URL and an ordinary path are left bare. Only this
-    value is quoted: the block's other placeholder, `{{FAMILY}}` in `cd
-    {{FAMILY}}`, is a name the naming policy spells in letters and digits.
+    shell (#532); a GitHub URL and an ordinary POSIX path are left bare (a
+    Windows path, spelled with `\\`, is quoted). Only this value is quoted:
+    the block's other placeholder, `{{FAMILY}}` in `cd {{FAMILY}}`, is a
+    name the naming policy spells in letters and digits.
     """
     return {
         "FAMILY": family,

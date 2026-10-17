@@ -58,12 +58,15 @@ from test_scaffold_free_text_values import (  # noqa: F401 - fixtures
 LONE_SURROGATE = "it holds a lone surrogate, which is no character"
 
 #: What `add`'s refusal tells a person to do: `init`'s way out, with `add`'s
-#: verb and GitHub URL, and why `.gitmodules` cannot hold the URL as text.
+#: verb and GitHub URL, but a directory that already holds the member's bare
+#: repository, not one made anew (a new, empty one is refused again), and why
+#: `.gitmodules` cannot hold the URL as text.
 MEMBER_REMEDIATION = (
     "Remediation: `--dry-run` refuses the same. Pass a --local-remote-dir "
-    "whose path is one line of UTF-8 text with no control character in it, "
-    "a directory renamed or made anew, and run again; or run `add` against "
-    "GitHub, without --local-remote-dir, where the clone URL is "
+    "whose path is one line of UTF-8 text with no control character in it "
+    "and that holds the member's bare repository `<Project>.git`, its "
+    "directory renamed or the repository moved, and run again; or run `add` "
+    "against GitHub, without --local-remote-dir, where the clone URL is "
     "`https://github.com/<org>/<Project>.git`. " + THE_RESOLVED_PATH
     + "The holder's `.gitmodules` records the clone URL as git is given it, "
     "and the holder's `make siblings` reads it back as UTF-8 text, a line a "
@@ -150,6 +153,36 @@ def test_add_through_a_link_to_such_a_directory_says_the_target_is_the_fault(
     offline.assert_left_nothing()
 
 
+@pytest.mark.parametrize("how", ["directory-renamed", "repository-moved"])
+def test_add_follows_its_own_remedy_to_a_mount(family, holder, offline,
+                                               tmp_path, how):
+    """`add`'s remedy says to pass a path of text that HOLDS the member's bare
+    repository, "its directory renamed or the repository moved". Both
+    are measured: from the refused `caf<e9>` directory, either one makes
+    `add` exit 0 with the member mounted, and the pin in `.gitmodules` is
+    the new path. The words "made anew" are not there because a new, empty
+    directory is refused again (`<Project>.git` does not exist in it), which
+    lane 1's review of #812 measured."""
+    bad = holding_the_spare(family, directory_named(tmp_path, b"caf\xe9"))
+    refused = offline.add(holder, SPARE, remotes=bad)
+    assert refused.returncode == 2, refused.stderr
+    assert "family-unwritable-value" in refused.stderr
+    if how == "directory-renamed":
+        good = tmp_path / "renamed"
+        os.rename(bad, good)
+    else:
+        good = tmp_path / "moved"
+        good.mkdir()
+        shutil.move(bad / f"{SPARE}.git", good / f"{SPARE}.git")
+    result = offline.add(holder, SPARE, remotes=good)
+    assert result.returncode == 0, result.stderr + result.stdout
+    url = str(good.resolve() / f"{SPARE}.git")
+    assert git("config", "-f", ".gitmodules", "--get",
+               f"submodule.members/{SPARE}.url",
+               cwd=holder).stdout == f"{url}\n"
+    offline.assert_left_nothing()
+
+
 def test_add_from_a_utf8_directory_still_mounts(family, holder, offline,
                                                 tmp_path):
     """The control, `<dir>/café`: text, so `add` mounts and pins it, exit 0,
@@ -210,8 +243,9 @@ SURROGATE_URL = "/remotes/\ud800/Atlas.git"
 def refused_text(module, function: str) -> str:
     """What `module`'s refusal `function` raises for `SURROGATE_URL` under
     `--local-remote-dir`, as the tool prints it to stderr."""
+    refuse = getattr(module, function)
     with pytest.raises(module.Refusal) as caught:
-        getattr(module, function)(True, SURROGATE_URL)
+        refuse(True, SURROGATE_URL)
     return f"{caught.value}\n"
 
 
@@ -243,7 +277,7 @@ def test_add_asks_only_a_local_url():
 
 #: `(id, the folder the remotes go under, whether a POSIX shell needs the URL
 #: quoted)`: the issue's two rows, and an ordinary name left bare. On Windows
-#: the path is spelled with `\` and `:`, which `sh` reads as syntax, so the
+#: the path is spelled with `\`, which `sh` reads as an escape, so the
 #: ordinary row is quoted there too.
 FOLDERS = [("space", "a b", True), ("apostrophe", "it's", True),
            ("ordinary", "plain", os.name == "nt")]
@@ -268,7 +302,8 @@ def clone_lines(readme: Path) -> list[str]:
 def assert_one_command(lines: list[str], url: str, quoted: bool) -> None:
     """Each line is the clone line, and `shlex` reads it as `sh` does: the
     three words and the URL whole."""
-    assert lines and set(lines) == {clone_line(url, quoted)}, lines
+    assert lines, lines
+    assert set(lines) == {clone_line(url, quoted)}, lines
     assert shlex.split(lines[0]) == ["git", "clone", "--recurse-submodules",
                                      url]
 

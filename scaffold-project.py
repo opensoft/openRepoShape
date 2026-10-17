@@ -912,8 +912,8 @@ def _refuse_unwritable_values(fields) -> None:
 #: text", which it was, a person renames the link and is refused again, so
 #: the remedy says where the fault is. And as `UNWRITABLE_REMEDIATION` says
 #: (#282), a lone surrogate, which a Windows name can hold, cannot be
-#: written either: the READMEs quote the URL for a shell (#693) and escape
-#: no character of it.
+#: written either: the READMEs quote the URL for a shell (#693) and write
+#: every character of it as itself but an apostrophe.
 CLONE_URL_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
     "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
@@ -926,13 +926,13 @@ CLONE_URL_REMEDIATION = (
     "relative path, the directory it was given from. Rename or replace the "
     "directory whose name is not text, or pass a path that does not lead "
     "through it; renaming a link changes nothing. The READMEs print the "
-    "clone URL in a `git clone` line, in quotes where a shell needs them "
-    "but with no character escaped: a byte that is not UTF-8 in the path (a "
-    "directory named in a legacy code page), or a lone surrogate, cannot be "
-    "written at all, a line break or a control character would break or "
-    "garble the line it is written into, and a bidirectional embedding, "
-    "override or isolate control would show the rest of that line in "
-    "another order than it is written.")
+    "clone URL in a `git clone` line, in quotes where a shell needs them, "
+    "every character but an apostrophe written as itself: a byte that is "
+    "not UTF-8 in the path (a directory named in a legacy code page), or a "
+    "lone surrogate, cannot be written at all, a line break or a control "
+    "character would break or garble the line it is written into, and a "
+    "bidirectional embedding, override or isolate control would show the "
+    "rest of that line in another order than it is written.")
 
 
 def _refuse_an_unwritable_clone_url(local: bool, url: str) -> None:
