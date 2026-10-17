@@ -8161,11 +8161,12 @@ def sibling_slot(root: Path, sibling: Path, row: dict,
     only names.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED OR ENTERED, IS `not-a-clone`
-    TOO: nothing can be cloned into it. `make siblings` itself ends in a
-    traceback on each today (`siblings.py:558`, #735), so the row says what
-    is there and nothing of what `make siblings` does with it
-    (`beside_sentence`). A folder that cannot be entered cannot be asked
-    for its `.git` either, so that question's `OSError` reads "no `.git`".
+    TOO: nothing can be cloned into it. A holder whose pinned `siblings.py`
+    predates #735 ends `make siblings` in a traceback on each, and one that
+    has #735 calls it NOT A CLONE, so the row says what is there and
+    nothing of what `make siblings` does with it (`beside_sentence`), which
+    is true of both. A folder that cannot be entered cannot be asked for its
+    `.git` either, so that question's `OSError` reads "no `.git`".
     """
     if sibling == root:
         return "is-the-holder", None
@@ -8310,9 +8311,9 @@ BESIDE_THE_HOLDER = {
                      "project.yaml that says it is this member", ""),
 }
 
-#: What stands at a `not-a-clone` slot `make siblings` cannot read today, as
-#: `unclonable` names it: it ends in a traceback on each (#735), so the row
-#: says what is there and no word of what `make siblings` does with it.
+#: What stands at a `not-a-clone` slot that a holder's pinned `siblings.py`
+#: from before #735 ends in a traceback on, as `unclonable` names it: the
+#: row says what is there and no word of what `make siblings` does with it.
 UNREADABLE_BESIDE = {"file": "is a file, not a folder",
                      "unlistable": "is a folder that cannot be listed"}
 
@@ -8329,8 +8330,9 @@ def beside_sentence(ctx: Context, entry: dict) -> str:
     `--json` keeps them raw: `json.dumps` escapes them.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone` with no
-    word from `make siblings`, which ends in a traceback on it today (#735):
-    the sentence stops at what stands there (`UNREADABLE_BESIDE`).
+    word from `make siblings`, which ends in a traceback on it in a holder
+    whose pinned copy predates #735: the sentence stops at what stands
+    there (`UNREADABLE_BESIDE`).
     """
     state = entry["sibling"]
     where = ctx.root.parent / entry["project"]
