@@ -1364,6 +1364,82 @@ def refuse_bad_branch(refusal: str, what: str, value) -> None:
 
 
 # ---------------------------------------------------------------------------
+# A tracking branch a person can read (#715)
+# ---------------------------------------------------------------------------
+#
+# What `bump-leg.py` and `update-shape.py` ask of a manifest's
+# `tracking_branch` before they compare it or hand it to `gh` (Brett Heap's
+# option A on RV823's SHOULD-1, 2026-10-17): only what no person can see in
+# it, never `checked_value`'s alphabet.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py` for the reason the leg-path
+# rule and `refuse_bad_branch` do (RV823's round-2 SHOULD-1): that file is a
+# SHAPE COPY every root digest-pins, and no root calls this. Both tools
+# already import this module.
+
+#: Why a branch name holding such a character is refused, in the words
+#: `validate-manifest.py`'s `_branch_finding` and `bootstrap.py`'s `UNSEEN`
+#: say it in (#715).
+UNSEEN = "a character that does not print or is white space"
+
+
+def readable_branch(what: str, value) -> str:
+    """A BRANCH NAME read out of a manifest, refused only for what no person
+    can see in it (#715; Brett Heap's option A on RV823's SHOULD-1).
+
+    The rule is the root's own: `validate-manifest.py`'s `_branch_finding`
+    and `bootstrap.py`'s `_argument_fault` refuse a branch holding a
+    character for which `str.isprintable()` is false or `str.isspace()` is
+    true, so `main` followed by U+00A0, which the reader reads as YAML does
+    since #715, is never taken for `main`. Each of those two spells the rule
+    itself rather than importing it: a root's validator and bootstrap run
+    beside the `repo_shape.py` that root holds, which may be older than they
+    are (the skew rule, `validate-manifest.py`'s `_library_takes_remedies`,
+    #661), and an older one has no such function. The words are theirs: a
+    NUL and a lone surrogate (#280) have their own, and any other such
+    character is `UNSEEN`.
+
+    It is NOT `checked_value`'s `SAFE_ARG_RE`. A name in any script, or one
+    holding `&`, is a name git creates and the root's own gate passes.
+    `bump-leg.py` only compares it and prints it, and `update-shape.py`
+    compares it, hands it to `gh pr create --base` as one argument and
+    prints it shell-quoted in the line a person pastes (#209). #823's first
+    fix round read it through `checked_value`, and refused those names.
+
+    A leading `-` is refused too, as `unsafe-value`: `update-shape.py` hands
+    the name to `gh pr create --base`, where it could be read as an option,
+    and git creates no branch whose name begins with one, so no root needs
+    it. The refusal's words say only the second, which holds for both
+    tools.
+    """
+    text = str(value)
+    if text.startswith("-"):
+        raise Refusal(
+            "unsafe-value",
+            f"{what} is {text!r}, which begins with `-`, and git creates no "
+            "branch whose name begins with one",
+            "Remediation: give it a branch name git can create, such as "
+            "`main` or `release/1.2`.")
+    char = next((c for c in text if not c.isprintable() or c.isspace()),
+                None)
+    if char is None:
+        return text
+    if char == "\x00":
+        kind = "a NUL: no argument, file name or ref name can hold one"
+    elif "\ud800" <= char <= "\udfff":
+        kind = ("a lone surrogate: no UTF-8 file or console can hold it, so "
+                "no branch name is spelled with one")
+    else:
+        kind = (f"{UNSEEN}: a person reading the name cannot tell it from the "
+                "name without it")
+    raise Refusal(
+        "unseen-branch",
+        f"{what} is {text!r}, which holds U+{ord(char):04X}, {kind}",
+        "Remediation: give it a name with no such character, such as "
+        "`main` or `release/1.2`, and run this again.")
+
+
+# ---------------------------------------------------------------------------
 # What a run asks before its first write: the folders it makes (#609)
 # ---------------------------------------------------------------------------
 #

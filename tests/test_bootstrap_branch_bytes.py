@@ -484,9 +484,11 @@ def test_a_nul_and_a_surrogate_without_a_byte_are_the_fault(
 ])
 def test_a_character_no_person_can_see_is_the_fault(bootstrap_module,
                                                    branch, point):
-    """Since #715: git takes each of these names, and no person reading one
-    can tell it from the name without the character. Step (a) makes no ref
-    of it, as `validate-manifest.py` and `siblings.py` refuse it too."""
+    """Since #715: no person reading one of these names can tell it from
+    the name without the character, a visible space aside, which git
+    refuses too. Step (a) makes no ref of it, as `validate-manifest.py`
+    refuses it too; `siblings.py` asks `isprintable()` alone, and takes the
+    space."""
     if "\udcff" in branch and len(os.fsencode("\udcff")) != 1:
         pytest.skip("this system's `os.fsencode` makes no byte of U+DCFF")
     assert bootstrap_module._argument_fault(branch) == (

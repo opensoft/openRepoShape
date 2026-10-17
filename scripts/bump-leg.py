@@ -125,7 +125,7 @@ from repo_shape import (  # noqa: E402
 )
 # On its own line, so the list above, which other changes extend, is
 # not a line two of them both rewrite (#715).
-from repo_shape import readable_branch  # noqa: E402
+from shape_materialize import readable_branch  # noqa: E402
 from shape_materialize import (  # noqa: E402
     CommandFailed, captured_child_environment, check_program, commit_trailers,
     escape_what_stdout_cannot_encode, is_nested_key, pin_values_in,

@@ -2376,56 +2376,6 @@ def checked_value(what: str, value, pattern: re.Pattern = SAFE_ARG_RE) -> str:
     return text
 
 
-#: Why a branch name holding such a character is refused, in the words
-#: `validate-manifest.py`'s `_branch_finding` and `bootstrap.py`'s `UNSEEN`
-#: say it in (#715).
-UNSEEN = "a character that does not print or is white space"
-
-
-def readable_branch(what: str, value) -> str:
-    """A BRANCH NAME read out of a manifest, refused only for what no person
-    can see in it (#715; Brett Heap's option A on RV823's SHOULD-1).
-
-    The rule is the root's own. `validate-manifest.py`'s `_branch_finding`
-    and `bootstrap.py`'s `_argument_fault` refuse a branch holding a
-    character for which `str.isprintable()` is false or `str.isspace()` is
-    true, so `main` followed by U+00A0, which the reader reads as YAML does
-    since #715, is never taken for `main`. Those two ship into a root and
-    import nothing from here, so the rule is spelled again, not shared.
-
-    It is NOT `checked_value`'s `SAFE_ARG_RE`. A name in any script, or one
-    holding `&`, is a name git creates and the root's own gate passes.
-    `bump-leg.py` only compares it and prints it, and `update-shape.py`
-    compares it, hands it to `gh pr create --base` as one argument and
-    prints it shell-quoted in the line a person pastes (#209). #823's first
-    fix round read it through `checked_value`, and refused those names.
-
-    A leading `-` is refused too: `update-shape.py` hands the name to
-    `gh pr create --base`, where it could be read as an option, and git
-    creates no branch whose name begins with one, so no root needs it.
-    """
-    text = str(value)
-    if text.startswith("-"):
-        raise Refusal(
-            "unsafe-value",
-            f"{what} is {text!r}, which begins with `-`: a command it is "
-            "handed to could read it as an option, and git creates no branch "
-            "whose name begins with one",
-            "Remediation: give it a branch name git can create, such as "
-            "`main` or `release/1.2`.")
-    char = next((c for c in text if not c.isprintable() or c.isspace()),
-                None)
-    if char is not None:
-        raise Refusal(
-            "unseen-branch",
-            f"{what} is {text!r}, which holds U+{ord(char):04X}, {UNSEEN}: "
-            "a person reading the name cannot tell it from the name without "
-            "it",
-            "Remediation: give it a name with no such character, such as "
-            "`main` or `release/1.2`, and run this again.")
-    return text
-
-
 # ---------------------------------------------------------------------------
 # A path spelled the one way Git records it (#179, #189)
 # ---------------------------------------------------------------------------

@@ -853,4 +853,23 @@ def test_tracking_branch_of_refuses_a_leading_dash(update_shape_module):
         update_shape_module.tracking_branch_of({"tracking_branch": "-x"})
     assert str(refused.value).startswith(
         "REFUSED unsafe-value: tracking_branch is '-x', which begins with "
-        "`-`"), refused.value
+        "`-`, and git creates no branch whose name begins with one\n"), (
+            refused.value)
+
+
+@pytest.mark.parametrize("value, words", [
+    pytest.param("a\udcffb", "U+DCFF, a lone surrogate: no UTF-8 file or "
+                 "console can hold it, so no branch name is spelled with one",
+                 id="a-lone-surrogate"),
+    pytest.param("a\x00b", "U+0000, a NUL: no argument, file name or ref "
+                 "name can hold one", id="a-nul"),
+])
+def test_tracking_branch_of_names_a_nul_and_a_surrogate_as_the_validator_does(
+        update_shape_module, value, words):
+    """RV823's round-2 NIT-2: a byte-carrying U+DCFF is "a lone surrogate",
+    as `validate-manifest.py` names it (#280), and a NUL is a NUL."""
+    with pytest.raises(update_shape_module.Refusal) as refused:
+        update_shape_module.tracking_branch_of({"tracking_branch": value})
+    assert str(refused.value).startswith(
+        f"REFUSED unseen-branch: tracking_branch is {value!r}, which holds "
+        f"{words}\n"), refused.value

@@ -275,7 +275,8 @@ def _argument_fault(branch: str) -> str | None:
     is `os.fsencode`'s own, so it is the system's and not a list kept here.
 
     NOR IS A CHARACTER THAT DOES NOT PRINT, OR WHITE SPACE (#715), `UNSEEN`,
-    which `validate-manifest.py` and `siblings.py` refuse in a branch too.
+    which `validate-manifest.py` refuses in a branch too (`siblings.py` asks
+    `isprintable()` alone, so a space it takes).
     git takes `main` followed by U+00A0, and since #715 the reader reads that
     no-break space as YAML does, where it used to strip it: so this step made
     a second `main` beside the first in every leg and checked it out. Asked

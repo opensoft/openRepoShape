@@ -601,12 +601,13 @@ def _branch_finding(code: str, what: str, value) -> list[str]:
     the scaffold asks it for `--tracking-branch` (#283); and a value that is
     not text is left alone, as `bootstrap.py` turns it into text.
 
-    NOR A CHARACTER THAT DOES NOT PRINT, OR WHITE SPACE (#715), the branch
-    `siblings.py` refuses to use. git takes `main` followed by U+00A0, and
-    since #715 the reader reads that no-break space as YAML does, where it
-    used to strip it: so `bootstrap.py` made a second `main` beside the
-    first, and `bump-leg.py`'s guard of the tracking branch let a commit be
-    made on `main`. No person can tell such a name from the one without it.
+    NOR A CHARACTER THAT DOES NOT PRINT, OR WHITE SPACE (#715); `siblings.py`
+    uses no branch that does not print, though it takes a space. git takes
+    `main` followed by U+00A0, and since #715 the reader reads that no-break
+    space as YAML does, where it used to strip it: so `bootstrap.py` made a
+    second `main` beside the first, and `bump-leg.py`'s guard of the
+    tracking branch let a commit be made on `main`. No person can tell such
+    a name from the one without it.
     """
     if not isinstance(value, str):
         return []

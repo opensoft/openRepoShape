@@ -163,7 +163,7 @@ sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, PYTHON, TREE_DIGEST_DEFINITION, Refusal, YamlError,
     checked_value, die, file_sha256, git_out, load_yaml, parse_yaml,
-    readable_branch, tree_digest,
+    tree_digest,
 )
 # The reader's own rule for where a comment starts, by its private name on
 # purpose: `shape_materialize` imports it the same way and says why (#380). A
@@ -190,6 +190,9 @@ from shape_materialize import (  # noqa: E402
 # Where a root keeps its shape pin. The materializer that writes it names it
 # once; this module spells the path by that name and never by a literal (#290).
 from shape_materialize import SHAPE_PIN  # noqa: E402
+# The tracking branch's rule (#715), on a line of its own so the lists above,
+# which other changes extend, are not lines two of them both rewrite.
+from shape_materialize import readable_branch  # noqa: E402
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
