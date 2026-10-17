@@ -154,27 +154,25 @@ def a_disk_that_refuses(monkeypatch, code: int, names=None) -> Disk:
     return disk
 
 
-def the_error_of(kind, call, *args) -> Exception:
+def the_error_of(kind, call, *args, said: str = "") -> Exception:
     """The `kind` of error `call(*args)` raises. A call that skips or ends
-    without one FAILS the test, as `fail_where_the_caller_ends` has it."""
+    without one FAILS the test, as `fail_where_the_caller_ends` has it, with
+    `said` in front of the message."""
     with pytest.raises(kind) as raised:
-        fail_where_the_caller_ends(call, *args)
+        fail_where_the_caller_ends(call, *args, said=said)
     return raised.value
 
 
 def raised_for_every_errno(disk: Disk, call, *args) -> None:
     """Fail unless `call(*args)` raises what `disk` answers, whichever of
     `EVERY_OTHER_ERRNO` it answers, as Python makes it (`PermissionError` for
-    EACCES). It stops at the first errno that does not, naming it, so a
-    caller that goes on past a refused name runs its whole test once and not
-    129 times."""
+    EACCES). It stops at the first errno that does not, naming it in the
+    failure, so a caller that goes on past a refused name runs its whole
+    test once and not 129 times."""
     for code in EVERY_OTHER_ERRNO:
         disk.code = code
-        try:
-            error = the_error_of(OSError, call, *args)
-        except pytest.fail.Exception as failed:
-            pytest.fail(f"errno {code} ({errno.errorcode[code]}): "
-                        f"{failed.msg}")
+        error = the_error_of(OSError, call, *args,
+                             said=f"errno {code} ({errno.errorcode[code]}): ")
         assert error.errno == code, (code, error)
         assert type(error) is type(OSError(code, "")), (code, error)
 
@@ -325,3 +323,26 @@ def test_a_failure_of_git_under_the_byte_directory_still_skips_the_test(
     reason = skip_message(BYTE_TEST, tmp_path)
     assert reason is not None, "the test went on past git's failure"
     assert "git will not work under" in reason, reason
+
+
+# --- the sweep itself -------------------------------------------------------
+
+def test_the_sweep_names_the_first_errno_that_fails_and_stops_there():
+    """A caller that skips where it should raise fails the test at the first
+    errno, with that errno named in front of the message, and is not asked
+    the other 128: the label is passed in and not made by catching a failure
+    (python:S8714), so a failure that drops it, or a sweep that goes on, shows
+    here."""
+    asked = []
+
+    def hides_the_error(tmp_path):
+        asked.append(tmp_path)
+        pytest.skip("hidden")
+
+    first = EVERY_OTHER_ERRNO[0]
+    with pytest.raises(pytest.fail.Exception) as failed:
+        raised_for_every_errno(Disk(first), hides_the_error, "a path")
+    assert failed.value.msg == (
+        f"errno {first} ({errno.errorcode[first]}): "
+        "the caller ended SKIPPED: hidden")
+    assert asked == ["a path"]

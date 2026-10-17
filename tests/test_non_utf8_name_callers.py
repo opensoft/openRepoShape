@@ -113,12 +113,14 @@ def refusing(code: int, *, probe: bool):
     return mkdir
 
 
-def fail_where_the_caller_ends(call, *args) -> None:
+def fail_where_the_caller_ends(call, *args, said: str = "") -> None:
     """Fail where `call(*args)` ends without an error, SKIPPED or not: the
     caller was to raise. A `pytest.raises` block may hold one call and no
-    more (python:S5778), so the failure is made here and not beside it."""
+    more (python:S5778), so the failure is made here and not beside it.
+    `said` goes in front of the message, for a caller that asks the same
+    question many times and says which one failed (#834)."""
     reason = skip_message(call, *args)
-    pytest.fail("the caller ended "
+    pytest.fail(said + "the caller ended "
                 + (f"SKIPPED: {reason}" if reason else "without an error"))
 
 
