@@ -10,11 +10,12 @@ workflow scan reads every `.yml` and `.yaml` child of `.github/workflows/`,
 and its child check is `_is_a(path, stat.S_ISREG)`: a child that is not a
 REGULAR FILE is not a workflow and is skipped, as it always was. A mutant that
 replaced the kind with `lambda mode: True` left every validate-pins suite
-passing (102 tests), because no test put a directory at a workflow's name. Over
-a root holding a directory named `.github/workflows/sub.yml` the code says
-`pins ok`; the mutant read the directory as a file and said `REFUSED
-workflow-unreadable: .github/workflows/sub.yml: cannot be read (Is a
-directory)`, a refusal of a tree that has nothing unreadable in it.
+passing (130 tests on main `8062810d`; the issue counted 102), because no test
+put a directory at a workflow's name. Over a root holding a directory named
+`.github/workflows/sub.yml` the code says `pins ok`; the mutant read the
+directory as a file and said `REFUSED workflow-unreadable:
+.github/workflows/sub.yml: cannot be read (Is a directory)`, a refusal of a
+tree that has nothing unreadable in it.
 
 THE SYMLINK ROWS ARE CONTROLS OF THE SAME RULE, AND KILL A DIFFERENT MUTANT.
 `_is_a` answers False to a `stat` that found nothing to open (ENOENT, ELOOP)
@@ -23,8 +24,8 @@ the kind check says, and the `lambda mode: True` mutant passes both. They pin
 the other half of the child check: a child whose `stat` finds nothing is still
 "no workflow" and not a file that cannot be read. A child check that let that
 `OSError` through (a bare `path.stat()` for `_is_a`) refuses `dangling.yml`
-and `loop.yml` as `cannot be read (No such file or directory)`, which only
-these two rows say.
+as `cannot be read (No such file or directory)` and `loop.yml` as `cannot be
+read (Too many levels of symbolic links)`, which only these two rows say.
 
 #454 (PR #642), `templates/family-root/scripts/siblings.py`. Both reports open
 with `siblings: <name> (<root>) — N member(s)` and then a `family folder`
