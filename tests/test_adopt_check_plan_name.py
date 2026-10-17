@@ -21,9 +21,18 @@ leg exists:
   GitHub about `acme/Atlsa`. The plan's record holds it now, in both.
 - L4-48: the comments on #499's `org:` read said that a hand edit is caught
   "whatever `org:` then holds". An `org:` that `checked_value` refuses is
-  `unsafe-value` in `check`, which asks it first, and `plan-not-the-source`
-  in `execute`, which compares first: caught in both, compared only by one.
-  The last test here pins that, so the comments say what the commands do.
+  `unsafe-value` in `check`, which asks it first, and, in `execute`,
+  `plan-not-the-source` where the plan is held to a repository and
+  `unsafe-value` where it is held to none: caught in both, compared only
+  by one. The last tests here pin that, so the comments say what the
+  commands do.
+- RV825's MUST-1: v1.0.0 and v1.0.1 read a path `origin` as its last two
+  directories (#521), so a plan they wrote can record `repository:
+  clones/Atlas` for a source whose `origin` is `<dir>/clones/Atlas.git`.
+  With the right `org:` put back by hand it is a correct plan, and holding
+  it to that record refused it and brought back the advice #521 took out
+  (`--org clones`). A record that is the path's own last two directories
+  holds nothing.
 
 Nothing here reaches GitHub or runs `gh`: each source's `origin` is an
 `https://github.com/` URL that nothing fetches, and `execute` is run
@@ -41,6 +50,9 @@ from conftest import ADOPT, git, run_script
 from test_adopt_project_is_the_source import (  # noqa: F401 - a fixture
     PLAN, PLAN_NOT_THE_SOURCE, RENAME_FIRST, RETYPE, adopter, check, edited,
     findings, plan, refused_before_any_remote, source_of)
+from test_adopt_relative_submodule_url import (
+    HTTPS_ORIGIN, SIBLING, THING, planned as planned_with_submodule,
+    source_with as source_with_submodule)
 
 #: The organisation, the source's own name, and a typo of it.
 ORG, OWN, TYPO = "acme", "Atlas", "Atlsa"
@@ -52,11 +64,19 @@ OWN_NAME = ("Remediation: {}Run `plan` again with `--project Atlas --org "
 #: source is.
 WHY = ("an in-place adoption keeps the source's own name, and `execute` acts "
        "on the repository `org:` and `legs.assembly:` name")
-#: What `check` finds of the plan edited to `Atlsa` where the source's
-#: `origin` is gone and the plan's record of it is the repository.
-RECORDED = (f"the plan's `org: {ORG}` with its `legs.assembly: {TYPO}` and "
+#: Why the live source names no repository, as the finding says it: it has
+#: no `origin` at all, or its `origin` names none (a path, here).
+NO_ORIGIN = "it has no `origin`"
+NAMES_NONE = "its `origin` names no repository"
+
+
+def recorded(why: str) -> str:
+    """What `check` finds of the plan edited to `Atlsa` where the live
+    source names no repository, for `why`, and the plan's record of it is
+    the repository."""
+    return (f"the plan's `org: {ORG}` with its `legs.assembly: {TYPO}` and "
             f"`project: {TYPO}` names {ORG}/{TYPO}, and the plan records the "
-            f"source as {ORG}/{OWN} (its `origin` names no repository): {WHY}")
+            f"source as {ORG}/{OWN} ({why}): {WHY}")
 
 
 def renamed(plan_path: Path, name: str, was: str = "Northwind") -> None:
@@ -169,21 +189,33 @@ def test_check_does_not_tell_the_source_to_be_renamed_for_another_name(
 
 # --- L4-40: the plan's record holds it where the source names none ----------
 
-def unreadable_origin(source: Path) -> None:
-    """The source as `execute` meets it after `git remote remove origin`:
-    no repository named."""
-    git("remote", "remove", "origin", cwd=source)
+def unreadable_origin(source: Path, origin: str | None = None) -> None:
+    """The source as `execute` meets it after `git remote remove origin`, or
+    with `origin` instead: no repository named."""
+    if origin is None:
+        git("remote", "remove", "origin", cwd=source)
+    else:
+        git("remote", "set-url", "origin", origin, cwd=source)
 
 
-def test_a_plan_edited_to_a_typo_is_found_where_the_origin_is_gone(
-        adopter, tmp_path, monkeypatch):
+@pytest.mark.parametrize("origin, why", [
+    (None, NO_ORIGIN),
+    ("/srv/mirrors/Atlas.git", NAMES_NONE),
+    ("Atlas.git", NAMES_NONE),
+    ("https://example.invalid/Atlas", NAMES_NONE),
+], ids=["no-origin", "path", "one-segment-path", "url-with-no-org"])
+def test_a_plan_edited_to_a_typo_is_found_where_the_origin_names_none(
+        adopter, tmp_path, monkeypatch, origin, why):
     """The issue's own: a plan for acme/Atlas edited to `Atlsa`, then `git
     remote remove origin`. On main `check` said `plan ok` and `execute` went
     on to ask GitHub about `acme/Atlsa`. Both find `plan-not-the-source`,
     naming what the plan records, and neither says to run `plan` with a
-    project that is not a name."""
+    project that is not a name. A source with no `origin` says it has none
+    (RV825's NIT-3); one whose `origin` names no repository, a path or a url
+    that ends in no `org/repo`, says that. A record that is not the path's
+    own last two directories is held."""
     source = planned_from_origin(tmp_path)
-    unreadable_origin(source)
+    unreadable_origin(source, origin)
     assert check(tmp_path / PLAN).returncode == 0, "the plan, unedited"
     renamed(tmp_path / PLAN, TYPO, OWN)
 
@@ -193,24 +225,30 @@ def test_a_plan_edited_to_a_typo_is_found_where_the_origin_is_gone(
 
     assert checked.returncode == 1, checked.stdout + checked.stderr
     assert findings(checked.stderr) == [
-        f"FINDING {PLAN_NOT_THE_SOURCE}: {RECORDED}"], checked.stderr
+        f"FINDING {PLAN_NOT_THE_SOURCE}: {recorded(why)}"], checked.stderr
     assert checked.stderr.count(OWN_NAME.format("")) == 1, checked.stderr
     assert refusal.code == PLAN_NOT_THE_SOURCE
-    assert refusal.detail == f"{tmp_path / PLAN}: {RECORDED}"
+    assert refusal.detail == f"{tmp_path / PLAN}: {recorded(why)}"
     assert refusal.remediation.startswith(OWN_NAME.format(
         "no leg repository was created and nothing was pushed. ")), \
         refusal.remediation
 
 
-def test_a_source_given_by_source_that_has_no_origin_holds_the_plan_too(
-        adopter, tmp_path, monkeypatch):
-    """`--source <a copy with no origin>`, which `check` and `execute` both
-    take: the copy names no repository, so the plan's record does. The
+@pytest.mark.parametrize("keep_origin, why", [
+    (False, NO_ORIGIN),
+    (True, NAMES_NONE),
+], ids=["no-origin", "origin-is-the-path-it-was-cloned-from"])
+def test_a_source_given_by_source_that_names_none_holds_the_plan_too(
+        adopter, tmp_path, monkeypatch, keep_origin, why):
+    """`--source <a copy>`, which `check` and `execute` both take: a copy
+    with no `origin`, or one whose `origin` is the path it was cloned from
+    (which names no repository), names none, so the plan's record does. The
     source the plan names has its `origin`, and is not the one read."""
     source = planned_from_origin(tmp_path)
     copy = tmp_path / "copy"
     git("clone", "-q", str(source), str(copy), cwd=tmp_path)
-    unreadable_origin(copy)
+    if not keep_origin:
+        unreadable_origin(copy)
     renamed(tmp_path / PLAN, TYPO, OWN)
 
     checked = run_script(ADOPT, "check", "--plan", str(tmp_path / PLAN),
@@ -226,9 +264,9 @@ def test_a_source_given_by_source_that_has_no_origin_holds_the_plan_too(
 
     assert checked.returncode == 1, checked.stdout + checked.stderr
     assert findings(checked.stderr) == [
-        f"FINDING {PLAN_NOT_THE_SOURCE}: {RECORDED}"], checked.stderr
+        f"FINDING {PLAN_NOT_THE_SOURCE}: {recorded(why)}"], checked.stderr
     assert (refusal.code, refusal.detail) == (
-        PLAN_NOT_THE_SOURCE, f"{tmp_path / PLAN}: {RECORDED}")
+        PLAN_NOT_THE_SOURCE, f"{tmp_path / PLAN}: {recorded(why)}")
 
 
 @pytest.mark.parametrize("held", ["acme/Atlas", "ACME/atlas",
@@ -313,6 +351,49 @@ def test_the_sources_own_origin_is_asked_before_the_plans_record(tmp_path):
     assert "\nplan ok\n" in checked.stdout
 
 
+# --- RV825's MUST-1: a plan v1.0.0 or v1.0.1 wrote for a path `origin` -------
+
+@pytest.mark.parametrize("origin", [
+    "/srv/clones/Atlas.git",
+    "/srv/clones/Atlas",
+    "/srv/clones/Atlas.git/",
+    "/srv/Clones/ATLAS.git",
+    "C:\\srv\\clones\\Atlas.git",
+    "\\\\server\\clones\\Atlas.git",
+    "file:///srv/clones/Atlas.git",
+    "clones/Atlas.git",
+], ids=["dot-git", "no-dot-git", "trailing-slash", "another-case",
+        "backslashes", "share", "file-url", "relative"])
+def test_a_plan_that_v1_0_x_wrote_for_a_path_origin_is_still_a_correct_plan(
+        adopter, tmp_path, monkeypatch, origin):
+    """v1.0.0 and v1.0.1 read a path `origin` as its last two directories
+    (#521): `plan --org acme --project Atlas` on a clone of
+    `/srv/clones/Atlas.git` was refused as `--org clones`, and the plan
+    written all the same recorded `repository: clones/Atlas`. With `org:
+    acme` put back by hand it is a correct plan, and `check` said `plan ok`
+    and `execute` went on to `acme/Atlas`. Held to that record it was
+    refused, with a remedy that brings `--org clones` back; the record is
+    the old reader's, not the source's name, so it holds nothing. The plan
+    here is the one this version writes, with its null edited to what
+    those versions recorded."""
+    source = source_of(tmp_path, None)
+    git("remote", "add", "origin", origin, cwd=source)
+    written = plan(tmp_path, source, "--project", OWN, "--org", ORG)
+    assert written.returncode == 0, written.stdout + written.stderr
+    edited(tmp_path / PLAN, ("  repository: null",
+                             "  repository: clones/Atlas"))
+
+    checked = check(tmp_path / PLAN)
+
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert "\nplan ok\n" in checked.stdout
+    with pytest.raises(AssertionError, match=r"execute ran \['git', "
+                                             r"'ls-remote', 'https://github"
+                                             r"\.com/acme/Atlas\.git'"):
+        refused_before_any_remote(adopter, monkeypatch, tmp_path / PLAN,
+                                  tmp_path / "work")
+
+
 # --- L4-48: what `check` does with an `org:` `checked_value` refuses --------
 
 #: The value `execute` spells, and `check` asks `checked_value` about.
@@ -327,14 +408,23 @@ UNSAFE_ORGS = [("org: acme labs", "'acme labs'"),
 @pytest.mark.parametrize("org, spelled", UNSAFE_ORGS,
                          ids=["space", "list", "empty", "leading-dash",
                               "not-ascii", "mapping"])
-def test_an_unsafe_org_is_unsafe_in_check_and_compared_in_execute(
-        adopter, tmp_path, monkeypatch, org, spelled):
+@pytest.mark.parametrize("held, code", [
+    (True, PLAN_NOT_THE_SOURCE),
+    (False, "unsafe-value"),
+], ids=["held-to-a-repository", "held-to-none"])
+def test_an_unsafe_org_is_unsafe_in_check_and_compared_by_execute_if_held(
+        adopter, tmp_path, monkeypatch, org, spelled, held, code):
     """L4-48: the comments on #499's `org:` read said any `org:` is caught
     "whatever the file holds". It is caught in both commands, and not by the
     same one: `check` asks `checked_value` first and ends in `unsafe-value`,
-    exit 2, never comparing it with the repository; `execute` compares it
-    first and refuses it as `plan-not-the-source`."""
-    planned_from_origin(tmp_path)
+    exit 2, never comparing it with the repository. `execute` compares it
+    first, so it refuses it as `plan-not-the-source` where the plan is held
+    to a repository, and as `unsafe-value` where it is held to none (a source
+    that recorded no repository), as `check` does in both."""
+    if held:
+        planned_from_origin(tmp_path)
+    else:
+        planned_for(tmp_path, OWN)
     edited(tmp_path / PLAN, ("org: acme", org))
 
     checked = check(tmp_path / PLAN)
@@ -342,19 +432,22 @@ def test_an_unsafe_org_is_unsafe_in_check_and_compared_in_execute(
                                         tmp_path / PLAN, tmp_path / "work")
 
     assert checked.returncode == 2, checked.stdout + checked.stderr
-    assert f"REFUSED unsafe-value: org is {spelled}, which is not a value " \
-        "this tool will put on a `git` or `gh` command line" in \
-        checked.stderr.splitlines()
+    unsafe = (f"REFUSED unsafe-value: org is {spelled}, which is not a value "
+              "this tool will put on a `git` or `gh` command line")
+    assert unsafe in checked.stderr.splitlines()
     assert PLAN_NOT_THE_SOURCE not in checked.stderr
-    assert refusal.code == PLAN_NOT_THE_SOURCE
+    assert refusal.code == code
+    if not held:
+        assert f"{refusal.code}: {refusal.detail}" == unsafe[len("REFUSED "):]
 
 
 def test_check_compares_an_unsafe_org_where_no_manifest_is_built(
         tmp_path):
-    """The one place `check` reaches the comparison with such an `org:`:
-    where the plan's own names are refused first, `_manifest_values` builds
-    no manifest and never asks `checked_value`, so `check` finds the plan
-    names another repository, and the name, and exits 1."""
+    """Where `check` reaches the comparison with such an `org:`: where the
+    plan's own names are refused first, `_manifest_values` builds no
+    manifest and never asks `checked_value` (and no kept submodule url is
+    relative: the next test), so `check` finds the plan names another
+    repository, and the name, and exits 1."""
     planned_from_origin(tmp_path)
     edited(tmp_path / PLAN, ("org: acme", "org: acme labs"))
     renamed(tmp_path / PLAN, "bad_name", OWN)
@@ -366,3 +459,28 @@ def test_check_compares_an_unsafe_org_where_no_manifest_is_built(
         f"FINDING {PLAN_NOT_THE_SOURCE}",
         "FINDING naming-unclassified"], checked.stderr
     assert "`org: acme labs`" in findings(checked.stderr)[0]
+
+
+def test_check_asks_an_unsafe_org_first_where_a_kept_submodule_url_is_relative(
+        adopter, tmp_path, monkeypatch):
+    """RV825's SHOULD-1(b): `_submodule_findings` asks `checked_value` of
+    `org:` earlier than `_manifest_values` does, wherever a kept submodule's
+    url is relative. With the plan's names refused and `org: test org`,
+    `check` ends in `unsafe-value`, exit 2, and never compares it, as it
+    does with no relative url (the test above); `execute` says
+    `plan-not-the-source`."""
+    source = source_with_submodule(tmp_path, SIBLING, HTTPS_ORIGIN)
+    made = planned_with_submodule(source, tmp_path)
+    edited(made, ("org: testorg", "org: test org"))
+    renamed(made, "bad_name", THING)
+
+    checked = check(made)
+    refusal = refused_before_any_remote(adopter, monkeypatch, made,
+                                        tmp_path / "work")
+
+    assert checked.returncode == 2, checked.stdout + checked.stderr
+    assert checked.stderr.splitlines()[0] == (
+        "REFUSED unsafe-value: org is 'test org', which is not a value this "
+        "tool will put on a `git` or `gh` command line")
+    assert PLAN_NOT_THE_SOURCE not in checked.stderr
+    assert refusal.code == PLAN_NOT_THE_SOURCE

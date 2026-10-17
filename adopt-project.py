@@ -37,14 +37,13 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            whole (#273). Where the source names a repository, `--org` and
            `--project` name that one, compared without case, or `plan`
            refuses them (`adopt-not-the-source`), and `check` finds and
-           `execute` refuses a plan edited to name another
-           (`plan-not-the-source`), or, where the source names none, than
-           the plan recorded for it (#716): in place, the source IS the
-           assembly root, and its own name is renamed first, on GitHub,
-           never retyped, which `check` says as `execute` does (#499, #716).
-           An `origin` that is a url names the
-           `org/repo` it ends in, with or without a trailing `/`; one that
-           is a path, in any separator, names none, and `plan` says it
+           `execute` refuses a plan edited to name another repository than
+           the source names, or, where it names none, than the plan
+           recorded for it (`plan-not-the-source`, #716): in place, the
+           source IS the assembly root, and its own name is renamed first,
+           on GitHub, never retyped (#499). An `origin` that is a url names
+           the `org/repo` it ends in, with or without a trailing `/`; one
+           that is a path, in any separator, names none, and `plan` says it
            compared nothing (#521). An organisation read from the url and
            refused is named by where it came from (#427).
   check    validates a plan against the source: each entry path bound for
@@ -12760,10 +12759,14 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
 # with its `project:`, as `plan-not-the-source`: a hand edit is caught too,
 # because `org:` is read as `execute` reads it (`_plan_org`), as `str()` of
 # what the file holds. One that `checked_value` refuses (a list, a mapping,
-# an empty value, a space, a leading `-`, a character outside ASCII) is refused
-# by `execute` as `plan-not-the-source` all the same, but `check` meets it
-# as `unsafe-value` first, and compares it only where the plan's own names
-# are refused before that (#716, L4-48). A source that names no repository
+# an empty value, a space, a leading `-`, a character outside ASCII) is, in
+# `execute`, `plan-not-the-source` where the plan is held to a repository
+# (`_held_repository`) and `unsafe-value` where it is held to none. `check`
+# asks `checked_value` of `org:` first (`_manifest_values`, and
+# `_submodule_findings` where a kept submodule url is relative) and ends in
+# `unsafe-value`, exit 2, before it compares anything; only where the plan's
+# own names are refused, and no kept url is relative, does it reach the
+# comparison with one (#716, L4-48). A source that names no repository
 # (no `origin`, or one that ends in no `org/repo`) is asked nothing by
 # `plan`, as before; `check` and `execute` hold the plan's names to what the
 # plan recorded for it, `source: repository:`, where it recorded one (#716).
@@ -12894,6 +12897,18 @@ def _refuse_another_repository(args, source: Source, naming: NamingPolicy,
                               "no plan was written. "))
 
 
+def _last_two_directories(path: str) -> str | None:
+    """`<directory>/<name>` for a filesystem path, in either separator, with
+    one `.git` dropped from the name and the case kept; None where the path
+    has fewer than two. It is what `url_repository` read of a path `origin`
+    until #521 (#716)."""
+    segments = [part for part in re.split(r"[\\/]", path) if part]
+    if segments and segments[-1].endswith(".git") \
+            and len(segments[-1]) > len(".git"):
+        segments[-1] = segments[-1][:-len(".git")]
+    return "/".join(segments[-2:]) if len(segments) >= 2 else None
+
+
 def _held_repository(plan: Plan, source: Source) -> str | None:
     """The repository an in-place adoption by `plan` is held to, or None
     where there is none (#716): the one the live source names
@@ -12908,11 +12923,42 @@ def _held_repository(plan: Plan, source: Source) -> str | None:
     `acme/Atlsa`. The record is read as `_github_name` reads a name, and
     never raises: one that is no text, or names no `owner/repo`, holds the
     plan to nothing, as a null does, and `Plan.open_source` is the reader
-    that refuses one it must clone (`_recorded_repository`)."""
+    that refuses one it must clone (`_recorded_repository`).
+
+    A RECORD THAT IS THE PATH'S OWN LAST TWO DIRECTORIES HOLDS NOTHING. v1.0.0
+    and v1.0.1 read a path `origin` as those directories (#521), so `plan
+    --org acme --project Atlas` on a clone of `/srv/clones/Atlas.git` was
+    refused with "`--org clones`" and, where the plan was written all the
+    same, recorded `repository: clones/Atlas`. A person who put `org: acme`
+    back by hand holds a correct plan, and holding it to that record
+    refused it, with a remedy that is the advice #521 took out. Where the
+    source's `origin` is a path (`_origin_path`), a record that is its last
+    two directories, as `_last_two_directories` reads them without case, in
+    either separator, is the old reader's and not the source's name: the
+    plan is held to nothing. Any other record is held, so a `git clone` of
+    the source, whose `origin` is a path, still holds a plan edited to
+    `Atlsa` to `acme/Atlas`."""
     if source.repository is not None:
         return source.repository
     recorded = plan.source.get("repository")
-    return _github_name(recorded) if isinstance(recorded, str) else None
+    held = _github_name(recorded) if isinstance(recorded, str) else None
+    path = _origin_path(source) if held is not None else None
+    if path is not None and held.casefold() == (
+            _last_two_directories(path) or "").casefold():
+        return None
+    return held
+
+
+def _why_the_source_names_none(source: Source) -> str:
+    """Why the live source names no repository, as `_not_the_source` says it
+    beside the plan's record (#716): it has no `origin`, or its `origin`
+    names none (a path, a url that ends in no `org/repo`, or one that is not
+    UTF-8: `_remote_repository`)."""
+    try:
+        git_out(["remote", "get-url", "origin"], cwd=source.path, binary=True)
+    except Refusal:
+        return "it has no `origin`"
+    return "its `origin` names no repository"
 
 
 def _not_the_source(plan: Plan, source: Source,
@@ -12934,12 +12980,15 @@ def _not_the_source(plan: Plan, source: Source,
 
     AN `org:` THAT `checked_value` REFUSES IS CAUGHT, BUT NOT ALWAYS AS
     THIS (#716, L4-48): a list, a mapping, an empty value, one with a space,
-    a leading `-` or a character outside ASCII. `check` asks `checked_value`
-    of `org:` first, in `_manifest_values`, and ends in `unsafe-value`, exit
-    2, before it compares anything; only where the plan's own names are
-    refused, and no manifest is built, does `check` reach this with it.
-    `execute` asks this first, so it refuses the same `org:` as
-    `plan-not-the-source`, before `_repository_urls` meets it."""
+    a leading `-` or a character outside ASCII. `execute` asks this first,
+    so it refuses such an `org:` as `plan-not-the-source` where the plan is
+    held to a repository (`_held_repository`), and as `unsafe-value`, from
+    `_repository_urls`, where it is held to none. `check` asks
+    `checked_value` of `org:` first (`_manifest_values`, and
+    `_submodule_findings` where a kept submodule url is relative) and ends
+    in `unsafe-value`, exit 2, before it compares anything; only where the
+    plan's own names are refused, and no kept url is relative, does it
+    reach this with one."""
     repository = _held_repository(plan, source)
     if repository is None:
         return None
@@ -12961,8 +13010,8 @@ def _not_the_source(plan: Plan, source: Source,
     # held to, and the detail says so: the source did not say it (#716).
     is_the = (f"the source is {_shown(repository)}"
               if source.repository is not None else
-              f"the plan records the source as {_shown(repository)} (its "
-              "`origin` names no repository)")
+              f"the plan records the source as {_shown(repository)} "
+              f"({_why_the_source_names_none(source)})")
     return (f"the plan's {said} with its {keys} names {named}, "
             f"and {is_the}: an in-place adoption "
             "keeps the source's own name, and `execute` acts on the "
