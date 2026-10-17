@@ -35,8 +35,8 @@ FOUR STATES #613'S CHECK WAS UNTRUE OF, from R613's review of #625:
   Its fetch failed with no network at fault, and it was told the stale-refs
   sentence and to "fix the network or the credential". The fetch note,
   `member-to-local-only` and `member-to-unknown` now say it has no remote
-  named `origin`, and to give it back; a mount config git cannot read is
-  git's failure, quoted.
+  named `origin`, and to give it back; a mount config git cannot read, or
+  cannot parse at all, is git's failure, quoted.
 
 The family, the holder, the offline environment and "changes nothing" are
 the modules' that own them, imported. Every remote a test writes is the
@@ -60,7 +60,9 @@ from test_family_bump_to_a_tag import annotated, both_runs
 from test_family_bump_to_local_only import (
     PATH, REPOSITORY, local_only, made_in_the_mount, only_in_the_mount, pins,
 )
-from test_family_dry_run import bump, commit_in_mount, isolated, pinned_at
+from test_family_dry_run import (
+    bump, commit_in_mount, isolated, objects, pinned_at, work_tree,
+)
 from test_family_member_path import MEMBER, raw
 
 #: The note both runs print first when the mount has no remote named
@@ -429,35 +431,106 @@ def test_an_id_a_mount_with_no_origin_lacks_is_not_put_down_to_access(
     offline.assert_left_nothing()
 
 
-def test_a_mount_config_git_cannot_read_is_gits_own_failure(
-        holder, offline, tmp_path):
-    """WHETHER THE MOUNT HAS AN `origin` IS GIT'S ANSWER, never a guess.
-    `git remote get-url origin` exits 2 for "No such remote" alone; a mount
-    whose config git cannot parse fails its fetch and that question with
-    128, and both runs print git's failure, the exact command and exit 2,
-    rather than telling the person the mount has no `origin` or to fix the
-    network. Nothing in the holder moves."""
-    env = isolated(offline, tmp_path)
+#: A `url` with no value under the mount's `[remote "origin"]`. Git's config
+#: parser reads a key with no `=` as a key with no value, so every read of
+#: the config that asks no remote works; git's remote reader dies over it
+#: (measured, git 2.43): `git remote get-url origin` and the fetch exit 128,
+#: "error: missing value for 'remote.origin.url'" and "fatal: bad config
+#: variable 'remote.origin.url' in file '<config>' at line <n>".
+VALUELESS_URL = b'[remote "origin"]\n\turl\n'
+
+#: A section header with no closing `]`, which git's config parser cannot
+#: parse: every git command that reads the mount's config exits 128, "fatal:
+#: bad config line <n> in file <config>", the holder's own commands that
+#: look into the mount among them (measured, git 2.43).
+UNCLOSED_HEADER = b'[remote "origin"\n'
+
+
+def mount_config_ending(holder: Path, env: dict, tail: bytes) -> str:
+    """A commit pushed from the mount, as `commit_in_mount` makes it, then
+    `tail` appended to the mount's own git config. Returns the commit."""
     mount = holder / PATH
     made = commit_in_mount(
         holder, env, lambda m: (m / "CONFIG.md").write_bytes(b"pushed\n"))
     config = Path(raw(mount, env, "rev-parse", "--absolute-git-dir")
                   .stdout.decode().strip()) / "config"
-    config.write_bytes(config.read_bytes() + b'[remote "origin"\n')
-    gitlink, manifest = pinned_at(holder, env), (holder / "family.yaml"
-                                                 ).read_bytes()
+    config.write_bytes(config.read_bytes() + tail)
+    return made
+
+
+def gits_own_failure(stderr: str) -> None:
+    """A refusal that is git's own failure, quoted, exit 128: never that the
+    mount has no `origin`, nor the network or a credential to fix."""
+    assert "THE EXACT COMMAND WAS:\n    git " in stderr
+    assert "    exit 128\n" in stderr
+    assert "`origin`" not in stderr
+    assert "network" not in stderr
+    assert "credential" not in stderr
+
+
+def test_a_mount_config_git_cannot_read_is_gits_own_failure(
+        holder, offline, tmp_path):
+    """WHETHER THE MOUNT HAS AN `origin` IS GIT'S ANSWER, never a guess.
+    `git remote get-url origin` exits 2 for "No such remote" alone; a mount
+    whose `origin` has a `url` with no value fails its fetch and that
+    question with 128, and both runs print git's failure, the exact command,
+    git's own words and exit 2, rather than telling the person the mount has
+    no `origin` or to fix the network. Nothing in the holder moves.
+
+    WHY A `url` WITH NO VALUE (#816). `bump` first asks the holder whether
+    `family.yaml` holds a change HEAD does not, and that check's `git
+    ls-files -m` reads each gitlinked mount's repository, so a mount config
+    git cannot parse at all is refused there, before the fetch (the next
+    test). A `url` with no value parses: the holder's check and the mount's
+    `git config --list` work, and only git's remote reader, the fetch's and
+    `get-url`'s, dies over it, so the question is asked."""
+    env = isolated(offline, tmp_path)
+    mount = holder / PATH
+    made = mount_config_ending(holder, env, VALUELESS_URL)
+    raw(holder, env, "ls-files", "-m", "-z")  # premise: the holder reads it
+    asked = raw(mount, env, "remote", "get-url", "origin", check=False)
+    assert asked.returncode == 128, "premise: git's own failure, not 2"
+    said = asked.stderr.decode().strip()
+    assert "missing value for 'remote.origin.url'" in said
+
+    stderr = both_runs(holder, env, made)
+
+    assert "THE EXACT COMMAND WAS:\n    git remote get-url origin\n" in stderr
+    assert f"--- output ---\n{said}\n--- end output ---" in stderr
+    gits_own_failure(stderr)
+    offline.assert_left_nothing()
+
+
+def test_a_mount_config_git_cannot_parse_is_gits_own_failure_where_met(
+        holder, offline, tmp_path):
+    """The same answer where git cannot parse the mount's config at all, a
+    section header with no closing `]`: both runs print git's own failure,
+    in the same words, the exact command and exit 2, and nothing of a
+    missing `origin`, the network or a credential. Which command meets it
+    first is not this test's: since #816 the holder's `git ls-files -m`
+    reads the mount's repository before the fetch and fails there (git
+    2.43), and every git command in the mount fails alike. Nothing in the
+    holder moves, as far as git can read it: `git status` in the holder and
+    `rev-parse` in the mount read that config too."""
+    env = isolated(offline, tmp_path)
+    made = mount_config_ending(holder, env, UNCLOSED_HEADER)
+
+    def held() -> dict:
+        return {"gitlink": pinned_at(holder, env),
+                "index": raw(holder, env, "ls-files", "-s", "-z").stdout,
+                "family.yaml": (holder / "family.yaml").read_bytes(),
+                "work tree": work_tree(holder),
+                "objects": objects(holder)}
+
+    before = held()
 
     dry = bump(holder, env, made, "--dry-run")
     real = bump(holder, env, made)
 
+    assert held() == before, "nothing in the holder moved"
     assert dry.returncode == real.returncode == 2, real.stdout + real.stderr
     assert dry.stdout == real.stdout == ""
     assert dry.stderr == real.stderr
-    assert "THE EXACT COMMAND WAS:\n    git remote get-url origin\n" \
-        in real.stderr
-    assert "    exit 128\n" in real.stderr
-    assert "`origin`" not in real.stderr
-    assert "network" not in real.stderr
-    assert pinned_at(holder, env) == gitlink, "the gitlink did not move"
-    assert (holder / "family.yaml").read_bytes() == manifest
+    assert "fatal: bad config line " in real.stderr
+    gits_own_failure(real.stderr)
     offline.assert_left_nothing()
