@@ -2751,23 +2751,28 @@ ON_DISK = "on disk and untracked"
 #: whole, in two steps through a free name (#685). A member's own gitlink,
 #: held only under another spelling of its row's path, is moved back to that
 #: path in the index alone (#646), after what the index holds at or under
-#: that path, or at `members` itself, is set aside (#761). What is on disk
-#: and untracked is moved out of the way, but for a checkout, which a move
-#: would leave pointing nowhere, and which is deleted by hand (#761); a
-#: `members/` a hand renamed is moved back.
+#: that path, or at `members` itself, is set aside (#761), with `git mv`,
+#: `git mv --sparse` or `git rm -r --cached` as the same rule names what the
+#: index holds (Codex's P2 1 on #828). What is on disk and untracked is
+#: moved out of the way, but for a checkout, which a move would leave
+#: pointing nowhere, and which is deleted by hand (#761); a `members/` a
+#: hand renamed is moved back.
 COMMIT = "git commit"
 RENAME = "git mv"
 RENAME_SPARSE = "git mv --sparse"
 UNSTAGE = "git rm -r --cached"
 RENAME_BACK = "git mv back"
 ASIDE = "git mv aside"
+ASIDE_SPARSE = "git mv --sparse aside"
 ASIDE_OUT = "git rm -r --cached aside"
 RESTORE = "git update-index"
 MOVE = "mv"
 CHECKOUT = "by hand"
 MOVE_BACK = "mv back"
 REMEDY_ORDER = (COMMIT, RENAME, RENAME_SPARSE, UNSTAGE, RENAME_BACK, ASIDE,
-                ASIDE_OUT, RESTORE, MOVE, CHECKOUT, MOVE_BACK)
+                ASIDE_SPARSE, ASIDE_OUT, RESTORE, MOVE, CHECKOUT, MOVE_BACK)
+#: Each remedy that sets aside what is in the way of a move back (#761).
+SET_ASIDE = (ASIDE, ASIDE_SPARSE, ASIDE_OUT)
 
 #: What a `--sparse` the remedy prints needs (#685). `git rm --sparse` came
 #: with git 2.34. `git mv` took `--sparse` in 2.34 too, but there it still
@@ -2826,22 +2831,25 @@ class Spelled(NamedTuple):
     or its rules leave it out, either of which `git rm --cached
     --ignore-unmatch` passes over without a word unless it is given
     `--sparse` too; `recorded` is empty, and `sparse` false, for every other
-    remedy but `UNSTAGE`. `sections` names each section of `.gitmodules`
-    that gives the member another spelling of its row's path, as a `git mv`
-    of its mount leaves it, which the move points back at that path (#761);
-    empty for every other remedy. One found `IN_GITMODULES` is a member HEAD
-    records at its row's path and the index holds nowhere, named by the
-    path its section gives, and moved back at HEAD's commit. `forced` says
-    the removal takes `-f`: the index stages the variant at a commit HEAD
-    does not record there, and a checkout is on disk at it, which `git rm
-    --cached` refuses wherever that checkout has moved on or holds a file
-    it does not track (#761).
+    remedy but `UNSTAGE` and `ASIDE_OUT`. `sections` names each section of
+    `.gitmodules` that gives the member another spelling of its row's path,
+    as a `git mv` of its mount leaves it, which the move points back at that
+    path (#761); empty for every other remedy. One found `IN_GITMODULES` is
+    a member HEAD records at its row's path and the index holds nowhere,
+    named by the path its section gives, and moved back at HEAD's commit.
+    `forced` says the removal takes `-f`: the index stages the variant at a
+    commit HEAD does not record there, and a checkout is on disk at it,
+    which `git rm --cached` refuses wherever that checkout has moved on or
+    holds a file it does not track (#761).
 
-    WHAT IS SET ASIDE BEFORE THE MOVE BACK (`ASIDE`, `ASIDE_OUT`, #761) is
-    an entry the index holds at or under a row's path, or at `members`
-    itself, which `git update-index` would replace or fail on: renamed
-    with `git mv` where it is on disk as the index holds it, else taken out
-    of the index; `target` is the entry itself.
+    WHAT IS SET ASIDE BEFORE THE MOVE BACK (`SET_ASIDE`, #761) is an entry
+    the index holds at or under a row's path, or at `members` itself, which
+    `git update-index` would replace or fail on: renamed with `git mv`
+    (`ASIDE`) where it is on disk as the index holds it, with `git mv
+    --sparse` (`ASIDE_SPARSE`) where a sparse checkout needs that, else
+    taken out of the index (`ASIDE_OUT`), `sparse` saying that its rules
+    leave it out, so that `git rm --cached` takes it only with `--sparse`
+    (Codex's P2 1 on #828); `target` is the entry itself.
 
     WHAT A `members/` RENAMED WITH `git mv` HOLDS (`RENAME_BACK`, #685) has
     that spelling as `target`, `committed` says whether renaming it back
@@ -3299,15 +3307,19 @@ def _members_spellings(root: Path, project: str,
     or at `members` itself (`appears as both a file and as a directory`,
     exit 128, after the removal took the variant out), and #574's remedy
     takes the member's gitlink out instead. So where the index holds only
-    files and links at or under a row's path, each at stage 0 and neither
-    marked nor left out by a sparse checkout, a gitlink at a variant is
-    still the member's own, and each of those entries is set aside first
-    (`ASIDE`, `ASIDE_OUT`), as is a file or link the index holds at
-    `members` itself wherever a gitlink is moved back: renamed with `git mv`
-    where it is on disk as the index holds it, as `_members_is_a_file` moves
-    `members` itself, else taken out of the index. The other order fails:
-    measured, the move back first replaced the file at the row's path, and
-    the `git mv` of that path then took the member's gitlink away.
+    files and links at or under a row's path, each at stage 0, a gitlink at
+    a variant is still the member's own, and each of those entries is set
+    aside first (`SET_ASIDE`, `_set_aside`), as is a file or link the index
+    holds at `members` itself wherever a gitlink is moved back: renamed with
+    `git mv` where it is on disk as the index holds it, as
+    `_members_is_a_file` moves `members` itself, else taken out of the
+    index, each with `--sparse` where a sparse checkout needs it. WHOSE
+    GITLINK IT IS NEVER TURNS ON THE SPARSE CHECKOUT (Codex's P2 1 on #828):
+    a row whose file it marked or left out was dropped here, so the gitlink
+    kept #574's remedy, which took it away from its row. The other order
+    fails: measured, the move back first replaced the file at the row's
+    path, and the `git mv` of that path then took the member's gitlink
+    away.
 
     ITS SECTION OF `.gitmodules` IS POINTED BACK TOO (#761, #670's (e)). A
     `git mv` of a member's mount (`git mv members/<P> Members/<P>`) moves
@@ -3394,23 +3406,18 @@ def _members_spellings(root: Path, project: str,
                          for name in indexed)}
     # Each row's path the index holds files and links alone at or under,
     # each set aside before the move back (#761), and a file or link at
-    # `members` itself, which no `members/<P>` can sit beside.
-    # Either, marked or left out by a sparse checkout, keeps the remedy it
-    # had: `git mv` and `git rm --cached` pass it over without `--sparse`.
+    # `members` itself, which no `members/<P>` can sit beside. Whatever a
+    # sparse checkout says of either, the gitlink is still the member's
+    # own: `_set_aside` gives it the `--sparse` git needs (Codex's P2 1 on
+    # #828).
     blocked: dict[str, list[str]] = {}
     for row in rows:
         held = [name for name in indexed
                 if name == row or name.startswith(row + "/")]
         if held and all(merged_file(name) for name in held):
             blocked[row] = held
-    if blocked:
-        blocked = {row: held for row, held in blocked.items()
-                   if not any(name in marked() or name in left_out()
-                              for name in held)}
     at_members = (MEMBERS_DIR if MEMBERS_DIR in indexed
-                  and merged_file(MEMBERS_DIR)
-                  and MEMBERS_DIR not in marked()
-                  and MEMBERS_DIR not in left_out() else None)
+                  and merged_file(MEMBERS_DIR) else None)
     owners = {**strays, **{_folded(row): row for row in blocked}}
     found: list[Spelled] = []
     restored: list[str] = []
@@ -3478,10 +3485,16 @@ def _members_spellings(root: Path, project: str,
     found.extend(staged)
     # What the disk holds where its section says is the move's to name too.
     restored.extend(gone)
-    if moved:
-        found.extend(_set_aside(root, indexed, in_head, [
-            name for row in sorted(moved & blocked.keys())
-            for name in blocked[row]] + ([at_members] if at_members else [])))
+    aside = ([name for row in sorted(moved & blocked.keys())
+              for name in blocked[row]] + ([at_members] if at_members else [])
+             if moved else [])
+    if aside:
+        # HEAD's gitlink at a row's path, which the move puts back, is no
+        # change for the removal of what stands there to leave to commit.
+        kept = {name: oid for name, kind, oid in head
+                if kind != gitlink or name not in moved}
+        found.extend(_set_aside(root, indexed, kept, aside, marked(),
+                                left_out()))
     renamed = _renamed_with_git(root, found, listed, canon, left_out()
                                 if any(spelled.remedy == RESTORE
                                        for spelled in found) else frozenset())
@@ -3596,20 +3609,45 @@ def _head_section_paths(root: Path) -> dict[str, str]:
 
 
 def _set_aside(root: Path, indexed: dict[str, int], in_head: dict[str, str],
-               names: list[str]) -> list[Spelled]:
-    """`ASIDE` or `ASIDE_OUT` for each of `names`, an entry the index holds
-    at or under a row's path that a gitlink is moved back to, or at
-    `members` itself (#761): renamed with `git mv` where it is on disk as
-    the index holds it, a file or link and no directory, which leaves a
-    change to commit; else taken out of the index, which touches no file,
-    and leaves one where HEAD holds it."""
+               names: list[str], marked: frozenset[str],
+               left_out: frozenset[str]) -> list[Spelled]:
+    """One of `SET_ASIDE` for each of `names`, an entry the index holds at
+    or under a row's path that a gitlink is moved back to, or at `members`
+    itself (#761), by the rule `_members_spellings` names what the index
+    holds by; `in_head` is what HEAD holds that the move back does not put
+    back, `marked` what a sparse checkout marks (`skip-worktree`), and
+    `left_out` what its rules leave out. Renamed with `git mv` where it is
+    on disk as the index holds it, a file or link and no directory, or with
+    `git mv --sparse` where the rules leave it out; off disk, renamed with
+    `git mv --sparse` where it is marked, which keeps what it holds, and
+    else taken out of the index, which touches no file, with `--sparse`
+    where the rules leave it out. A rename leaves a change to commit, and a
+    removal one where `in_head` holds the entry. HEAD's gitlink at the row's
+    path is not in it: a file staged there over a staged `git mv` of the
+    mount and deleted from disk was said to leave its removal to commit,
+    and the commit printed failed with nothing to commit (found in #828's
+    fix round for Codex's P2s).
+
+    EACH `--sparse` IS ONE GIT ASKS FOR (Codex's P2 1 on #828), measured on
+    git 2.43 and 2.47.1 for a file under a row's path. Marked and on disk,
+    plain `git mv` takes it. Marked and off disk, or left out by the rules
+    with its bit cleared and on disk, plain `git mv` and `git rm --cached`
+    refuse it (`exist outside of your sparse-checkout definition`, exit 1),
+    and `git mv --sparse` takes it. Left out and off disk, `git rm --cached`
+    refuses it the same way, `git mv` with or without `--sparse` says `bad
+    source` (exit 128), and `git rm --cached --sparse` takes it."""
     aside = []
     for name in names:
         on = _on_disk_as_named(root, name, False)
+        if on:
+            remedy = ASIDE_SPARSE if name in left_out else ASIDE
+        else:
+            remedy = ASIDE_SPARSE if name in marked else ASIDE_OUT
         aside.append(Spelled(
             _shown(name), INDEX_ENTRY_KINDS.get(indexed[name], "a file"),
-            IN_INDEX, _shown(name), False, ASIDE if on else ASIDE_OUT,
-            on or name in in_head))
+            IN_INDEX, _shown(name), False, remedy,
+            remedy != ASIDE_OUT or name in in_head,
+            sparse=remedy == ASIDE_OUT and name in left_out))
     return aside
 
 
@@ -3681,7 +3719,9 @@ def _spellings_refusal(path: str, found: list[Spelled],
     or at `members` itself, which `git update-index` would replace or fail
     on, is set aside first, in no commit of its own: the move's commit
     takes both, so the history never holds the member's gitlink beside the
-    file, nor the file gone and the gitlink not back.
+    file, nor the file gone and the gitlink not back. Its `git mv --sparse`
+    and `git rm --cached --sparse` are said as the index's are (Codex's P2
+    1 on #828).
 
     THE WORK TREE'S `.gitmodules` (`gitmodules`, `_gitmodules_beside`'s
     answer, which `_checked_mount_path` passes only where the index holds a
@@ -3713,11 +3753,16 @@ def _spellings_refusal(path: str, found: list[Spelled],
 
     ITS CLOSING SENTENCES, after every other remedy, so that a `members/`
     moved back has taken the checkout with it, are the validator's
-    (`_wrong_case_move`, #681), each `mv` guarded by two tests a POSIX shell
-    runs (#761): `[ <variant> -ef <row path> ]`, true where the disk takes
-    the two names for one directory, the row's own, and `[ -e
-    <variant>/.git ]`, true for a checkout, which a move leaves pointing
-    nowhere. So the text is the same on every disk, and the shell, not a
+    (`_wrong_case_move`, #681), each `mv` guarded by tests a POSIX shell
+    runs (#761): `[ ! -e <variant> ] && [ ! -L <variant> ]`, true where
+    nothing is there, where the `mv` alone failed, exit 1 (`cannot stat`),
+    and stopped what was typed after it, as where a sparse checkout keeps
+    the variant off disk (Codex's P2 2 on #828), while a link there pointing
+    nowhere, which `-e` takes for nothing, is still moved; `[ <variant> -ef
+    <row path> ]`, true where the disk takes the two names for one
+    directory, the row's own; and `[ -e <variant>/.git ]`, true for a
+    checkout, which a move leaves pointing nowhere. So the text is the same
+    on every disk, it exits 0 wherever it is typed, and the shell, not a
     sentence about the system, keeps the row's own directory in place. Then
     where a checkout's commits are kept, and that it is deleted by hand
     once nothing only it holds is needed; a clone of its own is moved out
@@ -3736,7 +3781,7 @@ def _spellings_refusal(path: str, found: list[Spelled],
         # What is set aside is at a row's path or at `members`, no spelling
         # of either: its part names it.
         here = [spelled for spelled in found if spelled.where == where
-                and spelled.remedy not in (ASIDE, ASIDE_OUT)]
+                and spelled.remedy not in SET_ASIDE]
         if not here:
             continue
         shown = ", ".join(f"`{spelled.name}` ({spelled.kind})"
@@ -3831,18 +3876,27 @@ def _spellings_refusal(path: str, found: list[Spelled],
                 spelled.committed for spelled in held) else ""))
     # WHAT IS IN THE WAY OF THE MOVE BACK (#761), set aside first, in the
     # move's own commit.
-    aside = [spelled for spelled in found
-             if spelled.remedy in (ASIDE, ASIDE_OUT)]
+    aside = [spelled for spelled in found if spelled.remedy in SET_ASIDE]
     if aside:
         how = []
         if by[ASIDE]:
             how.append("rename each that is on disk as the index holds it "
                        f"with `git mv` ({each(RENAME, by[ASIDE])})")
+        # `--sparse` where a sparse checkout needs it, said as the index's
+        # are (Codex's P2 1 on #828).
+        if by[ASIDE_SPARSE]:
+            how.append("rename each that the sparse checkout leaves out with "
+                       f"`git mv --sparse`, {SPARSE_MV_GIT} "
+                       f"({each(RENAME_SPARSE, by[ASIDE_SPARSE])})")
         if by[ASIDE_OUT]:
             quoted = " ".join(shell_quoted(target, "posix")
                               for target in by[ASIDE_OUT])
+            out = any(spelled.sparse for spelled in aside
+                      if spelled.remedy == ASIDE_OUT)
             how.append("take each that is not on disk so out of the index, "
-                       f"which touches no file (`{UNSTAGE} -- {quoted}`)")
+                       f"which touches no file (`{UNSTAGE}"
+                       f"{' --sparse' if out else ''} -- {quoted}`"
+                       + (f", {SPARSE_RM_GIT}" if out else "") + ")")
         named = ", ".join(f"`{spelled.name}` ({spelled.kind})"
                           for spelled in aside)
         parts.append(
@@ -3923,8 +3977,12 @@ def _spellings_refusal(path: str, found: list[Spelled],
                 spelled.committed for spelled in aside) else ""))
         rows = {spelled.name: row for row, held in moved.items()
                 for spelled in held}
+        # Nothing there, not even a link, moves nothing and exits 0 (Codex's
+        # P2 2 on #828): a plain `mv` of it failed and stopped the update.
         guarded = " and ".join(
-            f"`[ {shell_quoted(name, 'posix')} -ef "
+            f"`[ ! -e {shell_quoted(name, 'posix')} ] && "
+            f"[ ! -L {shell_quoted(name, 'posix')} ] || "
+            f"[ {shell_quoted(name, 'posix')} -ef "
             f"{shell_quoted(rows[name], 'posix')} ] || "
             f"[ -e {shell_quoted(name + '/.git', 'posix')} ] || mv -- "
             f"{shell_quoted(name, 'posix')} "
@@ -3942,8 +4000,8 @@ def _spellings_refusal(path: str, found: list[Spelled],
             "where the disk holds the two apart it stays there, untracked, "
             "and add refuses it as family-members-dir-variant: move each one "
             f"that is there out of the holder, in a POSIX shell, {guarded}, "
-            "which moves nothing where the two names are one directory or "
-            "where it holds a .git entry, a checkout",
+            "which moves nothing where nothing is there, where the two names "
+            "are one directory or where it holds a .git entry, a checkout",
             "a checkout there that git submodule add or git mv made holds a "
             ".git file naming its store by a path relative to it, which a "
             "move would leave pointing nowhere: its commits are kept under "

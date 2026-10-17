@@ -41,7 +41,7 @@ import pytest
 from conftest import cloned_just_pushed, git, rmtree
 from test_family import NAME, SPARE, family  # noqa: F401
 from test_family_add_member_variant import (
-    OTHER_ROW, OTHER_VARIANT, REMOVE, ROW, VARIANT, VARIANT_SHOWN,
+    MOVE_OUT, OTHER_ROW, OTHER_VARIANT, REMOVE, ROW, VARIANT, VARIANT_SHOWN,
     dry_run_in_process, in_the_index, moved_back, record, refused_in_process,
     registered, typed_as_printed, variant,
 )
@@ -612,7 +612,8 @@ def test_a_missing_gitmodules_is_put_back_before_the_move_back(
     assert said == (in_the_index(VARIANT_SHOWN),
                     remedy_of(RESTORE_FIRST, move, *closing))
     assert typed_as_printed(holder, said[1]) == [
-        "git checkout -- .gitmodules", REMOVE, record(commit), "git commit"]
+        "git checkout -- .gitmodules", REMOVE, record(commit), "git commit",
+        MOVE_OUT]
     registered(holder, family["root"], commit)
     assert_passes_in_every_mode(holder, 2)
     added(offline, holder, family["remotes"])

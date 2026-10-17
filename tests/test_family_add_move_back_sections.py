@@ -24,6 +24,10 @@ printed in each state git leaves them in (#761).
    file under a third spelling keeps its own remedy beside the rename back;
    and an entry the sparse rules leave out, its `skip-worktree` bit cleared,
    is given `--sparse`.
+6. Codex's two P2s on #828: what is in the way of the move back is the
+   member's own to set aside whatever a sparse checkout says of it, with
+   `--sparse` where it needs one, and the closing `mv` moves nothing, and
+   exits 0, where nothing is at the variant.
 
 States that need two directories differing only in case, or `git mv` into
 one, are made on a disk that does not fold case alone; what a folding disk
@@ -42,10 +46,10 @@ import pytest
 from conftest import cloned_just_pushed, git, rmtree
 from test_family import NAME, SPARE, family  # noqa: F401
 from test_family_add_member_variant import (
-    MOVE_OUT, OTHER_ROW, OTHER_VARIANT, REMOVE, REMOVE_SPARSE, ROW,
+    HEAD_ONLY, MOVE_OUT, OTHER_ROW, OTHER_VARIANT, REMOVE, REMOVE_SPARSE, ROW,
     SUBMODULE, VARIANT, VARIANT_SHOWN, dry_run_in_process, guarded,
     in_the_index, moved_back, point_back, record, refused_in_process,
-    registered, typed_as_printed, variant,
+    registered, remedy, typed_as_printed, variant,
 )
 from test_family_add_refusals import (  # noqa: F401
     family_module, holder, offline, plant,
@@ -55,8 +59,8 @@ from test_family_add_spellings_remedies import (
 )
 from test_family_head_lost_gitmodules import assert_passes_in_every_mode
 from test_family_members_case_variants import (
-    DIR_VARIANT, NEEDS_GIT_2_34, added, disk_as, git_version, index_part,
-    refused_untouched, remedy_of,
+    DIR_VARIANT, NEEDS_GIT_2_34, NEEDS_GIT_2_38, added, disk_as, disk_folds,
+    git_version, index_part, refused_untouched, remedy_of,
 )
 from test_family_refuse_up_front import needs_check_rules
 
@@ -210,18 +214,26 @@ def test_a_sparse_gitmodules_is_named_first_where_a_section_is_pointed_back(
 
 # --- 2. (g) and 3. (h): what is in the way, set aside first ------------------
 
-def set_aside(entries: list[str], kinds: dict, renamed=(), out=()) -> str:
+def set_aside(entries: list[str], kinds: dict, renamed=(), out=(),
+              sparse=(), out_sparse: bool = False) -> str:
     """The part of the remedy that sets `entries` aside: `renamed` with `git
-    mv`, `out` taken out of the index."""
+    mv`, `sparse` with `git mv --sparse`, `out` taken out of the index, with
+    `--sparse` where `out_sparse` (Codex's P2 on #828)."""
     how = []
     if renamed:
         how.append("rename each that is on disk as the index holds it with "
                    "`git mv` (" + " and ".join(f"`git mv -- {name} <new name>`"
                                                for name in renamed) + ")")
+    if sparse:
+        how.append("rename each that the sparse checkout leaves out with `git "
+                   f"mv --sparse`, {NEEDS_GIT_2_38} ("
+                   + " and ".join(f"`git mv --sparse -- {name} <new name>`"
+                                  for name in sparse) + ")")
     if out:
         how.append("take each that is not on disk so out of the index, which "
-                   "touches no file (`git rm -r --cached -- "
-                   f"{' '.join(out)}`)")
+                   "touches no file (`git rm -r --cached"
+                   f"{' --sparse' if out_sparse else ''} -- {' '.join(out)}`"
+                   + (f", {NEEDS_GIT_2_34}" if out_sparse else "") + ")")
     named = ", ".join(f"`{name}` ({kinds.get(name, 'a file')})"
                       for name in entries)
     return ("set aside first what the index holds in the way of the move of "
@@ -284,7 +296,8 @@ def test_a_file_where_the_disk_holds_the_checkout_is_taken_out_first(
                     remedy_of(set_aside([ROW], {}, out=[ROW]), move,
                               *closing))
     assert typed_as_printed(holder, said[1]) == [
-        f"git rm -r --cached -- {ROW}", REMOVE, record(commit), "git commit"]
+        f"git rm -r --cached -- {ROW}", REMOVE, record(commit), "git commit",
+        MOVE_OUT]
     registered(holder, family["root"], commit)
     gate_then_add(offline, holder, family["remotes"])
 
@@ -309,17 +322,35 @@ def members_a_link(root: Path) -> tuple:
                       renamed=["members"]), "git mv -- members renamed-1")
 
 
-@pytest.mark.parametrize("make", [members_file_deleted, members_a_link],
-                         ids=["a file deleted from disk", "a link"])
+def members_file_marked(root: Path) -> tuple:
+    """A file `members` committed, which a sparse checkout keeps off disk
+    (`skip-worktree`): it was left where it was, so each `git update-index`
+    still failed beside it. Renamed with `git mv --sparse`, which keeps what
+    it holds, as the index's own rule names such an entry (Codex's P2 1 on
+    #828)."""
+    if git_version() < (2, 38):
+        pytest.skip("`git mv --sparse` of one entry kept off disk needs git "
+                    "2.38 or later")
+    file_committed(root, "members")
+    git("update-index", "--skip-worktree", "--", "members", cwd=root)
+    (root / "members").unlink()
+    return (set_aside(["members"], {}, sparse=["members"]),
+            "git mv --sparse -- members renamed-1")
+
+
+@pytest.mark.parametrize("make", [members_file_deleted, members_a_link,
+                                  members_file_marked],
+                         ids=["a file deleted from disk", "a link",
+                              "a file a sparse checkout keeps off disk"])
 def test_an_entry_at_members_itself_is_set_aside_first(family, holder,
                                                        offline, tmp_path,
                                                        make):
     """(h) `git mv members Members`, committed, and the index holds a file
-    or a link at `members`: each `git update-index` failed `appears as both
-    a file and as a directory`, exit 128. Typed as printed: the entry set
-    aside, both gitlinks and sections moved back in one commit, both
-    checkouts deleted by hand, the update; the gate passes and the same
-    `add` goes through."""
+    or a link at `members`, one a sparse checkout keeps off disk too: each
+    `git update-index` failed `appears as both a file and as a directory`,
+    exit 128. Typed as printed: the entry set aside, both gitlinks and
+    sections moved back in one commit, both checkouts deleted by hand, the
+    update; the gate passes and the same `add` goes through."""
     folding_skip(tmp_path)
     commits = renamed_with_git(holder, True)
     aside, typed_first = make(holder)
@@ -633,6 +664,64 @@ def test_what_is_set_aside_is_committed_with_the_move(family, holder,
     gate_then_add(offline, holder, family["remotes"])
 
 
+def test_what_a_sparse_checkout_keeps_off_disk_is_committed_with_the_move(
+        family, holder, offline, tmp_path):
+    """The same, the new file marked `skip-worktree` and kept off disk, as a
+    sparse checkout keeps it: renamed aside with `git mv --sparse`, which
+    leaves a change to commit though nothing is on disk, so the commit is
+    printed (Codex's P2 1 on #828). Typed as printed, HEAD holds the file at
+    its new name, the gate passes and the same `add` goes through."""
+    if git_version() < (2, 38):
+        pytest.skip("`git mv --sparse` of one entry kept off disk needs git "
+                    "2.38 or later")
+    folding_skip(tmp_path)
+    commit = mount_moved(holder, committed=False)
+    (holder / ROW).write_bytes(b"our own notes\n")
+    git("add", "--", ROW, cwd=holder)
+    git("update-index", "--skip-worktree", "--", ROW, cwd=holder)
+    (holder / ROW).unlink()
+    move, closing = moved_back({ROW: ([VARIANT], commit)}, sections=(ROW,),
+                               forced=True)
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said[1] == remedy_of(set_aside([ROW], {}, sparse=[ROW]), move,
+                                *closing)
+    assert typed_as_printed(holder, said[1],
+                            lambda root: rmtree(root / VARIANT)) == [
+        f"git mv --sparse -- {ROW} renamed-1", REMOVE_FORCED, record(commit),
+        *POINTED[::2], "git commit", MOVE_OUT, SUBMODULE]
+    assert git("show", "HEAD:renamed-1", cwd=holder).stdout == (
+        "our own notes\n")
+    registered(holder, family["root"], commit)
+    gate_then_add(offline, holder, family["remotes"])
+
+
+def test_a_removal_where_head_records_the_gitlink_leaves_no_commit(
+        family, holder, offline, tmp_path):
+    """The same, the new file deleted from disk and not marked: taken out of
+    the index. HEAD records the member's gitlink at that path, which the
+    move puts back, so the removal leaves nothing to commit, and no commit
+    is printed: one was, and `git commit` failed with nothing to commit
+    (found in #828's fix round for Codex's P2s). Typed as printed, the
+    member is where its row says, the gate passes and the same `add` goes
+    through."""
+    folding_skip(tmp_path)
+    commit = mount_moved(holder, committed=False)
+    (holder / ROW).write_bytes(b"our own notes\n")
+    git("add", "--", ROW, cwd=holder)
+    (holder / ROW).unlink()
+    move, closing = moved_back({ROW: ([VARIANT], commit)}, commit=False,
+                               sections=(ROW,), forced=True)
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said[1] == remedy_of(set_aside([ROW], {}, out=[ROW]), move,
+                                *closing)
+    assert typed_as_printed(holder, said[1],
+                            lambda root: rmtree(root / VARIANT)) == [
+        f"git rm -r --cached -- {ROW}", REMOVE_FORCED, record(commit),
+        *POINTED[::2], MOVE_OUT, SUBMODULE]
+    registered(holder, family["root"], commit)
+    gate_then_add(offline, holder, family["remotes"])
+
+
 def test_both_removals_staged_with_no_gitmodules_on_disk(family, holder,
                                                          offline, tmp_path):
     """A staged `git mv members Members`, both gitlinks then taken out of the
@@ -678,3 +767,121 @@ def test_a_checkout_under_an_index_entry_is_the_indexs_to_name(
         holder, SPARE, family_module._members_on_disk(holder), frozenset())
     assert [(spelled.where, spelled.target) for spelled in found] == [
         ("in the index", "Members/X")]
+
+
+# --- 6. Codex's two P2s on #828 ----------------------------------------------
+
+#: A file committed under the row's path, in the way of the move back.
+NOTES = f"{ROW}/notes"
+
+
+def notes_marked(on_disk: bool):
+    """`members/IRRS/notes` marked `skip-worktree`, as a sparse checkout
+    marks it, and kept off disk unless `on_disk`."""
+    def make(root: Path) -> None:
+        if not on_disk and git_version() < (2, 38):
+            pytest.skip("`git mv --sparse` of one entry kept off disk needs "
+                        "git 2.38 or later")
+        git("update-index", "--skip-worktree", "--", NOTES, cwd=root)
+        if not on_disk:
+            (root / NOTES).unlink()
+    return make
+
+
+def notes_left_out(on_disk: bool):
+    """Non-cone sparse rules that leave out `members/IRRS/notes` alone, its
+    `skip-worktree` bit cleared, on disk where `on_disk`."""
+    def make(root: Path) -> None:
+        git("sparse-checkout", "set", "--no-cone", "/*", f"!/{NOTES}",
+            cwd=root)
+        bit_cleared(root, NOTES, on_disk, False)
+    return make
+
+
+#: `{state: (how it is made, the set-aside part's arguments, the line typed
+#: for it)}`.
+SPARSE_ASIDE = {
+    "marked, on disk": (notes_marked(True), {"renamed": [NOTES]},
+                        f"git mv -- {NOTES} renamed-1"),
+    "marked, off disk": (notes_marked(False), {"sparse": [NOTES]},
+                         f"git mv --sparse -- {NOTES} renamed-1"),
+    "left out by the rules, on disk": (
+        notes_left_out(True), {"sparse": [NOTES]},
+        f"git mv --sparse -- {NOTES} renamed-1"),
+    "left out by the rules, off disk": (
+        notes_left_out(False), {"out": [NOTES], "out_sparse": True},
+        f"git rm -r --cached --sparse -- {NOTES}"),
+}
+
+
+@pytest.mark.parametrize("state", [
+    pytest.param(state, marks=needs_check_rules) if "rules" in state
+    else state for state in SPARSE_ASIDE])
+def test_a_blocker_a_sparse_checkout_marks_or_leaves_out_is_set_aside_too(
+        family, holder, offline, tmp_path, state):
+    """Codex's P2 1 on #828: `git mv members/IRRS Members/IRRS`, committed,
+    and a file committed under the row's path, which a sparse checkout
+    marks or its rules leave out. Such a row was dropped from the rows to
+    set aside before the member's own gitlink was asked for, so
+    `Members/IRRS` kept #574's `git mv -- Members/IRRS <new name>`, which
+    takes the member's gitlink and section away from its row. Now the
+    gitlink is moved back, and the file is set aside as the index's own
+    rule names it: plain `git mv` where it is marked and on disk, `git mv
+    --sparse` where it is marked and off disk or left out and on disk, and
+    `git rm -r --cached --sparse` where it is left out and off disk; plain
+    `git mv` and `git rm --cached` refuse each of the last three (measured
+    on git 2.43 and 2.47.1). Typed as printed, the file's bytes are at its
+    new name where it is renamed, the member is where its row says, the
+    gate passes and the same `add` goes through."""
+    folding_skip(tmp_path)
+    make, how, typed_first = SPARSE_ASIDE[state]
+    commit = mount_moved(holder)
+    data = file_committed(holder, NOTES)
+    make(holder)
+    move, closing = moved_back({ROW: ([VARIANT], commit)}, sections=(ROW,))
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said == (in_the_index(VARIANT_SHOWN),
+                    remedy_of(set_aside([NOTES], {}, **how), move, *closing))
+    assert typed_as_printed(holder, said[1],
+                            lambda root: rmtree(root / VARIANT)) == [
+        typed_first, REMOVE, record(commit), *POINTED[::2], "git commit",
+        MOVE_OUT, SUBMODULE]
+    if typed_first.startswith("git mv"):
+        assert git("show", "HEAD:renamed-1",
+                   cwd=holder).stdout.encode() == data
+    registered(holder, family["root"], commit)
+    gate_then_add(offline, holder, family["remotes"])
+
+
+def test_a_link_pointing_nowhere_at_the_variant_is_still_moved_out(
+        family, holder, offline, tmp_path):
+    """Codex's P2 2 on #828: the closing `mv` failed, exit 1, where nothing
+    is at the variant, so its guard now begins `[ ! -e <variant> ] && [ !
+    -L <variant> ]`, and every typing of a state with nothing there types
+    it, as printed, moving nothing. The second test keeps what the guard did
+    before for a link there pointing nowhere, which `-e` takes for nothing:
+    #646's state with the removal staged, so HEAD alone holds the variant,
+    and a link `Members/IRRS -> nowhere`. (With the variant's gitlink still
+    in the index, git 2.45.1 and later refuse the link itself: `git status`
+    says `expected submodule path 'Members/IRRS' not to be a symbolic
+    link`, measured on git 2.47.1.) Typed as printed, the link is moved out
+    of the holder, the member is where its row says, the gate passes and
+    the same `add` goes through."""
+    if os.name == "nt":
+        pytest.skip("a symlink needs a privilege Windows runners do not grant")
+    if disk_folds(tmp_path):
+        pytest.skip("a link at the variant beside the row's directory needs a "
+                    "disk that does not fold case")
+    commit = variant(holder)
+    git("rm", "-q", "--cached", "--", VARIANT, cwd=holder)
+    (holder / "Members").mkdir()
+    os.symlink("nowhere", holder / VARIANT)
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said == (DIR_VARIANT + f"{HEAD_ONLY}: {VARIANT_SHOWN}",
+                    remedy(commit))
+    assert typed_as_printed(holder, said[1]) == [
+        REMOVE, record(commit), "git commit", MOVE_OUT]
+    assert not os.path.lexists(holder / VARIANT)
+    assert os.readlink(holder.parent / "Members-IRRS") == "nowhere"
+    registered(holder, family["root"], commit)
+    gate_then_add(offline, holder, family["remotes"])
