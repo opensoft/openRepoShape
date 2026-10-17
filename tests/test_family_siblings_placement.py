@@ -579,6 +579,37 @@ def test_a_family_folder_reached_through_a_windows_junction_passes(
     assert warning is None
 
 
+@pytest.mark.parametrize("dry_run", [True, False],
+                         ids=["the-dry-run", "the-real-run"])
+def test_a_windows_junction_to_nothing_at_a_slot_is_a_link_to_nothing(
+        placement, monkeypatch, capsys, tmp_path, dry_run):
+    """#793: a junction to nothing at `../<Project>` is NOT A CLONE, as a
+    link to nothing is (#784). `is_symlink` says no to a junction and
+    `os.path.isjunction` (3.12) says yes, so the slot read as empty: the
+    dry run said `would clone`. Simulated, as above, so every system asks
+    it: the slot does not exist, and only the junction check says yes.
+
+    THE MEMBER IS MOUNTED FROM A LOCAL PATH THAT DOES NOT EXIST, so a run
+    that took the slot for an empty one fails its clone here and never
+    reaches a remote: with the `repository:` fallback, it cloned github."""
+    root = tmp_path / NAME / NAME
+    root.mkdir(parents=True)
+    slot = root.parent / MEMBERS[0]
+    mount = f"members/{MEMBERS[0]}"
+    nowhere = {mount: str(tmp_path / "remotes" / f"{MEMBERS[0]}.git")}
+    monkeypatch.setattr(os.path, "isjunction", lambda path: Path(path) == slot,
+                        raising=False)
+    found = placement.place(root, {"project": MEMBERS[0], "path": mount,
+                                   "repository": f"{NAME}/{MEMBERS[0]}"},
+                            nowhere, [], "", dry_run)
+    assert found.state == "NOT A CLONE", found.state
+    assert found.finding == (
+        f"{MEMBERS[0]}: {slot} is a link to nothing, so this command will "
+        "not write into it. Move it aside or name the link something else; "
+        "nothing here overwrites a link somebody made."), found.finding
+    assert "would clone" not in capsys.readouterr().out
+
+
 def test_a_folder_is_renamed_only_for_a_difference_of_case(
         placement, monkeypatch, tmp_path):
     """A second path to this folder under another NAME that is neither a

@@ -7989,11 +7989,16 @@ def unclonable(sibling: Path) -> str | None:
     A LINK TO NOTHING IS NOT NOTHING (#784). `exists` follows a link, so a
     dangling one read as `absent`, and the row said `make siblings` places
     the member there, where git ends `CLONE FAILED`: it cannot clone into a
-    path that is a link to nothing.
+    path that is a link to nothing. A JUNCTION TO NOTHING is one too
+    (#793), the link Windows makes without privilege, which `is_symlink`
+    does not see: it is asked as `siblings.py` asks it, with Python 3.12's
+    `os.path.isjunction`, and before 3.12, which has none, the answer is no.
     """
     try:
         if not sibling.exists():
-            return "dangling" if sibling.is_symlink() else None
+            junction = getattr(os.path, "isjunction", lambda _: False)
+            return ("dangling" if sibling.is_symlink() or junction(sibling)
+                    else None)
         if not sibling.is_dir():
             return "file"
         return "files" if any(sibling.iterdir()) else None

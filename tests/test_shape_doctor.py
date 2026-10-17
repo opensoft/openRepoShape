@@ -4187,6 +4187,27 @@ def test_make_siblings_dry_run_gives_the_rows_word_for_each_slot(
         f"sibling {FAMILY_MEMBER} {DRY_RUN_SAYS[entry['sibling']]} "), said
 
 
+def test_the_row_names_a_windows_junction_to_nothing_a_link_to_nothing(
+        standard, holder, tmp_path, monkeypatch):
+    """#793: a junction to nothing at `../IRRS`, the link Windows makes
+    without privilege, is `not-a-clone` in the doctor's row, in the words
+    `make siblings` says it in, as a link to nothing is (#784). `is_symlink`
+    says no to a junction, so the row called the slot `absent` and said
+    `make siblings` places the member there. Simulated in this process, as
+    `tests/test_family_siblings_placement.py` simulates a junction: the slot
+    does not exist, and only `os.path.isjunction` says yes."""
+    root = holder_with_slot(holder, tmp_path, "nothing").resolve()
+    slot = root.parent / FAMILY_MEMBER
+    module = doctor_module(standard)
+    monkeypatch.setattr(os.path, "isjunction", lambda path: Path(path) == slot,
+                        raising=False)
+    row = module.check_members(module.Context(root))
+    assert row.detail["members"][0]["sibling"] == "not-a-clone", row.detail
+    assert f"{FAMILY_MEMBER}: {slot} {UNREADABLE_SAYS['dangling']}" in \
+        row.reason, row.reason
+    assert PLACES_NOTE not in row.reason, row.reason
+
+
 def test_a_sibling_at_the_right_origin_with_another_id_is_not_the_member(
         standard, holder, tmp_path):
     """The `WRONG PROJECT` half, which was already asked and stays asked: a
