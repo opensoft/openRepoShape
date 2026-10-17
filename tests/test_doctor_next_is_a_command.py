@@ -259,11 +259,14 @@ def _agent_files_pinned(standard, project, holder, tmp_path):
     return rows_of(doctor(standard, project, "--json"))["agent-files"]
 
 
-def _agent_files_pinned_lost_repo_shape(standard, project, holder, tmp_path):
-    # The same row where the root's own `validate-pins.py` lost its
-    # `repo_shape.py`: its WHY puts the file back before the gate (#776).
-    root = agent_files_lost(project, holder, tmp_path)
-    return rows_of(doctor(standard, root, "--json"))["agent-files"]
+def _agent_files_pinned_lost_repo_shape(case):
+    """The builder of the same row where the root's own gate lost its
+    `repo_shape.py`, in an assembly root (`pins`) and in a holder
+    (`family`): its WHY puts the file back before the gate (#776)."""
+    def build(standard, project, holder, tmp_path):
+        root = agent_files_lost(case, project, holder, tmp_path)
+        return rows_of(doctor(standard, root, "--json"))["agent-files"]
+    return build
 
 
 def _agent_files_unpinned(standard, project, holder, tmp_path):
@@ -709,10 +712,15 @@ CASES = {
         "the pin has a `files:` row for it, so it was deleted rather than "
         "never copied; restore it from this repository's own history, then "),
     "check_agent_files-pinned-lost-repo-shape": (
-        _agent_files_pinned_lost_repo_shape,
+        _agent_files_pinned_lost_repo_shape("pins"),
         "the pin has a `files:` row for it, so it was deleted rather than "
-        "never copied; restore it from this repository's own history. To "
-        "confirm the digest, first `git -C "),
+        "never copied; restore it from this repository's own history. "
+        "First `git -C "),
+    "check_agent_files-pinned-lost-repo-shape-holder": (
+        _agent_files_pinned_lost_repo_shape("family"),
+        "the pin has a `files:` row for it, so it was deleted rather than "
+        "never copied; restore it from this repository's own history. "
+        "First `git -C "),
     "check_agent_files-unpinned": (
         _agent_files_unpinned,
         "no pin row names it, so it is reported upstream-added and taken, on "
