@@ -378,6 +378,11 @@ class Family:
         still exactly as the human left it, rather than after `git submodule
         add` has staged a gitlink and a `.gitmodules` section that the
         refusal would then leave behind.
+
+        THE FIX BY HAND IS COMMITTED before the run again (#684): the verbs
+        refuse a `family.yaml` holding a change HEAD does not
+        (`_checked_manifest_committed`), and this refusal is only reached
+        once the shape it names is committed.
         """
         text = self.path.read_text(encoding="utf-8")
         lines = text.splitlines()
@@ -399,7 +404,8 @@ class Family:
                 "Remediation: the manifest was hand-edited into a shape this "
                 "tool does not recognise. `members:` is the LAST block in the "
                 "file and everything below it belongs to this tool; fix it by "
-                "hand this once.")
+                "hand this once and commit that (`git commit -- "
+                f"{MANIFEST}`), then run the same command again.")
         return "\n".join(out) + "\n"
 
 
@@ -1190,12 +1196,15 @@ def _checked_manifest_committed(root: Path, verb: str) -> None:
     row back by hand (`member-path`, `_member_path`) say to commit that.
 
     ASKED OF GIT, AND NOTHING WRITTEN: the index's records for the file
-    (`_index_records`, no pathspec), the blob HEAD holds (`_head_oid`), and
-    `git ls-files -m`, git's own answer to "modified", which compares the
-    work tree's copy with the index's by content where their stat data
-    differ. Not `git hash-object`, which a dry run asks only for `bump`'s
-    `nothing to do`; so a copy the index marks assume-unchanged, which git
-    does not compare, is not seen.
+    (`_index_records`, no pathspec), HEAD's entry for it, MODE AND OBJECT,
+    from `git ls-tree -r -z HEAD` with no pathspec (a mode change staged
+    and not committed went into the commit too, measured with `remove`:
+    `mode change 100644 => 100755 family.yaml`), and `git ls-files -m`,
+    git's own answer to "modified", which compares the work tree's copy
+    with the index's by content where their stat data differ. Not `git
+    hash-object`, which a dry run asks only for `bump`'s `nothing to do`;
+    so a copy the index marks assume-unchanged, which git does not compare,
+    is not seen.
 
     A HOLDER WHOSE HEAD HOLDS NO `family.yaml`, as one made by hand with no
     commit yet does, has no committed copy for a change to differ from: the
@@ -1206,16 +1215,24 @@ def _checked_manifest_committed(root: Path, verb: str) -> None:
     -- family.yaml` commits the work tree's copy and nothing else staged,
     unmerged or not; `git checkout HEAD -- family.yaml` puts HEAD's back in
     the index and the work tree. Where the change is a staged deletion over
-    a copy that is HEAD's byte for byte, the first has nothing to commit,
-    and the second is the way out.
+    a copy that is HEAD's byte for byte, or a mode staged with `git
+    update-index --chmod` that the work tree's copy does not have, the
+    first has nothing to commit, and the second is the way out.
+
+    A GITLINK UNDER `members/` STAGED BESIDE IT (#210's half-finished bump,
+    lane 1's review of #816, F5) is told the second ALONE: there the first
+    commits the row without its gitlink, so the row and the gitlink HEAD
+    holds disagree (measured), while the second, and the same command run
+    again, makes the one commit of both.
     """
-    head = _head_oid(root, MANIFEST)
+    held = _head_entries(root)
+    head = held.get(MANIFEST.encode())
     if head is None:
         return
+    index = _index_records(root)
     records = [record.partition(b"\t")[0].split()
-               for record in _index_records(root).get(MANIFEST.encode(), [])]
-    merged = [oid.decode("ascii") for _, oid, stage in records
-              if stage == b"0"]
+               for record in index.get(MANIFEST.encode(), [])]
+    merged = [(mode, oid) for mode, oid, stage in records if stage == b"0"]
     if len(merged) != len(records):
         # `ls-files -m` lists an unmerged path once for each stage the work
         # tree's copy differs from, which says nothing more.
@@ -1236,10 +1253,49 @@ def _checked_manifest_committed(root: Path, verb: str) -> None:
         f"`{verb}` rewrites {MANIFEST} as the work tree has it and commits "
         "it, so that change would go into the command's commit beside its "
         "own. No git command that writes was run and nothing was written.",
-        "Remediation: which change to keep is a person's to say. To keep it, "
-        f"commit it on its own first, `git commit -- {MANIFEST}`; to drop "
-        "it, put back HEAD's copy, in the index and the work tree, `git "
-        f"checkout HEAD -- {MANIFEST}`. Then run the same command again.")
+        ("Remediation: the index also stages a gitlink under "
+         f"{MEMBERS_DIR}/ that HEAD does not hold, as a run stopped before "
+         f"its commit leaves it, and `git commit -- {MANIFEST}` would commit "
+         "the row without it: put back HEAD's copy, in the index and the "
+         f"work tree, `git checkout HEAD -- {MANIFEST}`."
+         if _gitlink_staged(index, held) else
+         "Remediation: which change to keep is a person's to say. To keep "
+         f"it, commit it on its own first, `git commit -- {MANIFEST}`; to "
+         "drop it, put back HEAD's copy, in the index and the work tree, "
+         f"`git checkout HEAD -- {MANIFEST}`.")
+        + " Then run the same command again.")
+
+
+def _head_entries(root: Path) -> dict[bytes, tuple[bytes, bytes]]:
+    """`{path: (mode, object)}` of every file and gitlink HEAD holds, by
+    `git ls-tree -r -z HEAD` with NO PATHSPEC, as `_tree_entries` reads a
+    tree, the mode kept as git prints it; none where HEAD names no commit
+    yet, or none git can read (#684)."""
+    try:
+        listed = _git_bytes(["ls-tree", "-r", "-z", "HEAD"], root)
+    except CommandFailed:
+        return {}
+    held = {}
+    for record in listed.split(b"\0"):
+        meta, _, name = record.partition(b"\t")
+        if meta:
+            mode, _, oid = meta.split()
+            held[name] = (mode, oid)
+    return held
+
+
+def _gitlink_staged(index: dict[bytes, list[bytes]],
+                    held: dict[bytes, tuple[bytes, bytes]]) -> bool:
+    """Does `index` (`_index_records`) stage a gitlink under `members/` that
+    HEAD (`_head_entries`) does not hold, mode and commit, as a run stopped
+    between its stage and its commit leaves one (#684; lane 1's review of
+    #816, F5)?"""
+    prefix = f"{MEMBERS_DIR}/".encode()
+    return any(
+        mode == b"160000" and held.get(name) != (mode, oid)
+        for name, found in index.items() if name.startswith(prefix)
+        for mode, oid, _ in (record.partition(b"\t")[0].split()
+                             for record in found))
 
 
 def _sparse_rules_exclude(root: Path, paths: list[str]) -> list[str]:
@@ -3447,8 +3503,10 @@ def _members_file_left_in_head(root: Path, path: str) -> Refusal | None:
             "which must be a plain directory of the holder's own. Take the "
             "file out of the index, which touches no file (`git rm --cached "
             f"-- {MEMBERS_DIR}`), and commit the removal on its own first "
-            f"(`git commit`), since the add's own commit names {GITMODULES}, "
-            f"{path} and {MANIFEST} alone, and run the same command again.")
+            "(`git commit`, with nothing else staged: a bare `git commit` "
+            "takes every staged change, and `git status` lists them), since "
+            f"the add's own commit names {GITMODULES}, {path} and {MANIFEST} "
+            "alone, and run the same command again.")
     return Refusal(
         "member-path-unaddable",
         f"git would add the mount path {path} and take `{MEMBERS_DIR}` out of "
@@ -3460,9 +3518,10 @@ def _members_file_left_in_head(root: Path, path: str) -> Refusal | None:
         "nothing was written.",
         f"Remediation: every member is mounted under {MEMBERS_DIR}/, which "
         "must be a plain directory of the holder's own. Commit that change "
-        "on its own first (`git commit`), since the add's own commit names "
-        f"{GITMODULES}, {path} and {MANIFEST} alone, and run the same command "
-        "again.")
+        "on its own first (`git commit`, with nothing else staged: a bare "
+        "`git commit` takes every staged change, and `git status` lists "
+        f"them), since the add's own commit names {GITMODULES}, {path} and "
+        f"{MANIFEST} alone, and run the same command again.")
 
 
 def _members_is_a_file(root: Path, path: str) -> Refusal:

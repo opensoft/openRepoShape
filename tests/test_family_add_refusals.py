@@ -450,7 +450,9 @@ def test_a_manifest_this_tool_will_not_rewrite_is_refused_before_the_mount(
         "exactly one was expected, so this tool will not rewrite it",
         "Remediation: the manifest was hand-edited into a shape this tool "
         "does not recognise. `members:` is the LAST block in the file and "
-        "everything below it belongs to this tool; fix it by hand this once.")
+        "everything below it belongs to this tool; fix it by hand this once "
+        "and commit that (`git commit -- family.yaml`), then run the same "
+        "command again.")
     assert_unchanged(holder, before, SPARE)
     offline.assert_left_nothing()
 

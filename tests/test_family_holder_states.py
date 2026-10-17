@@ -30,9 +30,11 @@ review lines on #459: E1, E2, E3, E5 and N4).
   2026-10-16T13:56:50Z, "refuse a dirty `family.yaml`"). `add`, `bump` and
   `remove` commit the file as the work tree has it, so a comment line
   edited by hand went into their commit; each now refuses it, staged or
-  not, and git's two ways out, typed as printed, let the command run.
-  `member-path`'s remedy says to commit a row put back by hand, so it no
-  longer leads into this refusal.
+  not, its mode compared as well as its object, and git's two ways out,
+  typed as printed, let the command run; where a gitlink under `members/`
+  is staged beside it, as #210's half-finished bump leaves one, only the
+  way out that drops it is named. `member-path`'s remedy says to commit a
+  row put back by hand, so it no longer leads into this refusal.
 
 #612's review E4 (reftable) is NOT here: this host's git is 2.43, and
 the issue asks for it to be measured on git 2.45 or later first.
@@ -60,7 +62,7 @@ from test_family import FAMILY, ORG, SPARE, family, family_module  # noqa: F401
 from test_family_add_excludes import empty_holder  # noqa: F401
 from test_family_add_refusals import holder, offline, refusal  # noqa: F401
 from test_family_dry_run import add, add_state, assert_add_as_it_was, isolated
-from test_family_member_path import GLOB, MEMBER, hand_edit, raw
+from test_family_member_path import GLOB, MEMBER, hand_edit, older, raw
 #: #612's proof of a refusal before the first write, and its states.
 from test_family_refuse_up_front import (
     NOTES, VERBS, assert_refused_alike, commit_file, head_of, mark_of,
@@ -437,9 +439,10 @@ MOVED_LINE = (
 MOVED_REMEDY = (
     "Remediation: every member is mounted under members/, which must be a "
     "plain directory of the holder's own. Commit that change on its own "
-    "first (`git commit`), since the add's own commit names .gitmodules, "
-    f"members/{SPARE} and family.yaml alone, and run the same command "
-    "again.")
+    "first (`git commit`, with nothing else staged: a bare `git commit` "
+    "takes every staged change, and `git status` lists them), since the "
+    f"add's own commit names .gitmodules, members/{SPARE} and family.yaml "
+    "alone, and run the same command again.")
 DELETED_LINE = (
     "REFUSED member-path-unaddable: git would add the mount path "
     f"members/{SPARE} and take `members` out of the holder with it: "
@@ -452,9 +455,11 @@ DELETED_REMEDY = (
     "Remediation: every member is mounted under members/, which must be a "
     "plain directory of the holder's own. Take the file out of the index, "
     "which touches no file (`git rm --cached -- members`), and commit the "
-    "removal on its own first (`git commit`), since the add's own commit "
-    f"names .gitmodules, members/{SPARE} and family.yaml alone, and run the "
-    "same command again.")
+    "removal on its own first (`git commit`, with nothing else staged: a "
+    "bare `git commit` takes every staged change, and `git status` lists "
+    "them), since the add's own commit names .gitmodules, "
+    f"members/{SPARE} and family.yaml alone, and run the same command "
+    "again.")
 
 #: `{id: the git command that leaves the tracked file staged away}`: the
 #: move #612's remedy names, and the file's removal.
@@ -690,6 +695,76 @@ def test_a_change_to_family_yaml_in_the_index_is_refused_too(
                          uncommitted_said("remove", *said))
     raw(holder, env, *typed)
     runs_after("remove", family, holder, env)
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_mode_change_staged_to_family_yaml_is_refused_too(
+        family, holder, offline, tmp_path, verb):
+    """THE MODE IS COMPARED AS WELL AS THE OBJECT (lane 1's review of #816,
+    F4): a `remove` over a `chmod 755` and `git add` committed `mode change
+    100644 => 100755 family.yaml` beside its own change. Staged with `git
+    update-index --chmod=+x`, which stages it on every disk, each verb
+    refuses it in both runs alike. Where the disk keeps modes, git lists the
+    work tree's copy, still 644, as modified as well, and the refusal says
+    what git lists (the premise, asked of git). `git checkout HEAD --
+    family.yaml`, typed as printed, lets the verb run; `git commit --
+    family.yaml` would have nothing to commit there, the work tree's copy
+    being HEAD's."""
+    env = isolated(offline, tmp_path)
+    raw(holder, env, "update-index", "--chmod=+x", "--", MANIFEST)
+    assert raw(holder, env, "ls-files", "-s", "--", MANIFEST
+               ).stdout.startswith(b"100755 "), "premise: the mode is staged"
+    assert raw(holder, env, "ls-tree", "HEAD", "--", MANIFEST
+               ).stdout.startswith(b"100644 "), "premise: HEAD's is not"
+    listed = MANIFEST.encode() in raw(holder, env, "ls-files", "-m", "-z"
+                                      ).stdout.split(b"\0")
+    said = (SAID_STAGED, *((SAID_UNSTAGED,) if listed else ()))
+    assert_refused_alike(verb, family, holder, env,
+                         uncommitted_said(verb, *said))
+    raw(holder, env, *DROP)
+    runs_after(verb, family, holder, env)
+
+
+#: The remediation where a gitlink under `members/` is staged beside the
+#: change (F5): the way out that drops it, alone.
+DROP_ALONE_REMEDY = (
+    "Remediation: the index also stages a gitlink under members/ that HEAD "
+    "does not hold, as a run stopped before its commit leaves it, and `git "
+    "commit -- family.yaml` would commit the row without it: put back "
+    "HEAD's copy, in the index and the work tree, `git checkout HEAD -- "
+    "family.yaml`. Then run the same command again.")
+
+
+def test_a_bump_stopped_before_its_commit_is_told_the_drop_alone(
+        family, holder, offline, tmp_path):
+    """#210'S HALF-FINISHED BUMP (lane 1's review of #816, F5): the row
+    rewritten to name an older commit of the member, and its gitlink moved
+    there, both staged, as a bump stopped between its stage and its commit
+    leaves them. "Keep" there commits the row without its gitlink, so HEAD's
+    row and gitlink disagree (lane 1 measured it); the refusal names the
+    drop ALONE, in both runs alike. Typed as printed, the same bump then
+    makes its one commit of both paths."""
+    env = isolated(offline, tmp_path)
+    mount = holder / "members" / MEMBER
+    pinned = raw(holder, env, "rev-parse", f"HEAD:members/{MEMBER}"
+                 ).stdout.decode().strip()
+    to = older(family)
+    raw(mount, env, "checkout", "-q", to)
+    manifest = holder / MANIFEST
+    text = manifest.read_bytes()
+    assert text.count(pinned.encode()) == 1, "fixture drift: the pin"
+    manifest.write_bytes(text.replace(pinned.encode(), to.encode()))
+    raw(holder, env, "add", "--", f"members/{MEMBER}", MANIFEST)
+    line, _ = uncommitted_said("bump", SAID_STAGED)
+    assert_refused_alike("bump", family, holder, env,
+                         (line, DROP_ALONE_REMEDY))
+    raw(holder, env, *DROP)
+    runs_after("bump", family, holder, env)
+    shown = raw(holder, env, "show", "--name-only", "--format=", "HEAD"
+                ).stdout.decode().split()
+    assert sorted(shown) == [MANIFEST, f"members/{MEMBER}"], shown
+    assert raw(holder, env, "rev-parse", f"HEAD:members/{MEMBER}"
+               ).stdout.decode().strip() == to
 
 
 def test_a_row_put_back_as_member_path_says_is_committed_and_the_verb_runs(

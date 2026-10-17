@@ -1113,11 +1113,12 @@ def test_bump_finishes_a_bump_an_earlier_run_staged_and_did_not_commit(holder):
     before `git commit` — a hook that refused, a lock — leaves exactly this.
     Reading `was == --to` as "nothing to do" would call the half-finished bump
     done and leave the commit for somebody to make by hand (#210). Since #684
-    the staged `family.yaml` is refused first, as a change HEAD does not hold;
-    the way out that drops it, `git checkout HEAD -- family.yaml`, leaves the
-    gitlink staged, and the same bump then finishes in ONE commit of both
-    paths. (The other way out, `git commit -- family.yaml`, would commit the
-    row without its gitlink.)"""
+    the staged `family.yaml` is refused first, as a change HEAD does not hold,
+    and with the gitlink staged beside it the refusal names one way out
+    alone: `git checkout HEAD -- family.yaml`, which leaves the gitlink
+    staged, and the same bump then finishes in ONE commit of both paths.
+    (`git commit -- family.yaml` would commit the row without its
+    gitlink.)"""
     member = holder / "members" / "IRRS"
     before = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
     after = commit_in_member(member)
@@ -1133,6 +1134,8 @@ def test_bump_finishes_a_bump_an_earlier_run_staged_and_did_not_commit(holder):
     refused = run_script(FAMILY, *args)
     assert refused.returncode == 2, refused.stderr + refused.stdout
     assert refused.stderr.startswith("REFUSED family-manifest-uncommitted: ")
+    assert ("Remediation: the index also stages a gitlink under members/ "
+            in refused.stderr), refused.stderr
     git("checkout", "HEAD", "--", "family.yaml", cwd=holder)
     result = run_script(FAMILY, *args)
 
