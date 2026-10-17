@@ -253,8 +253,8 @@ from shape_materialize import (  # noqa: E402
 # What GitHub keeps a repository's name, a topic and an organisation's name
 # to, asked by `execute` before either leg exists where GitHub is (#838).
 from shape_materialize import (  # noqa: E402
-    GITHUB_ID_MAX, GITHUB_NAME_MAX, GITHUB_OWNER_MAX, GITHUB_PROJECT_MAX,
-    GITHUB_TOPIC_MAX, refuse_a_topic_github_cannot_set,
+    GITHUB_ID_MAX, GITHUB_LIMITS, GITHUB_NAME_MAX, GITHUB_OWNER_MAX,
+    GITHUB_PROJECT_MAX, GITHUB_TOPIC_MAX, refuse_a_topic_github_cannot_set,
     refuse_an_owner_github_cannot_have,
 )
 # Whether a value this tool writes into a file is text a file can hold
@@ -10730,9 +10730,21 @@ def _repository_urls(args, plan: Plan, names: dict,
     # GitHub keeps to 100 characters, under an organisation it keeps to 39:
     # either passed to the first `gh repo create` (#838).
     legs = [names["spec"], names["code"]]
-    refuse_unstorable_names(
-        "adopt-name-too-long", list(names.values()), legs if local else [],
-        [] if local else legs)
+    try:
+        refuse_unstorable_names(
+            "adopt-name-too-long", list(names.values()),
+            legs if local else [], [] if local else legs)
+    except Refusal as exc:
+        if local or not _a_leg_named_after_a_long_root(names):
+            raise
+        # THE SOURCE'S OWN NAME IS NOT `--project`'S TO SHORTEN (#859's
+        # review, SHOULD 1). Without `--local-remote-dir` the assembly root
+        # is the source's own repository on GitHub, which GitHub lets be
+        # named with up to 100 characters, and a leg named after one of 96
+        # to 100 is over that limit. "Use a shorter --project" planned
+        # another repository, which `git ls-remote` could not read.
+        raise Refusal(exc.code, exc.detail, _rename_first(
+            repositories["assembly"], SOURCE_NAME_TOO_LONG)) from None
     if not local:
         refuse_an_owner_github_cannot_have(
             "adopt-org-too-long", org, f"{plan.path}: `org:`",
@@ -10754,6 +10766,24 @@ TOPIC_REMEDIATION = (
     f"re-run `plan` with an explicit --id, of at most {GITHUB_ID_MAX} "
     "characters: the id need not be the project's name lowercased, and the "
     "name, which the assembly root already has, stays as it is.")
+#: What `adopt-name-too-long` says before `_rename_first`'s way out, where a
+#: leg GitHub will not create is named after the source (#859's review,
+#: SHOULD 1), as `adopt-bad-id` says why the source's own name will not do.
+SOURCE_NAME_TOO_LONG = (
+    "nothing was created. The legs are named `<Project>-spec` and "
+    "`<Project>-code`, and --project is the source's own name, which must be "
+    f"at most {GITHUB_PROJECT_MAX} characters: {GITHUB_LIMITS}. ")
+
+
+def _a_leg_named_after_a_long_root(names: dict) -> bool:
+    """Whether a leg over GitHub's `GITHUB_NAME_MAX` is named after the
+    assembly root, `<legs.assembly>-spec` or `-code`, as `plan` names both:
+    its length is then the root's, the source's own name (#859's review,
+    SHOULD 1). A leg the plan was edited to name otherwise is the plan's own
+    to shorten, and keeps the remediation it had."""
+    return any(len(names[role]) > GITHUB_NAME_MAX
+               and names[role] == f"{names['assembly']}-{role}"
+               for role in ("spec", "code"))
 
 
 def _refuse_a_topic_github_cannot_set(plan: Plan, topic: str) -> None:
@@ -12864,7 +12894,8 @@ def _is_the_source(repository: str, org: str, name: str) -> bool:
 
 def _rename_first(repository: str, said: str = "") -> str:
     """The remediation where the source's own name is one the naming policy
-    refuses: it cannot be adopted in place under that name, and renaming it
+    refuses, or one too long for GitHub to create a leg named after it
+    (#838): it cannot be adopted in place under that name, and renaming it
     is a human's decision that comes first (#499). `said` is what the
     refusal says before that, a sentence or none. THE ONE TEXT of it.
 

@@ -4987,23 +4987,24 @@ def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,
 # refused the name `legs.spec` with `unsafe-value`.
 #
 # GITHUB KEEPS A NAME SHORTER STILL, AND A TOPIC AND AN OWNER TOO (#838). A
-# repository's name is at most 100 characters, a topic at most 50, and a
-# user's or an organisation's name at most 39. These are GitHub's own
-# documented limits, and no run of this repository has measured them: none
-# creates a real repository, and a probe against a real organisation is
-# another lane's. Nothing asked them. A `--project` of 96 to 246 characters,
-# or an `--org` of 40 to 255, passed the plan and met GitHub's refusal at the
+# repository's name is at most 100 characters and a topic at most 50, both
+# documented on docs.github.com. For 39, the docs give the limit on a user's
+# name (Enterprise Cloud's username considerations), and nothing for an
+# organisation's; 39 is asked of both. No run of this repository has measured
+# any of the three: none creates a real repository, and a probe against a real
+# organisation is another lane's. Nothing asked them. A `--project` of 96 to
+# 250 characters (250 makes the longest `-spec` a directory can be named), or
+# an `--org` of 40 to 255, passed the plan and met GitHub's refusal at the
 # first `gh repo create`, with nothing made yet. An id over 39 characters,
-# which a `--project` of 40 or more gives by default, passed the plan, and
-# the scaffold created and seeded all three repositories before `gh repo
-# edit --add-topic` failed, last; `adopt-project.py execute` failed there
-# after both legs and the split were pushed. Each is asked before anything
-# is created now, and only where a GitHub repository will be made: under
-# `--local-remote-dir` nothing goes to GitHub, the limit on a name is the
-# disk's, and no topic is set. `setup-project.py` cannot import this module
-# (it runs before there is a checkout to import it from), so it says the
-# same numbers in its own `--help`, and `tests/test_github_name_limits.py`
-# holds the two to one number.
+# which a `--project` of 40 or more gives by default, passed the plan, and the
+# scaffold created and seeded all three repositories before `gh repo edit
+# --add-topic` failed, last; `adopt-project.py execute` failed there after both
+# legs and the split were pushed. Each is asked before anything is created now,
+# and only where a GitHub repository will be made: under `--local-remote-dir`
+# nothing goes to GitHub, the limit on a name is the disk's, and no topic is
+# set. `setup-project.py` cannot import this module (it runs before there is a
+# checkout to import it from), so it says the same numbers in its own `--help`,
+# and `tests/test_github_name_limits.py` holds the two to one number.
 
 #: The longest name a file or a directory may have, in bytes.
 NAME_MAX = 255

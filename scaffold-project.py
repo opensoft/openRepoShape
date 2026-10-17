@@ -872,7 +872,10 @@ def _refuse_what_github_cannot_hold(args, project_id: str, policy) -> None:
     """`scaffold-org-too-long` and `scaffold-topic-too-long`: an `--org`
     GitHub gives no organisation, and an id whose `xf-project-<id>` topic
     GitHub will not set (#838), refused where GitHub is asked, before any
-    process is started and under `--dry-run` alike.
+    repository or work directory exists and under `--dry-run` alike. No
+    process has started yet where `--elected-by` or GIT_AUTHOR_NAME names
+    the elector; otherwise `_identity` has asked `git config user.name`
+    first, as it has before `scaffold-bad-id`.
 
     THE TOPIC IS SET LAST (`_set_topics`), after `_create_remotes`,
     `_seed_legs` and `_build_assembly_root`, so an id over 39 characters,
@@ -1865,7 +1868,7 @@ def _scaffold(args) -> int:
     # 247 to 250 characters died in `Path.exists` with a traceback, and one
     # of 251 or more in the work directory, where adopt's `check` refused it.
     # And without it, each is a GitHub repository's, which GitHub keeps to
-    # 100 characters: a `--project` of 96 to 246 planned and met GitHub's
+    # 100 characters: a `--project` of 96 to 250 planned and met GitHub's
     # refusal at the first `gh repo create` (#838).
     on_disk = args.local_remote_dir is not None
     refuse_unstorable_names(

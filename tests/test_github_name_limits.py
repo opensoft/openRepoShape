@@ -2,26 +2,36 @@
 """What GitHub will not take is refused before anything is created (#838).
 
 GitHub keeps a repository's name to 100 characters, a topic to 50 and a
-user's or an organisation's name to 39. Those are its DOCUMENTED limits: no
-run here creates a real repository, so none of the three is measured, and the
-fakes below stand in for GitHub by those numbers. Nothing asked them before
-#838:
+user's or an organisation's name to 39. The 100 and the 50 are documented on
+docs.github.com; for 39 the docs give the limit on a user's name (Enterprise
+Cloud's username considerations) and nothing for an organisation's. No run
+here creates a real repository, so none of the three is measured. The fake
+`gh` below holds only the topic to its number, refusing a topic over 50
+characters; a name over 100 or an organisation over 39 never reaches it.
+Nothing asked them before #838:
 
 * `scaffold-project.py` sets `xf-project-<id>` on each repository LAST, with
   `gh repo edit --add-topic`, after it has created and seeded all three. An
   id over 39 characters, which a `--project` of 40 or more gives by default,
   failed there; `adopt-project.py execute` failed there after both legs and
   the split were pushed.
-* A `--project` of 96 to 246 characters, and an `--org` of 40 to 255, passed
+* A `--project` of 96 to 250 characters, and an `--org` of 40 to 255, passed
   the plan and met GitHub's refusal at the first `gh repo create`.
 
-Each is now asked before any repository is made: by the scaffold's plan
-before any process is started, under `--dry-run` alike, and by `execute`
-before either leg exists. Only where a GitHub repository will be made: under
+Each is now asked before any repository is made: by the scaffold's plan,
+under `--dry-run` alike, before any process is started where `--elected-by`
+or GIT_AUTHOR_NAME names the elector (otherwise `git config user.name` is
+read first), and by `execute` before `_confirm` and before either leg
+exists. Only where a GitHub repository will be made: under
 `--local-remote-dir` a name's limit is the disk's, which the same helper
 still asks, and no topic is set. `setup-project.py` hands the three values to
 the scaffold's plan at its step (5), which refuses them there, and its
 `--help` says the same three numbers, which it cannot import.
+
+An adoption's assembly root on GitHub is the source's own repository, so a
+leg over 100 characters named after it is mended by renaming the source on
+GitHub first, as `adopt-bad-id` says of a name the policy refuses, and not by
+a shorter `--project`, which plans another repository (#859's review).
 
 The in-process runs refuse every process start (`no_process`), so a refusal
 that passes came before git, before `gh` and before the work directory. The
@@ -34,17 +44,21 @@ from __future__ import annotations
 import importlib.util
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import test_adopt_github_exits
 from conftest import (ADOPT, ORG, PTY_SKIP, REPO, SCAFFOLD, WINDOWS_SKIP, git,
                       make_source_repo, run_in_a_terminal, run_script,
                       write_plan)
 from test_adopt_github_exits import (NORTHWIND, SOURCE_TREE, SPLIT_BRANCH,
                                      gh_calls, github_run, heads,
                                      needs_filter_repo)
+from test_adopt_project_is_the_source import RENAME_FIRST
 from test_scaffold_leg_path_collisions import (  # noqa: F401 (a fixture)
     ProcessStarted, no_process,
 )
@@ -55,8 +69,8 @@ sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
 from repo_shape import TOPIC_PREFIX, NamingPolicy  # noqa: E402
 
-#: GitHub's documented limits, written out here rather than read back from
-#: the module that asks them, so a change to either is a change a test sees.
+#: GitHub's limits, written out here rather than read back from the module
+#: that asks them, so a change to either is a change a test sees.
 NAME_MAX, TOPIC_MAX, OWNER_MAX = 100, 50, 39
 #: The longest project name and id they leave: `-spec` adds five to a name,
 #: and the topic is `xf-project-<id>`.
@@ -69,6 +83,14 @@ ORG_TOO_LONG = "REFUSED scaffold-org-too-long"
 
 IDENTITY = ("--org", ORG, "--elected-by", "Test Human", "--elected-on",
             "2026-09-02")
+
+#: What a refusal of a name over GitHub's limit says of GitHub's numbers, at
+#: the end of its remediation: the id's bound with the name's.
+GITHUB_LIMITS_SAID = (
+    "GitHub keeps a repository's name to at most 100 characters, so a "
+    "project name is at most 95, and a topic to at most 50, so the id in the "
+    "topic `xf-project-<id>`, which is the project name lowercased unless "
+    "--id is given, is at most 39.")
 
 
 def a_name(length: int) -> str:
@@ -86,7 +108,7 @@ def an_org(length: int) -> str:
 
 # --- the numbers ---------------------------------------------------------------
 
-def test_the_limits_are_githubs_documented_numbers():
+def test_the_limits_are_githubs_numbers():
     assert shape_materialize.GITHUB_NAME_MAX == NAME_MAX
     assert shape_materialize.GITHUB_TOPIC_MAX == TOPIC_MAX
     assert shape_materialize.GITHUB_OWNER_MAX == OWNER_MAX
@@ -210,11 +232,7 @@ def test_a_repository_name_over_githubs_limit_is_refused_by_both_ends():
         "101 characters, and GitHub keeps a repository's name to at most "
         "100.")
     assert "a disk keeps" not in caught.remediation
-    assert caught.remediation.endswith(
-        "GitHub keeps a repository's name to at most 100 characters, so a "
-        "project name is at most 95, and a topic to at most 50, so the id in "
-        "the topic `xf-project-<id>`, which is the project name lowercased "
-        "unless --id is given, is at most 39.")
+    assert caught.remediation.endswith(GITHUB_LIMITS_SAID)
 
 
 def test_a_name_the_disk_cannot_hold_is_named_once_and_both_limits_said():
@@ -235,15 +253,19 @@ def test_a_name_the_disk_cannot_hold_is_named_once_and_both_limits_said():
     assert "; and GitHub keeps" in caught.remediation
 
 
+#: The remediation of a name the disk alone cannot hold, as it was before
+#: #838 and is still.
+DISK_REMEDY = (
+    "Remediation: nothing was created. Use a shorter --project: the three "
+    "repositories are named `<Project>`, `<Project>-spec` and "
+    "`<Project>-code`, and a disk keeps a name of at most 255 bytes, which "
+    "under --local-remote-dir includes the `.git` each bare repository adds.")
+
+
 def test_the_disk_alone_keeps_its_remediation_word_for_word():
     caught = refusal(shape_materialize.refuse_unstorable_names, "r",
                      [a_name(256)], [], [])
-    assert caught.remediation == (
-        "Remediation: nothing was created. Use a shorter --project: the "
-        "three repositories are named `<Project>`, `<Project>-spec` and "
-        "`<Project>-code`, and a disk keeps a name of at most 255 bytes, "
-        "which under --local-remote-dir includes the `.git` each bare "
-        "repository adds.")
+    assert caught.remediation == DISK_REMEDY
 
 
 def test_a_topic_over_githubs_limit_is_refused():
@@ -331,6 +353,12 @@ def test_one_past_githubs_bound_is_refused_before_any_process(
     assert "nothing was created" in err
 
 
+#: How each of the scaffold's own refusals begins its remediation: a dry
+#: run refuses what the real run would.
+SCAFFOLD_NOTHING_MADE = ("Remediation: nothing was created, and `--dry-run` "
+                         "refuses the same.")
+
+
 def test_a_derived_id_is_named_as_derived_and_mended_with_an_id(
         scaffold, no_process, capsys):
     err = refused_plan(scaffold, capsys, "--project", a_name(ID_MAX + 1))
@@ -338,9 +366,9 @@ def test_a_derived_id_is_named_as_derived_and_mended_with_an_id(
         f"{TOPIC_TOO_LONG}: --id (not given, so --project lowercased) is "
         "abbbbbbbbbbb...bbbbbbbbbbbb, 40 characters, "), err
     assert err.endswith(
-        "Pass an explicit --id of at most 39 characters: the id need not be "
-        "--project lowercased, and --project, which names the three "
-        "repositories, stays as it is.\n"), err
+        f"\n{SCAFFOLD_NOTHING_MADE} Pass an explicit --id of at most 39 "
+        "characters: the id need not be --project lowercased, and --project, "
+        "which names the three repositories, stays as it is.\n"), err
 
 
 def test_an_empty_id_is_named_as_empty(scaffold, no_process, capsys):
@@ -356,7 +384,19 @@ def test_a_passed_id_is_named_as_passed(scaffold, no_process, capsys):
     err = refused_plan(scaffold, capsys, "--project", "Atlas", "--id",
                        an_id(ID_MAX + 1))
     assert err.startswith(f"{TOPIC_TOO_LONG}: --id is aaaa"), err
-    assert err.endswith("Pass a shorter --id, of at most 39 characters.\n")
+    assert err.endswith(f"\n{SCAFFOLD_NOTHING_MADE} Pass a shorter --id, of "
+                        "at most 39 characters.\n"), err
+
+
+def test_an_organisation_is_mended_as_github_spells_it(scaffold, no_process,
+                                                       capsys):
+    err = refused_plan(scaffold, capsys, *EDGES["org"][1])
+    assert err.startswith(f"{ORG_TOO_LONG}: --org is oooo"), err
+    assert err.endswith(
+        f"\n{SCAFFOLD_NOTHING_MADE} Pass --org as GitHub spells the "
+        "organisation, the `<org>` of `https://github.com/<org>`: GitHub "
+        "gives no user or organisation a name of more than 39 "
+        "characters.\n"), err
 
 
 def test_a_long_name_with_a_short_id_still_plans(scaffold, no_process,
@@ -601,25 +641,49 @@ def assert_no_leg(github: Path, org: str, project: str) -> None:
         assert not (github / org / f"{project}-{leg}.git").exists(), leg
 
 
-#: How a refusal says that `execute` made nothing: the name's is the disk's
-#: sentence, which the scaffold shares; the other two are `execute`'s own.
+#: `execute`'s own two remediations, word for word: neither is a leg's.
 NO_REPOSITORY = "Remediation: no repository was created."
-NOTHING = "Remediation: nothing was created."
+TOPIC_REMEDY = (
+    f"{NO_REPOSITORY} Fix `id:` in the plan, or re-run `plan` with an "
+    "explicit --id, of at most 39 characters: the id need not be the "
+    "project's name lowercased, and the name, which the assembly root "
+    "already has, stays as it is.")
+ORG_REMEDY = (
+    f"{NO_REPOSITORY} Fix `org:` in the plan, or re-run `plan` with --org, as "
+    "GitHub spells the organisation, the `<org>` of "
+    "`https://github.com/<org>`: GitHub gives no user or organisation a name "
+    "of more than 39 characters.")
+
+
+def renamed_first(repository: str) -> str:
+    """`adopt-name-too-long`'s remediation where a leg GitHub will not
+    create is named after the assembly root, which on GitHub is the source
+    itself: GitHub's numbers, then `_rename_first`'s words, as `adopt-bad-id`
+    says them. "Use a shorter --project" planned another repository."""
+    return ("Remediation: nothing was created. The legs are named "
+            "`<Project>-spec` and `<Project>-code`, and --project is the "
+            "source's own name, which must be at most 95 characters: "
+            f"{GITHUB_LIMITS_SAID} {repository} {RENAME_FIRST}")
+
 
 #: `(plan flags, the organisation, the project, the refusal, its
-#: remediation's first sentence)`: one past each bound, each refused by
-#: `execute` before a `gh` call or a leg.
+#: remediation)`: one past each bound, each refused by `execute` before a
+#: `gh` call or a leg. The source is named on GitHub with 96 and with 100
+#: characters, both names GitHub gives a repository.
 ADOPT_OVER = {
     "id": (("--id", an_id(ID_MAX + 1)), ORG, NORTHWIND,
-           "REFUSED adopt-topic-too-long: ", NO_REPOSITORY),
+           "REFUSED adopt-topic-too-long: ", TOPIC_REMEDY),
     "derived-id": (("--project", a_name(ID_MAX + 1)), ORG,
                    a_name(ID_MAX + 1), "REFUSED adopt-topic-too-long: ",
-                   NO_REPOSITORY),
+                   TOPIC_REMEDY),
     "project": (("--project", a_name(PROJECT_MAX + 1), "--id", "atl"), ORG,
                 a_name(PROJECT_MAX + 1), "REFUSED adopt-name-too-long: ",
-                NOTHING),
+                renamed_first(f"{ORG}/{a_name(PROJECT_MAX + 1)}")),
+    "project-100": (("--project", a_name(NAME_MAX), "--id", "atl"), ORG,
+                    a_name(NAME_MAX), "REFUSED adopt-name-too-long: ",
+                    renamed_first(f"{ORG}/{a_name(NAME_MAX)}")),
     "org": (("--org", an_org(OWNER_MAX + 1)), an_org(OWNER_MAX + 1),
-            NORTHWIND, "REFUSED adopt-org-too-long: ", NO_REPOSITORY),
+            NORTHWIND, "REFUSED adopt-org-too-long: ", ORG_REMEDY),
 }
 
 
@@ -657,28 +721,117 @@ def test_executes_topic_refusal_names_the_id_by_where_it_came_from(
     assert caught.value.code == "adopt-topic-too-long"
     assert caught.value.detail.startswith(
         f"{path}: {named} is abbbbbbbbbbb...bbbbbbbbbbbb, 40 characters, ")
-    assert caught.value.remediation.startswith(
-        "Remediation: no repository was created. Fix `id:` in the plan")
+    assert caught.value.remediation == TOPIC_REMEDY
+
+
+class _Plan:
+    """What `_repository_urls` reads of a plan: its `org:` and its path."""
+    path = Path("adoption-plan.yaml")
+
+    @staticmethod
+    def get(key, default=None):
+        return {"org": ORG}.get(key, default)
+
+
+def names_refused(adopter, names: dict, local_remote_dir=None):
+    """`adopt-name-too-long` as `execute` refuses `names`, in process."""
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._repository_urls(
+            SimpleNamespace(local_remote_dir=local_remote_dir), _Plan(),
+            names, None)
+    assert caught.value.code == "adopt-name-too-long"
+    return caught.value
+
+
+def names_of(project: str, **legs) -> dict:
+    return {"assembly": project, "spec": legs.get("spec", f"{project}-spec"),
+            "code": legs.get("code", f"{project}-code")}
+
+
+def test_a_leg_named_after_the_source_is_mended_by_renaming_it(adopter):
+    caught = names_refused(adopter, names_of(a_name(NAME_MAX)))
+    assert caught.remediation == renamed_first(f"{ORG}/{a_name(NAME_MAX)}")
+
+
+def test_a_leg_the_plan_names_otherwise_keeps_its_remediation(adopter):
+    """A leg edited in the plan to a name of its own is not the source's
+    name: the remediation is the one it had."""
+    caught = names_refused(adopter, names_of(
+        NORTHWIND, spec=f"{a_name(PROJECT_MAX + 1)}-spec"))
+    assert caught.remediation.startswith(
+        "Remediation: nothing was created. Use a shorter --project: ")
+    assert caught.remediation.endswith(GITHUB_LIMITS_SAID)
+
+
+def test_the_disk_alone_keeps_its_remediation_under_a_local_remote_dir(
+        adopter, tmp_path):
+    """A bare `<247>-spec.git` is 256 bytes: the disk's limit, and its
+    remediation word for word, as before #838."""
+    caught = names_refused(adopter, names_of(a_name(247)),
+                           tmp_path / "remotes")
+    assert caught.remediation == DISK_REMEDY
+
+
+class _WithoutYes:
+    """`subprocess` as `github_run` sees it, but `execute` is run without
+    `--yes`, on the stdin `github_run` gives it, which is not a terminal:
+    `_confirm` then refuses `adopt-unconfirmed`, as nobody can be asked."""
+
+    def __getattr__(self, name):
+        return getattr(subprocess, name)
+
+    @staticmethod
+    def run(argv, *args, **kwargs):
+        return subprocess.run([arg for arg in argv if arg != "--yes"], *args,
+                              **kwargs)
+
+
+def refusals(stderr: str) -> list:
+    """The code of each `REFUSED` line, in order."""
+    return [line.split(":", 1)[0] for line in stderr.splitlines()
+            if line.startswith("REFUSED ")]
 
 
 @WINDOWS_SKIP
 @needs_filter_repo
-@pytest.mark.parametrize("case", ADOPT_OVER)
-def test_execute_refuses_what_github_will_not_take_before_a_leg(tmp_path,
-                                                                case):
+@pytest.mark.parametrize("case, confirmed", [
+    *(pytest.param(case, True, id=case) for case in ADOPT_OVER),
+    pytest.param("id", False, id="id-unconfirmed"),
+    pytest.param("org", False, id="org-unconfirmed"),
+])
+def test_execute_refuses_what_github_will_not_take_before_a_leg(
+        tmp_path, monkeypatch, case, confirmed):
     """On main an id over 39 characters adopted, pushed both legs and the
     split, and ended at the topic, exit 2 (`The split IS pushed`); a leg
     name over 100 or an organisation over 39 ended at the first `gh repo
-    create`."""
+    create`. Unconfirmed, without `--yes` where nobody can be asked, the
+    refusal is still GitHub's limit: it comes before `_confirm`."""
     flags, org, project, refused, made = ADOPT_OVER[case]
+    if not confirmed:
+        monkeypatch.setattr(test_adopt_github_exits, "subprocess",
+                            _WithoutYes())
     result, github = github_run(tmp_path, "", plan_flags=flags,
                                 before_plan=a_root_named(org, project))
     assert result.returncode == 2, result.stderr + result.stdout
-    assert refused in result.stderr, result.stderr
+    assert refusals(result.stderr) == [refused.rstrip(": ")], result.stderr
     assert gh_calls(github) == []
     assert_no_leg(github, org, project)
     assert SPLIT_BRANCH not in heads(github / org / f"{project}.git")
-    assert f"\n{made} " in result.stderr, result.stderr
+    assert f"\n{made}\n" in result.stderr, result.stderr
+
+
+@WINDOWS_SKIP
+@needs_filter_repo
+def test_without_yes_a_plan_github_takes_is_unconfirmed(tmp_path,
+                                                        monkeypatch):
+    """The control: the run `_WithoutYes` makes reaches `_confirm`, which
+    refuses, so a refusal above came before it."""
+    monkeypatch.setattr(test_adopt_github_exits, "subprocess", _WithoutYes())
+    result, github = github_run(tmp_path, "")
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert refusals(result.stderr) == ["REFUSED adopt-unconfirmed"]
+    assert gh_calls(github) == []
+    assert_no_leg(github, ORG, NORTHWIND)
 
 
 #: `(plan flags, the organisation, the project)`: at each bound, adopted to
