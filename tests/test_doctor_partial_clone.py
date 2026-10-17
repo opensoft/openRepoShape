@@ -41,7 +41,8 @@ import pytest
 from conftest import FILE_PROTOCOL, git, load_without_bytecode, run_script
 from test_shape_doctor import (  # noqa: F401
     UPSTREAM_TARGET, doctor, doctor_module, pasted, project, rows_of,
-    run_pasted, scaffolded_here, standard, standard_ahead, verdict_line,
+    run_pasted, scaffolded_here, standard, standard_ahead,
+    standard_of_another_history, verdict_line,
 )
 
 #: The doctor's `error` for a partial clone that lacks what the comparison
@@ -140,18 +141,22 @@ def test_a_partial_clone_behind_its_pin_cannot_answer_and_fetches_nothing(
 def test_the_row_names_the_commit_short_and_the_fetch_that_ends_it(
         moved, project, tmp_path):
     """What the row says of the clone it could not read: the pinned commit,
-    how many objects it lacks there, the promisor remote, and a NEXT that
-    is that remote's whole fetch, never `fetch --all`, which keeps the
-    clone's filter and brings in no blob."""
+    how many objects it lacks there at least -- a floor, since a missing
+    tree hides what is under it (#754) -- the promisor remote, and a NEXT
+    that fetches every object at that commit from it, never `fetch --all`,
+    which keeps the clone's filter and brings in no blob."""
     clone = partial_clone_of(moved["ahead"], tmp_path / "partial")
     row = currency_of(doctor(clone, project, "--json"))
     assert row["detail"] == {
         "error": PARTIAL, "environment": True, "pinned": moved["c1"],
         "standard": moved["c2"], "remote": "origin",
         "lacking": {moved["c1"]: 1}}, row
+    assert row["reason"].endswith(
+        f"it lacks at least 1 object at the pinned commit "
+        f"{moved['c1'][:12]}"), row["reason"]
     assert pasted(row["next"]) == [
         "git", "-C", str(clone.resolve()), "fetch", "--refetch",
-        "--no-filter", "origin"]
+        "--no-filter", "origin", moved["c1"]]
     assert row["why"].startswith("this checkout of the standard is a "
                                  "partial clone"), row["why"]
 
@@ -204,6 +209,101 @@ def test_the_commit_head_names_is_asked_too(moved, project, tmp_path):
     result, before, after = doctored(clone, project)
     assert currency_of(result)["detail"]["lacking"] == {moved["c2"]: 1}
     assert after == before, "the doctor fetched"
+
+
+def holds(clone: Path, commit: str) -> bool:
+    """Whether `clone` holds `commit`, asked of git without fetching:
+    `rev-list --missing=print` refuses a commit it does not hold."""
+    return subprocess.run(
+        ["git", "rev-list", "--objects", "--no-walk", "--missing=print",
+         commit], cwd=str(clone), capture_output=True,
+        check=False).returncode == 0
+
+
+@pytest.fixture
+def elsewhere(standard, moved, tmp_path) -> dict:
+    """A standard whose `main` is a history of its own, `S`, that holds C1,
+    the commit the project is pinned at, on another branch only, `pinned`.
+    Its `main` holds the same tools and templates, so the doctor runs from
+    a clone of it as from the standard."""
+    stranger = standard_of_another_history(standard, tmp_path)
+    git(*FILE_PROTOCOL, "fetch", "-q", str(moved["ahead"]),
+        f"{moved['c1']}:refs/heads/pinned", cwd=stranger)
+    git("config", "uploadpack.allowFilter", "true", cwd=stranger)
+    return {"stranger": stranger, "c1": moved["c1"]}
+
+
+@pytest.fixture
+def single_branch(elsewhere, tmp_path) -> Path:
+    """A `--single-branch` partial clone of `elsewhere`'s `main`: it does
+    not hold C1 at all, which only another branch has (#754)."""
+    clone = partial_clone_of(elsewhere["stranger"], tmp_path / "partial",
+                             "blob:none", "--single-branch", "--branch",
+                             "main")
+    assert not holds(clone, elsewhere["c1"]), "the clone holds C1"
+    return clone
+
+
+def test_a_partial_clone_without_the_pinned_commit_cannot_answer(
+        elsewhere, single_branch, project):
+    """A partial clone that does not hold the pinned commit at all (#754
+    S1): `objects_lacking` is None there, which no test reached, and a
+    mutant reading it as "lacks nothing" fetched six times and answered.
+    CANNOT ANSWER, exit 3, `lacking == {C1: None}`, the `why` says the
+    commit is not in the clone, and the clone still does not hold it."""
+    result = doctor(single_branch, project, "--json")
+    assert result.returncode == 3, result.stdout + result.stderr
+    row = currency_of(result)
+    assert row["detail"]["lacking"] == {elsewhere["c1"]: None}, row
+    assert (f"the pinned commit {elsewhere['c1'][:12]} is not in this "
+            "clone at all") in row["why"], row["why"]
+    assert not holds(single_branch, elsewhere["c1"]), "the doctor fetched"
+
+
+def run_the_next_and_ask_again(clone: Path, project: Path) -> dict:
+    """The row's NEXT run as a person pastes it, then the `shape currency`
+    row the doctor gives after it."""
+    run_pasted(currency_of(doctor(clone, project, "--json"))["next"])
+    return currency_of(doctor(clone, project, "--json"))
+
+
+def test_the_next_fetches_a_pinned_commit_only_another_branch_holds(
+        elsewhere, single_branch, project):
+    """The NEXT names the commit by id (#754 S2): fetching the clone's one
+    branch again left it without C1, and the row printed the same NEXT. Run
+    as printed, the clone holds C1 and the doctor answers."""
+    again = run_the_next_and_ask_again(single_branch, project)
+    assert again["detail"].get("error") != PARTIAL, again
+
+
+@pytest.fixture
+def two_promisors(elsewhere, single_branch, moved) -> Path:
+    """`single_branch`'s partial clone of `elsewhere`'s `main`, `origin`,
+    with the standard one commit on as a second promisor remote,
+    `second`, fetched with the same filter: it holds C1's commit, on
+    `second`'s branches only, and not C1's blobs that `main` does not
+    share."""
+    clone = single_branch
+    git("remote", "add", "second", moved["ahead"].as_uri(), cwd=clone)
+    git("config", "remote.second.promisor", "true", cwd=clone)
+    git("config", "remote.second.partialclonefilter", "blob:none",
+        cwd=clone)
+    git(*FILE_PROTOCOL, "fetch", "-q", "second", cwd=clone)
+    assert holds(clone, elsewhere["c1"]), "the clone lacks C1's commit"
+    return clone
+
+
+def test_the_next_names_the_promisor_remote_that_holds_the_commit(
+        elsewhere, two_promisors, project):
+    """Two promisor remotes, the pinned commit on the second's branches
+    only (#754 S2): the NEXT named the first, `origin`, which exits 0 and
+    brings in nothing at C1, so the row came back the same. It names
+    `second`, and run as printed, the doctor answers."""
+    row = currency_of(doctor(two_promisors, project, "--json"))
+    assert pasted(row["next"])[-2:] == ["second", elsewhere["c1"]], \
+        row["next"]
+    again = run_the_next_and_ask_again(two_promisors, project)
+    assert again["detail"].get("error") != PARTIAL, again
 
 
 def test_promisor_false_alone_is_a_read_that_fails_never_a_fetch_or_both(

@@ -4522,6 +4522,12 @@ def objects_lacking(shape: Path, commit: str) -> int | None:
     `bad object` there, exit 128, and None, which `partial_clone_row`
     counts as lacking: `update-shape.py`'s first read of that commit, its
     `rev-parse`, fetches it (measured with git 2.43).
+
+    A FLOOR, NOT A COUNT, WHERE A TREE IS MISSING (#754). `rev-list` cannot
+    walk into a tree it does not hold, so a `--filter=tree:0` clone's
+    missing root tree is one `?<id>` with everything under it uncounted,
+    and the id alone does not say it was a tree. So the row says "at
+    least" of every count.
     """
     listed = git_answer(["rev-list", "--objects", "--no-walk",
                          "--missing=print", commit], shape, binary=True)
@@ -4567,12 +4573,22 @@ def partial_clone_row(ctx: Context, pinned: str) -> Row | None:
     THAT ROW'S, MADE TO FIT: there, the fetch a person runs to put in this
     checkout what it lacks. Here `fetch --all` would put in no blob, since
     a promisor remote's fetch keeps its `partialclonefilter`, so the NEXT
-    is `fetch --refetch --no-filter` from the remote a read would fetch
-    from: measured with git 2.43, it leaves the clone lacking nothing and
-    its config as it was, and the doctor run again answers. It is the
-    person's fetch, never this doctor's, and the `why` names the other way,
-    a full clone of the standard, as the precedent's names a clone that
-    has the commit.
+    is `fetch --refetch --no-filter`: measured with git 2.43, it leaves the
+    clone lacking nothing at what it fetches and its config as it was, and
+    the doctor run again answers. It is the person's fetch, never this
+    doctor's, and the `why` names the other way, a full clone of the
+    standard, as the precedent's names a clone that has the commit.
+    `--refetch` needs git 2.36 or later, and the `why` says so.
+
+    FROM THE REMOTE THAT HOLDS IT, AND OF THE COMMITS IT LACKS (#754). The
+    NEXT fetched the first promisor remote whole, and looped where that
+    remote's branches do not hold the pinned commit: with two promisor
+    remotes and the commit on the second's, and in a `--single-branch`
+    clone whose pin is on another branch, which then still does not hold
+    it. So it names each commit lacked, by id, and fetches it from the
+    remote `remote_holding` finds holding them; where none does -- always
+    for a commit the clone does not hold at all, which the `why` says --
+    from the first promisor remote, and the `why` names every one.
     """
     remotes = promisor_remotes(ctx.shape)
     if not remotes:
@@ -4584,29 +4600,70 @@ def partial_clone_row(ctx: Context, pinned: str) -> Row | None:
                if count != 0}
     if not lacking:
         return None
-    said = []
-    for commit, count in lacking.items():
-        which = ("the pinned commit" if commit == pinned
-                 else "this standard's commit")
-        said.append(f"git cannot list {which} {commit[:12]} there"
-                    if count is None else
-                    f"it lacks {count} object{'' if count == 1 else 's'} "
-                    f"at {which} {commit[:12]}")
-    remote = remotes[0]
+    def which(commit: str) -> str:
+        return (f"the pinned commit {commit[:12]}" if commit == pinned
+                else f"this standard's commit {commit[:12]}")
+
+    said = [f"it does not hold {which(commit)} at all" if count is None
+            else f"it lacks at least {count} object"
+                 f"{'' if count == 1 else 's'} at {which(commit)}"
+            for commit, count in lacking.items()]
+    absent = [commit for commit, count in lacking.items() if count is None]
+    held = remote_holding(ctx.shape, remotes,
+                          [commit for commit in lacking
+                           if commit not in absent])
+    remote = held or remotes[0]
+    them = "it" if len(lacking) == 1 else "them"
+    whence = ([f"{' and '.join(which(commit) for commit in absent)} "
+               + ("is" if len(absent) == 1 else "are")
+               + " not in this clone at all"] if absent else [])
+    if held:
+        whence.append(f"{held}'s branches hold {them}, so fetch every "
+                      f"object at {them} from {held}")
+    else:
+        others = ("" if len(remotes) == 1 else
+                  f", or from whichever of {', '.join(remotes)} has {them}")
+        whence.append(f"no branch this clone tracks holds {them}, so fetch "
+                      f"{them} by id from {remote}{others}")
     return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                "the copies cannot be compared without fetching: this "
                "checkout of the standard is a partial clone, and "
                + " and ".join(said),
                f"git -C {quote_arg(ctx.shape)} fetch --refetch --no-filter "
-               f"{quote_arg(remote)}",
+               f"{quote_arg(remote)} " + " ".join(lacking),
                {"error": PARTIAL_CLONE_LACKS, "environment": True,
                 "pinned": pinned, "standard": standard, "remote": remote,
                 "lacking": lacking},
                why="this checkout of the standard is a partial clone, and "
-                   "a read of an object it lacks fetches it from "
-                   f"{remote}, which this doctor never does; fetch every "
-                   f"object {remote} holds, then run the doctor again, or "
-                   "run it from a full clone of the standard")
+                   "a read of an object it lacks fetches it from a promisor "
+                   "remote, which this doctor never does; "
+                   + "; ".join(whence)
+                   + " (--refetch needs git 2.36 or later), then run the "
+                   "doctor again, or run it from a full clone of the "
+                   "standard")
+
+
+def remote_holding(shape: Path, remotes: list, commits: list) -> str | None:
+    """The first of `remotes` whose branches here -- its tracking refs,
+    `refs/remotes/<name>/` -- hold every one of `commits`, or None where
+    none does or `commits` is empty (#754).
+
+    `for-each-ref --contains` reads commits alone, and a `--filter` clone
+    holds every commit a fetch brought, so it fetches nothing: measured with
+    git 2.43, no fetch in a trace2 log. It is never asked of a commit the
+    clone does not hold, which no branch here can hold and whose read would
+    fetch it: `partial_clone_row` passes only the commits `objects_lacking`
+    could list.
+    """
+    if not commits:
+        return None
+    for name in remotes:
+        if all(git_answer(["for-each-ref", "--count=1",
+                           "--format=%(refname)", f"--contains={commit}",
+                           f"refs/remotes/{name}/"], shape)
+               for commit in commits):
+            return name
+    return None
 
 
 def check_shape_currency(ctx: Context) -> Row:
