@@ -2586,7 +2586,8 @@ SHELL_BARE_POSIX = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")
 #: A word PowerShell reads as itself: `scripts/repo_shape.py`'s
 #: `SHELL_BARE_NT`. This file runs before any checkout of the standard
 #: exists, so it carries its own copy of the rule, and
-#: `tests/test_family_printed_quoting.py` holds the two to one answer.
+#: `tests/test_git_bash_dialect.py` holds the two to one answer on every
+#: host, as `tests/test_family_printed_quoting.py` does on this one.
 SHELL_BARE_NT = re.compile(r"[A-Za-z0-9_./:%+=\\-]+")
 
 

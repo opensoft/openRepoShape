@@ -34,9 +34,9 @@ WHAT THIS MODULE OWNS
   - `spelled` and `escape_unencodable_stdout` — how both roots'
     `bootstrap.py` print a person's text: what a terminal must not be handed
     raw is escaped, and a stdout that cannot encode it never raises (#391).
-  - `shell_quoted` and `shell_line` — how `scripts/family.py` and a holder's
-    `scripts/siblings.py` spell a path in a command a person pastes, so that
-    it reaches the command as ONE argument in `sh` or PowerShell (#486), and
+  - `shell_quoted` and `shell_line` — how `scripts/family.py` spells a path
+    in a command a person pastes, so that it reaches the command as ONE
+    argument in `sh` or PowerShell (#486), and
     `host_shell_dialect`, which of the two a line printed here is for: Git
     Bash on Windows gets `sh`'s (#711).
 

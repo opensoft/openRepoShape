@@ -22,8 +22,12 @@ unset in the real environment, which that `os` reads through. The real
 way the reader's shell reads it, `shlex.split` for `sh` and
 `powershell_words` for PowerShell, and must give back the words it was
 built from. `PYTHON` is decided at import, from this host's `os.name`, so
-the interpreter a line names is this host's; CI's `tests-git-bash` job is
-where a real Git Bash runs.
+the interpreter a line names is this host's.
+
+NO CI JOB RUNS THESE LINES UNDER A REAL GIT BASH. The `tests-git-bash` job
+(`.github/workflows/tests.yml`) runs only the launcher's and the
+installer's suites, started from PowerShell, and none of them asserts a
+line quoted for the host; this file's emulation is what holds the lines.
 """
 
 from __future__ import annotations
@@ -237,7 +241,9 @@ def doctor_lines(doctor, dialect: str, machine: str) -> dict:
     shape, root = WINDOWS_SHAPE, WINDOWS_ROOT
     python = doctor.python_command()
     source, target = shape / "templates" / "x.md", root / "x.md"
-    keep = doctor.checkout_notes("leg", [root / "spec"])
+    kept = root / ".git" / "modules" / "spec"
+    keep = doctor.checkout_notes("leg", [root / "spec"],
+                                 kept=[(kept, COMMIT, None)])
     lines = {
         "quote_arg": (doctor.quote_arg(root), [str(root)]),
         "restore_from_head": (
@@ -256,7 +262,8 @@ def doctor_lines(doctor, dialect: str, machine: str) -> dict:
         "checkout_notes": (
             re.search(r"run first (.*) with a name of your choice",
                       keep).group(1),
-            ["git", "-C", str(root / "spec"), "branch", "NAME"]),
+            ["git", "-C", str(root / "spec"), "branch", "NAME", "and",
+             "git", f"--git-dir={kept}", "branch", "NAME", COMMIT]),
         "copy_command": (
             doctor.copy_command(source, target),
             ["Copy-Item", "-LiteralPath", str(source), "-Destination",
@@ -315,3 +322,22 @@ def test_the_doctors_validator_line_sets_pythonpath_in_the_hosts_shell(
     else:
         assert shlex.split(printed) == ["env", f"PYTHONPATH={scripts}",
                                         *words], printed
+
+
+@pytest.mark.parametrize("host", sorted(HOSTS))
+def test_the_lane_trailer_is_spelled_by_the_lines_own_quoter(monkeypatch,
+                                                             doctor, host):
+    """`bump_leg_command`'s ` --trailer` is spelled by the quoter of the
+    line it ends, for the host's shell. `LANE_NAME_RE` refuses an
+    apostrophe, so every lane `lane_trailer` accepts reads alike in both
+    dialects (`'Lane: lane 2'`); a stand-in `lane_trailer_argument` hands
+    the quoter one, so a trailer quoted for a fixed shell is seen."""
+    dialect = as_host(monkeypatch, host, doctor.quote_arg,
+                      doctor.host_shell_dialect)
+    monkeypatch.setitem(
+        doctor.lane_trailer_command.__globals__, "lane_trailer_argument",
+        lambda quote: " --trailer " + quote("Lane: Dana's lane"))
+    printed = doctor.bump_leg_command(WINDOWS_SHAPE, WINDOWS_ROOT, "spec",
+                                      COMMIT)
+    assert reader(dialect)(printed)[-2:] == ["--trailer",
+                                             "Lane: Dana's lane"], printed

@@ -9582,9 +9582,10 @@ def test_the_scaffold_lines_quoting_is_the_asked_for_platforms_too():
     assert module.scaffold_command(WINDOWS_SHAPE_SPACED, "Atlas", "posix") == (
         r"'C:\Program Files\openRepoShape\setup.sh' "
         "--org <your-org> --project Atlas")
-    # NO PLATFORM IS STILL THE HOST, unchanged: `quote_arg(value, None)`
-    # resolves `os.name` exactly as `quote_arg(value, os.name)` does, so the
-    # line every real run prints is the one it printed before.
+    # NO PLATFORM IS STILL THE HOST: `quote_arg(value, None)` asks
+    # `host_shell_dialect` (#711), which answers `os.name` wherever `MSYSTEM`
+    # is unset, so off Git Bash the line every real run prints is the one it
+    # printed before.
     assert module.scaffold_command(WINDOWS_SHAPE, "Atlas") == (
         windows if os.name == "nt" else posix)
 
