@@ -48,7 +48,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
-from conftest import WINDOWS_SKIP, cloned_just_pushed, git, rmtree
+from conftest import (WINDOWS_SKIP, cloned_just_pushed, git, rmtree,
+                      submodule_update_through_git)
 from test_doctor_gitmodules_not_utf8 import listed_locale
 from test_shape_doctor import (  # noqa: F401
     FAMILY_MEMBER, FAMILY_NAME, GIT_IDENTITY, PROJECT, commit_all, doctor,
@@ -615,7 +616,7 @@ def test_the_git_line_does_not_cure_a_mount_git_cannot_read_a_head_in(
 
 
 def test_a_checkout_wins_over_a_lockstep_fact_and_a_rerun_names_the_other(
-        standard, project):
+        standard, project, scaffolded_here):
     """One leg a checkout cures (an empty mount) and one it does not (a
     gitlink that is not the pin): the line is the checkout, over the first
     leg only, and it says to run the doctor again. The re-run names the
@@ -629,8 +630,8 @@ def test_a_checkout_wins_over_a_lockstep_fact_and_a_rerun_names_the_other(
     ), first["next"]
     assert "doctor again" in why_of(first), why_of(first)
     # The fix, applied by hand (no sh needed): the empty leg is now cured.
-    git("-c", "protocol.file.allow=always", "submodule", "update", "--init",
-        "--recursive", "--", "code", cwd=project)
+    submodule_update_through_git(project, scaffolded_here["base"] / "remotes",
+                                 "--init", "--recursive", "--", "code")
     second = row_of(standard, project, "legs")
     assert second["status"] == "FINDING", second
     assert command_of(second) == pins_gate(module, standard, project, True), \
@@ -985,8 +986,9 @@ def test_an_empty_member_with_no_pin_is_still_a_checkout_first(
     assert command_of(row) == (
         f"git -C {module.quote_arg(root.resolve())} {UPDATE} -- "
         f"members/{FAMILY_MEMBER}"), row["next"]
-    git("-c", "protocol.file.allow=always", "submodule", "update", "--init",
-        "--recursive", "--", f"members/{FAMILY_MEMBER}", cwd=root)
+    submodule_update_through_git(root, holder["base"] / "remotes", "--init",
+                                 "--recursive", "--",
+                                 f"members/{FAMILY_MEMBER}")
     again = row_of(standard, root, "members")
     assert again["status"] == "FINDING", again
     assert "validate-family.py" in command_of(again), again["next"]
@@ -1048,12 +1050,14 @@ def detached_member(root: Path) -> Path:
     return member
 
 
-def with_its_own_legs(root: Path) -> Path:
+def with_its_own_legs(root: Path, holder: dict) -> Path:
     """`family.py add` does not recurse, so the fixture's member has empty
-    legs: fill them, as a recursive clone of the holder does. Each is then
-    detached at the commit the MEMBER records for it."""
-    git("-c", "protocol.file.allow=always", "submodule", "update", "--init",
-        "--recursive", "--", f"members/{FAMILY_MEMBER}", cwd=root)
+    legs: fill them, as a recursive clone of the holder does, from the
+    remotes the `holder` fixture made. Each is then detached at the commit
+    the MEMBER records for it."""
+    submodule_update_through_git(root, holder["base"] / "remotes", "--init",
+                                 "--recursive", "--",
+                                 f"members/{FAMILY_MEMBER}")
     return root / "members" / FAMILY_MEMBER
 
 
@@ -1239,11 +1243,11 @@ def test_413b_without_it_the_holders_bootstrap_leaves_the_commit_in_no_ref(
     assert commit in git("reflog", cwd=member).stdout
 
 
-def made_in_a_members_own_leg(root: Path) -> tuple[Path, str]:
+def made_in_a_members_own_leg(root: Path, holder: dict) -> tuple[Path, str]:
     """A commit in the member, so the row is red, and one in the member's
     own detached `spec` leg, which the row never reads: the leg and the
     second commit's sha."""
-    member = with_its_own_legs(root)
+    member = with_its_own_legs(root, holder)
     git("checkout", "-q", "--detach", "HEAD", cwd=member)
     commit_in(member, "work in the member")
     leg = member / "spec"
@@ -1257,7 +1261,7 @@ def test_413c_the_members_git_line_says_it_checks_out_each_members_legs(
     in general words, with the keep line to run in that leg first."""
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    made_in_a_members_own_leg(root)
+    made_in_a_members_own_leg(root, holder)
     module = doctor_module(standard)
     row = row_of(standard, root, "members")
     assert command_of(row) == (
@@ -1276,7 +1280,7 @@ def test_413c_the_leg_keep_line_keeps_a_members_leg_commit_through_the_paste(
         standard, holder, tmp_path):
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    leg, commit = made_in_a_members_own_leg(root)
+    leg, commit = made_in_a_members_own_leg(root, holder)
     module = doctor_module(standard)
     row = row_of(standard, root, "members")
     keep = re.search(r"git -C LEG branch NAME", why_of(row))
@@ -1295,7 +1299,7 @@ def test_413c_without_it_the_members_leg_commit_is_in_no_ref(
         standard, holder, tmp_path):
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    leg, commit = made_in_a_members_own_leg(root)
+    leg, commit = made_in_a_members_own_leg(root, holder)
     result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, root, "members")["status"] == "ok"
@@ -1651,7 +1655,10 @@ def test_414_3_there_the_bootstrap_cures_nothing_and_the_git_line_cures_one(
                    f"{module.quote_arg(tried / 'scripts' / 'bootstrap.py')} "
                    f"--root {module.quote_arg(tried)}", tmp_path / "boot")
     output = bootstrap.stdout + bootstrap.stderr
-    assert bootstrap.returncode == 0, output
+    # It cures nothing, and since #648 it says so and fails: git stopped
+    # at Ghost, whose section gives no url, before it checked out either.
+    assert bootstrap.returncode == 1, output
+    assert "git stopped at members/Ghost" in output, output
     assert "No url found" in output, output
     assert not any((tried / "members" / FAMILY_MEMBER).iterdir()), output
     result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
@@ -2231,7 +2238,7 @@ def test_an_emptied_members_own_leg_is_kept_through_its_repository(
     kept for the member keeps a commit made in its own `spec` leg."""
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    leg, commit = made_in_a_members_own_leg(root)
+    leg, commit = made_in_a_members_own_leg(root, holder)
     git("submodule", "deinit", "-q", "-f", "--", f"members/{FAMILY_MEMBER}",
         cwd=root)
     module = doctor_module(standard)
