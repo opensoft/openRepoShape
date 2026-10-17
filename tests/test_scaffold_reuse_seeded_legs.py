@@ -309,10 +309,13 @@ def test_a_leg_somebody_else_made_is_refused(tmp_path):
 #: `FAKE_GH_FULL` names it too (`org/name,...`), when its commit listing has
 #: one commit; it answers `repo create` and `repo edit` with success, answers
 #: `api orgs/<org>` with `FAKE_GH_PLAN` when that is set (the Free-plan hint
-#: asks it for `.plan.name`), answers `repo view` of each repository that
+#: asks it for `.plan.name`), and with `FAKE_GH_PLAN_ERROR` on stderr and
+#: exit 1 when that is, answers `repo view` of each repository that
 #: `FAKE_GH_VIEW_ERRORS` (JSON, `{"org/name": "stderr text"}`) names with that
 #: text and exit 1, known or not (a 401, where an unknown one is not-found),
-#: and logs every call.
+#: answers only `repo view --json visibility` of each that
+#: `FAKE_GH_VISIBILITY_ERRORS` names so (an `HTTP 502` after `--json name`
+#: found it), and logs every call.
 FAKE_GH = textwrap.dedent("""\
     #!/usr/bin/env python3
     import json
@@ -326,22 +329,30 @@ FAKE_GH = textwrap.dedent("""\
                  os.environ["FAKE_GH_REPOS"].split(",") if pair)
     FULL = os.environ.get("FAKE_GH_FULL", "").split(",")
     ERRORS = json.loads(os.environ.get("FAKE_GH_VIEW_ERRORS", "{}"))
+    UNSEEN = json.loads(os.environ.get("FAKE_GH_VISIBILITY_ERRORS", "{}"))
 
     if argv[:2] == ["repo", "view"]:
         repo = argv[2]
+        fields = (argv[argv.index("--json") + 1].split(",")
+                  if "--json" in argv else [])
+        if repo in UNSEEN and "visibility" in fields:
+            ERRORS[repo] = UNSEEN[repo]
         if repo in ERRORS:
             print(ERRORS[repo], file=sys.stderr)
             sys.exit(1)
         if repo not in KNOWN:
             print("GraphQL: Could not resolve to a Repository", file=sys.stderr)
             sys.exit(1)
-        fields = argv[argv.index("--json") + 1].split(",")
         out = {}
         if "name" in fields:
             out["name"] = repo.rsplit("/", 1)[-1]
         if "visibility" in fields:
             out["visibility"] = KNOWN[repo]
         print(json.dumps(out))
+    elif (argv[:1] == ["api"] and argv[1].startswith("orgs/")
+          and "FAKE_GH_PLAN_ERROR" in os.environ):
+        print(os.environ["FAKE_GH_PLAN_ERROR"], file=sys.stderr)
+        sys.exit(1)
     elif (argv[:1] == ["api"] and argv[1].startswith("orgs/")
           and "FAKE_GH_PLAN" in os.environ):
         print(os.environ["FAKE_GH_PLAN"])
@@ -357,13 +368,17 @@ FAKE_GH = textwrap.dedent("""\
 
 
 def fake_gh(tmp_path, repos: dict, full=(), plan: str | None = None,
-            view_errors: dict | None = None) -> tuple[dict, Path]:
+            view_errors: dict | None = None, *,
+            visibility_errors: dict | None = None,
+            plan_error: str | None = None) -> tuple[dict, Path]:
     """`FAKE_GH` first on PATH, knowing `repos` (`{name: VISIBILITY}`, each
     under `ORG`) and holding commits in each of `full`, naming `plan` as the
-    organisation's GitHub plan when one is given, and failing `repo view` of
-    each name in `view_errors` (`{name: stderr text}`, each under `ORG`) with
-    that text: the environment for the run, and the log of every call.
-    Nothing it answers reaches GitHub."""
+    organisation's GitHub plan when one is given, or failing that question
+    with the text `plan_error`, and failing `repo view` of each name in
+    `view_errors` (`{name: stderr text}`, each under `ORG`) with that text,
+    or only its `--json visibility` for each name in `visibility_errors`:
+    the environment for the run, and the log of every call. Nothing it
+    answers reaches GitHub."""
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir()
     gh = fakebin / "gh"
@@ -378,9 +393,13 @@ def fake_gh(tmp_path, repos: dict, full=(), plan: str | None = None,
            "FAKE_GH_FULL": ",".join(f"{ORG}/{name}" for name in full)}
     if plan is not None:
         env["FAKE_GH_PLAN"] = plan
-    if view_errors:
-        env["FAKE_GH_VIEW_ERRORS"] = json.dumps(
-            {f"{ORG}/{name}": text for name, text in view_errors.items()})
+    if plan_error is not None:
+        env["FAKE_GH_PLAN_ERROR"] = plan_error
+    for key, errors in (("FAKE_GH_VIEW_ERRORS", view_errors),
+                        ("FAKE_GH_VISIBILITY_ERRORS", visibility_errors)):
+        if errors:
+            env[key] = json.dumps(
+                {f"{ORG}/{name}": text for name, text in errors.items()})
     return env, log
 
 
