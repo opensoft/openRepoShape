@@ -354,24 +354,31 @@ def test_install_says_how_to_put_it_on_path(tmp_path):
 WINDOWS_BIN_DIR = "D:\\tools\\bin"
 WINDOWS_BIN_DIR_SLASH = "D:/tools/bin"
 
-#: The two spellings a person types, for a test to run over both. Git Bash
-#: takes `D:\tools\bin` and `D:/tools/bin` alike, and `--install` has an arm
-#: for each.
-BIN_DIR_SPELLINGS = pytest.mark.parametrize("spelling",
-                                            ["backslash", "slash"])
+#: The spellings a person types, for a test to run over each. Git Bash takes
+#: `D:\tools\bin` and `D:/tools/bin` alike, and `--install` has an arm for
+#: each; a drive letter is a letter in either case (#667).
+BIN_DIR_SPELLINGS = pytest.mark.parametrize(
+    "spelling", ["backslash", "slash", "lower-case"])
 
 
 def typed_bin_dir(bin_dir: Path, spelling: str) -> str:
     """`$OPENREPOSHAPE_BIN_DIR` as a person types it for Windows, in
-    `spelling`, "backslash" or "slash". Off Windows it is `D:\\tools\\bin`
-    or `D:/tools/bin`, which name no directory of their own. On Windows it
-    is `bin_dir` itself, a real drive path under the test's directory, with
-    `str` for the backslash and `as_posix` for the slash: a command placed
-    where it should not be then lands where the test can see it, and never
-    on the machine's own `D:` drive."""
+    `spelling`: "backslash", "slash", or "lower-case", a backslash path
+    whose drive letter is lower case. Off Windows it is `D:\\tools\\bin`,
+    `D:/tools/bin` or `d:\\tools\\bin`, which name no directory of their own.
+    On Windows it is `bin_dir` itself, a real drive path under the test's
+    directory, with `str` for the backslash and `as_posix` for the slash: a
+    command placed where it should not be then lands where the test can see
+    it, and never on the machine's own `D:` drive."""
     if os.name == "nt":
-        return bin_dir.as_posix() if spelling == "slash" else str(bin_dir)
-    return WINDOWS_BIN_DIR_SLASH if spelling == "slash" else WINDOWS_BIN_DIR
+        if spelling == "slash":
+            return bin_dir.as_posix()
+        typed = str(bin_dir)
+        return typed[0].lower() + typed[1:] if spelling == "lower-case" \
+            else typed
+    return {"slash": WINDOWS_BIN_DIR_SLASH,
+            "lower-case": WINDOWS_BIN_DIR.lower()}.get(spelling,
+                                                       WINDOWS_BIN_DIR)
 
 
 def fake_cygpath(directory: Path, typed: str, answer: str | None) -> None:
@@ -384,6 +391,25 @@ def fake_cygpath(directory: Path, typed: str, answer: str | None) -> None:
         f"printf '%s\\n' {shlex.quote(answer)} && exit 0\n")
     write_script(directory / "cygpath", f"#!/bin/sh\n{answers}exit 1\n")
     (directory / "cygpath").chmod(0o755)
+
+
+#: What `cygpath` does where a test builds a `$PATH` (#667): "spells" the
+#: value the way bash does, "fails", answers a drive spelling "again", or is
+#: not "there" at all.
+CYGPATH_STATES = ("spells", "fails", "again", "there-is-none")
+
+
+def put_cygpath(directory: Path, typed: str, state: str, spelled: str) -> None:
+    """A `cygpath` in `directory` in `state`: Git Bash's own where it
+    "spells" on Windows, a fake that answers `spelled` elsewhere."""
+    if state == "there-is-none":
+        return
+    if state == "spells" and os.name == "nt":
+        directory.mkdir(exist_ok=True)
+        put_on_path(directory, "cygpath", shutil.which("cygpath"))
+        return
+    fake_cygpath(directory, typed, {"spells": spelled, "fails": None,
+                                    "again": WINDOWS_BIN_DIR_SLASH}[state])
 
 
 @BIN_DIR_SPELLINGS
@@ -453,6 +479,183 @@ def test_a_windows_spelled_bin_dir_is_refused_where_no_cygpath_spells_it(
     assert "Nothing was placed. Set $OPENREPOSHAPE_BIN_DIR to the directory " \
         "as this shell spells it, then run this again." in said, said
     assert result.stdout == ""
+    assert [path.name for path in tmp_path.iterdir()] == ["machine-path"]
+
+
+# --- the PATH note quotes the directory it prints (#667) ---------------------
+
+#: Windows names no file with a `"` or a `\` in it.
+POSIX_NAME = pytest.mark.skipif(
+    os.name == "nt", reason="a Windows file name holds no \" or \\")
+
+#: One directory name per case, and the `export PATH` line `--install` prints
+#: for it, with `{d}` for the directory's parent. The lines are written out,
+#: not computed, because the launcher's own rule is what is being held:
+#: today's line byte for byte where double quotes are enough (a space and an
+#: apostrophe are), and single quotes, an apostrophe as `'\''`, where bash
+#: would still read a `"`, `$`, backquote or `\` between double quotes, or a
+#: `!` at an interactive prompt.
+PATH_NOTE_NAMES = [
+    pytest.param("plain", 'export PATH="{d}/plain:$PATH"', id="plain"),
+    pytest.param("two words", 'export PATH="{d}/two words:$PATH"',
+                 id="a-space"),
+    pytest.param("it's", 'export PATH="{d}/it\'s:$PATH"', id="an-apostrophe"),
+    pytest.param("a$b", "export PATH='{d}/a$b':\"$PATH\"", id="a-dollar"),
+    pytest.param("a`b`", "export PATH='{d}/a`b`':\"$PATH\"",
+                 id="a-backquote"),
+    pytest.param("a!b", "export PATH='{d}/a!b':\"$PATH\"", id="a-bang"),
+    pytest.param("it's $HOME", "export PATH='{d}/it'\\''s $HOME':\"$PATH\"",
+                 id="an-apostrophe-and-a-dollar"),
+    pytest.param("a'b'c!", "export PATH='{d}/a'\\''b'\\''c!':\"$PATH\"",
+                 id="two-apostrophes-and-a-bang"),
+    pytest.param('a"b', "export PATH='{d}/a\"b':\"$PATH\"",
+                 marks=POSIX_NAME, id="a-double-quote"),
+    pytest.param("a\\b", "export PATH='{d}/a\\b':\"$PATH\"",
+                 marks=POSIX_NAME, id="a-backslash"),
+    pytest.param("a\\", "export PATH='{d}/a\\':\"$PATH\"",
+                 marks=POSIX_NAME, id="a-trailing-backslash"),
+    pytest.param('a"b$HOME c', "export PATH='{d}/a\"b$HOME c':\"$PATH\"",
+                 marks=POSIX_NAME, id="the-issue-probe"),
+]
+
+
+def path_after(line: str) -> str:
+    """`$PATH` once bash has run `line` where it held `/sentinel`: the line
+    through `eval`, which reads it as a shell reads a pasted line. The line
+    travels in the environment and the script on stdin as bytes, which keep
+    a `"` and a `\\` whole on Windows."""
+    ran = subprocess.run(
+        [BASH, "-s"], capture_output=True, check=False,
+        input=b'PATH=/sentinel\neval "$LINE"\nprintf %s "$PATH"\n',
+        env=command_env(setup_sh=None, env={"LINE": line}))
+    assert ran.returncode == 0, ran.stderr.decode("utf-8", "replace")
+    return ran.stdout.decode("utf-8")
+
+
+@pytest.mark.parametrize("name, line", PATH_NOTE_NAMES)
+def test_the_path_note_is_a_line_that_does_what_it_says(tmp_path, name, line):
+    """`--install` prints `export PATH=…` for a directory that is not on
+    `$PATH`, and a person pastes it. It put the directory between double
+    quotes as it was, so `a"b$HOME c` printed `export PATH="…/a"b$HOME
+    c:$PATH"`, which does not parse, and `$HOME` or a backquote in a name
+    was run or read, not kept (#667). The printed line is the one written
+    out for that name, and bash, handed it, puts exactly that directory
+    ahead of the old `$PATH`: no more, no less, nothing expanded."""
+    parent = bash_path(tmp_path)
+    result = run_cmd("--install", home=tmp_path, cwd=tmp_path,
+                     env={"OPENREPOSHAPE_BIN_DIR": f"{parent}/{name}"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / name / "openRepoShape").is_file()
+    printed = [text for text in result.stdout.splitlines()
+               if text.startswith("    export PATH=")]
+    assert printed == ["    " + line.format(d=parent)], result.stdout
+    assert path_after(printed[0]) == f"{parent}/{name}:/sentinel"
+
+
+@pytest.mark.parametrize("name, line", PATH_NOTE_NAMES)
+def test_export_path_line_quotes_any_directory_for_bash(name, line):
+    """The same rule on the function alone, so a `"` or a `\\` is held on
+    Windows too, where no file can be named with one and the test above
+    skips them: the function is lifted out of the launcher and handed the
+    directory in the environment, as `set -euo pipefail` runs it there."""
+    directory = f"/srv/tools/{name}"
+    text = COMMAND.read_text(encoding="utf-8")
+    [function] = re.findall(r"^export_path_line\(\) \{\n.*?^\}\n", text,
+                            re.M | re.S)
+    ran = subprocess.run(
+        [BASH, "-s"], capture_output=True, check=False,
+        input=("set -euo pipefail\n" + function +
+               'export_path_line "$DIR"\n').encode("utf-8"),
+        env=command_env(setup_sh=None, env={"DIR": directory}))
+    assert ran.returncode == 0, ran.stderr.decode("utf-8", "replace")
+    assert ran.stdout.decode("utf-8") == line.format(d="/srv/tools")
+    assert path_after(ran.stdout.decode("utf-8")) == f"{directory}:/sentinel"
+
+
+@POSIX_NAME
+@pytest.mark.parametrize("name", ["a!b", "a$b", "plain"])
+def test_a_pasted_path_note_reaches_an_interactive_bash_as_printed(
+        tmp_path, name):
+    """A person pastes the line at a prompt, and an interactive bash reads
+    `!` inside double quotes as history (`event not found`), which a profile
+    file never does: so a directory holding one is single-quoted too. Run
+    through `bash -i`, the line sets `$PATH` to the directory and no
+    other."""
+    parent = bash_path(tmp_path)
+    result = run_cmd("--install", home=tmp_path, cwd=tmp_path,
+                     env={"OPENREPOSHAPE_BIN_DIR": f"{parent}/{name}"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    [line] = [text.strip() for text in result.stdout.splitlines()
+              if text.startswith("    export PATH=")]
+    reached = tmp_path / "reached"
+    script = f'PATH=/sentinel\n{line}\nprintf %s "$PATH" > "$OUT"\nexit\n'
+    subprocess.run(
+        [BASH, "--norc", "--noprofile", "-i"], capture_output=True,
+        check=False, input=script.encode("utf-8"), start_new_session=True,
+        env=command_env(setup_sh=None, env={
+            "OUT": str(reached), "HISTFILE": os.devnull}))
+    assert reached.read_text(encoding="utf-8") == f"{parent}/{name}:/sentinel"
+
+
+#: What `--install` refuses, before it places anything: a directory no line
+#: about `$PATH` can name, and what its refusal says. `{d}` is `tmp_path` as
+#: bash spells it. The newline's refusal never echoes the value.
+UNNAMEABLE_BIN_DIRS = [
+    pytest.param("{d}/a:b/bin", "holds a ':'", id="a-colon"),
+    pytest.param("{d}/bin:{d}/other", "holds a ':'", id="two-directories"),
+    pytest.param("D:tools", "holds a ':'", id="a-drive-relative-name"),
+    pytest.param("{d}/a\nforged/bin",
+                 "holds a newline", id="a-newline"),
+    pytest.param("D:\\tools\nforged\\bin",
+                 "holds a newline", id="a-drive-spelling-and-a-newline"),
+]
+
+
+@pytest.mark.parametrize("value, said", UNNAMEABLE_BIN_DIRS)
+def test_a_bin_dir_no_path_line_can_name_is_refused_before_it_places_anything(
+        tmp_path, value, said):
+    """A `:` splits a `$PATH` and a newline breaks the note's line in two, so
+    no `export PATH` line could name such a directory (#667): refused with
+    exit 2 beside the Windows spelling's refusal, before a file is placed or
+    a directory made, and saying what to set instead. A newline is refused
+    first and the value is never echoed, so it cannot forge a line."""
+    result = run_cmd("--install", home=tmp_path, cwd=tmp_path, env={
+        "OPENREPOSHAPE_BIN_DIR": value.format(d=bash_path(tmp_path))})
+    assert result.returncode == 2, result.stdout + result.stderr
+    said_in_full = " ".join(result.stderr.split())
+    assert said in said_in_full, said_in_full
+    assert "Nothing was placed. Set $OPENREPOSHAPE_BIN_DIR to a directory " \
+        "without one, then run this again." in said_in_full, said_in_full
+    assert "forged" not in result.stderr
+    assert result.stdout == ""
+    assert list(tmp_path.iterdir()) == []
+
+
+@POSIX_NAME
+def test_the_default_directory_is_held_to_the_same_refusal(tmp_path):
+    """No variable at all, and a `$HOME` that holds a `:`: the directory is
+    `$HOME/.local/bin`, and it is refused the same, naming it."""
+    home = tmp_path / "a:b"
+    result = run_cmd("--install", home=home, cwd=tmp_path)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"--install would place this command in '{home}/.local/bin', " \
+        "which holds a ':'" in " ".join(result.stderr.split())
+    assert list(tmp_path.iterdir()) == []
+
+
+@POSIX_NAME
+def test_a_respelled_bin_dir_is_held_to_the_same_refusal(tmp_path):
+    """`cygpath` may answer a directory with a `:` of its own: the colon is
+    refused after the Windows spelling, not before it, or this one would
+    pass, and `D:\\tools\\bin` would be refused whatever `cygpath` said."""
+    env = machine_path(tmp_path, ())
+    env.pop("_log")
+    fake_cygpath(tmp_path / "machine-path", WINDOWS_BIN_DIR, "/d/a:b/bin")
+    result = run_cmd("--install", home=tmp_path, cwd=tmp_path,
+                     env={**env, "OPENREPOSHAPE_BIN_DIR": WINDOWS_BIN_DIR})
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "--install would place this command in '/d/a:b/bin', which " \
+        "holds a ':'" in " ".join(result.stderr.split())
     assert [path.name for path in tmp_path.iterdir()] == ["machine-path"]
 
 
