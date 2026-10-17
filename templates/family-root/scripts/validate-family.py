@@ -1117,8 +1117,8 @@ def _check_gitmodules_values(root: Path, members: list,
     whether the work tree's file gives one, and whether the work tree's
     or HEAD's does.
 
-    Git 2.43 dies reading such a file, before `git submodule update`
-    checks out any member, so `make bootstrap` checks none out either. In
+    Git dies reading such a file, before `git submodule update` checks
+    out any member, so `make bootstrap` checks none out either. In
     a plain clone the members modes refused `member-uninitialized` for the
     first row, naming that same update, and `--no-members` said `family
     ok`. The rules are `parse_config`'s in git's submodule-config.c
@@ -1148,41 +1148,66 @@ def _check_gitmodules_values(root: Path, members: list,
             and isinstance(row.get("project"), str) and row["project"]}
     put_back = present
     for name, key in dict.fromkeys([*in_work, *in_head]):
-        full = f"submodule.{name}.{key}"
-        values = dict.fromkeys([*in_work.get((name, key), []),
-                                *in_head.get((name, key), [])])
-        where = GIVEN_WHERE[(name, key) in in_work, (name, key) in in_head]
-        said = (f"{GITMODULES} gives `{spelled(full)}` " + " and ".join(
-            "no value" if value is None else f"the value `{spelled(value)}`"
-            for value in values) + f" {where}, and git dies reading a file "
-            "that does, before `git submodule update` checks out any "
-            "member, so neither that nor make bootstrap checks one out. Git "
-            f"takes {GIT_TAKES[key]} for that key.")
+        said = _value_said(name, key, in_work, in_head)
         if present and (name, key) not in in_work:
             report.finding("gitmodules-value-refused",
                            f"{said} Stage and commit the work tree's "
                            f"{GITMODULES}, which does not give it.")
             continue
-        lines = [] if put_back else [f"git checkout HEAD -- {GITMODULES}"]
-        lines.append(f"git config -f {GITMODULES} --unset-all "
-                     f"{shlex.quote(full)}")
         back = _written_back(name, key, here if present else there, rows)
-        if back is not None:
-            lines.append(f"git config -f {GITMODULES} {shlex.quote(full)} "
-                         f"{back}")
-        report.finding(
-            "gitmodules-value-refused",
-            f"{said} "
+        report.finding("gitmodules-value-refused", _value_taken_out(
+            said, f"submodule.{name}.{key}", back, put_back=put_back,
+            committed=(name, key) in in_head))
+        put_back = True
+    return bool(in_work), bool(in_work or in_head)
+
+
+def _value_said(name: str, key: str,
+                in_work: dict[tuple[str, str], list[str | None]],
+                in_head: dict[tuple[str, str], list[str | None]]) -> str:
+    """`gitmodules-value-refused` up to its remedy, for the key `key` of
+    the section `name` (#768): each value the work tree's file and HEAD's
+    give it, where, and what git takes. Where HEAD's alone gives one, the
+    file git reads here may not, so it says git dies on it in a clone,
+    which reads HEAD's."""
+    full = f"submodule.{name}.{key}"
+    values = dict.fromkeys([*in_work.get((name, key), []),
+                            *in_head.get((name, key), [])])
+    where = (name, key) in in_work, (name, key) in in_head
+    dies = ("so in a clone neither `git submodule update` nor make "
+            "bootstrap checks out any member" if where == (False, True)
+            else "before `git submodule update` checks out any member, so "
+            "neither that nor make bootstrap checks one out")
+    return (f"{GITMODULES} gives `{spelled(full)}` " + " and ".join(
+        "no value" if value is None else f"the value `{spelled(value)}`"
+        for value in values) + f" {GIVEN_WHERE[where]}, and git dies "
+        f"reading a file that does, {dies}. Git takes {GIT_TAKES[key]} for "
+        "that key.")
+
+
+def _value_taken_out(said: str, full: str, back: str | None, *,
+                     put_back: bool, committed: bool) -> str:
+    """`gitmodules-value-refused` whole, `said` (`_value_said`) and its
+    commands, one to a line, on the work tree's file (#768): HEAD's put
+    back first where the work tree has none and no finding before put it
+    back (`put_back` False), the key `full` taken out, and `back` written
+    in, where it is given, then the commit where HEAD's gives the value
+    (`committed`)."""
+    key = full.rpartition(".")[2]
+    lines = [] if put_back else [f"git checkout HEAD -- {GITMODULES}"]
+    lines.append(f"git config -f {GITMODULES} --unset-all "
+                 f"{shlex.quote(full)}")
+    if back is not None:
+        lines.append(f"git config -f {GITMODULES} {shlex.quote(full)} "
+                     f"{back}")
+    return (f"{said} "
             + ("" if put_back else f"The work tree holds no {GITMODULES}, "
                "so the first line below puts HEAD's back. ")
             + "Take the key out"
             + (f" and write its {key} back" if back is not None else "")
             + " by hand, in a POSIX shell"
-            + (f", then stage and commit {GITMODULES}"
-               if (name, key) in in_head else "")
+            + (f", then stage and commit {GITMODULES}" if committed else "")
             + ":" + "".join(f"\n    {line}" for line in lines))
-        put_back = True
-    return bool(in_work), bool(in_work or in_head)
 
 
 def _submodule_entries(listed: bytes) -> list[tuple[str, str, str | None]]:
@@ -1205,10 +1230,11 @@ def _submodule_entries(listed: bytes) -> list[tuple[str, str, str | None]]:
 def _values_refused(root: Path, entries: list[tuple[str, str, str | None]]
                     ) -> dict[tuple[str, str], list[str | None]]:
     """`{(name, key): [each value]}` of `entries` (`_submodule_entries`)
-    that git 2.43 dies on as it reads `.gitmodules` (#768), as
-    `parse_config` in its submodule-config.c reads a key: a `path`, `url`,
-    `update` or `ignore` with no value (`bad config line`), a `branch`
-    with none (it crashes), an `update` other than `none`, `checkout`,
+    that git dies on as it reads `.gitmodules` (#768), as `parse_config`
+    in its submodule-config.c reads a key: a `path`, `url`, `update` or
+    `ignore` with no value (`bad config line`), a `branch` with none (git
+    before 2.43.1 crashes on it, and a later one refuses it as it refuses
+    a `url` with none), an `update` other than `none`, `checkout`,
     `rebase` or `merge`, in that case, a `!command` included (`invalid
     value`), a `shallow` that is no boolean, and a `fetchrecursesubmodules`
     that is neither a boolean nor `on-demand`, as git itself reads a
@@ -1232,12 +1258,15 @@ def _values_refused(root: Path, entries: list[tuple[str, str, str | None]]
 def _git_takes_bool(root: Path, value: str) -> bool:
     """Whether git reads `value` as a boolean, asked of git itself (`git
     config --type=bool`), which reads `shallow` and
-    `fetchRecurseSubmodules` so (#768)."""
+    `fetchRecurseSubmodules` so (#768). It is asked as the `--default` of
+    a key looked up in an empty file, so no `probe.value` in any of the
+    person's own config scopes is read in its place."""
     with _git_runs(f"a value in {GITMODULES} could not be read as git "
                    "reads a boolean"):
         try:
-            git_out(["-c", f"probe.value={value}", "config", "--type=bool",
-                     "--get", "probe.value"], cwd=root)
+            git_out(["config", "--file", os.devnull, "--type=bool",
+                     f"--default={value}", "--get", "probe.value"],
+                    cwd=root)
         except Refusal:
             return False
     return True
