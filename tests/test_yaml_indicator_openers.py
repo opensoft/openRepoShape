@@ -33,8 +33,9 @@ asserted. NOT IN THESE ISSUES, and not asserted here: `?`, `:` or `-` with a
 space and more text as a VALUE (`k: - a`, `{x: ? a}`), which PyYAML refuses
 and `tests/test_yaml_flow_mappings.py` pins as each form's twin; a flow `?a`,
 which #252 keeps as text; `|` and `>`, block scalar headers; and a block KEY.
-The empty key of `- :` is one: it reads `[{'': None}]`, where PyYAML refuses
-it, and the fuzz leaves it out.
+The empty key of `- :` was one, left out of the fuzz while it read
+`[{'': None}]`; #715 refuses it, as PyYAML does, so the fuzz draws it again
+(`tests/test_yaml_reader_spaces.py` holds its rows).
 
 NO NETWORK AND NO GITHUB: strings, a temporary file, one scaffolded project
 over local bare remotes, and an import.
@@ -454,23 +455,19 @@ def test_the_projects_own_validator_refuses_it(project, old, new, words):
 
 #: The seeds, so a failure here is the same failure on every machine. The
 #: first is the writer's. Seeds 1 and 3 are the two on which the table below
-#: drew `- :` (`EMPTY_BLOCK_KEY`) and the test went red before it was left out;
-#: all three stay in, so that every draw of the table is held in place.
+#: draws `- :`, the empty block key, which was left out of the fuzz until #715
+#: refused it; all three stay in, so that every draw of the table is held in
+#: place.
 FUZZ_SEED = 392393
 FUZZ_SEEDS = [FUZZ_SEED, 1, 3]
-
-#: The empty block key, drawn by `:` as an item, and outside these issues: this
-#: reader reads `- :` as `[{'': None}]` where PyYAML refuses it.
-#: `fuzz_documents` leaves it out.
-EMPTY_BLOCK_KEY = "- :"
 
 #: Plain words that read as text in both readers: no number, bool or null.
 WORDS = ["a", "b", "ab", "x"]
 
 #: What a BLOCK value or item may open with, and the tails after it. A tail
 #: holds no space, ends in no `:`, and opens with no `&*!` (anchors and
-#: tags, refused by design). One draw is outside these issues and is dropped
-#: from the documents: `:` as an item, the empty block key (`EMPTY_BLOCK_KEY`).
+#: tags, refused by design). `:` as an item is the empty block key, `- :`,
+#: which #715 refuses.
 BLOCK_OPENERS = ["]", "}", ",", "@", "`", "%", "?", ":", "-", "a", "x"]
 BLOCK_TAILS = ["", "a", "ab", "]", "}", "[0]", ",b", "@", "%", "`", "?", "-",
                ":b", "#b", "]x", "a]"]
@@ -489,9 +486,8 @@ FLOW_VALUES = WORDS + ['"a"', "", "-", "-a", "@a", "`a", "%a", "?", ":",
 def fuzz_documents(seed: int) -> list[str]:
     """A few hundred small documents, drawn from the seed: block values and
     items, flow sequences and flow mappings, with every indicator these
-    issues name in every place it can open a scalar or an entry. The empty
-    block key `- :`, which the block table can draw and no issue names, is
-    dropped after the draw, so each seed's other documents are the same."""
+    issues name in every place it can open a scalar or an entry, and the
+    empty block key `- :`, which #715 refuses."""
     rng = random.Random(seed)
     docs: list[str] = []
     for _ in range(120):
@@ -506,7 +502,7 @@ def fuzz_documents(seed: int) -> list[str]:
         entries = [f"{rng.choice(FLOW_KEYS)}: {rng.choice(FLOW_VALUES)}"
                    for _ in range(rng.randint(1, 2))]
         docs.append("k: {" + ", ".join(entries) + rng.choice(["", ","]) + "}")
-    return sorted(set(docs) - {EMPTY_BLOCK_KEY})
+    return sorted(set(docs))
 
 
 #: The two refusals this reader makes of a document PyYAML reads, by design:
@@ -522,7 +518,6 @@ def test_the_fuzz_finds_no_document_read_where_pyyaml_refuses_or_misread(seed):
     the same; and where only PyYAML reads, the refusal is one this reader
     makes by design. Every disagreement is listed, not just the first."""
     docs = fuzz_documents(seed)
-    assert EMPTY_BLOCK_KEY not in docs
     assert len(docs) >= 300, "the fuzz must stay a few hundred documents"
     read_not_refused, misread, undesigned = [], [], []
     tally = {"both refuse": 0, "both read": 0, "by design": 0}

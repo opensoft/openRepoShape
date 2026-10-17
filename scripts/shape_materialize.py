@@ -4172,8 +4172,18 @@ def _leg_path_lines(templates: Path) -> tuple[tuple[str, str, str], ...]:
 def _read_back(tree: str, file: str, rendered: str):
     """What the project's reader gives back from one rendered `key: value`
     line, read on its own: its scalar reads the same there as inside its
-    block."""
-    read = parse_yaml(rendered + "\n")
+    block.
+
+    A LINE THE READER REFUSES GIVES BACK THE REFUSAL, its `YamlError`, as
+    `_reading_of` gives it for a manifest's line (#715). Uncaught, it was a
+    traceback where the tool owes a refusal of the value: `checked_value`
+    lets a leg path open with `@`, which opens no plain scalar (#393), so a
+    bare leg-path line holding `--spec-path @x` is a line the project's
+    reader refuses. All four such lines are quoted today (#259)."""
+    try:
+        read = parse_yaml(rendered + "\n")
+    except YamlError as exc:
+        return exc
     if not (isinstance(read, dict) and len(read) == 1):
         raise Refusal("template-leg-path-line",
                       f"templates/{tree}/{file}: `{rendered}` is not one "
@@ -4193,7 +4203,10 @@ def _listed(names: list[str]) -> str:
 def _read_as(value) -> str:
     """What the YAML reader made of a value, in words: `the number 1.5`.
     None is `NOT_TEXT_KINDS`' "no value at all", as for a leg path read out
-    of a plan as no value (#181)."""
+    of a plan as no value (#181). A refusal (`_read_back`) is "nothing at
+    all", in `_reading_in_words`' words (#715)."""
+    if isinstance(value, YamlError):
+        return f"nothing at all, because it refuses the line ({value})"
     if isinstance(value, bool):
         return f"the boolean {str(value).lower()}"
     if isinstance(value, (int, float)):
@@ -4213,7 +4226,10 @@ def _misread_reason(text: str) -> str | None:
     quoted one (#259) reads it back. The sentence quotes each line that
     misreads, as rendered. Asked after `checked_value`, whose alphabet holds
     no space, quote, backslash, bracket, brace, `#`, `:`, `&`, `*` or `!`, so
-    each line parses, bare or quoted, and a bare value is a plain scalar.
+    a quoted line always parses and a bare value is a plain scalar. The
+    alphabet holds `@`, though, which opens no plain scalar (#393): a bare
+    line of `@x` is refused, and the refusal is its reading (`_read_back`),
+    said as "nothing at all" (#715).
     """
     values = dict.fromkeys(LEG_PATH_PLACEHOLDERS, text)
     misread: dict[tuple[str, str], list[str]] = {}
