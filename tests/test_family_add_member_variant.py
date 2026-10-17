@@ -18,11 +18,13 @@ after #637") in place of the "committed `git mv`" of his "Refuse on every
 disk" ruling, since `git mv` to the row's path fails or misplaces the
 gitlink: `git rm -r --cached --ignore-unmatch` of the variant, `git
 update-index --add --cacheinfo 160000,<commit>,members/IRRS` at the commit
-the variant records, and a commit. Then, as the validator says, `git
-submodule update --init --recursive` where nothing is checked out at the
-row's path, an `mv` out of the holder of what a case-sensitive disk leaves at
-the variant, and nothing to do on macOS and Windows, where that directory is
-the row's own.
+the variant records, and a commit. Then, as the validator says, an `mv`
+out of the holder of what a case-sensitive disk leaves at the variant,
+guarded by two tests a POSIX shell runs so that it moves nothing where that
+directory is the row's own (macOS and Windows) or a checkout, which is
+deleted, or for a clone of its own moved, by hand; and last `git submodule
+update --init --recursive` where nothing is checked out at the row's path
+(#761).
 
 EVERY PRINTED COMMAND IS TYPED AS PRINTED (`typed_as_printed`), in each
 layout rv611b's review of #639 used, and the holder's gate then passes, the
@@ -68,7 +70,18 @@ OTHER_VARIANT = "Members/IRSS"
 REMOVE = f"git rm -r --cached --ignore-unmatch -- {VARIANT}"
 REMOVE_SPARSE = f"git rm -r --cached --sparse --ignore-unmatch -- {VARIANT}"
 SUBMODULE = "git submodule update --init --recursive"
-MOVE_OUT = f"mv -- {VARIANT} ../Members-{MEMBER}"
+
+
+def guarded(name: str = VARIANT, row: str = ROW) -> str:
+    """The closing `mv` of a directory left at `name`, the variant of
+    `row`'s path, guarded by the two tests a POSIX shell runs (#761, as
+    `validate-family.py` guards it, #681): it moves nothing where the two
+    names are one directory, nor where it holds a `.git` entry."""
+    return (f"[ {name} -ef {row} ] || [ -e {name}/.git ] || "
+            f"mv -- {name} ../{name.replace('/', '-')}")
+
+
+MOVE_OUT = guarded()
 
 
 def record(commit: str, row: str = ROW) -> str:
@@ -76,34 +89,91 @@ def record(commit: str, row: str = ROW) -> str:
     return f"git update-index --add --cacheinfo 160000,{commit},{row}"
 
 
-def moved_back(rows: dict, commit: bool = True,
-               sparse: bool = False) -> tuple[str, list[str]]:
+def point_back(row: str = ROW, name: str | None = None) -> str:
+    """The line that points the section `name` (named after `row`, as `git
+    submodule add` names one) back at `row` (#761)."""
+    return f"git config -f .gitmodules submodule.{name or row}.path {row}"
+
+
+def moved_back(rows: dict, commit: bool = True, sparse: bool = False,
+               sections: tuple = (), staged: dict | None = None,
+               forced: bool = False) -> tuple[str, list[str]]:
     """`(the part that moves each gitlink back, the closing parts)` of the
     remedy, for `rows`, `{row path: ([its variants], the commit named)}`;
-    `sparse` where a sparse checkout keeps a variant off disk."""
-    variants = sorted(name for names, _ in rows.values() for name in names)
+    `sparse` where a sparse checkout keeps a variant off disk; `sections`,
+    the rows whose section is pointed back (#761); `staged`, `{row path:
+    (the path its section gives, HEAD's commit)}` for a member whose
+    removal is staged (#761); `forced` where the removal takes `-f`
+    (#761)."""
+    staged = staged or {}
+    every = {**{row: (names, at) for row, (names, at) in rows.items()},
+             **{row: ([given], at) for row, (given, at) in staged.items()}}
+    variants = sorted(name for names, _ in every.values() for name in names)
+    row_of = {name: row for row, (names, _) in every.items()
+              for name in names}
     pairs = " and ".join(f"`{name}` for the row {row}"
                          for row, (names, _) in sorted(rows.items())
                          for name in sorted(names))
+    put = " and ".join(f"{row}, whose section gives `{given}`"
+                       for row, (given, _) in sorted(staged.items()))
     lines = " and ".join(f"`{record(at, row)}`"
-                         for row, (_, at) in sorted(rows.items()))
-    move = ("move each member's gitlink held only under another spelling of "
-            f"its row's path, {pairs}, to that path, at the commit it "
-            "records, in the index alone, which touches no file (`git rm -r "
-            f"--cached{' --sparse' if sparse else ''} --ignore-unmatch -- "
+                         for row, (_, at) in sorted(every.items()))
+    said = []
+    if pairs:
+        said.append("move each member's gitlink held only under another "
+                    f"spelling of its row's path, {pairs}, to that path, at "
+                    "the commit it records")
+    if put:
+        said.append("put back at its row's path each member's gitlink whose "
+                    "removal is staged though a section of .gitmodules gives "
+                    f"it another spelling, {put}, at the commit HEAD records")
+    pointed = " and ".join(f"`{point_back(row)}`" for row in sorted(sections))
+    move = (", and ".join(said) + ", in the index alone, which touches no "
+            "file"
+            + (", and point each section of .gitmodules that gives one of "
+               "them another spelling of its row's path, as a `git mv` of "
+               "its mount leaves it, at that path" if sections else "")
+            + f" (`git rm -r --cached{' --sparse' if sparse else ''}"
+            f"{' -f' if forced else ''} --ignore-unmatch -- "
             f"{' '.join(variants)}`, "
-            + (f"{NEEDS_GIT_2_34}, " if sparse else "") + f"then {lines})"
+            + (f"{NEEDS_GIT_2_34}, " if sparse else "")
+            + ("whose -f takes out a staged gitlink whose checkout has moved "
+               "on or holds a file git does not track, which git rm "
+               "otherwise refuses, and with --cached touches no file, "
+               if forced else "") + f"then {lines}"
+            + (f", then {pointed} and `git add -- .gitmodules`"
+               if sections else "") + ")"
             + (", and commit that" if commit else ""))
-    moved = " and ".join(f"`mv -- {name} ../{name.replace('/', '-')}`"
+    moved = " and ".join(f"`{guarded(name, row_of[name])}`"
                          for name in variants)
+    status = " or ".join(f"`git -C {name} status`" for name in variants)
+    unpushed = " or ".join(f"`git -C {name} log --oneline HEAD --branches "
+                           "--not --remotes`" for name in variants)
     return move, [
-        f"where nothing is checked out at {' or '.join(sorted(rows))}, as in "
-        f"a fresh clone, `{SUBMODULE}` then checks the member out there",
-        "on a case-sensitive disk, as Linux's usually is, a directory left "
-        f"at {' or '.join(variants)} stays there, untracked, and add refuses "
-        "it as family-members-dir-variant: move each one that is there out "
-        f"of the holder, {moved}",
-        "on macOS and Windows it is the row's own directory, so leave it"]
+        f"a directory left at {' or '.join(variants)} is the row's own where "
+        "the disk folds case, as macOS's and Windows' usually do and a Linux "
+        "mount can (WSL's /mnt/c)",
+        "where the disk holds the two apart it stays there, untracked, and "
+        "add refuses it as family-members-dir-variant: move each one that is "
+        f"there out of the holder, in a POSIX shell, {moved}, which moves "
+        "nothing where the two names are one directory or where it holds a "
+        ".git entry, a checkout",
+        "a checkout there that git submodule add or git mv made holds a .git "
+        "file naming its store by a path relative to it, which a move would "
+        "leave pointing nowhere: its commits are kept under this holder's "
+        ".git/modules/, in the directory its .git file names, whatever "
+        "becomes of the checkout, and only what is not committed is in the "
+        f"checkout alone ({status} shows it, except where a plain mv brought "
+        "the checkout to that path: git cannot open it there, so check its "
+        "files by hand), so delete such a checkout by hand once nothing only "
+        "it holds is needed, before the update below, which points a store "
+        "the row shares at the row's path",
+        "a checkout whose .git is a directory, a clone of its own, holds its "
+        f"commits there and nowhere else, and {unpushed} lists the ones not "
+        "pushed: move it out of the holder whole, by hand, rather than "
+        "delete it",
+        f"then, where nothing is checked out at {' or '.join(sorted(every))}, "
+        f"as in a fresh clone, `{SUBMODULE}` checks the member out there"]
 
 
 def remedy(commit: str) -> str:
@@ -138,30 +208,32 @@ def variant(root: Path, row: str = ROW, spelled: str = VARIANT,
     return commit
 
 
-def on_disk_as_named(root: Path, name: str) -> bool:
-    """Is `name` on disk in that very spelling, component by component?"""
-    here = root
-    for part in name.split("/"):
-        if not here.is_dir() or part not in os.listdir(here):
-            return False
-        here = here / part
-    return True
+def typed_in_sh(root: Path, command: str) -> None:
+    """`command` typed into a POSIX shell in `root`, as printed: exit 0."""
+    typed = subprocess.run(["sh", "-c", command], cwd=str(root),
+                           capture_output=True, check=False)
+    assert typed.returncode == 0, (command, typed.stderr)
 
 
-def typed_as_printed(root: Path, said: str) -> list[str]:
+def typed_as_printed(root: Path, said: str, by_hand=None) -> list[str]:
     """EVERY COMMAND `said` PRINTS, TYPED AS PRINTED, in its order, and the
     commit each part asks for, as `type_remedy` types #574's: `<new name>`
     filled in `renamed-N` for a `git mv` and `../moved-N` for a `mv`. Typed
     where its sentence says so, and only there: `git submodule update` where
-    nothing is checked out at the row's path, and an `mv` with nothing to
-    fill in where its source is on disk in that spelling and the disk does
-    not fold case (on macOS and Windows the text says to leave it). A local
-    member is cloned with `protocol.file.allow`, the suite's one concession
-    to bare repositories as origins. Returns what was typed."""
-    folds = disk_folds(root.parent)
+    nothing is checked out at the row's path, and a guarded `mv` (#761)
+    where its source is there, into a POSIX shell, which keeps a checkout and
+    the row's own directory in place. `by_hand`, where given, is what a
+    person does by hand where the text says to (#761), run after the last
+    such part. A local member is cloned with `protocol.file.allow`, the
+    suite's one concession to bare repositories as origins. Returns what was
+    typed."""
     typed: list[str] = []
     count = {"git": 0, "mv": 0}
-    for part in said.split(" on every disk. ", 1)[1].split("; "):
+    parts = said.split(" on every disk. ", 1)[1].split("; ")
+    last_by_hand = max((index for index, part in enumerate(parts)
+                        if "by hand" in part),
+                       default=None)
+    for index, part in enumerate(parts):
         for command in re.findall(r"`([^`]*)`", part):
             argv = shlex.split(command)
             if command == "git commit":
@@ -175,19 +247,21 @@ def typed_as_printed(root: Path, said: str) -> list[str]:
             elif "<new name>" in command:
                 tool = argv[0]
                 count[tool] += 1
-                argv[-1] = (f"renamed-{count['git']}" if tool == "git"
-                            else f"../moved-{count['mv']}")
+                argv = shlex.split(command.replace(
+                    "<new name>", f"renamed-{count['git']}" if tool == "git"
+                    else f"../moved-{count['mv']}"))
                 if tool == "git":
                     git(*argv[1:], cwd=root)
                 else:
                     os.rename(root / argv[2], root / argv[3])
                 command = shlex.join(argv)
-            elif argv[0] == "mv":
-                if folds or not on_disk_as_named(root, argv[2]):
+            elif argv[0] in ("mv", "["):
+                source = argv[1] if argv[0] == "[" else argv[2]
+                if not os.path.lexists(root / source):
                     continue
-                os.rename(root / argv[2], root / argv[3])
-            elif argv[0] == "git" and (" -- " in command
-                                       or argv[1] == "update-index"):
+                typed_in_sh(root, command)
+            elif argv[0] == "git" and (" -- " in command or argv[1] in (
+                    "update-index", "config")):
                 git(*argv[1:], cwd=root)
             else:
                 continue
@@ -196,6 +270,8 @@ def typed_as_printed(root: Path, said: str) -> list[str]:
                      part):
             git("commit", "-qm", "The remedy", cwd=root)
             typed.append("git commit")
+        if index == last_by_hand and by_hand is not None:
+            by_hand(root)
     return typed
 
 
@@ -252,16 +328,28 @@ def removal_staged(root: Path, remotes: Path, commit: str) -> None:
     git("rm", "-q", "--cached", "--", VARIANT, cwd=root)
 
 
+def clone_moved_out_by_hand(root: Path) -> None:
+    """What the text says of a clone of its own at the variant, done by
+    hand: the guarded `mv` moved nothing, since it holds a `.git` entry, and
+    the clone, whose `.git` is a directory, is moved out of the holder whole
+    (#761, as `validate-family.py` says it, #681)."""
+    assert (root / VARIANT / ".git").is_dir(), "premise: a clone of its own"
+    os.rename(root / VARIANT, root.parent / f"{MEMBER}-clone")
+
+
 #: `{layout: (how it is laid out after the move, whether it needs two
 #: directories differing only in case, where the refusal finds the gitlink,
-#: what is typed after the move and its commit)}`.
+#: what is typed after the move and its commit, what is done by hand)}`.
 LAYOUTS = {
-    "nothing on disk in that spelling": (nothing_there, False, IN_INDEX, []),
+    "nothing on disk in that spelling": (nothing_there, False, IN_INDEX, [],
+                                         None),
     "the only checkout at the variant": (checkout_at_the_variant, True,
-                                         IN_INDEX, [SUBMODULE, MOVE_OUT]),
-    "both directories": (both_directories, True, IN_INDEX, [MOVE_OUT]),
+                                         IN_INDEX, [MOVE_OUT, SUBMODULE],
+                                         clone_moved_out_by_hand),
+    "both directories": (both_directories, True, IN_INDEX, [MOVE_OUT],
+                         clone_moved_out_by_hand),
     "the removal staged, not committed": (removal_staged, False, HEAD_ONLY,
-                                          []),
+                                          [], None),
 }
 
 
@@ -274,8 +362,10 @@ def test_each_layout_moves_the_gitlink_back_as_printed(family, holder,
     remedy moves the member's gitlink back to its row's path, where #574's
     `git rm --cached`, `git mv` or `git commit` took it away. Typed as
     printed, the member is where its row says, at the commit it recorded,
-    the holder's gate passes, and the same `add` goes through."""
-    lay_out, two_spellings, where, after = LAYOUTS[layout]
+    the holder's gate passes, and the same `add` goes through. A clone of
+    its own at the variant is kept by the guarded `mv` and moved out by
+    hand, as the text says, before the update (#761)."""
+    lay_out, two_spellings, where, after, by_hand = LAYOUTS[layout]
     if two_spellings and disk_folds(tmp_path):
         pytest.skip("two directories differing only in case need a disk "
                     "that does not fold case")
@@ -285,7 +375,7 @@ def test_each_layout_moves_the_gitlink_back_as_printed(family, holder,
     assert refused_untouched(offline, holder, family["remotes"]) == said
     assert said == (DIR_VARIANT + f"{where}: {VARIANT_SHOWN}",
                     remedy(commit))
-    assert typed_as_printed(holder, said[1]) == [
+    assert typed_as_printed(holder, said[1], by_hand) == [
         REMOVE, record(commit), "git commit", *after]
     registered(holder, family["root"], commit)
     gate_passes(holder)
@@ -296,12 +386,12 @@ def test_a_fresh_clone_moves_the_gitlink_back_as_printed(family, holder,
                                                           offline, tmp_path):
     """A FRESH RECURSIVE CLONE of a holder whose HEAD records the gitlink
     only at `Members/IRRS`: the clone leaves an empty `Members/IRRS` and
-    nothing at the row's path. The same text; typed as printed, `git
-    submodule update` checks the member out at its row's path, the empty
-    directory leaves the holder on a case-sensitive disk (on macOS and
-    Windows it is the row's own, and stays), and the clone's gate passes.
-    The branch is pushed to the fixture's remote under a name no other test
-    uses."""
+    nothing at the row's path. The same text; typed as printed, the empty
+    directory leaves the holder on a case-sensitive disk by the guarded
+    `mv` (on macOS and Windows it is the row's own, and the shell's `-ef`
+    keeps it), `git submodule update` checks the member out at its row's
+    path, and the clone's gate passes. The branch is pushed to the
+    fixture's remote under a name no other test uses."""
     commit = variant(holder)
     remote = family["remotes"] / f"{NAME}.git"
     branch = "w646/fresh-clone"
@@ -312,8 +402,7 @@ def test_a_fresh_clone_moves_the_gitlink_back_as_printed(family, holder,
     said = refused_untouched(offline, clone, family["remotes"], "--dry-run")
     assert said == (in_the_index(VARIANT_SHOWN), remedy(commit))
     assert typed_as_printed(clone, said[1]) == [
-        REMOVE, record(commit), "git commit", SUBMODULE,
-        *([] if disk_folds(tmp_path) else [MOVE_OUT])]
+        REMOVE, record(commit), "git commit", MOVE_OUT, SUBMODULE]
     registered(clone, family["root"], commit)
     gate_passes(clone)
     added(offline, clone, family["remotes"])
@@ -346,7 +435,7 @@ def test_every_disk_gives_the_same_answer(family, holder, family_module,
     holder (`disk_as`), gives the one text the subprocess gives. The move
     reads the index and HEAD, never the disk, so the disk cannot change
     it."""
-    lay_out, two_spellings, where, _ = LAYOUTS[layout]
+    lay_out, two_spellings, where, _, _ = LAYOUTS[layout]
     if two_spellings and disk_folds(tmp_path):
         pytest.skip("two directories differing only in case need a disk "
                     "that does not fold case")
@@ -435,13 +524,14 @@ def members_renamed_by_hand(root: Path, remotes: Path) -> tuple:
 
 def head_only_and_on_disk(root: Path, remotes: Path) -> tuple:
     """HEAD alone holds the gitlink at the variant, and the member's only
-    checkout is there: the directory is the move's to name, never a second
-    time as untracked."""
+    checkout is there, a clone of its own: the directory is the move's to
+    name, never a second time as untracked, and it is moved out by hand
+    before the update (#761)."""
     commit = variant(root)
     git("rm", "-q", "--cached", "--", VARIANT, cwd=root)
     checkout_at_the_variant(root, remotes, commit)
     return (DIR_VARIANT + f"{HEAD_ONLY}: {VARIANT_SHOWN}", remedy(commit),
-            [REMOVE, record(commit), "git commit", SUBMODULE, MOVE_OUT],
+            [REMOVE, record(commit), "git commit", MOVE_OUT, SUBMODULE],
             commit)
 
 
@@ -515,17 +605,18 @@ def unmerged(root: Path, remotes: Path) -> tuple:
 
 #: `{state: (how it is made, from the holder and the remotes, returning
 #: (the refusal's two lines, what is typed, the member's commit), whether it
-#: needs two directories differing only in case)}`.
+#: needs two directories differing only in case, what is done by hand)}`.
 WITH_OTHERS = {
-    "beside a file under Members/": (beside_a_file, False),
-    "after a pending change in HEAD": (after_a_pending_change, False),
-    "with nothing left to commit": (nothing_to_commit, False),
-    "members/ renamed by hand": (members_renamed_by_hand, True),
-    "HEAD alone, the checkout at the variant": (head_only_and_on_disk, True),
+    "beside a file under Members/": (beside_a_file, False, None),
+    "after a pending change in HEAD": (after_a_pending_change, False, None),
+    "with nothing left to commit": (nothing_to_commit, False, None),
+    "members/ renamed by hand": (members_renamed_by_hand, True, None),
+    "HEAD alone, the checkout at the variant": (head_only_and_on_disk, True,
+                                                clone_moved_out_by_hand),
     "HEAD holding both, the row's removal staged": (head_holding_both,
-                                                    False),
-    "kept off disk by a sparse checkout": (kept_off_disk, False),
-    "unmerged, with nothing in progress": (unmerged, False),
+                                                    False, None),
+    "kept off disk by a sparse checkout": (kept_off_disk, False, None),
+    "unmerged, with nothing in progress": (unmerged, False, None),
 }
 
 
@@ -539,14 +630,14 @@ def test_with_the_other_remedies_each_runs_in_its_order(family, holder,
     make, then the disk, and the move back's closing sentences last. Typed
     as printed, in that order, the member is where its row says, the gate
     passes and the same `add` goes through."""
-    make, two_spellings = WITH_OTHERS[state]
+    make, two_spellings, by_hand = WITH_OTHERS[state]
     if two_spellings and disk_folds(tmp_path):
         pytest.skip("two directories differing only in case need a disk "
                     "that does not fold case")
     first, said, typed, commit = make(holder, family["remotes"])
     assert refused_untouched(offline, holder, family["remotes"]) == (first,
                                                                      said)
-    assert typed_as_printed(holder, said) == typed
+    assert typed_as_printed(holder, said, by_hand) == typed
     registered(holder, family["root"], commit)
     gate_passes(holder)
     added(offline, holder, family["remotes"])
@@ -688,7 +779,8 @@ def beside_a_file_at(path: str):
     """The variant's gitlink with a FILE at `path`, the row's path or under
     it, in the index: the move would replace the one, and stop on the other
     (`appears as both a file and as a directory`) once the variant was out
-    (#646's review, N3)."""
+    (#646's review, N3), so the file is set aside first, here out of the
+    index, since the disk holds the member's checkout there (#761)."""
     def make(root: Path) -> None:
         plant(root, "100644", path)
         plant(root, "160000", VARIANT)
@@ -712,32 +804,34 @@ def unmerged_file_ours(root: Path) -> None:
 
 
 #: `{state: (how it is made after the row's gitlink leaves the index, what
-#: `_members_spellings` gives the variant: where, target, remedy)}`. The
+#: `_members_spellings` gives each path: where, target, remedy)}`. The
 #: index never holds the row's gitlink but in the first.
 OWN = {
     "a second gitlink beside the row's": (
         lambda root: plant(root, "160000", VARIANT),
-        (IN_INDEX, VARIANT, "git rm -r --cached")),
+        [(IN_INDEX, VARIANT, "git rm -r --cached")]),
     "a file at the variant": (
         lambda root: plant(root, "100644", VARIANT),
-        (IN_INDEX, VARIANT, "git rm -r --cached")),
+        [(IN_INDEX, VARIANT, "git rm -r --cached")]),
     "a gitlink under the variant": (
         lambda root: plant(root, "160000", f"{VARIANT}/x"),
-        (IN_INDEX, VARIANT, "git rm -r --cached")),
+        [(IN_INDEX, VARIANT, "git rm -r --cached")]),
     "a file at the variant in HEAD alone": (
-        head_file, (HEAD_ONLY, VARIANT, "git commit")),
+        head_file, [(HEAD_ONLY, VARIANT, "git commit")]),
     "a file at the row's path": (
-        beside_a_file_at(ROW), (IN_INDEX, VARIANT, "git rm -r --cached")),
+        beside_a_file_at(ROW), [(IN_INDEX, ROW, "git update-index"),
+                                (IN_INDEX, ROW, "git rm -r --cached aside")]),
     "a file under the row's path": (
         beside_a_file_at(f"{ROW}/x"),
-        (IN_INDEX, VARIANT, "git rm -r --cached")),
+        [(IN_INDEX, ROW, "git update-index"),
+         (IN_INDEX, f"{ROW}/x", "git rm -r --cached aside")]),
     "unmerged, with no gitlink at stage 2": (
-        unmerged_theirs, (IN_INDEX, VARIANT, "git rm -r --cached")),
+        unmerged_theirs, [(IN_INDEX, VARIANT, "git rm -r --cached")]),
     "unmerged, with a file at stage 2 and gitlinks at 1 and 3": (
-        unmerged_file_ours, (IN_INDEX, VARIANT, "git rm -r --cached")),
+        unmerged_file_ours, [(IN_INDEX, VARIANT, "git rm -r --cached")]),
     "the member's own gitlink": (
         lambda root: plant(root, "160000", VARIANT),
-        (IN_INDEX, ROW, "git update-index")),
+        [(IN_INDEX, ROW, "git update-index")]),
 }
 
 
@@ -745,12 +839,12 @@ OWN = {
 def test_only_the_members_own_gitlink_is_moved_back(holder, family_module,
                                                     state):
     """WHICH PATH IS THE MEMBER'S OWN: a gitlink at a case variant of a
-    row's path, where the index holds nothing at or under that path. A
-    second gitlink beside the row's, a file at the variant, a gitlink under
-    it, a file at or under the row's path, or an unmerged variant with no
-    gitlink at stage 2 (none, or a file there, whatever stages 1 and 3
-    hold) keeps #574's remedy."""
-    make, (where, target, remedy_said) = OWN[state]
+    row's path, where the index holds nothing at or under that path but
+    files (#761), which are set aside first. A second gitlink beside the
+    row's, a file at the variant, a gitlink under it, or an unmerged variant
+    with no gitlink at stage 2 (none, or a file there, whatever stages 1
+    and 3 hold) keeps #574's remedy."""
+    make, said = OWN[state]
     if state != "a second gitlink beside the row's":
         git("rm", "-q", "--cached", "--", ROW, cwd=holder)
     make(holder)
@@ -758,7 +852,7 @@ def test_only_the_members_own_gitlink_is_moved_back(holder, family_module,
     assert [(spelled.where, spelled.target, spelled.remedy)
             for spelled in family_module._members_spellings(
                 holder, SPARE, family_module._members_on_disk(holder),
-                rows)] == [(where, target, remedy_said)]
+                rows)] == said
 
 
 def test_the_rows_that_have_a_path_of_their_own(family_module):
