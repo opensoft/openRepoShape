@@ -812,8 +812,12 @@ def no_github(adopter, monkeypatch, tmp_path: Path) -> list:
 def planned_here(adopter, monkeypatch, capsys,
                  tmp_path: Path) -> tuple[Path, Path, list]:
     """`(source, plan, gh calls)`: `plan` of `local_source`, in this
-    process, with `gh repo clone` stood in for; stdin is no terminal."""
+    process, with `gh repo clone` stood in for; stdin is no terminal, and
+    `git filter-repo` is not asked for, as in `planned_from_github`:
+    `execute` asks for it before it reads the source's tree, so without
+    it on PATH a lost blob would never be reached."""
     calls = no_github(adopter, monkeypatch, tmp_path)
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     source = local_source(tmp_path)
     plan = tmp_path / PLAN
