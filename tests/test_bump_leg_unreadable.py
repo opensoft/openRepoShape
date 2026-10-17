@@ -350,12 +350,11 @@ def test_the_other_legs_pin_stays_the_validators_refusal(project, scaffolded,
     commit_bytes(project, Path("contracts") / "code-pin.yaml", LATIN1_COMMENT,
                  append=True)
 
-    # The file is named by the VALIDATOR, whose `load_yaml` prints the Path it
-    # was given, absolute and in the platform's own spelling:
-    # `...\Atlas\contracts\code-pin.yaml` on Windows. This tool's own refusals
-    # name a file by its repository path, `as_posix()`, and are asserted as
-    # such everywhere else in this module; this one is not its text.
-    pin = str(Path("contracts") / "code-pin.yaml")
+    # The file is named by the VALIDATOR, relative to the root and POSIX on
+    # every platform, as this tool's own refusals name one (#712). It named
+    # the Path its `load_yaml` was given, absolute and in the platform's own
+    # spelling: `...\Atlas\contracts\code-pin.yaml` on Windows.
+    pin = "contracts/code-pin.yaml"
     stderr = refused_and_untouched(
         project, scaffolded, advanced, "bump-leg-validators-red",
         "yaml-unreadable", pin)
