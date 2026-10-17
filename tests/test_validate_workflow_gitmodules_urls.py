@@ -17,6 +17,12 @@ what is tested and not a Python reading of it. The one thing a runner does
 that a test cannot is reach the legs: `git submodule update` is a stub that
 exits 1, which is how the two printing steps are reached, and every other
 `git` is the real one.
+
+Three things beside the first-space split, from the review of the fix: a url
+holding a line break or a carriage return is skipped in all three steps, since
+printed it could be a workflow command of its own; each repository is named
+once however many sections or paths give it; and a url key outside a
+`submodule` section, even `[-x] url`, is read without git's usage dump.
 """
 
 from __future__ import annotations
@@ -62,6 +68,33 @@ SECTIONS = {
     "plain": "-odd url\twith #hash;semi ",
 }
 THE_LEGS = "IRRS,Tabbed,Odd"
+#: Urls the steps skip, given by git's `\n` escape and a raw carriage return:
+#: each holds a line that a runner would read as a workflow command.
+LINE_BREAKS = {
+    "nl": "https://github.com/acme/A.git\n::error title=x::injected",
+    "cr": "https://github.com/acme/B.git\r::error title=y::injected",
+}
+#: What a step prints of its own: its summary line, and the `  <url>` lines.
+OWN_COMMAND = re.compile(r"::(warning|error)::(  |submodule checkout failed|A )")
+EACH_STEP = pytest.mark.parametrize("step", ["names", "fetch", "fail"])
+
+
+def acme(name: str, scheme: str = "https://github.com/") -> str:
+    return f"url = {scheme}acme/{name}.git\n"
+
+
+#: Each case a repository could be named twice, as a `.gitmodules` text and
+#: the repositories the names step names for it: once each, first seen first.
+DUPLICATES = {
+    "a url given twice in one section": (
+        '[submodule "m"]\n\t' + acme("Stale") + "\t" + acme("A"), "A"),
+    "a section reopened further down": (
+        '[submodule "m"]\n\t' + acme("Stale") + '[submodule "n"]\n\t'
+        + acme("B") + '[submodule "m"]\n\t' + acme("A"), "A,B"),
+    "two paths mounting one repository": (
+        '[submodule "m"]\n\t' + acme("A") + '[submodule "n"]\n\t'
+        + acme("A", "git@github.com:"), "A"),
+}
 
 
 def workflow_text(template: str) -> str:
@@ -72,13 +105,21 @@ def workflow_text(template: str) -> str:
 
 @pytest.fixture
 def holder(tmp_path: Path) -> Path:
-    """A folder whose `.gitmodules` is `SECTIONS`, written by git so that its
-    quoting is git's."""
+    """A folder whose `.gitmodules` is `SECTIONS` and then `LINE_BREAKS`,
+    written by git so that its quoting is git's."""
     work = tmp_path / "holder"
     work.mkdir()
-    for name, url in SECTIONS.items():
+    for name, url in {**SECTIONS, **LINE_BREAKS}.items():
         git("config", "--file", ".gitmodules", f"submodule.{name}.url", url,
             cwd=work)
+    return work
+
+
+def holder_of(tmp_path: Path, gitmodules: str) -> Path:
+    """A folder whose `.gitmodules` is `gitmodules`, as written."""
+    work = tmp_path / "holder"
+    work.mkdir()
+    (work / ".gitmodules").write_bytes(gitmodules.encode("utf-8"))
     return work
 
 
@@ -150,3 +191,49 @@ def test_no_step_reads_a_listing_that_a_section_name_can_split(template):
     assert reads
     for line in reads:
         assert "--name-only" in line, line
+
+
+@WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
+@EACH_STEP
+@EACH_TEMPLATE
+def test_a_url_holding_a_line_break_prints_no_workflow_command_of_its_own(
+        template, step, holder, tmp_path):
+    result, _ = run_step(template, step, holder, tmp_path)
+    commands = [line for line in result.stdout.split("\n")
+                if line.startswith("::") and not OWN_COMMAND.match(line)]
+    assert commands == []
+
+
+@WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
+@EACH_STEP
+@EACH_TEMPLATE
+def test_a_url_holding_a_line_break_writes_only_key_value_lines_to_the_output(
+        template, step, holder, tmp_path):
+    _, output = run_step(template, step, holder, tmp_path)
+    stray = [line for line in output.split("\n")
+             if line and not re.match(r"[a-z_]+=", line)]
+    assert stray == []
+
+
+@WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
+@pytest.mark.parametrize("case", sorted(DUPLICATES))
+@EACH_TEMPLATE
+def test_the_names_step_names_a_repository_once(template, case, tmp_path):
+    gitmodules, names = DUPLICATES[case]
+    work = holder_of(tmp_path, gitmodules)
+    _, output = run_step(template, "names", work, tmp_path)
+    assert output.splitlines() == [f"{TEMPLATES[template]['output']}={names}"]
+
+
+@WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
+@EACH_STEP
+@EACH_TEMPLATE
+def test_a_url_key_outside_a_submodule_section_is_read_without_a_usage_dump(
+        template, step, tmp_path):
+    """`--get-regexp '\\.url$'` lists any section's url, and `git config
+    --get -x.url` reads `-x` as a switch: a usage dump on stderr, exit 129,
+    and the url swallowed by the `|| continue` after it."""
+    work = holder_of(tmp_path, '[remote "origin"]\n\t' + acme("Remote")
+                     + "[-x]\n\t" + acme("Dash"))
+    result, _ = run_step(template, step, work, tmp_path)
+    assert result.stderr == ""

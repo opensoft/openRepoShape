@@ -63,7 +63,10 @@ jobs:
       # IRRS` the url `IRRS.url <url>`, which matched neither form and dropped
       # that leg from the token (#741). A key holds no line break, so one per
       # line is exact; the two steps below that print the urls read them the
-      # same way.
+      # same way. A url holding a line break or a carriage return is skipped
+      # in all three: it could print a workflow command of its own, and git
+      # cannot clone it. And each repository is named once, however many
+      # sections or paths give it.
       - name: leg repository names from .gitmodules
         id: leg-names
         if: env.SHAPE_LEGS_APP_SET == 'true'
@@ -74,7 +77,10 @@ jobs:
           legs=""
           if [ -f .gitmodules ]; then
             while IFS= read -r key; do
-              url=$(git config --file .gitmodules --get "$key") || continue
+              url=$(git config --file .gitmodules --get -- "$key") || continue
+              # A url holding a line break could print a workflow command of its own.
+              case $url in *'
+          '*|*"$(printf '\r')"*) continue ;; esac
               [ -n "$url" ] || continue
               case "$url" in
                 https://github.com/*) repo="${url#https://github.com/}" ;;
@@ -85,6 +91,7 @@ jobs:
               owner="${repo%%/*}"
               name="${repo#*/}"
               if [ "$owner" = "$REPO_OWNER" ]; then
+                case ",$legs," in *",$name,"*) continue ;; esac
                 if [ -z "$legs" ]; then
                   legs="$name"
                 else
@@ -180,7 +187,10 @@ jobs:
             echo "legs_available=false" >> "$GITHUB_OUTPUT"
             echo "::warning::submodule checkout failed (git exit $status) using credential source '$legs_credential'. If the legs are PRIVATE or internal sibling repositories, the default GITHUB_TOKEN cannot read them. Configure a GitHub App (SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or set SHAPE_LEGS_TOKEN — a fine-grained PAT — with contents:read on the legs, as a repository or organisation secret. Leg URLs:"
             git config --file .gitmodules --name-only --get-regexp '\.url$' | while IFS= read -r key; do
-              url=$(git config --file .gitmodules --get "$key") || continue
+              url=$(git config --file .gitmodules --get -- "$key") || continue
+              # A url holding a line break could print a workflow command of its own.
+              case $url in *'
+          '*|*"$(printf '\r')"*) continue ;; esac
               echo "::warning::  $url"
             done
           fi
@@ -228,7 +238,10 @@ jobs:
         run: |
           echo "::error::A leg credential is configured (source: ${{ steps.submodules.outputs.legs_credential }}) but 'git submodule update --init --recursive' still failed. The root checkout does not use this token — it reads with the workflow's default token — so this means the '${{ steps.submodules.outputs.legs_credential }}' credential cannot read one or more of the following LEG repositories (wrong token/App scope, a missing contents:read grant, an incomplete App installation, or a leg URL problem):"
           git config --file .gitmodules --name-only --get-regexp '\.url$' | while IFS= read -r key; do
-            url=$(git config --file .gitmodules --get "$key") || continue
+            url=$(git config --file .gitmodules --get -- "$key") || continue
+            # A url holding a line break could print a workflow command of its own.
+            case $url in *'
+          '*|*"$(printf '\r')"*) continue ;; esac
             echo "::error::  $url"
           done
           exit 1
