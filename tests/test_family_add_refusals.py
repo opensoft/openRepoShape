@@ -66,8 +66,10 @@ LEG_REMEDIATION = (
     "their own assembly root{named}.")
 
 #: What a good `add` ends with (#487): the push of the branch it committed on,
-#: which is the fixture's own, and the pull request it is for.
-NEXT = ("NEXT  git -C {root} push -u origin {branch}",
+#: which is the fixture's own, by its full refname on both sides (#689), and
+#: the pull request it is for.
+NEXT = ("NEXT  git -C {root} push -u origin "
+        "refs/heads/{branch}:refs/heads/{branch}",
         "      then open a pull request against main; never push to it "
         "directly")
 
