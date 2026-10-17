@@ -376,14 +376,19 @@ main() {
 	# copied for the reason the drive-letter one below is, and the refusal
 	# says nothing of the value. `[[:cntrl:]]` and not `[![:print:]]`, which
 	# `checked_repo` uses: a directory with a letter the locale does not
-	# print (`café` under LC_ALL=C) is no fault of the directory's. Which C1
-	# controls (U+0080 to U+009F) match is the locale's, measured with bash
-	# 5.2.21: C.UTF-8 matches every one of them, C and POSIX none.
-	case "$bin_dir" in
-	*[[:cntrl:]]*)
+	# print (`café` under LC_ALL=C) is no fault of the directory's. The check
+	# runs under `LC_ALL=C` and names U+0080 to U+009F's two bytes (`\302`,
+	# then `\200` to `\237`), so a C1 control is refused in every locale,
+	# whatever else the value holds; U+2028 and U+2029 are refused in none.
+	# Left to the locale, `[[:cntrl:]]` matches a C1 control only in a value
+	# that is valid UTF-8: one byte that is not (a lone 0xE9) makes bash
+	# match byte by byte, and then U+009B's two bytes are not controls, as
+	# under `C` (measured with bash 5.2.21). The locale is `C` in a subshell,
+	# so that the match is byte by byte whatever a libc says of a byte in a
+	# UTF-8 locale, and the locale of every line below is as it was.
+	if (LC_ALL=C; case "$bin_dir" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
 		die "the directory to install into holds a control character, such as a newline, a carriage return, a tab or an escape, and no line about \$PATH can print such a name as it is: a terminal acts on it. Nothing was installed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this line again."
-		;;
-	esac
+	fi
 	# A WINDOWS SPELLING IS SPELLED THE WAY BASH SPELLS IT, THE COMMAND'S OWN
 	# RULE (#667, after #649), before it is named in a line or looked at: a
 	# value typed `D:\tools\bin` was echoed as typed, in the `install:`,

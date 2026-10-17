@@ -603,6 +603,9 @@ def test_a_pasted_path_note_reaches_an_interactive_bash_as_printed(
 ESCAPE = chr(0x1B)
 DELETE = chr(0x7F)
 C1_CSI = chr(0x9B)
+#: A lone 0xE9 byte, which no UTF-8 text holds, as Python hands one to a
+#: child's environment (the byte comes back through `surrogateescape`).
+NOT_UTF8 = chr(0xDCE9)
 
 HOLDS_A_COLON = "holds a ':'"
 HOLDS_A_CONTROL_CHARACTER = "holds a control character"
@@ -647,6 +650,14 @@ UNNAMEABLE_BIN_DIRS = [
 NO_FILE_NAMED_SO = pytest.mark.skipif(
     os.name == "nt", reason="a Windows file name holds no control character")
 
+#: The two locales a value is tried under: `C` reads one byte at a time, and
+#: `C.UTF-8` reads UTF-8 text where it is valid (#760).
+LOCALES = ["C", "C.UTF-8"]
+
+NO_NON_ASCII_INTO_GIT_BASH = pytest.mark.skipif(
+    os.name == "nt", reason="a non-ASCII value through the environment into "
+    "Git Bash is not run here")
+
 
 def assert_a_bin_dir_is_refused(result, typed: str, said: str,
                                 ending: str) -> None:
@@ -686,17 +697,32 @@ def test_a_bin_dir_no_path_line_can_name_is_refused_before_it_places_anything(
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.skipif(os.name == "nt", reason="a non-ASCII value through the "
-                    "environment into Git Bash is not run here")
-@pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
+#: Names no arm refuses, in either locale (#760): an e with an acute accent;
+#: U+00A0, a no-break space, whose bytes `0xC2 0xA0` come right after the
+#: C1 range's last (`0xC2 0x9F`); and U+2028 and U+2029, which `[[:cntrl:]]`
+#: alone matches under a UTF-8 locale and not under `C`. The arm runs under
+#: `C`, so it answers alike in both, and neither is a control a terminal
+#: acts on (a line that holds one prints as it is).
+NOT_CONTROLS = [
+    pytest.param("caf" + chr(0xE9), id="an-e-acute"),
+    pytest.param("a" + chr(0xA0) + "b", id="a-no-break-space"),
+    pytest.param("a" + chr(0x2028) + "b", id="a-line-separator"),
+    pytest.param("a" + chr(0x2029) + "b", id="a-paragraph-separator"),
+]
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("name", NOT_CONTROLS)
 def test_a_bin_dir_with_an_unprinted_letter_is_placed(
-        tmp_path, locale):
+        tmp_path, locale, name):
     """The refusal is `[[:cntrl:]]` and not `[![:print:]]` (#760): under
     `LC_ALL=C` the two bytes of an e with an acute accent are not
     printable, so the second would refuse a directory called `caf` and
     that letter for a fault it has not got. It is placed, in either
-    locale."""
-    name = "caf" + chr(0xE9)
+    locale, and so is a no-break space, whose first byte is the C1
+    controls' (`0xC2`) and whose second is the one past them, and so are
+    U+2028 and U+2029, which only a UTF-8 locale's `[[:cntrl:]]` matches."""
     result = run_cmd("--install", home=tmp_path, cwd=tmp_path, env={
         "OPENREPOSHAPE_BIN_DIR": f"{bash_path(tmp_path)}/{name}",
         "LC_ALL": locale})
@@ -705,35 +731,35 @@ def test_a_bin_dir_with_an_unprinted_letter_is_placed(
         == COMMAND.read_bytes()
 
 
-def utf8_locale_with_c1_controls() -> str | None:
-    """A UTF-8 locale in which THIS bash reads U+009B as a control
-    character, or None: which of the C1 controls (U+0080 to U+009F)
-    `[[:cntrl:]]` matches is the locale's, so a test of one asks first. On
-    Linux with bash 5.2.21, `C.UTF-8` matches them all and `C` and `POSIX`
-    none (#760)."""
-    for locale in ("C.UTF-8", "en_US.UTF-8"):
-        probe = subprocess.run(
-            [BASH, "-c", 'case "$1" in *[[:cntrl:]]*) exit 0;; esac; exit 1',
-             "-", C1_CSI], capture_output=True, check=False,
-            env={**os.environ, "LC_ALL": locale})
-        if probe.returncode == 0:
-            return locale
-    return None
+#: A C1 control (U+0080 to U+009F) is two bytes in UTF-8, `0xC2` and a byte
+#: from `0x80` to `0x9F`, and a terminal that reads the two as one acts on
+#: it (#760). Each is refused in every locale, and whatever else the value
+#: holds: under a UTF-8 locale `[[:cntrl:]]` matches a C1 control only in a
+#: value that is valid UTF-8, and a lone `0xE9` byte before it makes bash
+#: match byte by byte. The first and the last of the range are named, so an
+#: arm that stops one short at either end is caught, and a colon beside the
+#: control shows the control arm comes first.
+C1_BIN_DIRS = [
+    pytest.param("{d}/a" + C1_CSI + "forged/bin", id="a-c1-csi"),
+    pytest.param("{d}/a" + chr(0x80) + "forged/bin", id="the-first-c1-control"),
+    pytest.param("{d}/a" + chr(0x9F) + "forged/bin", id="the-last-c1-control"),
+    pytest.param("{d}/caf" + NOT_UTF8 + C1_CSI + "31mforged/bin",
+                 id="a-byte-that-is-not-utf-8-then-a-c1-csi"),
+    pytest.param("{d}/a:caf" + NOT_UTF8 + C1_CSI + "31mforged/bin",
+                 id="a-colon-then-a-byte-that-is-not-utf-8-and-a-c1-csi"),
+]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="a non-ASCII value through the "
-                    "environment into Git Bash is not run here")
-def test_a_c1_control_is_refused_where_the_locale_reads_it_as_one(tmp_path):
-    """U+009B, the C1 control sequence introducer, is two bytes in UTF-8,
-    and a terminal that reads them as one runs what follows (#760). Under a
-    UTF-8 locale `[[:cntrl:]]` matches it, so it is refused as an escape
-    is; under `LC_ALL=C` it is not (the bytes are not controls there), a
-    limit the launcher's comment states."""
-    locale = utf8_locale_with_c1_controls()
-    if locale is None:
-        pytest.skip("no UTF-8 locale here in which bash reads U+009B as a "
-                    "control character")
-    typed = f"{bash_path(tmp_path)}/a{C1_CSI}forged/bin"
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("value", C1_BIN_DIRS)
+def test_a_c1_control_is_refused_in_every_locale_whatever_else_the_value_holds(
+        tmp_path, value, locale):
+    """Refused as an escape is, exit 2, nothing placed, and never echoed:
+    under `C`, where `[[:cntrl:]]` reads the two bytes one at a time and
+    matches neither, and under `C.UTF-8`, where a byte that is not UTF-8
+    anywhere in the value makes bash match byte by byte (#760)."""
+    typed = value.format(d=bash_path(tmp_path))
     result = run_cmd("--install", home=tmp_path, cwd=tmp_path,
                      env={"OPENREPOSHAPE_BIN_DIR": typed, "LC_ALL": locale})
     assert_a_bin_dir_is_refused(result, typed, HOLDS_A_CONTROL_CHARACTER,

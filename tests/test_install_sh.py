@@ -46,18 +46,18 @@ from pathlib import Path
 import pytest
 
 from conftest import BASH, BASH_SKIP, REPO, bash_path
-from test_openreposhape_command import (BIN_DIR_SPELLINGS, C1_CSI, COMMAND,
-                                        COMMAND_REFUSAL_ENDS, CYGPATH_STATES,
-                                        HOLDS_A_COLON,
+from test_openreposhape_command import (BIN_DIR_SPELLINGS, C1_BIN_DIRS,
+                                        COMMAND, COMMAND_REFUSAL_ENDS,
+                                        CYGPATH_STATES, HOLDS_A_COLON,
                                         HOLDS_A_CONTROL_CHARACTER,
-                                        INSTALL_NEEDS, NO_FILE_NAMED_SO,
-                                        UNNAMEABLE_BIN_DIRS,
+                                        INSTALL_NEEDS, LOCALES,
+                                        NO_FILE_NAMED_SO,
+                                        NO_NON_ASCII_INTO_GIT_BASH,
+                                        NOT_CONTROLS, UNNAMEABLE_BIN_DIRS,
                                         assert_a_bin_dir_is_refused,
                                         command_env, machine_path,
                                         put_cygpath, put_on_path, run_cmd,
-                                        typed_bin_dir,
-                                        utf8_locale_with_c1_controls,
-                                        write_script)
+                                        typed_bin_dir, write_script)
 
 INSTALLER = REPO / "install.sh"
 
@@ -924,39 +924,44 @@ def test_a_control_character_is_refused_before_the_symlink_check_names_it(
     assert link.is_symlink()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="a non-ASCII value through the "
-                    "environment into Git Bash is not run here")
-@pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("name", NOT_CONTROLS)
 def test_the_installer_places_a_directory_with_an_unprinted_letter(
-        tmp_path, locale):
+        tmp_path, locale, name):
     """The refusal is `[[:cntrl:]]` and not `[![:print:]]`, which
     `checked_repo` uses (#760): under `LC_ALL=C` the two bytes of an e with
     an acute accent are not printable, so the second would refuse a
     directory called `caf` and that letter for a fault it has not got. It
-    is installed into, in either locale, and named as typed."""
+    is installed into, in either locale, and named as typed, and so is a
+    no-break space, whose first byte is the C1 controls' (`0xC2`) and
+    whose second is the one past them, and so are U+2028 and U+2029 (see
+    `NOT_CONTROLS`). The line is looked for among the lines split at a
+    newline and nothing else: `splitlines` splits at those two as well."""
     net = Net(tmp_path)
-    net.bin = tmp_path / ("caf" + chr(0xE9))
+    net.bin = tmp_path / name
     result = net.run(env={"OPENREPOSHAPE_BIN_DIR": bash_path(net.bin),
                           "LC_ALL": locale})
     assert result.returncode == 0, result.stdout + result.stderr
     net.installed(result)
     assert f"preflight: {bash_path(net.bin)}/openRepoShape --preflight" \
-        in result.stdout.splitlines()
+        in result.stdout.split("\n"), result.stdout
 
 
-@pytest.mark.skipif(os.name == "nt", reason="a non-ASCII value through the "
-                    "environment into Git Bash is not run here")
-def test_the_installer_refuses_a_c1_control_where_the_locale_reads_it_as_one(
-        tmp_path):
-    """U+009B, the C1 control sequence introducer, under a UTF-8 locale in
-    which `[[:cntrl:]]` matches it (#760); under `LC_ALL=C` it is not
-    matched, a limit the comment above the arm states."""
-    locale = utf8_locale_with_c1_controls()
-    if locale is None:
-        pytest.skip("no UTF-8 locale here in which bash reads U+009B as a "
-                    "control character")
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("value", C1_BIN_DIRS)
+def test_the_installer_refuses_a_c1_control_in_every_locale_before_any_request(
+        tmp_path, value, locale):
+    """A C1 control (U+0080 to U+009F) in the directory, under `C` and
+    under `C.UTF-8`, alone, after a byte that is not UTF-8, and after a
+    colon (#760): exit 2 with the control-character refusal, no request,
+    and nothing of the value in either stream. Under a UTF-8 locale a byte
+    that is not UTF-8 anywhere in the value makes bash match byte by byte,
+    and `[[:cntrl:]]` then matches neither byte of U+009B, as it matches
+    neither under `C`."""
     net = Net(tmp_path)
-    typed = f"{bash_path(tmp_path)}/a{C1_CSI}forged/bin"
+    typed = value.format(d=bash_path(tmp_path))
     result = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed, "LC_ALL": locale})
     assert net.calls() == [], net.calls()
     assert_a_bin_dir_is_refused(result, typed, HOLDS_A_CONTROL_CHARACTER,
