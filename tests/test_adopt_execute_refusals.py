@@ -35,9 +35,13 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
+import os
 import re
+import shlex
 import shutil
 import sys
+import textwrap
 from argparse import Namespace
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,7 +49,7 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, git, make_source_repo, resolve, run_script,
-                      write_plan)
+                      spelled, write_plan)
 
 PROJECT = "Northwind"
 UTF8 = "utf-8"
@@ -1312,6 +1316,416 @@ def test_execute_raises_the_refusal_not_the_decode_error(adopter, world):
     assert refusal.code == "yaml-unreadable"
     assert f"not UTF-8 at byte {offset}" in refusal.detail
     no_leg_was_created(world.tmp)
+
+
+# --- both leg repositories, asked about before either is made (#798) --------
+#
+# `execute` made the spec leg's repository and asked about the code leg's only
+# as it made that one. So a code leg that already existed, on disk or on
+# GitHub, was refused once the spec leg had been made, and a
+# `--local-remote-dir` that could not hold them ended in a traceback (a file
+# at the path, a folder above it this user cannot write in) or in a raw
+# `git init` failure (a folder this user cannot write in), each after `check`
+# had said `plan ok`. Both are asked about now before either is made, every
+# finding is refused at once, and `check` prints the same findings under the
+# same flags.
+
+LEG_EXISTS = "leg-remote-exists"
+FOLDER_REFUSED = "adopt-folder-cannot-be-made"
+REMOTE_UNREADABLE = "adopt-remote-unreadable"
+LEG_CODES = (LEG_EXISTS, FOLDER_REFUSED, REMOTE_UNREADABLE)
+ORG = "testorg"
+#: What `_create_leg_remotes` prints once it starts making them.
+CREATING = "creating the leg repositories"
+#: How `execute`'s refusal of them begins its remediation.
+REMEDIATION_FIRST = f"Remediation: {NO_LEG_MADE}."
+#: The two answers a folder can give that refuse it.
+A_FILE = "is a file, not a folder"
+CANNOT_WRITE_IN = "is a folder this user cannot write in"
+#: gh's own words, with exit 4, for a command that needs a login, on a
+#: machine with none.
+NO_LOGIN = "To get started with GitHub CLI, please run:  gh auth login"
+#: What `check` prints for a repository gh could not answer about.
+COULD_NOT_ASK = "NOTE `check` could not ask GitHub whether "
+
+
+def bare(tmp_path: Path, role: str) -> Path:
+    """Where `execute --local-remote-dir <tmp_path>/remotes` makes `role`'s
+    leg, as it names it: under the directory resolved."""
+    return (tmp_path / REMOTES).resolve() / f"{PROJECT}-{role}.git"
+
+
+def repository(role: str) -> str:
+    """`role`'s leg repository on GitHub, as `execute` names it."""
+    return f"{ORG}/{PROJECT}-{role}"
+
+
+def view(role: str) -> list[str]:
+    """The `gh` call that asks whether `role`'s leg repository exists."""
+    return ["repo", "view", repository(role), "--json", "name"]
+
+
+def leg_findings(text: str) -> list[str]:
+    """Each FINDING about the leg repositories in `text`, as `check` prints
+    it: the lines of its stderr, or of `execute`'s refusal, indented."""
+    return [line.strip() for line in text.splitlines()
+            if line.strip().startswith(tuple(f"FINDING {code}:"
+                                             for code in LEG_CODES))]
+
+
+def on_disk(tmp_path: Path, role: str) -> str:
+    return (f"FINDING {LEG_EXISTS}: {spelled(bare(tmp_path, role))}, the "
+            f"{role} leg's bare repository, already exists")
+
+
+def on_github(role: str) -> str:
+    return (f"FINDING {LEG_EXISTS}: {repository(role)}, the {role} leg's "
+            "repository, already exists on GitHub: `gh repo view "
+            f"{repository(role)} --json name` finds it")
+
+
+def told(role: str, code: int, said: str) -> str:
+    """How a `gh repo view` that failed otherwise than not-found is named."""
+    return (f"`gh repo view {repository(role)} --json name` exited {code}: "
+            f"{said}")
+
+
+def unread(role: str, code: int, said: str) -> str:
+    return (f"FINDING {REMOTE_UNREADABLE}: whether {repository(role)}, the "
+            f"{role} leg's repository, already exists on GitHub cannot be "
+            f"told: {told(role, code, said)}")
+
+
+def cannot_hold(local_remote_dir: Path, here: Path, why: str) -> str:
+    return (f"FINDING {FOLDER_REFUSED}: --local-remote-dir "
+            f"{spelled(local_remote_dir.resolve())} cannot hold the two leg "
+            f"repositories: {spelled(here.resolve())} {why}")
+
+
+@pytest.fixture
+def unwritable():
+    """A maker of folders this user cannot write in: `make(path)` makes
+    `path` and sets it `0o555`, and each is made writable again for pytest
+    to delete. Skipped where a folder's mode refuses this user nothing:
+    root, and Windows."""
+    made: list[Path] = []
+
+    def make(path: Path) -> Path:
+        if os.name == "nt" or os.geteuid() == 0:
+            pytest.skip("a folder's mode refuses nothing to this user here")
+        path.mkdir(parents=True)
+        path.chmod(0o555)
+        made.append(path)
+        return path
+    yield make
+    for path in made:
+        path.chmod(0o755)
+
+
+def a_file(tmp_path: Path, _unwritable) -> tuple[Path, Path, str]:
+    """`(--local-remote-dir, what stands in the way, why)`: a file at it."""
+    path = tmp_path / REMOTES
+    path.write_text("not a folder\n", encoding=UTF8)
+    return path, path, A_FILE
+
+
+def under_an_unwritable_parent(tmp_path: Path, unwritable_folder):
+    parent = unwritable_folder(tmp_path / "read-only")
+    return parent / REMOTES, parent, CANNOT_WRITE_IN
+
+
+def an_unwritable_directory(tmp_path: Path, unwritable_folder):
+    path = unwritable_folder(tmp_path / REMOTES)
+    return path, path, CANNOT_WRITE_IN
+
+
+#: L1-72's three `--local-remote-dir`s, each refused by name.
+FOLDERS = {"a-file": a_file,
+           "under-an-unwritable-parent": under_an_unwritable_parent,
+           "an-unwritable-directory": an_unwritable_directory}
+EACH_FOLDER = pytest.mark.parametrize("layout", sorted(FOLDERS))
+#: The legs that already exist, each refused by name.
+EACH_EXISTING = pytest.mark.parametrize("existing", [(CODE,), (SPEC,), ROLES],
+                                        ids=["code", "spec", "both"])
+
+
+def made_bare(tmp_path: Path, existing: tuple) -> None:
+    for role in existing:
+        git("init", "-q", "--bare", str(bare(tmp_path, role)), cwd=tmp_path)
+
+
+def execute_here(world: World, local_remote_dir: Path) -> list[str]:
+    """`main`'s argv for `execute --yes` of the world's plan into
+    `local_remote_dir`."""
+    return ["execute", "--plan", str(world.plan), "--yes",
+            "--local-remote-dir", str(local_remote_dir), "--work-dir",
+            str(world.tmp / WORK)]
+
+
+@EACH_EXISTING
+def test_a_leg_on_disk_is_refused_before_either_is_made(adopter, world,
+                                                        capsys, existing):
+    """L1-73, local: with `<P>-code.git` there, `execute` made
+    `<P>-spec.git` and was then refused at the code leg. Both are asked
+    about first, each one there is named, and none is made."""
+    made_bare(world.tmp, existing)
+    refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
+    assert refusal.code == LEG_EXISTS
+    assert leg_findings(refusal.detail) == [on_disk(world.tmp, role)
+                                            for role in existing]
+    assert refusal.remediation.startswith(REMEDIATION_FIRST)
+    for role in ROLES:
+        assert bare(world.tmp, role).exists() == (role in existing), role
+    assert CREATING not in capsys.readouterr().out
+
+
+@EACH_FOLDER
+def test_a_local_remote_dir_that_cannot_hold_the_legs_is_refused_by_name(
+        adopter, world, capsys, unwritable, layout):
+    """L1-72: a file at the path ended in a `FileExistsError` traceback, a
+    path under a folder this user cannot write in in a `PermissionError`
+    one, and a folder this user cannot write in in `git init`'s raw
+    failure. Each is refused by name now, exit 2, before anything is
+    made."""
+    local_remote_dir, here, why = FOLDERS[layout](world.tmp, unwritable)
+    assert adopter.main(execute_here(world, local_remote_dir)) == 2
+    err = capsys.readouterr().err
+    assert f"REFUSED {FOLDER_REFUSED}: " in err
+    assert leg_findings(err) == [cannot_hold(local_remote_dir, here, why)]
+    assert not list(world.tmp.rglob(f"{PROJECT}-*.git"))
+
+
+def local_case(world: World, unwritable_folder, case: str) -> Path:
+    """The `--local-remote-dir` of `case`: one of `FOLDERS`, or legs on disk
+    under `<tmp>/remotes`."""
+    if case in FOLDERS:
+        return FOLDERS[case](world.tmp, unwritable_folder)[0]
+    made_bare(world.tmp, (CODE,) if case == "code-exists" else ROLES)
+    return world.tmp / REMOTES
+
+
+@pytest.mark.parametrize("case", ["code-exists", "both-exist", *sorted(FOLDERS)])
+def test_check_given_the_same_local_remote_dir_prints_what_execute_refuses(
+        adopter, world, unwritable, case):
+    """#417's one verdict: `check --local-remote-dir` said `plan ok` in
+    every case `execute` then refused. It prints each finding now, word for
+    word as `execute`'s refusal lists it, and fails."""
+    local_remote_dir = local_case(world, unwritable, case)
+    checked = run_script(ADOPT, "check", "--plan", str(world.plan),
+                         "--local-remote-dir", str(local_remote_dir))
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    args = execute_args(world.tmp, world.plan)
+    args.local_remote_dir = local_remote_dir
+    refusal = refused_by(adopter, args)
+    printed = leg_findings(checked.stderr)
+    assert printed, checked.stderr
+    assert printed == leg_findings(refusal.detail)
+
+
+#: A `gh` that logs each call, as JSON, to $GH_STUB_LOG and answers as GitHub
+#: would for the repositories in $GH_STUB_EXISTING: `repo view` of one there
+#: finds it, and of any other says gh's not-found words, exit 1; `repo create`
+#: makes any other, and of one there, or of one in $GH_STUB_HIDDEN (a
+#: repository the token cannot see), says the name is taken. With
+#: $GH_STUB_VIEW_FAILS (`<exit> <words>`) every `repo view` fails so.
+GH_STUB = textwrap.dedent("""\
+    import json, os, sys
+    argv = sys.argv[1:]
+    with open(os.environ["GH_STUB_LOG"], "a", encoding="utf-8") as log:
+        log.write(json.dumps(argv) + "\\n")
+    existing = os.environ.get("GH_STUB_EXISTING", "").split()
+    failing = os.environ.get("GH_STUB_VIEW_FAILS")
+    if argv[:2] == ["repo", "view"] and failing:
+        code, said = failing.split(" ", 1)
+        sys.stderr.write(said + "\\n")
+        sys.exit(int(code))
+    if argv[:2] == ["repo", "view"] and argv[2] in existing:
+        print(json.dumps({"name": argv[2].split("/")[-1]}))
+        sys.exit(0)
+    if argv[:2] == ["repo", "view"]:
+        sys.stderr.write("GraphQL: Could not resolve to a Repository with "
+                         f"the name '{argv[2]}'. (repository)\\n")
+        sys.exit(1)
+    hidden = os.environ.get("GH_STUB_HIDDEN", "").split()
+    if argv[:2] == ["repo", "create"] and argv[2] in existing + hidden:
+        sys.stderr.write("GraphQL: Name already exists on this account "
+                         "(createRepository)\\n")
+        sys.exit(1)
+    if argv[:2] == ["repo", "create"]:
+        print(f"https://github.com/{argv[2]}")
+        sys.exit(0)
+    sys.stderr.write("gh stub: a call no test here expects\\n")
+    sys.exit(97)
+    """)
+
+
+@dataclass(frozen=True)
+class GitHub:
+    """What `on_github` set up: the log its `gh` keeps."""
+
+    log: Path
+
+    def calls(self, words: int = 0) -> list[list[str]]:
+        """Each call the stub was run with, in order: its whole argv, or
+        its first `words`."""
+        if not self.log.exists():
+            return []
+        return [json.loads(line)[:words or None]
+                for line in self.log.read_text(encoding=UTF8).splitlines()]
+
+
+@pytest.fixture
+def github(world, monkeypatch) -> GitHub:
+    """`execute` and `check` against GitHub, with no network: `GH_STUB`
+    first on PATH, ahead of the session's guard, with a token no `gh` takes
+    and an empty config directory, and every `https://github.com/` url git
+    reads rewritten to a directory that holds the assembly, a bare clone of
+    the source. A `#!` launcher, so not on Windows."""
+    if os.name == "nt":
+        pytest.skip("the stub gh is a #! script")
+    tmp = world.tmp
+    stand_in = tmp / "github"
+    git("clone", "-q", "--bare", str(world.source),
+        str(stand_in / ORG / f"{PROJECT}.git"), cwd=tmp)
+    config = tmp / "gitconfig"
+    config.write_text(f'[url "{stand_in.as_posix()}/"]\n'
+                      "\tinsteadOf = https://github.com/\n", encoding=UTF8)
+    bin_dir = tmp / "bin"
+    bin_dir.mkdir()
+    script = bin_dir / "gh_stub.py"
+    script.write_text(GH_STUB, encoding=UTF8)
+    launcher = bin_dir / "gh"
+    launcher.write_bytes(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
+                         f"{shlex.quote(str(script))} \"$@\"\n".encode(UTF8))
+    launcher.chmod(0o755)
+    (tmp / "gh-config").mkdir()
+    for name, value in {
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "GH_STUB_LOG": str(tmp / "gh.log"),
+            "GH_TOKEN": "bogus-token-for-tests",
+            "GH_CONFIG_DIR": str(tmp / "gh-config"),
+            "GIT_CONFIG_GLOBAL": str(config)}.items():
+        monkeypatch.setenv(name, value)
+    return GitHub(tmp / "gh.log")
+
+
+def against_github(world: World) -> Namespace:
+    """`execute --yes` of the world's plan with no `--local-remote-dir`."""
+    args = execute_args(world.tmp, world.plan)
+    args.local_remote_dir = None
+    return args
+
+
+@pytest.mark.parametrize("existing", [(CODE,), ROLES], ids=["code", "both"])
+def test_a_leg_name_github_has_is_refused_before_any_repo_create(
+        adopter, world, github, monkeypatch, existing):
+    """L1-73, GitHub: the only `gh` calls were `repo create <P>-spec`, then
+    `repo create <P>-code`, which found the name taken, and a private
+    `<P>-spec` stayed behind. Both names are asked with `gh repo view`
+    first, and a name that exists is refused with no `repo create`."""
+    monkeypatch.setenv("GH_STUB_EXISTING",
+                       " ".join(repository(role) for role in existing))
+    refusal = refused_by(adopter, against_github(world))
+    assert refusal.code == LEG_EXISTS
+    assert leg_findings(refusal.detail) == [on_github(role)
+                                            for role in existing]
+    assert refusal.remediation.startswith(REMEDIATION_FIRST)
+    assert github.calls() == [view(SPEC), view(CODE)]
+
+
+#: gh's failures that are not its answer that a repository does not exist,
+#: `(exit, first line)`: neither says whether it does.
+OTHER_FAILURES = {
+    "no-login": (4, NO_LOGIN),
+    "bad-credentials": (1, "HTTP 401: Bad credentials "
+                           "(https://api.github.com/graphql)"),
+}
+
+
+@pytest.mark.parametrize("failure", sorted(OTHER_FAILURES))
+def test_a_view_that_fails_otherwise_is_refused_by_name(
+        adopter, world, github, monkeypatch, failure):
+    """Only gh's not-found answer means absent, as #622 has it for the
+    scaffold: any other failure of `gh repo view` is refused by name, the
+    command, its exit and gh's first line, before any `repo create`."""
+    code, said = OTHER_FAILURES[failure]
+    monkeypatch.setenv("GH_STUB_VIEW_FAILS", f"{code} {said}")
+    refusal = refused_by(adopter, against_github(world))
+    assert refusal.code == REMOTE_UNREADABLE
+    assert leg_findings(refusal.detail) == [unread(role, code, said)
+                                            for role in ROLES]
+    assert github.calls() == [view(SPEC), view(CODE)]
+
+
+def test_a_gh_that_cannot_be_run_is_refused_by_name(adopter, world, github,
+                                                    monkeypatch):
+    """A `gh` that cannot be started at all says nothing of either name
+    either: refused by name, not a `FileNotFoundError` traceback at the first
+    `repo create`."""
+    real_run = adopter.run
+
+    def no_gh(args, *rest, **named):
+        if args[0] == "gh":
+            raise FileNotFoundError(2, "No such file or directory", "gh")
+        return real_run(args, *rest, **named)
+
+    monkeypatch.setattr(adopter, "run", no_gh)
+    refusal = refused_by(adopter, against_github(world))
+    assert refusal.code == REMOTE_UNREADABLE
+    assert ("cannot be told: `gh` could not be run: [Errno 2] No such file or "
+            "directory: 'gh'") in refusal.detail
+    assert github.calls() == []
+
+
+def test_check_finds_a_leg_name_github_has_as_execute_refuses_it(
+        adopter, world, github, monkeypatch):
+    """`check`, given no `--local-remote-dir`, asks GitHub the same two
+    questions, and a name that exists is a FINDING, word for word as
+    `execute` refuses it."""
+    monkeypatch.setenv("GH_STUB_EXISTING", repository(CODE))
+    checked = run_check(world.plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert leg_findings(checked.stderr) == [on_github(CODE)]
+    assert github.calls() == [view(SPEC), view(CODE)]
+    refusal = refused_by(adopter, against_github(world))
+    assert leg_findings(refusal.detail) == leg_findings(checked.stderr)
+
+
+@pytest.mark.parametrize("failure", sorted(OTHER_FAILURES))
+def test_check_notes_a_view_that_fails_otherwise_and_still_passes(
+        world, github, monkeypatch, failure):
+    """Where gh cannot answer -- no login, a bad token, no network --
+    `check` names what it could not ask in a NOTE and still passes, so it
+    stays usable offline; `execute` refuses the same (above)."""
+    code, said = OTHER_FAILURES[failure]
+    monkeypatch.setenv("GH_STUB_VIEW_FAILS", f"{code} {said}")
+    checked = run_check(world.plan)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert leg_findings(checked.stderr) == []
+    notes = [line for line in checked.stdout.splitlines()
+             if line.startswith(COULD_NOT_ASK)]
+    assert [role for role in ROLES
+            if any(told(role, code, said) in note for note in notes)] == \
+        list(ROLES), notes
+    assert len(notes) == len(ROLES), notes
+    assert github.calls() == [view(SPEC), view(CODE)]
+
+
+def test_a_name_github_hides_still_gets_the_notice_once_the_spec_leg_exists(
+        adopter, world, github, monkeypatch, capsys):
+    """THE NOTICE OF #188 N4 STAYS for what can still fail after the first
+    `repo create`: GitHub answers a repository the token cannot see as not
+    found, so both questions pass, and `repo create` then finds the code
+    leg's name taken once the spec leg's repository exists."""
+    monkeypatch.setenv("GH_STUB_HIDDEN", repository(CODE))
+    with pytest.raises(adopter.CommandFailed):
+        adopter.cmd_execute(against_github(world))
+    assert github.calls(3) == [view(SPEC)[:3], view(CODE)[:3],
+                               ["repo", "create", repository(SPEC)],
+                               ["repo", "create", repository(CODE)]]
+    err = capsys.readouterr().err
+    assert (f"{LATE_NOTICE}: `https://github.com/{repository(SPEC)}.git` "
+            "exists, and nothing is pushed to it.") in err
 
 
 # --- end to end ------------------------------------------------------------

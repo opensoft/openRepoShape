@@ -1301,6 +1301,72 @@ def test_a_branch_the_split_push_fast_forwards_is_not_refused(
         BRANCH, True) is None
 
 
+def after_the_question(adopter, monkeypatch, then) -> None:
+    """`_leg_remote_answers`, which asks about both leg repositories before
+    `execute` makes either (#798), answers as it does, and then `then()`
+    runs: what another run or a person does between that question and the
+    first make."""
+    asked = adopter._leg_remote_answers
+
+    def answered_then(*args):
+        answers = asked(*args)
+        then()
+        return answers
+
+    monkeypatch.setattr(adopter, "_leg_remote_answers", answered_then)
+
+
+def test_a_code_leg_made_after_the_question_still_gets_the_notice(
+        adopter, monkeypatch, capsys, tmp_path):
+    """#188 N4's notice STAYS for a failure that still comes after the
+    first make (#798). Both leg repositories are asked about first now, so
+    a `<P>-code.git` already there is refused before either is made; one
+    made after that question meets `_create_leg_remote`'s own
+    `leg-remote-exists` once the spec leg's exists, and the notice names
+    that one."""
+    no_filter_repo_probe(adopter, monkeypatch)
+    plan = planned(tmp_path, make_source_repo(tmp_path / SOURCE,
+                                              tree=SMALL_TREE, edits=()))
+    code_leg = tmp_path / REMOTES / f"{ASSEMBLY}-{CODE}.git"
+    after_the_question(adopter, monkeypatch, lambda: git(
+        "init", "-q", "--bare", str(code_leg), cwd=tmp_path))
+
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(tmp_path, plan))
+
+    assert caught.value.code == "leg-remote-exists"
+    err = capsys.readouterr().err
+    assert f"{REFUSED} creating the {CODE} leg repository. " in err
+    spec_leg = (tmp_path / REMOTES).resolve() / f"{ASSEMBLY}-{SPEC}.git"
+    assert the_notice(err).startswith(
+        f"{ROLLED_BACK}: {spelled(spec_leg)} exists, and nothing is pushed "
+        "to it."), err
+
+
+def test_a_local_remote_dir_that_cannot_be_made_after_the_question_is_refused(
+        adopter, monkeypatch, capsys, tmp_path):
+    """The `mkdir` of `--local-remote-dir` that follows the question raised
+    `FileExistsError` or `PermissionError` out of `main`, a traceback, for
+    what the question could not foresee (a file put there since). It is
+    refused by name, exit 2, before any leg exists, so with no notice."""
+    no_filter_repo_probe(adopter, monkeypatch)
+    plan = planned(tmp_path, make_source_repo(tmp_path / SOURCE,
+                                              tree=SMALL_TREE, edits=()))
+    remotes = tmp_path / REMOTES
+    after_the_question(adopter, monkeypatch, lambda: remotes.write_text(
+        "put here since\n", encoding=UTF8))
+
+    assert adopter.main(["execute", PLAN_FLAG, str(plan), "--yes",
+                         "--local-remote-dir", str(remotes), "--work-dir",
+                         str(tmp_path / WORK)]) == 2
+
+    err = capsys.readouterr().err
+    assert (f"{REFUSED} adopt-folder-cannot-be-made: --local-remote-dir "
+            f"{spelled(remotes.resolve())} cannot be made: ") in err, err
+    assert ROLLED_BACK not in err
+    assert remotes.is_file()
+
+
 def test_a_refusal_from_the_substitution_table_leaves_no_leg_repository(
         adopter, monkeypatch, tmp_path):
     """The table can refuse -- an `elected_on` that is not a date, a
