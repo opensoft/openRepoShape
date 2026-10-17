@@ -82,7 +82,10 @@ def clone_just_pushed(remote: Path, dest: Path,
     loose objects and deletes them mid-walk, and the clone dies `failed to
     copy file to '<dest>/.git/objects/..': No such file or directory` (the
     macOS runner, twice in 90 minutes on 2026-10-12). Upload-pack reads the
-    object store, which a repack does not break.
+    object store, which a repack does not break. The session now keeps that
+    maintenance from starting (`no_auto_maintenance` below, #645), and the
+    clone still reads through git: a test that gives git a global config of
+    its own takes the session's away from the pushes it makes.
 
     `--no-local` does that for the root. The two leg clones
     `--recurse-submodules` makes are git's own, from the plain path
@@ -133,6 +136,132 @@ def cloned_just_pushed(remote: Path, dest: Path, branch: str | None = None,
     assert cloned.returncode == 0, (f"git clone of {remote} failed:\n"
                                     f"{cloned.stderr}{cloned.stdout}")
     return Path(dest)
+
+
+# --- git's automatic maintenance, OFF for every git the session starts (#645)
+#
+# A COPY IS A WALK OF THE FILES TOO. `shutil.copytree` reads `objects/` one
+# file at a time, as git's local clone does (`clone_just_pushed` above), and
+# this suite copies a repository a fixture has just committed in, fetched
+# into or pushed to in over a hundred places: `project`, `test_family.py`'s
+# `holder`, `test_doctor_pin_restore_merges.py`'s copies of the session's
+# `standard` (`the_standard_moved`), a bare remote.
+# `git commit`, `merge` and `fetch`, and the `receive-pack` a push starts in
+# the remote, each run `git maintenance run --auto` as they finish. Since git
+# 2.47 that run DETACHES, holding `objects/maintenance.lock`, and the command
+# returns while it goes on; since 2.54 its default strategy (`geometric`)
+# repacks a repository of a few hundred loose objects and deletes the ones
+# it packed. A copy taken in that moment fails `[Errno 2] No such file or
+# directory` on one of them: `holder` and `the_standard_moved`, on the
+# Linux runner (#645).
+#
+# So the session turns it off, as every git command in this estate is told
+# to: `gc.auto=0`, for a git that runs `git gc --auto` itself (2.43's
+# `receive-pack` does), and `maintenance.auto=false`. In TWO scopes, because
+# neither reaches every git alone:
+#
+# - COMMAND SCOPE (`GIT_CONFIG_COUNT`), APPENDED to what the environment
+#   holds (`appended_to_command_scope`; the Windows job holds two): every git
+#   this process and every tool under test starts inherits it, and so does
+#   each git a `git submodule` starts. It outranks every config file, a
+#   repository's own and a test's own global file included.
+# - A GLOBAL FILE (`GIT_CONFIG_GLOBAL`), for the one git that never sees
+#   command scope: a push to a local path or a `file://` URL starts
+#   `receive-pack` in the remote with `GIT_CONFIG_COUNT` and
+#   `GIT_CONFIG_PARAMETERS` removed, and that process runs the remote's
+#   maintenance. The file INCLUDES the global config git would read without
+#   it -- the file `GIT_CONFIG_GLOBAL` already named, or
+#   `$XDG_CONFIG_HOME/git/config` then `~/.gitconfig` -- so a person's own
+#   settings still apply, and sets the two keys after them. A `git config
+#   --global <key>` read without `--includes` sees the two alone: in this
+#   repository that is `setup-project.py`'s Windows-only `core.autocrlf`
+#   warning, which no test reads from a person's own config. An EMPTY
+#   `GIT_CONFIG_GLOBAL` is git's "no global config", and nothing is included.
+#   A `~/` path is written only where `HOME` is set, or on Windows, where Git
+#   for Windows sets it: with `HOME` unset git cannot expand one, and every
+#   git then dies `could not expand include path`.
+#
+# WHAT IT LEAVES: a git whose environment takes away both -- a
+# `GIT_CONFIG_COUNT` overwritten rather than appended to, together with a
+# `GIT_CONFIG_GLOBAL` of a test's own, or an environment built from nothing
+# -- and a push made under a global file of a test's own. No repository the
+# suite copies is made, or pushed to, that way today.
+# `tests/test_no_auto_maintenance.py` holds both scopes to account.
+
+#: The two settings, in the order they are appended and written.
+NO_AUTO_MAINTENANCE = (("gc.auto", "0"), ("maintenance.auto", "false"))
+
+#: The session's global config file, directly under the basetemp.
+GLOBAL_CONFIG_NAME = "gitconfig"
+
+
+def _config_quoted(path: str) -> str:
+    """`path` as a double-quoted git config value, in which a backslash and a
+    double quote are escapes."""
+    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def appended_to_command_scope(environ: Mapping[str, str],
+                              entries=NO_AUTO_MAINTENANCE) -> dict:
+    """The `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`
+    that put `entries` in git's command scope AFTER the ones `environ` holds,
+    which stay as they are: a later entry of a key is the one git reads."""
+    held = int(environ.get("GIT_CONFIG_COUNT") or 0)
+    added = {"GIT_CONFIG_COUNT": str(held + len(entries))}
+    for index, (key, value) in enumerate(entries, held):
+        added[f"GIT_CONFIG_KEY_{index}"] = key
+        added[f"GIT_CONFIG_VALUE_{index}"] = value
+    return added
+
+
+def home_is_known() -> bool:
+    """Whether git can expand a `~/` path: `HOME` is set, or this is Windows,
+    where Git for Windows finds a home of its own."""
+    return bool(os.environ.get("HOME")) or os.name == "nt"
+
+
+def session_global_config(named: str | None) -> bytes:
+    """The global config file `no_auto_maintenance` writes: an include of
+    what git reads as its global config without one, and then
+    `NO_AUTO_MAINTENANCE`. LF, and every path POSIX-style: `~/` is expanded by
+    git, from the `HOME` of the git that reads it.
+
+    `named` is what `GIT_CONFIG_GLOBAL` held. A name is the file included. An
+    empty value is git's "no global config" (2.43), so nothing is included.
+    None, unset, is git's two default files in git's own order, the
+    `~/` ones only where `home_is_known()`: with `HOME` unset git dies
+    `could not expand include path` over one, in every command it runs."""
+    if named is not None:
+        included = [Path(os.path.abspath(named)).as_posix()] if named else []
+    else:
+        homed = (["~/.config/git/config", "~/.gitconfig"]
+                 if home_is_known() else [])
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        # `XDG_CONFIG_HOME` stands in for the first, and needs no `HOME`.
+        included = ([(Path(xdg) / "git" / "config").as_posix(), *homed[1:]]
+                    if xdg else homed)
+    lines = ["[include]"] if included else []
+    lines += [f"\tpath = {_config_quoted(path)}" for path in included]
+    for key, value in NO_AUTO_MAINTENANCE:
+        section, name = key.split(".")
+        lines += [f"[{section}]", f"\t{name} = {value}"]
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def no_auto_maintenance(tmp_path_factory):
+    """Git's automatic maintenance off in `os.environ` for the whole session,
+    in both scopes the block above describes; returns the global file. Autouse
+    and session scope, so it is in place before any session or module fixture
+    builds a repository, and put back as it was at the end."""
+    config = tmp_path_factory.getbasetemp() / GLOBAL_CONFIG_NAME
+    config.write_bytes(session_global_config(
+        os.environ.get("GIT_CONFIG_GLOBAL")))
+    with pytest.MonkeyPatch.context() as patch:
+        for name, value in {**appended_to_command_scope(os.environ),
+                            "GIT_CONFIG_GLOBAL": str(config)}.items():
+            patch.setenv(name, value)
+        yield config
 
 
 def load_without_bytecode(path: Path, name: str):
@@ -1769,9 +1898,9 @@ def assert_an_empty_pin_source_is_the_plans_to_refuse(run,
     it, made the naming check WARN about `--link-source`, `.` and a folder the
     plan never reads. The naming check is given no source, so it says of the
     chain what it says of any it cannot verify, `[declared-unverified]`, and
-    its hint there, `--link-source <product>=<path>`, one per holder it
-    cannot verify, is the one spelling of the flag in a run that never typed
-    it."""
+    its hint there offers the sources the plan reads, in the plan's words
+    (#661, L2-75): no line names `--link-source`, a flag the run never typed
+    and setup does not take."""
     result = run("--project", "codexDox", "--org", "demoorg",
                  "--local-remote-dir", str(tmp_path / "remotes"),
                  "--into", str(tmp_path / "work"),
@@ -1783,14 +1912,12 @@ def assert_an_empty_pin_source_is_the_plans_to_refuse(run,
     assert result.returncode == 2, heard
     assert "REFUSED pin-source-no-path:" in result.stderr, result.stderr
     assert "link-source-no-path" not in heard, heard
-    # The validator's own hint for a chain it cannot verify names the flag,
-    # `--link-source openXdox=<path>`, whatever the run typed, so it is the
-    # one spelling left out; a `--link-source` that is a REPORT is not.
-    assert "--link-source" not in re.sub(r"--link-source \w+=<path>", "",
-                                         heard), heard
+    assert "--link-source" not in heard, heard
     step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
         "(5) the plan", 1)[0]
     assert "[declared-unverified]" in step_four, step_four
+    assert f"not reachable here ({FIRST_LINK_WORDS})." in step_four, (
+        step_four)
     assert "do not satisfy the naming policy" not in result.stderr, (
         result.stderr)
     assert not (tmp_path / "remotes").exists()
@@ -1822,4 +1949,95 @@ def assert_a_chain_of_one_link_has_no_source_to_note(run,
     assert "codexDox: domain-descendant" in step_four, step_four
     assert "NOTE --link-source" not in step_four + result.stderr, (
         step_four + result.stderr)
+    assert not (tmp_path / "remotes").exists()
+
+
+#: What step (4) is asked to say of a chain (#661, L2-75): each case's
+#: passthrough after `--`, as `(--pin-source, --referent-chain, what the
+#: link tree declares, the variable set for the first link)`.
+STEP_FOUR_WORDS = {
+    "three-links-first-tree": ("tree", "openXdox,openYdox,openDox",
+                               "openYdox", False),
+    "three-links-no-source": ("", "openXdox,openYdox,openDox", None, False),
+    "blank": (" ", "openXdox,openDox", None, False),
+    "holds-an-equals": ("openXdox=layer", "openXdox,openDox", None, False),
+    "variable-first": ("tree", "openXdox,openDox", "openDox", True),
+}
+
+#: The scaffold's own words for the first link and a later one (#610).
+FIRST_LINK_WORDS = ("SHAPE_PIN_SOURCE_OPENXDOX, or a --pin-source clone of "
+                    "openXdox that holds its project.yaml, would let it be "
+                    "read")
+LATER_LINK_WORDS = "SHAPE_PIN_SOURCE_OPENYDOX would let it be read"
+
+
+def assert_step_four_speaks_in_the_plans_words(run, tmp_path: Path,
+                                               monkeypatch, case: str
+                                               ) -> None:
+    """Step (4) names no `--link-source`, a flag setup does not take (#661,
+    L2-75): a holder it cannot read is offered the sources step (5) reads,
+    in step (5)'s words, one offer per holder; a `--pin-source` it could not
+    read, or did not need, is named `--pin-source`; and a value holding
+    `=` is not said to have been read as a PATH. On main step (4) offered
+    `--link-source <link>=<path>` and labelled the source `(--link-source)`;
+    typed as printed, the offer ended step (5) in `unrecognized
+    arguments`."""
+    clear_ambient_pin_sources(monkeypatch)
+    source, chain, declares, variable = STEP_FOUR_WORDS[case]
+    commit = "0123456789abcdef" * 2 + "01234567"
+    if declares is not None:
+        tree = tmp_path / "openXdox"
+        tree.mkdir()
+        git("init", "-q", "-b", "main", cwd=tree)
+        (tree / "project.yaml").write_bytes(
+            ("schema_version: 1\nkind: project-manifest\n"
+             f"neutral_product_pins:\n  - {declares}\n").encode("utf-8"))
+        git("add", "project.yaml", cwd=tree)
+        git("commit", "-q", "-m", "seed", cwd=tree)
+        commit = git("rev-parse", "HEAD", cwd=tree).stdout.strip()
+        source = str(tree)
+        if variable:
+            monkeypatch.setenv("SHAPE_PIN_SOURCE_OPENXDOX", source)
+    result = run("--project", "codexDox", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--pin", f"openXdox@{commit}",
+                 "--referent-chain", chain, "--pin-source", source)
+    heard = result.stdout + result.stderr
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert "(5) the plan" in result.stdout, heard
+    assert result.returncode == 2, heard
+    assert "--link-source" not in step_four + result.stderr, heard
+    offered = [line.strip() for line in step_four.splitlines()
+               if line.strip().startswith("WARNING declared-unverified: ")]
+    if case == "three-links-first-tree":
+        assert offered == [
+            "WARNING declared-unverified: openYdox declaring a pin on openDox "
+            "is a fact in openYdox's own tree, which is not reachable here "
+            f"({LATER_LINK_WORDS}). The recorded chain still classifies."]
+        # One run says one fact one way: the plan's own WARNING.
+        assert offered[0] + "\n" in result.stderr, result.stderr
+    elif case == "three-links-no-source":
+        assert [line.partition("not reachable here (")[2] for line in offered
+                ] == [f"{FIRST_LINK_WORDS}). The recorded chain still "
+                      "classifies.",
+                      f"{LATER_LINK_WORDS}). The recorded chain still "
+                      "classifies."]
+        assert "REFUSED pin-source-no-path:" in result.stderr
+    elif case == "variable-first":
+        assert "[verified]" in step_four, step_four
+        assert (f"NOTE --pin-source {source}: not used — each link whose own "
+                "declaration is read had a more specific source "
+                "(SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout beside the "
+                "project).") in result.stderr, result.stderr
+    else:
+        assert (f"WARNING link-source-unreadable: {source} (--pin-source) "
+                "could not answer for openXdox: no such file or directory"
+                ) in result.stderr, result.stderr
+        assert "read as a PATH" not in result.stderr, result.stderr
+        assert offered, step_four
+        assert offered[0].endswith(
+            f"({FIRST_LINK_WORDS}). The recorded chain still classifies."
+        ), offered
     assert not (tmp_path / "remotes").exists()
