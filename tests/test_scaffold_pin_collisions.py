@@ -41,6 +41,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ORG, SCAFFOLD, WINDOWS_SKIP, git, run_script
+from test_adopt_pins import asked_what
 
 PROJECT = "Northwind"
 UTF8 = "utf-8"
@@ -388,8 +389,11 @@ def test_no_gh_command_runs_before_the_refusal(world):
     control = run_script(SCAFFOLD, *common, env=world["env"])
     assert control.returncode == 2, control.stdout + control.stderr
     assert "pin-unreadable" in control.stderr
-    assert world["log"].read_text(encoding=UTF8).startswith(
-        "api repos/opensoft/openGlass")
+    # It reaches `gh`, and only to READ: its one call is the GraphQL query
+    # asking the forge what the pin's id names (#651), which the stub
+    # refuses, so no other `gh` command runs.
+    assert world["log"].read_text(encoding=UTF8).splitlines() == [
+        asked_what(commit)]
 
 
 # --- accepted: one pin, and two different products ---------------------------
