@@ -11285,22 +11285,23 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
     asks them. A question of the walk above is recorded as before.
 
     AND AGAINST WHAT EACH LEG'S OWN WALK SAYS (#801). The doctor walks a
-    leg, not the source, and `walk` folds a directory by the files under
-    it in THAT leg. A person who splits by hand a directory the source's
-    walk folds leaves each leg part of it, and a part may fold another way
-    or not at all: `engine/` is 3 of 4 `.py`, exactly the 75%
-    `extension_majority:`, so it folds to code; `engine/c.py` answered
-    `spec` leaves the code leg's `engine/` 2 of 3, which does not fold, and
-    there `engine/x.md` is spec by its own extension. So `walk` is run
-    again over each leg's own files, the paths `_answered_legs` keeps in
-    it, gitlinks left out, as the doctor runs it over the leg, and each
-    entry covering a path that walk does not put in that leg is recorded
-    too, a question or a path it puts elsewhere. That walk keeps the files
-    the doctor sets aside in every leg (its `everywhere_patterns`: names
-    at the top of a leg, and `.github/`), which change how no other
-    directory folds. A plan left as `plan` wrote it keeps each such part
-    whole in its leg, where it folds as it did in the source, so this adds
-    no row to it.
+    leg, not the source, and `walk` folds a directory by the files under it
+    in THAT leg. A directory the source's walk folds, split by hand, leaves
+    part of it in each leg, and a part may fold another way or not at all:
+    `engine/` is 3 of 4 `.py`, exactly the 75% `extension_majority:`, so it
+    folds to code; with `engine/c.py` answered `spec`, the code leg's
+    `engine/` is 2 of 3, which does not fold, and there `engine/x.md` is
+    spec by its own extension. So `walk` is run again over each leg's own
+    files -- the paths `_answered_legs` keeps in it, gitlinks left out, as
+    the doctor runs it over the leg -- and an entry covering a path that
+    walk does not put in that leg is recorded too, whether the walk asks of
+    the path or puts it elsewhere. An entry `plan` wrote, kept whole in the
+    leg `plan` gave it, reads the same there, so a plan left as `plan`
+    wrote it gets no row from this walk. Before it walks, the doctor also
+    sets aside the files every repository carries (`everywhere_patterns`:
+    names at the top of a leg, and `.github/`), which change how no other
+    directory folds, and a name no report can carry, which can: this walk
+    keeps both, as the one above does.
 
     A SOURCE WITH NO SUCH ENTRY GETS "" and so the `project.yaml` it always
     got, byte for byte.

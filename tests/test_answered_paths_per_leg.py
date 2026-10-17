@@ -52,12 +52,21 @@ A_PY = "engine/a.py"
 B_PY = "engine/b.py"
 C_PY = "engine/c.py"
 X_MD = "engine/x.md"
+Q_ZZZ = "engine/q.zzz"
+NOTES = "engine/notes/"
+C_MD = "notes/c.md"
+Y_PY = "notes/y.py"
+THE_ISSUE = "the-issue"
+#: The record's key, and the doctor's for what it answered.
+ANSWERED = "answered_paths"
+UTF8 = "utf-8"
 #: Beside every source below: a front door the root keeps and a
 #: requirement the spec leg keeps, so that neither leg is seeded.
 BESIDE = {"README.md": "# Thing\n", "requirements/r.md": "# Requirement\n"}
+#: Three `.py` files under `engine/`.
+PY_FILES = {A_PY: "A = 1\n", B_PY: "B = 1\n", C_PY: "C = 1\n"}
 #: The issue's `engine/`: 3 of 4 files `.py`, exactly the 75% majority.
-ENGINE_FILES = {A_PY: "A = 1\n", B_PY: "B = 1\n", C_PY: "C = 1\n",
-                X_MD: "# Notes\n"}
+ENGINE_FILES = {**PY_FILES, X_MD: "# Notes\n"}
 #: The two `.py` files the split leaves in the code leg.
 KEPT = ((A_PY, "code"), (B_PY, "code"))
 
@@ -65,7 +74,7 @@ KEPT = ((A_PY, "code"), (B_PY, "code"))
 #: them, the entries a person splits it into, the rows `answered_paths:`
 #: needs)}`. Each split is one the doctor's first run disputed on main.
 SPLITS = {
-    "the-issue": (ENGINE_FILES, ENGINE,
+    THE_ISSUE: (ENGINE_FILES, ENGINE,
                   (*KEPT, (C_PY, "spec"), (X_MD, "code")),
                   [(C_PY, "spec"), (X_MD, "code")]),
     "the-other-file-dropped": (ENGINE_FILES, ENGINE,
@@ -77,24 +86,22 @@ SPLITS = {
     # 3 of 4 `.md`, so `notes/` goes to spec; one `.md` taken to code
     # leaves `notes/y.py` read as code in the spec leg.
     "a-spec-majority-split": (
-        {"notes/a.md": "# A\n", "notes/b.md": "# B\n", "notes/c.md": "# C\n",
-         "notes/y.py": "Y = 1\n"}, "notes/",
-        (("notes/a.md", "spec"), ("notes/b.md", "spec"),
-         ("notes/c.md", "code"), ("notes/y.py", "spec")),
-        [("notes/c.md", "code"), ("notes/y.py", "spec")]),
+        {"notes/a.md": "# A\n", "notes/b.md": "# B\n", C_MD: "# C\n",
+         Y_PY: "Y = 1\n"}, "notes/",
+        (("notes/a.md", "spec"), ("notes/b.md", "spec"), (C_MD, "code"),
+         (Y_PY, "spec")),
+        [(C_MD, "code"), (Y_PY, "spec")]),
     # One directory down: the row the code leg needs is the directory's.
     "a-nested-split": (
-        {A_PY: "A = 1\n", B_PY: "B = 1\n", C_PY: "C = 1\n",
-         "engine/notes/x.md": "# Notes\n"}, ENGINE,
-        (*KEPT, (C_PY, "spec"), ("engine/notes/", "code")),
-        [(C_PY, "spec"), ("engine/notes/", "code")]),
+        {**PY_FILES, NOTES + "x.md": "# Notes\n"}, ENGINE,
+        (*KEPT, (C_PY, "spec"), (NOTES, "code")),
+        [(C_PY, "spec"), (NOTES, "code")]),
     # An extension no class names is a question once it is outvoted no
     # more: a `note` on main, not MISPLACED.
     "a-question-left-over": (
-        {A_PY: "A = 1\n", B_PY: "B = 1\n", C_PY: "C = 1\n",
-         "engine/q.zzz": "q\n"}, ENGINE,
-        (*KEPT, (C_PY, "spec"), ("engine/q.zzz", "code")),
-        [(C_PY, "spec"), ("engine/q.zzz", "code")]),
+        {**PY_FILES, Q_ZZZ: "q\n"}, ENGINE,
+        (*KEPT, (C_PY, "spec"), (Q_ZZZ, "code")),
+        [(C_PY, "spec"), (Q_ZZZ, "code")]),
 }
 
 #: The controls, which main records the same way: a split whose rest still
@@ -126,7 +133,7 @@ def record_of(adopt, files: dict, parts: tuple) -> str:
 def rows_of(text: str) -> list:
     """`(path, leg)` for each `answered_paths:` row `text` holds, or []."""
     return [(row["path"], row["leg"])
-            for row in ((parse_yaml(text) or {}).get("answered_paths") or [])]
+            for row in ((parse_yaml(text) or {}).get(ANSWERED) or [])]
 
 
 # --- the record `execute` writes ---------------------------------------------
@@ -138,8 +145,8 @@ def test_the_issues_split_records_the_file_the_code_legs_walk_disputes(
     with the plan's reason and commit, beside `engine/c.py` in the spec
     leg, which main already recorded."""
     block = record_of(adoption_module(standard), ENGINE_FILES,
-                      SPLITS["the-issue"][2])
-    assert parse_yaml(block)["answered_paths"] == [
+                      SPLITS[THE_ISSUE][2])
+    assert parse_yaml(block)[ANSWERED] == [
         {"path": path, "leg": leg, "resolution": BY_HAND,
          "source_commit": SOURCE_COMMIT}
         for path, leg in ((C_PY, "spec"), (X_MD, "code"))], block
@@ -196,7 +203,7 @@ def adopt_split(standard: Path, base: Path, case: str) -> dict:
     source = base / "Thing"
     for name, body in {**BESIDE, **files}.items():
         (source / name).parent.mkdir(parents=True, exist_ok=True)
-        (source / name).write_text(body, encoding="utf-8")
+        (source / name).write_text(body, encoding=UTF8)
     git("init", "-q", "-b", "main", ".", cwd=source)
     commit_all(source, "a directory its extensions fold")
     tool = standard / "adopt-project.py"
@@ -205,11 +212,11 @@ def adopt_split(standard: Path, base: Path, case: str) -> dict:
                          str(source), "--org", ORG, "--project", "Northwind",
                          "--elected-on", "2026-10-17", "--elected-by", "T")
     assert planned.returncode == 0, planned.stderr
-    text = plan.read_text(encoding="utf-8")
+    text = plan.read_text(encoding=UTF8)
     if [path for path, _ in parts] == [entry]:
         assert f"  - path: {entry}\n    leg: {parts[0][1]}\n" in text, text
     else:
-        plan.write_bytes(split_by_hand(text, entry, parts).encode("utf-8"))
+        plan.write_bytes(split_by_hand(text, entry, parts).encode(UTF8))
     executed = run_script(tool, "execute", "--yes", "--plan", str(plan),
                           "--work-dir", str(base / "work"),
                           "--local-remote-dir", str(base / "remotes"))
@@ -225,8 +232,8 @@ def adopt_split(standard: Path, base: Path, case: str) -> dict:
 @pytest.fixture(scope="module")
 def adopted_the_issue(standard, tmp_path_factory) -> dict:
     """The issue's split, adopted."""
-    return adopt_split(standard, tmp_path_factory.mktemp("the-issue"),
-                       "the-issue")
+    return adopt_split(standard, tmp_path_factory.mktemp(THE_ISSUE),
+                       THE_ISSUE)
 
 
 @needs_filter_repo
@@ -238,8 +245,8 @@ def test_the_issues_split_is_compliant_on_the_doctors_first_run(
     COMPLIANT with the row `ok`, the code leg's `engine/x.md` answered by
     its row."""
     clone = adopted_the_issue["clone"]
-    manifest = parse_yaml((clone / "project.yaml").read_text(encoding="utf-8"))
-    assert manifest["answered_paths"] == [
+    manifest = parse_yaml((clone / "project.yaml").read_text(encoding=UTF8))
+    assert manifest[ANSWERED] == [
         {"path": path, "leg": leg, "resolution": BY_HAND,
          "source_commit": adopted_the_issue["commit"]}
         for path, leg in ((C_PY, "spec"), (X_MD, "code"))], manifest
@@ -248,13 +255,13 @@ def test_the_issues_split_is_compliant_on_the_doctors_first_run(
     assert (verdict, row["status"], row["detail"]["misplaced"]) == (
         COMPLIANT, "ok", []), row
     assert [(item["path"], item["answered_by"])
-            for item in row["detail"]["answered_paths"]] == [
+            for item in row["detail"][ANSWERED]] == [
         ("spec/engine/", [C_PY]), ("code/engine/x.md", [X_MD])], row["detail"]
 
 
 @pytest.fixture(scope="module", params=[case for case in CASES
                                         if case not in (
-                                            "the-issue",
+                                            THE_ISSUE,
                                             "the-other-file-in-the-root")])
 def adopted_by_hand(request, standard, tmp_path_factory) -> dict:
     """Each other case but the root's, which differs from the drop's only
@@ -272,9 +279,9 @@ def test_each_split_by_hand_is_compliant_on_the_doctors_first_run(
     needed; the doctor's first run reads each adoption COMPLIANT with the
     row `ok`."""
     clone = adopted_by_hand["clone"]
-    text = (clone / "project.yaml").read_text(encoding="utf-8")
+    text = (clone / "project.yaml").read_text(encoding=UTF8)
     rows = CASES[adopted_by_hand["case"]][3]
-    assert (rows_of(text), "answered_paths" in text) == (rows, bool(rows)), \
+    assert (rows_of(text), ANSWERED in text) == (rows, bool(rows)), \
         text
     result, verdict, row = placement(standard, clone)
     assert result.returncode == 0, result.stdout + result.stderr
