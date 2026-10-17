@@ -110,7 +110,7 @@ from test_doctor_legs_members_next import (
 #: Doctor B's crashing validator and unloaded manifest (#278, #298), from the
 #: module that owns them.
 from test_doctor_validator_rows import (
-    crashing, lockstep_lost, lost_gate, unloaded,
+    agent_files_lost, crashing, lockstep_lost, lost_gate, unloaded,
 )
 
 
@@ -257,6 +257,13 @@ def _placement_moved(standard, project, holder, tmp_path):
 def _agent_files_pinned(standard, project, holder, tmp_path):
     (project / "AGENTS-shape.md").unlink()
     return rows_of(doctor(standard, project, "--json"))["agent-files"]
+
+
+def _agent_files_pinned_lost_repo_shape(standard, project, holder, tmp_path):
+    # The same row where the root's own `validate-pins.py` lost its
+    # `repo_shape.py`: its WHY puts the file back before the gate (#776).
+    root = agent_files_lost(project, holder, tmp_path)
+    return rows_of(doctor(standard, root, "--json"))["agent-files"]
 
 
 def _agent_files_unpinned(standard, project, holder, tmp_path):
@@ -701,6 +708,11 @@ CASES = {
         _agent_files_pinned,
         "the pin has a `files:` row for it, so it was deleted rather than "
         "never copied; restore it from this repository's own history, then "),
+    "check_agent_files-pinned-lost-repo-shape": (
+        _agent_files_pinned_lost_repo_shape,
+        "the pin has a `files:` row for it, so it was deleted rather than "
+        "never copied; restore it from this repository's own history. To "
+        "confirm the digest, first `git -C "),
     "check_agent_files-unpinned": (
         _agent_files_unpinned,
         "no pin row names it, so it is reported upstream-added and taken, on "

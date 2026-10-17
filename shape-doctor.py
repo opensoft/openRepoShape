@@ -4881,6 +4881,25 @@ def own_bootstrap(root: Path, make_target: bool = False) -> bool:
     return re.search(r"(?m)^bootstrap\s*:", makefile) is not None
 
 
+def gate_line(ctx: Context, gate: tuple) -> tuple[Path, bool, str | None]:
+    """`(the copy of `gate` a row names, whether it is the root's own, the
+    line that runs it on the root)`: the line is None where neither copy is
+    readable, or where no `PYTHONPATH` can name the standard's template copy
+    (#278), because a line that cannot run is not printed (#276).
+
+    ONE DEFINITION for the rows that hand a reader the lockstep gate:
+    `lockstep_next`, for the `legs` and `members` rows, and the `agent-files`
+    row's confirm clause (#776). Both asked `validator_for` and
+    `pythonpath_unnamable` in the same words.
+    """
+    used, _, own_copy = validator_for(ctx, *gate)
+    if (not used.is_file()
+            or pythonpath_unnamable(ctx.shape, own_copy) is not None):
+        return used, own_copy, None
+    return used, own_copy, validator_command(
+        ctx.shape, used, own_copy, ["--root", str(ctx.root)])
+
+
 def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
     """`(the line, why it is the line)` for what NO checkout cures: the
     lockstep gate, built the way the `pins` and `family` rows build their
@@ -4906,12 +4925,9 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
     where HEAD no longer holds it. Its `why` says to run the gate once the
     file is back, and the sentence above follows it.
     """
-    used, _, own_copy = validator_for(ctx, *gate)
-    if (not used.is_file()
-            or pythonpath_unnamable(ctx.shape, own_copy) is not None):
+    used, own_copy, command = gate_line(ctx, gate)
+    if command is None:
         return None, None
-    command = validator_command(ctx.shape, used, own_copy,
-                                ["--root", str(ctx.root)])
     said = (f"no submodule update cures a {noun} whose gitlink "
             "or pin is missing or disagrees, or a mount git cannot "
             f"read a HEAD in. {used.name} prints what it finds and "
@@ -7613,6 +7629,33 @@ def pinned_paths(root: Path) -> set:
 LABEL_AGENT_FILES = "agent files"
 
 
+def confirm_digest(ctx: Context) -> str:
+    """The end of the `agent-files` WHY for a pinned copy that is gone: what
+    confirms its digest once it is back (#776).
+
+    THE GATE IS `validate-pins.py`, the root's own copy else the standard's
+    template copy, named as the validator rows name it (`gate_line`). The
+    sentence used to name the root's own copy whether or not the root had one,
+    and where the root has lost the `scripts/repo_shape.py` that copy imports
+    from beside itself it died on `ModuleNotFoundError` and exited 1, as the
+    `pins` row says. So there the sentence is #737's: put the file back first,
+    with the cure `lost_repo_shape_cure` gives the `pins` row, or, where HEAD
+    does not hold it, why no command does, and the gate after. Where no line
+    can be named (`gate_line`) nothing is said of a gate. Everywhere else it
+    is, byte for byte, what it was.
+    """
+    used, own_copy, command = gate_line(ctx, PINS_GATE)
+    if command is None:
+        return ""
+    if own_copy and not imports_repo_shape(ctx.shape, used, own_copy):
+        cure, why = lost_repo_shape_cure(
+            ctx, PINS_GATE[0], repo_shape_for(ctx.shape, used, own_copy),
+            command, again=False)
+        return ". To confirm the digest, " + (
+            f"first `{cure}`: {why}" if cure else why)
+    return f", then `{command}` to confirm the digest"
+
+
 def check_agent_files(ctx: Context) -> Row:
     present = {name: (ctx.root / name).is_file() for name in AGENT_FILES}
     absent = [name for name, there in present.items() if not there]
@@ -7637,10 +7680,8 @@ def check_agent_files(ctx: Context) -> Row:
                f"{quote_arg(first)}")
         why = ("the pin has a "
                "`files:` row for it, so it was deleted rather than never "
-               "copied; restore it from this repository's own history, then "
-               f"`{PYTHON} "
-               f"{quote_arg(ctx.root / 'scripts' / 'validate-pins.py')} "
-               f"--root {quote_arg(ctx.root)}` to confirm the digest")
+               "copied; restore it from this repository's own history"
+               + confirm_digest(ctx))
     elif "AGENTS-shape.md" in absent:
         fix = (f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} "
                f"check --root {quote_arg(ctx.root)} --upstream "

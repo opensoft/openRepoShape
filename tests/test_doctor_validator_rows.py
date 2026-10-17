@@ -996,6 +996,115 @@ def test_a_lockstep_line_whose_repo_shape_left_head_too_is_no_line(
         assert said in row["why"], (said, row["why"])
 
 
+# --- #776: the agent-files WHY names no gate that dies on the lost file -----
+#
+# The `agent-files` row of a pinned copy that is gone says to restore it and
+# then run `validate-pins.py` "to confirm the digest": a line that dies on
+# `import repo_shape` where the root lost that file, as the rows above did.
+
+#: The copy the row is about: pinned, so its absence is a FINDING.
+AGENT_COPY = "AGENTS-shape.md"
+#: What the row's WHY says before it names a gate, which no case changes.
+AGENT_FILES_WHY = ("the pin has a `files:` row for it, so it was deleted "
+                   "rather than never copied; restore it from this "
+                   "repository's own history")
+
+
+def agent_files_lost(project: Path, holder: dict, tmp_path: Path,
+                     committed: bool = False) -> Path:
+    """The root whose own `validate-pins.py` lost its `scripts/repo_shape.py`
+    (`committed`, or not) and whose pinned `AGENTS-shape.md` is deleted from
+    the tree, which HEAD still holds."""
+    root = lost_gate("pins", project, holder, tmp_path, committed)
+    (root / AGENT_COPY).unlink()
+    return root
+
+
+def agent_files_row(standard: Path, root: Path) -> dict:
+    row = rows_of(doctor(standard, root, "--json"))["agent-files"]
+    assert row["status"] == "FINDING", row
+    return row
+
+
+def test_the_agent_files_why_of_a_root_that_lost_repo_shape_names_the_cure(
+        standard, project, holder, tmp_path):
+    """The row's NEXT is what it was. The gate it names to confirm the digest
+    dies on the import before the file is back; the WHY says to put the file
+    back first, and the three lines it names, run in its order -- the NEXT,
+    the cure, the gate -- end with the gate passing."""
+    root = agent_files_lost(project, holder, tmp_path)
+    row = agent_files_row(standard, root)
+    module = doctor_module(standard)
+    restore = module.restore_from_head(root, LOST)
+    gate = rerun_of(standard, root, "pins")
+    assert row["next"] == (f"git -C {module.quote_arg(root)} checkout -- "
+                           f"{AGENT_COPY}"), row["next"]
+    assert row["why"].startswith(AGENT_FILES_WHY + ". "), row["why"]
+    assert f"first `{restore}`" in row["why"], row["why"]
+    assert f"`{gate}` once the file is back" in row["why"], row["why"]
+    dies = run_argv(gate.split())
+    assert dies.returncode == 1, dies.stdout + dies.stderr
+    assert "ModuleNotFoundError" in dies.stdout + dies.stderr
+    for line in (row["next"], restore, gate):
+        ran = run_argv(line.split())
+        assert ran.returncode == 0, (line, ran.stdout + ran.stderr)
+
+
+def test_the_agent_files_why_where_head_lacks_repo_shape_says_why_and_no_cure(
+        standard, project, holder, tmp_path):
+    """HEAD does not hold a file whose deletion was COMMITTED, so the WHY has
+    no cure to offer: it says where the file comes back from, and the gate to
+    run then. The NEXT is still the copy's own."""
+    root = agent_files_lost(project, holder, tmp_path, committed=True)
+    row = agent_files_row(standard, root)
+    assert row["next"] is not None, row
+    assert "first `" not in row["why"], row["why"]
+    gate = rerun_of(standard, root, "pins")
+    for said in (LOST, "parent of the commit", gate):
+        assert said in row["why"], (said, row["why"])
+
+
+def test_the_agent_files_why_of_a_root_that_keeps_repo_shape_is_unchanged(
+        standard, project, holder, tmp_path):
+    """The control: the WHY is the one it always was, byte for byte, with the
+    root's own gate and the same two arguments."""
+    root = project.resolve()
+    (root / AGENT_COPY).unlink()
+    module = doctor_module(standard)
+    expected = (f"{AGENT_FILES_WHY}, then `{module.PYTHON} "
+                f"{module.quote_arg(root / 'scripts' / 'validate-pins.py')} "
+                f"--root {module.quote_arg(root)}` to confirm the digest")
+    assert agent_files_row(standard, root)["why"] == expected
+
+
+def test_the_agent_files_why_of_a_root_with_no_pins_gate_names_the_standards(
+        standard, project):
+    """A root with no `validate-pins.py` of its own has the standard's template
+    copy named, with the `PYTHONPATH` it needs, as the validator rows name it,
+    and not a file the root does not have."""
+    root = project.resolve()
+    git("rm", "-q", "--", "scripts/validate-pins.py", cwd=root)
+    (root / AGENT_COPY).unlink()
+    shape = standard.resolve()
+    line = doctor_module(standard).validator_command(
+        shape, shape / TEMPLATE_FALLBACK["pins"]["template"], False,
+        ["--root", root])
+    assert agent_files_row(standard, root)["why"] == (
+        f"{AGENT_FILES_WHY}, then `{line}` to confirm the digest")
+
+
+def test_the_agent_files_why_names_no_gate_where_no_line_can_be_named(
+        standard, project, tmp_path):
+    """Neither copy of the gate is readable: nothing is said of one, as the
+    lockstep rows print no line there (#276)."""
+    hollow = standard_under(standard, tmp_path, "hollow")
+    (hollow / TEMPLATE_FALLBACK["pins"]["template"]).unlink()
+    root = project.resolve()
+    git("rm", "-q", "--", "scripts/validate-pins.py", cwd=root)
+    (root / AGENT_COPY).unlink()
+    assert agent_files_row(hollow, root)["why"] == AGENT_FILES_WHY
+
+
 # --- #278: the lockstep line of the `legs` and `members` rows ----------------
 
 def assert_no_pythonpath_line(*streams: str) -> None:
