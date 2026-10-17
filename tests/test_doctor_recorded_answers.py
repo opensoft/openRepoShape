@@ -66,6 +66,13 @@ EXAMPLES_ANSWER = "the specification cites the golden runs"
 RULES_ANSWER = "editor rules the code leg's tooling reads"
 #: A golden run, as two files the policy cannot call (`ambiguous-examples`).
 GOLDEN = ("examples/golden/case.json", "examples/golden/case.expected.json")
+#: A top-level file named as the staying-single record is, and what `kind:`
+#: makes of it (#691): the record the policy asks its own question of, or a
+#: file that is not one, which is asked the general question.
+RECORD_FILE = "single-repository.yaml"
+RECORD_KINDS = [
+    ("kind: single-repository-record\n", "ambiguous-single-repository-record"),
+    ("kind: release-config\n", "ambiguous-top-level-yaml")]
 MOVED_CLAUSE = ("1 submodule(s) moved out of the leg project.yaml's "
                 "`submodules:` records for them, which no longer holds them "
                 "(#525): spec/vendor/rules (recorded in the code leg)")
@@ -213,6 +220,26 @@ def test_an_answer_no_leg_holds_is_silent(standard, project):
         COMPLIANT, "ok", before["reason"]), row
 
 
+@pytest.mark.parametrize("body, rule", RECORD_KINDS,
+                         ids=["a-record", "not-a-record"])
+def test_an_answered_single_repository_yaml_names_the_rule_that_asked_it(
+        standard, project, body, rule):
+    """THE RULE IS THE QUESTION'S, AND `kind:` DECIDES WHICH QUESTION (#691).
+    A leg's file of this name answered in the code leg is listed under
+    `answered_paths` with the rule that asked it of that file: the record's
+    where it is the record, and the general one where it declares anything
+    else, as `adopt-project.py plan` asks it."""
+    stage(project / "code", RECORD_FILE, body)
+    record_answers(project, (RECORD_FILE, "code", "kept in the code leg"))
+    result, _, row = placement(standard, project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row["status"] == "ok", row
+    [answered] = row["detail"]["answered_paths"]
+    assert (answered["path"], answered["rule"]) == (
+        f"code/{RECORD_FILE}", rule), answered
+    assert f"code/{RECORD_FILE} (rule {rule})" in row["reason"], row["reason"]
+
+
 # --- L1-08: a submodule moved, and one removed ------------------------------
 
 def moved_rules(project: Path, *, gitmodules: bool = False) -> None:
@@ -358,7 +385,8 @@ def plan_entries(**legs: str) -> list:
     ({"examples_": "drop"}, []),
     ({"examples_a_": "spec", "examples_b_": "code"},
      [("examples/a/", "spec"), ("examples/b/", "code")]),
-    ({"examples_": "spec", "docs_": "code"}, [(EXAMPLES, "spec")]),
+    ({"examples_": "spec", "docs_": "code"},
+     [("docs/", "code"), (EXAMPLES, "spec")]),
 ], ids=["answered-spec", "answered-root", "answered-drop", "split-by-hand",
         "a-confident-rule-overridden"])
 def test_execute_records_the_policys_own_questions_answered_into_a_leg(
@@ -369,8 +397,9 @@ def test_execute_records_the_policys_own_questions_answered_into_a_leg(
     `root` and `drop` are in no leg. `.gitmodules` and a gitlink are
     `submodules:`'s, and `vendor/` is recorded only because the policy
     cannot call the file beside its gitlink. A path a confident rule called
-    and the plan answered the other way is not a question the policy asked
-    (outside #525)."""
+    and the plan answered into the other leg is recorded too (#655): the
+    plan's answer against the rule is the person's word, as a question's
+    is."""
     adopt = adoption_module(standard)
     legs = {README: "root", "src_": "code", "docs_": "spec",
             "dot_gitmodules": "code", "vendor_": "code", **answers}
@@ -406,11 +435,13 @@ def test_a_plan_that_answered_no_question_into_a_leg_appends_nothing(
 
 # --- end to end: `execute`, then the doctor ---------------------------------
 
-def adopt_source(standard: Path, base: Path, answers: dict) -> dict:
+def adopt_source(standard: Path, base: Path, answers: dict,
+                 overrides: dict | None = None) -> dict:
     """A source with a golden run under `examples/` and the editor rules as
     a submodule at `vendor/rules`, planned, answered as `answers` says
-    (`{entry: (leg, resolution)}`), executed into local remotes and cloned
-    recursively from the split branch."""
+    (`{entry: (leg, resolution)}`) and, against a rule, as `overrides` says
+    (`{entry: (the rule's leg, leg, resolution)}`, #655), executed into
+    local remotes and cloned recursively from the split branch."""
     dependency = base / "rules"
     dependency.mkdir()
     git("init", "-q", "-b", "main", ".", cwd=dependency)
@@ -436,8 +467,10 @@ def adopt_source(standard: Path, base: Path, answers: dict) -> dict:
                          "--elected-on", "2026-10-15", "--out", str(plan))
     assert written.returncode == 0, written.stdout + written.stderr
     text = plan.read_text(encoding="utf-8")
-    for path, (leg, why) in answers.items():
-        needle = f"  - path: {path}\n    leg: null\n"
+    edits = [(path, "null", leg, why) for path, (leg, why) in answers.items()]
+    edits += [(path, *answer) for path, answer in (overrides or {}).items()]
+    for path, was, leg, why in edits:
+        needle = f"  - path: {path}\n    leg: {was}\n"
         assert needle in text, (path, text)
         text = text.replace(needle, f"  - path: {path}\n    leg: {leg}\n"
                             f'    resolution: "{why}"\n')

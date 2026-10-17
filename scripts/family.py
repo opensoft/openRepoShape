@@ -166,7 +166,6 @@ from typing import NamedTuple
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    free_plan_secret_hint,
     COMMIT_RE, PROJECT_ID_RE, PYTHON, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError, checked_value,
     double_quoted, git_out, load_yaml, parse_yaml, recorded_gitlink,
@@ -195,6 +194,11 @@ from repo_shape import shell_line, shell_quoted  # noqa: E402
 # holder's clone URL under `--local-remote-dir` (#255, #433). It is the
 # question the scaffold and `adopt-project.py` ask of theirs.
 from shape_materialize import unwritable_reason  # noqa: E402
+# A reused holder's own visibility and the Free-plan secrets note, asked as
+# the scaffold asks them of its root (#660).
+from shape_materialize import (  # noqa: E402
+    free_plan_secrets_note, repository_visibility,
+)
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -1988,27 +1992,53 @@ def _create_holder_worktree(args, work: Path, values: dict, shape_commit: str,
     return None
 
 
-def _finish_holder_remote(args, repository: str, topic: str,
-                          local: bool) -> None:
-    """Set the holder's topic and print the private-visibility secrets hint.
+def _finish_holder_remote(args, repository: str, topic: str, local: bool,
+                          reuse: bool) -> None:
+    """Set the holder's topic and print the private-visibility NOTE and the
+    Free-plan secrets note.
 
     Neither applies to a local (no-network) remote. Split from `cmd_init`
     for #136.
+
+    BY THE HOLDER AS IT STANDS (#660). The holder is the repository whose
+    `validate` workflow reads the secrets. One this run created has the
+    run's `--visibility`; one `--reuse-empty-repo` reused keeps its own,
+    which `--visibility` never touched, and GitHub is asked for it
+    (`repository_visibility`). Both lines went by `--visibility` alone, so
+    a public holder reused under the default `private` was called private
+    and given the Free-plan hint. A reused holder whose visibility GitHub
+    does not give is `ROOT_VISIBILITY_UNREAD` and gets no NOTE: whether it
+    is private is the very question that went unanswered.
+
+    NO MEMBER IS NAMED THAT DOES NOT EXIST (#660). `init` mounts none, and
+    `add` mounts a member of any visibility, so the NOTE's "and its members
+    will be too" said what nothing here decides, and the hint's "<holder>
+    and its members are private" named members there are not. The hint
+    names the holder alone, as the scaffold's and adopt's name the root
+    (#602), and the NOTE says which members need the credential: those added
+    later that are private or internal.
     """
     if local:
         return
     run(["gh", "repo", "edit", repository, "--add-topic", topic])
     print(f"  topic     {topic} set on the holder")
-    if args.visibility in ("private", "internal"):
-        print(f"NOTE {repository} is {args.visibility} and its members will "
-              "be too: give it a way to read them — a GitHub App "
+    visibility = args.visibility
+    if reuse:
+        # `gh` has just set the topic, so an `OSError` here is no missing
+        # `gh` to refuse, only a visibility this run could not read.
+        try:
+            visibility = repository_visibility(repository)
+        except OSError:
+            visibility = None
+    if visibility in ("private", "internal"):
+        print(f"NOTE {repository} is {visibility}: give it a way to read the "
+              "members you add that are private or internal — a GitHub App "
               "(SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or "
               "a SHAPE_LEGS_TOKEN PAT with contents:read on the members AND "
               "their legs — or the `validate` check cannot check them out.")
-        hint = free_plan_secret_hint(
-            args.org, repository, f"{repository} and its members are")
-        if hint:
-            print(hint)
+    note = free_plan_secrets_note(args.org, repository, visibility)
+    if note:
+        print(note)
 
 
 def _print_next_steps(args, work: Path, folder: Path | None) -> None:
@@ -2461,7 +2491,7 @@ def cmd_init(args) -> int:
         return code
     head = git_out(["rev-parse", "HEAD"], cwd=work)[:12]
     print(f"  holder    {head} -> {url}")
-    _finish_holder_remote(args, repository, topic, local)
+    _finish_holder_remote(args, repository, topic, local, reuse)
     _print_next_steps(args, work, folder)
     return 0
 
