@@ -53,6 +53,7 @@ from conftest import (ADOPT, git, make_source_repo, resolve, run_script,
 
 PROJECT = "Northwind"
 UTF8 = "utf-8"
+CHECK = "check"
 UNCOVERED = "plan-uncovered"
 REMOTES = "remotes"
 WORK = "work"
@@ -200,7 +201,7 @@ def open_plan(adopter, world: World, text: str):
 
 def run_check(plan: Path):
     """`check --plan <plan>`, run as a person would."""
-    return run_script(ADOPT, "check", "--plan", str(plan))
+    return run_script(ADOPT, CHECK, "--plan", str(plan))
 
 
 def check_findings(plan: Path) -> list[str]:
@@ -968,7 +969,7 @@ def test_a_wrong_source_is_named_when_source_says_where_to_read_it(world):
     and its `commit:` is what `check` holds the tree to. On 5a5011d this was
     `AttributeError` from `source_commit`."""
     text = with_key(world.answered, "source", "source: 5\n")
-    result = run_script(ADOPT, "check", "--plan",
+    result = run_script(ADOPT, CHECK, "--plan",
                         str(write_edited(world, text)),
                         "--source", str(world.source))
     assert result.returncode == 1, result.stderr + result.stdout
@@ -1362,7 +1363,7 @@ def repository(role: str) -> str:
 
 def view(role: str) -> list[str]:
     """The `gh` call that asks whether `role`'s leg repository exists."""
-    return ["repo", "view", repository(role), "--json", "name"]
+    return ["repo", "view", repository(role), "--json", "nameWithOwner"]
 
 
 def leg_findings(text: str) -> list[str]:
@@ -1381,19 +1382,25 @@ def on_disk(tmp_path: Path, role: str) -> str:
 def on_github(role: str) -> str:
     return (f"FINDING {LEG_EXISTS}: {repository(role)}, the {role} leg's "
             "repository, already exists on GitHub: `gh repo view "
-            f"{repository(role)} --json name` finds it")
+            f"{repository(role)} --json nameWithOwner` finds it")
 
 
-def told(role: str, code: int, said: str) -> str:
-    """How a `gh repo view` that failed otherwise than not-found is named."""
-    return (f"`gh repo view {repository(role)} --json name` exited {code}: "
-            f"{said}")
+def told(role: str, what: str) -> str:
+    """How a `gh repo view` that failed otherwise than not-found, or
+    answered with no `nameWithOwner` to read, is named: the command, then
+    `what` it did."""
+    return f"`gh repo view {repository(role)} --json nameWithOwner` {what}"
 
 
-def unread(role: str, code: int, said: str) -> str:
+def exited(code: int, said: str) -> str:
+    """`told`'s `what` for a `gh` that exited `code`, saying `said` first."""
+    return f"exited {code}: {said}"
+
+
+def unread(role: str, what: str) -> str:
     return (f"FINDING {REMOTE_UNREADABLE}: whether {repository(role)}, the "
             f"{role} leg's repository, already exists on GitHub cannot be "
-            f"told: {told(role, code, said)}")
+            f"told: {told(role, what)}")
 
 
 def as_named(path: Path) -> Path:
@@ -1531,14 +1538,15 @@ def local_case(world: World, unwritable_folder, case: str) -> Path:
     return world.tmp / REMOTES
 
 
-@pytest.mark.parametrize("case", ["code-exists", "both-exist", *sorted(FOLDERS)])
+@pytest.mark.parametrize("case",
+                         ["code-exists", "both-exist", *sorted(FOLDERS)])
 def test_check_given_the_same_local_remote_dir_prints_what_execute_refuses(
         adopter, world, unwritable, case):
     """#417's one verdict: `check --local-remote-dir` said `plan ok` in
     every case `execute` then refused. It prints each finding now, word for
     word as `execute`'s refusal lists it, and fails."""
     local_remote_dir = local_case(world, unwritable, case)
-    checked = run_script(ADOPT, "check", "--plan", str(world.plan),
+    checked = run_script(ADOPT, CHECK, "--plan", str(world.plan),
                          "--local-remote-dir", str(local_remote_dir))
     assert checked.returncode == 1, checked.stderr + checked.stdout
     args = execute_args(world.tmp, world.plan)
@@ -1551,10 +1559,12 @@ def test_check_given_the_same_local_remote_dir_prints_what_execute_refuses(
 
 #: A `gh` that logs each call, as JSON, to $GH_STUB_LOG and answers as GitHub
 #: would for the repositories in $GH_STUB_EXISTING: `repo view` of one there
-#: finds it, and of any other says gh's not-found words, exit 1; `repo create`
-#: makes any other, and of one there, or of one in $GH_STUB_HIDDEN (a
-#: repository the token cannot see), says the name is taken. With
-#: $GH_STUB_VIEW_FAILS (`<exit> <words>`) every `repo view` fails so.
+#: finds it, answering with its `nameWithOwner`, and of any other says gh's
+#: not-found words, exit 1; `repo create` makes any other, and of one there,
+#: or of one in $GH_STUB_HIDDEN (a repository the token cannot see), says the
+#: name is taken. With $GH_STUB_VIEW_FAILS (`<exit> <words>`) every `repo
+#: view` fails so, and $GH_STUB_VIEW_ANSWERS (a JSON object) maps a
+#: repository to what its `repo view` prints, exit 0.
 GH_STUB = textwrap.dedent("""\
     import json, os, sys
     argv = sys.argv[1:]
@@ -1562,12 +1572,16 @@ GH_STUB = textwrap.dedent("""\
         log.write(json.dumps(argv) + "\\n")
     existing = os.environ.get("GH_STUB_EXISTING", "").split()
     failing = os.environ.get("GH_STUB_VIEW_FAILS")
+    answers = json.loads(os.environ.get("GH_STUB_VIEW_ANSWERS", "{}"))
     if argv[:2] == ["repo", "view"] and failing:
         code, said = failing.split(" ", 1)
         sys.stderr.write(said + "\\n")
         sys.exit(int(code))
+    if argv[:2] == ["repo", "view"] and argv[2] in answers:
+        sys.stdout.write(answers[argv[2]] + "\\n")
+        sys.exit(0)
     if argv[:2] == ["repo", "view"] and argv[2] in existing:
-        print(json.dumps({"name": argv[2].split("/")[-1]}))
+        print(json.dumps({"nameWithOwner": argv[2]}))
         sys.exit(0)
     if argv[:2] == ["repo", "view"]:
         sys.stderr.write("GraphQL: Could not resolve to a Repository with "
@@ -1679,7 +1693,7 @@ def test_a_view_that_fails_otherwise_is_refused_by_name(
     monkeypatch.setenv("GH_STUB_VIEW_FAILS", f"{code} {said}")
     refusal = refused_by(adopter, against_github(world))
     assert refusal.code == REMOTE_UNREADABLE
-    assert leg_findings(refusal.detail) == [unread(role, code, said)
+    assert leg_findings(refusal.detail) == [unread(role, exited(code, said))
                                             for role in ROLES]
     assert github.calls() == [view(SPEC), view(CODE)]
 
@@ -1732,10 +1746,116 @@ def test_check_notes_a_view_that_fails_otherwise_and_still_passes(
     notes = [line for line in checked.stdout.splitlines()
              if line.startswith(COULD_NOT_ASK)]
     assert [role for role in ROLES
-            if any(told(role, code, said) in note for note in notes)] == \
+            if any(told(role, exited(code, said)) in note
+                   for note in notes)] == \
         list(ROLES), notes
     assert len(notes) == len(ROLES), notes
     assert github.calls() == [view(SPEC), view(CODE)]
+
+
+def answering(monkeypatch, role: str, printed: str) -> None:
+    """`gh repo view` of `role`'s leg repository exits 0 and prints
+    `printed`; the other leg's is not found."""
+    monkeypatch.setenv("GH_STUB_VIEW_ANSWERS",
+                       json.dumps({repository(role): printed}))
+
+
+def named_as(name_with_owner: str) -> str:
+    """GitHub's answer to `--json nameWithOwner`, naming `name_with_owner`."""
+    return json.dumps({"nameWithOwner": name_with_owner})
+
+
+#: Names GitHub answers a view of the code leg's name with when it only
+#: redirects that name: a repository renamed away from it, and one moved
+#: to another owner.
+REDIRECTS = {
+    "renamed": f"{ORG}/{PROJECT}-code-old",
+    "transferred": f"elsewhere/{PROJECT}-code",
+}
+
+
+class LegsMade(Exception):
+    """Raised as `_create_leg_remotes` returns, to stop `execute` there."""
+
+
+@pytest.mark.parametrize("redirect", sorted(REDIRECTS))
+def test_a_name_github_only_redirects_is_free(adopter, world, github,
+                                              monkeypatch, redirect):
+    """gh's GraphQL follows a rename or a transfer, so `gh repo view` of a
+    name a repository was renamed or moved away from exits 0 and answers
+    with the name it has now. That name is free, and `gh repo create` takes
+    it over: `check` finds nothing, and `execute` goes on to both `repo
+    create` calls. Exit 0 alone is not "taken"."""
+    answering(monkeypatch, CODE, named_as(REDIRECTS[redirect]))
+    checked = run_check(world.plan)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert leg_findings(checked.stderr) == []
+    assert COULD_NOT_ASK not in checked.stdout, checked.stdout
+    assert github.calls() == [view(SPEC), view(CODE)]
+    github.log.unlink()
+    real = adopter._create_leg_remotes
+
+    def then_stop(*args, **named):
+        real(*args, **named)
+        raise LegsMade
+
+    monkeypatch.setattr(adopter, "_create_leg_remotes", then_stop)
+    monkeypatch.setattr(adopter, "_free_plan_hint_by_the_root",
+                        lambda *_: None)
+    with pytest.raises(LegsMade):
+        adopter.cmd_execute(against_github(world))
+    assert github.calls()[:2] == [view(SPEC), view(CODE)]
+    assert github.calls(3)[2:] == [["repo", "create", repository(SPEC)],
+                                   ["repo", "create", repository(CODE)]]
+
+
+def test_a_name_github_answers_in_another_case_is_taken(adopter, world,
+                                                        github, monkeypatch):
+    """GitHub compares names without case, so an answer naming the leg's
+    repository in other letters is that repository: taken, in `check` and
+    `execute` alike, with no `repo create`."""
+    answering(monkeypatch, CODE,
+              named_as(f"{ORG.upper()}/{PROJECT.lower()}-CODE"))
+    checked = run_check(world.plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert leg_findings(checked.stderr) == [on_github(CODE)]
+    refusal = refused_by(adopter, against_github(world))
+    assert refusal.code == LEG_EXISTS
+    assert leg_findings(refusal.detail) == [on_github(CODE)]
+    assert github.calls() == [view(SPEC), view(CODE)] * 2
+
+
+#: Answers, exit 0, that hold no `nameWithOwner` to read, and how each is
+#: named after the command: `(printed, what)`.
+UNREADABLE_ANSWERS = {
+    "not-json": (f"{PROJECT}-code", "exited 0, and what it printed holds no "
+                 f"`nameWithOwner`: {PROJECT}-code"),
+    "no-field": (json.dumps({"name": f"{PROJECT}-code"}),
+                 "exited 0, and what it printed holds no `nameWithOwner`: "
+                 + json.dumps({"name": f"{PROJECT}-code"})),
+    "nothing": ("", "exited 0 and printed nothing"),
+}
+
+
+@pytest.mark.parametrize("answer", sorted(UNREADABLE_ANSWERS))
+def test_an_answer_with_no_name_to_read_is_unreadable(adopter, world, github,
+                                                      monkeypatch, answer):
+    """An answer that is not JSON, or holds no `nameWithOwner`, says
+    nothing about the name: `execute` refuses it as
+    `adopt-remote-unreadable`, naming the command and what it printed, and
+    `check` notes it and passes, as for any view gh could not answer."""
+    printed, what = UNREADABLE_ANSWERS[answer]
+    answering(monkeypatch, CODE, printed)
+    checked = run_check(world.plan)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert leg_findings(checked.stderr) == []
+    notes = [line for line in checked.stdout.splitlines()
+             if line.startswith(COULD_NOT_ASK)]
+    assert len(notes) == 1 and told(CODE, what) in notes[0], notes
+    refusal = refused_by(adopter, against_github(world))
+    assert refusal.code == REMOTE_UNREADABLE
+    assert leg_findings(refusal.detail) == [unread(CODE, what)]
+    assert github.calls() == [view(SPEC), view(CODE)] * 2
 
 
 def test_a_name_github_hides_still_gets_the_notice_once_the_spec_leg_exists(
@@ -1747,9 +1867,9 @@ def test_a_name_github_hides_still_gets_the_notice_once_the_spec_leg_exists(
     monkeypatch.setenv("GH_STUB_HIDDEN", repository(CODE))
     with pytest.raises(adopter.CommandFailed):
         adopter.cmd_execute(against_github(world))
-    assert github.calls(3) == [view(SPEC)[:3], view(CODE)[:3],
-                               ["repo", "create", repository(SPEC)],
-                               ["repo", "create", repository(CODE)]]
+    assert github.calls()[:2] == [view(SPEC), view(CODE)]
+    assert github.calls(3)[2:] == [["repo", "create", repository(SPEC)],
+                                   ["repo", "create", repository(CODE)]]
     err = capsys.readouterr().err
     assert (f"{LATE_NOTICE}: `https://github.com/{repository(SPEC)}.git` "
             "exists, and nothing is pushed to it.") in err

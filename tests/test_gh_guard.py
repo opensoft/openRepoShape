@@ -115,10 +115,12 @@ def test_the_two_probes_answer_as_a_gh_with_no_login(gh_guard, request):
 def test_whether_a_repository_exists_is_answered_as_a_gh_with_no_login(
         gh_guard, request):
     """`adopt-project.py check` asks `gh repo view <owner>/<name> --json
-    name` of each leg it would create (#798). The guard answers as a `gh`
-    with no login does, exit 4 and gh's own words, logs it as a probe, and
-    the per-test check passes it. Any other `repo view` is still refused."""
-    asked = ["repo", "view", "testorg/Northwind-spec", "--json", "name"]
+    nameWithOwner` of each leg it would create (#798). The guard answers as
+    a `gh` with no login does, exit 4 and gh's own words, logs it as a
+    probe, and the per-test check passes it. Any other `repo view` is still
+    refused."""
+    asked = ["repo", "view", "testorg/Northwind-spec", "--json",
+             "nameWithOwner"]
     result = run([guard_launcher(gh_guard), *asked])
     assert result.returncode == NO_LOGIN_EXIT, result.stdout + result.stderr
     assert result.stdout == ""
@@ -131,11 +133,39 @@ def test_whether_a_repository_exists_is_answered_as_a_gh_with_no_login(
     for near in (["repo", "view", "testorg/Northwind-spec"],
                  ["repo", "view", "testorg/Northwind", "--json",
                   "visibility"],
-                 ["repo", "view", "--web", "--json", "name"],
-                 ["repo", "view", "testorg/a/b", "--json", "name"],
+                 ["repo", "view", "testorg/Northwind-spec", "--json",
+                  "name"],
+                 ["repo", "view", "--web", "--json", "nameWithOwner"],
+                 ["repo", "view", "testorg/a/b", "--json", "nameWithOwner"],
                  ["repo", "create", "testorg/Northwind-spec", "--json",
-                  "name"]):
+                  "nameWithOwner"]):
         assert failure([record(near, "")]) is not None, near
+
+
+#: The argv `scaffold-project.py` (`remote_is_empty`) and `family.py` run to
+#: ask whether a repository of their own exists, as each source spells it.
+THEIR_VIEW = '["gh", "repo", "view", repository, "--json", "name"]'
+
+
+def test_the_view_scaffold_and_family_ask_is_still_refused(gh_guard,
+                                                           request):
+    """The guard answers adopt's `--json nameWithOwner` alone (#798).
+    `scaffold-project.py` and `family.py` ask `gh repo view <owner>/<name>
+    --json name`, so a test of either that reaches gh with no stub of its
+    own is refused, exit 97, and failed at teardown, as before #798."""
+    for tool in (REPO / "scaffold-project.py", REPO / "scripts" / "family.py"):
+        assert THEIR_VIEW in tool.read_text(encoding="utf-8"), tool
+    asked = ["repo", "view", "acme/Atlas", "--json", "name"]
+    result = run([guard_launcher(gh_guard), *asked])
+    assert result.returncode == GUARD_EXIT, result.stdout + result.stderr
+    assert "tests/conftest.py" in result.stderr, result.stderr
+    lines = gh_guard.take()
+    assert [(kind, argv) for kind, argv, _ in calls(lines)] == [
+        ("refused", asked)]
+    assert calls(lines)[0][2].startswith(this_test(request))
+    message = failure(lines)
+    assert message is not None
+    assert "gh repo view acme/Atlas --json name " in message, message
 
 
 def test_the_check_fails_on_a_refused_call_and_passes_on_probes_alone():

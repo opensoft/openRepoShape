@@ -93,10 +93,11 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            it makes either leg (#798): given `--local-remote-dir`, whether
            each leg's bare repository is already there and whether that
            directory can be made and written in, and without it, with `gh
-           repo view`, whether GitHub already has either leg's name -- a
-           NOTE and no finding where gh cannot answer, so that `check`
-           stays usable offline. It prints what will happen and changes
-           nothing.
+           repo view --json nameWithOwner`, whether GitHub already has
+           either leg's name, where a name GitHub only redirects (a
+           repository renamed or moved away) is free -- a NOTE and no
+           finding where gh cannot answer, so that `check` stays usable
+           offline. It prints what will happen and changes nothing.
   execute  asks about both legs before it makes either (#798), then
            creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
@@ -127,7 +128,8 @@ leads to asked again of the disk, a climb from its own work directory.
 And last, before it makes either leg, it refuses at once everything that
 stands in their way (#798), as `check` finds it: a leg repository already
 there, on the disk or on GitHub, a `--local-remote-dir` that cannot hold
-them, and a `gh repo view` that fails otherwise than gh's not-found answer.
+them, and a `gh repo view` that fails otherwise than gh's not-found answer
+or answers with no `nameWithOwner` to read.
 
 THE NEW PROJECT MUST BE ABLE TO HOLD WHAT `execute` WRITES INTO IT (#261).
 `execute` puts the plan's values into the root's `project.yaml`, and the
@@ -186,6 +188,7 @@ import argparse
 import contextlib
 import datetime as _dt
 import itertools
+import json
 import os
 import re
 import shlex
@@ -281,7 +284,8 @@ from shape_materialize import (  # noqa: E402
 # What `execute` asks of both leg repositories before it makes either, and
 # `check` with it (#798): the folder `--local-remote-dir` names, asked as the
 # scaffold and `family.py` ask theirs, and gh's not-found answer, the one
-# failure of `gh repo view` that means a repository is absent (#609).
+# failure of `gh repo view` that means a repository is absent (#609); the
+# other is an answer naming another repository, a redirect.
 from shape_materialize import (  # noqa: E402
     CANNOT_WRITE_IN, GH_NOT_FOUND_WORDS, folder_in_the_way,
 )
@@ -9642,7 +9646,8 @@ def cmd_check(args) -> int:
         # LAST, as `execute` asks it last, right before it makes either leg
         # (#798), and only of names `execute` would get that far with: what
         # stands in the way of the two leg repositories, of the disk under
-        # `--local-remote-dir` and otherwise of GitHub, with `gh repo view`.
+        # `--local-remote-dir` and otherwise of GitHub, with `gh repo view
+        # --json nameWithOwner`.
         # A question gh cannot answer is a NOTE here, not a finding.
         legs, fixes, unasked = _leg_remote_findings(plan, names,
                                                     local_remote_dir)
@@ -10254,11 +10259,17 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
 #   then the code leg's, and then whether the directory can be made and
 #   written in, asked as the scaffold and `family.py` ask theirs
 #   (`folder_in_the_way`, #609), which makes nothing;
-# - against GitHub, `gh repo view` of the spec leg's name and then the code
-#   leg's. ONLY GH'S NOT-FOUND ANSWER MEANS ABSENT, as #609 has it for the
-#   scaffold: a name that exists is `leg-remote-exists` before any `gh repo
-#   create`, and a view that fails otherwise is `adopt-remote-unreadable`,
-#   naming the command, its exit and gh's first line.
+# - against GitHub, `gh repo view <name> --json nameWithOwner` of the spec
+#   leg's name and then the code leg's. A NAME IS TAKEN ONLY WHEN GITHUB
+#   ANSWERS WITH IT: gh's GraphQL follows a rename or a transfer, so the
+#   answer counts only when its `nameWithOwner` is the name asked, compared
+#   without case as GitHub compares names; an answer naming another
+#   repository is a redirect, which `gh repo create` takes over, and the
+#   name is free. A name that exists is `leg-remote-exists` before any `gh
+#   repo create`. Gh's not-found answer means absent, as #609 has it for the
+#   scaffold; a view that fails otherwise, or answers with no
+#   `nameWithOwner` to read, is `adopt-remote-unreadable`, naming the
+#   command and what it said.
 #
 # WHERE: right before `_create_leg_remotes`, after the yes, where
 # `leg-remote-exists` was always refused. Every refusal before it keeps its
@@ -10302,8 +10313,9 @@ ON_GITHUB_FIX = (
     "Then run `check` and `execute` again.")
 UNREAD_FIX = (
     "Only gh's own answer that a repository does not exist (exit 1, "
-    f"`{GH_NOT_FOUND_WORDS}`) lets `execute` create one; any other failure "
-    "says nothing about whether it is there. Check `gh auth status` (`gh "
+    f"`{GH_NOT_FOUND_WORDS}`), or one naming another repository that the "
+    "name redirects to, lets `execute` create one; any other answer says "
+    "nothing about whether it is there. Check `gh auth status` (`gh "
     "auth login` where it names a token that is missing, bad or expired), "
     "or let a rate limit or an outage pass, then run `execute` again.")
 FOLDER_FIX = (
@@ -10378,15 +10390,31 @@ def _first_said(output: str) -> str:
                           else _spelled_character(char) for char in lines[0])
 
 
+def _name_with_owner(answer: str) -> str | None:
+    """The `nameWithOwner` a `gh repo view --json nameWithOwner` answer
+    names, or None for anything else: not JSON, not an object, no such
+    field, or one that is not a name."""
+    try:
+        value = json.loads(answer)
+    except ValueError:
+        return None
+    value = value.get("nameWithOwner") if isinstance(value, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
 def _in_the_way_on_github(role: str, repository: str) -> tuple | None:
-    """GitHub's answer for one leg's `repository`, by `gh repo view`: None
-    when gh says it does not exist, `leg-remote-exists` when it does, and
-    `adopt-remote-unreadable` when gh failed otherwise or could not be run,
-    which says nothing either way (#609)."""
-    command = ["gh", "repo", "view", repository, "--json", "name"]
+    """GitHub's answer for one leg's `repository`, by `gh repo view --json
+    nameWithOwner`: `leg-remote-exists` when GitHub answers with that very
+    name, compared without case as GitHub compares names; None when gh
+    says it does not exist (#609), or answers with another repository's
+    name, which is a redirect left by a rename or a transfer, a name `gh
+    repo create` takes over; and `adopt-remote-unreadable` when gh failed
+    otherwise, could not be run or answered with no `nameWithOwner` to
+    read, which says nothing either way."""
+    command = ["gh", "repo", "view", repository, "--json", "nameWithOwner"]
     shown = " ".join(command)
     try:
-        run(command)
+        answer = run(command)
     except CommandFailed as exc:
         if exc.code == 1 and GH_NOT_FOUND_WORDS in exc.output:
             return None
@@ -10394,9 +10422,20 @@ def _in_the_way_on_github(role: str, repository: str) -> tuple | None:
     except OSError as exc:
         how = f"`gh` could not be run: {exc}"
     else:
-        return (LEG_REMOTE_EXISTS,
-                f"{repository}, the {role} leg's repository, already exists "
-                f"on GitHub: `{shown}` finds it", ON_GITHUB_FIX, "")
+        found = _name_with_owner(answer)
+        if found is None:
+            how = (f"`{shown}` exited 0, and what it printed holds no "
+                   f"`nameWithOwner`{_first_said(answer)}" if answer.strip()
+                   else f"`{shown}` exited 0 and printed nothing")
+        elif found.lower() == repository.lower():
+            return (LEG_REMOTE_EXISTS,
+                    f"{repository}, the {role} leg's repository, already "
+                    f"exists on GitHub: `{shown}` finds it", ON_GITHUB_FIX,
+                    "")
+        else:
+            # GitHub followed a rename or a transfer away from this name:
+            # the name itself is free, and `gh repo create` takes it over.
+            return None
     named = f"{repository}, the {role} leg's repository,"
     return (REMOTE_UNREADABLE,
             f"whether {named} already exists on GitHub cannot be told: {how}",
@@ -13696,8 +13735,11 @@ def main(argv: list[str] | None = None) -> int:
                             "there and whether this directory can be made "
                             "and written in. Nothing is created there. "
                             "Without it, `check` asks GitHub with `gh repo "
-                            "view` whether either leg's name exists, and a "
-                            "`gh` that cannot answer is a NOTE.")
+                            "view --json nameWithOwner` whether either "
+                            "leg's name exists (a name GitHub only "
+                            "redirects to a repository renamed or moved "
+                            "away does not), and a `gh` that cannot answer "
+                            "is a NOTE.")
     check.add_argument(
         "--work-dir", type=Path, default=None,
         help=_work_dir_help(

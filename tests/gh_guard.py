@@ -36,15 +36,19 @@ word of the first line of `gh --version`, and `_check_gh` there and
 status`. Any other argv -- `gh version`, `gh auth status --hostname x` -- is
 not a probe and is refused.
 
-ONE MORE CALL IS ANSWERED (#798): `gh repo view <owner>/<name> --json name`,
-which `adopt-project.py check` asks of each leg repository it would create,
-as `execute` does before it makes either. Every `check` in this suite that is
-given no `--local-remote-dir` asks it twice, and refused, each such test
-would fail. It is answered as a `gh` with no login answers it, the state the
-other two answers describe: exit 4 and gh's own words (`NEEDS_A_LOGIN`), so
-`check` prints, on every machine, the NOTE that it could not ask, and still
-passes. It is logged as a probe. Only that exact shape is answered: `--json
-visibility`, or any other field, and any other `repo view`, are refused.
+ONE MORE CALL IS ANSWERED (#798): `gh repo view <owner>/<name> --json
+nameWithOwner`, which `adopt-project.py check` asks of each leg repository it
+would create, as `execute` does before it makes either. Every `check` in this
+suite that is given no `--local-remote-dir` asks it twice, and refused, each
+such test would fail. It is answered as a `gh` with no login answers it, the
+state the other two answers describe: exit 4 and gh's own words
+(`NEEDS_A_LOGIN`), so `check` prints, on every machine, the NOTE that it
+could not ask, and still passes. It is logged as a probe. Only that exact
+shape is answered: `--json name`, `--json visibility` or any other field,
+and any other `repo view`, are refused. SO IT ANSWERS ADOPT'S CALL ALONE:
+`scaffold-project.py` and `family.py` ask whether their own repositories
+exist with `--json name`, so a test of either that reaches gh with no stub
+of its own is still failed at teardown (`tests/test_gh_guard.py`).
 
 STANDARD LIBRARY ONLY, and importable: `tests/conftest.py` and
 `tests/test_gh_guard.py` read the same table, the same record format and the
@@ -97,8 +101,8 @@ NEEDS_A_LOGIN = (
     "API authentication token.")
 NO_LOGIN_EXIT = 4
 
-#: `repo view <owner>/<name> --json name`: one owner and one name, as a
-#: plan names them (an `org:` GitHub would refuse, `a+b`, included), with no
+#: `repo view <owner>/<name> --json nameWithOwner`: one owner and one name, as
+#: a plan names them (an `org:` GitHub would refuse, `a+b`, included), with no
 #: space or further `/`, and no option.
 ASKS_WHETHER_IT_EXISTS = re.compile(r"[^\s/-][^\s/]*/[^\s/]+")
 
@@ -112,10 +116,11 @@ def answer(argv) -> tuple | None:
     if probe is not None:
         return probe
     if (len(argv) == 5 and argv[:2] == ["repo", "view"]
-            and argv[3:] == ["--json", "name"]
+            and argv[3:] == ["--json", "nameWithOwner"]
             and ASKS_WHETHER_IT_EXISTS.fullmatch(argv[2])):
         return NO_LOGIN_EXIT, "", NEEDS_A_LOGIN + "\n"
     return None
+
 
 #: The refusal, ONE line on stderr. `{argv}` is the call as `shown` spells it.
 REFUSAL = ("gh guard (tests/conftest.py): no test may run the operator's gh, "
@@ -129,7 +134,8 @@ _CONTROLS = {code: f"\\x{code:02x}" for code in (*range(32), 127)}
 
 def is_probe(argv) -> bool:
     """Whether `argv` is a call the guard answers (`answer`): one of the two
-    `PROBES`, exactly, or `repo view <owner>/<name> --json name`."""
+    `PROBES`, exactly, or `repo view <owner>/<name> --json nameWithOwner`.
+    """
     return answer(argv) is not None
 
 
@@ -176,8 +182,9 @@ def failure(lines) -> str | None:
     return ("tests/conftest.py's gh guard logged "
             f"{len(named)} line(s) that are not a call it answers (the "
             "machine row's two probes, and `repo view <owner>/<name> --json "
-            "name`) -- calls to gh made with no stub of the test's own ahead "
-            "of the guard on PATH, each refused:\n" + "\n".join(named) + "\n"
+            "nameWithOwner`) -- calls to gh made with no stub of the test's "
+            "own ahead of the guard on PATH, each refused:\n"
+            + "\n".join(named) + "\n"
             "No test may reach the operator's gh. A test that means to run "
             "gh puts a stub of its own first on PATH, as "
             "tests/test_neutral_pin_validator.py does.")

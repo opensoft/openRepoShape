@@ -139,18 +139,19 @@ def gh_clones(adopter, monkeypatch, origin: Path) -> list:
     """`gh repo clone REPOSITORY <directory>` stood in for by a `git clone`
     of `origin`, its `origin` then set to the GitHub URL, as gh leaves it;
     a repository gh's own parser refuses -- a path -- fails as gh fails it,
-    and any other repository is not found. `gh repo view`, which `check`
-    and `execute` ask of each leg repository before either is made (#798),
-    finds none, as GitHub answers for a name it does not have, and is not
-    recorded. Returns the list each other `gh` call's arguments are
-    recorded in."""
+    and any other repository is not found. `gh repo view <repository>
+    --json nameWithOwner`, which `check` and `execute` ask of each leg
+    repository before either is made (#798), finds none, as GitHub answers
+    for a name it does not have, and is not recorded. Returns the list each
+    other `gh` call's arguments are recorded in."""
     real = adopter.run
     calls: list = []
 
     def stand_in(args, *rest, **keywords):
         if args[0] != "gh":
             return real(args, *rest, **keywords)
-        if args[1:3] == ["repo", "view"]:
+        if args[1:3] == ["repo", "view"] and \
+                args[4:] == ["--json", "nameWithOwner"]:
             raise adopter.CommandFailed(
                 args, None, 1, "GraphQL: Could not resolve to a Repository")
         calls.append(list(args))
