@@ -61,6 +61,9 @@ from shape_materialize import SHAPE_REPOSITORY, CommandFailed  # noqa: E402
 
 UPDATE = REPO / "update-shape.py"
 BRANCH = "shape/update-landing"
+#: How every push names BRANCH, the run's and both NEXT lines': in full
+#: on both sides, so a tag of its name cannot take it (#674).
+PUSHED = f"refs/heads/{BRANCH}:refs/heads/{BRANCH}"
 PIN = "contracts/shape-pin.yaml"
 #: The copied file upstream commit C changes, and only C (#333).
 PINS = "scripts/validate-pins.py"
@@ -291,7 +294,7 @@ def test_a_failed_pull_request_on_an_unpushed_branch_pushes_first(
     assert len(calls) == 1, calls
     assert calls[0][:2] == ["pr", "create"], calls
     push = shlex.join(["git", "-C", str(root.path), "push", "-u", "--",
-                       "origin", BRANCH])
+                       "origin", PUSHED])
     assert next_line_of(result.stdout) == (
         f"NEXT  {push} && " + shlex.join(["gh", *calls[0]]))
     the_commit_stands(root, project)
@@ -404,8 +407,8 @@ def test_a_failed_push_is_named_and_its_next_line_pushes_first(root, project,
     result = apply(root, project, "--branch", BRANCH, *flags)
     assert result.returncode == 2, result.stdout + result.stderr
     assert f"REFUSED pushing {BRANCH}" in result.stderr
-    assert f"git push -q -u -- origin {BRANCH}" in result.stderr, (
-        "`--` ends git's options before the branch")
+    assert f"git push -q -u -- origin {PUSHED}" in result.stderr, (
+        "`--` ends git's options before the branch, named in full")
     assert "committing the re-synced shape" not in result.stderr
     assert "origin does not have it yet" in result.stderr
     assert "nothing was rolled back" in result.stderr
@@ -414,7 +417,7 @@ def test_a_failed_push_is_named_and_its_next_line_pushes_first(root, project,
 
     line = next_line_of(result.stdout)
     push = shlex.join(["git", "-C", str(root.path), "push", "-u", "--",
-                       "origin", BRANCH])
+                       "origin", PUSHED])
     assert line.startswith(f"NEXT  {push} && gh pr create "), line
     if "--pr" in flags:
         assert f"--repo testorg/{PROJECT} --base main --head {BRANCH} " \

@@ -45,7 +45,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, git, load_without_bytecode
+from conftest import (REPO, git, load_without_bytecode, skip_message,
+                      skip_where_a_name_cannot_be_not_utf_8,
+                      skip_where_fsencode_gives_a_surrogate_no_byte,
+                      windows_fsencode)
 from test_bootstrap_spelling import (ASSEMBLY_TEMPLATE, DASH, bootstrap_of,
                                      edit, pin12, run)
 from test_stdout_encoding import child_environ, run_tool_bytes
@@ -363,12 +366,12 @@ def test_a_name_that_is_not_utf8_is_still_carried_and_the_branch_made(
     `os.fsencode` carries it, and git is handed that byte, as on origin/main.
     `--branch` is the only way it reaches step (a) with the validators out of
     it (the manifest validator names it, #280's rule for a surrogate). Made on
-    a disk that takes the byte, skipped on one that does not."""
-    probe = tmp_path / "probe-\udcff"
-    try:
-        probe.write_bytes(b"")
-    except (OSError, ValueError):
-        pytest.skip("this disk takes no file name with the byte 0xff")
+    a system and a disk that take the byte, skipped on one that does not: the
+    shared helper asks `os.fsencode` first, which is what Windows answers
+    (NTFS takes the name, and `_argument_fault` refuses the branch there,
+    which `test_where_a_surrogate_is_three_bytes_and_no_byte_it_is_refused`
+    holds), and then the disk, which macOS refuses (#663)."""
+    skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     code, out, err = run(bootstrap_of(project), "--skip-validators",
                          "--branch", "a\udcffb", encoding=ENCODING,
                          tmp_path=tmp_path, cwd=project)
@@ -384,10 +387,38 @@ def test_a_name_that_is_not_utf8_is_still_carried_and_the_branch_made(
         assert head == b"refs/heads/a\xffb\n", head
 
 
+def test_the_branch_test_skips_where_fsencode_makes_no_byte_of_the_surrogate(
+        project, tmp_path, monkeypatch):
+    """THE WINDOWS GUARD, EMULATED (#663, R455 F1): on NTFS the disk takes
+    `probe\\udcff`, the child is given `--branch a\\udcffb`, and
+    `_argument_fault` refuses U+DCFF where `os.fsencode` writes three bytes,
+    so the `branch a\\udcffb created` line the test expects is absent. With
+    Windows' `os.fsencode` the test is therefore SKIPPED, before it runs
+    bootstrap: it is called here as it is, under the emulation, and the legs
+    stand as they were."""
+    before = legs_state(project)
+    monkeypatch.setattr(os, "fsencode", windows_fsencode)
+    reason = skip_message(
+        test_a_name_that_is_not_utf8_is_still_carried_and_the_branch_made,
+        project, tmp_path)
+    assert reason is not None, "the test ran where `os.fsencode` gives no byte"
+    assert "os.fsencode" in reason, reason
+    assert legs_state(project) == before
+
+
 @pytest.fixture(scope="module")
 def bootstrap_module():
     """The template run as a module, no bytecode written beside it."""
     return load_without_bytecode(ASSEMBLY_TEMPLATE, "bootstrap_branch_bytes")
+
+
+@pytest.fixture(scope="module")
+def validator_module():
+    """`validate-manifest.py`, the same template, as a module: the file is a
+    pinned copy, so its functions are read and never changed here."""
+    return load_without_bytecode(
+        REPO / "templates" / "assembly-root" / "scripts"
+        / "validate-manifest.py", "validate_manifest_branch_bytes")
 
 
 @pytest.mark.parametrize("branch", [
@@ -402,10 +433,26 @@ def test_a_branch_the_system_carries_has_no_fault(bootstrap_module, branch):
     the byte-carrying surrogates U+DC80 to U+DCFF are the commands'. On a
     system whose `os.fsencode` does not carry U+DC80 and U+DCFF (Windows) the
     next test is the one that holds."""
-    if any("\udc80" <= char <= "\udcff" for char in branch) and len(
-            os.fsencode("\udcff")) != 1:
-        pytest.skip("this system's `os.fsencode` makes no byte of U+DCFF")
+    skip_where_fsencode_gives_a_surrogate_no_byte(branch)
     assert bootstrap_module._argument_fault(branch) is None
+
+
+@pytest.mark.parametrize("branch, skipped", [
+    pytest.param("a\udcffb", True, id="byte-carrying-surrogate"),
+    pytest.param("\udc80", True, id="the-first-one"),
+    pytest.param("release/1.2", False, id="plain"),
+    pytest.param("a\xe9b", False, id="text"),
+])
+def test_the_no_fault_test_skips_where_fsencode_makes_no_byte_of_the_branch(
+        bootstrap_module, monkeypatch, branch, skipped):
+    """THE WINDOWS GUARD, EMULATED (#663): under Windows' `os.fsencode` the
+    test above skips a branch holding a byte-carrying surrogate, which
+    `_argument_fault` refuses there, and runs every other (the next test
+    holds the refusal)."""
+    monkeypatch.setattr(os, "fsencode", windows_fsencode)
+    reason = skip_message(test_a_branch_the_system_carries_has_no_fault,
+                          bootstrap_module, branch)
+    assert (reason is not None) is skipped, reason
 
 
 @pytest.mark.parametrize("branch, fault", [
@@ -441,13 +488,28 @@ def test_where_a_surrogate_is_three_bytes_and_no_byte_it_is_refused(
     assert fault.startswith("U+DC"), fault
 
 
-def test_the_two_templates_agree_on_what_a_fault_is(bootstrap_module):
+def test_the_two_templates_agree_on_what_a_fault_is(bootstrap_module,
+                                                    validator_module):
     """`validate-manifest.py` finds ANY surrogate (#280's rule, which a UTF-8
     file settles), where `bootstrap.py` asks only whether a command can be
     given the value: so every value bootstrap refuses, the validator names."""
-    validator = load_without_bytecode(
-        REPO / "templates" / "assembly-root" / "scripts"
-        / "validate-manifest.py", "validate_manifest_branch_bytes")
     for branch in ("a\x00b", "a\ud83db", "a\ude00", "\udc00"):
         assert bootstrap_module._argument_fault(branch) is not None
-        assert validator._branch_finding("c", "w", branch) != []
+        assert validator_module._branch_finding("c", "w", branch) != []
+
+
+@pytest.mark.parametrize("role", ["spec", "code"])
+def test_the_leg_finding_names_the_leg_by_its_role_and_not_its_path(
+        validator_module, role):
+    """THE NAME IS THE ROLE (#663, R455 F3, mutant R2: naming `path` passed
+    all 54 tests). The templates' roles equal their paths (`spec` is mounted
+    at `spec`), so nothing the scaffold writes can tell the two apart, and
+    the finding is asked of a leg whose path is not its role, as a spec leg
+    mounted at `contracts` is. A unit test on the validator, which this file
+    loads for its last test too: it is a pinned copy and is not edited."""
+    [finding] = validator_module._leg_branch_findings(
+        [{"role": role, "path": "contracts", "branch": "a\x00b"}])
+    assert finding.startswith(
+        f"FINDING manifest-leg-branch: leg '{role}': branch is 'a\\x00b', "
+        "which holds U+0000, a NUL"), finding
+    assert "contracts" not in finding, finding
