@@ -32,11 +32,13 @@ wins, so neither asks git at all.
 NO NETWORK AND NO GITHUB. The scaffold and `family.py init` here are run as
 child processes into LOCAL bare remotes (`--local-remote-dir`), which never
 calls `gh`. A name that is not UTF-8 is made by `os.fsdecode` of its bytes, so
-a POSIX filesystem takes it as it is; where the disk refuses (macOS, Windows)
-the test skips, and where the ENVIRONMENT cannot carry a byte (Windows') the
-`user.name` rows skip. The checkout under test for `_shape_revision` and
-`_shape_snapshot` is a COPY of the standard in a repository of its own
-(`standard`), made dirty one test at a time, never this checkout.
+a POSIX filesystem takes it as it is; where the system cannot carry the byte
+the test skips (`make_file`: Windows' `os.fsencode` makes no byte of it, and
+macOS's disk refuses it), and where the ENVIRONMENT cannot carry a byte
+(Windows') the `user.name` rows skip. The checkout under test for
+`_shape_revision` and `_shape_snapshot` is a COPY of the standard in a
+repository of its own (`standard`), made dirty one test at a time, never this
+checkout.
 """
 
 from __future__ import annotations
@@ -49,7 +51,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ORG, PROJECT, REPO, cloned_just_pushed, git, run_script
+from conftest import (ORG, PROJECT, REPO, cloned_just_pushed, git, run_script,
+                      skip_message,
+                      skip_where_fsencode_gives_a_surrogate_no_byte,
+                      windows_fsencode)
 from test_bump_leg import branched, bump
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -85,12 +90,99 @@ QUOTE_PATH_OFF = {"GIT_CONFIG_COUNT": "1",
 
 def make_file(path: Path, data: bytes = b"on: [push]\n") -> None:
     """Write `data` at `path`, or skip: a name that is not UTF-8 needs a
-    filesystem that stores bytes (Linux does; APFS and NTFS refuse it)."""
+    system that carries the byte and a filesystem that stores it (Linux does;
+    APFS refuses it, and on Windows `os.fsencode` makes no byte of it, which
+    is asked FIRST: NTFS most likely takes the surrogate, and the file would
+    then not be the one the test means). A name that is UTF-8 is written."""
+    skip_where_fsencode_gives_a_surrogate_no_byte(path.name)
     try:
         path.write_bytes(data)
     except (OSError, UnicodeError) as exc:
         pytest.skip("this filesystem cannot hold a file name that is not "
                     f"UTF-8: {exc}")
+
+
+def test_make_file_skips_where_fsencode_makes_no_byte_and_writes_nothing(
+        tmp_path, monkeypatch):
+    """THE WINDOWS GUARD, EMULATED (#663, R423 N1): where `os.fsencode` gives
+    a surrogate three bytes, NTFS most likely takes `caf\\udce9.yml` anyway
+    and git for Windows would see another name, so `make_file` skips BEFORE it
+    writes, and nothing is on the disk. Linux takes the name, so a file
+    standing there would be the failure."""
+    monkeypatch.setattr(os, "fsencode", windows_fsencode)
+    target = tmp_path / NOT_UTF8
+    reason = skip_message(make_file, target)
+    assert reason is not None, "make_file wrote the name instead of skipping"
+    assert "os.fsencode" in reason, reason
+    assert not target.exists(), "the file was written before the skip"
+
+
+def test_make_file_writes_a_name_that_is_utf8_where_fsencode_makes_no_byte(
+        tmp_path, monkeypatch):
+    """The guard is for the byte and no wider: Windows holds `caf\\u00e9.yml`
+    as text, and the tests that use it must run there."""
+    monkeypatch.setattr(os, "fsencode", windows_fsencode)
+    target = tmp_path / UTF8
+    assert skip_message(make_file, target, b"on: [pull_request]\n") is None
+    assert target.read_bytes() == b"on: [pull_request]\n"
+
+
+def test_make_file_writes_the_name_that_is_not_utf8_where_the_system_has_it(
+        tmp_path):
+    """The control: where `os.fsencode` carries the byte and the disk takes it
+    (Linux), the file is written under the name that is not UTF-8, so the
+    guard skipped nothing."""
+    if len(os.fsencode("\udce9")) != 1:
+        pytest.skip("this system's `os.fsencode` makes no byte of U+DCE9")
+    target = tmp_path / NOT_UTF8
+    reason = skip_message(make_file, target, b"on: [push]\n")
+    if reason is not None and "filesystem" in reason:
+        pytest.skip(reason)
+    assert reason is None, reason
+    assert os.fsencode(target.name) == b"caf\xe9.yml"
+    assert target.read_bytes() == b"on: [push]\n"
+
+
+def assert_shown_without_hex_escapes(shown: str, output: str) -> None:
+    """Assert that the refusal's line for `caf\u00e9.yml` holds no literal
+    `\\x`, or skip where this system's file name encoding is not UTF-8.
+
+    On a Latin-1 host `make_file` writes the one byte 0xE9 for it, and the
+    tool, which decodes git's bytes as UTF-8, rightly prints `caf\\xe9.yml`:
+    the assertion would fail though the tool is right (#663, NIT-1). So it
+    is asked after the system's encoding is, and a system whose encoding is
+    not UTF-8 skips. (Where `make_file` could not write the name at all, an
+    ASCII host, it skipped already.)"""
+    if os.fsencode(UTF8) != UTF8.encode("utf-8"):
+        pytest.skip("this system's file name encoding is not UTF-8, so a "
+                    "UTF-8 name is not written as the bytes the tool decodes")
+    assert "\\x" not in shown, output
+
+
+def test_the_hex_escape_check_skips_where_the_file_name_encoding_is_not_utf_8(
+        monkeypatch):
+    """THE LATIN-1 HOST, EMULATED (#663, NIT-1): `os.fsencode` gives the name
+    `caf\u00e9.yml` as the one byte 0xE9, the line holds a `\\x`, and the
+    check skips, where it would otherwise fail on a tool that is right."""
+    monkeypatch.setattr(os, "fsencode", lambda name: name.encode("latin-1"))
+    reason = skip_message(assert_shown_without_hex_escapes,
+                          r"    M .github/workflows/caf\xe9.yml", "output")
+    assert reason is not None, "the check asserted instead of skipping"
+    assert "UTF-8" in reason, reason
+
+
+def test_the_hex_escape_check_asserts_where_the_file_name_encoding_is_utf_8(
+        monkeypatch):
+    """The control: Windows' `os.fsencode` (emulated), like Linux's and
+    macOS's, is UTF-8 for text, so the check is not skipped, and it still
+    fails a line that holds a `\\x` and passes one that does not."""
+    monkeypatch.setattr(os, "fsencode", windows_fsencode)
+    reason = skip_message(assert_shown_without_hex_escapes,
+                          "    M .github/workflows/caf\u00e9.yml", "output")
+    assert reason is None, reason
+    with pytest.raises(AssertionError):
+        skip_message(assert_shown_without_hex_escapes,
+                     r"    M .github/workflows/caf\xc3\xa9.yml", "output")
 
 
 def git_bytes(*args: str, cwd: Path) -> bytes:
@@ -206,18 +298,23 @@ def test_a_name_that_is_utf8_under_quote_path_false_is_still_refused(
     Its bytes decode, and it was refused on main; it still is, and the
     refusal still prints it as git did. (The name is matched on its ASCII
     ends: a child's stderr is decoded by the locale here, which is not UTF-8
-    on every platform.)"""
+    on every platform. What the middle of the name is NOT is held instead, in
+    any locale: the tool decodes git's bytes as UTF-8, so `\\u00e9` is one
+    character, where a decode as ASCII would show its two bytes as `\\xc3\\xa9`,
+    and a locale's decode of what the child printed is mojibake at worst and
+    never a `\\x`: #423's mutant R1, #663.)"""
     dirty_root(project, UTF8, quote_path=False)
     before = found(project)
     result = bump(project, scaffolded, advanced, *extra)
     output = result.stderr + result.stdout
     assert result.returncode == 2, output
     assert "REFUSED bump-leg-root-dirty: " in result.stderr, output
-    assert any(line.startswith("     M .github/workflows/caf")
-               and line.endswith(".yml")
-               for line in result.stderr.splitlines()), output
+    [shown] = [line for line in result.stderr.splitlines()
+               if line.startswith("     M .github/workflows/caf")]
+    assert shown.endswith(".yml"), output
     assert "Traceback" not in output, output
     assert found(project) == before
+    assert_shown_without_hex_escapes(shown, output)
 
 
 def test_the_refusal_names_every_dirty_file_whatever_its_bytes(
