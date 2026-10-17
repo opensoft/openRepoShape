@@ -11,14 +11,18 @@ Three lines of #459, each measured on main before this change:
     broken in two, and a `--created-by` or a GIT_AUTHOR_NAME holding U+202E,
     an ESC or a byte that is not UTF-8 exited 0 too. Now each is
     `family-unwritable-value`, and the remediation names the flag, the
-    variable or the setting that supplied the name;
+    variable or the setting that supplied the name, and each is an exit that
+    works: the variable's says to correct or unset it, for `--created-by`
+    would only meet the commit's refusal of the same variable, and a blank
+    one with no other creator is named as the cause;
   * THE COMMIT'S IDENTITY. `_creator_name` passes over a GIT_AUTHOR_NAME of
     whitespace alone and reads `git config user.name`, but `git commit` reads
     the variable: a real run exited 2 with `fatal: name consists only of
     disallowed characters` after `<remotes>/Contoso.git` and the work
     directory existed. Now git is asked first (`git var`), and the run is
     `family-bad-commit-identity`. A name of only `<>` and a date git cannot
-    read failed at the same commit, and are asked the same way;
+    read failed at the same commit, and are asked the same way; git's words
+    are quoted as a path is (#610), for git echoes the date it refuses;
   * THE HOLDER'S NAME. `--family CON` (or `Nul`, `com1`, any Windows device
     name) is one CamelCase token, which is all the naming policy asks, and a
     Windows disk can make no folder of that name. Now it is
@@ -50,6 +54,10 @@ from test_non_utf8_git_reads import (
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml  # noqa: E402
 
+#: A backslash, so that a row spells what `repr` writes for a character (a
+#: line break, U+202E) without the source holding the character or its escape.
+BACKSLASH = chr(92)
+
 #: A byte that is not UTF-8 in an ARGUMENT: POSIX passes the byte; Windows
 #: passes UTF-16, where it cannot be one.
 POSIX_ARGV_ONLY = pytest.mark.skipif(
@@ -76,9 +84,11 @@ FLAG_REMEDIATION = (
 #: The creator came from GIT_AUTHOR_NAME.
 ENV_REMEDIATION = (
     NOTHING + "`init` read the creator from GIT_AUTHOR_NAME, because no "
-    "--created-by was given: pass --created-by 'Your Name', or correct that "
-    "variable. The environment keeps it as the bytes it was given, so a name "
-    "set in a legacy code page holds a byte that is not UTF-8, " + WHY)
+    "--created-by was given: correct that variable, or unset it, for git "
+    "makes the holder's first commit as it too; --created-by 'Your Name' "
+    "changes only who `family.yaml` records. The environment keeps it as the "
+    "bytes it was given, so a name set in a legacy code page holds a byte "
+    "that is not UTF-8, " + WHY)
 #: The creator came from `git config user.name`: #426's words, whole.
 CONFIG_REMEDIATION = (
     REMEDIATION + "git keeps it as the bytes it was given, so a name saved "
@@ -197,6 +207,70 @@ def test_a_creator_that_is_text_still_initialises(tmp_path, flags, env,
         assert manifest["created_by"] == recorded
 
 
+#: A GIT_AUTHOR_NAME of only control characters: no creator a file can hold,
+#: and a name git refuses at the commit too.
+ONLY_CONTROLS = "\x1b\x07"
+
+#: What a GIT_AUTHOR_NAME of whitespace alone is told when nothing else names
+#: a creator: the variable is there, and is the cause.
+BLANK_NO_CREATOR = (
+    "REFUSED family-no-creator: no --created-by, a GIT_AUTHOR_NAME of "
+    "whitespace alone, and no `git config user.name`. Creating a family is a "
+    "human's act and the manifest records whose.\n"
+    "Remediation: unset GIT_AUTHOR_NAME, which git would make the holder's "
+    "first commit as and refuses, and re-run with --created-by 'Your Name'.\n")
+
+
+@DRY_RUN
+def test_a_blank_git_author_name_and_no_other_creator_is_named_as_the_cause(
+        tmp_path, dry_run):
+    """`family-no-creator` said "no GIT_AUTHOR_NAME" of a variable that was
+    set, and the remedy it gave, `--created-by`, led to
+    `family-bad-commit-identity` for that very variable. Now it names the
+    blank variable as the cause, and says to unset it AND pass the flag."""
+    result = init(tmp_path, user_name("", GIT_AUTHOR_NAME="   "),
+                  dry_run=dry_run)
+    refused(result, BLANK_NO_CREATOR, tmp_path)
+
+
+@DRY_RUN
+def test_the_blank_creator_remedy_goes_on_to_a_holder(tmp_path, dry_run):
+    """THE REMEDY'S EXIT IS MEASURED: GIT_AUTHOR_NAME unset (empty is the same
+    to `init`: `_creator_name` and `env_commit` both treat it as unset) and
+    `--created-by 'T H'` is a run that initialises, where the variable left
+    blank and the flag alone is the next refusal."""
+    result = init(tmp_path, user_name(""), "--created-by", "T H",
+                  dry_run=dry_run)
+    initialised(result, tmp_path, dry_run)
+
+
+@pytest.mark.parametrize("env", [
+    pytest.param({"GIT_AUTHOR_NAME": "Ada Lovelace"}, id="correct-it"),
+    pytest.param(user_name("Ada Lovelace"), id="unset-it"),
+])
+@DRY_RUN
+def test_each_exit_of_the_variables_remedy_goes_on_to_a_holder(
+        tmp_path, env, dry_run):
+    """THE VARIABLE'S REMEDY, MEASURED: a GIT_AUTHOR_NAME no file can hold is
+    told to correct it, or unset it; a corrected name, and no name with a
+    good `user.name` behind it, are runs that initialise. It no longer says
+    `--created-by`, which the next test shows leads nowhere."""
+    result = init(tmp_path, env, dry_run=dry_run)
+    initialised(result, tmp_path, dry_run)
+
+
+def test_created_by_does_not_get_a_bad_git_author_name_past_the_commit(
+        tmp_path):
+    """WHY THE REMEDY NO LONGER OFFERS IT: with `--created-by` the creator is
+    fine, and git is then asked about the same GIT_AUTHOR_NAME, which it
+    refuses, as `family-bad-commit-identity`."""
+    result = init(tmp_path, identity(GIT_AUTHOR_NAME=ONLY_CONTROLS),
+                  "--created-by", "T H")
+    refused(result, f"{BAD_IDENTITY}git refuses the author the holder's first "
+                    f"commit would be made as, from GIT_AUTHOR_NAME "
+                    f"{ONLY_CONTROLS!r} and GIT_AUTHOR_EMAIL ", tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # The identity git makes the holder's first commit as
 # ---------------------------------------------------------------------------
@@ -303,6 +377,60 @@ def test_an_identity_left_empty_still_initialises(tmp_path):
     result = init(tmp_path, user_name("Ada Lovelace", **empty,
                                       **GIT_IN_ENGLISH))
     initialised(result, tmp_path, dry_run=False)
+
+
+#: A date git reads.
+GOOD_DATE = "2026-01-01T00:00:00 +0000"
+
+
+@DRY_RUN
+@pytest.mark.parametrize("changed", [
+    pytest.param({"GIT_AUTHOR_NAME": "", "GIT_AUTHOR_DATE": GOOD_DATE},
+                 id="author-name"),
+    pytest.param({"GIT_AUTHOR_EMAIL": "", "GIT_AUTHOR_DATE": GOOD_DATE},
+                 id="author-email"),
+    pytest.param({"GIT_COMMITTER_NAME": "", "GIT_COMMITTER_DATE": GOOD_DATE},
+                 id="committer-name"),
+    pytest.param({"GIT_COMMITTER_EMAIL": "", "GIT_COMMITTER_DATE": GOOD_DATE},
+                 id="committer-email"),
+])
+def test_an_empty_name_or_address_beside_a_date_is_still_the_fallback(
+        tmp_path, changed, dry_run):
+    """THE CONTROL INSIDE A ROLE THAT IS ASKED: the row above empties every
+    variable, so no role is asked at all. Here one role has a date, so git IS
+    asked, and its empty name or address must still be the stand-in `env_commit`
+    puts there (an empty one is unset to it): asked as the person gave it,
+    git refuses an empty ident name, and `init` would refuse a holder it
+    makes."""
+    result = init(tmp_path, identity(**changed), dry_run=dry_run)
+    initialised(result, tmp_path, dry_run)
+
+
+@DRY_RUN
+@pytest.mark.parametrize("date, spelled", [
+    pytest.param("x\nREFUSED family-fake: not real",
+                 "x" + BACKSLASH + "nREFUSED family-fake: not real",
+                 id="line-break"),
+    pytest.param("2026" + chr(0x202E) + "-01-01",
+                 "2026" + BACKSLASH + "u202e-01-01", id="bidi"),
+])
+def test_what_git_echoes_of_a_refused_date_is_spelled_never_printed_raw(
+        tmp_path, date, spelled, dry_run):
+    """git echoes a date it cannot read as it was given
+    (`fatal: invalid date format: <date>`), so the refusal quotes git's words
+    as a path is quoted (#610): printable as they are, otherwise as `repr`
+    spells them. Raw, a line break began a refusal's second line of the
+    date's own choosing, and U+202E reached the terminal. The variable is
+    already quoted with `!r`; this pins git's words beside it."""
+    result = init(tmp_path, identity(GIT_AUTHOR_DATE=date), dry_run=dry_run)
+    listed = ("GIT_AUTHOR_NAME 'Ada', GIT_AUTHOR_EMAIL 'ada@example.invalid' "
+              f"and GIT_AUTHOR_DATE {date!r}")
+    refused(result, f"{BAD_IDENTITY}"
+                    + refuses_the("author", "GIT_AUTHOR_IDENT", listed,
+                                  f"'fatal: invalid date format: {spelled}'")
+                    + f".\n{COMMIT_IDENTITY_REMEDIATION}\n", tmp_path)
+    assert "\nREFUSED family-fake" not in result.stderr, result.stderr
+    assert chr(0x202E) not in result.stderr, result.stderr
 
 
 # ---------------------------------------------------------------------------

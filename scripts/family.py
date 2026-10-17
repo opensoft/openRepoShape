@@ -198,6 +198,10 @@ from shape_materialize import unwritable_reason  # noqa: E402
 # the scaffold and `adopt-project.py` hold a leg's mount path to, asked of a
 # path of one segment.
 from shape_materialize import _unmountable_reason  # noqa: E402
+# How a refusal quotes the words git echoes of a value it refused (#688): as
+# a path is quoted (#610), as it is when printable and as Python's `repr`
+# spells it when it is not.
+from repo_shape import shown_path  # noqa: E402
 # A reused holder's own visibility and the Free-plan secrets note, asked as
 # the scaffold asks them of its root (#660).
 from shape_materialize import (  # noqa: E402
@@ -1661,10 +1665,11 @@ CREATOR_UNWRITABLE_REMEDIATIONS = {
     "GIT_AUTHOR_NAME": (
         "Remediation: nothing was created, and `--dry-run` refuses the same. "
         "`init` read the creator from GIT_AUTHOR_NAME, because no "
-        "--created-by was given: pass --created-by 'Your Name', or correct "
-        "that variable. The environment keeps it as the bytes it was given, "
-        "so a name set in a legacy code page holds a byte that is not UTF-8, "
-        + CREATOR_UNWRITABLE_WHY),
+        "--created-by was given: correct that variable, or unset it, for git "
+        "makes the holder's first commit as it too; --created-by 'Your Name' "
+        "changes only who `family.yaml` records. The environment keeps it as "
+        "the bytes it was given, so a name set in a legacy code page holds a "
+        "byte that is not UTF-8, " + CREATOR_UNWRITABLE_WHY),
     "`git config user.name`": (
         "Remediation: nothing was created, and `--dry-run` refuses the same. "
         "`init` read the creator from `git config user.name`, because no "
@@ -1737,6 +1742,11 @@ def _refuse_an_unusable_commit_identity() -> None:
     and `refuse_bad_branch` has just had an answer from git there, so a
     refusal here is about the variables. The detail names every variable of
     the role the person set, with git's own words, which say which one.
+    Git echoes a value it refuses (`fatal: invalid date format: <the date>`)
+    as it was given, a line break and a bidi control included, so its words
+    are quoted by `shown_path` (#610): as they are when printable, as
+    Python's `repr` spells them when not. Raw, a `GIT_AUTHOR_DATE` holding a
+    line break began a line of its own choosing in the refusal.
 
     `cmd_init` ASKS IT AFTER THE QUESTIONS ABOUT WHAT IT WRITES, before the
     landing, the plan and anything made: the clone URL's refusal (#433)
@@ -1759,9 +1769,12 @@ def _refuse_an_unusable_commit_identity() -> None:
         except CommandFailed as exc:
             listed = (f"{', '.join(given[:-1])} and {given[-1]}"
                       if len(given) > 1 else given[0])
+            # Git echoes a value it refuses (a date) as it was given, so its
+            # words are spelled as a path is (#610), never printed raw.
             problems.append(
                 f"git refuses the {role} the holder's first commit would be "
-                f"made as, from {listed} (`git var {ident}`: {exc.output})")
+                f"made as, from {listed} (`git var {ident}`: "
+                f"{shown_path(exc.output)})")
         finally:
             # Empty: git writes nothing there (`_ask_git_branch`'s reason).
             shutil.rmtree(nowhere, ignore_errors=True)
@@ -1807,11 +1820,20 @@ def _creator_name(args) -> str:
     GIT_AUTHOR_NAME is also who git makes the holder's first commit as, and
     a blank one passed over here is not passed over there: `cmd_init` asks
     git about that later (`_refuse_an_unusable_commit_identity`, #688).
+    THE REMEDIES ARE EXITS THAT WORK (Brett Heap's ruling, "Offer only exits
+    that work"): the variable's own says to correct or unset it, not to pass
+    `--created-by`, which changes only who `family.yaml` records and leaves
+    git to refuse the same variable at the commit; and where the variable is
+    set but blank and nothing else names a creator, the refusal says that
+    variable is there and is the cause, instead of "no GIT_AUTHOR_NAME", and
+    tells the person to unset it AND pass `--created-by`.
     """
     created_by, source = args.created_by, "--created-by"
+    blank_variable = False
     if not created_by:
-        created_by = (os.environ.get("GIT_AUTHOR_NAME") or "").strip()
-        source = "GIT_AUTHOR_NAME"
+        named = os.environ.get("GIT_AUTHOR_NAME") or ""
+        created_by, source = named.strip(), "GIT_AUTHOR_NAME"
+        blank_variable = bool(named) and not created_by
     if not created_by:
         source = "`git config user.name`"
         try:
@@ -1820,6 +1842,15 @@ def _creator_name(args) -> str:
                                      "utf-8", "surrogateescape").strip()
         except Refusal:
             created_by = ""
+    if not created_by and blank_variable:
+        raise Refusal(
+            "family-no-creator",
+            "no --created-by, a GIT_AUTHOR_NAME of whitespace alone, and no "
+            "`git config user.name`. Creating a family is a human's act and "
+            "the manifest records whose.",
+            "Remediation: unset GIT_AUTHOR_NAME, which git would make the "
+            "holder's first commit as and refuses, and re-run with "
+            "--created-by 'Your Name'.")
     if not created_by:
         raise Refusal(
             "family-no-creator",
