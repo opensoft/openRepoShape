@@ -32,6 +32,11 @@ FIVE LINES, EACH MEASURED ON MAIN BEFORE THE FIX:
     they already refuse it exits 0 and the real run ends
     `bump-leg-validators-red`. Its closing paragraph says so.
 
+THE ROOT ABOVE THEM (#766). The three refusals and the dry run's `the real
+run needs a branch` line printed the root as it was, so a root under a name
+with an ESC, a line break or a bidi override sent it to the terminal raw.
+Each names it as `repo_shape.shown_path` does now.
+
 NO NETWORK, NO `gh`: the bare remotes are the session's own, and every root
 here pushes to a private copy of its remote (`make_root`), so a push reaches
 nothing another test reads. Every printed line is run as the argv a POSIX
@@ -48,6 +53,9 @@ from pathlib import Path
 import pytest
 
 from conftest import FILE_PROTOCOL, PROJECT, REPO, cloned_just_pushed, git
+#: The names no line may print raw, and how a line spells them (#766).
+from conftest import (POSIX_NAMES, UNSAFE_NAMES, assert_shown_safe,
+                      copied_under, refusal_detail, spelt)
 # A fixture is used by being named in this module's namespace, which is what
 # the imports of `bump_leg_module` and `make_root` are for.
 from test_bump_leg import (  # noqa: F401
@@ -518,3 +526,81 @@ def test_a_dry_run_says_the_validators_are_the_real_runs(project, scaffolded,
     assert "REFUSED bump-leg-validators-red" in real.stderr, real.stderr
     assert head_of(project) == head
     assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+# --- #766: the root, named safe to show -------------------------------------
+
+#: The names a root is put under: an ESC, a line break then a forged line,
+#: and rv672's measured name, a bidi override and a C1 control.
+ROOT_NAMES = [*UNSAFE_NAMES,
+              pytest.param("r\u202eo\u009bot", id="bidi-and-C1",
+                           marks=POSIX_NAMES)]
+
+
+@pytest.mark.parametrize("extra", [(), ("--dry-run",)],
+                         ids=["bump", "dry-run"])
+@pytest.mark.parametrize("name", ROOT_NAMES)
+def test_a_dirty_root_is_named_safe_to_show(scaffolded, advanced, tmp_path,
+                                            name, extra):
+    """#766's third line, measured by rv672 on #672's head: under a root
+    named `r<U+202E>o<U+009B>ot`, `bump-leg-root-dirty` put both characters
+    raw into its first line, above the file names #672 spells. The root is
+    named as `repr` spells it now, by the real run and the dry run alike,
+    and nothing on either stream holds the name raw."""
+    root = branched(copied_under(scaffolded["clone"], tmp_path, name))
+    readme = root / "README.md"
+    readme.write_bytes(readme.read_bytes() + b"dirty\n")
+    result = bump(root, scaffolded, advanced, *extra)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert refusal_detail(result.stderr, "bump-leg-root-dirty") == [
+        f"REFUSED bump-leg-root-dirty: {spelt(root)} has uncommitted "
+        "changes:", "     M README.md"]
+    lines = (result.stdout + result.stderr).splitlines()
+    assert [raw_controls(name, line) for line in lines
+            if raw_controls(name, line)] == [], ascii(result.stderr)
+    assert_shown_safe(result.stdout, result.stderr)
+
+
+@pytest.mark.parametrize("state", ["tracking-branch", "detached"])
+@pytest.mark.parametrize("name", UNSAFE_NAMES)
+def test_a_root_refused_for_its_branch_is_named_safe_to_show(
+        scaffolded, advanced, tmp_path, name, state):
+    """#766: `bump-leg-on-tracking-branch` and `bump-leg-root-detached`
+    named the root as it was. The detail names it as `repr` spells it, on
+    the one line it is. The remedy's `switch -c` is a command to paste,
+    quoted for a shell as it was (`_switch_command`), and is not this
+    row's."""
+    root = copied_under(scaffolded["clone"], tmp_path, name)
+    if state == "detached":
+        git("checkout", "-q", "--detach", cwd=root)
+    result = bump(root, scaffolded, advanced)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert result.stdout == ""
+    code, said = (
+        ("bump-leg-root-detached",
+         "is not on a branch, so there is no branch to push and open a pull "
+         "request from")
+        if state == "detached" else
+        ("bump-leg-on-tracking-branch",
+         "is on 'main', which project.yaml declares as this project's "
+         "tracking branch"))
+    assert refusal_detail(result.stderr, code) == [
+        f"REFUSED {code}: {spelt(root)} {said}"]
+
+
+@pytest.mark.parametrize("name", UNSAFE_NAMES)
+def test_the_dry_runs_branch_line_names_the_root_safe_to_show(
+        scaffolded, advanced, tmp_path, name):
+    """#766: on the tracking branch the dry run ends `the real run needs a
+    branch: <root> is on 'main'`, and named the root as it was. It names it
+    as `repr` spells it. The `switch -c` after it is a command to paste,
+    quoted for a shell as it was, and is not this row's."""
+    root = copied_under(scaffolded["clone"], tmp_path, name)
+    result = bump(root, scaffolded, advanced, "--dry-run")
+    assert result.returncode == 0, result.stderr + result.stdout
+    said = [line for line in result.stdout.splitlines()
+            if line.startswith("the real run needs a branch: ")]
+    assert len(said) == 1, result.stdout
+    assert said[0].startswith(
+        f"the real run needs a branch: {spelt(root)} is on 'main', the "
+        "tracking branch. Create one first with: git -C "), said
