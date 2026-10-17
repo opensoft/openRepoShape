@@ -21,17 +21,20 @@ file`, with the same exit; a mark that is a file is named at its path, as
 before. `git rev-parse -q --verify` is NOT the ask: it resolves a branch or
 a tag of that name too.
 
-THIS HOST'S GIT IS 2.43, which makes no reftable (`git init
---ref-format=reftable` says `unknown option`). So the refusal under both
-runs is held here by a STAND-IN: a `git` first on PATH that answers `git
-show-ref --exists <name>` as the probe says a reftable answers (exit 0 for
-a mark its store holds), with the mark's file moved out of the git directory
-into that store, as a reftable keeps none, and runs the real git for
-everything else. The same stand-in answers as a git before 2.43 does (exit
-129, `unknown option`, measured on git 2.40.4) and as a git that cannot read
-its ref store would (exit 1 and 128). The REAL reftable rows build a
-repository with `git init --ref-format=reftable` and skip, saying why, where
-git cannot make one. The exact-name rows run on every git.
+A GIT BEFORE 2.45 MAKES NO REFTABLE: `git init --ref-format=reftable` says
+`unknown option` on git 2.43, the git these tests were written on, and CI's
+git, 2.55, makes one. So the refusal under both runs is held on any git by a
+STAND-IN: a `git` first on PATH that answers `git show-ref --exists <name>`
+as the probe says a reftable answers (exit 0 for a mark its store holds),
+with the mark's file moved out of the git directory into that store, as a
+reftable keeps none, and runs the real git for everything else. It logs the
+directory each ask runs in, which must be the holder's. The same stand-in
+answers as a git before 2.43 does (exit 129, `unknown option`, measured on
+git 2.40.4) and as a git that cannot read its ref store would (exit 1 and
+128). The stand-in is a `sh` script, so those rows skip on Windows. The
+REAL reftable rows build a repository with `git init --ref-format=reftable`
+and skip, saying why, where git cannot make one. The exact-name rows and
+the order rows run on every git.
 """
 
 from __future__ import annotations
@@ -91,7 +94,8 @@ needs_reftable = pytest.mark.skipif(
     not reftable_available(),
     reason="this git cannot make a reftable repository (`git init "
            "--ref-format=reftable` needs git 2.45 or later); the stand-in "
-           "rows hold the refusal on any git")
+           "rows hold the refusal in its place, but not on Windows, where "
+           "they skip too")
 
 needs_sh = pytest.mark.skipif(
     sys.platform == "win32",
@@ -105,7 +109,8 @@ def stand_in(tmp_path: Path, env: dict, answer: str) -> tuple[dict, Path]:
     """`env` with a `git` first on PATH that answers `git show-ref --exists
     <name>` with the `sh` lines `answer` (`$3` is the name), and runs the
     real git for everything else, an `answer` that does not exit included;
-    and the file it logs each name so asked to, one a line."""
+    and the file it logs each name so asked to, one a line. The directory
+    each ask runs in goes to `asked_where(log)`."""
     real = shutil.which("git")
     assert real, "premise: git is on PATH"
     shim = tmp_path / "stand-in"
@@ -115,6 +120,7 @@ def stand_in(tmp_path: Path, env: dict, answer: str) -> tuple[dict, Path]:
         "#!/bin/sh\n"
         'if [ "$1" = show-ref ] && [ "$2" = --exists ] && [ "$#" = 3 ]; then\n'
         f"  printf '%s\\n' \"$3\" >> '{log.as_posix()}'\n"
+        f"  pwd -P >> '{asked_where(log).as_posix()}'\n"
         f"{answer}"
         "fi\n"
         f"exec '{real}' \"$@\"\n", encoding="utf-8")
@@ -125,6 +131,22 @@ def stand_in(tmp_path: Path, env: dict, answer: str) -> tuple[dict, Path]:
 def asked(log: Path) -> list[str]:
     """The names the stand-in was asked, in order; none where it never was."""
     return log.read_text(encoding="utf-8").split() if log.exists() else []
+
+
+def asked_where(log: Path) -> Path:
+    """Where the stand-in logs the directory each ask runs in (`pwd -P`)."""
+    return log.with_name("show-ref-dirs.log")
+
+
+def asked_in(log: Path) -> set[str]:
+    """The directories the stand-in was asked in. It must be the holder's
+    alone: `_in_ref_store` asks the holder's own ref store, and an ask made
+    in any other directory passed every row on git 2.43 (#846's review,
+    M10, which asked in the process's working directory)."""
+    where = asked_where(log)
+    if not where.exists():
+        return set()
+    return set(where.read_text(encoding="utf-8").splitlines())
 
 
 def a_reftable_of(holder: Path, env: dict, mark: str,
@@ -176,6 +198,7 @@ def test_a_mark_the_ref_store_holds_and_no_file_does_is_refused_alike(
     held, log = a_reftable_of(holder, env, mark, tmp_path)
     assert_refused_alike(verb, family, holder, held, held_said(kind, verb))
     assert asked(log).count(mark) == 2, asked(log)
+    assert asked_in(log) == {str(holder.resolve())}, asked_in(log)
 
 
 @needs_sh
@@ -212,6 +235,7 @@ def test_a_cherry_pick_conflicted_in_family_yaml_names_the_ref_store(
     line = re.compile(re.escape(unparsable_line(holder, at)))
     assert_refused_alike("add", family, holder, held, (line, remedy))
     assert asked(log) == ["CHERRY_PICK_HEAD"] * 2, asked(log)
+    assert asked_in(log) == {str(holder.resolve())}, asked_in(log)
 
 
 # --- what git answers that is not 0 or 2 (the stand-in) ---------------------
@@ -231,6 +255,7 @@ def test_a_git_before_2_43_answers_from_the_files_alone(
                         "  exit 129\n")
     runs_after("add", family, holder, old)
     assert asked(log) == list(REFS), asked(log)
+    assert asked_in(log) == {str(holder.resolve())}, asked_in(log)
 
 
 #: `{exit: what the stand-in says}`: a git that could not read its ref store.
@@ -268,6 +293,7 @@ def test_git_failing_to_answer_stops_the_verb_before_its_first_write(
         assert expected.fullmatch(ran.stderr), (extra, ran.stderr)
         assert_untouched(verb, holder, env, before)
     assert asked(log) == ["CHERRY_PICK_HEAD"] * 2, asked(log)
+    assert asked_in(log) == {str(holder.resolve())}, asked_in(log)
 
 
 # --- the exact name, and the order (this git) -------------------------------
@@ -298,20 +324,31 @@ def test_a_branch_and_a_tag_named_as_the_marks_are_no_operation(
 def test_the_file_is_asked_first_and_the_ref_store_only_where_none_is(
         family, holder, offline, tmp_path, monkeypatch, kind, refs):
     """THE ORDER, on the files backend: each of the two marks is asked of
-    the ref store in its own row, only where its file is not there, and by
-    `git show-ref --exists <mark>` alone. With nothing in progress both are
-    asked; a revert's file is found after the cherry-pick's mark was asked;
-    a cherry-pick's file is found before any ask. A mark found as a file is
-    named at its path, as before #684."""
+    the ref store in its own row, only where its file is not there, by
+    `git show-ref --exists <mark>` alone, and in the holder. With nothing in
+    progress both are asked; a revert's file is found after the
+    cherry-pick's mark was asked; a cherry-pick's file is found before any
+    ask. A mark found as a file is named at its path, as before #684."""
     env = isolated(offline, tmp_path)
     if kind is not None:
         begin(kind, holder, env, tmp_path)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     calls = recorded(monkeypatch)
-    found = family_module()._operation_in_progress(holder)
+    module = family_module()
+    real = module._git_bytes
+    where = []
+
+    def git_bytes(args, cwd, data=None):
+        where.append((args[0], cwd))
+        return real(args, cwd, data)
+
+    monkeypatch.setattr(module, "_git_bytes", git_bytes)
+    found = module._operation_in_progress(holder)
     shown = [argv for argv in calls if "show-ref" in argv]
     assert shown == [["git", "show-ref", "--exists", name] for name in refs]
+    assert [cwd for sub, cwd in where if sub == "show-ref"] == (
+        [holder] * len(refs)), where
     if kind is None:
         assert found is None
     else:
@@ -391,8 +428,8 @@ def test_on_a_reftable_each_act_is_found_where_git_keeps_its_mark(
     assert module._operation_in_progress(repo) is None
     assert not os.path.lexists(mark_of(repo, env, mark))
     if kind != "merge":
-        # Not asked of `MERGE_HEAD`: git 2.43 answers `show-ref --exists
-        # MERGE_HEAD` 1 where no merge is in progress.
+        # `MERGE_HEAD` is a file on a reftable too (the premise above), so
+        # its file is the whole answer: only the two refs are asked.
         assert raw(repo, env, "show-ref", "--exists", mark,
                    check=False).returncode == 2
 

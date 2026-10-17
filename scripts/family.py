@@ -1003,10 +1003,14 @@ REBASE_HEAD_NAMES = {"rebase-merge": "rebase-merge/head-name",
 #: commit this check is there to keep it from. Each is asked of the ref store
 #: in its own row of `OPERATION_MARKS`, where its file is not there
 #: (`_in_ref_store`), and the refusal says git keeps it `IN_THE_REF_STORE`.
-#: `MERGE_HEAD` is asked as a file alone: git 2.43 answers `git show-ref
+#: `MERGE_HEAD` is asked as a file alone, because it is a file on both
+#: backends: a stopped merge leaves `MERGE_HEAD` a file on a reftable too
+#: (lane 5's probe, git 2.47.1), and git reads `MERGE_HEAD` and `FETCH_HEAD`
+#: from their files whatever the backend (`is_pseudo_ref`, git 2.47.1's
+#: `refs.c`), so the file is the whole answer. Asking the ref store for it
+#: would also stop the verbs on git 2.43, which answers `git show-ref
 #: --exists MERGE_HEAD` 1, `failed to look up reference: Success`, where no
-#: merge is in progress (measured), which `_in_ref_store` reads as git's own
-#: failure.
+#: merge is in progress (measured; git 2.47.1 answers 2 there).
 REF_STORE_MARKS = ("CHERRY_PICK_HEAD", "REVERT_HEAD")
 IN_THE_REF_STORE = "in its ref store, not as a file"
 #: How `git show-ref --exists <name>` (git 2.43 and later) answers where the
