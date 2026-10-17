@@ -340,8 +340,9 @@ def test_the_sweep_names_the_first_errno_that_fails_and_stops_there():
         pytest.skip("hidden")
 
     first = EVERY_OTHER_ERRNO[0]
+    disk = Disk(first)
     with pytest.raises(pytest.fail.Exception) as failed:
-        raised_for_every_errno(Disk(first), hides_the_error, "a path")
+        raised_for_every_errno(disk, hides_the_error, "a path")
     assert failed.value.msg == (
         f"errno {first} ({errno.errorcode[first]}): "
         "the caller ended SKIPPED: hidden")
