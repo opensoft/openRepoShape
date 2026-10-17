@@ -417,7 +417,9 @@ def test_a_file_holding_one_is_yaml_unparsable_naming_the_file(tmp_path, body,
     with pytest.raises(Refusal) as caught:
         load_yaml(path)
     assert caught.value.code == "yaml-unparsable"
-    assert caught.value.detail == f"{path}: {words}"
+    # An opener's refusal names its line, the second, since #708.
+    where = "line 2: " if words.startswith(OPENS) else ""
+    assert caught.value.detail == f"{path}: {where}{words}"
 
 
 @pytest.mark.parametrize("old, new, words", [
@@ -445,7 +447,11 @@ def test_the_projects_own_validator_refuses_it(project, old, new, words):
     result = run_script(project / "scripts" / "validate-manifest.py",
                         cwd=project)
     assert result.returncode == 2, result.stderr
-    assert f"REFUSED yaml-unparsable: {manifest}: {words}\n" in result.stderr
+    # An opener's refusal names its line since #708.
+    line = edited[:edited.index(new)].count(b"\n") + 1
+    where = f"line {line}: " if words.startswith(OPENS) else ""
+    assert (f"REFUSED yaml-unparsable: {manifest}: {where}{words}\n"
+            in result.stderr)
     assert "Traceback" not in result.stderr
     assert "manifest ok" not in result.stdout
     assert manifest.read_bytes() == edited

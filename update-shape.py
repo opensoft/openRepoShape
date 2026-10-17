@@ -168,8 +168,9 @@ from repo_shape import (  # noqa: E402
 # The reader's own rule for where a comment starts, by its private name on
 # purpose: `shape_materialize` imports it the same way and says why (#380). A
 # block header is found with it, so a trailing comment is one here wherever it
-# is one to the reader (#437).
-from repo_shape import _strip_comment  # noqa: E402
+# is one to the reader (#437), and with the reader's rule for a key, so a
+# quoted key or a space before the colon is one here too (#674).
+from repo_shape import _split_key, _strip_comment  # noqa: E402
 from shape_materialize import (  # noqa: E402
     ATTRIBUTES, COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
@@ -1456,8 +1457,26 @@ def _is_block_header(line: str, key: str) -> bool:
     `# comment` aside? Asked the reader's way, `_strip_comment`, so a
     comment that a quoted scalar holds is not one, and the `#` a comment
     starts at is one only after a space or a tab (#437). A header indented
-    at all is not this one: the reader's own top-level keys start at 0."""
-    return _strip_comment(line) == f"{key}:"
+    at all is not this one: the reader's own top-level keys start at 0.
+
+    AND THE KEY IS READ THE READER'S WAY TOO (#674), by `_split_key`, so
+    `"files":`, `'files':` and `files :` are the header `files`, as
+    `load_yaml` and both validators read them. This asked for the exact
+    text `files:`, so `check` passed such a pin, sent the person to
+    `apply`, and `apply` refused it `update-pin-unrecognised` ("0 `files`
+    line(s)"), or a manifest `update-manifest-no-shape`, saying it has no
+    `shape:` block when the reader gives it one. The column is the
+    reader's: no space in front, and no tab among the blanks in front,
+    which the reader refuses outright; the text is `.strip()`ped first,
+    as `_tokenise` strips it. A line `_split_key` refuses is one the
+    reader refuses as well, so it is no header here rather than a
+    traceback, and the count that follows says so."""
+    if line.startswith(" ") or "\t" in line[:len(line) - len(line.lstrip())]:
+        return False
+    try:
+        return _split_key(_strip_comment(line.strip())) == (key, "")
+    except YamlError:
+        return False
 
 
 def _header_as_it_was(line: str) -> str:
@@ -1494,10 +1513,11 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
     trailing `# comment`. It was `line.rstrip() == "files:"`, so a header
     that carried a comment, which the reader and both validators accept, was
     counted as no `files` line and refused as `update-pin-unrecognised`,
-    after `check` had sent the person to this `apply`. That is ALL this
-    claims: a header spelled with a quoted key or a space before the colon
-    is read as the key by the reader and is not found here, as before. The
-    header is written back AS THE LINE WAS, comment and the spacing in front
+    after `check` had sent the person to this `apply`. AND WITH THE READER'S
+    RULE FOR A KEY (#674): a header spelled with a quoted key or a space
+    before the colon, `"files":` or `files :`, is read as the key by the
+    reader, and is found here now too (`_is_block_header`). The header is
+    written back AS THE LINE WAS, quotes, comment and the spacing in front
     of it included, like the two lines above; only the rows under it are
     written whole.
 
@@ -1644,9 +1664,12 @@ def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
     was `line.rstrip() == "shape:"`, so `shape:  # mirrors the pin`, which
     both validators accept, was refused as having NO `shape:` block, and the
     remedy, "add it", would have given the manifest a second `shape:` key.
-    That is ALL this claims: a quoted key or a space before the colon is
-    read as the key by the reader and is not found here, as before. The
-    header line itself is never rewritten, so its comment stays.
+    AND WITH THE READER'S RULE FOR A KEY (#674): a quoted key or a space
+    before the colon, `"shape":` or `shape :`, is read as the key by the
+    reader and is found here too, where it was refused as having no
+    `shape:` block. The header line itself is never rewritten, so its
+    comment and its quotes stay. So `"shape":` beside `shape:` is the key
+    written twice, as the reader reads it, and refused by name below.
 
     A HEADER THAT APPEARS TWICE IS REFUSED BY NAME (review of PR #558). The
     reader keeps the last block, so a rewrite of the first would move a pin
@@ -2302,11 +2325,31 @@ def current_branch(root: Path) -> str | None:
     Named the same as `bump-leg.py`'s own helper for the same one-line read:
     two different tools reading two different checkouts, so a shared import
     would be the wrong coupling, but no reason for the name to drift.
+
+    READ IN FULL, NEVER `--short` (#674). Beside a tag of the same name,
+    `--short` prints `heads/<b>`, so on a branch `v1.0.0` in a root tagged
+    `v1.0.0` this read `heads/v1.0.0`: `commit_on_branch` refused `--branch
+    v1.0.0` as a branch that "is not the current branch ('heads/v1.0.0' is
+    checked out)", and `_awaits_its_pull_request` never knew its re-run. So
+    the ref is read whole and `refs/heads/` taken off by `_branch_of`, as
+    `Rollback.new_branch` takes it off; a HEAD attached anywhere else is on
+    no branch, as a detached one is.
     """
-    proc = subprocess.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+    proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
                           cwd=str(root), capture_output=True, text=True,
                           encoding="utf-8", errors="replace", check=False)
-    return proc.stdout.strip() or None
+    return _branch_of(proc.stdout.strip())
+
+
+def _branch_of(ref: str | None) -> str | None:
+    """The branch the full ref `ref` names, `refs/heads/` taken off, or None
+    where it names none: a detached HEAD, or one attached outside
+    `refs/heads/`. One spelling for `current_branch` and
+    `Rollback.new_branch` (#674)."""
+    prefix = "refs/heads/"
+    if not ref or not ref.startswith(prefix):
+        return None
+    return ref[len(prefix):] or None
 
 
 BRANCH_REMEDIATION = (
@@ -2818,9 +2861,7 @@ class Rollback:
         that is `heads/main`, and `git checkout heads/main` DETACHES HEAD
         rather than returning to the branch.
         """
-        head = _symbolic_head(self.root)
-        start = (head[len("refs/heads/"):]
-                 if head and head.startswith("refs/heads/") else None)
+        start = _branch_of(_symbolic_head(self.root))
         commit = run(["git", "rev-parse", "HEAD"], cwd=self.root)
         self.branch = (branch, start, commit)
         run(["git", "checkout", "-q", "-b", branch], cwd=self.root)
@@ -2935,9 +2976,21 @@ class Rollback:
             # "MAKE IT WRITABLE" IS SAID OF A FILE THAT IS THERE (review of
             # PR #560, round 2). A directory a validator deleted took the
             # file with it, and a file that is not there cannot be made
-            # writable: the line is then the command alone, which creates it.
-            how = (f"{where}, so make it writable, then: {command}"
-                   if os.path.lexists(path) else f"{where}, then: {command}")
+            # writable: the line is then the command, which creates it.
+            # UNLESS THE DIRECTORY IT IS CREATED IN WILL NOT TAKE IT (#674):
+            # a validator that deleted the pin and left `contracts/` at 0555
+            # was handed the bare `cat-file` redirect, and pasted, that
+            # failed `Permission denied`. The directory named is the one the
+            # command writes into, `_nearest_directory`'s, by its full path,
+            # since it need not be inside the root at all.
+            shut = (None if os.path.lexists(path)
+                    else self._nearest_directory(path.parent))
+            if shut is None:
+                how = f"{where}, so make it writable, then: {command}"
+            elif os.access(shut, os.W_OK):
+                how = f"{where}, then: {command}"
+            else:
+                how = f"{where}, so make {shut} writable, then: {command}"
             left.append(f"file      {name} was not put back "
                         f"({exc.strerror or exc}); "
                         + (how if command else where))
@@ -4493,7 +4546,19 @@ def _land(root: Path, args, paths: list[str], added: list[str], target: str,
     commit_on_branch(root, args.branch, paths, target, upstream,
                      count, kind, added, args.trailer, ledger=ledger,
                      dropped=dropped, accepted=accepted)
-    print(f"\n  committed on {args.branch}: " + ", ".join(paths))
+    # WHAT THE COMMIT HOLDS, AS GIT LISTS IT (#674), not `paths`, which is
+    # what it was asked to commit: `cmd_apply` always names the pin and the
+    # manifest, and a run that only drops a merged-away row, or keeps a copy
+    # with `--accept-local` at the pinned commit, rewrites the manifest with
+    # the bytes it had, so this said `project.yaml` of a commit without it.
+    # Asked of the plumbing, `-z` so no name comes back quoted, `--root` so
+    # a first commit lists its files too. Should git not answer, or list
+    # nothing, the line keeps the paths it was asked to commit, as it always
+    # printed.
+    held = _git_answer(root, ["diff-tree", "--root", "--no-commit-id", "-r",
+                              "--name-only", "--no-renames", "-z", "HEAD"])
+    named = [path for path in (held or "").split("\0") if path]
+    print(f"\n  committed on {args.branch}: " + ", ".join(named or paths))
     if args.push:
         push_branch(root, args, create)
     if args.pr:
@@ -4667,8 +4732,11 @@ def landing_failed(root: Path, args, exc: CommandFailed, act: str,
           + f": that commit stands and nothing was rolled back. What is left "
           f"is {left}{again}.", file=sys.stderr)
     sys.stderr.flush()
+    # The branch IN FULL (#674): bare, a tag of its name made the pasted
+    # push fail as the run's own push had (`_full_refspec`).
     push = ("" if pushed else shlex.join(["git", "-C", str(root), "push", "-u",
-                                          "--", "origin", branch]) + " && ")
+                                          "--", "origin",
+                                          _full_refspec(branch)]) + " && ")
     print()
     print(f"NEXT  {push}{shlex.join(create)}")
     return LandingIncomplete(act)
@@ -4692,14 +4760,33 @@ def _landing_run(command: list[str], root: Path) -> str:
             f"({exc.strerror or exc}): is it installed and on PATH?") from exc
 
 
+def _full_refspec(branch: str) -> str:
+    """`refs/heads/<branch>:refs/heads/<branch>`: the branch named in full on
+    both sides of the push, for `push_branch` and for the two NEXT lines
+    that push by hand (`landing_failed`, `next_line`), so the three are one.
+
+    A BARE NAME IS A REFSPEC THAT A TAG CAN TAKE (#674). In a root tagged
+    `v1.0.0`, `--branch v1.0.0 --push` committed and then died at `git push
+    -u -- origin v1.0.0`, `error: src refspec v1.0.0 matches more than one`,
+    and the NEXT line it printed failed the same way pasted. Named in full,
+    the source is the branch and nothing else, the destination is a branch,
+    and `-u` still sets the upstream (measured with git 2.43). It is the
+    form #689 and #672 ask of `family.py`'s and `bump-leg.py`'s push lines,
+    for the same reason, so the three tools can print one form; and
+    `checked_branch`'s alphabet already keeps a leading `+`, the other way
+    a bare name bends, out of this tool."""
+    return f"refs/heads/{branch}:refs/heads/{branch}"
+
+
 def push_branch(root: Path, args, create: list[str]) -> None:
-    """`git push -u -- origin <branch>`, for the first run and for the re-run
-    alike, `--` ending git's options before the two positionals. A refusal
-    from origin is `landing_failed`'s (#204): the commit it was pushing
-    stands, so the step is named and nothing is rolled back."""
+    """`git push -u -- origin refs/heads/<b>:refs/heads/<b>`, for the first
+    run and for the re-run alike, `--` ending git's options before the two
+    positionals and the branch named in full (`_full_refspec`, #674). A
+    refusal from origin is `landing_failed`'s (#204): the commit it was
+    pushing stands, so the step is named and nothing is rolled back."""
     try:
-        _landing_run(["git", "push", "-q", "-u", "--", "origin", args.branch],
-                     root)
+        _landing_run(["git", "push", "-q", "-u", "--", "origin",
+                      _full_refspec(args.branch)], root)
     except CommandFailed as exc:
         raise landing_failed(root, args, exc, f"pushing {args.branch}",
                              create) from exc
@@ -5302,9 +5389,11 @@ def next_line(root: Path, args, paths: list[str], target: str,
             # THE ROOT, QUOTED (#325): `git -C <root>` is the one place a
             # path with a space, a quote or a `$` was printed bare in front of
             # `&&`, so the push the line starts with went to the wrong place
-            # or not at all and the `gh pr create` after it never ran.
+            # or not at all and the `gh pr create` after it never ran. AND
+            # THE BRANCH IN FULL (#674): bare, a tag of the same name made
+            # the push fail, `src refspec ... matches more than one`.
             push = shlex.join(["git", "-C", str(root), "push", "-u", "origin",
-                               args.branch])
+                               _full_refspec(args.branch)])
             print(f"NEXT  {push} && {create}")
         return
     # NO COMMIT LINE OVER CHANGES THIS RUN DID NOT WRITE (#436). The line

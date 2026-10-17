@@ -84,6 +84,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -535,18 +536,15 @@ def test_the_branch_is_spelled_in_the_lines_that_name_it(root):
             f"{new[:12]}, the pin") in printed()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "#710: step (a) reads a branch's upstream with a strict UTF-8 decode, "
-    "so an upstream named with the byte 0xff, the one name that does not "
-    "print and still reaches git since #715, ends it in a "
-    "UnicodeDecodeError. #824 fixes that. Strict, so the merge round that "
-    "brings #823 and #824 together sees it pass and drops this mark."))
 def test_the_branch_and_its_upstream_are_spelled_in_the_move_back(root):
     """The line that moves a branch back names the branch, its upstream and
     a command with both in it; each is spelled (#391). The state is built
     by hand: a commit past the pin, a remote-tracking ref at it, the branch
     tracking that ref, and the leg detached at the pin. Named with the byte
-    0xff since #715, as the test above is."""
+    0xff since #715, as the test above is, and read from `tracking_branch:`;
+    the line is asked as the escape it must print, not as `spelled` makes
+    it. Its upstream is read as the system decodes it since #824 (#710), and
+    HEAD is read here as bytes, which git's answer is."""
     needs_a_byte_name(root.parent)
     manifest = root / "project.yaml"
     text = manifest.read_bytes()
@@ -570,7 +568,9 @@ def test_the_branch_and_its_upstream_are_spelled_in_the_move_back(root):
     assert moved_back(ahead, pin, r"tb\udcffx", command=command) in (
         result.stdout), result.stdout
     assert rev(leg, f"refs/heads/{raw}") == pin and rev(leg) == pin
-    assert head_ref(leg) is not None
+    head = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
+                          cwd=str(leg), capture_output=True, check=True)
+    assert head.stdout == b"refs/heads/" + os.fsencode(raw) + b"\n"
 
 
 # --- a fresh clone of a leg whose remote moved past the pin -----------------
