@@ -53,17 +53,20 @@ import pytest
 
 from conftest import REPO, git, run_script
 from repo_shape import PYTHON
+from test_bump_leg import bump_leg_module  # noqa: F401
 from test_family import (  # noqa: F401
     FAMILY, ORG, SPARE, family, family_module, manifest, mount_twice,
     scaffold_member, validate,
 )
 from test_family_printed_quoting import host_words
 from test_family_tracking_branch import (  # noqa: F401
-    TRACKING, act, next_push, on_main, remedy_switch, snapshot, suggested,
+    TRACKING, act, next_push, on_main, refspec, remedy_switch, snapshot,
+    suggested,
 )
-# `BRANCH_LEFT` is the sentence both tools end the remedy with, pinned as
+from test_setup_project_py import entry_point_module
+# `BRANCH_LEFT` is the sentence the tools end the remedy with, pinned as
 # text: a person, an agent and a holder's CI read it, so it is not rebuilt
-# from either tool's own constant here.
+# from any tool's own constant here.
 from test_validate_family_branch_step import BRANCH_LEFT, TEMPLATE, gate_module
 from test_validate_family_unnamed_mounts import spare_commits, stage_gitlink
 
@@ -192,7 +195,7 @@ def test_the_refusal_typed_as_printed_puts_the_act_on_its_branch(
         assert git("rev-parse", "HEAD~1", cwd=holder).stdout.strip() == \
             earlier
     push, _ = next_push(done.stdout)
-    assert push[-1] == branch, push
+    assert push[-1] == refspec(branch), push
     assert validate(holder).returncode == 0
 
 
@@ -300,24 +303,31 @@ def test_another_name_keeps_a_commit_made_on_a_detached_head(family, on_main):
 # --- validate-family.py: each remedy that names the branch ------------------
 
 @STATES
-def test_a_missing_gitlinks_remedy_typed_as_printed(on_main, left):
-    """`member-gitlink-absent`: the remedy's prose ends with the sentence,
-    and its first command, typed as printed, puts the holder on the branch
-    the `add` under it needs, in either state."""
+def test_a_staged_hand_mount_removals_remedy_typed_as_printed(family,
+                                                              on_main, left):
+    """`member-gitlink-unnamed` for a hand mount whose removal is staged and
+    not committed (#681): the finding's prose ends with the sentence, and
+    its first command, typed as printed in either state, puts the holder on
+    the branch `add` needs, with the removal still staged."""
     holder = on_main
-    git("rm", "-r", "-q", "-f", "--", "members/IRRS", cwd=holder)
-    git("commit", "-qm", "Drop the gitlink but keep the row", cwd=holder)
-    earlier = leave_branch(holder, "family/add-irrs") if left else None
-    result = validate(holder)
-    assert result.returncode == 2, result.stdout + result.stderr
-    lines = result.stderr.splitlines()
-    assert lines[0].startswith("REFUSED member-gitlink-absent: "), lines
-    assert lines[1].endswith(
-        "a row with no submodule is a claim about a tree that is not here. "
-        + BRANCH_LEFT), lines[1]
-    switch = shlex.split(lines[2])
-    assert switch[-2:] == ["-c", "family/add-irrs"], lines[2]
-    type_switch(holder, switch, "family/add-irrs", earlier)
+    _, tip = spare_commits(family)
+    path = f"members/{SPARE}"
+    stage_gitlink(holder, path, tip)
+    git("commit", "-qm", "A hand mount", cwd=holder)
+    git("rm", "-q", "--cached", "--", path, cwd=holder)
+    branch = f"family/add-{SPARE.lower()}"
+    earlier = leave_branch(holder, branch) if left else None
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1, result.stderr + result.stdout
+    finding = result.stderr.split("FINDING member-gitlink-unnamed: ", 1)[1]
+    assert finding.splitlines()[0].endswith(
+        "if one is still there. " + BRANCH_LEFT), finding
+    assert "git rm" not in "".join(finding.splitlines()[1:]), finding
+    switch = shlex.split(finding.splitlines()[1])
+    assert switch[-2:] == ["-c", branch], switch
+    type_switch(holder, switch, branch, earlier)
+    assert git("diff", "--cached", "--name-only", cwd=holder).stdout == (
+        f"{path}\n")
 
 
 @STATES
@@ -414,10 +424,10 @@ def unguarded(source: str) -> list[int]:
 
 def test_every_remedy_that_names_a_switch_line_ends_with_the_sentence():
     """THE GUARD (S2). The validator's three remedies that print a `git
-    switch -c` (`member-gitlink-absent`, `member-duplicate-id` and
-    `member-gitlink-unnamed`) end their prose with `BRANCH_LEFT`, and so
-    does any remedy added later: the one that builds it cannot forget, as
-    #610's `_lockstep` does, without this failing."""
+    switch -c` (`member-duplicate-id`, and `member-gitlink-unnamed`'s two
+    for a hand mount, its removal staged or not, #681) end their prose with
+    `BRANCH_LEFT`, and so does any remedy added later: the one that builds
+    it cannot forget, as #610's `_lockstep` does, without this failing."""
     source = TEMPLATE.read_text(encoding="utf-8")
     assert len(switch_remedies(source)) >= 3, switch_remedies(source)
     assert unguarded(source) == []
@@ -447,12 +457,17 @@ def test_the_guard_sees_a_remedy_left_without_the_sentence():
     assert unguarded(source + fourth_remedy(" {BRANCH_LEFT}")) == []
 
 
-def test_the_two_tools_say_the_same_words(monkeypatch):
+def test_the_tools_say_the_same_words(monkeypatch, bump_leg_module):
     """ONE ANSWER: `family.py` and the holder's validator, which a holder
     carries as a copy and which cannot import `family.py`, spell the
-    sentence the same, word for word."""
+    sentence the same, word for word, and so do `setup-project.py`, which
+    runs before any checkout of the standard exists, and `bump-leg.py`,
+    which says "the project" where the others say "the holder" (#647)."""
     assert family_module().BRANCH_LEFT == BRANCH_LEFT
     assert gate_module(monkeypatch).BRANCH_LEFT == BRANCH_LEFT
+    assert entry_point_module().BRANCH_LEFT == BRANCH_LEFT
+    assert bump_leg_module.BRANCH_LEFT == BRANCH_LEFT.replace(
+        "the holder", "the project")
 
 
 # --- one placeholder for the member (L2-45) ----------------------------------
@@ -501,5 +516,5 @@ def test_the_branch_filled_in_as_written_is_one_add_commits_on(family,
     done = act(family, holder, "add")
     assert done.returncode == 0, done.stdout + done.stderr
     push, _ = next_push(done.stdout)
-    assert push[-1] == branch, push
+    assert push[-1] == refspec(branch), push
     assert SPARE in [row["project"] for row in manifest(holder)["members"]]

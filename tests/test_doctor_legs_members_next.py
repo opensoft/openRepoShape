@@ -48,7 +48,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
-from conftest import WINDOWS_SKIP, cloned_just_pushed, git, rmtree
+from conftest import (WINDOWS_SKIP, cloned_just_pushed, git, rmtree,
+                      submodule_update_through_git)
 from test_shape_doctor import (  # noqa: F401
     FAMILY_MEMBER, FAMILY_NAME, GIT_IDENTITY, PROJECT, commit_all, doctor,
     doctor_module, holder, project, record_gitlink, rows_of,
@@ -614,7 +615,7 @@ def test_the_git_line_does_not_cure_a_mount_git_cannot_read_a_head_in(
 
 
 def test_a_checkout_wins_over_a_lockstep_fact_and_a_rerun_names_the_other(
-        standard, project):
+        standard, project, scaffolded_here):
     """One leg a checkout cures (an empty mount) and one it does not (a
     gitlink that is not the pin): the line is the checkout, over the first
     leg only, and it says to run the doctor again. The re-run names the
@@ -628,8 +629,8 @@ def test_a_checkout_wins_over_a_lockstep_fact_and_a_rerun_names_the_other(
     ), first["next"]
     assert "doctor again" in why_of(first), why_of(first)
     # The fix, applied by hand (no sh needed): the empty leg is now cured.
-    git("-c", "protocol.file.allow=always", "submodule", "update", "--init",
-        "--recursive", "--", "code", cwd=project)
+    submodule_update_through_git(project, scaffolded_here["base"] / "remotes",
+                                 "--init", "--recursive", "--", "code")
     second = row_of(standard, project, "legs")
     assert second["status"] == "FINDING", second
     assert command_of(second) == pins_gate(module, standard, project, True), \
@@ -984,8 +985,9 @@ def test_an_empty_member_with_no_pin_is_still_a_checkout_first(
     assert command_of(row) == (
         f"git -C {module.quote_arg(root.resolve())} {UPDATE} -- "
         f"members/{FAMILY_MEMBER}"), row["next"]
-    git("-c", "protocol.file.allow=always", "submodule", "update", "--init",
-        "--recursive", "--", f"members/{FAMILY_MEMBER}", cwd=root)
+    submodule_update_through_git(root, holder["base"] / "remotes", "--init",
+                                 "--recursive", "--",
+                                 f"members/{FAMILY_MEMBER}")
     again = row_of(standard, root, "members")
     assert again["status"] == "FINDING", again
     assert "validate-family.py" in command_of(again), again["next"]
@@ -1047,12 +1049,14 @@ def detached_member(root: Path) -> Path:
     return member
 
 
-def with_its_own_legs(root: Path) -> Path:
+def with_its_own_legs(root: Path, holder: dict) -> Path:
     """`family.py add` does not recurse, so the fixture's member has empty
-    legs: fill them, as a recursive clone of the holder does. Each is then
-    detached at the commit the MEMBER records for it."""
-    git("-c", "protocol.file.allow=always", "submodule", "update", "--init",
-        "--recursive", "--", f"members/{FAMILY_MEMBER}", cwd=root)
+    legs: fill them, as a recursive clone of the holder does, from the
+    remotes the `holder` fixture made. Each is then detached at the commit
+    the MEMBER records for it."""
+    submodule_update_through_git(root, holder["base"] / "remotes", "--init",
+                                 "--recursive", "--",
+                                 f"members/{FAMILY_MEMBER}")
     return root / "members" / FAMILY_MEMBER
 
 
@@ -1238,11 +1242,11 @@ def test_413b_without_it_the_holders_bootstrap_leaves_the_commit_in_no_ref(
     assert commit in git("reflog", cwd=member).stdout
 
 
-def made_in_a_members_own_leg(root: Path) -> tuple[Path, str]:
+def made_in_a_members_own_leg(root: Path, holder: dict) -> tuple[Path, str]:
     """A commit in the member, so the row is red, and one in the member's
     own detached `spec` leg, which the row never reads: the leg and the
     second commit's sha."""
-    member = with_its_own_legs(root)
+    member = with_its_own_legs(root, holder)
     git("checkout", "-q", "--detach", "HEAD", cwd=member)
     commit_in(member, "work in the member")
     leg = member / "spec"
@@ -1256,7 +1260,7 @@ def test_413c_the_members_git_line_says_it_checks_out_each_members_legs(
     in general words, with the keep line to run in that leg first."""
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    made_in_a_members_own_leg(root)
+    made_in_a_members_own_leg(root, holder)
     module = doctor_module(standard)
     row = row_of(standard, root, "members")
     assert command_of(row) == (
@@ -1275,7 +1279,7 @@ def test_413c_the_leg_keep_line_keeps_a_members_leg_commit_through_the_paste(
         standard, holder, tmp_path):
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    leg, commit = made_in_a_members_own_leg(root)
+    leg, commit = made_in_a_members_own_leg(root, holder)
     module = doctor_module(standard)
     row = row_of(standard, root, "members")
     keep = re.search(r"git -C LEG branch NAME", why_of(row))
@@ -1294,7 +1298,7 @@ def test_413c_without_it_the_members_leg_commit_is_in_no_ref(
         standard, holder, tmp_path):
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    leg, commit = made_in_a_members_own_leg(root)
+    leg, commit = made_in_a_members_own_leg(root, holder)
     result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, root, "members")["status"] == "ok"
@@ -1495,6 +1499,72 @@ def test_414_3_a_gitmodules_deleted_from_the_working_tree_alone_is_read(
     ), row["next"]
 
 
+#: What the index holds in place of `.gitmodules`, for a root whose working
+#: tree has none and whose HEAD's copy gives the mount `p` its url, and the
+#: `(name, url)` git then finds for `p` (#668). None stages no copy.
+INDEX_COPIES = [
+    pytest.param(b'[submodule "q"]\n\tpath = q\n\turl = /r/index.git\n',
+                 (None, None), id="no-section-for-the-path"),
+    pytest.param(None, ("p", "/r/head.git"), id="no-copy"),
+    pytest.param(b'[submodule "p"\n\tpath = p\n', (None, None),
+                 id="unparsable"),
+]
+
+
+def gitmodules_in_head_and_index(root: Path, index_copy: bytes | None):
+    """`root`, a new repository with a gitlink at `p` and HEAD's
+    `.gitmodules` giving it `/r/head.git`, with no `.gitmodules` in the
+    working tree and `index_copy` staged in its place. The copy reaches git
+    as bytes on stdin."""
+    git("init", "-q", "-b", "main", ".", cwd=root)
+    (root / ".gitmodules").write_bytes(
+        b'[submodule "p"]\n\tpath = p\n\turl = /r/head.git\n')
+    git("add", ".gitmodules", cwd=root)
+    git("update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},p",
+        cwd=root)
+    git("commit", "-q", "-m", "Mount p", cwd=root)
+    (root / ".gitmodules").unlink()
+    if index_copy is None:
+        git("rm", "-q", "--cached", ".gitmodules", cwd=root)
+        return
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(root), input=index_copy,
+                          capture_output=True, check=True).stdout
+    git("update-index", "--cacheinfo",
+        f"100644,{blob.decode('ascii').strip()},.gitmodules", cwd=root)
+
+
+def url_git_finds(root: Path, rel: str) -> str | None:
+    """The url `git submodule init -- <rel>` copies into the root's config,
+    or None where git stops at `No url found`, exit 128."""
+    init = subprocess.run(["git", "submodule", "init", "--", rel],
+                          cwd=str(root), capture_output=True, check=False)
+    if init.returncode != 0:
+        return None
+    return git("config", "--get", f"submodule.{rel}.url",
+               cwd=root).stdout.strip()
+
+
+@pytest.mark.parametrize(("index_copy", "found"), INDEX_COPIES)
+def test_668_with_none_in_the_working_tree_the_first_copy_alone_is_read(
+        standard, tmp_path, index_copy, found):
+    """With no `.gitmodules` in the working tree, git reads the index's
+    copy, else HEAD's, and ONLY the first that exists, whatever it holds
+    (#668). Each answer is git's own, from `git submodule init`:
+
+    - an index copy with no section for the path: no url, although HEAD's
+      copy gives one;
+    - no copy in the index: HEAD's url. Main called the mount url-less
+      there: its `--get-regexp` exits 1 over a blob that is not there,
+      which it took for "read, and no section";
+    - an index copy git cannot parse: no url, for git stops there. Reading
+      on to HEAD's copy named a url and handed over a line that exits 128.
+    """
+    gitmodules_in_head_and_index(tmp_path, index_copy)
+    assert doctor_module(standard).gitmodules_entry(tmp_path, "p") == found
+    assert url_git_finds(tmp_path, "p") == found[1]
+
+
 @WINDOWS_SKIP
 def test_414_3_pasted_there_the_line_runs_and_the_row_is_ok(
         standard, project, tmp_path):
@@ -1584,7 +1654,10 @@ def test_414_3_there_the_bootstrap_cures_nothing_and_the_git_line_cures_one(
                    f"{module.quote_arg(tried / 'scripts' / 'bootstrap.py')} "
                    f"--root {module.quote_arg(tried)}", tmp_path / "boot")
     output = bootstrap.stdout + bootstrap.stderr
-    assert bootstrap.returncode == 0, output
+    # It cures nothing, and since #648 it says so and fails: git stopped
+    # at Ghost, whose section gives no url, before it checked out either.
+    assert bootstrap.returncode == 1, output
+    assert "git stopped at members/Ghost" in output, output
     assert "No url found" in output, output
     assert not any((tried / "members" / FAMILY_MEMBER).iterdir()), output
     result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
@@ -2005,18 +2078,28 @@ def test_pasted_there_the_git_line_fills_the_member_the_bootstrap_would_not(
 def test_section_url_reads_gits_listing_and_the_last_value_wins(standard,
                                                                  tmp_path):
     """`section_url` is the pure half of `gitmodules_entry`: one `git config
-    -z --get-regexp` listing in, `(name, url)` out. Fed git's own listing of
-    a `.gitmodules` whose section NAME holds a space and a dot and gives its
+    -z --list` listing in, `(name, url)` out. Fed git's own listing of a
+    `.gitmodules` whose section NAME holds a space and a dot and gives its
     url twice, and of a path two sections give: the last value given wins
-    each time, as git reads the file, and an empty url is no url."""
+    each time, as git reads the file, and an empty url is no url.
+
+    `--list` gives every key (#668), so the file holds keys no submodule
+    has: a `path` and `url` in a section that is not `submodule`, given
+    last, and in a `[submodule]` section with no subsection, which git
+    ignores. A reading that cut `submodule.` off every key by its length
+    took the first for a section named `gin` and the second for one named
+    `''`."""
     module = doctor_module(standard)
     (tmp_path / ".gitmodules").write_bytes(
         b'[submodule "my lib.v2"]\n\tpath = vendor/lib\n'
         b"\turl = ../first.git\n\turl = ../second.git\n"
         b'[submodule "old"]\n\tpath = vendor/both\n\turl = ../old.git\n'
-        b'[submodule "new"]\n\tpath = vendor/both\n\turl =\n')
-    listing = git("config", "-z", "--file", ".gitmodules", "--get-regexp",
-                  r"^submodule\..*\.(path|url)$", cwd=tmp_path).stdout
+        b'[submodule "new"]\n\tpath = vendor/both\n\turl =\n'
+        b"\tbranch = main\n"
+        b"[submodule]\n\tpath = vendor/none\n\turl = ../nameless.git\n"
+        b'[remote "origin"]\n\tpath = vendor/lib\n\turl = ../other.git\n')
+    listing = git("config", "-z", "--file", ".gitmodules", "--list",
+                  cwd=tmp_path).stdout
     assert module.section_url(listing, "vendor/lib") == (
         "my lib.v2", "../second.git"), listing
     assert module.section_url(listing, "vendor/both") == ("new", None), \
@@ -2078,7 +2161,7 @@ def test_an_emptied_members_own_leg_is_kept_through_its_repository(
     kept for the member keeps a commit made in its own `spec` leg."""
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    leg, commit = made_in_a_members_own_leg(root)
+    leg, commit = made_in_a_members_own_leg(root, holder)
     git("submodule", "deinit", "-q", "-f", "--", f"members/{FAMILY_MEMBER}",
         cwd=root)
     module = doctor_module(standard)

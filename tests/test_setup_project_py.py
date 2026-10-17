@@ -68,6 +68,12 @@ from conftest import (CHAIN_LINK_TREES, DRIVE_WAY_OUT, WRITE_IT,
                       assert_a_chain_of_one_link_has_no_source_to_note,
                       assert_an_empty_pin_source_is_the_plans_to_refuse)
 
+from conftest import (STEP_FOUR_WORDS, load_without_bytecode,
+                      assert_step_four_speaks_in_the_plans_words)
+
+sys.path.insert(0, str(REPO / "scripts"))
+import shape_materialize  # noqa: E402
+
 SETUP_PROJECT = REPO / "setup-project.py"
 SETUP_SH = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
@@ -2905,3 +2911,56 @@ def test_a_terminal_whose_read_fails_is_the_end_of_the_answer(monkeypatch):
     monkeypatch.setattr(module, "os", hung_up)
     assert module.ask("Type yes to continue: ") == ""
     assert hung_up.closed == [7]
+
+
+# --- #661 (L2-75): step (4) speaks in the plan's words ----------------------
+
+@pytest.mark.parametrize("passthrough,spoken", [
+    # A chain of two links at least: the label, and each HOLDER's words, in
+    # the scaffold's own (`shape_materialize.scaffold_link_remedies`).
+    (["--referent-chain", "openXdox,openDox"],
+     ["--referent-chain=openXdox,openDox", "--link-source-label=--pin-source",
+      "--link-remedy=openxdox=SHAPE_PIN_SOURCE_OPENXDOX, or a --pin-source "
+      "clone of openXdox that holds its project.yaml, would let it be read"]),
+    (["--referent-chain", "openXdox,openYdox,openDox", "--pin-source", "src"],
+     ["--referent-chain=openXdox,openYdox,openDox", "--link-source=src",
+      "--link-source-label=--pin-source",
+      "--link-remedy=openxdox=SHAPE_PIN_SOURCE_OPENXDOX, or a --pin-source "
+      "clone of openXdox that holds its project.yaml, would let it be read",
+      "--link-remedy=openydox=SHAPE_PIN_SOURCE_OPENYDOX would let it be "
+      "read"]),
+    # ...read as the scaffold reads the chain: blanks dropped, the last kept.
+    (["--referent-chain", "openXdox, ,openDox"],
+     ["--referent-chain=openXdox, ,openDox",
+      "--link-source-label=--pin-source",
+      "--link-remedy=openxdox=SHAPE_PIN_SOURCE_OPENXDOX, or a --pin-source "
+      "clone of openXdox that holds its project.yaml, would let it be read"]),
+    # A chain of one link has no holder, so nothing is said for it.
+    (["--referent-chain", "openDox", "--pin-source", "src"],
+     ["--referent-chain=openDox"]),
+    (["--referent-chain", "openXdox,openDox", "--referent-chain", " , "],
+     ["--referent-chain= , "]),
+    ([], [])])
+def test_each_holder_is_given_the_plans_words(passthrough, spoken):
+    """#661, L2-75: with the scaffold's words, step (4) tells the naming
+    check `--pin-source` is the flag and what each holder is offered."""
+    module = entry_point_module()
+    assert module.naming_declarations(
+        passthrough, shape_materialize.scaffold_link_remedies) == spoken
+
+
+def test_step_four_and_the_plan_share_one_set_of_words():
+    """ONE definition: setup asks the checkout's `shape_materialize` for the
+    words the scaffold's own `_link_remedies` is."""
+    module = entry_point_module()
+    assert module.scaffold_link_remedies(REPO) is (
+        shape_materialize.scaffold_link_remedies)
+    scaffold = load_without_bytecode(REPO / "scaffold-project.py",
+                                     "scaffold_for_setup_words")
+    assert scaffold._link_remedies is shape_materialize.scaffold_link_remedies
+
+
+@pytest.mark.parametrize("case", STEP_FOUR_WORDS)
+def test_step_four_speaks_in_the_plans_words(tmp_path, monkeypatch, case):
+    assert_step_four_speaks_in_the_plans_words(run_entry, tmp_path,
+                                               monkeypatch, case)

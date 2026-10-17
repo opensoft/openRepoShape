@@ -504,24 +504,37 @@ LOCAL_PATHS = {
 }
 
 
+#: How `check` and `execute` refuse a plan's `local_path:` that names
+#: nothing that exists and that `plan` did not clone (#652): by its key. They
+#: said `source-unresolvable`, naming a `--source` nobody passed.
+LOCAL_PATH_GONE = b"REFUSED plan-source-gone: the plan's `source.local_path`, "
+NOT_PLANS_CLONE = (b"names nothing that exists, and the plan does not record "
+                   b"it as a clone `plan` made")
+
+
+def assert_refused_as_gone(runs: dict) -> None:
+    """Each run refused the plan's `local_path:` by its key, exit 2."""
+    for name, run in runs.items():
+        assert run.returncode == 2, f"{name}:\n{said(run)}"
+        assert run.stderr.startswith(LOCAL_PATH_GONE), f"{name}:\n{said(run)}"
+        assert NOT_PLANS_CLONE in run.stderr, f"{name}:\n{said(run)}"
+
+
 @pytest.mark.parametrize("make", list(LOCAL_PATHS.values()),
                          ids=list(LOCAL_PATHS))
-def test_a_local_path_that_is_not_text_is_unresolvable(tmp_path, answered,
-                                                       make):
+def test_a_local_path_that_is_not_text_is_refused_as_gone(tmp_path, answered,
+                                                          make):
     """On main `check` and `execute` ended in a traceback: `print` raised on
     the surrogate and `subprocess` on the NUL, as the value was about to be
-    handed to `gh repo clone` as an `org/repo`. It is no path that exists
-    and no `org/repo` name, which is what `source-unresolvable` says, and
-    what Windows, where such a path holds no `/`, said already."""
+    handed to `gh repo clone` as an `org/repo`. Then it was
+    `source-unresolvable`, naming `--source`. It names no path that exists,
+    and is no clone `plan` made, which is what `plan-source-gone` says."""
     value = make(tmp_path / "Thing")
     edited_plan(tmp_path, answered, f"  local_path: {double_quoted(value)}")
     assert load_yaml(tmp_path / PLAN_FILE)["source"]["local_path"] == value
     runs = {"check": checked(tmp_path), "execute": executed(tmp_path)}
     assert_no_traceback_and_no_leg(tmp_path, runs)
-    for name, run in runs.items():
-        assert run.returncode == 2, f"{name}:\n{said(run)}"
-        assert SOURCE_REFUSED + f"--source {value!r} is neither".encode() \
-            in run.stderr, f"{name}:\n{said(run)}"
+    assert_refused_as_gone(runs)
 
 
 # --- `--source`: a name `gh` would read as one of its options ----------------
@@ -581,8 +594,8 @@ def test_plan_refuses_a_source_gh_would_read_as_an_option(tmp_path, spec):
 def test_check_and_execute_refuse_a_hand_edited_source_gh_would_read(
         tmp_path, answered, spec):
     """The plan file is edited between `plan` and `execute`, on purpose, and
-    its `local_path:` reaches the same `Source.open`. On main `check` and
-    `execute` each ran `gh repo clone` with it first."""
+    its `local_path:` is read as a path, never as a `--source` (#652). On
+    main `check` and `execute` each ran `gh repo clone` with it first."""
     edited_plan(tmp_path, answered, f"  local_path: {double_quoted(spec)}")
     assert load_yaml(tmp_path / PLAN_FILE)["source"]["local_path"] == spec
     stub, log = gh_stub(tmp_path)
@@ -590,10 +603,7 @@ def test_check_and_execute_refuse_a_hand_edited_source_gh_would_read(
             "execute": executed(tmp_path, stub)}
     assert not log.exists(), f"gh was run with:\n{gh_calls(log)}"
     assert_no_traceback_and_no_leg(tmp_path, runs)
-    for name, run in runs.items():
-        assert run.returncode == 2, f"{name}:\n{said(run)}"
-        assert SOURCE_REFUSED + f"--source {spec!r} is neither".encode() \
-            in run.stderr, f"{name}:\n{said(run)}"
+    assert_refused_as_gone(runs)
 
 
 @WINDOWS_SKIP  # the stub `gh` is a `#!` script; Windows executes none

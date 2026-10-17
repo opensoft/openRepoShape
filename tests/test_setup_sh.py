@@ -51,6 +51,9 @@ from conftest import (CHAIN_LINK_TREES,
                       assert_a_chain_of_one_link_has_no_source_to_note,
                       assert_an_empty_pin_source_is_the_plans_to_refuse)
 
+from conftest import (STEP_FOUR_WORDS,
+                      assert_step_four_speaks_in_the_plans_words)
+
 SETUP = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
@@ -1145,3 +1148,9 @@ def test_the_one_liners_preflight_offers_are_asked_at_the_terminal(tmp_path,
     calls = (stub / "calls.log").read_text(encoding="utf-8").splitlines()
     logins = [call for call in calls if call.startswith("auth login|")]
     assert logins == ([] if typed == "no" else ["auth login|terminal"]), calls
+
+
+@pytest.mark.parametrize("case", STEP_FOUR_WORDS)
+def test_step_four_speaks_in_the_plans_words(tmp_path, monkeypatch, case):
+    assert_step_four_speaks_in_the_plans_words(run_setup, tmp_path,
+                                               monkeypatch, case)
