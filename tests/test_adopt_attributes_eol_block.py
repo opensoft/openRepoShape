@@ -20,6 +20,11 @@ exactly that block and nothing else. It needs no `git filter-repo` and no
 network, so every CI job runs it. `tests/test_adopt_ignored_shape_files.py`
 adopts such a source end to end and clones it with a checkout that writes
 CRLF; `tests/test_update_shape_add.py` extends the block with `--add`.
+
+Each copy is named by the path git tracks: one written through a symlinked
+directory the root keeps, `.github -> ci`, is named where the link leads
+(#807), and `tests/test_adopt_eol_block_through_links.py` adopts such a
+source end to end.
 """
 
 from __future__ import annotations
@@ -56,6 +61,12 @@ COPIES_BLOCK = (f"{EOL_BLOCK_HEAD}\n"
                 "/.github/workflows/validate.yml text eol=lf\n").encode(UTF8)
 SHAPE_PIN = "contracts/shape-pin.yaml"
 TEMPLATE = REPO / "templates" / "assembly-root"
+#: The shape's workflow, and where git tracks it when the root keeps
+#: `.github -> ci`, or a chain of links that ends there (#807).
+WORKFLOW = ".github/workflows/validate.yml"
+TRACKED_WORKFLOW = "ci/workflows/validate.yml"
+THROUGH_LINKS = [pytest.param({".github": "ci"}, id="a-link"),
+                 pytest.param({".github": "l1", "l1": "ci"}, id="a-chain")]
 
 #: A symlink made ON THE DISK, as the other symlink tests of the adoption
 #: suites skip one on Windows: there a runner may make one only in Developer
@@ -114,6 +125,25 @@ def test_copies_under_shape_are_left_to_the_shapes_own_file():
               "Makefile", "shape-notes/x.md"]
     assert eol_block_paths(pinned, COLLISION_DIR) == [
         "scripts/bootstrap.py", "Makefile", "shape-notes/x.md"]
+
+
+def test_each_copy_is_named_where_git_tracks_it():
+    """A copy written through `.github -> ci` is tracked at `ci/`, and a
+    line naming the link's spelling governs nothing (#807)."""
+    pinned = ["Makefile", WORKFLOW, f"{COLLISION_DIR}/{ATTRIBUTES}"]
+    tracked = {WORKFLOW: TRACKED_WORKFLOW,
+               f"{COLLISION_DIR}/{ATTRIBUTES}": ATTRIBUTES}
+    assert eol_block_paths(pinned, COLLISION_DIR, tracked) == [
+        "Makefile", TRACKED_WORKFLOW]
+
+
+@pytest.mark.parametrize("tracked", [
+    {}, {WORKFLOW: None}, {WORKFLOW: "my ci/workflows/validate.yml"}],
+    ids=["not-mapped", "led-nowhere", "no-literal-name"])
+def test_a_copy_tracked_nowhere_nameable_keeps_its_pinned_path(tracked):
+    """Where the links lead out of the root or cannot be followed, or to a
+    name no line can spell, the line is today's."""
+    assert eol_block_paths([WORKFLOW], COLLISION_DIR, tracked) == [WORKFLOW]
 
 
 @pytest.mark.parametrize("path", ["notes and more.md", "scripts/*.py",
@@ -247,6 +277,31 @@ def test_an_attributes_symlink_is_not_written_through(tmp_path):
     assert (ATTRIBUTES, f"{COLLISION_DIR}/{ATTRIBUTES}") in result.collisions
     assert result.eol_block == []
     assert (target / "config" / "attributes").read_bytes() == OWN
+
+
+@needs_disk_symlinks
+@pytest.mark.parametrize("links", THROUGH_LINKS)
+def test_a_copy_written_through_a_link_is_named_where_git_tracks_it(tmp_path,
+                                                                  links):
+    """The root keeps `.github -> ci`, or a chain to it: the shape writes its
+    workflow through the link, git tracks it at `ci/workflows/validate.yml`,
+    and that is its line. The pin's row keeps the path it was written at,
+    which a clone opens through the same link (#807)."""
+    target = target_holding(tmp_path, {ATTRIBUTES: OWN,
+                                       "ci/workflows/ci.yml": b"on: [push]\n"})
+    for link, to in links.items():
+        try:
+            os.symlink(to, target / link)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"this platform cannot create a symlink here: {exc}")
+    result = materialize_assembly_root(REPO, target, template_values(),
+                                       collision_dir=COLLISION_DIR)
+    assert WORKFLOW in result.shape_files
+    assert (target / TRACKED_WORKFLOW).is_file()
+    named = eol_block_paths(result.shape_files, COLLISION_DIR,
+                            {WORKFLOW: TRACKED_WORKFLOW})
+    assert result.eol_block == named
+    assert (target / ATTRIBUTES).read_bytes() == with_eol_block(OWN, named)
 
 
 def index_only_link(repo: Path, link: str, target: str) -> None:
@@ -400,21 +455,25 @@ def commit_files(repo: Path, files: dict, message: str,
 
 
 def accounted(adopter, tmp_path: Path, attributes: bytes,
-              pin_path: str = SHAPE_PIN, links: dict | None = None) -> tuple:
+              pin_path: str = SHAPE_PIN, links: dict | None = None,
+              workflow: str | None = None) -> tuple:
     """A source commit holding `OWN`, and a split commit over it whose root
     `.gitattributes` is `attributes`: `(lines counted, findings, counts,
     the source's oid, after)` from the verification's own steps. `links`
-    go into the split's tree only (`index_only_link`)."""
+    go into the split's tree only (`index_only_link`). With `workflow`, the
+    pin names `WORKFLOW` too, and the split holds it at `workflow`."""
     repo = tmp_path / "repo"
     repo.mkdir()
     git("init", "-q", "-b", "main", ".", cwd=repo)
     source = commit_files(repo, {ATTRIBUTES: OWN, "README.md": b"# Thing\n"},
                           "The source")
+    copies = {workflow: b"on: [push]\n"} if workflow else {}
     split = commit_files(repo, {
-        ATTRIBUTES: attributes, pin_path: pin_of(PINNED),
+        ATTRIBUTES: attributes,
+        pin_path: pin_of([*PINNED, WORKFLOW] if workflow else PINNED),
         f"{COLLISION_DIR}/{ATTRIBUTES}": (TEMPLATE / ATTRIBUTES).read_bytes(),
-        "Makefile": b"all:\n", "scripts/validate-pins.py": b"print()\n"},
-        "The split", links=links)
+        "Makefile": b"all:\n", "scripts/validate-pins.py": b"print()\n",
+        **copies}, "The split", links=links)
     before = {path: oid for path, _, oid, _ in adopter._tree_of(repo, source)}
     tree = adopter._tree_of(repo, split)
     after: dict = {}
@@ -455,6 +514,30 @@ def test_the_pin_is_read_through_a_link_the_root_kept(adopter, tmp_path):
         pin_path="meta/shape-pin.yaml", links={"contracts": "meta"})
     assert (lines, findings) == (2, [])
     assert after[ATTRIBUTES] == [f"root:{oid}"]
+
+
+@pytest.mark.parametrize("links", THROUGH_LINKS)
+def test_a_copy_written_through_a_link_is_counted_where_git_tracks_it(
+        adopter, tmp_path, links):
+    """The split keeps `.github -> ci`, or a chain to it, and the workflow
+    at `ci/`: the block the materializer wrote names it there, and the
+    verification reads the same path through the split's links (#807)."""
+    lines, findings, _, oid, after = accounted(
+        adopter, tmp_path, with_eol_block(OWN, [*ROOT_COPIES,
+                                                TRACKED_WORKFLOW]),
+        links=links, workflow=TRACKED_WORKFLOW)
+    assert (lines, findings) == (3, [])
+    assert after[ATTRIBUTES] == [f"root:{oid}"]
+
+
+def test_a_copy_whose_link_leads_out_of_the_split_keeps_its_pinned_path(
+        adopter, tmp_path):
+    """A link out of the split tracks nothing there: the line is the one the
+    pin names, as before, and `_shape_file_findings` reports the copy."""
+    lines, findings, _, _, _ = accounted(
+        adopter, tmp_path, with_eol_block(OWN, [*ROOT_COPIES, WORKFLOW]),
+        links={".github": "/etc"}, workflow=TRACKED_WORKFLOW)
+    assert (lines, findings) == (3, [])
 
 
 def test_the_sources_own_bytes_untouched_need_no_exception(adopter, tmp_path):
