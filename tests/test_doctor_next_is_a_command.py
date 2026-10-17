@@ -109,7 +109,9 @@ from test_doctor_legs_members_next import (
 )
 #: Doctor B's crashing validator and unloaded manifest (#278, #298), from the
 #: module that owns them.
-from test_doctor_validator_rows import crashing, lost_gate, unloaded
+from test_doctor_validator_rows import (
+    crashing, lockstep_lost, lost_gate, unloaded,
+)
 
 
 # --- making each converted row print its NEXT -------------------------------
@@ -318,6 +320,16 @@ def _validator_crashed_restore(standard, project, holder, tmp_path):
     # HEAD still holds: the same restore line, on a valid manifest (#697).
     root = lost_gate("manifest", project, holder, tmp_path)
     return rows_of(doctor(standard, root, "--json"))["manifest"]
+
+
+def _lockstep_restore(case):
+    """The builder of the `legs` (`pins`) or `members` (`family`) row for a
+    gitlink off its pin in a root whose own gate lost its `repo_shape.py`:
+    the lockstep line is the restore line (#750)."""
+    def build(standard, project, holder, tmp_path):
+        root, row_id = lockstep_lost(case, project, holder, tmp_path)
+        return rows_of(doctor(standard, root, "--json"))[row_id]
+    return build
 
 
 def _pin_row(standard, root, restore):
@@ -643,6 +655,16 @@ CASES = {
         _validator_crashed_restore,
         "it puts back the scripts/repo_shape.py HEAD holds, the copy this "
         "project committed and scripts/validate-manifest.py imports, where "
+        "update-shape.py apply would copy a newer one. Then run `"),
+    "lockstep_next-legs-restore": (
+        _lockstep_restore("pins"),
+        "it puts back the scripts/repo_shape.py HEAD holds, the copy this "
+        "project committed and scripts/validate-pins.py imports, where "
+        "update-shape.py apply would copy a newer one. Then run `"),
+    "lockstep_next-members-restore": (
+        _lockstep_restore("family"),
+        "it puts back the scripts/repo_shape.py HEAD holds, the copy this "
+        "project committed and scripts/validate-family.py imports, where "
         "update-shape.py apply would copy a newer one. Then run `"),
     "check_legs": (
         _legs,

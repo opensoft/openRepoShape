@@ -4892,6 +4892,15 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
     The `legs` and `members` rows say the same thing about a leg and about a
     member, so the sentence is written here once -- and it is the row's
     `why`, apart from the line, never a `   # ` tail on it (#277).
+
+    A GATE THAT CANNOT IMPORT `repo_shape` IS NOT THE LINE (#750). The root's
+    own copy, beside a lost `scripts/repo_shape.py`, dies on that import and
+    exits 1, the code it uses for findings, so that line cannot do what the
+    sentence says of it, and the `pins` and `family` rows beside it already
+    print the cure (#697). So the line is theirs, from
+    `lost_repo_shape_cure`: the one command that puts the file back, or none
+    where HEAD no longer holds it. Its `why` says to run the gate once the
+    file is back, and the sentence above follows it.
     """
     used, _, own_copy = validator_for(ctx, *gate)
     if (not used.is_file()
@@ -4899,10 +4908,15 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
         return None, None
     command = validator_command(ctx.shape, used, own_copy,
                                 ["--root", str(ctx.root)])
-    return command, (f"no submodule update cures a {noun} whose gitlink "
-                     "or pin is missing or disagrees, or a mount git cannot "
-                     f"read a HEAD in. {used.name} prints what it finds and "
-                     "names the repair where it has one")
+    said = (f"no submodule update cures a {noun} whose gitlink "
+            "or pin is missing or disagrees, or a mount git cannot "
+            f"read a HEAD in. {used.name} prints what it finds and "
+            "names the repair where it has one")
+    if own_copy and not imports_repo_shape(ctx.shape, used, own_copy):
+        cure, why = lost_repo_shape_cure(
+            ctx, gate[0], repo_shape_for(ctx.shape, used, own_copy), command)
+        return cure, f"{why}. {said[:1].upper()}{said[1:]}"
+    return command, said
 
 
 def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
