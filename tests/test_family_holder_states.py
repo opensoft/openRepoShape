@@ -743,7 +743,8 @@ def test_a_bump_stopped_before_its_commit_is_told_the_drop_alone(
     leaves them. "Keep" there commits the row without its gitlink, so HEAD's
     row and gitlink disagree (lane 1 measured it); the refusal names the
     drop ALONE, in both runs alike. Typed as printed, the same bump then
-    makes its one commit of both paths."""
+    makes its one commit of both paths (a `bump` only: an `add` stopped so
+    then meets `member-path-taken`, lane 1 measured)."""
     env = isolated(offline, tmp_path)
     mount = holder / "members" / MEMBER
     pinned = raw(holder, env, "rev-parse", f"HEAD:members/{MEMBER}"
@@ -765,6 +766,46 @@ def test_a_bump_stopped_before_its_commit_is_told_the_drop_alone(
     assert sorted(shown) == [MANIFEST, f"members/{MEMBER}"], shown
     assert raw(holder, env, "rev-parse", f"HEAD:members/{MEMBER}"
                ).stdout.decode().strip() == to
+
+
+def gitlink_committed_by_hand(root: Path, env: dict) -> None:
+    """A commit made inside `members/IRRS` by hand, and its gitlink staged,
+    `git add -- members/IRRS`."""
+    raw(root / "members" / MEMBER, env, "commit", "-q", "--allow-empty",
+        "-m", "a commit made by hand")
+    raw(root, env, "add", "--", f"members/{MEMBER}")
+
+
+def gitlink_moved_by_hand(root: Path, env: dict) -> None:
+    """The mount moved by hand, `git mv -- members/IRRS members/MOVED`."""
+    raw(root, env, "mv", "--", f"members/{MEMBER}", "members/MOVED")
+
+
+#: Lane 1's two states of a gitlink a person staged by hand (N1).
+STAGED_BY_HAND = {"commit-and-add": gitlink_committed_by_hand,
+                  "git-mv": gitlink_moved_by_hand}
+
+
+@pytest.mark.parametrize("stage", STAGED_BY_HAND.values(),
+                         ids=STAGED_BY_HAND)
+def test_a_gitlink_staged_by_hand_beside_an_unstaged_edit_is_told_both(
+        family, holder, offline, tmp_path, stage):
+    """N1 (lane 1's re-verification of #816): a gitlink staged BY HAND, and
+    a comment line in `family.yaml` not staged. No run stopped there, and
+    the change is not the row, so the drop alone would discard the
+    person's only copy of their edit: the refusal names both ways out, as
+    for any unstaged edit, in both runs alike. Every stopped `add` or
+    `bump` stages `family.yaml` beside its gitlink; that is what the drop
+    alone is kept for. Typed, "keep" commits `family.yaml` alone."""
+    env = isolated(offline, tmp_path)
+    stage(holder, env)
+    commented(holder)
+    assert_refused_alike("remove", family, holder, env,
+                         uncommitted_said("remove", SAID_UNSTAGED))
+    assert (holder / MANIFEST).read_bytes().startswith(COMMENT)
+    raw(holder, env, *KEEP)
+    assert raw(holder, env, "show", "--name-status", "--format=", "HEAD"
+               ).stdout == f"M\t{MANIFEST}\n".encode()
 
 
 def test_a_row_put_back_as_member_path_says_is_committed_and_the_verb_runs(

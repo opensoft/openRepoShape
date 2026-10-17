@@ -1220,11 +1220,17 @@ def _checked_manifest_committed(root: Path, verb: str) -> None:
     update-index --chmod` that the work tree's copy does not have, the
     first has nothing to commit, and the second is the way out.
 
-    A GITLINK UNDER `members/` STAGED BESIDE IT (#210's half-finished bump,
-    lane 1's review of #816, F5) is told the second ALONE: there the first
-    commits the row without its gitlink, so the row and the gitlink HEAD
-    holds disagree (measured), while the second, and the same command run
-    again, makes the one commit of both.
+    A CHANGE TO IT STAGED, AND A GITLINK UNDER `members/` STAGED BESIDE IT
+    (#210's half-finished bump, lane 1's review of #816, F5), is told the
+    second ALONE: there the first commits the row without its gitlink, so
+    the row and the gitlink HEAD holds disagree (measured), while the
+    second, and the same `bump` run again, makes the one commit of both.
+    That holds for `bump` only: after the second, a half-finished `add`
+    meets `member-path-taken` (lane 1 measured). Every stopped `add` or
+    `bump` stages `family.yaml` beside its gitlink, so a gitlink staged by
+    hand beside a change to the work tree's copy alone is told both ways
+    out: no run stopped there, and the second alone would drop the
+    person's edit (lane 1's re-verification, N1).
     """
     held = _head_entries(root)
     head = held.get(MANIFEST.encode())
@@ -1262,7 +1268,8 @@ def _checked_manifest_committed(root: Path, verb: str) -> None:
          f"its commit leaves it, and `git commit -- {MANIFEST}` would commit "
          "the row without it: put back HEAD's copy, in the index and the "
          f"work tree, `git checkout HEAD -- {MANIFEST}`."
-         if _gitlink_staged(index, held) else
+         if merged and merged != [head] and _gitlink_staged(index, held)
+         else
          "Remediation: which change to keep is a person's to say. To keep "
          f"it, commit it on its own first, `git commit -- {MANIFEST}`; to "
          "drop it, put back HEAD's copy, in the index and the work tree, "
@@ -1293,7 +1300,8 @@ def _gitlink_staged(index: dict[bytes, list[bytes]],
     """Does `index` (`_index_records`) stage a gitlink under `members/` that
     HEAD (`_head_entries`) does not hold, mode and commit, as a run stopped
     between its stage and its commit leaves one (#684; lane 1's review of
-    #816, F5)?"""
+    #816, F5)? Asked only where the index's copy of `family.yaml` differs
+    from HEAD's too (N1)."""
     prefix = f"{MEMBERS_DIR}/".encode()
     return any(
         mode == b"160000" and held.get(name) != (mode, oid)
