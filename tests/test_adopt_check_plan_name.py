@@ -357,7 +357,9 @@ def test_the_sources_own_origin_is_asked_before_the_plans_record(tmp_path):
     ("/srv/clones/Atlas.git", "clones/Atlas"),
     ("/srv/clones/Atlas", "clones/Atlas"),
     ("/srv/clones/Atlas.git/", "clones/Atlas"),
-    # What v1.0.1's own regex records for it, `Clones/ATLAS`.
+    # The record in another case than the path, as a person may retype it,
+    # and as v1.0.1's own regex writes it, `Clones/ATLAS`.
+    ("/srv/Clones/ATLAS.git", "clones/Atlas"),
     ("/srv/Clones/ATLAS.git", "Clones/ATLAS"),
     ("C:\\srv\\clones\\Atlas.git", "clones/Atlas"),
     ("\\\\server\\clones\\Atlas.git", "clones/Atlas"),
@@ -368,8 +370,8 @@ def test_the_sources_own_origin_is_asked_before_the_plans_record(tmp_path):
     ("/srv/clones/Atlas.git.git", "clones/Atlas.git"),
     ("/srv/a:b/Atlas.git", "b/Atlas"),
 ], ids=["dot-git", "no-dot-git", "trailing-slash", "another-case",
-        "backslashes", "share", "file-url", "relative", "two-dot-gits",
-        "colon"])
+        "v1-0-1-case", "backslashes", "share", "file-url", "relative",
+        "two-dot-gits", "colon"])
 def test_a_plan_that_v1_0_x_wrote_for_a_path_origin_is_still_a_correct_plan(
         adopter, tmp_path, monkeypatch, origin, record):
     """v1.0.0 and v1.0.1 read a path `origin` as its last two directories
