@@ -56,6 +56,10 @@ from conftest import WINDOWS_SKIP, clone_just_pushed, git, run_script
 #: The layer stand-in a chain descendant pins, from the module that scaffolds
 #: one: a second way of building it would test a different one.
 from test_scaffold_pin_and_reuse import layer_repo
+#: A leg clone's builder, from the module that tests the Triad advisory: a
+#: second way of building one would test a different one.
+from test_shape_advisory import rendered_leg_agents
+from test_shape_advisory import repository as a_repository
 #: #357's harness, and through it the session's standard and project. Each
 #: fixture imported gives this module its own instance of it.
 from test_doctor_validator_rows import (  # noqa: F401
@@ -569,13 +573,14 @@ def a_directory_that_is_not_a_root(tmp_path: Path, repository: bool) -> Path:
 
 @pytest.mark.parametrize("repository", [False, True],
                          ids=["directory", "repository"])
-@pytest.mark.parametrize("how, code, said", [
-    ("tab", "yaml-unparsable", "tab used for indentation"),
-    ("pattern", "policy-raised", "missing ), unterminated subpattern"),
-    ("classify", "policy-raised", "KeyError: 'id'"),
+@pytest.mark.parametrize("how, code, verb, said", [
+    ("tab", "yaml-unparsable", "does not load", "tab used for indentation"),
+    ("pattern", "policy-raised", "does not load",
+     "missing ), unterminated subpattern"),
+    ("classify", "policy-unusable", "cannot be used", "KeyError: 'id'"),
 ])
 def test_an_unusable_naming_policy_is_an_environment_row_in_the_way_in_rows(
-        standard, tmp_path, how, code, said, repository):
+        standard, tmp_path, how, code, verb, said, repository):
     """The issue's three tests, for the three ways a policy is unusable: a
     directory that is not a root stays NOT A SHAPE ROOT, exit 2, with no
     traceback, and each `the way in` row names this checkout's file as the
@@ -584,6 +589,7 @@ def test_an_unusable_naming_policy_is_an_environment_row_in_the_way_in_rows(
     The row is `n/a` with `detail.environment` and no NEXT, for a policy that
     does not load and for one that raises, in a plain directory (one row) and
     in a repository (`the other way in` too), and it quotes the fault whole.
+    A policy that LOADED and raised when asked "cannot be used": it did load.
     `naming` is an environment row there as well: the file is one fact, and
     every row that reads it says the same.
     """
@@ -605,11 +611,35 @@ def test_an_unusable_naming_policy_is_an_environment_row_in_the_way_in_rows(
         assert row["detail"]["suggested_project"] is None, row
         assert row["detail"]["refusal"]["code"] == code, row
         assert row["reason"].startswith(
-            f"the standard's {NAMING_POLICY} does not load: REFUSED {code}: "
+            f"the standard's {NAMING_POLICY} {verb}: REFUSED {code}: "
             f"{file}: "), row
         assert said in row["reason"], row
         assert row["reason"].endswith(NOT_THIS_DIRECTORYS_WAY_IN), row
         assert "this directory" in row["why"], row
+
+
+@pytest.mark.parametrize("how", ["tab", "pattern", "classify"])
+def test_an_unusable_naming_policy_keeps_a_leg_clones_rows(
+        standard, tmp_path, how):
+    """A leg clone that says so in its own `AGENTS.md` is sent to its
+    assembly root whatever the checkout's policy is, because that route reads
+    no policy: `the way in` keeps its leg row (no NEXT, no environment mark),
+    the Triad row keeps its instruction, and the scaffold is not offered. A
+    pattern that does not compile used to escape `shape_advisory.read` as a
+    `re.error`, which `leg_clone` read as "not a leg" (#707)."""
+    here = naming_policy_unusable(standard, tmp_path, how)
+    leg = a_repository(tmp_path / "elsewhere" / "renamed-clone",
+                       {"AGENTS.md": rendered_leg_agents("spec")})
+    result = doctor(here, leg, "--json")
+    rows = rows_of(result)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "AS A LEG" in rows["way-in"]["reason"], rows["way-in"]
+    assert rows["way-in"]["next"] is None, rows["way-in"]
+    assert "environment" not in rows["way-in"]["detail"], rows["way-in"]
+    assert "way-in-scaffold" not in rows, sorted(rows)
+    assert "this is a clone of the spec leg of a Triad" in \
+        rows["triad-advisory"]["reason"], rows["triad-advisory"]
 
 
 def test_an_unusable_naming_policy_ends_no_text_report_in_a_traceback(

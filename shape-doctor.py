@@ -2259,17 +2259,20 @@ def own_naming_policy_refusal(shape: Path) -> Refusal | None:
     return fault if isinstance(fault, Refusal) else None
 
 
-def naming_policy_refusal_of(shape: Path, fault: Exception) -> Refusal:
+def naming_policy_refusal_of(shape: Path, fault: Exception,
+                             code: str = "policy-raised") -> Refusal:
     """`fault`, from `own_naming_policy`, as a `Refusal` a row can quote (#707):
-    the loader's own where it is one, else a `policy-raised` one naming what
-    was raised, so a policy that raises and one that refuses are quoted, and
-    carried in `detail.refusal`, in one shape."""
+    the loader's own where it is one, else one with `code` naming what was
+    raised, so a policy that raises and one that refuses are quoted, and
+    carried in `detail.refusal`, in one shape. `code` is `policy-raised` for
+    the loader, and `policy-unusable` for a policy that loaded and raised when
+    it was asked (`way_in_project`)."""
     if isinstance(fault, Refusal):
         return fault
     kind = type(fault)
     name = (kind.__qualname__ if kind.__module__ == "builtins"
             else f"{kind.__module__}.{kind.__qualname__}")
-    return Refusal("policy-raised", f"{shape / NAMING_COPY}: {name}: {fault}")
+    return Refusal(code, f"{shape / NAMING_COPY}: {name}: {fault}")
 
 
 def naming_script_refusal(shape: Path, whole: str) -> Refusal | None:
@@ -2334,16 +2337,18 @@ def naming_row_subject(names: list[str] | None) -> tuple:
     return f"{', '.join(names)}: ", "this directory", "what it is called"
 
 
-def naming_policy_words(refusal: Refusal, owner: str, about: str) -> tuple:
+def naming_policy_words(refusal: Refusal, owner: str, about: str,
+                        verb: str = "does not load") -> tuple:
     """`(reason, why)` for a row about a checkout whose own
     `contracts/repository-naming.yaml` does not load (#678, #707): the file
     named, the loader's own line quoted whole, and whose the file is -- the
     checkout's, not `owner`'s -- so that nothing here is a statement about
-    `about`. A refusal's remedy, where it has one, leads the `why`."""
+    `about`. A refusal's remedy, where it has one, leads the `why`. `verb` is
+    "cannot be used" for a policy that loaded and raised when it was asked."""
     mend = ("the file belongs to the checkout of the standard this command is "
             f"run from, not to {owner}: repair it there, or run the doctor "
             "from a clone of the standard whose own copy loads")
-    return (f"the standard's {NAMING_COPY} does not load: "
+    return (f"the standard's {NAMING_COPY} {verb}: "
             f"{refusal_line(refusal)}; that file is this checkout's, not "
             f"{owner}'s, so nothing here is a statement about {about}",
             " ".join(filter(None, (remedy_as_why(refusal), mend))))
@@ -9203,7 +9208,9 @@ def way_in_project(ctx: Context) -> tuple:
     file (#678), so a policy the loader refuses and one that raises --
     a pattern `re.compile` will not take -- are told in one shape, as a
     `Refusal` `naming_policy_refusal_of` makes of either, and `classify`
-    raising on one that loaded is the same fault found a step later. This
+    raising on one that loaded is the same fault found a step later, told
+    as `policy-unusable`, which the row words "cannot be used" and not "does
+    not load". This
     called `NamingPolicy.load` with no handler, and `run_checks` catches only
     a `Refusal` and an `OSError`: a tab line became `FINDING the way in
     refused: ...` about the DIRECTORY, and a pattern that does not compile
@@ -9211,12 +9218,13 @@ def way_in_project(ctx: Context) -> tuple:
     """
     identity = repo_local_origin_name(ctx.root) or ctx.root.name
     policy, fault = own_naming_policy(ctx.shape)
-    if fault is None:
-        try:
-            return project_token_for(identity, policy), None
-        except Exception as exc:  # noqa: BLE001 - see the docstring
-            fault = exc
-    return None, naming_policy_refusal_of(ctx.shape, fault)
+    if fault is not None:
+        return None, naming_policy_refusal_of(ctx.shape, fault)
+    try:
+        return project_token_for(identity, policy), None
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        return None, naming_policy_refusal_of(ctx.shape, exc,
+                                              "policy-unusable")
 
 
 def way_in_policy_row(refusal: Refusal, row_id: str, label: str,
@@ -9235,7 +9243,9 @@ def way_in_policy_row(refusal: Refusal, row_id: str, label: str,
     before it reads a row.
     """
     reason, why = naming_policy_words(
-        refusal, "this directory", "how this directory becomes a shape root")
+        refusal, "this directory", "how this directory becomes a shape root",
+        "cannot be used" if refusal.code == "policy-unusable"
+        else "does not load")
     return Row(row_id, label, NA, reason, None,
                {**detail, "environment": True,
                 "refusal": {"code": refusal.code, "detail": refusal.detail}},

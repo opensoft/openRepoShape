@@ -463,9 +463,17 @@ def repository_names(root: Path) -> list[str]:
 
 
 def _naming_policy(shape: Path) -> NamingPolicy | None:
+    """The standard's naming policy, or None where it cannot be had.
+
+    ANY FAULT IN THE FILE IS NONE, NOT AN EXCEPTION (#707). The advisory
+    never fails a report, and a policy that does not LOAD can raise more than
+    a refusal: a pattern `re.compile` will not take is a `re.error`, which
+    escaped `read()` and took a leg clone's own-`AGENTS.md` route with it,
+    though that route reads no policy at all.
+    """
     try:
         return NamingPolicy.load(shape / NAMING_POLICY)
-    except (Refusal, OSError, UnicodeDecodeError):
+    except Exception:  # noqa: BLE001 - the advisory never fails the report
         return None
 
 
