@@ -27,11 +27,14 @@ name: release
 # until both environments exist and are limited so. Then, for each release:
 #   1. The release commit passes `tests` ON ITSELF, in a push or dispatch
 #      run of tests.yml. The push run that landed it on main, or that its
-#      push to a `release/v<X.Y>` branch started (tests.yml runs on both
-#      since #850), does that when that run finished green; one that failed
-#      does not, nor one that a later landing cancelled (each landing
-#      cancelled the one before until #593). A commit that came to a
-#      release branch by fast-forward already has main's push run.
+#      push to a `release/v<X.Y>` branch started (once the branch holds
+#      #850's tests.yml, which runs on both), does that when that run
+#      finished green; one that failed does not, nor one that a later
+#      landing cancelled (each landing cancelled the one before until
+#      #593). A commit that came to a release branch by fast-forward
+#      already has main's push run. Once the branch holds #850's tests.yml,
+#      the fast-forward also starts the branch's own push run on that
+#      commit, and that newer run decides. Tag once it has finished green.
 #      Otherwise, for a commit that no finished green run tested: BEFORE
 #      TAGGING, dispatch tests.yml on a branch that points at the release
 #      commit, and wait for it:
@@ -57,6 +60,7 @@ name: release
 #      PyPI lacks.
 # A version is uploaded once. A bad upload is fixed by the next patch, never
 # by moving a tag (decision 4).
+#
 # RELEASE BRANCHES AND BACK-PORTS (#850), on Brett Heap's ruling at
 # 2026-10-17T19:52:26Z, "back-port to release/v1.1 as 1.1.1, open the issue":
 #   - main stays the trunk, and every change lands there first; a release
@@ -67,9 +71,16 @@ name: release
 #     gate, and is then back-ported to `release/v<X.Y>`: by a fast-forward
 #     to main while main holds only the patch's work, and otherwise by a
 #     pull request to `release/v<X.Y>` of `git cherry-pick -x <squash>`,
-#     the squash commit main landed;
-#   - the patch is tagged on `release/v<X.Y>` once that commit's tests.yml
-#     run is green (step 1), then released by steps 2 to 5.
+#     the squash commit main landed. The fast-forward stands unless a
+#     `release/*` ruleset requires a pull request (that ruleset waits on
+#     Brett Heap's word, #850); then every back-port is the cherry-pick;
+#   - a push runs the tests.yml its own commit holds, so a release branch
+#     runs it only once it holds #850's change: `release/v1.1` from its
+#     first fast-forward past it, or a cherry-pick of it; `release/v1.0`
+#     never has, and still needs a dispatch (step 1);
+#   - the patch is tagged on `release/v<X.Y>` once step 1 holds for that
+#     commit (its tests.yml runs have all finished and the newest is green),
+#     then released by steps 2 to 5.
 #
 # DISPATCH ONLY. Nothing here runs on a push, a tag or a pull request: an
 # upload is an act Brett Heap approves. The version is the tag's (decision

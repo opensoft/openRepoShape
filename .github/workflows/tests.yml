@@ -15,10 +15,14 @@ name: tests
 #
 # A RELEASE BRANCH'S PUSHES RUN IT TOO (#850). A patch is tagged on its
 # `release/v<major>.<minor>` branch, and `release.yml` releases a commit only
-# once a push or dispatch run of this workflow passed `tests` on it, so every
+# once a push or dispatch run of this workflow passed `tests` on it, so a
 # commit a release branch takes gets that run from its own push, with no
-# dispatch by hand. `release/v*` names exactly those branches: in a branch
-# filter `*` matches no `/`.
+# dispatch by hand. `release/v*` takes each of them, and any other name of one
+# segment that starts `release/v`: in a branch filter `*` matches no `/`.
+# A push runs the tests.yml its own commit holds, so a release branch runs it
+# only once it holds this change: `release/v1.1` from its first fast-forward
+# past it, or a cherry-pick of it; `release/v1.0` never has, and still needs a
+# dispatch.
 #
 # The `package` job at the end runs no pytest. It builds the openreposhape
 # wheel and installs it with pipx, so what it checks needs PyPI (the build
@@ -32,10 +36,10 @@ on:
 
 # A RUN IS CANCELLED ONLY BY A NEWER RUN IN ITS OWN GROUP: a newer push to the
 # same pull request, or a second dispatch of the same ref at the same commit.
-# A pull request's group is its number. A `push` run on main has no number,
-# and the old fallback `github.ref` put every one of them in the one group
-# `tests-refs/heads/main`, so each landing cancelled the run on the main
-# before it: on 2026-10-15 every push run from #561 (7d9bec9) to #580
+# A pull request's group is its ref and its number. A `push` run on main has
+# no number, and the old fallback `github.ref` put every one of them in the
+# one group `tests-refs/heads/main`, so each landing cancelled the run on the
+# main before it: on 2026-10-15 every push run from #561 (7d9bec9) to #580
 # (dd3f23a) ended `cancelled` and nine PRs landed with no Linux run over their
 # combination (#592). `github.sha` gives a push run a group of its own commit,
 # so no later landing cancels it and each landing keeps its own Linux result.

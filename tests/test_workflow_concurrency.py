@@ -21,6 +21,10 @@ cancel the push run it sits beside (RV593 SHOULD-1).
 #850 ADDS THE RELEASE BRANCHES. A push to `release/v<major>.<minor>` runs the
 suite as a push to main does, so each commit a release branch takes has the
 push run `release.yml` requires of a tagged commit, with no dispatch by hand.
+That holds once the branch holds this change, not before: a push runs the
+tests.yml its own commit holds, so `release/v1.1` runs the suite from its first
+fast-forward past this change, or a cherry-pick of it, and `release/v1.0`,
+whose tests.yml still says `branches: [main]`, never has and needs a dispatch.
 The ref joined the group with it: a group spans the repository, and a
 fast-forward of a release branch to main's commit pushes the very commit main's
 push run is testing, so grouped by event and commit alone the release branch's
@@ -44,10 +48,11 @@ from repo_shape import load_yaml
 
 WORKFLOW = REPO / ".github" / "workflows" / "tests.yml"
 
-#: A pull request is grouped by its number. Anything else is grouped by its
-#: event, its ref and the commit it runs on, so a push run and a dispatch on
-#: the same commit stay in two groups, and so do the push runs of main and of
-#: a release branch fast-forwarded to main's commit; neither cancels the other.
+#: A pull request is grouped by its ref and its number. Anything else is
+#: grouped by its event, its ref and the commit it runs on, so a push run and
+#: a dispatch on the same commit stay in two groups, and so do the push runs
+#: of main and of a release branch fast-forwarded to main's commit; neither
+#: cancels the other.
 GROUP = ("${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-"
          "${{ github.event.pull_request.number || github.sha }}")
 
@@ -175,19 +180,23 @@ def branch_filter_matches(pattern: str, branch: str) -> bool:
     """GitHub's branch filter for the one wildcard this workflow uses: `*`
     matches any characters but `/`. A pattern with any other special
     character is refused here rather than guessed at."""
-    assert not set(pattern) & set("?+[]!") and "**" not in pattern, pattern
+    assert not set(pattern) & set("?+[]!"), pattern
+    assert "**" not in pattern, pattern
     return re.fullmatch("[^/]*".join(map(re.escape, pattern.split("*"))),
                         branch) is not None
 
 
 def test_a_push_to_main_or_to_a_release_branch_runs_the_suite():
     """#850: the push trigger names `main` and `release/v*`, so a commit a
-    release branch takes gets the push run `release.yml`'s gate requires of
-    the tagged commit; before, each had to be dispatched by hand. A pull
-    request and a manual run still run it."""
+    release branch takes, once the branch holds this change, gets the push
+    run `release.yml`'s gate requires of the tagged commit; before, each had
+    to be dispatched by hand. A pull request and a manual run still run it,
+    and `pull_request` takes no branch filter, so the pull request of a
+    cherry-pick back-port to `release/v<X.Y>` gets its run too."""
     on = load_yaml(WORKFLOW)["on"]
     assert on["push"] == {"branches": PUSH_BRANCHES}, on["push"]
     assert set(on) == {"push", "pull_request", "workflow_dispatch"}, set(on)
+    assert on["pull_request"] is None, on["pull_request"]
 
 
 @pytest.mark.parametrize("branch, runs", [
@@ -199,9 +208,29 @@ def test_a_push_to_main_or_to_a_release_branch_runs_the_suite():
 ], ids=["main", "release-v1.1", "release-v1.0", "a-pull-requests-branch",
         "a-branch-named-for-a-release"])
 def test_which_branchs_push_runs_the_suite(branch, runs):
-    """`release/v1.1`, where v1.1.1 is tagged, and `release/v1.0`, where
-    v1.0.1 was, run on a push as main does; a pull request's own branch runs
-    in its pull request instead, whatever its name says."""
+    """The push patterns take main, `release/v1.1`, where v1.1.1 is tagged,
+    and `release/v1.0`, where v1.0.1 was; a pull request's own branch runs
+    in its pull request instead, whatever its name says.
+
+    These rows test only the pattern. A push runs the tests.yml its own
+    commit holds, so a branch whose tests.yml lacks this change runs nothing
+    on a push, whatever its name: `release/v1.0`'s still says
+    `branches: [main]`, and `release/v1.1`, cut at v1.1.0, runs the suite only
+    from its first fast-forward past this change, or a cherry-pick of it."""
     patterns = load_yaml(WORKFLOW)["on"]["push"]["branches"]
     assert any(branch_filter_matches(pattern, branch)
                for pattern in patterns) is runs, (branch, patterns)
+
+
+def test_the_header_says_why_a_release_branch_runs_it_and_when():
+    """#850's two comment blocks stay in tests.yml's header, with the rule that
+    bounds the trigger: a push runs the tests.yml its own commit holds, so a
+    release branch runs the suite only once it holds this change. A header
+    that loses them leaves the trigger and the group as two edits with no
+    reason to be kept. Each phrase sits on one line, whatever the EOL."""
+    text = WORKFLOW.read_bytes().decode("utf-8")
+    for phrase in (
+            "# A RELEASE BRANCH'S PUSHES RUN IT TOO (#850)",
+            "# A push runs the tests.yml its own commit holds, so a release",
+            "# `github.ref` KEEPS TWO BRANCHES APART AT ONE COMMIT (#850)"):
+        assert phrase in text, phrase
