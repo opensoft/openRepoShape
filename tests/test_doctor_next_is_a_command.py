@@ -109,7 +109,7 @@ from test_doctor_legs_members_next import (
 )
 #: Doctor B's crashing validator and unloaded manifest (#278, #298), from the
 #: module that owns them.
-from test_doctor_validator_rows import crashing, unloaded
+from test_doctor_validator_rows import crashing, lost_gate, unloaded
 
 
 # --- making each converted row print its NEXT -------------------------------
@@ -311,6 +311,13 @@ def _unloaded_manifest_restore(standard, project, holder, tmp_path):
     root, row_id, _refusal = unloaded("project", project, holder, tmp_path,
                                       "tree")
     return rows_of(doctor(standard, root, "--json"))[row_id]
+
+
+def _validator_crashed_restore(standard, project, holder, tmp_path):
+    # An own gate that crashed for want of the `repo_shape.py` it lost, which
+    # HEAD still holds: the same restore line, on a valid manifest (#697).
+    root = lost_gate("manifest", project, holder, tmp_path)
+    return rows_of(doctor(standard, root, "--json"))["manifest"]
 
 
 def _pin_row(standard, root, restore):
@@ -632,6 +639,11 @@ CASES = {
         "it puts back the scripts/repo_shape.py HEAD holds, the copy this "
         "project committed and scripts/validate-manifest.py imports, where "
         "update-shape.py apply would copy a newer one"),
+    "validator_row-crashed-restore": (
+        _validator_crashed_restore,
+        "it puts back the scripts/repo_shape.py HEAD holds, the copy this "
+        "project committed and scripts/validate-manifest.py imports, where "
+        "update-shape.py apply would copy a newer one. Then run `"),
     "check_legs": (
         _legs,
         "checks each leg out at the commit this repository records for it, "

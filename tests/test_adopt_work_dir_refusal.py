@@ -58,9 +58,10 @@ PLANNED = ("--project", PROJECT, "--org", "testorg", "--elected-by",
 AGAIN = "again.yaml"
 MINE = "mine\n"
 #: Each command's codes for a `--work-dir`, which its help names.
-WORK_DIR_CODES = {PLAN_VERB: (WORK_DIR_UNWRITABLE,),
-                  CHECK: (WORK_DIR_UNWRITABLE,),
-                  EXECUTE: (WORK_DIR_UNWRITABLE, "adopt-work-dir-occupied")}
+WORK_DIR_OCCUPIED = "adopt-work-dir-occupied"
+WORK_DIR_CODES = {PLAN_VERB: (WORK_DIR_UNWRITABLE, WORK_DIR_OCCUPIED),
+                  CHECK: (WORK_DIR_UNWRITABLE, WORK_DIR_OCCUPIED),
+                  EXECUTE: (WORK_DIR_UNWRITABLE, WORK_DIR_OCCUPIED)}
 NO_ORG = "adopt-no-org"
 #: How the NOTE about a recorded clone that is gone begins.
 GONE = "NOTE the plan's `source.local_path`, "
@@ -203,16 +204,22 @@ def test_check_refuses_a_source_it_cannot_open_as_execute_does(
 
 def test_check_asks_the_work_dir_before_it_says_it_clones_again(
         tmp_path, unwritable_work):
-    """A plan of a source whose `origin` names a repository records it, and
-    where the recorded clone is gone, `check` clones that repository again
-    and says so in a NOTE. Into a `--work-dir` this user cannot write in it
-    cannot, so it refuses first, with no NOTE, as `execute` does: it said
-    the repository is cloned again, then refused."""
+    """A plan whose clone `plan` made records its repository, and where
+    that clone is gone, `check` clones the repository again and says so in
+    a NOTE. Into a `--work-dir` this user cannot write in it cannot, so it
+    refuses first, with no NOTE, as `execute` does: it said the repository
+    is cloned again, then refused. The plan here is of a local source, its
+    record then marked as `plan`'s own clone (`cloned: true`), so that no
+    `gh` is needed (#652: a path the person gave is never cloned again)."""
     source = make_source_repo(tmp_path / THING, tree=BASIC)
     git("remote", "add", "origin",
         f"https://github.com/testorg/{PROJECT}.git", cwd=source)
     written = write_plan(source, tmp_path / PLAN_FILE, project=PROJECT)
     assert written.returncode == 0, written.stderr + written.stdout
+    plan = tmp_path / PLAN_FILE
+    text = plan.read_bytes()
+    assert text.count(b"  cloned: false\n") == 1
+    plan.write_bytes(text.replace(b"  cloned: false\n", b"  cloned: true\n"))
     rmtree(source)
     executed = run_in(EXECUTE, tmp_path, unwritable_work)
     checked = run_in(CHECK, tmp_path, unwritable_work)
