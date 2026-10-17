@@ -217,6 +217,17 @@ MANIFEST = "family.yaml"
 MAKE_TARGET_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*")
 MAKE_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[^\x00-\x1f\x7f]*")
 
+#: A `.gitmodules` section name git ignores, every key of it
+#: (`check_submodule_name`): `..` as a component, between `/` or `\`. An
+#: empty name is ignored too. The doctor's `members` row skips the same
+#: (#733).
+DOTDOT_COMPONENT = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
+
+#: The keys of a section that git refuses the WHOLE `.gitmodules` over when
+#: one is given with no value at all (measured, git 2.43: `bad config line
+#: N`, exit 128, and a bare `branch` crashes it) (#733).
+VALUED_KEYS = ("path", "url", "ignore", "update", "branch")
+
 
 # ---------------------------------------------------------------------------
 # where a member comes from
@@ -233,6 +244,16 @@ def submodule_urls(root: Path) -> dict[str, str]:
     from the manifest instead would clone a different remote from the one this
     holder is pinned against, silently, in exactly the estates that do not use
     the default spelling.
+
+    AND ONLY WHAT GIT READS (#733), by git's own tests, as the doctor's
+    `members` row reads the same file: a section whose name is empty or
+    holds a `..` component is ignored whole (`DOTDOT_COMPONENT`); a `path`
+    or `url` beginning with `-` is ignored, that key alone; a key of
+    `VALUED_KEYS` given with no value at all refuses the whole file, `{}`;
+    and a section with no `path` mounts nothing, so its name is not read as
+    one. git names no url for any of these: `git submodule init` says `No
+    url found` or `bad config line`, and a clone made from the url would be
+    of a member git does not mount.
     """
     path = root / ".gitmodules"
     if not path.is_file():
@@ -245,16 +266,22 @@ def submodule_urls(root: Path) -> dict[str, str]:
     paths: dict[str, str] = {}
     urls: dict[str, str] = {}
     for line in proc.stdout.splitlines():
-        key, _, value = line.partition("=")
+        key, valued, value = line.partition("=")
         parts = key.split(".")
         if len(parts) < 3 or parts[0] != "submodule":
             continue
         name, field = ".".join(parts[1:-1]), parts[-1]
+        if not name or DOTDOT_COMPONENT.search(name):
+            continue
+        if not valued and field in VALUED_KEYS:
+            return {}
+        if value.startswith("-"):
+            continue
         if field == "path":
             paths[name] = value
         elif field == "url":
             urls[name] = value
-    return {paths.get(name, name): url for name, url in urls.items()}
+    return {paths[name]: url for name, url in urls.items() if name in paths}
 
 
 def resolve_relative(url: str, root: Path) -> str:

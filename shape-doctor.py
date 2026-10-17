@@ -4939,7 +4939,14 @@ def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
     The copy is read by `gitmodules_listing`, the one reading
     `submodule_config` makes too, and `section_url` picks the section out of
     it.
+
+    NO COPY AT ALL WHILE `.gitmodules` IS UNMERGED (#733): git reads none
+    then (`is_gitmodules_unmerged`), so `submodule init` says `No url found`,
+    exit 128, measured with the conflict resolved in the working tree and
+    with that copy deleted, where this named the resolved url or HEAD's.
     """
+    if git_answer(["ls-files", "-u", "--", ".gitmodules"], root):
+        return None, None
     if os.path.lexists(root / ".gitmodules"):
         source = ["--file", ".gitmodules"]
     else:
@@ -4969,11 +4976,15 @@ def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
 
     THE LAST VALUE GIVEN WINS, for a path two sections give and for a key a
     section gives twice, because git reads `.gitmodules` with each later
-    value overwriting the one before. An empty `url =` is no url.
+    value overwriting the one before. An empty `url =` is no url, and a file
+    git refuses whole gives no section (#733).
     """
+    keys = submodule_keys(listing)
+    if keys is None:
+        return None, None
     named = None
     urls: dict[str, str] = {}
-    for name, field, value in submodule_keys(listing):
+    for name, field, value in keys:
         if field == "path" and value == rel:
             named = name
         elif field == "url":
@@ -4983,10 +4994,23 @@ def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
     return named, urls.get(named) or None
 
 
-def submodule_keys(listing: str) -> list[tuple[str, str, str]]:
+#: A `.gitmodules` section name git ignores, every key of it
+#: (`check_submodule_name`): `..` as a component, between `/` or `\`. An
+#: empty name is ignored too. `a..b` is a name like any other.
+DOTDOT_COMPONENT = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
+
+#: The keys of a section that git refuses the WHOLE file over when one is
+#: given with no value at all, `[submodule "q"]` then a bare `url`
+#: (`config_error_nonbool`). Measured on git 2.43: `bad config line N`,
+#: exit 128, and `branch` crashes it (exit 139). A bare `shallow`,
+#: `fetchRecurseSubmodules` or unknown key is read as true.
+VALUED_KEYS = ("path", "url", "ignore", "update", "branch")
+
+
+def submodule_keys(listing: str) -> list[tuple[str, str, str]] | None:
     """`(name, field, value)` for each `submodule.<name>.path` and `.url`
-    key of one `gitmodules_listing`, in git's order, and no other key
-    (#668).
+    key of one `gitmodules_listing` that git reads, in git's order, and no
+    other key (#668), or None where git refuses the file whole (#733).
 
     PURE, as `section_url` is. Each record ends in a NUL and is the key, a
     newline and the value: a key holds no newline and a value may, so the
@@ -5004,13 +5028,30 @@ def submodule_keys(listing: str) -> list[tuple[str, str, str]]:
     with no keep line. The value is compared and printed, so it takes the
     replacement, as `make siblings` reads the same file (#432) and
     `origin_url` reads a remote (#385).
+
+    AND ONLY WHAT GIT READS (#733), by git's own tests, each measured
+    against `git submodule init -- <path>`, which says `No url found` and
+    exits 128 where the doctor and `make siblings` named a url:
+
+    - a section whose name is empty or holds a `..` component is ignored,
+      every key of it (`DOTDOT_COMPONENT`);
+    - a `path` or `url` whose value begins with `-` is ignored, that key
+      alone, so an earlier url of the section still stands;
+    - a key of `VALUED_KEYS` given with no value at all, in a section git
+      reads, refuses the whole file: None, and no section is read.
     """
     keys = []
     for record in listing.split("\0"):
-        key, _, value = record.partition("\n")
+        key, valued, value = record.partition("\n")
         section, _, field = key.rpartition(".")
-        if section.startswith("submodule.") and field in ("path", "url"):
-            keys.append((section[len("submodule."):], field,
+        name = section[len("submodule."):]
+        if (not section.startswith("submodule.") or not name
+                or DOTDOT_COMPONENT.search(name)):
+            continue
+        if not valued and field in VALUED_KEYS:
+            return None
+        if field in ("path", "url") and not value.startswith("-"):
+            keys.append((name, field,
                          value.encode("utf-8", "surrogateescape").decode(
                              "utf-8", "replace")))
     return keys
@@ -7838,7 +7879,8 @@ def submodule_config(root: Path) -> dict:
     """
     fields: dict = {}
     listing = gitmodules_listing(root, ["--file", ".gitmodules"])
-    for name, field, value in submodule_keys(listing or ""):
+    # A file git refuses whole gives no section (#733).
+    for name, field, value in submodule_keys(listing or "") or []:
         fields.setdefault(name, {})[field] = value
     return fields
 
@@ -7873,17 +7915,26 @@ def mounted_from(root: Path, rel: str, repository: str) -> str:
     and the row's answer rests on the `repository:` comparison alone --
     which is the state `verify_sibling` is in for the same holder.
 
-    THE LAST SECTION THAT GIVES `rel` A URL WINS, as git reads the file,
-    each later value overwriting the one before, and as
-    `siblings.py::submodule_urls` maps it (#668). The first named a remote
-    that `git submodule update` and `make siblings` both pass over.
+    THE LAST SECTION THAT GIVES `rel` A URL WINS, as
+    `siblings.py::submodule_urls` maps it (#668), and as git reads a file
+    whose sections are written one after another, each later value
+    overwriting the one before. The first named a remote that `git
+    submodule update` and `make siblings` both pass over. That holds for
+    sections written whole: a section REOPENED further down the file is
+    ordered here by the first key it gives, in `siblings.py` by its first
+    url, and by git by its last `path`, so with one the three can name
+    different sections (#733).
+
+    ONLY A SECTION WITH A `path` MOUNTS ANYTHING (#733). One that gives a
+    url and no path is mounted nowhere by git (`No url found` for its name
+    as a path, measured), so its NAME is not read as a path, here or in
+    `siblings.py`.
     """
     url = None
-    for name, mount in submodule_config(root).items():
-        # A submodule's NAME is its path unless somebody mounted it by hand
-        # under another one, which git allows and this reads rather than
-        # assumes.
-        if mount.get("path", name) == rel and mount.get("url"):
+    for mount in submodule_config(root).values():
+        # The section's NAME is not the path: a member mounted by hand
+        # under another name, which git allows, is found by its `path`.
+        if mount.get("path") == rel and mount.get("url"):
             url = mount["url"]
     if url is None:
         return f"https://github.com/{repository}.git"

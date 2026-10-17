@@ -53,7 +53,7 @@ from test_doctor_gitmodules_not_utf8 import listed_locale
 from test_shape_doctor import (  # noqa: F401
     FAMILY_MEMBER, FAMILY_NAME, GIT_IDENTITY, PROJECT, commit_all, doctor,
     doctor_module, holder, project, record_gitlink, rows_of,
-    scaffolded_here, standard,
+    scaffolded_here, siblings, standard,
 )
 
 #: What every pasted git line runs under: the identity a commit needs (this
@@ -1496,6 +1496,11 @@ def test_414_3_a_gitmodules_deleted_from_the_working_tree_alone_is_read(
     ), row["next"]
 
 
+#: `.gitmodules` UNMERGED, as a merge that changed one url two ways leaves
+#: it: the base, ours and theirs, staged as stages 1, 2 and 3 (#733).
+UNMERGED = tuple(b'[submodule "p"]\n\tpath = p\n\turl = /r/%s.git\n' % side
+                 for side in (b"base", b"ours", b"theirs"))
+
 #: What the index holds in place of `.gitmodules`, for a root whose working
 #: tree has none and whose HEAD's copy gives the mount `p` its url, and the
 #: `(name, url)` git then finds for `p` (#668). None stages no copy.
@@ -1505,40 +1510,61 @@ INDEX_COPIES = [
     pytest.param(None, ("p", "/r/head.git"), id="no-copy"),
     pytest.param(b'[submodule "p"\n\tpath = p\n', (None, None),
                  id="unparsable"),
+    pytest.param(UNMERGED, (None, None), id="unmerged"),
 ]
 
 
-def gitmodules_in_head_and_index(root: Path, index_copy: bytes | None):
+def repository_mounting_p(root: Path) -> None:
+    """`root`, a new repository whose index holds a gitlink at `p`."""
+    git("init", "-q", "-b", "main", ".", cwd=root)
+    git("update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},p",
+        cwd=root)
+
+
+def blob_of(root: Path, content: bytes) -> bytes:
+    """The blob `content` is stored as in `root`, fed to git as bytes."""
+    return subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(root), input=content, capture_output=True,
+                          check=True).stdout.strip()
+
+
+def gitmodules_in_head_and_index(root: Path,
+                                 index_copy: bytes | tuple | None):
     """`root`, a new repository with a gitlink at `p` and HEAD's
     `.gitmodules` giving it `/r/head.git`, with no `.gitmodules` in the
-    working tree and `index_copy` staged in its place. The copy reaches git
-    as bytes on stdin."""
-    git("init", "-q", "-b", "main", ".", cwd=root)
+    working tree and `index_copy` staged in its place: a tuple of copies
+    is staged unmerged, as stages 1, 2 and 3. Each copy and index record
+    reaches git as bytes on stdin."""
+    repository_mounting_p(root)
     (root / ".gitmodules").write_bytes(
         b'[submodule "p"]\n\tpath = p\n\turl = /r/head.git\n')
     git("add", ".gitmodules", cwd=root)
-    git("update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},p",
-        cwd=root)
     git("commit", "-q", "-m", "Mount p", cwd=root)
     (root / ".gitmodules").unlink()
     if index_copy is None:
         git("rm", "-q", "--cached", ".gitmodules", cwd=root)
         return
-    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
-                          cwd=str(root), input=index_copy,
-                          capture_output=True, check=True).stdout
-    git("update-index", "--cacheinfo",
-        f"100644,{blob.decode('ascii').strip()},.gitmodules", cwd=root)
+    if isinstance(index_copy, bytes):
+        git("update-index", "--cacheinfo", "100644,%s,.gitmodules"
+            % blob_of(root, index_copy).decode("ascii"), cwd=root)
+        return
+    records = [b"0 %s\t.gitmodules\n" % (b"0" * 40)]
+    records += [b"100644 %s %d\t.gitmodules\n" % (blob_of(root, copy), stage)
+                for stage, copy in enumerate(index_copy, start=1)]
+    subprocess.run(["git", "update-index", "--index-info"], cwd=str(root),
+                   input=b"".join(records), capture_output=True, check=True)
 
 
-def url_git_finds(root: Path, rel: str) -> str | None:
-    """The url `git submodule init -- <rel>` copies into the root's config,
-    or None where git stops at `No url found`, exit 128."""
+def url_git_finds(root: Path, rel: str, name: str | None = None
+                  ) -> str | None:
+    """The url `git submodule init -- <rel>` copies into the root's config
+    for the submodule NAMED `name` (`rel` by default), or None where git
+    stops at `No url found` or refuses the file, exiting non-zero."""
     init = subprocess.run(["git", "submodule", "init", "--", rel],
                           cwd=str(root), capture_output=True, check=False)
     if init.returncode != 0:
         return None
-    return git("config", "--get", f"submodule.{rel}.url",
+    return git("config", "--get", f"submodule.{name or rel}.url",
                cwd=root).stdout.strip()
 
 
@@ -1556,10 +1582,85 @@ def test_668_with_none_in_the_working_tree_the_first_copy_alone_is_read(
       which it took for "read, and no section";
     - an index copy git cannot parse: no url, for git stops there. Reading
       on to HEAD's copy named a url and handed over a line that exits 128.
+    - an unmerged `.gitmodules`: no url, for git reads no copy at all while
+      it is unmerged (#733). Reading HEAD's named a url there.
     """
     gitmodules_in_head_and_index(tmp_path, index_copy)
     assert doctor_module(standard).gitmodules_entry(tmp_path, "p") == found
     assert url_git_finds(tmp_path, "p") == found[1]
+
+
+def test_733_while_gitmodules_is_unmerged_a_resolved_copy_is_not_read(
+        standard, tmp_path):
+    """The conflict resolved in the working tree and not yet added: git
+    still reads no copy, and says `No url found`. The doctor named the
+    resolved url there (#733)."""
+    gitmodules_in_head_and_index(tmp_path, UNMERGED)
+    (tmp_path / ".gitmodules").write_bytes(
+        b'[submodule "p"]\n\tpath = p\n\turl = /r/resolved.git\n')
+    assert doctor_module(standard).gitmodules_entry(tmp_path, "p") == (
+        None, None)
+    assert url_git_finds(tmp_path, "p") is None
+
+
+#: `.gitmodules` files for a gitlink at `p` that git reads otherwise than as
+#: they are written, each with the `(name, url)` git then finds for `p`, as
+#: `git submodule init` says (#733). The controls git reads as written are
+#: `a..b`, a bare `shallow` and a bare key in a section git ignores.
+GIT_SKIPS = [
+    pytest.param(b'[submodule ""]\n\tpath = p\n\turl = /r/u.git\n',
+                 (None, None), id="empty-name"),
+    pytest.param(b'[submodule "../evil"]\n\tpath = p\n\turl = /r/u.git\n',
+                 (None, None), id="dotdot-name"),
+    pytest.param(b'[submodule "a/../b"]\n\tpath = p\n\turl = /r/u.git\n',
+                 (None, None), id="dotdot-component"),
+    pytest.param(b'[submodule "a\\\\..\\\\b"]\n\tpath = p\n'
+                 b"\turl = /r/u.git\n", (None, None), id="dotdot-backslash"),
+    pytest.param(b'[submodule "a..b"]\n\tpath = p\n\turl = /r/u.git\n',
+                 ("a..b", "/r/u.git"), id="dots-in-a-name"),
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = -u\n',
+                 ("q", None), id="url-option"),
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = /r/first.git\n'
+                 b"\turl = -u\n", ("q", "/r/first.git"),
+                 id="url-option-after-a-url"),
+    pytest.param(b'[submodule "q"]\n\tpath = -p\n\turl = /r/u.git\n',
+                 (None, None), id="path-option"),
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\tpath = -p\n'
+                 b"\turl = /r/u.git\n", ("q", "/r/u.git"),
+                 id="path-option-after-a-path"),
+    pytest.param(b'[submodule "p"]\n\turl = /r/u.git\n', (None, None),
+                 id="no-path"),
+    *(pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = /r/u.git\n\t%s\n'
+                   % key, (None, None), id=f"bare-{key.decode()}")
+      for key in (b"ignore", b"update", b"branch")),
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\turl\n', (None, None),
+                 id="bare-url"),
+    pytest.param(b'[submodule "q"]\n\tpath\n[submodule "r"]\n\tpath = p\n'
+                 b"\turl = /r/r.git\n", (None, None), id="bare-path"),
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = /r/u.git\n'
+                 b"\tshallow\n", ("q", "/r/u.git"), id="bare-shallow"),
+    pytest.param(b'[submodule "../evil"]\n\tpath\n[submodule "q"]\n'
+                 b"\tpath = p\n\turl = /r/u.git\n", ("q", "/r/u.git"),
+                 id="bare-path-in-an-ignored-section"),
+]
+
+
+@pytest.mark.parametrize(("gitmodules", "found"), GIT_SKIPS)
+def test_733_the_doctor_and_make_siblings_skip_what_git_skips(
+        standard, siblings, tmp_path, gitmodules, found):
+    """A section git ignores, a `path` or `url` it ignores, and a file it
+    refuses whole name no url for `p`, in `gitmodules_entry`, in the
+    `members` row's `mounted_from` and in `make siblings`, where git says
+    `No url found` or `bad config line` and exits non-zero. Both tools read
+    each of them as a member before (#733). Each `found` is git's own."""
+    repository_mounting_p(tmp_path)
+    (tmp_path / ".gitmodules").write_bytes(gitmodules)
+    module = doctor_module(standard)
+    assert module.gitmodules_entry(tmp_path, "p") == found
+    assert url_git_finds(tmp_path, "p", found[0]) == found[1]
+    assert module.mounted_from(tmp_path, "p", "Org/Repo") == (
+        found[1] or "https://github.com/Org/Repo.git")
+    assert siblings.submodule_urls(tmp_path).get("p") == found[1]
 
 
 @WINDOWS_SKIP
