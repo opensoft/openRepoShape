@@ -169,7 +169,7 @@ def test_nothing_is_flattened_and_a_typographic_apostrophe_is_doubled():
 
 def test_a_line_is_its_words_each_quoted():
     words = ["git", "-C", "/srv/my work/Sonata", "push", "-u", "origin",
-             "family/add-irrs"]
+             "refs/heads/family/add-irrs:refs/heads/family/add-irrs"]
     assert shlex.split(shell_line(words, "posix")) == words
     assert powershell_words(shell_line(words, "nt")) == words
 

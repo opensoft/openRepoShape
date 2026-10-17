@@ -255,7 +255,8 @@ def _break_spec_pin(project: Path, how: str) -> str:
                 f"'{short}', which is not 40 hex. An abbreviated oid, a "
                 "branch or a tag is a moving reference.")
     pin.write_bytes(b"commit: [unclosed\n")
-    return (f"REFUSED yaml-unparsable: {pin.resolve()}: not a flow "
+    # Named relative to the root, as the gate names every file (#712).
+    return ("REFUSED yaml-unparsable: contracts/spec-pin.yaml: not a flow "
             "collection: '[unclosed'")
 
 
@@ -265,7 +266,8 @@ def test_validate_pins_prints_the_lockstep_remedy_as_it_always_did(
     """The assembly root's own gate is the one place the lockstep remedy is
     the right one, and it prints it under each refusal that names no other:
     its own (`pin-tag-only`) and one `repo_shape` raises for it
-    (`yaml-unparsable`), byte for byte what it printed before #370."""
+    (`yaml-unparsable`), byte for byte what it printed before #370, under
+    a line that names the pin relative to the root since #712."""
     line = _break_spec_pin(project, how)
     checked = run_script(project / "scripts" / "validate-pins.py",
                          "--quiet", cwd=project)

@@ -411,9 +411,10 @@ record_ref() {
 # nothing is read but the quote itself, which is written `'\''`. Every other
 # directory keeps the line this command has always printed, byte for byte:
 # README says `export PATH=…`, and a space or an apostrophe is safe in
-# double quotes. A `:` splits a `$PATH` whatever the quoting, and a newline
-# breaks the printed line in two, so `install_commands` refuses both before
-# this is asked.
+# double quotes. A `:` splits a `$PATH` whatever the quoting, and a control
+# character (a newline breaks the printed line in two, an escape is the
+# terminal's to act on) is no name a line can print as it is, so
+# `install_commands` refuses both before this is asked.
 export_path_line() {
 	local dir="$1" backslash='\' quote="'" rest quoted=""
 	case "$dir" in
@@ -444,19 +445,32 @@ export_path_line() {
 install_commands() {
 	local dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
 	local name target source verb placed=0 recording=0 record spelled=""
-	# NO LINE ABOUT `$PATH` CAN NAME A DIRECTORY HOLDING A NEWLINE OR A `:`
-	# (#667): the colon is what splits a `$PATH`, and a newline breaks the
-	# line the note prints in two. Refused before anything is placed, as the
-	# Windows spelling below is. The newline goes first, and its refusal says
-	# nothing of the value, so that no refusal after it echoes one that can
-	# forge a line of output. The colon is checked after the Windows
-	# spelling, which holds one by definition, is respelled without one, and
-	# refuses what it cannot respell.
-	case "$dir" in
-	*$'\n'*)
-		die "--install would place this command in a directory whose name holds a newline, which no line about \$PATH can name: it would break in two. Nothing was placed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this again."
-		;;
-	esac
+	# NO LINE ABOUT `$PATH` CAN NAME A DIRECTORY HOLDING A CONTROL CHARACTER
+	# OR A `:` (#667, #760): the colon is what splits a `$PATH`; a newline
+	# breaks the line the note prints in two; a carriage return rewrites the
+	# line on the terminal (`/tmp/x^MFORGED is not on $PATH`) and an escape
+	# is the terminal's to act on, in the note and in every refusal that
+	# names the directory. Refused before anything is placed, as the Windows
+	# spelling below is. The control characters go first, and their refusal
+	# says nothing of the value, so that no refusal after it echoes one that
+	# can forge a line of output. It is `[[:cntrl:]]` and not
+	# `[![:print:]]`, which is what this file holds the repository and the
+	# ref to: a name with a letter the locale does not print, as `café`
+	# under LC_ALL=C, is no fault of the directory's. The check runs under
+	# `LC_ALL=C` and names U+0080 to U+009F's two bytes (`\302`, then `\200`
+	# to `\237`), so a C1 control is refused in every locale, whatever else
+	# the value holds; U+2028 and U+2029 are refused in none. Left to the
+	# locale, `[[:cntrl:]]` matches a C1 control only in a value that is
+	# valid UTF-8: one byte that is not (a lone 0xE9) makes bash match byte
+	# by byte, and then U+009B's two bytes are not controls, as under `C`
+	# (measured with bash 5.2.21). The locale is `C` in a subshell, so that
+	# the match is byte by byte whatever a libc says of a byte in a UTF-8
+	# locale, and the locale of every line below is as it was. The colon is
+	# checked after the Windows spelling, which holds one by definition, is
+	# respelled without one, and refuses what it cannot respell.
+	if (LC_ALL=C; case "$dir" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
+		die "--install would place this command in a directory whose name holds a control character, such as a newline, a carriage return, a tab or an escape, and no line about \$PATH can print such a name as it is: a terminal acts on it. Nothing was placed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this again."
+	fi
 	# A WINDOWS SPELLING IS SPELLED AGAIN THE WAY BASH SPELLS IT (#649), with
 	# `cygpath -u`, which Git Bash has, before anything is checked or placed:
 	# `D:\tools\bin` becomes `/d/tools/bin`. Kept as typed, every line below
