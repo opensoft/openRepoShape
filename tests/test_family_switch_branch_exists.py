@@ -53,6 +53,7 @@ import pytest
 
 from conftest import REPO, git, run_script
 from repo_shape import PYTHON
+from test_bump_leg import bump_leg_module  # noqa: F401
 from test_family import (  # noqa: F401
     FAMILY, ORG, SPARE, family, family_module, manifest, mount_twice,
     scaffold_member, validate,
@@ -62,9 +63,10 @@ from test_family_tracking_branch import (  # noqa: F401
     TRACKING, act, next_push, on_main, refspec, remedy_switch, snapshot,
     suggested,
 )
-# `BRANCH_LEFT` is the sentence both tools end the remedy with, pinned as
+from test_setup_project_py import entry_point_module
+# `BRANCH_LEFT` is the sentence the tools end the remedy with, pinned as
 # text: a person, an agent and a holder's CI read it, so it is not rebuilt
-# from either tool's own constant here.
+# from any tool's own constant here.
 from test_validate_family_branch_step import BRANCH_LEFT, TEMPLATE, gate_module
 from test_validate_family_unnamed_mounts import spare_commits, stage_gitlink
 
@@ -448,12 +450,17 @@ def test_the_guard_sees_a_remedy_left_without_the_sentence():
     assert unguarded(source + fourth_remedy(" {BRANCH_LEFT}")) == []
 
 
-def test_the_two_tools_say_the_same_words(monkeypatch):
+def test_the_tools_say_the_same_words(monkeypatch, bump_leg_module):
     """ONE ANSWER: `family.py` and the holder's validator, which a holder
     carries as a copy and which cannot import `family.py`, spell the
-    sentence the same, word for word."""
+    sentence the same, word for word, and so do `setup-project.py`, which
+    runs before any checkout of the standard exists, and `bump-leg.py`,
+    which says "the project" where the others say "the holder" (#647)."""
     assert family_module().BRANCH_LEFT == BRANCH_LEFT
     assert gate_module(monkeypatch).BRANCH_LEFT == BRANCH_LEFT
+    assert entry_point_module().BRANCH_LEFT == BRANCH_LEFT
+    assert bump_leg_module.BRANCH_LEFT == BRANCH_LEFT.replace(
+        "the holder", "the project")
 
 
 # --- one placeholder for the member (L2-45) ----------------------------------
