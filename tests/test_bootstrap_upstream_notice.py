@@ -17,6 +17,9 @@ THE DEFECT, measured on lane 5's #745 head (f4935e11, Python 3.12.3, git
   after `validate-pins.py` had refused it (`shape-pin-unreadable`).
 - A `contracts/` this process may not enter ended in a `PermissionError`
   from the notice's own `is_file`, after the validators.
+- A `SHAPE_UPSTREAM_PATH` over the longest name or path the system takes
+  ended in an `OSError` (`ENAMETOOLONG`) traceback, where Python 3.12 and
+  3.13 raise it from `Path.is_dir` too (3.14 answers False).
 
 The notice's docstring says it is silent where it cannot answer and never
 fails the bootstrap; the issue's goal is that `make bootstrap` never ends in
@@ -90,6 +93,30 @@ def test_an_upstream_path_nobody_may_enter_is_an_absent_answer(project,
     assert "  shape:" not in result.stdout, result.stdout
 
 
+def over_long_name(folder: Path) -> str:
+    """A name of 300 characters, over the 255 every system here takes."""
+    return f"{folder}/{'a' * 300}"
+
+
+def over_long_path(folder: Path) -> str:
+    """A path of over 5000 characters in names of 49, over the 4096 Linux
+    takes (and macOS's 1024)."""
+    return str(folder) + ("/" + "a" * 49) * 100
+
+
+@pytest.mark.parametrize("over", [over_long_name, over_long_path],
+                         ids=["a name over the limit",
+                              "a path over the limit"])
+def test_an_over_long_upstream_path_is_an_absent_answer(project, tmp_path,
+                                                        over):
+    """`stat` answers `ENAMETOOLONG`, which is an `OSError` and no
+    `PermissionError`: a notice that caught only the one the issue's case
+    raises would end `make bootstrap` in a traceback again."""
+    result = bootstrap(project, over(tmp_path))
+    ends_ok(result)
+    assert "  shape:" not in result.stdout, result.stdout
+
+
 @LOCKED_OUT
 def test_the_cache_answers_where_the_clone_cannot_be_read(project, locked):
     """An unreadable clone is an ABSENT answer, so the cache is asked next,
@@ -126,13 +153,14 @@ def test_a_cache_that_cannot_be_read_is_an_absent_answer(project, make):
 def test_a_shape_pin_that_is_not_a_mapping_ends_as_the_validators_end_it(
         project):
     """`validate-pins.py` refuses the list by name, and the run goes on to
-    step (c) and ends non-zero on that refusal, with no traceback."""
+    step (c) and ends on that refusal, `bootstrap REFUSED: pins (exit 2)`,
+    exit 2, with no traceback."""
     (project / "contracts" / "shape-pin.yaml").write_bytes(b"- a\n- b\n")
     result = bootstrap(project)
     assert "Traceback" not in result.stderr, result.stderr
     assert "REFUSED shape-pin-unreadable: " in result.stderr, result.stderr
     assert "\n(c) review authority\n" in result.stdout, result.stdout
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 2, result.stdout
 
 
 @LOCKED_OUT

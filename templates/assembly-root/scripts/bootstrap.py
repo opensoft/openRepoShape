@@ -62,14 +62,15 @@ WHAT IT DOES, in order:
       failed there would have made the layout load-bearing again.
 
   (d) EXITS 0 unless a validator failed, and says which way. A validator
-      that FOUND something exits 1, and the run ends `bootstrap FAILED:
-      <name> (exit 1)`, exit 1. A validator that REFUSED, its exit 2, could
-      not check at all, and the run ends `bootstrap REFUSED: <name> (exit 2)`,
-      exit 2 (#764). Step (a) and the upstream notice refuse
-      `git-not-runnable`, exit 2, where git cannot be started, as the
-      validators do (#694). Where one validator found and another refused,
-      both lines are said and the run exits 2, since a check that could not
-      run outranks a finding.
+      that FOUND something, any exit but 2, ends the run `bootstrap FAILED:
+      <name> (exit <code>)`, exit 1. A validator that REFUSED, its exit 2,
+      could not check at all, and the run ends `bootstrap REFUSED: <name>
+      (exit 2)`, exit 2 (#764). Where one validator found and another
+      refused, both lines are said, the finding first, and the run exits 2,
+      since a check that could not run outranks a finding. Step (a) and the
+      upstream notice refuse `git-not-runnable`, exit 2, where git cannot be
+      started, as the validators do (#694): the run stops there and says
+      neither line, though a validator may have found or refused by then.
 
 SCHEMA-NEUTRAL BY CONTRACT. A one-repository project runs the same command:
 step (a) is a no-op where there are no submodules, and steps (c) and (d) are
@@ -1178,6 +1179,10 @@ def _end_of_run(failed: list[tuple[str, int]]) -> int:
     happened both lines are said, the findings first, and the run exits 2,
     since a check that could not run outranks a finding.
     """
+    # Stdout first: piped, it is block-buffered and stderr is not, so a log of
+    # both would show the lines below before step (c)'s, as `main`'s
+    # `git-not-runnable` path takes care that it does not.
+    sys.stdout.flush()
     found = [f"{label} (exit {code})" for label, code in failed
              if code != VALIDATOR_REFUSED]
     refused = [f"{label} (exit {code})" for label, code in failed

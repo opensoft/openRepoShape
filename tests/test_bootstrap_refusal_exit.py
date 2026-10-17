@@ -25,6 +25,17 @@ THE RULE NOW.
 says, so only its `Error <code>` line changes, from `Error 1` to `Error 2`.
 What changes for a person is the exit of `bootstrap.py` run directly, as
 `setup-project.py` step (7) and `siblings.py` run it.
+
+A PLAIN CLONE WITH NO GIT is #764's own Verify case (rv704's): no git on `PATH`
+and nothing initialized, so step (a) runs no git, and `validate-pins.py`
+refuses `git-not-runnable`. It ends `bootstrap REFUSED: pins (exit 2)` too.
+Where `SHAPE_UPSTREAM_PATH` names a directory the offline notice would run
+git in, it refuses `git-not-runnable` first (#694) and the run says neither
+line: the module docstring's step (d) says so, and a test holds it.
+
+BOTH STREAMS IN ONE PIPE read in the order the run went: stdout is
+block-buffered when piped and stderr is not, so without a flush the ending's
+line came before step (c)'s.
 """
 
 from __future__ import annotations
@@ -39,6 +50,7 @@ import pytest
 
 from conftest import (PROJECT, REPO, clone_just_pushed, load_without_bytecode,
                       run_script)
+from test_bootstrap_without_git import without_git
 
 FAILED = "bootstrap FAILED: manifest (exit 1)"
 REFUSED = "bootstrap REFUSED: pins (exit 2)"
@@ -127,6 +139,56 @@ def test_make_bootstrap_says_refused_and_make_names_error_2(plain):
     assert REFUSED in proc.stderr, proc.stderr
     assert re.search(r"\] Error 2\b", proc.stderr), proc.stderr
     assert "Error 1" not in proc.stderr, proc.stderr
+
+
+def test_a_plain_clone_with_no_git_ends_refused_with_exit_2(plain, tmp_path):
+    """#764's Verify case for C2: "a plain clone with no git, asserting the
+    exit and the word". On #815's first commit: `bootstrap FAILED: pins
+    (exit 2)`, exit 1."""
+    result = without_git(plain, tmp_path, env={"SHAPE_UPSTREAM_PATH": ""})
+    ends(result, 2, REFUSED)
+    assert "REFUSED git-not-runnable: " in result.stderr, result.stderr
+    assert "bootstrap FAILED" not in result.stderr, result.stderr
+    assert "  [spec] spec: NOT INITIALIZED." in result.stdout, result.stdout
+    assert "(c) review authority" in result.stdout, result.stdout
+
+
+def test_no_git_and_a_clone_named_refuses_before_either_line(plain, tmp_path):
+    """Step (d)'s docstring: a notice that must run git refuses
+    `git-not-runnable`, exit 2 (#694), and the run stops there, though a
+    validator had found (the manifest) and one had refused (the pins)."""
+    a_finding(plain)
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    result = without_git(plain, tmp_path,
+                         env={"SHAPE_UPSTREAM_PATH": str(upstream)})
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "REFUSED git-not-runnable: the clone SHAPE_UPSTREAM_PATH names" in (
+        result.stderr), result.stderr
+    assert "bootstrap FAILED" not in result.stderr, result.stderr
+    assert "bootstrap REFUSED" not in result.stderr, result.stderr
+    assert "(c) review authority" not in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("which, code, line", [
+    ("plain", 2, REFUSED), ("project", 1, FAILED)],
+    ids=["refused", "failed"])
+def test_the_ending_follows_step_c_in_a_log_of_both_streams(request, which,
+                                                            code, line):
+    """`> log 2>&1`: the ending's line is the log's last, and after step (c)'s
+    own, as a person reads it. `PYTHONUNBUFFERED` is blanked so the pipe is
+    block-buffered whoever runs the test."""
+    root = request.getfixturevalue(which)
+    if which == "project":
+        a_finding(root)
+    result = run_script(root / "scripts" / "bootstrap.py", cwd=root,
+                        env={"SHAPE_UPSTREAM_PATH": "",
+                             "PYTHONUNBUFFERED": ""}, merge_stderr=True)
+    assert result.returncode == code, result.stdout
+    assert result.stdout.endswith(f"{line}\n"), result.stdout
+    assert (result.stdout.index("(c) review authority")
+            < result.stdout.index(line)), result.stdout
 
 
 # --- the ending itself, asked of each mix of codes --------------------------
