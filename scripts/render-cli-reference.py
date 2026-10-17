@@ -180,8 +180,9 @@ PROJECT_TOOLS = [
     Tool("templates/assembly-root/scripts/bootstrap.py", "python",
          "python3 scripts/bootstrap.py",
          "The one command after `git clone --recurse-submodules`: places each "
-         "leg on its tracking branch AT the pinned commit. What `make "
-         "bootstrap` runs.",
+         "leg on its tracking branch AT the pinned commit only where that "
+         "loses no commit, and otherwise leaves its checkout where it is, "
+         "saying why. What `make bootstrap` runs.",
          "scripts/bootstrap.py", INSTALLED_IN_ASSEMBLY_ROOT),
     Tool("templates/assembly-root/scripts/validate-manifest.py", "python",
          "python3 scripts/validate-manifest.py",
