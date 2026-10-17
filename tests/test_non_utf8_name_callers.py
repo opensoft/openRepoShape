@@ -18,26 +18,30 @@ asked what it did:
   reason;
 - the PROBE is refused with EACCES: the test fails with `PermissionError`;
 - the test's OWN directory is refused with EACCES, the probe not: the test
-  fails with `PermissionError`, where it skipped.
+  fails with `PermissionError`, where it skipped. These rows let the probe
+  through to the real disk, so they ask it first and skip where it answers
+  EILSEQ (macOS's APFS, a ZFS with `utf8only`): they would FAIL there on a
+  system that holds no defect.
 
 Windows is emulated too, for the one caller whose own question is wider than
 the helper's: `directory_named` skips there for a control character, which
 Windows refuses in any file name, and for no other name that is text. No
 Windows run was made.
 
-The last two groups hold the C-locale half of the same issue. Under
+The last groups hold the C-locale half of the same issue. Under
 `LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0` the file name encoding is ASCII,
 so `make_file` cannot write `caf\\u00e9.yml` and `subprocess` cannot put a
-`user.name` of `Jos\\u00e9` into a child's environment: the tests that do it
-skip where this system cannot, and are held to it here with an ASCII
-`os.fsencode` and a `write_bytes` that raises as it would.
+`user.name` of `Jos\\u00e9` into a child's environment: the three tests that
+do it skip where this system's encoding cannot, held here with an ASCII
+`os.fsencode`, and for that reason ALONE: a write the disk refuses (EACCES,
+ENOSPC) still fails the `make_file` test, which a skip on `make_file`'s own
+"filesystem" reason would have turned into a skip.
 """
 
 from __future__ import annotations
 
 import errno
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -48,7 +52,8 @@ import test_adopt_template_values as template_values
 import test_clone_url_bytes as clone_url_bytes
 import test_non_utf8_git_reads as non_utf8_git_reads
 import test_stdout_encoding as stdout_encoding
-from conftest import NOT_UTF_8_PROBE, skip_message, windows_fsencode
+from conftest import (NOT_UTF_8_PROBE, skip_message,
+                      skip_where_a_name_cannot_be_not_utf_8, windows_fsencode)
 # The fixture of `test_adopt_plan_escapes.py`, `adopt-project.py` loaded as a
 # module, which two of its tests ask for.
 from test_adopt_plan_escapes import adopter  # noqa: F401 - fixture
@@ -108,10 +113,27 @@ def refusing(code: int, *, probe: bool):
     return mkdir
 
 
+def fail_where_the_caller_ends(call, *args) -> None:
+    """Fail where `call(*args)` ends without an error, SKIPPED or not: the
+    caller was to raise. A `pytest.raises` block may hold one call and no
+    more (python:S5778), so the failure is made here and not beside it."""
+    reason = skip_message(call, *args)
+    pytest.fail("the caller ended "
+                + (f"SKIPPED: {reason}" if reason else "without an error"))
+
+
 @pytest.fixture
 def a_system_that_carries_the_byte():
     if len(os.fsencode(NOT_UTF_8_PROBE)) != 1:
         pytest.skip("on this system the first question is the one that skips")
+
+
+@pytest.fixture
+def a_disk_that_takes_the_probe(tmp_path, a_system_that_carries_the_byte):
+    """The rows that let the probe through to the real disk ask it first:
+    macOS's APFS, or a ZFS with `utf8only`, answers EILSEQ to it, and those
+    rows would FAIL there on a system that holds no defect."""
+    skip_where_a_name_cannot_be_not_utf_8(tmp_path)
 
 
 # --- the disk's refusals, on the systems CI does not run --------------------
@@ -136,12 +158,10 @@ def test_a_disk_that_refuses_the_probe_with_eacces_fails_the_caller(
     hold, so the test FAILS, and no run reads it as a skip."""
     monkeypatch.setattr(os, "mkdir", refusing(errno.EACCES, probe=True))
     with pytest.raises(PermissionError):
-        reason = skip_message(call, tmp_path, adopter)
-        pytest.fail("the caller ended "
-                    + (f"SKIPPED: {reason}" if reason else "without an error"))
+        fail_where_the_caller_ends(call, tmp_path, adopter)
 
 
-@pytest.mark.usefixtures("a_system_that_carries_the_byte")
+@pytest.mark.usefixtures("a_disk_that_takes_the_probe")
 @pytest.mark.parametrize("call", THOSE_WITH_A_DIRECTORY_OF_THEIR_OWN)
 def test_a_disk_that_refuses_the_tests_own_directory_fails_the_test(
         tmp_path, monkeypatch, adopter, call):
@@ -150,9 +170,20 @@ def test_a_disk_that_refuses_the_tests_own_directory_fails_the_test(
     was a skip that said "no directory here is named ..."."""
     monkeypatch.setattr(os, "mkdir", refusing(errno.EACCES, probe=False))
     with pytest.raises(PermissionError):
-        reason = skip_message(call, tmp_path, adopter)
-        pytest.fail("the caller ended "
-                    + (f"SKIPPED: {reason}" if reason else "without an error"))
+        fail_where_the_caller_ends(call, tmp_path, adopter)
+
+
+@pytest.mark.usefixtures("a_system_that_carries_the_byte")
+def test_the_fixture_that_guards_those_rows_asks_the_real_disk(
+        tmp_path, monkeypatch, request):
+    """`a_disk_that_takes_the_probe` skips where the disk answers EILSEQ to the
+    probe, as APFS does; asked here after the disk is made to, because a
+    fixture runs before the test body and Linux's disk would never say it."""
+    monkeypatch.setattr(os, "mkdir", refusing(errno.EILSEQ, probe=True))
+    reason = skip_message(request.getfixturevalue,
+                          "a_disk_that_takes_the_probe")
+    assert reason is not None, "the fixture let a refused probe through"
+    assert "EILSEQ" in reason, reason
 
 
 # --- `directory_named`'s own question: Windows, emulated --------------------
@@ -166,9 +197,12 @@ def windows_names_it(monkeypatch) -> None:
 
 def test_where_windows_cannot_carry_the_byte_directory_named_skips_and_makes_nothing(
         tmp_path, monkeypatch):
+    """`directory_named` itself is called, so that it asks before it makes
+    anything: a version that skipped after its `os.mkdir` would leave a
+    directory here, or fail on `os.fsencode` of a path under the emulation."""
     windows_names_it(monkeypatch)
-    reason = skip_message(clone_url_bytes.skip_where_this_system_cannot_name,
-                          tmp_path, b"caf\xe9")
+    reason = skip_message(clone_url_bytes.directory_named, tmp_path,
+                          b"caf\xe9")
     assert reason is not None, "a name that is not UTF-8 was not skipped"
     assert "os.fsencode" in reason, reason
     assert list(tmp_path.iterdir()) == []
@@ -179,17 +213,20 @@ def test_where_windows_cannot_carry_the_byte_directory_named_skips_and_makes_not
 def test_where_windows_refuses_a_control_character_directory_named_skips(
         tmp_path, monkeypatch, raw):
     windows_names_it(monkeypatch)
-    reason = skip_message(clone_url_bytes.skip_where_this_system_cannot_name,
-                          tmp_path, raw)
+    reason = skip_message(clone_url_bytes.directory_named, tmp_path, raw)
     assert reason is not None, f"{raw!r} was not skipped on Windows"
     assert "control character" in reason, reason
+    assert list(tmp_path.iterdir()) == []
 
 
-def test_where_windows_holds_a_bidi_override_directory_named_does_not_skip(
+def test_where_windows_holds_a_bidi_override_the_name_check_does_not_skip(
         tmp_path, monkeypatch):
     """The row #459 names (R433 O5): NTFS holds U+202E, so the `bidi-override`
     row of the clone-URL tests runs on Windows as it does here. Reasoned, and
-    asked here only of the skip: no Windows run was made."""
+    asked here only of the skip: no Windows run was made. It asks
+    `skip_where_this_system_cannot_name` and not `directory_named`, which
+    goes on to make a `Path`, and under an emulated `os.name` of `nt` that is
+    a `WindowsPath`, which Linux cannot make."""
     windows_names_it(monkeypatch)
     raw = "\u202eevil".encode("utf-8")
     assert skip_message(clone_url_bytes.skip_where_this_system_cannot_name,
@@ -220,28 +257,39 @@ def ascii_fsencode(value):
     return value.encode("ascii", "surrogateescape")
 
 
+MAKE_FILE_TEST = (
+    non_utf8_git_reads
+    .test_make_file_writes_a_name_that_is_utf8_where_fsencode_makes_no_byte)
+
+
 def test_make_files_utf8_name_test_skips_where_the_encoding_is_ascii(
         tmp_path, monkeypatch):
     """`make_file` cannot write `caf\\u00e9.yml` where the file name encoding is
-    ASCII, and says so as a skip on `filesystem`. The test about the guard
-    reads that skip as it reads it in its neighbour, and is SKIPPED: it failed
-    on `assert skip_message(make_file, ...) is None`, on a system that holds
-    no defect. Emulated: `write_bytes` raises what the ASCII encoding does."""
-    real = Path.write_bytes
+    ASCII, so the test about the guard failed on `assert skip_message(...)
+    is None`, on a system that holds no defect. It asks the encoding first,
+    and is SKIPPED on that reason."""
+    monkeypatch.setattr(os, "fsencode", ascii_fsencode)
+    reason = skip_message(MAKE_FILE_TEST, tmp_path, monkeypatch)
+    assert reason is not None, "the test went on past an ASCII encoding"
+    assert "file name encoding" in reason, reason
+
+
+@pytest.mark.parametrize("code", [errno.EACCES, errno.ENOSPC],
+                         ids=["EACCES", "ENOSPC"])
+def test_a_write_the_disk_refuses_still_fails_the_make_file_test(
+        tmp_path, monkeypatch, code):
+    """The name is plain UTF-8, so a refused write is the disk's and not the
+    encoding's: the test FAILS on its assert, as it does without this change.
+    A skip on `make_file`'s own "filesystem" reason would end it SKIPPED, and
+    no run fails on that."""
+    non_utf8_git_reads.skip_where_the_environment_cannot_carry(
+        non_utf8_git_reads.UTF8)
 
     def write_bytes(self, data):
-        for index, char in enumerate(self.name):
-            if not char.isascii():
-                raise UnicodeEncodeError("ascii", self.name, index, index + 1,
-                                         "ordinal not in range(128)")
-        return real(self, data)
+        raise OSError(code, os.strerror(code), str(self))
     monkeypatch.setattr(Path, "write_bytes", write_bytes)
-    reason = skip_message(
-        non_utf8_git_reads
-        .test_make_file_writes_a_name_that_is_utf8_where_fsencode_makes_no_byte,
-        tmp_path, monkeypatch)
-    assert reason is not None, "the test went on past an ASCII encoding"
-    assert "filesystem" in reason, reason
+    with pytest.raises(AssertionError):
+        fail_where_the_caller_ends(MAKE_FILE_TEST, tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("value", ["Jos\u00e9", "Mehr\u200cdad", "\u202eevil"],
@@ -252,7 +300,7 @@ def test_a_user_name_the_encoding_cannot_carry_skips_where_it_is_ascii(
     reason = skip_message(
         non_utf8_git_reads.skip_where_the_environment_cannot_carry, value)
     assert reason is not None, f"{value!r} was carried by an ASCII encoding"
-    assert "environment" in reason, reason
+    assert "file name encoding" in reason, reason
 
 
 @pytest.mark.parametrize("value", ["Jose", "Jos\udce9", "Ada\nLovelace",
@@ -282,4 +330,4 @@ def test_the_two_tests_that_pass_the_name_in_an_environment_skip_where_it_is_asc
     monkeypatch.setattr(os, "fsencode", ascii_fsencode)
     reason = skip_message(getattr(non_utf8_git_reads, test), tmp_path, *args)
     assert reason is not None, "the test ran, and raised or passed on ASCII"
-    assert "environment" in reason, reason
+    assert "file name encoding" in reason, reason

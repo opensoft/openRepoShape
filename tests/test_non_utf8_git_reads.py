@@ -120,13 +120,14 @@ def test_make_file_skips_where_fsencode_makes_no_byte_and_writes_nothing(
 def test_make_file_writes_a_name_that_is_utf8_where_fsencode_makes_no_byte(
         tmp_path, monkeypatch):
     """The guard is for the byte and no wider: Windows holds `caf\\u00e9.yml`
-    as text, and the tests that use it must run there."""
+    as text, and the tests that use it must run there. Skipped, before the
+    Windows `os.fsencode` is put in, where this system's own file name
+    encoding cannot write `caf\\u00e9.yml` (ASCII); and for nothing else, so a
+    write the disk refuses fails the test (#757)."""
+    skip_where_the_environment_cannot_carry(UTF8)
     monkeypatch.setattr(os, "fsencode", windows_fsencode)
     target = tmp_path / UTF8
-    reason = skip_message(make_file, target, b"on: [pull_request]\n")
-    if reason is not None and "filesystem" in reason:
-        pytest.skip(reason)
-    assert reason is None, reason
+    assert skip_message(make_file, target, b"on: [pull_request]\n") is None
     assert target.read_bytes() == b"on: [pull_request]\n"
 
 
@@ -496,17 +497,18 @@ LEGACY_NAME = "Jos\udce9"
 
 def skip_where_the_environment_cannot_carry(value: str) -> None:
     """Skip where this system's file name encoding cannot encode `value`, as
-    under `LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0` (ASCII): `subprocess`
-    puts each environment value through `os.fsencode` before it starts the
-    child, so a `user.name` of `Jos\\u00e9` raises `UnicodeEncodeError` in the
-    test and not in the tool (#757). A name that is ASCII, or a lone
-    surrogate that `os.fsencode` gives back as its byte, is carried."""
+    under `LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0` (ASCII). It is asked of
+    a file name (`make_file` cannot write `caf\\u00e9.yml`) and of an
+    environment value: `subprocess` puts each one through `os.fsencode`
+    before it starts the child, so a `user.name` of `Jos\\u00e9` raises
+    `UnicodeEncodeError` in the test and not in the tool (#757). Text that is
+    ASCII, or a lone surrogate that `os.fsencode` gives back as its byte, is
+    carried."""
     try:
         os.fsencode(value)
     except UnicodeEncodeError:
         pytest.skip(f"this system's file name encoding "
-                    f"({sys.getfilesystemencoding()}) cannot carry {value!r} "
-                    "in an environment")
+                    f"({sys.getfilesystemencoding()}) cannot carry {value!r}")
 
 
 REFUSED = "REFUSED family-unwritable-value: "
