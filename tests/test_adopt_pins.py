@@ -153,10 +153,25 @@ def check_plan(plan: Path, **named) -> subprocess.CompletedProcess:
     given here, `remotes` beside the plan: the test path, on which `check`
     asks the disk and not GitHub whether each leg repository exists (#798).
     So the stub's log holds only what a pin made `gh` asked, which is what
-    these tests read: `check` reads no network for a pin."""
+    these tests read: `check` reads no network for a pin. One test runs
+    `check` as people run it, with no flag (`check_on_github`)."""
     return run_script(ADOPT, "check", "--plan", str(plan),
                       "--local-remote-dir", str(plan.parent / "remotes"),
                       **named)
+
+
+def check_on_github(plan: Path, **named) -> subprocess.CompletedProcess:
+    """`check --plan <plan>` with no `--local-remote-dir`, as people run it:
+    it asks GitHub whether each leg repository exists (#798), the two calls
+    `LEG_VIEWS` names, and no more for a pin."""
+    return run_script(ADOPT, "check", "--plan", str(plan), **named)
+
+
+#: The two `gh` calls, as the stub logs them, that a `check` with no
+#: `--local-remote-dir` makes for a plan of `PROJECT`: whether each leg's
+#: repository exists, the spec leg's first.
+LEG_VIEWS = [f"repo view {ORG}/{PROJECT}-{role} --json nameWithOwner"
+             for role in ("spec", "code")]
 
 
 def forge_objects(path: Path, objects: dict) -> Path:
@@ -1086,7 +1101,9 @@ def test_the_pin_and_write_lines_say_how_and_not_where(source_repo, tmp_path,
     digest was read, `local-clone`, and not where, because the path is this
     machine's own and `execute` writes into the pin file what `check`
     prints there (#540). The one line of either that names the clone is
-    #449's NOTE that the digest recomputes there."""
+    #449's NOTE that the digest recomputes there. `check` runs here as
+    people run it, with no `--local-remote-dir`, and asks `gh` the two leg
+    questions alone (#798)."""
     path, commit, _ = glass
     digest = tree_digest(path, commit)
     out = tmp_path / "plan.yaml"
@@ -1102,7 +1119,7 @@ def test_the_pin_and_write_lines_say_how_and_not_where(source_repo, tmp_path,
     assert str(path) not in result.stdout + result.stderr
     for answered, leg in ANSWERS:
         resolve(out, answered, leg)
-    checked = check_plan(out, env=gh_env)
+    checked = check_on_github(out, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert [line for line in checked.stdout.splitlines()
             if line.startswith("  write ")] == [
@@ -1113,7 +1130,9 @@ def test_the_pin_and_write_lines_say_how_and_not_where(source_repo, tmp_path,
         f"NOTE {ENTRY}: digest recomputes at {commit[:12]} in the clone "
         f"`plan` read it from, {path}."], checked.stdout
     assert str(path) not in checked.stderr
-    assert gh_calls(gh_env) == ""
+    # The two leg questions, and nothing a pin asked: `check` reads no
+    # network for a pin when it runs as people run it, with no flag.
+    assert gh_calls(gh_env).splitlines() == LEG_VIEWS
 
 
 # --- what `check` finds, and `execute` refuses before any leg exists ---------

@@ -94,6 +94,9 @@ EXTRACT = "_extract_leg"
 COPY_TREE = "copy_tree"
 TREE_OF = "_tree_of"
 PLAN_FLAG = "--plan"
+LEG_REMOTE_EXISTS = "leg-remote-exists"
+BARE_FLAG = "--bare"
+EXECUTE = "execute"
 
 #: A source small enough that `plan` asks no question, so `execute` runs on
 #: the plan as written.
@@ -375,7 +378,7 @@ def test_a_split_that_fails_names_its_step_and_both_pushed_legs(
     for role in LEGS:
         assert spelled(arguments["urls"][role]) in notice
     assert BOTH_PUSHED in notice
-    assert "leg-remote-exists" in notice
+    assert LEG_REMOTE_EXISTS in notice
     assert FIX_FIRST in notice
     # Read off the disk: the split's clone is there, and no leg's, because
     # the legs here are stand-ins that were never built in it.
@@ -919,7 +922,7 @@ def test_a_leg_is_pushed_last_so_the_notice_cannot_miscount_it(
     arguments = legs_arguments(tmp_path, source=source_of(adopter, tmp_path))
     arguments["seeded"] = seeded
     for role in LEGS:
-        git("init", "-q", "--bare", "-b", "main", arguments["urls"][role],
+        git("init", "-q", BARE_FLAG, "-b", "main", arguments["urls"][role],
             cwd=tmp_path)
 
     assert adopter._build_the_legs(**arguments) is None
@@ -1002,7 +1005,7 @@ def test_main_flushes_stdout_before_a_failure_no_step_reported(
     events, stderr = recorded_streams(monkeypatch)
     said, unsaid = scenario(adopter, monkeypatch, tmp_path)
 
-    assert adopter.main(["execute", PLAN_FLAG, "adoption-plan.yaml"]) == 2
+    assert adopter.main([EXECUTE, PLAN_FLAG, "adoption-plan.yaml"]) == 2
 
     err = "".join(stderr.written)
     assert flushed_first(events)
@@ -1132,7 +1135,7 @@ def test_a_refused_leg_push_offers_an_adoption_its_one_exit(
     `main` as a ruleset does."""
     monkeypatch.setattr(adopter, COPY_TREE, seed_one_file)
     remote = tmp_path / REMOTES / f"{ASSEMBLY}-{SPEC}.git"
-    git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
+    git("init", "-q", BARE_FLAG, "-b", "main", str(remote), cwd=tmp_path)
     write_refusing_hook(remote / "hooks", MAIN_REF)
 
     with pytest.raises(adopter.CommandFailed):
@@ -1261,7 +1264,7 @@ def test_a_live_leg_keeps_its_own_refusal_over_the_split_branch(
     with pytest.raises(adopter.Refusal) as caught:
         adopter.cmd_execute(execute_args(tmp_path, plan))
 
-    assert caught.value.code == "leg-remote-exists"
+    assert caught.value.code == LEG_REMOTE_EXISTS
 
 
 def test_against_github_the_split_branch_is_asked_of_the_assembly(
@@ -1329,12 +1332,12 @@ def test_a_code_leg_made_after_the_question_still_gets_the_notice(
                                               tree=SMALL_TREE, edits=()))
     code_leg = tmp_path / REMOTES / f"{ASSEMBLY}-{CODE}.git"
     after_the_question(adopter, monkeypatch, lambda: git(
-        "init", "-q", "--bare", str(code_leg), cwd=tmp_path))
+        "init", "-q", BARE_FLAG, str(code_leg), cwd=tmp_path))
 
     with pytest.raises(adopter.Refusal) as caught:
         adopter.cmd_execute(execute_args(tmp_path, plan))
 
-    assert caught.value.code == "leg-remote-exists"
+    assert caught.value.code == LEG_REMOTE_EXISTS
     err = capsys.readouterr().err
     assert f"{REFUSED} creating the {CODE} leg repository. " in err
     spec_leg = (tmp_path / REMOTES).resolve() / f"{ASSEMBLY}-{SPEC}.git"
@@ -1356,7 +1359,7 @@ def test_a_local_remote_dir_that_cannot_be_made_after_the_question_is_refused(
     after_the_question(adopter, monkeypatch, lambda: remotes.write_text(
         "put here since\n", encoding=UTF8))
 
-    assert adopter.main(["execute", PLAN_FLAG, str(plan), "--yes",
+    assert adopter.main([EXECUTE, PLAN_FLAG, str(plan), "--yes",
                          "--local-remote-dir", str(remotes), "--work-dir",
                          str(tmp_path / WORK)]) == 2
 
@@ -1607,7 +1610,7 @@ def adopt_with_hook(tmp_path: Path, ref_pattern: str):
 
 def execute(plan: Path, remotes: Path, work: Path, env: dict | None = None,
             merge_stderr: bool = False) -> subprocess.CompletedProcess:
-    return run_script(ADOPT, "execute", PLAN_FLAG, str(plan), "--yes",
+    return run_script(ADOPT, EXECUTE, PLAN_FLAG, str(plan), "--yes",
                       "--local-remote-dir", str(remotes), "--work-dir",
                       str(work), env=env, merge_stderr=merge_stderr)
 

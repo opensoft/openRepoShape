@@ -171,8 +171,8 @@ def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
     """Both leg repositories exist by now, and one may even be pushed. The
     human reads the failure, fixes it and re-runs; the re-run is refused as
     `leg-remote-exists` before it makes either leg, on the disk and on
-    GitHub alike (#798), so the notice says so BEFORE it happens, and names the two repositories to delete or to
-    replace. It says to fix what failed first: a cause that is still there
+    GitHub alike (#798), so the notice says so BEFORE it happens, and names
+    the two repositories to delete or to replace. It says to fix what failed first: a cause that is still there
     fails the re-run the same way, after two more leg repositories (#188's
     review, F2)."""
     refuse_every_leg(adopter, monkeypatch, command, tmp_path)
