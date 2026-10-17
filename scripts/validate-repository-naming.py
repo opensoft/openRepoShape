@@ -87,7 +87,8 @@ EXIT CODES, the same three in every validator this standard ships:
     1  a FINDING: at least one name matches no family, or a leg's declared role
        disagrees with the form of its name, or (#443) `neutral_product_pins:`
        or a leg's `naming.referent_chain:` is not a list, or (#714) `legs:`
-       is not a list, or an entry of the first two is not a name
+       is missing, empty or not a list, or an entry of the first two is not
+       a name
     2  a REFUSAL: the question could not be asked at all — the policy file is
        missing, unparsable, or not a naming policy, or a `--link-source`
        names no path
@@ -878,13 +879,21 @@ def _project_legs(data: dict) -> list:
 
 
 def _legs_field_findings(data: dict) -> list[str]:
-    """`validate-manifest.py`'s finding for a `legs:` that is not a list, in
-    its words (#714), as `validate-pins.py` says it too. Absent, null or
-    `[]` names no leg and is not this finding: with no other name, the run
-    refuses `naming-no-target`, as it did."""
+    """`validate-manifest.py`'s finding for a `legs:` that is not a list, or
+    that is absent, null or `[]`, in its words (#714); `validate-pins.py`
+    says the first too.
+
+    A MANIFEST THAT NAMES NO LEG IS THAT FINDING, NOT `naming-no-target`
+    (lane 4's ruling on #714). The refusal said "Pass names, `--project
+    project.yaml`, or names on stdin" to a run that had passed
+    `--project project.yaml`, and under `--project` this gate no longer
+    reads stdin, so two of its three offers were no way out. The manifest
+    is what is wrong, and `validate-manifest.py` says so, exit 1."""
     legs = data.get("legs")
-    if legs is None or isinstance(legs, list):
+    if isinstance(legs, list) and legs:
         return []
+    if legs is None or isinstance(legs, list):
+        return ["manifest-legs: legs is missing or empty"]
     return [f"manifest-legs: legs is {legs!r}, expected a list of `role:`, "
             "`repository:` and `path:` mappings"]
 
@@ -1200,8 +1209,11 @@ def main(argv: list[str] | None = None) -> int:
     # question; a manifest that names no leg, or whose `legs:` is not a
     # list, read names from a stdin that is not a terminal, and a pipe left
     # open (a parent that holds it) made the gate wait forever.
-    # A finding with no name to classify is still said, exit 1: the
-    # `no names given` refusal is for a run that found nothing to ask.
+    # A finding with no name to classify is still said, exit 1, and under
+    # `--project` a run with no target always has one (`legs:` missing,
+    # empty or not a list, or a leg with no `repository:`): the
+    # `no names given` refusal is for a run without `--project` that found
+    # nothing to ask.
     if not targets and data is None and not sys.stdin.isatty():
         targets = _targets_from_stdin(args.role, cli_pins, cli_chain, here)
     if not targets and not findings:

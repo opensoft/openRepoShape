@@ -18,7 +18,11 @@ NOW the three gates say one sentence, exit 1:
       `repository:` and `path:` mappings
 
 and under `--project` the naming gate reads no stdin at all, whatever `legs:`
-holds, so absent, null, `[]` and `[5]` cannot wait either.
+holds, so absent, null, `[]` and `[5]` cannot wait either. A manifest that
+names no leg (absent, null or `[]`) is `validate-manifest.py`'s `legs is
+missing or empty` in the naming gate too, exit 1 (lane 4's ruling), and not
+`REFUSED naming-no-target`, whose offers of `--project` and of names on stdin
+were no way out under `--project`. Without `--project` that refusal stands.
 
 AN ENTRY THAT IS NOT A NAME (#443 left `[5]` and `[[a]]` unexamined) was read
 with `str()`: `[5]` was the pin or the link `'5'`, and a link holding ESC,
@@ -77,6 +81,10 @@ NOT_PRINTABLE = "it holds a character that is not printable"
 ESC = "\x1b[31mRED"
 #: The issue's name that is not UTF-8, as argv reads the byte `\xff`.
 NOT_UTF8 = "Atl\udcffas"
+
+
+#: `validate-manifest.py`'s sentence for a `legs:` that names no leg.
+LEGS_MISSING = "FINDING manifest-legs: legs is missing or empty\n"
 
 
 def legs_said(value) -> str:
@@ -146,37 +154,62 @@ def test_each_gate_says_legs_that_are_not_a_list_in_one_sentence(
         assert wrong not in result.stderr, result.stderr
 
 
-@pytest.mark.parametrize("spelled,exit_code,said", [
-    pytest.param("openXdox", 1, legs_said("openXdox"), id="scalar-string"),
-    pytest.param("5", 1, legs_said(5), id="number"),
-    pytest.param("{a: b}", 1, legs_said({"a": "b"}), id="mapping"),
-    pytest.param(None, 2, "REFUSED naming-no-target: ", id="absent"),
-    pytest.param("", 2, "REFUSED naming-no-target: ", id="null"),
-    pytest.param("[]", 2, "REFUSED naming-no-target: ", id="empty-list"),
-    pytest.param("[5]", 1, "FINDING project.yaml: a leg has no `repository:`",
+@pytest.mark.parametrize("spelled,said", [
+    pytest.param("openXdox", legs_said("openXdox"), id="scalar-string"),
+    pytest.param("5", legs_said(5), id="number"),
+    pytest.param("{a: b}", legs_said({"a": "b"}), id="mapping"),
+    pytest.param(None, LEGS_MISSING, id="absent"),
+    pytest.param("", LEGS_MISSING, id="null"),
+    pytest.param("[]", LEGS_MISSING, id="empty-list"),
+    pytest.param("[5]", "FINDING project.yaml: a leg has no `repository:`",
                  id="a-leg-that-is-not-a-mapping"),
 ])
 def test_the_naming_gate_never_waits_on_a_stdin_left_open(project, spelled,
-                                                          exit_code, said):
+                                                          said):
     """THE WAIT (L4-141). Under `--project` stdin is never read, so a pipe
-    nobody writes or closes cannot hold the gate, whatever `legs:` is. The
-    finding a manifest of no target still gets is said, exit 1 (`[5]` was
-    `naming-no-target`, which dropped it); one with nothing to say is still
-    refused `naming-no-target`, exit 2."""
+    nobody writes or closes cannot hold the gate, whatever `legs:` is, and
+    every manifest with no target is a finding, exit 1: `[5]` was
+    `naming-no-target`, which dropped its finding, and absent, null and `[]`
+    were that refusal, which offered `--project` and names on stdin to a run
+    that had passed `--project`. They are `validate-manifest.py`'s `legs is
+    missing or empty` now (lane 4's ruling)."""
     set_legs(project, spelled)
     result = naming_gate_beside_an_open_pipe(project)
     out = result.stdout + result.stderr
-    assert result.returncode == exit_code, out
+    assert result.returncode == 1, out
     assert "Traceback" not in out, out
-    assert said in result.stderr, out
-    if exit_code == 1:
-        assert "naming-no-target" not in result.stderr, out
+    assert result.stderr.count(said) == 1, out
+    assert "naming-no-target" not in result.stderr, out
+
+
+@pytest.mark.parametrize("which", ["naming", "manifest"])
+@pytest.mark.parametrize("spelled", [
+    pytest.param(None, id="absent"),
+    pytest.param("", id="null"),
+    pytest.param("[]", id="empty-list"),
+])
+def test_a_manifest_that_names_no_leg_is_said_alike(project, which, spelled):
+    """`legs:` absent, null or `[]` is one sentence, exit 1, from the
+    naming gate as from the manifest gate."""
+    set_legs(project, spelled)
+    assert_said_once(gate(project, which), LEGS_MISSING)
+
+
+def test_without_project_no_name_is_still_refused_naming_no_target(tmp_path):
+    """THE OTHER SIDE of the ruling: with no `--project`, no name and
+    nothing on stdin, the run is refused `naming-no-target`, exit 2, in its
+    own words, as it always was."""
+    result = run_script(NAMING_SCRIPT, cwd=tmp_path)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr == (
+        "REFUSED naming-no-target: no names given. Pass names, "
+        "`--project project.yaml`, or names on stdin.\n"), result.stderr
 
 
 def test_names_on_stdin_are_read_without_project_and_never_with_it(project):
     """THE OTHER SIDE: a name piped in is classified as ever when no other
     source names one, and is not read under `--project`, where a manifest
-    with no leg is refused `naming-no-target` and the name is not listed."""
+    with no leg is `legs is missing or empty` and the name is not listed."""
     alone = run_script(NAMING_SCRIPT, cwd=project, input="openChart\n")
     assert alone.returncode == 0, alone.stdout + alone.stderr
     assert "openChart" in alone.stdout, alone.stdout
@@ -184,8 +217,8 @@ def test_names_on_stdin_are_read_without_project_and_never_with_it(project):
     script, *args = GATES["naming"]
     piped = run_script(project / script, *args, cwd=project,
                        input="openChart\n")
-    assert piped.returncode == 2, piped.stdout + piped.stderr
-    assert "REFUSED naming-no-target: " in piped.stderr, piped.stderr
+    assert_said_once(piped, LEGS_MISSING)
+    assert "naming-no-target" not in piped.stderr, piped.stderr
     assert "openChart" not in piped.stdout, piped.stdout
 
 
