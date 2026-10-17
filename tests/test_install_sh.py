@@ -46,14 +46,15 @@ from pathlib import Path
 import pytest
 
 from conftest import BASH, BASH_SKIP, REPO, bash_path
-from test_openreposhape_command import (BIN_DIR_SPELLINGS, C1_BIN_DIRS,
-                                        COMMAND, COMMAND_REFUSAL_ENDS,
+from test_openreposhape_command import (BIN_DIR_SPELLINGS, COMMAND,
+                                        COMMAND_REFUSAL_ENDS,
                                         CYGPATH_STATES, HOLDS_A_COLON,
-                                        HOLDS_A_CONTROL_CHARACTER,
-                                        INSTALL_NEEDS, LOCALES,
-                                        NO_FILE_NAMED_SO,
+                                        INSTALL_NEEDS, LINKED_BIN_DIRS,
+                                        LOCALES, NO_FILE_NAMED_SO,
                                         NO_NON_ASCII_INTO_GIT_BASH,
-                                        NOT_CONTROLS, UNNAMEABLE_BIN_DIRS,
+                                        NOT_CONTROLS,
+                                        REFUSED_IN_EVERY_LOCALE,
+                                        UNNAMEABLE_BIN_DIRS,
                                         assert_a_bin_dir_is_refused,
                                         command_env, machine_path,
                                         put_cygpath, put_on_path, run_cmd,
@@ -905,21 +906,21 @@ def test_the_installer_holds_the_default_directory_to_the_colon_refusal(
 
 
 @NO_FILE_NAMED_SO
-def test_a_control_character_is_refused_before_the_symlink_check_names_it(
-        tmp_path):
+@pytest.mark.parametrize("name, said", LINKED_BIN_DIRS)
+def test_a_bin_dir_is_refused_before_the_symlink_check_names_it(
+        tmp_path, name, said):
     """The symlink refusal (#563) names `$target`, so a directory holding a
-    carriage return that has pipx's link in it would have install.sh print
-    the value as typed (#760): the control character is refused first, and
-    the link stays as it was."""
+    carriage return or U+202E that has pipx's link in it would have
+    install.sh print the value as typed (#760, #837): the value is refused
+    first, and the link stays as it was."""
     net = Net(tmp_path)
-    bin_dir = tmp_path / "a\rforged" / "bin"
+    bin_dir = tmp_path / name / "bin"
     bin_dir.mkdir(parents=True)
     link = bin_dir / "openRepoShape"
     link.symlink_to(tmp_path / "nowhere")
     result = net.run(env={"OPENREPOSHAPE_BIN_DIR": str(bin_dir)})
     assert net.calls() == [], net.calls()
-    assert_a_bin_dir_is_refused(result, str(bin_dir),
-                                HOLDS_A_CONTROL_CHARACTER,
+    assert_a_bin_dir_is_refused(result, str(bin_dir), said,
                                 INSTALLER_REFUSAL_ENDS)
     assert link.is_symlink()
 
@@ -935,9 +936,10 @@ def test_the_installer_places_a_directory_with_an_unprinted_letter(
     directory called `caf` and that letter for a fault it has not got. It
     is installed into, in either locale, and named as typed, and so is a
     no-break space, whose first byte is the C1 controls' (`0xC2`) and
-    whose second is the one past them, and so are U+2028 and U+2029 (see
-    `NOT_CONTROLS`). The line is looked for among the lines split at a
-    newline and nothing else: `splitlines` splits at those two as well."""
+    whose second is the one past them, and so are the zero-width
+    non-joiner and joiner and the other names in `NOT_CONTROLS` (#837).
+    The line is looked for among the lines split at a newline and nothing
+    else, as `splitlines` splits at other characters too."""
     net = Net(tmp_path)
     net.bin = tmp_path / name
     result = net.run(env={"OPENREPOSHAPE_BIN_DIR": bash_path(net.bin),
@@ -950,22 +952,23 @@ def test_the_installer_places_a_directory_with_an_unprinted_letter(
 
 @NO_NON_ASCII_INTO_GIT_BASH
 @pytest.mark.parametrize("locale", LOCALES)
-@pytest.mark.parametrize("value", C1_BIN_DIRS)
-def test_the_installer_refuses_a_c1_control_in_every_locale_before_any_request(
-        tmp_path, value, locale):
-    """A C1 control (U+0080 to U+009F) in the directory, under `C` and
-    under `C.UTF-8`, alone, after a byte that is not UTF-8, and after a
-    colon (#760): exit 2 with the control-character refusal, no request,
-    and nothing of the value in either stream. Under a UTF-8 locale a byte
-    that is not UTF-8 anywhere in the value makes bash match byte by byte,
-    and `[[:cntrl:]]` then matches neither byte of U+009B, as it matches
-    neither under `C`."""
+@pytest.mark.parametrize("value, said", REFUSED_IN_EVERY_LOCALE)
+def test_the_installer_refuses_in_every_locale_before_any_request(
+        tmp_path, value, said, locale):
+    """A C1 control (U+0080 to U+009F) in the directory (#760), or a
+    character a terminal draws as something other than itself (#837),
+    under `C` and under `C.UTF-8`, alone, after a byte that is not UTF-8,
+    and beside a colon: exit 2 with the refusal that says what it holds,
+    no request, and nothing of the value in either stream. Under a UTF-8
+    locale a byte that is not UTF-8 anywhere in the value makes bash match
+    byte by byte, and `[[:cntrl:]]` then matches neither byte of U+009B, as
+    it matches neither under `C`; the second check looks for bytes in any
+    locale, and names what it found by its code point."""
     net = Net(tmp_path)
     typed = value.format(d=bash_path(tmp_path))
     result = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed, "LC_ALL": locale})
     assert net.calls() == [], net.calls()
-    assert_a_bin_dir_is_refused(result, typed, HOLDS_A_CONTROL_CHARACTER,
-                                INSTALLER_REFUSAL_ENDS)
+    assert_a_bin_dir_is_refused(result, typed, said, INSTALLER_REFUSAL_ENDS)
     net.refused(result)
 
 

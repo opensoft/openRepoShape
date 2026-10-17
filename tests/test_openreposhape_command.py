@@ -607,8 +607,26 @@ C1_CSI = chr(0x9B)
 #: child's environment (the byte comes back through `surrogateescape`).
 NOT_UTF8 = chr(0xDCE9)
 
+#: THE CHARACTERS A TERMINAL DRAWS AS SOMETHING OTHER THAN THEMSELVES (#837),
+#: by code point, as the launcher's `MISDRAWN_CHARACTERS` and install.sh's
+#: copy list them: the soft hyphen, the twelve bidirectional controls, the
+#: line and paragraph separators, and the characters of no width. Written
+#: out here, not read from either file, so that a change to that list is a
+#: change to this one too.
+MISDRAWN = (0x00AD, 0x061C, 0x200B, 0x200E, 0x200F, *range(0x2028, 0x202F),
+            *range(0x2060, 0x2070), 0xFEFF)
+
 HOLDS_A_COLON = "holds a ':'"
 HOLDS_A_CONTROL_CHARACTER = "holds a control character"
+
+
+def drawn_as_another(named: str) -> str:
+    """What both files' refusal says of a directory holding `named`: the
+    `U+XXXX` of each character of `MISDRAWN` in it, comma-separated (#837)."""
+    return ("holds a character a terminal draws as something other than "
+            f"itself ({named}): one that is invisible, ends a line or "
+            "reorders the text around it, so no line about $PATH can print "
+            "the name as it reads.")
 
 #: How `--install`'s two refusals end, and how install.sh's do (#760): the
 #: remedy is the same sentence in both, less the verb.
@@ -664,7 +682,8 @@ def assert_a_bin_dir_is_refused(result, typed: str, said: str,
     """`result` is a refusal, exit 2, of `typed`, a directory no line about
     `$PATH` can name (#667, #760), saying `said` and ending as `ending`
     does. A colon's refusal names the directory; nothing else does, and no
-    control character, and no `forged` tail, reaches either stream."""
+    control character, no character of `MISDRAWN` and no `forged` tail
+    reaches either stream."""
     assert result.returncode == 2, result.stdout + result.stderr
     said_in_full = " ".join(result.stderr.split())
     assert said in said_in_full, said_in_full
@@ -676,6 +695,8 @@ def assert_a_bin_dir_is_refused(result, typed: str, said: str,
         assert ESCAPE not in stream, stream
         assert DELETE not in stream, stream
         assert C1_CSI not in stream, stream
+        for code in MISDRAWN:
+            assert chr(code) not in stream, (f"U+{code:04X}", stream)
     assert result.stdout == ""
 
 
@@ -697,17 +718,25 @@ def test_a_bin_dir_no_path_line_can_name_is_refused_before_it_places_anything(
     assert list(tmp_path.iterdir()) == []
 
 
-#: Names no arm refuses, in either locale (#760): an e with an acute accent;
-#: U+00A0, a no-break space, whose bytes `0xC2 0xA0` come right after the
-#: C1 range's last (`0xC2 0x9F`); and U+2028 and U+2029, which `[[:cntrl:]]`
-#: alone matches under a UTF-8 locale and not under `C`. The arm runs under
-#: `C`, so it answers alike in both, and neither is a control a terminal
-#: acts on (a line that holds one prints as it is).
+#: Names no check refuses, in either locale (#760, #837): an e with an acute
+#: accent; U+00A0, a no-break space, whose bytes `0xC2 0xA0` come right
+#: after the C1 range's last (`0xC2 0x9F`); a Persian word (letters) whose
+#: two parts U+200C ZERO WIDTH NON-JOINER keeps apart, and an emoji sequence
+#: (a woman technologist) that U+200D ZERO WIDTH JOINER makes, which that
+#: script and that sequence need; and U+2026 and U+FF21, which start with
+#: the bytes `0xE2` and `0xEF` that most of `MISDRAWN` start with. U+2028
+#: and U+2029 were here until #837 refused them with the rest of
+#: `MISDRAWN`.
 NOT_CONTROLS = [
     pytest.param("caf" + chr(0xE9), id="an-e-acute"),
     pytest.param("a" + chr(0xA0) + "b", id="a-no-break-space"),
-    pytest.param("a" + chr(0x2028) + "b", id="a-line-separator"),
-    pytest.param("a" + chr(0x2029) + "b", id="a-paragraph-separator"),
+    pytest.param("".join(map(chr, (0x0646, 0x0627, 0x0645, 0x0647, 0x200C,
+                                   0x0647, 0x0627))),
+                 id="a-persian-word-and-u+200c"),
+    pytest.param(chr(0x1F469) + chr(0x200D) + chr(0x1F4BB),
+                 id="an-emoji-sequence-and-u+200d"),
+    pytest.param("a" + chr(0x2026) + "b", id="u+2026"),
+    pytest.param("a" + chr(0xFF21) + "b", id="u+ff21"),
 ]
 
 
@@ -721,8 +750,10 @@ def test_a_bin_dir_with_an_unprinted_letter_is_placed(
     printable, so the second would refuse a directory called `caf` and
     that letter for a fault it has not got. It is placed, in either
     locale, and so is a no-break space, whose first byte is the C1
-    controls' (`0xC2`) and whose second is the one past them, and so are
-    U+2028 and U+2029, which only a UTF-8 locale's `[[:cntrl:]]` matches."""
+    controls' (`0xC2`) and whose second is the one past them; and so are
+    the zero-width non-joiner and joiner, which a script or an emoji
+    needs, and two characters drawn as themselves whose first bytes are
+    those of the characters #837 refuses (see `NOT_CONTROLS`)."""
     result = run_cmd("--install", home=tmp_path, cwd=tmp_path, env={
         "OPENREPOSHAPE_BIN_DIR": f"{bash_path(tmp_path)}/{name}",
         "LC_ALL": locale})
@@ -749,39 +780,135 @@ C1_BIN_DIRS = [
                  id="a-colon-then-a-byte-that-is-not-utf-8-and-a-c1-csi"),
 ]
 
+#: Each of `MISDRAWN` in a directory, refused by the words that name it by
+#: its code point (#837); then two at once, which are both named, in
+#: `MISDRAWN`'s order; one after a byte that is not UTF-8; and one beside a
+#: `:` and one in a drive spelling, whose own refusals name the directory,
+#: so this one has to come before them.
+MISDRAWN_BIN_DIRS = [
+    *(pytest.param("{d}/a" + chr(code) + "forged/bin",
+                   drawn_as_another(f"U+{code:04X}"), id=f"u+{code:04x}")
+      for code in MISDRAWN),
+    pytest.param("{d}/a" + chr(0x202E) + "b" + chr(0x200B) + "forged/bin",
+                 drawn_as_another("U+200B, U+202E"), id="two-at-once"),
+    pytest.param("{d}/caf" + NOT_UTF8 + chr(0x202E) + "forged/bin",
+                 drawn_as_another("U+202E"),
+                 id="a-byte-that-is-not-utf-8-then-u+202e"),
+    pytest.param("{d}/a:b" + chr(0x202E) + "forged/bin",
+                 drawn_as_another("U+202E"), id="a-colon-and-u+202e"),
+    pytest.param("D:\\tools" + chr(0x202E) + "forged\\bin",
+                 drawn_as_another("U+202E"),
+                 id="a-drive-spelling-and-u+202e"),
+]
+
+#: Every value refused alike under `C` and under `C.UTF-8`, with what its
+#: refusal says: each of `C1_BIN_DIRS` as a control character (#760), and
+#: each of `MISDRAWN_BIN_DIRS` by what it holds (#837).
+REFUSED_IN_EVERY_LOCALE = [
+    *(pytest.param(*value.values, HOLDS_A_CONTROL_CHARACTER, id=value.id)
+      for value in C1_BIN_DIRS),
+    *MISDRAWN_BIN_DIRS,
+]
+
 
 @NO_NON_ASCII_INTO_GIT_BASH
 @pytest.mark.parametrize("locale", LOCALES)
-@pytest.mark.parametrize("value", C1_BIN_DIRS)
-def test_a_c1_control_is_refused_in_every_locale_whatever_else_the_value_holds(
-        tmp_path, value, locale):
-    """Refused as an escape is, exit 2, nothing placed, and never echoed:
-    under `C`, where `[[:cntrl:]]` reads the two bytes one at a time and
-    matches neither, and under `C.UTF-8`, where a byte that is not UTF-8
-    anywhere in the value makes bash match byte by byte (#760)."""
+@pytest.mark.parametrize("value, said", REFUSED_IN_EVERY_LOCALE)
+def test_a_bin_dir_is_refused_in_every_locale_whatever_else_it_holds(
+        tmp_path, value, said, locale):
+    """Refused, exit 2, nothing placed, and never echoed, under `C` and
+    under `C.UTF-8`. A C1 control is refused as an escape is (#760): under
+    `C`, `[[:cntrl:]]` reads its two bytes one at a time and matches
+    neither, and under `C.UTF-8` a byte that is not UTF-8 anywhere in the
+    value makes bash match byte by byte. A character a terminal draws as
+    something other than itself is refused in words that name it by its
+    code point, because nobody can see it (#837), and its bytes are looked
+    for as bytes, so the locale changes nothing there either."""
     typed = value.format(d=bash_path(tmp_path))
     result = run_cmd("--install", home=tmp_path, cwd=tmp_path,
                      env={"OPENREPOSHAPE_BIN_DIR": typed, "LC_ALL": locale})
-    assert_a_bin_dir_is_refused(result, typed, HOLDS_A_CONTROL_CHARACTER,
-                                COMMAND_REFUSAL_ENDS)
+    assert_a_bin_dir_is_refused(result, typed, said, COMMAND_REFUSAL_ENDS)
     assert list(tmp_path.iterdir()) == []
 
 
+def misdrawn_check(path: Path) -> str:
+    """`MISDRAWN_CHARACTERS` and `misdrawn_characters`, as the file at
+    `path` carries them (#837)."""
+    text = path.read_text(encoding="utf-8")
+    [listed] = re.findall(r"^MISDRAWN_CHARACTERS=\(.*?\)\n", text, re.M)
+    [function] = re.findall(r"^misdrawn_characters\(\) \{\n.*?^\}\n", text,
+                            re.M | re.S)
+    return listed + function
+
+
+def test_install_sh_carries_the_launchers_misdrawn_check_as_it_is():
+    """install.sh arrives alone down a pipe, so it carries a copy of the
+    launcher's list and function, as it carries the control check (#837).
+    The two are one text, so neither file can refuse a directory the other
+    places, or name it otherwise."""
+    assert misdrawn_check(REPO / "install.sh") == misdrawn_check(COMMAND)
+
+
+#: Every code point whose UTF-8 starts with the bytes one of `MISDRAWN`
+#: starts with: U+0080 to U+00BF (`0xC2`), U+0600 to U+063F (`0xD8`),
+#: U+2000 to U+20FF (`0xE2 0x80` to `0xE2 0x83`) and U+FE00 to U+FFFF
+#: (`0xEF 0xB8` to `0xEF 0xBF`).
+SHARING_ITS_BYTES = (*range(0x80, 0xC0), *range(0x600, 0x640),
+                     *range(0x2000, 0x2100), *range(0xFE00, 0x10000))
+
+
+@pytest.mark.parametrize("name", ["openRepoShape", "install.sh"])
+def test_misdrawn_characters_names_its_own_and_nothing_else(tmp_path, name):
+    """The function alone, lifted out of the file and run under `LC_ALL=C`,
+    as both call sites run it, over one directory name for each code point
+    that starts with the bytes one it refuses starts with (#837): it names
+    exactly the code points of `MISDRAWN`, each as `U+XXXX`, and nothing
+    for the rest, so a name that merely holds a byte such as `0xE2` or
+    `0xEF` is never refused. The names travel on stdin, as bytes, so this
+    runs under Git Bash too, where no such name crosses the environment."""
+    script = tmp_path / "misdrawn.sh"
+    write_script(script, "LC_ALL=C\n" + misdrawn_check(REPO / name)
+                 + 'while IFS= read -r -d "" value; do\n'
+                 '\tmisdrawn_characters "$value"\n'
+                 "\tprintf '\\n'\n"
+                 "done\n")
+    ran = subprocess.run(
+        [BASH, bash_path(script)], capture_output=True, check=False,
+        input=b"".join(f"/a{chr(code)}b".encode("utf-8") + b"\0"
+                       for code in SHARING_ITS_BYTES),
+        env=command_env(setup_sh=None))
+    assert ran.returncode == 0, ran.stderr.decode("utf-8", "replace")
+    named = ran.stdout.decode("ascii").split("\n")[:-1]
+    assert dict(zip(SHARING_ITS_BYTES, named)) == {
+        code: f"U+{code:04X}" if code in MISDRAWN else ""
+        for code in SHARING_ITS_BYTES}
+
+
+#: A directory that already holds pipx's link (#563), whose name holds a
+#: carriage return (#760) or U+202E (#837), and what its refusal says.
+LINKED_BIN_DIRS = [
+    pytest.param("a\rforged", HOLDS_A_CONTROL_CHARACTER,
+                 id="a-carriage-return"),
+    pytest.param("a" + chr(0x202E) + "forged", drawn_as_another("U+202E"),
+                 id="u+202e"),
+]
+
+
 @NO_FILE_NAMED_SO
-def test_a_control_character_is_refused_before_a_link_in_it_names_it(
-        tmp_path):
+@pytest.mark.parametrize("name, said", LINKED_BIN_DIRS)
+def test_a_bin_dir_is_refused_before_a_link_in_it_names_it(
+        tmp_path, name, said):
     """The symlink refusal (#563) names `$dir/openRepoShape`, so a directory
-    holding a carriage return that already has pipx's link in it would
-    have the refusal print the value as typed (#760): the control character
+    holding a carriage return or U+202E that already has pipx's link in it
+    would have the refusal print the value as typed (#760, #837): the value
     is refused first, and the link stays as it was."""
-    bin_dir = tmp_path / "a\rforged" / "bin"
+    bin_dir = tmp_path / name / "bin"
     bin_dir.mkdir(parents=True)
     link = bin_dir / "openRepoShape"
     link.symlink_to(tmp_path / "nowhere")
     result = run_cmd("--install", home=tmp_path, cwd=tmp_path,
                      env={"OPENREPOSHAPE_BIN_DIR": str(bin_dir)})
-    assert_a_bin_dir_is_refused(result, str(bin_dir),
-                                HOLDS_A_CONTROL_CHARACTER,
+    assert_a_bin_dir_is_refused(result, str(bin_dir), said,
                                 COMMAND_REFUSAL_ENDS)
     assert link.is_symlink()
 

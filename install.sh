@@ -45,7 +45,8 @@
 #      command already there as a symbolic link (pipx's, #563), a
 #      `$OPENREPOSHAPE_BIN_DIR` spelled for Windows where no `cygpath` can
 #      spell it the way bash does (#667), or a directory holding a control
-#      character or a `:`, which no line about `$PATH` can name (#760).
+#      character or a `:`, which no line about `$PATH` can name (#760), or
+#      a character a terminal draws as something other than itself (#837).
 # git-filter-repo never changes it: only adopting needs it, and
 # `adopt-project.py` refuses with its own install command where it is missing.
 # What it changes is the summary (#595): `adoption:` says whether it is there
@@ -336,8 +337,44 @@ filter_repo_step() {
 	adoption_not_ready "it is not installed" "$how $found"
 }
 
+# THE CHARACTERS A TERMINAL DRAWS AS SOMETHING OTHER THAN THEMSELVES, AND
+# WHICH OF THEM "$1" HOLDS (#837): the launcher's `MISDRAWN_CHARACTERS` and
+# `misdrawn_characters`, copied as they are, for the reason the control
+# check in `main` is copied: this file arrives alone down a pipe. The
+# launcher says why these characters and no others, and
+# `tests/test_openreposhape_command.py` holds the two copies to one text.
+MISDRAWN_CHARACTERS=(00AD 061C 200B 200E-200F 2028-202E 2060-206F FEFF)
+
+misdrawn_characters() {
+	local value="$1" entry code last bytes name found=""
+	for entry in "${MISDRAWN_CHARACTERS[@]}"; do
+		code=$((0x${entry%-*}))
+		last=$((0x${entry#*-}))
+		while [ "$code" -le "$last" ]; do
+			if [ "$code" -lt 2048 ]; then
+				printf -v bytes '\\0%o\\0%o' $((0xC0 | (code >> 6))) \
+					$((0x80 | (code & 63)))
+			else
+				printf -v bytes '\\0%o\\0%o\\0%o' $((0xE0 | (code >> 12))) \
+					$((0x80 | ((code >> 6) & 63))) $((0x80 | (code & 63)))
+			fi
+			printf -v bytes '%b' "$bytes"
+			case "$value" in
+			*"$bytes"*)
+				printf -v name 'U+%04X' "$code"
+				found="${found:+$found, }$name"
+				;;
+			*) ;;
+			esac
+			code=$((code + 1))
+		done
+	done
+	printf '%s' "$found"
+}
+
 main() {
 	local version="" asked launcher_url bin_dir spelled target shown status=0 pinned=1
+	local misdrawn
 	local machine="this machine is ready"
 
 	# NOTHING A CHILD READS IS THIS SCRIPT. Piped, stdin is the pipe the
@@ -379,7 +416,8 @@ main() {
 	# print (`café` under LC_ALL=C) is no fault of the directory's. The check
 	# runs under `LC_ALL=C` and names U+0080 to U+009F's two bytes (`\302`,
 	# then `\200` to `\237`), so a C1 control is refused in every locale,
-	# whatever else the value holds; U+2028 and U+2029 are refused in none.
+	# whatever else the value holds; U+2028 and U+2029, which only a UTF-8
+	# locale's `[[:cntrl:]]` matched, are the next check's (#837).
 	# Left to the locale, `[[:cntrl:]]` matches a C1 control only in a value
 	# that is valid UTF-8: one byte that is not (a lone 0xE9) makes bash
 	# match byte by byte, and then U+009B's two bytes are not controls, as
@@ -389,6 +427,14 @@ main() {
 	if (LC_ALL=C; case "$bin_dir" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
 		die "the directory to install into holds a control character, such as a newline, a carriage return, a tab or an escape, and no line about \$PATH can print such a name as it is: a terminal acts on it. Nothing was installed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this line again."
 	fi
+	# A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
+	# NEXT (#837), as the command refuses it, and before any request: the
+	# name would read as another directory's in every line below. The
+	# refusal names each one by its code point, because nobody can see it,
+	# and says nothing else of the value.
+	misdrawn="$(LC_ALL=C; misdrawn_characters "$bin_dir")"
+	[ -z "$misdrawn" ] ||
+		die "the directory to install into holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, ends a line or reorders the text around it, so no line about \$PATH can print the name as it reads. Nothing was installed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this line again."
 	# A WINDOWS SPELLING IS SPELLED THE WAY BASH SPELLS IT, THE COMMAND'S OWN
 	# RULE (#667, after #649), before it is named in a line or looked at: a
 	# value typed `D:\tools\bin` was echoed as typed, in the `install:`,
