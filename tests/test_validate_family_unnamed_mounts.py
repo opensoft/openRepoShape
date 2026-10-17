@@ -28,7 +28,9 @@ case variant (`members/irss`, the row saying `members/IRSS`) is recorded in
 the wrong case: the same command, run in either, takes the member's own
 record out of the index, after which `--no-members`, the run a private
 family's CI falls back to, says `family ok` over a member that is no longer
-there. Those two print no command.
+there. Those two print no such command: the first none, and the second,
+since #648, the index move members mode prints, which records the member
+at its row's path as it takes the variant out.
 
 When a hand mount's gitlink says to `git rm` it, its section finding says that
 the `git rm` takes the section out too and prints no `--unset-all` line: run
@@ -513,14 +515,13 @@ def test_a_row_hand_edited_into_a_case_variant_of_its_mount_is_the_edit(
 
 
 @MODES
-def test_a_member_recorded_only_in_another_case_says_so_and_prints_no_command(
+def test_a_member_recorded_only_in_another_case_says_so_and_prints_the_move(
         holder, extra):
     """STATE (ii), REVIEW SHOULD-1: IRSS's row is canonical, and the only
     gitlink the holder records for it is at `members/irss`. `git rm --cached`
     of that took the member's only record out, and `--no-members` then said
     `family ok` over a holder that records one gitlink fewer than it has rows.
-    It says the member is recorded in the wrong case instead, and sends the
-    operator to git's history, as every other unnamed gitlink does.
+    It says the member is recorded in the wrong case instead.
 
     Members checked, the row's own gitlink is read at its exact path, finds
     none and is the refusal `member-gitlink-absent`, which prints no finding,
@@ -529,26 +530,31 @@ def test_a_member_recorded_only_in_another_case_says_so_and_prints_no_command(
     there. What no run may do is print a command that takes the gitlink out
     ALONE: since #611 the refusal names the variant and prints the move that
     takes it out of the index and records it at the row's path together
-    (`tests/test_family_head_lost_gitmodules.py` types it)."""
+    (`tests/test_family_head_lost_gitmodules.py` types it), and since #648
+    the finding prints the same two lines
+    (`tests/test_family_bootstrap_gate_order.py` types them)."""
     named = record_in_another_case(holder, "IRSS", "members/irss")
     result = validate(holder, *extra)
     assert "--unset-all" not in result.stderr + result.stdout
+    move = [
+        "    git rm -r --cached --ignore-unmatch -- members/irss",
+        f"    git update-index --add --cacheinfo 160000,{named},members/IRSS"]
     if result.returncode == 2:
         assert extra != ("--no-members",), result.stderr
         assert result.stderr.startswith(
             "REFUSED member-gitlink-absent: no gitlink (mode 160000) "
             "recorded at 'members/IRSS'."), result.stderr
-        assert result.stderr.splitlines()[-2:] == [
-            "    git rm -r --cached --ignore-unmatch -- members/irss",
-            "    git update-index --add --cacheinfo "
-            f"160000,{named},members/IRSS"], result.stderr
+        assert result.stderr.splitlines()[-2:] == move, result.stderr
         return
-    assert "git rm" not in result.stderr + result.stdout
     assert result.returncode == 1, result.stderr + result.stdout
     (gitlink,) = findings(result)
-    assert gitlink == GITLINK_SAID.format(
-        path="members/irss", commit=named) + WRONG_CASE.format(
-            row_path="members/IRSS", project="IRSS", what="gitlink")
+    said = GITLINK_SAID.format(path="members/irss", commit=named) + (
+        VARIANT.format(row_path="members/IRSS", project="IRSS"))
+    assert gitlink.startswith(
+        said + " The member is recorded in the wrong case. Move its gitlink "
+        "to the row's path, at the commit the row pins, in the index "
+        "alone, "), gitlink
+    assert gitlink.splitlines()[1:] == move, gitlink
 
 
 @MODES
