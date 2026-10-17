@@ -51,13 +51,16 @@ one (`case_sensitive_disk`).
 
 from __future__ import annotations
 
+import itertools
 import re
 import shlex
 from pathlib import Path
 
 import pytest
 
-from conftest import REPO, clone_just_pushed, git, rmtree, run_script
+from conftest import (
+    IDENTITY_CONFIG, REPO, clone_just_pushed, git, rmtree, run_script,
+)
 from repo_shape import PYTHON, tree_digest
 from test_family import (  # noqa: F401
     MEMBERS, NAME, ORG, SPARE, family, validate,
@@ -440,16 +443,38 @@ def test_a_staged_removal_once_committed_is_member_gitlink_absent(
 
 # --- member-commit-unresolvable ---------------------------------------------
 
+#: The dates every `commit_ahead` commit carries, so that the clock never
+#: tells two of them apart: their bytes do.
+AHEAD_DATES = {"GIT_AUTHOR_DATE": "2031-01-01T00:00:00+0000",
+               "GIT_COMMITTER_DATE": "2031-01-01T00:00:00+0000"}
+
+#: The number each `commit_ahead` commit writes into `AHEAD.md`. Not
+#: `tmp_path.name`, for the reason `test_family_bootstrap_gate_order.py`
+#: gives for its `BRANCHES`: a passed test's directory is removed under
+#: `tmp_path_retention_policy=failed`, and the next test is given its
+#: number.
+AHEAD = itertools.count()
+
+
 def commit_ahead(family, tmp_path: Path, ref: str | None) -> tuple[str, str]:
     """A new commit of MEMBER, made in a scratch clone of its remote and
     pushed to `ref` there, or nowhere where `ref` is None. Returns the
-    commit and its tree digest."""
+    commit and its tree digest.
+
+    ONE COMMIT PER TEST. The tests below share one remote (`family` is
+    module-scoped), and a commit with the same parent, tree, message,
+    identity and second IS the one an earlier test pushed: on CI (run
+    39031276097) the no-remote test's commit, made in the same second as
+    the on-no-branch test's, was the commit that test had pushed, so its
+    fetch fetched it. `AHEAD.md` holds a number no other call writes
+    (`AHEAD`) and the dates are fixed (`AHEAD_DATES`), so in every run the
+    bytes keep two calls apart, never the clock."""
     scratch = tmp_path / "scratch"
     git("clone", "-q", str(family["remotes"] / f"{MEMBER}.git"), str(scratch),
         cwd=tmp_path)
-    (scratch / "AHEAD.md").write_bytes(b"ahead\n")
+    (scratch / "AHEAD.md").write_bytes(f"ahead {next(AHEAD)}\n".encode())
     git("add", "--", "AHEAD.md", cwd=scratch)
-    git("commit", "-qm", "Ahead", cwd=scratch)
+    raw(scratch, AHEAD_DATES, *IDENTITY_CONFIG, "commit", "-qm", "Ahead")
     commit = git("rev-parse", "HEAD", cwd=scratch).stdout.strip()
     if ref is not None:
         git("push", "-q", "origin", f"HEAD:{ref}", cwd=scratch)
@@ -499,6 +524,10 @@ def test_a_pin_a_remote_holds_is_fetched_as_printed(family, holder, offline,
     and the gate passes in every mode."""
     env = fetching(isolated(offline, tmp_path))
     commit, digest = commit_ahead(family, tmp_path, ref)
+    branches = git("branch", "--format=%(refname)", "--contains", commit,
+                   cwd=family["remotes"] / f"{MEMBER}.git").stdout.split()
+    assert branches == ([ref] if ref.startswith("refs/heads/") else []), (
+        "premise: on that branch alone, or on none")
     pinned_by_hand(holder, env, commit, digest)
     remedy = unresolvable(holder, commit)
     assert refused_lines(holder, "--pins")[1:] == remedy.splitlines()
@@ -519,6 +548,9 @@ def test_a_pin_no_remote_holds_is_bumped_as_printed(family, on_main, offline,
     and the pin back in step, and the gate passes in every mode."""
     env = fetching(isolated(offline, tmp_path))
     commit, digest = commit_ahead(family, tmp_path, None)
+    on_remote = git("cat-file", "-e", commit,
+                    cwd=family["remotes"] / f"{MEMBER}.git", check=False)
+    assert on_remote.returncode == 1, "premise: no remote holds it"
     pinned_by_hand(on_main, env, commit, digest)
     remedy = unresolvable(on_main, commit)
     (fetch,) = [command for command in re.findall(r"`([^`]*)`", remedy)
