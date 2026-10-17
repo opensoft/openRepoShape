@@ -240,7 +240,8 @@ from shape_materialize import (  # noqa: E402
 # into its manifest, and whether a repository's name can be a directory's:
 # asked of the plan's values by `plan`, `check` and `execute` (#261).
 from shape_materialize import (  # noqa: E402
-    MANIFEST_INVALID_REMEDIATION, manifest_judged, manifest_value_problems,
+    KIND_UNREADABLE, MANIFEST_INVALID_REMEDIATION,
+    MANIFEST_UNREADABLE_REMEDIATION, manifest_judged, manifest_value_problems,
     refuse_manifest_values, refuse_unstorable_names,
 )
 # Whether a value this tool writes into a file is text a file can hold
@@ -929,12 +930,22 @@ FALSE_WORD = "false"
 SEED_TEMPLATE = {"spec": "templates/spec-root", "code": "templates/code-root"}
 EXTRACTED_LEGS = ("spec", "code")
 
+#: In install.sh's order (#595): with the pipx or uv already there, else
+#: brew's, else pipx from apt or dnf, else Arch's own package. No `pip
+#: install --user`: Debian 12, Ubuntu 23.04 and Arch mark their own Python
+#: externally managed (PEP 668) and refuse it. The openreposhape package
+#: depends on git-filter-repo and puts it on PATH for the `adopt-project` it
+#: places, but not for this file run by its path (#563).
 FILTER_REPO_HINT = (
-    "Remediation: install it — `pip install git-filter-repo`, or "
-    "`apt install git-filter-repo`, or `brew install git-filter-repo`; it is "
-    "one file on PATH named `git-filter-repo`. It is NOT vendored here on "
-    "purpose: history extraction has one correct implementation and a copy of "
-    "it is a second one that drifts."
+    "Remediation: install it — `pipx install git-filter-repo==2.47.0`, or "
+    "`uv tool install git-filter-repo==2.47.0` where there is no pipx; with "
+    "neither, `brew install git-filter-repo`, or `sudo apt-get install -y "
+    "pipx && pipx install git-filter-repo==2.47.0 && pipx ensurepath` (`dnf` "
+    "for `apt-get` on Fedora), or `sudo pacman -S --needed git-filter-repo` "
+    "on Arch; it is one file on PATH named `git-filter-repo`. `pipx install "
+    "openreposhape` brings it for the `adopt-project` command it places. It "
+    "is NOT vendored here on purpose: history extraction has one correct "
+    "implementation and a copy of it is a second one that drifts."
 )
 
 
@@ -4259,12 +4270,18 @@ def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
     if values is None:
         return [], []
     problems = manifest_value_problems(values, naming, _named_as_read(plan),
-                                       misreads=False, ignore=LEG_PATH_CODES)
+                                       misreads=False,
+                                       ignore=_validator_ignores(plan))
     if not problems:
         return [], []
+    # Where the project's own YAML reader refuses the manifest, the words
+    # are the reader's, and so is the remedy (#708).
+    remedy = (MANIFEST_UNREADABLE_REMEDIATION
+              if problems[0][0] == KIND_UNREADABLE
+              else MANIFEST_INVALID_REMEDIATION)
     return ([f"FINDING plan-manifest-invalid: {sentence}"
              for _, sentence in problems],
-            [f"{MANIFEST_INVALID_REMEDIATION} `execute` writes the plan's "
+            [f"{remedy} `execute` writes the plan's "
              "values into the project's `project.yaml` as they stand, so "
              "correct each one named here in the plan, or re-run `plan` with "
              "a value the validator accepts."])
@@ -4280,7 +4297,37 @@ def _validator_judged(plan: Plan) -> frozenset[str] | None:
     values = _manifest_values(plan, naming)
     if values is None:
         return None
-    return manifest_judged(values, naming, ignore=LEG_PATH_CODES)
+    return manifest_judged(values, naming, ignore=_validator_ignores(plan))
+
+
+#: The validator's finding about `tracking_branch:` (#455), which `check`
+#: leaves to `unsafe-value` wherever that names the branch (#708).
+TRACKING_BRANCH_CODES = ("manifest-tracking-branch",)
+
+
+def _validator_ignores(plan: Plan) -> tuple:
+    """The codes of the validator's findings `check` leaves out, because a
+    rule of its own names the same value: a leg path's always
+    (`LEG_PATH_CODES`), and the tracking branch's where `checked_value`
+    refuses that branch, which `_branch_name_findings` reports as
+    `unsafe-value` (#708).
+
+    ONE BAD `tracking_branch` IS ONE FINDING. Since #644 (#455) the
+    validator finds a NUL or a lone surrogate in it, and `check` asks the
+    validator, so `tracking_branch: "a\\x00b"` was `unsafe-value`, and
+    then `plan-manifest-invalid` again in the validator's words, which
+    name no plan key. No such value is in `checked_value`'s alphabet, so
+    `unsafe-value`, `execute`'s own refusal of it, names every one, and
+    the validator's sentence is left out where it does. `checked_value`
+    alone is asked, the value `execute` reads (`_branch_name_refusal`'s),
+    because the validator's question starts no process (git's verdict on
+    a name is `_branch_name_findings`' own).
+    """
+    try:
+        checked_value(TRACKING_KEY, plan.get(TRACKING_KEY, "main"))
+    except Refusal:
+        return LEG_PATH_CODES + TRACKING_BRANCH_CODES
+    return LEG_PATH_CODES
 
 
 def _named_as_read(plan: Plan) -> dict[str, str]:
@@ -11323,6 +11370,29 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
     again by `ask_about_submodules` and `ask_about_refused_paths` as `plan`
     asks them. A question of the walk above is recorded as before.
 
+    AND AGAINST WHAT EACH LEG'S OWN WALK SAYS (#801). The doctor walks a
+    leg, not the source, and `walk` folds a directory by the files under it
+    in THAT leg. A directory the source's walk folds, split by hand, leaves
+    part of it in each leg, and a part may fold another way or not at all:
+    `engine/` is 3 of 4 `.py`, exactly the 75% `extension_majority:`, so it
+    folds to code; with `engine/c.py` answered `spec`, the code leg's
+    `engine/` is 2 of 3, which does not fold, and there `engine/x.md` is
+    spec by its own extension. Answers against their extensions can fold a
+    directory in a leg as the source's walk did not, over an entry beside
+    them left as `plan` wrote it. So `walk` is run again over each leg's
+    own files -- the paths `_answered_legs` keeps in it, gitlinks left out,
+    as the doctor runs it over the leg -- and an entry covering a path that
+    walk does not put in that leg is recorded too, whether the walk asks of
+    the path or puts it elsewhere. A row is added only where the doctor's
+    walk of that leg disputes the path. A plan left as `plan` wrote it,
+    over a source with no gitlink, gets none: each entry is whole in the
+    leg `plan` gave it, and no directory above one can fold to another leg
+    there, since at most a quarter of an entry's files read as one. Before
+    it walks, the doctor also sets aside the files every repository carries
+    (`everywhere_patterns`: names at the top of a leg, and `.github/`),
+    which change how no other directory folds, and a name no report can
+    carry, which can: this walk keeps both, as the one above does.
+
     A SOURCE WITH NO SUCH ENTRY GETS "" and so the `project.yaml` it always
     got, byte for byte.
     """
@@ -11335,14 +11405,31 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
             policy, [(path, size) for path, _, _, size in tree]), tree),
         tree)}
     answered = _answered_legs(entries, [path for path, _ in files])
+    in_its_leg = _walked_in_each_leg(policy, files, answered)
     kept = sorted({entry: leg for path, (leg, entry) in answered.items()
                    if leg in EXTRACTED_LEGS and entry != GITMODULES
-                   and leg != _walked_leg(called, path)
-                   and (_walked_leg(called, path) is None
-                        or leg != _walked_leg(shown, path))}.items())
+                   and (leg != in_its_leg.get(path)
+                        or (leg != _walked_leg(called, path)
+                            and (_walked_leg(called, path) is None
+                                 or leg != _walked_leg(shown, path))))
+                   }.items())
     return _record_block(ANSWER_RECORD_PREAMBLE,
                          [(entry, leg, entry) for entry, leg in kept],
                          entries, commit)
+
+
+def _walked_in_each_leg(policy: PathPolicy, files: list,
+                        answered: dict) -> dict:
+    """`{path: leg}` for each of `files` that `answered` keeps in a leg:
+    the leg `walk` gives it over THAT leg's files alone, as the doctor
+    walks the leg after the split; None for a question (#801)."""
+    out: dict = {}
+    for role in EXTRACTED_LEGS:
+        held = [(path, size) for path, size in files
+                if path in answered and answered[path][0] == role]
+        called = {entry.path: entry.leg for entry in walk(policy, held)}
+        out.update((path, _walked_leg(called, path)) for path, _ in held)
+    return out
 
 
 def _walked_leg(called: dict, path: str) -> str | None:

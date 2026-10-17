@@ -536,10 +536,13 @@ def test_a_merge_in_a_linked_worktree_is_found_where_git_keeps_it(
 
 
 @pytest.mark.skipif(sys.platform == "win32",
-                    reason="Windows refuses a newline in a file name; Linux "
-                           "and APFS take it")
-def test_a_holder_path_with_a_newline_still_shows_its_merge(
-        family, holder, offline, tmp_path):
+                    reason="Windows refuses a newline and an ESC in a file "
+                           "name; Linux and APFS take them")
+@pytest.mark.parametrize("name", ["Ink\nRouter", "Ink\x1b[31mRouter",
+                                  "Ink\nWARNING forged-line: pwned"],
+                         ids=["line-break", "ESC", "forged-line"])
+def test_a_holder_path_with_a_control_character_still_shows_its_merge(
+        family, holder, offline, tmp_path, name):
     """V-F1 of #612's verification. A linked worktree's `git rev-parse
     --git-path` answers with an ABSOLUTE path through the holder's own
     `.git`, so a holder in a directory whose name holds a newline makes every
@@ -547,9 +550,15 @@ def test_a_holder_path_with_a_newline_still_shows_its_merge(
     only that answer's FIRST line, which named a directory that does not
     exist: no mark was found, `add --dry-run` printed a plan, and the real
     `add` mounted and failed at the commit, #612's own defect back for that
-    path. The whole answer, less git's final newline, is the path."""
+    path. The whole answer, less git's final newline, is the path.
+
+    THE PATH IS NAMED AS `repr` SPELLS IT (#692, R612's round 2). It is the
+    true path, as git keeps it, and the refusal printed it as it was: across
+    two lines for a newline, with a forged line of the person's choosing for
+    `WARNING forged-line`, and an ESC reached the terminal. It is one line
+    now, with the path quoted and its control characters spelled out."""
     env = isolated(offline, tmp_path)
-    broken = tmp_path / "Ink\nRouter"
+    broken = tmp_path / name
     shutil.copytree(holder, broken, symlinks=True)
     linked = tmp_path / "linked"
     raw(broken, env, "worktree", "add", "-q", "-b", "linked-branch",
@@ -557,15 +566,18 @@ def test_a_holder_path_with_a_newline_still_shows_its_merge(
     begin("merge", linked, env, tmp_path)
     shown = raw(linked, env, "rev-parse", "--git-path", "MERGE_HEAD"
                 ).stdout.decode()
-    assert shown.count("\n") == 2, f"premise: a newline in the path: {shown!r}"
+    where = shown[:-1]
+    assert name in where, f"premise: the name is in the path: {shown!r}"
     for extra in ((), ("--dry-run",)):
         ran = add(linked, env, family["remotes"], *extra)
         assert ran.returncode == 2, (extra, ran.stdout, ran.stderr)
         assert ran.stdout == ""
-        assert ran.stderr.startswith(
+        line, _ = refusal(ran.stderr)
+        assert line.startswith(
             "REFUSED family-operation-in-progress: a merge is unfinished in "
             "the family root: git keeps MERGE_HEAD at "), ran.stderr
-        assert "Ink\nRouter/.git/worktrees/" in ran.stderr, ran.stderr
+        assert f"git keeps MERGE_HEAD at {where!r}. `add` makes " in line
+        assert "\x1b" not in ran.stderr, ran.stderr
 
 
 def test_with_no_act_and_no_sparse_checkout_each_verb_runs_as_it_always_did(

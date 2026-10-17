@@ -25,6 +25,7 @@ fast.
 
 from __future__ import annotations
 
+import errno
 import functools
 import importlib.util
 import os
@@ -68,6 +69,60 @@ ORG = "testorg"
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 
 
+# --- one rewrite, for every read of a just-pushed local remote (#440, #662) --
+#
+# A clone of a plain path is git's local clone, which walks the source's
+# `objects/` one file at a time; a clone of a `file://` URL asks upload-pack,
+# which reads the object store (`clone_just_pushed` says why that matters).
+# What turns the first into the second for the legs a submodule clones from
+# the plain paths `.gitmodules` records is a `url.<file URI>.insteadOf`
+# rewrite, and it is written HERE, once, in three forms: the prefixes, the
+# `(key, prefix)` entries, and the `-c` arguments of one git command.
+# `read_through_git` below puts the entries in the environment instead.
+
+def insteadof_prefixes(remotes: Path | str, *,
+                       typed: bool = False) -> list[str]:
+    """The prefixes a `url.<file URI>.insteadOf` rewrite names so that git
+    reads the bare remotes under `remotes` through the transport and not
+    through their files: the directory with a separator after it, so a
+    rewrite of `<remotes>/` does not reach a neighbour called
+    `<remotes>-other`, and a `remotes` given with or without a trailing
+    separator gives the same list.
+
+    RESOLVED, always: `scaffold-project.py` writes `.gitmodules`'s leg URLs
+    from the directory resolved, so that is where a submodule's clone starts,
+    spelled with the system's separator and with a slash, which are two
+    prefixes on Windows and one elsewhere. TYPED, on request: the directory
+    as the caller spelled it, made absolute and a symlink in it kept, which is
+    how a line a tool prints names a remote; it comes first. None is listed
+    twice."""
+    resolved = Path(remotes).resolve()
+    directories = [Path(os.path.abspath(remotes)), resolved] if typed \
+        else [resolved]
+    return list(dict.fromkeys(
+        spelling for directory in directories
+        for spelling in (os.path.join(str(directory), ""),
+                         directory.as_posix().rstrip("/") + "/")))
+
+
+def insteadof_entries(remotes: Path | str, *,
+                      typed: bool = False) -> list[tuple[str, str]]:
+    """`(key, prefix)` for each of `insteadof_prefixes`: the key is the one
+    `url.<file URI of the directory resolved>.insteadOf` that sends them all
+    to the same `file://` URL."""
+    uri = Path(remotes).resolve().as_uri().rstrip("/") + "/"
+    return [(f"url.{uri}.insteadOf", prefix)
+            for prefix in insteadof_prefixes(remotes, typed=typed)]
+
+
+def insteadof_args(remotes: Path | str, *, typed: bool = False) -> list[str]:
+    """`insteadof_entries` as the `-c <key>=<prefix>` pairs of one git
+    command. A `-c` is not stored: a clone made with it keeps the plain path
+    it was given as its `origin`, and a submodule its `.gitmodules` URL."""
+    return [arg for key, prefix in insteadof_entries(remotes, typed=typed)
+            for arg in ("-c", f"{key}={prefix}")]
+
+
 def clone_just_pushed(remote: Path, dest: Path,
                       branch: str | None = None, *, recurse: bool = True,
                       bare: bool = False, config: Sequence[str] = (),
@@ -93,7 +148,9 @@ def clone_just_pushed(remote: Path, dest: Path,
     `url.<base>.insteadOf` for the one command: a `-c` is not stored, so the
     clone's own `origin` and `submodule.<name>.url` keep the plain paths. The
     prefix is the directory RESOLVED, as `scaffold-project.py` writes it into
-    `.gitmodules`, in both of a Windows path's spellings.
+    `.gitmodules`, in both of a Windows path's spellings
+    (`insteadof_prefixes`, shared with `read_through_git` and
+    `submodule_update_through_git`).
 
     `branch` is `-b <branch>`: `adopt-project.py execute` pushes its split
     branch into the SOURCE, a plain repository, which is then `remote`.
@@ -110,12 +167,7 @@ def clone_just_pushed(remote: Path, dest: Path,
     names a path, and a project's name can be any text.
     """
     remote = Path(remote)
-    remotes = remote.parent.resolve()
-    uri = remotes.as_uri().rstrip("/") + "/"
-    prefixes = dict.fromkeys([os.path.join(str(remotes), ""),
-                              remotes.as_posix().rstrip("/") + "/"])
-    rewrites = [arg for prefix in prefixes
-                for arg in ("-c", f"url.{uri}.insteadOf={prefix}")]
+    rewrites = insteadof_args(remote.parent)
     if bare:
         mode = ["--bare"]
     else:
@@ -138,6 +190,30 @@ def cloned_just_pushed(remote: Path, dest: Path, branch: str | None = None,
     return Path(dest)
 
 
+def submodule_update_through_git(root: Path, remotes: Path,
+                                 *options: str
+                                 ) -> subprocess.CompletedProcess:
+    """`git submodule update <options>` in `root`, failing the test where it
+    fails (`git` below), with each mount it CLONES read through git and not
+    through the remote's files (#662, #440).
+
+    An `--init` of a mount git keeps no repository for is git's local clone of
+    the plain path `.gitmodules` records for it: the walk of the remote's
+    `objects/` that `clone_just_pushed` keeps off, taken by a submodule.
+    So the plain paths under `remotes` are rewritten to `file://` for the one
+    command, as `clone_just_pushed` rewrites them for its legs, and the file
+    transport is allowed, as every test that clones a local path allows it.
+    `options` follow `update`: `("-q", "--init")`, `("--init", "--recursive",
+    "--", "code")`.
+
+    An `update` over a mount whose repository git already keeps FETCHES, and
+    a fetch asks upload-pack whatever the URL is: a call that only brings
+    such a mount to its gitlink needs neither the rewrite nor this wrapper.
+    """
+    return git(*FILE_PROTOCOL, *insteadof_args(remotes),
+               "submodule", "update", *options, cwd=root)
+
+
 # --- git's automatic maintenance, OFF for every git the session starts (#645)
 #
 # A COPY IS A WALK OF THE FILES TOO. `shutil.copytree` reads `objects/` one
@@ -150,10 +226,13 @@ def cloned_just_pushed(remote: Path, dest: Path, branch: str | None = None,
 # the remote, each run `git maintenance run --auto` as they finish. Since git
 # 2.47 that run DETACHES, holding `objects/maintenance.lock`, and the command
 # returns while it goes on; since 2.54 its default strategy (`geometric`)
-# repacks a repository of a few hundred loose objects and deletes the ones
+# repacks once its estimate, taken from `objects/17` alone, is above 256
+# loose objects, so two loose objects there are enough, and deletes the ones
 # it packed. A copy taken in that moment fails `[Errno 2] No such file or
-# directory` on one of them: `holder` and `the_standard_moved`, on the
-# Linux runner (#645).
+# directory` on one of them (`holder` and `the_standard_moved`, on the
+# Linux runner, #645), and a listing of `.git/objects` taken before and
+# after it differs: `test_family_bump_remove_rollback.py`'s `objects
+# changed`, 37 loose objects packed into two.
 #
 # So the session turns it off, as every git command in this estate is told
 # to: `gc.auto=0`, for a git that runs `git gc --auto` itself (2.43's
@@ -186,7 +265,9 @@ def cloned_just_pushed(remote: Path, dest: Path, branch: str | None = None,
 # `GIT_CONFIG_GLOBAL` of a test's own, or an environment built from nothing
 # -- and a push made under a global file of a test's own. No repository the
 # suite copies is made, or pushed to, that way today.
-# `tests/test_no_auto_maintenance.py` holds both scopes to account.
+# `tests/test_no_auto_maintenance.py` holds both scopes to account, and fails a
+# test file that sets `GIT_CONFIG_COUNT` to a number of its own instead of
+# appending (#758).
 
 #: The two settings, in the order they are appended and written.
 NO_AUTO_MAINTENANCE = (("gc.auto", "0"), ("maintenance.auto", "false"))
@@ -993,6 +1074,91 @@ def a_hook_that_unstages(hooks: Path, path: str = PINNED_COPY) -> Path:
     return hooks
 
 
+# --- a file name or a branch that is not UTF-8 (#663) ------------------------
+#
+# A test that needs a file name or a branch holding a byte that is not UTF-8
+# (Python keeps the byte as a lone surrogate, U+DC80 to U+DCFF, which
+# `os.fsencode` gives back as the byte on POSIX) asks these helpers whether
+# this system can carry it, so each system's answer is written in one place
+# and a change to it reaches every test that asks.
+# `tests/test_non_utf8_name_helpers.py` holds them to it, Windows included, by
+# emulating its `os.fsencode`: CI runs the suite on Linux only (#597).
+
+#: The surrogate the helpers ask about: the byte 0xFF, which no UTF-8 text has.
+NOT_UTF_8_PROBE = "\udcff"
+
+
+def skip_where_fsencode_gives_a_surrogate_no_byte(text: str) -> None:
+    """Skip where `text` holds a byte-carrying surrogate (U+DC80 to U+DCFF)
+    and this system's `os.fsencode` makes no single byte of one.
+
+    That is Windows: its `os.fsencode` is UTF-8 with `surrogatepass`, so it
+    writes the three bytes of a sequence that is not UTF-8 for EVERY
+    surrogate, and none of them is a byte of a name. A disk probe cannot be
+    trusted to ask it: CPython hands a str path to `CreateFileW` as UTF-16
+    and NTFS most likely stores a lone surrogate unchecked (read, not run),
+    so the file is made, and git for Windows then sees the name through its
+    own UTF-16 conversion, which is not the byte the test meant. A command
+    line is the same (`CreateProcessW`), which is why `bootstrap.py`'s
+    `_argument_fault` refuses U+DC80 to U+DCFF there. Asked through the `os`
+    module at call time, so a test emulates Windows with
+    `monkeypatch.setattr(os, "fsencode", <a function that gives three bytes>)`.
+    """
+    if (any("\udc80" <= char <= "\udcff" for char in text)
+            and len(os.fsencode(NOT_UTF_8_PROBE)) != 1):
+        pytest.skip("this system's `os.fsencode` makes no byte of a surrogate "
+                    "that stands for a byte that is not UTF-8")
+
+
+def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
+    """Skip, as `POSIX_NAMES` skips on Windows, where a file name that is not
+    UTF-8 cannot be made under `directory`. Two systems say so:
+
+    - `skip_where_fsencode_gives_a_surrogate_no_byte` (Windows), asked first,
+      before the disk is touched;
+    - a filesystem that refuses the name: macOS answers EILSEQ ("Illegal byte
+      sequence"), so no clone can sit at such a path there.
+
+    The second is asked by making a directory `probe<U+DCFF>` under
+    `directory` and removing it; any other error is the test's own and is
+    raised.
+    """
+    probe = directory / f"probe{NOT_UTF_8_PROBE}"
+    skip_where_fsencode_gives_a_surrogate_no_byte(probe.name)
+    try:
+        probe.mkdir()
+    except OSError as exc:
+        if exc.errno != errno.EILSEQ:
+            raise
+        pytest.skip("needs a file name that is not UTF-8, which this "
+                    "filesystem refuses (EILSEQ)")
+    probe.rmdir()
+
+
+def windows_fsencode(text: str | bytes) -> bytes:
+    """`os.fsencode` as Windows has it: UTF-8 with `surrogatepass`, so every
+    lone surrogate is the three bytes of a sequence that is not UTF-8. Bytes
+    go through as they are, as `os.fsencode` passes them on every system. For
+    `monkeypatch.setattr(os, "fsencode", windows_fsencode)`, which puts the
+    guard above in front of a test that Linux would let through."""
+    if isinstance(text, bytes):
+        return text
+    return text.encode("utf-8", "surrogatepass")
+
+
+def skip_message(call, *args) -> str | None:
+    """The reason `call(*args)` skips the running test with, or None where it
+    returns; any other exception goes on. For a test OF a skip helper: a
+    skip that escapes a test ends it SKIPPED, which no run fails on, so a
+    helper that skipped where it should not would pass `pytest.raises` and
+    every other assertion that expects no skip."""
+    try:
+        call(*args)
+    except pytest.skip.Exception as skipped:
+        return skipped.msg
+    return None
+
+
 # --- the `gh` guard (#296) ---------------------------------------------------
 #
 # NO TEST REACHES THE OPERATOR'S `gh`, and the doctor's `machine` row is still
@@ -1525,21 +1691,18 @@ def read_through_git(remotes: Path) -> dict:
     """The environment that makes every git a pasted line starts read the
     bare repositories in `remotes` through git, not through their files
     (#440): `clone_just_pushed`'s `url.<file URI>.insteadOf` rewrites, as
-    `GIT_CONFIG_COUNT` entries, because the line under test is run exactly
-    as it was printed and a submodule's own clone inherits the environment.
-    The directory as typed and as resolved, so the root's URL and the legs'
-    `.gitmodules` URLs are both rewritten."""
-    uri = remotes.resolve().as_uri().rstrip("/") + "/"
-    prefixes = list(dict.fromkeys(
-        spelling for directory in (Path(os.path.abspath(remotes)),
-                                   remotes.resolve())
-        for spelling in (os.path.join(str(directory), ""),
-                         directory.as_posix().rstrip("/") + "/")))
-    env = {"GIT_CONFIG_COUNT": str(len(prefixes))}
-    for index, prefix in enumerate(prefixes):
-        env[f"GIT_CONFIG_KEY_{index}"] = f"url.{uri}.insteadOf"
-        env[f"GIT_CONFIG_VALUE_{index}"] = prefix
-    return env
+    `GIT_CONFIG_*` entries, because the line under test is run exactly as it
+    was printed and a submodule's own clone inherits the environment. The
+    directory as typed and as resolved (`insteadof_entries`), so the root's
+    URL and the legs' `.gitmodules` URLs are both rewritten.
+
+    The entries are APPENDED to the ones `os.environ` holds
+    (`appended_to_command_scope`), which every caller lays this over at the
+    same moment, so the session's own (`no_auto_maintenance`'s, and the two
+    the Windows job sets) still reach the pasted line, as they reach every
+    other git a test starts."""
+    return appended_to_command_scope(
+        os.environ, insteadof_entries(remotes, typed=True))
 
 
 def pasted(lines, cwd: Path,

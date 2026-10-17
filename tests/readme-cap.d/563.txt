@@ -1,0 +1,23 @@
++12
+2026-10-15
+Twelve lines for the second way in, `pipx install openreposhape` (#563),
+which Brett Heap approved as decision 6 of #563's design at
+2026-10-15T13:32:51Z ("approve all six for #563"): the one-line install stays
+first, pipx comes second, and first on native Windows.
+Step 3 of the quick start gains the second way, one paragraph: the command,
+where pipx comes from on Debian, Ubuntu and macOS, and what it places that the
+one line does not: four commands named for the tools, git-filter-repo as their
+dependency, a cached clone at the release's commit checked against its digest,
+how it upgrades, and that both installers place ~/.local/bin/openRepoShape, so
+a reader uses one of them (+8).
+The native Windows block leads with the same command and with how pipx is
+installed there, because pipx is the one install that gives PowerShell an
+`openRepoShape`; the two-command download stays after it, as the way that
+installs nothing (+3).
+The Layout block names `src/openreposhape/`, the package #590 adds (+1).
+Reworded at no cost in lines: git-filter-repo under "Adopting" says step 3's
+one line installs it or prints the command for this machine, where it led with
+a `pip install` that an externally managed Python refuses (PEP 668), and that
+the package brings it; the standard-library sentence says the package is a
+second way in, never a requirement, where it said "no packaging"; the native
+Windows paragraph keeps #596's Git Bash sentence beside the pipx one.
