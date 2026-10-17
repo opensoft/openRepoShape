@@ -1443,7 +1443,7 @@ def test_a_gitlink_git_stages_under_another_spelling_is_named_not_hidden(
               cwd=family["remotes"] / f"{SPARE}.git").stdout.strip()
     before, index = snapshot(holder), index_bytes(holder)
     monkeypatch.setattr(family_module, "_members_spellings",
-                        lambda root, project, on_disk: [])
+                        lambda root, project, on_disk, rows: [])
 
     code = add_in_process(family_module, monkeypatch, offline, holder, SPARE,
                           family["remotes"])
