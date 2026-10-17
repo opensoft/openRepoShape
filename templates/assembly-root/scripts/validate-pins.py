@@ -957,12 +957,20 @@ def _check_shape_copy(root: Path, row, rel: str, report: Report) -> None:
 
     Split from `_check_shape_pin` for #132 so the loop over the pinned files
     is a single call per row: is it a mapping, is the file still there, and
-    does its sha256 still match what the pin recorded.
+    does its sha256 still match what the pin recorded. A row whose `path:`
+    is absent, empty or no string is `shape-pin-row`, as `update-shape.py`
+    refuses it `update-pin-row`: its `path:` was read as a path, so a row
+    with none was `None is pinned but absent` (#681).
     """
     if not isinstance(row, dict):
         report.finding("shape-pin-row", f"{rel}: a files row is not a mapping")
         return
-    target = root / str(row.get("path"))
+    path = row.get("path")
+    if not isinstance(path, str) or not path:
+        report.finding("shape-pin-row", f"{rel}: a files row's `path:` is "
+                                        f"{path!r}, not the path of a file")
+        return
+    target = root / path
     if not target.is_file():
         report.finding("shape-copy-missing",
                        f"{rel}: {row.get('path')} is pinned but absent")
