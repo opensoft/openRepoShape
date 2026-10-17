@@ -29,6 +29,7 @@ commit. Every test works on a private copy of its clone. `execute` needs
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import sys
@@ -41,6 +42,11 @@ from conftest import REPO, WINDOWS_SKIP, clone_just_pushed, git, \
 from test_shape_doctor import (  # noqa: F401
     commit_all, doctor, keep_as_committed_link, rows_of, standard,
     verdict_line,
+)
+#: A partial clone of the standard one commit on, from the file that owns
+#: the doctor's partial-clone question (#683).
+from test_doctor_partial_clone import (  # noqa: F401
+    doctored, moved, partial_clone_of,
 )
 from test_update_shape import STATES, next_line_of
 
@@ -391,12 +397,106 @@ def test_the_currency_rows_counts_name_a_merged_away_row(standard, root):
     counts now sum to the rows."""
     merge_away(root, ".gitignore")
     currency = rows_of(doctor(standard, root, "--json"))["shape-currency"]
+    assert_the_counts_sum_to_the_rows(currency, " / 1 merged-away")
+
+
+def assert_the_counts_sum_to_the_rows(currency: dict, tail: str) -> None:
+    """The `shape currency` row's printed counts end with `tail` and add up
+    to every row `check` classified (`detail.counts`)."""
     summary = currency["reason"].split(" (pinned ", 1)[0]
-    assert summary.endswith(" / 1 merged-away"), currency["reason"]
+    assert summary.endswith(tail), currency["reason"]
     said = {state: int(count) for count, state in
             (part.split(" ", 1) for part in summary.split(" / "))}
     assert sum(said.values()) == sum(currency["detail"]["counts"].values()), \
         (said, currency["detail"]["counts"])
+
+
+#: A pinned copy at its own name that nothing reads as it runs, so keeping
+#: it as a link changes no gate's answer: `check` calls it `copy-is-link`.
+LINKED_COPY = "AGENTS-shape.md"
+
+
+@pytest.fixture
+def linked_beside_merged(standard, root, tmp_path) -> dict:
+    """#676's root: `shape/Makefile` merged away and `AGENTS-shape.md` kept
+    as a committed symlink to the same bytes. The gate's one finding is the
+    merged-away row's; `check` says REFUSAL AHEAD over the link, which this
+    asserts first, and the doctor's `--json` rows."""
+    merge_away(root, "Makefile")
+    keep_as_committed_link(root, LINKED_COPY, tmp_path)
+    checked = update_shape(standard, root, "check")
+    states = verdicts(checked.stdout)
+    assert states["shape/Makefile"] == "merged-away", checked.stdout
+    assert states[LINKED_COPY] == "copy-is-link", checked.stdout
+    assert f"REFUSAL AHEAD: `apply` will refuse while these are unresolved " \
+        f"— {LINKED_COPY}" in checked.stdout, checked.stdout
+    return rows_of(doctor(standard, root, "--json"))
+
+
+def assert_the_pins_row_keeps_its_gate(pins_row: dict, ahead: dict) -> None:
+    """The `pins` row beside a REFUSAL AHEAD `ahead` (#676): its NEXT is the
+    gate, not `check`, its reason names what `check` says, merged-away and
+    REFUSAL AHEAD both, and no `apply` that drops a row."""
+    assert pins_row["detail"]["refusal_ahead"] == ahead, pins_row
+    assert "update-shape.py" not in pins_row["next"], pins_row["next"]
+    assert "the `apply` it prints drops" not in pins_row["reason"], \
+        pins_row["reason"]
+    said = ", ".join(f"{path} ({why})" for path, why in ahead.items())
+    assert f"reports it `merged-away`, but it also says REFUSAL AHEAD over " \
+        f"{said}" in pins_row["reason"], pins_row["reason"]
+
+
+@WINDOWS_SKIP
+def test_the_pins_row_keeps_the_gate_beside_a_copy_kept_as_a_link(
+        linked_beside_merged):
+    """A pinned COPY kept as a link beside a merged-away row (#676): no
+    record `linked_record` asks about, so the `pins` row named `check` and
+    said the `apply` it prints drops the row, while `check` says REFUSAL
+    AHEAD over the link and that `apply` exits 2 writing nothing."""
+    assert_the_pins_row_keeps_its_gate(linked_beside_merged["pins"],
+                                       {LINKED_COPY: "copy-is-link"})
+
+
+@WINDOWS_SKIP
+def test_the_currency_rows_counts_name_every_state_check_counts(
+        linked_beside_merged):
+    """The `shape currency` reason counted the five original states and
+    `merged-away` alone (#676): over this root it read `... / 1 merged-away`
+    over twelve rows, eleven counted, where `check` prints `merged-away 1
+    copy-is-link 1`. Every state of `ORDER` with a count now follows the
+    five, in that order."""
+    assert_the_counts_sum_to_the_rows(linked_beside_merged["shape-currency"],
+                                      " / 1 merged-away / 1 copy-is-link")
+
+
+def test_the_pins_row_keeps_the_gate_beside_a_hard_linked_pin(standard, root,
+                                                              tmp_path):
+    """The other half of `check`'s REFUSAL AHEAD (#422): the pin, which the
+    re-pin rewrites, with a second name. `apply` refuses it,
+    `update-rewrite-hardlink`, so it drops no merged-away row either."""
+    merge_away(root, "Makefile")
+    os.link(root / SHAPE_PIN, tmp_path / "pin-elsewhere.yaml")
+    checked = update_shape(standard, root, "check")
+    assert "REFUSAL AHEAD: `apply` will refuse to rewrite these in place" \
+        in checked.stdout, checked.stdout
+    rows = rows_of(doctor(standard, root, "--json"))
+    assert_the_pins_row_keeps_its_gate(rows["pins"], {SHAPE_PIN: "hard-link"})
+
+
+def test_the_pins_row_keeps_the_gate_where_check_would_fetch(standard, root,
+                                                             moved, tmp_path):
+    """Run from a partial clone of the standard one commit on, which lacks
+    the pinned commit's copy of the Makefile template (#683), the source
+    of `shape/Makefile`, a row `check` reads: its question cannot be asked
+    without fetching, so the `pins` row keeps its gate and says nothing
+    of `apply`, and nothing is fetched."""
+    merge_away(root, ".gitignore")
+    clone = partial_clone_of(moved["ahead"], tmp_path / "partial")
+    result, before, after = doctored(clone, root)
+    assert after == before, "the doctor fetched"
+    pins_row = rows_of(result)["pins"]
+    assert "merged_away" not in pins_row["detail"], pins_row
+    assert "update-shape.py" not in pins_row["next"], pins_row["next"]
 
 
 def test_the_plans_follow_up_says_what_happens_to_the_row(adopted_here):
