@@ -1542,6 +1542,18 @@ def shape_scripts(shape_root: Path):
     return repo_shape
 
 
+def scaffold_link_remedies(shape_root: Path):
+    """`scripts/shape_materialize.py`'s `scaffold_link_remedies` out of
+    the checkout this run is using: what the scaffold's plan offers a chain
+    link whose tree it cannot read (#610), so step (4) can hand the naming
+    check the same words (#661) and one run says one fact one way.
+    Deferred for the reason `shape_scripts` gives, from the same directory.
+    """
+    shape_scripts(shape_root)
+    import shape_materialize  # noqa: E402  (deferred; see shape_scripts)
+    return shape_materialize.scaffold_link_remedies
+
+
 def family_landing(parent, family: str):
     """The clone's PARENT once `--family` has had its say. A PURE path.
 
@@ -2102,7 +2114,7 @@ def as_a_bare_link_source(path: str) -> str:
     return "./" + path if re.match(r"[^/\\:=]+=", path) else path
 
 
-def naming_declarations(passthrough: list) -> list:
+def naming_declarations(passthrough: list, link_remedies=None) -> list:
     """The naming validator's arguments for what the passthrough declares
     about the project (#538): the products of its `--pin`s, and its
     `--referent-chain`, with the tree its links are read from (#608).
@@ -2139,19 +2151,37 @@ def naming_declarations(passthrough: list) -> list:
     BLANK value is a path and goes as it is, and the rule reads the LAST
     value alone: `--pin-source src --pin-source ''` is empty,
     `--pin-source '' --pin-source src` is not.
+
+    THE NAMING CHECK SPEAKS IN THIS RUN'S WORDS (#661). Its own name for a
+    bare source is `--link-source`, and for a link it cannot read it offers
+    "a sibling checkout, SHAPE_PIN_SOURCE_<LINK>, or --link-source
+    <link>=<path>": a flag this file does not take, which typed after `--`
+    ends step (5) in the scaffold's `unrecognized arguments`. So, with a
+    chain of two links at least and `link_remedies` (`_main` passes the
+    scaffold's own, `scaffold_link_remedies`), it is told
+    `--link-source-label=--pin-source` and, for each holder,
+    `--link-remedy=<link>=<words>`: what step (5) reads, said as step (5)
+    says it. The chain is read as the scaffold reads it
+    (`referent_chain_links`: split on commas, each stripped, an empty one
+    dropped).
     """
     products = [name for name in (
         pin.strip().split("@", 1)[0].rsplit("/", 1)[-1]
         for pin in passed_values(passthrough, "--pin")) if name]
     chains = passed_values(passthrough, "--referent-chain")
     sources = passed_values(passthrough, "--pin-source")
-    has_links = bool(chains) and sum(
-        1 for link in chains[-1].split(",") if link.strip()) > 1
+    chain = tuple(link.strip() for link in chains[-1].split(",")
+                  if link.strip()) if chains else ()
+    has_links = len(chain) > 1
     names_a_source = bool(sources) and bool(str(sources[-1]))
+    spoken = link_remedies(chain) if has_links and link_remedies else None
     return ((["--pins=" + ",".join(products)] if products else [])
             + (["--referent-chain=" + chains[-1]] if chains else [])
             + (["--link-source=" + as_a_bare_link_source(sources[-1])]
-               if has_links and names_a_source else []))
+               if has_links and names_a_source else [])
+            + (["--link-source-label=--pin-source"]
+               + ["--link-remedy=%s=%s" % pair for pair in spoken.items()]
+               if spoken is not None else []))
 
 
 # ---------------------------------------------------------------------------
@@ -2584,6 +2614,25 @@ def shell_word(value, posix: bool = False) -> str:
     return "'" + text.replace("'", "'\\''") + "'"
 
 
+#: What the `switch -c` line of the family block says under it (#647): where
+#: an earlier try left that branch in the holder, `switch -c` fails `fatal: a
+#: branch named '<branch>' already exists` (exit 128). Another name comes
+#: first, because a new branch starts where the holder stands now; going back
+#: is right only where the old branch holds work not merged yet. IN WORDS, NOT
+#: A SECOND COMMAND, so no line changes and none needs quoting. THE SAME
+#: SENTENCE as `scripts/family.py`'s and the holder's `validate-family.py`'s
+#: `BRANCH_LEFT` (#607), word for word: this file carries its own copy, as it
+#: does of `shell_word`, because it runs before any checkout of the standard
+#: exists, and `tests/test_branch_left_bump_leg_setup.py` holds them to one
+#: answer.
+BRANCH_LEFT = ("If `git switch -c` says that branch already exists, an "
+               "earlier act left it: give the branch another name, which "
+               "starts it where the holder stands, or, only if that branch "
+               "holds work not merged yet, the same command with `switch` "
+               "in place of `switch -c` goes back to it and keeps every "
+               "commit on it.")
+
+
 def family_next_command(project: str, org: str, landing: Landing) -> None:
     """The LAST line of the next commands: who records the membership.
 
@@ -2602,12 +2651,15 @@ def family_next_command(project: str, org: str, landing: Landing) -> None:
     A BRANCH FIRST, AND EVERY PATH ONE WORD (#487, #486). `add` refuses to
     commit onto the holder's tracking branch, so the `git switch -c` that
     makes the branch it suggests comes before it; and a holder under a
-    folder with a space in it must reach `--family-root` whole.
+    folder with a space in it must reach `--family-root` whole. Under the
+    `switch -c`, one comment line says what to do where the holder has that
+    branch already (`BRANCH_LEFT`, #647).
     """
     holder = shell_word(landing.holder)
     say("    git -C %s switch -c family/add-%s" % (holder, project.lower()))
     say("                           # a branch first: `add` refuses the")
     say("                           #   holder's tracking branch")
+    say("                           # " + BRANCH_LEFT)
     say("    %s scripts/family.py add --family-root %s --member %s"
         % (PYTHON_CMD, holder, shell_word("%s/%s" % (org, project))))
     say("                           # from a checkout of openRepoShape. The")
@@ -2714,7 +2766,8 @@ def _main(argv, invocation_dir: str) -> int:
     clone = landing.clone_path(opts.project)
     refuse_a_taken_clone_path(clone, opts.project)
     check_names(shape_root, opts.project, opts.family,
-                naming_declarations(opts.passthrough))
+                naming_declarations(opts.passthrough,
+                                    scaffold_link_remedies(shape_root)))
     args = scaffold_args(opts, org)
     if not plan_and_confirm(opts, shape_root, org, args, clone):
         return 0

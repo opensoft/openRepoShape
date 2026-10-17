@@ -55,6 +55,13 @@ RENAME_FIRST = (
     "rename`); then run `plan` again against the renamed repository "
     "(`--source <org>/<new name>`, or a clone whose `origin` names it), with "
     "its new name as `--project`.")
+#: The rule `naming-unclassified` gives for `--project`, which a derived
+#: id's remedy names too (#658, rv699).
+NAME_RULE = "one CamelCase token with no hyphen, underscore, dot or space"
+#: What `adopt-bad-id` says of an id derived from the source's own name,
+#: before the repository and `RENAME_FIRST` (#658).
+DERIVED_OWN_NAME = ("the id is --project lowercased, and --project is the "
+                    f"source's own name, which must be {NAME_RULE}.")
 #: A source small enough that `plan` asks no question.
 TREE = {"README.md": "# here\n", "src/app.py": "print(1)\n",
         "specs/001/spec.md": "# Spec\n"}
@@ -220,12 +227,9 @@ def test_a_source_that_names_no_repository_is_asked_nothing(tmp_path,
     assert load_yaml(tmp_path / PLAN)["source"]["repository"] is None
 
 
-def test_an_org_repo_source_is_the_repository_it_names(adopter, tmp_path,
-                                                       monkeypatch, capsys):
-    """`--source acme/Atlas` names the repository it clones, and is compared
-    as an `origin` is. `git clone` of a local repository stands in for `gh
-    repo clone`, and is the one command the run is let make."""
-    local = source_of(tmp_path, None, "Atlas")
+def cloned_from(adopter, monkeypatch, local: Path) -> None:
+    """`gh repo clone` replaced by `git clone` of the local repository
+    `local`, the one command the run is let make."""
     real = adopter.run
 
     def cloned(args, *rest, **keywords):
@@ -234,6 +238,14 @@ def test_an_org_repo_source_is_the_repository_it_names(adopter, tmp_path,
                     **keywords)
 
     monkeypatch.setattr(adopter, "run", cloned)
+
+
+def test_an_org_repo_source_is_the_repository_it_names(adopter, tmp_path,
+                                                       monkeypatch, capsys):
+    """`--source acme/Atlas` names the repository it clones, and is compared
+    as an `origin` is. `git clone` of a local repository stands in for `gh
+    repo clone`."""
+    cloned_from(adopter, monkeypatch, source_of(tmp_path, None, "Atlas"))
     code = adopter.main(["plan", "--source", "acme/Atlas", "--project",
                          "Atlsa", "--elected-by", "Test Human",
                          "--elected-on", "2026-10-13", "--out",
@@ -246,6 +258,28 @@ def test_an_org_repo_source_is_the_repository_it_names(adopter, tmp_path,
         f"REFUSED {NOT_THE_SOURCE}: --project Atlsa, with the organisation of "
         "`--source` (`--org` not given), names acme/Atlsa, and the source is "
         "acme/Atlas: "), err
+    assert not (tmp_path / PLAN).exists()
+
+
+def test_a_derived_id_of_a_cloned_sources_own_name_says_rename_first(
+        adopter, tmp_path, monkeypatch, capsys):
+    """#658, rv699: `--source testorg/North_Wind` names the repository it
+    clones as an `origin` does, so the id derived from that name is told to
+    rename it first, as for a local clone, and not to change `--project`."""
+    cloned_from(adopter, monkeypatch, source_of(tmp_path, None, "North_Wind"))
+    code = adopter.main(["plan", "--source", "testorg/North_Wind",
+                         "--project", "North_Wind", "--elected-by",
+                         "Test Human", "--elected-on", "2026-10-13", "--out",
+                         str(tmp_path / PLAN), "--work-dir",
+                         str(tmp_path / "work")])
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert err.splitlines()[:2] == [
+        "REFUSED adopt-bad-id: --id (not given, so --project lowercased) is "
+        "'north_wind', which must match ^[a-z0-9][a-z0-9-]*$",
+        f"Remediation: {DERIVED_OWN_NAME} testorg/North_Wind {RENAME_FIRST}"
+    ], err
     assert not (tmp_path / PLAN).exists()
 
 
