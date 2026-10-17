@@ -137,7 +137,8 @@ The same credentials the assembly roots use apply here, and are tried in the
 same order: a GitHub App (`SHAPE_LEGS_APP_ID` + `SHAPE_LEGS_APP_PRIVATE_KEY`,
 preferred, minted per run) then a fine-grained `SHAPE_LEGS_TOKEN` PAT with
 `contents:read`. With neither, the workflow degrades: it still runs the checks
-that do not need the members checked out.
+that do not need the members checked out. A `.gitmodules` that git refuses
+fails the run whatever the credential, naming the key or line.
 
 **On the GitHub Free plan, set these as REPOSITORY secrets.** GitHub delivers
 an ORGANISATION secret only to PUBLIC repositories on Free, so on a private
