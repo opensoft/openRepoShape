@@ -1732,6 +1732,14 @@ def _check_members(root: Path, members: list, no_members: bool,
     """
     _check_member_names_unique(members, report)
     _check_member_ids_unique(root, members, report)
+    # A ROW THAT IS NOT A MAPPING reads `family.yaml` alone too, so it is
+    # found here, in both modes (#864): found only in the loop below, past
+    # the `--no-members` return, it was counted as a member there, and the
+    # rows beside a `5` were `family ok`, exit 0.
+    for row in members:
+        if not isinstance(row, dict):
+            report.finding("member-row",
+                           f"a member is not a mapping: {row!r}")
     sections = _gitmodules_sections(root)
     _check_gitmodules_paths(sections, report)
     named = _row_paths(members)
@@ -1750,8 +1758,6 @@ def _check_members(root: Path, members: list, no_members: bool,
     gitlinked: list[Gitlinked] = []
     for row in members:
         if not isinstance(row, dict):
-            report.finding("member-row",
-                           f"a member is not a mapping: {row!r}")
             continue
         asked = _check_member(root, row, seen, report, gitlinks)
         if asked is not None:
