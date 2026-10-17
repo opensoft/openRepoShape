@@ -23,7 +23,9 @@ and the other wrote its own -- is never taken either, and the `why` and
 it, the `why` says a person keeps or deletes it, as there are no hunks to
 keep (review of PR #736). A side whose pin does not read is never taken:
 the NEXT takes the side whose pin reads, and where no side's pin reads,
-neither row names a NEXT (#752).
+neither row names a NEXT (#752). A copy renamed on one side conflicts
+under a name no pin has a row for; the `why` names it as renamed from that
+copy, by the merge base's blob, and gives it to a person (#753).
 
 L2-9. A slip amended into `bump-leg.py`'s own commit leaves the commit
 before it holding the pin for the OLD leg commit. Putting that pin back is
@@ -1020,3 +1022,67 @@ def test_a_partial_clone_of_the_standard_proves_nothing_and_fetches_nothing(
             "nothing was read from it to prove a copy unedited") \
         in currency["why"], currency["why"]
     assert left_out <= missing(), "the doctor fetched a blob"
+
+
+# --- a copy renamed on one side (#753) --------------------------------------
+
+#: The name one side gives its Makefile, which no pin has a row for.
+RENAMED = "build.mk"
+
+#: Each rename's merge: the side that renames the Makefile, the side that
+#: deletes it (none where the other side keeps it), the stages the merge
+#: leaves at the new name, and what the `why` then says of it.
+RENAMES = {
+    "renamed-on-the-side-ours-takes": (
+        "shape/b", None, [1, 2, 3],
+        "so neither side is taken whole: a person merges it by hand, "
+        "keeping the hunks git merged"),
+    "renamed-on-the-other-side": (
+        "shape/a", None, [1, 2, 3],
+        "so neither side is taken whole: a person merges it by hand, "
+        "keeping the hunks git merged"),
+    "renamed-on-one-side-deleted-on-the-other": (
+        "shape/b", "shape/a", [1, 2],
+        "and one side alone holds it, so neither side is taken whole: a "
+        "person keeps or deletes it by hand"),
+}
+
+
+@pytest.mark.parametrize("merge", sorted(RENAMES))
+def test_a_copy_renamed_on_one_side_is_named_for_a_person(
+        standard, project, tmp_path, merge):
+    """Both copies re-copied by `apply` on both sides, and on ONE side the
+    project renames its Makefile to build.mk, while the other edits it, or
+    deletes it. git takes the conflict to the new name, a path no pin has
+    a row for, so the `why` and `left_for_a_person` said nothing of it, and
+    only the `merge` row listed it (#753). Its stage 1 is the merge base's
+    own Makefile, so the `why` now names build.mk as renamed from that copy
+    and gives it to a person, and the NEXT never takes it; bootstrap.py is
+    still taken. Run, the NEXT leaves build.mk as the merge left it."""
+    renamer, deleter, held, tail = RENAMES[merge]
+    root = under_an_awkward_name(project, tmp_path)
+    moved, c2, c3, _frozen = the_standard_moved(
+        standard, tmp_path, UPSTREAM_TARGET, BOOTSTRAP_SOURCE)
+    for commit, branch in ((c2, "shape/a"), (c3, "shape/b")):
+        apply_on(moved, root, commit, branch)
+        if branch == renamer:
+            git("mv", "--", MAKEFILE, RENAMED, cwd=root)
+            commit_in(root, f"the project's Makefile renamed to {RENAMED}")
+        if branch == deleter:
+            git("rm", "-q", "--", MAKEFILE, cwd=root)
+            commit_in(root, "the project's Makefile removed")
+    merge_a_into_b(root)
+    assert sorted(index_stages(root, RENAMED)) == held
+    _verdict, rows = rows_from(moved, root)
+    currency = assert_both_rows_name_it(rows)
+    assert pasted(currency["next"])[3:] == [
+        "checkout", "--ours", "--", SHAPE_PIN, BOOTSTRAP], currency["next"]
+    assert currency["detail"]["left_for_a_person"] == [
+        RENAMED, "project.yaml"], currency["detail"]
+    assert f"{RENAMED}, renamed from the copy {MAKEFILE}, is conflicted " \
+        f"too, and no pin has a row for it under its new name, {tail}. " \
+        "Then finish" in currency["why"], currency["why"]
+    before = (root / RENAMED).read_bytes()
+    run_pasted(currency["next"])
+    assert sorted(index_stages(root, RENAMED)) == held
+    assert (root / RENAMED).read_bytes() == before
