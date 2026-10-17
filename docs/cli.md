@@ -53,7 +53,7 @@ one today, and the generator refuses to write this file if one ever appears.
 
 ## Run from a checkout of the standard
 
-Every command below is typed at the root of a clone of this repository. `openRepoShape` is also the one file `--install` places on `PATH`, and is the only entry point that needs no checkout at all.
+Every command below is typed at the root of a clone of this repository. `openRepoShape` is also the one file `--install` places on `PATH`, and needs no checkout at all. `pipx install openreposhape` (#563) places a Python `openRepoShape` with the same modes, whose own `--help` says what differs (its `--install` refuses and names `pipx upgrade openreposhape`), and four commands that need no checkout either: `scaffold-project`, `adopt-project`, `update-shape` and `shape-doctor` each run the tool of that name below, with every argument unchanged, from a clone of the standard at the package's own release commit, so their flags are the ones below.
 
 ### `setup.sh`
 
