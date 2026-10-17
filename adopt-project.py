@@ -10285,9 +10285,11 @@ def _leg_remote_answers(repositories: dict, names: dict,
 
 
 def _the_remote_dir(local_remote_dir: Path) -> Path:
-    """`--local-remote-dir` as `_remote_urls` makes each leg's url of it,
-    resolved; made absolute as given where it cannot be resolved (a link
-    loop raises), for `folder_in_the_way` to name what is wrong with it."""
+    """`--local-remote-dir` as each leg's url is made of it (`_remote_urls`)
+    and asked about: resolved, and made absolute as given where it cannot be
+    resolved. `Path.resolve` raised `RuntimeError` out of `execute` for a
+    link loop, a traceback before anything was asked (#798);
+    `folder_in_the_way` names it now, in `check` and `execute` alike."""
     try:
         return local_remote_dir.resolve()
     except (OSError, RuntimeError):
@@ -10969,8 +10971,9 @@ def _remote_urls(org: str, names: dict, local_remote_dir: Path | None,
                 for role, name in names.items()}
     # NOT created yet: nothing exists on disk until the human has said yes,
     # so a refused run leaves the directory it would have used absent rather
-    # than empty.
-    remote_dir = local_remote_dir.resolve()
+    # than empty. One that cannot be resolved (a link loop) is kept as given,
+    # for the question about it to refuse by name (#798).
+    remote_dir = _the_remote_dir(local_remote_dir)
     urls = {role: str(remote_dir / f"{name}.git")
             for role, name in names.items()}
     urls["assembly"] = str(source.path)

@@ -1396,10 +1396,19 @@ def unread(role: str, code: int, said: str) -> str:
             f"told: {told(role, code, said)}")
 
 
+def as_named(path: Path) -> Path:
+    """`path` as `adopt-project.py` names a `--local-remote-dir`: resolved,
+    or made absolute where it cannot be (a link loop)."""
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return path.absolute()
+
+
 def cannot_hold(local_remote_dir: Path, here: Path, why: str) -> str:
     return (f"FINDING {FOLDER_REFUSED}: --local-remote-dir "
-            f"{spelled(local_remote_dir.resolve())} cannot hold the two leg "
-            f"repositories: {spelled(here.resolve())} {why}")
+            f"{spelled(as_named(local_remote_dir))} cannot hold the two leg "
+            f"repositories: {spelled(as_named(here))} {why}")
 
 
 @pytest.fixture
@@ -1439,10 +1448,28 @@ def an_unwritable_directory(tmp_path: Path, unwritable_folder):
     return path, path, CANNOT_WRITE_IN
 
 
-#: L1-72's three `--local-remote-dir`s, each refused by name.
+def under_a_link_loop(tmp_path: Path, _unwritable):
+    """A folder above it that is a link loop: `Path.resolve` raised
+    `RuntimeError` out of `execute` before anything was asked. The reason is
+    the system's own, read from the loop rather than spelled here."""
+    loop, back = tmp_path / "loop", tmp_path / "back"
+    try:
+        loop.symlink_to(back)
+        back.symlink_to(loop)
+    except OSError:
+        pytest.skip("this machine cannot make a symlink")
+    with pytest.raises(OSError) as looped:
+        os.stat(loop)
+    return (loop / REMOTES, loop,
+            f"cannot be used as a folder: {looped.value.strerror}")
+
+
+#: L1-72's three `--local-remote-dir`s, each refused by name, and a link
+#: loop above one.
 FOLDERS = {"a-file": a_file,
            "under-an-unwritable-parent": under_an_unwritable_parent,
-           "an-unwritable-directory": an_unwritable_directory}
+           "an-unwritable-directory": an_unwritable_directory,
+           "under-a-link-loop": under_a_link_loop}
 EACH_FOLDER = pytest.mark.parametrize("layout", sorted(FOLDERS))
 #: The legs that already exist, each refused by name.
 EACH_EXISTING = pytest.mark.parametrize("existing", [(CODE,), (SPEC,), ROLES],
