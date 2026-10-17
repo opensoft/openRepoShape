@@ -1654,7 +1654,10 @@ def test_414_3_there_the_bootstrap_cures_nothing_and_the_git_line_cures_one(
                    f"{module.quote_arg(tried / 'scripts' / 'bootstrap.py')} "
                    f"--root {module.quote_arg(tried)}", tmp_path / "boot")
     output = bootstrap.stdout + bootstrap.stderr
-    assert bootstrap.returncode == 0, output
+    # It cures nothing, and since #648 it says so and fails: git stopped
+    # at Ghost, whose section gives no url, before it checked out either.
+    assert bootstrap.returncode == 1, output
+    assert "git stopped at members/Ghost" in output, output
     assert "No url found" in output, output
     assert not any((tried / "members" / FAMILY_MEMBER).iterdir()), output
     result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
