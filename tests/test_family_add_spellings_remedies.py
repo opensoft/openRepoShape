@@ -376,7 +376,8 @@ def test_a_folding_disk_that_received_it_renames_it_back(
     pull leaves it on a disk that folds case. There `Members` is that very
     directory, and the two steps are printed. On Linux `Members` is not on
     disk at all, a second spelling `git mv` cannot find, and #646's move
-    back is printed, as before."""
+    back is printed, as before, pointing each section, which the rename
+    moved to `Members/`, back at its row's path (#761)."""
     folding_skip(tmp_path)
     commits = renamed_with_git(holder)
     os.rename(holder / "Members", holder / "members")
@@ -384,7 +385,7 @@ def test_a_folding_disk_that_received_it_renames_it_back(
     move, closing = moved_back({ROW: ([VARIANT], commits[ROW]),
                                 OTHER_ROW: ([OTHER_VARIANT],
                                             commits[OTHER_ROW])},
-                               commit=False)
+                               commit=False, sections=(ROW, OTHER_ROW))
     assert dry_run_in_process(family_module, monkeypatch, offline, holder,
                               family["remotes"], capsys) == (
         BOTH, remedy_of(renamed_back(False)) if folding
@@ -478,8 +479,6 @@ NOT_RENAMED_BACK = {
         lambda root: plant(root, "100644", "members/notes")),
     "a file at members in the index": (
         lambda root: plant(root, "100644", "members")),
-    "another spelling in the index too": (
-        lambda root: plant(root, "100644", "MEMBERS/notes")),
     "a case variant of the mount path under it": (
         lambda root: plant(root, "100644", f"Members/{SPARE}")),
     "an entry under it a sparse checkout keeps off disk": (
@@ -501,9 +500,10 @@ def test_only_members_renamed_whole_is_renamed_back(holder, family_module,
                                                     tmp_path, state):
     """The rename back is printed only where it types clean and leaves
     nothing out: no `members/` on disk but that spelling's own directory,
-    nothing in the index at or under `members` itself or under a second
-    spelling, no case variant of the mount path in it, nothing under it
-    kept off disk or unmerged, no member's gitlink that HEAD alone holds
+    nothing in the index at or under `members` itself, no member's gitlink
+    under a second spelling (a third spelling's own entries keep their own
+    remedy, #761), no case variant of the mount path in it, nothing under
+    it kept off disk or unmerged, no member's gitlink that HEAD alone holds
     there, and every entry under it on disk as the index holds it or able
     to be put back. Elsewhere each path keeps its own remedy (the move back
     of a member's own gitlink, or #574's), never `git mv back`."""
