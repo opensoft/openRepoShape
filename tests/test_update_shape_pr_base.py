@@ -367,12 +367,13 @@ def test_nothing_in_the_next_line_names_a_base_when_the_pull_request_is_open(
 def test_a_value_the_manifest_holds_is_quoted_for_the_shell_that_reads_the_line(
         update_shape, tmp_path, capsys, push):
     """The base and the repository come out of a manifest a human may have
-    edited, and the line is pasted into a shell. `validate-manifest.py` never
-    looks at `tracking_branch:`, so `a&b` reaches the line, and an unquoted
-    `&` would end the command there. What a shell READS from the line is
-    compared, not the text, so any quoting that says the same thing passes."""
+    edited, and the line is pasted into a shell. An unquoted `'` in the
+    repository would open a quotation there. What a shell READS from the line
+    is compared, not the text, so any quoting that says the same thing
+    passes. The base is one `checked_value` takes: the next test holds what
+    becomes of one it does not."""
     (tmp_path / "project.yaml").write_text(
-        'tracking_branch: "a&b"\n'
+        'tracking_branch: "release/1.2"\n'
         "legs:\n"
         "  - role: assembly\n"
         '    repository: "acme/It\'s here"\n', encoding="utf-8")
@@ -382,9 +383,33 @@ def test_a_value_the_manifest_holds_is_quoted_for_the_shell_that_reads_the_line(
     command = line.partition(" && ")[2] if not push else line[len("NEXT  "):]
     words = shlex.split(command)
     assert words[:9] == [
-        "gh", "pr", "create", "--repo", "acme/It's here", "--base", "a&b",
-        "--head", "shape/x"], line
+        "gh", "pr", "create", "--repo", "acme/It's here", "--base",
+        "release/1.2", "--head", "shape/x"], line
     assert words[9] == "--title" and words[11] == "--body", line
+
+
+@pytest.mark.parametrize("push", [True, False], ids=["branch-push", "branch"])
+def test_a_tracking_branch_a_shell_would_misread_never_reaches_the_line(
+        update_shape, tmp_path, capsys, push):
+    """`tracking_branch_of` reads through `checked_value` since #715 (RV823's
+    Q2), so `a&b`, whose `&` would end the pasted command, is refused as
+    `unsafe-value` and no line is printed. Before, it was quoted into the
+    line. In `apply --branch` the same refusal comes before the commit, from
+    `commit_on_branch`'s guard (and, under `--push` or `--pr`, from
+    `pull_request_line` before it), and is rolled back."""
+    (tmp_path / "project.yaml").write_text(
+        'tracking_branch: "a&b"\n'
+        "legs:\n"
+        "  - role: assembly\n"
+        '    repository: "acme/It\'s here"\n', encoding="utf-8")
+    args = SimpleNamespace(branch="shape/x", push=push, pr=False)
+    with pytest.raises(update_shape.Refusal) as refused:
+        update_shape.next_line(tmp_path, args, [], "0" * 40, [])
+    assert refused.value.code == "unsafe-value"
+    assert str(refused.value).startswith(
+        "REFUSED unsafe-value: tracking_branch is 'a&b', which is not a value "
+        "this tool will put on a `git` or `gh` command line"), refused.value
+    assert capsys.readouterr().out == ""
 
 
 FAMILY_SOURCE = "templates/family-root/scripts/validate-family.py"

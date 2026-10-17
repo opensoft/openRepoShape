@@ -38,11 +38,11 @@ import sys
 
 import pytest
 
-from conftest import REPO, git, run_script
+from conftest import PROJECT, REPO, cloned_just_pushed, git, run_script
 from test_bootstrap_branch_bytes import (ADVICE, ENCODING, leg_branch,
                                          legs_state, tracking, validator_of)
 from test_bootstrap_spelling import bootstrap_of, pin12, run
-from test_bump_leg import advanced, bump  # noqa: F401 - `advanced`
+from test_bump_leg import bump
 from test_leg_path_yaml_scalars import (  # noqa: F401 - `bare_lines`
     OFFER, SPEC, assert_nothing_was_created, bare_lines, scaffold, sentence)
 from test_scaffold_pin_and_reuse import scaffolder  # noqa: F401 - a fixture
@@ -617,11 +617,32 @@ def committed_tracking(root, value: str) -> str:
     return git("rev-parse", "HEAD", cwd=root).stdout.strip()
 
 
+#: Where this module's advanced spec commit is pushed. Not `test_bump_leg.py`'s
+#: branch: both modules share the session's bare remotes, and a second,
+#: different commit pushed to the same branch name is refused as
+#: non-fast-forward, which errors every test of whichever module runs second.
+ADVANCE_BRANCH = "yaml-reader-spaces-advance"
+
+
+@pytest.fixture(scope="module")
+def advanced(scaffolded, tmp_path_factory) -> str:
+    """A real new commit on the spec leg's bare remote; returns its sha."""
+    work = cloned_just_pushed(
+        scaffolded["remotes"] / f"{PROJECT}-spec.git",
+        tmp_path_factory.mktemp("spec-advance-spaces") / f"{PROJECT}-spec")
+    (work / "SPACES-CONTRACT.md").write_text("# a contract the leg gained\n")
+    git("add", "--", "SPACES-CONTRACT.md", cwd=work)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Advance the spec leg for the #715 tests", cwd=work)
+    git("push", "-q", "origin", f"HEAD:refs/heads/{ADVANCE_BRANCH}", cwd=work)
+    return git("rev-parse", "HEAD", cwd=work).stdout.strip()
+
+
 @pytest.mark.parametrize("dry_run", [(), ("--dry-run",)],
                          ids=["real-run", "dry-run"])
 @pytest.mark.parametrize("value, point", UNSEEN_BRANCHES[:3])
 def test_bump_leg_refuses_a_tracking_branch_no_person_can_see(
-        project, scaffolded, advanced, value, point,  # noqa: F811
+        project, scaffolded, advanced, value, point,
         dry_run):
     """On #823's first head, on `main`: exit 0, a commit on `main`, and a
     NEXT line pushing it, where `bump-leg-on-tracking-branch` was owed.
