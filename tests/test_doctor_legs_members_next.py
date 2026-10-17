@@ -1634,6 +1634,10 @@ def test_733_while_gitmodules_is_unmerged_a_resolved_copy_is_not_read(
     assert url_git_finds(tmp_path, "p") is None
 
 
+#: `p`'s section, then one line in another section, named first (#733).
+P_THEN_A_LINE = (b'[submodule "p"]\n\tpath = p\n\turl = /r/p.git\n'
+                 b'[submodule "%s"]\n\t%s\n')
+
 #: `.gitmodules` files for a gitlink at `p` that git reads otherwise than as
 #: they are written, each with the `(name, url)` git then finds for `p`, as
 #: `git submodule init` says (#733). The controls git reads as written are
@@ -1675,9 +1679,7 @@ GIT_SKIPS = [
     pytest.param(b'[submodule "../evil"]\n\tpath\n[submodule "q"]\n'
                  b"\tpath = p\n\turl = /r/u.git\n", ("q", "/r/u.git"),
                  id="bare-path-in-an-ignored-section"),
-    *(pytest.param(b'[submodule "p"]\n\tpath = p\n\turl = /r/p.git\n'
-                   b'[submodule "%s"]\n\t%s\n' % (section, line), found,
-                   id=label)
+    *(pytest.param(P_THEN_A_LINE % (section, line), found, id=label)
       for section, line, found, label in (
           (b"q", b"update = !echo", (None, None), "update-command"),
           (b"q", b"update = Merge", (None, None), "update-unknown"),
@@ -1685,6 +1687,18 @@ GIT_SKIPS = [
           (b"q", b"shallow = maybe", (None, None), "shallow-no-boolean"),
           (b"q", b"shallow = 2k", ("p", "/r/p.git"), "shallow-an-integer"),
           (b"q", b"shallow = 2g", (None, None), "shallow-past-an-int"),
+          (b"q", b"shallow = 0x10", ("p", "/r/p.git"), "shallow-hex"),
+          (b"q", b"shallow = 08", (None, None), "shallow-08-no-octal"),
+          (b"q", b'shallow = " 1"', ("p", "/r/p.git"),
+           "shallow-after-a-space"),
+          (b"q", b'shallow = "\\t1"', ("p", "/r/p.git"),
+           "shallow-after-a-tab"),
+          (b"q", b'shallow = " true"', (None, None),
+           "shallow-word-after-a-space"),
+          (b"q", b"shallow = -2147483647", ("p", "/r/p.git"),
+           "shallow-above-int-min"),
+          (b"q", b"shallow = -2147483649", (None, None),
+           "shallow-below-int-min"),
           (b"q", b"fetchRecurseSubmodules = sometimes", (None, None),
            "fetch-recurse-no-boolean"),
           (b"q", b"fetchRecurseSubmodules = on-demand", ("p", "/r/p.git"),
@@ -1710,6 +1724,26 @@ def test_733_the_doctor_and_make_siblings_skip_what_git_skips(
     assert module.mounted_from(tmp_path, "p", "Org/Repo") == (
         found[1] or "https://github.com/Org/Repo.git")
     assert siblings.submodule_urls(tmp_path).get("p") == found[1]
+
+
+@pytest.mark.parametrize("value", [b"-2147483648", b"-2097152k", b"-2048m",
+                                   b"-2g"])
+def test_733_a_shallow_of_int_min_is_a_boolean_as_git_2_55_reads_it(
+        standard, siblings, tmp_path, value):
+    """-2**31, however it is spelled, is a boolean to git 2.55, which CI
+    runs, and to the doctor and `make siblings`, which follow it (#733).
+    git 2.43 dies on it (`-max / factor > val`), so the git at hand is
+    asked last, and a git that dies on it skips the test with the
+    reason."""
+    repository_mounting_p(tmp_path)
+    (tmp_path / ".gitmodules").write_bytes(
+        P_THEN_A_LINE % (b"q", b"shallow = " + value))
+    assert doctor_module(standard).gitmodules_entry(tmp_path, "p") == (
+        "p", "/r/p.git")
+    assert siblings.submodule_urls(tmp_path).get("p") == "/r/p.git"
+    if url_git_finds(tmp_path, "p") is None:
+        pytest.skip("this git dies on a `shallow` of -2**31, as git 2.43 "
+                    "does; git 2.55, which CI runs, takes it")
 
 
 @WINDOWS_SKIP

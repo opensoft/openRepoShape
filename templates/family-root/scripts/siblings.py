@@ -229,10 +229,11 @@ DOTDOT_COMPONENT = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
 VALUED_KEYS = ("path", "url", "ignore", "update", "branch")
 
 #: A boolean as git reads one in `.gitmodules` (`git_config_bool`): one of
-#: these words in any case, or an integer as `strtoimax` reads it, base 0,
-#: times 1024 per `k`, `m` or `g`, that fits an `int` (#733).
+#: these words in any case, as they stand, or an integer as `strtoimax`
+#: reads it after the white space it skips, base 0, times 1024 per `k`, `m`
+#: or `g`, from -2**31 to 2**31 - 1, the range git 2.55 checks (#733).
 GIT_BOOL_WORDS = ("", "true", "yes", "on", "false", "no", "off")
-GIT_INT = re.compile(r"[+-]?(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)"
+GIT_INT = re.compile(r"([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)"
                      r"([kKmMgG]?)")
 
 
@@ -253,14 +254,14 @@ def git_dies_on(field: str, value: str) -> bool:
             or value.lower() in GIT_BOOL_WORDS
             or (field == "fetchrecursesubmodules" and value == "on-demand")):
         return False
-    number = GIT_INT.fullmatch(value)
+    number = GIT_INT.fullmatch(value.lstrip(" \t\n\v\f\r"))
     if number is None:
         return True
-    digits, unit = number.groups()
+    sign, digits, unit = number.groups()
     base = 16 if digits[:2] in ("0x", "0X") else 8 if digits[0] == "0" else 10
     # " kmg".index: no unit is 1024 ** 0, `k` 1024 ** 1, and so on.
-    return int(digits, base) * 1024 ** " kmg".index(unit.lower() or " ") \
-        >= 2 ** 31
+    scaled = int(digits, base) * 1024 ** " kmg".index(unit.lower() or " ")
+    return not -2 ** 31 <= (-scaled if sign == "-" else scaled) < 2 ** 31
 
 
 def submodule_urls(root: Path) -> dict[str, str]:

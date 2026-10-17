@@ -5016,26 +5016,35 @@ VALUED_KEYS = ("path", "url", "ignore", "update", "branch")
 #: one of these words in any case, or an integer `GIT_INT` reads.
 GIT_BOOL_WORDS = ("", "true", "yes", "on", "false", "no", "off")
 
-#: An integer as `strtoimax` reads one, base 0: a sign, then decimal, `0x`
-#: hex or `0` octal digits, then a unit, `k`, `m` or `g`, each a power of
-#: 1024 (`git_parse_int`). It must fit an `int`.
-GIT_INT = re.compile(r"[+-]?(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)"
+#: An integer as `strtoimax` reads one, base 0, after the white space it
+#: skips: a sign, then decimal, `0x` hex or `0` octal digits, then a unit,
+#: `k`, `m` or `g`, each a power of 1024 (`git_parse_int`). It must fit an
+#: `int`.
+GIT_INT = re.compile(r"([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)"
                      r"([kKmMgG]?)")
 
 
 def git_bool(value: str) -> bool:
     """Whether git reads `value` as a boolean (`GIT_BOOL_WORDS`, `GIT_INT`)
-    rather than dying on it (#733)."""
+    rather than dying on it (#733).
+
+    The words are compared as they stand, as `strcasecmp` compares them, so
+    `" true"` dies. An integer may follow white space, which `strtoimax`
+    skips, so `" 1"` is taken (measured). Its range is the one git 2.55,
+    which CI runs, checks: -2**31 to 2**31 - 1, the policy the bare
+    `branch` in `submodule_keys` follows too. git 2.43 stops one short
+    below, `-max / factor > val`, so `-2147483648` and `-2g` die there.
+    """
     if value.lower() in GIT_BOOL_WORDS:
         return True
-    number = GIT_INT.fullmatch(value)
+    number = GIT_INT.fullmatch(value.lstrip(" \t\n\v\f\r"))
     if number is None:
         return False
-    digits, unit = number.groups()
+    sign, digits, unit = number.groups()
     base = 16 if digits[:2] in ("0x", "0X") else 8 if digits[0] == "0" else 10
     # " kmg".index: no unit is 1024 ** 0, `k` 1024 ** 1, and so on.
-    return int(digits, base) * 1024 ** " kmg".index(unit.lower() or " ") \
-        < 2 ** 31
+    scaled = int(digits, base) * 1024 ** " kmg".index(unit.lower() or " ")
+    return -2 ** 31 <= (-scaled if sign == "-" else scaled) < 2 ** 31
 
 
 def git_dies_on(field: str, value: str) -> bool:
