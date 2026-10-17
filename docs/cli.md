@@ -563,8 +563,13 @@ options:
                         given (the TEST path): each relative submodule url the
                         plan keeps in a leg is resolved from the bare
                         repository `execute` would create there, as that run
-                        resolves it, and not from GitHub's. Nothing is created
-                        there.
+                        resolves it, and not from GitHub's, and `check` asks,
+                        as `execute` asks before it makes either leg, whether
+                        each leg's bare repository is already there and
+                        whether this directory can be made and written in.
+                        Nothing is created there. Without it, `check` asks
+                        GitHub with `gh repo view` whether either leg's name
+                        exists, and a `gh` that cannot answer is a NOTE.
   --work-dir WORK_DIR   where `check` works: an `org/repo` --source, or the
                         plan's `source.repository` where the clone `plan` made
                         is gone or no longer whole, is cloned there. Give the
@@ -603,7 +608,11 @@ options:
                         `plan-source-gone`.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create the legs as bare repositories here instead of
-                        calling `gh` (the TEST path)
+                        calling `gh` (the TEST path). Both are asked about
+                        before either is made: one already there, or a
+                        directory that cannot be made and written in, is
+                        refused, as `gh repo view` finding either leg's name
+                        is without it.
   --allow-empty-leg {spec,code}
                         proceed even though NO path is assigned to this leg,
                         seeding it from the shape's template. Unioned with the

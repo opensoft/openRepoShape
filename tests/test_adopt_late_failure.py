@@ -1267,7 +1267,7 @@ def test_a_live_leg_keeps_its_own_refusal_over_the_split_branch(
 def test_against_github_the_split_branch_is_asked_of_the_assembly(
         adopter, tmp_path):
     """Against GitHub nothing is on disk to look at, and the leg names are
-    taken or not by `gh repo create`; the branch is asked of the URL the
+    asked with `gh repo view` (#798); the branch is asked of the URL the
     split is pushed to, which a local path stands in for here."""
     source = source_of(adopter, tmp_path)
     urls = {ROOT: str(source.path),

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The session's `gh` guard (#296): it is reached, it answers the two probes,
-its check fails a test that ran `gh`, and the doctor's `machine` row meets it.
+"""The session's `gh` guard (#296): it is reached, it answers the two probes
+and whether a repository exists (#798), its check fails a test that ran `gh`,
+and the doctor's `machine` row meets it.
 
 `tests/conftest.py` puts the guard first on PATH for every child and checks,
 after each test, that the guard refused none of that test's calls. Each test
@@ -28,8 +29,8 @@ import sys
 from pathlib import Path
 
 from conftest import REPO, WINDOWS_SKIP, run_script
-from gh_guard import (GUARD_EXIT, NOT_LOGGED_IN, VERSION_LINE, failure,
-                      record)
+from gh_guard import (GUARD_EXIT, NEEDS_A_LOGIN, NO_LOGIN_EXIT,
+                      NOT_LOGGED_IN, VERSION_LINE, failure, record)
 
 DOCTOR = REPO / "shape-doctor.py"
 
@@ -109,6 +110,32 @@ def test_the_two_probes_answer_as_a_gh_with_no_login(gh_guard, request):
     assert all(test.startswith(this_test(request))
                for _, _, test in calls(lines))
     assert failure(lines) is None
+
+
+def test_whether_a_repository_exists_is_answered_as_a_gh_with_no_login(
+        gh_guard, request):
+    """`adopt-project.py check` asks `gh repo view <owner>/<name> --json
+    name` of each leg it would create (#798). The guard answers as a `gh`
+    with no login does, exit 4 and gh's own words, logs it as a probe, and
+    the per-test check passes it. Any other `repo view` is still refused."""
+    asked = ["repo", "view", "testorg/Northwind-spec", "--json", "name"]
+    result = run([guard_launcher(gh_guard), *asked])
+    assert result.returncode == NO_LOGIN_EXIT, result.stdout + result.stderr
+    assert result.stdout == ""
+    assert result.stderr == NEEDS_A_LOGIN + "\n"
+    lines = gh_guard.take()
+    assert [(kind, argv) for kind, argv, _ in calls(lines)] == [
+        ("probe", asked)]
+    assert calls(lines)[0][2].startswith(this_test(request))
+    assert failure(lines) is None
+    for near in (["repo", "view", "testorg/Northwind-spec"],
+                 ["repo", "view", "testorg/Northwind", "--json",
+                  "visibility"],
+                 ["repo", "view", "--web", "--json", "name"],
+                 ["repo", "view", "testorg/a/b", "--json", "name"],
+                 ["repo", "create", "testorg/Northwind-spec", "--json",
+                  "name"]):
+        assert failure([record(near, "")]) is not None, near
 
 
 def test_the_check_fails_on_a_refused_call_and_passes_on_probes_alone():

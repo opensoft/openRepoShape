@@ -36,6 +36,16 @@ word of the first line of `gh --version`, and `_check_gh` there and
 status`. Any other argv -- `gh version`, `gh auth status --hostname x` -- is
 not a probe and is refused.
 
+ONE MORE CALL IS ANSWERED (#798): `gh repo view <owner>/<name> --json name`,
+which `adopt-project.py check` asks of each leg repository it would create,
+as `execute` does before it makes either. Every `check` in this suite that is
+given no `--local-remote-dir` asks it twice, and refused, each such test
+would fail. It is answered as a `gh` with no login answers it, the state the
+other two answers describe: exit 4 and gh's own words (`NEEDS_A_LOGIN`), so
+`check` prints, on every machine, the NOTE that it could not ask, and still
+passes. It is logged as a probe. Only that exact shape is answered: `--json
+visibility`, or any other field, and any other `repo view`, are refused.
+
 STANDARD LIBRARY ONLY, and importable: `tests/conftest.py` and
 `tests/test_gh_guard.py` read the same table, the same record format and the
 same decision from here, so the guard and the check cannot disagree about
@@ -46,6 +56,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -77,6 +88,34 @@ PROBES = {
     ("auth", "status"): (1, "", NOT_LOGGED_IN + "\n"),
 }
 
+#: gh's own words, on stderr with exit 4, for a command that needs a login on
+#: a machine that has none (gh 2.x, outside CI): how `ASKS_WHETHER_IT_EXISTS`
+#: is answered (#798).
+NEEDS_A_LOGIN = (
+    "To get started with GitHub CLI, please run:  gh auth login\n"
+    "Alternatively, populate the GH_TOKEN environment variable with a GitHub "
+    "API authentication token.")
+NO_LOGIN_EXIT = 4
+
+#: `repo view <owner>/<name> --json name`: one owner and one name, each a
+#: word GitHub could name, and nothing else on the line.
+ASKS_WHETHER_IT_EXISTS = re.compile(r"[A-Za-z0-9][\w.-]*/[\w.-]+")
+
+
+def answer(argv) -> tuple | None:
+    """`(exit status, stdout, stderr)` for a call the guard answers: one of
+    the two `PROBES`, or whether a repository exists, as a `gh` with no
+    login answers it (#798). None for anything else, which is refused."""
+    argv = list(argv)
+    probe = PROBES.get(tuple(argv))
+    if probe is not None:
+        return probe
+    if (len(argv) == 5 and argv[:2] == ["repo", "view"]
+            and argv[3:] == ["--json", "name"]
+            and ASKS_WHETHER_IT_EXISTS.fullmatch(argv[2])):
+        return NO_LOGIN_EXIT, "", NEEDS_A_LOGIN + "\n"
+    return None
+
 #: The refusal, ONE line on stderr. `{argv}` is the call as `shown` spells it.
 REFUSAL = ("gh guard (tests/conftest.py): no test may run the operator's gh, "
            "so `gh {argv}` was refused and logged; a test that means to run "
@@ -88,8 +127,9 @@ _CONTROLS = {code: f"\\x{code:02x}" for code in (*range(32), 127)}
 
 
 def is_probe(argv) -> bool:
-    """Whether `argv` is one of the two `PROBES`, exactly."""
-    return tuple(argv) in PROBES
+    """Whether `argv` is a call the guard answers (`answer`): one of the two
+    `PROBES`, exactly, or `repo view <owner>/<name> --json name`."""
+    return answer(argv) is not None
 
 
 def shown(argv) -> str:
@@ -133,9 +173,10 @@ def failure(lines) -> str | None:
     if not named:
         return None
     return ("tests/conftest.py's gh guard logged "
-            f"{len(named)} line(s) that are not the machine row's two probes "
-            "-- calls to gh made with no stub of the test's own ahead of the "
-            "guard on PATH, each refused:\n" + "\n".join(named) + "\n"
+            f"{len(named)} line(s) that are not a call it answers (the "
+            "machine row's two probes, and `repo view <owner>/<name> --json "
+            "name`) -- calls to gh made with no stub of the test's own ahead "
+            "of the guard on PATH, each refused:\n" + "\n".join(named) + "\n"
             "No test may reach the operator's gh. A test that means to run "
             "gh puts a stub of its own first on PATH, as "
             "tests/test_neutral_pin_validator.py does.")
@@ -147,9 +188,9 @@ def main(argv) -> int:
     with open(log, "a", encoding="utf-8", newline="\n") as handle:
         handle.write(record(argv, os.environ.get("PYTEST_CURRENT_TEST", ""))
                      + "\n")
-    answer = PROBES.get(tuple(argv))
-    if answer is not None:
-        code, out, err = answer
+    answered = answer(argv)
+    if answered is not None:
+        code, out, err = answered
         sys.stdout.write(out)
         sys.stderr.write(err)
         return code
