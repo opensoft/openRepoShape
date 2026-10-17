@@ -2561,10 +2561,11 @@ ON_DISK = "on disk and untracked"
 #: --sparse` where a sparse checkout keeps it off disk, and otherwise taken
 #: out of the index, which touches no file, as #318 takes out a variant of
 #: the mount path. A `members/` renamed with `git mv` is renamed back with
-#: it, whole (#685). A member's own gitlink, held only under another
-#: spelling of its row's path, is moved back to that path in the index alone
-#: (#646). What is on disk and untracked is moved out of the way, and a
-#: `members/` a hand renamed is moved back.
+#: it, whole, in two steps through a free name (#685). A member's own
+#: gitlink, held only under another spelling of its row's path, is moved
+#: back to that path in the index alone (#646). What is on disk and
+#: untracked is moved out of the way, and a `members/` a hand renamed is
+#: moved back.
 COMMIT = "git commit"
 RENAME = "git mv"
 RENAME_SPARSE = "git mv --sparse"
@@ -2576,12 +2577,26 @@ MOVE_BACK = "mv back"
 REMEDY_ORDER = (COMMIT, RENAME, RENAME_SPARSE, UNSTAGE, RENAME_BACK, RESTORE,
                 MOVE, MOVE_BACK)
 
-#: What a `--sparse` the remedy prints needs: git older than 2.34 has none,
-#: and has no other way that types clean (#685). Clearing the entry's
-#: `skip-worktree` bit first, `git update-index --no-skip-worktree`, leaves
-#: `git mv` saying `bad source`, since the file is still off disk, and in a
-#: cone-mode sparse checkout `git rm --cached` of it still removes nothing.
-SPARSE_GIT = "which needs git 2.34 or later"
+#: What a `--sparse` the remedy prints needs (#685). `git rm --sparse` came
+#: with git 2.34. `git mv` took `--sparse` in 2.34 too, but there it still
+#: says `bad source` for one entry a sparse checkout keeps off disk, which
+#: is the one entry the remedy names: its `builtin/mv.c` is the same from
+#: 2.34.0 to 2.37.7, and 2.38.0 is the first to look that entry up in the
+#: index, and the first whose tests move one (`can move out-of-cone file
+#: with --sparse`). Read from git's source, not run.
+#:
+#: NO OTHER WAY IS NAMED. On git 2.43, the only git run here, clearing the
+#: entry's `skip-worktree` bit first (`git update-index
+#: --no-skip-worktree`) leaves `git mv` saying `bad source`, since the file
+#: is still off disk, and in a cone-mode sparse checkout `git rm --cached`
+#: then still removes nothing. An older git may differ (2.33's `mv.c` has
+#: no sparse code at all), but none was run.
+SPARSE_MV_GIT = "which needs git 2.38 or later"
+SPARSE_RM_GIT = "which needs git 2.34 or later"
+
+#: The name a `members/` renamed with `git mv` is renamed back through, or
+#: the first of its numbered variants that nothing holds (#685).
+RENAMING = "members.renaming"
 
 
 class Spelled(NamedTuple):
@@ -2604,8 +2619,12 @@ class Spelled(NamedTuple):
     false, for every other remedy.
 
     WHAT A `members/` RENAMED WITH `git mv` HOLDS (`RENAME_BACK`, #685) has
-    that spelling as `target`, and `committed` says whether renaming it back
-    leaves anything to commit."""
+    that spelling as `target`, `committed` says whether renaming it back
+    leaves anything to commit, `through` is the free name it is renamed
+    back through, and `put_back` says whether the disk lacks this entry,
+    which is put back first, since `git mv` of a directory refuses any
+    entry under it that is not on disk (`bad source`); `through` is empty,
+    and `put_back` false, for every other remedy."""
 
     name: str
     kind: str
@@ -2616,6 +2635,8 @@ class Spelled(NamedTuple):
     committed: bool = False
     recorded: str = ""
     sparse: bool = False
+    through: str = ""
+    put_back: bool = False
 
 
 def _folded(name: str) -> str:
@@ -2867,28 +2888,42 @@ def _head_spellings(root: Path) -> list[tuple[str, str, str]]:
     return held
 
 
+def _free_name(root: Path, listed: dict[str, list]) -> str:
+    """`RENAMING`, or else the first of `RENAMING-2`, `RENAMING-3` and on,
+    that nothing the index holds (`listed`) is at or under, in any case, and
+    that the disk does not hold, as it resolves a name."""
+    folded = {_folded(name) for name in listed}
+    count = 1
+    while True:
+        name = RENAMING if count == 1 else f"{RENAMING}-{count}"
+        if not os.path.lexists(root / name) and not any(
+                held == name or held.startswith(name + "/")
+                for held in folded):
+            return name
+        count += 1
+
+
 def _renamed_with_git(root: Path, found: list[Spelled],
-                      indexed: dict[str, int],
-                      canon: str | None) -> str | None:
-    """The spelling a `git mv members <spelling>` renamed `members/` to,
-    where what `_members_spellings` found in the index is that and nothing
-    else (#685), or None. `indexed` is every name the index holds, and
-    `canon` is `_members_dir_on_disk`'s answer.
+                      listed: dict[str, list], canon: str | None
+                      ) -> tuple[str, str, frozenset[str]] | None:
+    """`(the spelling, the free name, the entries to put back first)` where
+    `members/` was renamed to that spelling with `git mv`, and what
+    `_members_spellings` found in the index is that and nothing else
+    (#685), or None. `listed` is every index entry's records, and `canon`
+    is `_members_dir_on_disk`'s answer.
 
     `git mv` of `members/` renames each member's checkout, its gitlink and
     its section of `.gitmodules` (`path = Members/<P>`), staged or
     committed. The move back of a member's own gitlink (#646) puts the
     gitlink back and leaves the section naming the other spelling, so `git
     submodule update` then says `No url found for submodule path
-    'members/<P>'`, and the gate finds `gitmodules-path-unnamed`. `git mv
-    -- <spelling> members` takes all of it back, and is the one remedy, where
-    all of these hold:
+    'members/<P>'`, and the gate finds `gitmodules-path-unnamed`. `git mv`
+    of the spelling to a free name, then of that to `members`, takes all of
+    it back, on every disk: on macOS and Windows the spelling IS
+    `members/`, and a `git mv -- Members members` would take `members` for
+    that directory and rename it into itself (`members/Members`), which the
+    disk refuses. It is the remedy where all of these hold:
 
-    - NO `members/` IS ON THIS DISK (`canon` is None), so the rename is not
-      into it (`members/Members`). On macOS and Windows the other spelling
-      IS `members/`, and `git mv` takes `members` for that directory, so it
-      renames it into itself, which the disk refuses: there the move back is
-      printed, as before.
     - The index holds nothing at or under `members` itself.
     - Everything the index holds under another spelling is under this one
       spelling, none of it a case variant of the mount path, and some of it
@@ -2896,13 +2931,21 @@ def _renamed_with_git(root: Path, found: list[Spelled],
       itself can sit beside.
     - HEAD holds no member's gitlink under another spelling that the index
       no longer does, which the rename would leave out.
-    - The disk holds that spelling as a directory in that spelling, and no
-      sparse checkout keeps anything under it off disk, which `git mv`
-      refuses without `--sparse`.
+    - No `members/` is on this disk, or the one there is that spelling's own
+      directory (`samefile`), as on macOS and Windows: a second directory
+      would take the second step into it.
+    - Every entry under it is at stage 0 (`git mv` says `source directory
+      is empty` for an unmerged gitlink, and `conflicted` for a file), and
+      no sparse checkout keeps one off disk, which `git mv` refuses without
+      `--sparse`.
+    - Every entry under it is on disk as the index holds it, as the disk
+      resolves the name, or can be put back first: `git mv` of a directory
+      says `bad source` for any entry under it that is not. A file is put
+      back with `git checkout --`; a gitlink with `git submodule update`,
+      where a section of `.gitmodules` with a url gives its path.
     """
-    if canon is not None or any(
-            name == MEMBERS_DIR or name.startswith(MEMBERS_DIR + "/")
-            for name in indexed):
+    if any(name == MEMBERS_DIR or name.startswith(MEMBERS_DIR + "/")
+           for name in listed):
         return None
     held = [spelled for spelled in found if spelled.where == IN_INDEX]
     spellings = {spelled.name.partition("/")[0] for spelled in held}
@@ -2913,10 +2956,41 @@ def _renamed_with_git(root: Path, found: list[Spelled],
                    if spelled.where == IN_HEAD_ONLY)):
         return None
     (spelling,) = spellings
-    if not _on_disk_as_named(root, spelling, True) or any(
-            name.startswith(spelling + "/") for name in _skip_worktree(root)):
+    if canon is not None:
+        try:
+            if not (os.path.isdir(root / spelling) and os.path.samefile(
+                    root / spelling, root / canon)):
+                return None
+        except OSError:
+            return None
+    under = [name for name in listed if name.startswith(spelling + "/")]
+    if any(fields[2] != b"0" for name in under for fields in listed[name]):
         return None
-    return spelling
+    skipped = _skip_worktree(root)
+    sections: set[str] | None = None
+    put_back = set()
+    for name in under:
+        if name in skipped:
+            return None
+        here = root / name
+        gitlink = listed[name][0][0] == b"160000"
+        # As the index holds it: a gitlink a directory, anything else not.
+        if (os.path.isdir(here) if gitlink else os.path.lexists(here) and (
+                os.path.islink(here) or not os.path.isdir(here))):
+            continue
+        if os.path.lexists(here):
+            return None
+        if gitlink:
+            if sections is None:
+                try:
+                    sections = {path for path, url, _
+                                in _submodule_paths(root).values() if url}
+                except Refusal:
+                    return None
+            if name not in sections:
+                return None
+        put_back.add(name)
+    return spelling, _free_name(root, listed), frozenset(put_back)
 
 
 def _members_spellings(root: Path, project: str,
@@ -2946,10 +3020,11 @@ def _members_spellings(root: Path, project: str,
     file there or fail on one under it: it keeps the remedy below.
 
     A `members/` RENAMED WITH `git mv` (#685), staged or committed, is
-    renamed back with it, whole (`RENAME_BACK`, `_renamed_with_git`), in
-    place of the move back, which would leave each member's section of
-    `.gitmodules` naming the other spelling; what the disk holds under that
-    spelling goes back with it, so it is not named.
+    renamed back with it, whole, in two steps through a free name
+    (`RENAME_BACK`, `_renamed_with_git`), in place of the move back, which
+    would leave each member's section of `.gitmodules` naming the other
+    spelling; what the disk holds under that spelling goes back with it, so
+    it is not named.
 
     THE INDEX, the whole of it, as `_index_entries` reads it (#362). Each
     entry's remedy acts on `_spelled_target`'s path: renamed with `git mv`
@@ -3041,10 +3116,13 @@ def _members_spellings(root: Path, project: str,
             continue
         found.append(Spelled(_shown(name), kind, IN_HEAD_ONLY,
                              _shown(spelled[0]), spelled[1], COMMIT, True))
-    renamed = _renamed_with_git(root, found, indexed, canon)
+    renamed = _renamed_with_git(root, found, listed, canon)
     if renamed is not None:
-        found = [spelled._replace(target=renamed, remedy=RENAME_BACK,
-                                  recorded="", sparse=False)
+        spelling, through, missing = renamed
+        gone = {_shown(name) for name in missing}
+        found = [spelled._replace(target=spelling, remedy=RENAME_BACK,
+                                  recorded="", sparse=False, through=through,
+                                  put_back=spelled.name in gone)
                  if spelled.where == IN_INDEX else spelled
                  for spelled in found]
     # What the disk holds at a gitlink moved back from HEAD is the move's to
@@ -3055,7 +3133,7 @@ def _members_spellings(root: Path, project: str,
         if any(name == path or path.startswith(name + "/")
                or (remedy == MOVE and name.startswith(path + "/"))
                for name in [*indexed, *restored,
-                            *([renamed] if renamed else [])]):
+                            *([renamed[0]] if renamed else [])]):
             continue
         found.append(Spelled(_shown(path), kind, ON_DISK, _shown(path),
                              _spelled_target(path, project)[1], remedy))
@@ -3067,7 +3145,8 @@ def _members_spellings(root: Path, project: str,
 SPELLED_ORDER = (IN_INDEX, IN_HEAD_ONLY, ON_DISK)
 
 
-def _spellings_refusal(path: str, found: list[Spelled]) -> Refusal:
+def _spellings_refusal(path: str, found: list[Spelled],
+                       gitmodules_unstaged: bool = False) -> Refusal:
     """The refusal for what `_members_spellings` found: every path named in
     its exact spelling, at most five in each place, with where it was found,
     and every remedy (Brett Heap's ruling of 2026-10-14, "Refuse on every
@@ -3083,12 +3162,21 @@ def _spellings_refusal(path: str, found: list[Spelled]) -> Refusal:
     no command takes another's path from under it: `git commit` first for
     what HEAD holds and the index no longer does, since the add's own commit
     names three paths; then `git mv`, `git mv --sparse` and `git rm -r
-    --cached` for what the index holds, and a commit; then `git mv` back for
-    a `members/` renamed with it (#685), and a commit; then the move of a
-    member's own gitlink back to its row's path, and a commit; then `mv` for
-    what is on disk and untracked, and `mv` back for a renamed `members/`.
-    Every path is quoted for a POSIX shell (#532). A `--sparse` says it
-    needs git 2.34 or later (`SPARSE_GIT`, #685).
+    --cached` for what the index holds, and a commit; then, for a
+    `members/` renamed with `git mv` (#685), what puts back an entry under
+    it that the disk lacks, the `git mv` of it to a free name and of that
+    to `members`, and a commit; then the move of a member's own gitlink back
+    to its row's path, and a commit; then `mv` for what is on disk and
+    untracked, and `mv` back for a renamed `members/`. Every path is quoted
+    for a POSIX shell (#532). A `--sparse` says the git it needs
+    (`SPARSE_MV_GIT`, `SPARSE_RM_GIT`, #685).
+
+    A CHANGE TO `.gitmodules` NOBODY HAS STAGED (`gitmodules_unstaged`, as
+    `git ls-files -m` lists it) is staged first, wherever the index holds a
+    gitlink this refusal names: `git mv` and `git rm` of a gitlink refuse to
+    run beside one (`Please stage your changes to .gitmodules or stash them
+    to proceed`), and `gitmodules-unstaged`, which says so, is asked after
+    this refusal (#685).
 
     THE MOVE BACK (#646) is `validate-family.py`'s for the same state
     (#611), in one line: `git rm -r --cached --ignore-unmatch` of every
@@ -3127,6 +3215,14 @@ def _spellings_refusal(path: str, found: list[Spelled]) -> Refusal:
             for target in targets)
 
     parts = []
+    if gitmodules_unstaged and any(
+            spelled.where == IN_INDEX
+            and spelled.kind == INDEX_ENTRY_KINDS[0o160000]
+            for spelled in found):
+        parts.append(
+            f"stage the change to {GITMODULES} that nobody has staged, or "
+            "set it aside, since `git mv` and `git rm` of a gitlink refuse "
+            f"to run beside one (`git add -- {GITMODULES}`)")
     if by[COMMIT]:
         named = ", ".join(f"`{target}`" for target in by[COMMIT])
         parts.append(
@@ -3141,7 +3237,7 @@ def _spellings_refusal(path: str, found: list[Spelled]) -> Refusal:
                      f"entry ({each(RENAME, by[RENAME])})")
     if by[RENAME_SPARSE]:
         index.append("rename what the sparse checkout keeps off disk with "
-                     f"`git mv --sparse`, {SPARSE_GIT}, entry by entry "
+                     f"`git mv --sparse`, {SPARSE_MV_GIT}, entry by entry "
                      f"({each(RENAME_SPARSE, by[RENAME_SPARSE])})")
     if by[UNSTAGE]:
         quoted = " ".join(shell_quoted(target, "posix")
@@ -3161,17 +3257,33 @@ def _spellings_refusal(path: str, found: list[Spelled]) -> Refusal:
             "the rename" if renamed else "the removal")
     if index:
         parts.append(", ".join(index))
-    # A `members/` RENAMED WITH `git mv` (#685), one spelling at most.
+    # A `members/` RENAMED WITH `git mv` (#685), one spelling at most: what
+    # puts back an entry under it the disk lacks, then the two `git mv`s.
     for target in by[RENAME_BACK]:
+        held = [spelled for spelled in found if spelled.remedy == RENAME_BACK]
+        through = shell_quoted(held[0].through, "posix")
+        quoted = shell_quoted(target, "posix")
+        gitlink = INDEX_ENTRY_KINDS[0o160000]
+        back = [f"`{command} -- {' '.join(names)}`" for command, names in (
+            ("git submodule update --init --recursive", sorted(
+                shell_quoted(spelled.name, "posix") for spelled in held
+                if spelled.put_back and spelled.kind == gitlink)),
+            ("git checkout", sorted(
+                shell_quoted(spelled.name, "posix") for spelled in held
+                if spelled.put_back and spelled.kind != gitlink)))
+            if names]
         parts.append(
-            f"rename `{target}` back to {MEMBERS_DIR}/, since it holds the "
+            (f"put back what the index holds under `{target}` and the disk "
+             f"does not, {' and '.join(back)}, then " if back else "")
+            + f"rename `{target}` back to {MEMBERS_DIR}/, since it holds the "
             f"gitlinks of members whose rows place them under {MEMBERS_DIR}/, "
-            f"as a `git mv` of {MEMBERS_DIR}/ leaves them: `git mv` takes "
-            f"each checkout and its section of {GITMODULES} back with it "
-            f"(`{RENAME} -- {shell_quoted(target, 'posix')} {MEMBERS_DIR}`)"
+            "in two steps through a name nothing holds, as macOS and Windows "
+            f"take `{target}` for {MEMBERS_DIR}/ itself: `git mv` takes each "
+            f"checkout, and each section of {GITMODULES} that names it, with "
+            f"it (`{RENAME} -- {quoted} {through}`, then `{RENAME} -- "
+            f"{through} {MEMBERS_DIR}`)"
             + (", and commit the rename" if by[COMMIT] or any(
-                spelled.committed for spelled in found
-                if spelled.remedy == RENAME_BACK) else ""))
+                spelled.committed for spelled in held) else ""))
     # A MEMBER'S OWN GITLINK (#646), per row: every variant found, the
     # index's before HEAD's, the first of which names the commit.
     moved = {row: [spelled for spelled in found
@@ -3198,7 +3310,7 @@ def _spellings_refusal(path: str, found: list[Spelled]) -> Refusal:
             f"its row's path, {pairs}, to that path, at the commit it "
             "records, in the index alone, which touches no file (`git rm -r "
             f"--cached{flag} --ignore-unmatch -- {taken_out}`, "
-            + (f"{SPARSE_GIT}, " if flag else "") + f"then {recorded})"
+            + (f"{SPARSE_RM_GIT}, " if flag else "") + f"then {recorded})"
             + (", and commit that" if by[COMMIT] or any(
                 spelled.committed for held in moved.values()
                 for spelled in held) else ""))
@@ -3496,7 +3608,9 @@ def _checked_mount_path(root: Path, project: str, path: str,
             + "re-run.")
     spelled = _members_spellings(root, project, on_disk, rows)
     if spelled:
-        raise _spellings_refusal(path, spelled)
+        raise _spellings_refusal(
+            path, spelled, GITMODULES.encode() in _git_bytes(
+                ["ls-files", "-m", "-z"], root).split(b"\0"))
     # A DIRECTORY NO LISTING COULD READ hides nothing: `lexists` asks the
     # path itself, as it always did, after every listing has answered.
     if os.path.lexists(root / path):
