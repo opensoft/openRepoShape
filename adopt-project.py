@@ -4329,14 +4329,17 @@ def _print_triad_advisory(path: Path, commit: str | None = None) -> None:
 
 
 def _print_plan_report(args, source: Source, tree: list, entries: list,
-                       follow_ups: list, seeded: list, out: Path,
+                       follow_ups: list, seeded: list,
                        pins: dict | None = None) -> None:
     """What `plan` says to the terminal once the file is on disk.
 
     Split out of `cmd_plan` for #138. THE UNRESOLVED PATHS ARE LAST on
     purpose: they are the one part of this report somebody has to act on, and
     a question printed above a summary table is a question that gets scrolled
-    past.
+    past. `plan written to` is NOT in it: `cmd_plan` prints that line the
+    moment the file is written, before this report reads anything more of the
+    source, so a read that fails here (`symlink_targets`' `git cat-file
+    --batch`) still leaves the line that says the plan exists (#799).
     """
     print(f"source     {source.repository or _shown(str(source.path))} @ "
           f"{source.commit[:12]} ({source.branch}), "
@@ -4372,7 +4375,8 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     # A default is still a question (#528): it is printed with the question,
     # before the paths `execute` refuses over, which stay last.
     proposed = [e for e in entries if e.leg is not None and e.review_required]
-    print(f"\nplan written to {out}")
+    if proposed or unresolved:
+        print()
     if proposed:
         print(f"{len(proposed)} path(s) carry their rule's default answer, "
               "which `execute` takes as written unless it is changed:")
@@ -4384,6 +4388,104 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
               "question before `execute` will run:")
         for entry in unresolved:
             print(f"  {_shown(entry.path)}\n      {entry.question}")
+
+
+#: The code `plan` refuses an `--out` it cannot write under (#799), whether
+#: it asks before any work or the write itself fails; and what both say to
+#: do, after `PLAN_NOT_WRITTEN`.
+OUT_UNWRITABLE = "adopt-out-unwritable"
+OUT_FIX = ("Pass an --out that names a file in a folder this user can write "
+           "in, making the folder first if it is not there.")
+#: What a write that began and failed adds: the file it opened is cut short.
+OUT_CUT_SHORT = (" If the write began, what now lies at that path is cut "
+                 "short and is not a plan.")
+
+
+def _out_refusal(args, why: str, then: str = "") -> Refusal:
+    """`adopt-out-unwritable` for `why` the plan cannot be written at the
+    `--out` as it was typed; `then` is added to the way out."""
+    return Refusal(OUT_UNWRITABLE,
+                   f"--out {_spelled(str(args.out))} cannot be written: {why}",
+                   f"Remediation: {PLAN_NOT_WRITTEN} {OUT_FIX}{then}")
+
+
+def _out_folder(out: Path) -> str:
+    """The folder `out` goes in, as the system spells it from here: the
+    current directory by its name where `--out` is a bare file name."""
+    return _spelled(os.path.abspath(out.parent))
+
+
+def _out_is_made_by_this_run(args, out: Path) -> bool:
+    """Whether `out` is below the `--work-dir`, which `_work_root` makes
+    where it is missing, parents included: a folder it goes in may not be
+    there yet, and the run makes it. Read as `_work_root` reads the
+    directory, with `os.path.realpath`."""
+    if not getattr(args, "work_dir", None):
+        return False
+    work = Path(os.path.realpath(args.work_dir))
+    return work in Path(os.path.realpath(out)).parents
+
+
+def _why_out_cannot_be_written(args, out: Path) -> str | None:
+    """Why the plan cannot be written at `out`, or None: a file made there
+    and removed again (or, where one is already there, opened to be added
+    to and left as it is), which is what the write itself needs.
+
+    A FOLDER IS REFUSED FIRST, whatever the system says of opening it: on
+    Windows that is a `PermissionError`, which would read as a folder this
+    user cannot write in. The probe is the file the plan will be, so what
+    the folder's mode, a read-only mount, a name too long for it and a file
+    in the way each say is said by the system and quoted. A file that
+    appeared since, or a symlink to nothing, is left to the write, which
+    follows it as it always did. A folder below the `--work-dir` that is not
+    there is left to the write too, since this run may make it, and the
+    backstop (`_write_the_plan`) refuses it where it does not."""
+    if out.is_dir():
+        return "it is a folder, and the plan is one file"
+    existed = out.exists()
+    try:
+        with out.open("ab" if existed else "xb"):
+            pass
+    except FileExistsError:
+        return None
+    except FileNotFoundError:
+        if _out_is_made_by_this_run(args, out):
+            return None
+        return f"the folder it goes in, {_out_folder(out)}, does not exist"
+    except NotADirectoryError:
+        return (f"the folder it goes in, {_out_folder(out)}, is a file or "
+                "lies under one")
+    except OSError as exc:
+        if existed:
+            return ("the file already there cannot be written "
+                    f"({exc.strerror or exc})")
+        return ("a file cannot be made in the folder it goes in, "
+                f"{_out_folder(out)}: making it failed "
+                f"({exc.strerror or exc})")
+    if not existed:
+        with contextlib.suppress(OSError):
+            out.unlink()
+    return None
+
+
+def _refuse_an_unwritable_out(args) -> None:
+    """Refuse an `--out` the plan cannot be written at, as
+    `adopt-out-unwritable`, before anything exists (#799's L1-89)."""
+    why = _why_out_cannot_be_written(args, Path(args.out))
+    if why:
+        raise _out_refusal(args, why)
+
+
+def _write_the_plan(args, out: Path, text: str) -> None:
+    """Write the plan at `out`, or refuse the write as
+    `adopt-out-unwritable` where it fails after all: the folder went since
+    `_refuse_an_unwritable_out` asked, a disk filled, or `--out` is a folder
+    below the `--work-dir` this run did not make (#799's L1-89)."""
+    try:
+        write_lf(out, text)
+    except OSError as exc:
+        raise _out_refusal(args, f"writing it failed ({exc.strerror or exc})",
+                           OUT_CUT_SHORT) from None
 
 
 def cmd_plan(args) -> int:
@@ -4403,6 +4505,11 @@ def cmd_plan(args) -> int:
                                 nothing_made=PLAN_NOT_WRITTEN)
     if args.pin and args.pin_source is not None:
         _refuse_an_unrecordable_pin_source(args.pin_source)
+    # `--out` is asked here too (#799's L1-89): it needs the flag and the
+    # file system alone, and a plan that could not be written ended in a
+    # traceback at the write, after the work directory was made, an
+    # `org/repo` source cloned and the whole plan built.
+    _refuse_an_unwritable_out(args)
     work_root = _work_root(args)
     # An `org/repo` source is cloned into the work directory, so one this
     # user cannot write in is refused before the clone, as `check` refuses
@@ -4457,15 +4564,18 @@ def cmd_plan(args) -> int:
     entries = with_defaults(ask_about_refused_paths(
         ask_about_submodules(policy, ruled, tree), tree))
     out = Path(args.out)
-    write_lf(out, render_plan(args, source, entries, names, pins, follow_ups,
-                              seeded))
+    _write_the_plan(args, out, render_plan(args, source, entries, names, pins,
+                                           follow_ups, seeded))
     # The plan that records the clone exists from here, whatever happens
     # next: `_leave_the_clones` keeps it, though the report below be cut
     # short by a closed pipe or Ctrl-C (#652's review, F2).
     args.plan_written = True
+    # And it is SAID from here, before the report reads more of the source:
+    # the report's last reads (`symlink_targets`) can still refuse, exit 2,
+    # and the plan is on disk (#799's L1-79).
+    print(f"\nplan written to {out}")
 
-    _print_plan_report(args, source, tree, entries, follow_ups, seeded, out,
-                       pins)
+    _print_plan_report(args, source, tree, entries, follow_ups, seeded, pins)
     return 0
 
 
@@ -13298,7 +13408,19 @@ def main(argv: list[str] | None = None) -> int:
                            "(2026-09-04): `--allow-empty-leg code`. "
                            "Repeatable.")
     plan.add_argument("--path-policy", type=Path, default=None)
-    plan.add_argument("--out", default="adoption-plan.yaml")
+    plan.add_argument("--out", default="adoption-plan.yaml",
+                      help="where the plan is written: a file, in a folder "
+                           "that is there and that this user can write in "
+                           "(default: `adoption-plan.yaml` in the current "
+                           "directory). Any other is refused as "
+                           "`adopt-out-unwritable`, and no plan is written: "
+                           "a folder, or a file in a folder that is missing "
+                           "or that nobody can write in. That is asked "
+                           "before the source is read or cloned and before "
+                           "a work directory is made, and a write that fails "
+                           "all the same is refused as the same code. A "
+                           "folder below --work-dir is not asked for, "
+                           "because the run makes that directory.")
     plan.add_argument(
         "--work-dir", type=Path, default=None,
         help=_work_dir_help(
