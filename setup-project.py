@@ -1542,6 +1542,18 @@ def shape_scripts(shape_root: Path):
     return repo_shape
 
 
+def scaffold_link_remedies(shape_root: Path):
+    """`scripts/shape_materialize.py`'s `scaffold_link_remedies` out of
+    the checkout this run is using: what the scaffold's plan offers a chain
+    link whose tree it cannot read (#610), so step (4) can hand the naming
+    check the same words (#661) and one run says one fact one way.
+    Deferred for the reason `shape_scripts` gives, from the same directory.
+    """
+    shape_scripts(shape_root)
+    import shape_materialize  # noqa: E402  (deferred; see shape_scripts)
+    return shape_materialize.scaffold_link_remedies
+
+
 def family_landing(parent, family: str):
     """The clone's PARENT once `--family` has had its say. A PURE path.
 
@@ -1565,6 +1577,35 @@ def family_landing(parent, family: str):
     return parent / family
 
 
+def family_manifest_here(shape_root: Path, parent: Path) -> dict | None:
+    """`<parent>/<basename>/family.yaml` as a mapping of `kind:
+    family-manifest`, or None where there is no such manifest.
+
+    THE ONE READ BOTH QUESTIONS BELOW ASK OF THE SAME FILE (#696):
+    `family_folder_here`, which says which family the folder IS, and
+    `display_name_folder_here`, which says only whether the manifest's
+    `name:` is the folder's. Split out of the first so that a refusal and a
+    plan line cannot read the file two ways.
+
+    ANY read failure means None, as the advice above it needs: a manifest
+    that is half-written, unreadable, or a YAML shape nobody expected is not
+    a reason to refuse a scaffold that never needed it.
+    """
+    name = parent.name
+    if not name:
+        return None
+    manifest = parent / name / FAMILY_MANIFEST
+    if not manifest.is_file():
+        return None
+    try:
+        data = shape_scripts(shape_root).load_yaml(manifest)
+    except Exception:  # noqa: BLE001  (advice rather than a gate; see above)
+        return None
+    if not isinstance(data, dict) or data.get("kind") != FAMILY_KIND:
+        return None
+    return data
+
+
 def family_folder_here(shape_root: Path, parent: Path) -> str:
     """The family whose FOLDER `parent` is, or "" for a plain directory.
 
@@ -1579,23 +1620,56 @@ def family_folder_here(shape_root: Path, parent: Path) -> str:
     `kind: family-manifest` inside it that NAMES that same family. All three
     have to agree, or this says nothing at all and the run is what it was.
 
-    ANY read failure means "not a family folder". This is advice printed in a
-    plan, so a manifest that is half-written, unreadable, or a YAML shape
-    nobody expected must not refuse a scaffold that never needed it.
+    THE FOLDER IS NAMED AFTER THE HOLDER'S REPOSITORY, NOT AFTER `name:`
+    (#696, #629's class). `scripts/family.py init --family Quill --name
+    QuillWorks` makes `Quill/Quill/family.yaml` holding `name: QuillWorks`
+    and `repository: <org>/Quill`: `--family` is the repository's name and
+    lays the folder out, and `name:` is only a display name. This read
+    `name:`, so it said nothing of that very folder, and AGENTS.md's
+    "detected with no flag" was false for every family made with `--name`,
+    while `QuillWorks/QuillWorks` - the layout the holder's README used to
+    tell a person to make, and the one `siblings.py` now refuses
+    (`family_folder_name`) - was detected. So the answer is the basename of
+    `repository:`, which is `family_folder_name`'s answer for the same
+    manifest, and `name:` only where there is no `repository:` to ask. A
+    manifest whose repository is not this folder's name is another family's,
+    whatever its `name:` says. `--family` typed from inside such a folder is
+    still refused as a family nested in a family (`display_name_folder_here`).
+
+    ANY read failure means "not a family folder" (`family_manifest_here`).
+    This is advice printed in a plan, so a manifest that is half-written,
+    unreadable, or a YAML shape nobody expected must not refuse a scaffold
+    that never needed it.
     """
-    name = parent.name
-    if not name:
+    data = family_manifest_here(shape_root, parent)
+    if data is None:
         return ""
-    manifest = parent / name / FAMILY_MANIFEST
-    if not manifest.is_file():
+    repository = str(data.get("repository") or "")
+    named = (shape_scripts(shape_root).repo_basename(repository) if repository
+             else str(data.get("name") or ""))
+    return parent.name if named == parent.name else ""
+
+
+def display_name_folder_here(shape_root: Path, parent: Path) -> str:
+    """The folder's name where `<parent>/<basename>/family.yaml` is a family
+    manifest whose `name:` is that name, or "" - THE OLD DISPLAY-NAME LAYOUT
+    (#696), which `family_folder_here` no longer detects.
+
+    ASKED ONLY BY THE REFUSAL, NEVER BY THE PLAN. `QuillWorks/QuillWorks`
+    holding `repository: <org>/Quill` is not a family folder any more: the
+    folder is named after the holder's repository, and `siblings.py` refuses
+    this one. But a person standing in one who types `--family Quill` (the
+    holder's own name, which is what `--help` asks for) or `--family Other`
+    would land `QuillWorks/Quill/<Project>`, a family filed inside a family,
+    which is what `resolve_family` refuses and what it refused here before
+    #696 stopped detecting the layout. The refusal is kept and the detection
+    is not: no plan line and no `family.py add` are said for a folder `make
+    siblings` will not clone into, and the nested-family words are.
+    """
+    data = family_manifest_here(shape_root, parent)
+    if data is None:
         return ""
-    try:
-        data = shape_scripts(shape_root).load_yaml(manifest)
-    except Exception:  # noqa: BLE001  (advice rather than a gate; see above)
-        return ""
-    if not isinstance(data, dict) or data.get("kind") != FAMILY_KIND:
-        return ""
-    return name if str(data.get("name") or "") == name else ""
+    return parent.name if str(data.get("name") or "") == parent.name else ""
 
 
 class Landing:
@@ -1654,14 +1728,21 @@ def resolve_family(opts: Options, shape_root: Path) -> Landing:
     # `Northwind/InkRouter/IRTS`: a member of one family filed inside
     # another, which is a layout no `family.yaml` can describe. Both names,
     # and both ways out - this tool moves nothing and asks for no --force.
-    if opts.family and standing and standing != opts.family:
+    #
+    # THE OLD DISPLAY-NAME LAYOUT IS REFUSED AS WELL AS EVER, THOUGH IT IS NO
+    # LONGER DETECTED (#696): `standing` is "" for `QuillWorks/QuillWorks`
+    # holding `repository: <org>/Quill`, so no plan line is said for it, but
+    # a `--family` typed from inside it still names a second family inside
+    # the first, and this refused that before the detection moved.
+    nested = standing or display_name_folder_here(shape_root, parent)
+    if opts.family and nested and nested != opts.family:
         die("--family %s, but %s is the %s family folder (%s says so, with "
             "kind: %s). A family is never nested inside a family. Either "
             "`cd` out of %s first and re-run, or drop --family and let %s "
             "land beside %s's holder."
-            % (opts.family, parent, standing,
-               parent / standing / FAMILY_MANIFEST, FAMILY_KIND,
-               standing, opts.project, standing))
+            % (opts.family, parent, nested,
+               parent / nested / FAMILY_MANIFEST, FAMILY_KIND,
+               nested, opts.project, nested))
 
     landing = family_landing(parent, family)
     if not family:
@@ -2033,7 +2114,7 @@ def as_a_bare_link_source(path: str) -> str:
     return "./" + path if re.match(r"[^/\\:=]+=", path) else path
 
 
-def naming_declarations(passthrough: list) -> list:
+def naming_declarations(passthrough: list, link_remedies=None) -> list:
     """The naming validator's arguments for what the passthrough declares
     about the project (#538): the products of its `--pin`s, and its
     `--referent-chain`, with the tree its links are read from (#608).
@@ -2070,19 +2151,37 @@ def naming_declarations(passthrough: list) -> list:
     BLANK value is a path and goes as it is, and the rule reads the LAST
     value alone: `--pin-source src --pin-source ''` is empty,
     `--pin-source '' --pin-source src` is not.
+
+    THE NAMING CHECK SPEAKS IN THIS RUN'S WORDS (#661). Its own name for a
+    bare source is `--link-source`, and for a link it cannot read it offers
+    "a sibling checkout, SHAPE_PIN_SOURCE_<LINK>, or --link-source
+    <link>=<path>": a flag this file does not take, which typed after `--`
+    ends step (5) in the scaffold's `unrecognized arguments`. So, with a
+    chain of two links at least and `link_remedies` (`_main` passes the
+    scaffold's own, `scaffold_link_remedies`), it is told
+    `--link-source-label=--pin-source` and, for each holder,
+    `--link-remedy=<link>=<words>`: what step (5) reads, said as step (5)
+    says it. The chain is read as the scaffold reads it
+    (`referent_chain_links`: split on commas, each stripped, an empty one
+    dropped).
     """
     products = [name for name in (
         pin.strip().split("@", 1)[0].rsplit("/", 1)[-1]
         for pin in passed_values(passthrough, "--pin")) if name]
     chains = passed_values(passthrough, "--referent-chain")
     sources = passed_values(passthrough, "--pin-source")
-    has_links = bool(chains) and sum(
-        1 for link in chains[-1].split(",") if link.strip()) > 1
+    chain = tuple(link.strip() for link in chains[-1].split(",")
+                  if link.strip()) if chains else ()
+    has_links = len(chain) > 1
     names_a_source = bool(sources) and bool(str(sources[-1]))
+    spoken = link_remedies(chain) if has_links and link_remedies else None
     return ((["--pins=" + ",".join(products)] if products else [])
             + (["--referent-chain=" + chains[-1]] if chains else [])
             + (["--link-source=" + as_a_bare_link_source(sources[-1])]
-               if has_links and names_a_source else []))
+               if has_links and names_a_source else [])
+            + (["--link-source-label=--pin-source"]
+               + ["--link-remedy=%s=%s" % pair for pair in spoken.items()]
+               if spoken is not None else []))
 
 
 # ---------------------------------------------------------------------------
@@ -2667,7 +2766,8 @@ def _main(argv, invocation_dir: str) -> int:
     clone = landing.clone_path(opts.project)
     refuse_a_taken_clone_path(clone, opts.project)
     check_names(shape_root, opts.project, opts.family,
-                naming_declarations(opts.passthrough))
+                naming_declarations(opts.passthrough,
+                                    scaffold_link_remedies(shape_root)))
     args = scaffold_args(opts, org)
     if not plan_and_confirm(opts, shape_root, org, args, clone):
         return 0

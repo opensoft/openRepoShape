@@ -166,7 +166,6 @@ from typing import NamedTuple
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    free_plan_secret_hint,
     COMMIT_RE, PROJECT_ID_RE, PYTHON, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError, checked_value,
     double_quoted, git_out, load_yaml, parse_yaml, recorded_gitlink,
@@ -195,6 +194,11 @@ from repo_shape import shell_line, shell_quoted  # noqa: E402
 # holder's clone URL under `--local-remote-dir` (#255, #433). It is the
 # question the scaffold and `adopt-project.py` ask of theirs.
 from shape_materialize import unwritable_reason  # noqa: E402
+# A reused holder's own visibility and the Free-plan secrets note, asked as
+# the scaffold asks them of its root (#660).
+from shape_materialize import (  # noqa: E402
+    free_plan_secrets_note, repository_visibility,
+)
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -585,6 +589,14 @@ def _member_url(repository: str, local_remote_dir: Path | None) -> str:
                 f"{repo_basename(repository)}.git"))
 
 
+#: The rule a `--family` is held to, as `naming-unclassified` states it
+#: (`_classify_family_name`). `family-bad-id`'s derived remedy names it in
+#: the same words, so the person who follows it is not sent from one
+#: refusal to the other (#659).
+FAMILY_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot "
+                    "or space")
+
+
 def _classify_family_name(policy: NamingPolicy, name: str) -> None:
     """The family name against the policy, in the form a family declares.
 
@@ -598,9 +610,9 @@ def _classify_family_name(policy: NamingPolicy, name: str) -> None:
         raise Refusal(
             "naming-unclassified",
             f"{name!r} matches no family in the naming policy",
-            "Remediation: --family takes one CamelCase token with no hyphen, "
-            "underscore, dot or space — the same rule an assembly root's name "
-            "follows, because a holder is spelled like one.")
+            f"Remediation: --family takes {FAMILY_NAME_RULE} — the same rule "
+            "an assembly root's name follows, because a holder is spelled "
+            "like one.")
     if found.family != "family":
         raise Refusal(
             "naming-not-a-family",
@@ -1502,6 +1514,53 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     return folder, holder
 
 
+#: Where `init` takes the id from when no `--id` is passed, as a sentence
+#: names it: in the label `_manifest_flags` gives a value no flag supplied,
+#: and in `family-bad-id` (#659).
+FAMILY_ID_DERIVED_FROM = "--family lowercased"
+
+#: How `family-bad-id` is told to go on (#659), in the words the scaffold
+#: gives `scaffold-bad-id` and `adopt-project.py plan` `adopt-bad-id`
+#: (#658). A `--id` the person passed is theirs to retype. An id `init`
+#: derived is `--family` lowercased, and `--family` also names the holder
+#: and, unless `--work-dir` is given, its family folder (`_landing`); the
+#: name is the one `_classify_family_name` reads against a policy whose
+#: forms take only ASCII letters, digits and hyphens, so "pass an explicit
+#: lowercase --id" led straight to `naming-unclassified`, and so would
+#: "change --family" to `North-Wind`. The derived remedy names the rule.
+PASSED_FAMILY_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
+DERIVED_FAMILY_ID_REMEDIATION = (
+    f"Remediation: change --family to {FAMILY_NAME_RULE}. The id is "
+    f"{FAMILY_ID_DERIVED_FROM}, and an explicit --id would not change "
+    "--family, which also names the holder and, unless --work-dir is given, "
+    "its family folder.")
+
+
+def _refuse_bad_family_id(family_id: str, given: str | None) -> None:
+    """`family-bad-id`: an id `validate-family.py` would not take
+    (`PROJECT_ID_RE`), named by where it came from (#659), as the scaffold
+    names `scaffold-bad-id`.
+
+    `given` is `--id` as parsed. One the person passed is named as the flag
+    they typed, value as typed, and keeps its remedy. With none, or an empty
+    one, the id is `--family` lowercased (`args.id or family.lower()`), and
+    `--id 'north_wind' must match` named a value nobody had typed: the flag
+    is named as `_manifest_flags` names one, by where its value came from,
+    and an empty `--id ''` as empty, because it was passed."""
+    if PROJECT_ID_RE.match(family_id):
+        return
+    pattern = PROJECT_ID_RE.pattern
+    if given:
+        raise Refusal("family-bad-id",
+                      f"--id {family_id!r} must match {pattern}",
+                      PASSED_FAMILY_ID_REMEDIATION)
+    unset = "not given" if given is None else "empty"
+    raise Refusal("family-bad-id",
+                  f"--id ({unset}, so {FAMILY_ID_DERIVED_FROM}) is "
+                  f"{family_id!r}, which must match {pattern}",
+                  DERIVED_FAMILY_ID_REMEDIATION)
+
+
 def _checked_family_identity(args) -> tuple[str, str, str]:
     """`(family, family_id, topic)` — every name check `init` makes before
     it decides where anything lands.
@@ -1523,10 +1582,7 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     refuse_bad_branch("family-bad-tracking-branch", "--tracking-branch",
                       args.tracking_branch)
     family_id = checked_value("--id", args.id or family.lower())
-    if not PROJECT_ID_RE.match(family_id):
-        raise Refusal("family-bad-id",
-                      f"--id {family_id!r} must match {PROJECT_ID_RE.pattern}",
-                      "Remediation: pass an explicit lowercase --id.")
+    _refuse_bad_family_id(family_id, args.id)
     policy = NamingPolicy.load(NAMING_POLICY)
     _classify_family_name(policy, family)
     topic = policy.topic_for(family_id)
@@ -1613,21 +1669,78 @@ def _holder_remote(args, family: str) -> tuple[bool, str, str]:
     return local, repository, url
 
 
+#: What every `family-unwritable-value` for a clone URL made under
+#: `--local-remote-dir` tells a person to do, `init`'s for the holder (#433)
+#: and `add`'s for a member (#693) alike: another directory, or GitHub, as
+#: the scaffold's twin says (`CLONE_URL_REMEDIATION`), with the verb and the
+#: last name of the GitHub URL filled in.
+#:
+#: THE URL IS THE PATH THE FLAG RESOLVES TO (#693). A `--local-remote-dir`
+#: typed as text can lead through a symbolic link to a directory whose name
+#: is not, or be relative to one, and the URL a refusal names is then not
+#: the path that was typed. Told only to pass a path that is "one line of
+#: UTF-8 text", which it already was, a person renames the link and is
+#: refused again, so this says where the fault is.
+#:
+#: WHAT THE DIRECTORY MUST HOLD IS THE CALLER'S (`{holding}`, #693). `init`
+#: makes the holder's bare repository there, so a directory made anew is a
+#: way out of its refusal. `add` reads the member's bare `<Project>.git`
+#: from it (`_probe_member`), so a new, empty directory is refused again
+#: with `does not exist`: its remedy says the directory must hold the
+#: repository, renamed or moved, as lane 1's review of #812 measured.
+LOCAL_REMOTE_DIR_REMEDY = (
+    "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
+    "control character in it{holding}, and run again; or run `{verb}` "
+    "against GitHub, without --local-remote-dir, "
+    "where the clone URL is `https://github.com/<org>/<{name}>.git`. The "
+    "clone URL is the path --local-remote-dir resolves to, so where the path "
+    "given is text and the URL named above is not, the fault is in what it "
+    "leads through: a symbolic link on it whose target is not text, or, for "
+    "a relative path, the directory it was given from. Rename or replace "
+    "the directory whose name is not text, or pass a path that does not "
+    "lead through it; renaming a link changes nothing.")
+
 #: What a `family-unwritable-value` for the holder's clone URL is told to do
-#: (#433): another directory, or GitHub, as the scaffold's twin says
-#: (`CLONE_URL_REMEDIATION`).
+#: (#433). The holder's `README.md` quotes the URL for a shell (#693) and
+#: writes every character of it as itself but an apostrophe, so a lone
+#: surrogate, which a Windows name can hold, cannot be written either, as
+#: #282's `UNWRITABLE_REMEDIATION` in `scaffold-project.py` says (#693).
 CLONE_URL_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
-    "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
-    "control character in it, a directory renamed or made anew, and run "
-    "again; or run `init` against GitHub, without --local-remote-dir, where "
-    "the clone URL is `https://github.com/<org>/<Family>.git`. The holder's "
-    "`README.md` prints the clone URL as it stands: a byte that is not UTF-8 "
-    "in the path (a directory named in a legacy code page) cannot be "
+    + LOCAL_REMOTE_DIR_REMEDY.format(
+        verb="init", name="Family",
+        holding=", a directory renamed or made anew")
+    + " The holder's `README.md` prints the clone URL in a `git clone` "
+    "line, in quotes where a shell needs them, every character but an "
+    "apostrophe written as itself: a byte that is not UTF-8 in the path (a "
+    "directory named in a legacy code page), or a lone surrogate, cannot be "
     "written at all, a line break or a control character would break or "
     "garble the line it is written into, and a bidirectional embedding, "
     "override or isolate control would show the rest of that line in "
     "another order than it is written.")
+
+#: What a `family-unwritable-value` for a member's clone URL is told to do
+#: (#693). `git submodule add` records the URL in the holder's `.gitmodules`
+#: as it is given (a line break escaped as `\n`, every other character
+#: raw), and the holder's `make siblings` reads it back through `git config
+#: --list` as UTF-8 text, a line a value. Measured on main: `caf<e9>` came
+#: back as `caf\ufffd`, a line break cut the URL short at it, and an escape
+#: and a bidi override came back as themselves.
+MEMBER_URL_REMEDIATION = (
+    "Remediation: `--dry-run` refuses the same. "
+    + LOCAL_REMOTE_DIR_REMEDY.format(
+        verb="add", name="Project",
+        holding=" and that holds the member's bare repository "
+                "`<Project>.git`, its directory renamed or the repository "
+                "moved")
+    + " The holder's `.gitmodules` records the clone URL as git is given "
+    "it, and the holder's `make siblings` reads it back as UTF-8 text, a "
+    "line a value: a byte that is not UTF-8 in the path (a directory named "
+    "in a legacy code page), or a lone surrogate, reads back as another "
+    "path, a line break ends the URL where it falls, a control character "
+    "garbles the line it is shown in, and a bidirectional embedding, "
+    "override or isolate control shows the rest of that line in another "
+    "order than it is written.")
 
 
 def _refuse_an_unwritable_clone_url(local: bool, url: str) -> None:
@@ -1662,6 +1775,38 @@ def _refuse_an_unwritable_clone_url(local: bool, url: str) -> None:
             CLONE_URL_REMEDIATION)
 
 
+def _refuse_an_unwritable_member_url(local: bool, url: str) -> None:
+    r"""Refuse a member's clone URL that the holder's `.gitmodules` cannot
+    hold as text, before the member is read or anything is mounted, and
+    under `--dry-run` alike, as `init` refuses the holder's (#433, #693).
+
+    Only a local one can be refused: under `--local-remote-dir` the URL is
+    the bare repository's own path (`_member_url`), which `git submodule add`
+    writes into `.gitmodules`; against GitHub it is
+    `https://github.com/<org>/<Project>.git`, ASCII by construction
+    (`MEMBER_RE`). On main `add --local-remote-dir <dir>/caf<e9>` exited 0,
+    dry run and real, and committed the byte into `.gitmodules`, where the
+    holder's `make siblings` read the URL as `caf\ufffd`, another path than
+    the one the holder is pinned to; a line break, an escape and a bidi
+    override were committed too (#693).
+
+    `init`'s question (`unwritable_reason`) and `init`'s code
+    (`family-unwritable-value`), with `add`'s own words for where the URL
+    goes (`MEMBER_URL_REMEDIATION`).
+    """
+    if not local:
+        return
+    reason = unwritable_reason(url)
+    if reason:
+        raise Refusal(
+            "family-unwritable-value",
+            "under --local-remote-dir the member's clone URL is the bare "
+            f"repository's own path, {url!r}, which `add` writes into the "
+            f"holder's `.gitmodules`, and {reason}. No git command that "
+            "writes was run and nothing was written.",
+            MEMBER_URL_REMEDIATION)
+
+
 def _shape_snapshot() -> tuple[str, str]:
     """`(shape_commit, shape_tree)` of this checkout, warning to stderr when
     it is dirty.
@@ -1694,6 +1839,18 @@ def _template_values(args, family: str, family_id: str, repository: str,
     template.
 
     Split from `cmd_init` for #136.
+
+    THE CLONE URL IS ONE WORD OF A COMMAND A PERSON PASTES (#693). The
+    holder's `README.md` prints it in `git clone --recurse-submodules
+    {{CLONE_URL}}`, and under `--local-remote-dir` it is a path, which was
+    rendered raw: under `a b/` the line split in two when pasted, and a path
+    holding `$`, `'`, `;` or `&` broke it too. It is spelled by
+    `shell_quoted` in the POSIX dialect whatever the host, since the README
+    is a committed file read on every OS and pasted commands are for a POSIX
+    shell (#532); a GitHub URL and an ordinary POSIX path are left bare (a
+    Windows path, spelled with `\\`, is quoted). Only this value is quoted:
+    the block's other placeholder, `{{FAMILY}}` in `cd {{FAMILY}}`, is a
+    name the naming policy spells in letters and digits.
     """
     return {
         "FAMILY": family,
@@ -1705,7 +1862,7 @@ def _template_values(args, family: str, family_id: str, repository: str,
         "TRACKING_BRANCH": args.tracking_branch,
         "CREATED_BY": created_by,
         "CREATED_ON": args.created_on or _dt.date.today().isoformat(),
-        "CLONE_URL": url,
+        "CLONE_URL": shell_quoted(url, "posix"),
         "SHAPE_REPOSITORY": SHAPE_REPOSITORY,
         "SHAPE_COMMIT": shape_commit,
         "SHAPE_TREE_SHA256": shape_tree,
@@ -1936,27 +2093,53 @@ def _create_holder_worktree(args, work: Path, values: dict, shape_commit: str,
     return None
 
 
-def _finish_holder_remote(args, repository: str, topic: str,
-                          local: bool) -> None:
-    """Set the holder's topic and print the private-visibility secrets hint.
+def _finish_holder_remote(args, repository: str, topic: str, local: bool,
+                          reuse: bool) -> None:
+    """Set the holder's topic and print the private-visibility NOTE and the
+    Free-plan secrets note.
 
     Neither applies to a local (no-network) remote. Split from `cmd_init`
     for #136.
+
+    BY THE HOLDER AS IT STANDS (#660). The holder is the repository whose
+    `validate` workflow reads the secrets. One this run created has the
+    run's `--visibility`; one `--reuse-empty-repo` reused keeps its own,
+    which `--visibility` never touched, and GitHub is asked for it
+    (`repository_visibility`). Both lines went by `--visibility` alone, so
+    a public holder reused under the default `private` was called private
+    and given the Free-plan hint. A reused holder whose visibility GitHub
+    does not give is `ROOT_VISIBILITY_UNREAD` and gets no NOTE: whether it
+    is private is the very question that went unanswered.
+
+    NO MEMBER IS NAMED THAT DOES NOT EXIST (#660). `init` mounts none, and
+    `add` mounts a member of any visibility, so the NOTE's "and its members
+    will be too" said what nothing here decides, and the hint's "<holder>
+    and its members are private" named members there are not. The hint
+    names the holder alone, as the scaffold's and adopt's name the root
+    (#602), and the NOTE says which members need the credential: those added
+    later that are private or internal.
     """
     if local:
         return
     run(["gh", "repo", "edit", repository, "--add-topic", topic])
     print(f"  topic     {topic} set on the holder")
-    if args.visibility in ("private", "internal"):
-        print(f"NOTE {repository} is {args.visibility} and its members will "
-              "be too: give it a way to read them — a GitHub App "
+    visibility = args.visibility
+    if reuse:
+        # `gh` has just set the topic, so an `OSError` here is no missing
+        # `gh` to refuse, only a visibility this run could not read.
+        try:
+            visibility = repository_visibility(repository)
+        except OSError:
+            visibility = None
+    if visibility in ("private", "internal"):
+        print(f"NOTE {repository} is {visibility}: give it a way to read the "
+              "members you add that are private or internal — a GitHub App "
               "(SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or "
               "a SHAPE_LEGS_TOKEN PAT with contents:read on the members AND "
               "their legs — or the `validate` check cannot check them out.")
-        hint = free_plan_secret_hint(
-            args.org, repository, f"{repository} and its members are")
-        if hint:
-            print(hint)
+    note = free_plan_secrets_note(args.org, repository, visibility)
+    if note:
+        print(note)
 
 
 def _print_next_steps(args, work: Path, folder: Path | None) -> None:
@@ -2332,7 +2515,7 @@ def _manifest_flags(args) -> dict:
     from, so that a refusal does not point at a flag nobody typed."""
     flags = dict(MANIFEST_FLAGS)
     for key, flag, given, source in (
-            ("FAMILY_ID", "--id", args.id, "--family lowercased"),
+            ("FAMILY_ID", "--id", args.id, FAMILY_ID_DERIVED_FROM),
             ("FAMILY_NAME", "--name", args.name, "--family"),
             ("CREATED_BY", "--created-by", args.created_by,
              "GIT_AUTHOR_NAME or `git config user.name`"),
@@ -2409,7 +2592,7 @@ def cmd_init(args) -> int:
         return code
     head = git_out(["rev-parse", "HEAD"], cwd=work)[:12]
     print(f"  holder    {head} -> {url}")
-    _finish_holder_remote(args, repository, topic, local)
+    _finish_holder_remote(args, repository, topic, local, reuse)
     _print_next_steps(args, work, folder)
     return 0
 
@@ -5044,7 +5227,9 @@ def cmd_add(args) -> int:
     file, `_checked_mount_path`, #612), the paths the sparse rules leave out
     (`_checked_inside_sparse_rules`, #612), then the branch the commit lands
     on, which the real run refuses on the tracking branch or none
-    (`_checked_branch`, #487) and a dry run only reports, then the member's
+    (`_checked_branch`, #487) and a dry run only reports, then the clone URL
+    `--local-remote-dir` makes, which `.gitmodules` will hold
+    (`_refuse_an_unwritable_member_url`, #693), then the member's
     (`_probe_member`, of a throwaway clone), then the member's id against the
     rows (`_checked_member_id`, #330), and only then the mount, the pin and
     the commit (`_mount_and_pin`), inside a `MountRollback` that puts the
@@ -5077,6 +5262,10 @@ def cmd_add(args) -> int:
                                                          suggested)
 
     url = _member_url(repository, args.local_remote_dir)
+    # THE CLONE URL IS A PATH `.gitmodules` WILL HOLD (#693): asked as
+    # `init` asks the holder's (#433), before the member is read or anything
+    # is mounted, and `--dry-run` refuses alike.
+    _refuse_an_unwritable_member_url(args.local_remote_dir is not None, url)
     protocol = FILE_PROTOCOL if args.local_remote_dir is not None else []
     # FLUSHED, so that in a log holding both streams the line saying what
     # was being done comes before a refusal of it, not after.
