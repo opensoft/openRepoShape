@@ -51,6 +51,16 @@ from test_bump_leg import (  # noqa: F401
 #: a name already taken is refused as non-fast-forward.
 ADVANCE_BRANCH = "bump-leg-paste-lines-advance"
 
+#: The sentence each of the three lines is followed by (#647), pinned as text:
+#: `family.py`'s and the holder's `BRANCH_LEFT` (#607) with a project where
+#: they have a holder. Imported by the tests that read these lines' bytes.
+BRANCH_LEFT_PROJECT = (
+    "If `git switch -c` says that branch already exists, an earlier act left "
+    "it: give the branch another name, which starts it where the project "
+    "stands, or, only if that branch holds work not merged yet, the same "
+    "command with `switch` in place of `switch -c` goes back to it and keeps "
+    "every commit on it.")
+
 #: A directory name each way a path breaks a line pasted bare: a space (two
 #: arguments), an apostrophe (a quotation nothing closes), a `$` (an
 #: expansion).
@@ -225,11 +235,13 @@ def test_an_exact_remedy_is_the_line_shlex_spells(make_root, scaffolded,
     tracking = bump(root, scaffolded, advanced)
     assert tracking.stderr.endswith(
         "will not make a commit whose only next step is a push to the "
-        f"default branch. Run:\n    {line}\nand re-run.\n"), tracking.stderr
+        f"default branch. Run:\n    {line}\nand re-run.\n"
+        f"{BRANCH_LEFT_PROJECT}\n"), tracking.stderr
 
     git("checkout", "-q", "--detach", cwd=root)
     detached = bump(root, scaffolded, advanced)
-    assert detached.stderr.endswith(f"Remediation: `{line}` and re-run.\n"), \
+    assert detached.stderr.endswith(
+        f"Remediation: `{line}` and re-run.\n{BRANCH_LEFT_PROJECT}\n"), \
         detached.stderr
 
 
@@ -276,8 +288,10 @@ def test_pasting_the_detached_remedy_puts_the_root_on_a_branch(
 @pytest.mark.parametrize("name", ROOTS)
 def test_the_closing_next_is_one_command(make_root, scaffolded, advanced,
                                          name):
-    """`NEXT  git -C <root> push -u origin <branch>`, split into the argv it
-    means, and spelled exactly as `shlex` spells it."""
+    """`NEXT  git -C <root> push -u origin refs/heads/<b>:refs/heads/<b>`,
+    split into the argv it means, and spelled exactly as `shlex` spells it.
+    The branch by its full refname (#672): a bare one is a refspec, and a
+    leading `+` forces."""
     root, _ = make_root(name)
     branched(root)
     result = bump(root, scaffolded, advanced)
@@ -285,7 +299,7 @@ def test_the_closing_next_is_one_command(make_root, scaffolded, advanced,
 
     line = next_line(result.stdout)
     argv = ["git", "-C", str(root.resolve()), "push", "-u", "origin",
-            WORKING_BRANCH]
+            f"refs/heads/{WORKING_BRANCH}:refs/heads/{WORKING_BRANCH}"]
     assert words(line) == argv
     assert line == shlex.join(argv)
     assert ("      then open a pull request against main; never push the "
@@ -297,13 +311,15 @@ def test_the_closing_next_is_one_command(make_root, scaffolded, advanced,
 def test_an_ordinary_root_prints_the_line_it_always_did(make_root, scaffolded,
                                                         advanced):
     """Nothing is quoted that needs no quoting: a root whose name is plain
-    prints the same bytes as before #532."""
+    prints the bytes it did before #532, the branch by its full refname on
+    both sides (#672)."""
     root, _ = make_root("plain")
     branched(root)
     result = bump(root, scaffolded, advanced)
     assert result.returncode == 0, result.stderr + result.stdout
     assert next_line(result.stdout) == (
-        f"git -C {root.resolve()} push -u origin {WORKING_BRANCH}")
+        f"git -C {root.resolve()} push -u origin "
+        f"refs/heads/{WORKING_BRANCH}:refs/heads/{WORKING_BRANCH}")
 
 
 @WINDOWS_SKIP
@@ -336,11 +352,12 @@ def test_the_closing_next_carries_the_branch_whole(make_root, scaffolded,
     assert result.returncode == 0, result.stderr + result.stdout
 
     line = next_line(result.stdout)
+    pushed = f"refs/heads/{branch}:refs/heads/{branch}"
     assert words(line) == ["git", "-C", str(root.resolve()), "push", "-u",
-                           "origin", branch]
-    assert words(line)[-1] == branch
+                           "origin", pushed]
+    assert words(line)[-1] == pushed
     assert line == shlex.join(["git", "-C", str(root.resolve()), "push", "-u",
-                               "origin", branch])
+                               "origin", pushed])
 
 
 @WINDOWS_SKIP
