@@ -49,7 +49,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ORG, PROJECT, REPO, cloned_just_pushed, git, run_script
+from conftest import (ORG, PROJECT, REPO, appended_to_command_scope,
+                      cloned_just_pushed, git, run_script)
 from test_bump_leg import branched, bump
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -77,10 +78,11 @@ NOT_UTF8 = "caf\udce9.yml"
 UTF8 = "caf\u00e9.yml"
 
 #: `core.quotePath=false`, as command-line config: it outranks every config
-#: file, and a test needs no config file of its own to say it.
-QUOTE_PATH_OFF = {"GIT_CONFIG_COUNT": "1",
-                  "GIT_CONFIG_KEY_0": "core.quotePath",
-                  "GIT_CONFIG_VALUE_0": "false"}
+#: file, and a test needs no config file of its own to say it. The `(key,
+#: value)` entries `tool_env` appends to the ones the environment holds,
+#: when the test runs: the environment of a session is not the one of
+#: collection.
+QUOTE_PATH_OFF = (("core.quotePath", "false"),)
 
 
 def make_file(path: Path, data: bytes = b"on: [push]\n") -> None:
@@ -293,11 +295,14 @@ def untracked(standard):
     assert git_bytes("status", "--porcelain", "-z", cwd=standard) == b""
 
 
-def tool_env(**extra: str) -> dict:
+def tool_env(entries=(), **extra: str) -> dict:
     """The environment a tool under test runs in: no bytecode written into
     the copy (an untracked `__pycache__` would be dirt, though the standard's
-    own `.gitignore` names it), and `extra` on top."""
-    return {"PYTHONDONTWRITEBYTECODE": "1", **extra}
+    own `.gitignore` names it), `entries` appended to the git command scope
+    the environment holds (`appended_to_command_scope`), and `extra` on
+    top."""
+    scope = appended_to_command_scope(os.environ, entries) if entries else {}
+    return {"PYTHONDONTWRITEBYTECODE": "1", **scope, **extra}
 
 
 def revision_of(standard: Path) -> str:
@@ -339,7 +344,7 @@ TOOLS = [
 #: not UTF-8; and its two controls, which passed on main.
 DIRTY_ROWS = [
     pytest.param(NOT_UTF8, QUOTE_PATH_OFF, id="not-utf8-quote-path-false"),
-    pytest.param(NOT_UTF8, {}, id="not-utf8-default-quoting"),
+    pytest.param(NOT_UTF8, (), id="not-utf8-default-quoting"),
     pytest.param(UTF8, QUOTE_PATH_OFF, id="utf8-quote-path-false"),
 ]
 
@@ -357,7 +362,7 @@ def test_a_dirty_standard_is_warned_about_whatever_its_file_is_named(
     the revision the copy is at, and goes on: exit 0, and a real run makes
     the remotes, which the traceback never reached."""
     untracked(name)
-    result = run(standard, tmp_path, tool_env(**config), dry_run=dry_run)
+    result = run(standard, tmp_path, tool_env(config), dry_run=dry_run)
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"{warning}{revision_of(standard)[:12]}" in result.stderr, (
         result.stderr)
@@ -367,7 +372,7 @@ def test_a_dirty_standard_is_warned_about_whatever_its_file_is_named(
         "a dry run creates no remote and a real run does")
 
 
-@pytest.mark.parametrize("config", [QUOTE_PATH_OFF, {}],
+@pytest.mark.parametrize("config", [QUOTE_PATH_OFF, ()],
                          ids=["quote-path-false", "default-quoting"])
 @pytest.mark.parametrize("run, warning", TOOLS)
 def test_a_clean_standard_prints_no_warning(standard, tmp_path, run, warning,
@@ -375,7 +380,7 @@ def test_a_clean_standard_prints_no_warning(standard, tmp_path, run, warning,
     """THE LAST ROW: the standard's checkout is clean, `core.quotePath=false`,
     and the run is exit 0 with no warning. `bool(...)` of git's bytes must
     still be false for an empty answer."""
-    result = run(standard, tmp_path, tool_env(**config), dry_run=True)
+    result = run(standard, tmp_path, tool_env(config), dry_run=True)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "DIRTY" not in result.stderr, result.stderr
 
@@ -420,8 +425,8 @@ def user_name(value: str, **extra: str) -> dict:
     `_creator_name` passes over (and `env_commit` replaces with its own
     fallback, where a name of whitespace alone would reach git as it is and be
     refused by `git commit`)."""
-    return {"GIT_AUTHOR_NAME": "", "GIT_CONFIG_COUNT": "1",
-            "GIT_CONFIG_KEY_0": "user.name", "GIT_CONFIG_VALUE_0": value,
+    return {"GIT_AUTHOR_NAME": "",
+            **appended_to_command_scope(os.environ, [("user.name", value)]),
             **extra}
 
 

@@ -32,8 +32,8 @@ import sys
 
 import pytest
 
-from conftest import (NO_BYTECODE, REPO, cloned_just_pushed, git, rmtree,
-                      run_script)
+from conftest import (NO_BYTECODE, REPO, appended_to_command_scope,
+                      cloned_just_pushed, git, rmtree, run_script)
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
@@ -71,12 +71,15 @@ SPARE = "IRQS"
 #: it. Every copy of the holder a test makes stands on this branch.
 WORK_BRANCH = "family/members"
 
-#: `git` reads one-off configuration out of the environment, which is how a
-#: test gives a plain `git submodule update` permission to clone a local path
-#: without the tool under test knowing anything about it.
-ALLOW_FILE_PROTOCOL = {"GIT_CONFIG_COUNT": "1",
-                       "GIT_CONFIG_KEY_0": "protocol.file.allow",
-                       "GIT_CONFIG_VALUE_0": "always"}
+
+def allow_file_protocol() -> dict:
+    """`git` reads one-off configuration out of the environment, which is how
+    a test gives a plain `git submodule update` permission to clone a local
+    path without the tool under test knowing anything about it. Built at the
+    call, and appended to the git command scope the environment holds, so the
+    session's own settings (#645) still reach the child (#758)."""
+    return appended_to_command_scope(os.environ,
+                                     [("protocol.file.allow", "always")])
 
 
 def scaffold_member(base, project: str) -> None:
@@ -1410,7 +1413,7 @@ def bootstrapped(family, tmp_path_factory):
     target = cloned_just_pushed(family["remotes"] / f"{NAME}.git",
                                 tmp_path_factory.mktemp("family-clone") / NAME)
     result = run_script(target / "scripts" / "bootstrap.py", cwd=target,
-                        env=ALLOW_FILE_PROTOCOL)
+                        env=allow_file_protocol())
     return {"root": target, "result": result}
 
 
@@ -1791,7 +1794,7 @@ def estate(family, tmp_path):
 
 def siblings(holder, *extra, env=None):
     return run_script(holder / "scripts" / "siblings.py", *extra, cwd=holder,
-                      env={**ALLOW_FILE_PROTOCOL, **(env or {})})
+                      env={**allow_file_protocol(), **(env or {})})
 
 
 def layout(stdout: str) -> list[str]:
@@ -1815,7 +1818,7 @@ def test_siblings_clones_each_member_beside_the_holder_on_its_branch(estate):
     """
     proc = subprocess.run(["make", "siblings"], cwd=str(estate["holder"]),
                            capture_output=True, text=True, check=False,
-                           env={**os.environ, **ALLOW_FILE_PROTOCOL})
+                           env={**os.environ, **allow_file_protocol()})
     assert proc.returncode == 0, proc.stderr + proc.stdout
     for project in MEMBERS:
         sibling = estate["folder"] / project
@@ -1975,7 +1978,7 @@ def test_family_py_siblings_runs_the_holders_own_file(family, tmp_path):
     theirs = one("target", lambda holder: siblings(holder))
     ours = one("shim", lambda holder: run_script(
         FAMILY, "siblings", "--family-root", str(holder),
-        env={**ALLOW_FILE_PROTOCOL, **NO_BYTECODE}))
+        env={**allow_file_protocol(), **NO_BYTECODE}))
 
     assert layout(ours["result"].stdout) == layout(theirs["result"].stdout)
     for project in MEMBERS:

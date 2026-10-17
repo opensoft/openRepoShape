@@ -28,6 +28,7 @@ platform cannot make one.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import shutil
 import subprocess
@@ -37,8 +38,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, as_human, git, make_source_repo, run_script, \
-    write_plan
+from conftest import (ADOPT, appended_to_command_scope, as_human, git,
+                      make_source_repo, run_script, write_plan)
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
@@ -61,10 +62,13 @@ CODE = "plan-empty-symlink"
 #: The issue's small source: a spec, the code, and a README the root keeps.
 TREE = {"src/app.py": "print(1)\n", "docs/spec.md": "# Spec\n",
         "README.md": "# Thing\n"}
-#: `core.symlinks=false` for every git a run starts, as Git for Windows has it
-#: by default.
-SYMLINKS_OFF = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.symlinks",
-                "GIT_CONFIG_VALUE_0": "false"}
+
+
+def symlinks_off() -> dict:
+    """`core.symlinks=false` for every git a run starts, as Git for Windows
+    has it by default: appended, when it is called, to the git command scope
+    the environment holds (#758)."""
+    return appended_to_command_scope(os.environ, [("core.symlinks", "false")])
 
 
 @pytest.fixture(scope="module")
@@ -273,8 +277,8 @@ def test_check_reports_it_where_git_makes_no_symlinks_too(tmp_path):
     file and the adoption verified: `check` reads the tree, not the disk,
     so `core.symlinks=false` changes nothing it says."""
     plan = planned(source_with_links(tmp_path, "docs/empty-link"),
-                   tmp_path / "plan.yaml", env=SYMLINKS_OFF)
-    off, on = check(plan, env=SYMLINKS_OFF), check(plan)
+                   tmp_path / "plan.yaml", env=symlinks_off())
+    off, on = check(plan, env=symlinks_off()), check(plan)
     assert off.returncode == on.returncode == 1
     assert findings_of(off) == findings_of(on)
     assert len(findings_of(off)) == 1
@@ -342,20 +346,21 @@ def test_execute_refuses_it_before_any_leg_exists(
 
 
 @needs_filter_repo
-@pytest.mark.parametrize("env", [
-    pytest.param(None, id="symlinks-on"),
-    pytest.param(SYMLINKS_OFF, id="symlinks-off"),
+@pytest.mark.parametrize("off", [
+    pytest.param(False, id="symlinks-on"),
+    pytest.param(True, id="symlinks-off"),
 ])
 @pytest.mark.parametrize("link, answers", [
     pytest.param("docs/empty-link", {}, id="in-docs"),
     pytest.param("empty-link", {"empty-link": "drop"}, id="top-level-drop"),
 ])
 def test_execute_refuses_it_end_to_end_and_the_remote_dir_stays_empty(
-        tmp_path, env, link, answers):
+        tmp_path, off, link, answers):
     """The issue's runs as commands: on main, both leg repositories and exit
     2 with nothing said (symlinks on), or `adoption verified` over a leg no
     clone with symlinks on can check out (symlinks off). Refused before a
     leg is made, so the EMPTY `--local-remote-dir` stays empty."""
+    env = symlinks_off() if off else None
     source = source_with_links(tmp_path, link)
     plan = planned(source, tmp_path / "plan.yaml", answers, env=env)
     (tmp_path / REMOTES).mkdir()

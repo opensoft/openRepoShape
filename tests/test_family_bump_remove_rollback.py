@@ -61,8 +61,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (cloned_just_pushed, git, rmtree, run_script,
-                      submodule_update_through_git)
+from conftest import (appended_to_command_scope, cloned_just_pushed, git,
+                      rmtree, run_script, submodule_update_through_git)
 #: The family fixture, its names, the offline environment and the holder's
 #: byte-for-byte state, imported from the modules that own them rather than
 #: rebuilt: a holder made, or compared, any other way would test a
@@ -677,10 +677,7 @@ def foreign_store(store: Path, url: str, tmp_path: Path) -> None:
 
 def configured(env: dict, key: str, value: str) -> dict:
     """`env` with one more entry in git's `GIT_CONFIG_COUNT` protocol."""
-    count = int(env.get("GIT_CONFIG_COUNT", "0"))
-    return {**env, "GIT_CONFIG_COUNT": str(count + 1),
-            f"GIT_CONFIG_KEY_{count}": key,
-            f"GIT_CONFIG_VALUE_{count}": value}
+    return {**env, **appended_to_command_scope(env, [(key, value)])}
 
 
 @pytest.mark.parametrize("store", ["absent", "without the commit"])

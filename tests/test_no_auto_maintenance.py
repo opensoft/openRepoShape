@@ -22,11 +22,16 @@ none of them waits for a race and each holds on any git:
   person's own global config is still read, in git's order, beneath them;
 - the file is one git can read where `HOME` is unset, and where
   `GIT_CONFIG_GLOBAL` is empty, which is git's "no global config";
-- the fixture is in place before any session fixture builds a repository.
+- the fixture is in place before any session fixture builds a repository;
+- a line pasted through the doctor tests' `paste()` runs under the entries the
+  environment holds when it is pasted, with `protocol.file.allow` appended
+  (#758), and no test file sets `GIT_CONFIG_COUNT` to a number of its own,
+  which would drop the entries the session and the Windows job set.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -35,8 +40,9 @@ from pathlib import Path
 import pytest
 
 from conftest import (NO_AUTO_MAINTENANCE, ORG, PROJECT, SCAFFOLD,
-                      appended_to_command_scope, git, home_is_known,
-                      run_script, session_global_config)
+                      WINDOWS_SKIP, appended_to_command_scope, git,
+                      home_is_known, run_script, session_global_config)
+from test_doctor_legs_members_next import paste
 
 #: The verbs auto maintenance runs as: `git maintenance run --auto`, and
 #: `git gc --auto`, which a git started itself before `maintenance` existed.
@@ -281,3 +287,173 @@ def test_the_settings_are_in_place_before_a_session_fixture_builds_a_repo(
         for name in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_COUNT")}
     assert seen_by_a_session_fixture["GIT_CONFIG_GLOBAL"] == \
         str(no_auto_maintenance)
+
+
+# --- the doctor tests' pasted lines, and the counts a test may not set (#758)
+#
+# `test_doctor_legs_members_next.py` pastes the NEXT a row prints into `sh`.
+# Its environment was a copy of `os.environ` made when the module was
+# imported, at collection, with `GIT_CONFIG_COUNT` set to 1: it held none of
+# the session's settings, which `no_auto_maintenance` puts there at session
+# start, and it dropped the entries the Windows job sets.
+
+@WINDOWS_SKIP
+def test_a_pasted_line_keeps_the_entries_the_environment_holds_at_the_call(
+        no_auto_maintenance, tmp_path, monkeypatch):
+    """The environment holds what the Windows job sets (two entries) and what
+    the session fixture appends (the two settings), put there AFTER the doctor
+    tests were imported. `git config --show-origin --list`, pasted through
+    `paste()`, lists all four in git's command scope, in order, and then the
+    `protocol.file.allow` the paste adds for its own sake, and reads the two
+    settings from the session's global file too. On the base it listed that
+    one alone, and no global file: the import-time copy held none of it."""
+    held = appended_to_command_scope(
+        {}, [("test.heldone", "one"), ("test.heldtwo", "two")])
+    for name, value in {**held, **appended_to_command_scope(
+            held, NO_AUTO_MAINTENANCE)}.items():
+        monkeypatch.setenv(name, value)
+    shown = paste({"next": "git config --show-origin --list"},
+                  tmp_path / "elsewhere")
+    assert shown.returncode == 0, shown.stderr + shown.stdout
+    from_the_command_line = [
+        line.split("\t", 1)[1] for line in shown.stdout.splitlines()
+        if line.startswith("command line:")]
+    assert from_the_command_line == [
+        "test.heldone=one", "test.heldtwo=two",
+        *(f"{key}={value}" for key, value in NO_AUTO_MAINTENANCE),
+        "protocol.file.allow=always"]
+    for key, value in NO_AUTO_MAINTENANCE:
+        assert f"file:{no_auto_maintenance}\t{key}={value}" in \
+            shown.stdout.splitlines()
+
+
+#: The test files (every `.py` beside this one but `conftest.py`, whose
+#: `appended_to_command_scope` is where a count is worked out) that may set a
+#: count of their own, and how many times. Each is a test that BUILDS an
+#: environment holding entries, to see that the code under test keeps them:
+#: this file's test of `appended_to_command_scope` writes its two out, and
+#: the test above starts from none; `test_adopt_git_reads.py` and
+#: `test_clone_just_pushed.py` do the same for `command_scope` and for
+#: `read_through_git`.
+OWN_COUNTS = {"test_no_auto_maintenance.py": 2,
+              "test_adopt_git_reads.py": 1, "test_clone_just_pushed.py": 1}
+
+COUNT = "GIT_CONFIG_COUNT"
+APPENDER = "appended_to_command_scope"
+#: The calls that put a value in the environment: `monkeypatch.setenv(name,
+#: value)`, `env.setdefault(name, value)` and `os.putenv(name, value)`. Not
+#: `env.get(name, default)`, which reads.
+SETTERS = ("setenv", "setdefault", "putenv")
+
+
+def is_the_count(node) -> bool:
+    """The string constant `"GIT_CONFIG_COUNT"`."""
+    return isinstance(node, ast.Constant) and node.value == COUNT
+
+
+def is_a_number(node) -> bool:
+    """A string constant of digits alone: `"1"`."""
+    return (isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and node.value.isdigit())
+
+
+def is_a_setter(node) -> bool:
+    """`setenv`, `setdefault` or `putenv`, called bare or on an object."""
+    return (isinstance(node, ast.Name) and node.id in SETTERS) or (
+        isinstance(node, ast.Attribute) and node.attr in SETTERS)
+
+
+def is_the_appender(node) -> bool:
+    """`appended_to_command_scope`, called bare or through a module."""
+    return (isinstance(node, ast.Name) and node.id == APPENDER) or (
+        isinstance(node, ast.Attribute) and node.attr == APPENDER)
+
+
+def counts_set_to_a_number(source: bytes) -> list:
+    """The line of each place `source` sets a git command scope of its own
+    instead of appending to the environment's:
+
+    - `GIT_CONFIG_COUNT` set to a number it writes out: in a dict
+      (`{"GIT_CONFIG_COUNT": "1"}`), as a keyword
+      (`dict(GIT_CONFIG_COUNT="1")`), in a call that names the variable and
+      gives its value (`monkeypatch.setenv("GIT_CONFIG_COUNT", "1")`), or by
+      subscript (`env["GIT_CONFIG_COUNT"] = "1"`);
+    - `appended_to_command_scope` handed a dict written out (`{}`), where the
+      environment goes: it counts from nothing, and the entries the
+      environment holds are no longer in the count it returns.
+
+    A count worked out from the one the environment holds is not one of
+    them."""
+    lines = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Dict):
+            lines += [key.lineno for key, value in zip(node.keys, node.values)
+                      if is_the_count(key) and is_a_number(value)]
+        elif isinstance(node, ast.Call):
+            lines += [keyword.value.lineno for keyword in node.keywords
+                      if keyword.arg == COUNT and is_a_number(keyword.value)]
+            if (is_a_setter(node.func) and len(node.args) >= 2
+                    and is_the_count(node.args[0])
+                    and is_a_number(node.args[1])):
+                lines.append(node.lineno)
+            if (is_the_appender(node.func) and node.args
+                    and isinstance(node.args[0], ast.Dict)):
+                lines.append(node.lineno)
+        elif isinstance(node, ast.Assign) and is_a_number(node.value):
+            lines += [target.lineno for target in node.targets
+                      if isinstance(target, ast.Subscript)
+                      and is_the_count(target.slice)]
+    return sorted(lines)
+
+
+@pytest.mark.parametrize("source", [
+    '{"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "protocol.file.allow"}',
+    'dict(GIT_CONFIG_COUNT="2")',
+    'monkeypatch.setenv("GIT_CONFIG_COUNT", "1")',
+    'env.setdefault("GIT_CONFIG_COUNT", "2")',
+    'env["GIT_CONFIG_COUNT"] = "3"',
+    'appended_to_command_scope({}, [("k", "v")])',
+    'conftest.appended_to_command_scope({"A": "1"}, [])',
+], ids=["dict", "keyword", "setenv", "setdefault", "subscript",
+        "appended-to-nothing", "through-a-module"])
+def test_the_scan_sees_each_way_a_test_can_set_a_count(source):
+    assert counts_set_to_a_number(source.encode("utf-8")) == [1]
+
+
+@pytest.mark.parametrize("source", [
+    '{"GIT_CONFIG_COUNT": str(held + 1)}',
+    '{**held, "GIT_CONFIG_KEY_0": "k"}',
+    'monkeypatch.setenv("GIT_CONFIG_COUNT", str(held))',
+    'index = int(env.get("GIT_CONFIG_COUNT", "0"))',
+    'env["GIT_CONFIG_COUNT"] = count',
+    '"GIT_CONFIG_COUNT is 1"',
+    'appended_to_command_scope(os.environ, [("k", "v")])',
+    'appended_to_command_scope(held, [("k", "v")])',
+], ids=["worked-out", "a-splat", "a-call", "a-read-with-a-default", "a-name",
+        "a-sentence", "appended-to-the-environment", "appended-to-a-name"])
+def test_the_scan_leaves_a_count_that_is_worked_out(source):
+    assert counts_set_to_a_number(source.encode("utf-8")) == []
+
+
+def test_no_test_sets_a_git_config_count_of_its_own():
+    """A `GIT_CONFIG_COUNT` of 1, laid over `os.environ`, replaces the one the
+    session fixture and the Windows job set: the entries it counted are no
+    longer git's, so a session setting or a job's `core.autocrlf` does not
+    reach the git the test starts. Every test gives git a setting by
+    appending to the entries the environment holds, built at the call by
+    `appended_to_command_scope` (`conftest.py`). Before #758 `PASTE_ENV`,
+    `ALLOW_FILE_PROTOCOL`, `NO_MAINTENANCE`, `QUOTE_PATH_OFF`, `SYMLINKS_OFF`
+    and eight one-off environments each wrote one."""
+    found = {}
+    for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
+        if path.name == "conftest.py":
+            continue
+        lines = counts_set_to_a_number(path.read_bytes())
+        if len(lines) != OWN_COUNTS.get(path.name, 0):
+            found[path.name] = lines
+    assert not found, (
+        "a `GIT_CONFIG_COUNT` written as a number, or `appended_to_command_"
+        "scope` handed a dict written out, replaces the entries the "
+        "environment holds; build it with `appended_to_command_scope` and "
+        "`os.environ` instead, or, for a test that builds an environment "
+        f"on purpose, change `OWN_COUNTS`: {found}")
