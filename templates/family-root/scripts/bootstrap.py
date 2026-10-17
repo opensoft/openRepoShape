@@ -40,11 +40,14 @@ WHAT IT DOES, in order:
       for (a stray case variant, a member mounted by hand), since git's
       init dies at the first such gitlink it asks about, before it checks
       out any member. Which section and which url git reads is its own
-      parser's answer, not `git config`'s (`gitmodules_sections`). Git
-      exits 0 over the second where a recursive clone ran first, and 128
-      (`No url found for submodule path`) in a plain clone; a missing
-      credential exits non-zero too, so what the holder records is the
-      test, never git's words. The line says what cures each (`cures`):
+      parser's answer, not `git config`'s (`gitmodules_sections`), and
+      while a merge leaves `.gitmodules` unmerged in the index git reads
+      none at all: every such member is said to be that, and the cure is
+      the file resolved and added. Git exits 0 over the second where a
+      recursive clone ran first, and 128 (`No url found for submodule
+      path`) in a plain clone; a missing credential exits non-zero too,
+      so what the holder records is the test, never git's words. The line
+      says what cures each (`cures`):
       `validate-family.py` names the commit for the first two; for the
       fourth it prints the `git submodule update --init --checkout` that
       checks the member out whatever the clone chose. For the third and
@@ -102,6 +105,7 @@ GITLINK_MODE = b"160000"
 #: Why (a) left a row's member NOT CHECKED OUT where no credential would
 #: check it out (#648), in the order `unfetchable` asks. `STOPPED` is
 #: filled with the gitlink git's init died at (`init_stop`).
+UNMERGED = f"git reads no {GITMODULES} while a merge leaves it unmerged"
 NO_GITLINK = "no gitlink is recorded at that path"
 NO_SECTION = f"no section of {GITMODULES} gives that path"
 NO_URL = "git has no url for that path"
@@ -209,6 +213,8 @@ def cures(left: list[tuple[dict, str, str]], stopper: str | None,
     """What (a)'s line says cures the rows `left` names, one sentence for
     each kind of cause among them (#648):
 
+    - A `.gitmodules` a merge left unmerged in the index, which git reads
+      nothing from (`Gitmodules.unmerged`): the file resolved and added.
     - A gitlink or a section the holder lacks at the row's path:
       `validate-family.py`, which names it and the commit that cures it,
       `member-gitlink-absent` (with the move, for a gitlink recorded only
@@ -232,6 +238,9 @@ def cures(left: list[tuple[dict, str, str]], stopper: str | None,
       clone left out, and `--checkout` overrides an `update = none`."""
     whys = {why for _, _, why in left}
     said = []
+    if UNMERGED in whys:
+        said.append(f"Resolve the merge in {GITMODULES} and `git add "
+                    f"{GITMODULES}`, then run this again.")
     if whys & {NO_GITLINK, NO_SECTION}:
         said.append(f"`{PYTHON} scripts/validate-family.py` names the cause "
                     "and the commit that cures it.")
@@ -279,18 +288,23 @@ class Gitmodules(NamedTuple):
     `member-gitmodules-absent` and `gitmodules-path-twice`. `read` is
     `{path: name}`, the section git reads for each path, and `urls` is
     `{name: url}`, the url git takes from each, as git's own parser has
-    them."""
+    them. `unmerged` says a merge left the file unmerged in the index, and
+    then git reads nothing from it, and the three are empty."""
 
     given: Counter
     read: dict[str, str]
     urls: dict[str, str]
+    unmerged: bool = False
 
 
 def gitmodules_sections(root: Path) -> Gitmodules:
     """`.gitmodules` as `git submodule update` reads it: the work tree's
     file, which a fresh clone takes from HEAD. Nothing where there is no
     such file, or one git cannot read: git has no url for any submodule
-    then either.
+    then either. Nothing, and `unmerged`, where the index holds the file
+    only at a merge's conflict stages (`git ls-files -u`): git reads no
+    `.gitmodules` at all then, whatever the work tree holds
+    (`repo_read_gitmodules`), and its init dies at the first gitlink.
 
     `read` and `urls` keep git 2.43's own rules (submodule-config.c), which
     drop what `git config --list` keeps. Entry by entry, in file order:
@@ -305,6 +319,14 @@ def gitmodules_sections(root: Path) -> Gitmodules:
       gives a path again lets go of the one it gave, even where a later
       section gave that one too: git then reads no section there."""
     nothing = Gitmodules(Counter(), {}, {})
+    try:
+        stages = git_out(["ls-files", "-u", "-z", "--", GITMODULES],
+                         cwd=root, binary=True)
+    except Refusal:
+        stages = b""
+    if any(record.partition(b"\t")[2] == GITMODULES.encode()
+           for record in stages.split(b"\0")):
+        return nothing._replace(unmerged=True)
     if not os.path.lexists(root / GITMODULES):
         return nothing
     try:
@@ -401,7 +423,9 @@ def unfetchable(root: Path, rows: list[dict], exited_0: bool
     gitlink git's init died at (`init_stop`), or None; and `.gitmodules`
     as it was read, for `cures`.
 
-    Asked of this holder's own records, never of git's words: a row at
+    Asked of this holder's own records, never of git's words: any row at
+    all while a merge leaves `.gitmodules` unmerged in the index, since git
+    then reads no section and asks for no credential; a row at
     whose path the holder records no gitlink (`recorded_gitlink`,
     as `validate-family.py`'s `member-gitlink-absent` reads one), or whose
     gitlink no section of `.gitmodules` gives a path (as its
@@ -424,7 +448,9 @@ def unfetchable(root: Path, rows: list[dict], exited_0: bool
     stopper = None if exited_0 else init_stop(root, modules, config)
     found: list[tuple[dict, str, str]] = []
     for path, row in left.items():
-        if recorded_gitlink(root, path) is None:
+        if modules.unmerged:
+            found.append((row, path, UNMERGED))
+        elif recorded_gitlink(root, path) is None:
             found.append((row, path, NO_GITLINK))
         elif not modules.given[path]:
             found.append((row, path, NO_SECTION))
