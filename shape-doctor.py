@@ -27,7 +27,9 @@ why the verdict is offline: no clone, no authenticated call, and the same
 answer on a machine that has never spoken to github.com. A partial clone
 (`git clone --filter`) fetches what it lacks on a read, so it is asked first,
 without fetching, whether it holds what the comparison reads, and the verdict
-is CANNOT ANSWER where it does not (#683). It runs the project's
+is CANNOT ANSWER where it does not (#683). Every git it starts runs with
+`GIT_NO_LAZY_FETCH=1`, so a read nothing asked about first fails rather than
+fetches (`lazy_fetch_off`, #787). It runs the project's
 own validators OFFLINE: `run_validator` starts each child with no token, no
 `gh` configuration and a proxy that goes nowhere (#297), so they are offline
 whatever their own contract says. ONE ROW IS THE EXCEPTION AND IT IS NAMED:
@@ -341,6 +343,7 @@ this tool is run on every platform the standard supports.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import importlib.util
 import json
@@ -3872,6 +3875,17 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    whose parent holds the OLD pin -- is still the one to put
                    back, and the `why` says what comes after it:
                    `gitlink_left_behind` (#547).
+      partial      the reads above found no pin to put back, and the root
+                   is a partial clone (`git clone --filter`) that lacks a
+                   pin or a tree they read, HEAD's included
+                   (`history_left_out`, #787). This doctor fetches nothing,
+                   so those reads failed, and what puts the pin back, a
+                   commit or HEAD's own pin, cannot be read here. `fetch
+                   --refetch --no-filter` from the first promisor remote
+                   puts in every object on its branches, and the doctor run
+                   again reads the whole history; the `why` spells out that
+                   fetch from each other promisor remote
+                   (`partial_history_why`).
       none         nothing above: no history, a root commit, no git, a walk
                    that meets a parent holding no pin, or goes
                    `PIN_HISTORY_DEPTH` commits back, before a pin that reads.
@@ -4082,6 +4096,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
             f"broke it, and the newest {what} in its history that reads. "
             f"Commit that rather than editing the {what}"
             + gitlink_left_behind(ctx, before, pin))
+    remotes = history_left_out(root, pin)
+    if remotes:
+        return "partial", refetch_of(git_c, remotes[0]), partial_history_why(
+            git_c, what, remotes)
     return "none", None, None
 
 
@@ -4605,17 +4623,30 @@ def objects_lacking(shape: Path, commit: str) -> int | None:
     `--missing=` turns git's lazy fetch off for its run: measured with git
     2.43, no fetch in a trace2 log, and the same objects missing after it.
     It is asked before any `ls-tree`, which fetches a tree a
-    `--filter=tree:0` clone lacks. A commit the clone does not hold is
-    `bad object` there, exit 128, and None, which `partial_clone_row`
-    counts as lacking: `update-shape.py`'s first read of that commit, its
-    `rev-parse`, fetches it (measured with git 2.43).
+    `--filter=tree:0` clone lacks.
+
+    A COMMIT THE CLONE DOES NOT HOLD IS NONE, ON EVERY GIT (#754). Before
+    git 2.45 `rev-list` refuses it, `bad object`, exit 128; from 2.45 on it
+    takes a missing tip as missing too and prints it, `?<commit>`, exit 0
+    (git's `rev-list` documentation, "If some tips passed to the traversal
+    are missing"). Counted as one object there, the commit was "lacked"
+    rather than absent, and `remotes_holding` asked `--contains` of a commit
+    the clone does not hold, a read that fetches it. `partial_clone_row`
+    counts None as lacking: `update-shape.py`'s first read of that commit,
+    its `rev-parse`, fetches it (measured with git 2.43).
+
+    A FLOOR, NOT A COUNT, WHERE A TREE IS MISSING (#754). `rev-list` cannot
+    walk into a tree it does not hold, so a `--filter=tree:0` clone's
+    missing root tree is one `?<id>` with everything under it uncounted,
+    and the id alone does not say it was a tree. So the row says "at
+    least" of every count.
     """
     listed = git_answer(["rev-list", "--objects", "--no-walk",
                          "--missing=print", commit], shape, binary=True)
-    if listed is None:
+    lines = (listed or b"").split(b"\n")
+    if listed is None or b"?" + commit.lower().encode("ascii") in lines:
         return None
-    return sum(1 for line in listed.split(b"\n")
-               if MISSING_OBJECT.fullmatch(line))
+    return sum(1 for line in lines if MISSING_OBJECT.fullmatch(line))
 
 
 #: `partial_clone_row`'s `error` (#683).
@@ -4654,12 +4685,20 @@ def partial_clone_row(ctx: Context, pinned: str) -> Row | None:
     THAT ROW'S, MADE TO FIT: there, the fetch a person runs to put in this
     checkout what it lacks. Here `fetch --all` would put in no blob, since
     a promisor remote's fetch keeps its `partialclonefilter`, so the NEXT
-    is `fetch --refetch --no-filter` from the remote a read would fetch
-    from: measured with git 2.43, it leaves the clone lacking nothing and
-    its config as it was, and the doctor run again answers. It is the
-    person's fetch, never this doctor's, and the `why` names the other way,
-    a full clone of the standard, as the precedent's names a clone that
-    has the commit.
+    is `fetch --refetch --no-filter`: measured with git 2.43, it leaves the
+    clone lacking nothing at what it fetches and its config as it was, and
+    the doctor run again answers. It is the person's fetch, never this
+    doctor's, and the `why` names the other way, a full clone of the
+    standard, as the precedent's names a clone that has the commit.
+    `--refetch` needs git 2.36 or later, and the `why` says so.
+
+    FROM THE REMOTE THAT HOLDS IT, AND OF THE COMMITS IT LACKS (#754). The
+    NEXT fetched the first promisor remote whole, and looped where that
+    remote's branches do not hold the pinned commit: with two promisor
+    remotes and the commit on the second's, and in a `--single-branch`
+    clone whose pin is on another branch, which then still does not hold
+    it. So it names each commit lacked by id, from the remote
+    `partial_clone_fetch` picks, and the `why` says where each commit is.
     """
     remotes = promisor_remotes(ctx.shape)
     if not remotes:
@@ -4671,29 +4710,246 @@ def partial_clone_row(ctx: Context, pinned: str) -> Row | None:
                if count != 0}
     if not lacking:
         return None
-    said = []
-    for commit, count in lacking.items():
-        which = ("the pinned commit" if commit == pinned
-                 else "this standard's commit")
-        said.append(f"git cannot list {which} {commit[:12]} there"
-                    if count is None else
-                    f"it lacks {count} object{'' if count == 1 else 's'} "
-                    f"at {which} {commit[:12]}")
-    remote = remotes[0]
+    remote, commits, whence = partial_clone_fetch(ctx.shape, remotes,
+                                                  pinned, lacking)
     return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                "the copies cannot be compared without fetching: this "
                "checkout of the standard is a partial clone, and "
-               + " and ".join(said),
-               f"git -C {quote_arg(ctx.shape)} fetch --refetch --no-filter "
-               f"{quote_arg(remote)}",
+               + lacking_said(lacking, pinned),
+               refetch_command(ctx.shape, remote, commits),
                {"error": PARTIAL_CLONE_LACKS, "environment": True,
                 "pinned": pinned, "standard": standard, "remote": remote,
                 "lacking": lacking},
                why="this checkout of the standard is a partial clone, and "
-                   "a read of an object it lacks fetches it from "
-                   f"{remote}, which this doctor never does; fetch every "
-                   f"object {remote} holds, then run the doctor again, or "
-                   "run it from a full clone of the standard")
+                   "a read of an object it lacks fetches it from a promisor "
+                   "remote, which this doctor never does; " + whence
+                   + ", or run it from a full clone of the standard")
+
+
+def lacked_commit(commit: str, pinned: str) -> str:
+    """How `partial_clone_row` names a commit the clone lacks objects at:
+    the pinned commit or this standard's, by its id's first twelve
+    digits."""
+    if commit == pinned:
+        return f"the pinned commit {commit[:12]}"
+    return f"this standard's commit {commit[:12]}"
+
+
+def lacking_said(lacking: dict, pinned: str) -> str:
+    """The reason's account of `lacking`: each commit the clone does not
+    hold at all, and how many objects at least it lacks at each it does
+    hold."""
+    said = []
+    for commit, count in lacking.items():
+        if count is None:
+            said.append(f"it does not hold {lacked_commit(commit, pinned)} "
+                        "at all")
+        else:
+            said.append(f"it lacks at least {count} object"
+                        f"{'' if count == 1 else 's'} at "
+                        f"{lacked_commit(commit, pinned)}")
+    return " and ".join(said)
+
+
+def refetch_command(shape: Path, remote: str, commits: list) -> str:
+    """The fetch that puts in `shape` every object at each of `commits`,
+    from `remote`, whatever its `partialclonefilter` (#683, #754)."""
+    return (f"git -C {quote_arg(shape)} fetch --refetch --no-filter "
+            f"{quote_arg(remote)} " + " ".join(commits))
+
+
+def partial_clone_fetch(shape: Path, remotes: list, pinned: str,
+                        lacking: dict) -> tuple:
+    """`(remote, commits, whence)` for a partial clone at `shape` that
+    lacks objects at `lacking`'s commits: the promisor remote the NEXT
+    fetches from, the commits it names, and the `why`'s account of where
+    each commit is and what to run (#754).
+
+    ONLY THE COMMITS THE REMOTE IS KNOWN TO HOLD, WHERE ONE IS. A fetch by
+    id from a remote that does not have one of the ids fails whole, exit
+    128, `not our ref`, and puts in nothing. Measured by RV-f on #773: in
+    a sparse clone whose HEAD lacked objects on `origin`'s branches alone,
+    with the pinned commit on `second`'s alone, the NEXT fetched both from
+    `origin`, git refused it, and the row came back the same, its `why`
+    saying no branch held them. So where some remote's branches hold a
+    lacking commit, the NEXT fetches from the first remote whose branches
+    hold every such commit, else from the first that holds the pinned
+    commit, and names only the commits that remote's branches hold. The
+    doctor run again names the rest: two runs at most, for two commits.
+
+    THE FIRST PROMISOR REMOTE, AND EVERY COMMIT, WHERE NONE IS. A commit
+    the clone does not hold, or holds only on a tag or on no ref, is on no
+    branch it tracks, and no read that fetches nothing says which remote
+    has it. The NEXT asks the first promisor remote, the one git's own
+    lazy fetch asks first, and the `why` spells out the same fetch from
+    each other promisor remote, so that each is a line to paste.
+    """
+    holding = {commit: remotes_holding(shape, remotes, commit)
+               for commit, count in lacking.items() if count is not None}
+    known = {commit: names for commit, names in holding.items() if names}
+    remote = fetch_source(remotes, pinned, known)
+    commits = [commit for commit, names in known.items()
+               if remote in names] or list(lacking)
+    said = [where_lacked(commit, holding.get(commit), pinned)
+            for commit in lacking]
+    said.append(fetch_said(shape, remotes, remote, commits,
+                           fetched_named(commits, lacking, pinned),
+                           bool(known)))
+    return (remote, commits,
+            "; ".join(said) + then_said(commits, lacking, pinned))
+
+
+def fetch_source(remotes: list, pinned: str, known: dict) -> str:
+    """The promisor remote the NEXT fetches from, of `known`, each lacking
+    commit some remote's branches hold and the remotes that hold it: the
+    first remote that holds every one -- the first promisor remote, where
+    `known` is empty -- else the first that holds the pinned commit
+    (#754)."""
+    for name in remotes:
+        if all(name in names for names in known.values()):
+            return name
+    return (known.get(pinned) or next(iter(known.values())))[0]
+
+
+def where_lacked(commit: str, holders: list | None, pinned: str) -> str:
+    """The `why`'s word on where `commit` is: not in this clone at all,
+    where `holders` is None, on no branch this clone tracks, where it is
+    empty, or on the branches of each of `holders` (#754)."""
+    named = lacked_commit(commit, pinned)
+    if holders is None:
+        return f"{named} is not in this clone at all"
+    if not holders:
+        return f"no branch this clone tracks holds {named}"
+    return (f"{named} is on "
+            + " and ".join(f"{name}'s" for name in holders) + " branches")
+
+
+def fetch_said(shape: Path, remotes: list, remote: str, commits: list,
+               them: str, known: bool) -> str:
+    """The `why`'s word on the fetch: every object at `them` from
+    `remote`, whose branches hold them, or, where none is `known` to, by
+    id from `remote` and else from each other promisor remote, that fetch
+    spelled out as a line to paste (#754)."""
+    if known:
+        return f"so fetch every object at {them} from {remote}"
+    said = f"so fetch {them} by id from {remote}"
+    others = [f"from {name}: `{refetch_command(shape, name, commits)}`"
+              for name in remotes if name != remote]
+    if others:
+        said += (f", or, where {remote} does not have {them}, "
+                 + ", or ".join(others))
+    return said
+
+
+def fetched_named(commits: list, lacking: dict, pinned: str) -> str:
+    """How the `why` names the commits the NEXT fetches: `it` or `them`,
+    where they are every commit `lacking` holds, else each by name
+    (#754)."""
+    if len(commits) < len(lacking):
+        return " and ".join(lacked_commit(commit, pinned)
+                            for commit in commits)
+    return "it" if len(commits) == 1 else "them"
+
+
+def then_said(commits: list, lacking: dict, pinned: str) -> str:
+    """The end of the `why`'s word on the fetch: the git it needs, the
+    doctor run again, and the commits of `lacking` that run names a fetch
+    for, those the NEXT leaves out (#754)."""
+    said = " (--refetch needs git 2.36 or later), then run the doctor again"
+    rest = [lacked_commit(commit, pinned) for commit in lacking
+            if commit not in commits]
+    if rest:
+        said += ", which names the fetch for " + " and ".join(rest)
+    return said
+
+
+def remotes_holding(shape: Path, remotes: list, commit: str) -> list:
+    """Those of `remotes` whose branches here -- their tracking refs,
+    `refs/remotes/<name>/` -- hold `commit`, in `remotes`' order (#754).
+
+    `for-each-ref --contains` reads commits alone, and a `--filter` clone
+    holds every commit a fetch brought, so it fetches nothing: measured with
+    git 2.43, no fetch in a trace2 log. It is never asked of a commit the
+    clone does not hold, which no branch here can hold and whose read would
+    fetch it: `partial_clone_fetch` asks only of the commits
+    `objects_lacking` could list.
+    """
+    return [name for name in remotes
+            if git_answer(["for-each-ref", "--count=1",
+                           "--format=%(refname)", f"--contains={commit}",
+                           f"refs/remotes/{name}/"], shape)]
+
+
+def refetch_of(git_c: str, remote: str) -> str:
+    """The fetch of every object on `remote`'s branches into the root
+    `git_c` names, whatever its `partialclonefilter` (#787)."""
+    return f"{git_c} fetch --refetch --no-filter {quote_arg(remote)}"
+
+
+def partial_history_why(git_c: str, what: str, remotes: list) -> str:
+    """`pin_restore`'s `why` for `partial` (#787): the root's partial clone
+    lacks the history of its `what`, the NEXT fetches the first of
+    `remotes`, and the same fetch from each other one is spelled out.
+
+    HISTORY, HEAD'S INCLUDED, AND NOT "THE COMMIT THAT BROKE IT" (RV-f on
+    #791). Where HEAD was moved without a checkout (`reset --soft`), the
+    pin HEAD holds is a blob the clone lacks too, and the doctor run after
+    the fetch answers `uncommitted`, which no commit broke.
+
+    EVERY PROMISOR REMOTE, EACH A LINE TO PASTE. The NEXT fetches the first
+    one's branches, the one git's own lazy fetch asks first. Where the
+    history lacked is on another remote's alone, or on a branch forced
+    away from the first, that fetch puts in nothing it needs and the row
+    comes back the same, so the `why` names the fetch from each other one.
+    """
+    first, *others = remotes
+    said = (f"this root is a partial clone, and the {what}'s history, "
+            "HEAD's included, is not all in this clone: git fetches what a "
+            "partial clone lacks on a read, which this doctor never does, "
+            f"so what puts the {what} back cannot be read here. This "
+            f"fetches every object on {first}'s branches (--refetch needs "
+            "git 2.36 or later)")
+    if others:
+        said += (f"; where {first}'s branches do not hold it, the same "
+                 "from " + ", or from ".join(
+                     f"{name}: `{refetch_of(git_c, name)}`"
+                     for name in others))
+    return (said + "; then run this doctor again, which names what puts "
+            f"the {what} back")
+
+
+def history_left_out(root: Path, pin: str) -> list:
+    """The promisor remotes of `root`, in the order git asks them, where
+    `root` is a partial clone that lacks an object `pin_restore`'s walk of
+    `pin`'s history reads, asked without fetching; empty where it lacks
+    none, or is no partial clone (#787).
+
+    THE WALK'S READS FAIL THERE, AND THE DOCTOR FETCHED THEM BEFORE.
+    Measured on #787 with git 2.43: a `--filter=blob:none` clone of a root
+    whose HEAD commit broke its pin made one lazy fetch, of the pin before
+    it, and a `--filter=tree:0` one two. With `GIT_NO_LAZY_FETCH` set
+    (`lazy_fetch_off`) each read fails instead, and the walk, which reads a
+    failure as "no pin there", said "none": no commit in this root holds a
+    pin to put back, which is not so.
+
+    `rev-list --objects --missing=print` over the commits that touched
+    `pin`, one more than the walk reads, lists the pin at each and the
+    trees down to it, and prints `?<id>` for each the clone does not hold,
+    without fetching (`objects_lacking` says why). Where the clone lacks a
+    tree, as a `tree:0` one does, it cannot tell which commits touched the
+    pin and fails, as the walk's own `rev-list` does: that is lacking too.
+    A root with no HEAD has no history to walk, and is not asked.
+    """
+    remotes = promisor_remotes(root)
+    if not remotes or head_of(root) is None:
+        return []
+    listed = git_answer(["rev-list", "--objects", "--missing=print", "-n",
+                         str(PIN_HISTORY_DEPTH + 1), "HEAD", "--", pin],
+                        root, binary=True)
+    if listed is not None and not any(
+            MISSING_OBJECT.fullmatch(line) for line in listed.split(b"\n")):
+        return []
+    return remotes
 
 
 def check_shape_currency(ctx: Context) -> Row:
@@ -9957,6 +10213,59 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: The variable git reads to leave out the fetch a partial clone makes for
+#: an object it lacks (#787).
+NO_LAZY_FETCH = "GIT_NO_LAZY_FETCH"
+
+
+@contextlib.contextmanager
+def lazy_fetch_off():
+    """This process's environment with `GIT_NO_LAZY_FETCH=1` for as long as
+    it runs, and as it was afterwards (#787).
+
+    "IT NEVER FETCHES", BY CONSTRUCTION. A partial clone (`git clone
+    --filter`) fetches an object it lacks from a promisor remote on any read
+    that needs one, so the promise held read by read: #683 and #754 ask
+    `rev-list --missing=print`, which never fetches, before anything reads
+    a partial clone of the standard, and never ask `for-each-ref --contains`
+    of a commit the clone does not hold. A read added to a row later, or one
+    in a project's own partial clone, need not ask first. With the variable
+    set, git fails that read instead of fetching: `warning: lazy fetching
+    disabled; some objects may not be available`, then the read's own error
+    (measured with git 2.43: exit 128, and no `fetch` in a trace2 log). That
+    is a read that failed, as one does where the clone's remote is out of
+    reach, and every reader here already answers one: `git_answer`'s None,
+    `git_out`'s `git-failed`, `update-shape.py`'s
+    `update-upstream-unreadable`.
+
+    EVERY GIT THIS PROCESS STARTS, AND NOTHING IT PRINTS. The doctor's own
+    reads (`git_out`, `git_answer` and its few `subprocess.run` of git),
+    `update-shape.py`'s `Upstream` as `check_shape_currency` drives it in
+    this process, the validators `run_validator` starts with a copy of this
+    environment, and every git each of those starts, inherit it. A NEXT the
+    doctor prints is text for a person's own shell, which does not have it,
+    so a `fetch --refetch` printed there fetches. The environment is put
+    back on the way out, for a caller that runs `main` in its own process.
+
+    WHICH GIT HONOURS IT. git 2.45.0 and later, and the security releases of
+    2024-05-14 back to 2.39.4 (2.39.4, 2.40.2, 2.41.1, 2.42.2, 2.43.4,
+    2.44.1), whose fix for CVE-2024-32465 made `promisor-remote.c` read it;
+    distributions carry that fix too (Ubuntu's 2.43.0-1ubuntu7.1 and later).
+    An older git ignores the variable, harmlessly, and there the guards
+    above are what keep the doctor from fetching, as before.
+    """
+    before = os.environ.get(NO_LAZY_FETCH)
+    os.environ[NO_LAZY_FETCH] = "1"
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop(NO_LAZY_FETCH, None)
+        else:
+            os.environ[NO_LAZY_FETCH] = before
+
+
+@lazy_fetch_off()
 def main(argv: list[str] | None = None) -> int:
     # FIRST, so that every `print` after it -- `--help` included -- escapes
     # a name stdout cannot encode rather than raising on it (#214).
