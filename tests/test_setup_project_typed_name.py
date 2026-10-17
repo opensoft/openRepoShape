@@ -4,11 +4,17 @@
 A name that arrives as `--project` or as the positional is checked at parse
 time, before step (1) prints, by `checked_value`. A name typed at the
 `project name` prompt reached step (3) unchecked: `..` left `--into`, an
-absolute name replaced it, `--help` printed the naming validator's help at
-step (4) and exited 0, and the refusals that did come named an `--id` nobody
-passed or dumped the usage text. These tests type each of those at a real
-terminal and hold the run to the `--project` refusal, worded for what the
-person did: the value is a `project name`.
+absolute name replaced it, `--help` made the naming validator print its help
+and exit 0 at step (4) (the run itself ended at step (5), with the scaffold's
+usage and exit 2), and the refusals that did come named an `--id` nobody passed
+or dumped the usage text. These tests type each of those at a real terminal and
+hold the run to the `--project` refusal, worded for what the person did: the
+value is a `project name`.
+
+Two things pin WHERE the check sits, not only that it is made. Nothing of step
+(3) may print (`[ok] project`, `[ok] legs`), and a FILE stands where the folder
+above `--into` goes, so a check made after step (3) has asked the disk would
+say "is a file" and not `project name is`.
 
 POSIX only, as every test that gives a run a terminal is (`PTY_SKIP`).
 """
@@ -24,6 +30,13 @@ from test_setup_project_py import (SETUP_PROJECT, SETUP_SH, piped, run_entry,
                                    terminal_env)
 
 PROMPT = "project name (ONE CamelCase token, e.g. Atlas): "
+
+#: Step (4)'s heading, which no refused name may reach.
+NAMING_POLICY = "(4) naming policy"
+
+#: A file where the folder above `--into` goes, so any step that asks the
+#: disk about the clone path refuses with "is a file".
+FILE_ABOVE_INTO = b"a file where the folder above --into goes\n"
 
 #: What a terminal in canonical mode takes as "the next character is text":
 #: ^V, which is how a control character is typed into a line.
@@ -55,11 +68,14 @@ def typed_value(tmp_path, case):
     return str(tmp_path / "elsewhere" / "Name") if value is None else value
 
 
-def at_the_prompt(tmp_path, typed, entry="py"):
+def at_the_prompt(tmp_path, typed, entry="py", seeded=False):
     """Setup, with no project, asked at a terminal and answered `typed`
     (`"EOF"` is Ctrl-D). `entry` is the file run directly, that file with
     its stdin a pipe (the terminal is then the controlling one), or
-    `setup.sh`. Returns the exit status and the screen."""
+    `setup.sh`. `seeded` puts `FILE_ABOVE_INTO` where a later step would
+    refuse it. Returns the exit status and the screen."""
+    if seeded:
+        (tmp_path / "parent").write_bytes(FILE_ABOVE_INTO)
     flags = ["--org", "demoorg", "--local-remote-dir",
              str(tmp_path / "remotes"), "--into",
              str(tmp_path / "parent" / "into")]
@@ -80,14 +96,23 @@ def the_refusal(text):
     return text[text.index("REFUSED: "):].strip()
 
 
+def assert_nothing_was_made(tmp_path):
+    """Only the seeded file is on the disk, and it is as it was."""
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["parent"]
+    assert (tmp_path / "parent").read_bytes() == FILE_ABOVE_INTO
+
+
 def assert_refused_at_the_prompt(tmp_path, value, entry="py"):
-    status, screen = at_the_prompt(tmp_path, value, entry)
+    status, screen = at_the_prompt(tmp_path, value, entry, seeded=True)
     assert status == 2, f"status {status}:\n{screen}"
     assert f"project name is {ascii(value)}, which is not a value" in screen
-    assert "(4) naming policy" not in screen, screen
+    assert "is a file" not in screen, screen
+    assert "[ok] project" not in screen, screen
+    assert "[ok] legs" not in screen, screen
+    assert NAMING_POLICY not in screen, screen
     assert "usage: setup-project.py" not in screen, screen
     assert "--id" not in screen, screen
-    assert list(tmp_path.iterdir()) == [], "the refused name left a trace"
+    assert_nothing_was_made(tmp_path)
     return screen
 
 
@@ -114,23 +139,25 @@ def test_a_typed_project_name_is_refused_on_every_way_in(tmp_path, entry):
 
 
 @PTY_SKIP
+@pytest.mark.parametrize("entry", ["py", "piped", "sh"])
 @pytest.mark.parametrize("typed", ["", "EOF"])
-def test_an_empty_answer_is_refused_as_no_name_not_as_no_terminal(tmp_path,
-                                                                  typed):
-    status, screen = at_the_prompt(tmp_path, typed)
+def test_an_empty_answer_is_refused_as_no_name_not_as_no_terminal(
+        tmp_path, typed, entry):
+    status, screen = at_the_prompt(tmp_path, typed, entry, seeded=True)
     assert status == 2, f"status {status}:\n{screen}"
     assert the_refusal(screen) == (
         "REFUSED: no project name was typed; nothing was created.")
+    assert "is a file" not in screen, screen
     assert "no terminal" not in screen, screen
     assert "usage: setup-project.py" not in screen, screen
-    assert "(4) naming policy" not in screen, screen
-    assert list(tmp_path.iterdir()) == []
+    assert NAMING_POLICY not in screen, screen
+    assert_nothing_was_made(tmp_path)
 
 
 @PTY_SKIP
 @pytest.mark.parametrize("value", LEFT_TO_STEP_FOUR)
 def test_a_name_the_policy_decides_is_left_to_step_four(tmp_path, value):
     status, screen = at_the_prompt(tmp_path, value)
-    assert "(4) naming policy" in screen, screen
+    assert NAMING_POLICY in screen, screen
     assert "project name is" not in screen, screen
     assert status == 1, f"status {status}:\n{screen}"
