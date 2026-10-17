@@ -193,10 +193,11 @@ class YamlError(Exception):
 # with the `-` and `+` chomping indicators accepted and `-` honoured).
 #
 # REFUSED (raises YamlError): tabs used for indentation, anchors and aliases
-# (`&`, `*`), tags (`!`), merge keys (`<<`), explicit keys (`? `), a
-# single-pair mapping in a flow sequence (`[a: b]`, #392), and more than one
-# document. Each of those has a meaning this reader would have to invent, and
-# an invented meaning in a validator is a wrong answer with a confident tone.
+# (`&`, `*`), tags (`!`), merge keys (`<<`), explicit keys (`? `), an empty
+# block key (`: a`, #715), a single-pair mapping in a flow sequence (`[a: b]`,
+# #392), and more than one document. Each of those has a meaning this reader
+# would have to invent, and an invented meaning in a validator is a wrong
+# answer with a confident tone.
 #
 # A QUOTE OPENS A QUOTED SCALAR ONLY WHERE A SCALAR BEGINS, as in YAML; in
 # the middle of a plain scalar (`it's`) it is a character of it (#249). A
@@ -217,7 +218,22 @@ class YamlError(Exception):
 # `@a: 1`, and `|` or `>` opening a plain scalar. See `_scalar`,
 # `_refuse_entry_indicator` and `_split_flow`.
 
-_DASH_RE = re.compile(r"^-(\s+|$)")
+#: YAML'S WHITE SPACE IS THE SPACE AND THE TAB (#715), and every strip of a
+#: line below names it. `str.strip()` with no argument, like the regex `\s`,
+#: also takes U+001F and sixteen Unicode spaces (U+00A0 NO-BREAK SPACE,
+#: U+1680, U+2000 to U+200A, U+202F, U+205F and U+3000 IDEOGRAPHIC SPACE),
+#: which YAML keeps as text. So `k: \u3000]` was read as `k: ]` and refused
+#: quoting `']'`, a text the file does not hold, `k: [a,\u3000,b]` was
+#: refused as an empty entry, and `k: \xa0` read as no value, where PyYAML
+#: reads `'\u3000]'`, `['a', '\u3000', 'b']` and `'\xa0'`. U+001F, a control
+#: character, is now text, as a raw ESC or NUL already is. The other
+#: characters `str.strip()` takes are line breaks to `str.splitlines`, which
+#: ends a line at them, so none of them reaches a strip.
+_YAML_WHITE = " \t"
+
+#: A sequence entry's `-`, then YAML's white space (`_YAML_WHITE`, #715) or
+#: the end of the line: `-\u3000a` is a plain scalar, and no entry.
+_DASH_RE = re.compile(r"^-([ \t]+|$)")
 
 
 class _Rec:
@@ -315,8 +331,8 @@ def _strip_comment(text: str) -> str:
     (`_unquoted`), at the start of the text or after a space or tab."""
     for i, ch in _unquoted(text):
         if ch == "#" and (i == 0 or text[i - 1] in " \t"):
-            return text[:i].rstrip()
-    return text.rstrip()
+            return text[:i].rstrip(_YAML_WHITE)
+    return text.rstrip(_YAML_WHITE)
 
 
 def _split_key(text: str) -> tuple[str, str] | None:
@@ -333,14 +349,15 @@ def _split_key(text: str) -> tuple[str, str] | None:
     bracket = False
     for i, ch in _unquoted(text):
         if ch in "[{":
-            if not text[:i].strip():
+            if not text[:i].strip(_YAML_WHITE):
                 return None  # a flow collection cannot be a key in this subset
             bracket = True
         elif ch == ":" and (i + 1 == len(text) or text[i + 1] in " \t"):
+            key = text[:i].strip(_YAML_WHITE)
             if bracket:
                 raise YamlError("a key holding `[` or `{` is not supported: "
-                                f"{text[:i].strip()!r}")
-            return _unquote_key(text[:i].strip()), text[i + 1:].strip()
+                                f"{key!r}")
+            return _unquote_key(key), text[i + 1:].strip(_YAML_WHITE)
     return None
 
 
@@ -526,7 +543,7 @@ def _scalar(raw: str) -> Any:
     a scalar (`k: a]`, `- see [1]`, `k: a, b`), and every quoted scalar
     (`k: "]"`), read as before.
     """
-    text = raw.strip()
+    text = raw.strip(_YAML_WHITE)
     if text == "" or text in ("null", "~", "Null", "NULL"):
         return None
     if text[0] in "\"'":
@@ -588,9 +605,19 @@ def _refuse_entry_indicator(text: str) -> None:
     indicator, as in YAML and #252: `[-]`, `[-a]`, `{-: 1}` and `{?a: b}`
     read as they did. A `]` or `}` is left to `_refuse_flow_indicator`, which
     names it in #301's words.
+
+    A KEY THAT IS A LONE `?` IS REFUSED WITH THEM (#715): a `?` whose `:`
+    opens a value, with a space, a tab or nothing after it. `k: {?: 1}` read
+    the key `'?'`, where PyYAML reads an explicit key that has no key,
+    `{None: 1}`, while the lone `?` of `[?]`, `{?}` and `{a: ?}` was
+    refused as one; `[?: 1]` was refused as a single pair. Both are now
+    #252's refusal. `{?:a}` holds no `: `, and `[?:a]` is a `?` with text
+    after it, the text #252 keeps for `?a`; a block `?: 1` is the key `'?'`
+    to PyYAML too.
     """
     first, after = text[:1], text[1:2]
     if (first in ":#@`%" or first in "-?" and after in (" ", "\t")
+            or text[:2] == "?:" and text[2:3] in ("", " ", "\t")
             or text == "?"):
         raise _indicator_refusal(text)
 
@@ -620,26 +647,37 @@ def _flow_value(text: str, item: bool = False) -> Any:
     cannot spell. So
     `pins: [openGlass: x]` is a typo, refused as one. `{a: b}` in a sequence
     is a flow mapping and reads, and `[a:b]` is the text `a:b`, as before.
+
+    AN ITEM WITH A SECOND `:` OPENING A VALUE IS NO PAIR AT ALL (#715).
+    YAML ends the pair's plain value at that `:`, and PyYAML refuses
+    `[a: b: c]` as invalid, so the single-pair words named a mapping the
+    file does not hold. It is refused as invalid YAML. `[a:b: c]`, whose key
+    is `a:b`, and `[a: "b: c"]`, whose value is quoted, are single pairs and
+    keep those words.
     """
     if text.startswith(("[", "{")):
         return _flow(text)
     _refuse_flow_indicator(text)
     if item:
         _refuse_entry_indicator(text)
-        if _split_key(text) is not None:
+        pair = _split_key(text)
+        if pair is not None and _split_key(pair[1]) is not None:
+            raise YamlError("a flow sequence entry with a second `:` opening "
+                            f"a value is not valid YAML: {text!r}")
+        if pair is not None:
             raise YamlError("a single-pair mapping in a flow sequence is not "
                             f"supported: {text!r}")
     return _scalar(text)
 
 
 def _flow(text: str) -> Any:
-    text = text.strip()
+    text = text.strip(_YAML_WHITE)
     if text.startswith("[") and text.endswith("]"):
-        body = text[1:-1].strip()
+        body = text[1:-1].strip(_YAML_WHITE)
         return [] if not body else [_flow_value(p, item=True)
                                     for p in _split_flow(body)]
     if text.startswith("{") and text.endswith("}"):
-        body = text[1:-1].strip()
+        body = text[1:-1].strip(_YAML_WHITE)
         out: dict[str, Any] = {}
         if body:
             for part in _split_flow(body):
@@ -710,9 +748,9 @@ def _split_flow(body: str) -> list[str]:
         elif ch in "]}":
             depth -= 1
         elif ch == "," and depth == 0:
-            parts.append(body[start:i].strip())
+            parts.append(body[start:i].strip(_YAML_WHITE))
             start = i + 1
-    parts.append(body[start:].strip())
+    parts.append(body[start:].strip(_YAML_WHITE))
     if len(parts) > 1 and parts[-1] == "":
         parts.pop()
     if "" in parts:
@@ -736,9 +774,9 @@ def _significant_text(raw: str, line: int) -> str | None:
     refused outright, and a blank line or a whole-line comment carries no
     record at all.
     """
-    if "\t" in raw[: len(raw) - len(raw.lstrip())]:
+    if "\t" in raw[: len(raw) - len(raw.lstrip(_YAML_WHITE))]:
         raise YamlError(f"line {line}: tab used for indentation")
-    stripped = raw.strip()
+    stripped = raw.strip(_YAML_WHITE)
     if not stripped or stripped.startswith("#"):
         return None
     return stripped
@@ -777,16 +815,25 @@ def _peel_dashes(recs: list[_Rec], indent: int, content: str,
 
 
 def _refuse_unsupported(content: str, line: int) -> None:
-    """The two constructs this reader will not guess at, refused by name.
+    """The three constructs this reader will not guess at, refused by name.
 
     Split out of `_tokenise` for #135. An explicit key and a merge key each
     have a meaning the reader would have to invent, and an invented meaning in
     a validator is a wrong answer with a confident tone.
+
+    SO DOES AN EMPTY KEY (#715): a line, or a sequence item, that opens with
+    a `:` opening a value, `: a` or `- :`. PyYAML refuses it, and this
+    reader read the key `''`, which no reader gives: `- :` was
+    `[{'': None}]`. Its flow twin, `{: a}`, is refused by
+    `_refuse_entry_indicator` (#392). A quoted empty key, `"": a`, is the
+    key `''` to PyYAML too, and still reads.
     """
     if content.startswith("? "):
         raise YamlError(f"line {line}: explicit keys are not supported")
     if content.startswith("<<"):
         raise YamlError(f"line {line}: merge keys are not supported")
+    if content[:1] == ":" and content[1:2] in ("", " ", "\t"):
+        raise YamlError(f"line {line}: empty keys are not supported")
 
 
 def _opens_block_scalar(kv: tuple[str, str] | None) -> bool:
@@ -808,13 +855,14 @@ def _block_scalar_body(raw_lines: list[str], i: int,
     Split out of `_tokenise` for #135. The body is every following line MORE
     INDENTED than the key, with the first such line's column taken as the
     block's own indentation and stripped from all of them. A blank line
-    belongs to the body whatever its column, because it has none.
+    belongs to the body whatever its column, because it has none. A line of
+    Unicode spaces is not blank (#715): it is text, as YAML reads it.
     """
     body: list[str] = []
     block_indent = None
     while i < len(raw_lines):
         nxt = raw_lines[i]
-        if nxt.strip() == "":
+        if nxt.strip(_YAML_WHITE) == "":
             body.append("")
             i += 1
             continue
