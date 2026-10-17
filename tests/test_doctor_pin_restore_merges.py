@@ -1341,8 +1341,20 @@ def the_kept_pin_lacks_its_row(root: Path) -> None:
 
 def no_merge_head(root: Path) -> None:
     """MERGE_HEAD gone, as a cherry-pick or a rebase leaves its conflicts:
-    git names no merge base."""
-    git("update-ref", "-d", "MERGE_HEAD", cwd=root)
+    git names no merge base.
+
+    The FILE is deleted, at the path git itself gives, which is also a
+    linked worktree's own. `git update-ref -d MERGE_HEAD` is refused from
+    git 2.46 on ("refusing to update pseudoref"), and MERGE_HEAD stays a
+    file under both ref backends (#783, review of PR #789). It must be
+    there to go: this follows a real merge, so a missing file is a fixture
+    that stopped being one, never a tolerated state."""
+    merge_head = Path(git("rev-parse", "--git-path", "MERGE_HEAD",
+                          cwd=root).stdout.strip())
+    if not merge_head.is_absolute():
+        merge_head = root / merge_head
+    merge_head.unlink()
+    assert not merge_head.exists(), merge_head
 
 
 class Twice(NamedTuple):
