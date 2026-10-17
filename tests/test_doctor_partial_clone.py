@@ -33,6 +33,7 @@ bytes, and nothing is fed to git as text.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -291,6 +292,18 @@ def test_the_next_fetches_a_pinned_commit_only_another_branch_holds(
     assert again["detail"].get("error") != PARTIAL, again
 
 
+def second_promisor(clone: Path, source: Path, *, fetched: bool) -> Path:
+    """`clone` with `source` as a second promisor remote, `second`, under
+    the same filter as `origin`, and fetched where `fetched` says so."""
+    git("remote", "add", "second", source.as_uri(), cwd=clone)
+    git("config", "remote.second.promisor", "true", cwd=clone)
+    git("config", "remote.second.partialclonefilter", "blob:none",
+        cwd=clone)
+    if fetched:
+        git(*FILE_PROTOCOL, "fetch", "-q", "second", cwd=clone)
+    return clone
+
+
 @pytest.fixture
 def two_promisors(elsewhere, single_branch, moved) -> Path:
     """`single_branch`'s partial clone of `elsewhere`'s `main`, `origin`,
@@ -298,12 +311,7 @@ def two_promisors(elsewhere, single_branch, moved) -> Path:
     `second`, fetched with the same filter: it holds C1's commit, on
     `second`'s branches only, and not C1's blobs that `main` does not
     share."""
-    clone = single_branch
-    git("remote", "add", "second", moved["ahead"].as_uri(), cwd=clone)
-    git("config", "remote.second.promisor", "true", cwd=clone)
-    git("config", "remote.second.partialclonefilter", "blob:none",
-        cwd=clone)
-    git(*FILE_PROTOCOL, "fetch", "-q", "second", cwd=clone)
+    clone = second_promisor(single_branch, moved["ahead"], fetched=True)
     assert holds(clone, elsewhere["c1"]), "the clone lacks C1's commit"
     return clone
 
@@ -318,6 +326,84 @@ def test_the_next_names_the_promisor_remote_that_holds_the_commit(
     assert pasted(row["next"])[-2:] == ["second", elsewhere["c1"]], \
         row["next"]
     again = run_the_next_and_ask_again(two_promisors, project)
+    assert again["detail"].get("error") != PARTIAL, again
+
+
+@pytest.fixture
+def split_across_remotes(elsewhere, moved, tmp_path) -> dict:
+    """A partial clone of `elsewhere`'s `main`, `origin`, whose HEAD is a
+    commit made on `origin` after the clone and fetched under its filter,
+    so that HEAD lacks a blob only `origin`'s branches hold; and the
+    standard one commit on as a second promisor remote, `second`, whose
+    branches alone hold C1. RV-f's case on #773 (S2) left HEAD lacking with
+    a sparse checkout, which here would leave out the doctor's own files.
+    The clone and the commit HEAD names, as `clone` and `head`."""
+    stranger = elsewhere["stranger"]
+    clone = partial_clone_of(stranger, tmp_path / "partial")
+    (stranger / "NOTES.md").write_bytes(b"made after the clone\n")
+    git("add", "NOTES.md", cwd=stranger)
+    git("commit", "-q", "-m", "A commit the clone never checked out",
+        cwd=stranger)
+    git(*FILE_PROTOCOL, "fetch", "-q", "origin", cwd=clone)
+    later = head(stranger)
+    git("update-ref", "--no-deref", "HEAD", later, cwd=clone)
+    second_promisor(clone, moved["ahead"], fetched=True)
+    blob = git("rev-parse", f"{later}:NOTES.md", cwd=stranger).stdout.strip()
+    assert f"?{blob}".encode() in missing(clone), "HEAD lacks nothing"
+    assert holds(clone, elsewhere["c1"]), "the clone lacks C1's commit"
+    return {"clone": clone, "head": later}
+
+
+def test_commits_on_two_remotes_are_fetched_from_each_in_turn(
+        elsewhere, split_across_remotes, project):
+    """HEAD lacks objects that `origin`'s branches alone hold, and C1 is on
+    `second`'s alone (RV-f on #773, S2). The NEXT fetched both from
+    `origin`, which has no C1, so git refused it whole, `not our ref`, and
+    the row came back the same, its `why` saying no branch held them. It
+    fetches C1 from `second`, the `why` says which remote holds which, and
+    run as printed it is followed by HEAD's fetch from `origin`, after
+    which the doctor answers."""
+    clone, later = split_across_remotes["clone"], split_across_remotes["head"]
+    first = currency_of(doctor(clone, project, "--json"))
+    assert pasted(first["next"])[-2:] == ["second", elsewhere["c1"]], \
+        first["next"]
+    assert (f"the pinned commit {elsewhere['c1'][:12]} is on second's "
+            "branches") in first["why"], first["why"]
+    assert (f"this standard's commit {later[:12]} is on origin's "
+            "branches") in first["why"], first["why"]
+    then = run_the_next_and_ask_again(clone, project)
+    assert pasted(then["next"])[-2:] == ["origin", later], then["next"]
+    again = run_the_next_and_ask_again(clone, project)
+    assert again["detail"].get("error") != PARTIAL, again
+
+
+@pytest.fixture
+def never_fetched(elsewhere, moved, tmp_path) -> Path:
+    """A partial clone of `elsewhere`'s `main`, `origin`, which has no C1,
+    and the standard one commit on as a second promisor remote, `second`,
+    never fetched: the clone does not hold C1, and no branch it tracks
+    says which remote has it (RV-f on #773, N1)."""
+    clone = second_promisor(partial_clone_of(elsewhere["stranger"],
+                                             tmp_path / "partial"),
+                            moved["ahead"], fetched=False)
+    assert not holds(clone, elsewhere["c1"]), "the clone holds C1"
+    return clone
+
+
+def test_the_why_spells_out_the_fetch_from_each_other_promisor_remote(
+        elsewhere, never_fetched, project):
+    """C1 is not in the clone, and only `second`, never fetched, has it
+    (RV-f on #773, N1). The NEXT asks `origin`, the first promisor remote,
+    which has no C1, and the `why` said "or from whichever of origin,
+    second has it", a name and no line to paste. It spells out the fetch
+    from `second`, and run as printed, the doctor answers."""
+    row = currency_of(doctor(never_fetched, project, "--json"))
+    assert pasted(row["next"])[-2:] == ["origin", elsewhere["c1"]], \
+        row["next"]
+    offered = re.search(r"from second: `([^`]+)`", row["why"])
+    assert offered, row["why"]
+    run_pasted(offered.group(1))
+    again = currency_of(doctor(never_fetched, project, "--json"))
     assert again["detail"].get("error") != PARTIAL, again
 
 
@@ -441,7 +527,7 @@ def test_objects_lacking_reads_a_missing_commit_on_every_git(
     """`objects_lacking` on each answer `rev-list --missing=print` gives
     (#754). From git 2.45 on, a commit the clone does not hold is printed
     `?<commit>`, exit 0, where git 2.43 refused it; read as one object
-    lacked, it was not "absent", and `remote_holding` asked `--contains`
+    lacked, it was not "absent", and `remotes_holding` asked `--contains`
     of it, a read that fetches. Both are None. Handed to the module, not
     run, because one machine has one git."""
     answer, expected = REV_LIST_ANSWERS[case]
