@@ -121,18 +121,20 @@ def test_with_no_gitmodules_the_gitlink_listing_is_named(holder, monkeypatch,
                                                          capsys, extra):
     """THE ISSUE'S RESIDUE: a holder with member rows and its `.gitmodules`
     gone from the working tree, where main still ended in the traceback in
-    the default and `--pins` modes. The first check to run git is now #361's
-    listing of `members/`, which every mode runs, `--no-members` included:
-    where it passed before, having run no git at all, it now refuses."""
+    the default and `--pins` modes. The first check to run git was #361's
+    listing of `members/`; since #768 it is the reading of HEAD's
+    `.gitmodules` for a value git dies on, which every mode runs,
+    `--no-members` included: where it passed before, having run no git at
+    all, it now refuses."""
     (holder / ".gitmodules").unlink()
     module = holder_validator(holder, monkeypatch)
     without_git(module, monkeypatch, validator=True, helpers=True)
     code, err = run(module, holder, capsys, *extra)
     assert code == 2, err
     assert err == [
-        "REFUSED git-not-runnable: the gitlinks this repository records in "
-        "members/ could not be listed: git could not be run (No such file "
-        "or directory)", REMEDIATION]
+        "REFUSED git-not-runnable: HEAD's .gitmodules could not be read as "
+        "git reads it: git could not be run (No such file or directory)",
+        REMEDIATION]
 
 
 @MEMBER_MODES
