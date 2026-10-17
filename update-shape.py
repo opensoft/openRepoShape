@@ -1437,8 +1437,9 @@ def resolve_additions(rows: list[Row], additions: list[Addition],
                 "Two files with one name is a merge, and this command copies "
                 "bytes rather than merging them",
                 "Remediation: the same posture as --accept-local — a human "
-                "merges. The upstream's bytes are `git show <commit>:"
-                f"{add.source}` in a shape clone. Once a file the project owns "
+                "merges. The upstream's bytes are "
+                f"`{upstream_show(target, add.source)}` in a shape clone. "
+                "Once a file the project owns "
                 f"sits at {path}, `check` stops reporting it: a path the root "
                 "has and the pin does not record is the in-place adoption "
                 "state, which this tool leaves alone by design.")
@@ -3575,6 +3576,9 @@ def upstream_show(target: str, source: str) -> str:
     always printed, since `shlex.join` leaves a word of `[\\w@%+=:,./-]`
     alone; a source path holding a blank or a `'` was two arguments, a git
     exit 128, or a quotation `sh` never saw closed, and is one argument now.
+    `update-conflict`, `update-accept-local-missing-name` and
+    `update-add-would-overwrite` print it; the last one named a `<commit>`
+    for the person to fill in, and names the run's target now.
     """
     return shlex.join(["git", "show", f"{target}:{source}"])
 
@@ -3799,14 +3803,21 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
     read as defined (`_bound_at` says what it reads as a binding). One
     bound, or imported, only where Python never runs it, under `if
     TYPE_CHECKING:`, `if False:` or `if 0:`, or after an unconditional
-    `raise` in its block, is not read at all (#675); the rest of what
-    never runs is read as running. A name bound only through `globals()`,
-    `setattr` on the module or `exec` reads as missing: refused where a
-    kept module binds it that way (#536), or
-    where the written bytes do and the bytes on disk bound it plainly
-    (#604). One bound and then deleted (`NAME = 1`, then `del NAME`) reads
-    as defined, so that copy's `ImportError` is still its first run's to
-    meet.
+    `raise` in its block, is not read at all (#675). The rest of what
+    never runs is read as running, and this paragraph's rule holds there
+    for a BINDING only, which reads as defined, as one bound and then
+    deleted does. An IMPORT read as running is TAKEN, so a copy whose
+    import Python never reaches is refused although it starts: one in the
+    `else` of `if True:` or of `if not TYPE_CHECKING:`, under `while
+    False:`, in the `else` of a `try` whose body always raises, or after a
+    `break`, a `continue` or a `return` (`_names_imported`): a refusal
+    Python would not make, though still one before the yes and before any
+    write. A name bound only through `globals()`, `setattr` on the module
+    or `exec` reads as missing: refused where a kept module binds it that
+    way (#536), or where the written bytes do and the bytes on disk bound
+    it plainly (#604). One bound and then deleted (`NAME = 1`, then `del
+    NAME`) reads as defined, so that copy's `ImportError` is still its
+    first run's to meet.
     """
     kept = {row.path: row for row in rows
             if row.state in (BOTH, LOCALLY_MODIFIED) and row.path in accepted}
@@ -3944,7 +3955,8 @@ def _validators_meet(root: Path, written: dict, pairs: list,
     as every shipped one does: each takes from `repo_shape` only names
     `repo_shape.py` defines, so no shipped copy reaches this today. What
     `_names_imported` cannot read, a star import or `import M`, is not
-    found here either.
+    found here either, nor a validator that reaches a line's importer
+    through another copy: one hop is read.
     """
     importers = {pair.importer for pair in pairs}
     lacking = {(pair.module, name) for pair in pairs for name in pair.names}
@@ -4094,8 +4106,14 @@ def _names_imported(data: bytes) -> dict[str, set[str]]:
     A NAME THE COPY ITSELF ANSWERS FOR IS NOT TAKEN, NOR ONE PYTHON NEVER
     REACHES. Nothing inside an `if` body that never runs is (`_never_runs`:
     `if TYPE_CHECKING:`, `if False:`, `if 0:`), nor an import after an
-    unconditional `raise` in its own block (`_reached`, #675). Inside the
-    body of a `try` that catches the `ImportError` a missing name raises
+    unconditional `raise` in its own block (`_reached`, #675). ANY OTHER
+    IMPORT PYTHON NEVER REACHES IS READ AS RUNNING, AND SO AS TAKEN: one in
+    the `else` of `if True:` or of `if not TYPE_CHECKING:`, under `while
+    False:`, in the `else` of a `try` whose body always raises, or after a
+    `break`, a `continue` or a `return`. Where its module lacks the name,
+    that copy is refused although Python starts it: for an import, "what
+    this cannot tell, it does not refuse" does not hold. Inside the body
+    of a `try` that catches the `ImportError` a missing name raises
     (`_catches_import_error`), a name is still taken unless the first
     handler that catches it binds that same local name itself, its `as`
     name else the name, as `_bound_at` reads a binding: that is the copy's
@@ -4192,6 +4210,12 @@ def _never_runs(test: ast.expr) -> bool:
     """Is `test` an `if` test whose body never runs (#675)? `TYPE_CHECKING`
     (`_is_type_checking`), and a false constant: `if False:`, `if 0:`, `if
     None:`. Any other test is read as one that may be true.
+
+    `TYPE_CHECKING` IS READ BY ITS NAME, NOT ITS VALUE, as `_blocks_inside`
+    has read an import under it since #536 and `_same_scope` reads a
+    binding there now: a module that sets its own `TYPE_CHECKING = True`,
+    or tests an `obj.TYPE_CHECKING` that is not `typing`'s, is still read
+    as one whose body never runs.
     """
     return _is_type_checking(test) or (isinstance(test, ast.Constant)
                                        and not test.value)

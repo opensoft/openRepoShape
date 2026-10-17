@@ -994,10 +994,18 @@ def test_a_handler_that_misses_a_missing_name_still_refuses(update_shape,
                  id="under if False"),
     pytest.param(b"if 0:\n    from repo_shape import NEW\n", False,
                  id="under if 0"),
+    pytest.param(b"if None:\n    from repo_shape import NEW\n", False,
+                 id="under if None"),
     pytest.param(b"try:\n    raise RuntimeError\n"
                  b"    from repo_shape import NEW\n"
                  b"except RuntimeError:\n    pass\n", False,
                  id="after a raise in a try body"),
+    pytest.param(b"raise SystemExit\nfrom repo_shape import NEW\n", False,
+                 id="after a raise at module scope"),
+    pytest.param(b"if False:\n    pass\n"
+                 b"else:\n    raise SystemExit\n"
+                 b"    from repo_shape import NEW\n", False,
+                 id="after a raise in the else of if False"),
     pytest.param(b"if False:\n    pass\n"
                  b"else:\n    from repo_shape import NEW\n", True,
                  id="in the else of if False"),
@@ -1009,8 +1017,9 @@ def test_a_handler_that_misses_a_missing_name_still_refuses(update_shape,
 def test_an_import_python_never_reaches_is_not_taken(update_shape, copy,
                                                      taken):
     """`_blocks_inside` (#675): Python starts a copy whose `from repo_shape
-    import NEW` sits under `if False:` or `if 0:`, or after an unconditional
-    `raise` in its block, whatever `repo_shape.py` defines, so that import
+    import NEW` sits under `if False:`, `if 0:` or `if None:`, or after an
+    unconditional `raise` in its block (a `try` body, the module's own, the
+    `else` of `if False:`), whatever `repo_shape.py` defines, so that import
     is no name the copy takes, as one under `if TYPE_CHECKING:` was not
     already. What does run is still read: the `else` of `if False:`, a
     true constant's body, and the statements before a `raise`."""
@@ -1356,6 +1365,7 @@ def assert_the_written_module_drops_gone(update_shape, root: Path,
                  id="if typing.TYPE_CHECKING"),
     pytest.param(b"if False:\n    GONE = 1\n", id="if False"),
     pytest.param(b"if 0:\n    GONE = 1\n", id="if 0"),
+    pytest.param(b"if None:\n    GONE = 1\n", id="if None"),
     pytest.param(b"if KEPT:\n    pass\nelif False:\n    GONE = 1\n",
                  id="elif False"),
 ])
@@ -1376,6 +1386,10 @@ def test_a_binding_under_an_if_that_never_runs_binds_nothing(update_shape,
     pytest.param(b"try:\n    if KEPT:\n        raise RuntimeError\n"
                  b"        GONE = 1\nexcept RuntimeError:\n    pass\n",
                  id="after a raise in a block inside a try"),
+    pytest.param(b"try:\n    if False:\n        pass\n    else:\n"
+                 b"        raise RuntimeError\n        GONE = 1\n"
+                 b"except RuntimeError:\n    pass\n",
+                 id="after a raise in the else of if False"),
 ])
 def test_a_binding_after_a_raise_in_its_block_binds_nothing(update_shape,
                                                             tmp_path,
@@ -1578,19 +1592,33 @@ def missing_name_remedy(update_shape, target: str) -> str:
         [pair], {HELPER: awkward_row(update_shape, target)}, target)
 
 
+def overwrite_remedy(update_shape, target: str) -> str:
+    """`update-add-would-overwrite`'s remedy for an `--add` of `HELPER`,
+    whose source in the fork is `AWKWARD_SOURCE`, where the root already
+    has a file (`resolve_additions`)."""
+    added = update_shape.Addition(
+        update_shape.Copy(HELPER, AWKWARD_SOURCE, False), True, AWKWARD_BYTES)
+    with pytest.raises(update_shape.Refusal) as refused:
+        update_shape.resolve_additions([], [added], [HELPER], target)
+    assert refused.value.code == "update-add-would-overwrite", refused.value
+    return refused.value.remediation
+
+
 @WINDOWS_SKIP
 @pytest.mark.parametrize("remedy", [
     pytest.param(merge_remedy, id="update-conflict"),
     pytest.param(missing_name_remedy, id="update-accept-local-missing-name"),
+    pytest.param(overwrite_remedy, id="update-add-would-overwrite"),
 ])
 def test_the_git_show_a_remedy_names_pastes_and_runs(update_shape, fork,
                                                      remedy):
-    """Both remedies that name the upstream's bytes print `git show
+    """Each remedy that names the upstream's bytes prints `git show
     <target>:<source>` quoted, as #588 quoted the other printed paths: the
     one command a POSIX shell splits it into, and, pasted into `sh` in the
     fork, the copy's own bytes. A plain path prints exactly as it did,
     which `tests/test_update_shape_messages.py` and the `git show` lines
-    above hold."""
+    above hold; `update-add-would-overwrite` printed `<commit>` where the
+    target goes, and `tests/test_update_shape_add.py` holds its line."""
     root, commit = fork
     shows = re.findall(r"`(git show [^`]*)`", remedy(update_shape, commit))
     assert len(shows) == 1, shows
