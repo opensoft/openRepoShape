@@ -5409,6 +5409,63 @@ def _on_a_remote_branch(member: Path, commit: str) -> bool:
                     cwd=member))
 
 
+#: What `bump`'s fetch always asks of `origin` (#686): every branch, into the
+#: namespace `_on_a_remote_branch` reads, forced as a remote-tracking ref is.
+_ORIGIN_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
+
+
+def _origin_fetch_refspecs(member: Path) -> list[str]:
+    """The refspecs `bump`'s fetch of `origin` carries (#686): every branch of
+    `origin`, then what the mount's own `remote.origin.fetch` keeps under
+    `refs/remotes/origin/`, then the exclusions it states.
+
+    WHY THE MOUNT'S OWN ARE ADDED. `--prune` deletes every ref under
+    `refs/remotes/origin/` that no refspec on the command line maps a ref of
+    `origin` to, and a refspec on the command line replaces the configured
+    ones. A mount that keeps pull requests there (`+refs/pull/*/head:
+    refs/remotes/origin/pr/*`) lost them to a prune made for a deleted
+    branch, in a dry run too, where `git fetch origin` kept them, pruning
+    only what its own refspec maps. So each positive refspec of the mount
+    whose destination is under `refs/remotes/origin/` goes on the command
+    line as well, forced as the first is (a remote-tracking ref only mirrors
+    the remote, and a refspec without `+` would fail the fetch on a branch
+    force-pushed), and is pruned only against itself. Beyond the branches the
+    first refspec is there for, that asks `origin` for nothing `git fetch
+    origin` did not. One whose destination is outside `refs/remotes/origin/`,
+    a mirror's `+refs/*:refs/*` or `+refs/heads/*:refs/heads/*`, is never
+    added, so no refspec this fetch names writes outside it. A ref put under
+    `origin/` by hand, which no refspec maps, is still pruned.
+
+    A NEGATIVE REFSPEC (`^refs/heads/wip`) is passed as it stands. Git
+    applies the configured negative refspecs only to a fetch with none on the
+    command line (measured, git 2.43), so without it this fetch would bring
+    a branch the person excluded. It writes nothing. A mount whose refspec
+    git cannot satisfy, one that names a ref `origin` lacks or two that map
+    to one destination, fails this fetch as it fails the person's own
+    `git fetch origin`, and `bump` says so as it says any failed fetch.
+
+    READ BY A LISTING, `git config --list`, not `--get-all`: the dry run's
+    test holds every `git config` it runs to a listing, the one form that
+    cannot write, and a listing exits 0 whether or not the mount has a
+    refspec (an `origin` with a URL and nothing else has none, and gets the
+    first refspec alone). A config git cannot read fails it with 128, which is
+    the caller's fetch failure, as the fetch's own would be.
+    """
+    listed = run(["git", "config", "--list"], cwd=member)
+    configured = [value for key, _, value in
+                  (line.partition("=") for line in listed.splitlines())
+                  if key == "remote.origin.fetch"]
+    refspecs = [_ORIGIN_BRANCHES]
+    for spec in (value.strip() for value in configured):
+        if not spec.startswith("^"):
+            spec = spec if spec.startswith("+") else "+" + spec
+            if not spec.partition(":")[2].startswith("refs/remotes/origin/"):
+                continue
+        if spec not in refspecs:
+            refspecs.append(spec)
+    return refspecs
+
+
 def _has_origin(member: Path) -> bool:
     """Whether the member's mount has a remote named `origin`, the only one
     `bump` fetches and asks (#686). Asked once its fetch has failed: a mount
@@ -5942,17 +5999,23 @@ def cmd_bump(args) -> int:
     # single-branch clone, or an `origin` with a URL and no refspec) left no
     # remote-tracking ref for the branch that holds `--to`, so a pushed
     # commit was refused `member-to-local-only` as on no branch.
-    # AND NO BRANCH `origin` NO LONGER HAS (#686; #459's line 105, on Brett
+    # AND NO REF NOTHING ON `origin` BACKS (#686; #459's line 105, on Brett
     # Heap's word "prune the fetch the tool already makes"): a branch deleted
     # on the remote after the last fetch kept its remote-tracking ref, which
     # passed the reachability check for a commit nothing on the remote may
-    # keep. `--prune` drops only refs the refspec writes, under
-    # `refs/remotes/origin/`; `--no-prune-tags` keeps a `pruneTags` setting
-    # from reaching the mount's tags. No local branch or tag is touched.
+    # keep. `--prune` drops every ref under `refs/remotes/origin/` that no
+    # refspec of this fetch maps a ref of `origin` to, so the mount's own
+    # refspecs that write there ride along (`_origin_fetch_refspecs`): a pull
+    # request ref its configuration keeps is kept and pruned only against its
+    # own refspec, as `git fetch origin` did. A ref put there by hand, which
+    # no refspec maps, is dropped, and `origin/HEAD` stays, dangling where it
+    # named a deleted branch. `--no-prune-tags` keeps a `pruneTags` setting
+    # from reaching the mount's tags. The prune touches no local branch or
+    # tag.
     fetched = True
     try:
         run(["git", "fetch", "-q", "--prune", "--no-prune-tags", "origin",
-             "+refs/heads/*:refs/remotes/origin/*"], cwd=member)
+             *_origin_fetch_refspecs(member)], cwd=member)
     except CommandFailed:
         fetched = False
         why = (" from its origin" if _has_origin(member) else

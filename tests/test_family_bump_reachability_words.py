@@ -18,8 +18,12 @@ FOUR STATES #613'S CHECK WAS UNTRUE OF, from R613's review of #625:
   issuecomment-6203972266, on Brett Heap's word relayed by lane 5 on #473
   at 13:56:50Z: "prune the fetch the tool already makes"). Its stale
   remote-tracking ref counted, so a commit no ref of the remote keeps was
-  pinned. The same fetch now prunes, with `--no-prune-tags`: only refs
-  under `refs/remotes/origin/` go, never a branch or a tag of the mount.
+  pinned. The same fetch now prunes, with `--no-prune-tags`: a ref under
+  `refs/remotes/origin/` that no refspec of the fetch maps a ref of `origin`
+  to goes, and never a branch or a tag of the mount. The mount's own
+  refspecs that write under `origin/` (pull requests, say) ride along, so
+  what its configuration keeps there stays, and a negative one still
+  excludes.
 - A COMMIT ONLY A TAG OF THE REMOTE REACHES, which the mount holds too
   (R613 p03). Still refused: the rule is branches (the triage's D2, option
   1). The reason was "A pin the rest of the world cannot fetch", which a
@@ -150,6 +154,22 @@ def refs(mount: Path, env: dict) -> list[str]:
                ).stdout.decode().splitlines()
 
 
+#: A pull-request refspec, as GitHub's and GitLab's documents give it: the
+#: mount's own, keeping under `origin/` refs that no branch backs.
+PULLS = "+refs/pull/*/head:refs/remotes/origin/pr/*"
+
+
+#: A refspec of the mount that writes outside `refs/remotes/origin/`.
+NOTES = "+refs/notes/*:refs/notes/*"
+
+
+def under_origin(ref: str, *kept: str) -> bool:
+    """Whether a `refs()` line is under `refs/remotes/origin/` and none of
+    `kept`, the remote-tracking refs a test expects to survive."""
+    return ref.startswith("refs/remotes/origin/") and not any(
+        ref.startswith(f"refs/remotes/origin/{name} ") for name in kept)
+
+
 def test_a_branch_deleted_on_the_remote_since_the_last_fetch_no_longer_counts(
         holder, offline, tmp_path):
     """#459's line 105 (issuecomment-6203972266), on Brett Heap's word
@@ -159,8 +179,15 @@ def test_a_branch_deleted_on_the_remote_since_the_last_fetch_no_longer_counts(
     remote-tracking ref still contained the commit, so `bump` pinned it,
     exit 0, with no ref of the remote keeping it. The fetch both runs make
     now prunes that ref, and both refuse `member-to-local-only`, with
-    nothing moved. ONLY THAT REF GOES: the mount's own branch and tag on the
-    commit, and `origin/HEAD`, stay, in a mount set to prune tags."""
+    nothing moved. WHAT NOTHING ON THE REMOTE BACKS GOES, AND NOTHING ELSE:
+    the mount's own branch and tag on the commit stay, in a mount set to
+    prune tags, and so does `origin/HEAD` (it names `main`, which the remote
+    still has). The mount's own refspec keeps pull requests under `origin/`:
+    `pr/7`, which the remote still has, stays, and `pr/8`, which it deleted,
+    goes with the branch, pruned against that refspec alone; a ref put
+    there by hand, which no refspec maps, goes too. A refspec of the mount
+    that writes OUTSIDE `origin/` (`+refs/notes/*:refs/notes/*`, here) is
+    not put on the command line: nothing outside `origin/` is written."""
     env = isolated(offline, tmp_path)
     mount = holder / PATH
     made = commit_in_mount(
@@ -168,7 +195,16 @@ def test_a_branch_deleted_on_the_remote_since_the_last_fetch_no_longer_counts(
         lambda m: (m / "DELETED.md").write_bytes(b"a branch deleted since\n"))
     stale = f"refs/remotes/origin/pushed-{made[:12]}"
     remote = private_remote(holder)
+    pin = pinned_at(holder, env, MEMBER)
+    for number in ("7", "8"):
+        raw(remote, env, "update-ref", f"refs/pull/{number}/head", pin)
+    raw(mount, env, "config", "--add", "remote.origin.fetch", PULLS)
+    raw(mount, env, "fetch", "-q", "origin")
+    raw(mount, env, "config", "--add", "remote.origin.fetch", NOTES)
+    raw(remote, env, "update-ref", "refs/notes/review", pin)
+    raw(remote, env, "update-ref", "-d", "refs/pull/8/head")
     raw(remote, env, "update-ref", "-d", f"refs/heads/pushed-{made[:12]}")
+    raw(mount, env, "update-ref", "refs/remotes/origin/by-hand", pin)
     assert not contains(remote, env, made, "refs/"), (
         "premise: no ref of the member's remote reaches it")
     assert contains(mount, env, made, stale), (
@@ -176,19 +212,54 @@ def test_a_branch_deleted_on_the_remote_since_the_last_fetch_no_longer_counts(
     raw(mount, env, "branch", "mine", made)
     raw(mount, env, "tag", "mine-tag", made)
     raw(mount, env, "config", "remote.origin.pruneTags", "true")
-    kept = [ref for ref in refs(mount, env)
-            if not ref.startswith("refs/remotes/origin/")
-            or ref.startswith("refs/remotes/origin/HEAD ")]
+    before = refs(mount, env)
+    for name in ("pr/7", "pr/8", "by-hand"):
+        assert f"refs/remotes/origin/{name} {pin}" in before, (
+            f"premise: the mount holds origin/{name}")
+    kept = [ref for ref in before if not under_origin(ref, "HEAD")]
 
     stderr = both_runs(holder, env, made)
 
     assert refusal(stderr) == local_only(made)
     after = refs(mount, env)
-    assert not [ref for ref in after if ref.startswith(stale + " ")], (
-        "the stale remote-tracking ref is pruned")
-    assert [ref for ref in after if not ref.startswith("refs/remotes/origin/")
-            or ref.startswith("refs/remotes/origin/HEAD ")] == kept, (
-        "no branch, no tag and not `origin/HEAD` was touched")
+    assert [ref for ref in after if not under_origin(ref, "HEAD")
+            ] == kept, "no branch, no tag and not `origin/HEAD` was touched"
+    assert not [ref for ref in after if ref.startswith("refs/notes/")], (
+        "a refspec of the mount that writes outside `origin/` is not named")
+    assert f"refs/remotes/origin/pr/7 {pin}" in after, (
+        "the pull request the mount's own refspec keeps, and the remote "
+        "still has, stays")
+    for gone in (stale, "refs/remotes/origin/pr/8",
+                 "refs/remotes/origin/by-hand"):
+        assert not [ref for ref in after if ref.startswith(gone + " ")], (
+            f"{gone}, which nothing on the remote backs, is pruned")
+    offline.assert_left_nothing()
+
+
+def test_a_branch_the_mounts_own_refspec_excludes_is_not_fetched(
+        holder, offline, tmp_path):
+    """A NEGATIVE REFSPEC IS THE PERSON'S, as `git fetch origin` took it. Git
+    applies the configured negative refspecs only to a fetch with none on
+    the command line (git 2.43), so `bump`'s own refspec would bring the
+    branch the mount excludes, and the commit pushed only to it would be
+    pinned from a branch the person said to leave alone. The refspec goes on
+    the command line, so both runs refuse `member-to-local-only` as before:
+    the branch is not fetched."""
+    env = isolated(offline, tmp_path)
+    mount = holder / PATH
+    made = commit_in_mount(
+        holder, env,
+        lambda m: (m / "EXCLUDED.md").write_bytes(b"a branch left out\n"))
+    branch = f"pushed-{made[:12]}"
+    raw(mount, env, "config", "--add", "remote.origin.fetch",
+        f"^refs/heads/{branch}")
+    raw(mount, env, "update-ref", "-d", f"refs/remotes/origin/{branch}")
+
+    stderr = both_runs(holder, env, made)
+
+    assert refusal(stderr) == local_only(made)
+    assert raw(mount, env, "for-each-ref", f"refs/remotes/origin/{branch}"
+               ).stdout == b"", "the excluded branch was not fetched"
     offline.assert_left_nothing()
 
 
@@ -281,7 +352,8 @@ def told_no_origin(stderr: str) -> tuple[str, str]:
     nothing about a network or a credential anywhere in it."""
     lines = stderr.splitlines()
     assert lines[0] == NO_ORIGIN_NOTE
-    assert "network" not in stderr and "credential" not in stderr
+    assert "network" not in stderr
+    assert "credential" not in stderr
     return refusal("\n".join(lines[1:]))
 
 
@@ -370,7 +442,8 @@ def test_a_mount_config_git_cannot_read_is_gits_own_failure(
     assert "THE EXACT COMMAND WAS:\n    git remote get-url origin\n" \
         in real.stderr
     assert "    exit 128\n" in real.stderr
-    assert "`origin`" not in real.stderr and "network" not in real.stderr
+    assert "`origin`" not in real.stderr
+    assert "network" not in real.stderr
     assert pinned_at(holder, env) == gitlink, "the gitlink did not move"
     assert (holder / "family.yaml").read_bytes() == manifest
     offline.assert_left_nothing()
