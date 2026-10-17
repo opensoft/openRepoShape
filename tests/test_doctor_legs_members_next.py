@@ -24,10 +24,11 @@ through `sh -c` exactly as the row printed it, and the row is asked again.
 Those tests are `WINDOWS_SKIP`: `sh` is a POSIX shell, and on Windows the
 reader's shell is PowerShell. The text-level assertions about what the line
 IS run on every OS. A git paste gets the file protocol per subprocess through
-`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0` and `GIT_CONFIG_VALUE_0` -- the
-fixtures' remotes are bare repositories on disk, which git refuses as a
-submodule URL by default -- and never `GIT_ALLOW_PROTOCOL`, which would
-override git's `user` policy for the whole run.
+git's `GIT_CONFIG_COUNT` entries -- the fixtures' remotes are bare
+repositories on disk, which git refuses as a submodule URL by default --
+appended at the call to the entries the environment holds (`paste_env`), and
+never through `GIT_ALLOW_PROTOCOL`, which would override git's `user` policy
+for the whole run.
 
 WHAT IS ASSERTED IS WHAT THE COMMAND DOES, and the explanation beside it is
 read through `why_of` alone, so that moving the `   # ` tail into a field of
@@ -48,24 +49,37 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
-from conftest import WINDOWS_SKIP, cloned_just_pushed, git, rmtree
+from conftest import (WINDOWS_SKIP, appended_to_command_scope,
+                      cloned_just_pushed, git, rmtree,
+                      submodule_update_through_git)
 from test_shape_doctor import (  # noqa: F401
     FAMILY_MEMBER, FAMILY_NAME, GIT_IDENTITY, PROJECT, commit_all, doctor,
     doctor_module, holder, project, record_gitlink, rows_of,
     scaffolded_here, standard,
 )
 
-#: What every pasted git line runs under: the identity a commit needs (this
-#: container has none, and neither does a fresh CI runner), the file
-#: protocol for ONE process tree, and no `PYTHONPATH` from the person
-#: running the suite -- a template line that needed one from the reader is
-#: exactly what these tests are not allowed to depend on.
-PASTE_ENV = {**{k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
-             **GIT_IDENTITY,
-             "GIT_CONFIG_COUNT": "1",
-             "GIT_CONFIG_KEY_0": "protocol.file.allow",
-             "GIT_CONFIG_VALUE_0": "always",
-             "PYTHONDONTWRITEBYTECODE": "1"}
+
+def paste_env() -> dict:
+    """What every pasted git line runs under: the identity a commit needs
+    (this container has none, and neither does a fresh CI runner), the file
+    protocol for ONE process tree, and no `PYTHONPATH` from the person
+    running the suite -- a template line that needed one from the reader is
+    exactly what these tests are not allowed to depend on.
+
+    BUILT AT THE CALL, from the `os.environ` of that moment, and the file
+    protocol is APPENDED to the `GIT_CONFIG_COUNT` entries it holds
+    (`appended_to_command_scope`): the session's own (`no_auto_maintenance`
+    keeps git's automatic maintenance off, #645) and the two the Windows job
+    sets. This was a dict built when the module was imported, at collection,
+    before the session fixture ran, so it held none of those, and its own
+    `GIT_CONFIG_COUNT` of 1 would have dropped the ones the environment did
+    hold (#758)."""
+    return {**{k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
+            **GIT_IDENTITY,
+            **appended_to_command_scope(
+                os.environ, [("protocol.file.allow", "always")]),
+            "PYTHONDONTWRITEBYTECODE": "1"}
+
 
 #: The git line's own words after `git -C <root>`: `--init` for a mount the
 #: clone never registered, `--recursive` for a member's own legs, and
@@ -98,7 +112,7 @@ def paste(row: dict, cwd: Path) -> subprocess.CompletedProcess:
     cwd.mkdir(exist_ok=True)
     return subprocess.run(["sh", "-c", row["next"]], cwd=str(cwd),
                           capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", check=False, env=PASTE_ENV,
+                          errors="replace", check=False, env=paste_env(),
                           stdin=subprocess.DEVNULL)
 
 
@@ -439,7 +453,7 @@ def test_the_keep_line_in_the_explanation_keeps_a_detached_commit(
     assert keep, why_of(row)
     kept = subprocess.run(["sh", "-c", keep.group(0).replace("NAME", "kept")],
                           capture_output=True, text=True, check=False,
-                          env=PASTE_ENV)
+                          env=paste_env())
     assert kept.returncode == 0, kept.stdout + kept.stderr
     result = paste(row, tmp_path / "elsewhere")
     assert result.returncode == 0, result.stdout + result.stderr
@@ -511,7 +525,7 @@ def test_a_plain_clones_empty_mounts_are_cured_by_the_pasted_line(
     `submodule.active`, so every other paste here would pass without it."""
     plain = cloned_just_pushed(
         scaffolded_here["base"] / "remotes" / f"{PROJECT}.git",
-        tmp_path / "Plain", recurse=False, env=PASTE_ENV)
+        tmp_path / "Plain", recurse=False, env=paste_env())
     row = row_of(standard, plain, "legs")
     assert row["status"] == "FINDING", row
     assert command_of(row).endswith("-- spec code"), row["next"]
@@ -606,7 +620,7 @@ def test_the_git_line_does_not_cure_a_mount_git_cannot_read_a_head_in(
     result = subprocess.run(
         ["git", "-C", str(project), "submodule", "update", "--init",
          "--recursive", "--", "spec"], capture_output=True, text=True,
-        check=False, env=PASTE_ENV)
+        check=False, env=paste_env())
     assert result.returncode != 0, result.stdout + result.stderr
     after = row_of(standard, project, "legs")
     assert after["status"] == "FINDING", after
@@ -614,7 +628,7 @@ def test_the_git_line_does_not_cure_a_mount_git_cannot_read_a_head_in(
 
 
 def test_a_checkout_wins_over_a_lockstep_fact_and_a_rerun_names_the_other(
-        standard, project):
+        standard, project, scaffolded_here):
     """One leg a checkout cures (an empty mount) and one it does not (a
     gitlink that is not the pin): the line is the checkout, over the first
     leg only, and it says to run the doctor again. The re-run names the
@@ -628,8 +642,8 @@ def test_a_checkout_wins_over_a_lockstep_fact_and_a_rerun_names_the_other(
     ), first["next"]
     assert "doctor again" in why_of(first), why_of(first)
     # The fix, applied by hand (no sh needed): the empty leg is now cured.
-    git("-c", "protocol.file.allow=always", "submodule", "update", "--init",
-        "--recursive", "--", "code", cwd=project)
+    submodule_update_through_git(project, scaffolded_here["base"] / "remotes",
+                                 "--init", "--recursive", "--", "code")
     second = row_of(standard, project, "legs")
     assert second["status"] == "FINDING", second
     assert command_of(second) == pins_gate(module, standard, project, True), \
@@ -782,7 +796,7 @@ def test_a_pasted_members_git_line_keeps_a_detached_commit_on_the_kept_branch(
     keep = re.search(r"git -C \S+ branch NAME", why_of(row))
     assert keep, why_of(row)
     subprocess.run(["sh", "-c", keep.group(0).replace("NAME", "kept")],
-                   capture_output=True, check=True, env=PASTE_ENV)
+                   capture_output=True, check=True, env=paste_env())
     result = paste(row, tmp_path / "elsewhere")
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, root, "members")["status"] == "ok"
@@ -984,8 +998,9 @@ def test_an_empty_member_with_no_pin_is_still_a_checkout_first(
     assert command_of(row) == (
         f"git -C {module.quote_arg(root.resolve())} {UPDATE} -- "
         f"members/{FAMILY_MEMBER}"), row["next"]
-    git("-c", "protocol.file.allow=always", "submodule", "update", "--init",
-        "--recursive", "--", f"members/{FAMILY_MEMBER}", cwd=root)
+    submodule_update_through_git(root, holder["base"] / "remotes", "--init",
+                                 "--recursive", "--",
+                                 f"members/{FAMILY_MEMBER}")
     again = row_of(standard, root, "members")
     assert again["status"] == "FINDING", again
     assert "validate-family.py" in command_of(again), again["next"]
@@ -1015,7 +1030,7 @@ def sh(line: str, cwd: Path) -> subprocess.CompletedProcess:
     cwd.mkdir(exist_ok=True)
     return subprocess.run(["sh", "-c", line], cwd=str(cwd),
                           capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", check=False, env=PASTE_ENV,
+                          errors="replace", check=False, env=paste_env(),
                           stdin=subprocess.DEVNULL)
 
 
@@ -1047,12 +1062,14 @@ def detached_member(root: Path) -> Path:
     return member
 
 
-def with_its_own_legs(root: Path) -> Path:
+def with_its_own_legs(root: Path, holder: dict) -> Path:
     """`family.py add` does not recurse, so the fixture's member has empty
-    legs: fill them, as a recursive clone of the holder does. Each is then
-    detached at the commit the MEMBER records for it."""
-    git("-c", "protocol.file.allow=always", "submodule", "update", "--init",
-        "--recursive", "--", f"members/{FAMILY_MEMBER}", cwd=root)
+    legs: fill them, as a recursive clone of the holder does, from the
+    remotes the `holder` fixture made. Each is then detached at the commit
+    the MEMBER records for it."""
+    submodule_update_through_git(root, holder["base"] / "remotes", "--init",
+                                 "--recursive", "--",
+                                 f"members/{FAMILY_MEMBER}")
     return root / "members" / FAMILY_MEMBER
 
 
@@ -1238,11 +1255,11 @@ def test_413b_without_it_the_holders_bootstrap_leaves_the_commit_in_no_ref(
     assert commit in git("reflog", cwd=member).stdout
 
 
-def made_in_a_members_own_leg(root: Path) -> tuple[Path, str]:
+def made_in_a_members_own_leg(root: Path, holder: dict) -> tuple[Path, str]:
     """A commit in the member, so the row is red, and one in the member's
     own detached `spec` leg, which the row never reads: the leg and the
     second commit's sha."""
-    member = with_its_own_legs(root)
+    member = with_its_own_legs(root, holder)
     git("checkout", "-q", "--detach", "HEAD", cwd=member)
     commit_in(member, "work in the member")
     leg = member / "spec"
@@ -1256,7 +1273,7 @@ def test_413c_the_members_git_line_says_it_checks_out_each_members_legs(
     in general words, with the keep line to run in that leg first."""
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    made_in_a_members_own_leg(root)
+    made_in_a_members_own_leg(root, holder)
     module = doctor_module(standard)
     row = row_of(standard, root, "members")
     assert command_of(row) == (
@@ -1275,7 +1292,7 @@ def test_413c_the_leg_keep_line_keeps_a_members_leg_commit_through_the_paste(
         standard, holder, tmp_path):
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    leg, commit = made_in_a_members_own_leg(root)
+    leg, commit = made_in_a_members_own_leg(root, holder)
     module = doctor_module(standard)
     row = row_of(standard, root, "members")
     keep = re.search(r"git -C LEG branch NAME", why_of(row))
@@ -1294,7 +1311,7 @@ def test_413c_without_it_the_members_leg_commit_is_in_no_ref(
         standard, holder, tmp_path):
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    leg, commit = made_in_a_members_own_leg(root)
+    leg, commit = made_in_a_members_own_leg(root, holder)
     result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, root, "members")["status"] == "ok"
@@ -1650,7 +1667,10 @@ def test_414_3_there_the_bootstrap_cures_nothing_and_the_git_line_cures_one(
                    f"{module.quote_arg(tried / 'scripts' / 'bootstrap.py')} "
                    f"--root {module.quote_arg(tried)}", tmp_path / "boot")
     output = bootstrap.stdout + bootstrap.stderr
-    assert bootstrap.returncode == 0, output
+    # It cures nothing, and since #648 it says so and fails: git stopped
+    # at Ghost, whose section gives no url, before it checked out either.
+    assert bootstrap.returncode == 1, output
+    assert "git stopped at members/Ghost" in output, output
     assert "No url found" in output, output
     assert not any((tried / "members" / FAMILY_MEMBER).iterdir()), output
     result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
@@ -1876,6 +1896,15 @@ def test_without_it_the_legs_own_submodule_commit_is_in_no_ref(
     assert commit in git("reflog", cwd=nested).stdout
 
 
+def clone_member(first: Path, ghost: Path) -> None:
+    """`ghost`, a plain clone of the member at `first`, read through git
+    (`cloned_just_pushed`): its own legs stay empty, as the first member's
+    are, which a recursive clone would fill from the urls `.gitmodules`
+    gives."""
+    cloned_just_pushed(first, ghost, recurse=False)
+    assert not any((ghost / "spec").iterdir()), "the clone filled a leg"
+
+
 def with_a_second_member_off_its_gitlink(root: Path) -> tuple[Path, str]:
     """A second member, `Ghost`, a clone of the first, recorded at a commit
     that is not its pin and detached at another past that one; and the
@@ -1887,8 +1916,7 @@ def with_a_second_member_off_its_gitlink(root: Path) -> tuple[Path, str]:
     ghost = root / "members" / "Ghost"
     url = git("config", "-f", ".gitmodules", "--get",
               f"submodule.members/{FAMILY_MEMBER}.url", cwd=root).stdout
-    git("-c", "protocol.file.allow=always", "clone", "-q", "--no-local",
-        str(first), str(ghost), cwd=root)
+    clone_member(first, ghost)
     add_member_row(root, "Ghost")
     git("config", "-f", ".gitmodules", "submodule.members/Ghost.path",
         "members/Ghost", cwd=root)
@@ -1988,8 +2016,7 @@ def with_a_second_member(root: Path, at_pin: bool, section: str) -> Path:
     ghost = root / "members" / "Ghost"
     url = git("config", "-f", ".gitmodules", "--get",
               f"submodule.members/{FAMILY_MEMBER}.url", cwd=root).stdout
-    git("-c", "protocol.file.allow=always", "clone", "-q", "--no-local",
-        str(first), str(ghost), cwd=root)
+    clone_member(first, ghost)
     add_member_row(root, "Ghost")
     if section != "none":
         git("config", "-f", ".gitmodules", "submodule.members/Ghost.path",
@@ -2154,7 +2181,7 @@ def test_an_emptied_members_own_leg_is_kept_through_its_repository(
     kept for the member keeps a commit made in its own `spec` leg."""
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    leg, commit = made_in_a_members_own_leg(root)
+    leg, commit = made_in_a_members_own_leg(root, holder)
     git("submodule", "deinit", "-q", "-f", "--", f"members/{FAMILY_MEMBER}",
         cwd=root)
     module = doctor_module(standard)

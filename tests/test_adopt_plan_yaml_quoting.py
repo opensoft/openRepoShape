@@ -66,6 +66,7 @@ import argparse
 import functools
 import importlib.util
 import itertools
+import os
 import random
 import re
 import shutil
@@ -74,8 +75,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, cloned_just_pushed, git, make_source_repo,
-                      resolve, run_script, write_plan)
+from conftest import (ADOPT, REPO, appended_to_command_scope,
+                      cloned_just_pushed, git, make_source_repo, resolve,
+                      run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import repo_shape  # noqa: E402
@@ -941,8 +943,8 @@ def test_plan_takes_an_elector_from_git_the_manifests_quotes_read_back(
     result = run_script(
         ADOPT, "plan", "--source", str(source), PROJECT_FLAG, PROJECT_NAME,
         "--org", TEST_ORG, "--elected-on", ELECTION_DATE, "--out", str(plan),
-        env={"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name",
-             "GIT_CONFIG_VALUE_0": DOMAIN_USER})
+        env=appended_to_command_scope(os.environ,
+                                      [("user.name", DOMAIN_USER)]))
     assert result.returncode == 0, result.stdout + result.stderr
     assert '\nelected_by: "CORP\\\\tom"\n' in text_of(plan)
     for path, leg in ANSWERS:
@@ -1694,7 +1696,9 @@ def test_a_manifest_its_reader_refuses_is_the_validators_alone(
                            "write is a file the project's own YAML reader "
                            "refuses: "), stderr
     assert stderr.count("Remediation: ") == 1, stderr
-    assert VALIDATOR_REMEDIATION_START in stderr, stderr
+    # The words are the reader's, and since #708 so is the remedy.
+    assert adopter.MANIFEST_UNREADABLE_REMEDIATION in stderr, stderr
+    assert VALIDATOR_REMEDIATION_START not in stderr, stderr
 
 
 #: A leg path the validator refuses as text, which its finding about the
