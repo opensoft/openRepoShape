@@ -4069,40 +4069,6 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     return "none", None, None
 
 
-def history_left_out(root: Path, pin: str) -> str | None:
-    """The first promisor remote of `root`, where `root` is a partial clone
-    that lacks an object `pin_restore`'s walk of `pin`'s history reads,
-    asked without fetching; None where it lacks none, or is no partial
-    clone (#787).
-
-    THE WALK'S READS FAIL THERE, AND THE DOCTOR FETCHED THEM BEFORE.
-    Measured on #787 with git 2.43: a `--filter=blob:none` clone of a root
-    whose HEAD commit broke its pin made one lazy fetch, of the pin before
-    it, and a `--filter=tree:0` one two. With `GIT_NO_LAZY_FETCH` set
-    (`lazy_fetch_off`) each read fails instead, and the walk, which reads a
-    failure as "no pin there", said "none": no commit in this root holds a
-    pin to put back, which is not so.
-
-    `rev-list --objects --missing=print` over the commits that touched
-    `pin`, one more than the walk reads, lists the pin at each and the
-    trees down to it, and prints `?<id>` for each the clone does not hold,
-    without fetching (`objects_lacking` says why). Where the clone lacks a
-    tree, as a `tree:0` one does, it cannot tell which commits touched the
-    pin and fails, as the walk's own `rev-list` does: that is lacking too.
-    A root with no HEAD has no history to walk, and is not asked.
-    """
-    remotes = promisor_remotes(root)
-    if not remotes or head_of(root) is None:
-        return None
-    listed = git_answer(["rev-list", "--objects", "--missing=print", "-n",
-                         str(PIN_HISTORY_DEPTH + 1), "HEAD", "--", pin],
-                        root, binary=True)
-    if listed is not None and not any(
-            MISSING_OBJECT.fullmatch(line) for line in listed.split(b"\n")):
-        return None
-    return remotes[0]
-
-
 def taken_with_the_pin(ctx: Context, kind, copies: list,
                        stages: dict) -> list:
     """Which of `copies`, conflicted beside the shape pin, `pin_restore`
@@ -4828,6 +4794,40 @@ def remotes_holding(shape: Path, remotes: list, commit: str) -> list:
             if git_answer(["for-each-ref", "--count=1",
                            "--format=%(refname)", f"--contains={commit}",
                            f"refs/remotes/{name}/"], shape)]
+
+
+def history_left_out(root: Path, pin: str) -> str | None:
+    """The first promisor remote of `root`, where `root` is a partial clone
+    that lacks an object `pin_restore`'s walk of `pin`'s history reads,
+    asked without fetching; None where it lacks none, or is no partial
+    clone (#787).
+
+    THE WALK'S READS FAIL THERE, AND THE DOCTOR FETCHED THEM BEFORE.
+    Measured on #787 with git 2.43: a `--filter=blob:none` clone of a root
+    whose HEAD commit broke its pin made one lazy fetch, of the pin before
+    it, and a `--filter=tree:0` one two. With `GIT_NO_LAZY_FETCH` set
+    (`lazy_fetch_off`) each read fails instead, and the walk, which reads a
+    failure as "no pin there", said "none": no commit in this root holds a
+    pin to put back, which is not so.
+
+    `rev-list --objects --missing=print` over the commits that touched
+    `pin`, one more than the walk reads, lists the pin at each and the
+    trees down to it, and prints `?<id>` for each the clone does not hold,
+    without fetching (`objects_lacking` says why). Where the clone lacks a
+    tree, as a `tree:0` one does, it cannot tell which commits touched the
+    pin and fails, as the walk's own `rev-list` does: that is lacking too.
+    A root with no HEAD has no history to walk, and is not asked.
+    """
+    remotes = promisor_remotes(root)
+    if not remotes or head_of(root) is None:
+        return None
+    listed = git_answer(["rev-list", "--objects", "--missing=print", "-n",
+                         str(PIN_HISTORY_DEPTH + 1), "HEAD", "--", pin],
+                        root, binary=True)
+    if listed is not None and not any(
+            MISSING_OBJECT.fullmatch(line) for line in listed.split(b"\n")):
+        return None
+    return remotes[0]
 
 
 def check_shape_currency(ctx: Context) -> Row:
