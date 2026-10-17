@@ -78,6 +78,20 @@ SECOND_LINE = ("          the branch is the leg's `branch:`, else `--branch`, "
                "and run bootstrap again.")
 
 
+def written(branch: str):
+    """`branch` as a row of the no-fault test, skipped where this system's
+    encoding cannot write it: there `_argument_fault` faults it as #710's
+    `UNWRITABLE`, which `tests/test_bootstrap_non_utf8_branch.py` holds
+    (RV824's S2). Asked at collection, of `os.fsencode` itself."""
+    try:
+        os.fsencode(branch)
+    except UnicodeEncodeError:
+        return pytest.param(branch, marks=pytest.mark.skip(
+            reason="this system's encoding cannot write it, so it is #710's "
+                   "UNWRITABLE fault, held in test_bootstrap_non_utf8_branch"))
+    return branch
+
+
 def not_tried(leg: str, printed: str, point: str, kind: str) -> list[str]:
     return [f"  [{leg}] {leg}: could not create branch {printed}: it holds "
             f"{point}, {kind}, which no command can be given as an "
@@ -377,11 +391,14 @@ def bootstrap_module():
 
 
 @pytest.mark.parametrize("branch", [
-    "main", "release/1.2", "feature/日本", "a‍b", "a\xe9b", "a b",
+    "main", "release/1.2", written("feature/日本"), written("a‍b"),
+    written("a\xe9b"), "a b",
     "a\x1bb", "a..b", "", "\udc80", "a\udcffb"])
 def test_a_branch_the_system_carries_has_no_fault(bootstrap_module, branch):
-    """Nothing but a NUL and a lone surrogate with no byte is a fault: a
-    control, a space, `..`, a character the system's encoding may lack, and
+    """Where the system's encoding writes every character of the branch,
+    nothing but a NUL and a lone surrogate with no byte is a fault: a
+    control, a space, `..`, a character that is not ASCII (`written` skips
+    one the encoding cannot write, #710's `UNWRITABLE`), and
     the byte-carrying surrogates U+DC80 to U+DCFF are the commands'. On a
     system whose `os.fsencode` does not carry U+DC80 and U+DCFF (Windows) the
     next test is the one that holds."""
