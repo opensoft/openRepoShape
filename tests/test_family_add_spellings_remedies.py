@@ -41,12 +41,13 @@ import pytest
 from conftest import cloned_just_pushed, git, rmtree
 from test_family import NAME, SPARE, family  # noqa: F401
 from test_family_add_member_variant import (
-    OTHER_ROW, OTHER_VARIANT, ROW, VARIANT, VARIANT_SHOWN, dry_run_in_process,
-    in_the_index, moved_back, refused_in_process, registered,
-    typed_as_printed, variant,
+    OTHER_ROW, OTHER_VARIANT, REMOVE, ROW, VARIANT, VARIANT_SHOWN,
+    dry_run_in_process, in_the_index, moved_back, record, refused_in_process,
+    registered, typed_as_printed, variant,
 )
 from test_family_add_refusals import (  # noqa: F401
-    family_module, holder, offline, plant, unborn_holder,
+    family_module, holder, index_bytes, offline, plant, refusal,
+    unborn_holder,
 )
 from test_family_head_lost_gitmodules import (
     DISKS, assert_passes_in_every_mode,
@@ -96,6 +97,10 @@ def renamed_back(commit: bool, free: str = FREE, gone: tuple = (),
 STAGE_FIRST = ("stage the change to .gitmodules that nobody has staged, or "
                "set it aside, since `git mv` and `git rm` of a gitlink refuse "
                "to run beside one (`git add -- .gitmodules`)")
+#: The part of the remedy for a `.gitmodules` the work tree lacks.
+RESTORE_FIRST = ("put back the copy of .gitmodules the index holds, which the "
+                 "work tree lacks, since git edits each member's section "
+                 "there (`git checkout -- .gitmodules`)")
 
 
 def gitmodules_changed(root: Path) -> None:
@@ -246,6 +251,17 @@ def gitmodules_unstaged(root: Path) -> tuple:
             ["git add -- .gitmodules", *two_steps()])
 
 
+def gitmodules_deleted(root: Path) -> tuple:
+    """The rename committed, then `.gitmodules` deleted from the work tree
+    and not staged: it is put back first, never staged, since `git add` of
+    it would stage the deletion and the commit would then take every
+    member's section out of HEAD (#685's review, MUST-A)."""
+    commits = renamed_with_git(root, True)
+    (root / ".gitmodules").unlink()
+    return (commits, BOTH, remedy_of(RESTORE_FIRST, renamed_back(True)),
+            ["git checkout -- .gitmodules", *two_steps(), "git commit"])
+
+
 #: `{state: how it is made, returning ({row: commit}, the refusal's first
 #: line, its remedy, what is typed)}`.
 RENAMED = {
@@ -260,6 +276,7 @@ RENAMED = {
     "nothing of it on disk": nothing_of_it_on_disk,
     "a committed file deleted from disk": a_committed_file_deleted,
     "a change to .gitmodules nobody staged": gitmodules_unstaged,
+    "a .gitmodules deleted from disk": gitmodules_deleted,
 }
 
 
@@ -430,6 +447,30 @@ def a_directory_where_a_file_is(root: Path) -> None:
     (root / "Members" / "README" / "inner").write_bytes(b"our own notes\n")
 
 
+def no_symlink_on_windows() -> None:
+    """A symlink needs a privilege Windows runners do not grant."""
+    if os.name == "nt":
+        pytest.skip("a symlink needs a privilege Windows runners do not grant")
+
+
+def members_a_link_to_it(root: Path) -> None:
+    """A link `members -> Members`: no disk's `members/` itself, and the
+    second step would say `destination already exists` and leave the holder
+    half renamed (#685's review, MUST-B)."""
+    no_symlink_on_windows()
+    os.symlink("Members", root / "members", target_is_directory=True)
+
+
+def it_a_link_outside(root: Path) -> None:
+    """`Members` a link to a directory outside the holder, holding the
+    checkouts: `git mv` of it says `not under version control` (#685's
+    review, SHOULD-A)."""
+    no_symlink_on_windows()
+    os.rename(root / "Members", root.parent / "Members-real")
+    os.symlink(os.path.join("..", "Members-real"), root / "Members",
+               target_is_directory=True)
+
+
 #: `{state: how it is laid out after `git mv members Members`, staged}`.
 NOT_RENAMED_BACK = {
     "a members/ on disk beside it": members_beside_it,
@@ -450,6 +491,8 @@ NOT_RENAMED_BACK = {
         gone_where_no_section_names_it),
     "a file where a checkout was": a_file_where_a_checkout_was,
     "a directory where a file is": a_directory_where_a_file_is,
+    "a link members to Members": members_a_link_to_it,
+    "Members a link to a directory outside": it_a_link_outside,
 }
 
 
@@ -491,27 +534,149 @@ def test_nothing_in_it_a_members_own_keeps_its_own_remedy(family_module,
         ("Members/README", "git mv")]
 
 
-@pytest.mark.parametrize("gitlink", [True, False],
-                         ids=["beside a gitlink", "beside a file alone"])
-def test_a_change_to_gitmodules_is_staged_first_only_beside_a_gitlink(
-        holder, family_module, gitlink):
-    """A change to `.gitmodules` nobody staged is staged first wherever the
-    index holds a gitlink the refusal names, as #646's move back of a
-    member's own gitlink is (`git rm` of a gitlink refuses beside it too),
-    and not where it names a file alone, which `git rm --cached` takes out
-    whatever `.gitmodules` holds."""
-    if gitlink:
-        commit = variant(holder)
-        move, closing = moved_back({ROW: ([VARIANT], commit)})
-        said = remedy_of(STAGE_FIRST, move, *closing)
-    else:
-        plant(holder, "100644", "Members/README")
-        said = remedy_of(
-            "take what has nothing on disk in that spelling out of the "
-            "index, which touches no file (`git rm -r --cached -- "
-            "Members/README`)")
-    gitmodules_changed(holder)
+def beside_the_move_back(root: Path) -> str:
+    """#646's state, IRRS's gitlink moved to `Members/IRRS` in the index
+    alone, and a change to `.gitmodules` nobody staged: staged first, as
+    `git rm` of a gitlink refuses beside it too. Returns the remedy."""
+    commit = variant(root)
+    gitmodules_changed(root)
+    move, closing = moved_back({ROW: ([VARIANT], commit)})
+    return remedy_of(STAGE_FIRST, move, *closing)
+
+
+def beside_a_file_alone(root: Path) -> str:
+    """A file `Members/README` in the index, and a change to `.gitmodules`
+    nobody staged: `git rm --cached` takes the file out whatever
+    `.gitmodules` holds, so nothing is said of it."""
+    plant(root, "100644", "Members/README")
+    gitmodules_changed(root)
+    return remedy_of(
+        "take what has nothing on disk in that spelling out of the index, "
+        "which touches no file (`git rm -r --cached -- Members/README`)")
+
+
+def gitmodules_kept_off_disk(root: Path) -> str:
+    """#646's state, and a `.gitmodules` a sparse checkout keeps off disk:
+    `git checkout --` of it matches nothing, and it is `gitmodules-sparse`'s
+    to name, so nothing is said of it here."""
+    commit = variant(root)
+    git("update-index", "--skip-worktree", "--", ".gitmodules", cwd=root)
+    (root / ".gitmodules").unlink()
+    move, closing = moved_back({ROW: ([VARIANT], commit)})
+    return remedy_of(move, *closing)
+
+
+#: `{state: how it is made, returning the remedy}`.
+GITMODULES_STATES = {
+    "a change beside a gitlink": beside_the_move_back,
+    "a change beside a file alone": beside_a_file_alone,
+    "a copy a sparse checkout keeps off disk": gitmodules_kept_off_disk,
+}
+
+
+@pytest.mark.parametrize("state", list(GITMODULES_STATES))
+def test_what_gitmodules_needs_first_is_said_beside_a_gitlink(
+        holder, family_module, state):
+    """What the work tree's `.gitmodules` needs before `git mv` or `git rm`
+    of a gitlink is said first wherever the index holds a gitlink the
+    refusal names, and only what git can type: nothing beside a file alone,
+    nor for a copy a sparse checkout keeps off disk."""
+    said = GITMODULES_STATES[state](holder)
     assert refused_in_process(family_module, holder)[1] == said
+
+
+def test_no_gitmodules_in_the_index_adds_nothing_first(family_module,
+                                                       tmp_path):
+    """A holder whose index holds no `.gitmodules` at all, and a gitlink
+    under `Members/`: nothing is said of the file."""
+    root = unborn_holder(tmp_path)
+    plant(root, "160000", "Members/X")
+    with pytest.raises(family_module.Refusal) as caught:
+        family_module._checked_mount_path(root, SPARE, MOUNT, frozenset())
+    assert str(caught.value).splitlines()[1] == remedy_of(
+        "take what has nothing on disk in that spelling out of the index, "
+        "which touches no file (`git rm -r --cached -- Members/X`)")
+
+
+def test_a_missing_gitmodules_is_put_back_before_the_move_back(
+        family, holder, offline):
+    """#646's state, and `.gitmodules` deleted from the work tree and not
+    staged: put back first, never staged. Typed as printed, HEAD keeps
+    every section, IRRS is where its row says, the gate passes in every
+    mode, and the same `add` goes through with every member registered
+    (#685's review, MUST-A)."""
+    commit = variant(holder)
+    (holder / ".gitmodules").unlink()
+    move, closing = moved_back({ROW: ([VARIANT], commit)})
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said == (in_the_index(VARIANT_SHOWN),
+                    remedy_of(RESTORE_FIRST, move, *closing))
+    assert typed_as_printed(holder, said[1]) == [
+        "git checkout -- .gitmodules", REMOVE, record(commit), "git commit"]
+    registered(holder, family["root"], commit)
+    assert_passes_in_every_mode(holder, 2)
+    added(offline, holder, family["remotes"])
+    assert_passes_in_every_mode(holder, 3)
+
+
+def unmerged_gitmodules(root: Path) -> bytes:
+    """`.gitmodules` unmerged at stages 1, 2 and 3, the other side adding a
+    comment, and its work-tree copy holding conflict markers, with nothing
+    in progress, as a conflicted `git stash pop` leaves it; all written as
+    BYTES. Returns this side's copy, the resolution the test takes."""
+    ours = (root / ".gitmodules").read_bytes()
+    base = git("rev-parse", ":.gitmodules", cwd=root).stdout.strip()
+    theirs = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"], cwd=str(root),
+        input=ours + b"# theirs\n", capture_output=True,
+        check=True).stdout.decode("ascii").strip()
+    written = subprocess.run(
+        ["git", "update-index", "--index-info"], cwd=str(root),
+        input=(f"0 {'0' * 40}\t.gitmodules\n100644 {base} 1\t.gitmodules\n"
+               f"100644 {base} 2\t.gitmodules\n"
+               f"100644 {theirs} 3\t.gitmodules\n").encode("ascii"),
+        capture_output=True, check=False)
+    assert written.returncode == 0, written.stderr
+    (root / ".gitmodules").write_bytes(
+        ours + b"<<<<<<< Updated upstream\n=======\n# theirs\n"
+        b">>>>>>> Stashed changes\n")
+    return ours
+
+
+def test_an_unmerged_gitmodules_is_named_first(family, holder, offline,
+                                              monkeypatch, tmp_path):
+    """The rename committed, and `.gitmodules` unmerged, its work-tree copy
+    holding conflict markers: `gitmodules-unstaged` names it first, with its
+    own restore, since `git add` of it stages the markers and `git mv` then
+    says `bad config line` (#685's review, MUST-A). The index is left as it
+    was. With the conflict resolved to this side and staged as printed, the
+    rename back is printed and types through: every member is where its
+    row says, the gate passes in every mode, and the same `add` goes
+    through."""
+    folding_skip(tmp_path)
+    commits = renamed_with_git(holder, True)
+    ours = unmerged_gitmodules(holder)
+    index = index_bytes(holder)
+    result = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert result.returncode == 2, result.stdout + result.stderr
+    first, said = refusal(result.stderr)
+    assert first.startswith("REFUSED gitmodules-unstaged: .gitmodules is "
+                            "unmerged in the index.")
+    assert said == ("Remediation: resolve the conflict in it and stage the "
+                    "result, `git add .gitmodules`, then run the same "
+                    "command again.")
+    assert index_bytes(holder) == index
+    (holder / ".gitmodules").write_bytes(ours)
+    git("add", ".gitmodules", cwd=holder)
+    refused = refused_untouched(offline, holder, family["remotes"])
+    assert refused == (BOTH, remedy_of(renamed_back(True)))
+    assert typed_with_local_remotes(monkeypatch, holder, refused[1]) == [
+        *two_steps(), "git commit"]
+    for row, commit in commits.items():
+        registered(holder, family["root"], commit, row)
+    assert_passes_in_every_mode(holder, 2)
+    added(offline, holder, family["remotes"])
+    assert_passes_in_every_mode(holder, 3)
 
 
 #: `{state: (what holds a name like the free one, the name chosen)}`.

@@ -2934,6 +2934,11 @@ def _renamed_with_git(root: Path, found: list[Spelled],
     - No `members/` is on this disk, or the one there is that spelling's own
       directory (`samefile`), as on macOS and Windows: a second directory
       would take the second step into it.
+    - Neither that spelling nor `members` is a link, which is never
+      `members/` itself (`_members_dir_on_disk`): `git mv` of a link to a
+      directory says `not under version control`, and with a link `members
+      -> Members` the second step says `destination already exists` and
+      leaves the holder half renamed (#685's review, MUST-B).
     - Every entry under it is at stage 0 (`git mv` says `source directory
       is empty` for an unmerged gitlink, and `conflicted` for a file), and
       no sparse checkout keeps one off disk, which `git mv` refuses without
@@ -2956,6 +2961,9 @@ def _renamed_with_git(root: Path, found: list[Spelled],
                    if spelled.where == IN_HEAD_ONLY)):
         return None
     (spelling,) = spellings
+    if os.path.islink(root / spelling) or (
+            canon is not None and os.path.islink(root / canon)):
+        return None
     if canon is not None:
         try:
             if not (os.path.isdir(root / spelling) and os.path.samefile(
@@ -3140,13 +3148,43 @@ def _members_spellings(root: Path, project: str,
     return found
 
 
+#: How the work tree's `.gitmodules` stands beside the index's copy, as
+#: `_gitmodules_beside` answers it (#685).
+GITMODULES_MODIFIED = "modified"
+GITMODULES_MISSING = "missing"
+GITMODULES_UNMERGED = "unmerged"
+
+
+def _gitmodules_beside(root: Path) -> str:
+    """How the work tree's `.gitmodules` stands beside the index's copy, told
+    apart as `_checked_gitmodules_as_staged` tells them apart, for the
+    remedies `_spellings_refusal` prints where the index holds a gitlink
+    (#685): `GITMODULES_UNMERGED` where the index holds it at a stage other
+    than 0; `GITMODULES_MISSING` where the index holds it at stage 0 and the
+    work tree has none; `GITMODULES_MODIFIED` where both hold one and git
+    lists it as modified (`git ls-files -m`, which lists a missing one too);
+    else empty: none in the index, one a sparse checkout keeps off disk
+    (`gitmodules-sparse`'s), or one as the index holds it."""
+    records = _gitmodules_in_index(root)
+    if any(stage for _, _, stage in records):
+        return GITMODULES_UNMERGED
+    if not records or records[0][0].upper() == "S":
+        return ""
+    if not os.path.lexists(root / GITMODULES):
+        return GITMODULES_MISSING
+    if GITMODULES.encode() in _git_bytes(["ls-files", "-m", "-z"],
+                                         root).split(b"\0"):
+        return GITMODULES_MODIFIED
+    return ""
+
+
 #: The order `_spellings_refusal` names its groups in. Its remedies run in
 #: `REMEDY_ORDER`: a pending change in HEAD is committed first.
 SPELLED_ORDER = (IN_INDEX, IN_HEAD_ONLY, ON_DISK)
 
 
 def _spellings_refusal(path: str, found: list[Spelled],
-                       gitmodules_unstaged: bool = False) -> Refusal:
+                       gitmodules: str = "") -> Refusal:
     """The refusal for what `_members_spellings` found: every path named in
     its exact spelling, at most five in each place, with where it was found,
     and every remedy (Brett Heap's ruling of 2026-10-14, "Refuse on every
@@ -3171,12 +3209,20 @@ def _spellings_refusal(path: str, found: list[Spelled],
     for a POSIX shell (#532). A `--sparse` says the git it needs
     (`SPARSE_MV_GIT`, `SPARSE_RM_GIT`, #685).
 
-    A CHANGE TO `.gitmodules` NOBODY HAS STAGED (`gitmodules_unstaged`, as
-    `git ls-files -m` lists it) is staged first, wherever the index holds a
-    gitlink this refusal names: `git mv` and `git rm` of a gitlink refuse to
-    run beside one (`Please stage your changes to .gitmodules or stash them
-    to proceed`), and `gitmodules-unstaged`, which says so, is asked after
-    this refusal (#685).
+    THE WORK TREE'S `.gitmodules` (`gitmodules`, `_gitmodules_beside`'s
+    answer, which `_checked_mount_path` passes only where the index holds a
+    gitlink this refusal names) comes first (#685):
+    - A change to it nobody has staged (`GITMODULES_MODIFIED`) is staged:
+      `git mv` and `git rm` of a gitlink refuse to run beside one (`Please
+      stage your changes to .gitmodules or stash them to proceed`).
+    - A copy the work tree lacks (`GITMODULES_MISSING`) is put back from the
+      index: `git mv` rewrites a moved member's section only in the work
+      tree's copy and passes over it where there is none, and a `git add`
+      of the file would stage its deletion, which the printed commit would
+      then take out of HEAD with every member's section (#685's review,
+      MUST-A).
+    `gitmodules-unstaged`, which says the same of the file, is asked after
+    this refusal; an unmerged copy is its to name first.
 
     THE MOVE BACK (#646) is `validate-family.py`'s for the same state
     (#611), in one line: `git rm -r --cached --ignore-unmatch` of every
@@ -3215,14 +3261,16 @@ def _spellings_refusal(path: str, found: list[Spelled],
             for target in targets)
 
     parts = []
-    if gitmodules_unstaged and any(
-            spelled.where == IN_INDEX
-            and spelled.kind == INDEX_ENTRY_KINDS[0o160000]
-            for spelled in found):
+    if gitmodules == GITMODULES_MODIFIED:
         parts.append(
             f"stage the change to {GITMODULES} that nobody has staged, or "
             "set it aside, since `git mv` and `git rm` of a gitlink refuse "
             f"to run beside one (`git add -- {GITMODULES}`)")
+    elif gitmodules == GITMODULES_MISSING:
+        parts.append(
+            f"put back the copy of {GITMODULES} the index holds, which the "
+            "work tree lacks, since git edits each member's section there "
+            f"(`git checkout -- {GITMODULES}`)")
     if by[COMMIT]:
         named = ", ".join(f"`{target}`" for target in by[COMMIT])
         parts.append(
@@ -3608,9 +3656,18 @@ def _checked_mount_path(root: Path, project: str, path: str,
             + "re-run.")
     spelled = _members_spellings(root, project, on_disk, rows)
     if spelled:
-        raise _spellings_refusal(
-            path, spelled, GITMODULES.encode() in _git_bytes(
-                ["ls-files", "-m", "-z"], root).split(b"\0"))
+        # The work tree's `.gitmodules`, where a remedy runs `git mv` or `git
+        # rm` of a gitlink (#685). An unmerged copy is `gitmodules-unstaged`'s
+        # to name, with its own restore, first: git cannot rewrite it, nor
+        # read conflict markers, and a `git add` of it stages them.
+        beside = _gitmodules_beside(root) if any(
+            spelled_one.where == IN_INDEX
+            and spelled_one.kind == INDEX_ENTRY_KINDS[0o160000]
+            for spelled_one in spelled) else ""
+        if beside == GITMODULES_UNMERGED:
+            _checked_gitmodules_as_staged(root, "add")
+            beside = ""
+        raise _spellings_refusal(path, spelled, beside)
     # A DIRECTORY NO LISTING COULD READ hides nothing: `lexists` asks the
     # path itself, as it always did, after every listing has answered.
     if os.path.lexists(root / path):
