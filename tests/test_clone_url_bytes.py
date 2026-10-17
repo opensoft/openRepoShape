@@ -44,7 +44,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ORG, SCAFFOLD, blank_unnamed_pin_sources
+from conftest import (ORG, SCAFFOLD, blank_unnamed_pin_sources,
+                      skip_where_a_name_cannot_be_not_utf_8)
 # Fixtures of the #282 file, on the harness this one shares with it: the
 # scaffold loaded as a module, and the guard that no process is started.
 from test_scaffold_free_text_values import (  # noqa: F401 - fixtures
@@ -133,18 +134,34 @@ def family_refusal(url: str, reason: str) -> str:
         f"{FAMILY_REMEDIATION}\n")
 
 
-def directory_named(tmp_path: Path, raw: bytes) -> Path:
-    """`tmp_path/<raw>` made from BYTES, empty; the test is skipped where the
-    disk cannot hold such a name (macOS refuses a name that is not UTF-8 and
-    Windows names its files in UTF-16, and refuses a control character)."""
-    if os.name == "nt":
-        pytest.skip("Windows names its files in UTF-16, which has no byte "
-                    "that is not UTF-8, and refuses a control character")
-    made = os.fsencode(tmp_path) + os.fsencode(os.sep) + raw
+def skip_where_this_system_cannot_name(tmp_path: Path, raw: bytes) -> None:
+    """Skip where `tmp_path/<raw>` cannot be made on this system. Two
+    questions, each asked only of the names it is about:
+
+    - a name that is not UTF-8 goes to `skip_where_a_name_cannot_be_not_utf_8`,
+      which skips on the two answers that mean "this system cannot carry
+      it" (Windows names its files in UTF-16, and macOS answers EILSEQ) and
+      raises any other error of the disk;
+    - a control character, 0x00 to 0x1F, is refused by Windows in any name,
+      and a name that holds one is skipped there.
+
+    Nothing else is skipped: U+202E, which NTFS holds, is a name Windows
+    makes as Linux does (#757; reasoned, no Windows run: CI is Linux only).
+    `tests/test_non_utf8_name_callers.py` holds the answers by emulation."""
     try:
-        os.mkdir(made)
-    except (OSError, ValueError, UnicodeError) as error:
-        pytest.skip(f"this disk cannot hold the name {raw!r}: {error}")
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        skip_where_a_name_cannot_be_not_utf_8(tmp_path)
+    if os.name == "nt" and any(byte < 0x20 for byte in raw):
+        pytest.skip("Windows refuses a control character in a file name")
+
+
+def directory_named(tmp_path: Path, raw: bytes) -> Path:
+    """`tmp_path/<raw>` made from BYTES, empty; the test is skipped where this
+    system cannot hold such a name, and fails on any other error of the disk."""
+    skip_where_this_system_cannot_name(tmp_path, raw)
+    made = os.fsencode(tmp_path) + os.fsencode(os.sep) + raw
+    os.mkdir(made)
     path = Path(os.fsdecode(made))
     assert path.is_dir()
     assert os.listdir(path) == []

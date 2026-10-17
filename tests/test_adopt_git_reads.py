@@ -31,7 +31,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, git, make_source_repo
+from conftest import (REPO, git, make_source_repo,
+                      skip_where_a_name_cannot_be_not_utf_8)
 from test_adopt_template_values import (ADOPT_REFUSED, PLAN_FILE, PLAN_OK,
                                         PROJECT, REMOTES, VERIFIED, WORK,
                                         adopted, answer,
@@ -427,12 +428,10 @@ def test_a_utf8_clone_of_a_source_whose_path_is_not_utf8_adopts(tmp_path):
     --source <the clone>` ended in this issue's traceback; it now adopts.
     Skipped where no directory can be named with the byte 0xE9 (Windows,
     macOS's APFS) or git will not work in one."""
-    try:
-        parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
-                                               b"caf\xe9")))
-        parent.mkdir()
-    except (OSError, UnicodeError) as exc:
-        pytest.skip(f"no directory here is named b'caf\\xe9': {exc!r}")
+    skip_where_a_name_cannot_be_not_utf_8(tmp_path)
+    parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
+                                           b"caf\xe9")))
+    parent.mkdir()
     try:
         source = make_source_repo(parent / "Thing")
     except AssertionError as exc:
