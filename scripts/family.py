@@ -1203,8 +1203,9 @@ def _print_next(family: "Family", branch: str) -> None:
     with a tag (`v1`) died `src refspec v1 matches more than one`.
     `refs/heads/<branch>:refs/heads/<branch>` is the branch it is whatever
     is checked out, and `-u` still records `origin/<branch>` as its upstream
-    (`branch.<branch>.merge`). `init`'s own push spells it the same way
-    (#421), and the whole refspec is ONE word for `shell_line` to quote.
+    (`branch.<branch>.merge`). `init`'s own push names its side of the
+    remote in full too (`HEAD:refs/heads/<branch>`, #421), and the whole
+    refspec is ONE word for `shell_line` to quote.
     """
     refspec = f"{HEADS_PREFIX}{branch}:{HEADS_PREFIX}{branch}"
     print("\nNEXT  " + shell_line(["git", "-C", family.root, "push", "-u",
