@@ -4168,7 +4168,12 @@ def copies_renamed(ctx: Context, copies: set, bases: dict) -> dict:
     nothing at it and its stage 1 is, object for object, the blob the base
     holds at the copy's path. A path the base held is no rename, though its
     bytes be a copy's, as the source's own file beside a collision copy
-    under `shape/` can be. The base is `merge-base HEAD MERGE_HEAD`, read
+    under `shape/` can be. Since the whole base is read (below), that check
+    is belt and braces: such a path's stage 1 is the blob the base holds at
+    that very path, which no pin lists, so the count or the copy check
+    below refuses it already. Alone it changes the answer only for a rename
+    onto a path the base held (rename/add), which stays unnamed (round 3 of
+    the review of PR #781). The base is `merge-base HEAD MERGE_HEAD`, read
     as git keeps it for a merge; for any other kind of conflict, or where
     git cannot say, no path is called a rename, as before.
 

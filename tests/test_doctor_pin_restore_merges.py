@@ -1060,20 +1060,22 @@ def edited(path: str, line: bytes):
 
 
 def merged_after(standard: Path, project: Path, tmp_path: Path, acts: dict,
-                 twin: tuple | None = None) -> tuple:
+                 own: tuple | None = None) -> tuple:
     """`(root, the standard moved on)`: (a)'s two applies, each followed
-    on its branch by `acts[branch]`, then shape/b merging shape/a. `twin`,
-    `(path, copy)`, is a file of the project's own that main gains first,
-    the copy's committed blob byte for byte."""
+    on its branch by `acts[branch]`, then shape/b merging shape/a. `own`,
+    `(path, content)`, is a file of the project's own that main gains
+    first: `content` where it is bytes, else the committed blob of the
+    copy it names, byte for byte."""
     root = under_an_awkward_name(project, tmp_path)
     moved, c2, c3, _frozen = the_standard_moved(
         standard, tmp_path, UPSTREAM_TARGET, BOOTSTRAP_SOURCE)
-    if twin:
-        path, copy = twin
+    if own:
+        path, content = own
         (root / path).parent.mkdir(parents=True, exist_ok=True)
-        (root / path).write_bytes(blob_at(root, f"HEAD:{copy}"))
+        (root / path).write_bytes(content if isinstance(content, bytes)
+                                  else blob_at(root, f"HEAD:{content}"))
         git("add", "--", path, cwd=root)
-        commit_in(root, f"the project's own {path}, with {copy}'s bytes")
+        commit_in(root, f"the project's own {path}")
     for commit, branch in ((c2, "shape/a"), (c3, "shape/b")):
         apply_on(moved, root, commit, branch)
         if branch in acts:
@@ -1144,18 +1146,53 @@ def test_a_copy_renamed_on_one_side_is_named_for_a_person(
     run_pasted(currency["next"])
     assert sorted(index_stages(root, RENAMED)) == held
     assert (root / RENAMED).read_bytes() == before
-    (root / RENAMED).write_bytes(stage_of(root, 2, RENAMED))
+    assert finished_keeping(root, tmp_path, moved, RENAMED) \
+        == "DRIFTED (1 copy-missing)"
+
+
+def finished_keeping(root: Path, tmp_path: Path, moved: Path,
+                     name: str) -> str:
+    """The merge, its NEXT run, finished by a person who keeps `name` as
+    the side taken holds it, merges `project.yaml` and commits; the
+    doctor's verdict then, out of the standard moved on."""
+    (root / name).write_bytes(stage_of(root, 2, name))
     merge_by_ours(root, tmp_path, "project.yaml")
-    git("add", "--", SHAPE_PIN, BOOTSTRAP, RENAMED, "project.yaml", cwd=root)
-    commit_in(root, "merge shape/a, build.mk kept")
-    verdict, _rows = rows_from(moved, root)
-    assert verdict == "DRIFTED (1 copy-missing)", verdict
+    git("add", "--", SHAPE_PIN, BOOTSTRAP, name, "project.yaml", cwd=root)
+    commit_in(root, f"merge shape/a, {name} kept")
+    return json.loads(doctor(moved, root, "--json").stdout)["verdict"]
 
 
-#: A file of the project's own that holds a copy's bytes in the merge base,
-#: the path the merge then conflicts at, and what each side does (review
-#: of PR #781): the own file renamed, or the copy renamed beside it.
-TWINS = {
+def test_a_rename_the_kept_pin_has_no_row_for_says_nothing_is_missing(
+        standard, project, tmp_path):
+    """The Makefile renamed on the side `--ours` takes, and that side's pin
+    restaged without the Makefile's row: only the other side's pin calls
+    it a copy. build.mk is still named as renamed from it, but the pin
+    taken here does not list it, so the `why` says nothing of it being
+    reported missing; finished with build.mk kept, the merge is not
+    `copy-missing` (round 3 of the review of PR #781)."""
+    root, moved = merged_after(standard, project, tmp_path,
+                               {"shape/b": renamed(MAKEFILE, RENAMED)})
+    a_pin_without_a_row(root, 2, MAKEFILE)
+    _verdict, rows = rows_from(moved, root)
+    currency = assert_both_rows_name_it(rows)
+    assert f"{RENAMED}, renamed from the copy {MAKEFILE}, is conflicted " \
+        "too" in currency["why"], currency["why"]
+    assert "still lists" not in currency["why"], currency["why"]
+    run_pasted(currency["next"])
+    verdict = finished_keeping(root, tmp_path, moved, RENAMED)
+    assert "copy-missing" not in verdict, verdict
+    assert verdict.startswith("COMPLIANT"), verdict
+
+
+#: Bytes of a file of the project's own that no other path holds.
+NOTES = b"# Notes this project keeps, in no copy of the standard.\n"
+
+#: Renames the rule never calls a copy's (review of PR #781): a file of
+#: the project's own, `(path, content)` as `merged_after` takes it, in
+#: the merge base; the path the merge then conflicts at; and what each
+#: side does. The own file renamed, with a copy's bytes or bytes of its
+#: own, or the copy renamed beside an own file holding its bytes.
+NOT_A_COPYS_RENAME = {
     "the-projects-own-file-renamed": (
         ("tools/bootstrap.py", BOOTSTRAP), "tools/boot.py",
         {"shape/a": edited("tools/bootstrap.py", C2_LINE),
@@ -1164,23 +1201,28 @@ TWINS = {
     "the-copy-renamed-beside-its-twin": (
         ("tools/Makefile.orig", MAKEFILE), RENAMED,
         {"shape/b": renamed(MAKEFILE, RENAMED)}),
+    "the-projects-own-unique-file-renamed": (
+        ("docs/notes.md", NOTES), "docs/n.md",
+        {"shape/a": edited("docs/notes.md", C2_LINE),
+         "shape/b": renamed("docs/notes.md", "docs/n.md", C3_LINE)}),
 }
 
 
-@pytest.mark.parametrize("merge", sorted(TWINS))
-def test_a_blob_two_paths_of_the_base_hold_names_no_rename(
-        standard, project, tmp_path, merge):
-    """The merge base holds a file of the project's own byte for byte as a
-    copy. Renamed on one side and edited on the other, that file conflicts
-    under its new name with the copy's blob as stage 1, and #781's first
-    head named it a rename of the copy, though a file of the project's own
-    is never named. The copy renamed beside such a twin holds a blob two
-    paths share as well. One blob, two paths: neither is called a rename,
-    and the new name is not named, as before #753 (review of PR #781)."""
-    twin, new, acts = TWINS[merge]
-    root, moved = merged_after(standard, project, tmp_path, acts, twin)
+@pytest.mark.parametrize("merge", sorted(NOT_A_COPYS_RENAME))
+def test_a_rename_of_no_copy_names_nothing(standard, project, tmp_path,
+                                           merge):
+    """A file of the project's own, renamed on one side and edited on the
+    other, conflicts under its new name with the base's blob of it as
+    stage 1. Where that blob is a copy's too, #781's first head named the
+    file a rename of the copy, though a file of the project's own is never
+    named; the copy renamed beside such a twin holds a blob two paths share
+    as well. One blob, two paths: neither is called a rename. And where no
+    copy holds the blob, the one path holding it is no copy: nothing is
+    called a rename either (review of PR #781, rounds 1 and 3)."""
+    own, new, acts = NOT_A_COPYS_RENAME[merge]
+    root, moved = merged_after(standard, project, tmp_path, acts, own)
     assert sorted(index_stages(root, new)) == [1, 2, 3]
-    assert stage_of(root, 1, new) == blob_at(root, f"main:{twin[1]}")
+    assert stage_of(root, 1, new) == blob_at(root, f"main:{own[0]}")
     _verdict, rows = rows_from(moved, root)
     currency = assert_both_rows_name_it(rows)
     assert new not in currency["detail"].get("left_for_a_person", []), \
