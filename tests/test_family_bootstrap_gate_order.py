@@ -12,12 +12,15 @@ THE ISSUE'S THREE LINES, each reproduced on #639's head before this change:
   gitlink recorded only at `Members/<P>`), git dies `No url found for
   submodule path` (exit 128), and it still ended ok. It fails now, saying
   which members no credential would check out and why, and what cures
-  them. So it does where git's init dies at a gitlink no section gives a
-  url, a stray case variant, a member mounted by hand or a section that
-  lost its url (rv648's S1, H1 and U1), and where git exits 0 over a member
-  a subset clone or `update = none` leaves out, whose line prints the
-  update that checks it out. A missing credential is still the skip it
-  was, after a recursive clone too.
+  them. So it does where git's init dies at a gitlink it has no url for:
+  a stray case variant, a member mounted by hand, in `members/` or outside
+  it, a section that lost its url (rv648's S1, H1, H2 and U1), and, as
+  git's own parser reads `.gitmodules`, a second section for a member's
+  path after its own, a section under a name git ignores and a url git
+  drops (D1, Q1 and O1). So it does where git exits 0 over a member a
+  subset clone or `update = none` leaves out, whose line prints the update
+  that checks it out, unless git has no url for it (A1). A missing
+  credential is still the skip it was, after a recursive clone too.
 - (b) In a plain clone of #363's state followed by `git submodule update
   --init --recursive`, as CI and `make bootstrap` run it, the update dies at
   `Members/<P>` before it checks out any member, so where that row is not
@@ -74,13 +77,15 @@ NOT_FETCHED = ("  NOT CHECKED OUT, and not for want of a credential: {left}. "
                "{cure}")
 NO_SECTION = "no section of .gitmodules gives that path"
 NO_GITLINK = "no gitlink is recorded at that path"
+NO_URL = "git has no url for that path"
 EXITED_0 = "git exited 0 and checked nothing out there"
-STOPPED = ("git stopped at {path}, a gitlink no section of .gitmodules "
-           "gives a url")
+STOPPED = "git stopped at {path}, a gitlink it has no url for"
 
 #: What the line says cures each why: the validator for the first two; for
-#: the gitlink git stopped at, the validator's `--no-members`, or, where a
-#: row names that gitlink, its section written back; and for a member git
+#: a path git has no url for, a row's own or the gitlink git stopped at,
+#: the validator's `--no-members` where two sections give it, a row's own
+#: section written back, `--no-members` for a gitlink in members/ no row
+#: names and `git rm --cached` for one outside it; and for a member git
 #: exited 0 over, the update that checks it out.
 VALIDATOR_CURE = (f"`{PYTHON} scripts/validate-family.py` names the cause "
                   "and the commit that cures it.")
@@ -90,6 +95,11 @@ UNNAMED_CURE = (f"`{PYTHON} scripts/validate-family.py --no-members` names "
 SECTION_CURE = ("Write the section of .gitmodules for {path} back as "
                 "`family.py add` writes one, with its path and url, and "
                 "commit .gitmodules.")
+TWICE_CURE = (f"`{PYTHON} scripts/validate-family.py --no-members` names "
+              "each path more than one section of .gitmodules gives, and how "
+              "to take the others out.")
+OUTSIDE_CURE = ("No row names {path} and no clone can check it out: `git rm "
+                "--cached -- {path}` takes its gitlink out, then commit that.")
 CHECKOUT_CURE = ("`git submodule update --init --checkout --recursive -- "
                  "{path}` checks it out.")
 
@@ -184,15 +194,47 @@ def hand_mounted(holder: Path, env: dict, family) -> str:
 UNNAMED_STOPS = {"stray": stray, "hand-mount": hand_mounted}
 
 
-def without_url(data: bytes, project: str) -> bytes:
-    """`.gitmodules` bytes with the `url` line of `project`'s section taken
-    out, the rest as `family.py add` wrote it (rv648's U1). A checkout's
-    copy may end its lines CRLF."""
+def url_edited(data: bytes, project: str, edit) -> bytes:
+    """`.gitmodules` bytes with the `url` line of `project`'s section put
+    through `edit`, the rest as `family.py add` wrote it. A checkout's copy
+    may end its lines CRLF."""
     section = re.compile(rb'(\[submodule "members/' + project.encode()
-                         + rb'"\]\r?\n(?:\t[^\n]*\n)*?)\turl = [^\n]*\n')
-    edited, count = section.subn(rb"\1", data)
+                         + rb'"\]\r?\n(?:\t[^\n]*\n)*?)(\turl = [^\n]*\n)')
+    edited, count = section.subn(
+        lambda found: found.group(1) + edit(found.group(2)), data)
     assert count == 1, data
     return edited
+
+
+def without_url(data: bytes, project: str) -> bytes:
+    """`.gitmodules` bytes with the `url` line of `project`'s section taken
+    out (rv648's U1)."""
+    return url_edited(data, project, lambda line: b"")
+
+
+def renamed(data: bytes, name: str) -> bytes:
+    """`.gitmodules` bytes with OTHER's section under the name `name`, its
+    keys as `family.py add` wrote them, escaped as git config escapes a
+    subsection name."""
+    own = f'[submodule "members/{OTHER}"]'.encode()
+    assert data.count(own) == 1, data
+    escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+    return data.replace(own, f'[submodule "{escaped}"]'.encode("utf-8"))
+
+
+#: A second section, `dup`, that gives OTHER's path and no url, as a merge
+#: that kept both sides of `.gitmodules` can leave one (rv648's D1 and D2).
+DUPLICATE = f'[submodule "dup"]\n\tpath = members/{OTHER}\n'.encode()
+
+
+def edited_clone(holder: Path, env: dict, family, tmp_path: Path,
+                 edit) -> tuple[Path, bytes]:
+    """HEAD's `.gitmodules` put through `edit` by hand and committed, then a
+    plain clone of it (`cloned`). Returns the clone and the bytes `family.py
+    add` wrote, which writing the file back restores."""
+    data = raw(holder, env, "show", f"HEAD:{GITMODULES}").stdout
+    committed_gitmodules(holder, env, edit(data))
+    return cloned(holder, env, family, tmp_path, recurse=False), data
 
 
 def failed_on(*projects: str) -> str:
@@ -430,29 +472,54 @@ def test_a_gitlink_no_row_names_that_stops_a_plain_clones_update_fails(
     assert after_first_line(again) == FETCHED
 
 
-def test_a_section_with_no_url_that_stops_the_update_says_to_write_it_back(
-        family, holder, offline, tmp_path):
-    """rv648's U1. OTHER's section lost its url, committed: in a plain
-    clone git's init dies at OTHER's own gitlink, after MEMBER's and before
-    it checks out either. The run said ok, and no mode of the validator
-    names it. It names both rows and says to write that section back;
-    written back as `family.py add` wrote it and committed, the same run
-    checks both members out."""
+#: `(edit, what git warns)`: OTHER's section with no url (rv648's U1), or
+#: one git's own parser drops, though `git config --list` keeps it: a name
+#: that is empty or has a `..` component, split on `/` or a backslash
+#: (Q1), and a url that begins with `-` (O1).
+NO_URL_FOR_OTHER = {
+    "no-url": (lambda data: without_url(data, OTHER), ""),
+    "dotdot-name": (lambda data: renamed(data, f"../{OTHER}"),
+                    f"ignoring suspicious submodule name: ../{OTHER}\n"),
+    "empty-name": (lambda data: renamed(data, ""),
+                   "ignoring suspicious submodule name: \n"),
+    "backslash-name": (lambda data: renamed(data, f"{OTHER}\\..\\x"),
+                       "ignoring suspicious submodule name: "
+                       f"{OTHER}\\..\\x\n"),
+    "option-url": (lambda data: url_edited(data, OTHER,
+                                           lambda line: b"\turl = -nowhere\n"),
+                   "which may be interpreted as a command-line option: "
+                   "-nowhere\n"),
+}
+
+
+@pytest.mark.parametrize("edit, warned", NO_URL_FOR_OTHER.values(),
+                         ids=NO_URL_FOR_OTHER)
+def test_a_member_git_has_no_url_for_stops_the_update_and_is_written_back(
+        family, holder, offline, tmp_path, edit, warned):
+    """rv648's U1, Q1 and O1. OTHER's section lost its url, or is one git
+    reads no url from, committed: in a plain clone git's init dies at
+    OTHER's own gitlink, after MEMBER's and before it checks out either.
+    The run said ok in Q1 and O1, reading the section with `git config`,
+    which keeps what git drops, and no mode of the validator names any of
+    the three. It names both rows, OTHER for want of a url and MEMBER
+    stopped there, and says to write OTHER's section back; written back as
+    `family.py add` wrote it and committed, the same run checks both
+    members out."""
     env = fetching(isolated(offline, tmp_path))
-    data = raw(holder, env, "show", f"HEAD:{GITMODULES}").stdout
-    committed_gitmodules(holder, env, without_url(data, OTHER))
-    clone = cloned(holder, env, family, tmp_path, recurse=False)
+    clone, data = edited_clone(holder, env, family, tmp_path, edit)
 
     result = bootstrap(clone, env, "--skip-members")
 
     assert result.returncode == 1, result.stdout + result.stderr
-    why = STOPPED.format(path=f"members/{OTHER}")
     assert result.stderr.splitlines()[-2:] == [
-        not_fetched((f"members/{MEMBER}", why), (f"members/{OTHER}", why),
+        not_fetched((f"members/{MEMBER}",
+                     STOPPED.format(path=f"members/{OTHER}")),
+                    (f"members/{OTHER}", NO_URL),
                     cure=SECTION_CURE.format(path=f"members/{OTHER}")),
         failed_on(MEMBER, OTHER)], result.stderr
     assert (f"No url found for submodule path 'members/{OTHER}'"
             in result.stderr)
+    assert warned in result.stderr
     (clone / GITMODULES).write_bytes(data)
     raw(clone, env, "add", "--", GITMODULES)
     commit_all(clone, env, "OTHER's section written back")
@@ -461,6 +528,161 @@ def test_a_section_with_no_url_that_stops_the_update_says_to_write_it_back(
 
     assert again.returncode == 0, again.stdout + again.stderr
     assert after_first_line(again) == FETCHED
+
+
+def test_a_second_section_git_reads_for_a_row_s_path_names_the_two(
+        family, holder, offline, tmp_path):
+    """rv648's D1. A second section, `dup`, gives OTHER's path and no url,
+    after OTHER's own: git reads the later of two sections for one path, so
+    in a plain clone its init dies at OTHER's gitlink, after MEMBER's and
+    before it checks out either. The run said ok, since one section gave
+    the path a url. It names both rows and `--no-members`, whose
+    `gitmodules-path-twice` names the two sections and says to take the
+    other out: a section written back would be a third. Taken out as that
+    says and committed, the same run checks both members out."""
+    env = fetching(isolated(offline, tmp_path))
+    clone, _ = edited_clone(holder, env, family, tmp_path,
+                            lambda data: data + DUPLICATE)
+
+    result = bootstrap(clone, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stderr.splitlines()[-2:] == [
+        not_fetched((f"members/{MEMBER}",
+                     STOPPED.format(path=f"members/{OTHER}")),
+                    (f"members/{OTHER}", NO_URL), cure=TWICE_CURE),
+        failed_on(MEMBER, OTHER)], result.stderr
+    assert (f"No url found for submodule path 'members/{OTHER}'"
+            in result.stderr)
+    fallback = validate(clone, "--no-members")
+    assert fallback.returncode == 1, fallback.stdout + fallback.stderr
+    (finding,) = [found for found in findings(fallback)
+                  if found.startswith("FINDING gitmodules-path-twice: ")]
+    assert finding.startswith(
+        f"FINDING gitmodules-path-twice: .gitmodules gives the path "
+        f"members/{OTHER} to 2 submodules, `members/{OTHER}` (url "), finding
+    assert "`dup` (no url)" in finding, finding
+    assert "--unset-all submodule.<name>.<key>` for every key" in finding
+    raw(clone, env, "config", "-f", GITMODULES, "--unset-all",
+        "submodule.dup.path")
+    raw(clone, env, "add", "--", GITMODULES)
+    commit_all(clone, env, "The second section taken out as printed")
+
+    again = bootstrap(clone, env, "--skip-members")
+
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert after_first_line(again) == FETCHED
+
+
+#: `.gitmodules` edits git's own parser reads past: rv648's D2, the second
+#: section placed BEFORE OTHER's own, which git then reads; a name whose
+#: dots are no `..` component; and a url that begins with `-` after OTHER's
+#: own, which git drops, keeping the one before it.
+READ_PAST = {
+    "duplicate-first": lambda data: DUPLICATE + data,
+    "dots-in-a-name": lambda data: renamed(data, f"..{OTHER}.."),
+    "option-url-after-a-url": lambda data: url_edited(
+        data, OTHER, lambda line: line + b"\turl = -x\n"),
+}
+
+
+@pytest.mark.parametrize("edit", READ_PAST.values(), ids=READ_PAST)
+def test_what_git_reads_past_is_still_the_skip_and_a_true_ok(
+        family, holder, offline, tmp_path, edit):
+    """No misfire. Where git's parser still reads a url for OTHER, a plain
+    clone's update with no credential for the members fails on their fetch,
+    not in its init, so they are the credential's: skipped, and the run
+    ends ok. With the credential, the same update checks both members out,
+    exit 0, and the run is a good holder's."""
+    env = isolated(offline, tmp_path)
+    clone, _ = edited_clone(holder, env, family, tmp_path, edit)
+
+    skipped = bootstrap(clone, env, "--skip-members")
+
+    assert skipped.returncode == 0, skipped.stdout + skipped.stderr
+    assert "FETCH INCOMPLETE" in skipped.stderr
+    assert "not for want of a credential" not in skipped.stderr
+    fetched = bootstrap(clone, fetching(env), "--skip-members")
+    assert fetched.returncode == 0, fetched.stdout + fetched.stderr
+    assert after_first_line(fetched) == FETCHED
+    assert fetched.stderr == ""
+
+
+def test_a_subset_clone_of_a_member_git_has_no_url_for_is_written_back(
+        family, holder, offline, tmp_path):
+    """rv648's A1. OTHER's section lost its url, committed, and the clone
+    chose MEMBER alone: git exits 0, and the line printed the exit-0 skip's
+    update, which dies `No url found` when typed (exit 128) and checks
+    nothing out. Git has no url for OTHER, in its section or its config,
+    so the line says to write the section back. Written back and
+    committed, the run is the exit-0 skip, and the update it prints, typed
+    as printed, lets the same run end ok."""
+    env = fetching(isolated(offline, tmp_path))
+    clone, data = edited_clone(holder, env, family, tmp_path,
+                               lambda data: without_url(data, OTHER))
+    env = skip_by_subset(clone, env)
+
+    result = bootstrap(clone, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stderr.splitlines() == [
+        not_fetched((f"members/{OTHER}", NO_URL),
+                    cure=SECTION_CURE.format(path=f"members/{OTHER}")),
+        failed_on(OTHER)]
+    (clone / GITMODULES).write_bytes(data)
+    raw(clone, env, "add", "--", GITMODULES)
+    commit_all(clone, env, "OTHER's section written back")
+    skipped = bootstrap(clone, env, "--skip-members")
+    assert skipped.returncode == 1, skipped.stdout + skipped.stderr
+    assert skipped.stderr.splitlines() == [
+        not_fetched((f"members/{OTHER}", EXITED_0),
+                    cure=CHECKOUT_CURE.format(path=f"members/{OTHER}")),
+        failed_on(OTHER)]
+    (line,) = re.findall(r"`(git submodule update [^`]*)`", skipped.stderr)
+    type_line(clone, env, line)
+
+    again = bootstrap(clone, env, "--skip-members")
+
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert after_first_line(again) == FETCHED
+    assert again.stderr == ""
+
+
+def test_a_hand_mount_outside_members_is_taken_out_of_the_index(
+        family, holder, offline, tmp_path):
+    """rv648's H2. SPARE's gitlink recorded by hand at `vendor/<SPARE>`,
+    outside members/, with no row and no section, and committed: in a plain
+    clone git's init dies there before it checks out any member. No mode
+    of the validator reads a gitlink outside members/, and `--no-members`
+    says `family ok`, so the line names the `git rm --cached` that takes
+    the gitlink out. Typed as printed and committed, the same run checks
+    both members out, and the gate passes in every mode."""
+    env = fetching(isolated(offline, tmp_path))
+    stopper = f"vendor/{SPARE}"
+    stage_gitlink(holder, stopper, spare_commits(family)[1])
+    commit_all(holder, env, "A gitlink mounted by hand outside members/")
+    clone = cloned(holder, env, family, tmp_path, recurse=False)
+
+    result = bootstrap(clone, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    why = STOPPED.format(path=stopper)
+    assert result.stderr.splitlines()[-2:] == [
+        not_fetched((f"members/{MEMBER}", why), (f"members/{OTHER}", why),
+                    cure=OUTSIDE_CURE.format(path=stopper)),
+        failed_on(MEMBER, OTHER)], result.stderr
+    assert f"No url found for submodule path '{stopper}'" in result.stderr
+    fallback = validate(clone, "--no-members")
+    assert fallback.returncode == 0, "premise: it reads only members/"
+    (line,) = re.findall(r"`(git rm [^`]*)`", result.stderr)
+    type_line(clone, env, line)
+    commit_all(clone, env, "The gitlink taken out as printed")
+
+    again = bootstrap(clone, env, "--skip-members")
+
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert after_first_line(again) == FETCHED
+    assert_passes_in_every_mode(clone, 2)
 
 
 @pytest.mark.parametrize("set_up", UNNAMED_STOPS.values(), ids=UNNAMED_STOPS)
