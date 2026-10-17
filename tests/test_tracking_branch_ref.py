@@ -86,12 +86,15 @@ ACCEPTED = ["main", "trunk", "release/1.2", "feature/x", "shape/update-v1.2",
 #: the test that holds the helper to git's. Names git refuses AND accepts, the
 #: edges of each rule, and a few that only some versions of git have an
 #: opinion on (`HEAD`, `@`), which is exactly why the expectation is asked of
-#: the git that runs the suite and not written here.
+#: the git that runs the suite and not written here. Every name is one the
+#: disk can hold: a part over its length limit (#689) is the one rule the
+#: helper keeps that git does not state, so it is asked in
+#: `tests/test_next_refspec_branch_length.py`, not against git's answer.
 CORPUS = [
     *ACCEPTED, "1", "0", "~", "a~1", "a..b", "..", ".", "x.lock", ".lock", "a/", "/a",
     "a//b", "/", "//", ".a", "a.", "a/.b", "a./b", "a.lock/b", "a/b.lock",
     "HEAD", "head", "@", "@-1", "a@", "@a", "FETCH_HEAD", "refs/heads/x",
-    "heads/x", "a/b/c/d", "a" * 255, "-", "a b", "a\tb", "a:b", "a^b", "a*b",
+    "heads/x", "a/b/c/d", "a" * 250, "-", "a b", "a\tb", "a:b", "a^b", "a*b",
     "a?b", "a[b", "a\\b", "a@{b", "a@{-1}", "@{-1}", "a\x7fb",
 ]
 

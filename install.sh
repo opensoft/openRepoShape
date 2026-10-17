@@ -41,8 +41,11 @@
 #      does not stay on the release tag (one older than v1.0.1 cannot record
 #      it): the lines above say which;
 #   2  refused before anything was installed: a version that is not a ref, no
-#      release found, a fetch that failed, a file that is not the command, or
-#      a command already there as a symbolic link (pipx's, #563).
+#      release found, a fetch that failed, a file that is not the command, a
+#      command already there as a symbolic link (pipx's, #563), a
+#      `$OPENREPOSHAPE_BIN_DIR` spelled for Windows where no `cygpath` can
+#      spell it the way bash does (#667), or a directory holding a control
+#      character or a `:`, which no line about `$PATH` can name (#760).
 # git-filter-repo never changes it: only adopting needs it, and
 # `adopt-project.py` refuses with its own install command where it is missing.
 # What it changes is the summary (#595): `adoption:` says whether it is there
@@ -334,7 +337,7 @@ filter_repo_step() {
 }
 
 main() {
-	local version="" asked launcher_url bin_dir target shown status=0 pinned=1
+	local version="" asked launcher_url bin_dir spelled target shown status=0 pinned=1
 	local machine="this machine is ready"
 
 	# NOTHING A CHILD READS IS THIS SCRIPT. Piped, stdin is the pipe the
@@ -362,6 +365,69 @@ main() {
 	command -v curl >/dev/null 2>&1 ||
 		die "curl is not installed, and this installer fetches with it. Install curl, or install by hand with: gh api repos/$REPO/contents/openRepoShape -H 'Accept: application/vnd.github.raw' | bash -s -- --install"
 
+	bin_dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
+	# A DIRECTORY HOLDING A CONTROL CHARACTER IS REFUSED FIRST (#760), before
+	# any line below names it: a newline breaks a line in two, a carriage
+	# return rewrites it on the terminal and an escape is the terminal's to
+	# act on, and the `install:`, `preflight:` and `done:` lines would print
+	# the directory as typed. The command refuses the same value, but only
+	# from the release that added the check, and only after this file had
+	# fetched it. The `case` is `install_commands`'s in `openRepoShape`,
+	# copied for the reason the drive-letter one below is, and the refusal
+	# says nothing of the value. `[[:cntrl:]]` and not `[![:print:]]`, which
+	# `checked_repo` uses: a directory with a letter the locale does not
+	# print (`café` under LC_ALL=C) is no fault of the directory's. The check
+	# runs under `LC_ALL=C` and names U+0080 to U+009F's two bytes (`\302`,
+	# then `\200` to `\237`), so a C1 control is refused in every locale,
+	# whatever else the value holds; U+2028 and U+2029 are refused in none.
+	# Left to the locale, `[[:cntrl:]]` matches a C1 control only in a value
+	# that is valid UTF-8: one byte that is not (a lone 0xE9) makes bash
+	# match byte by byte, and then U+009B's two bytes are not controls, as
+	# under `C` (measured with bash 5.2.21). The locale is `C` in a subshell,
+	# so that the match is byte by byte whatever a libc says of a byte in a
+	# UTF-8 locale, and the locale of every line below is as it was.
+	if (LC_ALL=C; case "$bin_dir" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
+		die "the directory to install into holds a control character, such as a newline, a carriage return, a tab or an escape, and no line about \$PATH can print such a name as it is: a terminal acts on it. Nothing was installed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this line again."
+	fi
+	# A WINDOWS SPELLING IS SPELLED THE WAY BASH SPELLS IT, THE COMMAND'S OWN
+	# RULE (#667, after #649), before it is named in a line or looked at: a
+	# value typed `D:\tools\bin` was echoed as typed, in the `install:`,
+	# `preflight:` and `done:` lines, while the command's own lines said
+	# `/d/tools/bin`, and where no `cygpath` answers the command refuses it
+	# (exit 2), which this file learnt only after the fetch. So the same
+	# `cygpath -u` respells it here, and the same refusal comes first, before
+	# anything is asked of the network. The `case` is `install_commands`'s in
+	# `openRepoShape`, copied: this file arrives alone down a pipe, and
+	# `tests/test_install_sh.py` feeds one value through both. The refusal
+	# does not echo the value.
+	case "$bin_dir" in
+	[A-Za-z]:/* | [A-Za-z]:\\*)
+		spelled=""
+		if command -v cygpath >/dev/null 2>&1; then
+			spelled="$(cygpath -u -- "$bin_dir" 2>/dev/null)" || spelled=""
+		fi
+		case "$spelled" in
+		"" | [A-Za-z]:*)
+			die "\$OPENREPOSHAPE_BIN_DIR is spelled for Windows, and no cygpath here spells it the way bash does, so the directory could not go on \$PATH: the drive's colon splits it. Nothing was installed. Set \$OPENREPOSHAPE_BIN_DIR to the directory as this shell spells it, then run this line again."
+			;;
+		esac
+		bin_dir="$spelled"
+		;;
+	esac
+	# A `:` SPLITS A `$PATH` WHATEVER THE QUOTING (#760), so no line about
+	# `$PATH` can name such a directory; the command refuses it from the
+	# release that added the check (#667), and this file learnt of it only
+	# after the fetch. Checked after the Windows spelling, as the command
+	# checks it: a drive spelling holds a `:` by definition, is respelled
+	# without one, and was refused above where it could not be. The
+	# control-character arm is above, so the directory is named here, as the
+	# command names it, and no value that can forge a line gets this far.
+	case "$bin_dir" in
+	*:*)
+		die "install.sh would place openRepoShape in '$bin_dir', which holds a ':', and a ':' is what splits a \$PATH into its directories, so no line about \$PATH can name it. Nothing was installed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this line again."
+		;;
+	esac
+
 	# A LINK IS NOT A PLACE TO INSTALL TO (#563), and this installer says so
 	# itself, before anything is asked of the network. pipx places the
 	# openreposhape package's `openRepoShape` as a symbolic link in this same
@@ -369,7 +435,6 @@ main() {
 	# through a link into the package's own environment. The command refuses
 	# such a target too, but only from the release that added the check: the
 	# release named here may be older, so its refusal cannot be relied on.
-	bin_dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
 	target="$bin_dir/openRepoShape"
 	[[ ! -L "$target" ]] ||
 		die "$target is a symbolic link, so nothing was installed: pipx places the openreposhape package's openRepoShape that way, and installing this one through the link would overwrite the package's command. Use one installer or the other:
