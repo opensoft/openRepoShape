@@ -155,10 +155,10 @@ def test_a_kept_project_yaml_is_a_finding(adopter):
         "in for the manifest: `shape-doctor.py`, the root's validators and "
         "`make bootstrap` read `project.yaml` at the root itself, and there "
         "they would find the source's file. `execute` would write the "
-        "shape's manifest beside it as `shape/project.yaml` and say "
-        "`adoption verified`, after both leg repositories were created and "
-        "pushed: send `project.yaml` to a leg, `drop` it, or rename it in "
-        "the source and re-run `plan`.")
+        "shape's manifest beside it as `shape/project.yaml` and fail its "
+        "verification (`adopt-manifest-not-shape`), after both leg "
+        "repositories were created and pushed: send `project.yaml` to a leg, "
+        "`drop` it, or rename it in the source and re-run `plan`.")
 
 
 @pytest.mark.parametrize("leg", ["spec", "code", "drop"])
@@ -193,7 +193,9 @@ def test_a_kept_symlink_there_is_a_finding_whatever_it_leads_to(adopter):
     assert said.startswith(f"FINDING {CODE}: the plan keeps the symlink "
                            "`project.yaml` in the assembly root, ")
     assert "and where it leads nowhere, through it, which a clone that " \
-           "makes no symlinks holds as a file naming its target" in said
+           "makes no symlinks holds as a file naming its target; either " \
+           "way it would fail its verification " \
+           "(`adopt-manifest-not-shape`), after both" in said
 
 
 def test_a_kept_directory_there_names_what_it_holds(adopter):
