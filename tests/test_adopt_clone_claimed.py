@@ -36,10 +36,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, WINDOWS_SKIP, spelled
-from test_adopt_source_clone_record import (
-    MINE, OCCUPIED, SOURCE_READONLY, WORK, WORK_FLAG, clone_dir, on_github,
-    plan_args, run, symlinks_are_made,
+from conftest import ADOPT, WINDOWS_SKIP, rmtree, spelled
+from test_adopt_source_clone_record import (  # noqa: F401
+    MINE, OCCUPIED, SOURCE_READONLY, WORK, WORK_FLAG, clone_dir, modes_hold,
+    on_github, plan_args, run, symlinks_are_made,
 )
 from test_adopt_temp_work_roots import (  # noqa: F401
     CHECK, EXECUTE, LOCAL_REMOTE_DIR, ORG, PLAN, PLAN_FLAG, PLAN_VERB, PROJECT,
@@ -53,6 +53,8 @@ UNCLONABLE = "REFUSED source-unclonable: "
 NOTHING_PUSHED = "no leg repository was created and nothing was pushed. "
 ANOTHER = ("Pass a --work-dir that does not hold it, or none: without one, "
            "each run makes a new one.")
+WRITABLE = ("Pass a --work-dir this user can write in, or none: without one, "
+            "each run makes a new one.")
 OWN = ("Pass a --work-dir this user owns and no other user can write in, or "
        "none: without one, each run makes a new one.")
 EVERY_USER = "can be written in by every user, without the sticky bit"
@@ -389,8 +391,7 @@ INJECTED = {
     "a-mkdir-refused": (
         "refused", UNWRITABLE, "cannot hold `source-readonly`, where this run "
         f"clones {REPOSITORY}: making it failed (Permission denied)",
-        "Pass a --work-dir this user can write in, or none: without one, "
-        "each run makes a new one."),
+        WRITABLE),
 }
 
 
@@ -419,6 +420,33 @@ def test_a_source_readonly_that_cannot_be_made_is_refused_by_name(
     assert err == (f"{refused}--work-dir {spelled(real(work))} {detail}\n"
                    f"Remediation: {remedy}\n")
     assert calls == []
+
+
+def test_a_source_readonly_this_user_cannot_write_in_is_refused_first(
+        adopter, monkeypatch, capsys, tmp_path, modes_hold):
+    """The plan's clone is gone from `W/source-readonly/`, which this user
+    can no longer write in (`chmod 555`). It is refused by name before the
+    NOTE that says the clone is made again, in #749's order: on main the
+    NOTE was printed, `gh` was called, and the run was refused
+    `source-unclonable`, with a remedy about `gh auth status`."""
+    calls = on_github(adopter, monkeypatch, tmp_path)
+    work, plan = tmp_path / WORK, tmp_path / PLAN
+    assert run(adopter, capsys, *plan_args(REPOSITORY, plan, WORK_FLAG,
+                                           str(work)))[0] == 0
+    rmtree(clone_dir(work))
+    os.chmod(work / SOURCE_READONLY, 0o555)
+    try:
+        code, out, err = run(adopter, capsys, CHECK, PLAN_FLAG, str(plan),
+                             WORK_FLAG, str(work))
+    finally:
+        os.chmod(work / SOURCE_READONLY, 0o755)
+    assert code == 2, err
+    assert "NOTE the plan's" not in out
+    assert err == (
+        f"{UNWRITABLE}--work-dir {spelled(real(work))} holds "
+        f"`{SOURCE_READONLY}`, where this run clones {REPOSITORY}, and this "
+        f"user cannot make a directory in it\nRemediation: {WRITABLE}\n")
+    assert len(calls) == 1
 
 
 # --- decision 1: a directory another user can rename in ----------------------

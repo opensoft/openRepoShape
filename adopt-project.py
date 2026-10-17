@@ -1874,10 +1874,13 @@ def _made_source_readonly(work_root: Path, parent: Path, repository: str,
     asked as `_source_readonly_refusal` asks it, and any other failure is
     `adopt-work-dir-unwritable`, by name, where it was a traceback (#457's
     L1-65). Made 0755 whatever the umask: under `umask 0` it would be one
-    every user can rename in."""
+    every user can rename in. The work directory above it is made where it
+    is missing, as on main: `_work_root` makes it for every command, so
+    only a caller of `Source.open` that names another one meets that."""
     if os.path.lexists(parent):
         return False
     try:
+        os.makedirs(work_root, exist_ok=True)
         os.mkdir(parent, 0o755)
         return True
     except FileExistsError:
