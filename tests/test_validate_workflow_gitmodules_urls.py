@@ -23,6 +23,14 @@ holding a line break or a carriage return is skipped in all three steps, since
 printed it could be a workflow command of its own; each repository is named
 once however many sections or paths give it; and a url key outside a
 `submodule` section, even `[-x] url`, is read without git's usage dump.
+
+And the rules the doctor and `siblings.py` read the same file by (#786, from
+#733): `RULES` holds one row per rule, each a `.gitmodules` and the urls git
+registers for it. Three things check a row. `git submodule init` itself says
+what git registers, a `siblings.submodule_urls` that has #775's rules agrees
+(it skips until they are in main), and each of the three steps in both
+templates names or lists exactly that, or fails with the cause where git
+refuses the whole file.
 """
 
 from __future__ import annotations
@@ -31,11 +39,13 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from conftest import REPO, WINDOWS_SKIP, git
+from conftest import REPO, WINDOWS_SKIP, git, load_without_bytecode
 from test_scaffold_e2e import _step_run_script
 
 #: What each template calls its steps. The names step's output is `legs=` in
@@ -56,16 +66,17 @@ TEMPLATES = {
 }
 EACH_TEMPLATE = pytest.mark.parametrize("template", sorted(TEMPLATES))
 
-#: Section name -> url, in the order the file lists them. The first three are
-#: names git allows and `--get-regexp`'s `key value` line cannot hold: a
-#: space, a tab, and a leading `-` with `#` and `;`. The fourth is a url, not
-#: a name, with the same bytes in it (a leading `-`, a space, a tab, `#`, `;`
-#: and a trailing space); it names no repository, so the names step skips it.
+#: Section name -> url, in the order the file lists them; each section mounts
+#: at `mounts/<its name>`. The first three are names git allows and
+#: `--get-regexp`'s `key value` line cannot hold: a space, a tab, and a
+#: leading `-` with `#` and `;`. The fourth is a url, not a name, with the
+#: same bytes in it (a space, a tab, `#`, `;` and a trailing space); it names
+#: no repository, so the names step skips it.
 SECTIONS = {
     "members/My IRRS": "https://github.com/acme/IRRS.git",
     "tab\there": "git@github.com:acme/Tabbed.git",
     "-lead #hash;semi": "https://github.com/acme/Odd.git",
-    "plain": "-odd url\twith #hash;semi ",
+    "plain": "odd url\twith #hash;semi ",
 }
 THE_LEGS = "IRRS,Tabbed,Odd"
 #: Urls the steps skip, given by git's `\n` escape and a raw carriage return:
@@ -79,21 +90,31 @@ OWN_COMMAND = re.compile(r"::(warning|error)::(  |submodule checkout failed|A )"
 EACH_STEP = pytest.mark.parametrize("step", ["names", "fetch", "fail"])
 
 
-def acme(name: str, scheme: str = "https://github.com/") -> str:
-    return f"url = {scheme}acme/{name}.git\n"
+def acme(name: str) -> str:
+    return f"https://github.com/acme/{name}.git"
+
+
+def section(name: str, *keys: str) -> str:
+    """A `[submodule "name"]` with each of `keys` on a line of its own."""
+    return f'[submodule "{name}"]\n' + "".join(f"\t{key}\n" for key in keys)
+
+
+def mounted(name: str, url: str, *keys: str, at: str = "") -> str:
+    """`section`, mounted at `at`, or at a path named for it, giving `url`."""
+    return section(name, f"path = {at or name}", f"url = {url}", *keys)
 
 
 #: Each case a repository could be named twice, as a `.gitmodules` text and
 #: the repositories the names step names for it: once each, first seen first.
 DUPLICATES = {
     "a url given twice in one section": (
-        '[submodule "m"]\n\t' + acme("Stale") + "\t" + acme("A"), "A"),
+        mounted("m", acme("Stale"), f"url = {acme('A')}"), "A"),
     "a section reopened further down": (
-        '[submodule "m"]\n\t' + acme("Stale") + '[submodule "n"]\n\t'
-        + acme("B") + '[submodule "m"]\n\t' + acme("A"), "A,B"),
+        mounted("m", acme("Stale")) + mounted("n", acme("B"))
+        + section("m", f"url = {acme('A')}"), "A,B"),
     "two paths mounting one repository": (
-        '[submodule "m"]\n\t' + acme("A") + '[submodule "n"]\n\t'
-        + acme("A", "git@github.com:"), "A"),
+        mounted("m", acme("A")) + mounted("n", "git@github.com:acme/A.git"),
+        "A"),
 }
 
 
@@ -105,22 +126,141 @@ def workflow_text(template: str) -> str:
 
 @pytest.fixture
 def holder(tmp_path: Path) -> Path:
-    """A folder whose `.gitmodules` is `SECTIONS` and then `LINE_BREAKS`,
+    """A repository whose `.gitmodules` is `SECTIONS` and then `LINE_BREAKS`,
     written by git so that its quoting is git's."""
     work = tmp_path / "holder"
     work.mkdir()
+    git("init", "-q", cwd=work)
     for name, url in {**SECTIONS, **LINE_BREAKS}.items():
+        git("config", "--file", ".gitmodules", f"submodule.{name}.path",
+            f"mounts/{name}", cwd=work)
         git("config", "--file", ".gitmodules", f"submodule.{name}.url", url,
             cwd=work)
     return work
 
 
-def holder_of(tmp_path: Path, gitmodules: str) -> Path:
-    """A folder whose `.gitmodules` is `gitmodules`, as written."""
-    work = tmp_path / "holder"
+@dataclass(frozen=True)
+class Rule:
+    """One row of `RULES`: a `.gitmodules`, the paths `git submodule init` is
+    asked about, and what git registers for it.
+
+    `urls` are the urls git registers, in the order of the file; none where it
+    reads none of the file. `refused` is the cause the steps name where git
+    refuses the whole file, and `unmerged` leaves `.gitmodules` unmerged in
+    the index with the file in the working tree as it is.
+    """
+    gitmodules: str
+    paths: tuple
+    urls: tuple
+    refused: str = ""
+    unmerged: bool = False
+
+
+GITLINK = "1234567890123456789012345678901234567890"
+
+
+def holder_of(tmp_path: Path, gitmodules: str, paths=(), unmerged=False,
+              name: str = "holder") -> Path:
+    """A repository whose `.gitmodules` is `gitmodules`, as written, with a
+    gitlink at each of `paths` and, for `unmerged`, `.gitmodules` in
+    conflict in the index."""
+    work = tmp_path / name
     work.mkdir()
+    git("init", "-q", cwd=work)
     (work / ".gitmodules").write_bytes(gitmodules.encode("utf-8"))
+    for path in paths:
+        git("update-index", "--add", "--cacheinfo", f"160000,{GITLINK},{path}",
+            cwd=work)
+    if unmerged:
+        stages = ""
+        for stage, body in ((1, b"base\n"), (2, b"ours\n"), (3, b"theirs\n")):
+            blob = subprocess.run(
+                ["git", "hash-object", "-w", "--stdin"], cwd=work, input=body,
+                capture_output=True, check=True).stdout.decode().strip()
+            stages += f"100644 {blob} {stage}\t.gitmodules\n"
+        subprocess.run(["git", "update-index", "--index-info"], cwd=work,
+                       input=stages.encode(), check=True)
     return work
+
+
+OK_URL = acme("Ok")
+OK = mounted("ok", OK_URL)
+
+
+def accepted(*keys: str) -> Rule:
+    """A mounted section for each of `keys`, which it holds, and `ok`: git
+    reads every one of them."""
+    names = [f"s{n}" for n in range(len(keys))]
+    text = "".join(mounted(name, acme(name.upper()), key)
+                   for name, key in zip(names, keys))
+    return Rule(text + OK, (*names, "ok"),
+                (*(acme(name.upper()) for name in names), OK_URL))
+
+
+def refusing(cause: str, *keys: str) -> Rule:
+    """`ok`, then a mounted section holding `keys`: git refuses the whole
+    file for them, `ok` and all, and the steps say `cause`."""
+    return Rule(OK + mounted("q", acme("Q"), *keys), ("ok", "q"), (), cause)
+
+
+NO_VALUE = " key with no value"
+UPDATE = "an update that is not none, checkout, rebase or merge"
+SHALLOW = "a shallow that is not a boolean"
+FETCH = "a fetchRecurseSubmodules that is neither a boolean nor on-demand"
+
+#: One row per rule, each measured against `git submodule init` by
+#: `test_git_registers_what_each_row_says`. Every row but the refusals keeps
+#: `ok`, so a rule that drops too much shows.
+RULES = {
+    "a url key outside a submodule section": Rule(
+        '[remote "origin"]\n\turl = ' + acme("Other") + "\n[-x]\n\turl = "
+        + acme("Dash") + "\n[submodule]\n\turl = " + acme("Bare") + "\n" + OK,
+        ("ok",), (OK_URL,)),
+    "an empty section name": Rule(
+        mounted("", acme("Empty"), at="e") + OK, ("e", "ok"), (OK_URL,)),
+    "a name holding a .. component": Rule(
+        mounted("../a", acme("DotA"), at="d1")
+        + mounted("a/../b", acme("DotB"), at="d2")
+        + mounted("..\\\\c", acme("DotC"), at="d3")
+        + mounted("..", acme("DotD"), at="d4")
+        + mounted("a/..", acme("DotE"), at="d5")
+        + mounted("a..b", acme("Dots"), at="d6") + OK,
+        ("d1", "d2", "d3", "d4", "d5", "d6", "ok"), (acme("Dots"), OK_URL)),
+    "a url beginning with a dash": Rule(
+        mounted("d", "-oProxyCommand=x") + OK, ("d", "ok"), (OK_URL,)),
+    "a path beginning with a dash": Rule(
+        section("p", "path = -p", f"url = {acme('P')}") + OK, ("-p", "ok"),
+        (OK_URL,)),
+    "a section with no path": Rule(
+        section("np", f"url = {acme('Nowhere')}") + OK, ("np", "ok"),
+        (OK_URL,)),
+    "a gitmodules left unmerged": Rule(OK, ("ok",), (), unmerged=True),
+    "a bare key where git ignores the section": Rule(
+        section("", "url") + section("../x", "path") + '[remote "r"]\n\turl\n'
+        + OK, ("ok",), (OK_URL,)),
+    "a file git cannot parse": Rule(
+        OK + '[submodule "x"\n', ("ok",), (), "git cannot parse .gitmodules"),
+    "a path with no value": refusing("path" + NO_VALUE, "path"),
+    "a url with no value": refusing("url" + NO_VALUE, "url"),
+    "an ignore with no value": refusing("ignore" + NO_VALUE, "ignore"),
+    "an update with no value": refusing("update" + NO_VALUE, "update"),
+    "a branch with no value": refusing("branch" + NO_VALUE, "branch"),
+    "an update git dies on": refusing(UPDATE, "update = bogus"),
+    "an update that is a command": refusing(UPDATE, "update = !echo hi"),
+    "each update git accepts": accepted(
+        "update = checkout", "update = merge", "update = rebase",
+        "update = none"),
+    "a shallow git dies on": refusing(SHALLOW, "shallow = maybe"),
+    "each shallow git accepts": accepted(
+        "shallow = true", "shallow = no", "shallow = 1", "shallow = 0x10",
+        "shallow = ", "shallow"),
+    "a fetchRecurseSubmodules git dies on": refusing(
+        FETCH, "fetchRecurseSubmodules = sometimes"),
+    "each fetchRecurseSubmodules git accepts": accepted(
+        "fetchRecurseSubmodules = on-demand", "fetchRecurseSubmodules = true",
+        "fetchRecurseSubmodules = 2", "fetchRecurseSubmodules"),
+}
+EACH_RULE = pytest.mark.parametrize("rule_id", sorted(RULES))
 
 
 def run_step(template: str, step: str, holder: Path, tmp_path: Path):
@@ -225,15 +365,109 @@ def test_the_names_step_names_a_repository_once(template, case, tmp_path):
     assert output.splitlines() == [f"{TEMPLATES[template]['output']}={names}"]
 
 
+def registered(work: Path, paths) -> list:
+    """The urls `git submodule init` registers, asked of each of `paths` in
+    turn, since it stops at the first it can name no url for. It says so on
+    stderr."""
+    urls = []
+    for path in paths:
+        proc = subprocess.run(
+            ["git", "submodule", "init", "--", path], cwd=work,
+            capture_output=True, text=True, encoding="utf-8", check=False)
+        urls += re.findall(r"^Submodule '.*' \((.*)\) registered for path ",
+                           proc.stdout + proc.stderr, re.MULTILINE)
+    return urls
+
+
+@EACH_RULE
+def test_git_registers_what_each_row_says(rule_id, tmp_path):
+    rule = RULES[rule_id]
+    work = holder_of(tmp_path, rule.gitmodules, rule.paths, rule.unmerged)
+    assert registered(work, rule.paths) == list(rule.urls)
+
+
+@pytest.fixture
+def siblings(monkeypatch):
+    """The TEMPLATE's `siblings.py`, once it has #775's rules; skipped until
+    they are in main. Loaded as `test_family_siblings_placement.py` loads it."""
+    scripts = REPO / "templates" / "family-root" / "scripts"
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setitem(sys.modules, "bootstrap", load_without_bytecode(
+        scripts / "bootstrap.py", "ci_rules_family_bootstrap"))
+    module = load_without_bytecode(scripts / "siblings.py",
+                                   "ci_rules_family_siblings")
+    if not hasattr(module, "DOTDOT_COMPONENT"):
+        pytest.skip("siblings.py has no #733 rules until #775 is in main")
+    return module
+
+
+@pytest.mark.parametrize("rule_id", sorted(
+    rule_id for rule_id, rule in RULES.items() if not rule.unmerged))
+def test_siblings_reads_what_each_row_says(rule_id, siblings, tmp_path):
+    """`siblings.submodule_urls` reads the file in the working tree, so a row
+    that leaves it unmerged in the index is not asked."""
+    rule = RULES[rule_id]
+    work = holder_of(tmp_path, rule.gitmodules, rule.paths)
+    assert sorted(siblings.submodule_urls(work).values()) == sorted(rule.urls)
+
+
+def read_by(template: str, step: str, result, output: str) -> list:
+    """What one step named (its repositories) or listed (its urls)."""
+    if step == "names":
+        key = TEMPLATES[template]["output"]
+        [named] = [line[len(key) + 1:] for line in output.splitlines()
+                   if line.startswith(f"{key}=")] or [""]
+        return named.split(",") if named else []
+    prefix = {"fetch": "::warning::  ", "fail": "::error::  "}[step]
+    return [line[len(prefix):] for line in result.stdout.split("\n")
+            if line.startswith(prefix)]
+
+
+def expected_of(step: str, rule: Rule) -> list:
+    """What git's urls come to in one step: repository names in the names step,
+    the urls themselves in the two that list them."""
+    if step != "names":
+        return list(rule.urls)
+    return [url.rsplit("/", 1)[-1].removesuffix(".git") for url in rule.urls]
+
+
 @WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
+@EACH_RULE
 @EACH_STEP
 @EACH_TEMPLATE
-def test_a_url_key_outside_a_submodule_section_is_read_without_a_usage_dump(
-        template, step, tmp_path):
-    """`--get-regexp '\\.url$'` lists any section's url, and `git config
-    --get -x.url` reads `-x` as a switch: a usage dump on stderr, exit 129,
-    and the url swallowed by the `|| continue` after it."""
-    work = holder_of(tmp_path, '[remote "origin"]\n\t' + acme("Remote")
-                     + "[-x]\n\t" + acme("Dash"))
+def test_each_step_reads_what_git_reads(template, step, rule_id, tmp_path):
+    rule = RULES[rule_id]
+    work = holder_of(tmp_path, rule.gitmodules, rule.paths, rule.unmerged)
+    result, output = run_step(template, step, work, tmp_path)
+    assert read_by(template, step, result, output) == expected_of(step, rule)
+
+
+@WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
+@EACH_RULE
+@EACH_STEP
+@EACH_TEMPLATE
+def test_each_step_exits_as_expected_and_prints_nothing_on_stderr(
+        template, step, rule_id, tmp_path):
+    """Only a file git refuses whole fails a step that would not fail anyway:
+    the failing step fails always, and nothing reaches stderr."""
+    rule = RULES[rule_id]
+    work = holder_of(tmp_path, rule.gitmodules, rule.paths, rule.unmerged)
     result, _ = run_step(template, step, work, tmp_path)
+    failed = bool(rule.refused) or step == "fail"
+    assert result.returncode == int(failed)
     assert result.stderr == ""
+
+
+@WINDOWS_SKIP  # it runs the step's `run:` body as the REAL bash it is
+@pytest.mark.parametrize("rule_id", sorted(
+    rule_id for rule_id, rule in RULES.items() if rule.refused))
+@EACH_STEP
+@EACH_TEMPLATE
+def test_a_file_git_refuses_whole_is_named_with_its_cause(
+        template, step, rule_id, tmp_path):
+    rule = RULES[rule_id]
+    work = holder_of(tmp_path, rule.gitmodules, rule.paths)
+    result, _ = run_step(template, step, work, tmp_path)
+    causes = [line for line in result.stdout.split("\n")
+              if line.startswith("::error::") and rule.refused in line]
+    assert len(causes) == 1
