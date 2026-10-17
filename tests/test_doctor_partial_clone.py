@@ -212,34 +212,49 @@ def test_the_commit_head_names_is_asked_too(moved, project, tmp_path):
 
 
 def holds(clone: Path, commit: str) -> bool:
-    """Whether `clone` holds `commit`, asked of git without fetching:
-    `rev-list --missing=print` refuses a commit it does not hold."""
-    return subprocess.run(
+    """Whether `clone` holds `commit`, asked of git without fetching.
+
+    `rev-list --missing=print` answers a commit the clone does not hold in
+    one of two ways, by git version: before 2.45 it refuses it, `bad
+    object`, exit 128; from 2.45 on it prints it, `?<commit>`, and exits 0
+    (#754: CI's git 2.55 read this as held). Either is "not held", and
+    neither fetches. `cat-file -e` would read the commit, which in a
+    partial clone fetches it wherever git does not honour
+    `GIT_NO_LAZY_FETCH`."""
+    listed = subprocess.run(
         ["git", "rev-list", "--objects", "--no-walk", "--missing=print",
-         commit], cwd=str(clone), capture_output=True,
-        check=False).returncode == 0
+         commit], cwd=str(clone), capture_output=True, check=False)
+    return (listed.returncode == 0
+            and f"?{commit}".encode() not in listed.stdout.splitlines())
 
 
 @pytest.fixture
 def elsewhere(standard, moved, tmp_path) -> dict:
-    """A standard whose `main` is a history of its own, `S`, that holds C1,
-    the commit the project is pinned at, on another branch only, `pinned`.
-    Its `main` holds the same tools and templates, so the doctor runs from
-    a clone of it as from the standard."""
+    """A standard whose `main` is a history of its own, `S`, with the same
+    tools and templates as the standard, so the doctor runs from a clone of
+    it as from the standard; and `pin`, which puts C1, the commit the
+    project is pinned at, on another branch of it, `pinned`, and nowhere
+    else. Called only once a clone of `main` exists, so no flag of any
+    git's `clone` can bring C1 in (#754)."""
     stranger = standard_of_another_history(standard, tmp_path)
-    git(*FILE_PROTOCOL, "fetch", "-q", str(moved["ahead"]),
-        f"{moved['c1']}:refs/heads/pinned", cwd=stranger)
     git("config", "uploadpack.allowFilter", "true", cwd=stranger)
-    return {"stranger": stranger, "c1": moved["c1"]}
+
+    def pin() -> None:
+        git(*FILE_PROTOCOL, "fetch", "-q", str(moved["ahead"]),
+            f"{moved['c1']}:refs/heads/pinned", cwd=stranger)
+
+    return {"stranger": stranger, "c1": moved["c1"], "pin": pin}
 
 
 @pytest.fixture
 def single_branch(elsewhere, tmp_path) -> Path:
-    """A `--single-branch` partial clone of `elsewhere`'s `main`: it does
-    not hold C1 at all, which only another branch has (#754)."""
+    """A `--single-branch` partial clone of `elsewhere`'s `main`, made
+    before C1 was on any branch of it: it does not hold C1 at all, which
+    only another branch of its remote has (#754)."""
     clone = partial_clone_of(elsewhere["stranger"], tmp_path / "partial",
                              "blob:none", "--single-branch", "--branch",
                              "main")
+    elsewhere["pin"]()
     assert not holds(clone, elsewhere["c1"]), "the clone holds C1"
     return clone
 
@@ -399,3 +414,38 @@ def test_upstream_blob_is_a_files_bytes_or_none_where_there_is_no_file(
                            f"{head(standard)}:{path}"], cwd=str(standard),
                           capture_output=True, check=False).stdout
     assert upstream.blob(head(standard), path) == (held if found else None)
+
+
+#: A commit id, and two of the objects its tree reaches, for the outputs
+#: below.
+SOME_COMMIT = "c" * 40
+SOME_OBJECTS = ("a" * 40, "b" * 40)
+
+#: `rev-list --objects --no-walk --missing=print <SOME_COMMIT>`'s answer,
+#: as `git_answer` hands it on, and what `objects_lacking` makes of it.
+REV_LIST_ANSWERS = {
+    "a commit not held, before git 2.45 (bad object, exit 128)": (None, None),
+    "a commit not held, from git 2.45 on (printed missing, exit 0)": (
+        f"?{SOME_COMMIT}\n".encode(), None),
+    "a commit held, with two objects missing": (
+        f"{SOME_COMMIT}\n{'d' * 40} \n?{SOME_OBJECTS[0]}\n"
+        f"?{SOME_OBJECTS[1]}\n".encode(), 2),
+    "a commit held, with nothing missing": (
+        f"{SOME_COMMIT}\n{'d' * 40} \n{'e' * 40} README.md\n".encode(), 0),
+}
+
+
+@pytest.mark.parametrize("case", list(REV_LIST_ANSWERS))
+def test_objects_lacking_reads_a_missing_commit_on_every_git(
+        standard, tmp_path, monkeypatch, case):
+    """`objects_lacking` on each answer `rev-list --missing=print` gives
+    (#754). From git 2.45 on, a commit the clone does not hold is printed
+    `?<commit>`, exit 0, where git 2.43 refused it; read as one object
+    lacked, it was not "absent", and `remote_holding` asked `--contains`
+    of it, a read that fetches. Both are None. Handed to the module, not
+    run, because one machine has one git."""
+    answer, expected = REV_LIST_ANSWERS[case]
+    module = doctor_module(standard)
+    monkeypatch.setattr(module, "git_answer",
+                        lambda *_args, **_kwargs: answer)
+    assert module.objects_lacking(tmp_path, SOME_COMMIT) == expected
