@@ -22,13 +22,22 @@ one the clone remembers after GitHub renamed it, which `execute` asks the
 remote about, are in `tests/test_adopt_github_exits.py`, beside the other exits
 a GitHub run has. Nothing here runs `gh`: every run below is `plan` and
 `check`, which read a local source, or `execute --local-remote-dir`, which
-refuses before any leg.
+refuses before any leg or adopts.
+
+The branch the source is read at is one of its own (#797). A clone made with
+`git clone -b dev` has `origin/HEAD` naming `main` and no `main` of its own,
+and `plan`, `check` and `execute` ended `git-failed` in `git rev-parse main`,
+with no remedy, whatever `--tracking-branch` said. Now that clone is refused
+by name, with both ways through, and `--tracking-branch dev` reads it at
+`dev`. A default branch outside the alphabet a command line may carry, such
+as `café`, is refused as before, and the refusal now says the way past it.
 """
 
 from __future__ import annotations
 
 import shutil
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -277,3 +286,186 @@ def test_a_passed_branch_equal_to_the_sources_own_is_still_named_as_passed(
         result.stderr, result.stderr
     assert "not given" not in result.stderr, result.stderr
     assert not plan.exists()
+
+
+# --- the source's own branch, by its full name (#797) -----------------------
+
+needs_filter_repo = pytest.mark.skipif(
+    shutil.which("git-filter-repo") is None,
+    reason="git filter-repo is not installed: `pip install git-filter-repo`")
+#: How a source whose `origin/HEAD` names a branch it has no branch of its
+#: own for is refused, by `plan`, `check` and `execute` alike (L1-71's second
+#: case on #457).
+NOT_LOCAL = "REFUSED source-default-branch-not-local: "
+#: The two ways through it, as its remediation names them.
+MAKE_IT_LOCAL = "`git branch main origin/main`, run in the source"
+OR_TRACK_ANOTHER = ("run `plan` with `--tracking-branch` naming a branch "
+                    "the source has, and the source is read at that branch")
+#: What `check` says once it reads the source where `plan` did.
+PLAN_OK = "\nplan ok\n"
+#: The flag that names the branch to track, and the plan `write_plan` writes.
+TRACKING = "--tracking-branch"
+PLAN_NAME = "adoption-plan.yaml"
+
+
+def cloned_with(tmp_path, branch: str) -> Path:
+    """`git clone -b <branch>` of a repository whose default branch is
+    `main` and which has a `dev` a commit ahead of it: `origin/HEAD` names
+    `origin/main`, and `branch` is the clone's one branch."""
+    seed = make_source_repo(tmp_path / "seed", tree=TREE, edits=())
+    git("switch", "-q", "-c", "dev", cwd=seed)
+    git("commit", "-q", "--allow-empty", "-m", "Ahead on dev", cwd=seed)
+    git("switch", "-q", "main", cwd=seed)
+    remote = tmp_path / "testorg" / "Northwind.git"
+    git(*FILE_PROTOCOL, "clone", "-q", "--bare", str(seed), str(remote),
+        cwd=tmp_path)
+    source = tmp_path / "Northwind"
+    git(*FILE_PROTOCOL, "clone", "-q", "-b", branch, str(remote), str(source),
+        cwd=tmp_path)
+    return source
+
+
+def tip(source, branch: str) -> str:
+    """The commit the source's own `branch` names."""
+    return git("rev-parse", f"refs/heads/{branch}", cwd=source).stdout.strip()
+
+
+def test_a_clone_of_another_branch_is_refused_by_name_with_both_ways_through(
+        tmp_path):
+    """L1-71's second case: on main, `plan` of a `git clone -b dev` source
+    was refused `git-failed` in `git rev-parse main`, in git's words, with
+    no remedy. It is refused by name now, before any plan is written, with
+    both ways through; and the first, `main` made the source's own, plans
+    the source at it."""
+    source = cloned_with(tmp_path, "dev")
+    plan = tmp_path / PLAN_NAME
+
+    result = write_plan(source, plan)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (f"{NOT_LOCAL}the source's `origin/HEAD` names `main`, the default "
+            "branch of its remote `origin`, and the source has no branch "
+            "`main` of its own (its branches: `dev`)") in result.stderr, \
+        result.stderr
+    assert MAKE_IT_LOCAL in result.stderr, result.stderr
+    assert OR_TRACK_ANOTHER in result.stderr, result.stderr
+    assert "git-failed" not in result.stderr, result.stderr
+    assert not plan.exists()
+    git("branch", "main", "origin/main", cwd=source)
+    _, plan = planned(tmp_path / "made", source)
+    assert load_yaml(plan)["source"]["commit"] == tip(source, "main")
+
+
+def test_a_clone_of_another_branch_is_read_at_the_tracking_branch_given(
+        tmp_path):
+    """The other way through, `--tracking-branch dev`, was refused as the
+    first run was: `Source.open` asked for `main` before anything else. Now
+    the source is read at `dev`, which the plan records with ITS commit,
+    and `check` reads it where `plan` did."""
+    source = cloned_with(tmp_path, "dev")
+
+    result, plan = planned(tmp_path, source, TRACKING, "dev")
+
+    written = load_yaml(plan)
+    assert written["source"]["default_branch"] == "dev", written["source"]
+    assert written["source"]["commit"] == tip(source, "dev")
+    assert written["tracking_branch"] == "dev"
+    assert MISSING not in result.stdout + result.stderr
+    checked = check(plan)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert PLAN_OK in checked.stdout
+
+
+def test_check_of_a_plan_whose_branch_was_deleted_is_refused_by_name(
+        tmp_path):
+    """The issue's `check` row: a plan of a clone on `main`, whose `main`
+    is then deleted with `dev` checked out. On main `check` said
+    `git-failed`, `git rev-parse main`; now it refuses as `plan` does,
+    naming `main` once."""
+    source = cloned_with(tmp_path, "main")
+    _, plan = planned(tmp_path, source)
+    git("switch", "-q", "dev", cwd=source)
+    git("branch", "-q", "-D", "main", cwd=source)
+
+    result = check(plan)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (f"{NOT_LOCAL}the source's `origin/HEAD` names `main`, the default "
+            "branch of its remote `origin`, and the source has no branch "
+            "`main` of its own (its branches: `dev`). A clone made with `git "
+            "clone -b <branch>` has none, nor does one whose own was "
+            "deleted") in result.stderr, result.stderr
+    assert MAKE_IT_LOCAL in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("head", ["detached", "unborn"])
+def test_a_default_branch_with_no_commit_is_read_at_the_tracking_branch(
+        tmp_path, head):
+    """`--tracking-branch` needs no default branch to resolve. With no
+    `origin/HEAD`, a detached HEAD has `main` guessed, which this source
+    does not have, and an orphan HEAD is on a branch with no commit yet:
+    each was refused `git-failed` in `git rev-parse` of it, whatever
+    `--tracking-branch` named. Now the source is read at the branch given,
+    and `check` reads it there again."""
+    source = make_source_repo(tmp_path / "Northwind", tree=TREE, edits=(),
+                              branch="trunk")
+    if head == "detached":
+        git("checkout", "-q", "--detach", cwd=source)
+    else:
+        git("switch", "-q", "--orphan", "new", cwd=source)
+
+    _, plan = planned(tmp_path / "plan", source, TRACKING, "trunk")
+
+    written = load_yaml(plan)
+    assert written["source"]["default_branch"] == "trunk", written["source"]
+    assert written["source"]["commit"] == tip(source, "trunk")
+    checked = check(plan)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+@needs_filter_repo
+def test_a_clone_of_another_branch_is_adopted_at_the_tracking_branch(
+        tmp_path):
+    """`execute` of that plan reads the source where `plan` did, and the
+    split is made on `dev`'s commit, which is not `main`'s."""
+    source = cloned_with(tmp_path, "dev")
+    _, plan = planned(tmp_path, source, TRACKING, "dev")
+
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "adoption verified" in result.stdout
+    split = git("rev-parse", "refs/heads/adopt/three-repo-shape^",
+                cwd=source).stdout.strip()
+    assert split == tip(source, "dev")
+
+
+def test_a_default_branch_outside_the_alphabet_names_the_way_past_it(
+        tmp_path):
+    """L1-71's first case: a source whose only branch is `café` was refused
+    `unsafe-value` with the alphabet alone as its remedy, though a way past
+    it works. The refusal says it now: a branch whose name is in the
+    alphabet, at the same commit, given as `--tracking-branch`. Followed,
+    `plan` reads the source at `café` and `check` finds nothing."""
+    source = make_source_repo(tmp_path / "Northwind", tree=TREE, edits=(),
+                              branch="café")
+    plan = tmp_path / PLAN_NAME
+
+    result = write_plan(source, plan)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    said = " ".join(result.stderr.split())
+    assert ("So make a branch whose name matches at the same commit, in the "
+            "source with that branch checked out (`git branch main`, and `git "
+            "push origin main` where the source has a remote `origin`), and "
+            "pass it: `--tracking-branch main`.") in said, said
+    assert not plan.exists()
+    git("branch", "main", cwd=source)
+    _, plan = planned(tmp_path / "past", source, TRACKING, "main")
+    written = load_yaml(plan)
+    assert written["source"]["default_branch"] == "café", written["source"]
+    assert written["tracking_branch"] == "main"
+    checked = check(plan)
+    assert checked.returncode == 0, checked.stdout + checked.stderr

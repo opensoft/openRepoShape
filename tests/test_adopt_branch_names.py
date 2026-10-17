@@ -32,19 +32,30 @@ Every run here is `plan` or `check`, which read a local source, or `execute`
 in this process, refused before any leg; the one end-to-end test needs `git
 filter-repo`. Each plan is edited as bytes, so it stays LF on every platform,
 and a name git refuses is only ever a plan value, never a branch on disk.
+
+The branch `plan` reads the source at is read by its full name (#797). Its
+short name took `origin/` off HEAD's branch too, so a HEAD on a branch of
+the source's own named `origin/x` read `x`; a tag named like the branch made
+HEAD's short name `heads/main`, which `plan` recorded as the tracking branch
+and `check` found no branch of the source; and an `origin/HEAD` naming `main`
+was read with `git rev-parse main`, which a tag `main` answers first.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import shutil
+import sys
 from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, findings, git, make_source_repo,
+from conftest import (ADOPT, REPO, findings, git, make_source_repo,
                       refused_before_any_leg, run_script, write_plan)
+
+sys.path.insert(0, str(REPO / "scripts"))
+from repo_shape import load_yaml  # noqa: E402
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
@@ -262,3 +273,68 @@ def test_a_split_branch_git_will_not_create_makes_no_leg_and_the_fix_adopts(
     adopted = run_script(ADOPT, "execute", *flags)
     assert adopted.returncode == 0, adopted.stderr + adopted.stdout
     assert "adoption verified" in adopted.stdout
+
+
+# --- the branch the source is read at, by its full name (#797) --------------
+
+#: Where git says which branch the source is on: its HEAD, or the default
+#: branch its remote `origin` names, `refs/remotes/origin/HEAD`.
+WHERE = pytest.mark.parametrize("where", ["head", "origin-head"])
+#: A branch of the source's own that is named like a remote-tracking one.
+ORIGIN_X = "origin/x"
+
+
+def planned_at(source: Path, base: Path) -> dict:
+    """`plan` of `source` into `base`, which must write the plan: the plan."""
+    plan = base / PLAN_FILE
+    written = write_plan(source, plan)
+    assert written.returncode == 0, written.stderr + written.stdout
+    return load_yaml(plan)
+
+
+def commit_of(source: Path, ref: str) -> str:
+    return git("rev-parse", ref, cwd=source).stdout.strip()
+
+
+def test_a_head_on_a_branch_named_like_a_remote_ones_is_read_there(tmp_path):
+    """L1-69: HEAD on a branch of the source's own named `origin/x`, a
+    commit ahead of a branch `x`. `_default_branch` took `origin/` off
+    HEAD's short name as off `origin/HEAD`'s, so `plan` read the source at
+    `x` and recorded `x`'s commit, and said nothing. HEAD's full name loses
+    `refs/heads/` alone now."""
+    source = make_source_repo(tmp_path / "Northwind", tree=TREE, edits=())
+    git("branch", "x", cwd=source)
+    git("switch", "-q", "-c", ORIGIN_X, cwd=source)
+    git("commit", "-q", "--allow-empty", "-m", "Ahead of x", cwd=source)
+
+    written = planned_at(source, tmp_path)
+
+    assert written["source"]["default_branch"] == ORIGIN_X
+    assert written["source"]["commit"] == commit_of(source,
+                                                    f"refs/heads/{ORIGIN_X}")
+    assert written["tracking_branch"] == ORIGIN_X
+
+
+@WHERE
+def test_a_tag_named_like_the_default_branch_shadows_nothing(tmp_path, where):
+    """A tag `main`, a commit behind the branch `main`. Read from HEAD, the
+    short name was `heads/main`, which `plan` recorded as the tracking
+    branch and `check` found no branch of the source; read from
+    `origin/HEAD`, it was `main`, and `git rev-parse main` answered with the
+    TAG's commit. The full name is read now, and the branch's commit."""
+    source = make_source_repo(tmp_path / "Northwind", tree=TREE, edits=())
+    git("tag", "main", cwd=source)
+    git("commit", "-q", "--allow-empty", "-m", "Past the tag", cwd=source)
+    if where == "origin-head":
+        git("update-ref", "refs/remotes/origin/main", "refs/heads/main",
+            cwd=source)
+        git("symbolic-ref", "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main", cwd=source)
+
+    written = planned_at(source, tmp_path)
+
+    assert written["source"]["default_branch"] == "main"
+    assert written["source"]["commit"] == commit_of(source, "refs/heads/main")
+    assert written["tracking_branch"] == "main"
+    checked = run_script(ADOPT, "check", "--plan", str(tmp_path / PLAN_FILE))
+    assert checked.returncode == 0, checked.stdout + checked.stderr

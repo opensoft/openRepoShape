@@ -28,6 +28,10 @@ strictly, a HEAD or an `origin/HEAD` naming such a branch ended `plan`,
 is kept as a lone surrogate, and `plan` refuses the name as `unsafe-value`
 for `--tracking-branch` before any plan is written; `check` and `execute`
 name it too, or adopt past it when the plan tracks a branch that is text.
+
+And only git's line end comes off it, from the bytes (#797). The name was
+stripped once decoded, which takes U+00A0 off `main<U+00A0>` too: `plan`
+read the branch `main` beside it, a commit behind, and recorded that commit.
 """
 
 from __future__ import annotations
@@ -522,32 +526,35 @@ LOST_FINDING = b"FINDING plan-tracking-branch-missing: " + BRANCH_LOST
 LOST_REFUSAL = b"REFUSED plan-tracking-branch-missing: "
 
 
-def with_default_branch(source: Path, where: str) -> Path:
-    """`source`, on `main`, with `BRANCH` as its default branch where git
-    says one: `head` is its HEAD, and `origin-head` is
-    `refs/remotes/origin/HEAD`, with HEAD left on `main`. `BRANCH` is one
-    commit AHEAD of `main`, which is still a branch of the source: a plan
-    that read the wrong branch would adopt the wrong commit, and a
-    `--tracking-branch main` names a branch it has.
+def with_default_branch(source: Path, where: str,
+                        branch: str = BRANCH) -> Path:
+    """`source`, on `main`, with `branch` (`BRANCH` unless given) as its
+    default branch where git says one: `head` is its HEAD, and
+    `origin-head` is `refs/remotes/origin/HEAD`, with HEAD left on `main`.
+    `branch` is one commit AHEAD of `main`, which is still a branch of the
+    source: a plan that read the wrong branch would adopt the wrong commit,
+    and a `--tracking-branch main` names a branch it has.
 
-    Skipped where no branch can be named with the byte 0xE9 (Windows, macOS's
-    APFS), or git here does not give the name back as it was written."""
+    Skipped where no branch can be named so (the byte 0xE9 on Windows or
+    macOS's APFS), or git here does not give the name back as it was
+    written."""
     ref = "refs/remotes/origin/HEAD" if where == ORIGIN_HEAD else "HEAD"
+    written = branch.encode("utf-8", "surrogateescape")
     try:
-        git("switch", "-q", "-c", BRANCH, cwd=source)
+        git("switch", "-q", "-c", branch, cwd=source)
         git("commit", "-q", "--allow-empty", "-m", "One ahead", cwd=source)
         if where == ORIGIN_HEAD:
             git("switch", "-q", "main", cwd=source)
-            for name in (BRANCH, "main"):
+            for name in (branch, "main"):
                 git("update-ref", f"refs/remotes/origin/{name}", name,
                     cwd=source)
-            git("symbolic-ref", ref, f"refs/remotes/origin/{BRANCH}",
+            git("symbolic-ref", ref, f"refs/remotes/origin/{branch}",
                 cwd=source)
     except (AssertionError, UnicodeError, OSError) as exc:
-        pytest.skip(f"no branch here is named {NOT_UTF8_BRANCH!r}: {exc!r}")
+        pytest.skip(f"no branch here is named {written!r}: {exc!r}")
     read = subprocess.run(["git", "symbolic-ref", ref], cwd=str(source),
                           capture_output=True, check=False)
-    if not read.stdout.rstrip(b"\r\n").endswith(b"/" + NOT_UTF8_BRANCH):
+    if not read.stdout.rstrip(b"\r\n").endswith(b"/" + written):
         pytest.skip(f"`git symbolic-ref {ref}` here is {read.stdout!r}")
     return source
 
@@ -609,12 +616,14 @@ def test_execute_refuses_a_plans_branch_gone_for_one_that_is_not_utf8(
     assert LOST_FINDING in refused.stderr, said(refused)
 
 
-def planned_past(base: Path, where: str) -> tuple[Path, dict]:
+def planned_past(base: Path, where: str,
+                 branch: str = BRANCH) -> tuple[Path, dict]:
     """`(source, runs)`: `plan --tracking-branch main` of a source whose
-    default branch is `BRANCH` (`with_default_branch`), the plan answered,
+    default branch is `branch` (`with_default_branch`), the plan answered,
     and `check`, each run there was. `main` is the branch to adopt into, so
-    nothing is asked of the name that is not UTF-8."""
-    source = with_default_branch(make_source_repo(base / "Thing"), where)
+    nothing is asked of the default branch's name."""
+    source = with_default_branch(make_source_repo(base / "Thing"), where,
+                                 branch)
     runs = {"plan": planned(base, source, TRACKING, "main")}
     assert runs["plan"].returncode == 0, said(runs["plan"])
     answer(base)
@@ -657,3 +666,47 @@ def test_execute_adopts_a_source_whose_default_branch_is_not_utf8(tmp_path,
     assert runs["execute"].returncode == 0, said(runs["execute"])
     assert VERIFIED in runs["execute"].stdout, said(runs["execute"])
     assert tip_of(source, f"{SPLIT_BRANCH}^") == tip_of(source, BRANCH)
+
+
+# --- `git symbolic-ref`: the name whole, white space and all (#797) ----------
+
+#: `main`, then U+00A0, NO-BREAK SPACE: a branch git keeps, and white space
+#: to `str.strip` (L1-68 on #457).
+NBSP_BRANCH = "main "
+#: `plan`'s refusal of that default branch as the tracking branch it would
+#: take, as `UNSAFE_BRANCH` is of `caf<e9>`.
+UNSAFE_NBSP = (
+    b"REFUSED unsafe-value: --tracking-branch (not given, so the source's "
+    b"default branch) is 'main\\xa0', which is not a value this tool will "
+    b"put on a `git` or `gh` command line\n")
+
+
+@by_where
+def test_plan_refuses_a_default_branch_ending_in_white_space(tmp_path,
+                                                            where):
+    """L1-68: `_default_branch` stripped the name it decoded, which took
+    the U+00A0 off `main<U+00A0>`, so `plan` planned `main`, the branch
+    beside it, and said nothing. Only git's line end comes off now, and
+    the name is the tracking branch `plan` would take, refused as
+    `unsafe-value` before any plan is written."""
+    source = with_default_branch(make_source_repo(tmp_path / "Thing"), where,
+                                 NBSP_BRANCH)
+    refused = planned(tmp_path, source)
+    assert_no_traceback({"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert UNSAFE_NBSP in refused.stderr, said(refused)
+    assert not (tmp_path / PLAN_FILE).exists()
+
+
+@by_where
+def test_plan_reads_a_default_branch_ending_in_white_space_whole(tmp_path,
+                                                                where):
+    """With `--tracking-branch main`, the source is read at `main<U+00A0>`
+    itself, with ITS commit, where the stripped name read `main`'s, a
+    commit behind; and the plan records the name as git keeps it."""
+    source, runs = planned_past(tmp_path, where, NBSP_BRANCH)
+    assert_no_traceback(runs)
+    read_at = load_yaml(tmp_path / PLAN_FILE)["source"]
+    assert read_at["default_branch"] == NBSP_BRANCH
+    assert read_at["commit"] == tip_of(source, NBSP_BRANCH)
+    assert runs["check"].returncode == 0, said(runs["check"])
