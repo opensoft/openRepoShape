@@ -19,8 +19,10 @@ THE ISSUE'S THREE LINES, each reproduced on #639's head before this change:
   path after its own, a section under a name git ignores and a url git
   drops (D1, Q1 and O1). So it does where git exits 0 over a member a
   subset clone or `update = none` leaves out, whose line prints the update
-  that checks it out, unless git has no url for it (A1). A missing
-  credential is still the skip it was, after a recursive clone too.
+  that checks it out, unless git has no url for it (A1), and where a
+  merge leaves `.gitmodules` unmerged, which git then reads nothing from
+  (MM1). A missing credential is still the skip it was, after a recursive
+  clone too.
 - (b) In a plain clone of #363's state followed by `git submodule update
   --init --recursive`, as CI and `make bootstrap` run it, the update dies at
   `Members/<P>` before it checks out any member, so where that row is not
@@ -78,6 +80,7 @@ NOT_FETCHED = ("  NOT CHECKED OUT, and not for want of a credential: {left}. "
 NO_SECTION = "no section of .gitmodules gives that path"
 NO_GITLINK = "no gitlink is recorded at that path"
 NO_URL = "git has no url for that path"
+UNMERGED = "git reads no .gitmodules while a merge leaves it unmerged"
 EXITED_0 = "git exited 0 and checked nothing out there"
 STOPPED = "git stopped at {path}, a gitlink it has no url for"
 
@@ -100,6 +103,8 @@ TWICE_CURE = (f"`{PYTHON} scripts/validate-family.py --no-members` names "
               "to take the others out.")
 OUTSIDE_CURE = ("No row names {path} and no clone can check it out: `git rm "
                 "--cached -- {path}` takes its gitlink out, then commit that.")
+UNMERGED_CURE = ("Resolve the merge in .gitmodules and `git add .gitmodules`, "
+                 "then run this again.")
 CHECKOUT_CURE = ("`git submodule update --init --checkout --recursive -- "
                  "{path}` checks it out.")
 
@@ -683,6 +688,59 @@ def test_a_hand_mount_outside_members_is_taken_out_of_the_index(
     assert again.returncode == 0, again.stdout + again.stderr
     assert after_first_line(again) == FETCHED
     assert_passes_in_every_mode(clone, 2)
+
+
+def with_branch(value: str):
+    """An edit giving OTHER's section a `branch` key of `value`, after its
+    url."""
+    return lambda data: url_edited(
+        data, OTHER, lambda line: line + f"\tbranch = {value}\n".encode())
+
+
+def test_a_gitmodules_a_merge_left_unmerged_says_to_add_it(
+        family, holder, offline, tmp_path):
+    """rv648's MM1. In a plain clone, a merge conflicts in `.gitmodules`
+    (each side gave OTHER's section another `branch`), and the file is
+    resolved in the work tree but not added: the index holds it only at
+    the conflict's three stages. Git reads no `.gitmodules` at all then,
+    so its init dies at MEMBER's gitlink, the first, and the run said ok,
+    reading the work tree's file. It names both rows for that and says to
+    add the file once it is resolved; added, the same run checks both
+    members out."""
+    env = fetching(isolated(offline, tmp_path))
+    remote = family["remotes"] / f"{NAME}.git"
+    side = f"w648/{next(BRANCHES)}"
+    data = raw(holder, env, "show", f"HEAD:{GITMODULES}").stdout
+    committed_gitmodules(holder, env, with_branch("dev")(data))
+    raw(holder, env, "push", "-q", str(remote), f"HEAD:refs/heads/{side}")
+    raw(holder, env, "update-index", "-q", "--refresh", check=False)
+    raw(holder, env, "reset", "-q", "--keep", "HEAD~1")
+    clone, _ = edited_clone(holder, env, family, tmp_path,
+                            with_branch("main"))
+    raw(clone, env, "fetch", "-q", "origin", side)
+    merged = raw(clone, env, "merge", "-q", "--no-edit", "FETCH_HEAD",
+                 check=False)
+    assert merged.returncode == 1, merged.stdout + merged.stderr
+    stages = raw(clone, env, "ls-files", "-u", "--", GITMODULES).stdout
+    assert len(stages.splitlines()) == 3, "premise: .gitmodules is unmerged"
+    (clone / GITMODULES).write_bytes(
+        raw(clone, env, "show", f":2:{GITMODULES}").stdout)
+
+    result = bootstrap(clone, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stderr.splitlines()[-2:] == [
+        not_fetched((f"members/{MEMBER}", UNMERGED),
+                    (f"members/{OTHER}", UNMERGED), cure=UNMERGED_CURE),
+        failed_on(MEMBER, OTHER)], result.stderr
+    assert (f"No url found for submodule path 'members/{MEMBER}'"
+            in result.stderr)
+    raw(clone, env, "add", "--", GITMODULES)
+
+    again = bootstrap(clone, env, "--skip-members")
+
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert after_first_line(again) == FETCHED
 
 
 @pytest.mark.parametrize("set_up", UNNAMED_STOPS.values(), ids=UNNAMED_STOPS)
