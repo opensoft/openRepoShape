@@ -19,9 +19,11 @@ standard's checkout is a partial clone, stay a person's (review of PR #586).
 A copy only the other side's pin has a row for -- a row the kept pin lost,
 or an add/add where one side's `apply --add` took a file the standard added
 and the other wrote its own -- is never taken either, and the `why` and
-`left_for_a_person` name it for a person (#687). Beside a kept pin that
-does not read, or where one side deleted it, the `why` says only what is
-known: no owner, and no hunks to keep (review of PR #736).
+`left_for_a_person` name it for a person (#687). Where one side deleted
+it, the `why` says a person keeps or deletes it, as there are no hunks to
+keep (review of PR #736). A side whose pin does not read is never taken:
+the NEXT takes the side whose pin reads, and where no side's pin reads,
+neither row names a NEXT (#752).
 
 L2-9. A slip amended into `bump-leg.py`'s own commit leaves the commit
 before it holding the pin for the OLD leg commit. Putting that pin back is
@@ -785,42 +787,107 @@ def test_a_copy_only_the_other_sides_pin_has_a_row_for_is_named(both_pure):
     assert (root / MAKEFILE).read_bytes() == held
 
 
-#: What the `why` says of the two copies, by what the kept side's pin says
-#: of them: no rows for either, or nothing, as it does not read (review of
-#: PR #736), where nothing says whose file each becomes.
-TOGETHER = {
-    "rows-gone": "where the pin taken here does not, so neither side is "
-                 "taken whole: once the merge is finished each is the "
-                 "project's own file, and a person merges each by hand, "
-                 "keeping the hunks git merged. Then finish",
-    "unreadable": "while the pin taken here does not read as a pin, so "
-                  "neither side is taken whole: a person merges each by "
-                  "hand, keeping the hunks git merged. Then finish",
-}
+#: Both copies conflicted beside the pin, by the conflict each is.
+BOTH_COPIES = [MAKEFILE, "project.yaml", BOOTSTRAP]
 
 
-@pytest.mark.parametrize("kept", sorted(TOGETHER))
 def test_copies_only_the_other_sides_pin_has_rows_for_are_named_together(
-        both_pure, kept):
-    """The mirror with both copies' rows gone from the kept side's pin, or
-    with that pin restaged as `files: [`, which does not read, while the
-    other side's reads: nothing is taken with the pin, and the `why` names
-    the two in one sentence, which says whose file each becomes only where
-    the pin taken here reads."""
+        both_pure):
+    """The mirror with both copies' rows gone from the kept side's pin:
+    nothing is taken with the pin, and the `why` names the two in one
+    sentence."""
     root = both_pure["root"]
-    if kept == "unreadable":
-        a_pin_restaged(root, 2, lambda _blob: b"files: [\n")
-    else:
-        for rel in (MAKEFILE, BOOTSTRAP):
-            a_pin_without_a_row(root, 2, rel)
+    for rel in (MAKEFILE, BOOTSTRAP):
+        a_pin_without_a_row(root, 2, rel)
     _verdict, rows = rows_from(both_pure["moved"], root)
     currency = assert_both_rows_name_it(rows)
     assert pasted(currency["next"])[3:] == [
         "checkout", "--ours", "--", SHAPE_PIN], currency["next"]
-    assert currency["detail"]["left_for_a_person"] == [
-        MAKEFILE, "project.yaml", BOOTSTRAP], currency["detail"]
+    assert currency["detail"]["left_for_a_person"] == BOTH_COPIES, \
+        currency["detail"]
     assert f"{MAKEFILE} and {BOOTSTRAP} are conflicted too, and the other " \
-        f"side's pin calls them copies {TOGETHER[kept]}" in currency["why"], \
+        "side's pin calls them copies where the pin taken here does not, " \
+        "so neither side is taken whole: once the merge is finished each " \
+        "is the project's own file, and a person merges each by hand, " \
+        "keeping the hunks git merged. Then finish" in currency["why"], \
+        currency["why"]
+
+
+# --- a side whose pin does not read is never taken (#752) -------------------
+
+#: Bytes no pin reads as: a flow sequence nothing closes, RV-b's state.
+UNREADABLE_PIN = b"files: [\n"
+
+
+@pytest.mark.parametrize("broken, side", [
+    pytest.param(2, "--theirs", id="ours-does-not-read"),
+    pytest.param(3, "--ours", id="theirs-does-not-read"),
+])
+def test_the_side_taken_is_one_whose_pin_reads(both_pure, broken, side):
+    """(a)'s merge with one side's pin restaged as bytes that do not read.
+    `--ours` was taken wherever ours held a pin, and taken whole a pin that
+    does not read left the pin as it was, so the doctor named the same
+    line again (#752). Now the NEXT takes the side whose pin reads, and its
+    `why` says only that side's pin reads, never offering the other. No
+    copy is taken: the proof reads both sides' pins. Run as printed, the
+    pin in the tree reads, and neither row names it unreadable again."""
+    root, moved = both_pure["root"], both_pure["moved"]
+    a_pin_restaged(root, broken, lambda _blob: UNREADABLE_PIN)
+    _verdict, rows = rows_from(moved, root)
+    currency = assert_both_rows_name_it(rows)
+    assert pasted(currency["next"])[3:] == [
+        "checkout", side, "--", SHAPE_PIN], currency["next"]
+    assert "taken_with_the_pin" not in currency["detail"], currency
+    assert currency["detail"]["left_for_a_person"] == BOTH_COPIES, currency
+    assert currency["why"].startswith(
+        "only that side's pin reads as one, and the other side taken whole "
+        "would leave a pin that does not read. Take it whole and never a "
+        "hand-merged pin. "), currency["why"]
+    run_pasted(currency["next"])
+    _verdict, after = rows_from(moved, root)
+    assert "error" not in after["shape-currency"]["detail"], \
+        after["shape-currency"]
+    assert SHAPE_PIN not in after["manifest-kinds"]["detail"].get(
+        "restore", {}), after["manifest-kinds"]
+
+
+#: What the `why` says where no side's pin reads, by how many sides hold a
+#: pin: no line puts back one that reads (#752).
+NO_SIDE_READS = {
+    "both": "neither side's pin reads as one",
+    "one": "the one side of it that holds a pin holds one that does not "
+           "read",
+}
+
+
+@pytest.mark.parametrize("held", sorted(NO_SIDE_READS))
+def test_no_line_is_named_where_no_sides_pin_reads(both_pure, held):
+    """(a)'s merge with both sides' pins restaged as bytes that do not
+    read, or ours removed and theirs not reading. Either side taken whole
+    leaves a pin that does not read, so both rows name no NEXT, and the
+    same `why` says the merge is a person's call (#752). The doctor said
+    `checkout --ours` before, again after it ran."""
+    root = both_pure["root"]
+    a_pin_restaged(root, 3, lambda _blob: UNREADABLE_PIN)
+    if held == "both":
+        a_pin_restaged(root, 2, lambda _blob: UNREADABLE_PIN)
+    else:
+        stages = index_stages(root, SHAPE_PIN)
+        del stages[2]
+        restaged(root, SHAPE_PIN, stages)
+    _verdict, rows = rows_from(both_pure["moved"], root)
+    currency, kinds = rows["shape-currency"], rows["manifest-kinds"]
+    assert currency["next"] is None, currency
+    assert kinds["next"] is None, kinds
+    assert kinds["why"] == currency["why"], (kinds, currency)
+    assert currency["detail"]["restore"] == "unmerged", currency["detail"]
+    assert kinds["detail"]["restore"] == {SHAPE_PIN: "unmerged"}, kinds
+    assert currency["why"] == (
+        f"a merge left the pin conflicted, and {NO_SIDE_READS[held]}, so no "
+        "side taken whole puts back a pin that reads, and this doctor would "
+        "name the same line again. A pin is never mended by hand, so no line "
+        "is named here: whether to finish the merge, or to abort it and "
+        "first put back the pin a side broke, is a person's call"), \
         currency["why"]
 
 
