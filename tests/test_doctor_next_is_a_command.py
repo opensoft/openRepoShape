@@ -654,17 +654,17 @@ CASES = {
     "validator_row-crashed-restore": (
         _validator_crashed_restore,
         "it puts back the scripts/repo_shape.py HEAD holds, the copy this "
-        "project committed and scripts/validate-manifest.py imports, where "
+        "root committed and scripts/validate-manifest.py imports, where "
         "update-shape.py apply would copy a newer one. Then run `"),
     "lockstep_next-legs-restore": (
         _lockstep_restore("pins"),
         "it puts back the scripts/repo_shape.py HEAD holds, the copy this "
-        "project committed and scripts/validate-pins.py imports, where "
+        "root committed and scripts/validate-pins.py imports, where "
         "update-shape.py apply would copy a newer one. Then run `"),
     "lockstep_next-members-restore": (
         _lockstep_restore("family"),
         "it puts back the scripts/repo_shape.py HEAD holds, the copy this "
-        "project committed and scripts/validate-family.py imports, where "
+        "root committed and scripts/validate-family.py imports, where "
         "update-shape.py apply would copy a newer one. Then run `"),
     "check_legs": (
         _legs,

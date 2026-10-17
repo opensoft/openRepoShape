@@ -1811,11 +1811,15 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
     return f"env PYTHONPATH={quote_arg(scripts, target)} {command}"
 
 
-def lost_repo_shape_cure(ctx: Context, own: str, lost: Path,
-                         rerun: str) -> tuple[str | None, str]:
+def lost_repo_shape_cure(ctx: Context, own: str, lost: Path, rerun: str,
+                         again: bool = True) -> tuple[str | None, str]:
     """`(the NEXT, the why)` for a root's own validator `own` that crashed
     because `lost`, the `repo_shape.py` it imports from beside itself, is not
     there, where `rerun` is the line that runs `own` (#697).
+
+    `again` says "run it AGAIN" where the doctor ran the gate and it crashed,
+    as the validator rows' crash does; the `legs` and `members` rows' lockstep
+    line is one the reader never ran, and says "run it" (#750).
 
     THE NEXT IS THE CURE, NOT THE VALIDATOR. The row used to print `rerun`,
     and a reader whose own `PYTHONPATH`, or a `.pth` in whose site-packages,
@@ -1838,14 +1842,14 @@ def lost_repo_shape_cure(ctx: Context, own: str, lost: Path,
     only: the standard's template copy has none beside it by design.
     """
     relative = lost.relative_to(ctx.root).as_posix()
-    then = (f"run `{rerun}` again once the file is back; before that, a "
-            "reader whose own PYTHONPATH or site-packages reaches another "
-            "repo_shape sees it run on that one, which says nothing about "
-            "this root's own copy")
+    then = (f"run `{rerun}`{' again' if again else ''} once the file is "
+            "back; before that, a reader whose own PYTHONPATH or "
+            "site-packages reaches another repo_shape sees it run on that "
+            "one, which says nothing about this root's own copy")
     if head_holds(ctx.root, relative):
         return (restore_from_head(ctx.root, relative),
                 f"it puts back the {relative} HEAD holds, the copy this "
-                f"project committed and {own} imports, where update-shape.py "
+                f"root committed and {own} imports, where update-shape.py "
                 f"apply would copy a newer one. Then {then}")
     return None, (f"HEAD does not hold {relative}, so no git checkout HEAD "
                   f"puts it back and {own} would only crash again: a "
@@ -4914,7 +4918,8 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
             "names the repair where it has one")
     if own_copy and not imports_repo_shape(ctx.shape, used, own_copy):
         cure, why = lost_repo_shape_cure(
-            ctx, gate[0], repo_shape_for(ctx.shape, used, own_copy), command)
+            ctx, gate[0], repo_shape_for(ctx.shape, used, own_copy), command,
+            again=False)
         return cure, f"{why}. {said[:1].upper()}{said[1:]}"
     return command, said
 

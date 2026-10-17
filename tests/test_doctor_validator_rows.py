@@ -23,8 +23,11 @@ the restore line #298 gave the unloaded-manifest row, and the gate is the
 row's why.
 
 EVERY ASSERTION IS ON WHAT A COMMAND DOES -- the row's status, its `detail`,
-the verdict, and a NEXT that is run -- and never on the words of a row's
-`why`, the sentence beside its NEXT (#277). The fixtures are those of
+the verdict, and a NEXT that is run -- and not on the prose of a row's `why`,
+the sentence beside its NEXT (#277). Where a row's why is the only place a
+command or a fact is named, the test reads the why for that and no more: the
+gate to run after the cure (#697, #750), the file, the commit a deletion comes
+back from. The fixtures are those of
 `tests/test_shape_doctor.py`, imported, so the standard, the project and the
 holder are the ones every other doctor test reads.
 
