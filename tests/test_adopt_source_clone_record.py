@@ -90,8 +90,10 @@ GONE_REMEDY = ("Remediation: pass the source again with --source: the path "
                "held to the plan's `commit:`.")
 MINE = "mine\n"
 MARKER = "mine.txt"
-#: What `source-unresolvable` says of a `--source` that names nothing.
+#: What `source-unresolvable` says of a `--source` that names nothing, and
+#: of a url that names no repository on GitHub.
 NEITHER = "is neither a path that exists nor an `org/repo` name"
+NO_OWNER_REPO = "names no `owner/repo` on github.com"
 
 
 def run(adopter, capsys, *argv: str) -> tuple[int, str, str]:
@@ -270,7 +272,11 @@ NAMES_NO_REPOSITORY = {
     # with a remedy about `gh auth status`.
     "dot-git-repository": (f"{ORG}/.git", NEITHER),
     "url-dot-git-repository": (f"https://github.com/{ORG}/.git.git",
-                               "names no `owner/repo` on github.com"),
+                               NO_OWNER_REPO),
+    # Controls: `.` and `..` name no repository either, whatever `.git`
+    # follows them, as since #652.
+    "dot-dot-git-repository": (f"{ORG}/..git", NEITHER),
+    "url-dot-dot-repository": (f"https://github.com/{ORG}/..", NO_OWNER_REPO),
 }
 
 
