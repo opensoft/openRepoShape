@@ -1641,9 +1641,10 @@ P_THEN_A_LINE = (b'[submodule "p"]\n\tpath = p\n\turl = /r/p.git\n'
 #: `.gitmodules` files for a gitlink at `p` that git reads otherwise than as
 #: they are written, each with the `(name, url)` git then finds for `p`, as
 #: `git submodule init` says (#733). The controls git reads as written are
-#: `a..b`, a plain `path = -p`, a bare `shallow`, a bare key in a section
-#: git ignores, and each value of `update`, `shallow` and
-#: `fetchRecurseSubmodules` git takes (`git_dies_on`) or ignores.
+#: `a..b`, a plain `path = -p`, a bare `shallow`, an empty `ignore =` or
+#: `branch =`, a bare key in a section git ignores, and each value of
+#: `update`, `shallow` and `fetchRecurseSubmodules` git takes
+#: (`git_dies_on`) or ignores.
 GIT_SKIPS = [
     pytest.param(b'[submodule ""]\n\tpath = p\n\turl = /r/u.git\n',
                  (None, None), id="empty-name"),
@@ -1676,6 +1677,12 @@ GIT_SKIPS = [
                  b"\turl = /r/r.git\n", (None, None), id="bare-path"),
     pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = /r/u.git\n'
                  b"\tshallow\n", ("q", "/r/u.git"), id="bare-shallow"),
+    # A key of `VALUED_KEYS` given an EMPTY value lists with a newline, and
+    # git takes it: `valued` is the newline, not the value.
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = /r/u.git\n'
+                 b"\tignore =\n", ("q", "/r/u.git"), id="empty-ignore"),
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = /r/u.git\n'
+                 b"\tbranch =\n", ("q", "/r/u.git"), id="empty-branch"),
     pytest.param(b'[submodule "../evil"]\n\tpath\n[submodule "q"]\n'
                  b"\tpath = p\n\turl = /r/u.git\n", ("q", "/r/u.git"),
                  id="bare-path-in-an-ignored-section"),
@@ -1683,6 +1690,7 @@ GIT_SKIPS = [
       for section, line, found, label in (
           (b"q", b"update = !echo", (None, None), "update-command"),
           (b"q", b"update = Merge", (None, None), "update-unknown"),
+          (b"q", b"update = -x", (None, None), "update-dash"),
           (b"q", b"update = rebase", ("p", "/r/p.git"), "update-rebase"),
           (b"q", b"shallow = maybe", (None, None), "shallow-no-boolean"),
           (b"q", b"shallow = 2k", ("p", "/r/p.git"), "shallow-an-integer"),

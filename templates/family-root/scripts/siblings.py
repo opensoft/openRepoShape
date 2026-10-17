@@ -278,17 +278,20 @@ def submodule_urls(root: Path) -> dict[str, str]:
     AND READ AS GIT READS IT (#690): `git config -z --list`, the reading
     `validate-family.py`'s `_gitmodules_sections` makes and #668 gives the
     doctor's `members` row, so the two tools name one url for one member
-    (#146). Each record ends in a NUL and is the key, a newline and the
-    value; a key holds no newline and a value may, so a record is split at
-    its FIRST one. The plain listing this read was split by `str.splitlines`
-    and at the first `=`: a url holding NEL, U+2028, U+2029, VT, FF or
-    U+001C to U+001E, which git keeps whole, was cut there (`<remotes>/caf`
-    of `caf<NEL>e/IRRS.git`), and a section named `members/a=b` gave no url,
-    so its member was cloned from the `repository:` guess. A section's NAME
-    is all of its key between `submodule.` and the last dot, so a name
-    holding a space, a dot, a quote or an `=` is read whole; only its `path`
-    and `url` count, and the later value wins, as git reads the file. A
-    byte that is not UTF-8 is still replaced (#432).
+    (#146). Each record ends in a NUL and is the key and, where it is given
+    a value, a newline and the value; a key holds no newline and a value
+    may, so a record is split at its FIRST one. The plain listing this read
+    was split by `str.splitlines` and at the first `=`: a url holding NEL,
+    U+2028, U+2029, VT, FF or U+001C to U+001E, which git keeps whole, was
+    cut there (`<remotes>/caf` of `caf<NEL>e/IRRS.git`), and a section named
+    `members/a=b` gave no url, so its member was cloned from the
+    `repository:` guess. A section's NAME is all of its key between
+    `submodule.` and the last dot, so a name holding a space, a dot, a quote
+    or an `=` is read whole; only its `path` and `url` count, and the later
+    value wins, as git reads the file. A byte that is not UTF-8 is still
+    replaced in a VALUE (#432). A NAME keeps git's bytes, as the doctor's
+    `submodule_keys` keeps them (#732): replaced, `caf\\xe9` and `caf\\xe8`
+    were one section, and the path of one was given the url of the other.
 
     AND OF THAT LISTING, ONLY WHAT GIT READS (#733), by git's own tests, as
     the doctor's `members` row cuts the same listing (`submodule_keys`): a
@@ -301,8 +304,8 @@ def submodule_urls(root: Path) -> dict[str, str]:
     one with a newline and an empty value. And a section with no `path`
     mounts nothing, so its name is not read as one. git names no url for
     any of these: `git submodule init` says `No url found` or `bad config
-    line`, and a clone made from the url would be of a member git does not
-    mount.
+    line`, or that the value is invalid, and a clone made from the url
+    would be of a member git does not mount.
     """
     path = root / ".gitmodules"
     if not path.is_file():
@@ -313,9 +316,13 @@ def submodule_urls(root: Path) -> dict[str, str]:
         return {}
     paths: dict[str, str] = {}
     urls: dict[str, str] = {}
-    for record in proc.stdout.decode("utf-8", "replace").split("\0"):
+    for record in proc.stdout.decode("utf-8", "surrogateescape").split("\0"):
         # `valued` is the newline: a key given no value at all has none.
         key, valued, value = record.partition("\n")
+        # A NAME keeps git's bytes, as `submodule_keys` keeps them, so two
+        # names are one only where git has one; a value is replaced (#432).
+        value = value.encode("utf-8", "surrogateescape").decode(
+            "utf-8", "replace")
         section, _, field = key.rpartition(".")
         if not section.startswith("submodule."):
             continue
