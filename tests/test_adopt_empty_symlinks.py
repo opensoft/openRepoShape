@@ -17,6 +17,13 @@ Now `check` reports each such link as `plan-empty-symlink`, whatever the plan
 answers and whatever `core.symlinks` says, `execute` refuses it before any
 leg exists, and `plan` notes it while it still writes the plan.
 
+A link whose target BEGINS WITH A NUL BYTE is the same link to Linux (#388):
+`\\0spec.md` is 8 bytes, not the empty blob, but a symlink's target ends at
+its first NUL, so it is empty there, and on main `check` said `plan ok` and
+`execute` failed as above. Now `plan` and `check` read the target of every
+link whose blob is not empty, in one `git cat-file --batch`, and report such
+a link the same way; each test of the rule runs with both targets.
+
 The links are made in the INDEX with `git update-index --cacheinfo`, as the
 issue's reproduction makes them, so no symlink is ever made on a disk to
 build a source, and every test but one runs on Windows too. `execute` is
@@ -65,6 +72,19 @@ TREE = {"src/app.py": "print(1)\n", "docs/spec.md": "# Spec\n",
 #: by default.
 SYMLINKS_OFF = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.symlinks",
                 "GIT_CONFIG_VALUE_0": "false"}
+#: The issue's target (#388): 8 bytes, the first of them NUL, so Linux reads
+#: it as the empty target.
+NUL_LED = b"\0spec.md"
+#: A target that names something: the control.
+NAMED = b"spec.md"
+#: Each target `plan-empty-symlink` reports, and how its finding begins.
+TARGETS = [pytest.param(b"", "is empty", id="empty"),
+           pytest.param(NUL_LED, "begins with a NUL byte", id="nul-led")]
+#: Each test of the rule, run with both targets.
+with_each_target = pytest.mark.parametrize("target, words", TARGETS)
+#: How every finding and NOTE names the link at `link` whose target is
+#: `words`.
+SAID = "`{link}` is a symlink whose target {words} at the source commit"
 
 
 @pytest.fixture(scope="module")
@@ -99,13 +119,15 @@ def put_link(repo: Path, path: str, target: bytes = b"") -> None:
         f"{SYMLINK},{blob(repo, target)},{path}", cwd=repo)
 
 
-def source_with_links(tmp_path: Path, *links: str, tree=None) -> Path:
-    """The issue's source with an empty symlink at each of `links`,
-    committed, as `git update-index --cacheinfo` and `git commit` make it."""
+def source_with_links(tmp_path: Path, *links: str, tree=None,
+                      target: bytes = b"") -> Path:
+    """The issue's source with a symlink to `target`, empty by default, at
+    each of `links`, committed, as `git update-index --cacheinfo` and `git
+    commit` make it."""
     source = make_source_repo(tmp_path / "Thing", tree=tree or TREE,
                               edits=())
     for path in links:
-        put_link(source, path)
+        put_link(source, path, target)
     as_human("commit", "-qm", "Add the links", cwd=source)
     return source
 
@@ -163,20 +185,30 @@ def executed(plan: Path, tmp_path: Path, env: dict | None = None):
 #: runs, `docs/empty-link` inside an entry the rules send to the spec leg,
 #: and a top-level `empty-link`, which `plan` asks about, answered each way.
 #: `drop` is among them: with symlinks on, the clone fails before the split
-#: removes anything.
+#: removes anything. And `.github` kept in the root, where the shape writes
+#: `.github/workflows/validate.yml` through it: the walk of #183 meets it, and
+#: it is still this one finding, not `plan-root-symlink` beside it.
 PLACES = [
     pytest.param("docs/empty-link", {}, id="in-docs-sent-to-spec"),
     *(pytest.param("empty-link", {"empty-link": leg},
                    id=f"top-level-answered-{leg}")
       for leg in ("root", "code", "spec", "drop")),
+    pytest.param(".github", {".github": "root"},
+                 id="above-a-shape-path-kept-in-the-root"),
 ]
 
 
 # --- the rule, in memory ---------------------------------------------------
 
-def row(path: str, mode: str = "100644", size: int = 1) -> tuple:
+def row(path: str, mode: str = "100644", size: int = 1,
+        oid: str = "0" * 40) -> tuple:
     """A row of `Source.tree()`: `(path, mode, blob id, size)`."""
-    return (path, mode, "0" * 40, size)
+    return (path, mode, oid, size)
+
+
+#: Blob ids for rows whose targets the in-memory tests hand in, as
+#: `symlink_targets` reads them: by blob id.
+NUL_OID, NAMED_OID, UNREAD_OID = "1" * 40, "2" * 40, "3" * 40
 
 
 def test_only_a_symlink_of_size_zero_is_empty(adopter):
@@ -186,13 +218,83 @@ def test_only_a_symlink_of_size_zero_is_empty(adopter):
     neither."""
     tree = [row("a", SYMLINK, 0), row("b", SYMLINK, 7), row("c", "100644", 0),
             row("d", "160000", 0), row("e/f", SYMLINK, 0)]
-    assert adopter.empty_symlinks(tree) == ["a", "e/f"]
+    assert adopter.empty_symlinks(tree, {}) == ["a", "e/f"]
+
+
+def test_a_symlink_whose_target_begins_with_nul_is_empty_too(adopter):
+    """#388: `\\0spec.md` is 8 bytes, but a symlink's target ends at its
+    first NUL, so Linux reads it as the empty target. Only a SYMLINK's
+    target counts: a file whose blob begins with NUL is a file. A link whose
+    target names something is not empty, and neither is one whose target was
+    not read: it is judged by its size alone, as before."""
+    tree = [row("a", SYMLINK, 8, NUL_OID), row("b", SYMLINK, 7, NAMED_OID),
+            row("c", size=8, oid=NUL_OID), row("d", SYMLINK, 7, UNREAD_OID),
+            row("e", SYMLINK, 0)]
+    targets = {NUL_OID: NUL_LED, NAMED_OID: NAMED}
+    assert adopter.empty_symlinks(tree, targets) == ["a", "e"]
+
+
+def test_the_finding_says_where_a_nul_led_target_ends(adopter):
+    """The same finding, and the same remediation, in words true of this
+    blob, which is not empty: it is a plain file, not an empty one, where
+    `core.symlinks` is false."""
+    found, remediation = adopter._empty_symlink_findings(
+        [row("docs/odd-link", SYMLINK, 8, NUL_OID)], {NUL_OID: NUL_LED})
+    finding, = found
+    assert finding.startswith(
+        f"FINDING {CODE}: `docs/odd-link` is a symlink whose target begins "
+        "with a NUL byte at the source commit; a symlink's target ends at "
+        "its first NUL, so this one is empty too, and Linux cannot make a "
+        "symlink to nothing. ")
+    assert "the clone holds it as a plain file, " in finding
+    assert remediation == [adopter.EMPTY_SYMLINK_REMEDIATION]
+
+
+def test_the_targets_are_read_in_one_pass_and_only_where_there_is_one(
+        adopter, tmp_path, monkeypatch):
+    """ONE `git cat-file --batch` reads the target of every symlink whose
+    blob `Source.tree()` gives a size, each blob once however many links
+    share it, byte for byte, a line break included. A link of size 0 (here
+    `docs/empty`) is the empty target already, and a file is no link:
+    neither is read."""
+    source = source_with_links(tmp_path, "docs/empty")
+    links = {"docs/named": NAMED, "docs/nul-led": NUL_LED,
+             "docs/line-break": b"line\nbreak", "docs/named-too": NAMED}
+    for path, target in links.items():
+        put_link(source, path, target)
+    as_human("commit", "-qm", "Add the links with a target", cwd=source)
+    opened = adopter.Source.open(str(source), tmp_path / WORK)
+    tree = opened.tree()
+    started = []
+    real_run = subprocess.run
+
+    def counted(args, *rest, **kwargs):
+        started.append(list(args))
+        return real_run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(adopter.subprocess, "run", counted)
+    targets = adopter.symlink_targets(opened, tree)
+    assert targets == {oid: links[path] for path, _, oid, _ in tree
+                       if path in links}
+    assert len(targets) == 3, "the two links to `spec.md` share one blob"
+    assert started == [["git", "cat-file", "--batch"]]
+
+
+def test_a_source_whose_links_are_all_empty_reads_no_target(
+        adopter, tmp_path, monkeypatch):
+    """Every link of size 0 is the empty target already, so no process is
+    started to read one."""
+    source = source_with_links(tmp_path, "docs/empty", "docs/empty-too")
+    opened = adopter.Source.open(str(source), tmp_path / WORK)
+    tree = opened.tree()
+    monkeypatch.setattr(adopter.subprocess, "run", None)
+    assert adopter.symlink_targets(opened, tree) == {}
 
 
 def test_the_finding_names_the_link_and_says_why_whatever_the_answer(
         adopter):
     found, remediation = adopter._empty_symlink_findings(
-        [row("docs/empty-link", SYMLINK, 0)])
+        [row("docs/empty-link", SYMLINK, 0)], {})
     finding, = found
     assert finding.startswith(
         f"FINDING {CODE}: `docs/empty-link` is a symlink whose target is "
@@ -208,39 +310,42 @@ def test_the_finding_names_the_link_and_says_why_whatever_the_answer(
 
 def test_a_source_with_none_has_no_finding_and_no_remediation(adopter):
     assert adopter._empty_symlink_findings(
-        [row("README.md"), row("link", SYMLINK, 9)]) == ([], [])
+        [row("README.md"), row("link", SYMLINK, 7, NAMED_OID)],
+        {NAMED_OID: NAMED}) == ([], [])
 
 
 def test_past_twenty_the_rest_are_counted(adopter):
-    tree = [row(f"l{n:02d}", SYMLINK, 0) for n in range(23)]
-    found, _ = adopter._empty_symlink_findings(tree)
+    tree = [row(f"l{n:02d}", SYMLINK, 0) for n in range(22)]
+    tree.append(row("l22", SYMLINK, 8, NUL_OID))
+    found, _ = adopter._empty_symlink_findings(tree, {NUL_OID: NUL_LED})
     assert len(found) == 21
     assert found[19].startswith(f"FINDING {CODE}: `l19` ")
     assert found[20] == (f"FINDING {CODE}: … and 3 more symlinks whose "
-                         "target is empty")
+                         "target is empty or begins with a NUL byte")
 
 
 def test_the_finding_spells_a_name_it_cannot_print(adopter):
     """A source name is bytes and may hold a line break: one line still."""
     finding, = adopter._empty_symlink_findings(
-        [row("a\nb", SYMLINK, 0)])[0]
+        [row("a\nb", SYMLINK, 0)], {})[0]
     assert "\n" not in finding
     assert "`a\\nb` is a symlink" in finding
 
 
 # --- `plan` and `check` -----------------------------------------------------
 
-def test_plan_notes_it_and_still_writes_the_plan(tmp_path):
-    source = source_with_links(tmp_path, "docs/empty-link")
+@with_each_target
+def test_plan_notes_it_and_still_writes_the_plan(tmp_path, target, words):
+    source = source_with_links(tmp_path, "docs/empty-link", target=target)
     out = tmp_path / "plan.yaml"
     written = run_script(ADOPT, "plan", "--source", str(source), "--project",
                          PROJECT, "--org", "testorg", "--out", str(out),
                          "--elected-by", "Test Human")
     assert written.returncode == 0, written.stderr + written.stdout
     assert out.is_file()
-    assert ("\nNOTE `docs/empty-link` is a symlink whose target is empty at "
-            "the source commit, and Linux cannot make a symlink to "
-            "nothing. ") in written.stdout
+    said = SAID.format(link="docs/empty-link", words=words)
+    assert f"\nNOTE {said}" in written.stdout
+    assert "Linux cannot make a symlink to nothing. " in written.stdout
     assert (f"`check` reports this as `{CODE}` and `execute` refuses it, "
             "whatever the plan answers") in written.stdout
 
@@ -254,30 +359,40 @@ def test_plan_notes_nothing_for_a_symlink_with_a_target(tmp_path):
     assert CODE not in written.stdout
 
 
+@with_each_target
 @pytest.mark.parametrize("link, answers", PLACES)
-def test_check_reports_what_it_passed(tmp_path, link, answers):
-    """#303's runs: on main, `plan ok` for each."""
-    plan = planned(source_with_links(tmp_path, link),
+def test_check_reports_what_it_passed(tmp_path, link, answers, target,
+                                      words):
+    """#303's runs and #388's, one finding each. Before this, each NUL-led
+    link here checked `plan ok` but `.github`, which the walk of #183
+    reported as `plan-root-symlink`, a link to a path the source does not
+    hold, with a fix (send it to a leg, or `drop` it) that is none here."""
+    plan = planned(source_with_links(tmp_path, link, target=target),
                    tmp_path / "plan.yaml", answers)
     result = check(plan)
     assert result.returncode == 1, result.stdout + result.stderr
     finding, = findings_of(result)
-    assert finding.startswith(f"FINDING {CODE}: `{link}` is a symlink ")
+    assert finding.startswith(
+        f"FINDING {CODE}: {SAID.format(link=link, words=words)}")
     assert "plan ok" not in result.stdout
     assert result.stderr.count("Remediation: a symlink's target is a fact "
                                "of the source") == 1
 
 
-def test_check_reports_it_where_git_makes_no_symlinks_too(tmp_path):
-    """The issue's second run, where every clone held the link as an empty
+@with_each_target
+def test_check_reports_it_where_git_makes_no_symlinks_too(tmp_path, target,
+                                                          words):
+    """The issue's second run, where every clone held the link as a plain
     file and the adoption verified: `check` reads the tree, not the disk,
     so `core.symlinks=false` changes nothing it says."""
-    plan = planned(source_with_links(tmp_path, "docs/empty-link"),
+    plan = planned(source_with_links(tmp_path, "docs/empty-link",
+                                     target=target),
                    tmp_path / "plan.yaml", env=SYMLINKS_OFF)
     off, on = check(plan, env=SYMLINKS_OFF), check(plan)
     assert off.returncode == on.returncode == 1
     assert findings_of(off) == findings_of(on)
-    assert len(findings_of(off)) == 1
+    finding, = findings_of(off)
+    assert SAID.format(link="docs/empty-link", words=words) in finding
 
 
 def test_each_link_is_named(tmp_path):
@@ -326,22 +441,26 @@ def test_the_remediation_the_finding_names_makes_check_pass(tmp_path, how):
 
 # --- `execute` ---------------------------------------------------------------
 
+@with_each_target
 @pytest.mark.parametrize("link, answers", PLACES)
 def test_execute_refuses_it_before_any_leg_exists(
-        adopter, no_filter_repo_probe, tmp_path, link, answers):
-    source = source_with_links(tmp_path, link)
+        adopter, no_filter_repo_probe, tmp_path, link, answers, target,
+        words):
+    source = source_with_links(tmp_path, link, target=target)
     plan = planned(source, tmp_path / "plan.yaml", answers)
     printed, = findings_of(check(plan))
     with pytest.raises(adopter.Refusal) as caught:
         adopter.cmd_execute(execute_args(tmp_path, plan))
     assert caught.value.code == CODE
     assert printed in caught.value.detail
+    assert SAID.format(link=link, words=words) in printed
     assert "no leg repository was created" in caught.value.remediation
     assert adopter.EMPTY_SYMLINK_REMEDIATION in caught.value.remediation
     no_leg_was_created(tmp_path, source)
 
 
 @needs_filter_repo
+@with_each_target
 @pytest.mark.parametrize("env", [
     pytest.param(None, id="symlinks-on"),
     pytest.param(SYMLINKS_OFF, id="symlinks-off"),
@@ -351,18 +470,19 @@ def test_execute_refuses_it_before_any_leg_exists(
     pytest.param("empty-link", {"empty-link": "drop"}, id="top-level-drop"),
 ])
 def test_execute_refuses_it_end_to_end_and_the_remote_dir_stays_empty(
-        tmp_path, env, link, answers):
+        tmp_path, env, link, answers, target, words):
     """The issue's runs as commands: on main, both leg repositories and exit
-    2 with nothing said (symlinks on), or `adoption verified` over a leg no
-    clone with symlinks on can check out (symlinks off). Refused before a
-    leg is made, so the EMPTY `--local-remote-dir` stays empty."""
-    source = source_with_links(tmp_path, link)
+    2 (symlinks on; with nothing said, until #171's fix said what failed), or
+    `adoption verified` over a leg no clone with symlinks on can check out
+    (symlinks off). Refused before a leg is made, so the EMPTY
+    `--local-remote-dir` stays empty."""
+    source = source_with_links(tmp_path, link, target=target)
     plan = planned(source, tmp_path / "plan.yaml", answers, env=env)
     (tmp_path / REMOTES).mkdir()
     result = executed(plan, tmp_path, env=env)
     assert result.returncode == 2, result.stdout + result.stderr
     assert f"REFUSED {CODE}: 1 finding(s) in " in result.stderr
-    assert f"`{link}` is a symlink whose target is empty" in result.stderr
+    assert SAID.format(link=link, words=words) in result.stderr
     assert "creating the leg repositories" not in result.stdout
     assert "adoption verified" not in result.stdout
     assert list((tmp_path / REMOTES).iterdir()) == [], "no leg was made"
@@ -382,15 +502,21 @@ def test_the_link_removed_in_the_source_adopts_end_to_end(tmp_path):
 
 
 @needs_filter_repo
-@needs_disk_symlinks
-def test_the_link_given_a_target_adopts_end_to_end(tmp_path):
-    """The other remediation: `execute`'s clones now check the link out, so
-    this needs a platform that makes symlinks, and the leg holds it."""
+@pytest.mark.parametrize("env", [
+    pytest.param(None, id="symlinks-on", marks=needs_disk_symlinks),
+    pytest.param(SYMLINKS_OFF, id="symlinks-off"),
+])
+def test_the_link_given_a_target_adopts_end_to_end(tmp_path, env):
+    """The other remediation, and #388's control: a target that names
+    something (`spec.md`, 7 bytes), read now, is no finding. With symlinks
+    on, `execute`'s clones check the link out, so this needs a platform
+    that makes symlinks; with them off, the clones hold it as a file. Either
+    way the leg holds the link."""
     source = source_with_links(tmp_path, "docs/empty-link")
-    put_link(source, "docs/empty-link", b"spec.md")
+    put_link(source, "docs/empty-link", NAMED)
     as_human("commit", "-qm", "Give the link a target", cwd=source)
-    plan = planned(source, tmp_path / "plan.yaml")
-    result = executed(plan, tmp_path)
+    plan = planned(source, tmp_path / "plan.yaml", env=env)
+    result = executed(plan, tmp_path, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "adoption verified" in result.stdout
     spec = tmp_path / REMOTES / f"{PROJECT}-spec.git"

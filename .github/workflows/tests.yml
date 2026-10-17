@@ -138,8 +138,9 @@ jobs:
   # THE LAUNCHER'S AND THE INSTALLER'S SUITES ON WINDOWS, UNDER GIT BASH
   # (#585). README says Git Bash runs the `openRepoShape` command and the
   # one-line install, "tested in CI but for a typed `yes`", and this job is
-  # what makes that true: `tests/test_openreposhape_command.py` and
-  # `tests/test_install_sh.py`, run here as Git Bash runs them.
+  # what makes that true: `tests/test_openreposhape_command.py`,
+  # `tests/test_install_sh.py` and `tests/test_install_sh_filter_repo.py`,
+  # run here as Git Bash runs them.
   #
   # TWO SUITES, NOT THE WHOLE SUITE. #597 dropped the Windows job for the
   # whole estate, and this job is the one exception made to it (see the
@@ -223,8 +224,13 @@ jobs:
       # guarantees allows: `runner.temp` is `D:\a\_temp` or `C:\a\_temp`,
       # and the default profile path is ~50 of MAX_PATH's 260 characters
       # before the suites' own nesting starts.
+      #
+      # The installer's suite is TWO FILES (#649): `tests/test_install_sh_
+      # filter_repo.py` holds the git-filter-repo step and the two
+      # readinesses step 3's one line ends with (#595), on
+      # `tests/test_install_sh.py`'s fakes and set-up.
       - name: the launcher's and the installer's suites, under Git Bash
-        run: python -m pytest -q -rA tests/test_openreposhape_command.py tests/test_install_sh.py --basetemp=${{ runner.temp }}\t
+        run: python -m pytest -q -rA tests/test_openreposhape_command.py tests/test_install_sh.py tests/test_install_sh_filter_repo.py --basetemp=${{ runner.temp }}\t
 
   # THE openreposhape PACKAGE, BUILT AND INSTALLED AS A PERSON INSTALLS IT
   # (#563). A JOB OF ITS OWN, AND NO PYTEST IN IT: the build backend
