@@ -123,7 +123,10 @@ def test_make_file_writes_a_name_that_is_utf8_where_fsencode_makes_no_byte(
     as text, and the tests that use it must run there."""
     monkeypatch.setattr(os, "fsencode", windows_fsencode)
     target = tmp_path / UTF8
-    assert skip_message(make_file, target, b"on: [pull_request]\n") is None
+    reason = skip_message(make_file, target, b"on: [pull_request]\n")
+    if reason is not None and "filesystem" in reason:
+        pytest.skip(reason)
+    assert reason is None, reason
     assert target.read_bytes() == b"on: [pull_request]\n"
 
 
@@ -490,6 +493,22 @@ POSIX_ENVIRONMENT_ONLY = pytest.mark.skipif(
            "Windows converts it")
 LEGACY_NAME = "Jos\udce9"
 
+
+def skip_where_the_environment_cannot_carry(value: str) -> None:
+    """Skip where this system's file name encoding cannot encode `value`, as
+    under `LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0` (ASCII): `subprocess`
+    puts each environment value through `os.fsencode` before it starts the
+    child, so a `user.name` of `Jos\\u00e9` raises `UnicodeEncodeError` in the
+    test and not in the tool (#757). A name that is ASCII, or a lone
+    surrogate that `os.fsencode` gives back as its byte, is carried."""
+    try:
+        os.fsencode(value)
+    except UnicodeEncodeError:
+        pytest.skip(f"this system's file name encoding "
+                    f"({sys.getfilesystemencoding()}) cannot carry {value!r} "
+                    "in an environment")
+
+
 REFUSED = "REFUSED family-unwritable-value: "
 #: How the refusal names the creator when no flag supplied it: `_manifest_flags`
 #: (#307), so that the two refusals agree on who is meant.
@@ -623,6 +642,7 @@ def test_a_user_name_that_is_text_still_initialises(tmp_path, value, dry_run):
     exit 0, `created_by: "Jose"`. Text a file holds is not refused: an
     accent, a U+200C ZERO WIDTH NON-JOINER, a backslash and a quote, which
     the scaffold lets through as well."""
+    skip_where_the_environment_cannot_carry(value)
     result = init(tmp_path, user_name(value), dry_run=dry_run)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "REFUSED" not in result.stderr, result.stderr
@@ -643,6 +663,7 @@ def test_every_other_name_no_file_can_hold_is_refused_the_same_way(
     asks it of the same setting: a line break, a bidi control and a control
     character in `git config user.name` are refused in its words, where the
     byte that is not UTF-8 is the case the issue lists."""
+    skip_where_the_environment_cannot_carry(value)
     result = init(tmp_path, user_name(value), dry_run=True)
     assert result.returncode == 2, result.stderr + result.stdout
     assert result.stderr.startswith(

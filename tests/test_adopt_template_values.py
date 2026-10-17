@@ -50,7 +50,8 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, REPO, WINDOWS_SKIP, blank_unnamed_pin_sources,
-                      make_source_repo, resolve)
+                      make_source_repo, resolve,
+                      skip_where_a_name_cannot_be_not_utf_8)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -292,12 +293,10 @@ def test_execute_refuses_a_local_source_directory_that_is_not_utf8(tmp_path):
     path, which `_remote_repository` reads as UTF-8. Skipped where no
     directory can be named with the byte 0xE9 (Windows, macOS's APFS) or
     git will not work in one."""
-    try:
-        parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
-                                               b"caf\xe9")))
-        parent.mkdir()
-    except (OSError, UnicodeError) as exc:
-        pytest.skip(f"no directory here is named b'caf\\xe9': {exc!r}")
+    skip_where_a_name_cannot_be_not_utf_8(tmp_path)
+    parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
+                                           b"caf\xe9")))
+    parent.mkdir()
     refused_then_moved(tmp_path, parent, b"a byte that is not UTF-8")
 
 
