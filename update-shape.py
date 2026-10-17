@@ -2489,6 +2489,17 @@ def pull_request_repository(manifest: dict | None,
     after the commit and a manifest that names no repository is no reason
     to take that back; and `pull_request_line`'s bare form, the one a
     failed `--push` prints, leaves `--repo` off (#204).
+
+    A `legs:` THAT IS NOT A LIST NAMES NO ASSEMBLY LEG (#832), as
+    `validate-manifest.py` reads it (#714), and an entry that is not a
+    mapping is no leg. Iterated as `legs or []`, `legs: 5` ended the re-run
+    `--pr` recognises (`_finish_landing`) in a `TypeError`, and a scalar
+    `openXdox` or a mapping was refused "declares no assembly leg", as of a
+    list of legs that leaves that one out. `why_none` now says what names
+    no leg, in that validator's words: the `manifest-legs` sentence, or
+    after "declares no assembly leg" each `manifest-leg` one. An entry that
+    is not a mapping beside the assembly leg does not stop its repository
+    being read; the validators `apply` runs before any landing say it.
     """
     manifest = manifest or {}
     if kind is FAMILY_KIND:
@@ -2501,11 +2512,22 @@ def pull_request_repository(manifest: dict | None,
             f"{kind.manifest} declares neither `repository:` nor an "
             "`org:`/`name:` pair, so there is no repository to open a "
             "pull request against")
-    legs = [leg for leg in manifest.get("legs") or []
+    declared = manifest.get("legs")
+    if declared is not None and not isinstance(declared, list):
+        return "", (
+            "project.yaml's `legs:` is not a list, so it names no assembly "
+            "leg and there is no repository to open a pull request against: "
+            f"manifest-legs: legs is {declared!r}, expected a list of "
+            "`role:`, `repository:` and `path:` mappings")
+    legs = [leg for leg in declared or []
             if isinstance(leg, dict) and leg.get("role") == "assembly"]
+    unread = [] if legs else [f"manifest-leg: a leg is not a mapping: {leg!r}"
+                              for leg in declared or []
+                              if not isinstance(leg, dict)]
     return (str(legs[0].get("repository") or "") if legs else ""), (
         "project.yaml declares no assembly leg, so there is no "
-        "repository to open a pull request against")
+        "repository to open a pull request against"
+        + (f": {'; '.join(unread)}" if unread else ""))
 
 
 def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,

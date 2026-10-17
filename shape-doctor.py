@@ -1178,9 +1178,36 @@ class Context:
             return None
 
     def legs(self) -> list[dict]:
-        """The non-assembly legs `project.yaml` declares, in its own order."""
-        return [leg for leg in ((self.manifest or {}).get("legs") or [])
+        """The non-assembly legs `project.yaml` declares, in its own order.
+
+        A `legs:` THAT IS NOT A LIST DECLARES NO LEG THIS CAN NAME (#832), as
+        `validate-manifest.py` reads it (#714), and an entry that is not a
+        mapping is no leg; `legs_unread` says each. Iterated as `legs or []`,
+        `legs: 5` ended the whole report in a `TypeError`, in `declared_pins`
+        under the `manifest kinds` row, and a scalar `openXdox` or a mapping
+        was walked one character, or one key, at a time, so the `legs` row
+        called the project one with no legs.
+        """
+        declared = (self.manifest or {}).get("legs")
+        if not isinstance(declared, list):
+            return []
+        return [leg for leg in declared
                 if isinstance(leg, dict) and leg.get("role") != "assembly"]
+
+    def legs_unread(self) -> list[str]:
+        """What in `legs:` names no leg `legs` can read, each as
+        `validate-manifest.py`'s finding, in its words (#714, #832): a
+        `legs:` that is not a list, or each entry of one that is not a
+        mapping. Absent or null is neither: it declares no leg, and
+        `validate-manifest.py` says `legs is missing or empty` of it."""
+        declared = (self.manifest or {}).get("legs")
+        if declared is None:
+            return []
+        if not isinstance(declared, list):
+            return [f"manifest-legs: legs is {declared!r}, expected a list of "
+                    "`role:`, `repository:` and `path:` mappings"]
+        return [f"manifest-leg: a leg is not a mapping: {leg!r}"
+                for leg in declared if not isinstance(leg, dict)]
 
     def members(self) -> list[dict]:
         return [row for row in ((self.manifest or {}).get("members") or [])
@@ -2161,6 +2188,35 @@ def waiting_row(ctx: Context, check_id: str, label: str, needs: str,
                f"{ctx.manifest_path.name} does not load, so {needs}; the "
                f"`{owner}` row quotes why and names the fix", None,
                {**(detail or {}), "waits_on": owner})
+
+
+def legs_unread_row(ctx: Context, check_id: str, label: str, needs: str,
+                    detail: dict | None = None) -> Row | None:
+    """The `n/a` a row that reads the LEGS gives where `legs:` names none it
+    can read (#832), or None: where it names a leg, and where it names none
+    at all (absent, null or `[]`), which the row's own sentence is about.
+
+    A `legs:` that is not a list, or a list in which no leg but the assembly
+    leg is a mapping and some entry is not one, is not a project with no
+    legs, which is what these rows said of `openXdox`, `{a: b}` and `[5]`
+    ("a one-repository project has none"): it is a manifest nobody can read
+    legs out of. ONE FAULT, ONE FINDING, as `waiting_row` reasons: the
+    project's own `validate-manifest.py` says the fault, and the `manifest`
+    row runs it, so this row is `n/a`, says the same sentence
+    (`Context.legs_unread`) and names that row in `waits_on`. A list that
+    holds a leg as well as an entry that is not one is checked leg by leg,
+    as `validate-pins.py` checks the rest past such an entry, and the entry
+    is left to the `manifest` row.
+    """
+    unread = ctx.legs_unread()
+    if not unread or ctx.legs():
+        return None
+    what = ("holds an entry that is not a mapping"
+            if isinstance(ctx.manifest.get("legs"), list) else "is not a list")
+    return Row(check_id, label, NA,
+               f"{ctx.manifest_path.name}'s `legs:` {what} "
+               f"({'; '.join(unread)}), so {needs}; the `manifest` row names "
+               "the fix", None, {**(detail or {}), "waits_on": "manifest"})
 
 
 # ---------------------------------------------------------------------------
@@ -5605,7 +5661,10 @@ def check_legs(ctx: Context) -> Row:
 
     THE LEGS ARE THE MANIFEST'S, and a manifest that does not load declares
     none that this row can name -- which is not "declares no non-assembly
-    leg", the sentence below, about a project that has none (#205).
+    leg", the sentence below, about a project that has none (#205). Nor is
+    a `legs:` that is not a list, or one holding only entries that are not
+    mappings: `legs_unread_row` says which, in `validate-manifest.py`'s
+    words, and waits on the `manifest` row (#832).
 
     THE NEXT IS CHOSEN BY WHAT IS WRONG, AND IT CURES THE FIRST KIND (#276).
     `make bootstrap` was named for all of it and does not answer it: it
@@ -5673,9 +5732,10 @@ def check_legs(ctx: Context) -> Row:
     an unborn HEAD or a leg with no url gets the same sentence it gets with
     no line at all, which ends by saying to run the doctor again.
     """
-    waiting = waiting_row(ctx, "legs", "legs",
-                          "the legs it declares are not known and none is "
-                          "checked against its pin", {"legs": []})
+    needs = ("the legs it declares are not known and none is checked against "
+             "its pin")
+    waiting = (waiting_row(ctx, "legs", "legs", needs, {"legs": []})
+               or legs_unread_row(ctx, "legs", "legs", needs, {"legs": []}))
     if waiting is not None:
         return waiting
     legs = ctx.legs()
@@ -6029,8 +6089,11 @@ def check_leg_shape_files(ctx: Context) -> Row:
     compare every leg, say what was found, and offer a copy for the files a
     copy would fix.
     """
-    waiting = waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
-                          "there are no legs to compare", {"legs": []})
+    needs = "there are no legs to compare"
+    waiting = (waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
+                           needs, {"legs": []})
+               or legs_unread_row(ctx, "leg-shape-files",
+                                  LABEL_LEG_SHAPE_FILES, needs, {"legs": []}))
     if waiting is not None:
         return waiting
     legs = ctx.legs()
@@ -7205,11 +7268,13 @@ def check_placement(ctx: Context) -> Row:
             "a family holder has no legs of its own: each member is an "
             "assembly root and answers this in its own report")
     # Before the sentence below, which is about a project that declares no
-    # leg, not one whose manifest nobody could read (#205). And `n/a` is what
-    # makes `--placement-plan` refuse by name and write nothing: there is no
-    # leg to write a plan about until the manifest loads.
-    waiting = waiting_row(ctx, "placement", "placement",
-                          "there is no leg to classify a path in")
+    # leg, not one whose manifest nobody could read (#205), nor one whose
+    # `legs:` names no leg that can be read (#832). And `n/a` is what makes
+    # `--placement-plan` refuse by name and write nothing: there is no leg to
+    # write a plan about until the manifest loads and names one.
+    needs = "there is no leg to classify a path in"
+    waiting = (waiting_row(ctx, "placement", "placement", needs)
+               or legs_unread_row(ctx, "placement", "placement", needs))
     if waiting is not None:
         return placement_row(NA, waiting.reason, None, waiting.detail)
     legs = ctx.legs()
