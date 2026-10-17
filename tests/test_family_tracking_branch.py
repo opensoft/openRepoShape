@@ -121,6 +121,13 @@ def next_push(stdout: str) -> tuple[list[str], str]:
     return host_words(lines[at][len("NEXT  "):]), lines[at + 1]
 
 
+def refspec(branch: str) -> str:
+    """The word the NEXT push ends with (#689): the branch by its full
+    refname on both sides, which no `+`, tag or checked-out branch can
+    change the reading of."""
+    return f"refs/heads/{branch}:refs/heads/{branch}"
+
+
 @pytest.mark.parametrize("verb", ["add", "bump", "remove"])
 def test_each_act_refuses_the_tracking_branch_then_lands_on_a_branch(
         family, on_main, verb):
@@ -156,7 +163,7 @@ def test_each_act_refuses_the_tracking_branch_then_lands_on_a_branch(
         "the tracking branch did not move")
     push, then = next_push(done.stdout)
     assert push == ["git", "-C", str(holder), "push", "-u", "origin",
-                    branch]
+                    refspec(branch)]
     assert then == (f"      then open a pull request against {TRACKING}; "
                     "never push to it directly")
     assert done.stdout.rstrip().endswith(then), (
@@ -305,7 +312,8 @@ def test_the_tracking_branch_is_the_one_family_yaml_declares(family,
     done = run_script(FAMILY, *add)
     assert done.returncode == 0, done.stdout + done.stderr
     push, then = next_push(done.stdout)
-    assert push == ["git", "-C", str(holder), "push", "-u", "origin", "main"]
+    assert push == ["git", "-C", str(holder), "push", "-u", "origin",
+                    refspec("main")]
     assert then == ("      then open a pull request against trunk; never "
                     "push to it directly")
 
