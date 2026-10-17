@@ -532,8 +532,9 @@ options:
                         write in. That is asked before the source is read or
                         cloned and before a work directory is made, and a
                         write that fails all the same is refused as the same
-                        code. A folder below --work-dir is not asked for,
-                        because the run makes that directory.
+                        code. The --work-dir, and for an org/repo source its
+                        `source-readonly/<repo>`, may be missing: the run
+                        makes them.
   --work-dir WORK_DIR   the directory an `org/repo` --source is cloned into,
                         as `source-readonly/<repo>`, which the plan records as
                         `source.local_path` for `check` and `execute` to read;

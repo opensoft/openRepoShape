@@ -174,6 +174,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as _dt
+import errno
 import itertools
 import os
 import re
@@ -4396,34 +4397,84 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
 OUT_UNWRITABLE = "adopt-out-unwritable"
 OUT_FIX = ("Pass an --out that names a file in a folder this user can write "
            "in, making the folder first if it is not there.")
-#: What a write that began and failed adds: the file it opened is cut short.
-OUT_CUT_SHORT = (" If the write began, what now lies at that path is cut "
-                 "short and is not a plan.")
+#: A write that fails for want of room (no space, a quota, an I/O error, a
+#: file too large) may have cut the file it opened short: that is all it
+#: adds to the way out, with its own remedy.
+OUT_NO_ROOM = frozenset(
+    getattr(errno, name) for name in ("ENOSPC", "EDQUOT", "EIO", "EFBIG")
+    if hasattr(errno, name))
+OUT_NO_ROOM_FIX = ("Free space, or pass an --out on another file system. If "
+                   "the write began, what now lies at that path is cut short "
+                   "and is not a plan.")
 
 
-def _out_refusal(args, why: str, then: str = "") -> Refusal:
+def _out_refusal(args, why: str, fix: str = OUT_FIX) -> Refusal:
     """`adopt-out-unwritable` for `why` the plan cannot be written at the
-    `--out` as it was typed; `then` is added to the way out."""
+    `--out` as it was typed; `fix` is the way out."""
     return Refusal(OUT_UNWRITABLE,
                    f"--out {_spelled(str(args.out))} cannot be written: {why}",
-                   f"Remediation: {PLAN_NOT_WRITTEN} {OUT_FIX}{then}")
+                   f"Remediation: {PLAN_NOT_WRITTEN} {fix}")
 
 
 def _out_folder(out: Path) -> str:
-    """The folder `out` goes in, as the system spells it from here: the
-    current directory by its name where `--out` is a bare file name."""
-    return _spelled(os.path.abspath(out.parent))
+    """The folder `out` goes in, as it was typed and made absolute: with
+    `absolute` and not `os.path.abspath`, which collapses `nope/..` as text,
+    so a folder that exists is never called missing for a path the kernel
+    would not have walked through."""
+    return _spelled(str(out.parent.absolute()))
+
+
+def _the_work_dir(args) -> Path | None:
+    """The `--work-dir` as `_work_root` reads it, with `os.path.realpath`,
+    or None where none was given."""
+    if not getattr(args, "work_dir", None):
+        return None
+    return Path(os.path.realpath(args.work_dir))
+
+
+def _out_is_the_work_dir(args, out: Path) -> bool:
+    """Whether `out` is the `--work-dir` itself, which the run makes a
+    folder where it is missing."""
+    work = _the_work_dir(args)
+    return work is not None and Path(os.path.realpath(out)) == work
+
+
+def _first_missing_part(folder: Path) -> Path:
+    """The first part of `folder`, walked as it was typed, that is not
+    there, or `folder` itself where all of it is: a `..` steps back by
+    name, as the kernel does through a folder that is there, and so `W/..`
+    is missing while `W` is."""
+    absolute = folder.absolute()
+    walked = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        walked = walked.parent if part == ".." else walked / part
+        if not os.path.lexists(walked):
+            return walked
+    return walked
 
 
 def _out_is_made_by_this_run(args, out: Path) -> bool:
-    """Whether `out` is below the `--work-dir`, which `_work_root` makes
-    where it is missing, parents included: a folder it goes in may not be
-    there yet, and the run makes it. Read as `_work_root` reads the
-    directory, with `os.path.realpath`."""
-    if not getattr(args, "work_dir", None):
+    """Whether the folder `out` goes in, found missing, is one this run
+    makes and no other: the `--work-dir`, what is above it that `_work_root`
+    makes with it (parents included), or `source-readonly` and the one
+    folder `Source.clone` makes in it for an `org/repo` source. Read as
+    `_work_root` reads the directory, with `os.path.realpath`, and asked of
+    the folder and of the first part of it that is missing, so that a `..`
+    which leads back to a folder above the `--work-dir` through one that
+    nothing makes (`nope/..`) is not taken for one the run makes. A local
+    source's `source-readonly/<name>` is not told apart from a clone's:
+    nothing makes it, and the write refuses what it cannot make."""
+    work = _the_work_dir(args)
+    if work is None:
         return False
-    work = Path(os.path.realpath(args.work_dir))
-    return work in Path(os.path.realpath(out)).parents
+    clones = work / SOURCE_READONLY
+
+    def made(path: Path) -> bool:
+        path = Path(os.path.realpath(path))
+        return (path == work or path in work.parents or path == clones
+                or path.parent == clones)
+
+    return made(out.parent) and made(_first_missing_part(out.parent))
 
 
 def _why_out_cannot_be_written(args, out: Path) -> str | None:
@@ -4434,15 +4485,17 @@ def _why_out_cannot_be_written(args, out: Path) -> str | None:
     file system with `os.path` and `os.access` alone, which answer False
     rather than raise.
 
-    A FOLDER IS REFUSED FIRST, and so is anything there that is not a
-    regular file (a pipe, a device, a socket): the plan is a file `write_lf`
-    makes and fills. `os.access` is what a person's permissions say, and not
-    what an ACL, a read-only mount, a full disk or being root say, so
-    `_write_the_plan` refuses, under the same code, whatever it cannot see.
-    A symlink to nothing is left to the write, which follows it as it always
-    did. A folder below the `--work-dir` that is not there is left to the
-    write too, since this run may make it."""
-    if os.path.isdir(out):
+    A FOLDER IS REFUSED FIRST, the `--work-dir` itself included, and so is
+    anything there that is not a regular file (a pipe, a device, a socket):
+    the plan is a file `write_lf` makes and fills. `os.access` is the
+    system's answer for the real user, a read-only mount included, and not
+    what a full disk, a quota or a Windows ACL say, so `_write_the_plan`
+    refuses, under the same code, whatever it cannot see. A symlink to
+    nothing is left to the write, which follows it as it always did. A
+    folder that is not there is left to the write only where this run makes
+    it (`_out_is_made_by_this_run`): any other is refused here, before a
+    clone."""
+    if os.path.isdir(out) or _out_is_the_work_dir(args, out):
         return "it is a folder, and the plan is one file"
     if os.path.exists(out):
         return _why_the_file_there_is_no_plan(out)
@@ -4494,13 +4547,16 @@ def _refuse_an_unwritable_out(args) -> None:
 def _write_the_plan(args, out: Path, text: str) -> None:
     """Write the plan at `out`, or refuse the write as
     `adopt-out-unwritable` where it fails after all: the folder went since
-    `_refuse_an_unwritable_out` asked, a disk filled, or `--out` is a folder
-    below the `--work-dir` this run did not make (#799's L1-89)."""
+    `_refuse_an_unwritable_out` asked, a disk filled, or the name is too
+    long for the file system (#799's L1-89). Only a failure for want of
+    room says the file may be cut short."""
     try:
         write_lf(out, text)
     except OSError as exc:
-        raise _out_refusal(args, f"writing it failed ({exc.strerror or exc})",
-                           OUT_CUT_SHORT) from None
+        raise _out_refusal(
+            args, f"writing it failed ({exc.strerror or exc})",
+            OUT_NO_ROOM_FIX if exc.errno in OUT_NO_ROOM else OUT_FIX
+        ) from None
 
 
 def cmd_plan(args) -> int:
@@ -13431,12 +13487,12 @@ def main(argv: list[str] | None = None) -> int:
                            "`adopt-out-unwritable`, and no plan is written: "
                            "a folder, a pipe or a device, or a file in a "
                            "folder that is missing or that nobody can write "
-                           "in. That is asked "
-                           "before the source is read or cloned and before "
-                           "a work directory is made, and a write that fails "
-                           "all the same is refused as the same code. A "
-                           "folder below --work-dir is not asked for, "
-                           "because the run makes that directory.")
+                           "in. That is asked before the source is read or "
+                           "cloned and before a work directory is made, and "
+                           "a write that fails all the same is refused as "
+                           "the same code. The --work-dir, and for an "
+                           "org/repo source its `source-readonly/<repo>`, "
+                           "may be missing: the run makes them.")
     plan.add_argument(
         "--work-dir", type=Path, default=None,
         help=_work_dir_help(

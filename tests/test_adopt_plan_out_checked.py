@@ -25,11 +25,15 @@ and removed it again, and opened one that was there to append to it, which
 blocks for ever on a named pipe. It is now asked with `os.path` and
 `os.access` alone, so a pipe or a device is refused by name without being
 opened (`test_an_out_that_is_not_a_regular_file...`, which fails by timeout
-on the old question), and what `os.access` cannot see (an ACL, a read-only
-mount, a full disk, being root) is the write's backstop.
+on the old question), and what `os.access` cannot see (a full disk, a quota,
+a Windows ACL) is the write's backstop. A read-only mount is seen: it is
+refused up front, and root writes where the mode bits say no, as on main.
 
-A folder the run itself makes is not asked for: `--work-dir` is made where it
-is missing, and an `--out` below it is written there. `chmod` keeps neither
+A folder the run itself makes is not asked for, and no other: `--work-dir` is
+made where it is missing, its missing parents with it, and for an `org/repo`
+source its `source-readonly/<repo>`. So `--out W/plan.yaml` and `--out
+Am/plan.yaml` (for `--work-dir Am/B/W`) are written, and `--out W/nope/p.yaml`
+is refused before any clone. `chmod` keeps neither
 root nor a Windows user from writing, so the tests of a folder or a file
 nobody can write skip where it does not.
 """
@@ -74,9 +78,14 @@ WRITTEN = "plan written to"
 #: What every refusal of `--out` says to do, after `no plan was written.`
 FIX = ("Pass an --out that names a file in a folder this user can write in, "
        "making the folder first if it is not there.")
-#: What the refusal of a write that began, and failed, adds.
-CUT_SHORT = (" If the write began, what now lies at that path is cut short "
-             "and is not a plan.")
+#: What the refusal of a write that failed for want of room says to do, and
+#: that the file it opened may be cut short.
+NO_ROOM_FIX = ("Free space, or pass an --out on another file system. If the "
+               "write began, what now lies at that path is cut short and is "
+               "not a plan.")
+#: The errnos of a write that fails for want of room.
+NO_ROOM = [getattr(errno, name) for name in ("ENOSPC", "EDQUOT", "EIO",
+                                             "EFBIG") if hasattr(errno, name)]
 
 
 def reason_text(code: int) -> str:
@@ -258,10 +267,13 @@ def test_an_out_that_is_not_a_regular_file_is_refused_without_opening_it(
     open and refuses every byte. The plan is a regular file, and neither is
     asked for a byte. A timeout is the failure of a question that opens."""
     out = a_pipe_or_a_device(tmp_path, kind)
+    work = tmp_path / RUN_WORK
     result = subprocess.run(
         [sys.executable, str(ADOPT), "plan", "--source", str(source),
-         *PLANNED, OUT_FLAG, str(out)], capture_output=True, text=True,
-        stdin=subprocess.DEVNULL, timeout=60, check=False)
+         *PLANNED, OUT_FLAG, str(out), WORK_FLAG, str(work)],
+        capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60,
+        check=False)
+    assert not work.exists(), "a work directory was made"
     assert result.returncode == 2, result.stderr + result.stdout
     assert result.stderr == refusal(
         str(out), "what is already there is not a regular file, and the "
@@ -296,18 +308,75 @@ def test_an_out_in_the_work_dir_the_run_makes_is_still_planned_into(
     assert out.is_file()
 
 
-def test_an_out_in_a_folder_the_work_dir_does_not_make_is_the_backstops(
-        tmp_path, source):
-    """Only the work directory and the clone are made, so `--out
-    <work>/nope/plan.yaml` is not asked for up front, and the write that
-    cannot be made is refused by the backstop, with no traceback."""
+def test_an_out_in_a_folder_the_run_does_not_make_is_refused_before_any_clone(
+        tmp_path, gh_guard, source):
+    """Only the work directory, its parents and the clone's folder are made:
+    `--out <work>/nope/plan.yaml` is refused first, with a source of either
+    kind, and the work directory is not made for it."""
+    out = tmp_path / RUN_WORK / "nope" / PLAN_FILE
+    refused_before_any_work(
+        tmp_path, gh_guard, source, str(out),
+        refusal(str(out), f"the folder it goes in, {where(out.parent)}, "
+                "does not exist"))
+
+
+def test_the_same_where_the_work_dir_is_already_there(tmp_path, gh_guard):
+    """A `--work-dir` that exists makes no difference: the folder below it
+    is missing, and nothing makes it. The clone is never started."""
     work = tmp_path / RUN_WORK
+    work.mkdir()
     out = work / "nope" / PLAN_FILE
-    result = plan_of(str(source), WORK_FLAG, str(work), OUT_FLAG, str(out))
+    result = plan_of(ORG_REPO, WORK_FLAG, str(work), OUT_FLAG, str(out))
     assert result.returncode == 2, result.stderr + result.stdout
     assert result.stderr == refusal(
-        str(out), f"writing it failed ({reason_text(errno.ENOENT)})",
-        FIX + CUT_SHORT)
+        str(out), f"the folder it goes in, {where(out.parent)}, does not "
+        "exist")
+    assert gh_guard.take() == []
+    assert list(work.iterdir()) == []
+
+
+def test_an_out_that_is_the_work_dir_is_refused_as_a_folder(
+        tmp_path, gh_guard, source):
+    """`--out W` names the directory the run makes, a folder, where it is
+    missing: it ended in `IsADirectoryError` at the write."""
+    out = tmp_path / RUN_WORK
+    refused_before_any_work(
+        tmp_path, gh_guard, source, str(out),
+        refusal(str(out), "it is a folder, and the plan is one file"))
+
+
+def test_an_out_beside_a_work_dir_in_folders_the_run_makes_is_planned_into(
+        tmp_path, source):
+    """`--work-dir Am/B/W` is made with `Am/B`, and `--out Am/plan.yaml`
+    goes in `Am`, which does not exist until then."""
+    work = tmp_path / "Am" / "B" / RUN_WORK
+    out = tmp_path / "Am" / PLAN_FILE
+    result = plan_of(str(source), WORK_FLAG, str(work), OUT_FLAG, str(out))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert out.is_file()
+
+
+def test_an_out_that_goes_back_out_of_the_work_dir_is_planned_into(
+        tmp_path, source):
+    """`--work-dir W --out W/../c-plan.yaml` with `W` missing: the kernel
+    walks through `W`, which the run makes first."""
+    result = plan_of(str(source), WORK_FLAG, RUN_WORK, OUT_FLAG,
+                     f"{RUN_WORK}/../c-plan.yaml", cwd=tmp_path)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (tmp_path / "c-plan.yaml").is_file()
+
+
+def test_a_dot_dot_through_a_folder_nothing_makes_is_not_the_work_dirs(
+        tmp_path, gh_guard, source):
+    """`nope/..` is the folder above the work directory, which is there, and
+    it is not walkable: `nope` is missing, and nothing makes it. Named as the
+    path it was typed, never as the folder it would collapse to
+    (`os.path.abspath`), which is there."""
+    out = tmp_path / "nope" / ".." / PLAN_FILE
+    refused_before_any_work(
+        tmp_path, gh_guard, source, str(out),
+        refusal(str(out), f"the folder it goes in, {ticked(str(out.parent))}, "
+                "does not exist"))
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +392,8 @@ def adopter():
 
 
 def refused_at_the_write(adopter, monkeypatch, capsys, source: Path,
-                         out: Path, error: OSError, then=None) -> None:
+                         out: Path, error: OSError, then=None,
+                         fix: str = FIX) -> None:
     """`plan` in this process, its `write_lf` made to raise `error` (after
     running `then`, a change in the folder), so that the write itself is the
     thing that fails: exit 2, the same refusal, no traceback, and no `plan
@@ -340,14 +410,15 @@ def refused_at_the_write(adopter, monkeypatch, capsys, source: Path,
     said = capsys.readouterr()
     assert code == 2, said.err + said.out
     assert said.err == refusal(
-        str(out), f"writing it failed ({error.strerror})", FIX + CUT_SHORT)
+        str(out), f"writing it failed ({error.strerror})", fix)
     assert WRITTEN not in said.out
 
 
 def test_a_folder_that_goes_after_the_question_is_the_same_refusal(
         adopter, monkeypatch, capsys, tmp_path, source):
     """A race: the folder was there when `--out` was asked, and is gone
-    when the plan is written."""
+    when the plan is written. The open failed, so nothing is cut short and
+    the way out is the ordinary one."""
     out = tmp_path / "soon-gone" / PLAN_FILE
     out.parent.mkdir()
     gone = FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT))
@@ -355,13 +426,25 @@ def test_a_folder_that_goes_after_the_question_is_the_same_refusal(
                          then=out.parent.rmdir)
 
 
-def test_a_full_disk_is_the_same_refusal_and_no_traceback(
-        adopter, monkeypatch, capsys, tmp_path, source):
-    """No space left on the device: the file opened and the bytes did not
-    go, which no question asked first can see."""
-    full = OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+@pytest.mark.parametrize("code", NO_ROOM)
+def test_a_write_that_fails_for_want_of_room_says_it_may_be_cut_short(
+        adopter, monkeypatch, capsys, tmp_path, source, code):
+    """No space, a quota, an I/O error, a file too large: the file opened
+    and the bytes did not go, which no question asked first can see. These
+    alone say what lies at `--out` may be cut short, and say to free space
+    or use another file system."""
+    full = OSError(code, os.strerror(code))
     refused_at_the_write(adopter, monkeypatch, capsys, source,
-                         tmp_path / PLAN_FILE, full)
+                         tmp_path / PLAN_FILE, full, fix=NO_ROOM_FIX)
+
+
+def test_any_other_failed_write_is_the_ordinary_way_out(
+        adopter, monkeypatch, capsys, tmp_path, source):
+    """A name too long for the file system fails at the open: nothing was
+    written, so nothing is said to be cut short."""
+    long_name = OSError(errno.ENAMETOOLONG, os.strerror(errno.ENAMETOOLONG))
+    refused_at_the_write(adopter, monkeypatch, capsys, source,
+                         tmp_path / PLAN_FILE, long_name)
 
 
 # ---------------------------------------------------------------------------
