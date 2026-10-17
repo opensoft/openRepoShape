@@ -42,16 +42,24 @@ change, in a scaffold's recursive clone bootstrapped once:
   now faults a character `os.fsencode` cannot write, the leg is left as it is,
   and the line of its own says the name is good, names the encoding and gives
   the two ways to run bootstrap under UTF-8; each is run here as printed.
+- RV824's review of #824, on the ruled line: it is said only where git takes
+  the name in UTF-8 (`git check-ref-format --branch`), so `feature/日本..x`,
+  `日本.lock` and `日本 x` get git's own words instead (S1); a name that also
+  holds a surrogate is named for the surrogate, as the validator names it
+  (S1); the first line says `did not try` (N2); a leg's own `branch:` takes
+  the same path (N4); and on Windows git's bytes are read as UTF-8 (N3).
 
 A run that needs the byte 0xff in a file name skips where the disk refuses it
 (or Windows, where `_argument_fault` refuses U+DCFF), and a run under `ascii`
 skips where `LC_ALL=C PYTHONUTF8=0` gives Python no `ascii` encoding (macOS and
 Windows keep UTF-8). The rule itself is held on every platform by an
-emulated `ascii` `os.fsencode`.
+emulated `ascii` `os.fsencode`. A test that hands git a name only UTF-8 can
+write skips where pytest itself does not run under UTF-8 (N5).
 """
 
 from __future__ import annotations
 
+import codecs
 import os
 import shlex
 import subprocess
@@ -65,7 +73,8 @@ from test_bootstrap_after_bump import (  # noqa: F401
     MAIN, bootstrap, bootstrapped, head_ref, moved_back, rev, root,
 )
 from test_bootstrap_branch_bytes import (  # noqa: F401
-    bootstrap_module, legs_state, tracking,
+    SECOND_LINE, bootstrap_module, leg_branch, legs_state, not_tried,
+    tracking,
 )
 from test_bootstrap_spelling import edit
 from test_stdout_encoding import child_environ, run_tool_bytes
@@ -84,6 +93,17 @@ GOOD = "feature/日本"
 GOOD_PRINTED = r"feature/\u65e5\u672c"
 #: What `_argument_fault` calls the character (`UNWRITABLE`).
 UNWRITABLE = "a character this system's encoding cannot write"
+#: The line under a name git refuses in UTF-8 too, before git's own words.
+GIT_REFUSES = "          and git refuses it as a branch name in UTF-8 too:"
+#: A test that hands git a name only UTF-8 can write, or reads a line a
+#: child under this process's locale writes in UTF-8 (`—`), needs this
+#: process itself under UTF-8 (RV824's N5). CI's is; a run of pytest under
+#: `LC_ALL=C PYTHONUTF8=0` is not, and `conftest.git` cannot hand git such
+#: a name there.
+NEEDS_A_UTF8_PROCESS = pytest.mark.skipif(
+    codecs.lookup(sys.getfilesystemencoding()).name != "utf-8",
+    reason="this pytest process's filesystem encoding is not UTF-8, so it "
+           "cannot hand git the name or read the child's UTF-8 line")
 
 
 def own_line(encoding: str) -> str:
@@ -95,9 +115,14 @@ def own_line(encoding: str) -> str:
 
 def unwritten(leg: str, printed: str, point: str) -> list[str]:
     """Step (a)'s two lines for a leg whose good branch was not tried."""
-    return [f"  [{leg}] {leg}: could not create branch {printed}: it holds "
+    return [did_not_try(leg, printed, point), own_line("ascii")]
+
+
+def did_not_try(leg: str, printed: str, point: str) -> str:
+    """The first line for a leg whose branch holds `UNWRITABLE` (N2)."""
+    return (f"  [{leg}] {leg}: did not try branch {printed}: it holds "
             f"{point}, {UNWRITABLE}, which no command can be given as an "
-            "argument; the leg is left as it is", own_line("ascii")]
+            "argument; the leg is left as it is")
 
 
 def needs_the_byte(tmp_path: Path) -> None:
@@ -169,7 +194,8 @@ def past_the_pin(leg: Path, upstream: str, branch: str) -> tuple[str, str]:
 
 @pytest.mark.parametrize("raw, byte", [
     pytest.param("a\udcffb", True, id="the-byte-0xff"),
-    pytest.param("a\u00a0", False, id="ending-in-U+00A0"),
+    pytest.param("a\u00a0", False, id="ending-in-U+00A0",
+                 marks=NEEDS_A_UTF8_PROCESS),
 ])
 def test_a_branch_past_the_pin_is_moved_back_whatever_its_upstream_is_named(
         root, tmp_path, bootstrap_module, raw, byte):
@@ -192,10 +218,12 @@ def test_a_branch_past_the_pin_is_moved_back_whatever_its_upstream_is_named(
                f"{spelled(shlex.quote('origin/' + raw))}")
     assert moved_back(ahead, pin, spelled(raw), command=command) in (
         result.stdout), result.stdout
-    assert rev(leg, f"refs/heads/{raw}") == pin and rev(leg) == pin
+    assert rev(leg, f"refs/heads/{raw}") == pin
+    assert rev(leg) == pin
     assert head_bytes(leg) == b"refs/heads/" + os.fsencode(raw) + b"\n"
 
 
+@NEEDS_A_UTF8_PROCESS
 def test_under_an_ascii_encoding_an_upstream_named_in_utf8_is_moved_back(
         root, tmp_path, bootstrap_module):
     """`main` tracking `origin/日本`, past the pin, under `LC_ALL=C
@@ -208,14 +236,16 @@ def test_under_an_ascii_encoding_an_upstream_named_in_utf8_is_moved_back(
     pin, ahead = past_the_pin(leg, "日本", "main")
 
     code, out, err = run_under(root, tmp_path, changes, "--skip-validators")
-    assert code == 0 and b"Traceback" not in err, out + err.decode("utf-8")
+    assert code == 0, out + err.decode("utf-8")
+    assert b"Traceback" not in err, err.decode("utf-8")
     held = bootstrap_module.spelled(
         "origin/" + "日本".encode("utf-8").decode("ascii", "surrogateescape"))
     assert (f"  [spec] spec: branch main moved back {ahead[:12]} -> "
             f"{pin[:12]}, the pin; nothing is lost, {held} still holds those "
             f"commits, and `git -C spec merge --ff-only '{held}'` brings the "
             "branch forward\n") in out, out
-    assert rev(leg, MAIN) == pin and head_ref(leg) == MAIN
+    assert rev(leg, MAIN) == pin
+    assert head_ref(leg) == MAIN
     assert rev(leg, "refs/remotes/origin/日本") == ahead
 
 
@@ -252,6 +282,7 @@ def test_a_leg_on_a_branch_whose_name_is_not_utf8_is_placed_on_every_run(
                                else b"refs/heads/main\n")
 
 
+@NEEDS_A_UTF8_PROCESS
 def test_a_tracking_branch_the_validator_names_is_followed_and_then_placed(
         root, tmp_path):
     """L4-126, option (b): step (a) creates `a<ff>b` from the manifest's
@@ -301,7 +332,8 @@ def test_a_good_name_this_encoding_cannot_write_is_said_and_the_way_out_works(
     before = legs_state(root)
 
     code, out, err = run_under(root, tmp_path, changes)
-    assert code == 0 and b"Traceback" not in err, out + err.decode("utf-8")
+    assert code == 0, out + err.decode("utf-8")
+    assert b"Traceback" not in err, err.decode("utf-8")
     assert step_a(out) == (unwritten("spec", GOOD_PRINTED, "U+65E5")
                            + unwritten("code", GOOD_PRINTED, "U+65E5")), out
     assert "manifest ok: Atlas (atlas), 3 legs" in out, out
@@ -309,11 +341,122 @@ def test_a_good_name_this_encoding_cannot_write_is_said_and_the_way_out_works(
     assert legs_state(root) == before
 
     code, out, err = run_under(root, tmp_path, way_out)
-    assert code == 0 and b"Traceback" not in err, out + err.decode("utf-8")
+    assert code == 0, out + err.decode("utf-8")
+    assert b"Traceback" not in err, err.decode("utf-8")
     for leg in ("spec", "code"):
         assert f"  [{leg}] {leg}: branch {GOOD} created at " in out, out
         assert head_bytes(root / leg) == (
             b"refs/heads/" + GOOD.encode("utf-8") + b"\n")
+
+
+@pytest.mark.parametrize("name, printed", [
+    pytest.param("feature/日本..x", r"feature/\u65e5\u672c..x", id="dot-dot"),
+    pytest.param("日本.lock", r"\u65e5\u672c.lock", id="dot-lock"),
+    pytest.param("日本 x", r"\u65e5\u672c x", id="a-space"),
+])
+def test_a_name_git_refuses_in_utf8_too_is_never_called_good(
+        root, tmp_path, name, printed):
+    """RV824's S1: each of these names this system's encoding cannot
+    write, and git refuses in any encoding (`..`, `.lock`, a space), was
+    called good, with a way out that ended in git's `is not a valid branch
+    name`. Now `git check-ref-format --branch` is asked of the UTF-8 bytes
+    first: git's words are said, and #455's way out, and each leg is left
+    as it was. The validators pass the value, as they did, so the run
+    ends `bootstrap ok`, as a branch git refuses always has."""
+    changes = under_ascii(tmp_path)
+    tracking(root, f'"{name}"')
+    before = legs_state(root)
+
+    code, out, err = run_under(root, tmp_path, changes)
+    assert code == 0, out + err.decode("utf-8")
+    assert b"Traceback" not in err, err.decode("utf-8")
+    assert "the name is good" not in out, out
+    lines = step_a(out)
+    for leg in ("spec", "code"):
+        at = lines.index(did_not_try(leg, printed, "U+65E5"))
+        said = lines[at + 2:lines.index(SECOND_LINE, at)]
+        assert lines[at + 1] == GIT_REFUSES, lines
+        assert said, lines
+        assert any(printed in line for line in said), said
+    assert lines.count(SECOND_LINE) == 2, lines
+    assert out.endswith("bootstrap ok\n"), out
+    assert legs_state(root) == before
+
+
+def test_a_name_holding_a_surrogate_too_is_named_for_the_surrogate(
+        root, tmp_path):
+    """RV824's S1: `"日\\udcff"` under `LC_ALL=C PYTHONUTF8=0` was called
+    good in step (a), while step (b) of the same run named its U+DCFF.
+    The surrogate is the fault now, with #455's lines, and the run ends as
+    the validator ends it."""
+    changes = under_ascii(tmp_path)
+    tracking(root, r'"日\udcff"')
+    before = legs_state(root)
+
+    code, out, err = run_under(root, tmp_path, changes)
+    said = err.decode("utf-8")
+    assert code == 1, out + said
+    assert "Traceback" not in said, said
+    assert "the name is good" not in out, out
+    printed = r"\u65e5\udcff"
+    assert step_a(out) == (
+        not_tried("spec", printed, "U+DCFF", "a lone surrogate")
+        + not_tried("code", printed, "U+DCFF", "a lone surrogate")), out
+    assert "FINDING manifest-tracking-branch:" in said, said
+    assert "bootstrap FAILED: manifest (exit 1)" in said, said
+    assert legs_state(root) == before
+
+
+def test_a_legs_own_branch_this_encoding_cannot_write_is_said_too(
+        root, tmp_path):
+    """RV824's N4: a leg's own `branch:` reaches `_argument_fault` as
+    `tracking_branch` does. Under `LC_ALL=C PYTHONUTF8=0`, `branch:
+    "feature/日本"` on the spec leg leaves that leg as it was under the
+    ruled lines, and the code leg, on `main`, is placed as it always was."""
+    changes = under_ascii(tmp_path)
+    leg_branch(root, "spec", f'"{GOOD}"')
+    before = legs_state(root)
+
+    code, out, err = run_under(root, tmp_path, changes)
+    assert code == 0, out + err.decode("utf-8")
+    assert b"Traceback" not in err, err.decode("utf-8")
+    assert step_a(out) == unwritten("spec", GOOD_PRINTED, "U+65E5") + [
+        f"  [code] code: on main at {rev(root / 'code')[:12]} (branch tip == "
+        "pin)"], out
+    assert out.endswith("bootstrap ok\n"), out
+    assert legs_state(root) == before
+
+
+class LegacyWindowsOs:
+    """`os` as Windows has it under `PYTHONLEGACYWINDOWSFSENCODING=1`:
+    `nt`, with an `os.fsdecode` that is `mbcs` with `replace`, so a
+    character the code page lacks is lost. Only what `bootstrap.py` reads
+    of it differs; everything else is this system's `os`."""
+
+    name = "nt"
+
+    @staticmethod
+    def fsdecode(raw: bytes) -> str:
+        return raw.decode("ascii", "replace")
+
+    def __getattr__(self, attr: str):
+        return getattr(os, attr)
+
+
+@NEEDS_A_UTF8_PROCESS
+def test_on_windows_what_git_prints_is_read_as_utf8(
+        root, bootstrap_module, monkeypatch):
+    """RV824's N3: on Windows `subprocess` hands git its arguments through
+    `CreateProcessW` and git reads them as UTF-8, so `_try_git` reads git's
+    bytes as UTF-8 there. Through `os.fsdecode` in the legacy mode, the
+    upstream `origin/日本` came back as `origin/??????`, which names no ref.
+    The stand-in `os` is the module's alone: git still runs here."""
+    leg = root / "spec"
+    past_the_pin(leg, "日本", "main")
+    monkeypatch.setattr(bootstrap_module, "os", LegacyWindowsOs())
+    assert bootstrap_module._try_git(
+        ["for-each-ref", "--format=%(upstream)", "refs/heads/main"],
+        leg) == "refs/remotes/origin/日本"
 
 
 def ascii_fsencode(text):
@@ -331,6 +474,10 @@ def ascii_fsencode(text):
     # good, so the line saying it is would be false.
     ("日\x00", "U+0000, a NUL"),
     ("日\ud83d", "U+D83D, a lone surrogate"),
+    # A surrogate that IS one byte of a name is the fault beside a character
+    # the encoding cannot write: the validator names it (RV824's S1).
+    ("日\udcff", "U+DCFF, a lone surrogate"),
+    ("\udc80日", "U+DC80, a lone surrogate"),
 ])
 def test_under_an_ascii_encoding_what_it_cannot_write_is_the_fault(
         bootstrap_module, monkeypatch, branch, fault):
@@ -355,17 +502,22 @@ def test_under_an_ascii_encoding_what_it_writes_has_no_fault(
 def test_the_line_for_a_name_the_encoding_cannot_write_is_its_own(
         bootstrap_module, monkeypatch, capsys):
     """The second line is the ruling's own, naming the encoding the
-    process has, and #455's NUL keeps its line."""
+    process has; #455's NUL keeps its line; and a name git refuses gets
+    git's words and #455's way out, never "good" (RV824's S1)."""
     monkeypatch.setattr(bootstrap_module.os, "fsencode", ascii_fsencode)
     say = bootstrap_module._say_not_tried
     say("[spec] spec", GOOD, bootstrap_module._argument_fault(GOOD))
     say("[code] code", "a\\x00b", bootstrap_module._argument_fault("a\x00b"))
+    refused = "fatal: '日本.lock' is not a valid branch name"
+    say("[spec] spec", "日本.lock", bootstrap_module._argument_fault("日本.lock"),
+        [refused])
     lines = capsys.readouterr().out.split("\n")
-    assert lines[:2] == [
-        f"  [spec] spec: could not create branch {GOOD}: it holds U+65E5, "
-        f"{UNWRITABLE}, which no command can be given as an argument; the "
-        "leg is left as it is", own_line(sys.getfilesystemencoding())], lines
-    assert lines[3] == (
-        "          the branch is the leg's `branch:`, else `--branch`, else "
-        "`tracking_branch`. Give that one a name git can create and run "
-        "bootstrap again."), lines
+    assert lines[:2] == [did_not_try("spec", GOOD, "U+65E5"),
+                         own_line(sys.getfilesystemencoding())], lines
+    assert lines[2:4] == [
+        "  [code] code: could not create branch a\\x00b: it holds U+0000, a "
+        "NUL, which no command can be given as an argument; the leg is left "
+        "as it is", SECOND_LINE], lines
+    assert lines[4:] == [did_not_try("spec", "日本.lock", "U+65E5"),
+                         GIT_REFUSES, f"          {refused}", SECOND_LINE,
+                         ""], lines
