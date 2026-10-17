@@ -764,7 +764,9 @@ def _checked_branch(family: "Family", verb: str, suggested: str) -> str:
     THE HOLDER IS NAMED AS `shown_path` NAMES A PATH (#766), as #692 names
     the folders `init` makes: a holder whose path held an ESC sent it to the
     terminal, and one with a line break began a line of its own choosing.
-    A printable path is named byte for byte."""
+    A printable path is named byte for byte. The remedy's `switch -c` is
+    a command to paste, and still holds the holder's path raw inside its
+    shell quotes (#459)."""
     branch = _holder_branch(family.root)
     if branch is not None and branch != family.tracking():
         return branch
@@ -6384,7 +6386,8 @@ def _checked_index_unlocked(root: Path, path: str) -> None:
 
     THE DETAIL NAMES THE LOCK AS `shown_path` NAMES A PATH (#766): it lies
     under the holder, whose path can hold an ESC or a line break. The
-    remedy's `rm -f` is quoted for a shell, as it was.
+    remedy's `rm -f` is quoted for a shell, as it was, and still holds
+    the lock's path raw inside those quotes (#459).
     """
     shown = _git_bytes(["rev-parse", "--git-path", "index.lock"],
                        root).decode("utf-8", "surrogateescape").strip()

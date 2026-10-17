@@ -41,7 +41,8 @@ import pytest
 
 from conftest import REPO, run_script
 #: The names no line may print raw, and how a line spells them (#766).
-from conftest import (UNSAFE_NAMES, assert_shown_safe, refusal_detail,
+from conftest import (PRINTABLE_NAME, SHOWN_NAMES, UNSAFE_NAMES,
+                      assert_shown_safe, named_as, refusal_detail,
                       spelt, unsafe_folder)
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -256,7 +257,7 @@ def test_the_plan_names_a_printable_folder_byte_for_byte(tmp_path):
     """#766 changes no row a person could read before: a space and a letter
     that is not ASCII are printable, so the folder and the holder are named
     as they are, with no quotes."""
-    place = tmp_path / "wd é and a space"
+    place = tmp_path / PRINTABLE_NAME
     place.mkdir()
     place = place.resolve()
     result = init(tmp_path, tmp_path, "--into", str(place), "--dry-run")
@@ -297,12 +298,14 @@ def test_landing_in_a_checkout_names_its_three_paths_safe_to_show(
         "scripts", "templates"]
 
 
-@pytest.mark.parametrize("name", UNSAFE_NAMES)
+@pytest.mark.parametrize("name", SHOWN_NAMES)
 def test_a_family_folder_already_here_is_named_safe_to_show(tmp_path, name):
     """#766: `family-holder-already-here` named `--into` and the holder in
     it as they were. The detail names both as `repr` spells them, on the
-    one line it is. The remedy's `add` line is a command to paste, quoted
-    for a shell as it was (`_add_command`), and is not this row's."""
+    one line it is, and a printable path as it is, byte for byte, with no
+    quotes (rv766's P8 and P9). The remedy's `add` line is a command to
+    paste, quoted for a shell as it was (`_add_command`), and is not this
+    row's."""
     into = unsafe_folder(tmp_path, name).resolve() / NAME
     (into / NAME).mkdir(parents=True)
     (into / NAME / "family.yaml").write_bytes(b"name: Orbit\n")
@@ -310,6 +313,7 @@ def test_a_family_folder_already_here_is_named_safe_to_show(tmp_path, name):
     assert result.returncode == 2, result.stdout + result.stderr
     assert result.stdout == ""
     assert refusal_detail(result.stderr, "family-holder-already-here") == [
-        f"REFUSED family-holder-already-here: {spelt(into)} is already the "
-        f"{NAME} family folder and its holder is at {spelt(into / NAME)}, so "
-        "there is nothing to init"]
+        "REFUSED family-holder-already-here: "
+        f"{named_as(into, name)} is already the {NAME} family folder and "
+        f"its holder is at {named_as(into / NAME, name)}, so there is "
+        "nothing to init"]

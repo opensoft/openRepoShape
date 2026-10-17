@@ -54,8 +54,9 @@ import pytest
 
 from conftest import FILE_PROTOCOL, PROJECT, REPO, cloned_just_pushed, git
 #: The names no line may print raw, and how a line spells them (#766).
-from conftest import (POSIX_NAMES, UNSAFE_NAMES, assert_shown_safe,
-                      copied_under, refusal_detail, spelt)
+from conftest import (POSIX_NAMES, SHOWN_NAMES, UNSAFE_NAMES,
+                      assert_shown_safe, copied_under, named_as,
+                      refusal_detail, spelt)
 # A fixture is used by being named in this module's namespace, which is what
 # the imports of `bump_leg_module` and `make_root` are for.
 from test_bump_leg import (  # noqa: F401
@@ -562,14 +563,15 @@ def test_a_dirty_root_is_named_safe_to_show(scaffolded, advanced, tmp_path,
 
 
 @pytest.mark.parametrize("state", ["tracking-branch", "detached"])
-@pytest.mark.parametrize("name", UNSAFE_NAMES)
+@pytest.mark.parametrize("name", SHOWN_NAMES)
 def test_a_root_refused_for_its_branch_is_named_safe_to_show(
         scaffolded, advanced, tmp_path, name, state):
     """#766: `bump-leg-on-tracking-branch` and `bump-leg-root-detached`
     named the root as it was. The detail names it as `repr` spells it, on
-    the one line it is. The remedy's `switch -c` is a command to paste,
-    quoted for a shell as it was (`_switch_command`), and is not this
-    row's."""
+    the one line it is, and a printable root as it is, byte for byte, with
+    no quotes (rv766's P14). The remedy's `switch -c` is a command to
+    paste, quoted for a shell as it was (`_switch_command`), and is not
+    this row's."""
     root = copied_under(scaffolded["clone"], tmp_path, name)
     if state == "detached":
         git("checkout", "-q", "--detach", cwd=root)
@@ -585,7 +587,7 @@ def test_a_root_refused_for_its_branch_is_named_safe_to_show(
          "is on 'main', which project.yaml declares as this project's "
          "tracking branch"))
     assert refusal_detail(result.stderr, code) == [
-        f"REFUSED {code}: {spelt(root)} {said}"]
+        f"REFUSED {code}: {named_as(root, name)} {said}"]
 
 
 @pytest.mark.parametrize("name", UNSAFE_NAMES)

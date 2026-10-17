@@ -1939,6 +1939,15 @@ POSIX_NAMES = pytest.mark.skipif(
 UNSAFE_NAMES = [pytest.param(ESC_NAME, id="ESC", marks=POSIX_NAMES),
                 pytest.param(FORGED_NAME, id="line-break", marks=POSIX_NAMES)]
 
+#: A name a line names as it is, byte for byte, with no quotes: a space and
+#: a letter that is not ASCII are each a character `str.isprintable`
+#: accepts.
+PRINTABLE_NAME = "wd \u00e9 and a space"
+
+#: `UNSAFE_NAMES` and `PRINTABLE_NAME`, for a row that holds both kinds
+#: (rv766's SHOULD 1: a quoted printable path was caught by no row).
+SHOWN_NAMES = [*UNSAFE_NAMES, pytest.param(PRINTABLE_NAME, id="printable")]
+
 
 def spelt(path) -> str:
     """A path that holds a control character as a line names it: as
@@ -1946,6 +1955,13 @@ def spelt(path) -> str:
     `repr`, and not `shown_path`, so a change to that function moves no
     expectation with it."""
     return repr(str(path))
+
+
+def named_as(path, name: str) -> str:
+    """`path`, made under the folder `name`, as a line names it: as it is,
+    byte for byte, under `PRINTABLE_NAME`, and `spelt` under one of
+    `UNSAFE_NAMES`."""
+    return str(path) if name == PRINTABLE_NAME else spelt(path)
 
 
 def unsafe_folder(parent: Path, name: str) -> Path:
