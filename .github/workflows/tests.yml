@@ -4,13 +4,21 @@ name: tests
 # clones them over the filesystem. It never calls `gh`, never touches the
 # network, and must never create a real repository.
 #
-# The FULL suite runs on LINUX ONLY, on every trigger: a push to `main`, a pull
-# request and a manual run all use the one ubuntu job below. Brett Heap decided
-# on 2026-10-15, for the whole estate, to drop the macOS and Windows test jobs.
+# The FULL suite runs on LINUX ONLY, on every trigger: a push to `main` or to a
+# release branch (`release/v<major>.<minor>`), a pull request and a manual run
+# all use the one ubuntu job below. Brett Heap decided on 2026-10-15, for the
+# whole estate, to drop the macOS and Windows test jobs.
 # One exception, on Brett Heap's word at 2026-10-15T18:20:35Z,
 # "Option 1: keep a small Git Bash job for #596": the `tests-git-bash` job
 # below runs the launcher's and the installer's suites, and nothing else, on
 # Windows under Git Bash.
+#
+# A RELEASE BRANCH'S PUSHES RUN IT TOO (#850). A patch is tagged on its
+# `release/v<major>.<minor>` branch, and `release.yml` releases a commit only
+# once a push or dispatch run of this workflow passed `tests` on it, so every
+# commit a release branch takes gets that run from its own push, with no
+# dispatch by hand. `release/v*` names exactly those branches: in a branch
+# filter `*` matches no `/`.
 #
 # The `package` job at the end runs no pytest. It builds the openreposhape
 # wheel and installs it with pipx, so what it checks needs PyPI (the build
@@ -18,24 +26,35 @@ name: tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/v*']
   pull_request:
   workflow_dispatch:
 
 # A RUN IS CANCELLED ONLY BY A NEWER RUN IN ITS OWN GROUP: a newer push to the
-# same pull request, or a second dispatch on the same commit. A pull request's
-# group is its number. A `push` run on main has no number, and the old fallback
-# `github.ref` put every one of them in the one group `tests-refs/heads/main`,
-# so each landing cancelled the run on the main before it: on 2026-10-15 every
-# push run from #561 (7d9bec9) to #580 (dd3f23a) ended `cancelled` and nine PRs
-# landed with no Linux run over their combination (#592). `github.sha` gives a
-# push run a group of its own commit, so no later landing cancels it and each
-# landing keeps its own Linux result. `github.event_name` keeps a push run and
-# a dispatch apart, so a dispatch on main, which runs on whatever commit main
-# is at, never cancels that commit's push run; a second dispatch on the same
-# commit still replaces the first.
+# same pull request, or a second dispatch of the same ref at the same commit.
+# A pull request's group is its number. A `push` run on main has no number,
+# and the old fallback `github.ref` put every one of them in the one group
+# `tests-refs/heads/main`, so each landing cancelled the run on the main
+# before it: on 2026-10-15 every push run from #561 (7d9bec9) to #580
+# (dd3f23a) ended `cancelled` and nine PRs landed with no Linux run over their
+# combination (#592). `github.sha` gives a push run a group of its own commit,
+# so no later landing cancels it and each landing keeps its own Linux result.
+# `github.event_name` keeps a push run and a dispatch apart, so a dispatch on
+# main, which runs on whatever commit main is at, never cancels that commit's
+# push run; a second dispatch of the same ref at the same commit still
+# replaces the first.
+#
+# `github.ref` KEEPS TWO BRANCHES APART AT ONE COMMIT (#850). A group spans
+# the repository, not a branch, and a push run's `github.sha` is the commit
+# the push left its branch at. Without the ref, a fast-forward of
+# `release/v1.1` to main's commit shares the group of main's push run on that
+# commit and cancels it while it is still running, as #592's landings did.
+# The ref sits beside the commit, never in its place as #592's fallback did.
+# A pull request's ref, `refs/pull/<number>/merge`, is its own, so a pull
+# request still has one group, and a newer push to it still cancels the older
+# run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -158,9 +177,9 @@ jobs:
   # Git's real `curl` ahead of the suites' fake. conftest's comment there
   # has the rest.
   #
-  # ON EVERY TRIGGER, a push to `main` included: a squash lands a tree no
-  # pull-request run tested (#122), and these two suites are the only run
-  # of the one-line install on Windows.
+  # ON EVERY TRIGGER, a push to `main` or to a release branch included: a
+  # squash lands a tree no pull-request run tested (#122), and these two
+  # suites are the only run of the one-line install on Windows.
   tests-git-bash:
     runs-on: windows-latest
     timeout-minutes: 15
