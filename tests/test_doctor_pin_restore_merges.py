@@ -25,7 +25,10 @@ keep (review of PR #736). A side whose pin does not read is never taken:
 the NEXT takes the side whose pin reads, and where no side's pin reads,
 neither row names a NEXT (#752). A copy renamed on one side conflicts
 under a name no pin has a row for; the `why` names it as renamed from that
-copy, by the merge base's blob, and gives it to a person (#753).
+copy, by the merge base's blob, and gives it to a person (#753). A copy
+renamed on both sides is `DD` at its old name, never a merge of hunks:
+the `why` names each new name a side's own commit holds the base's blob
+at, and says where a side's is not proved (#783).
 
 L2-9. A slip amended into `bump-leg.py`'s own commit leaves the commit
 before it holding the pin for the OLD leg commit. Putting that pin back is
@@ -1060,15 +1063,18 @@ def edited(path: str, line: bytes):
 
 
 def merged_after(standard: Path, project: Path, tmp_path: Path, acts: dict,
-                 own: tuple | None = None) -> tuple:
+                 own: tuple | None = None,
+                 sources: tuple = (UPSTREAM_TARGET, BOOTSTRAP_SOURCE)
+                 ) -> tuple:
     """`(root, the standard moved on)`: (a)'s two applies, each followed
     on its branch by `acts[branch]`, then shape/b merging shape/a. `own`,
     `(path, content)`, is a file of the project's own that main gains
     first: `content` where it is bytes, else the committed blob of the
-    copy it names, byte for byte."""
+    copy it names, byte for byte. `sources` are the standard's files C2
+    and C3 move on."""
     root = under_an_awkward_name(project, tmp_path)
-    moved, c2, c3, _frozen = the_standard_moved(
-        standard, tmp_path, UPSTREAM_TARGET, BOOTSTRAP_SOURCE)
+    moved, c2, c3, _frozen = the_standard_moved(standard, tmp_path,
+                                                *sources)
     if own:
         path, content = own
         (root / path).parent.mkdir(parents=True, exist_ok=True)
@@ -1150,12 +1156,15 @@ def test_a_copy_renamed_on_one_side_is_named_for_a_person(
         == "DRIFTED (1 copy-missing)"
 
 
-def finished_keeping(root: Path, tmp_path: Path, moved: Path,
-                     name: str) -> str:
+def finished_keeping(root: Path, tmp_path: Path, moved: Path, name: str,
+                     dropped: tuple = ()) -> str:
     """The merge, its NEXT run, finished by a person who keeps `name` as
-    the side taken holds it, merges `project.yaml` and commits; the
-    doctor's verdict then, out of the standard moved on."""
+    the side taken holds it, removes each of `dropped`, merges
+    `project.yaml` and commits; the doctor's verdict then, out of the
+    standard moved on."""
     (root / name).write_bytes(stage_of(root, 2, name))
+    if dropped:
+        git("rm", "-q", "--", *dropped, cwd=root)
     merge_by_ours(root, tmp_path, "project.yaml")
     git("add", "--", SHAPE_PIN, BOOTSTRAP, name, "project.yaml", cwd=root)
     commit_in(root, f"merge shape/a, {name} kept")
@@ -1228,3 +1237,78 @@ def test_a_rename_of_no_copy_names_nothing(standard, project, tmp_path,
     assert new not in currency["detail"].get("left_for_a_person", []), \
         currency["detail"]
     assert new not in currency["why"], currency["why"]
+
+
+# --- a copy renamed on both sides (#783) -------------------------------------
+
+#: The names each side gives the Makefile: the side `--ours` takes, and the
+#: other side.
+OURS_NAME, THEIRS_NAME = "a.mk", "b.mk"
+
+#: Both sides rename the Makefile, after `apply` runs that leave it as the
+#: merge base holds it.
+BOTH_RENAME = {"shape/a": renamed(MAKEFILE, THEIRS_NAME),
+               "shape/b": renamed(MAKEFILE, OURS_NAME)}
+
+#: Each merge in which both sides rename the Makefile: what each side does,
+#: the file of the project's own main gains first (none, or the Makefile's
+#: twin), what the `why` says of the Makefile, and what is left to a person.
+TWICE = {
+    "renamed-on-both-sides": (
+        BOTH_RENAME, None,
+        f"renamed to {OURS_NAME} on the side taken here and to "
+        f"{THEIRS_NAME} on the other side, and no pin lists the new names, "
+        "so nothing is taken whole: a person keeps one name, or both, by "
+        "hand",
+        [MAKEFILE, OURS_NAME, THEIRS_NAME, "project.yaml"]),
+    "renamed-on-both-sides-edited-on-ours": (
+        {**BOTH_RENAME, "shape/b": renamed(MAKEFILE, OURS_NAME, OWN_LINE)},
+        None,
+        f"renamed to {THEIRS_NAME} on the other side, and no pin lists the "
+        "new name; where the side taken here put it is not proved here, so "
+        "nothing is taken whole: a person settles where it goes, by hand",
+        [MAKEFILE, THEIRS_NAME, "project.yaml"]),
+    "renamed-on-both-sides-beside-a-twin": (
+        BOTH_RENAME, ("tools/Makefile.orig", MAKEFILE),
+        "and where either side put it is not proved here, so nothing is "
+        "taken whole: a person settles where it goes, by hand",
+        [MAKEFILE, "project.yaml"]),
+}
+
+
+@pytest.mark.parametrize("merge", sorted(TWICE))
+def test_a_copy_renamed_on_both_sides_is_named_for_a_person(
+        standard, project, tmp_path, merge):
+    """Both sides rename the Makefile, to a.mk on the side `--ours` takes
+    and to b.mk on the other. git leaves the Makefile `DD`, stage 1 alone,
+    and each new name added by one side alone, with no stage 1, so #781's
+    rule saw neither, and the Makefile got the copies' sentence, keeping
+    "the hunks git merged" where git merged none (#783).
+
+    Now the Makefile is gone on both sides, and each new name is named
+    where the commit of the side that made it holds the merge base's blob
+    of the Makefile there, and no other path of the base holds that blob.
+    Edited on ours, git writes its merge to both names and ours' commit
+    holds the edit, so only b.mk is proved, and the `why` says ours' is
+    not; beside a twin of the Makefile neither is. The pin taken here
+    still lists the Makefile, and finished keeping a.mk, the merge is
+    `copy-missing`, as the `why` says."""
+    acts, own, said, left = TWICE[merge]
+    root, moved = merged_after(standard, project, tmp_path, acts, own,
+                               sources=(BOOTSTRAP_SOURCE,))
+    assert [sorted(index_stages(root, name))
+            for name in (MAKEFILE, OURS_NAME, THEIRS_NAME)] \
+        == [[1], [2], [3]]
+    _verdict, rows = rows_from(moved, root)
+    currency = assert_both_rows_name_it(rows)
+    assert pasted(currency["next"])[3:] == [
+        "checkout", "--ours", "--", SHAPE_PIN, BOOTSTRAP], currency["next"]
+    assert currency["detail"]["left_for_a_person"] == left, \
+        currency["detail"]
+    assert f"{MAKEFILE} is gone on both sides of the merge, {said}. " \
+        f"{STILL_LISTED}. Then finish" in currency["why"], currency["why"]
+    assert "hunks" not in currency["why"], currency["why"]
+    run_pasted(currency["next"])
+    assert finished_keeping(root, tmp_path, moved, OURS_NAME,
+                            (MAKEFILE, THEIRS_NAME)) \
+        == "DRIFTED (1 copy-missing)"
