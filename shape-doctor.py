@@ -676,10 +676,21 @@ FLATTENED = {"—": "--", "–": "-", "‘": "'", "’": "'", "“": '"', "”":
              "…": "...", "\N{NO-BREAK SPACE}": " "}
 
 
+#: The encoding the report is written for where that is not stdout's: UTF-8
+#: for `--json`, which `main` sets (#785, review S2 on PR #792). `json.dumps`
+#: writes ASCII whatever stdout's encoding is, and every character as an
+#: escape its reader decodes, so a JSON reader gets each character a UTF-8
+#: name holds as itself -- under `LC_ALL=C` and a `PYTHONIOENCODING=cp1252`
+#: pipe as under a UTF-8 terminal. None for the table, which IS stdout.
+REPORT_ENCODING: str | None = None
+
+
 def printed_encoding(encoding: str | None = None) -> str:
-    """`encoding`, or the one the report is printed in: `sys.stdout`'s, which
-    `pythonw` and a stream a caller replaced may not have (#785)."""
-    return encoding or getattr(sys.stdout, "encoding", None) or "utf-8"
+    """`encoding`, or the one the report is written for: `REPORT_ENCODING`
+    where `main` set one, else `sys.stdout`'s, which `pythonw` and a stream
+    a caller replaced may not have (#785)."""
+    return (encoding or REPORT_ENCODING
+            or getattr(sys.stdout, "encoding", None) or "utf-8")
 
 
 def prints_as_itself(char: str, encoding: str) -> bool:
@@ -855,11 +866,14 @@ def quote_arg(value, platform: str | None = None, *,
       every printable character, and only a stdout redirected to a file or a
       pipe is in the ANSI code page.
 
-    So `ascii_text`'s later pass finds nothing in a value to change, and a
-    row's `--json` carries the same command its table line does: a
-    character that is itself there is written by `json.dumps` as an escape
-    that decodes to it, and a JSON reader runs what the table shows. A
-    value made of ASCII is quoted exactly as before.
+    So `ascii_text`'s later pass finds nothing in a value to change. The
+    report's encoding is stdout's for the table, and UTF-8 for `--json`,
+    whatever stdout's is (`REPORT_ENCODING`, review S2 on PR #792): a JSON
+    reader decodes each `\u` escape `json.dumps` writes into the character
+    it stands for, so a row's `next` holds a UTF-8 name as itself, and only
+    a byte that is not UTF-8, or a character `prints_as_itself` refuses, is
+    escaped there. The table escapes what its own encoding cannot write. A
+    value made of ASCII is quoted exactly as before, in both.
 
     AND THE ALPHABET CHECK MUST COVER THE VALUE WHOLE. `$` is content to
     match just before a trailing newline, so `.match` alone waved a value
@@ -918,7 +932,25 @@ def quoted_beyond_ascii(text: str, windows: bool, encoding: str) -> str:
     """`quote_arg` for a value holding a character that is not ASCII (#785):
     quoted as any other value where every such character `prints_as_itself`
     -- for `sh`, as the bytes the path holds -- and escaped whole where one
-    does not. See `quote_arg`'s docstring."""
+    does not. See `quote_arg`'s docstring.
+
+    ON POSIX A NAME IS READ AS UTF-8 FIRST (review S2 on PR #792). Under
+    `LC_ALL=C` with Python's UTF-8 mode off the filesystem encoding is
+    ASCII, so `os.fsdecode` carries each byte of `é` as a `surrogateescape`
+    byte of its own, and a report in UTF-8 -- `--json` -- could not show
+    it. Those bytes are read again as UTF-8, which joins each run that
+    spells a character into that character and leaves every other byte as
+    it was, so `path_bytes` gives the same bytes either way. A value that
+    holds a surrogate `surrogateescape` never makes (outside
+    U+DC80..U+DCFF) cannot be written back to bytes like that, and is left
+    as it is: such a character is not printable, so it is escaped."""
+    if not windows:
+        try:
+            text = text.encode("utf-8", "surrogateescape").decode(
+                "utf-8", "surrogateescape")
+        except UnicodeEncodeError:
+            pass
+
     def shown(char: str) -> bool:
         if char.isascii():
             return True
@@ -10109,6 +10141,9 @@ def main(argv: list[str] | None = None) -> int:
     # a name stdout cannot encode rather than raising on it (#214).
     escape_what_stdout_cannot_encode()
     args = build_parser().parse_args(argv)
+    # Before any row is built: `quote_arg` and `ascii_text` read it (#785).
+    global REPORT_ENCODING
+    REPORT_ENCODING = "utf-8" if args.as_json else None
     if [marker for marker in SHAPE_MARKERS
             if not (SHAPE_ROOT / marker).exists()]:
         return not_in_the_standard("")

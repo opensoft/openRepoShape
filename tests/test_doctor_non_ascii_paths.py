@@ -19,7 +19,10 @@ show. Each line is asserted here as a reader uses it: the table's bytes and
 the `--json` value, pasted into bash -- `sh` on Ubuntu is dash, which has no
 `$'...'` -- under a UTF-8 locale, under `LC_ALL=C`, and under `LC_ALL=C`
 with Python's UTF-8 mode off, where its filesystem encoding is ASCII, for a
-directory named in UTF-8 and one named in Latin-1.
+directory named in UTF-8 and one named in Latin-1. The NEXT is also read
+with stdout in cp1252 and in ASCII, an encoding that is not the filesystem's
+(review S3 on PR #792), and run in dash where the report shows the name as
+itself, which is what README says dash can run.
 
 The spellings are asserted on every OS. The runs are `WINDOWS_SKIP`: a
 Windows command line is text and cannot carry the byte 0xC9 alone. No
@@ -79,6 +82,14 @@ POSIX_CASES = {
     "outside-cp1252": ("/srv/日本", "cp1252",
                        r"$'/srv/\346\227\245\346\234\254'",
                        "/srv/日本".encode("utf-8")),
+    # `é` as `os.fsdecode` reads it with an ASCII filesystem encoding: two
+    # `surrogateescape` bytes, read again as the UTF-8 they spell.
+    "utf-8-read-byte-by-byte": (f"/srv/caf{chr(0xDCC3)}{chr(0xDCA9)}",
+                                "utf-8", "'/srv/café'",
+                                "/srv/café".encode("utf-8")),
+    # A surrogate `surrogateescape` never makes: escaped, never raised on.
+    "stray-surrogate": (f"/srv/a{chr(0xD800)}", "utf-8",
+                        r"$'/srv/a\355\240\200'", b"/srv/a\xed\xa0\x80"),
 }
 
 #: The same cases, as `pytest` parameters: the first three, or the last.
@@ -208,6 +219,15 @@ LOCALES = [pytest.param("UTF-8", {}, id="utf-8-locale"),
            pytest.param("C", {}, id="C"),
            pytest.param("C", {"PYTHONUTF8": "0"}, id="C-ascii-fs")]
 
+#: Those, and a UTF-8 locale whose stdout is in cp1252 or in ASCII: Linux's
+#: stand-in for a Windows stdout redirected in the ANSI code page, an
+#: encoding that is not the filesystem's (review S3 on PR #792).
+STDOUTS = [*LOCALES,
+           pytest.param("UTF-8", {"PYTHONIOENCODING": "cp1252"},
+                        id="cp1252-stdout"),
+           pytest.param("UTF-8", {"PYTHONIOENCODING": "ascii"},
+                        id="ascii-stdout")]
+
 #: Where a line is read from: the table's bytes, or the `--json` value,
 #: which a reader's UTF-8 terminal hands the shell as UTF-8.
 SOURCES = ["table", "json"]
@@ -263,12 +283,27 @@ def run_doctor(standard, root: Path, env: dict, *args: str) -> bytes:
     return result.stdout
 
 
-def bash(line: bytes, env: dict, cwd: Path) -> subprocess.CompletedProcess:
-    """`line` pasted into bash, from a directory that is not the root."""
+def bash(line: bytes, env: dict, cwd: Path,
+         shell: str = "bash") -> subprocess.CompletedProcess:
+    """`line` pasted into bash, or `shell`, from a directory that is not
+    the root."""
     cwd.mkdir(exist_ok=True)
-    return subprocess.run(["bash", "-c", line], cwd=str(cwd), env=env,
+    return subprocess.run([shell, "-c", line], cwd=str(cwd), env=env,
                           capture_output=True, check=False,
                           stdin=subprocess.DEVNULL)
+
+
+def next_root(standard, holder, tmp_path: Path, parent: bytes, env: dict,
+              source: str, shell: str = "bash") -> tuple[bytes, bytes]:
+    """`(the --root word as `shell` reads the members row's NEXT, the root's
+    own bytes)`, for a holder under `parent` whose member is detached with
+    a commit on it: `printf` in place of the interpreter prints each word."""
+    root = holder_under(holder, tmp_path, parent)
+    commit_in(root / "members" / FAMILY_MEMBER)
+    line = members_line(standard, root, env, source, "NEXT")
+    words = bash(b"printf '%s\\0' " + line.split(b" ", 1)[1], env,
+                 tmp_path / "away", shell).stdout.split(b"\0")
+    return words[words.index(b"--root") + 1], os.fsencode(root.resolve())
 
 
 @WINDOWS_SKIP
@@ -304,19 +339,48 @@ def test_785_a_keep_line_naming_the_path_keeps_the_commit_as_printed(
 @WINDOWS_SKIP
 @pytest.mark.parametrize("source", SOURCES)
 @pytest.mark.parametrize("parent", PARENTS)
-@pytest.mark.parametrize(("codeset", "changes"), LOCALES)
+@pytest.mark.parametrize(("codeset", "changes"), STDOUTS)
 def test_785_the_members_next_names_the_real_root(standard, holder, tmp_path,
                                                   source, parent, codeset,
                                                   changes):
-    """The NEXT's `--root`, as the shell reads it, is the root's own
-    bytes: `printf` in place of the interpreter prints each word."""
-    root = holder_under(holder, tmp_path, parent)
+    """The NEXT's `--root`, as bash reads it, is the root's own bytes, and
+    with stdout in cp1252 or ASCII too: a table that printed `É` in
+    cp1252 would hand the shell 0xC9, which is not the byte this path
+    holds."""
+    word, root = next_root(standard, holder, tmp_path, parent,
+                           environ(codeset, changes), source)
+    assert word == root
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("source", SOURCES)
+@pytest.mark.parametrize(("codeset", "changes"), LOCALES[:2])
+def test_785_dash_runs_a_next_that_shows_the_name_as_itself(
+        standard, holder, tmp_path, source, codeset, changes):
+    """dash has no `$'...'`, as README says, so the lines it can run are
+    the ones that show a name as itself: a UTF-8 name, under a UTF-8 locale
+    or `C`, where Python's UTF-8 mode is on (review N1 on PR #792)."""
+    if shutil.which("dash") is None:
+        pytest.skip("no dash here")
+    word, root = next_root(standard, holder, tmp_path,
+                           "Équipe".encode("utf-8"),
+                           environ(codeset, changes), source, "dash")
+    assert word == root
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize(("codeset", "changes"), STDOUTS)
+def test_785_json_holds_a_utf_8_name_as_itself_whatever_stdout_holds(
+        standard, holder, tmp_path, codeset, changes):
+    """`--json` is written for a reader who decodes it, so its `next`
+    holds a UTF-8 name as itself whatever stdout's encoding is, and under
+    `LC_ALL=C` with Python's UTF-8 mode off, where the name is read in as
+    bytes (review S2 on PR #792)."""
+    root = holder_under(holder, tmp_path, "Équipe".encode("utf-8"))
     commit_in(root / "members" / FAMILY_MEMBER)
-    env = environ(codeset, changes)
-    line = members_line(standard, root, env, source, "NEXT")
-    words = bash(b"printf '%s\\0' " + line.split(b" ", 1)[1], env,
-                 tmp_path / "away").stdout.split(b"\0")
-    assert words[words.index(b"--root") + 1] == os.fsencode(root.resolve())
+    line = members_line(standard, root, environ(codeset, changes), "json",
+                        "NEXT")
+    assert b"--root '" + os.fsencode(root.resolve()) + b"'" in line
 
 
 @WINDOWS_SKIP
