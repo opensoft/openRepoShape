@@ -448,7 +448,8 @@ def test_a_name_head_holds_that_is_not_utf8_is_shown_replaced(
         holder, SPARE, family_module._members_on_disk(holder)) == [
         ("Members/\N{REPLACEMENT CHARACTER}", "a file",
          "in HEAD and no longer in the index",
-         "Members/\N{REPLACEMENT CHARACTER}", False, "git commit", True)]
+         "Members/\N{REPLACEMENT CHARACTER}", False, "git commit", True, "",
+         False)]
 
 
 # --- the disk (#364) ---------------------------------------------------------
