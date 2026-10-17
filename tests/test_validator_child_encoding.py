@@ -606,15 +606,28 @@ def test_the_handler_a_child_would_not_know_is_never_passed_on():
 
 #: The shipped tools that run a Python child of the standard's own, and so
 #: build its environment. `shape-doctor.py` sets UTF-8 itself (it reads the
-#: pipe as UTF-8 too); the other two use the helpers above.
+#: pipe as UTF-8 too); the other three use the helpers above. `family.py`'s
+#: `siblings` runs the holder's own `siblings.py` that way (#214, #543).
 LAUNCHERS = {
     "scripts/bump-leg.py": "captured_child_environment",
     "update-shape.py": "inherited_child_environment",
+    "scripts/family.py": "inherited_child_environment",
 }
 
 
+def runs_the_interpreter(argv0: ast.expr) -> bool:
+    """`sys.executable`, or `sys.executable or PYTHON`: the interpreter that
+    is running this process, with the name the standard prints for it
+    (`repo_shape.PYTHON`) when `sys.executable` is empty or `None`, as
+    `family.py`'s `siblings` child spells it."""
+    if isinstance(argv0, ast.BoolOp) and isinstance(argv0.op, ast.Or):
+        argv0 = argv0.values[0]
+    return ast.unparse(argv0) == "sys.executable"
+
+
 def interpreter_runs(tree: ast.AST) -> list[ast.Call]:
-    """Every `subprocess.run([sys.executable, ...])` in `tree`."""
+    """Every `subprocess.run([sys.executable, ...])` in `tree`, and every
+    `subprocess.run([sys.executable or PYTHON, ...])`."""
     found = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call)
@@ -625,7 +638,7 @@ def interpreter_runs(tree: ast.AST) -> list[ast.Call]:
             continue
         argv = node.args[0]
         if (isinstance(argv, ast.List) and argv.elts
-                and ast.unparse(argv.elts[0]) == "sys.executable"):
+                and runs_the_interpreter(argv.elts[0])):
             found.append(node)
     return found
 
