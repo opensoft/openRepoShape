@@ -16,7 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, REPO, resolve, run_script, write_plan
+from conftest import ADOPT, REPO, git, resolve, run_script, write_plan
+from test_adopt_project_is_the_source import (DERIVED_OWN_NAME, NAME_RULE,
+                                              RENAME_FIRST)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from path_classify import PathPolicy  # noqa: E402
@@ -371,39 +373,110 @@ def test_a_project_name_that_is_not_a_lowercase_id_is_refused(source_repo,
 
 #: `repo_shape.PROJECT_ID_RE`, as `adopt-bad-id` prints it.
 ID_PATTERN = "^[a-z0-9][a-z0-9-]*$"
+#: What a passed `--id` is told to do: pass another.
+PASS_AN_ID = "Remediation: pass an explicit lowercase --id."
+#: How `adopt-bad-id` names an id `plan` derived from `--project`:
+#: `_flag_named` over `FLAG_DEFAULTS`, as the tracking branch and the
+#: elector are named (#529).
+DERIVED_ID = "--id (not given, so --project lowercased)"
+#: And what it is told to do (L2-54): change `--project`, which the naming
+#: policy reads itself, so "pass an explicit lowercase --id" led to
+#: `naming-unclassified`; and to what that refusal's rule takes, for
+#: "change --project" alone led to `North-Wind`, which it refuses (rv699).
+CHANGE_PROJECT = (
+    f"Remediation: change --project to {NAME_RULE}. The id is --project "
+    "lowercased, and an explicit --id would not change --project, which "
+    "also names the assembly root and both legs.")
+#: Or, where `--project` is the name of the repository the source names,
+#: adopted in place, `_rename_first`'s words after the same rule.
+IN_PLACE = f"Remediation: {DERIVED_OWN_NAME} testorg/North_Wind {RENAME_FIRST}"
+
+
+def bad_id(result) -> list[str]:
+    """The first two lines `plan` printed on stderr, the refusal and its
+    remediation, once it exited 2."""
+    assert result.returncode == 2, result.stdout + result.stderr
+    return result.stderr.splitlines()[:2]
 
 
 def test_a_passed_id_that_is_not_a_lowercase_id_is_named_as_passed(
         source_repo, tmp_path):
     """#601: the refusal of a `--id` the person typed keeps naming that flag,
-    with the value as typed; nothing in it says the id came from elsewhere."""
+    with the value as typed, and its remedy is another `--id`; nothing in it
+    says the id came from elsewhere."""
     plan = tmp_path / "plan.yaml"
     result = write_plan(source_repo, plan, project="Northwind",
                         extra=("--id", "Foo_Bar"))
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert (f"REFUSED adopt-bad-id: --id 'Foo_Bar' must match {ID_PATTERN}"
-            in result.stderr), result.stderr
-    assert "derived" not in result.stderr, result.stderr
+    assert bad_id(result) == [
+        f"REFUSED adopt-bad-id: --id 'Foo_Bar' must match {ID_PATTERN}",
+        PASS_AN_ID], result.stderr
     assert not plan.exists()
 
 
-@pytest.mark.parametrize("project", ["North_Wind", "Wind.Mill"])
+@pytest.mark.parametrize("project", ["Northwind", "North_Wind"])
+def test_an_empty_id_is_refused_as_the_id_passed(source_repo, tmp_path,
+                                                 project):
+    """L2-53: `--id ''` was read as not passed, so a script's `--id "$ID"`
+    with `ID` unset planned `id: northwind`, exit 0, and beside `--project
+    North_Wind` was refused as an id derived from it, "(--id was not given)"
+    (rv601's P4). It is a value typed, held to the id's rule as any other
+    and refused by name, as `--tracking-branch ''` is since #479."""
+    plan = tmp_path / "plan.yaml"
+    result = write_plan(source_repo, plan, project=project,
+                        extra=("--id", ""))
+    assert bad_id(result) == [
+        f"REFUSED adopt-bad-id: --id '' must match {ID_PATTERN}",
+        PASS_AN_ID], result.stderr
+    assert not plan.exists()
+
+
+@pytest.mark.parametrize("origin, project, remediation", [
+    (None, "North_Wind", CHANGE_PROJECT),
+    (None, "Wind.Mill", CHANGE_PROJECT),
+    ("testorg/Atlas", "North_Wind", CHANGE_PROJECT),
+    ("testorg/North_Wind", "North_Wind", IN_PLACE),
+    ("testorg/North_Wind", "north_wind", IN_PLACE),
+], ids=["underscore", "dot", "another-repository", "in-place",
+        "in-place-other-case"])
 def test_an_id_derived_from_the_project_is_named_as_derived(
-        source_repo, tmp_path, project):
+        source_repo, tmp_path, origin, project, remediation):
     """#601: with no `--id`, `plan` lowercases `--project` into the id, and
-    the refusal of that id names where it came from, as `_flag_named` names
-    the tracking branch and the elector (#529), and not as a flag nobody
-    passed: the sentence used to read `--id 'north_wind' must match`."""
+    the refusal of that id names where it came from, by `_flag_named`, as
+    the tracking branch and the elector are named (#529), and not as a flag
+    nobody passed (`--id 'north_wind' must match`).
+
+    L2-54: and it says to change `--project`, not to pass an `--id`. Where
+    the source names a repository and `--project` is its name, compared
+    without case, it is adopted in place and cannot be retyped, so the
+    remedy is to rename it first. A source naming another repository is
+    told to change `--project` (`adopt-not-the-source` names its own)."""
+    if origin is not None:
+        git("remote", "add", "origin", f"https://github.com/{origin}.git",
+            cwd=source_repo)
     plan = tmp_path / "plan.yaml"
     result = write_plan(source_repo, plan, project=project)
-    derived = project.lower()
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert ("REFUSED adopt-bad-id: the id derived from --project "
-            f"{project!r} (--id was not given) is {derived!r}, which must "
-            f"match {ID_PATTERN}") in result.stderr, result.stderr
-    assert f"--id {derived!r}" not in result.stderr, result.stderr
-    assert "Remediation: pass an explicit lowercase --id." in result.stderr
+    assert bad_id(result) == [
+        f"REFUSED adopt-bad-id: {DERIVED_ID} is {project.lower()!r}, which "
+        f"must match {ID_PATTERN}", remediation], result.stderr
     assert not plan.exists()
+
+
+def test_a_derived_ids_remedy_names_the_rule_naming_unclassified_does(
+        source_repo, tmp_path):
+    """rv699: "change --project" alone sent the person to `North-Wind`, which
+    `naming-unclassified` then refused. The remedy names the rule that
+    refusal gives for `--project`, in its own words, and the next refusal
+    of the same `--project` says the same rule."""
+    derived = bad_id(write_plan(source_repo, tmp_path / "derived.yaml",
+                                project="North_Wind"))
+    named = bad_id(write_plan(source_repo, tmp_path / "named.yaml",
+                              project="North_Wind",
+                              extra=("--id", "north-wind")))
+    assert named == [
+        "REFUSED naming-unclassified: 'North_Wind' matches no family in the "
+        "naming policy", f"Remediation: --project takes {NAME_RULE}."], named
+    assert derived[1].startswith(
+        f"Remediation: change --project to {NAME_RULE}. "), derived
 
 
 def test_a_passed_id_equal_to_the_derived_one_is_still_named_as_passed(
@@ -414,10 +487,9 @@ def test_a_passed_id_equal_to_the_derived_one_is_still_named_as_passed(
     plan = tmp_path / "plan.yaml"
     result = write_plan(source_repo, plan, project="North_Wind",
                         extra=("--id", "north_wind"))
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert (f"REFUSED adopt-bad-id: --id 'north_wind' must match {ID_PATTERN}"
-            in result.stderr), result.stderr
-    assert "derived" not in result.stderr, result.stderr
+    assert bad_id(result) == [
+        f"REFUSED adopt-bad-id: --id 'north_wind' must match {ID_PATTERN}",
+        PASS_AN_ID], result.stderr
     assert not plan.exists()
 
 

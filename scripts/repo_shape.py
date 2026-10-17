@@ -179,7 +179,21 @@ class YamlError(Exception):
 
     Raising rather than guessing is the whole point: a validator that silently
     mis-reads its own contract file is worse than one that will not start.
+
+    `line` AND `remediation` ARE FOR `load_yaml`, WHICH NAMES A FILE (#708).
+    Where the fix is one edit of the value, the same in every file, the
+    refusal carries it (`_indicator_refusal`); every other refusal carries
+    none. Such a refusal is raised where the value is read, which knows no
+    line, so the block reader records the line it read the value on
+    (`_block_value`), and `load_yaml` names it. It stays out of the words:
+    a tool that asks the reader about ONE rendered line (`k: @a`) quotes
+    those words in a sentence of its own, where `line 1:` would be noise.
     """
+
+    def __init__(self, message: str, remediation: str = ""):
+        super().__init__(message)
+        self.line: int | None = None
+        self.remediation = remediation
 
 
 # ---------------------------------------------------------------------------
@@ -501,13 +515,24 @@ _INDICATOR_ROLES = {
 def _indicator_refusal(text: str) -> YamlError:
     """The refusal of the plain scalar `text`, which opens with an indicator
     YAML does not let open one (#392, #393): the indicator, what it does, and
-    the scalar. One `?` opens an explicit key, refused in #252's words."""
+    the scalar. One `?` opens an explicit key, refused in #252's words.
+
+    IT SAYS WHAT TO DO (#708). The likeliest hand to meet it is an adoption
+    plan's `resolution:`, which AGENTS.md asks for in words, and a reason
+    such as `` `adopt-project.py` reads it `` read as text until #392 and
+    #393. Whatever the file, the value is kept by writing it between double
+    quotes, spelled by `double_quoted`, the writer this reader takes back
+    unchanged, or by rewording it, so the refusal carries that remedy."""
     char = text[0]
+    remedy = ("Remediation: unquoted, YAML does not read this value as text, "
+              "so this reader refuses it rather than guess. Write it in "
+              f"double quotes, as {double_quoted(text)}, or reword it so that "
+              "it opens with another character, and run the command again.")
     if char == "?":
-        return YamlError(f"explicit keys are not supported: {text!r}")
+        return YamlError(f"explicit keys are not supported: {text!r}", remedy)
     shown = "a backtick" if char == "`" else f"`{char}`"
     return YamlError(f"a plain scalar cannot open with {shown}, which "
-                     f"{_INDICATOR_ROLES[char]} in YAML: {text!r}")
+                     f"{_INDICATOR_ROLES[char]} in YAML: {text!r}", remedy)
 
 
 def _scalar(raw: str) -> Any:
@@ -571,7 +596,7 @@ def _refuse_flow_indicator(text: str) -> None:
                         f"which ends it in YAML: {text!r}")
 
 
-def _refuse_entry_indicator(text: str) -> None:
+def _refuse_entry_indicator(text: str, remedy: bool = True) -> None:
     """Refuse a flow ENTRY -- an item of a flow sequence, or an entry of a
     flow mapping, whose key it opens -- that opens with an indicator (#392).
 
@@ -592,7 +617,10 @@ def _refuse_entry_indicator(text: str) -> None:
     first, after = text[:1], text[1:2]
     if (first in ":#@`%" or first in "-?" and after in (" ", "\t")
             or text == "?"):
-        raise _indicator_refusal(text)
+        refusal = _indicator_refusal(text)
+        if not remedy:
+            refusal.remediation = ""
+        raise refusal
 
 
 def _flow_value(text: str, item: bool = False) -> Any:
@@ -679,7 +707,9 @@ def _split_key_flow(text: str) -> tuple[str, str] | None:
     refuses both. `_refuse_flow_indicator` refuses them; a quoted key is
     still text.
     """
-    _refuse_entry_indicator(text)
+    # A MAPPING ENTRY opens its KEY: quoting the whole entry, as the
+    # remedy would spell it, reads as an entry without a key (#708).
+    _refuse_entry_indicator(text, remedy=False)
     kv = _split_key(text)
     if kv is not None and not text.startswith(('"', "'")):
         _refuse_flow_indicator(kv[0])
@@ -921,7 +951,7 @@ def _parse_sequence(recs: list[_Rec], i: int, indent: int) -> tuple[list[Any], i
             if not rec.dash and rec.block is None \
                     and _split_key(rec.text) is None:
                 # A plain or flow SCALAR item (`- openAvatar`, `- [a, b]`).
-                value = _flow(rec.text) if rec.text[:1] in "[{" else _scalar(rec.text)
+                value = _block_value(rec.text, rec.line)
                 i += 1
             else:
                 value, i = _parse_nodes(recs, i, rec.indent)
@@ -971,13 +1001,39 @@ def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
         i += 1
         if rest == "":
             out[key], i = _nested_value(recs, i, indent)
-        elif rest[0] in "[{":
-            out[key] = _flow(rest)
-        elif rest == "-":
-            raise _indicator_refusal(rest)
         else:
-            out[key] = _scalar(rest)
+            out[key] = _block_value(rest, rec.line)
     return out, i
+
+
+def _block_value(text: str, line: int) -> Any:
+    """A block mapping's value or a block sequence's scalar item, read on
+    `line`: a flow collection where `text` opens one, and otherwise a
+    scalar. A lone `-` is `_parse_mapping`'s refusal, made here: no
+    sequence item is one, because `_peel_dashes` takes `- -` for two
+    entries.
+
+    THE ONE PLACE A VALUE'S REFUSAL LEARNS ITS LINE (#708). `_scalar` and
+    `_flow` read text and know no line, so their refusals named the file
+    and not where in it: an adoption plan whose `resolution:` opened with
+    a backtick was `REFUSED yaml-unparsable: <plan>: a plain scalar cannot
+    open with a backtick ...`, among the hundreds of lines a plan holds.
+    The line is recorded on the refusal (`YamlError.line`), never put in
+    its words, where the refusal carries a remedy (`_indicator_refusal`'s):
+    one that tells a person to edit a value says where it is. The others
+    keep the words they had, which the naming gate's `declared-unverified`
+    reason and the root's `validate-pins.py` print, and tests quote, whole.
+    """
+    try:
+        if text[0] in "[{":
+            return _flow(text)
+        if text == "-":
+            raise _indicator_refusal(text)
+        return _scalar(text)
+    except YamlError as exc:
+        if exc.remediation:
+            exc.line = line
+        raise
 
 
 def parse_yaml(text: str) -> Any:
@@ -1016,7 +1072,12 @@ def load_yaml(path: Path) -> Any:
     try:
         return parse_yaml(text)
     except YamlError as exc:
-        raise Refusal("yaml-unparsable", f"{path}: {exc}") from exc
+        # The remedy a value's refusal carries, and the line it was read on
+        # (#708): with neither, a plan that read as text before #392 and
+        # #393 ended `check` with a refusal a person could not act on.
+        where = "" if exc.line is None else f"line {exc.line}: "
+        raise Refusal("yaml-unparsable", f"{path}: {where}{exc}",
+                      exc.remediation) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1032,6 +1093,23 @@ def git_out(args: list[str], cwd: Path, binary: bool = False,
     own. A git that cannot be STARTED (none on PATH) raises `OSError` from
     here, never a refusal: whether that is a question the caller cannot
     answer is the caller's to say (#368).
+
+    THE REFUSAL'S TWO UNTRUSTED PARTS ARE SPELLED (#610), because it is
+    printed as a line, and a root's `validate-pins.py` prints it inside the
+    `neutral-pin-source-unreadable` FINDING. `cwd` is a person's path, named
+    with `shown_path`: as it is, unless a character in it is not printable.
+    What git printed is `spelled`, as ONE line. git echoes the paths it
+    reads (`invalid gitfile format: <cwd>/.git`, `not a git repository:
+    <gitdir>`, `detected dubious ownership in repository at '<cwd>'`) and
+    passes a line break through, so a folder named with a line break, then
+    `WARNING forged-line: ...`, began a line the tool never printed; git
+    2.43 replaces an ESC, a CR or a BEL that it echoes with `?` but passes
+    a line break and a C1 control (U+0080 to U+009F) through, and another
+    git may replace nothing, so everything git printed is spelled. A line
+    break git itself printed between two lines of its message is `\\n`
+    here, because it cannot be told from a path's. Printable text, UTF-8
+    included, is unchanged. `args`, which the caller wrote, are named as
+    they were.
     """
     proc = subprocess.run(
         ["git", *args], cwd=str(cwd), capture_output=True, check=False,
@@ -1041,8 +1119,8 @@ def git_out(args: list[str], cwd: Path, binary: bool = False,
         raise Refusal(
             "git-failed",
             "`git {}` in {} exited {}: {}".format(
-                " ".join(args), cwd, proc.returncode,
-                proc.stderr.decode("utf-8", "replace").strip(),
+                " ".join(args), shown_path(cwd), proc.returncode,
+                spelled(proc.stderr.decode("utf-8", "replace").strip()),
             ),
         )
     return proc.stdout if binary else proc.stdout.decode("utf-8").strip()
@@ -1570,12 +1648,19 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     reached could not: a warning for such a link says so, where a plain
     mapping's says the tree is not reachable (#338).
 
+    A tree that is not reachable is offered the sources that would let it be
+    read: the caller's own, where its `LinkPins` has `remedies` for the link
+    (the scaffold's, #610), and otherwise the naming validator's, which
+    reads a checkout beside the project and takes `--link-source`.
+
     A holder's tree and the next link are matched by `pin_product_key`
     (#444): a tree declaring `openss` does not declare `openß`, whose pin
-    file is another.
+    file is another. A holder's `remedies` entry is found by it too, so in a
+    chain naming both, each is offered its own sources and not the other's.
     """
     available = _link_declarations(link_pins)
     unreadable = getattr(link_pins, "unreadable", None) or {}
+    remedies = getattr(link_pins, "remedies", None) or {}
     warnings: list[str] = []
     unverified: list[str] = []
     # A link whose variable another link of the chain shares is never offered
@@ -1596,15 +1681,17 @@ def _chain_link_findings(chain, link_pins) -> tuple:
             continue
         if declared is None:
             unverified.append(holder)
-            alone = pin_product_key(holder) not in shared
-            offered = (f"a sibling checkout, {pin_source_env_name(holder)}, or"
-                       if alone else "a sibling checkout or")
+            remedy = remedies.get(pin_product_key(holder))
+            if remedy is None:
+                variable = ("" if pin_product_key(holder) in shared
+                            else f", {pin_source_env_name(holder)},")
+                remedy = (f"a sibling checkout{variable} or --link-source "
+                          f"{holder}=<path> would let it be read")
             warnings.append(
                 f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
                 f"is a fact in {holder}'s own tree, which is not "
-                f"reachable here ({offered} --link-source "
-                f"{holder}=<path> would let it be read). The recorded "
-                "chain still classifies.")
+                f"reachable here ({remedy}). The recorded chain still "
+                "classifies.")
             continue
         if pin_product_key(held) not in {pin_product_key(pin)
                                          for pin in declared}:
@@ -2846,6 +2933,22 @@ def _os_reason(exc: BaseException) -> str:
     return getattr(exc, "strerror", None) or str(exc)
 
 
+def shown_path(path) -> str:
+    """A path as a line about it names it: as it is, unless a character in
+    it is not printable (`str.isprintable`), and then as Python's `repr`
+    spells it -- `\\x1b`, `\\n`, `\\r`, and `\\udcff` for a byte that is not
+    UTF-8, as `sys.argv` keeps one (#610).
+
+    THE SPELLING `pin-source-unreadable` GIVES A `--pin-source` (#339):
+    `shape_materialize.shown_source` is this function. Printed raw, an ESC
+    in a path reached the terminal, and a line break or a carriage return
+    began a line of the path's choosing. A printable path is named byte for
+    byte as it always was.
+    """
+    text = str(path)
+    return text if text.isprintable() else repr(text)
+
+
 def link_manifest_lookup(path) -> tuple[Path | None, str | None]:
     """`(manifest, None)` where `path` can answer as a link's tree, else
     `(None, why)`. `<dir>` -> `<dir>/project.yaml`; a file is taken as the
@@ -2898,32 +3001,39 @@ def link_declarations(manifest_path, key: str = CHAIN_LINK_DECLARED_BY
     iterating it as one read `openDox` as the characters `D`, `e`, `n`, `o`,
     `p`, `x` and ended the run in a `TypeError` for `5` (#338). An absent or
     empty `key`, and a blank entry in the list, declare nothing, as ever.
+
+    THE MANIFEST'S PATH IN `why` IS `shown_path`'S (#610). It is the
+    scaffold's `--pin-source`, or a `--link-source`, with `/project.yaml`
+    after it, and the scaffold prints `why` in its `declared-unverified`
+    WARNING: a `--pin-source` holding an ESC put a raw `\\x1b[31m` on
+    stderr. A printable path is the bytes it always was.
     """
     path, why = link_manifest_lookup(manifest_path)
     if path is None:
         return None, why
+    named = shown_path(path)
     try:
         data = load_yaml(path)
     except Refusal as exc:
         cause = exc.__cause__
         if isinstance(cause, OSError):
-            return None, f"{path}: {_os_reason(cause)}"
-        return None, exc.detail
+            return None, f"{named}: {_os_reason(cause)}"
+        return None, exc.detail.replace(str(path), named)
     except (YamlError, OSError, UnicodeDecodeError) as exc:
-        return None, f"{path}: {exc}"
+        return None, f"{named}: {exc}"
     if not isinstance(data, dict):
-        return None, f"{path}: not a mapping"
+        return None, f"{named}: not a mapping"
     declared = data.get(key)
     if declared is None:
         return set(), None
     if not isinstance(declared, list):
-        return None, f"{path}: {key} is not a list"
+        return None, f"{named}: {key} is not a list"
     pins: set[str] = set()
     for pin in declared:
         if pin is None or pin == "":
             continue
         if not isinstance(pin, str):
-            return None, f"{path}: {key} holds an entry that is not text"
+            return None, f"{named}: {key} holds an entry that is not text"
         pins.add(repo_basename(pin))
     return pins, None
 
@@ -2996,11 +3106,22 @@ class LinkPins(dict):
     it, which names the reason instead of saying the tree is "not reachable
     here". Only a caller that asks for one gets one, so every other
     reader's warning is exactly the text it always was.
+
+    `remedies`, `{pin_product_key(link): what would let its tree be read}`,
+    is the sources a caller that reads OTHER sources than the naming
+    validator's has to offer for a tree that is not reachable (#610, #444).
+    That warning offers "a sibling checkout, SHAPE_PIN_SOURCE_<LINK>, or
+    --link-source <link>=<path>", and the scaffold reads no sibling checkout
+    and has no `--link-source`, so it names its own here. A link with no
+    entry, and every link for a caller that gives none, gets the naming
+    validator's words, as ever.
     """
 
-    def __init__(self, found=(), unreadable: dict | None = None) -> None:
+    def __init__(self, found=(), unreadable: dict | None = None,
+                 remedies: dict | None = None) -> None:
         super().__init__(found)
         self.unreadable: dict[str, str] = dict(unreadable or {})
+        self.remedies: dict[str, str] = dict(remedies or {})
 
 
 def link_pins_from_trees(links, root: Path | None = None,
@@ -3008,7 +3129,8 @@ def link_pins_from_trees(links, root: Path | None = None,
                          default_source=None,
                          key: str = CHAIN_LINK_DECLARED_BY, *,
                          tried: dict | None = None,
-                         with_reasons: bool = False) -> dict[str, set]:
+                         with_reasons: bool = False,
+                         remedies: dict | None = None) -> dict[str, set]:
     """`{link: the pins ITS manifest declares}` for the links that answered.
 
     A link whose tree is not on the disk is simply ABSENT from the mapping,
@@ -3025,6 +3147,11 @@ def link_pins_from_trees(links, root: Path | None = None,
     link a source reached and could not read, so that the caller that has no
     line of its own for it (the scaffold) can have the warning say so. It is
     off for the callers that print the reason themselves, and for the rest.
+
+    `remedies` returns a `LinkPins` too, carrying them: what would let each
+    link's tree be read, in the caller's own sources, for the warning about
+    a tree that is not reachable (#610). Given without `with_reasons`, the
+    `LinkPins` remembers no reason, as the plain mapping does not.
 
     A link whose `SHAPE_PIN_SOURCE_<PRODUCT>` another of `links` names too is
     not read through it (#275): one tree would answer for two links, and a
@@ -3071,7 +3198,9 @@ def link_pins_from_trees(links, root: Path | None = None,
             unreadable[pin_product_key(name)] = why
             continue
         found[pin_product_key(name)] = pins
-    return LinkPins(found, unreadable) if with_reasons else found
+    if not (with_reasons or remedies):
+        return found
+    return LinkPins(found, unreadable if with_reasons else None, remedies)
 
 
 def find_repo_root(start: Path) -> Path:

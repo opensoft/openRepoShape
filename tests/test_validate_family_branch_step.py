@@ -9,11 +9,13 @@ the holder gate's remedies named `add` or `remove` and no branch, so each
 cost one refusal first: `member-duplicate-id`'s `remove`, a hand mount's
 `member-gitlink-unnamed` `add` (run as printed in
 `tests/test_validate_family_unnamed_mounts.py`, now from the tracking
-branch), and `member-gitlink-absent`'s `add`. Each now names `git -C
-<holder> switch -c family/<act>-<member>` first, the branch `family.py`
-suggests and the holder's docs show, POSIX-quoted as every line this gate
-prints is, and the `add` of `member-gitlink-absent` names the holder by its
-path, where `--family-root .` named the checkout the line runs from.
+branch), and `member-gitlink-absent`'s `add`. Each named `git -C <holder>
+switch -c family/<act>-<member>` first, the branch `family.py` suggests and
+the holder's docs show, POSIX-quoted as every line this gate prints is.
+Since #681 `member-gitlink-absent` names no `add`, which refuses the row
+that is there, and so no branch: it names the index and `.gitmodules`
+lines that put the gitlink back, typed in
+`tests/test_validate_family_remedies_typed.py`.
 
 THE COUNT. The report ended `<n> finding(s) in family.yaml.` and THE
 LOCKSTEP RULE whatever was found; it ends at the rule only where a member's
@@ -133,15 +135,13 @@ def test_the_duplicate_id_remedy_makes_the_branch_then_removes(family,
     assert validate(holder).returncode == 0
 
 
-# --- member-gitlink-absent: the branch, then the add, naming the holder -----
+# --- member-gitlink-absent: no add, so no branch (#681) ---------------------
 
-def test_a_missing_gitlink_remedy_makes_the_branch_and_names_the_holder(
-        on_main):
-    """The refusal's two lines: the `switch` that makes `family.py`'s
-    branch for the `add`, and the `add` from a checkout of openRepoShape,
-    `--family-root` this holder by its path rather than `.`, which names
-    the checkout the line runs from. The `switch`, run as printed, puts
-    the holder on that branch."""
+def test_a_missing_gitlink_remedy_names_no_add_and_no_branch(on_main):
+    """`family.py add` refuses a row that is there
+    (`member-already-present`), so the refusal names neither it nor the
+    branch it would need. Every line it prints is a `git` line typed in
+    the holder."""
     holder = on_main
     git("rm", "-r", "-q", "-f", "--", "members/IRRS", cwd=holder)
     git("commit", "-qm", "Drop the gitlink but keep the row", cwd=holder)
@@ -149,21 +149,9 @@ def test_a_missing_gitlink_remedy_makes_the_branch_and_names_the_holder(
     assert result.returncode == 2, result.stdout + result.stderr
     lines = result.stderr.splitlines()
     assert lines[0].startswith("REFUSED member-gitlink-absent: "), lines
-    assert lines[1] == (
-        "Remediation: from a checkout of openRepoShape, the second command "
-        "below mounts and pins it in one commit, on a branch other than the "
-        "holder's tracking branch, which it refuses, so the first makes one; "
-        "a row with no submodule is a claim about a tree that is not here. "
-        + BRANCH_LEFT)
-    switch, add = (line.strip() for line in lines[2:])
-    assert lines[2:] == ["    " + switch, "    " + add], lines
-    assert shlex.split(switch) == switch_argv(holder, "add", "IRRS")
-    assert shlex.split(add) == [PYTHON, "scripts/family.py", "add",
-                                "--family-root", str(holder), "--member",
-                                "<org>/IRRS"], add
-    git(*shlex.split(switch)[1:], cwd=holder.parent)
-    assert git("symbolic-ref", "--short", "HEAD",
-               cwd=holder).stdout.strip() == "family/add-irrs"
+    assert "switch -c" not in result.stderr, result.stderr
+    assert "scripts/family.py add" not in result.stderr, result.stderr
+    assert [shlex.split(line)[0] for line in lines[2:]] == ["git"] * 3
 
 
 # --- the count ends at the rule only where it applies -----------------------
@@ -174,13 +162,13 @@ def copy_edited(holder) -> None:
     target.write_bytes(target.read_bytes() + b"\n# edit\n")
 
 
-def gitlink_moved(holder) -> None:
-    """IRRS's gitlink moved alone, staged at an EMPTY commit past its pin,
-    so the pin's digest still recomputes: a lone
+def gitlink_moved(holder, member: str = "IRRS") -> None:
+    """`member`'s gitlink (IRRS's) moved alone, staged at an EMPTY commit
+    past its pin, so the pin's digest still recomputes: a lone
     `member-gitlink-mismatch`."""
     git("commit", "-q", "--allow-empty", "-m", "The member moved alone",
-        cwd=holder / "members" / "IRRS")
-    git("add", "--", "members/IRRS", cwd=holder)
+        cwd=holder / "members" / member)
+    git("add", "--", f"members/{member}", cwd=holder)
 
 
 def digest_written_wrong(holder) -> None:
@@ -222,3 +210,138 @@ def test_the_count_ends_at_the_rule_only_where_it_applies(family, on_main,
     else:
         assert count_line(result) == "1 finding(s) in family.yaml."
         assert "LOCKSTEP RULE" not in result.stdout + result.stderr
+
+
+# --- THE LOCKSTEP RULE's `bump`: the holder, and the branch first (#610) ----
+
+def rule_commands(text: str) -> tuple[str, str]:
+    """`(bump, switch)`: the two commands THE LOCKSTEP RULE in `text` names,
+    in the order it names them."""
+    rule = text[text.index(RULE):]
+    bump, switch = [command for command in re.findall(r"`([^`]*)`", rule)
+                    if command.startswith((PYTHON, "git -C"))]
+    return bump, switch
+
+
+def test_the_rule_s_bump_runs_as_printed_from_the_tracking_branch(on_main):
+    """L2-39. The rule named `scripts/family.py bump --member <Project> --to
+    <commit>`: no `--family-root`, which `bump` requires, and no branch,
+    though a real `bump` refuses the holder's tracking branch (#487). It
+    names this holder by its path and the `switch` that makes `family.py`'s
+    branch; run as printed, from a checkout of openRepoShape, with the
+    pinned commit as `--to`, the `switch` and then the `bump` put the
+    gitlink back in step, where the `bump` alone is refused."""
+    holder = on_main
+    pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
+    gitlink_moved(holder)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Move the gitlink and not the pin", cwd=holder)
+    found = validate(holder)
+    assert found.returncode == 1, found.stdout + found.stderr
+    finding = found.stderr.split("FINDING member-gitlink-mismatch: ", 1)[1]
+    bump, switch = rule_commands(finding.split("\n\n", 1)[0])
+    assert shlex.split(switch) == switch_argv(holder, "bump", "irrs")
+    assert shlex.split(bump) == [PYTHON, "scripts/family.py", "bump",
+                                 "--family-root", str(holder), "--member",
+                                 "IRRS", "--to", "<commit>"], bump
+    argv = shlex.split(bump.replace("<commit>", pinned))
+    refused = run_script(REPO / argv[1], *argv[2:], cwd=REPO)
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert "REFUSED family-on-tracking-branch: " in refused.stderr
+    git(*shlex.split(switch)[1:], cwd=holder.parent)
+    bumped = run_script(REPO / argv[1], *argv[2:], cwd=REPO)
+    assert bumped.returncode == 0, bumped.stdout + bumped.stderr
+    assert git("symbolic-ref", "--short", "HEAD",
+               cwd=holder).stdout.strip() == "family/bump-irrs"
+    assert validate(holder).returncode == 0
+
+
+def test_a_digest_s_rule_names_its_own_member(on_main):
+    """`member-digest-mismatch` ends at the rule too, naming its member,
+    IRSS, in the `--member` and in the branch."""
+    holder = on_main
+    digest_written_wrong(holder)
+    found = validate(holder)
+    assert found.returncode == 1, found.stdout + found.stderr
+    finding = found.stderr.split("FINDING member-digest-mismatch: ", 1)[1]
+    bump, switch = rule_commands(finding.split("\n\n", 1)[0])
+    assert shlex.split(switch) == switch_argv(holder, "bump", "irss")
+    assert shlex.split(bump)[3:7] == ["--family-root", str(holder),
+                                      "--member", "IRSS"], bump
+
+
+def test_the_count_s_rule_names_the_holder_and_no_member(on_main):
+    """The closing count may follow more than one member out of step, so its
+    rule names this holder and `<Project>`, in the `--member` and in the
+    branch alike, as `_switch_line` says a member it cannot name."""
+    holder = on_main
+    gitlink_moved(holder)
+    found = validate(holder)
+    assert found.returncode == 1, found.stdout + found.stderr
+    line = count_line(found)
+    assert line.startswith("1 finding(s) in family.yaml. " + RULE), line
+    bump, switch = rule_commands(line)
+    assert bump == (f"{PYTHON} scripts/family.py bump --family-root "
+                    f"{shlex.quote(str(holder))} --member <Project> --to "
+                    "<commit>")
+    assert switch == (f"git -C {shlex.quote(str(holder))} switch -c "
+                      "family/bump-<Project>")
+
+
+@pytest.mark.parametrize("drop_id, word", [
+    pytest.param(False, "irrs", id="the-rows-id"),
+    pytest.param(True, "irrs2", id="no-id-so-the-project"),
+])
+def test_the_rule_names_the_rows_id_through_the_gate(family, on_main,
+                                                      drop_id, word):
+    """rv610's F3 on #634 (mutant A1: `_lockstep(root, project, project)`
+    at the call site). `test_the_rule_quotes_what_it_names` hands `_lockstep`
+    an id; this goes through the gate, which reads it from the row. A
+    member's `id:` is its own `project.yaml` id, which `--id` can make
+    anything, and every other row here says the project lowercased, so a
+    call site that passed the PROJECT passed the right word by accident.
+
+    `mount_twice`'s second row is the project `IRRS2` recording the id
+    `irrs`, and its gitlink is moved alone: the rule's `--member` is the
+    project, and its branch is the row's `id:` -- `family/bump-irrs`, not
+    `family/bump-irrs2`. Where the row records no `id:`, the project is the
+    word."""
+    holder = on_main
+    mount_twice(holder, family["remotes"])
+    if drop_id:
+        # IRRS2's row is the last in the file, so its `id:` is the last.
+        line = "    id: irrs\n"
+        head, dropped, tail = (holder / "family.yaml").read_text(
+            encoding="utf-8").rpartition(line)
+        assert dropped == line and line not in tail
+        (holder / "family.yaml").write_bytes((head + tail).encode("utf-8"))
+    gitlink_moved(holder, "IRRS2")
+    found = validate(holder)
+    assert found.returncode == 1, found.stdout + found.stderr
+    finding = found.stderr.split("FINDING member-gitlink-mismatch: ", 1)[1]
+    assert finding.startswith("members/IRRS2: "), finding
+    bump, switch = rule_commands(finding.split("\n\n", 1)[0])
+    assert shlex.split(switch) == switch_argv(holder, "bump", word)
+    assert shlex.split(bump)[3:7] == ["--family-root", str(holder),
+                                      "--member", "IRRS2"], bump
+
+
+@pytest.mark.parametrize("project,member_id,word", [
+    ("IRRS", "irrs", "irrs"), ("IRRS", None, "irrs"),
+    ("My Proj", "my-proj", "my-proj"), ("O'Brien", None, "member"),
+])
+def test_the_rule_quotes_what_it_names(monkeypatch, tmp_path, project,
+                                       member_id, word):
+    """In this process: a holder whose path a shell would split, and a
+    member whose name it would, are each one word; the branch is the row's
+    `id:`, or the project where the row records none, said as `member`
+    where no branch word spells it."""
+    holder = tmp_path / "it's a holder"
+    text = gate_module(monkeypatch)._lockstep(holder, project, member_id)
+    assert text.startswith(RULE)
+    bump, switch = rule_commands(text)
+    assert shlex.split(bump) == [PYTHON, "scripts/family.py", "bump",
+                                 "--family-root", str(holder), "--member",
+                                 project, "--to", "<commit>"], bump
+    assert shlex.split(switch) == ["git", "-C", str(holder), "switch", "-c",
+                                   f"family/bump-{word}"], switch
