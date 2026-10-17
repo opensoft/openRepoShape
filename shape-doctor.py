@@ -2757,6 +2757,18 @@ def with_merged_away_rows(ctx: Context, row: Row, output: str) -> Row:
     (`linked_record_row`), so both of this row's sentences were false. The
     same `linked_record` question that row asks keeps this one the gate
     until the link is replaced; the doctor run again then names `check`.
+
+    AND ONLY WHERE THAT `apply` IS NOT REFUSED (#676). A pinned COPY kept
+    as a link is no record `linked_record` asks about: `check` reads that
+    root, calls the copy `copy-is-link` and says REFUSAL AHEAD over it, and
+    the `apply` it prints is refused, `update-rewrite-symlink`, writing
+    nothing. So "the `apply` it prints drops its pin row" was false there,
+    and of a `both`, an `upstream-removed`, an `unmapped` row or a file
+    `apply` would rewrite that has a hard link. `refusals_ahead` asks
+    `check`'s own two questions; where it names anything, the row keeps the
+    gate, says what `check` reports, merged-away and REFUSAL AHEAD both,
+    and leaves the sentence about `apply` out. Where the doctor cannot ask
+    them -- the `shape currency` row says why -- it keeps the gate too.
     """
     if row.status != FINDING or row.detail.get("exit") != 1 \
             or row.detail.get("crashed"):
@@ -2767,14 +2779,27 @@ def with_merged_away_rows(ctx: Context, row: Row, output: str) -> Row:
     us = ctx.update_shape()
     if us.linked_record(ctx.root, us.root_kind(ctx.root)) is not None:
         return row
+    ahead = refusals_ahead(ctx, us)
+    if ahead is None:
+        return row
     one = len(merged) == 1
     copies = ", ".join(f"{path} (merged into {original})"
                        for path, original in merged.items())
-    reason = (f"{row.reason}. {copies} "
-              + ("is a collision copy" if one else "are collision copies")
-              + " the root merged away, so `update-shape.py check` reports "
-              + ("it" if one else "them") + " `merged-away`, and the "
-              "`apply` it prints drops "
+    said = (f"{row.reason}. {copies} "
+            + ("is a collision copy" if one else "are collision copies")
+            + " the root merged away, so `update-shape.py check` reports "
+            + ("it" if one else "them") + " `merged-away`")
+    if ahead:
+        refused = ", ".join(f"{path} ({why})" for path, why in ahead.items())
+        return Row(row.id, row.label, row.status,
+                   f"{said}, but it also says REFUSAL AHEAD over {refused}, "
+                   "and the `apply` it prints refuses while "
+                   + ("that is" if len(ahead) == 1 else "those are")
+                   + " unresolved, so it drops no pin row yet",
+                   row.next_command,
+                   {**row.detail, "merged_away": merged,
+                    "refusal_ahead": ahead}, why=row.why)
+    reason = (f"{said}, and the `apply` it prints drops "
               + ("its pin row" if one else "their pin rows")
               + " in the re-pin commit: the step the `shape currency` row "
               "names too")
@@ -2783,6 +2808,46 @@ def with_merged_away_rows(ctx: Context, row: Row, output: str) -> Row:
                f"--root {quote_arg(ctx.root)} --upstream "
                f"{quote_arg(ctx.shape)}",
                {**row.detail, "merged_away": merged})
+
+
+def refusals_ahead(ctx: Context, us) -> dict | None:
+    """`{path: why}` for what `update-shape.py check` names under `REFUSAL
+    AHEAD` for this root, or None where the doctor cannot ask (#676).
+
+    `check`'S OWN TWO QUESTIONS, over the rows its own `prepare` classifies:
+    each row that is a conflict (`Row.is_conflict`: `both`,
+    `upstream-removed`, `unmapped`, `copy-missing`, `copy-is-link`, never
+    `merged-away`), by its state, and each file `apply` would rewrite in
+    place that has another name (`hard_linked_rewrites`, #422), as
+    `hard-link`. `apply` refuses while any of them is there, so its re-pin
+    commit drops no merged-away row.
+
+    NONE WHERE THE QUESTION CANNOT BE ASKED: the pin does not read, the
+    checkout of the standard is a partial clone short of what the
+    comparison reads, where `prepare` would fetch (`partial_clone_row`,
+    #683), or `prepare` refuses. The `shape currency` row says which, and
+    the `pins` row keeps its gate.
+    """
+    try:
+        pin, _rows = us.read_pin(ctx.root)
+    except Refusal:
+        return None
+    if partial_clone_row(ctx, str(pin["commit"]).lower()) is not None:
+        return None
+    args = argparse.Namespace(root=str(ctx.root), upstream=str(ctx.shape),
+                              at=None)
+    try:
+        root, _pin, rows, _added, upstream, _pinned, _target, kind = \
+            us.prepare(args)
+    except Refusal:
+        return None
+    try:
+        ahead = {row.path: row.state for row in rows if row.is_conflict}
+        for path, _names in us.hard_linked_rewrites(root, rows, kind):
+            ahead.setdefault(path, "hard-link")
+    finally:
+        upstream.close()
+    return ahead
 
 
 def check_family(ctx: Context) -> Row:
@@ -4622,17 +4687,19 @@ def check_shape_currency(ctx: Context) -> Row:
         added = [add for add in additions if not add.present]
         reported = list(rows) + added
         counts = us.counted(reported)
-        # A MERGED-AWAY ROW IS COUNTED WHERE THERE IS ONE (#502, review of PR
-        # #512). The five states every root has a word for are always
-        # printed; without `merged-away` beside them the counts fell one
-        # short of the rows for each such row, and the path `named` below
-        # stood under no count, in the reason of the very row whose `apply`
-        # drops it. Zero is left unsaid, so a root with no such row reads
-        # as it always did.
-        states = (us.UNCHANGED, us.UPSTREAM_CHANGED, us.LOCALLY_MODIFIED,
+        # EVERY STATE `check` COUNTS IS COUNTED WHERE THERE IS ONE (#502,
+        # review of PR #512; #676). The five states every root has a word
+        # for are always printed; any other state of `update-shape.py`'s
+        # `ORDER` follows them, in that order, where its count is not zero.
+        # Without them the counts fell one short of the rows for each such
+        # row -- `merged-away` until #502, `copy-is-link`, `copy-missing`,
+        # `upstream-removed`, `unmapped` and `already-at-target` until #676
+        # -- and the path `named` below stood under no count. Zero is left
+        # unsaid, so a root with none of them reads as it always did.
+        always = (us.UNCHANGED, us.UPSTREAM_CHANGED, us.LOCALLY_MODIFIED,
                   us.BOTH, us.UPSTREAM_ADDED)
-        if counts.get(us.MERGED_AWAY):
-            states += (us.MERGED_AWAY,)
+        states = always + tuple(state for state in us.ORDER
+                                if state not in always and counts.get(state))
         summary = " / ".join(f"{counts.get(state, 0)} {state}"
                              for state in states)
         by_state: dict[str, list[str]] = {}
