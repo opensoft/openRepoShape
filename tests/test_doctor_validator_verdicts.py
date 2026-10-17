@@ -4,7 +4,7 @@ a printed `FINDING` or `REFUSED`, anything else non-zero is a crash, and a
 pass that printed `WARNING` or `  note ` lines is a `note` (#410, #448, with
 #447 and #460's pins-note line riding along).
 
-FIVE WAYS A ROW STILL SAID MORE, OR LESS, THAN THE CHILD DID.
+SIX WAYS A ROW STILL SAID MORE, OR LESS, THAN THE CHILD DID.
 
 - #447: `crashed()` needed a `Traceback` line, so a validator killed by a
   signal (a negative exit), ended by `os._exit(1)` with nothing printed,
@@ -19,6 +19,10 @@ FIVE WAYS A ROW STILL SAID MORE, OR LESS, THAN THE CHILD DID.
   made the naming script refuse, exit 2, before it read the project, and a
   `REFUSED` is a verdict to `crashed()`, so a compliant project read `INVALID
   (naming)`, exit 1, "the naming policy is not satisfied (exit 2)".
+- #707: the same file, in a directory that is NOT a shape root, where `the way
+  in` rows called `NamingPolicy.load` with no handler: a tab line was
+  `FINDING the way in refused: ...` about the directory, and a pattern that
+  does not compile ended the doctor in a traceback, exit 1.
 - #448: `validate-manifest.py`'s `WARNING naming-referent-chain` on exit 0
   appeared nowhere in the report, and a red manifest row quoted that WARNING
   as its reason when an earlier leg printed it before a later leg's FINDING.
@@ -48,7 +52,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import WINDOWS_SKIP, clone_just_pushed, run_script
+from conftest import WINDOWS_SKIP, clone_just_pushed, git, run_script
 #: The layer stand-in a chain descendant pins, from the module that scaffolds
 #: one: a second way of building it would test a different one.
 from test_scaffold_pin_and_reuse import layer_repo
@@ -307,16 +311,38 @@ def test_a_crashed_naming_script_leaves_a_directory_not_a_shape_root(
 
 # --- #678: a checkout whose own naming policy does not load -----------------
 
-def naming_policy_refuses(standard: Path, tmp_path: Path) -> Path:
-    """A COPY of the standard, history and all, whose own naming policy
-    gained one tab-indented line: the file `NamingPolicy.load` refuses with
-    `yaml-unparsable`, and the `validate-repository-naming.py` that reads it
-    first exits 2 before it reads a name. Bytes, not `write_text`: the line
-    is added to what the file holds, line endings and all."""
-    here = standard_under(standard, tmp_path, "naming-policy")
+#: How this checkout's own naming policy is made unusable, besides the tab
+#: line: `(a pattern in the file's bytes, what replaces it)`. `pattern` is one
+#: the loader does not REFUSE but raises on; `classify` loads, and raises
+#: `KeyError` the first time a name satisfies the role that lost its `id:`.
+POLICY_EDITS = {
+    "pattern": (rb'pattern: "\^open\(\?:', b'pattern: "(^open(?:'),
+    "classify": (rb"- id: assembly(?=\r?\n)", b"- idx: assembly"),
+}
+
+
+def naming_policy_unusable(standard: Path, tmp_path: Path, how: str) -> Path:
+    """A COPY of the standard, history and all, whose own naming policy is
+    unusable as `how` says: `tab`, one tab-indented line, which
+    `NamingPolicy.load` refuses with `yaml-unparsable` and which makes the
+    `validate-repository-naming.py` that reads it first exit 2 before it
+    reads a name; or an edit of `POLICY_EDITS`. Bytes, not `write_text`: the
+    edit is made to what the file holds, line endings and all."""
+    here = standard_under(standard, tmp_path, f"naming-policy-{how}")
     policy = here / NAMING_POLICY
-    policy.write_bytes(policy.read_bytes() + b"\n\ttab: indented\n")
+    body = policy.read_bytes()
+    if how == "tab":
+        body += b"\n\ttab: indented\n"
+    else:
+        body, count = re.subn(*POLICY_EDITS[how], body)
+        assert count == 1, (how, count)
+    policy.write_bytes(body)
     return here
+
+
+def naming_policy_refuses(standard: Path, tmp_path: Path) -> Path:
+    """The tab line: the case #678 was filed for."""
+    return naming_policy_unusable(standard, tmp_path, "tab")
 
 
 def test_an_unloadable_naming_policy_cannot_answer_for_a_compliant_project(
@@ -508,16 +534,10 @@ def test_a_naming_policy_that_raises_is_the_scripts_crash_not_the_doctors(
     doctor asks the loader first and in process, so it must not die of it
     there: the exception is the script's to raise, and the row is the crash
     row, not a traceback with the exit code of a finding. A directory that is
-    NOT a root is not asserted: `way_in_project` loads the same policy
-    unguarded and ends the doctor in that traceback (#707)."""
-    here = standard_under(standard, tmp_path, "naming-policy-raises")
-    policy = here / NAMING_POLICY
-    body = policy.read_bytes()
-    assert body.count(b'pattern: "^open(?:') == 1, body
-    policy.write_bytes(body.replace(b'pattern: "^open(?:',
-                                    b'pattern: "(^open(?:'))
+    NOT a root is #707's, below."""
+    here = naming_policy_unusable(standard, tmp_path, "pattern")
     with pytest.raises(re.error):
-        doctor_module(here).NamingPolicy.load(policy)
+        doctor_module(here).NamingPolicy.load(here / NAMING_POLICY)
     result = doctor(here, project.resolve(), "--json")
     row = rows_of(result)["naming"]
     assert result.returncode == 3, result.stdout + result.stderr
@@ -526,6 +546,84 @@ def test_a_naming_policy_that_raises_is_the_scripts_crash_not_the_doctors(
     assert row["detail"]["environment"] is True, row
     assert f"the standard's {NAMING_SCRIPT} {CRASHED} (exit 1): " in \
         row["reason"], row
+
+
+# --- #707: the same file, asked by `the way in` rows ------------------------
+
+#: The tail of a `the way in` row for a checkout whose own policy does not
+#: load: this directory's, and about what the row would have offered.
+NOT_THIS_DIRECTORYS_WAY_IN = ("that file is this checkout's, not this "
+                              "directory's, so nothing here is a statement "
+                              "about how this directory becomes a shape root")
+
+
+def a_directory_that_is_not_a_root(tmp_path: Path, repository: bool) -> Path:
+    """`<tmp>/elsewhere/Atlas`: a plain directory, or a git repository with
+    no commit and no `origin`, which is also told of `the other way in`."""
+    away = tmp_path / "elsewhere" / "Atlas"
+    away.mkdir(parents=True)
+    if repository:
+        git("init", "-q", "-b", "main", ".", cwd=away)
+    return away
+
+
+@pytest.mark.parametrize("repository", [False, True],
+                         ids=["directory", "repository"])
+@pytest.mark.parametrize("how, code, said", [
+    ("tab", "yaml-unparsable", "tab used for indentation"),
+    ("pattern", "policy-raised", "missing ), unterminated subpattern"),
+    ("classify", "policy-raised", "KeyError: 'id'"),
+])
+def test_an_unusable_naming_policy_is_an_environment_row_in_the_way_in_rows(
+        standard, tmp_path, how, code, said, repository):
+    """The issue's three tests, for the three ways a policy is unusable: a
+    directory that is not a root stays NOT A SHAPE ROOT, exit 2, with no
+    traceback, and each `the way in` row names this checkout's file as the
+    checkout's.
+
+    The row is `n/a` with `detail.environment` and no NEXT, for a policy that
+    does not load and for one that raises, in a plain directory (one row) and
+    in a repository (`the other way in` too), and it quotes the fault whole.
+    `naming` is an environment row there as well: the file is one fact, and
+    every row that reads it says the same.
+    """
+    here = naming_policy_unusable(standard, tmp_path, how)
+    away = a_directory_that_is_not_a_root(tmp_path, repository)
+    result = doctor(here, away, "--json")
+    rows = rows_of(result)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert payload_of(result)["verdict"] == "NOT A SHAPE ROOT", result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert rows["naming"]["detail"]["environment"] is True, rows["naming"]
+    assert ("way-in-scaffold" in rows) is repository, sorted(rows)
+    file = str(here.resolve() / NAMING_POLICY)
+    for row in (rows[key] for key in ("way-in", "way-in-scaffold")
+                if key in rows):
+        assert row["status"] == "n/a", row
+        assert row["next"] is None, row
+        assert row["detail"]["environment"] is True, row
+        assert row["detail"]["suggested_project"] is None, row
+        assert row["detail"]["refusal"]["code"] == code, row
+        assert row["reason"].startswith(
+            f"the standard's {NAMING_POLICY} does not load: REFUSED {code}: "
+            f"{file}: "), row
+        assert said in row["reason"], row
+        assert row["reason"].endswith(NOT_THIS_DIRECTORYS_WAY_IN), row
+        assert "this directory" in row["why"], row
+
+
+def test_an_unusable_naming_policy_ends_no_text_report_in_a_traceback(
+        standard, tmp_path):
+    """The traceback was in the TEXT run too, `re.error` and exit 1: the
+    report prints, ends in NOT A SHAPE ROOT, and prints no
+    `shape-doctor-cannot-answer` under it, which would contradict the
+    verdict above it."""
+    here = naming_policy_unusable(standard, tmp_path, "pattern")
+    text = doctor(here, a_directory_that_is_not_a_root(tmp_path, True))
+    assert text.returncode == 2, text.stdout + text.stderr
+    assert "NOT A SHAPE ROOT   (exit 2)" in text.stdout, text.stdout
+    assert "Traceback" not in text.stderr, text.stderr
+    assert "shape-doctor-cannot-answer" not in text.stderr, text.stderr
 
 
 @WINDOWS_SKIP
