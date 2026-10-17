@@ -226,10 +226,13 @@ def submodule_update_through_git(root: Path, remotes: Path,
 # the remote, each run `git maintenance run --auto` as they finish. Since git
 # 2.47 that run DETACHES, holding `objects/maintenance.lock`, and the command
 # returns while it goes on; since 2.54 its default strategy (`geometric`)
-# repacks a repository of a few hundred loose objects and deletes the ones
+# repacks once its estimate, taken from `objects/17` alone, is above 256
+# loose objects, so two loose objects there are enough, and deletes the ones
 # it packed. A copy taken in that moment fails `[Errno 2] No such file or
-# directory` on one of them: `holder` and `the_standard_moved`, on the
-# Linux runner (#645).
+# directory` on one of them (`holder` and `the_standard_moved`, on the
+# Linux runner, #645), and a listing of `.git/objects` taken before and
+# after it differs: `test_family_bump_remove_rollback.py`'s `objects
+# changed`, 37 loose objects packed into two.
 #
 # So the session turns it off, as every git command in this estate is told
 # to: `gc.auto=0`, for a git that runs `git gc --auto` itself (2.43's
@@ -262,7 +265,9 @@ def submodule_update_through_git(root: Path, remotes: Path,
 # `GIT_CONFIG_GLOBAL` of a test's own, or an environment built from nothing
 # -- and a push made under a global file of a test's own. No repository the
 # suite copies is made, or pushed to, that way today.
-# `tests/test_no_auto_maintenance.py` holds both scopes to account.
+# `tests/test_no_auto_maintenance.py` holds both scopes to account, and fails a
+# test file that sets `GIT_CONFIG_COUNT` to a number of its own instead of
+# appending (#758).
 
 #: The two settings, in the order they are appended and written.
 NO_AUTO_MAINTENANCE = (("gc.auto", "0"), ("maintenance.auto", "false"))

@@ -48,7 +48,7 @@ from test_clone_url_bytes import (  # noqa: F401 - only_the_branch_question
     assert_nothing_was_made, child, directory_named, family_argv,
     family_refusal, only_the_branch_question, scaffold_argv, scaffold_refusal)
 from test_family import (  # noqa: F401 - fixtures
-    ALLOW_FILE_PROTOCOL, FAMILY, SPARE, family, family_module)
+    FAMILY, SPARE, allow_file_protocol, family, family_module)
 from test_family_add_refusals import (  # noqa: F401 - fixtures
     assert_unchanged, holder, offline, snapshot)
 from test_scaffold_free_text_values import (  # noqa: F401 - fixtures
@@ -346,6 +346,6 @@ def test_the_holders_readme_prints_a_clone_line_that_pastes_whole(
     assert_one_command(lines, url, quoted)
     paste = tmp_path / "paste"
     paste.mkdir()
-    done = pasted(lines, paste, ALLOW_FILE_PROTOCOL)
+    done = pasted(lines, paste, allow_file_protocol())
     assert done.returncode == 0, done.stderr
     assert (paste / HOLDER / "family.yaml").is_file()
