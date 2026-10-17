@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -1101,12 +1102,22 @@ def test_the_agent_files_why_of_a_root_that_keeps_repo_shape_names_its_gate(
 
 
 def without_its_own_gate(case: str, project: Path, holder: dict,
-                         tmp_path: Path) -> Path:
-    """The root with no gate of its own to name, and `AGENTS-shape.md` gone."""
+                         tmp_path: Path, pin_row: bool = True) -> Path:
+    """The root with no gate of its own to name, and `AGENTS-shape.md` gone.
+    The shape pin keeps its `files:` row for the gate, as every scaffolded
+    root's does, unless `pin_row` is False."""
     root = own_root("family" if case == "family" else "manifest", project,
                     holder, tmp_path)
-    git("rm", "-q", "--", TEMPLATE_FALLBACK[case]["own"], cwd=root)
+    own = TEMPLATE_FALLBACK[case]["own"]
+    git("rm", "-q", "--", own, cwd=root)
     (root / AGENT_COPY).unlink()
+    if not pin_row:
+        pin = root / "contracts" / "shape-pin.yaml"
+        row = re.compile(rb'(?m)^  - path: ' + re.escape(own.encode())
+                         + rb'\n    sha256: "[0-9a-f]{64}"\n')
+        edited, removed = row.subn(b"", pin.read_bytes())
+        assert removed == 1, own
+        pin.write_bytes(edited)
     return root
 
 
@@ -1148,6 +1159,43 @@ def test_the_template_line_the_agent_files_why_names_reports_the_missing_gate(
     assert gate.returncode == 1, whole
     assert "shape-copy-missing" in whole, whole
     assert TEMPLATE_FALLBACK[case]["own"] in whole, whole
+
+
+@pytest.mark.parametrize("case", AGENT_GATES)
+def test_the_agent_files_why_says_nothing_of_a_gate_the_pin_has_no_row_for(
+        standard, project, holder, tmp_path, case):
+    """The root has no gate of its own, and the shape pin has no `files:` row
+    for it either: the standard's copy has nothing to report missing, so the
+    WHY names the line and carries no sentence about an exit 1 for the gate."""
+    root = without_its_own_gate(case, project, holder, tmp_path, pin_row=False)
+    shape = standard.resolve()
+    line = doctor_module(standard).validator_command(
+        shape, shape / TEMPLATE_FALLBACK[case]["template"], False,
+        ["--root", root])
+    assert agent_files_row(standard, root)["why"] == (
+        f"{AGENT_FILES_WHY}, then `{line}` to confirm the digest")
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs sh")
+@pytest.mark.parametrize("case", AGENT_GATES)
+def test_the_template_line_for_a_gate_the_pin_has_no_row_for_passes(
+        standard, project, holder, tmp_path, case):
+    """Pasted after the NEXT, from `/`, the standard's line confirms the
+    restored copy and exits 0: nothing is pinned and absent, so the WHY was
+    right to say nothing of an exit 1."""
+    root = without_its_own_gate(case, project, holder, tmp_path, pin_row=False)
+    row = agent_files_row(standard, root)
+    restored = pasted_from_elsewhere(row["next"], tmp_path)
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    shape = standard.resolve()
+    line = doctor_module(standard).validator_command(
+        shape, shape / TEMPLATE_FALLBACK[case]["template"], False,
+        ["--root", root])
+    gate = pasted_from_elsewhere(line, tmp_path)
+    whole = gate.stdout + gate.stderr
+    assert gate.returncode == 0, whole
+    assert "shape-copy-missing" not in whole, whole
 
 
 @pytest.mark.parametrize("case", AGENT_GATES)
