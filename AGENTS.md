@@ -161,7 +161,7 @@ install command). Seven steps, in order, and step 4 is the one you must not skip
 
 `execute` also records the plan's answers in the split's `project.yaml`, under
 `submodules:` (per submodule a leg keeps) and `answered_paths:` (per other path
-the policy asked about). They confer nothing, and no command rewrites them.
+the policy asked about or put elsewhere). They confer nothing; no command rewrites them.
 
 ### Adopting a repository that has NO code yet (or no spec)
 

@@ -664,7 +664,7 @@ refuse_bad_record() {
 # the doctor compares a project's copies against a standard, so it must have
 # a standard, and a single file in ~/.local/bin is not one.
 run_doctor() {
-	local py selfdir="" shape="" cloned=0 kept
+	local py selfdir="" shape="" cloned=0 kept caught=""
 	py="$(find_python)" || die "no Python 3.9 or newer on this machine (tried python3, python). \`--doctor\` is a Python program: https://www.python.org/downloads/"
 	if [ -f "$SELF" ]; then
 		selfdir="$(cd -- "$(dirname -- "$SELF")" && pwd)"
@@ -693,7 +693,27 @@ run_doctor() {
 	# resolves a relative `--root` and a relative `--placement-plan <file>`
 	# against where they typed the command, exactly as `./shape-doctor.py`
 	# would from a checkout, and never against the clone (#500).
+	#
+	# A SIGNAL TO THIS SHELL WAITS FOR THE DOCTOR (#680). INT, TERM and HUP
+	# are trapped around it, and each trap only writes down which one came:
+	# bash runs a trap for a foreground command once that command has ended,
+	# so the EXIT trap that removes the clone cannot run while the doctor is
+	# still reading it. Untrapped, a TERM or HUP sent to this shell alone
+	# (`kill <pid>`) ended it at once, and the EXIT trap removed the clone
+	# under a doctor nobody had signalled, which went on over a standard that
+	# was gone and printed a report with no line saying where it had been.
+	#
+	# IN THE FOREGROUND, never `&` and `wait` with the signal handed on, which
+	# would stop sooner: a script's background job reads /dev/null for its
+	# stdin and starts with SIGINT and SIGQUIT ignored, so a Ctrl-C would
+	# raise no KeyboardInterrupt in the doctor and would be ignored by every
+	# `git` and `gh` it runs. Here a Ctrl-C, or a terminal hanging up, reaches
+	# the doctor and what it started as it always did, and the doctor ends by
+	# it before this shell does.
 	set +e
+	trap 'caught=2' INT
+	trap 'caught=15' TERM
+	trap 'caught=1' HUP
 	"$py" "$shape/$DOCTOR" --root "${DOCTOR_PATH:-.}" \
 		${DOCTOR_ARGS[@]+"${DOCTOR_ARGS[@]}"}
 	STATUS=$?
@@ -706,11 +726,15 @@ run_doctor() {
 	# standard as this command returned, so each one, pasted, died with
 	# `can't open file`. A fix that names a file nobody has is no fix.
 	#
-	# DISARMED HERE, ONCE THE DOCTOR HAS RUN, AND NOT BEFORE. A refusal on
-	# the way here (the clone failed, the ref did not check out, the ref
-	# carries no doctor) printed no NEXT line, and a run interrupted mid-way
-	# (bash runs the EXIT trap on INT, TERM and HUP too) printed no report;
-	# both leave nothing behind, as before. Beside a checkout nothing was
+	# DISARMED HERE, ONCE THE DOCTOR HAS RUN TO ITS END, AND NOT BEFORE. A
+	# refusal on the way here (the clone failed, the ref did not check out,
+	# the ref carries no doctor) printed no NEXT line, and a doctor ENDED BY A
+	# SIGNAL, whose status bash gives as 128 + its number, printed no report:
+	# both leave nothing behind, and so does a run signalled while it was
+	# still cloning (bash runs the EXIT trap on INT, TERM and HUP too). A
+	# doctor that was NOT sent the signal this shell was sent ran to its end
+	# while the shell waited (#680), so its report is out and its clone is
+	# kept and named, as any other's is. Beside a checkout nothing was
 	# cloned, so there is nothing to keep or to name.
 	#
 	# ON STDERR UNDER `--json`, on stdout otherwise. The JSON object on
@@ -722,12 +746,12 @@ run_doctor() {
 	# line, so a report saved to a file still says what it left behind.
 	#
 	# IT SAYS "ANY NEXT COMMAND ABOVE", NEVER "BECAUSE NEXT COMMANDS NAME
-	# FILES IN IT". The clone is kept whenever the doctor RAN, and the doctor
-	# can refuse (exit 3: a missing <path>, a `--placement-plan` it cannot
-	# write) with no report and no NEXT line at all; the first wording said
-	# there were NEXT commands where there were none (#500, review of
-	# 9808aec, SHOULD-1). Whether the clone is kept does not change, only
-	# what the line claims about it.
+	# FILES IN IT". The clone is kept whenever the doctor RAN TO ITS END, and
+	# the doctor can refuse (exit 3: a missing <path>, a `--placement-plan`
+	# it cannot write) with no report and no NEXT line at all; the first
+	# wording said there were NEXT commands where there were none (#500,
+	# review of 9808aec, SHOULD-1). Whether the clone is kept does not
+	# change, only what the line claims about it.
 	#
 	# AND "THAT NAMES IT", NEVER "RUNS FROM IT" (#546). Not every NEXT needs
 	# the clone: a `pins` row's, where the project carries its own validator,
@@ -739,7 +763,7 @@ run_doctor() {
 	# IT NAMES THE DIRECTORY AND HANDS OUT NO `rm`. Every other line here
 	# that reads like a command is one to run; an agent told to run what the
 	# report names would delete the clone before the commands it holds ran.
-	if [ "$cloned" -eq 1 ]; then
+	if [ "$cloned" -eq 1 ] && [ "$STATUS" -le 128 ]; then
 		trap - EXIT
 		kept="the standard this run used is kept at $WORKDIR, for any NEXT command above that names it; it is safe to delete once you are done with them."
 		if [ "$DOCTOR_JSON" -eq 1 ]; then
@@ -747,6 +771,31 @@ run_doctor() {
 		else
 			say "$kept"
 		fi
+	fi
+	trap - INT TERM HUP
+	# AN INT COUNTS ONLY WHERE THE DOCTOR WAS ENDED BY ONE TOO (status 130),
+	# which is bash's own rule for SIGINT and what this shell did before INT
+	# was trapped: a command that ran on after a Ctrl-C took the Ctrl-C as
+	# its own business, and the shell carries on with the command's status.
+	if [ "$caught" = 2 ] && [ "$STATUS" -ne 130 ]; then
+		caught=""
+	fi
+	# THEN THIS SHELL ENDS BY THE SIGNAL IT WAS SENT (#680), as it would have
+	# with no trap: whoever ran it reads 128 + its number in `$?`, and a
+	# shell loop running it stops at a Ctrl-C. An `exit 130` would not stop
+	# that loop, because a shell takes a command that EXITED, rather than
+	# being ended by SIGINT, to have handled the Ctrl-C itself and goes on to
+	# its next turn. The clone of a doctor ended by the signal is removed
+	# here first, rather than left to the EXIT trap, so what is left does not
+	# depend on which handler `trap -` gives the signal back; the `exit` is
+	# for a shell the signal somehow did not end.
+	if [ -n "$caught" ]; then
+		if [ "$cloned" -eq 1 ] && [ "$STATUS" -gt 128 ]; then
+			rm -rf -- "$WORKDIR" || true
+		fi
+		trap - EXIT
+		kill -"$caught" "$$"
+		exit $((128 + caught))
 	fi
 	return "$STATUS"
 }

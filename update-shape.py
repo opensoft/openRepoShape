@@ -357,6 +357,8 @@ class Upstream:
         #: this machine rather than the standard.
         self.repository = SHAPE_REPOSITORY
         self._temporary = temporary
+        #: `files_at`'s answers, one listing per revision asked about.
+        self._files: dict[str, frozenset] = {}
 
     def close(self) -> None:
         if self._temporary is not None:
@@ -389,22 +391,94 @@ class Upstream:
         return out.lower()
 
     def blob(self, rev: str, path: str) -> bytes | None:
-        """The bytes of `path` at `rev`, or None when it is not there."""
-        proc = subprocess.run(["git", "show", f"{rev}:{path}"],
+        """The bytes of the file `path` at `rev`, or None when `rev` holds no
+        file there.
+
+        A READ THAT FAILS IS NOT AN ABSENCE (#683). This was one `git show`,
+        and any exit but 0 was None, which every caller reads as "the
+        standard has no such file at that commit". From a partial clone
+        (`git clone --filter`) whose remote was out of reach, the read of a
+        blob the clone left out failed, and `_row_verdict` called each copy
+        the standard had changed since the pin `both`: not a verbatim copy
+        of a blob that was never there. So where the read fails, `files_at`
+        says whether `rev` lists a file at `path`. None where it lists none
+        -- a path the tree does not have, or a directory or a gitlink there,
+        which hold no file's bytes -- and `update-upstream-unreadable` where
+        it lists one, so `check` and `apply` refuse rather than guess.
+
+        `git cat-file blob` READS IT, and not `git show`: the same `<rev>:
+        <path>` and the same bytes for every file, but a directory is not
+        read as the listing `git show` prints for one. Where the clone is a
+        partial one, git fetches a blob it lacks from the promisor remote on
+        this read, as it did on `git show`'s; `shape-doctor.py` asks first,
+        without fetching, whether any read would need one.
+        """
+        read = subprocess.run(["git", "cat-file", "blob", f"{rev}:{path}"],
                               cwd=str(self.path), capture_output=True,
                               check=False)
-        return proc.stdout if proc.returncode == 0 else None
+        if read.returncode == 0:
+            return read.stdout
+        if path.encode("utf-8", "surrogateescape") not in self.files_at(rev):
+            return None
+        raise unreadable_upstream(
+            f"{self.label} holds {path!r} at {rev[:12]}, and git could not "
+            f"read it", read)
+
+    def files_at(self, rev: str) -> frozenset:
+        """Every path `rev` lists as a file, as git's bytes: `ls-tree -r`'s
+        blob records, a symlink's included (#683). Read once per revision,
+        and only where a read has failed, to tell a path that is not there
+        from one that could not be read. A listing that fails is not an
+        empty tree: it is `update-upstream-unreadable` too."""
+        if rev not in self._files:
+            listed = subprocess.run(
+                ["git", "ls-tree", "-r", "-z", "--full-tree", rev],
+                cwd=str(self.path), capture_output=True, check=False)
+            if listed.returncode != 0:
+                raise unreadable_upstream(
+                    f"{self.label} could not list the files at {rev[:12]}",
+                    listed)
+            self._files[rev] = frozenset(
+                record.partition(b"\t")[2]
+                for record in listed.stdout.split(b"\0")
+                if record.split(b" ", 2)[1:2] == [b"blob"])
+        return self._files[rev]
 
     def tree_sha256(self, rev: str) -> str:
         return tree_digest(self.path, rev)
 
 
+#: The refusal for a read of the upstream that failed (#683).
+UPSTREAM_UNREADABLE = "update-upstream-unreadable"
+
+
+def unreadable_upstream(said: str, proc: subprocess.CompletedProcess
+                        ) -> Refusal:
+    """`update-upstream-unreadable`: `said`, then git's exit and its own
+    words, one line each run of them, so a refusal is one line to read."""
+    words = "; ".join(line.strip() for line in proc.stderr.decode(
+        "utf-8", "replace").splitlines() if line.strip())
+    return Refusal(
+        UPSTREAM_UNREADABLE,
+        f"{said} (git exit {proc.returncode}: {words or 'no message'})",
+        "Remediation: a file the comparison reads could not be read, so this "
+        "refuses rather than guess a verdict without it. Where --upstream is "
+        "a partial clone (`git clone --filter`), git fetches what a read "
+        "needs from that clone's remote, and that fetch failed: reach the "
+        "remote and run this again, or point --upstream at a full clone of "
+        "openRepoShape.")
+
+
 def open_upstream(spec: str) -> Upstream:
     """`--upstream` as a repository this tool can read.
 
-    A PATH IS USED IN PLACE AND NOTHING IS FETCHED. That is deliberate: it is
-    what lets the tests run with no network, and it is also the honest answer
-    for an organisation whose fork is the upstream. `owner/repo` is bare-cloned
+    A PATH IS USED IN PLACE AND THIS TOOL FETCHES NOTHING INTO IT. That is
+    deliberate: it is what lets the tests run with no network, and it is
+    also the honest answer for an organisation whose fork is the upstream.
+    Where the path is a partial clone (`git clone --filter`), git itself
+    fetches each object a read needs that the clone lacks from the clone's
+    promisor remote, and a read whose fetch fails refuses as
+    `update-upstream-unreadable` (#683). `owner/repo` is bare-cloned
     into a temporary directory, which is the one place this tool fetches the
     shape, and it refuses loudly rather than degrading to a guess. It is not
     the only place `apply` can touch a network (#411): the project's own
@@ -689,10 +763,12 @@ def _classify_row(root: Path, row: Row, upstream: Upstream, pinned: str,
     certain. THE PINNED BLOB IS THE EXCEPTION and is passed on as `None` when
     the standard carried no such source at the pinned commit: that is not a
     hole in the comparison but an upstream change, and the ladder reads it as
-    one. The reads are left in the order they were written in — the root's
-    bytes, then the pinned blob, then the target blob — because
-    `Upstream.blob` shells out to git and a reordering would change what a
-    failing run prints.
+    one. Only then: a read that FAILED is `Upstream.blob`'s refusal, never a
+    `None`, or a partial clone out of reach of its remote made every copy
+    the standard changed since the pin a `both` (#683). The reads are left
+    in the order they were written in — the root's bytes, then the pinned
+    blob, then the target blob — because `Upstream.blob` shells out to git
+    and a reordering would change what a failing run prints.
     """
     target_path = root / row.path
     if not target_path.is_file():
