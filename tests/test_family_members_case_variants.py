@@ -144,17 +144,23 @@ def remedy_of(*parts: str) -> str:
             + said[0].upper() + said[1:] + "; then re-run.")
 
 
-def refused_untouched(offline, root, remotes, *extra):
+def refused_untouched(offline, root, remotes, *extra, status=True):
     """`add` of the spare member, refused before anything about the member
     is printed or read, with the holder exactly as it was: the snapshot, the
     index byte for byte, no `gh` call and no throwaway clone left. Returns
-    the refusal's two lines."""
-    before, index = snapshot(root), index_bytes(root)
+    the refusal's two lines.
+
+    `status=False` is passed to `snapshot`, which then asks no `git status`,
+    for a holder where git 2.45.1 and later refuse it: a gitlink the index
+    holds that is a symbolic link on disk (`expected submodule path
+    'Members/IRRS' not to be a symbolic link`). The rest of the snapshot is
+    kept."""
+    before, index = snapshot(root, status=status), index_bytes(root)
     result = offline.add(root, SPARE, *extra, remotes=remotes)
     assert result.returncode == 2, result.stdout + result.stderr
     assert result.stdout == ""
     assert index_bytes(root) == index
-    assert snapshot(root) == before
+    assert snapshot(root, status=status) == before
     offline.assert_left_nothing()
     return refusal(result.stderr)
 

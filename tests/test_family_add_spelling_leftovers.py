@@ -64,7 +64,7 @@ from test_family_add_move_back_sections import (
     file_committed, gate_then_add, mount_moved, set_aside,
 )
 from test_family_add_refusals import (  # noqa: F401
-    family_module, holder, index_bytes, offline, plant, refusal,
+    family_module, holder, offline, plant,
 )
 from test_family_add_spellings_remedies import (
     BOTH, BOTH_AND_A_FILE, STAGE_FIRST, folding_skip, no_symlink_on_windows,
@@ -690,22 +690,6 @@ def test_members_a_link_outside_the_holder_is_moved_out_first(
     gate_then_add(offline, holder, family["remotes"])
 
 
-def refused_beside_a_link(offline, root: Path, remotes: Path) -> tuple:
-    """`refused_untouched` without its `git status`, which git 2.45.1 and
-    later refuse while a gitlink the index holds is a link on disk
-    (`expected submodule path 'Members/IRRS' not to be a symbolic link`):
-    `add` of the spare member refused, the index byte for byte as it was,
-    no `gh` call and no throwaway clone left. Returns the refusal's two
-    lines."""
-    before = index_bytes(root)
-    result = offline.add(root, SPARE, remotes=remotes)
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert result.stdout == ""
-    assert index_bytes(root) == before
-    offline.assert_left_nothing()
-    return refusal(result.stderr)
-
-
 def test_a_link_at_a_variant_the_index_holds_is_refused_first(
         family, holder, offline):
     """The coordinator's added state for #840 (w761's candidate 8 on #828):
@@ -728,7 +712,7 @@ def test_a_link_at_a_variant_the_index_holds_is_refused_first(
     (holder / "Members").mkdir()
     os.symlink(os.path.join("..", ROW), holder / VARIANT,
                target_is_directory=True)
-    said = refused_beside_a_link(offline, holder, family["remotes"])
+    said = refused_untouched(offline, holder, family["remotes"], status=False)
     assert said == (in_the_index(VARIANT_SHOWN), remedy(commit))
     assert typed_as_printed(holder, said[1]) == [
         REMOVE, record(commit), "git commit", MOVE_OUT]
