@@ -46,8 +46,11 @@ from pathlib import Path
 import pytest
 
 from conftest import BASH, BASH_SKIP, REPO, bash_path
-from test_openreposhape_command import (COMMAND, INSTALL_NEEDS, command_env,
-                                        put_on_path, write_script)
+from test_openreposhape_command import (BIN_DIR_SPELLINGS, COMMAND,
+                                        CYGPATH_STATES, INSTALL_NEEDS,
+                                        command_env, machine_path,
+                                        put_cygpath, put_on_path, run_cmd,
+                                        typed_bin_dir, write_script)
 
 INSTALLER = REPO / "install.sh"
 
@@ -684,6 +687,156 @@ def test_a_command_that_is_a_symlink_is_refused_before_any_request(
     assert sorted(path.name for path in net.bin.iterdir()) == \
         ["openRepoShape"]
     assert list(net.temporary.iterdir()) == []
+
+
+# --- a Windows-spelled `$OPENREPOSHAPE_BIN_DIR` (#667) -----------------------
+
+def in_its_own_directory(tmp_path: Path, name: str) -> Path:
+    """`tmp_path/name`, made: one run's whole world, so that two runs of one
+    test cannot see each other's files."""
+    directory = tmp_path / name
+    directory.mkdir()
+    return directory
+
+
+@BIN_DIR_SPELLINGS
+@pytest.mark.parametrize("state", CYGPATH_STATES)
+def test_the_installer_and_the_command_answer_one_drive_directory_alike(
+        tmp_path, spelling, state):
+    """ONE `$OPENREPOSHAPE_BIN_DIR`, spelled for Windows, through install.sh
+    and through the command it installs (#667).
+
+    The command respells it with `cygpath -u`, or refuses it where no
+    `cygpath` can (#649), and install.sh carries a copy of that `case`,
+    because it arrives alone and cannot share the command's. The two must
+    never answer one value differently, so each is given the same value,
+    in each spelling, with `cygpath` in each state: spelled, failing,
+    answering a drive spelling again, or not there. Where it spells, both
+    place the command at the directory as bash does and name no other; where
+    it does not, both refuse with exit 2, and install.sh has asked the
+    network nothing.
+    """
+    net = Net(in_its_own_directory(tmp_path, "installer"))
+    net.bin = net.tmp_path / "drive" / "bin"
+    command_home = in_its_own_directory(tmp_path, "command")
+    command_bin = command_home / "drive" / "bin"
+    typed_installer = typed_bin_dir(net.bin, spelling)
+    typed_command = typed_bin_dir(command_bin, spelling)
+    put_cygpath(net.path, typed_installer, state, bash_path(net.bin))
+    command_env_path = machine_path(command_home, ())
+    command_env_path.pop("_log")
+    put_cygpath(command_home / "machine-path", typed_command, state,
+                bash_path(command_bin))
+
+    installer = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed_installer})
+    command = run_cmd("--install", home=command_home, cwd=command_home,
+                      env={**command_env_path,
+                           "OPENREPOSHAPE_BIN_DIR": typed_command})
+
+    if state == "spells":
+        assert installer.returncode == 0, installer.stdout + installer.stderr
+        assert command.returncode == 0, command.stdout + command.stderr
+        net.installed(installer)
+        assert (command_bin / "openRepoShape").read_bytes() \
+            == COMMAND.read_bytes()
+        assert f"preflight: {bash_path(net.bin)}/openRepoShape --preflight" \
+            in installer.stdout.splitlines()
+        assert "openRepoShape: installed at " \
+            f"{bash_path(command_bin)}/openRepoShape" \
+            in command.stdout.splitlines()
+        assert typed_installer not in installer.stdout
+        assert typed_command not in command.stdout
+        return
+    net.refused(installer)
+    assert command.returncode == 2, command.stdout + command.stderr
+    for result in (installer, command):
+        said = " ".join(result.stderr.split())
+        assert "is spelled for Windows" in said, said
+        assert "no cygpath here spells it the way bash does" in said, said
+        assert "Set $OPENREPOSHAPE_BIN_DIR to the directory as this shell " \
+            "spells it, then run this" in said, said
+    assert net.calls() == [], net.calls()
+    assert not command_bin.exists()
+    assert typed_installer not in installer.stderr
+
+
+#: An old launcher that answers as Git Bash makes every launcher answer:
+#: the drive spelling and the bash spelling name one directory, so it places
+#: itself where `cygpath -u` says whichever it was handed. `OLD_LAUNCHER`
+#: takes the variable as typed, which off Windows is a directory of its own.
+OLD_LAUNCHER_IN_GIT_BASH = OLD_LAUNCHER.replace(
+    'mkdir -p "$OPENREPOSHAPE_BIN_DIR" && '
+    'cp "$0" "$OPENREPOSHAPE_BIN_DIR/openRepoShape"',
+    'dir="$(cygpath -u -- "$OPENREPOSHAPE_BIN_DIR")" && mkdir -p "$dir" && '
+    'cp "$0" "$dir/openRepoShape"')
+assert OLD_LAUNCHER_IN_GIT_BASH != OLD_LAUNCHER
+
+
+@pytest.mark.parametrize("preflight_exit, old, ends", [
+    pytest.param(0, False, "pinned to the release tag, and this machine is "
+                 "ready. Run the same line again to upgrade to the newest "
+                 "release.", id="done"),
+    pytest.param(1, False, "but the preflight did not pass (exit 1); it "
+                 "names what is missing above.", id="preflight-not-ready"),
+    pytest.param(2, False, "but the preflight did not run to the end (exit "
+                 "2); the REFUSED line above says why.",
+                 id="preflight-did-not-run"),
+    pytest.param(0, True, "and this machine is ready, but the command does "
+                 "not stay on v9.9.9 (see above).", id="does-not-stay"),
+])
+def test_every_line_names_a_windows_spelled_bin_dir_the_way_bash_does(
+        tmp_path, preflight_exit, old, ends):
+    """`D:\\tools\\bin` was echoed as typed by `install:`, `preflight:` and
+    each of the four `done:` lines, where the command's own lines said
+    `/d/tools/bin` (#667). With `cygpath` spelling it, every one of them says
+    the directory the way bash does, and none says it as typed. The fourth
+    `done:` is the one after `install:`, which an old release earns."""
+    net = Net(tmp_path)
+    net.bin = tmp_path / "drive" / "bin"
+    typed = typed_bin_dir(net.bin, "backslash")
+    target = f"{bash_path(net.bin)}/openRepoShape"
+    put_cygpath(net.path, typed, "spells", bash_path(net.bin))
+    net.config["preflight_exit"] = preflight_exit
+    if old:
+        launcher = net.root / "old-openRepoShape"
+        write_script(launcher, OLD_LAUNCHER_IN_GIT_BASH)
+        net.serve(RELEASE, launcher=launcher)
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed,
+                          "OPENREPOSHAPE_REPO": SLUG})
+    assert result.returncode == (0 if preflight_exit == 0 and not old else 1), \
+        result.stdout + result.stderr
+    lines = result.stdout.splitlines()
+    assert f"preflight: {target} --preflight" in lines, result.stdout
+    assert lines[-1] == f"done: openRepoShape {RELEASE} is installed at " \
+        f"{target}{' ' if old else ', '}{ends}", result.stdout
+    if old:
+        assert any(line.startswith(f"install: {target} does not stay on "
+                                   f"{RELEASE}: ") for line in lines), \
+            result.stdout
+    assert typed not in result.stdout
+
+
+def test_the_symlink_check_looks_at_the_directory_as_bash_spells_it(tmp_path):
+    """The link check names a target it can find: with the drive spelling
+    respelled first, pipx's link at the directory as bash spells it is the
+    one that is found and refused, before any request (#563, #667). Read as
+    typed, `D:\\tools\\bin/openRepoShape` is no link here, and the install
+    would go on and copy through the one that is."""
+    net = Net(tmp_path)
+    net.bin = tmp_path / "drive" / "bin"
+    typed = typed_bin_dir(net.bin, "backslash")
+    put_cygpath(net.path, typed, "spells", bash_path(net.bin))
+    packaged = tmp_path / "pipx" / "openRepoShape"
+    packaged.parent.mkdir(parents=True)
+    packaged.write_bytes(b"#!/usr/bin/env python3\n# the package's own\n")
+    net.bin.mkdir(parents=True)
+    (net.bin / "openRepoShape").symlink_to(packaged)
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed})
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"{bash_path(net.bin)}/openRepoShape is a symbolic link, so " \
+        "nothing was installed" in " ".join(result.stderr.split())
+    assert net.calls() == [], net.calls()
+    assert packaged.read_bytes() == b"#!/usr/bin/env python3\n# the package's own\n"
 
 
 #: A curl that RUNS, in either script: tab-indented, alone or as the value
