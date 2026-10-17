@@ -225,7 +225,8 @@ def test_a_link_to_nothing_named_after_the_family_is_named_first(family,
         assert moves(result.stderr) == [
             ["mv", str(holder), str(staged)], ["mkdir", "-p", str(link)],
             ["mv", str(staged), str(link / NAME)]]
-        assert os.path.islink(link) and holder.is_dir(), "nothing moved"
+        assert os.path.islink(link), "nothing moved"
+        assert holder.is_dir(), "nothing moved"
 
     os.rename(link, tmp_path / "moved-aside")
     run_as_typed(printed_moves(result.stderr))
@@ -471,6 +472,93 @@ def test_make_siblings_clones_from_a_url_holding_nel(family, tmp_path):
                cwd=clone).stdout.rstrip("\n") == remote.as_posix()
     assert table_row(result.stdout, BENT)[2] == "cloned"
     assert not NEVER_RAW & set(result.stdout), result.stdout
+
+
+#: IRRS's `.gitmodules` url as written in the file, and as the member's own
+#: lines spell it: a line feed (`\n` in a quoted value), and one beside an
+#: ESC, which git quotes as a `?`. Each holds a line a forger could write.
+FORGED_URLS = {
+    "line-feed": (b'"/r/nowhere\\nFINDING ' + KEPT.encode() + b': forged"',
+                  f"/r/nowhere\\nFINDING {KEPT}: forged"),
+    "line-feed-and-esc": (
+        b'"/r/no\x1b[31mwhere\\nFINDING ' + KEPT.encode() + b': forged"',
+        f"/r/no\\x1b[31mwhere\\nFINDING {KEPT}: forged"),
+}
+
+
+def siblings_over_url(family: dict, parent: Path, url: bytes):
+    """`make siblings` over a holder whose IRRS url is `url`, as written."""
+    holder = holder_in(family, parent / NAME)
+    config = holder / ".gitmodules"
+    rewritten, count = re.subn(
+        rb"(?m)^(\turl = ).*/IRRS\.git$",
+        lambda found: found.group(1) + url, config.read_bytes())
+    assert count == 1
+    config.write_bytes(rewritten)
+    return siblings(holder)
+
+
+@pytest.mark.parametrize("url", [url for url, _ in FORGED_URLS.values()],
+                         ids=list(FORGED_URLS))
+def test_a_url_holding_a_line_feed_forges_no_finding_line(family, tmp_path,
+                                                          url):
+    """Lane 1's review of #805: git's clone error quotes the url raw, line
+    feed and all. Read whole since #690, a `.gitmodules` url holding a line
+    feed and `FINDING IRSS: ...` put that line at column 0 of IRRS's
+    finding, where main, which cut the url at the line feed, never had it.
+    The only FINDING line is IRRS's own, and no raw ESC reaches stderr."""
+    result = siblings_over_url(family, tmp_path, url)
+    assert result.returncode == 1, result.stdout + result.stderr
+    findings = [line for line in result.stderr.split("\n")
+                if line.startswith("FINDING ")]
+    assert findings == [f"FINDING {BENT}: git clone exited 128:"], \
+        result.stderr
+    assert not NEVER_RAW & set(result.stderr), result.stderr
+
+
+@pytest.mark.parametrize("url, shown", FORGED_URLS.values(),
+                         ids=list(FORGED_URLS))
+def test_the_clone_failure_names_a_line_feed_url_spelled(family, tmp_path,
+                                                         url, shown):
+    """The same relay, read the other way: git's text still names the url
+    it could not clone, written as the lines above it write it. git quotes
+    an ESC as a `?`, so the url is found in that form too."""
+    result = siblings_over_url(family, tmp_path, url)
+    assert f"'{shown}'" in result.stderr, result.stderr
+
+
+def test_a_failed_fetch_forges_no_finding_line(family, tmp_path):
+    """The other relay of git's text (#805's review): a clone made from a
+    url holding a line feed (a folder named `x<LF>FINDING IRSS: ...`, which
+    only the whole-url read can reach) has it for its `origin`, and when
+    its fetch fails git quotes the origin raw. The re-run's stderr holds no
+    line of the folder's name at column 0."""
+    holder = holder_in(family, tmp_path / NAME)
+    remote = tmp_path / f"x\nFINDING {KEPT}: forged" / "IRRS.git"
+    try:
+        remote.parent.mkdir()
+    except OSError as refused:
+        pytest.skip(f"this disk holds no line feed in a name: {refused}")
+    made = clone_just_pushed(family["remotes"] / "IRRS.git", remote,
+                             recurse=False, bare=True)
+    assert made.returncode == 0, made.stderr
+    config = holder / ".gitmodules"
+    written = b'"' + remote.as_posix().replace("\n", "\\n").encode() + b'"'
+    rewritten, count = re.subn(
+        rb"(?m)^(\turl = ).*/IRRS\.git$",
+        lambda found: found.group(1) + written, config.read_bytes())
+    assert count == 1
+    config.write_bytes(rewritten)
+    first = siblings(holder)
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    os.rename(remote.parent, tmp_path / "gone")
+    result = siblings(holder)
+    assert f"[{BENT}] fetch exited 128" in result.stderr, result.stderr
+    assert f"x\\nFINDING {KEPT}: forged/IRRS.git'" in result.stderr, \
+        result.stderr
+    assert not [line for line in result.stderr.split("\n")
+                if line.startswith("FINDING ")], result.stderr
 
 
 @pytest.mark.parametrize("name", ["members/a=b", "a=b"])

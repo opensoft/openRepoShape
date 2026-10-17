@@ -421,6 +421,29 @@ def scrub(text: str, token: str) -> str:
     return text.replace(token, "<redacted>") if token else text
 
 
+def said_of_url(text: str, url: str | None) -> str:
+    """git's own text, with the url it quotes written as `spelled` writes it
+    (#690).
+
+    A `.gitmodules` url is read whole now, line feed and all, as git reads
+    it, and git's `die` and `error` quote a url RAW: a line feed stays, so
+    the url's second line stood at column 0 of the finding that relays the
+    text, and `FINDING IRSS: forged` in a url was a FINDING line of its own.
+    Every other control is written as a `?` (a tab stays), so a url holding
+    an ESC as well is quoted in that form; both forms are replaced, and
+    nothing is, where the url prints as it is. `place` relays git's text
+    twice, and both go through here: the clone's, with the member's url,
+    and a failed fetch's, with the origin of a clone made from such a url.
+    """
+    if not url or spelled(url) == url:
+        return text
+    quoted = "".join("?" if (char < " " or char == "\x7f")
+                     and char not in "\t\n" else char for char in url)
+    for form in dict.fromkeys((url, quoted)):
+        text = text.replace(form, spelled(url))
+    return text
+
+
 def git_text(args: list[str], cwd: Path) -> str | None:
     proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
                           text=True, encoding="utf-8", errors="replace",
@@ -648,7 +671,8 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
             sibling.state = "CLONE FAILED"
             sibling.finding = (
                 f"{who}: git clone exited {proc.returncode}:\n"
-                + scrub((proc.stderr + proc.stdout).strip(), token))
+                + said_of_url(scrub((proc.stderr + proc.stdout).strip(),
+                                    token), url))
             return sibling
         sibling.state = "cloned"
         if branch and branch_of(target) == "detached":
@@ -678,7 +702,9 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
     if fetched.returncode != 0:
         print(f"  [{who}] fetch exited {fetched.returncode}; the clone is "
               "untouched:\n"
-              + scrub((fetched.stderr + fetched.stdout).strip(), token),
+              + said_of_url(scrub((fetched.stderr + fetched.stdout).strip(),
+                                  token),
+                            git_text(["remote", "get-url", "origin"], target)),
               file=sys.stderr)
     sibling.branch = branch_of(target)
     return sibling
