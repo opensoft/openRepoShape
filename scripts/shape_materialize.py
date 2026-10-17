@@ -3069,7 +3069,7 @@ def pin_source_not_top_level(source: Path) -> tuple[str, Path | None] | None:
             return (f"it is a folder inside the bare clone at "
                     f"{shown_source(top)}", top)
         if inside == "true":
-            gitdir = _rev_parse(source, "--absolute-git-dir")
+            gitdir = Path(_rev_parse(source, "--absolute-git-dir"))
             return (f"it is inside {shown_source(gitdir)}, the git directory "
                     "of a clone, where git finds no top level", None)
         if not prefix:

@@ -19,9 +19,10 @@ a fourth way in: `Path.resolve()` raised a `RuntimeError` before 3.13 (an
 Both tools reach the one function through `declared_pin_values`, so every case
 runs three ways: `scaffold-project.py --dry-run`, the same without it, and
 `adopt-project.py plan`. Each must give exit 2 and the refusal NAMING the
-source and the reason, with the remediation the not-a-clone refusal already
-had, no traceback, and nothing created: no remote directory and no work
-directory for the scaffold, no plan file for adopt. The reasons are the
+source and the reason, with the remediation git's own failure
+(`lacks-the-commit`) already had, no traceback, and nothing created: no
+remote directory and no work directory for the scaffold, no plan file for
+adopt. The reasons are the
 sentences `validate-pins.py` gives the same sources (#295, #312): "no such
 directory", "it is a file, not a directory", and the system's own for any
 other `OSError`.
@@ -56,7 +57,7 @@ COMMIT = "0123456789abcdef0123456789abcdef01234567"
 NO_SUCH_DIRECTORY = "no such directory"
 A_FILE = "it is a file, not a directory"
 
-#: What every refusal is told to do, as the not-a-clone refusal always said it.
+#: What every refusal is told to do, as git's own failure always said it.
 REMEDIATION = ("Remediation: point --pin-source at a clone of that repository "
                "that HAS the pinned commit (`git fetch --all` first), or drop "
                "--pin-source and let `gh api` read the forge.")
@@ -173,7 +174,7 @@ def unreadable(request, tmp_path):
     refusal that always held, unchanged. (A directory that is no clone is
     `pin-source-not-a-clone` since #800.)
     `relative-missing` is typed relative to the working directory the tool
-    runs in and is named absolute, as the not-a-clone refusal always named
+    runs in and is named absolute, as git's own failure always named
     its source.
     """
     case = request.param
