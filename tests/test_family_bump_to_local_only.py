@@ -73,17 +73,28 @@ FETCH_FAILED = (f"  note: could not fetch {PATH} from its origin; the commit "
 
 
 def local_only(to: str, commit: str = "", *, fetched: bool = True,
-               project: str = MEMBER) -> tuple[str, str]:
+               project: str = MEMBER, tagged: bool = False
+               ) -> tuple[str, str]:
     """The two lines `bump --to <to>` is refused with when the commit it
     names, `commit` (`to` itself unless an annotated tag was peeled), is in
     the mount's objects and no branch of the member's remote reaches it;
     `fetched` False when the member's fetch failed. `project` is the member
-    bumped, `MEMBER` unless a test bumps another."""
+    bumped, `MEMBER` unless a test bumps another. `tagged` where a tag of the
+    member's remote reaches the commit (#686): the reason is then that no
+    branch does, with no claim that nobody can fetch it."""
     commit = commit or to
     path, repository = f"members/{project}", f"{ORG}/{project}"
     named = (f"--to {to}" if commit == to else
              f"--to {to} is an annotated tag, and the commit it names, "
              f"{commit},")
+    if tagged:
+        return (
+            f"REFUSED member-to-local-only: {named} is in the member's own "
+            f"object store, in {path}, and a tag of {repository} reaches it, "
+            f"but no branch of {repository} does",
+            f"Remediation: push it to a branch of {repository} and run the "
+            "same command again: `bump` pins only a commit a branch of the "
+            "member's remote reaches, and a tag is not a branch.")
     stale = ("" if fetched else
              f" The fetch of {path} FAILED, as the note above says, so this "
              "was answered from stale remote-tracking refs: fix the network "
@@ -239,9 +250,9 @@ def test_a_pin_add_at_made_from_a_tag_alone_is_refused_until_pushed(
     clone brought every tag. `bump --to` the very commit pinned said
     `nothing to do` before #613; now both runs refuse it
     `member-to-local-only`, with nothing moved, since no branch of the
-    remote reaches it. The refusal's own way out works: once the commit is
-    pushed to a branch of the member, the same command says `nothing to
-    do`, exit 1."""
+    remote reaches it, saying that its tag does (#686). The refusal's own
+    way out works: once the commit is pushed to a branch of the member, the
+    same command says `nothing to do`, exit 1."""
     env = isolated(offline, tmp_path)
     remotes, at = tagged_remote(family, tmp_path, "main")
     bare = remotes / f"{SPARE}.git"
@@ -269,7 +280,8 @@ def test_a_pin_add_at_made_from_a_tag_alone_is_refused_until_pushed(
     assert dry.returncode == real.returncode == 2, real.stdout + real.stderr
     assert dry.stdout == real.stdout == ""
     assert dry.stderr == real.stderr
-    assert refusal(real.stderr) == local_only(release, project=SPARE)
+    assert refusal(real.stderr) == local_only(release, project=SPARE,
+                                              tagged=True)
 
     raw(mount, env, "push", "-q", "origin", f"{release}:refs/heads/release")
     again = bump_the_pin()
