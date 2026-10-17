@@ -69,14 +69,14 @@ that is the name `make siblings` checks the folder against. The display name
 in `family.yaml` is only a title and names no folder, even when it is spelled
 differently.
 
-**Nothing ever moves a checkout.** When this holder's parent folder is not
-named after the family, and no link of that name beside it leads to it,
-`make siblings` WARNS, prints the exact `mv` for a human to run and stops
-before it clones anything, so that the run after the move clones each member
-once — it moves nothing itself. Relocating a
-directory out from under a shell, an editor or an agent lane breaks linked
-worktrees, whose `.git` files carry absolute paths, and this standard does
-not act by surprise.
+**Nothing ever moves a checkout.** This holder's parent folder must be named
+EXACTLY after its repository, case included, on every disk. When it is not, and
+no link of that name beside it leads to it, `make siblings` WARNS, prints the
+exact `mv` for a human to run and stops before it clones anything, so that the
+run after the move clones each member once — it moves nothing itself.
+Relocating a directory out from under a shell, an editor or an agent lane
+breaks linked worktrees, whose `.git` files carry absolute paths, and this
+standard does not act by surprise.
 
 From a checkout of `{{SHAPE_REPOSITORY}}` the same utility runs against a
 holder anywhere on disk, which is what to use before this repository is

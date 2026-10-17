@@ -392,12 +392,12 @@ python3 scripts/family.py siblings --family-root <path>
    A holder keeps `members/` in ONE spelling on every disk: `add` refuses
    `family-members-dir-variant` (`member-path-taken` for a variant of the
    member's own path) until a human renames what sits under another spelling.
-3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the
-   gitlink and the pin together, on a branch you make first (see above): the
-   tracking branch is refused (`family-on-tracking-branch`). Push the branch
-   as its `NEXT` line says and land it as a pull request; never suggest a
-   push to the default branch. Never hand-edit `family.yaml`'s `members:`
-   block — the tool rewrites it wholesale.
+3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the gitlink
+   and the pin together, on a branch made first (`family-on-tracking-branch`
+   refuses the tracking branch). Push it as its `NEXT` line says and land it as
+   a pull request; never suggest a push to the default branch. Never hand-edit
+   `family.yaml`'s `members:` block, which the tool rewrites wholesale, but for
+   a row repair `validate-family.py` names; the commit is then the person's.
 4. **The member must be scaffolded or adopted FIRST.** A family cannot make a
    project out of a repository; it can only pin one that already is.
 5. **`make siblings` in the holder — or `family.py siblings --family-root
