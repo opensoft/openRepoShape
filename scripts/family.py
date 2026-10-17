@@ -5417,7 +5417,7 @@ _ORIGIN_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
 def _origin_fetch_refspecs(member: Path) -> list[str]:
     """The refspecs `bump`'s fetch of `origin` carries (#686): every branch of
     `origin`, then what the mount's own `remote.origin.fetch` keeps under
-    `refs/remotes/origin/`, then the exclusions it states.
+    `refs/remotes/origin/`, and none of what it excludes.
 
     WHY THE MOUNT'S OWN ARE ADDED. `--prune` deletes every ref under
     `refs/remotes/origin/` that no refspec on the command line maps a ref of
@@ -5436,13 +5436,26 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
     added, so no refspec this fetch names writes outside it. A ref put under
     `origin/` by hand, which no refspec maps, is still pruned.
 
-    A NEGATIVE REFSPEC (`^refs/heads/wip`) is passed as it stands. Git
+    A NEGATIVE REFSPEC (`^refs/heads/wip`) IS SKIPPED. A narrowing refspec
+    never decides reachability (#686): a positive one that leaves a branch
+    out is overridden by the first refspec, as R613 p07 found it must be, and
+    a negative one is left out, so that it does not decide either. Git
     applies the configured negative refspecs only to a fetch with none on the
-    command line (measured, git 2.43), so without it this fetch would bring
-    a branch the person excluded. It writes nothing. A mount whose refspec
-    git cannot satisfy, one that names a ref `origin` lacks or two that map
-    to one destination, fails this fetch as it fails the person's own
-    `git fetch origin`, and `bump` says so as it says any failed fetch.
+    command line (measured, git 2.43), so skipping is enough. Honouring it
+    refused a commit only the excluded branch reaches with #613's words,
+    "reachable from no branch of <repository>", which are untrue there: the
+    branch is on the remote.
+
+    A mount whose refspec git cannot satisfy, one that names a ref `origin`
+    lacks or two that map to one destination, fails this fetch as it fails
+    the person's own `git fetch origin`, and `bump` says so as it says any
+    failed fetch. One refspec of the mount's own can also clash with the
+    first, which that `git fetch origin` never meets: a mount whose only
+    refspec maps tags into `origin/` (`+refs/tags/*:refs/remotes/origin/*`),
+    and a remote with a branch and a tag of one name, fail this fetch with
+    128 ("Cannot fetch both refs/heads/feat and refs/tags/feat to
+    refs/remotes/origin/feat") where `git fetch origin` exits 0. That is
+    left for #459's checklist.
 
     READ BY A LISTING, `git config --list`, not `--get-all`: the dry run's
     test holds every `git config` it runs to a listing, the one form that
@@ -5457,10 +5470,11 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
                   if key == "remote.origin.fetch"]
     refspecs = [_ORIGIN_BRANCHES]
     for spec in (value.strip() for value in configured):
-        if not spec.startswith("^"):
-            spec = spec if spec.startswith("+") else "+" + spec
-            if not spec.partition(":")[2].startswith("refs/remotes/origin/"):
-                continue
+        if spec.startswith("^"):
+            continue  # a narrowing refspec never decides reachability (p07)
+        spec = spec if spec.startswith("+") else "+" + spec
+        if not spec.partition(":")[2].startswith("refs/remotes/origin/"):
+            continue
         if spec not in refspecs:
             refspecs.append(spec)
     return refspecs

@@ -22,8 +22,8 @@ FOUR STATES #613'S CHECK WAS UNTRUE OF, from R613's review of #625:
   `refs/remotes/origin/` that no refspec of the fetch maps a ref of `origin`
   to goes, and never a branch or a tag of the mount. The mount's own
   refspecs that write under `origin/` (pull requests, say) ride along, so
-  what its configuration keeps there stays, and a negative one still
-  excludes.
+  what its configuration keeps there stays. A negative one is skipped: a
+  narrowing refspec, positive or negative, never decides reachability.
 - A COMMIT ONLY A TAG OF THE REMOTE REACHES, which the mount holds too
   (R613 p03). Still refused: the rule is branches (the triage's D2, option
   1). The reason was "A pin the rest of the world cannot fetch", which a
@@ -236,30 +236,44 @@ def test_a_branch_deleted_on_the_remote_since_the_last_fetch_no_longer_counts(
     offline.assert_left_nothing()
 
 
-def test_a_branch_the_mounts_own_refspec_excludes_is_not_fetched(
+def test_a_branch_the_mounts_own_negative_refspec_excludes_still_counts(
         holder, offline, tmp_path):
-    """A NEGATIVE REFSPEC IS THE PERSON'S, as `git fetch origin` took it. Git
-    applies the configured negative refspecs only to a fetch with none on
-    the command line (git 2.43), so `bump`'s own refspec would bring the
-    branch the mount excludes, and the commit pushed only to it would be
-    pinned from a branch the person said to leave alone. The refspec goes on
-    the command line, so both runs refuse `member-to-local-only` as before:
-    the branch is not fetched."""
+    """A NARROWING REFSPEC NEVER DECIDES REACHABILITY, a negative one no more
+    than a positive one (R613 p07; lane 1's N1 on #795). The mount excludes,
+    with `^refs/heads/<branch>`, the branch a commit was pushed to, and has
+    no remote-tracking ref for it. Git applies a configured negative refspec
+    only to a fetch with none on the command line, so `bump`'s own refspec
+    fetches the branch and both runs find the commit on a branch of the
+    member's remote: the dry run prints the row, exit 0, and the real run
+    pins it. Honouring the exclusion refused it `member-to-local-only` with
+    "reachable from no branch of <repository>", untrue of a branch the remote
+    has. The exclusion is left as the person set it."""
     env = isolated(offline, tmp_path)
     mount = holder / PATH
     made = commit_in_mount(
         holder, env,
         lambda m: (m / "EXCLUDED.md").write_bytes(b"a branch left out\n"))
     branch = f"pushed-{made[:12]}"
-    raw(mount, env, "config", "--add", "remote.origin.fetch",
-        f"^refs/heads/{branch}")
+    exclusion = f"^refs/heads/{branch}"
+    raw(mount, env, "config", "--add", "remote.origin.fetch", exclusion)
     raw(mount, env, "update-ref", "-d", f"refs/remotes/origin/{branch}")
+    configured = raw(mount, env, "config", "--get-all",
+                     "remote.origin.fetch").stdout
+    assert exclusion in configured.decode().splitlines(), (
+        "premise: the mount excludes the branch")
 
-    stderr = both_runs(holder, env, made)
+    dry = bump(holder, env, made, "--dry-run")
 
-    assert refusal(stderr) == local_only(made)
-    assert raw(mount, env, "for-each-ref", f"refs/remotes/origin/{branch}"
-               ).stdout == b"", "the excluded branch was not fetched"
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert dry.stderr == ""
+    assert f'      commit: "{made}"' in dry.stdout.splitlines()
+    assert contains(mount, env, made, f"refs/remotes/origin/{branch}"), (
+        "the excluded branch was fetched")
+
+    raw(mount, env, "update-ref", "-d", f"refs/remotes/origin/{branch}")
+    pins(holder, env, made, bump(holder, env, made))
+    assert raw(mount, env, "config", "--get-all", "remote.origin.fetch"
+               ).stdout == configured, "the exclusion is as it was"
     offline.assert_left_nothing()
 
 
