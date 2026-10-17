@@ -97,9 +97,10 @@ NEEDS_A_LOGIN = (
     "API authentication token.")
 NO_LOGIN_EXIT = 4
 
-#: `repo view <owner>/<name> --json name`: one owner and one name, each a
-#: word GitHub could name, and nothing else on the line.
-ASKS_WHETHER_IT_EXISTS = re.compile(r"[A-Za-z0-9][\w.-]*/[\w.-]+")
+#: `repo view <owner>/<name> --json name`: one owner and one name, as a
+#: plan names them (an `org:` GitHub would refuse, `a+b`, included), with no
+#: space or further `/`, and no option.
+ASKS_WHETHER_IT_EXISTS = re.compile(r"[^\s/-][^\s/]*/[^\s/]+")
 
 
 def answer(argv) -> tuple | None:

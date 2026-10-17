@@ -68,9 +68,17 @@ EDITED_ACROSS = "../s/contracts/"
 
 #: A `gh` that creates a bare repository for `repo create`, takes `repo edit`,
 #: and logs every argument of a `pr create`, NUL-separated, so the body is read
-#: back as it was given. Anything else is refused: it reaches nothing.
+#: back as it was given. `repo view <repository> --json name`, which `execute`
+#: asks of each leg before it makes either (#798), finds one under
+#: $FAKE_GH_ROOT and gives gh's not-found answer for any other. Anything else
+#: is refused: it reaches nothing.
 STUB_GH = textwrap.dedent("""\
     #!/bin/sh
+    if [ "$1 $2 $4 $5" = "repo view --json name" ]; then
+      [ -d "$FAKE_GH_ROOT/$3.git" ] && exit 0
+      echo "GraphQL: Could not resolve to a Repository with the name '$3'." >&2
+      exit 1
+    fi
     case "$1 $2" in
       "repo create")
         git init -q --bare -b main "$FAKE_GH_ROOT/$3.git" \\
