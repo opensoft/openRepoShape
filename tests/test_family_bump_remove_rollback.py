@@ -61,8 +61,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, cloned_just_pushed, git, rmtree,
-                      run_script)
+from conftest import (cloned_just_pushed, git, rmtree, run_script,
+                      submodule_update_through_git)
 #: The family fixture, its names, the offline environment and the holder's
 #: byte-for-byte state, imported from the modules that own them rather than
 #: rebuilt: a holder made, or compared, any other way would test a
@@ -336,8 +336,8 @@ def test_a_remove_puts_back_the_members_legs_it_had_checked_out(
     from the stores inside the member's own, and the holder's work tree is
     byte for byte what it was, theirs included."""
     env = isolated(offline, tmp_path)
-    git(*FILE_PROTOCOL, "submodule", "update", "-q", "--init",
-        cwd=holder / PATH)
+    submodule_update_through_git(holder / PATH, family["remotes"], "-q",
+                                 "--init")
     legs = sorted(name for name in ("spec", "code")
                   if (holder / PATH / name / ".git").exists())
     assert legs == ["code", "spec"], "premise: both legs checked out"
@@ -931,7 +931,7 @@ def test_a_leg_no_store_holds_is_left_out_not_cloned(
     its checkout comes back only from its remote."""
     env = isolated(offline, tmp_path)
     mount = holder / PATH
-    git(*FILE_PROTOCOL, "submodule", "update", "-q", "--init", cwd=mount)
+    submodule_update_through_git(mount, family["remotes"], "-q", "--init")
     assert git("config", "-f", ".gitmodules", "submodule.spec.path",
                cwd=mount).stdout.strip() == "spec", "fixture drift"
     leg_store = Path(git("rev-parse", "--absolute-git-dir",
