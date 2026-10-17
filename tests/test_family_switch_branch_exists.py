@@ -60,7 +60,8 @@ from test_family import (  # noqa: F401
 )
 from test_family_printed_quoting import host_words
 from test_family_tracking_branch import (  # noqa: F401
-    TRACKING, act, next_push, on_main, remedy_switch, snapshot, suggested,
+    TRACKING, act, next_push, on_main, refspec, remedy_switch, snapshot,
+    suggested,
 )
 from test_setup_project_py import entry_point_module
 # `BRANCH_LEFT` is the sentence the tools end the remedy with, pinned as
@@ -194,7 +195,7 @@ def test_the_refusal_typed_as_printed_puts_the_act_on_its_branch(
         assert git("rev-parse", "HEAD~1", cwd=holder).stdout.strip() == \
             earlier
     push, _ = next_push(done.stdout)
-    assert push[-1] == branch, push
+    assert push[-1] == refspec(branch), push
     assert validate(holder).returncode == 0
 
 
@@ -515,5 +516,5 @@ def test_the_branch_filled_in_as_written_is_one_add_commits_on(family,
     done = act(family, holder, "add")
     assert done.returncode == 0, done.stdout + done.stderr
     push, _ = next_push(done.stdout)
-    assert push[-1] == branch, push
+    assert push[-1] == refspec(branch), push
     assert SPARE in [row["project"] for row in manifest(holder)["members"]]
