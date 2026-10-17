@@ -1135,6 +1135,10 @@ def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
 #: `chr`, not `os.fsdecode`, which raises on Windows, where this module
 #: must still import.
 NOT_UTF_8_BRANCH = "caf" + chr(0xDCE9)
+#: How a refusal names `NOT_UTF_8_BRANCH`: by its bytes, `b'caf<0xE9>'`, as
+#: `trailer-not-utf8` names a trailer.
+NOT_UTF_8_BRANCH_NAMED = repr(NOT_UTF_8_BRANCH.encode("utf-8",
+                                                      "surrogateescape"))
 
 
 def git_answer_bytes(repo: Path, *args: str) -> bytes:
@@ -1148,13 +1152,29 @@ def git_answer_bytes(repo: Path, *args: str) -> bytes:
 def held_by_git(repo: Path) -> dict:
     """What a refusal must leave in `repo` as it was, as bytes (#765): the
     commit HEAD names, the ref it is attached to, every ref and its commit,
-    the index and the status."""
-    return {"head": git_answer_bytes(repo, "rev-parse", "HEAD"),
+    the index and the status; and for each git directory under
+    `.git/modules`, a leg's or a member's, its refs, its object count and
+    its FETCH_HEAD with the time it was written, which every fetch into it
+    rewrites."""
+    held = {"head": git_answer_bytes(repo, "rev-parse", "HEAD"),
             "attached": git_answer_bytes(repo, "symbolic-ref", "-q", "HEAD"),
             "refs": git_answer_bytes(repo, "for-each-ref",
                                      "--format=%(objectname) %(refname)"),
             "index": git_answer_bytes(repo, "ls-files", "--stage", "-z"),
             "status": git_answer_bytes(repo, "status", "--porcelain", "-z")}
+    modules = repo / ".git" / "modules"
+    gitdirs = sorted(found.parent for found in modules.rglob("HEAD")
+                     if (found.parent / "objects").is_dir()
+                     ) if modules.is_dir() else []
+    for gitdir in gitdirs:
+        fetched = gitdir / "FETCH_HEAD"
+        held[gitdir.relative_to(modules).as_posix()] = (
+            git_answer_bytes(gitdir, "for-each-ref",
+                             "--format=%(objectname) %(refname)"),
+            git_answer_bytes(gitdir, "count-objects", "-v"),
+            (fetched.read_bytes(), fetched.stat().st_mtime_ns)
+            if fetched.is_file() else None)
+    return held
 
 
 def on_a_branch_that_is_not_utf_8(repo: Path) -> dict:

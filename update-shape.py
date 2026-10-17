@@ -2349,9 +2349,12 @@ def current_branch(root: Path) -> str | None:
     try:
         branch.encode("utf-8")
     except UnicodeEncodeError:
+        # NAMED BY ITS BYTES, `b'caf<0xE9>'`, as `trailer-not-utf8` names a
+        # trailer.
+        raw = branch.encode("utf-8", "surrogateescape")
         raise Refusal(
             "update-branch-not-utf8",
-            f"{root} is on the branch {branch!r}, whose name is not UTF-8, so "
+            f"{root} is on the branch {raw!r}, whose name is not UTF-8, so "
             "no line this tool prints can name it: a line that named it "
             "would name a branch that is not there. Nothing was written.",
             "Remediation: give the branch a name that is UTF-8 text, then "
@@ -3264,7 +3267,10 @@ class Rollback:
         back = [start] if start else ["--detach", commit]
         moved = _symbolic_head(self.root) == ref
         if moved:
-            _git_quietly(["git", "checkout", "-q", start, "--"] if start
+            # `start` AS GIT'S OWN BYTES (#765), whatever the locale; the
+            # by-hand lines below print it as it is.
+            _git_quietly(["git", "checkout", "-q", _as_git_argument(start),
+                          "--"] if start
                          else ["git", "checkout", "-q", "--detach", commit,
                                "--"], self.root)
         if self._head_is(start, commit):
@@ -3343,6 +3349,23 @@ def _symbolic_head(root: Path) -> str | None:
     ref = proc.stdout if proc.returncode == 0 else b""
     ref = ref[:-1] if ref.endswith(b"\n") else ref
     return ref.decode("utf-8", "surrogateescape") or None
+
+
+def _as_git_argument(name: str) -> str:
+    """`name`, as `_symbolic_head` decoded it, spelled as the argument that
+    hands git the same bytes back under any locale (#765), as #824 does for
+    `bootstrap.py`'s branches.
+
+    `subprocess` writes an argument with `os.fsencode`, the locale's codec:
+    under `LC_ALL=C PYTHONUTF8=0` that is ASCII, which cannot write U+00A0,
+    so the rollback's checkout from `feat<U+00A0>` raised
+    `UnicodeEncodeError` part way and left the copies written. Decoded back
+    with `os.fsdecode`, the name's own UTF-8 bytes go to git under every
+    codec. Windows hands git UTF-16, so the name goes as it is there. A line
+    printed for a person keeps the name as it is."""
+    if os.name == "nt":
+        return name
+    return os.fsdecode(name.encode("utf-8", "surrogateescape"))
 
 
 def _by_hand(root: Path, *args: str) -> str:

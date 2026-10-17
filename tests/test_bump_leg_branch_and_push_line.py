@@ -51,7 +51,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, NOT_UTF_8_BRANCH, PROJECT, REPO,
+from conftest import (FILE_PROTOCOL, NOT_UTF_8_BRANCH_NAMED, PROJECT, REPO,
                       cloned_just_pushed, git, held_by_git,
                       on_a_branch_that_is_not_utf_8)
 # A fixture is used by being named in this module's namespace, which is what
@@ -276,16 +276,17 @@ def test_a_branch_named_with_a_byte_that_is_not_utf8_is_refused_by_name(
     """`caf<0xE9>` (#765): decoded with `errors="replace"`, it read as
     `caf<U+FFFD>`, a branch nobody has, so the bump committed on `caf<0xE9>`
     and the line named `caf<U+FFFD>` on both sides, which pasted fails `src
-    refspec ... does not match any`. Refused by name now, the dry run alike,
-    before the fetch: no line names the branch but the refusal, which says
-    how to rename it, and the root and its refs are as they were."""
+    refspec ... does not match any`. Refused by name now, by its bytes, the
+    dry run alike, before the fetch: no line names the branch but the
+    refusal, which says how to rename it, and the root, its refs and each
+    leg's git directory are as they were, FETCH_HEAD and objects too."""
     before = on_a_branch_that_is_not_utf_8(project)
 
     result = bump(project, scaffolded, advanced, *extra)
 
     assert result.returncode == 2, result.stderr + result.stdout
     assert (f"REFUSED bump-leg-branch-not-utf8: {project.resolve()} is on "
-            f"the branch {NOT_UTF_8_BRANCH!r}, whose name is not UTF-8"
+            f"the branch {NOT_UTF_8_BRANCH_NAMED}, whose name is not UTF-8"
             in result.stderr), result.stderr
     assert result.stderr.rstrip().endswith(" branch -m <a new name>"), (
         result.stderr)

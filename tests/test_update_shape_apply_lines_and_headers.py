@@ -59,8 +59,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (NOT_UTF_8_BRANCH, REPO, WINDOWS_SKIP, git, held_by_git,
-                      on_a_branch_that_is_not_utf_8, run_script)
+from conftest import (NOT_UTF_8_BRANCH_NAMED, REPO, WINDOWS_SKIP, git,
+                      held_by_git, on_a_branch_that_is_not_utf_8, run_script)
 from test_pin_rewrite_layout import MANIFEST as MANIFEST_TEXT
 from test_pin_rewrite_layout import (NEW_COMMIT, NEW_ROWS, NEW_TREE,
                                      OLD_COMMIT, OLD_ROWS, OLD_TREE, make_pin,
@@ -530,9 +530,9 @@ def test_a_branch_named_with_a_byte_that_is_not_utf8_is_refused_first(
         standard, root, tmp_path):
     """HEAD on `caf<0xE9>` (#765): `errors="replace"` read it as
     `caf<U+FFFD>`, a branch nobody has, which the lines that name the branch
-    HEAD is on then named. Refused by name now, before the first write, so
-    there is nothing to roll back, with how to rename it, the root and its
-    refs as they were, and nothing pushed."""
+    HEAD is on then named. Refused by name now, by its bytes, before the
+    first write, so there is nothing to roll back, with how to rename it,
+    the root and its refs as they were, and nothing pushed."""
     remote = own_remote(root, tmp_path)
     before = on_a_branch_that_is_not_utf_8(root)
 
@@ -540,13 +540,40 @@ def test_a_branch_named_with_a_byte_that_is_not_utf8_is_refused_first(
 
     assert result.returncode == 2, result.stdout + result.stderr
     assert (f"REFUSED update-branch-not-utf8: {root} is on the branch "
-            f"{NOT_UTF_8_BRANCH!r}, whose name is not UTF-8"
+            f"{NOT_UTF_8_BRANCH_NAMED}, whose name is not UTF-8"
             in result.stderr), result.stderr
     assert result.stderr.rstrip().endswith(" branch -m <a new name>"), (
         result.stderr)
     assert "ROLLED BACK" not in result.stderr, "refused before any write"
     assert held_by_git(root) == before
     assert git("for-each-ref", cwd=remote).stdout == ""
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("env", [{}, {"LC_ALL": "C", "PYTHONUTF8": "0"}],
+                         ids=["locale", "c-locale"])
+def test_a_rollback_puts_head_back_on_the_branch_it_started_on(
+        standard, root, env):
+    """A run from `feat<U+00A0>`, beside `feat`, whose commit a `pre-commit`
+    hook refuses (#765, r765's findings 2 and 3). `strip()` read the branch
+    HEAD started on as `feat`, so the rollback "switched HEAD back to feat",
+    the neighbour. And handed back to git as text, the name raised
+    `UnicodeEncodeError` under `LC_ALL=C PYTHONUTF8=0` part way through the
+    rollback, leaving the copies written and HEAD on the new branch. HEAD
+    goes back on `feat<U+00A0>` now, in both locales, with every byte git
+    holds as it was."""
+    git("branch", "feat", cwd=root)
+    git("switch", "-q", "-c", "feat" + chr(0xA0), cwd=root)
+    hook = root / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(exist_ok=True)
+    hook.write_bytes(b"#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    before = held_by_git(root)
+
+    result = apply(standard, root, "b", "--branch", BRANCH, env=env)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert held_by_git(root) == before
 
 
 # ---------------------------------------------------------------------------

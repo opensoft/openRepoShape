@@ -42,7 +42,7 @@ import subprocess
 
 import pytest
 
-from conftest import (NOT_UTF_8_BRANCH, REPO, git, held_by_git,
+from conftest import (NOT_UTF_8_BRANCH_NAMED, REPO, git, held_by_git,
                       on_a_branch_that_is_not_utf_8, run_script)
 #: The family fixture, its names and the work branch it grows the holder on,
 #: imported from the module that owns them.
@@ -236,11 +236,13 @@ def test_a_branch_ending_in_a_no_break_space_is_pushed_as_itself(family,
 @pytest.mark.parametrize("verb", ["add", "bump", "remove"])
 def test_a_branch_named_with_a_byte_that_is_not_utf8_is_refused_by_name(
         family, on_main, verb):
-    """`caf<0xE9>` (#765): no line can spell it, and the act committed on it
-    and printed a NEXT holding the lone surrogate Python keeps the byte as,
-    which a stream refuses or writes as text no shell turns back into the
-    byte. Refused by name now, before the member is read, with how to
-    rename it: no NEXT, and the holder and its refs as they were."""
+    """`caf<0xE9>` (#765): the act committed on it and printed a NEXT whose
+    spelling of the byte was the stream's: the raw byte, which a UTF-8
+    terminal shows and copies as U+FFFD, or the six characters of its
+    escape, which name another branch. Refused by name now, by its bytes, before anything is fetched or
+    written, with how to rename it: no NEXT, `add` prints not even the line
+    that says the member is being read, and the holder, its refs and each
+    member's git directory are as they were, FETCH_HEAD and objects too."""
     holder = on_main
     before = on_a_branch_that_is_not_utf_8(holder)
 
@@ -249,7 +251,7 @@ def test_a_branch_named_with_a_byte_that_is_not_utf8_is_refused_by_name(
     assert refused.returncode == 2, refused.stdout + refused.stderr
     assert refused.stdout == ""
     assert (f"REFUSED family-branch-not-utf8: {holder} is on the branch "
-            f"{NOT_UTF_8_BRANCH!r}, whose name is not UTF-8"
+            f"{NOT_UTF_8_BRANCH_NAMED}, whose name is not UTF-8"
             in refused.stderr), refused.stderr
     assert refused.stderr.rstrip().endswith(" branch -m <a new name>"), (
         refused.stderr)

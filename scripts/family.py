@@ -791,19 +791,24 @@ def _holder_branch(root: Path) -> str | None:
     heads = HEADS_PREFIX.encode("ascii")
     if not ref.startswith(heads):
         return None
-    branch = ref[len(heads):].decode("utf-8", "surrogateescape")
+    raw = ref[len(heads):]
+    branch = raw.decode("utf-8", "surrogateescape")
     try:
         branch.encode("utf-8")
     except UnicodeEncodeError:
+        # NAMED BY ITS BYTES, `b'caf<0xE9>'`, as `trailer-not-utf8` names a
+        # trailer; the remedy is quoted for a POSIX shell, as bump-leg's
+        # and update-shape's are, so README's sentence on the lines quoted
+        # for PowerShell stays true.
         raise Refusal(
             "family-branch-not-utf8",
-            f"{root} is on the branch {branch!r}, whose name is not UTF-8, "
+            f"{root} is on the branch {raw!r}, whose name is not UTF-8, "
             "so no line this tool prints can name it: the NEXT line would "
             "push a branch that is not there. Nothing was committed, and the "
             "holder's work tree and index are as they were.",
             "Remediation: give the branch a name that is UTF-8 text, then "
             "run the same command again:\n    "
-            + shell_line(["git", "-C", root, "branch", "-m"])
+            + shell_line(["git", "-C", root, "branch", "-m"], "posix")
             + " <a new name>") from None
     return branch
 

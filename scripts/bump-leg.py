@@ -1106,13 +1106,16 @@ def current_branch(root: Path) -> str | None:
     heads = HEADS.encode("ascii")
     if not ref.startswith(heads):
         return None
-    branch = ref[len(heads):].decode("utf-8", "surrogateescape")
+    raw = ref[len(heads):]
+    branch = raw.decode("utf-8", "surrogateescape")
     try:
         branch.encode("utf-8")
     except UnicodeEncodeError:
+        # NAMED BY ITS BYTES, `b'caf<0xE9>'`, as `trailer-not-utf8` names a
+        # trailer.
         raise Refusal(
             "bump-leg-branch-not-utf8",
-            f"{root} is on the branch {branch!r}, whose name is not UTF-8, so "
+            f"{root} is on the branch {raw!r}, whose name is not UTF-8, so "
             "no line this tool prints can name it: its push line would name "
             "a branch that is not there. Nothing was fetched, written or "
             "committed.",
