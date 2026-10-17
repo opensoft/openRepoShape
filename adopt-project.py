@@ -38,9 +38,11 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `--project` name that one, compared without case, or `plan`
            refuses them (`adopt-not-the-source`), and `check` finds and
            `execute` refuses a plan edited to name another
-           (`plan-not-the-source`): in place, the source IS the assembly
-           root, and its own name is renamed first, on GitHub, never
-           retyped (#499). An `origin` that is a url names the
+           (`plan-not-the-source`), or, where the source names none, than
+           the plan recorded for it (#716): in place, the source IS the
+           assembly root, and its own name is renamed first, on GitHub,
+           never retyped, which `check` says as `execute` does (#499, #716).
+           An `origin` that is a url names the
            `org/repo` it ends in, with or without a trailing `/`; one that
            is a path, in any separator, names none, and `plan` says it
            compared nothing (#521). An organisation read from the url and
@@ -9564,15 +9566,30 @@ def cmd_check(args) -> int:
     another = _not_the_source(plan, source, names)
     if another:
         findings.append(f"FINDING {PLAN_NOT_THE_SOURCE}: {another}")
-        remediation.append(_own_name_remediation(source, naming, pins, ""))
+        remediation.append(_own_name_remediation(
+            _held_repository(plan, source), naming, pins, ""))
+    # THE SOURCE IS HANDED TO `_check_names` WHERE `execute` HANDS IT (#716):
+    # when the plan does not name another repository, so that a refusal of
+    # the assembly root's own name says to rename it first, as `execute`
+    # says it on the same plan. Where the plan does name another,
+    # `execute` stops at `plan-not-the-source` and never asks the names, and
+    # a refusal of the plan's name is then about a name that is not the
+    # source's: `_own_name_remediation` has said what to do.
+    renamed = (_rename_first(source.repository)
+               if source.repository is not None and not another else None)
     try:
-        _check_names(naming, names, pins)
+        _check_names(naming, names, pins, None if another else source)
         for role, name in names.items():
             found = naming.classify(name, role, pins)
             print(f"  {role:<9} {name:<28} {found.family}"
                   + (f"/{found.role}" if found.role else ""))
     except Refusal as exc:
         findings.append(f"FINDING {exc.code}: {exc.detail}")
+        # Only the rename-first remedy is printed, once after the findings:
+        # it is the one `check` was missing. `--project takes ...` is not,
+        # and `check` never printed it (#716).
+        if renamed is not None and exc.remediation == renamed:
+            remediation.append(renamed)
 
     _print_what_will_happen(plan, source, names,
                             naming.topic_for(plan.project_id),
@@ -12741,9 +12758,15 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
 # refuses before it asks the naming policy or any remote, a plan whose `org:`
 # names another with its `legs.assembly:`, which is what `execute` acts on, or
 # with its `project:`, as `plan-not-the-source`: a hand edit is caught too,
-# whatever `org:` then holds, because it is read as `execute` reads it
-# (`_plan_org`). A source that names no repository (no `origin`, or one that
-# ends in no `org/repo`) is asked nothing, as before.
+# because `org:` is read as `execute` reads it (`_plan_org`), as `str()` of
+# what the file holds. One that `checked_value` refuses (a list, a mapping,
+# an empty value, a space, a leading `-`, a character outside ASCII) is refused
+# by `execute` as `plan-not-the-source` all the same, but `check` meets it
+# as `unsafe-value` first, and compares it only where the plan's own names
+# are refused before that (#716, L4-48). A source that names no repository
+# (no `origin`, or one that ends in no `org/repo`) is asked nothing by
+# `plan`, as before; `check` and `execute` hold the plan's names to what the
+# plan recorded for it, `source: repository:`, where it recorded one (#716).
 #
 # AN `origin` THAT IS A PATH NAMES NO REPOSITORY (#521), in any separator
 # (`url_repository`). It was read as its last two directories, so a clone of
@@ -12823,13 +12846,14 @@ def _path_origin_notes(args, source: Source) -> list[str]:
             "repository on GitHub."]
 
 
-def _own_name_remediation(source: Source, naming: NamingPolicy,
+def _own_name_remediation(repository: str, naming: NamingPolicy,
                           pins: set[str], done: str) -> str:
     """What `adopt-not-the-source` and `plan-not-the-source` say to do:
     `plan` again under the source's own name, or, where the naming policy
-    refuses that name, `_rename_first`. `done` is what the refusing command
-    left as it was, said first."""
-    repository = str(source.repository)
+    refuses that name, `_rename_first`. `repository` is the one the source
+    is held to (`_held_repository`), as text: where the live source names
+    none, the plan's record of it, and `str(None)` is no name (#716). `done`
+    is what the refusing command left as it was, said first."""
     org, _, name = repository.partition("/")
     try:
         _check_names(naming, _names(name), pins)
@@ -12866,24 +12890,57 @@ def _refuse_another_repository(args, source: Source, naming: NamingPolicy,
         "an in-place adoption keeps the source's own name, and `execute` "
         "pushes the split to the repository they name, opens its pull "
         "request there and sets its topic on it",
-        _own_name_remediation(source, naming, pins, "no plan was written. "))
+        _own_name_remediation(repository, naming, pins,
+                              "no plan was written. "))
+
+
+def _held_repository(plan: Plan, source: Source) -> str | None:
+    """The repository an in-place adoption by `plan` is held to, or None
+    where there is none (#716): the one the live source names
+    (`source.repository`), and where it names none, the one the plan
+    recorded for it, `source: repository:`.
+
+    A SOURCE WITH NO `origin` ONCE HELD A PLAN TO NOTHING. `plan` records
+    `repository: null` for it and compares nothing, which is right; but a
+    plan for acme/Atlas whose names were edited to `Atlsa`, with `origin`
+    then removed from the source, or given a copy of it that has none by
+    `--source`, checked `plan ok`, and `execute` went on to ask GitHub about
+    `acme/Atlsa`. The record is read as `_github_name` reads a name, and
+    never raises: one that is no text, or names no `owner/repo`, holds the
+    plan to nothing, as a null does, and `Plan.open_source` is the reader
+    that refuses one it must clone (`_recorded_repository`)."""
+    if source.repository is not None:
+        return source.repository
+    recorded = plan.source.get("repository")
+    return _github_name(recorded) if isinstance(recorded, str) else None
 
 
 def _not_the_source(plan: Plan, source: Source,
                     names: dict[str, str]) -> str | None:
     """`plan-not-the-source`'s detail, or None: the plan's `org:` with its
     `legs.assembly:` (`names`, read by `Plan.names`) or with its `project:`
-    names another repository than the one the source names (#499).
+    names another repository than the one the source is held to
+    (`_held_repository`): the one it names (#499), or, where it names none,
+    the one the plan records for it (#716).
 
-    `org:` is read as `execute` reads it (`_plan_org`), whatever the file
-    holds. While it was compared only when it was text, a number, a
-    boolean, a null or a deleted `org:` line checked `plan ok`, and
-    `execute` acted on `2026/Atlas`, `True/Atlas` or `None/Atlas` (#513's
-    review, SHOULD-1). Where it is not text, the detail says what the file
-    holds beside how `execute` spells it. `project:` is read only as text:
-    a misread one is not this question's to answer, and `execute` acts on
-    `legs.assembly:`."""
-    repository = source.repository
+    `org:` is read as `execute` reads it (`_plan_org`), as whatever text
+    `str()` makes of what the file holds. While it was compared only when
+    it was text, a number, a boolean, a null or a deleted `org:` line
+    checked `plan ok`, and `execute` acted on `2026/Atlas`, `True/Atlas` or
+    `None/Atlas` (#513's review, SHOULD-1). Where it is not text, the detail
+    says what the file holds beside how `execute` spells it. `project:` is
+    read only as text: a misread one is not this question's to answer, and
+    `execute` acts on `legs.assembly:`.
+
+    AN `org:` THAT `checked_value` REFUSES IS CAUGHT, BUT NOT ALWAYS AS
+    THIS (#716, L4-48): a list, a mapping, an empty value, one with a space,
+    a leading `-` or a character outside ASCII. `check` asks `checked_value`
+    of `org:` first, in `_manifest_values`, and ends in `unsafe-value`, exit
+    2, before it compares anything; only where the plan's own names are
+    refused, and no manifest is built, does `check` reach this with it.
+    `execute` asks this first, so it refuses the same `org:` as
+    `plan-not-the-source`, before `_repository_urls` meets it."""
+    repository = _held_repository(plan, source)
     if repository is None:
         return None
     org, held = _plan_org(plan), plan.get("org")
@@ -12900,8 +12957,14 @@ def _not_the_source(plan: Plan, source: Source,
     keys = " and ".join(f"`{key}: {_shown(value)}`" for key, value in wrong)
     named = _and_listed(sorted({f"{_shown(org)}/{_shown(value)}"
                                 for _, value in wrong}))
+    # Where the live source names none, the plan's own record is what it is
+    # held to, and the detail says so: the source did not say it (#716).
+    is_the = (f"the source is {_shown(repository)}"
+              if source.repository is not None else
+              f"the plan records the source as {_shown(repository)} (its "
+              "`origin` names no repository)")
     return (f"the plan's {said} with its {keys} names {named}, "
-            f"and the source is {_shown(repository)}: an in-place adoption "
+            f"and {is_the}: an in-place adoption "
             "keeps the source's own name, and `execute` acts on the "
             "repository `org:` and `legs.assembly:` name")
 
@@ -12919,7 +12982,7 @@ def _refuse_a_plan_for_another_repository(
         raise Refusal(
             PLAN_NOT_THE_SOURCE, f"{plan.path}: {detail}",
             _own_name_remediation(
-                source, naming, pins,
+                _held_repository(plan, source), naming, pins,
                 "no leg repository was created and nothing was pushed. "))
 
 
