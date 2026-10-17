@@ -14,10 +14,14 @@ line into Git Bash gets a different command (`git -C C:\\work\\Orbit` reads as
     HASH of the README, not what the two say);
   * the tools that call a quoter that follows the host (`quote_arg`,
     `shell_quoted`, `shell_line`, `shell_word`) are exactly the three the
-    sentence names, so a fourth is a fault here until the sentence names it.
+    sentence names, and for the two it names by the lines of particular
+    commands, the functions that print those lines are the ones pinned
+    below, so a fourth tool, or a new line in a named one, is a fault here
+    until the sentence names it (#665).
 
-Nothing runs a tool and nothing touches git: the first reads two files, the
-second reads every shipped `.py` file with `ast`.
+Nothing runs a tool: the first reads two files, the second reads every
+shipped Python file with `ast`, the files `git ls-files` lists (a `.py`
+suffix, or a `python` shebang, as the root `bootstrap` has).
 """
 
 from __future__ import annotations
@@ -25,6 +29,9 @@ from __future__ import annotations
 import ast
 import html
 import re
+import subprocess
+
+import pytest
 
 from conftest import REPO
 
@@ -36,8 +43,37 @@ SENTENCE = re.compile(r"Printed commands are quoted for a POSIX shell.*?, "
 #: `os.name` is `nt`, `sh`'s elsewhere.
 HOST_QUOTERS = {"quote_arg", "shell_quoted", "shell_line", "shell_word"}
 
-#: The tools the sentence names, which is every shipped file that calls one.
-NAMED = {"shape-doctor.py", "scripts/family.py", "setup-project.py"}
+#: A tool the sentence names for ALL its lines: any function of it may call
+#: a host-dialect quoter.
+EVERY_LINE = None
+
+#: The tools the sentence names, which is every shipped file that calls one,
+#: and where it names a tool by the lines of particular commands, the
+#: functions that print them (`Class.method` where a method does). A call
+#: switched to `"posix"` in one of these leaves its function out of what the
+#: file calls, and a new function that quotes for the host is not one the
+#: sentence names: either way the sentence and this table change together.
+NAMED = {
+    # "`shape-doctor.py`'s lines": every NEXT, fix and command line it prints.
+    "shape-doctor.py": EVERY_LINE,
+    # "`setup-project.py`'s family lines": the `switch -c` and `add` it prints.
+    "setup-project.py": {"family_next_command"},
+    # "`family.py`'s `NEXT`, `switch -c`, `add` and `git rm -r --cached`
+    # lines".
+    "scripts/family.py": {
+        "_print_next",          # the `NEXT` line: `git push -u origin ...`
+        "_switch_command",      # the `git switch -c <branch>` line
+        "_add_command",         # the `family.py add --family-root ...` line
+        "_print_next_steps",    # `init`'s block: its `switch -c` and `cd`
+        "_checked_mount_path",  # the `git rm -r --cached -- <path>` remedy
+    },
+}
+
+#: The quoters' own home is not a tool, and only these two bodies are what the
+#: sentence need not name: `shell_line` spells each word by `shell_quoted`, and
+#: `shell_quoted` is the host-dialect rule itself. Any other function of
+#: `scripts/repo_shape.py` that calls a host-dialect quoter is a tool's line.
+QUOTERS_OWN_BODIES = {"scripts/repo_shape.py": {"shell_quoted", "shell_line"}}
 
 
 def squashed(text: str) -> str:
@@ -79,42 +115,168 @@ def test_the_handbooks_windows_panel_says_the_same_words():
         f"what README's \"Windows, natively\" says:\n  {sentence}")
 
 
-def host_calls(path) -> list[int]:
-    """The lines of every call in `path` to a quoter that follows the host:
-    not one that forces `sh`'s dialect with a `'posix'` argument or a
-    `posix=True` keyword."""
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    lines = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
+def quoter_names(tree: ast.AST) -> set:
+    """The names a host-dialect quoter answers to in this module: the four of
+    `HOST_QUOTERS`, and every other name bound to one, by `from repo_shape
+    import shell_line as joined` or by `joined = shell_line` (or
+    `... = repo_shape.shell_line`), however many steps it takes (#665)."""
+    names = set(HOST_QUOTERS)
+    while True:
+        before = len(names)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                names.update(alias.asname for alias in node.names
+                             if alias.asname and alias.name in names)
+            elif (isinstance(node, ast.Assign) and len(node.targets) == 1
+                  and isinstance(node.targets[0], ast.Name)):
+                value = node.value
+                bound = value.id if isinstance(value, ast.Name) else getattr(
+                    value, "attr", None)
+                if bound in names:
+                    names.add(node.targets[0].id)
+        if len(names) == before:
+            return names
+
+
+def host_calls(source: str, filename: str = "<tool>") -> list:
+    """`(function, line)` for every call in `source` to a quoter that follows
+    the host: not one that forces `sh`'s dialect with a `'posix'` argument or
+    a `posix=True` keyword. `function` is the innermost `def` the call is
+    in (`Class.method` for a method), or `<module>`. A quoter handed on as a
+    value (`map(shell_quoted, words)`) is not a call and is not seen."""
+    tree = ast.parse(source, filename=filename)
+    quoters = quoter_names(tree)
+    found = []
+
+    def walk(node, scope):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.ClassDef)):
+                walk(child, scope + [child.name])
+            else:
+                if isinstance(child, ast.Call) and host_call(child, quoters):
+                    found.append((".".join(scope) or "<module>",
+                                  child.lineno))
+                walk(child, scope)
+
+    walk(tree, [])
+    return found
+
+
+def host_call(node: ast.Call, quoters: set) -> bool:
+    func = node.func
+    name = func.id if isinstance(func, ast.Name) else getattr(
+        func, "attr", None)
+    if name not in quoters:
+        return False
+    forced = any(isinstance(arg, ast.Constant) and arg.value == "posix"
+                 for arg in node.args[1:]) or any(
+        isinstance(kw.value, ast.Constant)
+        and (kw.value.value == "posix" or kw.value.value is True)
+        for kw in node.keywords if kw.arg in ("platform", "posix"))
+    return not forced
+
+
+def is_python_source(relative: str, first_line: bytes) -> bool:
+    """A `.py` file, or a file whose first line is a shebang naming `python`:
+    the root `bootstrap` is a shipped tool with no suffix (#665)."""
+    return relative.endswith(".py") or (
+        first_line.startswith(b"#!") and b"python" in first_line)
+
+
+def tool_sources() -> dict:
+    """`{relative path: text}` of every shipped Python file: what `git
+    ls-files` lists (tracked, or new and not ignored), outside `tests/` and
+    the dot-directories, that is a `.py` file or has a `python` shebang."""
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others",
+         "--exclude-standard"],
+        cwd=str(REPO), capture_output=True, check=True).stdout
+    sources = {}
+    for raw in sorted(set(listed.split(b"\0"))):
+        relative = raw.decode("utf-8")
+        parts = relative.split("/")
+        if not raw or parts[0] == "tests" or parts[0].startswith("."):
             continue
-        func = node.func
-        name = func.id if isinstance(func, ast.Name) else getattr(
-            func, "attr", None)
-        if name not in HOST_QUOTERS:
-            continue
-        forced = any(isinstance(arg, ast.Constant) and arg.value == "posix"
-                     for arg in node.args[1:]) or any(
-            isinstance(kw.value, ast.Constant)
-            and (kw.value.value == "posix" or kw.value.value is True)
-            for kw in node.keywords if kw.arg in ("platform", "posix"))
-        if not forced:
-            lines.append(node.lineno)
-    return lines
+        path = REPO / relative
+        if not path.is_file():
+            continue                    # a gitlink, or deleted and not staged
+        data = path.read_bytes()
+        if is_python_source(relative, data.split(b"\n", 1)[0]):
+            sources[relative] = data.decode("utf-8")
+    return sources
+
+
+def host_quoting(sources: dict) -> dict:
+    """`{relative path: {function: [lines]}}` of the tools that call a quoter
+    that follows the host, the quoters' own bodies left out."""
+    quoting = {}
+    for relative, source in sources.items():
+        own = QUOTERS_OWN_BODIES.get(relative, set())
+        for function, line in host_calls(source, relative):
+            if function not in own:
+                quoting.setdefault(relative, {}).setdefault(
+                    function, []).append(line)
+    return quoting
 
 
 def test_the_tools_that_quote_for_the_host_are_the_ones_the_sentence_names():
-    quoting = {}
-    for path in REPO.rglob("*.py"):
-        relative = path.relative_to(REPO)
-        if (relative.parts[0] == "tests" or relative.parts[0].startswith(".")
-                or relative.as_posix() == "scripts/repo_shape.py"):
-            continue                    # the quoters' own home is not a tool
-        lines = host_calls(path)
-        if lines:
-            quoting[relative.as_posix()] = lines
-    assert set(quoting) == NAMED, (
+    quoting = host_quoting(tool_sources())
+    assert set(quoting) == set(NAMED), (
         "README's \"Windows, natively\" and the handbook's Windows panel name "
         "the tools whose printed lines are quoted for PowerShell on Windows. "
         f"The files that call a host-dialect quoter are {sorted(quoting)}: "
         "change the sentence in both places, then NAMED here.")
+
+
+@pytest.mark.parametrize("tool", sorted(
+    tool for tool, functions in NAMED.items() if functions is not EVERY_LINE))
+def test_the_functions_that_quote_for_the_host_are_the_ones_the_sentence_names(
+        tool):
+    """`family.py` and `setup-project.py` are named for the lines of certain
+    commands, not for every line: a call switched to POSIX quoting leaves its
+    function out, and a new function that calls a host-dialect quoter is a
+    line the sentence does not name."""
+    calling = set(host_quoting(tool_sources()).get(tool, {}))
+    assert calling == NAMED[tool], (
+        f"{tool}'s functions that call a host-dialect quoter are "
+        f"{sorted(calling)}, and the sentence names {sorted(NAMED[tool])}: "
+        "change the sentence in both places, then NAMED here.")
+
+
+def test_a_quoter_imported_under_another_name_is_a_host_call():
+    source = ("from repo_shape import shell_line as joined, shell_quoted\n"
+              "spelled = joined\n"
+              "def a():\n    return joined(['git'])\n"
+              "def b():\n    return spelled(['git'])\n"
+              "def c():\n    return shell_quoted('x', 'posix')\n"
+              "def d():\n    return joined(['git'], platform='posix')\n")
+    assert host_calls(source) == [("a", 4), ("b", 6)]
+
+
+def test_a_method_is_named_with_its_class():
+    source = ("import repo_shape\n"
+              "class Plan:\n    def line(self):\n"
+              "        return repo_shape.shell_line(['git'])\n")
+    assert host_calls(source) == [("Plan.line", 4)]
+
+
+def test_only_the_two_quoter_bodies_of_repo_shape_are_exempt():
+    own = ("def shell_quoted(value, platform=None):\n    return value\n"
+           "def shell_line(words, platform=None):\n"
+           "    return ' '.join(shell_quoted(w, platform) for w in words)\n")
+    assert host_quoting({"scripts/repo_shape.py": own}) == {}
+    third = own + "def next_line():\n    return shell_line(['git'])\n"
+    assert host_quoting({"scripts/repo_shape.py": third}) == {
+        "scripts/repo_shape.py": {"next_line": [6]}}
+    assert host_quoting({"scripts/other.py": own}) != {}, (
+        "the exemption is for repo_shape.py's bodies, not for any file that "
+        "defines functions of those names")
+
+
+def test_a_suffixless_python_file_is_scanned_and_another_language_is_not():
+    assert is_python_source("bootstrap", b"#!/usr/bin/env python3\n")
+    assert is_python_source("scripts/x.py", b"")
+    assert not is_python_source("openRepoShape", b"#!/usr/bin/env bash\n")
+    assert not is_python_source("README.md", b"# Title\n")
+    assert "bootstrap" in tool_sources()
