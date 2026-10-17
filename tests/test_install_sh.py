@@ -46,11 +46,18 @@ from pathlib import Path
 import pytest
 
 from conftest import BASH, BASH_SKIP, REPO, bash_path
-from test_openreposhape_command import (BIN_DIR_SPELLINGS, COMMAND,
-                                        CYGPATH_STATES, INSTALL_NEEDS,
+from test_openreposhape_command import (BIN_DIR_SPELLINGS, C1_CSI, COMMAND,
+                                        COMMAND_REFUSAL_ENDS, CYGPATH_STATES,
+                                        HOLDS_A_COLON,
+                                        HOLDS_A_CONTROL_CHARACTER,
+                                        INSTALL_NEEDS, NO_FILE_NAMED_SO,
+                                        UNNAMEABLE_BIN_DIRS,
+                                        assert_a_bin_dir_is_refused,
                                         command_env, machine_path,
                                         put_cygpath, put_on_path, run_cmd,
-                                        typed_bin_dir, write_script)
+                                        typed_bin_dir,
+                                        utf8_locale_with_c1_controls,
+                                        write_script)
 
 INSTALLER = REPO / "install.sh"
 
@@ -837,6 +844,124 @@ def test_the_symlink_check_looks_at_the_directory_as_bash_spells_it(tmp_path):
         "nothing was installed" in " ".join(result.stderr.split())
     assert net.calls() == [], net.calls()
     assert packaged.read_bytes() == b"#!/usr/bin/env python3\n# the package's own\n"
+
+
+# --- a directory no line about `$PATH` can name (#760) -----------------------
+
+#: How install.sh's refusals of one end: the command's remedy, for this file.
+INSTALLER_REFUSAL_ENDS = (
+    "Nothing was installed. Set $OPENREPOSHAPE_BIN_DIR to a directory "
+    "without one, then run this line again.")
+
+
+@pytest.mark.parametrize("value, said", UNNAMEABLE_BIN_DIRS)
+def test_the_installer_refuses_what_the_command_refuses_before_any_request(
+        tmp_path, value, said):
+    """ONE `$OPENREPOSHAPE_BIN_DIR`, a `:` or a control character, through
+    install.sh and through the command it installs (#760).
+
+    The command refuses it with exit 2, but install.sh learnt of it only
+    after its fetch, said only "the <version> openRepoShape's --install
+    refused (exit 2)", and a release older than the refusal placed the
+    command under it and printed it as typed. So install.sh carries a copy
+    of both `case` arms, and the two must never answer one value
+    differently: each is refused with exit 2 and the remedy, nothing is
+    placed or made, and install.sh has asked the network nothing. A colon's
+    refusal names the directory; a control character's never does."""
+    net = Net(in_its_own_directory(tmp_path, "installer"))
+    command_home = in_its_own_directory(tmp_path, "command")
+    seen = {path.name for path in net.tmp_path.iterdir()}
+    typed_installer = value.format(d=bash_path(net.tmp_path))
+    typed_command = value.format(d=bash_path(command_home))
+
+    installer = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed_installer})
+    command = run_cmd("--install", home=command_home, cwd=command_home,
+                      env={"OPENREPOSHAPE_BIN_DIR": typed_command})
+
+    assert net.calls() == [], net.calls()
+    assert_a_bin_dir_is_refused(installer, typed_installer, said,
+                                INSTALLER_REFUSAL_ENDS)
+    assert_a_bin_dir_is_refused(command, typed_command, said,
+                                COMMAND_REFUSAL_ENDS)
+    net.refused(installer)
+    assert {path.name for path in net.tmp_path.iterdir()} - seen \
+        <= {"gh-config"}
+    assert list(command_home.iterdir()) == []
+
+
+@NO_FILE_NAMED_SO
+def test_the_installer_holds_the_default_directory_to_the_colon_refusal(
+        tmp_path):
+    """No variable at all, and a `$HOME` that holds a `:`: the directory is
+    `$HOME/.local/bin`, and install.sh refuses it as the command does,
+    naming it (#667, #760)."""
+    net = Net(tmp_path)
+    home = tmp_path / "a:b"
+    result = net.run(env={"HOME": str(home)})
+    assert net.calls() == [], net.calls()
+    assert_a_bin_dir_is_refused(result, f"{home}/.local/bin", HOLDS_A_COLON,
+                                INSTALLER_REFUSAL_ENDS)
+    net.refused(result)
+
+
+@NO_FILE_NAMED_SO
+def test_a_control_character_is_refused_before_the_symlink_check_names_it(
+        tmp_path):
+    """The symlink refusal (#563) names `$target`, so a directory holding a
+    carriage return that has pipx's link in it would have install.sh print
+    the value as typed (#760): the control character is refused first, and
+    the link stays as it was."""
+    net = Net(tmp_path)
+    bin_dir = tmp_path / "a\rforged" / "bin"
+    bin_dir.mkdir(parents=True)
+    link = bin_dir / "openRepoShape"
+    link.symlink_to(tmp_path / "nowhere")
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": str(bin_dir)})
+    assert net.calls() == [], net.calls()
+    assert_a_bin_dir_is_refused(result, str(bin_dir),
+                                HOLDS_A_CONTROL_CHARACTER,
+                                INSTALLER_REFUSAL_ENDS)
+    assert link.is_symlink()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a non-ASCII value through the "
+                    "environment into Git Bash is not run here")
+@pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
+def test_the_installer_places_a_directory_with_an_unprinted_letter(
+        tmp_path, locale):
+    """The refusal is `[[:cntrl:]]` and not `[![:print:]]`, which
+    `checked_repo` uses (#760): under `LC_ALL=C` the two bytes of an e with
+    an acute accent are not printable, so the second would refuse a
+    directory called `caf` and that letter for a fault it has not got. It
+    is installed into, in either locale, and named as typed."""
+    net = Net(tmp_path)
+    net.bin = tmp_path / ("caf" + chr(0xE9))
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": bash_path(net.bin),
+                          "LC_ALL": locale})
+    assert result.returncode == 0, result.stdout + result.stderr
+    net.installed(result)
+    assert f"preflight: {bash_path(net.bin)}/openRepoShape --preflight" \
+        in result.stdout.splitlines()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a non-ASCII value through the "
+                    "environment into Git Bash is not run here")
+def test_the_installer_refuses_a_c1_control_where_the_locale_reads_it_as_one(
+        tmp_path):
+    """U+009B, the C1 control sequence introducer, under a UTF-8 locale in
+    which `[[:cntrl:]]` matches it (#760); under `LC_ALL=C` it is not
+    matched, a limit the comment above the arm states."""
+    locale = utf8_locale_with_c1_controls()
+    if locale is None:
+        pytest.skip("no UTF-8 locale here in which bash reads U+009B as a "
+                    "control character")
+    net = Net(tmp_path)
+    typed = f"{bash_path(tmp_path)}/a{C1_CSI}forged/bin"
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed, "LC_ALL": locale})
+    assert net.calls() == [], net.calls()
+    assert_a_bin_dir_is_refused(result, typed, HOLDS_A_CONTROL_CHARACTER,
+                                INSTALLER_REFUSAL_ENDS)
+    net.refused(result)
 
 
 #: A curl that RUNS, in either script: tab-indented, alone or as the value
