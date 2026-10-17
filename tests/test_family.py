@@ -1916,37 +1916,65 @@ MODE_HOLDS = pytest.mark.skipif(
     reason="a mode hides a folder's contents only on POSIX, from a user "
            "who is not root")
 
-#: `(the folder's mode, or None for a file; what the finding says is there;
-#: what kind of thing it is)` for the slots `make siblings` ended in a
-#: traceback on (#735): a file, and a folder holding a file whose mode hides
-#: it, one that can be entered and not listed (`711` is common for another
-#: user's directory) and one that cannot be entered.
+#: A symbolic link needs a privilege on Windows.
+LINKS_HOLD = pytest.mark.skipif(
+    os.name == "nt", reason="a symbolic link needs a privilege on Windows")
+
+#: The mode each locked folder is given: one that can be entered and not
+#: listed (`711` is common for another user's directory), and one that
+#: cannot be entered.
+LOCKED_MODES = {"unlistable": 0o311, "unenterable": 0o000}
+
+#: `(what stands at the slot; what the finding says is there; what kind of
+#: thing it is)` for the slots `make siblings` ended in a traceback on
+#: before #735 (a file, and a folder holding a file whose mode hides it),
+#: and the one it ended `CLONE FAILED` on before #784 (a link to nothing).
 SLOTS_NOT_READ = [
-    pytest.param(None, "is a file, not a folder", "file", id="a-file"),
-    pytest.param(0o311, "is a folder that cannot be listed", "directory",
-                 id="a-folder-it-cannot-list", marks=MODE_HOLDS),
-    pytest.param(0o000, "is a folder that cannot be listed", "directory",
-                 id="a-folder-it-cannot-enter", marks=MODE_HOLDS),
+    pytest.param("file", "is a file, not a folder", "file", id="a-file"),
+    pytest.param("unlistable", "is a folder that cannot be listed",
+                 "directory", id="a-folder-it-cannot-list", marks=MODE_HOLDS),
+    pytest.param("unenterable", "is a folder that cannot be listed",
+                 "directory", id="a-folder-it-cannot-enter",
+                 marks=MODE_HOLDS),
+    pytest.param("link", "is a link to nothing", "link",
+                 id="a-link-to-nothing", marks=LINKS_HOLD),
 ]
 
 
-def slot_not_read(request, slot, mode):
-    """A file at `slot`, or, for a `mode`, a folder there holding `notes.md`
-    with that mode, given its own mode back when the test ends; the file
-    that says `mine` is returned."""
-    if mode is None:
+def as_it_is(slot) -> tuple:
+    """What stands at `slot`: a link and where it leads, a folder's names
+    and what each file says, or a file and what it says."""
+    if slot.is_symlink():
+        return "link", os.readlink(slot)
+    if slot.is_dir():
+        return "folder", {path.name: (path.read_text(encoding="utf-8")
+                                      if path.is_file() else None)
+                          for path in slot.iterdir()}
+    return "file", slot.read_text(encoding="utf-8")
+
+
+def slot_not_read(request, slot, kind) -> tuple:
+    """`kind` at `slot`: a file, a link to nothing, or a folder holding
+    `notes.md` with a `LOCKED_MODES` mode, given its own mode back when the
+    test ends. What stands there is returned, as `as_it_is` reads it before
+    the mode is taken."""
+    if kind == "link":
+        slot.symlink_to(slot.parent / "nowhere", target_is_directory=True)
+    elif kind == "file":
         slot.write_text("mine\n", encoding="utf-8")
-        return slot
-    slot.mkdir()
-    (slot / "notes.md").write_text("mine\n", encoding="utf-8")
-    slot.chmod(mode)
-    request.addfinalizer(lambda: slot.chmod(0o755))
-    return slot / "notes.md"
+    else:
+        slot.mkdir()
+        (slot / "notes.md").write_text("mine\n", encoding="utf-8")
+    before = as_it_is(slot)
+    if kind in LOCKED_MODES:
+        slot.chmod(LOCKED_MODES[kind])
+        request.addfinalizer(lambda: slot.chmod(0o755))
+    return before
 
 
-@pytest.mark.parametrize("mode, found, thing", SLOTS_NOT_READ)
+@pytest.mark.parametrize("kind, found, thing", SLOTS_NOT_READ)
 def test_siblings_reports_a_slot_it_cannot_read_as_not_a_clone(
-        estate, request, mode, found, thing):
+        estate, request, kind, found, thing):
     """#735: A FILE, OR A FOLDER IT CANNOT LIST, IS NOT A CLONE.
 
     `place` asked only whether a folder had something in it, and `iterdir`
@@ -1955,9 +1983,13 @@ def test_siblings_reports_a_slot_it_cannot_read_as_not_a_clone(
     IRSS, the member after it, was never placed. Now each is `NOT A CLONE`,
     as the doctor's `members` row calls the slot: the finding is the one a
     folder of files gets, saying what stands there, the slot is left as it
-    is, and the next member is placed."""
+    is, and the next member is placed.
+
+    #784: AND SO IS A LINK TO NOTHING. `exists` follows a link, so it read
+    as nothing at all: the dry run said `would clone`, and git ended the
+    real run `CLONE FAILED`."""
     slot = estate["folder"] / "IRRS"
-    mine = slot_not_read(request, slot, mode)
+    before = slot_not_read(request, slot, kind)
     result = siblings(estate["holder"])
     assert "Traceback" not in result.stderr, result.stderr
     assert result.returncode == 1, result.stdout + result.stderr
@@ -1969,21 +2001,25 @@ def test_siblings_reports_a_slot_it_cannot_read_as_not_a_clone(
             f"nothing here overwrites a {thing} somebody made.") in \
         result.stderr, result.stderr
     assert (estate["folder"] / "IRSS" / ".git").is_dir()
-    if mode is not None:
+    if kind in LOCKED_MODES:
         slot.chmod(0o755)
-    assert mine.read_text(encoding="utf-8") == "mine\n"
-    assert not (slot / ".git").exists()
+    assert as_it_is(slot) == before
 
 
-@MODE_HOLDS
+@pytest.mark.parametrize("kind", [
+    pytest.param("unenterable", id="a-folder-it-cannot-enter",
+                 marks=MODE_HOLDS),
+    pytest.param("link", id="a-link-to-nothing", marks=LINKS_HOLD),
+])
 @pytest.mark.skipif(shutil.which("make") is None,
                     reason="needs `make` on PATH")
-def test_a_make_verb_skips_a_folder_it_cannot_enter(estate, request):
+def test_a_make_verb_skips_a_slot_with_no_clone(estate, request, kind):
     """#735's `--make` half: `dispatch` asked `(path / ".git").exists()`,
     which Python 3.12 answers with `PermissionError` in a folder that cannot
     be entered, so `make park` ended in that traceback. It is now a member
-    with no working clone, skipped by name, as every other one is."""
-    slot_not_read(request, estate["folder"] / "IRRS", 0o000)
+    with no working clone, skipped by name, as every other one is, and so
+    is a link to nothing (#784): `make park` and `make resume` skip it."""
+    slot_not_read(request, estate["folder"] / "IRRS", kind)
     result = siblings(estate["holder"], "--make", "park", "--dry-run")
     assert "Traceback" not in result.stderr, result.stderr
     assert "sibling IRRS SKIPPED no clone -" in [
