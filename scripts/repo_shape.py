@@ -179,7 +179,21 @@ class YamlError(Exception):
 
     Raising rather than guessing is the whole point: a validator that silently
     mis-reads its own contract file is worse than one that will not start.
+
+    `line` AND `remediation` ARE FOR `load_yaml`, WHICH NAMES A FILE (#708).
+    Where the fix is one edit of the value, the same in every file, the
+    refusal carries it (`_indicator_refusal`); every other refusal carries
+    none. Such a refusal is raised where the value is read, which knows no
+    line, so the block reader records the line it read the value on
+    (`_block_value`), and `load_yaml` names it. It stays out of the words:
+    a tool that asks the reader about ONE rendered line (`k: @a`) quotes
+    those words in a sentence of its own, where `line 1:` would be noise.
     """
+
+    def __init__(self, message: str, remediation: str = ""):
+        super().__init__(message)
+        self.line: int | None = None
+        self.remediation = remediation
 
 
 # ---------------------------------------------------------------------------
@@ -501,13 +515,24 @@ _INDICATOR_ROLES = {
 def _indicator_refusal(text: str) -> YamlError:
     """The refusal of the plain scalar `text`, which opens with an indicator
     YAML does not let open one (#392, #393): the indicator, what it does, and
-    the scalar. One `?` opens an explicit key, refused in #252's words."""
+    the scalar. One `?` opens an explicit key, refused in #252's words.
+
+    IT SAYS WHAT TO DO (#708). The likeliest hand to meet it is an adoption
+    plan's `resolution:`, which AGENTS.md asks for in words, and a reason
+    such as `` `adopt-project.py` reads it `` read as text until #392 and
+    #393. Whatever the file, the value is kept by writing it between double
+    quotes, spelled by `double_quoted`, the writer this reader takes back
+    unchanged, or by rewording it, so the refusal carries that remedy."""
     char = text[0]
+    remedy = ("Remediation: unquoted, YAML does not read this value as text, "
+              "so this reader refuses it rather than guess. Write it in "
+              f"double quotes, as {double_quoted(text)}, or reword it so that "
+              "it opens with another character, and run the command again.")
     if char == "?":
-        return YamlError(f"explicit keys are not supported: {text!r}")
+        return YamlError(f"explicit keys are not supported: {text!r}", remedy)
     shown = "a backtick" if char == "`" else f"`{char}`"
     return YamlError(f"a plain scalar cannot open with {shown}, which "
-                     f"{_INDICATOR_ROLES[char]} in YAML: {text!r}")
+                     f"{_INDICATOR_ROLES[char]} in YAML: {text!r}", remedy)
 
 
 def _scalar(raw: str) -> Any:
@@ -571,7 +596,7 @@ def _refuse_flow_indicator(text: str) -> None:
                         f"which ends it in YAML: {text!r}")
 
 
-def _refuse_entry_indicator(text: str) -> None:
+def _refuse_entry_indicator(text: str, remedy: bool = True) -> None:
     """Refuse a flow ENTRY -- an item of a flow sequence, or an entry of a
     flow mapping, whose key it opens -- that opens with an indicator (#392).
 
@@ -592,7 +617,10 @@ def _refuse_entry_indicator(text: str) -> None:
     first, after = text[:1], text[1:2]
     if (first in ":#@`%" or first in "-?" and after in (" ", "\t")
             or text == "?"):
-        raise _indicator_refusal(text)
+        refusal = _indicator_refusal(text)
+        if not remedy:
+            refusal.remediation = ""
+        raise refusal
 
 
 def _flow_value(text: str, item: bool = False) -> Any:
@@ -679,7 +707,9 @@ def _split_key_flow(text: str) -> tuple[str, str] | None:
     refuses both. `_refuse_flow_indicator` refuses them; a quoted key is
     still text.
     """
-    _refuse_entry_indicator(text)
+    # A MAPPING ENTRY opens its KEY: quoting the whole entry, as the
+    # remedy would spell it, reads as an entry without a key (#708).
+    _refuse_entry_indicator(text, remedy=False)
     kv = _split_key(text)
     if kv is not None and not text.startswith(('"', "'")):
         _refuse_flow_indicator(kv[0])
@@ -921,7 +951,7 @@ def _parse_sequence(recs: list[_Rec], i: int, indent: int) -> tuple[list[Any], i
             if not rec.dash and rec.block is None \
                     and _split_key(rec.text) is None:
                 # A plain or flow SCALAR item (`- openAvatar`, `- [a, b]`).
-                value = _flow(rec.text) if rec.text[:1] in "[{" else _scalar(rec.text)
+                value = _block_value(rec.text, rec.line)
                 i += 1
             else:
                 value, i = _parse_nodes(recs, i, rec.indent)
@@ -971,13 +1001,39 @@ def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
         i += 1
         if rest == "":
             out[key], i = _nested_value(recs, i, indent)
-        elif rest[0] in "[{":
-            out[key] = _flow(rest)
-        elif rest == "-":
-            raise _indicator_refusal(rest)
         else:
-            out[key] = _scalar(rest)
+            out[key] = _block_value(rest, rec.line)
     return out, i
+
+
+def _block_value(text: str, line: int) -> Any:
+    """A block mapping's value or a block sequence's scalar item, read on
+    `line`: a flow collection where `text` opens one, and otherwise a
+    scalar. A lone `-` is `_parse_mapping`'s refusal, made here: no
+    sequence item is one, because `_peel_dashes` takes `- -` for two
+    entries.
+
+    THE ONE PLACE A VALUE'S REFUSAL LEARNS ITS LINE (#708). `_scalar` and
+    `_flow` read text and know no line, so their refusals named the file
+    and not where in it: an adoption plan whose `resolution:` opened with
+    a backtick was `REFUSED yaml-unparsable: <plan>: a plain scalar cannot
+    open with a backtick ...`, among the hundreds of lines a plan holds.
+    The line is recorded on the refusal (`YamlError.line`), never put in
+    its words, where the refusal carries a remedy (`_indicator_refusal`'s):
+    one that tells a person to edit a value says where it is. The others
+    keep the words they had, which the naming gate's `declared-unverified`
+    reason and the root's `validate-pins.py` print, and tests quote, whole.
+    """
+    try:
+        if text[0] in "[{":
+            return _flow(text)
+        if text == "-":
+            raise _indicator_refusal(text)
+        return _scalar(text)
+    except YamlError as exc:
+        if exc.remediation:
+            exc.line = line
+        raise
 
 
 def parse_yaml(text: str) -> Any:
@@ -1025,7 +1081,12 @@ def load_yaml(path: Path) -> Any:
     try:
         return parse_yaml(text)
     except YamlError as exc:
-        raise Refusal("yaml-unparsable", f"{path}: {exc}") from exc
+        # The remedy a value's refusal carries, and the line it was read on
+        # (#708): with neither, a plan that read as text before #392 and
+        # #393 ended `check` with a refusal a person could not act on.
+        where = "" if exc.line is None else f"line {exc.line}: "
+        raise Refusal("yaml-unparsable", f"{path}: {where}{exc}",
+                      exc.remediation) from exc
 
 
 # ---------------------------------------------------------------------------
