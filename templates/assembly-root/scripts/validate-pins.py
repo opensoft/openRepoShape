@@ -45,10 +45,11 @@ EXIT CODES
        recheckable neutral-product pin disagrees
     1  a FINDING: drift a reviewer can act on
     2  a REFUSAL: the question could not be asked — an uninitialized submodule,
-       an unresolvable commit, an unreadable pin or workflow file (one that is
-       not UTF-8, or that this user cannot open), or a `.github/workflows/`
-       directory this user cannot list or search (#434). An unanswerable pin
-       question is never an implicit pass.
+       an unresolvable commit, an unreadable pin, manifest, workflow file or
+       pinned shape copy (one that is not UTF-8, or that this user cannot
+       open or reach, #712), or a `.github/workflows/` directory this user
+       cannot list or search (#434). An unanswerable pin question is never an
+       implicit pass.
        No git to run is one too (`git-not-runnable`, #412), a git that is
        missing, will not run or cannot be executed: the gitlinks and the
        digests are read through git.
@@ -166,10 +167,13 @@ class Report:
 
 class _Unreadable(NamedTuple):
     """One workflow file that could not be read (#359): the line that names it,
-    and whether it failed on its ENCODING (`True`) or on being opened."""
+    whether it failed on its ENCODING (`True`) or on being opened, and, for
+    one that could not be opened, whether the operating system refused a
+    PERMISSION (#712): any other cause gets its own advice, not `chmod`."""
 
     line: str
     encoding: bool
+    permission: bool = False
 
 
 def _read_workflow(root: Path, path: Path) -> tuple[str, _Unreadable | None]:
@@ -183,17 +187,18 @@ def _read_workflow(root: Path, path: Path) -> tuple[str, _Unreadable | None]:
     it into git and into an editor that opens it from the root.
     A file this user cannot open (`OSError`) is the same line with the
     operating system's own reason, because it is the same unguarded read.
+    The name is spelled as `_named` spells it (#712): a newline in it began a
+    line of its own, and a bidi control reordered the line it was printed on.
     """
-    rel = path.relative_to(root).as_posix()
+    rel = _named(root, path)
     try:
         return path.read_text(encoding="utf-8"), None
     except UnicodeDecodeError as exc:
         return "", _Unreadable(
             f"{rel}: not UTF-8 at byte {exc.start} ({exc.reason})", True)
     except OSError as exc:
-        return "", _Unreadable(
-            f"{rel}: cannot be read ({exc.strerror or type(exc).__name__})",
-            False)
+        return "", _Unreadable(_cannot_read(rel, exc), False,
+                               isinstance(exc, PermissionError))
 
 
 def _workflow_unreadable(files: list[_Unreadable]) -> Refusal:
@@ -204,6 +209,12 @@ def _workflow_unreadable(files: list[_Unreadable]) -> Refusal:
     them all before it raises. The first line follows the id and the rest
     follow it, one file to a line, so `shape-doctor.py`, which quotes the
     first `REFUSED` line of this script's output, quotes a file's name.
+
+    THE ADVICE FOLLOWS THE CAUSE (#712), as the directory's does (#434):
+    "restore read access" was said of every `cannot be read` file, and a
+    file whose `stat` or read failed with an I/O error or a name too long
+    is not put right by a mode. A permission keeps its sentence; any other
+    cause gets `OTHER_REASON`, the words `bump-leg.py` gives it (#383).
     """
     advice = ""
     if any(one.encoding for one in files):
@@ -213,12 +224,14 @@ def _workflow_unreadable(files: list[_Unreadable]) -> Refusal:
             "as UTF-8 (a UTF-16 file with a byte-order mark needs converting, "
             "not editing), or replace that byte with the character it was "
             "meant to be, and commit it. ")
-    if not all(one.encoding for one in files):
+    if any(one.permission for one in files):
         advice += (
             "A `cannot be read` file is not an encoding failure: this user "
             "cannot open it, so restore read access to it, and search access "
             "to every directory above it inside the root (a file in a "
             "directory this user can list but not search cannot be opened). ")
+    if any(not one.encoding and not one.permission for one in files):
+        advice += OTHER_REASON
     return Refusal(
         "workflow-unreadable",
         "\n".join(one.line for one in files),
@@ -229,7 +242,7 @@ def _workflow_unreadable(files: list[_Unreadable]) -> Refusal:
         "workflow it skipped could hide a `@<sha>` reference that is out of "
         "lockstep, which is what it exists to find, and a lossy read would "
         "call green a tree that the project's other readers refuse. "
-        + advice + "Then run the same command again.")
+        + advice + RUN_AGAIN)
 
 
 #: The `OSError`s that `Path.is_file()` and `Path.is_dir()` answered False to
@@ -266,6 +279,139 @@ def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
     return kind(mode)
 
 
+def _named(root: Path, path: Path) -> str:
+    """`path` as this validator names a file (#712): relative to `root`, POSIX
+    on every platform, as #633's `workflow-unreadable` lines are, and spelled
+    by `_shown`, so a name holding a newline, a bidi or C1 control, an ESC or
+    a byte that is not UTF-8 prints as `repr` spells it and stays on its
+    line. A path that is not under the root (a role or a product spelled as
+    an absolute path) is named whole, since `relative_to` would end the run
+    in a `ValueError`."""
+    try:
+        return _shown(path.relative_to(root).as_posix())
+    except ValueError:
+        return _shown(str(path))
+
+
+def _cannot_read(named: str, exc: OSError) -> str:
+    """`<named>: cannot be read (<the operating system's reason>)`: the line
+    for a file whose `stat` or open the operating system refused, in every
+    refusal that names one (#359, #434, #712)."""
+    return f"{named}: cannot be read ({exc.strerror or type(exc).__name__})"
+
+
+#: What a file the operating system refused for ANOTHER reason than
+#: permission is told (#712): an I/O error, a name longer than the
+#: filesystem takes, a file replaced while this ran. No `chmod` puts one
+#: right. `bump-leg.py`'s words for the same refusal (#383).
+OTHER_REASON = (
+    "Where the operating system gave another reason, put a regular file this "
+    "user can open back in its place, or take away one nobody wants, and make "
+    "sure nothing is changing the directory while this runs. ")
+
+#: The sentence every refusal of a file or directory this validator cannot
+#: read ends on, said once (#712).
+RUN_AGAIN = "Then run the same command again."
+
+#: What this validator reads, as `_unreadable_file`'s remedy says it.
+FILES_READ = ("each leg's pin, the shape pin, each neutral-product pin, "
+              "project.yaml and every copy the shape pin lists")
+
+
+def _unreadable_file(code: str, named: str, exc: OSError,
+                     reads: str = FILES_READ) -> Refusal:
+    """The refusal for a pin, the manifest or a pinned shape copy that this
+    validator must read and the operating system will not let it (#712):
+    its `stat` refused (a `contracts/` this user cannot search) or its open
+    refused (a pin at mode 000).
+
+    NAMED ONCE, RELATIVE TO THE ROOT. A pin this user could not open was
+    `load_yaml`'s line, `<absolute path>: [Errno 13] Permission denied:
+    '<absolute path>'`, under THE LOCKSTEP RULE's remedy, which moves a pin
+    and says nothing of access. This is `_cannot_read`'s line, with a remedy
+    of its own, so `main` adds no other.
+
+    THE ADVICE FOLLOWS THE CAUSE, in `bump-leg.py`'s words for the same
+    file (#383): a permission (`PermissionError`, which is `EACCES` and
+    `EPERM`) is put right by the mode or the owner, and any other cause is
+    `OTHER_REASON`, which is not told to `chmod`. `reads` names what the
+    validator reads, a leg's checkout where that is what it cannot reach.
+    """
+    advice = (
+        "Make what this user may not open readable by this user: `chmod u+r` "
+        "on a file, `chmod u+rx` on a directory (and on every directory above "
+        "it inside the root), or fix who owns it. "
+        if isinstance(exc, PermissionError) else OTHER_REASON)
+    return Refusal(
+        code, _cannot_read(named, exc),
+        f"Remediation: this validator reads {reads}, and one it cannot read "
+        "is a question it cannot answer, never a pass. " + advice + RUN_AGAIN)
+
+
+def _is_file(root: Path, path: Path, code: str = "yaml-unreadable",
+             named: str | None = None) -> bool:
+    """Whether `path` is a file, asked as `_is_a` asks it, or `code`'s
+    refusal naming it (`named`, else `_named`) where its `stat` was refused
+    (#712). The four `is_file()` calls on a pin and the manifest, and the
+    one on each shape copy, are this.
+
+    `Path.is_file()` raised a refused `stat` out of the run on Python 3.9 to
+    3.13, so a `contracts/` this user could not search ended in a
+    `PermissionError` traceback, exit 1; on 3.14 it answered False, and the
+    run refused `pin-missing`, a present file said not to exist, under the
+    lockstep remedy. A name the operating system cannot take at all (a NUL
+    in a role or a product) is no file, as `is_file()` answered it."""
+    try:
+        return _is_a(path, stat.S_ISREG)
+    except OSError as exc:
+        raise _unreadable_file(code, named or _named(root, path),
+                               exc) from exc
+    except ValueError:
+        return False
+
+
+def _is_there(path: Path) -> bool:
+    """Whether anything is at `path` (a checkout's `.git`, a file or a
+    directory), asked as `_is_a` asks it, raising the `OSError` of a `stat`
+    the operating system refused (#712, after RV827's S1).
+
+    NOT `Path.exists()`, which raised a refused `stat` out of the run up to
+    Python 3.13, so a leg checkout or a checkout beside the root that this
+    user cannot search ended in a `PermissionError` traceback, and which
+    answers False to it from 3.14, so the leg read as an uninitialized
+    submodule. A name the system cannot take at all is nothing there, as
+    `exists()` answered it."""
+    try:
+        return _is_a(path, lambda _mode: True)
+    except ValueError:
+        return False
+
+
+def _load(root: Path, path: Path):
+    """`load_yaml(path)`, with every refusal it raises naming the file as
+    `_named` does (#712).
+
+    `load_yaml` names the path it was given, which is absolute here and in
+    the platform's own spelling, raw. A file this user cannot open is
+    `_unreadable_file`'s refusal, `yaml-unreadable`, the id it always had;
+    any other keeps its id, its words and its remedy, with the path at its
+    start named relative to the root. Asked of the refusal and not of new
+    words in `repo_shape`, so a root whose `scripts/repo_shape.py` is older
+    than this file names the file the same way (#370, #610): `load_yaml`
+    has raised its refusal `from` the `OSError` since it was written."""
+    try:
+        return load_yaml(path)
+    except Refusal as exc:
+        if isinstance(exc.__cause__, OSError):
+            raise _unreadable_file("yaml-unreadable", _named(root, path),
+                                   exc.__cause__) from exc.__cause__
+        absolute = f"{path}: "
+        if not exc.detail.startswith(absolute):
+            raise
+        raise Refusal(exc.code, _named(root, path) + ": "
+                      + exc.detail[len(absolute):], exc.remediation) from exc
+
+
 def _workflows_unlistable(root: Path, workflows: Path,
                           exc: OSError) -> Refusal:
     """`workflow-unreadable` for the DIRECTORY, named as one (#434).
@@ -300,8 +446,7 @@ def _workflows_unlistable(root: Path, workflows: Path,
         "neither skips one nor reads one lossily: a workflow it skipped "
         "could hide a `@<sha>` reference that is out of lockstep, which is "
         "what it exists to find, and a directory it cannot list is one whose "
-        "workflows it cannot read. " + advice
-        + "Then run the same command again.")
+        "workflows it cannot read. " + advice + RUN_AGAIN)
 
 
 def _workflow_refs(root: Path) -> list[tuple[Path, str, str]]:
@@ -345,10 +490,11 @@ def _workflow_refs(root: Path) -> list[tuple[Path, str, str]]:
             if not _is_a(path, stat.S_ISREG):
                 continue
         except OSError as exc:
-            # The words `_read_workflow` gives a file it cannot open.
+            # The words `_read_workflow` gives a file it cannot open, the
+            # name spelled and the cause kept for the advice (#712).
             unreadable.append(_Unreadable(
-                f"{path.relative_to(root).as_posix()}: cannot be read "
-                f"({exc.strerror or type(exc).__name__})", False))
+                _cannot_read(_named(root, path), exc), False,
+                isinstance(exc, PermissionError)))
             continue
         text, problem = _read_workflow(root, path)
         if problem is not None:
@@ -368,23 +514,27 @@ def _load_leg_pin(root: Path, role, path: str, repository: str,
 
     Split from `_check_leg` for #132: everything that answers "does the pin
     file itself look right" belongs together. Returns the pin, its path
-    relative to `root`, and its `commit:` lowercased.
+    relative to `root` as `_named` spells it, and its `commit:` lowercased.
+
+    A pin that cannot be reached or read is refused by name (#712): see
+    `_is_file` and `_load`. Every name is spelled, the leg's role and
+    repository in the lines below as the pin's path is.
     """
     pin_path = root / "contracts" / f"{role}-pin.yaml"
-    if not pin_path.is_file():
-        raise Refusal(
-            "pin-missing",
-            f"leg {role!r} declares {repository} at {path!r} but "
-            f"{pin_path.relative_to(root).as_posix()} does not exist",
-        )
-    pin = load_yaml(pin_path)
-    if not isinstance(pin, dict):
-        raise Refusal("pin-unreadable", f"{pin_path}: not a mapping")
-
     # POSIX, on every platform: a finding names a path in THIS repository,
     # and `str()` of a relative Path on Windows spells it with backslashes —
     # a path the reader cannot paste back into git.
-    rel = pin_path.relative_to(root).as_posix()
+    rel = _named(root, pin_path)
+    if not _is_file(root, pin_path):
+        raise Refusal(
+            "pin-missing",
+            f"leg {role!r} declares {_shown(repository)} at {path!r} but "
+            f"{rel} does not exist",
+        )
+    pin = _load(root, pin_path)
+    if not isinstance(pin, dict):
+        raise Refusal("pin-unreadable", f"{rel}: not a mapping")
+
     if pin.get("kind") != "pinned_contract_manifest":
         report.finding("pin-wrong-kind",
                        f"{rel}: kind is {pin.get('kind')!r}, expected "
@@ -406,7 +556,8 @@ def _load_leg_pin(root: Path, role, path: str, repository: str,
     if pin.get("submodule_path") != path:
         report.finding("pin-path-mismatch",
                        f"{rel}: submodule_path is {pin.get('submodule_path')!r} "
-                       f"but project.yaml puts the {role} leg at {path!r}")
+                       f"but project.yaml puts the {_shown(str(role))} leg at "
+                       f"{path!r}")
     if pin.get("source_repository") != repository:
         report.finding("pin-repository-mismatch",
                        f"{rel}: source_repository is "
@@ -493,10 +644,22 @@ def _gitlink_repairs(root: Path, role, gitlink: str, commit: str) -> str:
                         "commit and the second the pin's", gitlink, commit)
 
 
+def _quoted(value) -> str:
+    """`value` as one word of a command this validator prints: `shlex.quote`d,
+    as every such word always was, unless a character in it is not printable,
+    and then as `_shown` spells it (#712). Quoted, an ESC or a line break in
+    a root's path or a leg's role reached the terminal as the control it is;
+    spelled, the word cannot be pasted as the value it names, and no quoting
+    could make it so."""
+    text = str(value)
+    return shlex.quote(text) if text.isprintable() else _shown(text)
+
+
 def _bump_command(root: Path, role) -> str:
-    """`bump-leg.py` for this root's leg `role`, up to its `--to` (#478)."""
-    return (f"{PYTHON} scripts/bump-leg.py --root {shlex.quote(str(root))} "
-            f"--leg {shlex.quote(str(role))} --to")
+    """`bump-leg.py` for this root's leg `role`, up to its `--to` (#478),
+    each word as `_quoted` spells it (#712)."""
+    return (f"{PYTHON} scripts/bump-leg.py --root {_quoted(root)} "
+            f"--leg {_quoted(role)} --to")
 
 
 #: What a `bump-leg.py` line needs to commit, said once for every finding
@@ -576,10 +739,11 @@ def _put_back(paths: list[str]) -> str:
     other leg's, which holds the next line back and asks for this step
     again. AN UNDO IS FOLLOWED BY `git submodule update` over the legs: it
     puts the gitlink back and leaves the leg checked out at the move, a
-    root `bump-leg.py` refuses as dirty."""
+    root `bump-leg.py` refuses as dirty. Each path is spelled (#712)."""
     one = len(paths) == 1
-    which, moved = (f"{paths[0]}'s", "it") if one else ("one leg's", "them")
-    legs = " ".join(shlex.quote(path) for path in paths)
+    which, moved = ((f"{_shown(paths[0])}'s", "it") if one
+                    else ("one leg's", "them"))
+    legs = " ".join(_quoted(path) for path in paths)
     return (f"put {which} gitlink back at its pin (check that leg out at the "
             "pin's commit and commit its gitlink in this root, with every "
             "workflow reference to its repository at that commit too), or "
@@ -593,15 +757,17 @@ def _held_then(lines: str, whom: str, back: Back | None,
     for `whom`. Never a line while `back`'s own digest stands, since two
     legs are then out of step with no gitlink off; and in the gitlink's own
     finding (`other_legs`), how its move is kept if it was meant: the
-    whole commit, which is the only `--to` `bump-leg.py` takes."""
+    whole commit, which is the only `--to` `bump-leg.py` takes. `back`'s
+    path is spelled (#712); `whom` comes spelled."""
     if back is not None and back.digest:
-        return (f"names no line while {back.path}'s own pin-digest-mismatch "
-                "stands.")
+        return (f"names no line while {_shown(back.path)}'s own "
+                "pin-digest-mismatch stands.")
     if back is not None and other_legs:
         after = ("after that line" if lines.endswith("line")
                  else "after one of them")
-        return (f"names {lines} for {whom}, and if {back.path}'s move was "
-                f"meant, bumping {back.path} to {back.gitlink} {after} keeps "
+        named = _shown(back.path)
+        return (f"names {lines} for {whom}, and if {named}'s move was "
+                f"meant, bumping {named} to {back.gitlink} {after} keeps "
                 "it.")
     return f"names {lines} for {whom}."
 
@@ -627,20 +793,21 @@ def _gitlink_repairs_held_back(paths: list[str], others: list[str],
     by hand, for `back`. The gitlink's own finding is given `other_legs`,
     `{path: codes}`, and `lines` are then that leg's; the other leg's
     finding names its own `lines`, for itself by its path, since "that leg"
-    would read as `back`. `_held_then` says what follows.
+    would read as `back`. `_held_then` says what follows. Every path is
+    spelled (#712).
     """
     what, first, whom = [], [], "that leg"
     if len(paths) > 1:
-        what.append(" and ".join(paths) + (" are both" if len(paths) == 2
-                                           else " are all")
+        what.append(" and ".join(_shown(path) for path in paths)
+                    + (" are both" if len(paths) == 2 else " are all")
                     + " off their pins")
         whom = "the leg that is left"
     elif other_legs:
-        whom = " and ".join(other_legs)
+        whom = " and ".join(_shown(path) for path in other_legs)
     elif back is not None:
-        what.append(f"{back.path} is off its pin")
-        whom = paths[0]
-    what += [f"{path} is out of step too ({', '.join(codes)})"
+        what.append(f"{_shown(back.path)} is off its pin")
+        whom = _shown(paths[0])
+    what += [f"{_shown(path)} is out of step too ({', '.join(codes)})"
              for path, codes in (other_legs or {}).items()]
     if others:
         what.append("this validator also reports " + ", ".join(others))
@@ -777,9 +944,10 @@ def _out_of_step(report: Report) -> tuple[list, list[str]]:
 def _curable_ending(root: Path, one: Curable, legs: list,
                     untagged: list[str], off: dict, named) -> str:
     """What `_end_curable_findings` adds to the finding `one`, or `""`.
-    `off` is `{role: Back}` of each leg whose gitlink is off its pin."""
+    `off` is `{role: Back}` of each leg whose gitlink is off its pin. The
+    leg's path is spelled (#712)."""
     if one.role in off:
-        return (f"Either bump-leg.py line under {one.path}'s "
+        return (f"Either bump-leg.py line under {_shown(one.path)}'s "
                 "pin-gitlink-mismatch above clears this finding too."
                 if one.role == named else "")
     # Every other leg out of step, as the `Back` of its gitlink off its pin,
@@ -801,28 +969,31 @@ def _check_gitlink_matches_pin(root: Path, role, path: str, commit: str,
                                rel: str, report: Report) -> str:
     """Fact 1 vs fact 2: the recorded gitlink against the pin file's
     `commit:`. Split from `_check_leg` for #132. Returns the gitlink so the
-    caller can check it again against fact 3, the workflow references.
+    caller can check it again against fact 3, the workflow references. The
+    role and the path are spelled (#712).
     """
-    with _git_runs(f"the {role} leg's gitlink recorded at {path!r} could "
-                   "not be read"):
+    role_named = _shown(str(role))
+    with _git_runs(f"the {role_named} leg's gitlink recorded at {path!r} "
+                   "could not be read"):
         gitlink = recorded_gitlink(root, path)
     if gitlink is None:
         raise Refusal(
             "pin-gitlink-absent",
-            f"no gitlink (mode 160000) recorded at {path!r}. The {role} leg is "
-            "declared in project.yaml but this repository does not record it "
-            "as a submodule.",
+            f"no gitlink (mode 160000) recorded at {path!r}. The {role_named} "
+            "leg is declared in project.yaml but this repository does not "
+            "record it as a submodule.",
         )
     if gitlink != commit:
         report.finding(
             "pin-gitlink-mismatch",
-            f"{path}: gitlink {gitlink} != {rel} commit {commit}\n  " + LOCKSTEP,
+            f"{_shown(path)}: gitlink {gitlink} != {rel} commit {commit}\n  "
+            + LOCKSTEP,
             leg=role,
         )
         report.mismatches.append((len(report.findings) - 1, role, path,
                                   gitlink, commit))
     else:
-        report.note(f"{path}: gitlink == {rel} commit {commit[:12]}")
+        report.note(f"{_shown(path)}: gitlink == {rel} commit {commit[:12]}")
     return gitlink
 
 
@@ -831,20 +1002,34 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
     """The digest: split from `_check_leg` for #132. Recomputes the leg's
     tree sha256 at the pinned commit, because a gitlink and a pin file that
     agree on a commit may still disagree on that commit's bytes. A mismatch
-    is one `bump-leg.py` clears, since it recomputes the digest (#478).
+    is one `bump-leg.py` clears, since it recomputes the digest (#478). The
+    leg's path is spelled in every line (#712).
+
+    A CHECKOUT THIS USER CANNOT SEARCH IS REFUSED BY NAME (#712, after
+    RV827's S1), `pin-submodule-unreadable`, naming its `.git`: the digest
+    cannot be recomputed, and the leg is not uninitialized, which is what
+    Python 3.14's `exists()` would have said of it.
     """
     submodule = root / path
-    if not (submodule / ".git").exists():
+    named = _shown(path)
+    try:
+        initialized = _is_there(submodule / ".git")
+    except OSError as exc:
+        raise _unreadable_file(
+            "pin-submodule-unreadable", _named(root, submodule / ".git"), exc,
+            "each leg's checkout, to recompute its pinned tree digest from "
+            "the leg's own objects") from exc
+    if not initialized:
         raise Refusal(
             "pin-submodule-uninitialized",
-            f"{path} is not an initialized submodule checkout, so the pinned "
+            f"{named} is not an initialized submodule checkout, so the pinned "
             "digest cannot be recomputed. Presence is not identity and an "
             "unreadable surface must fail rather than degrade.",
         )
     # `_git_runs` OUTSIDE the `try`: the refusal it raises is a `Refusal`, and
     # inside, the `except Refusal` below would turn "no git to run" into
     # `pin-commit-unresolvable`, which says the commit is missing.
-    with _git_runs(f"{path}: the pinned commit {commit[:12]} could not be "
+    with _git_runs(f"{named}: the pinned commit {commit[:12]} could not be "
                    "looked up in that submodule"):
         try:
             git_out(["rev-parse", "--verify", "--quiet",
@@ -852,7 +1037,7 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
         except Refusal as exc:
             raise Refusal(
                 "pin-commit-unresolvable",
-                f"{path}: the pinned commit {commit} is not in that "
+                f"{named}: the pinned commit {commit} is not in that "
                 f"submodule's object store ({exc.detail})",
             ) from exc
     recorded = (pin.get("digests") or {}).get("tree_sha256")
@@ -867,7 +1052,7 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
             "unstated is a number, not an identity.",
         )
     else:
-        with _git_runs(f"{path}: the tree digest at {commit[:12]} could not "
+        with _git_runs(f"{named}: the tree digest at {commit[:12]} could not "
                        "be recomputed"):
             actual = tree_digest(submodule, commit)
         if actual.lower() != recorded.lower():
@@ -882,7 +1067,8 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
             report.curable.append(Curable(len(report.findings) - 1, role,
                                           path, commit, None))
         else:
-            report.note(f"{path}: tree digest recomputes ({recorded[:12]}…)")
+            report.note(f"{named}: tree digest recomputes "
+                        f"({recorded[:12]}…)")
 
 
 def _check_workflow_refs_for_leg(refs, repository: str, path: str,
@@ -906,7 +1092,7 @@ def _check_workflow_refs_for_leg(refs, repository: str, path: str,
         if wf_sha != gitlink:
             report.finding(
                 "pin-workflow-ref-mismatch",
-                f"{wf_path.name}: `{wf_repo}@{wf_sha}` != the gitlink "
+                f"{_shown(wf_path.name)}: `{wf_repo}@{wf_sha}` != the gitlink "
                 f"{gitlink} recorded at {path!r}\n  " + LOCKSTEP,
                 leg=role,
             )
@@ -938,14 +1124,19 @@ def _check_shape_pin_header(root: Path, manifest: dict, report: Report
 
     Split from `_check_shape_pin` for #132. Returns the pin and its path
     relative to `root`.
+
+    Named relative to the root in every line, the two refusals included,
+    which named it absolute, and refused by name where it cannot be reached
+    or read (#712). The two commits it compares are spelled: neither is
+    asked to be 40 hex before the finding that names both.
     """
     pin_path = root / "contracts" / "shape-pin.yaml"
-    if not pin_path.is_file():
-        raise Refusal("shape-pin-missing", f"{pin_path} does not exist")
-    pin = load_yaml(pin_path)
-    rel = pin_path.relative_to(root).as_posix()
+    rel = _named(root, pin_path)
+    if not _is_file(root, pin_path):
+        raise Refusal("shape-pin-missing", f"{rel} does not exist")
+    pin = _load(root, pin_path)
     if not isinstance(pin, dict):
-        raise Refusal("shape-pin-unreadable", f"{pin_path}: not a mapping")
+        raise Refusal("shape-pin-unreadable", f"{rel}: not a mapping")
     if pin.get("revision_kind") != "commit":
         report.finding("pin-tag-only",
                        f"{rel}: revision_kind is {pin.get('revision_kind')!r}")
@@ -956,8 +1147,8 @@ def _check_shape_pin_header(root: Path, manifest: dict, report: Report
     declared = (manifest.get("shape") or {}).get("commit")
     if declared and str(declared).lower() != commit.lower():
         report.finding("shape-pin-manifest-disagree",
-                       f"{rel} commit {commit} != project.yaml shape.commit "
-                       f"{declared}")
+                       f"{rel} commit {_shown(commit)} != project.yaml "
+                       f"shape.commit {_shown(str(declared))}")
     return pin, rel
 
 
@@ -966,22 +1157,40 @@ def _check_shape_copy(root: Path, row, rel: str, report: Report) -> None:
 
     Split from `_check_shape_pin` for #132 so the loop over the pinned files
     is a single call per row: is it a mapping, is the file still there, and
-    does its sha256 still match what the pin recorded.
+    does its sha256 still match what the pin recorded. A row whose `path:`
+    is absent, empty or no string is `shape-pin-row`, as `update-shape.py`
+    refuses it `update-pin-row`: its `path:` was read as a path, so a row
+    with none was `None is pinned but absent` (#681).
     """
     if not isinstance(row, dict):
         report.finding("shape-pin-row", f"{rel}: a files row is not a mapping")
         return
-    target = root / str(row.get("path"))
-    if not target.is_file():
-        report.finding("shape-copy-missing",
-                       f"{rel}: {row.get('path')} is pinned but absent")
+    path = row.get("path")
+    if not isinstance(path, str) or not path:
+        report.finding("shape-pin-row", f"{rel}: a files row's `path:` is "
+                                        f"{path!r}, not the path of a file")
         return
-    actual = file_sha256(target)
+    target = root / path
+    # A copy whose `stat` or read is refused is `shape-copy-unreadable`, a
+    # refusal naming it as the row does (#712). `is_file()` raised a refused
+    # `stat` out of the run up to Python 3.13, and called the copy "pinned
+    # but absent" on 3.14; a copy at mode 000 ended in `file_sha256`'s
+    # `PermissionError` on every Python. The row's path and digest are
+    # spelled, as the pin spells them.
+    named = _shown(path)
+    if not _is_file(root, target, "shape-copy-unreadable", named):
+        report.finding("shape-copy-missing",
+                       f"{rel}: {named} is pinned but absent")
+        return
+    try:
+        actual = file_sha256(target)
+    except OSError as exc:
+        raise _unreadable_file("shape-copy-unreadable", named, exc) from exc
     if actual != str(row.get("sha256", "")).lower():
         report.finding(
             "shape-copy-drift",
-            f"{row.get('path')}: sha256 {actual}\n"
-            f"       {rel} records {row.get('sha256')}\n"
+            f"{named}: sha256 {actual}\n"
+            f"       {rel} records {_shown(str(row.get('sha256')))}\n"
             "  A shape file was edited in place. Either revert it, or "
             "carry the change upstream to openRepoShape and re-pin.",
         )
@@ -1041,9 +1250,9 @@ class PinSources:
     that a source keyed to a product `a` that nothing declares, which no pin
     ever looked up — the digest went to `gh api` and a `skip`, exit 0, with
     the skip line itself suggesting the `--pin-source` the person had just
-    passed. So the text before the first `=` is a PRODUCT only when it
-    casefolds to a declared pin's name, the same casefold the lookup below
-    uses, and any other value is a bare PATH, whole. A declared name wins
+    passed. So the text before the first `=` is a PRODUCT only when its
+    `pin_product_key` is a declared pin's, the key the lookup below uses,
+    and any other value is a bare PATH, whole. A declared name wins
     even when a directory is spelled like the whole value
     (`openGlass=x/openGlass` beside a directory `openGlass=x`): the reading is
     decided by the manifest and never by what happens to be on the disk, and
@@ -1058,14 +1267,24 @@ class PinSources:
     A VALUE THAT NAMES NO PATH IS REFUSED (#442), `pin-source-no-path`:
     `openGlass=` with nothing after its `=`, or an empty value. Either was
     `Path("")`, which is `.`, so the directory this ran in was asked for the
-    pinned commit and the finding blamed `.`. `.` typed still means it.
+    pinned commit and the finding blamed `.`. `.` typed still means it. The
+    value and the product it names are spelled, as `_shown` spells them.
+
+    KEYED BY `pin_product_key`, the pin file's own fold (#712, after #638).
+    `casefold()` took `openss=` for `openß`, two pin files, where the chain
+    readers' `LinkSources` read them as two: the two copied tools read
+    `[PRODUCT=]PATH` one way over ASCII alone. A pin's digest stopped a wrong
+    source from passing; the source was simply looked up under the other
+    spelling.
     """
 
     def __init__(self, values: list[str], declared) -> None:
         #: The declared pins, spelled as `project.yaml` spells them.
         self.declared = [p for p in declared if isinstance(p, str) and p]
-        names = {product.casefold(): product for product in self.declared}
-        #: `{product casefolded: (typed, path)}`, the last value given wins.
+        names = {pin_product_key(product): product
+                 for product in self.declared}
+        #: `{pin_product_key(product): (typed, path)}`, the last value given
+        #: wins.
         self.keyed: dict[str, tuple[str, Path]] = {}
         #: `(typed, path)` of the last bare value, if any.
         self.bare: tuple[str, Path] | None = None
@@ -1078,18 +1297,19 @@ class PinSources:
         self.used: set[str] = set()
         for typed in values:
             key, sep, path = typed.partition("=")
-            product = names.get(key.casefold()) if sep else None
+            product = names.get(pin_product_key(key)) if sep else None
             self.reading[typed] = product
             if product is not None:
-                earlier = self.keyed.get(product.casefold())
-                self.keyed[product.casefold()] = (typed, Path(path))
+                earlier = self.keyed.get(pin_product_key(product))
+                self.keyed[pin_product_key(product)] = (typed, Path(path))
             else:
                 earlier = self.bare
                 self.bare = (typed, Path(typed))
             self.replaced.pop(typed, None)
             if earlier is not None and earlier[0] != typed:
                 self.replaced[earlier[0]] = typed
-        no_path = [f"`--pin-source {typed}` names no path for {product}"
+        no_path = [f"`--pin-source {_shown(typed)}` names no path for "
+                   f"{_shown(product)}"
                    if typed else "`--pin-source ''` names no path"
                    for typed, product in self.reading.items()
                    if not (typed.partition("=")[2] if product else typed)]
@@ -1106,14 +1326,16 @@ class PinSources:
         or `""` — what a person who meant `PRODUCT=PATH` and mistyped the
         product needs told, since nothing else in the run names it. Nothing
         when no pin is declared: the note has already said so. The key is
-        spelled as `_shown` spells the value (#610)."""
+        spelled as `_shown` spells the value (#610), and so is each declared
+        pin, which is the manifest's text (#712)."""
         if typed is None or self.reading.get(typed) is not None \
                 or "=" not in typed or not self.declared:
             return ""
         key = typed.partition("=")[0]
         what = f"`{_shown(key)}` is not" if key else "nothing before its `=` is"
+        declared = ", ".join(_shown(product) for product in self.declared)
         return (f"It was read as a PATH: {what} a declared neutral-product "
-                f"pin (declared: {', '.join(self.declared)}).")
+                f"pin (declared: {declared}).")
 
 
 def resolve_neutral_pin_source(root: Path, product: str, repository: str,
@@ -1124,8 +1346,9 @@ def resolve_neutral_pin_source(root: Path, product: str, repository: str,
 
     Tried in order, the most explicit ask first:
 
-      1. `--pin-source <product>=<path>` (case-insensitive on the name, which
-         must be a declared pin's for the value to be read this way, #295)
+      1. `--pin-source <product>=<path>` (case-insensitive on the name as
+         `pin_product_key` folds it, #712, and it must be a declared pin's
+         for the value to be read this way, #295)
       2. `SHAPE_PIN_SOURCE_<PRODUCT>` in the environment
       3. a checkout sitting BESIDE this assembly root, named for the pinned
          repository (`opensoft/openGlass` -> `../openGlass`) — the ordinary
@@ -1144,19 +1367,30 @@ def resolve_neutral_pin_source(root: Path, product: str, repository: str,
     Returns `(path, how, typed)`, `typed` being the `--pin-source` value as
     given when one of those answered, so the caller can mark it used (#295).
     `(None, None, None)` when nothing above answers; the caller's next step
-    is `gh api`, and after that, a SKIP.
+    is `gh api`, and after that, a SKIP. `how` is printed, so the product
+    and the sibling's path in it are spelled (#712).
+
+    A CHECKOUT BESIDE THE ROOT THAT THIS USER CANNOT SEARCH IS THE SOURCE
+    (#712, after RV827's S1): something is there, so it answers, and
+    `_digest_from_source` names why it cannot, a finding. `exists()` raised
+    its `PermissionError` out of the run up to Python 3.13, and from 3.14
+    would have passed it over for `gh api`.
     """
-    keyed = sources.keyed.get(product.casefold())
+    keyed = sources.keyed.get(pin_product_key(product))
     if keyed is not None:
         typed, path = keyed
-        return path, f"--pin-source {product}=...", typed
+        return path, f"--pin-source {_shown(product)}=...", typed
     env_name = pin_source_env_name(product)
     env_value = None if env_shared else os.environ.get(env_name)
     if env_value:
         return Path(env_value), f"${env_name}", None
     sibling = root.parent / repo_basename(repository)
-    if (sibling / ".git").exists():
-        return sibling, f"sibling checkout ({sibling})", None
+    try:
+        beside = _is_there(sibling / ".git")
+    except OSError:
+        beside = True
+    if beside:
+        return sibling, f"sibling checkout ({_shown(str(sibling))})", None
     if sources.bare is not None:
         typed, path = sources.bare
         return path, "--pin-source", typed
@@ -1207,6 +1441,12 @@ def _check_neutral_pin_entry_and_load(root: Path, product, report: Report
     the entry itself is malformed — already reported, and there is no pin
     file name to go read — so the caller moves on to the next entry exactly
     as the original loop's `continue` did.
+
+    THE PIN'S PATH IS SPELLED (#712). The entry was `repr`'d and the path
+    built from it was not, so `["\\x1b[31mRED"]` put an ESC on stderr inside
+    `contracts/<ESC>[31mred-pin.yaml`, and in the remedy's `--pin`. The pin
+    is named relative to the root in every line, and refused by name where
+    it cannot be reached or read.
     """
     if not isinstance(product, str) or not product:
         report.finding(
@@ -1216,21 +1456,21 @@ def _check_neutral_pin_entry_and_load(root: Path, product, report: Report
         )
         return None
     pin_path = root / "contracts" / f"{product.lower()}-pin.yaml"
-    if not pin_path.is_file():
+    rel = _named(root, pin_path)
+    if not _is_file(root, pin_path):
         raise Refusal(
             "neutral-pin-missing",
-            f"project.yaml declares a pin on {product!r} but "
-            f"{pin_path.relative_to(root).as_posix()} does not exist",
+            f"project.yaml declares a pin on {product!r} but {rel} does not "
+            "exist",
             "Remediation: `scaffold-project.py --pin "
-            f"{product}@<commit>` writes that file. A declaration in "
+            f"{_shown(product)}@<commit>` writes that file. A declaration in "
             "project.yaml with no pin file beside it is a claim with no "
             "referent — either restore the file or remove the "
             "declaration.",
         )
-    pin = load_yaml(pin_path)
-    rel = pin_path.relative_to(root).as_posix()
+    pin = _load(root, pin_path)
     if not isinstance(pin, dict):
-        raise Refusal("neutral-pin-unreadable", f"{pin_path}: not a mapping")
+        raise Refusal("neutral-pin-unreadable", f"{rel}: not a mapping")
     return pin, rel
 
 
@@ -1308,11 +1548,13 @@ def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
     Split from `_check_neutral_product_pins` for #132. Returns `(actual,
     how)`, or `None` when nothing could answer — a finding or a skip is
     already reported in that case, exactly as the original loop's
-    `continue` left it.
+    `continue` left it. The product and the pin's `source_repository` are
+    spelled wherever they are printed (#712).
     """
     env_shared = pin_product_key(product) in shared
     source, how, typed = resolve_neutral_pin_source(root, product, repository,
                                                     sources, env_shared)
+    named = _shown(repository)
     if source is not None:
         if typed is not None:
             sources.used.add(typed)
@@ -1322,11 +1564,11 @@ def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
             report.finding(
                 "neutral-pin-source-unreadable",
                 f"{rel}: {_shown(str(source))} ({how}) could not answer for "
-                f"{repository} @ {commit}: {exc.detail}"
+                f"{named} @ {commit}: {exc.detail}"
                 + "".join(f"\n  {line}" for line in (
                     sources.read_as_path(typed),
                     _also_a_directory(typed, sources),
-                    f"Remediation: point it at a clone of {repository} that "
+                    f"Remediation: point it at a clone of {named} that "
                     "has that commit (`git fetch` in it first), or drop it "
                     "so the next source in the order answers.") if line),
             )
@@ -1338,13 +1580,13 @@ def _recompute_neutral_pin_digest(root: Path, product: str, repository: str,
         # bare `--pin-source`, which answers for every pin that has no more
         # specific answer: the keyed form is the one that says which pin it
         # is for (#275).
-        offered = (f"A --pin-source {product}=<path> or" if env_shared else
-                   f"A --pin-source, {pin_source_env_name(product)}, or")
+        offered = (f"A --pin-source {_shown(product)}=<path> or" if env_shared
+                   else f"A --pin-source, {pin_source_env_name(product)}, or")
         report.skip(
-            f"{product}: pin commit {commit[:12]} digest NOT "
+            f"{_shown(product)}: pin commit {commit[:12]} digest NOT "
             f"rechecked — no local checkout ({exc.code}: "
             f"{exc.detail}). {offered} a checkout at "
-            f"../{repo_basename(repository)} beside "
+            f"{_shown('../' + repo_basename(repository))} beside "
             "this assembly root would verify it offline.",
         )
         return None
@@ -1385,7 +1627,7 @@ def _check_one_neutral_product_pin(root: Path, product, report: Report,
             "descent from has moved, or the pin was hand-edited.",
         )
     else:
-        report.note(f"{product}: pin commit {commit[:12]} digest "
+        report.note(f"{_shown(product)}: pin commit {commit[:12]} digest "
                    f"recomputes ({how})")
 
 
@@ -1458,7 +1700,8 @@ def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
     which `or []` read as an empty list, are the finding too.
     """
     products = manifest.get("neutral_product_pins")
-    if products is not None and not isinstance(products, list):
+    not_a_list = products is not None and not isinstance(products, list)
+    if not_a_list:
         report.finding(
             "manifest-neutral-product-pins",
             f"neutral_product_pins is {products!r}, expected a list of "
@@ -1470,10 +1713,11 @@ def _check_neutral_product_pins(root: Path, manifest: dict, report: Report,
     shared = frozenset(pin_source_env_shared(products))
     for product in products:
         _check_one_neutral_product_pin(root, product, report, sources, shared)
-    _note_unused_pin_sources(sources, report)
+    _note_unused_pin_sources(sources, report, not_a_list)
 
 
-def _note_unused_pin_sources(sources: PinSources, report: Report) -> None:
+def _note_unused_pin_sources(sources: PinSources, report: Report,
+                             not_a_list: bool = False) -> None:
     """A note for each `--pin-source` value no declared pin read (#295),
     naming it as typed and why: a later value replaced it, its pin was never
     recomputed, nothing is declared, or every pin had a more specific
@@ -1481,7 +1725,13 @@ def _note_unused_pin_sources(sources: PinSources, report: Report) -> None:
     that is the mistyped key's only trace in the run.
 
     "As typed" is `_shown`'s (#610): a value that is not printable, and the
-    later value that replaced it, are named as `repr` spells them.
+    later value that replaced it, are named as `repr` spells them, and so is
+    the declared product a keyed value names (#712).
+
+    A FIELD THAT IS NOT A LIST IS NAMED (#712): `not_a_list` says that
+    `neutral_product_pins` was `manifest-neutral-product-pins`'s finding,
+    so it declares nothing, and the note points at that finding, where it
+    said only that nothing is declared and left the reader to find why.
     """
     for typed, product in sources.reading.items():
         if typed in sources.used:
@@ -1490,7 +1740,12 @@ def _note_unused_pin_sources(sources: PinSources, report: Report) -> None:
         if later is not None:
             why = f"the later `--pin-source {_shown(later)}` replaced it"
         elif product is not None:
-            why = f"{product}'s digest was not recomputed from any source"
+            why = (f"{_shown(product)}'s digest was not recomputed from any "
+                   "source")
+        elif not sources.declared and not_a_list:
+            why = ("project.yaml's neutral_product_pins is not a list, so it "
+                   "declares no neutral-product pin (see the "
+                   "manifest-neutral-product-pins finding)")
         elif not sources.declared:
             why = "project.yaml declares no neutral-product pin"
         else:
@@ -1505,23 +1760,27 @@ def _note_unused_pin_sources(sources: PinSources, report: Report) -> None:
 def _load_legs_to_check(root: Path) -> tuple[dict, list[dict]]:
     """The manifest and its non-assembly legs, or a Refusal naming why there
     is nothing here to check. Split from `main` for #132.
+
+    `project.yaml` is named relative to the root, as every file this
+    validator names is, where three refusals named its absolute path raw,
+    and it is refused by name where it cannot be reached or read (#712).
     """
     manifest_path = root / "project.yaml"
-    if not manifest_path.is_file():
+    if not _is_file(root, manifest_path):
         raise Refusal(
             "manifest-missing",
-            f"{manifest_path} does not exist, so there is no declaration of "
+            "project.yaml does not exist, so there is no declaration of "
             "which legs to check. A one-repository project has no legs and "
             "does not run this validator.",
         )
-    manifest = load_yaml(manifest_path)
+    manifest = _load(root, manifest_path)
     if not isinstance(manifest, dict):
-        raise Refusal("manifest-unreadable", f"{manifest_path}: not a mapping")
+        raise Refusal("manifest-unreadable", "project.yaml: not a mapping")
     legs = [leg for leg in (manifest.get("legs") or [])
             if isinstance(leg, dict) and leg.get("role") != "assembly"]
     if not legs:
         raise Refusal("manifest-no-legs",
-                      f"{manifest_path}: no non-assembly legs declared")
+                      "project.yaml: no non-assembly legs declared")
     return manifest, legs
 
 
