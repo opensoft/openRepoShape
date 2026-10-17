@@ -4681,13 +4681,84 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
     asked as the project asks it. `values` must be the complete table;
     `policy` is the naming policy the project carries a copy of. A WARNING of
     the validator (a chain link it cannot check offline) is a note and never
-    a refusal, exactly as the project's own exit code treats it.
+    a refusal, exactly as the project's own exit code treats it. Where the
+    project's own YAML reader refuses the file before the validator can be
+    asked, each sentence is the reader's, naming the value on the line it
+    refuses (`_unread_sentences`, #708).
     """
+    return [sentence for _, sentence in _invalid_problems(
+        values, policy, what, template_dir, ignore, not_text)]
+
+
+#: The kinds of problem `manifest_value_problems` names, each spelled once
+#: (#708): a value the project's reader reads back as something else, one
+#: its validator refuses, and a manifest the reader refuses before the
+#: validator can be asked, which `refuse_manifest_values` refuses under the
+#: code `invalid` still.
+KIND_MISREAD, KIND_INVALID, KIND_UNREADABLE = (
+    "misread", "invalid", "unreadable")
+
+
+def _invalid_problems(values: dict, policy: NamingPolicy, what: dict,
+                      template_dir: Path, ignore: tuple,
+                      not_text: tuple) -> list[tuple[str, str]]:
+    """`manifest_invalid`'s sentences, each with its kind: `invalid` for a
+    finding of the validator's, and `unreadable` where the project's own
+    YAML reader refuses the file the validator would read (#708), whose
+    words are the reader's and whose remedy is its own
+    (`MANIFEST_UNREADABLE_REMEDIATION`)."""
     notes = _validator_notes(values, policy, template_dir, ignore)
     if isinstance(notes, YamlError):
+        return [(KIND_UNREADABLE, sentence) for sentence
+                in _unread_sentences(values, what, template_dir, notes)]
+    return [(KIND_INVALID, sentence)
+            for sentence in _sentences_of(notes, values, what, not_text)]
+
+
+#: The placeholders that carry a value of `what` into the manifest where no
+#: line holds that value's own placeholder (#708): the organisation is the
+#: owner half of each leg's `repository:`, so the reader's refusal of such a
+#: line is `--org`'s, as the validator's finding about it is
+#: (`FINDING_PLACEHOLDER`'s `manifest-leg-repository`).
+CARRIED_BY = {"ASSEMBLY_REPOSITORY": "ORG", "SPEC_REPOSITORY": "ORG",
+              "CODE_REPOSITORY": "ORG"}
+
+
+def _unread_sentences(values: dict, what: dict, template_dir: Path,
+                      refusal: YamlError) -> list[str]:
+    """A sentence for each value of `what` that a line of the manifest the
+    project's own reader refuses carries, in the reader's words, and the
+    reader's `refusal` of the whole file where no such line is found.
+
+    THE VALUE IS NAMED AGAIN (#708). Until #392 and #393 the reader took
+    `repository: @x/Atlas` for text, so `--org @x` reached the validator,
+    whose `manifest-leg-repository` names `--org`. Since then the reader
+    refuses the file first, and the sentence named nothing: `plan --org
+    @x` (a typo of `@opensoft`, where GitHub owners never begin with `@`)
+    said only that the manifest was a file the reader refuses. So each
+    template line that carries a value of `what` (by its own placeholder,
+    or by one `CARRIED_BY` names) is rendered and read alone, as
+    `_misread_rows` reads one, and a value is named where the reader
+    refuses one of its lines.
+    """
+    said: dict[str, list[str]] = {}
+    template = (Path(template_dir) / MANIFEST_TEMPLATE).read_text(
+        encoding="utf-8")
+    for line in template.splitlines():
+        carried = {CARRIED_BY.get(key, key) for key in _placeholders_of(line)}
+        named = [key for key in what if key in carried and key in values]
+        if not named or line.lstrip().startswith("#"):
+            continue
+        reading = _reading_of(render(line, values, MANIFEST_TEMPLATE))
+        if isinstance(reading, YamlError):
+            for key in named:
+                said.setdefault(key, []).append(f"{reading}.")
+    if not said:
         return ["the manifest this run would write is a file the project's "
-                f"own YAML reader refuses: {notes}."]
-    return _sentences_of(notes, values, what, not_text)
+                f"own YAML reader refuses: {refusal}."]
+    return [f"{what[key]} is {str(values[key])!r}, which the project's own "
+            f"YAML reader refuses: {' '.join(words)}"
+            for key, words in said.items()]
 
 
 def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
@@ -4765,6 +4836,21 @@ MANIFEST_INVALID_REMEDIATION = (
     "Remediation: choose a value the project's own validate-manifest.py "
     "accepts; the words after each value are the validator's own, and a "
     "project it refuses is one whose first bootstrap would fail.")
+#: Where the project's own YAML reader refuses the manifest before its
+#: validator can be asked (#708), the words are the reader's, and a sentence
+#: may name no value (`_unread_sentences`), so the remedy says neither that
+#: they are the validator's nor that a value is always named.
+MANIFEST_UNREADABLE_REMEDIATION = (
+    "Remediation: choose another value for each one named; where none is "
+    "named, the text the reader's words quote holds it. The words are the "
+    "project's own YAML reader's, which refuses the manifest this run would "
+    "write before its validate-manifest.py can be asked, and a project "
+    "whose manifest it refuses is one whose first bootstrap would fail.")
+#: The remedy for each kind of problem, so a refusal names it by its kind
+#: (#708), with no conditional nested in another.
+KIND_REMEDIATIONS = {KIND_MISREAD: MANIFEST_MISREAD_REMEDIATION,
+                     KIND_INVALID: MANIFEST_INVALID_REMEDIATION,
+                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION}
 
 
 def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
@@ -4773,7 +4859,8 @@ def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
                             template_dir: Path = ASSEMBLY_TEMPLATE
                             ) -> list[tuple[str, str]]:
     """`(kind, sentence)` for everything wrong with the values, `kind` being
-    `misread` or `invalid`; `[]` when the project would hold every one.
+    `misread`, `invalid` or `unreadable` (`_invalid_problems`); `[]` when
+    the project would hold every one.
 
     A misread comes FIRST and alone: a value the reader turns into something
     else makes the manifest invalid in ways that are its consequence (`id:
@@ -4784,10 +4871,9 @@ def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
     if misreads:
         misread = manifest_misreads(values, what, template_dir)
         if misread:
-            return [("misread", sentence) for sentence in misread]
-    return [("invalid", sentence) for sentence
-            in manifest_invalid(values, policy, what, template_dir, ignore,
-                                not_text)]
+            return [(KIND_MISREAD, sentence) for sentence in misread]
+    return _invalid_problems(values, policy, what, template_dir, ignore,
+                             not_text)
 
 
 def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,
@@ -4796,16 +4882,18 @@ def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,
     """Raise `Refusal(<prefix>-manifest-misread)` or `<prefix>-manifest-
     invalid`, naming every value, when the project could not hold them; the
     caller's own `prefix` (`scaffold`, `adopt`) says which tool refused, and
-    its `tail` finishes the remediation with what only it knows."""
+    its `tail` finishes the remediation with what only it knows. A manifest
+    the project's reader refuses is `-invalid` still, the code a value it
+    refuses had when the validator was the one to refuse it, with the
+    reader's remedy (#708)."""
     problems = manifest_value_problems(values, policy, what,
                                        misreads=misreads)
     if problems:
         kind = problems[0][0]
-        remedy = (MANIFEST_MISREAD_REMEDIATION if kind == "misread"
-                  else MANIFEST_INVALID_REMEDIATION)
-        raise Refusal(f"{prefix}-manifest-{kind}",
+        code = KIND_MISREAD if kind == KIND_MISREAD else KIND_INVALID
+        raise Refusal(f"{prefix}-manifest-{code}",
                       " ".join(sentence for _, sentence in problems),
-                      f"{remedy} {tail}")
+                      f"{KIND_REMEDIATIONS[kind]} {tail}")
 
 
 # ---------------------------------------------------------------------------
