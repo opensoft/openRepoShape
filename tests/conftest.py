@@ -68,6 +68,60 @@ ORG = "testorg"
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
 
 
+# --- one rewrite, for every read of a just-pushed local remote (#440, #662) --
+#
+# A clone of a plain path is git's local clone, which walks the source's
+# `objects/` one file at a time; a clone of a `file://` URL asks upload-pack,
+# which reads the object store (`clone_just_pushed` says why that matters).
+# What turns the first into the second for the legs a submodule clones from
+# the plain paths `.gitmodules` records is a `url.<file URI>.insteadOf`
+# rewrite, and it is written HERE, once, in three forms: the prefixes, the
+# `(key, prefix)` entries, and the `-c` arguments of one git command.
+# `read_through_git` below puts the entries in the environment instead.
+
+def insteadof_prefixes(remotes: Path | str, *,
+                       typed: bool = False) -> list[str]:
+    """The prefixes a `url.<file URI>.insteadOf` rewrite names so that git
+    reads the bare remotes under `remotes` through the transport and not
+    through their files: the directory with a separator after it, so a
+    rewrite of `<remotes>/` does not reach a neighbour called
+    `<remotes>-other`, and a `remotes` given with or without a trailing
+    separator gives the same list.
+
+    RESOLVED, always: `scaffold-project.py` writes `.gitmodules`'s leg URLs
+    from the directory resolved, so that is where a submodule's clone starts,
+    spelled with the system's separator and with a slash, which are two
+    prefixes on Windows and one elsewhere. TYPED, on request: the directory
+    as the caller spelled it, made absolute and a symlink in it kept, which is
+    how a line a tool prints names a remote; it comes first. None is listed
+    twice."""
+    resolved = Path(remotes).resolve()
+    directories = [Path(os.path.abspath(remotes)), resolved] if typed \
+        else [resolved]
+    return list(dict.fromkeys(
+        spelling for directory in directories
+        for spelling in (os.path.join(str(directory), ""),
+                         directory.as_posix().rstrip("/") + "/")))
+
+
+def insteadof_entries(remotes: Path | str, *,
+                      typed: bool = False) -> list[tuple[str, str]]:
+    """`(key, prefix)` for each of `insteadof_prefixes`: the key is the one
+    `url.<file URI of the directory resolved>.insteadOf` that sends them all
+    to the same `file://` URL."""
+    uri = Path(remotes).resolve().as_uri().rstrip("/") + "/"
+    return [(f"url.{uri}.insteadOf", prefix)
+            for prefix in insteadof_prefixes(remotes, typed=typed)]
+
+
+def insteadof_args(remotes: Path | str, *, typed: bool = False) -> list[str]:
+    """`insteadof_entries` as the `-c <key>=<prefix>` pairs of one git
+    command. A `-c` is not stored: a clone made with it keeps the plain path
+    it was given as its `origin`, and a submodule its `.gitmodules` URL."""
+    return [arg for key, prefix in insteadof_entries(remotes, typed=typed)
+            for arg in ("-c", f"{key}={prefix}")]
+
+
 def clone_just_pushed(remote: Path, dest: Path,
                       branch: str | None = None, *, recurse: bool = True,
                       bare: bool = False, config: Sequence[str] = (),
@@ -82,7 +136,10 @@ def clone_just_pushed(remote: Path, dest: Path,
     loose objects and deletes them mid-walk, and the clone dies `failed to
     copy file to '<dest>/.git/objects/..': No such file or directory` (the
     macOS runner, twice in 90 minutes on 2026-10-12). Upload-pack reads the
-    object store, which a repack does not break.
+    object store, which a repack does not break. The session now keeps that
+    maintenance from starting (`no_auto_maintenance` below, #645), and the
+    clone still reads through git: a test that gives git a global config of
+    its own takes the session's away from the pushes it makes.
 
     `--no-local` does that for the root. The two leg clones
     `--recurse-submodules` makes are git's own, from the plain path
@@ -90,7 +147,9 @@ def clone_just_pushed(remote: Path, dest: Path,
     `url.<base>.insteadOf` for the one command: a `-c` is not stored, so the
     clone's own `origin` and `submodule.<name>.url` keep the plain paths. The
     prefix is the directory RESOLVED, as `scaffold-project.py` writes it into
-    `.gitmodules`, in both of a Windows path's spellings.
+    `.gitmodules`, in both of a Windows path's spellings
+    (`insteadof_prefixes`, shared with `read_through_git` and
+    `submodule_update_through_git`).
 
     `branch` is `-b <branch>`: `adopt-project.py execute` pushes its split
     branch into the SOURCE, a plain repository, which is then `remote`.
@@ -107,12 +166,7 @@ def clone_just_pushed(remote: Path, dest: Path,
     names a path, and a project's name can be any text.
     """
     remote = Path(remote)
-    remotes = remote.parent.resolve()
-    uri = remotes.as_uri().rstrip("/") + "/"
-    prefixes = dict.fromkeys([os.path.join(str(remotes), ""),
-                              remotes.as_posix().rstrip("/") + "/"])
-    rewrites = [arg for prefix in prefixes
-                for arg in ("-c", f"url.{uri}.insteadOf={prefix}")]
+    rewrites = insteadof_args(remote.parent)
     if bare:
         mode = ["--bare"]
     else:
@@ -133,6 +187,156 @@ def cloned_just_pushed(remote: Path, dest: Path, branch: str | None = None,
     assert cloned.returncode == 0, (f"git clone of {remote} failed:\n"
                                     f"{cloned.stderr}{cloned.stdout}")
     return Path(dest)
+
+
+def submodule_update_through_git(root: Path, remotes: Path,
+                                 *options: str
+                                 ) -> subprocess.CompletedProcess:
+    """`git submodule update <options>` in `root`, failing the test where it
+    fails (`git` below), with each mount it CLONES read through git and not
+    through the remote's files (#662, #440).
+
+    An `--init` of a mount git keeps no repository for is git's local clone of
+    the plain path `.gitmodules` records for it: the walk of the remote's
+    `objects/` that `clone_just_pushed` keeps off, taken by a submodule.
+    So the plain paths under `remotes` are rewritten to `file://` for the one
+    command, as `clone_just_pushed` rewrites them for its legs, and the file
+    transport is allowed, as every test that clones a local path allows it.
+    `options` follow `update`: `("-q", "--init")`, `("--init", "--recursive",
+    "--", "code")`.
+
+    An `update` over a mount whose repository git already keeps FETCHES, and
+    a fetch asks upload-pack whatever the URL is: a call that only brings
+    such a mount to its gitlink needs neither the rewrite nor this wrapper.
+    """
+    return git(*FILE_PROTOCOL, *insteadof_args(remotes),
+               "submodule", "update", *options, cwd=root)
+
+
+# --- git's automatic maintenance, OFF for every git the session starts (#645)
+#
+# A COPY IS A WALK OF THE FILES TOO. `shutil.copytree` reads `objects/` one
+# file at a time, as git's local clone does (`clone_just_pushed` above), and
+# this suite copies a repository a fixture has just committed in, fetched
+# into or pushed to in over a hundred places: `project`, `test_family.py`'s
+# `holder`, `test_doctor_pin_restore_merges.py`'s copies of the session's
+# `standard` (`the_standard_moved`), a bare remote.
+# `git commit`, `merge` and `fetch`, and the `receive-pack` a push starts in
+# the remote, each run `git maintenance run --auto` as they finish. Since git
+# 2.47 that run DETACHES, holding `objects/maintenance.lock`, and the command
+# returns while it goes on; since 2.54 its default strategy (`geometric`)
+# repacks a repository of a few hundred loose objects and deletes the ones
+# it packed. A copy taken in that moment fails `[Errno 2] No such file or
+# directory` on one of them: `holder` and `the_standard_moved`, on the
+# Linux runner (#645).
+#
+# So the session turns it off, as every git command in this estate is told
+# to: `gc.auto=0`, for a git that runs `git gc --auto` itself (2.43's
+# `receive-pack` does), and `maintenance.auto=false`. In TWO scopes, because
+# neither reaches every git alone:
+#
+# - COMMAND SCOPE (`GIT_CONFIG_COUNT`), APPENDED to what the environment
+#   holds (`appended_to_command_scope`; the Windows job holds two): every git
+#   this process and every tool under test starts inherits it, and so does
+#   each git a `git submodule` starts. It outranks every config file, a
+#   repository's own and a test's own global file included.
+# - A GLOBAL FILE (`GIT_CONFIG_GLOBAL`), for the one git that never sees
+#   command scope: a push to a local path or a `file://` URL starts
+#   `receive-pack` in the remote with `GIT_CONFIG_COUNT` and
+#   `GIT_CONFIG_PARAMETERS` removed, and that process runs the remote's
+#   maintenance. The file INCLUDES the global config git would read without
+#   it -- the file `GIT_CONFIG_GLOBAL` already named, or
+#   `$XDG_CONFIG_HOME/git/config` then `~/.gitconfig` -- so a person's own
+#   settings still apply, and sets the two keys after them. A `git config
+#   --global <key>` read without `--includes` sees the two alone: in this
+#   repository that is `setup-project.py`'s Windows-only `core.autocrlf`
+#   warning, which no test reads from a person's own config. An EMPTY
+#   `GIT_CONFIG_GLOBAL` is git's "no global config", and nothing is included.
+#   A `~/` path is written only where `HOME` is set, or on Windows, where Git
+#   for Windows sets it: with `HOME` unset git cannot expand one, and every
+#   git then dies `could not expand include path`.
+#
+# WHAT IT LEAVES: a git whose environment takes away both -- a
+# `GIT_CONFIG_COUNT` overwritten rather than appended to, together with a
+# `GIT_CONFIG_GLOBAL` of a test's own, or an environment built from nothing
+# -- and a push made under a global file of a test's own. No repository the
+# suite copies is made, or pushed to, that way today.
+# `tests/test_no_auto_maintenance.py` holds both scopes to account.
+
+#: The two settings, in the order they are appended and written.
+NO_AUTO_MAINTENANCE = (("gc.auto", "0"), ("maintenance.auto", "false"))
+
+#: The session's global config file, directly under the basetemp.
+GLOBAL_CONFIG_NAME = "gitconfig"
+
+
+def _config_quoted(path: str) -> str:
+    """`path` as a double-quoted git config value, in which a backslash and a
+    double quote are escapes."""
+    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def appended_to_command_scope(environ: Mapping[str, str],
+                              entries=NO_AUTO_MAINTENANCE) -> dict:
+    """The `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`
+    that put `entries` in git's command scope AFTER the ones `environ` holds,
+    which stay as they are: a later entry of a key is the one git reads."""
+    held = int(environ.get("GIT_CONFIG_COUNT") or 0)
+    added = {"GIT_CONFIG_COUNT": str(held + len(entries))}
+    for index, (key, value) in enumerate(entries, held):
+        added[f"GIT_CONFIG_KEY_{index}"] = key
+        added[f"GIT_CONFIG_VALUE_{index}"] = value
+    return added
+
+
+def home_is_known() -> bool:
+    """Whether git can expand a `~/` path: `HOME` is set, or this is Windows,
+    where Git for Windows finds a home of its own."""
+    return bool(os.environ.get("HOME")) or os.name == "nt"
+
+
+def session_global_config(named: str | None) -> bytes:
+    """The global config file `no_auto_maintenance` writes: an include of
+    what git reads as its global config without one, and then
+    `NO_AUTO_MAINTENANCE`. LF, and every path POSIX-style: `~/` is expanded by
+    git, from the `HOME` of the git that reads it.
+
+    `named` is what `GIT_CONFIG_GLOBAL` held. A name is the file included. An
+    empty value is git's "no global config" (2.43), so nothing is included.
+    None, unset, is git's two default files in git's own order, the
+    `~/` ones only where `home_is_known()`: with `HOME` unset git dies
+    `could not expand include path` over one, in every command it runs."""
+    if named is not None:
+        included = [Path(os.path.abspath(named)).as_posix()] if named else []
+    else:
+        homed = (["~/.config/git/config", "~/.gitconfig"]
+                 if home_is_known() else [])
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        # `XDG_CONFIG_HOME` stands in for the first, and needs no `HOME`.
+        included = ([(Path(xdg) / "git" / "config").as_posix(), *homed[1:]]
+                    if xdg else homed)
+    lines = ["[include]"] if included else []
+    lines += [f"\tpath = {_config_quoted(path)}" for path in included]
+    for key, value in NO_AUTO_MAINTENANCE:
+        section, name = key.split(".")
+        lines += [f"[{section}]", f"\t{name} = {value}"]
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def no_auto_maintenance(tmp_path_factory):
+    """Git's automatic maintenance off in `os.environ` for the whole session,
+    in both scopes the block above describes; returns the global file. Autouse
+    and session scope, so it is in place before any session or module fixture
+    builds a repository, and put back as it was at the end."""
+    config = tmp_path_factory.getbasetemp() / GLOBAL_CONFIG_NAME
+    config.write_bytes(session_global_config(
+        os.environ.get("GIT_CONFIG_GLOBAL")))
+    with pytest.MonkeyPatch.context() as patch:
+        for name, value in {**appended_to_command_scope(os.environ),
+                            "GIT_CONFIG_GLOBAL": str(config)}.items():
+            patch.setenv(name, value)
+        yield config
 
 
 def load_without_bytecode(path: Path, name: str):
@@ -1396,21 +1600,18 @@ def read_through_git(remotes: Path) -> dict:
     """The environment that makes every git a pasted line starts read the
     bare repositories in `remotes` through git, not through their files
     (#440): `clone_just_pushed`'s `url.<file URI>.insteadOf` rewrites, as
-    `GIT_CONFIG_COUNT` entries, because the line under test is run exactly
-    as it was printed and a submodule's own clone inherits the environment.
-    The directory as typed and as resolved, so the root's URL and the legs'
-    `.gitmodules` URLs are both rewritten."""
-    uri = remotes.resolve().as_uri().rstrip("/") + "/"
-    prefixes = list(dict.fromkeys(
-        spelling for directory in (Path(os.path.abspath(remotes)),
-                                   remotes.resolve())
-        for spelling in (os.path.join(str(directory), ""),
-                         directory.as_posix().rstrip("/") + "/")))
-    env = {"GIT_CONFIG_COUNT": str(len(prefixes))}
-    for index, prefix in enumerate(prefixes):
-        env[f"GIT_CONFIG_KEY_{index}"] = f"url.{uri}.insteadOf"
-        env[f"GIT_CONFIG_VALUE_{index}"] = prefix
-    return env
+    `GIT_CONFIG_*` entries, because the line under test is run exactly as it
+    was printed and a submodule's own clone inherits the environment. The
+    directory as typed and as resolved (`insteadof_entries`), so the root's
+    URL and the legs' `.gitmodules` URLs are both rewritten.
+
+    The entries are APPENDED to the ones `os.environ` holds
+    (`appended_to_command_scope`), which every caller lays this over at the
+    same moment, so the session's own (`no_auto_maintenance`'s, and the two
+    the Windows job sets) still reach the pasted line, as they reach every
+    other git a test starts."""
+    return appended_to_command_scope(
+        os.environ, insteadof_entries(remotes, typed=True))
 
 
 def pasted(lines, cwd: Path,

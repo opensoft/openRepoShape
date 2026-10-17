@@ -303,24 +303,31 @@ def test_another_name_keeps_a_commit_made_on_a_detached_head(family, on_main):
 # --- validate-family.py: each remedy that names the branch ------------------
 
 @STATES
-def test_a_missing_gitlinks_remedy_typed_as_printed(on_main, left):
-    """`member-gitlink-absent`: the remedy's prose ends with the sentence,
-    and its first command, typed as printed, puts the holder on the branch
-    the `add` under it needs, in either state."""
+def test_a_staged_hand_mount_removals_remedy_typed_as_printed(family,
+                                                              on_main, left):
+    """`member-gitlink-unnamed` for a hand mount whose removal is staged and
+    not committed (#681): the finding's prose ends with the sentence, and
+    its first command, typed as printed in either state, puts the holder on
+    the branch `add` needs, with the removal still staged."""
     holder = on_main
-    git("rm", "-r", "-q", "-f", "--", "members/IRRS", cwd=holder)
-    git("commit", "-qm", "Drop the gitlink but keep the row", cwd=holder)
-    earlier = leave_branch(holder, "family/add-irrs") if left else None
-    result = validate(holder)
-    assert result.returncode == 2, result.stdout + result.stderr
-    lines = result.stderr.splitlines()
-    assert lines[0].startswith("REFUSED member-gitlink-absent: "), lines
-    assert lines[1].endswith(
-        "a row with no submodule is a claim about a tree that is not here. "
-        + BRANCH_LEFT), lines[1]
-    switch = shlex.split(lines[2])
-    assert switch[-2:] == ["-c", "family/add-irrs"], lines[2]
-    type_switch(holder, switch, "family/add-irrs", earlier)
+    _, tip = spare_commits(family)
+    path = f"members/{SPARE}"
+    stage_gitlink(holder, path, tip)
+    git("commit", "-qm", "A hand mount", cwd=holder)
+    git("rm", "-q", "--cached", "--", path, cwd=holder)
+    branch = f"family/add-{SPARE.lower()}"
+    earlier = leave_branch(holder, branch) if left else None
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1, result.stderr + result.stdout
+    finding = result.stderr.split("FINDING member-gitlink-unnamed: ", 1)[1]
+    assert finding.splitlines()[0].endswith(
+        "if one is still there. " + BRANCH_LEFT), finding
+    assert "git rm" not in "".join(finding.splitlines()[1:]), finding
+    switch = shlex.split(finding.splitlines()[1])
+    assert switch[-2:] == ["-c", branch], switch
+    type_switch(holder, switch, branch, earlier)
+    assert git("diff", "--cached", "--name-only", cwd=holder).stdout == (
+        f"{path}\n")
 
 
 @STATES
@@ -417,10 +424,10 @@ def unguarded(source: str) -> list[int]:
 
 def test_every_remedy_that_names_a_switch_line_ends_with_the_sentence():
     """THE GUARD (S2). The validator's three remedies that print a `git
-    switch -c` (`member-gitlink-absent`, `member-duplicate-id` and
-    `member-gitlink-unnamed`) end their prose with `BRANCH_LEFT`, and so
-    does any remedy added later: the one that builds it cannot forget, as
-    #610's `_lockstep` does, without this failing."""
+    switch -c` (`member-duplicate-id`, and `member-gitlink-unnamed`'s two
+    for a hand mount, its removal staged or not, #681) end their prose with
+    `BRANCH_LEFT`, and so does any remedy added later: the one that builds
+    it cannot forget, as #610's `_lockstep` does, without this failing."""
     source = TEMPLATE.read_text(encoding="utf-8")
     assert len(switch_remedies(source)) >= 3, switch_remedies(source)
     assert unguarded(source) == []
