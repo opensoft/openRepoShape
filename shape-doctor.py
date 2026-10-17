@@ -419,10 +419,13 @@ try:
     #: `adopt-project.py plan` takes `--org` from, imported here for the same
     #: reason, in place of a copy of `plan`'s regex (`origin_org`, #521).
     #: `spelled` is how `siblings.py` prints the values that row quotes (#673).
+    #: `host_shell_dialect` is which shell a printed line is quoted for, the
+    #: one question `quote_arg` and `repo_shape.shell_quoted` both ask (#711).
     from repo_shape import (  # noqa: E402
         COMMIT_RE, NamingPolicy, PYTHON, Refusal, accepts_role, git_out,
-        load_yaml, recorded_gitlink, redacted, remote_local_path,
-        resolved_remote, same_repository, spelled, url_repository,
+        host_shell_dialect, load_yaml, recorded_gitlink, redacted,
+        remote_local_path, resolved_remote, same_repository, spelled,
+        url_repository,
     )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
@@ -805,11 +808,19 @@ def quote_arg(value, platform: str | None = None, *,
     `tests/test_family_printed_quoting.py` holds the two quoters to one
     answer. PowerShell's dialect is NOT changed: it expands no `=word`, so
     `UNQUOTED_NT` keeps its bare `=`, as in any other place in a word.
+
+    NO `platform` IS THE SHELL THE DOCTOR RUNS IN, which
+    `repo_shape.host_shell_dialect` answers, the question
+    `repo_shape.shell_quoted` asks too (#711): PowerShell's dialect on
+    Windows, and `sh`'s under Git Bash, where `MSYSTEM` is set, and
+    everywhere else. It used to be `os.name`, which is `nt` under Git Bash
+    as well, so Git Bash was handed lines quoted for PowerShell.
     """
     # ASCII first, so the alphabet check and the quoting below it both see
     # what `Row.__init__` will (Copilot, PR #102); see the docstring above.
     text = ascii_text(str(value))
-    windows = (os.name if platform is None else platform) == "nt"
+    windows = (host_shell_dialect() if platform is None
+               else platform) == "nt"
     # `.fullmatch`, not `.match`: a pattern ending in `$` still matches just
     # before a trailing newline, so `.match` alone would call "Atlas\n" bare
     # (Copilot, PR #102). And a leading `=` is never bare for `sh` (#532).
@@ -1350,7 +1361,7 @@ def restore_from_head(root: Path, relative: str,
     passed on to `quote_arg` as `bump_leg_command`'s is, so both dialects
     are asserted from either host.
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     return (f"git -C {quote_arg(root, target)} checkout HEAD -- "
             f"{quote_arg(relative, target)}")
 
@@ -1805,9 +1816,13 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
     `platform` IS PASSED ON, as `copy_command` says at length: one resolved
     `target` governs the dialect, the interpreter and every quoting, so a
     Windows line built on a POSIX runner is a Windows line, and both are
-    asserted from either host. `platform=None` is the host, unchanged.
+    asserted from either host. `platform=None` is the host, and asks two
+    questions that part only under Git Bash (#711): the shell
+    (`host_shell_dialect`, `sh`'s there) for `env` or `$env:` and every
+    quoting, and the machine (`python_command`, `python` on Windows) for
+    the interpreter, so Git Bash gets `env PYTHONPATH=... python ...`.
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     command = " ".join([python_command(platform), quote_arg(used, target),
                         *(quote_arg(arg, target) for arg in args)])
     scripts = validator_scripts(shape, own_copy)
@@ -2426,7 +2441,7 @@ def bump_leg_command(shape: Path, root: Path, role: str, commit: str,
     one, as the `shape currency` row's `apply` does, because it writes a
     commit too (#111).
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     return " ".join([
         python_command(platform),
         quote_arg(shape / "scripts" / "bump-leg.py", target),
@@ -5459,7 +5474,7 @@ def checkout_notes(noun: str, off_pin: list[Path], kept: list = (),
     about a loss that cannot happen learns to skip the sentence on the day
     it can.
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     notes = "".join(f". {rel} has files but no .git of its own, and git kept "
                     "its repository, so this line links the two again"
                     for rel in relinked)
@@ -5581,7 +5596,7 @@ def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
     `platform` is `quote_arg`'s and `copy_command`'s, and for the same
     reason: the line is spelled for the reader's shell, not the host's.
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     line = " ".join(["git", "-C", quote_arg(root, target), "submodule",
                      "update", "--init", "--recursive", "--checkout", "--",
                      *(quote_arg(path, target) for path in paths)])
@@ -5881,14 +5896,19 @@ def copy_command(source, target, platform: str | None = None) -> str:
     being exercised only where nobody is looking.
 
     AND `platform` IS PASSED ON, not merely branched on. `quote_arg(value)`
-    with no platform reads the REAL host's `os.name`, so a Windows line
+    with no platform reads the REAL host's shell, so a Windows line
     built on a POSIX runner would be quoted by `sh` rules -- the function
     claiming a spelling it did not produce, which is the defect #103 names
     in the neighbouring `scaffold_command`. Here the argument is threaded
     through to every value, so what the test asserts is what a Windows
     reader gets.
+
+    WITH NO `platform`, THE BRANCH ASKS WHAT THE QUOTING ASKS:
+    `host_shell_dialect` (#711). `Copy-Item` is a cmdlet, which Git Bash
+    does not have, and Git Bash has a `cp`, so a Windows machine run from
+    Git Bash is handed `cp` and `sh`'s quoting, the line its shell runs.
     """
-    if (os.name if platform is None else platform) == "nt":
+    if (host_shell_dialect() if platform is None else platform) == "nt":
         return (f"Copy-Item -LiteralPath {quote_arg(source, platform)} "
                 f"-Destination {quote_arg(target, platform)}")
     return f"cp {quote_arg(source, platform)} {quote_arg(target, platform)}"
@@ -9061,7 +9081,7 @@ def scaffold_command(shape: Path, project: str,
 
     AND THE QUOTING IS THAT PLATFORM'S TOO, which is the third of the three
     decisions this one line makes and was the last one still reading the
-    HOST. `quote_arg` defaults to `os.name` when it is passed no platform, so
+    HOST. `quote_arg` defaults to the host when it is passed no platform, so
     with an explicit `platform` half this line followed the argument and half
     followed the machine: `scaffold_command(PureWindowsPath(r"C:\srv\Shape"),
     "Atlas", "nt")` named `setup-project.py` and `python` on every host, as
@@ -9071,18 +9091,22 @@ def scaffold_command(shape: Path, project: str,
     OTHER one (#103). `\` is in `UNQUOTED_NT` and not in `UNQUOTED_POSIX`,
     so a Windows path is exactly where that shows.
 
-    ONE RESOLUTION, USED THREE TIMES. `target` is decided once and the
-    branch, the quoting and the interpreter all read it rather than each
-    re-deriving "which platform is this" from its own source -- which is the
-    defect above, stated as code. `python_command` is the one that keeps the
-    RAW `platform`: `None` there returns the module constant itself rather
-    than a second derivation of the same rule (see its docstring), and
-    `quote_arg(value, None)` resolves the host identically to
-    `quote_arg(value, os.name)`, so the host-default line is unchanged, byte
-    for byte.
+    ONE RESOLUTION PER QUESTION, NEVER ONE PER CALL. An explicit `platform`
+    is the whole answer: the branch, the quoting and the interpreter all
+    read it, rather than each re-deriving "which platform is this" from its
+    own source -- which is the defect above, stated as code. With none, the
+    host answers two questions, and Git Bash is where they part (#711): the
+    MACHINE picks the entry point and the interpreter, so a Windows machine
+    is handed `python setup-project.py` in PowerShell and in Git Bash alike
+    (`os.name`, and `python_command`, which keeps the RAW `platform` and so
+    the module constant itself); the SHELL picks the quoting, which is
+    `host_shell_dialect`, `sh`'s under Git Bash, as `quote_arg(value, None)`
+    asks it. Off Git Bash the two answers are one, so that line is unchanged,
+    byte for byte.
     """
-    target = os.name if platform is None else platform
-    if target == "nt":
+    machine = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
+    if machine == "nt":
         return (f"{python_command(platform)} "
                 f"{quote_arg(shape / 'setup-project.py', target)} "
                 f"--org {ORG_PLACEHOLDER} --project "

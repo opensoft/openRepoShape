@@ -36,7 +36,9 @@ WHAT THIS MODULE OWNS
     raw is escaped, and a stdout that cannot encode it never raises (#391).
   - `shell_quoted` and `shell_line` — how `scripts/family.py` and a holder's
     `scripts/siblings.py` spell a path in a command a person pastes, so that
-    it reaches the command as ONE argument in `sh` or PowerShell (#486).
+    it reaches the command as ONE argument in `sh` or PowerShell (#486), and
+    `host_shell_dialect`, which of the two a line printed here is for: Git
+    Bash on Windows gets `sh`'s (#711).
 
 This file is COPIED into a scaffolded assembly root by `scaffold-project.py`
 and its sha256 is recorded in that project's `contracts/shape-pin.yaml`, so an
@@ -3280,10 +3282,44 @@ SHELL_BARE_NT = re.compile(r"[A-Za-z0-9_./:%+=\\-]+")
 POWERSHELL_SINGLE_QUOTES = frozenset("'‘’‚‛")
 
 
+def host_shell_dialect(name: str | None = None, environ=None) -> str:
+    """Which shell a line printed on this host is quoted for, as the
+    `platform` `shell_quoted` takes: `"nt"` for PowerShell's dialect, and
+    `"posix"` for `sh`'s (#711). `name` and `environ` are `os.name` and
+    `os.environ` when None, so a test can ask about any host from any host.
+
+    THE RULE. A Windows host (`os.name` is `nt`) is PowerShell's, unless its
+    environment has a non-empty `MSYSTEM`: then the tool was run from Git
+    Bash, or another MSYS2 shell, which reads a line as `sh` does, so the
+    line gets `sh`'s quoting. Every other host is `sh`'s. It is asked each
+    time a line is quoted, not once at import, so the answer is the
+    environment's the line is printed in.
+
+    WHY `MSYSTEM`. Under Git Bash `os.name` is `nt`, as it is under
+    PowerShell, because the Python Git Bash runs is the same Windows Python,
+    so `os.name` cannot tell the two shells apart. Git Bash and every MSYS2
+    shell set `MSYSTEM` (`MINGW64`, `UCRT64`, `CLANGARM64`, `MSYS`, ...) and
+    hand it to every program they start; PowerShell and cmd.exe do not set
+    it. An EMPTY `MSYSTEM` names no MSYS2 shell, so it is not Git Bash.
+
+    WHAT IT DOES NOT COVER. A PowerShell or cmd.exe started from inside Git
+    Bash inherits `MSYSTEM`, so a tool run there is answered `sh`'s and
+    prints `sh`'s quoting into PowerShell: nothing the tool can read tells
+    that PowerShell from Git Bash, and this does not try. It answers the
+    quoting and the shell syntax around a word, and nothing about the
+    machine: `PYTHON` stays `python` under Git Bash, which runs the Windows
+    Python, and a path keeps its Windows spelling.
+    """
+    name = os.name if name is None else name
+    environ = os.environ if environ is None else environ
+    return "nt" if name == "nt" and not environ.get("MSYSTEM") else "posix"
+
+
 def shell_quoted(value: object, platform: str | None = None) -> str:
     """`value` as ONE word of a command a person pastes into the shell of
-    `platform` (`os.name` when None): bare where that shell reads every
-    character of it as itself, else whole, in single quotes (#486).
+    `platform` (`host_shell_dialect()` when None, #711): bare where that
+    shell reads every character of it as itself, else whole, in single
+    quotes (#486).
 
     THE DOCTOR'S RULE, `shape-doctor.py`'s `quote_arg`, which has quoted
     every path its NEXT lines print since #101/#102: `sh` and PowerShell are
@@ -3312,7 +3348,7 @@ def shell_quoted(value: object, platform: str | None = None) -> str:
     `quote_arg` still leaves it bare: a known gap, named where #486 lands.
     """
     text = str(value)
-    windows = (os.name if platform is None else platform) == "nt"
+    windows = (host_shell_dialect() if platform is None else platform) == "nt"
     bare = SHELL_BARE_NT if windows else SHELL_BARE_POSIX
     if not text.startswith("=") and bare.fullmatch(text):
         return text

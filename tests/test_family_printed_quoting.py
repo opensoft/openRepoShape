@@ -51,7 +51,8 @@ from test_family import (  # noqa: F401
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
-    PYTHON, SHELL_BARE_NT, SHELL_BARE_POSIX, shell_line, shell_quoted,
+    PYTHON, SHELL_BARE_NT, SHELL_BARE_POSIX, host_shell_dialect, shell_line,
+    shell_quoted,
 )
 
 #: The two folders a holder is copied into: a space, and a space beside an
@@ -97,8 +98,11 @@ def powershell_words(line: str) -> list[str]:
 
 
 def host_words(line: str) -> list[str]:
-    """`line` as the shell `shell_quoted` speaks on THIS host reads it."""
-    return powershell_words(line) if os.name == "nt" else shlex.split(line)
+    """`line` as the shell `shell_quoted` speaks on THIS host reads it:
+    PowerShell's where `host_shell_dialect` says so, `sh`'s under Git Bash
+    and everywhere else (#711)."""
+    return (powershell_words(line) if host_shell_dialect() == "nt"
+            else shlex.split(line))
 
 
 # --- the quoter ---------------------------------------------------------------
@@ -146,11 +150,11 @@ def test_the_powershell_form_is_one_word_to_powershell(value):
 
 def test_the_two_dialects_escape_an_apostrophe_differently():
     """Each reads the other's escape as a different value: `sh` reads
-    `'O''Brien'` as `OBrien`. So the dialect is the platform's."""
+    `'O''Brien'` as `OBrien`. So the dialect is the shell's (#711)."""
     assert shell_quoted("O'Brien", "posix") == "'O'\\''Brien'"
     assert shell_quoted("O'Brien", "nt") == "'O''Brien'"
     assert shlex.split(shell_quoted("O'Brien", "nt")) == ["OBrien"]
-    here = "nt" if os.name == "nt" else "posix"
+    here = host_shell_dialect()
     assert shell_quoted("O'Brien") == shell_quoted("O'Brien", here)
 
 
