@@ -12761,15 +12761,16 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
 # what the file holds. One that `checked_value` refuses (a list, a mapping,
 # an empty value, a space, a leading `-`, a character outside ASCII) is, in
 # `execute`, `plan-not-the-source` where the plan is held to a repository
-# (`_held_repository`) and `unsafe-value` where it is held to none. `check`
-# asks `checked_value` of `org:` first (`_manifest_values`, and
-# `_submodule_findings` where a kept submodule url is relative) and ends in
-# `unsafe-value`, exit 2, before it compares anything; only where the plan's
-# own names are refused, and no kept url is relative, does it reach the
-# comparison with one (#716, L4-48). A source that names no repository
-# (no `origin`, or one that ends in no `org/repo`) is asked nothing by
-# `plan`, as before; `check` and `execute` hold the plan's names to what the
-# plan recorded for it, `source: repository:`, where it recorded one (#716).
+# (`_held_repository`, and the `org:` is not that repository's own) and
+# `unsafe-value` where it is held to none. `check` asks `checked_value` of
+# `org:` first (`_manifest_values`, and `_submodule_findings` where a kept
+# submodule url is relative) and ends in `unsafe-value`, exit 2, before it
+# compares anything; only where the plan's own names are refused, and no
+# kept url is relative, does it reach the comparison with one (#716,
+# L4-48). A source that names no repository (no `origin`, or one that ends
+# in no `org/repo`) is asked nothing by `plan`, as before; `check` and
+# `execute` hold the plan's names to what the plan recorded for it,
+# `source: repository:`, where it recorded one (#716).
 #
 # AN `origin` THAT IS A PATH NAMES NO REPOSITORY (#521), in any separator
 # (`url_repository`). It was read as its last two directories, so a clone of
@@ -12898,11 +12899,19 @@ def _refuse_another_repository(args, source: Source, naming: NamingPolicy,
 
 
 def _last_two_directories(path: str) -> str | None:
-    """`<directory>/<name>` for a filesystem path, in either separator, with
-    one `.git` dropped from the name and the case kept; None where the path
-    has fewer than two. It is what `url_repository` read of a path `origin`
-    until #521 (#716)."""
-    segments = [part for part in re.split(r"[\\/]", path) if part]
+    """`<directory>/<name>` for a filesystem path, in either separator and
+    after a `:`, with one `.git` dropped from the name and the case kept;
+    None where the path has fewer than two (#716).
+
+    A SUPERSET OF WHAT v1.0.0 AND v1.0.1 READ. Their `_remote_repository`
+    took `[:/]([^/:]+/[^/]+?)(?:\\.git)?$` of a path `origin` (until #521),
+    which is its last two segments, split at `/` or `:`, one `.git` dropped
+    from the second: `/srv/a:b/Atlas.git` was `b/Atlas`, and
+    `/srv/clones/Atlas.git.git` was `clones/Atlas.git`. It read none for a
+    trailing `/`, a backslash path, or a relative one that starts with no
+    separator; this reads each as its last two directories too, which only
+    holds a plan to nothing more often, and that is what main does."""
+    segments = [part for part in re.split(r"[\\/:]", path) if part]
     if segments and segments[-1].endswith(".git") \
             and len(segments[-1]) > len(".git"):
         segments[-1] = segments[-1][:-len(".git")]
@@ -12943,9 +12952,13 @@ def _held_repository(plan: Plan, source: Source) -> str | None:
     recorded = plan.source.get("repository")
     held = _github_name(recorded) if isinstance(recorded, str) else None
     path = _origin_path(source) if held is not None else None
-    if path is not None and held.casefold() == (
-            _last_two_directories(path) or "").casefold():
-        return None
+    if path is not None:
+        # Read as `held` was, so the two spellings are one name: v1.0.1
+        # records `clones/Atlas.git` for `/srv/clones/Atlas.git.git`.
+        old = _last_two_directories(path)
+        old = None if old is None else _github_name(old)
+        if old is not None and old.casefold() == held.casefold():
+            return None
     return held
 
 
@@ -12982,8 +12995,9 @@ def _not_the_source(plan: Plan, source: Source,
     THIS (#716, L4-48): a list, a mapping, an empty value, one with a space,
     a leading `-` or a character outside ASCII. `execute` asks this first,
     so it refuses such an `org:` as `plan-not-the-source` where the plan is
-    held to a repository (`_held_repository`), and as `unsafe-value`, from
-    `_repository_urls`, where it is held to none. `check` asks
+    held to a repository (`_held_repository`, and the `org:` is not that
+    repository's own), and as `unsafe-value`, from `_repository_urls`,
+    where it is held to none. `check` asks
     `checked_value` of `org:` first (`_manifest_values`, and
     `_submodule_findings` where a kept submodule url is relative) and ends
     in `unsafe-value`, exit 2, before it compares anything; only where the

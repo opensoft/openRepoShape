@@ -353,19 +353,25 @@ def test_the_sources_own_origin_is_asked_before_the_plans_record(tmp_path):
 
 # --- RV825's MUST-1: a plan v1.0.0 or v1.0.1 wrote for a path `origin` -------
 
-@pytest.mark.parametrize("origin", [
-    "/srv/clones/Atlas.git",
-    "/srv/clones/Atlas",
-    "/srv/clones/Atlas.git/",
-    "/srv/Clones/ATLAS.git",
-    "C:\\srv\\clones\\Atlas.git",
-    "\\\\server\\clones\\Atlas.git",
-    "file:///srv/clones/Atlas.git",
-    "clones/Atlas.git",
+@pytest.mark.parametrize("origin, record", [
+    ("/srv/clones/Atlas.git", "clones/Atlas"),
+    ("/srv/clones/Atlas", "clones/Atlas"),
+    ("/srv/clones/Atlas.git/", "clones/Atlas"),
+    # What v1.0.1's own regex records for it, `Clones/ATLAS`.
+    ("/srv/Clones/ATLAS.git", "Clones/ATLAS"),
+    ("C:\\srv\\clones\\Atlas.git", "clones/Atlas"),
+    ("\\\\server\\clones\\Atlas.git", "clones/Atlas"),
+    ("file:///srv/clones/Atlas.git", "clones/Atlas"),
+    ("clones/Atlas.git", "clones/Atlas"),
+    # Two that v1.0.1 really records an exotic name for: its regex takes a
+    # `:` for a separator and drops only the last `.git`.
+    ("/srv/clones/Atlas.git.git", "clones/Atlas.git"),
+    ("/srv/a:b/Atlas.git", "b/Atlas"),
 ], ids=["dot-git", "no-dot-git", "trailing-slash", "another-case",
-        "backslashes", "share", "file-url", "relative"])
+        "backslashes", "share", "file-url", "relative", "two-dot-gits",
+        "colon"])
 def test_a_plan_that_v1_0_x_wrote_for_a_path_origin_is_still_a_correct_plan(
-        adopter, tmp_path, monkeypatch, origin):
+        adopter, tmp_path, monkeypatch, origin, record):
     """v1.0.0 and v1.0.1 read a path `origin` as its last two directories
     (#521): `plan --org acme --project Atlas` on a clone of
     `/srv/clones/Atlas.git` was refused as `--org clones`, and the plan
@@ -381,7 +387,7 @@ def test_a_plan_that_v1_0_x_wrote_for_a_path_origin_is_still_a_correct_plan(
     written = plan(tmp_path, source, "--project", OWN, "--org", ORG)
     assert written.returncode == 0, written.stdout + written.stderr
     edited(tmp_path / PLAN, ("  repository: null",
-                             "  repository: clones/Atlas"))
+                             f"  repository: {record}"))
 
     checked = check(tmp_path / PLAN)
 
@@ -438,7 +444,7 @@ def test_an_unsafe_org_is_unsafe_in_check_and_compared_by_execute_if_held(
     assert PLAN_NOT_THE_SOURCE not in checked.stderr
     assert refusal.code == code
     if not held:
-        assert f"{refusal.code}: {refusal.detail}" == unsafe[len("REFUSED "):]
+        assert unsafe[len("REFUSED "):] == f"{refusal.code}: {refusal.detail}"
 
 
 def test_check_compares_an_unsafe_org_where_no_manifest_is_built(
