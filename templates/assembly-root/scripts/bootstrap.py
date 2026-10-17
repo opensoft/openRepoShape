@@ -61,9 +61,15 @@ WHAT IT DOES, in order:
       wallet-carried authority is not misconfigured, and a bootstrap that
       failed there would have made the layout load-bearing again.
 
-  (d) EXITS 0 unless a validator failed, and 2 where step (a) or the
-      upstream notice cannot start git, refused `git-not-runnable` as the
-      validators refuse it (#694).
+  (d) EXITS 0 unless a validator failed, and says which way. A validator
+      that FOUND something exits 1, and the run ends `bootstrap FAILED:
+      <name> (exit 1)`, exit 1. A validator that REFUSED, its exit 2, could
+      not check at all, and the run ends `bootstrap REFUSED: <name> (exit 2)`,
+      exit 2 (#764). Step (a) and the upstream notice refuse
+      `git-not-runnable`, exit 2, where git cannot be started, as the
+      validators do (#694). Where one validator found and another refused,
+      both lines are said and the run exits 2, since a check that could not
+      run outranks a finding.
 
 SCHEMA-NEUTRAL BY CONTRACT. A one-repository project runs the same command:
 step (a) is a no-op where there are no submodules, and steps (c) and (d) are
@@ -145,6 +151,9 @@ VALIDATORS = (
     ("manifest", ["scripts/validate-manifest.py"]),
     ("pins", ["scripts/validate-pins.py"]),
 )
+#: The exit code a validator ends a REFUSAL with: it could not check, which
+#: is not a finding (#764). Every other non-zero code is a failure.
+VALIDATOR_REFUSED = 2
 
 
 def _run(root: Path, args: list[str]) -> int:
@@ -1131,11 +1140,12 @@ def _checkout_all_tracking_branches(root: Path, sub_legs: list[dict],
 
 
 def _run_neutral_validators(root: Path, manifest: dict | None,
-                            skip: bool) -> list[str]:
+                            skip: bool) -> list[tuple[str, int]]:
     """Step (b): run the neutral validators, then the upstream notice.
 
-    Split from `main` for #132. Returns the labels of any validator that
-    failed, exactly as `main`'s local `failed` list used to accumulate them.
+    Split from `main` for #132. Returns the label and the exit code of each
+    validator that failed, in the order they ran: `_end_of_run` says which
+    were findings and which refusals (#764).
     """
     if skip:
         print("  skipped (--skip-validators)")
@@ -1153,9 +1163,35 @@ def _run_neutral_validators(root: Path, manifest: dict | None,
         print(f"  --- {label} ---")
         code = _run(root, argv_)
         if code != 0:
-            failed.append(f"{label} (exit {code})")
+            failed.append((label, code))
     shape_upstream_notice(root)
     return failed
+
+
+def _end_of_run(failed: list[tuple[str, int]]) -> int:
+    """The last line or two of the run, and its exit code (#764).
+
+    A validator's exit 2 is its REFUSAL, that it could not check, and is said
+    as one: `bootstrap REFUSED: <name> (exit 2)`, exit 2, the code every
+    other refusal here ends with. Any other non-zero exit is a finding, as it
+    was: `bootstrap FAILED: <name> (exit <code>)`, exit 1. Where both
+    happened both lines are said, the findings first, and the run exits 2,
+    since a check that could not run outranks a finding.
+    """
+    found = [f"{label} (exit {code})" for label, code in failed
+             if code != VALIDATOR_REFUSED]
+    refused = [f"{label} (exit {code})" for label, code in failed
+               if code == VALIDATOR_REFUSED]
+    if found:
+        print("bootstrap FAILED: " + ", ".join(found), file=sys.stderr)
+    if refused:
+        print("bootstrap REFUSED: " + ", ".join(refused), file=sys.stderr)
+    if refused:
+        return 2
+    if found:
+        return 1
+    print("bootstrap ok")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1199,11 +1235,7 @@ def main(argv: list[str] | None = None) -> int:
     read_authority(root, legs)
 
     print()
-    if failed:
-        print("bootstrap FAILED: " + ", ".join(failed), file=sys.stderr)
-        return 1
-    print("bootstrap ok")
-    return 0
+    return _end_of_run(failed)
 
 
 if __name__ == "__main__":
