@@ -1342,8 +1342,12 @@ def assert_the_plan_refuses_a_remote_that_exists(run, tmp_path: Path) -> None:
     assert result.returncode == 2, result.stderr + result.stdout
     assert (f"REFUSED scaffold-remote-exists: {leg.resolve()} already exists "
             "and has commits" in result.stderr), result.stderr
-    assert "REFUSED: the plan could not be produced" in result.stderr
+    # THE PLAN WAS PRINTED BEFORE THE REMOTES WERE ASKED (#573), so it is
+    # refused, not "could not be produced" (#608, L2-37).
+    assert "REFUSED: the plan was refused (see above)." in result.stderr
+    assert "could not be produced" not in result.stderr, result.stderr
     assert "(5) the plan" in result.stdout, result.stdout
+    assert "\nproject      Sample" in result.stdout, result.stdout
     assert "--dry-run: nothing was created." not in result.stdout
     assert "(6) scaffold" not in result.stdout, "the run reached (6)"
     assert "This will create THREE repositories" not in result.stdout
@@ -1745,4 +1749,295 @@ def assert_an_upstream_origin_in_any_case_needs_an_org(run,
     assert result.returncode == 2, result.stderr + result.stdout
     assert "you are running from the upstream checkout" in result.stderr, (
         result.stderr)
+    assert not (tmp_path / "remotes").exists()
+
+
+# --- setup's step (3), (4) and (5) checks (#608) -----------------------------
+#
+# ONE READING, TWO ENTRY POINTS, as above: each helper takes the runner of the
+# file that calls it, and every run passes `--local-remote-dir`.
+
+#: What step (3) says a person can do about a parent folder nobody can write
+#: in, and about a path whose drive is not there.
+WRITE_IT = ("Choose another --into, or make it a folder you can write in, "
+            "then run this again.")
+DRIVE_WAY_OUT = ("Choose another --into on a drive that is there, then run "
+                 "this again.")
+
+#: Where the naming check can be asked about a chain, and what each makes of
+#: it: `(the product the project pins, what its own tree declares)`. `verified`
+#: is a link tree that declares the chain's next link; `broken` one that
+#: declares another product, which the plan refuses as `chain-not-declared`.
+CHAIN_LINK_TREES = {"verified": ("openXdox", "openDox"),
+                    "broken": ("openYdox", "openOther")}
+
+
+def a_folder_nobody_can_write_in(tmp_path: Path) -> Path:
+    """`tmp_path/shut`, an existing folder at mode 555, or a skip where this
+    account can make a folder in one anyway (root) or the platform has no such
+    mode (Windows). The test puts the mode back: pytest cannot delete it
+    otherwise."""
+    if os.name == "nt":
+        pytest.skip("a folder's mode does not stop Windows from writing in it")
+    shut = tmp_path / "shut"
+    shut.mkdir()
+    shut.chmod(0o555)
+    try:
+        (shut / "probe").mkdir()
+    except OSError:
+        return shut
+    (shut / "probe").rmdir()
+    shut.chmod(0o755)
+    pytest.skip("this account can make a folder in a folder at mode 555")
+
+
+def assert_a_parent_nobody_can_write_in_is_refused(run,
+                                                   tmp_path: Path) -> None:
+    """`--into <folder at mode 555>/work` is refused in step (3), naming the
+    folder and the reason the system gave, before the naming check, the plan
+    or any repository, and leaves the folder as it was. On main step (3)
+    asked only that what it found was a folder, so all three repositories were
+    created and step (7) refused `could not be made a folder (Permission
+    denied)`."""
+    shut = a_folder_nobody_can_write_in(tmp_path)
+    try:
+        into = shut / "work"
+        result = run("--project", "Sample", "--yes", "--org", "demoorg",
+                     "--local-remote-dir", str(tmp_path / "remotes"),
+                     "--into", str(into))
+        assert result.returncode == 2, result.stderr + result.stdout
+        assert ("REFUSED: %s is a folder you cannot write in (Permission "
+                "denied), and this project would be cloned inside it, at %s, "
+                "so the run stops here and nothing was created. %s"
+                % (os.path.abspath(str(shut)),
+                   os.path.abspath(str(into / "Sample")), WRITE_IT)
+                ) in result.stderr, result.stderr
+        assert "Traceback" not in result.stderr, result.stderr
+        assert "(3) project" in result.stdout, result.stdout
+        for later in ("(4) naming policy", "(5) the plan", "(6) scaffold"):
+            assert later not in result.stdout, f"the run reached {later}"
+        assert not (tmp_path / "remotes").exists()
+        assert list(shut.iterdir()) == []
+    finally:
+        shut.chmod(0o755)
+
+
+def assert_a_plan_that_never_printed_could_not_be_produced(
+        run, tmp_path: Path) -> None:
+    """A plan the scaffold refuses BEFORE it prints one - here a
+    `--tracking-branch` git will not create, passed through - keeps step
+    (5)'s words, `the plan could not be produced (see above).`: there is no
+    plan above to call refused (#608, L2-37). The refusal after a PRINTED plan
+    is `assert_the_plan_refuses_a_remote_that_exists`'s."""
+    result = run("--project", "Sample", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--tracking-branch", "a..b")
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "REFUSED scaffold-bad-tracking-branch:" in result.stderr
+    assert ("REFUSED: the plan could not be produced (see above)."
+            in result.stderr), result.stderr
+    assert "was refused" not in result.stderr, result.stderr
+    assert "(5) the plan" in result.stdout, result.stdout
+    assert "\nproject      Sample" not in result.stdout, result.stdout
+    assert not (tmp_path / "remotes").exists()
+    assert not (tmp_path / "work").exists()
+
+
+def assert_step_four_reads_a_chain_as_the_plan_does(run, tmp_path: Path,
+                                                    how: str) -> None:
+    """Step (4) is given the passthrough's `--pin-source` as the naming
+    check's `--link-source`, so the chain it reports on is the chain the plan
+    reads (#608, L2-25): a link tree that declares the next link shows
+    `[verified]`, as the plan has it, and one that declares another product
+    shows `[broken]`, which the plan then refuses as `chain-not-declared`. On
+    main step (4) showed both as `[declared-unverified]` with a WARNING that
+    the link's tree was not reachable, though the tree was named with
+    `--pin-source`."""
+    product, declares = CHAIN_LINK_TREES[how]
+    tree = tmp_path / "link"
+    tree.mkdir()
+    git("init", "-q", "-b", "main", cwd=tree)
+    (tree / "project.yaml").write_bytes(
+        ("schema_version: 1\nkind: project-manifest\n"
+         f"neutral_product_pins:\n  - {declares}\n").encode("utf-8"))
+    git("add", "project.yaml", cwd=tree)
+    git("commit", "-q", "-m", "seed", cwd=tree)
+    commit = git("rev-parse", "HEAD", cwd=tree).stdout.strip()
+    result = run("--project", "codexDox", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--pin", f"{product}@{commit}",
+                 "--referent-chain", f"{product},openDox",
+                 "--pin-source", str(tree))
+    assert result.returncode == 2, result.stderr + result.stdout
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert f"[{how}]" in step_four, step_four
+    assert "declared-unverified" not in step_four + result.stderr, (
+        step_four + result.stderr)
+    assert "NOTE --link-source" not in step_four + result.stderr
+    if how == "verified":
+        assert_refuses_for_want_of_a_terminal(result.stderr)
+    else:
+        assert "REFUSED chain-not-declared:" in result.stderr, result.stderr
+        assert (f"{product} declares {declares}, not openDox"
+                in step_four + result.stderr)
+    assert not (tmp_path / "remotes").exists()
+
+
+def assert_an_empty_pin_source_is_the_plans_to_refuse(run,
+                                                      tmp_path: Path) -> None:
+    """`--pin-source ''` is refused by the scaffold's plan as
+    `pin-source-no-path` (#570), so step (4) is given no `--link-source` for
+    it and leaves the value to step (5) (#608, rv608 on #623). On the merge of
+    #608 with #576 step (4) passed `--link-source=`, which the naming check
+    refuses as `link-source-no-path`, naming a flag the person never typed,
+    and the run ended there with exit 1 where the plan refuses the same value
+    with exit 2; passing `.` instead, as the scaffold's `Path('')` once read
+    it, made the naming check WARN about `--link-source`, `.` and a folder the
+    plan never reads. The naming check is given no source, so it says of the
+    chain what it says of any it cannot verify, `[declared-unverified]`, and
+    its hint there offers the sources the plan reads, in the plan's words
+    (#661, L2-75): no line names `--link-source`, a flag the run never typed
+    and setup does not take."""
+    result = run("--project", "codexDox", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--pin", "openXdox@" + "0123456789abcdef" * 2
+                 + "01234567", "--referent-chain", "openXdox,openDox",
+                 "--pin-source", "")
+    heard = result.stderr + result.stdout
+    assert "(5) the plan" in result.stdout, result.stdout
+    assert result.returncode == 2, heard
+    assert "REFUSED pin-source-no-path:" in result.stderr, result.stderr
+    assert "link-source-no-path" not in heard, heard
+    assert "--link-source" not in heard, heard
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert "[declared-unverified]" in step_four, step_four
+    assert f"not reachable here ({FIRST_LINK_WORDS})." in step_four, (
+        step_four)
+    assert "do not satisfy the naming policy" not in result.stderr, (
+        result.stderr)
+    assert not (tmp_path / "remotes").exists()
+
+
+def assert_a_chain_of_one_link_has_no_source_to_note(run,
+                                                     tmp_path: Path) -> None:
+    """A chain of ONE link, which the plan accepts, has no holder whose
+    declaration a source could answer, so step (4) is not given the
+    `--pin-source` as a `--link-source`: the naming check would say `NOTE
+    --link-source ...: not used`, which the plan never prints for that chain
+    (#608, rv608 on #623)."""
+    source = tmp_path / "product"
+    source.mkdir()
+    git("init", "-q", "-b", "main", cwd=source)
+    (source / "README.md").write_bytes(b"# a neutral product\n")
+    git("add", "README.md", cwd=source)
+    git("commit", "-q", "-m", "seed", cwd=source)
+    commit = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    result = run("--project", "codexDox", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--pin", f"openDox@{commit}",
+                 "--referent-chain", "openDox", "--pin-source", str(source))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert_refuses_for_want_of_a_terminal(result.stderr)
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert "codexDox: domain-descendant" in step_four, step_four
+    assert "NOTE --link-source" not in step_four + result.stderr, (
+        step_four + result.stderr)
+    assert not (tmp_path / "remotes").exists()
+
+
+#: What step (4) is asked to say of a chain (#661, L2-75): each case's
+#: passthrough after `--`, as `(--pin-source, --referent-chain, what the
+#: link tree declares, the variable set for the first link)`.
+STEP_FOUR_WORDS = {
+    "three-links-first-tree": ("tree", "openXdox,openYdox,openDox",
+                               "openYdox", False),
+    "three-links-no-source": ("", "openXdox,openYdox,openDox", None, False),
+    "blank": (" ", "openXdox,openDox", None, False),
+    "holds-an-equals": ("openXdox=layer", "openXdox,openDox", None, False),
+    "variable-first": ("tree", "openXdox,openDox", "openDox", True),
+}
+
+#: The scaffold's own words for the first link and a later one (#610).
+FIRST_LINK_WORDS = ("SHAPE_PIN_SOURCE_OPENXDOX, or a --pin-source clone of "
+                    "openXdox that holds its project.yaml, would let it be "
+                    "read")
+LATER_LINK_WORDS = "SHAPE_PIN_SOURCE_OPENYDOX would let it be read"
+
+
+def assert_step_four_speaks_in_the_plans_words(run, tmp_path: Path,
+                                               monkeypatch, case: str
+                                               ) -> None:
+    """Step (4) names no `--link-source`, a flag setup does not take (#661,
+    L2-75): a holder it cannot read is offered the sources step (5) reads,
+    in step (5)'s words, one offer per holder; a `--pin-source` it could not
+    read, or did not need, is named `--pin-source`; and a value holding
+    `=` is not said to have been read as a PATH. On main step (4) offered
+    `--link-source <link>=<path>` and labelled the source `(--link-source)`;
+    typed as printed, the offer ended step (5) in `unrecognized
+    arguments`."""
+    clear_ambient_pin_sources(monkeypatch)
+    source, chain, declares, variable = STEP_FOUR_WORDS[case]
+    commit = "0123456789abcdef" * 2 + "01234567"
+    if declares is not None:
+        tree = tmp_path / "openXdox"
+        tree.mkdir()
+        git("init", "-q", "-b", "main", cwd=tree)
+        (tree / "project.yaml").write_bytes(
+            ("schema_version: 1\nkind: project-manifest\n"
+             f"neutral_product_pins:\n  - {declares}\n").encode("utf-8"))
+        git("add", "project.yaml", cwd=tree)
+        git("commit", "-q", "-m", "seed", cwd=tree)
+        commit = git("rev-parse", "HEAD", cwd=tree).stdout.strip()
+        source = str(tree)
+        if variable:
+            monkeypatch.setenv("SHAPE_PIN_SOURCE_OPENXDOX", source)
+    result = run("--project", "codexDox", "--org", "demoorg",
+                 "--local-remote-dir", str(tmp_path / "remotes"),
+                 "--into", str(tmp_path / "work"),
+                 "--", "--pin", f"openXdox@{commit}",
+                 "--referent-chain", chain, "--pin-source", source)
+    heard = result.stdout + result.stderr
+    step_four = result.stdout.split("(4) naming policy", 1)[-1].split(
+        "(5) the plan", 1)[0]
+    assert "(5) the plan" in result.stdout, heard
+    assert result.returncode == 2, heard
+    assert "--link-source" not in step_four + result.stderr, heard
+    offered = [line.strip() for line in step_four.splitlines()
+               if line.strip().startswith("WARNING declared-unverified: ")]
+    if case == "three-links-first-tree":
+        assert offered == [
+            "WARNING declared-unverified: openYdox declaring a pin on openDox "
+            "is a fact in openYdox's own tree, which is not reachable here "
+            f"({LATER_LINK_WORDS}). The recorded chain still classifies."]
+        # One run says one fact one way: the plan's own WARNING.
+        assert offered[0] + "\n" in result.stderr, result.stderr
+    elif case == "three-links-no-source":
+        assert [line.partition("not reachable here (")[2] for line in offered
+                ] == [f"{FIRST_LINK_WORDS}). The recorded chain still "
+                      "classifies.",
+                      f"{LATER_LINK_WORDS}). The recorded chain still "
+                      "classifies."]
+        assert "REFUSED pin-source-no-path:" in result.stderr
+    elif case == "variable-first":
+        assert "[verified]" in step_four, step_four
+        assert (f"NOTE --pin-source {source}: not used — each link whose own "
+                "declaration is read had a more specific source "
+                "(SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout beside the "
+                "project).") in result.stderr, result.stderr
+    else:
+        assert (f"WARNING link-source-unreadable: {source} (--pin-source) "
+                "could not answer for openXdox: no such file or directory"
+                ) in result.stderr, result.stderr
+        assert "read as a PATH" not in result.stderr, result.stderr
+        assert offered, step_four
+        assert offered[0].endswith(
+            f"({FIRST_LINK_WORDS}). The recorded chain still classifies."
+        ), offered
     assert not (tmp_path / "remotes").exists()
