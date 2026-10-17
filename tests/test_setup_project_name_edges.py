@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import string
 import sys
 
@@ -143,7 +144,16 @@ TYPED = {
 def gh_that_is_signed_in(tmp_path):
     """The environment of a run that is allowed to call `gh` and gets the
     three answers a preflight and step (3) read, and refuses the rest, so no
-    run here reaches a real GitHub (the real `gh` stays unreachable)."""
+    run here reaches a real GitHub (the real `gh` stays unreachable).
+
+    Its git has a credential helper for github.com: the line `gh auth
+    setup-git` writes, pointed at this stub, in git's command scope
+    (`GIT_CONFIG_COUNT`, appended to what the environment holds). Without
+    it, the machine's own git config decided whether a GitHub run's
+    preflight offered `gh auth setup-git`. A machine with a helper anywhere
+    was never offered it; CI's runner has none, and its runs waited at that
+    offer's `Type yes to continue:`, which nothing here answers, until they
+    were killed (#777's first CI run)."""
     stub = tmp_path / "ghbin"
     stub.mkdir(exist_ok=True)
     gh = stub / "gh"
@@ -155,7 +165,12 @@ def gh_that_is_signed_in(tmp_path):
                    b'  *) echo "stub gh: refused $*" >&2; exit 97 ;;\n'
                    b"esac\n")
     gh.chmod(0o755)
-    return {"PATH": str(stub) + os.pathsep + os.environ["PATH"]}
+    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+    return {"PATH": str(stub) + os.pathsep + os.environ["PATH"],
+            "GIT_CONFIG_COUNT": str(held + 1),
+            f"GIT_CONFIG_KEY_{held}": "credential.https://github.com.helper",
+            f"GIT_CONFIG_VALUE_{held}":
+                "!%s auth git-credential" % shlex.quote(str(gh))}
 
 
 def flags_for(tmp_path, local):
@@ -304,6 +319,25 @@ def test_a_typed_name_at_the_bound_goes_on_to_step_four(tmp_path, local):
     assert "[ok] project" in screen, screen
     assert NAMING_POLICY in screen, screen
     assert "characters long" not in screen, screen
+
+
+@PTY_SKIP
+@pytest.mark.parametrize("length", [BOUND, BOUND + 1])
+def test_a_github_run_here_is_not_held_by_a_git_with_no_helper(
+        tmp_path, monkeypatch, length):
+    """A GitHub run's preflight offers `gh auth setup-git` to a machine whose
+    git has no credential helper for github.com, before step (3) asks for the
+    project. CI's runner is such a machine, and the typed runs above waited
+    there on it. Here git's system and global files are empty, as the
+    runner's are, so a run that would wait at that offer fails on every
+    machine, not on CI alone."""
+    blank = tmp_path / "blank.gitconfig"
+    blank.write_bytes(b"")
+    for scope in ("GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL"):
+        monkeypatch.setenv(scope, str(blank))
+    _, screen = at_the_prompt(tmp_path, a_name(length), local=False)
+    assert "gh auth setup-git" not in screen, screen
+    assert ("characters long" in screen) == (length > BOUND), screen
 
 
 @PTY_SKIP
