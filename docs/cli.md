@@ -44,7 +44,7 @@ one today, and the generator refuses to write this file if one ever appears.
 
 | tool | what it is for |
 | --- | --- |
-| [`templates/assembly-root/scripts/bootstrap.py`](#templatesassembly-rootscriptsbootstrappy) | The one command after `git clone --recurse-submodules`: places each leg on its tracking branch AT the pinned commit. What `make bootstrap` runs. |
+| [`templates/assembly-root/scripts/bootstrap.py`](#templatesassembly-rootscriptsbootstrappy) | The one command after `git clone --recurse-submodules`: places each leg on its tracking branch AT the pinned commit only where that loses no commit, and otherwise leaves its checkout where it is, saying why. What `make bootstrap` runs. |
 | [`templates/assembly-root/scripts/validate-manifest.py`](#templatesassembly-rootscriptsvalidate-manifestpy) | The project's own `project.yaml` validator: the manifest against the naming and path policies it was cut from. |
 | [`templates/assembly-root/scripts/validate-pins.py`](#templatesassembly-rootscriptsvalidate-pinspy) | The project's own LOCKSTEP validator: the gitlink, the pin and the workflow references must agree, and every digest must recompute. |
 | [`templates/family-root/scripts/bootstrap.py`](#templatesfamily-rootscriptsbootstrappy) | The holder's own bootstrap: mounts every member at its pin and runs each member's. |
