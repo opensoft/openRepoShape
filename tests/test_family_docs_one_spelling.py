@@ -110,11 +110,12 @@ SHAPE_LAYOUT = "a plain folder named after this holder's repository"
 #: as case-insensitive, where `siblings.py` compares the name exactly.
 BEFORE_763 = "not named after the family"
 
-#: The folder rule's subject and its "must", with the words every place says
-#: it in: the standard's README and the handbook, and the holder's README and
-#: `AGENTS-shape.md` (#763). "named EXACTLY ..." alone would pass a doc that
-#: said the folder "need not be" named so.
-FOLDER_RULE = "parent folder must be " + NAMED_EXACTLY
+#: The folder rule's owner, its subject and its "must", with the words every
+#: place says it in: the standard's README and the handbook, and the holder's
+#: README and `AGENTS-shape.md` (#763). "named EXACTLY ..." alone would pass a
+#: doc that said the folder "need not be" named so, and "parent folder must be"
+#: one that gave it to a member's.
+FOLDER_RULE = "holder's parent folder must be " + NAMED_EXACTLY
 
 #: Each doc's whole passage on hand-editing `members:`, from its never to
 #: whose commit a repair is (#763). A WHOLE SENTENCE, as `ONE_SPELLING` is: the
