@@ -69,14 +69,14 @@ that is the name `make siblings` checks the folder against. The display name
 in `family.yaml` is only a title and names no folder, even when it is spelled
 differently.
 
-**Nothing ever moves a checkout.** When this holder's parent folder is not
-named after the family, and no link of that name beside it leads to it,
-`make siblings` WARNS, prints the exact `mv` for a human to run and stops
-before it clones anything, so that the run after the move clones each member
-once — it moves nothing itself. Relocating a
-directory out from under a shell, an editor or an agent lane breaks linked
-worktrees, whose `.git` files carry absolute paths, and this standard does
-not act by surprise.
+**Nothing ever moves a checkout.** This holder's parent folder must be named
+EXACTLY after its repository, case included, on every disk. When it is not, and
+no link of that name beside it leads to it, `make siblings` WARNS, prints the
+exact `mv` for a human to run and stops before it clones anything, so that the
+run after the move clones each member once — it moves nothing itself.
+Relocating a directory out from under a shell, an editor or an agent lane
+breaks linked worktrees, whose `.git` files carry absolute paths, and this
+standard does not act by surprise.
 
 From a checkout of `{{SHAPE_REPOSITORY}}` the same utility runs against a
 holder anywhere on disk, which is what to use before this repository is
@@ -127,7 +127,10 @@ python3 scripts/family.py remove --family-root <path> --member <Project>
 Each writes ONE commit, with explicit pathspecs, moving the gitlink and the
 pin together, on the branch the holder stands on: it refuses the tracking
 branch, so make a branch first, as the block's first line does. Push it as its
-`NEXT` line says and land it as a pull request.
+`NEXT` line says and land it as a pull request. A holder keeps `members/` in
+ONE spelling on every disk: `add` refuses `family-members-dir-variant`
+(`member-path-taken` for a variant of the member's own path) until a human
+renames what sits under another spelling.
 
 ## Private members in CI
 

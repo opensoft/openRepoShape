@@ -870,10 +870,9 @@ is reviewed identically to one in this family.
 | what the holder owns | the legs | nothing but pins and utilities |
 
 **Use a family when the parts deploy separately.** Eight services that are
-eight APIs are eight projects: folding them into one assembly root would give
-them one gate, one release and one pin, which is the opposite of what "deploy
-separately" means. **Use one project when the parts ship together** — that is
-what the spec and code legs already are.
+eight APIs are eight projects: one assembly root would give them one gate, one
+release and one pin, the opposite of "deploy separately". **Use one project
+when the parts ship together**: that is what the spec and code legs are.
 
 ### The workstation layout: a plain folder, and two copies of every member
 
@@ -891,13 +890,13 @@ InkRouter/                      a PLAIN FOLDER, not a git repository
 ```
 
 `scripts/family.py init` lands the holder there: `--into <dir>` is the PARENT
-directory (the directory you are standing in, by default), the folder
+directory (the directory you are standing in, by default; refused inside a
+checkout of this standard, `family-landing-in-standard`), the folder
 `<Family>/` is created in it, and the holder is cloned INSIDE that at
-`<into>/<Family>/<Family>` — the same "lands where you were standing" rule
-projects have. Standing in the family folder already, it does not nest a
-second one. `--work-dir` remains the override that lands `<work-dir>/<Family>`
-and makes no folder. The doubled name is kept on purpose: the holder keeps its
-own repository name and `family.yaml` is what tells the two apart.
+`<into>/<Family>/<Family>`. Standing in the family folder already, it does not
+nest a second one. `--work-dir` is the override that lands
+`<work-dir>/<Family>` and makes no folder. The doubled name is on purpose: the
+holder keeps its own repository name, and `family.yaml` tells the two apart.
 
 `make siblings` in the holder — or `python3 scripts/family.py siblings
 --family-root <path>`, the same file through the other entry point — clones
@@ -910,16 +909,16 @@ inside the holder is pinned and DETACHED, and is what `bootstrap` and
 **fetched and nothing else** — no checkout, no reset, no pull — and one that
 is a different repository is reported and skipped. It is idempotent.
 
-**Nothing ever moves a checkout.** When the holder's parent folder is not
-named after the family, `make siblings` WARNS and prints the exact `mv` for a
-human to run. A tool that relocated the directory would do it out from under
-the shell, the editor and every agent lane standing in it, and would break
-linked worktrees, whose `.git` files carry absolute paths — an act by
-surprise, which is the one thing every refusal here exists to avoid.
+**Nothing ever moves a checkout**: a linked worktree's `.git` file carries an
+absolute path. The holder's parent folder must be named EXACTLY after its
+repository, case included, on every disk. When it is not, and no link of that
+name beside it leads to it, `make siblings` WARNS, prints the exact `mv` for a
+human to run and clones nothing until it is run, so the next run clones each
+member once. For a holder straight in a folder (`~/projects/InkRouter`) the
+move makes the family folder `~/InkRouter`, beside `~/projects`, and the holder
+`~/InkRouter/InkRouter`, not `~/projects/InkRouter/InkRouter`.
 
 ### The InkRouter example
-
-Eight services, each its own project, one holder:
 
 ```
 InkRouter/                      the family FOLDER (see the layout above)
@@ -944,13 +943,14 @@ branch made first (the tracking branch is refused) and print its push: the
 gitlink and `members[].pin` move together, the lockstep rule an assembly root
 applies to its legs, which `scripts/validate-family.py` enforces. Each row
 records the member's `project.yaml` `id`, so the validator can check
-`members/<Project>` holds the project the row claims, not merely a repository
-at the right commit. **A family pins assembly roots, never legs**:
-`<Project>-spec` is refused; a leg has no `project.yaml`.
+`members/<Project>` holds the project the row claims. **A family pins assembly
+roots, never legs**: `<Project>-spec` is refused; a leg has no `project.yaml`.
+A holder keeps `members/` in ONE spelling on every disk: `add` refuses
+`family-members-dir-variant` (`member-path-taken` for a variant of the member's
+own path) until a human renames what sits under another spelling.
 
-`make bootstrap` in the holder fetches every member and its legs — resolving
-the GitHub App or `SHAPE_LEGS_TOKEN` credential the workflow does, as a member
-is a private assembly root mounting two private legs — then runs each member's
+`make bootstrap` in the holder fetches every member and its legs, with the
+workflow's GitHub App or `SHAPE_LEGS_TOKEN` credential, then runs each member's
 own `make bootstrap`; `make validate` runs the family validator, then each
 member's. `make bootstrap` reports and skips one it lacks a credential for.
 
@@ -959,12 +959,11 @@ The holder carries the same COPY pin an assembly root does, so
 instead of `project.yaml` and must leave `validate-family.py` green.
 
 The name is the `family` form in `contracts/repository-naming.yaml`: one
-CamelCase token, exactly an assembly root's rule, with **precedence below**
-it, and DECLARED-ONLY. `InkRouter` is spelled like an assembly root and
+CamelCase token, exactly an assembly root's rule, with **precedence below** it,
+and DECLARED-ONLY. `InkRouter` is spelled like an assembly root and
 `family.yaml` is the only thing that tells them apart, so the classifier
 reports the holder form only when it is asked for (`--role family`). That is
-what let a fifth family be added to a policy two live projects already carry a
-copy of without changing any existing name's answer.
+what let a fifth family be added without changing any existing name's answer.
 
 ## The double pin, and the lockstep invariant
 
