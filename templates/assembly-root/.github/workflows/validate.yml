@@ -56,6 +56,14 @@ jobs:
       # failing) on any that don't, since those can only ever be reached by
       # `SHAPE_LEGS_TOKEN`. Runs only when the App secrets are present — its
       # only consumer is the mint step below, which is guarded the same way.
+      #
+      # Each url is read by its exact key: `--name-only` lists the keys, then
+      # `--get` asks for one, as git reads it. Splitting `--get-regexp`'s
+      # `key value` lines at the first space gave a section named `members/My
+      # IRRS` the url `IRRS.url <url>`, which matched neither form and dropped
+      # that leg from the token (#741). A key holds no line break, so one per
+      # line is exact; the two steps below that print the urls read them the
+      # same way.
       - name: leg repository names from .gitmodules
         id: leg-names
         if: env.SHAPE_LEGS_APP_SET == 'true'
@@ -65,7 +73,8 @@ jobs:
           set -e
           legs=""
           if [ -f .gitmodules ]; then
-            while IFS= read -r url; do
+            while IFS= read -r key; do
+              url=$(git config --file .gitmodules --get "$key") || continue
               [ -n "$url" ] || continue
               case "$url" in
                 https://github.com/*) repo="${url#https://github.com/}" ;;
@@ -84,7 +93,7 @@ jobs:
               else
                 echo "::warning::leg $owner/$name is owned by a different account ($owner) than this repository ($REPO_OWNER); a GitHub App installation token is per-owner, so it is excluded from the App-minted token here and can only be reached via SHAPE_LEGS_TOKEN."
               fi
-            done < <(git config --file .gitmodules --get-regexp '\.url$' | cut -d' ' -f2- || true)
+            done < <(git config --file .gitmodules --name-only --get-regexp '\.url$' || true)
           fi
           echo "legs=$legs" >> "$GITHUB_OUTPUT"
           echo "legs for the App-minted token: $legs"
@@ -170,7 +179,8 @@ jobs:
           else
             echo "legs_available=false" >> "$GITHUB_OUTPUT"
             echo "::warning::submodule checkout failed (git exit $status) using credential source '$legs_credential'. If the legs are PRIVATE or internal sibling repositories, the default GITHUB_TOKEN cannot read them. Configure a GitHub App (SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or set SHAPE_LEGS_TOKEN — a fine-grained PAT — with contents:read on the legs, as a repository or organisation secret. Leg URLs:"
-            git config --file .gitmodules --get-regexp '\.url$' | while read -r _ url; do
+            git config --file .gitmodules --name-only --get-regexp '\.url$' | while IFS= read -r key; do
+              url=$(git config --file .gitmodules --get "$key") || continue
               echo "::warning::  $url"
             done
           fi
@@ -217,7 +227,8 @@ jobs:
         if: steps.submodules.outputs.legs_available != 'true' && (env.SHAPE_LEGS_TOKEN_SET == 'true' || env.SHAPE_LEGS_APP_SET == 'true')
         run: |
           echo "::error::A leg credential is configured (source: ${{ steps.submodules.outputs.legs_credential }}) but 'git submodule update --init --recursive' still failed. The root checkout does not use this token — it reads with the workflow's default token — so this means the '${{ steps.submodules.outputs.legs_credential }}' credential cannot read one or more of the following LEG repositories (wrong token/App scope, a missing contents:read grant, an incomplete App installation, or a leg URL problem):"
-          git config --file .gitmodules --get-regexp '\.url$' | while read -r _ url; do
+          git config --file .gitmodules --name-only --get-regexp '\.url$' | while IFS= read -r key; do
+            url=$(git config --file .gitmodules --get "$key") || continue
             echo "::error::  $url"
           done
           exit 1
