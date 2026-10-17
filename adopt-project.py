@@ -1839,10 +1839,12 @@ class Source:
     def _at(cls, path: Path, repository: str | None, work_root: Path,
             cloned: bool, instead: str | None = None) -> "Source":
         branch = _default_branch(path, instead)
-        # The branch by its full name, which no tag named like it shadows
-        # (#797), and as the bytes git keeps it, under any locale (#653).
-        commit = _git_out_exact(["rev-parse", f"{LOCAL_BRANCHES}{branch}"],
-                                path).lower()
+        # The branch's own commit, read by its full name and nothing else
+        # (#797): `git rev-parse refs/heads/<b>` looks further, and a tag
+        # named `refs/heads/<b>` answers it. As the bytes git keeps the name,
+        # under any locale (#653).
+        commit = _git_out_exact(["show-ref", "--verify", "--hash",
+                                 f"{BRANCH_REFS}{branch}"], path).lower()
         return cls(path, repository, branch, commit, work_root, cloned)
 
     def tree(self) -> list[tuple[str, str, str, int]]:
@@ -1968,14 +1970,16 @@ def _origin_url(path: Path) -> str | None:
         return None
 
 
-#: Where git keeps the source's own branches, and the default branch of its
-#: remote `origin`, as `git clone` and `git remote set-head` record it.
-LOCAL_BRANCHES = "refs/heads/"
+#: Where git keeps the default branch of the source's remote `origin`, as
+#: `git clone` and `git remote set-head` record it.
 ORIGIN_HEAD = "refs/remotes/origin/HEAD"
-#: How `Source.open` refuses a source whose remote's default branch is no
-#: branch of its own, and the way through it, in `plan`, `check` and
-#: `execute` alike (#797).
+#: How `Source.open` refuses a source whose default branch is no branch of
+#: its own, and the way through it, in `plan`, `check` and `execute` alike
+#: (#797).
 DEFAULT_BRANCH_NOT_LOCAL = "source-default-branch-not-local"
+#: How each of its details ends, after "the source".
+NOT_IN_ITS_PLACE = ("is read at a branch of its own, never at another "
+                    "nobody named in its place")
 
 
 def _default_branch(path: Path, instead: str | None = None) -> str:
@@ -1992,7 +1996,10 @@ def _default_branch(path: Path, instead: str | None = None) -> str:
     `main`, was read with `git rev-parse main`, which a tag `main` answers
     first. The name was also stripped once decoded, which takes U+00A0 off
     `main<U+00A0>`, and the branch `main` beside it was read. So the full
-    name is read (`_branch_named_by`), and only its own prefix comes off.
+    name is read (`_symbolic_ref`), and only its own prefix comes off. An
+    `origin/HEAD` set by hand to a ref outside `refs/remotes/origin/`
+    names no branch of `origin`: it is passed over for HEAD's branch, in a
+    NOTE that names it.
 
     A BYTE THAT IS NOT UTF-8 IS KEPT, AS `sys.argv` KEEPS ONE (#425). git
     keeps a branch's name as the bytes it was given: `git branch caf<e9>` is
@@ -2006,50 +2013,103 @@ def _default_branch(path: Path, instead: str | None = None) -> str:
     plan tracks one the source no longer has. Where the plan tracks a branch
     that is text, the source is read at this one and adopted.
 
-    A DEFAULT BRANCH THE SOURCE HAS NO BRANCH OF IS NEVER REPLACED BY ONE
-    NOBODY NAMED (#797). A clone made with `git clone -b dev`, or one whose
-    `main` was deleted, has `origin/HEAD` naming `main` and no `main` of its
-    own, and `git rev-parse main` ended `plan`, `check` and `execute` as
-    `git-failed`, in git's words, whatever `--tracking-branch` said. Such a
-    source is read at `instead` where that is a branch of its own: `plan`'s
+    ONLY A BRANCH OF THE SOURCE'S OWN IS EVER READ (#797). A clone made
+    with `git clone -b dev`, or one whose `main` was deleted, has
+    `origin/HEAD` naming `main` and no `main` of its own, and `git rev-parse
+    main` ended `plan`, `check` and `execute` as `git-failed`, in git's
+    words, whatever `--tracking-branch` said. A detached HEAD's guessed
+    `main` and an orphan HEAD's branch with no commit yet can be no branch
+    either, and `git rev-parse refs/heads/<b>` then looks further, so a tag
+    named `refs/heads/main` answered for it. Such a source is read at
+    `instead` where that is a branch of its own: `plan`'s
     `--tracking-branch`, or the branch a plan records reading it at, for
-    `check` and `execute`. Otherwise a remote's default branch is refused by
-    name, with both ways through, and never read at HEAD's branch or any
-    other in its place; HEAD's branch with no commit yet, and a `main`
-    guessed for a detached HEAD, are left to `git rev-parse`'s words."""
-    origins = _branch_named_by(path, ORIGIN_HEAD, ORIGIN_BRANCHES)
-    branch = origins or _branch_named_by(path, "HEAD", LOCAL_BRANCHES) \
-        or "main"
-    branches = _local_branches(path)
+    `check` and `execute`. Otherwise it is refused by name, with the ways
+    through (`_no_branch_of_its_own`), and never read at HEAD's branch or
+    any other in its place."""
+    named = _symbolic_ref(path, ORIGIN_HEAD)
+    origins = _branch_under(named, ORIGIN_BRANCHES)
+    if named is not None and origins is None:
+        print(f"NOTE the source's `origin/HEAD` names {_spelled(named)}, "
+              "which is no branch of its remote `origin`, so it is passed "
+              "over, and the branch its HEAD is on is read instead.")
+    head = None if origins else _branch_under(_symbolic_ref(path, "HEAD"),
+                                              BRANCH_REFS)
+    branch = origins or head or "main"
+    branches = _branch_names(path, BRANCH_REFS)
     if branch in branches:
         return branch
     if instead in branches:
         return instead
-    if origins is None:
-        return branch
-    nor = "" if instead in (None, origins) else \
+    if origins:
+        raise _no_branch_of_its_own(path, branch, "origin", instead, branches)
+    raise _no_branch_of_its_own(path, branch, "head" if head else None,
+                                instead, branches)
+
+
+def _no_branch_of_its_own(path: Path, branch: str, where: str | None,
+                          instead: str | None, branches: list) -> Refusal:
+    """`source-default-branch-not-local`: the source's default branch,
+    `branch`, is no branch of its own, nor is `instead`. `where` is what
+    named it: `origin` (its `origin/HEAD`), `head` (HEAD, on a branch with
+    no commit yet), or None (no `origin/HEAD` and a detached HEAD, so the
+    `main` this tool reads then). Each way through is said: the branch
+    made, or HEAD moved, and `--tracking-branch`."""
+    nor = "" if instead in (None, branch) else \
         f", nor one named {_spelled(instead)}"
-    raise Refusal(
-        DEFAULT_BRANCH_NOT_LOCAL,
-        f"the source's `origin/HEAD` names {_spelled(origins)}, the default "
-        f"branch of its remote `origin`, and the source has no branch "
-        f"{_spelled(origins)} of its own{nor} (its branches: "
-        f"{_branches_named(branches)}). A clone made with `git clone -b "
-        "<branch>` has none, nor does one whose own was deleted, and the "
-        "source is read at a branch of its own, never at another nobody "
-        "named in its place",
-        f"Remediation: make it a branch of the source's own, from its "
-        f"remote's: `git branch {shlex.quote(origins)} "
-        f"{shlex.quote('origin/' + origins)}`, run in the source. Or run "
-        "`plan` with `--tracking-branch` naming a branch the source has, "
-        "and the source is read at that branch; `check` and `execute` then "
-        "read it where the plan did.")
+    held = f"{nor} (its branches: {_branches_named(branches)})"
+    if where == "origin":
+        detail = (f"the source's `origin/HEAD` names {_spelled(branch)}, the "
+                  "default branch its remote `origin` had when it was last "
+                  f"asked, and the source has no branch {_spelled(branch)} of "
+                  f"its own{held}. A clone made with `git clone -b <branch>` "
+                  "has none, nor does one whose own was deleted, and the "
+                  f"source {NOT_IN_ITS_PLACE}")
+        first = _from_the_remote(path, branch)
+    else:
+        named = (f"its HEAD is on {_spelled(branch)}, which has no commit "
+                 "yet, so it is no branch" if where == "head" else
+                 "it has no `origin/HEAD` naming a branch of its remote "
+                 "`origin`, its HEAD is detached, and it has no branch "
+                 "`main`, which this tool reads then")
+        detail = f"the source names no branch of its own to read: {named}" \
+            f"{held}. The source {NOT_IN_ITS_PLACE}"
+        first = ("Remediation: check out the branch to adopt, in the source "
+                 "(`git switch <branch>`).")
+    return Refusal(
+        DEFAULT_BRANCH_NOT_LOCAL, detail,
+        f"{first} Or run `plan` with `--tracking-branch` naming a branch "
+        "the source has, and the source is read at that branch; `check` "
+        "and `execute` then read it at that branch while the source has "
+        f"no branch {_spelled(branch)} of its own.")
 
 
-def _branch_named_by(path: Path, ref: str, prefix: str) -> str | None:
-    """The branch the symbolic ref `ref` names, its full name with `prefix`
-    taken off; None where `ref` is no symbolic ref, or names nothing under
-    `prefix` (an `origin/HEAD` set by hand to another remote's branch).
+def _from_the_remote(path: Path, branch: str) -> str:
+    """The first way through for `origin/HEAD`'s `branch`: made the
+    source's own from its remote's, where the source has fetched that; and
+    where it has not, as after the remote renamed its default branch, the
+    remote asked again (`git remote set-head origin --auto`). A command is
+    printed with the name in it only where the name is printable, which a
+    lone surrogate never is: a name holding U+0085 or U+2028 broke the line,
+    and #425's `caf\\udce9` printed a command git refuses. Otherwise the name
+    is `_spelled` and the step said in words."""
+    if branch not in _branch_names(path, ORIGIN_BRANCHES):
+        return ("Remediation: its remote `origin` has no branch "
+                f"{_spelled(branch)} either, as the source last fetched it: "
+                "ask `origin` for its default branch again, `git remote "
+                "set-head origin --auto`, run in the source.")
+    made = (f"`git branch {shlex.quote(branch)} "
+            f"{shlex.quote('origin/' + branch)}`" if branch.isprintable()
+            else f"a branch named {_spelled(branch)} made from `origin`'s "
+            "branch of that name")
+    return ("Remediation: make it a branch of the source's own, from its "
+            f"remote's: {made}, run in the source; where `origin` may have "
+            "changed its default branch since, run `git remote set-head "
+            "origin --auto` first.")
+
+
+def _symbolic_ref(path: Path, ref: str) -> str | None:
+    """The full name of the ref the symbolic ref `ref` names; None where
+    `ref` is no symbolic ref.
 
     Read as bytes and decoded as #425 decodes them, with only git's line end
     taken off first, from the bytes: `str.strip` after decoding took U+00A0,
@@ -2058,18 +2118,26 @@ def _branch_named_by(path: Path, ref: str, prefix: str) -> str | None:
         full = git_out(["symbolic-ref", "-q", ref], cwd=path, binary=True)
     except Refusal:
         return None
-    name = full.removesuffix(b"\n").decode("utf-8", "surrogateescape")
-    if name.startswith(prefix) and len(name) > len(prefix):
+    return full.removesuffix(b"\n").decode("utf-8", "surrogateescape")
+
+
+def _branch_under(name: str | None, prefix: str) -> str | None:
+    """`name` with exactly `prefix` taken off; None where it is not a name
+    under `prefix`."""
+    if name is not None and name.startswith(prefix) \
+            and len(name) > len(prefix):
         return name[len(prefix):]
     return None
 
 
-def _local_branches(path: Path) -> list[str]:
-    """The source's own branches, each name as `Source.tree` reads a path,
-    so a byte that is not UTF-8 is kept rather than refused."""
-    raw = git_out(["for-each-ref", "--format=%(refname)", LOCAL_BRANCHES],
-                  cwd=path, binary=True)
-    return sorted(ref[len(LOCAL_BRANCHES):]
+def _branch_names(path: Path, prefix: str) -> list[str]:
+    """The names of the source's refs under `prefix` (`BRANCH_REFS`, its own
+    branches; `ORIGIN_BRANCHES`, its remote's as it last fetched them), each
+    as `Source.tree` reads a path, so a byte that is not UTF-8 is kept
+    rather than refused."""
+    raw = git_out(["for-each-ref", "--format=%(refname)", prefix], cwd=path,
+                  binary=True)
+    return sorted(ref[len(prefix):]
                   for ref in map(_git_path, raw.splitlines()))
 
 
@@ -3699,7 +3767,7 @@ def _branches_of(source: Source) -> tuple[str, list[str]]:
     where they were read: its remote `origin`'s when it has fetched any,
     and otherwise its own. Each name is read as `Source.tree` reads a path,
     so a byte that is not UTF-8 is kept rather than refused."""
-    raw = git_out(["for-each-ref", "--format=%(refname)", "refs/heads/",
+    raw = git_out(["for-each-ref", "--format=%(refname)", BRANCH_REFS,
                    ORIGIN_BRANCHES], cwd=source.path, binary=True)
     refs = [_git_path(line) for line in raw.splitlines()]
     fetched = sorted(ref[len(ORIGIN_BRANCHES):] for ref in refs
@@ -3707,8 +3775,8 @@ def _branches_of(source: Source) -> tuple[str, list[str]]:
                      and ref != f"{ORIGIN_BRANCHES}HEAD")
     if fetched:
         return "the source's remote `origin`", fetched
-    return "the source", sorted(ref[len("refs/heads/"):] for ref in refs
-                                if ref.startswith("refs/heads/"))
+    return "the source", sorted(ref[len(BRANCH_REFS):] for ref in refs
+                                if ref.startswith(BRANCH_REFS))
 
 
 def _branches_named(branches: list[str]) -> str:

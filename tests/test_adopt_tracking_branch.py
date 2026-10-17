@@ -297,10 +297,19 @@ needs_filter_repo = pytest.mark.skipif(
 #: own for is refused, by `plan`, `check` and `execute` alike (L1-71's second
 #: case on #457).
 NOT_LOCAL = "REFUSED source-default-branch-not-local: "
-#: The two ways through it, as its remediation names them.
+#: What it says of the branch `origin/HEAD` names, `main`.
+NAMES_MAIN = ("the source's `origin/HEAD` names `main`, the default branch "
+              "its remote `origin` had when it was last asked, and the "
+              "source has no branch `main` of its own (its branches: `dev`)")
+#: The two ways through it, as its remediation names them, and what the
+#: second promises of `check` and `execute`.
 MAKE_IT_LOCAL = "`git branch main origin/main`, run in the source"
 OR_TRACK_ANOTHER = ("run `plan` with `--tracking-branch` naming a branch "
                     "the source has, and the source is read at that branch")
+WHILE_IT_HAS_NONE = ("`check` and `execute` then read it at that branch "
+                     "while the source has no branch `main` of its own.")
+#: The way through for an `origin/HEAD` its remote no longer has.
+ASK_AGAIN = "`git remote set-head origin --auto`"
 #: What `check` says once it reads the source where `plan` did.
 PLAN_OK = "\nplan ok\n"
 #: The flag that names the branch to track, and the plan `write_plan` writes.
@@ -343,12 +352,10 @@ def test_a_clone_of_another_branch_is_refused_by_name_with_both_ways_through(
     result = write_plan(source, plan)
 
     assert result.returncode == 2, result.stdout + result.stderr
-    assert (f"{NOT_LOCAL}the source's `origin/HEAD` names `main`, the default "
-            "branch of its remote `origin`, and the source has no branch "
-            "`main` of its own (its branches: `dev`)") in result.stderr, \
-        result.stderr
+    assert f"{NOT_LOCAL}{NAMES_MAIN}" in result.stderr, result.stderr
     assert MAKE_IT_LOCAL in result.stderr, result.stderr
     assert OR_TRACK_ANOTHER in result.stderr, result.stderr
+    assert WHILE_IT_HAS_NONE in result.stderr, result.stderr
     assert "git-failed" not in result.stderr, result.stderr
     assert not plan.exists()
     git("branch", "main", "origin/main", cwd=source)
@@ -390,12 +397,52 @@ def test_check_of_a_plan_whose_branch_was_deleted_is_refused_by_name(
     result = check(plan)
 
     assert result.returncode == 2, result.stdout + result.stderr
-    assert (f"{NOT_LOCAL}the source's `origin/HEAD` names `main`, the default "
-            "branch of its remote `origin`, and the source has no branch "
-            "`main` of its own (its branches: `dev`). A clone made with `git "
-            "clone -b <branch>` has none, nor does one whose own was "
-            "deleted") in result.stderr, result.stderr
+    assert (f"{NOT_LOCAL}{NAMES_MAIN}. A clone made with `git clone -b "
+            "<branch>` has none, nor does one whose own was deleted") in \
+        result.stderr, result.stderr
     assert MAKE_IT_LOCAL in result.stderr, result.stderr
+
+
+def test_an_origin_head_its_remote_renamed_names_the_way_to_ask_again(
+        tmp_path):
+    """r797's third finding: a clone made while its repository's default
+    branch was `master`, which GitHub then renamed `main`. The clone's own
+    branch is renamed to match and pruned, but `origin/HEAD` still names
+    `master`, which `origin` no longer has. `git branch master
+    origin/master` cannot run there, so the refusal asks `origin` for its
+    default branch again instead, and that plans the source at `main`."""
+    seed = make_source_repo(tmp_path / "seed", tree=TREE, edits=(),
+                            branch="master")
+    remote = tmp_path / "testorg" / "Northwind.git"
+    git(*FILE_PROTOCOL, "clone", "-q", "--bare", str(seed), str(remote),
+        cwd=tmp_path)
+    source = tmp_path / "Northwind"
+    git(*FILE_PROTOCOL, "clone", "-q", str(remote), str(source), cwd=tmp_path)
+    git("branch", "-m", "master", "main", cwd=remote)
+    git("symbolic-ref", "HEAD", "refs/heads/main", cwd=remote)
+    git("branch", "-m", "master", "main", cwd=source)
+    git(*FILE_PROTOCOL, "fetch", "-q", "--prune", "origin", cwd=source)
+    git("branch", "-q", "-u", "origin/main", "main", cwd=source)
+    # As a clone made before the rename keeps it, whatever this git's fetch
+    # does with a remote HEAD.
+    git("symbolic-ref", "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/master", cwd=source)
+
+    result = write_plan(source, tmp_path / PLAN_NAME)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (f"{NOT_LOCAL}the source's `origin/HEAD` names `master`, the "
+            "default branch its remote `origin` had when it was last asked, "
+            "and the source has no branch `master` of its own (its "
+            "branches: `main`)") in result.stderr, result.stderr
+    assert ("Remediation: its remote `origin` has no branch `master` "
+            f"either, as the source last fetched it: ask `origin` for its "
+            f"default branch again, {ASK_AGAIN}, run in the source.") in \
+        result.stderr, result.stderr
+    assert "origin/master`" not in result.stderr, result.stderr
+    git(*FILE_PROTOCOL, "remote", "set-head", "origin", "--auto", cwd=source)
+    _, plan = planned(tmp_path / "asked", source)
+    assert load_yaml(plan)["source"]["default_branch"] == "main"
 
 
 @pytest.mark.parametrize("head", ["detached", "unborn"])

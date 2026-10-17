@@ -672,7 +672,7 @@ def test_execute_adopts_a_source_whose_default_branch_is_not_utf8(tmp_path,
 
 #: `main`, then U+00A0, NO-BREAK SPACE: a branch git keeps, and white space
 #: to `str.strip` (L1-68 on #457).
-NBSP_BRANCH = "main "
+NBSP_BRANCH = "main\u00a0"
 #: `plan`'s refusal of that default branch as the tracking branch it would
 #: take, as `UNSAFE_BRANCH` is of `caf<e9>`.
 UNSAFE_NBSP = (
@@ -710,3 +710,52 @@ def test_plan_reads_a_default_branch_ending_in_white_space_whole(tmp_path,
     assert read_at["default_branch"] == NBSP_BRANCH
     assert read_at["commit"] == tip_of(source, NBSP_BRANCH)
     assert runs["check"].returncode == 0, said(runs["check"])
+
+
+# --- the way through, for a name no command line carries (#797) -------------
+
+#: `ma`, U+2028 LINE SEPARATOR, `in`: a branch git keeps, and a line break
+#: to `str.splitlines`, as U+0085 is.
+LINE_SEPARATED = "ma\u2028in"
+#: How the remediation names a branch it cannot print as a command.
+FROM_ORIGINS = b"made from `origin`'s branch of that name, run in the source"
+
+
+def remembered_on(source: Path, branch: str) -> Path:
+    """`source` with `origin/HEAD` naming `origin/<branch>`, which it has
+    fetched, and no branch `branch` of its own, as `git clone -b main` of a
+    repository whose default branch is `branch` leaves it. Skipped as
+    `with_default_branch` is, where git refuses or alters the name."""
+    try:
+        git("update-ref", f"refs/remotes/origin/{branch}", "refs/heads/main",
+            cwd=source)
+        git("symbolic-ref", "refs/remotes/origin/HEAD",
+            f"refs/remotes/origin/{branch}", cwd=source)
+    except (AssertionError, UnicodeError, OSError) as exc:
+        pytest.skip(f"no ref here is named {branch!r}: {exc!r}")
+    return source
+
+
+@pytest.mark.parametrize("branch, spelled", [
+    (LINE_SEPARATED, b"`ma\\u2028in`"),
+    (BRANCH, b"`caf\\udce9`"),
+], ids=["u2028", "not-utf8"])
+def test_the_way_through_spells_a_name_no_command_line_carries(
+        tmp_path, branch, spelled):
+    """r797's second finding: the remediation printed `origin/HEAD`'s
+    branch raw in a `git branch` command. A U+2028 in it broke the
+    refusal's two lines in four for `str.splitlines`, and #425's
+    `caf<e9>` printed `git branch 'caf\\udce9' ...`, which git
+    refuses. The name is spelled now, and the step said in words."""
+    source = remembered_on(make_source_repo(tmp_path / "Thing"), branch)
+
+    refused = planned(tmp_path, source)
+
+    assert_no_traceback({"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert len(refused.stderr.splitlines()) == 2, said(refused)
+    assert len(refused.stderr.decode("utf-8").splitlines()) == 2, \
+        said(refused)
+    assert b"a branch named " + spelled + b" " + FROM_ORIGINS in \
+        refused.stderr, said(refused)
+    assert b"`git branch " not in refused.stderr, said(refused)
