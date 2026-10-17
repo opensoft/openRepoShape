@@ -378,7 +378,10 @@ def main(argv: list[str] | None = None) -> int:
                              "--pin and no --referent-chain to read it, it "
                              "is refused as `pin-source-unused`; an empty "
                              "value is refused as `pin-source-no-path`, and "
-                             "`.` means this directory.")
+                             "`.` means this directory. A --pin's digest is "
+                             "read only at a clone's top level, or a bare "
+                             "clone's: any other path is refused as "
+                             "`pin-source-not-a-clone`.")
     parser.add_argument("--work-dir", type=Path, default=None,
                         help="where the working trees are built "
                              "(default: a temporary directory)")

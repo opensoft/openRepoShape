@@ -311,6 +311,9 @@ from shape_materialize import (  # noqa: E402
 #: How `plan`'s refusals of a `--pin-source` begin their remediation.
 PLAN_NOT_WRITTEN = "no plan was written."
 from repo_shape import SHA256_RE, repo_basename  # noqa: E402
+# Whether a recorded `--pin-source` is a clone's top level, asked as `plan`
+# asks it (#800).
+from shape_materialize import pin_source_not_top_level  # noqa: E402
 # One reading of an `origin`, shared with `shape-doctor.py` (#521).
 from repo_shape import origin_is_a_path, url_repository  # noqa: E402
 
@@ -335,6 +338,9 @@ ROOT_HOLDS_PIN = "plan-root-holds-pin"
 PIN_DIGEST_MISMATCH = "plan-pin-digest-mismatch"
 PIN_SOURCE_UNREADABLE = "plan-pin-source-unreadable"
 PIN_NOT_A_COMMIT = "plan-pin-not-a-commit"
+#: And about a clone `plan` read a digest from that is no clone's top level,
+#: which `plan` now refuses as `pin-source-not-a-clone` (#800).
+PIN_SOURCE_NOT_A_CLONE = "plan-pin-source-not-a-clone"
 #: How `plan` records where it read a digest (`_as_planned`): from a clone on
 #: this machine, `--pin-source` as typed, or from the forge.
 LOCAL_CLONE_RE = re.compile(r"local-clone \((?P<path>.+)\)")
@@ -693,10 +699,17 @@ def _pin_findings(plan: "Plan", tree: list) -> list[str]:
 # directory `check` or `execute` runs in, as `plan` read it from the one it
 # ran in, and every sentence naming one says where that is
 # (`_read_from_here`). Anything else at the path that cannot answer -- a
-# commit it lacks, a directory that is no clone, a file -- is
-# `plan-pin-source-unreadable`, as `validate-pins.py` finds a source it reads
-# that cannot answer. `check` and `execute` ask this through
-# `_entry_findings`, the one list.
+# commit it lacks, a file -- is `plan-pin-source-unreadable`, as
+# `validate-pins.py` finds a source it reads that cannot answer. `check` and
+# `execute` ask this through `_entry_findings`, the one list.
+#
+# A DIRECTORY THAT IS NO CLONE'S TOP LEVEL is asked about FIRST (#800), before
+# a partial clone's NOTE: a folder inside a clone, or a directory that is no
+# clone at all, is `plan-pin-source-not-a-clone`, as `plan` refuses it
+# `pin-source-not-a-clone`. In a folder `git ls-tree` lists only what is
+# under it, so the digest recomputed there was the wrong one `plan` read,
+# and `check` said it recomputes; inside a partial clone it said only that
+# it was not asked. The question reads no object, so it reads no network.
 
 #: Why a pin's digest `gh api` read was not rechecked.
 NOT_RECHECKED_GH = "`plan` read it with `gh api`, and `check` reads no network"
@@ -807,6 +820,30 @@ def _recomputed_pin_finding(said: str, values: dict) -> str | None:
             f"(`neutral-pin-digest-mismatch`): {_pin_fix(repository)}.")
 
 
+def _not_a_top_level_finding(said: str, how: str,
+                             repository: str) -> str | None:
+    """The FINDING for a pin whose `digest_source:` names a directory that is
+    no clone's top level (#800), asked as `plan` asks a `--pin-source`
+    (`pin_source_not_top_level`); None for a top level, and for a path that
+    is no directory or that cannot be entered, which the questions after
+    this one name as they always did."""
+    clone = _recorded_clone(how)
+    try:
+        found = (pin_source_not_top_level(Path(clone))
+                 if clone is not None and Path(clone).is_dir() else None)
+    except OSError:
+        return None
+    if found is None:
+        return None
+    why, top = found
+    fix = (f"re-run `plan` with `--pin-source {_shown(str(top))}`, its top "
+           "level" if top is not None else _pin_fix(repository))
+    return (f"FINDING {PIN_SOURCE_NOT_A_CLONE}: {said} records that `plan` "
+            f"read its digest from {_shown(clone)}{_read_from_here(clone)}, "
+            f"which is not a clone's top level: {why}. `plan` refuses such a "
+            f"--pin-source as `pin-source-not-a-clone`: {fix}.")
+
+
 def _pin_digest_findings(plan: "Plan") -> tuple[list[str], list[str]]:
     """`(findings, notes)` for each pin `execute` would write: a FINDING for
     a digest the clone `plan` read it from recomputes otherwise at the
@@ -817,8 +854,10 @@ def _pin_digest_findings(plan: "Plan") -> tuple[list[str], list[str]]:
     notes: list[str] = []
     for said, _, values in _read_pins(plan)[0]:
         how = values["PIN_DIGEST_SOURCE"]
-        why = _why_not_rechecked(how)
-        found = None if why else _recomputed_pin_finding(said, values)
+        found = _not_a_top_level_finding(said, how, values["PIN_REPOSITORY"])
+        why = None if found else _why_not_rechecked(how)
+        if not (found or why):
+            found = _recomputed_pin_finding(said, values)
         if why:
             notes.append(f"NOTE {said}: digest NOT rechecked here: {why}. The "
                          "root's own `validate-pins.py` recomputes it "
@@ -13288,7 +13327,10 @@ def main(argv: list[str] | None = None) -> int:
                            "Given with no --pin to read it, the flag is "
                            "refused as `pin-source-unused`; an empty value "
                            "is refused as `pin-source-no-path`, and `.` "
-                           "means this directory.")
+                           "means this directory. `pin-source-not-a-clone` "
+                           "refuses any other path than a clone's top level, "
+                           "or a bare clone's, where a --pin's digest is "
+                           "read.")
     plan.add_argument("--allow-empty-leg", action="append", default=[],
                       choices=EXTRACTED_LEGS,
                       help="record in the plan that this leg having NO path "

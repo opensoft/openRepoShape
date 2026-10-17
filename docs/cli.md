@@ -366,7 +366,9 @@ options:
                         --pin and no --referent-chain to read it, it is
                         refused as `pin-source-unused`; an empty value is
                         refused as `pin-source-no-path`, and `.` means this
-                        directory.
+                        directory. A --pin's digest is read only at a clone's
+                        top level, or a bare clone's: any other path is
+                        refused as `pin-source-not-a-clone`.
   --work-dir WORK_DIR   where the working trees are built (default: a
                         temporary directory)
   --no-next-steps       leave out the closing NEXT STEPS (the clone, the cd
@@ -516,6 +518,9 @@ options:
                         Given with no --pin to read it, the flag is refused as
                         `pin-source-unused`; an empty value is refused as
                         `pin-source-no-path`, and `.` means this directory.
+                        `pin-source-not-a-clone` refuses any other path than a
+                        clone's top level, or a bare clone's, where a --pin's
+                        digest is read.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's

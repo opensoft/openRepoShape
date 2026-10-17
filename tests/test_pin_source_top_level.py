@@ -188,7 +188,7 @@ def test_a_top_level_is_read_as_it_always_was(kind, where, tmp_path,
     elif kind == "scaffold-run":
         written = git("show", f"main:{PIN_FILE}",
                       cwd=tmp_path / "remotes" / "MedxGlass.git").stdout
-        assert parse_yaml(written)["tree_sha256"] == digest
+        assert parse_yaml(written)["digests"]["tree_sha256"] == digest
     else:
         assert f"tree {digest[:12]}" in result.stdout, result.stdout
     assert gh_calls(gh_env) == ""
@@ -238,7 +238,9 @@ def test_a_path_holding_a_control_character_is_named_spelled(
         f"REFUSED {NOT_A_CLONE}: --pin-source {str(clone / 'sub')!r} is not "
         f"a clone's top level: {why('folder', repr(str(clone)))}\n"), \
         result.stderr
-    assert result.stderr.count("REFUSED") == 1, result.stderr
+    lines = result.stderr.splitlines()
+    assert [line for line in lines if line.startswith("REFUSED")] \
+        == lines[:1], result.stderr
 
 
 @pytest.mark.parametrize("tool", [(SCAFFOLD,), (ADOPT, "plan")],
