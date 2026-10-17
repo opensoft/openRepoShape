@@ -617,7 +617,7 @@ def _refuse_entry_indicator(text: str) -> None:
     """
     first, after = text[:1], text[1:2]
     if (first in ":#@`%" or first in "-?" and after in (" ", "\t")
-            or text[:2] == "?:" and text[2:3] in ("", " ", "\t")
+            or text.startswith("?:") and text[2:3] in ("", " ", "\t")
             or text == "?"):
         raise _indicator_refusal(text)
 
@@ -661,10 +661,14 @@ def _flow_value(text: str, item: bool = False) -> Any:
     if item:
         _refuse_entry_indicator(text)
         pair = _split_key(text)
-        if pair is not None and _split_key(pair[1]) is not None:
-            raise YamlError("a flow sequence entry with a second `:` opening "
-                            f"a value is not valid YAML: {text!r}")
         if pair is not None:
+            # A QUOTED item skipped the test above, so its value is asked
+            # here, before it is split again (#715): `["a": b[: c]` names
+            # the `[` in #301's words, not a key holding it.
+            _refuse_flow_indicator(pair[1])
+            if _split_key(pair[1]) is not None:
+                raise YamlError("a flow sequence entry with a second `:` "
+                                f"opening a value is not valid YAML: {text!r}")
             raise YamlError("a single-pair mapping in a flow sequence is not "
                             f"supported: {text!r}")
     return _scalar(text)
@@ -832,7 +836,7 @@ def _refuse_unsupported(content: str, line: int) -> None:
         raise YamlError(f"line {line}: explicit keys are not supported")
     if content.startswith("<<"):
         raise YamlError(f"line {line}: merge keys are not supported")
-    if content[:1] == ":" and content[1:2] in ("", " ", "\t"):
+    if content.startswith(":") and content[1:2] in ("", " ", "\t"):
         raise YamlError(f"line {line}: empty keys are not supported")
 
 
@@ -856,7 +860,8 @@ def _block_scalar_body(raw_lines: list[str], i: int,
     INDENTED than the key, with the first such line's column taken as the
     block's own indentation and stripped from all of them. A blank line
     belongs to the body whatever its column, because it has none. A line of
-    Unicode spaces is not blank (#715): it is text, as YAML reads it.
+    Unicode spaces at the block's own indentation or deeper is not blank
+    (#715): it is text, as YAML reads it.
     """
     body: list[str] = []
     block_indent = None

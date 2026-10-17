@@ -243,7 +243,14 @@ class Project:
 
     @property
     def tracking(self) -> str:
-        return str(self.data.get("tracking_branch") or "main")
+        """The tracking branch, read through `checked_value`, as `family.py`
+        reads its own (#715). Compared raw, `tracking_branch: main` followed
+        by U+00A0, which the reader reads as YAML does since #715, was not
+        `main`, so `_branch_to_bump_from` let a commit be made on `main`.
+        Every run asks this before it fetches or writes, and a name
+        `checked_value` refuses is `unsafe-value`, exit 2."""
+        return checked_value("tracking_branch",
+                             self.data.get("tracking_branch") or "main")
 
 
 # ---------------------------------------------------------------------------

@@ -596,22 +596,32 @@ def _branch_finding(code: str, what: str, value) -> list[str]:
     `subprocess.py` and, with that fixed, would only say it could not place
     the leg, while this file said `manifest ok`. So no tool named the key.
     Any surrogate is found, as `name` is (#280): no UTF-8 file or console can
-    hold one, so none is a name anybody wrote. That is the whole of the
-    question. Whether the value is a name git will create (`a..b`, `x.lock`)
-    is `git check-ref-format`'s to answer, as the scaffold asks it for
-    `--tracking-branch` (#283); and a value that is not text is left alone,
-    as `bootstrap.py` turns it into text.
+    hold one, so none is a name anybody wrote. Whether the value is a name git
+    will create (`a..b`, `x.lock`) is `git check-ref-format`'s to answer, as
+    the scaffold asks it for `--tracking-branch` (#283); and a value that is
+    not text is left alone, as `bootstrap.py` turns it into text.
+
+    NOR A CHARACTER THAT DOES NOT PRINT, OR WHITE SPACE (#715), the branch
+    `siblings.py` refuses to use. git takes `main` followed by U+00A0, and
+    since #715 the reader reads that no-break space as YAML does, where it
+    used to strip it: so `bootstrap.py` made a second `main` beside the
+    first, and `bump-leg.py`'s guard of the tracking branch let a commit be
+    made on `main`. No person can tell such a name from the one without it.
     """
     if not isinstance(value, str):
         return []
-    char = next((c for c in value if c == "\x00" or "\ud800" <= c <= "\udfff"),
+    char = next((c for c in value if not c.isprintable() or c.isspace()),
                 None)
     if char is None:
         return []
-    kind = ("a NUL: no argument, file name or ref name can hold one"
-            if char == "\x00" else
-            "a lone surrogate: no UTF-8 file or console can hold it, so no "
-            "branch name is spelled with one")
+    if char == "\x00":
+        kind = "a NUL: no argument, file name or ref name can hold one"
+    elif "\ud800" <= char <= "\udfff":
+        kind = ("a lone surrogate: no UTF-8 file or console can hold it, so "
+                "no branch name is spelled with one")
+    else:
+        kind = ("a character that does not print or is white space: a person "
+                "reading the name cannot tell it from the name without it")
     return [_finding(
         code,
         f"{what} is {value!r}, which holds U+{ord(char):04X}, {kind}. Name a "

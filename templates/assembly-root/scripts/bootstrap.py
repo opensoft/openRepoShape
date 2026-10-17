@@ -183,6 +183,12 @@ def _git_runs(unread: str) -> Iterator[None]:
                       f"({exc.strerror or exc})", GIT_NOT_RUNNABLE) from exc
 
 
+#: What `_argument_fault` calls a character that does not print, or white
+#: space (#715): git takes the name, and no person can tell it from the name
+#: without it, so `_say_not_tried` gives it a line of its own.
+UNSEEN = "a character that does not print or is white space"
+
+
 def _argument_fault(branch: str) -> str | None:
     """What stops `branch` being an argument to a command, or `None` (#455).
 
@@ -199,8 +205,8 @@ def _argument_fault(branch: str) -> str | None:
     exception `_try_git` would then have to swallow: a `UnicodeDecodeError`,
     which `git_out` raises over output that is not UTF-8, is a `ValueError`
     too, and catching that there would read a leg whose HEAD is on such a
-    branch as detached. Only a NUL and a lone surrogate are looked for; a
-    character the system's encoding merely lacks is not this fix's.
+    branch as detached. A character the system's encoding merely lacks is
+    not this fix's.
 
     A surrogate that is ONE BYTE of a name is not refused. POSIX spells a name
     that is not UTF-8 with U+DC80 to U+DCFF and `os.fsencode` writes each back
@@ -210,12 +216,24 @@ def _argument_fault(branch: str) -> str | None:
     is not UTF-8 for ANY of them, so a lone surrogate is never handed to git
     there either, where a `CreateProcess` would pass it on mangled. The answer
     is `os.fsencode`'s own, so it is the system's and not a list kept here.
+
+    NOR IS A CHARACTER THAT DOES NOT PRINT, OR WHITE SPACE (#715), `UNSEEN`,
+    which `validate-manifest.py` and `siblings.py` refuse in a branch too.
+    git takes `main` followed by U+00A0, and since #715 the reader reads that
+    no-break space as YAML does, where it used to strip it: so this step made
+    a second `main` beside the first in every leg and checked it out. Asked
+    once the name holds neither a NUL nor a lone surrogate, and never of a
+    surrogate, so the byte-carrying ones above still reach git.
     """
     for char in branch:
         if char == "\x00":
             return "U+0000, a NUL"
         if "\ud800" <= char <= "\udfff" and _fsencoded_length(char) != 1:
             return f"U+{ord(char):04X}, a lone surrogate"
+    for char in branch:
+        if not "\ud800" <= char <= "\udfff" and (
+                not char.isprintable() or char.isspace()):
+            return f"U+{ord(char):04X}, {UNSEEN}"
     return None
 
 
@@ -230,7 +248,19 @@ def _fsencoded_length(char: str) -> int:
 def _say_not_tried(where: str, named: str, fault: str) -> None:
     """A branch `_argument_fault` found: no command was run with it. The leg
     stays where it is, and the line says which of the three places the
-    person's value can have come from holds it (#455)."""
+    person's value can have come from holds it (#455).
+
+    `UNSEEN` (#715) has its own words: git would take the name, so "which no
+    command can be given" would be wrong, and the name to give is the one
+    without that character."""
+    if fault.endswith(UNSEEN):
+        print(f"  {where}: could not create branch {named}: it holds "
+              f"{fault}, which no person can tell from the name without it; "
+              "the leg is left as it is")
+        print("          the branch is the leg's `branch:`, else `--branch`, "
+              "else `tracking_branch`. Give that one a name with no such "
+              "character and run bootstrap again.")
+        return
     print(f"  {where}: could not create branch {named}: it holds {fault}, "
           "which no command can be given as an argument; the leg is left as "
           "it is")

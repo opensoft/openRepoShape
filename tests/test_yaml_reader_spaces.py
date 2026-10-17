@@ -33,14 +33,21 @@ over local bare remotes, one dry run, and imports.
 from __future__ import annotations
 
 import re
+import shutil
 import sys
 
 import pytest
 
-from conftest import REPO, run_script
+from conftest import REPO, git, run_script
+from test_bootstrap_branch_bytes import (ADVICE, ENCODING, leg_branch,
+                                         legs_state, tracking, validator_of)
+from test_bootstrap_spelling import bootstrap_of, pin12, run
+from test_bump_leg import advanced, bump  # noqa: F401 - `advanced`
 from test_leg_path_yaml_scalars import (  # noqa: F401 - `bare_lines`
     OFFER, SPEC, assert_nothing_was_created, bare_lines, scaffold, sentence)
 from test_scaffold_pin_and_reuse import scaffolder  # noqa: F401 - a fixture
+from test_update_shape import (CHANGED_SOURCE, UPDATE,
+                               scaffold_upstream_and_project)
 from test_yaml_indicator_openers import (EXPLICIT_KEY, NEEDS_PYYAML, OPENS,
                                          PAIR, fuzz_documents, ours, refused,
                                          stock)
@@ -412,6 +419,19 @@ def test_pyyaml_reads_each_as_a_single_pair(text, entry, pyyaml_reads):
     assert stock(text) == pyyaml_reads
 
 
+@pytest.mark.parametrize("text, value, held", [
+    pytest.param('k: ["a": b[: c]', "b[: c", "[", id="a-bracket"),
+    pytest.param('k: ["a": b{: c]', "b{: c", "{", id="a-brace"),
+])
+def test_a_quoted_items_value_holding_a_bracket_keeps_301s_words(
+        text, value, held):
+    """RV823's NIT-1: a QUOTED item skips the bracket test its plain twin
+    gets, so the value was split again and named as a key holding `[`."""
+    assert refusal_words(text) == (
+        f"a plain scalar in a flow collection holds `{held}`, which ends it "
+        f"in YAML: {value!r}")
+
+
 # --- L4-153: a template line the reader refuses -----------------------------
 
 #: What the leg-path rule says the project's reader makes of a bare `@x`.
@@ -487,3 +507,177 @@ def test_the_docstrings_example_is_one_the_reader_reads(
     assert parse_yaml(f"id: {value}\n") == {"id": value}
     assert scaffolder._neutral_pin_entry(entry) == double_quoted(entry)
     assert refused(ours("id: -"))
+
+
+# --- RV823 MUST-1: a branch no person can tell from another ------------------
+#
+# The reader now reads `tracking_branch: main` followed by U+00A0 as PyYAML
+# reads it, `'main\xa0'`, where main read `'main'`. git takes that name, so
+# the four readers of a branch refuse it as `siblings.py` does: a character
+# that does not print or is white space.
+
+#: `(the YAML line's value, bare as a person types it, the code point named)`.
+UNSEEN_BRANCHES = [
+    pytest.param("main\xa0", "U+00A0", id="main-and-a-no-break-space"),
+    pytest.param("\xa0", "U+00A0", id="a-no-break-space-alone"),
+    pytest.param("main\N{IDEOGRAPHIC SPACE}", "U+3000",
+                 id="main-and-an-ideographic-space"),
+    pytest.param("a\N{ZERO WIDTH JOINER}b", "U+200D",
+                 id="a-zero-width-joiner"),
+]
+
+#: What `validate-manifest.py` says after the code point.
+UNSEEN_WHY = ("a character that does not print or is white space: a person "
+              "reading the name cannot tell it from the name without it.")
+
+
+def unseen_finding(code: str, what: str, value: str, point: str) -> str:
+    return (f"FINDING {code}: {what} is {value!r}, which holds {point}, "
+            f"{UNSEEN_WHY} {ADVICE}")
+
+
+@pytest.mark.parametrize("value, point", UNSEEN_BRANCHES)
+def test_the_validator_names_a_tracking_branch_no_person_can_see(
+        project, tmp_path, value, point):
+    tracking(project, value)
+    code, out, err = run(validator_of(project), encoding=ENCODING,
+                         tmp_path=tmp_path, cwd=project)
+    assert (code, out) == (1, ""), out + err
+    assert err.split("\n") == [
+        unseen_finding("manifest-tracking-branch", "tracking_branch", value,
+                       point),
+        "", f"1 finding(s) in {project / 'project.yaml'}", ""], err
+
+
+def test_the_validator_names_a_legs_branch_no_person_can_see(
+        project, tmp_path):
+    leg_branch(project, "spec", "main\xa0")
+    code, out, err = run(validator_of(project), encoding=ENCODING,
+                         tmp_path=tmp_path, cwd=project)
+    assert (code, out) == (1, ""), out + err
+    assert err.split("\n")[0] == unseen_finding(
+        "manifest-leg-branch", "leg 'spec': branch", "main\xa0", "U+00A0"), err
+
+
+def not_placed(leg: str, value: str, point: str) -> list[str]:
+    """Step (a)'s two lines for a leg whose branch no person can see. The
+    name is printed as `spelled` prints it, which leaves a no-break or an
+    ideographic space as it is (#391), so the line names its code point."""
+    return [f"  [{leg}] {leg}: could not create branch "
+            f"{value}: it holds {point}, a character that does "
+            "not print or is white space, which no person can tell from the "
+            "name without it; the leg is left as it is",
+            "          the branch is the leg's `branch:`, else `--branch`, "
+            "else `tracking_branch`. Give that one a name with no such "
+            "character and run bootstrap again."]
+
+
+def step_a(out: str) -> list[str]:
+    lines = out.split("\n")
+    return lines[lines.index("(a) legs on tracking branches, pins untouched")
+                 + 1:lines.index("(b) neutral validators") - 1]
+
+
+@pytest.mark.parametrize("value, point", UNSEEN_BRANCHES[:3])
+def test_bootstrap_makes_no_ref_of_a_tracking_branch_no_person_can_see(
+        project, tmp_path, value, point):
+    """On #823's first head each leg gained `refs/heads/main` followed by
+    U+00A0 beside `main`, checked out, and the run ended `bootstrap ok`."""
+    tracking(project, value)
+    before = legs_state(project)
+    code, out, err = run(bootstrap_of(project), encoding=ENCODING,
+                         tmp_path=tmp_path, cwd=project)
+    assert code == 1 and "Traceback" not in err, out + err
+    assert step_a(out) == (not_placed("spec", value, point)
+                           + not_placed("code", value, point)), out
+    assert "bootstrap FAILED: manifest (exit 1)" in err, err
+    assert legs_state(project) == before
+
+
+def test_bootstrap_makes_no_ref_of_a_legs_branch_no_person_can_see(
+        project, tmp_path):
+    leg_branch(project, "spec", "main\xa0")
+    before = legs_state(project)
+    code, out, err = run(bootstrap_of(project), encoding=ENCODING,
+                         tmp_path=tmp_path, cwd=project)
+    assert code == 1 and "Traceback" not in err, out + err
+    assert step_a(out) == not_placed("spec", "main\xa0", "U+00A0") + [
+        f"  [code] code: on main at {pin12(project, 'code')} "
+        "(branch tip == pin)"], out
+    assert legs_state(project)["spec"] == before["spec"]
+
+
+def committed_tracking(root, value: str) -> str:
+    """`tracking_branch: <value>` hand-edited into the root and committed, as
+    RV823's scenario has it; the root's new HEAD."""
+    tracking(root, value)
+    git("add", "--", "project.yaml", cwd=root)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "hand-edit the tracking branch", cwd=root)
+    return git("rev-parse", "HEAD", cwd=root).stdout.strip()
+
+
+@pytest.mark.parametrize("dry_run", [(), ("--dry-run",)],
+                         ids=["real-run", "dry-run"])
+@pytest.mark.parametrize("value, point", UNSEEN_BRANCHES[:3])
+def test_bump_leg_refuses_a_tracking_branch_no_person_can_see(
+        project, scaffolded, advanced, value, point,  # noqa: F811
+        dry_run):
+    """On #823's first head, on `main`: exit 0, a commit on `main`, and a
+    NEXT line pushing it, where `bump-leg-on-tracking-branch` was owed.
+    `checked_value` refuses it now, before anything is fetched or written."""
+    head = committed_tracking(project, value)
+    pin = git("rev-parse", "HEAD:spec", cwd=project).stdout
+    result = bump(project, scaffolded, advanced, *dry_run)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith(
+        f"REFUSED unsafe-value: tracking_branch is {value!r}, which is not a "
+        "value this tool will put on a `git` or `gh` command line"), (
+            result.stderr)
+    assert git("rev-parse", "HEAD", cwd=project).stdout.strip() == head
+    assert git("rev-parse", "HEAD:spec", cwd=project).stdout == pin
+    assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+@pytest.fixture(scope="module")
+def older_validator(tmp_path_factory) -> dict:
+    """A project scaffolded at A, and B: an upstream commit whose manifest
+    validator asks a branch for a NUL alone, as one older than #715 does.
+    So the root's own validators pass a hand-edited `main` followed by
+    U+00A0 after `apply`, and update-shape's own guard is what is asked."""
+    _base, upstream, commit_a, clone = scaffold_upstream_and_project(
+        tmp_path_factory, "w715-older-validator")
+    source = upstream / CHANGED_SOURCE
+    text = source.read_text(encoding="utf-8")
+    asked = "if not c.isprintable() or c.isspace()),"
+    assert text.count(asked) == 1, "the validator no longer asks this"
+    source.write_text(text.replace(asked, 'if c == "\\x00"),'),
+                      encoding="utf-8")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "An older manifest validator", "--", CHANGED_SOURCE, cwd=upstream)
+    commit_b = git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
+    return {"upstream": upstream, "clone": clone, "a": commit_a,
+            "b": commit_b}
+
+
+def test_update_shape_never_commits_onto_a_tracking_branch_no_one_can_see(
+        older_validator, tmp_path):
+    """`apply --branch main` on `main`, `tracking_branch: main` followed by
+    U+00A0. On #823's first head the guard compared `'main'` with
+    `'main\xa0'`, found them different, and committed the shape update onto
+    `main`. Now `checked_value` refuses the value, and the ledger rolls the
+    rewrite back: the pin, HEAD and the tree are as they were."""
+    root = tmp_path / "Atlas"
+    shutil.copytree(older_validator["clone"], root, symlinks=True)
+    head = committed_tracking(root, "main\xa0")
+    result = run_script(UPDATE, "apply", "--root", str(root), "--yes",
+                        "--upstream", str(older_validator["upstream"]),
+                        "--at", older_validator["b"], "--branch", "main")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert ("REFUSED unsafe-value: tracking_branch is 'main\\xa0', which is "
+            "not a value this tool will put on a `git` or `gh` command line"
+            in result.stderr), result.stderr
+    assert git("rev-parse", "HEAD", cwd=root).stdout.strip() == head
+    pinned = load_yaml(root / "contracts" / "shape-pin.yaml")["commit"]
+    assert pinned.lower() == older_validator["a"]
+    assert git("status", "--porcelain", cwd=root).stdout == ""

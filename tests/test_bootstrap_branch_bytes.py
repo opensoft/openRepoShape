@@ -180,7 +180,6 @@ def test_both_keys_are_named_when_both_hold_one(project, tmp_path):
 @pytest.mark.parametrize("scalar", [
     '"release/1.2"',
     '"feature/日本"',
-    '"a\\u200db"',      # a zero-width joiner is text, and is not asked about
     '"a\\xe9b"',        # U+00E9 is a character, not a surrogate
     '"\\U0001F600"',    # the one-escape spelling of an emoji #280 asks for
     "2026",             # not text: `bootstrap.py` turns it into text
@@ -188,8 +187,10 @@ def test_both_keys_are_named_when_both_hold_one(project, tmp_path):
 ])
 def test_a_value_that_is_not_one_of_the_two_is_left_alone(
         project, tmp_path, scalar):
-    """The question is the two characters and no wider: neither key's other
-    values are the validator's to judge here."""
+    """The question is the two characters, and since #715 a character that
+    does not print or is white space (`tests/test_yaml_reader_spaces.py`
+    holds those rows), and no wider: neither key's other values are the
+    validator's to judge here."""
     tracking(project, scalar)
     leg_branch(project, "code", scalar)
     code, out, err = run(validator_of(project), encoding=ENCODING,
@@ -377,11 +378,12 @@ def bootstrap_module():
 
 
 @pytest.mark.parametrize("branch", [
-    "main", "release/1.2", "feature/日本", "a‍b", "a\xe9b", "a b",
-    "a\x1bb", "a..b", "", "\udc80", "a\udcffb"])
+    "main", "release/1.2", "feature/日本", "a\xe9b", "a..b", "", "\udc80",
+    "a\udcffb"])
 def test_a_branch_the_system_carries_has_no_fault(bootstrap_module, branch):
-    """Nothing but a NUL and a lone surrogate with no byte is a fault: a
-    control, a space, `..`, a character the system's encoding may lack, and
+    """Nothing but a NUL, a lone surrogate with no byte and, since #715, a
+    character that does not print or is white space is a fault (the test
+    after next): `..`, a character the system's encoding may lack, and
     the byte-carrying surrogates U+DC80 to U+DCFF are the commands'. On a
     system whose `os.fsencode` does not carry U+DC80 and U+DCFF (Windows) the
     next test is the one that holds."""
@@ -406,6 +408,25 @@ def test_a_branch_the_system_carries_has_no_fault(bootstrap_module, branch):
 def test_a_nul_and_a_surrogate_without_a_byte_are_the_fault(
         bootstrap_module, branch, fault):
     assert bootstrap_module._argument_fault(branch) == fault
+
+
+@pytest.mark.parametrize("branch, point", [
+    ("main\xa0", "U+00A0"),
+    ("a\N{ZERO WIDTH JOINER}b", "U+200D"),
+    ("a b", "U+0020"),
+    ("a\x1bb", "U+001B"),
+    # A byte-carrying surrogate is not asked, so the ESC after it is named.
+    ("a\udcff\x1b", "U+001B"),
+])
+def test_a_character_no_person_can_see_is_the_fault(bootstrap_module,
+                                                   branch, point):
+    """Since #715: git takes each of these names, and no person reading one
+    can tell it from the name without the character. Step (a) makes no ref
+    of it, as `validate-manifest.py` and `siblings.py` refuse it too."""
+    if "\udcff" in branch and len(os.fsencode("\udcff")) != 1:
+        pytest.skip("this system's `os.fsencode` makes no byte of U+DCFF")
+    assert bootstrap_module._argument_fault(branch) == (
+        f"{point}, {bootstrap_module.UNSEEN}")
 
 
 @pytest.mark.parametrize("branch", ["a\udcffb", "\udc80", "a\udcfeb"])

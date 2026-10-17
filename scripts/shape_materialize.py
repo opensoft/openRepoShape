@@ -4206,7 +4206,7 @@ def _read_as(value) -> str:
     of a plan as no value (#181). A refusal (`_read_back`) is "nothing at
     all", in `_reading_in_words`' words (#715)."""
     if isinstance(value, YamlError):
-        return f"nothing at all, because it refuses the line ({value})"
+        return _reading_in_words(value)
     if isinstance(value, bool):
         return f"the boolean {str(value).lower()}"
     if isinstance(value, (int, float)):

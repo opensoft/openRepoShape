@@ -2423,8 +2423,16 @@ def tracking_branch_of(manifest: dict | None) -> str:
     `bump-leg.py` and `family.py` read the field with. The remote's own HEAD
     is never asked: a base taken from the network could disagree with the
     one the `--branch` refusal and `--pr` read from the manifest.
+
+    READ THROUGH `checked_value`, as `bump-leg.py` and `family.py` read it
+    (#715). Compared raw, `tracking_branch: main` followed by U+00A0, which
+    the reader reads as YAML does since #715, was not `main`, so
+    `apply --branch main` committed onto `main` where the root's own
+    validators passed. A name `checked_value` refuses is `unsafe-value`,
+    and inside `apply` the ledger rolls the rewrite back.
     """
-    return str((manifest or {}).get("tracking_branch") or "main")
+    return checked_value("tracking_branch",
+                         (manifest or {}).get("tracking_branch") or "main")
 
 
 def pull_request_repository(manifest: dict | None,
