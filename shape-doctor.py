@@ -3860,11 +3860,12 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    and the `why` says it is gone on both sides and names
                    each new name a side's own commit holds the base's blob
                    of it at, or the bytes that commit's own pin row for it
-                   records, saying where a side's is not proved
-                   (`copies_renamed_twice`, `twice_renamed_copies`). Where
-                   the pin taken here still lists a copy renamed on one side
-                   or both, the `why` says this doctor reports it missing
-                   once the merge is finished (`still_listed`).
+                   records, at that one path of the commit, saying where a
+                   side's is not proved (`copies_renamed_twice`,
+                   `twice_renamed_copies`). Where the pin taken here still
+                   lists a copy renamed on one side or both, the `why` says
+                   this doctor reports it missing once the merge is
+                   finished (`still_listed`).
                    The manifest and README.md are never named either, though
                    `apply` writes lines of them: every other line is the
                    project's own, and one side taken whole drops the other
@@ -4188,13 +4189,22 @@ def by_conflict(names: list, stages: dict) -> list:
 
 def base_holders(ctx: Context) -> dict:
     """`{blob: [paths]}`, every path of the merge base's whole tree under
-    the blob it holds, the base being `merge-base HEAD MERGE_HEAD`, as
-    `copies_renamed` (#753) and `copies_renamed_twice` (#783) weigh a blob;
-    `{}` where git cannot name the base, as for any conflict but a merge's.
+    the blob it holds (`tree_holders`), the base being `merge-base HEAD
+    MERGE_HEAD`, as `copies_renamed` (#753) and `copies_renamed_twice`
+    (#783) weigh a blob; `{}` where git cannot name the base, as for any
+    conflict but a merge's.
     """
     base = git_answer(["merge-base", "HEAD", "MERGE_HEAD"], ctx.root)
-    listing = base and git_answer(["ls-tree", "-r", "-z", base], ctx.root,
-                                  binary=True)
+    return tree_holders(ctx, base) if base else {}
+
+
+def tree_holders(ctx: Context, rev: str) -> dict:
+    """`{blob: [paths]}`, every path of the whole tree `rev` names under
+    the blob it holds, read from the root as `ls-tree -r` lists it, so each
+    path is named as `ls-files` names it there; `{}` where git cannot read
+    it. One read of the merge base (`base_holders`), and of each side's own
+    commit, for `copies_renamed_twice` (review of PR #789, round 3)."""
+    listing = git_answer(["ls-tree", "-r", "-z", rev], ctx.root, binary=True)
     held: dict[bytes, list] = {}
     for record in (listing or b"").split(b"\0"):
         meta, _tab, path = record.partition(b"\t")
@@ -4283,27 +4293,38 @@ def copies_renamed_twice(ctx: Context, gone: dict, stages: dict,
     copy's old bytes does not stand in the way of bytes the standard moved
     it to. Where git cannot name the base, nothing is proved.
 
+    AND NO OTHER PATH OF THE SIDE'S OWN COMMIT HOLDS THEM (`tree_holders`,
+    review of PR #789, round 3): #781's one-path rule, applied to the
+    side's tree. A project that keeps its own twin of the copy in step
+    with it, and renames the twin too, holds the copy's bytes at two new
+    names, and git pairs one of them with the twin: neither is proved, as
+    either may be the project's own file. The same holds for the base's
+    blob written at two paths.
+
     Only a path no pin has a row for is a candidate: `pin_restore` names
     the others as what their rows say, never as a new name too (review of
     PR #789). Several proved paths on one side were not reached in that
-    review: git pairs one new name per side with the rename, and another
-    path a side copies the copy to is added cleanly, never conflicted. The
-    `[paths]` keeps them all, should git ever give more.
+    review: git pairs one new name per side with the rename, another path
+    a side copies the copy to is added cleanly, never conflicted, and two
+    proved paths would have to hold different bytes, the base's blob at
+    one and the bytes of the side's pin row at the other. The `[paths]`
+    keeps them all, should git ever give more.
     """
     if not gone:
         return {}
     added = sorted(name for name, held_at in stages.items()
                    if set(held_at) in ({b"2"}, {b"3"}))
-    pinned = {number: pinned_sha256(ctx, commit)
-              for number, commit in COMMIT_OF_STAGE.items()}
+    sides = {number: (commit, pinned_sha256(ctx, commit),
+                      tree_holders(ctx, commit))
+             for number, commit in COMMIT_OF_STAGE.items()}
     twice: dict[str, dict] = {}
     for copy, blob in sorted(gone.items()):
         found: dict[bytes, list] = {}
         for path in added:
             number = next(iter(stages[path]))
-            if held and side_moved_it(
-                    ctx, f"{COMMIT_OF_STAGE[number]}:./{path}", copy, blob,
-                    pinned[number].get(copy), held):
+            commit, pinned, tree = sides[number]
+            if held and side_moved_it(ctx, commit, path, copy, blob,
+                                      pinned.get(copy), tree, held):
                 found.setdefault(number, []).append(path)
         twice[copy] = found
     return twice
@@ -4317,15 +4338,18 @@ def pinned_sha256(ctx: Context, rev: str) -> dict:
     return {row.path: row.recorded for row in read[1]} if read else {}
 
 
-def side_moved_it(ctx: Context, spec: str, copy: str, blob: bytes,
-                  recorded: str | None, held: dict) -> bool:
-    """Whether `spec`, `<commit>:./<path>` of one side of the merge, holds
-    the copy `copy` moved there, by `copies_renamed_twice`'s evidence: the
-    merge base's blob of the copy, `blob`, which the base `held` holds at
-    the copy alone, or bytes the base holds at no path whose sha256 is
-    `recorded`, that side's pin row for the copy."""
+def side_moved_it(ctx: Context, commit: str, path: str, copy: str,
+                  blob: bytes, recorded: str | None, tree: dict,
+                  held: dict) -> bool:
+    """Whether `path` of `commit`, one side of the merge, holds the copy
+    `copy` moved there, by `copies_renamed_twice`'s evidence: bytes that
+    `tree`, that commit's whole tree by blob, holds at `path` alone, and
+    that are either the merge base's blob of the copy, `blob`, which the
+    base `held` holds at the copy alone, or bytes the base holds at no
+    path whose sha256 is `recorded`, that side's pin row for the copy."""
+    spec = f"{commit}:./{path}"
     committed = git_answer(["rev-parse", "-q", "--verify", spec], ctx.root)
-    if committed is None:
+    if committed is None or tree.get(committed.encode("ascii")) != [path]:
         return False
     if committed.encode("ascii") == blob:
         return held.get(blob) == [copy]

@@ -1270,6 +1270,40 @@ EDITED_ON_OURS = {**BOTH_RENAME,
 #: neither side's commit holds the merge base's blob of it.
 THE_MAKEFILE_MOVES = (UPSTREAM_TARGET, BOOTSTRAP_SOURCE)
 
+#: A file of the project's own beside the Makefile: its twin, where main
+#: gains it with the Makefile's bytes.
+TWIN = "tools/Makefile.orig"
+
+
+def in_step(path: str, like: str):
+    """An act on a branch: `path` given `like`'s bytes, committed, as a
+    project keeps its own twin of a copy in step with the copy."""
+    def act(root: Path) -> None:
+        (root / path).write_bytes((root / like).read_bytes())
+        git("add", "--", path, cwd=root)
+        commit_in(root, f"{path} in step with {like}")
+    return act
+
+
+def in_turn(*acts):
+    """One act on a branch: each of `acts` in turn."""
+    def act(root: Path) -> None:
+        for each in acts:
+            each(root)
+    return act
+
+
+#: Both sides rename the Makefile and the project's own twin of it, ours
+#: keeping the twin in step with its a.mk first, so ours' commit holds
+#: a.mk's bytes at two new names (review of PR #789, round 3).
+TWIN_KEPT_IN_STEP = {
+    "shape/a": in_turn(renamed(MAKEFILE, THEIRS_NAME),
+                       renamed(TWIN, "tools/y.mk")),
+    "shape/b": in_turn(renamed(MAKEFILE, OURS_NAME),
+                       in_step(TWIN, OURS_NAME),
+                       renamed(TWIN, "tools/x.mk")),
+}
+
 
 def both_proved(taken_here: str, other: str) -> str:
     """What the `why` says of the Makefile where each side's new name is
@@ -1337,7 +1371,8 @@ class Twice(NamedTuple):
 
 #: Each merge in which both sides rename the Makefile, by what proves each
 #: new name: the merge base's blob of it, or the bytes the side's own pin
-#: row records (review of PR #789), at the side's own commit.
+#: row records (review of PR #789), at the side's own commit, and at one
+#: path of it (round 3).
 TWICE = {
     "renamed-on-both-sides": Twice(
         BOTH_RENAME, both_proved(OURS_NAME, THEIRS_NAME),
@@ -1347,7 +1382,11 @@ TWICE = {
         [MAKEFILE, THEIRS_NAME, "project.yaml"]),
     "renamed-on-both-sides-beside-a-twin": Twice(
         BOTH_RENAME, NONE_PROVED, [MAKEFILE, "project.yaml"],
-        own=("tools/Makefile.orig", MAKEFILE)),
+        own=(TWIN, MAKEFILE)),
+    "renamed-on-both-sides-a-twin-kept-in-step": Twice(
+        TWIN_KEPT_IN_STEP, one_proved(THEIRS_NAME, OTHER_SIDE, TAKEN_HERE),
+        [MAKEFILE, THEIRS_NAME, "project.yaml"],
+        own=(TWIN, MAKEFILE, OWN_LINE), finished=None),
     "renamed-on-both-sides-theirs-moving-its-row": Twice(
         {**BOTH_RENAME, "shape/a": renamed(MAKEFILE, THEIRS_NAME, row=True)},
         one_proved(OURS_NAME, TAKEN_HERE, OTHER_SIDE),
@@ -1373,7 +1412,11 @@ TWICE = {
     "renamed-on-both-sides-the-standard-moved-beside-a-twin": Twice(
         BOTH_RENAME, both_proved(OURS_NAME, THEIRS_NAME),
         [MAKEFILE, OURS_NAME, THEIRS_NAME, "project.yaml"],
-        own=("tools/Makefile.orig", MAKEFILE), sources=THE_MAKEFILE_MOVES),
+        own=(TWIN, MAKEFILE), sources=THE_MAKEFILE_MOVES),
+    "renamed-on-both-sides-the-standard-moved-a-twin-kept-in-step": Twice(
+        TWIN_KEPT_IN_STEP, one_proved(THEIRS_NAME, OTHER_SIDE, TAKEN_HERE),
+        [MAKEFILE, THEIRS_NAME, "project.yaml"],
+        own=(TWIN, MAKEFILE), sources=THE_MAKEFILE_MOVES, finished=None),
     "renamed-on-both-sides-the-standard-moved-the-base-holding-ours": Twice(
         BOTH_RENAME, one_proved(THEIRS_NAME, OTHER_SIDE, TAKEN_HERE),
         [MAKEFILE, THEIRS_NAME, "project.yaml"],
@@ -1405,7 +1448,10 @@ def test_a_copy_renamed_on_both_sides_is_named_for_a_person(
     side's pin row proves its name, a twin of the base's bytes beside it
     or not; a base holding ours' bytes at another path proves ours' name
     nothing, and with no MERGE_HEAD no base is named, so nothing is proved
-    (review of PR #789).
+    (review of PR #789). Where ours keeps its own twin of the Makefile in
+    step with a.mk and both sides rename the twin too, ours' commit holds
+    a.mk's bytes at two new names, and git pairs one with the twin: ours'
+    name is not proved, the standard moved or not (round 3).
 
     A name a pin has a row for is named by that row alone: theirs, moving
     its row to b.mk, gets b.mk named once, as the other side's copy, and
