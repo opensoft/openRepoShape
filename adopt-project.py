@@ -1761,27 +1761,33 @@ class Source:
 
     @classmethod
     def open(cls, spec: str, work_root: Path, unwritable: str | None = None,
-             made: list | None = None, done: str = "") -> "Source":
+             made: list | None = None, done: str = "",
+             instead: str | None = None) -> "Source":
         """`spec`, a `--source`, as `_source_spec` reads it: a local path,
         read in place, or a GitHub repository, cloned (`clone`, which takes
-        `unwritable`, `made` and `done`)."""
+        `unwritable`, `made` and `done`). `instead` is `_default_branch`'s:
+        the branch to read it at where its remote's default branch is no
+        branch of its own."""
         path, repository = _source_spec(spec)
         if repository is not None:
             return cls.clone(repository, work_root, unwritable, made,
-                             done=done)
-        return cls.in_place(path, work_root)
+                             done=done, instead=instead)
+        return cls.in_place(path, work_root, instead)
 
     @classmethod
-    def in_place(cls, path: Path, work_root: Path) -> "Source":
+    def in_place(cls, path: Path, work_root: Path,
+                 instead: str | None = None) -> "Source":
         """The repository at `path`, read where it is, named by its
         `origin`."""
         path = path.expanduser().resolve()
-        return cls._at(path, _remote_repository(path), work_root, False)
+        return cls._at(path, _remote_repository(path), work_root, False,
+                       instead)
 
     @classmethod
     def clone(cls, repository: str, work_root: Path,
               unwritable: str | None = None, made: list | None = None, *,
-              note: str = "", taken: str = "", done: str = "") -> "Source":
+              note: str = "", taken: str = "", done: str = "",
+              instead: str | None = None) -> "Source":
         """`repository`, an `owner/repo` `_github_name` gave, cloned with
         `gh repo clone` into `<work_root>/source-readonly/<repo>`, and read
         there. Every clone of a source goes through here.
@@ -1827,14 +1833,16 @@ class Source:
                 f"could not clone {repository}: {exc.output.strip()[:400]}",
                 "Remediation: check `gh auth status` and the repository "
                 "name, or clone it yourself and pass the path.") from exc
-        return cls._at(path, repository, work_root, True)
+        return cls._at(path, repository, work_root, True, instead)
 
     @classmethod
     def _at(cls, path: Path, repository: str | None, work_root: Path,
-            cloned: bool) -> "Source":
-        branch = _default_branch(path)
-        # The name as the bytes git keeps it, under any locale (#653).
-        commit = _git_out_exact(["rev-parse", branch], path).lower()
+            cloned: bool, instead: str | None = None) -> "Source":
+        branch = _default_branch(path, instead)
+        # The branch by its full name, which no tag named like it shadows
+        # (#797), and as the bytes git keeps it, under any locale (#653).
+        commit = _git_out_exact(["rev-parse", f"{LOCAL_BRANCHES}{branch}"],
+                                path).lower()
         return cls(path, repository, branch, commit, work_root, cloned)
 
     def tree(self) -> list[tuple[str, str, str, int]]:
@@ -1960,8 +1968,31 @@ def _origin_url(path: Path) -> str | None:
         return None
 
 
-def _default_branch(path: Path) -> str:
-    """The branch the adoption reads, in the order a reader would guess it.
+#: Where git keeps the source's own branches, and the default branch of its
+#: remote `origin`, as `git clone` and `git remote set-head` record it.
+LOCAL_BRANCHES = "refs/heads/"
+ORIGIN_HEAD = "refs/remotes/origin/HEAD"
+#: How `Source.open` refuses a source whose remote's default branch is no
+#: branch of its own, and the way through it, in `plan`, `check` and
+#: `execute` alike (#797).
+DEFAULT_BRANCH_NOT_LOCAL = "source-default-branch-not-local"
+
+
+def _default_branch(path: Path, instead: str | None = None) -> str:
+    """The branch the adoption reads, in the order a reader would guess it:
+    the default branch of the source's remote `origin`, as its `origin/HEAD`
+    names it; else the branch its HEAD is on; else `main`. The name of a
+    branch of the source's own, which `Source._at` reads by its full name.
+
+    BY FULL NAME, AND WHOLE (#797). `git symbolic-ref --short` gave a name
+    with `origin/` to take off, and it was taken off HEAD's too, so a HEAD
+    on a branch of the source's own named `origin/x` read `x`; a tag named
+    like the branch made HEAD's short name `heads/main`, which `plan`
+    recorded as the tracking branch; and the name `origin/HEAD` gave,
+    `main`, was read with `git rev-parse main`, which a tag `main` answers
+    first. The name was also stripped once decoded, which takes U+00A0 off
+    `main<U+00A0>`, and the branch `main` beside it was read. So the full
+    name is read (`_branch_named_by`), and only its own prefix comes off.
 
     A BYTE THAT IS NOT UTF-8 IS KEPT, AS `sys.argv` KEEPS ONE (#425). git
     keeps a branch's name as the bytes it was given: `git branch caf<e9>` is
@@ -1974,17 +2005,72 @@ def _default_branch(path: Path) -> str:
     `check` and `execute` name, as `plan-tracking-branch-missing`, when the
     plan tracks one the source no longer has. Where the plan tracks a branch
     that is text, the source is read at this one and adopted.
-    """
-    for args in (["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-                 ["symbolic-ref", "--short", "HEAD"]):
-        try:
-            name = git_out(args, cwd=path, binary=True).decode(
-                "utf-8", "surrogateescape").strip()
-        except Refusal:
-            continue
-        if name:
-            return name.split("/", 1)[1] if name.startswith("origin/") else name
-    return "main"
+
+    A DEFAULT BRANCH THE SOURCE HAS NO BRANCH OF IS NEVER REPLACED BY ONE
+    NOBODY NAMED (#797). A clone made with `git clone -b dev`, or one whose
+    `main` was deleted, has `origin/HEAD` naming `main` and no `main` of its
+    own, and `git rev-parse main` ended `plan`, `check` and `execute` as
+    `git-failed`, in git's words, whatever `--tracking-branch` said. Such a
+    source is read at `instead` where that is a branch of its own: `plan`'s
+    `--tracking-branch`, or the branch a plan records reading it at, for
+    `check` and `execute`. Otherwise a remote's default branch is refused by
+    name, with both ways through, and never read at HEAD's branch or any
+    other in its place; HEAD's branch with no commit yet, and a `main`
+    guessed for a detached HEAD, are left to `git rev-parse`'s words."""
+    origins = _branch_named_by(path, ORIGIN_HEAD, ORIGIN_BRANCHES)
+    branch = origins or _branch_named_by(path, "HEAD", LOCAL_BRANCHES) \
+        or "main"
+    branches = _local_branches(path)
+    if branch in branches:
+        return branch
+    if instead in branches:
+        return instead
+    if origins is None:
+        return branch
+    nor = "" if instead in (None, origins) else \
+        f", nor one named {_spelled(instead)}"
+    raise Refusal(
+        DEFAULT_BRANCH_NOT_LOCAL,
+        f"the source's `origin/HEAD` names {_spelled(origins)}, the default "
+        f"branch of its remote `origin`, and the source has no branch "
+        f"{_spelled(origins)} of its own{nor} (its branches: "
+        f"{_branches_named(branches)}). A clone made with `git clone -b "
+        "<branch>` has none, nor does one whose own was deleted, and the "
+        "source is read at a branch of its own, never at another nobody "
+        "named in its place",
+        f"Remediation: make it a branch of the source's own, from its "
+        f"remote's: `git branch {shlex.quote(origins)} "
+        f"{shlex.quote('origin/' + origins)}`, run in the source. Or run "
+        "`plan` with `--tracking-branch` naming a branch the source has, "
+        "and the source is read at that branch; `check` and `execute` then "
+        "read it where the plan did.")
+
+
+def _branch_named_by(path: Path, ref: str, prefix: str) -> str | None:
+    """The branch the symbolic ref `ref` names, its full name with `prefix`
+    taken off; None where `ref` is no symbolic ref, or names nothing under
+    `prefix` (an `origin/HEAD` set by hand to another remote's branch).
+
+    Read as bytes and decoded as #425 decodes them, with only git's line end
+    taken off first, from the bytes: `str.strip` after decoding took U+00A0,
+    which a branch's name may end in, for white space (#797)."""
+    try:
+        full = git_out(["symbolic-ref", "-q", ref], cwd=path, binary=True)
+    except Refusal:
+        return None
+    name = full.removesuffix(b"\n").decode("utf-8", "surrogateescape")
+    if name.startswith(prefix) and len(name) > len(prefix):
+        return name[len(prefix):]
+    return None
+
+
+def _local_branches(path: Path) -> list[str]:
+    """The source's own branches, each name as `Source.tree` reads a path,
+    so a byte that is not UTF-8 is kept rather than refused."""
+    raw = git_out(["for-each-ref", "--format=%(refname)", LOCAL_BRANCHES],
+                  cwd=path, binary=True)
+    return sorted(ref[len(LOCAL_BRANCHES):]
+                  for ref in map(_git_path, raw.splitlines()))
 
 
 # ---------------------------------------------------------------------------
@@ -3625,6 +3711,15 @@ def _branches_of(source: Source) -> tuple[str, list[str]]:
                                 if ref.startswith("refs/heads/"))
 
 
+def _branches_named(branches: list[str]) -> str:
+    """`branches` as a finding names them: the first `BRANCHES_NAMED`, and
+    how many more there are; `none` where there are none."""
+    named = _listed(branches[:BRANCHES_NAMED]) or "none"
+    if len(branches) > BRANCHES_NAMED:
+        named += f" and {len(branches) - BRANCHES_NAMED} more"
+    return named
+
+
 def _tracking_branch_problem(source: Source, what: str,
                              tracking: str) -> str | None:
     """Why `tracking`, named as `what`, cannot be this adoption's tracking
@@ -3634,16 +3729,14 @@ def _tracking_branch_problem(source: Source, what: str,
     whose, branches = _branches_of(source)
     if tracking in branches:
         return None
-    named = _listed(branches[:BRANCHES_NAMED]) or "none"
-    if len(branches) > BRANCHES_NAMED:
-        named += f" and {len(branches) - BRANCHES_NAMED} more"
     return (f"{what} is {_spelled(tracking)}, which is no branch of {whose} "
-            f"(its branches: {named}; the source's default branch is "
-            f"{_spelled(source.branch)}). `execute` pushes both legs to it, "
-            "writes it into the root's `project.yaml` as the branch the "
-            "project tracks, and opens the split's pull request against it "
-            "once both legs and the split are pushed, where GitHub refuses a "
-            "base that is not a branch (`Base ref must be a branch`)")
+            f"(its branches: {_branches_named(branches)}; the source's "
+            f"default branch is {_spelled(source.branch)}). `execute` pushes "
+            "both legs to it, writes it into the root's `project.yaml` as the "
+            "branch the project tracks, and opens the split's pull request "
+            "against it once both legs and the split are pushed, where "
+            "GitHub refuses a base that is not a branch (`Base ref must be a "
+            "branch`)")
 
 
 def _tracking_branch_findings(plan: Plan, source: Source
@@ -3806,6 +3899,31 @@ def _refuse_bad_id(project_id: str, project: str, given: set,
                   remedy)
 
 
+#: What `plan` says after `checked_value`'s remedy when the value refused is
+#: the source's own branch, which nobody passed (#797, L1-71's first case on
+#: #457). The alphabet alone said nothing of the way past it, which works.
+DEFAULT_BRANCH_WAY_PAST = (
+    "The source's branch can keep its name: the source is read at it as it "
+    "is, and only the tracking branch is held to that pattern, since "
+    "`execute` pushes both legs to it and opens the split's pull request "
+    "against it. So make a branch whose name matches at the same commit, in "
+    "the source with that branch checked out (`git branch main`, and `git "
+    "push origin main` where the source has a remote `origin`), and pass "
+    "it: `--tracking-branch main`.")
+
+
+def _checked_default_branch(what: str, branch: str) -> str:
+    """`checked_value(what, branch)` of the source's default branch, which
+    `plan` takes as the tracking branch when none is passed, its refusal
+    saying the way past it too (`DEFAULT_BRANCH_WAY_PAST`)."""
+    try:
+        return checked_value(what, branch)
+    except Refusal as refused:
+        raise Refusal(refused.code, refused.detail,
+                      f"{refused.remediation} {DEFAULT_BRANCH_WAY_PAST}"
+                      ) from None
+
+
 def _checked_plan_inputs(args, source: Source,
                          naming: NamingPolicy) -> tuple[dict, list]:
     """Every value the plan will RECORD, defaulted and checked before one of
@@ -3836,8 +3954,9 @@ def _checked_plan_inputs(args, source: Source,
     # `--elected-by` is below, and not as a flag the person never passed.
     given = args.tracking_branch is not None
     tracking = _flag_named(TRACKING_KEY, {TRACKING_KEY} if given else set())
-    args.tracking_branch = checked_value(
-        tracking, args.tracking_branch if given else source.branch)
+    args.tracking_branch = (checked_value(tracking, args.tracking_branch)
+                            if given else
+                            _checked_default_branch(tracking, source.branch))
     # Then git's own question (#420): a name inside that alphabet that git
     # will not create (`a..b`, `~`, `x.lock`, `a/`) is refused here, in git's
     # words, and is not written for `check` to find it no branch of the
@@ -4409,9 +4528,12 @@ def cmd_plan(args) -> int:
     # it (#650); a local source is read in place, and writes nothing there.
     # The clone goes on `args.clones`, and `_leave_the_clones` removes it
     # unless this run ends having written the plan that records it (#652).
+    # Read at `--tracking-branch` where its remote's default branch is no
+    # branch of its own, a `git clone -b` (#797).
     source = Source.open(args.source, work_root,
                          _unwritable_work_dir(args, work_root),
-                         getattr(args, "clones", None))
+                         getattr(args, "clones", None),
+                         instead=args.tracking_branch)
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
     naming = NamingPolicy.load(NAMING_POLICY)
 
@@ -4620,6 +4742,15 @@ class Plan:
     def source_commit(self) -> str:
         return str(self.source.get("commit") or "")
 
+    @property
+    def read_at(self) -> str | None:
+        """The branch `plan` read the source at, `source.default_branch`, or
+        None where the plan records none: where the source's remote's
+        default branch is no branch of its own, `check` and `execute` read
+        it there again (`_default_branch`'s `instead`, #797)."""
+        branch = self.source.get("default_branch")
+        return None if branch is None else str(branch)
+
     def open_source(self, override: str | None, work_root: Path,
                     unwritable: str | None = None,
                     made: list | None = None, done: str = "") -> Source:
@@ -4635,7 +4766,8 @@ class Plan:
         existed, said the plan's repository is cloned again and read that
         directory instead."""
         if override:
-            return Source.open(override, work_root, unwritable, made, done)
+            return Source.open(override, work_root, unwritable, made, done,
+                               self.read_at)
         local_path = self.source.get("local_path")
         if local_path:
             return self._recorded_source(str(local_path), work_root,
@@ -4646,7 +4778,7 @@ class Plan:
                           f"{self.path}: `source:` names neither a local path "
                           "nor a repository")
         return Source.clone(repository, work_root, unwritable, made,
-                            done=done)
+                            done=done, instead=self.read_at)
 
     def _recorded_repository(self) -> str | None:
         """The plan's `source.repository` as `_github_name` reads it, or None
@@ -4699,7 +4831,7 @@ class Plan:
         there = path.exists()
         if self.source.get("cloned") is not True:
             if there:
-                return Source.in_place(path, work_root)
+                return Source.in_place(path, work_root, self.read_at)
             raise self._gone(local_path, "names nothing that exists",
                              "the plan does not record it as a clone `plan` "
                              "made (`source.cloned` is not `true`), so "
@@ -4707,7 +4839,7 @@ class Plan:
         broken = _not_a_whole_clone(path, self.source_commit) if there \
             else None
         if there and broken is None:
-            return Source.in_place(path, work_root)
+            return Source.in_place(path, work_root, self.read_at)
         state = (f"is a clone `plan` made that is no longer whole ({broken})"
                  if there else "no longer exists")
         repository = self._recorded_repository()
@@ -4725,7 +4857,7 @@ class Plan:
                   "GitHub, as `plan` cloned it."),
             taken=(f"the plan's `source.local_path`, {_spelled(local_path)}, "
                    f"{state}" if at_the_record and there else ""),
-            done=done)
+            done=done, instead=self.read_at)
 
     def _gone(self, local_path: str, state: str, why: str) -> Refusal:
         """`plan-source-gone`: the plan's `source.local_path` is in `state`,
