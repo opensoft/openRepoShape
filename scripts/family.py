@@ -1687,12 +1687,17 @@ COMMIT_IDENTITY = (
 
 #: A name and an address git takes, standing in for one the person left
 #: unset or empty, where `env_commit` puts its fallback: git is then asked
-#: about the person's own variables, beside values it accepts.
+#: about the person's own variables, beside values it accepts. Each is
+#: spelled once, and neither is the fallback `env_commit` or `commit_on_branch`
+#: spells: the answer does not depend on which acceptable value stands in, and
+#: a third copy of a fallback would be one more to keep in step with them.
+COMMIT_STAND_IN_NAME = "identity check"
+COMMIT_STAND_IN_EMAIL = "identity-check@openreposhape.invalid"
 COMMIT_IDENTITY_STAND_IN = {
-    "GIT_AUTHOR_NAME": "openRepoShape family",
-    "GIT_AUTHOR_EMAIL": "family@openreposhape.invalid",
-    "GIT_COMMITTER_NAME": "openRepoShape family",
-    "GIT_COMMITTER_EMAIL": "family@openreposhape.invalid",
+    "GIT_AUTHOR_NAME": COMMIT_STAND_IN_NAME,
+    "GIT_AUTHOR_EMAIL": COMMIT_STAND_IN_EMAIL,
+    "GIT_COMMITTER_NAME": COMMIT_STAND_IN_NAME,
+    "GIT_COMMITTER_EMAIL": COMMIT_STAND_IN_EMAIL,
 }
 
 #: What `family-bad-commit-identity` is told to do (#688).
@@ -1752,7 +1757,7 @@ def _refuse_an_unusable_commit_identity() -> None:
             run(["git", f"--git-dir={nowhere}", "var", ident],
                 cwd=Path(nowhere), env=identity)
         except CommandFailed as exc:
-            listed = (", ".join(given[:-1]) + " and " + given[-1]
+            listed = (f"{', '.join(given[:-1])} and {given[-1]}"
                       if len(given) > 1 else given[0])
             problems.append(
                 f"git refuses the {role} the holder's first commit would be "

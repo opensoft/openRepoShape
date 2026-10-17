@@ -117,7 +117,7 @@ def initialised(result, tmp_path, dry_run: bool) -> None:
 
 UNWRITABLE = [
     pytest.param("Ada\nLovelace", LINE_BREAK, id="lf"),
-    pytest.param("Ada‮Lovelace", BIDI, id="u202e"),
+    pytest.param("Ada\u202eLovelace", BIDI, id="u202e"),
     pytest.param("Ada\x1bLovelace", CONTROL, id="esc"),
     pytest.param("Ada\tLovelace", CONTROL, id="tab"),
 ]
@@ -181,7 +181,7 @@ def test_the_setting_keeps_the_remediation_426_gave_it(tmp_path):
 @DRY_RUN
 @pytest.mark.parametrize("flags, env, recorded", [
     pytest.param(("--created-by", "José"), {}, "José", id="flag"),
-    pytest.param((), {"GIT_AUTHOR_NAME": "Mehr‌dad"}, "Mehr‌dad",
+    pytest.param((), {"GIT_AUTHOR_NAME": "Mehr\u200cdad"}, "Mehr\u200cdad",
                  id="env"),
 ])
 def test_a_creator_that_is_text_still_initialises(tmp_path, flags, env,
