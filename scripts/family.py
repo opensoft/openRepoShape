@@ -169,7 +169,7 @@ from repo_shape import (  # noqa: E402
     COMMIT_RE, PROJECT_ID_RE, PYTHON, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError, checked_value,
     double_quoted, git_out, load_yaml, parse_yaml, recorded_gitlink,
-    repo_basename, same_repository, shown_path, tree_digest,
+    repo_basename, same_repository, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     FAMILY_RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
