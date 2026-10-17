@@ -215,7 +215,14 @@ GROUPS = [
     ("Run from a checkout of the standard", CHECKOUT_TOOLS,
      "Every command below is typed at the root of a clone of this "
      "repository. `openRepoShape` is also the one file `--install` places on "
-     "`PATH`, and is the only entry point that needs no checkout at all."),
+     "`PATH`, and needs no checkout at all. `pipx install openreposhape` "
+     "(#563) places a Python `openRepoShape` with the same modes, whose own "
+     "`--help` says what differs (its `--install` refuses and names `pipx "
+     "upgrade openreposhape`), and four commands that need no checkout "
+     "either: `scaffold-project`, `adopt-project`, `update-shape` and "
+     "`shape-doctor` each run the tool of that name below, with every "
+     "argument unchanged, from a clone of the standard at the package's own "
+     "release commit, so their flags are the ones below."),
     ("Shipped into every project (copied, digest-pinned)", PROJECT_TOOLS,
      "These six are COPIES. `scaffold-project.py` writes them into a "
      "scaffolded project or a family holder and records each one by sha256 "
@@ -286,6 +293,13 @@ def child_env() -> dict:
     If that ever stops being true, git refuses the transport, the tool's
     `--help` exits non-zero, and `capture_help` turns that into a refusal
     naming the tool — the regression fails closed, offline.
+
+    `PYTHONDONTWRITEBYTECODE=1` (#665): the template's `siblings.py` does
+    `from bootstrap import ...` from its own directory, so a `--help` child
+    that may write bytecode leaves a `__pycache__/bootstrap.*.pyc` inside
+    `templates/family-root/scripts/`, ignored by git and so silent in
+    `git status`. A person who runs this generator gets the same tree as the
+    test that runs it.
     """
     env = dict(os.environ)
     env.pop("LINES", None)
@@ -297,6 +311,7 @@ def child_env() -> dict:
         "PYTHONPATH": str(REPO / "scripts"),
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
         "NO_COLOR": "1",
         "TERM": "dumb",
         "LC_ALL": "C",

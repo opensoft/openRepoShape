@@ -1,0 +1,11 @@
++2
+2026-10-16
+Two lines for #460's L1, which Brett Heap gave lane 3 at
+2026-10-16T12:24:41Z and which rides with #563's docs pull request, #630.
+README's `validate-pins.py` paragraph says again what a digest that
+recomputes differently is, the finding `neutral-pin-digest-mismatch`
+(exit 1), the true half of a sentence #465 removed, and what its false half
+got wrong: a declared pin file that is not there is the refusal
+`neutral-pin-missing` (exit 2), not drift. That paragraph is where a reader
+learns what the pins gate says about a neutral-product pin, and v1.0.0's
+notes listed the missing sentence as a known limit.
