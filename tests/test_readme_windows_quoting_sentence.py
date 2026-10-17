@@ -16,8 +16,9 @@ line into Git Bash gets a different command (`git -C C:\\work\\Orbit` reads as
     `shell_quoted`, `shell_line`, `shell_word`) are exactly the three the
     sentence names, and for the two it names by the lines of particular
     commands, the functions that print those lines are the ones pinned
-    below, so a fourth tool, or a new line in a named one, is a fault here
-    until the sentence names it (#665).
+    below, each with its number of host-dialect calls, so a fourth tool, or
+    a new line in a named one, is a fault here until the sentence names it
+    (#665, #759).
 
 Nothing runs a tool: the first reads two files, the second reads every
 shipped Python file with `ast`, the files `git ls-files` lists (a `.py`
@@ -49,23 +50,24 @@ EVERY_LINE = None
 
 #: The tools the sentence names, which is every shipped file that calls one,
 #: and where it names a tool by the lines of particular commands, the
-#: functions that print them (`Class.method` where a method does). A call
-#: switched to `"posix"` in one of these leaves its function out of what the
-#: file calls, and a new function that quotes for the host is not one the
-#: sentence names: either way the sentence and this table change together.
+#: functions that print them (`Class.method` where a method does), each with
+#: its number of host-dialect uses. A call switched to `"posix"` takes one off
+#: its function's count, and a new function that quotes for the host is not
+#: one the sentence names: either way the sentence and this table change
+#: together.
 NAMED = {
     # "`shape-doctor.py`'s lines": every NEXT, fix and command line it prints.
     "shape-doctor.py": EVERY_LINE,
     # "`setup-project.py`'s family lines": the `switch -c` and `add` it prints.
-    "setup-project.py": {"family_next_command"},
+    "setup-project.py": {"family_next_command": 2},
     # "`family.py`'s `NEXT`, `switch -c`, `add` and `git rm -r --cached`
     # lines".
     "scripts/family.py": {
-        "_print_next",          # the `NEXT` line: `git push -u origin ...`
-        "_switch_command",      # the `git switch -c <branch>` line
-        "_add_command",         # the `family.py add --family-root ...` line
-        "_print_next_steps",    # `init`'s block: its `switch -c` and `cd`
-        "_checked_mount_path",  # the `git rm -r --cached -- <path>` remedy
+        "_print_next": 1,          # the `NEXT` line: `git push -u origin ...`
+        "_switch_command": 1,      # the `git switch -c <branch>` line
+        "_add_command": 3,         # the `family.py add --family-root ...` line
+        "_print_next_steps": 2,    # `init`'s block: its `switch -c` and `cd`
+        "_checked_mount_path": 1,  # the `git rm -r --cached -- <path>` remedy
     },
 }
 
@@ -143,7 +145,8 @@ def host_calls(source: str, filename: str = "<tool>") -> list:
     the host: not one that forces `sh`'s dialect with a `'posix'` argument or
     a `posix=True` keyword. `function` is the innermost `def` the call is
     in (`Class.method` for a method), or `<module>`. A quoter handed on as a
-    value (`map(shell_quoted, words)`) is not a call and is not seen."""
+    value (`map(shell_quoted, words)`) is a use as a call is, and is seen
+    (`host_values`, #759)."""
     tree = ast.parse(source, filename=filename)
     quoters = quoter_names(tree)
     found = []
@@ -160,7 +163,7 @@ def host_calls(source: str, filename: str = "<tool>") -> list:
                 walk(child, scope)
 
     walk(tree, [])
-    return found
+    return sorted(found + host_values(tree, quoters), key=lambda use: use[1])
 
 
 def host_call(node: ast.Call, quoters: set) -> bool:
@@ -175,6 +178,58 @@ def host_call(node: ast.Call, quoters: set) -> bool:
         and (kw.value.value == "posix" or kw.value.value is True)
         for kw in node.keywords if kw.arg in ("platform", "posix"))
     return not forced
+
+
+def host_values(tree: ast.AST, quoters: set) -> list:
+    """`(function, line)` for every host quoter handed on as a value and not
+    called: an argument or keyword of another call (`map(shell_quoted, w)`,
+    `functools.partial(shell_line)`), a list entry, a default or a return
+    value. The alias statement `joined = shell_line` is not one: each use of
+    `joined` is, and is seen under its own function. A call told `'posix'`
+    (`functools.partial(shell_line, platform="posix")`) is `sh`'s (#759)."""
+    parents = {child: parent for parent in ast.walk(tree)
+               for child in ast.iter_child_nodes(parent)}
+    found = []
+    for node in ast.walk(tree):
+        name = node.id if isinstance(node, ast.Name) else getattr(
+            node, "attr", None)
+        if name not in quoters or not isinstance(node.ctx, ast.Load):
+            continue
+        parent = parents.get(node)
+        while isinstance(parent, (ast.keyword, ast.Starred)):
+            parent = parents.get(parent)
+        if isinstance(parent, ast.Call):
+            handed_on = parent.func is not node and not names_posix(parent)
+        else:
+            handed_on = not (isinstance(parent, ast.Assign)
+                             and parent.value is node
+                             and len(parent.targets) == 1
+                             and isinstance(parent.targets[0], ast.Name))
+        if handed_on:
+            found.append((function_of(node, parents), node.lineno))
+    return found
+
+
+def names_posix(call: ast.Call) -> bool:
+    """`host_call`'s test of a call, for a call that takes the quoter as an
+    argument: a `'posix'` argument, or a `platform=` or `posix=` keyword."""
+    return any(isinstance(arg, ast.Constant) and arg.value == "posix"
+               for arg in call.args) or any(
+        isinstance(kw.value, ast.Constant)
+        and (kw.value.value == "posix" or kw.value.value is True)
+        for kw in call.keywords if kw.arg in ("platform", "posix"))
+
+
+def function_of(node: ast.AST, parents: dict) -> str:
+    """The innermost `def` (`Class.method` for a method) holding `node`, or
+    `<module>`: `host_calls`' own scope, read upward."""
+    names = []
+    while node in parents:
+        node = parents[node]
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            names.append(node.name)
+    return ".".join(reversed(names)) or "<module>"
 
 
 def is_python_source(relative: str, first_line: bytes) -> bool:
@@ -220,6 +275,12 @@ def host_quoting(sources: dict) -> dict:
     return quoting
 
 
+def host_use_counts(sources: dict, tool: str) -> dict:
+    """`{function: its number of host-dialect uses}` in `tool`."""
+    return {function: len(lines) for function, lines in
+            host_quoting(sources).get(tool, {}).items()}
+
+
 def test_the_tools_that_quote_for_the_host_are_the_ones_the_sentence_names():
     quoting = host_quoting(tool_sources())
     assert set(quoting) == set(NAMED), (
@@ -234,14 +295,15 @@ def test_the_tools_that_quote_for_the_host_are_the_ones_the_sentence_names():
 def test_the_functions_that_quote_for_the_host_are_the_ones_the_sentence_names(
         tool):
     """`family.py` and `setup-project.py` are named for the lines of certain
-    commands, not for every line: a call switched to POSIX quoting leaves its
-    function out, and a new function that calls a host-dialect quoter is a
-    line the sentence does not name."""
-    calling = set(host_quoting(tool_sources()).get(tool, {}))
-    assert calling == NAMED[tool], (
-        f"{tool}'s functions that call a host-dialect quoter are "
-        f"{sorted(calling)}, and the sentence names {sorted(NAMED[tool])}: "
-        "change the sentence in both places, then NAMED here.")
+    commands, not for every line: a call switched to POSIX quoting takes one
+    off its function's count (a function of three calls with one switched
+    would still be in a set of names, #759), and a new function that calls a
+    host-dialect quoter is a line the sentence does not name."""
+    counted = host_use_counts(tool_sources(), tool)
+    assert counted == NAMED[tool], (
+        f"{tool}'s functions that use a host-dialect quoter, with their "
+        f"number of uses, are {counted}, and the sentence names "
+        f"{NAMED[tool]}: change the sentence in both places, then NAMED here.")
 
 
 def test_a_quoter_imported_under_another_name_is_a_host_call():
@@ -252,6 +314,80 @@ def test_a_quoter_imported_under_another_name_is_a_host_call():
               "def c():\n    return shell_quoted('x', 'posix')\n"
               "def d():\n    return joined(['git'], platform='posix')\n")
     assert host_calls(source) == [("a", 4), ("b", 6)]
+
+
+#: Each way to hand a host quoter on without calling it. The first two are
+#: the forms #665's inventory missed (#759); the rest read the same rule.
+VALUE_USES = {
+    "map": "def f(w):\n    return map(shell_quoted, w)\n",
+    "partial": ("import functools\n"
+                "def f():\n    return functools.partial(shell_line)\n"),
+    "keyword": "def f(w):\n    return sorted(w, key=shell_quoted)\n",
+    "attribute": ("import repo_shape\n"
+                  "def f(w):\n    return map(repo_shape.shell_word, w)\n"),
+    "alias": ("from repo_shape import shell_line as joined\n"
+              "def f(w):\n    return list(map(joined, w))\n"),
+    "bound alias": ("def f(w):\n    quote = shell_quoted\n"
+                    "    return map(quote, w)\n"),
+    "list": "def f():\n    return [shell_line, repr]\n",
+    "default": "def f(quote=quote_arg):\n    return quote\n",
+    "returned": "def f():\n    return shell_line\n",
+}
+
+#: What is not a use: `sh`'s dialect asked for, the alias statement, a string
+#: and a name no quoter answers to.
+NOT_USES = {
+    "posix keyword": ("import functools\ndef f():\n    return "
+                      "functools.partial(shell_line, platform='posix')\n"),
+    "posix argument": ("import functools\ndef f():\n    return "
+                       "functools.partial(shell_quoted, 'x', 'posix')\n"),
+    "posix=True": ("import functools\ndef f():\n    return "
+                   "functools.partial(shell_line, posix=True)\n"),
+    "posix keyword beside the quoter in a keyword":
+        "def f(w):\n    return sorted(w, key=shell_quoted, posix=True)\n",
+    "alias statement": "def f():\n    quote = shell_quoted\n",
+    "string": "def f():\n    return 'shell_line'\n",
+    "other name": "def f(w):\n    return map(repr, w)\n",
+}
+
+
+@pytest.mark.parametrize("form", sorted(VALUE_USES))
+def test_a_quoter_handed_on_as_a_value_is_a_host_use(form):
+    """`map(shell_quoted, words)` formats each word for the host as surely as
+    a call does: a tool could print a PowerShell line through one and the
+    sentence would not have to name it."""
+    uses = host_calls(VALUE_USES[form])
+    assert [function for function, _ in uses] == ["f"], (form, uses)
+
+
+@pytest.mark.parametrize("form", sorted(NOT_USES))
+def test_what_is_not_a_use_of_a_host_quoter_is_not_one(form):
+    assert host_calls(NOT_USES[form]) == [], form
+
+
+def test_a_value_use_names_its_tool_and_function():
+    source = "def _next_line(w):\n    return map(shell_quoted, w)\n"
+    assert host_quoting({"update-shape.py": source}) == {
+        "update-shape.py": {"_next_line": [2]}}
+
+
+def test_calls_and_value_uses_come_in_source_order():
+    source = ("def c(w):\n    return map(shell_quoted, w)\n"
+              "def b():\n    return shell_line(['git'])\n"
+              "def a(w):\n    return map(shell_word, w)\n")
+    assert host_calls(source) == [("c", 2), ("b", 4), ("a", 6)]
+
+
+def test_a_use_count_tells_one_call_switched_from_a_whole_function():
+    """`_add_command` has three host-dialect calls. With one switched to
+    `'posix'` its NAME is still in the set of functions the old pin compared;
+    its count is two, not three."""
+    three = ("def _add_command(a, b, c):\n"
+             "    return shell_quoted(a) + shell_quoted(b) + shell_quoted(c)\n")
+    two = three.replace("shell_quoted(c)", "shell_quoted(c, 'posix')")
+    tool = "scripts/family.py"
+    assert host_use_counts({tool: three}, tool) == {"_add_command": 3}
+    assert host_use_counts({tool: two}, tool) == {"_add_command": 2}
 
 
 def test_a_method_is_named_with_its_class():

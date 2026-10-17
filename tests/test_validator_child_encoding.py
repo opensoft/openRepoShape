@@ -29,7 +29,9 @@ Three kinds of test, the first two against local bare remotes and never GitHub:
   is not UTF-8;
 - the environment helpers themselves, each one handed to a real child that
   prints the name, so a handler a child does not know fails here; and a guard
-  that no tool runs the interpreter without one.
+  that no tool runs the interpreter without one, in whichever spelling it
+  starts the child: `subprocess.run`, the package's `run_child`, or
+  `setup-project.py`'s `run` with the interpreter held in a name (#759).
 
 One name no stdout can hold at all, a lone surrogate (#280), is refused by the
 validator as a finding, and the two tools, the doctor and `make validate` are
@@ -606,55 +608,256 @@ def test_the_handler_a_child_would_not_know_is_never_passed_on():
 
 #: The shipped tools that run a Python child of the standard's own, and so
 #: build its environment. `shape-doctor.py` sets UTF-8 itself (it reads the
-#: pipe as UTF-8 too); the other three use the helpers above. `family.py`'s
+#: pipe as UTF-8 too); the others use the helpers above. `family.py`'s
 #: `siblings` runs the holder's own `siblings.py` that way (#214, #543).
+#: `src/openreposhape/cli.py` hands every child `standard.child_environment()`,
+#: which is the package environment's PATH and not an encoding: it is the
+#: helper that file is held to, and its docstring promises it (#759).
 LAUNCHERS = {
     "scripts/bump-leg.py": "captured_child_environment",
     "update-shape.py": "inherited_child_environment",
     "scripts/family.py": "inherited_child_environment",
+    "src/openreposhape/cli.py": "standard.child_environment",
+    "setup-project.py": "child_environment",
 }
 
+#: The rows of `LAUNCHERS` that fail today, and why. Each is a finding about
+#: the tool's own `run`, and its test is a strict `xfail`: it passes while the
+#: row fails and fails the day the row passes, so whoever fixes the finding
+#: takes the row out of this table (#759).
+NOT_YET = {
+    "setup-project.py": (
+        "`run` takes no environment, so each of the five Python children "
+        "(the checkout's own setup-project.py, the naming validator, the plan "
+        "and the scaffold, bootstrap) writes in the code page ITS OWN "
+        "environment gives, into the stdout this process reconfigured to "
+        "UTF-8: one stream in two encodings. Measured under "
+        "PYTHONIOENCODING=cp1252:strict, where nine lines of one run were "
+        "not UTF-8. The fix is an `env=` from a copy of "
+        "`inherited_child_environment`, which this one-file entry point "
+        "cannot import."),
+}
 
-def runs_the_interpreter(argv0: ast.expr) -> bool:
+#: Spellings that start a child process in these tools: `subprocess`'s own,
+#: the package's `run_child`, and `run`, which is `setup-project.py`'s wrapper
+#: of `subprocess.run`.
+STARTERS = {"subprocess.run", "subprocess.Popen", "subprocess.call",
+            "subprocess.check_call", "subprocess.check_output", "run",
+            "run_child"}
+
+
+def interpreter_names(tree: ast.AST) -> set:
+    """`sys.executable`, and every name this module binds to it at its top
+    level (`PYTHON = sys.executable`, as `setup-project.py` does). A `PYTHON`
+    IMPORTED from `repo_shape` is `python3` as a person types it, and is not
+    the interpreter running this process, so it is not one."""
+    names = {"sys.executable"}
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and ast.unparse(node.value) in names):
+            names.add(node.targets[0].id)
+    return names
+
+
+def runs_the_interpreter(argv0: ast.expr, names: frozenset) -> bool:
     """`sys.executable`, or `sys.executable or PYTHON`: the interpreter that
     is running this process, with the name the standard prints for it
     (`repo_shape.PYTHON`) when `sys.executable` is empty or `None`, as
-    `family.py`'s `siblings` child spells it."""
+    `family.py`'s `siblings` child spells it. A name in `names` is it too."""
     if isinstance(argv0, ast.BoolOp) and isinstance(argv0.op, ast.Or):
         argv0 = argv0.values[0]
-    return ast.unparse(argv0) == "sys.executable"
+    return ast.unparse(argv0) in names
+
+
+def bound_values(name: str, node: ast.AST) -> list:
+    """What `name = ...` binds it to, in the function holding `node` (or in
+    the module, for one outside any)."""
+    scope = node
+    while hasattr(scope, "parent") and not isinstance(
+            scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+        scope = scope.parent
+    return [assigned.value for assigned in ast.walk(scope)
+            if isinstance(assigned, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == name
+                for target in assigned.targets)]
+
+
+def argv_of(call: ast.Call) -> ast.List | None:
+    """The list `call` is given to run: the one it spells out, or the one a
+    name in its own function was bound to (`plan = [PYTHON, ...]`)."""
+    if not call.args:
+        return None
+    argv = call.args[0]
+    if isinstance(argv, ast.Name):
+        lists = [value for value in bound_values(argv.id, call)
+                 if isinstance(value, ast.List)]
+        argv = lists[0] if lists else argv
+    return argv if isinstance(argv, ast.List) else None
 
 
 def interpreter_runs(tree: ast.AST) -> list[ast.Call]:
-    """Every `subprocess.run([sys.executable, ...])` in `tree`, and every
-    `subprocess.run([sys.executable or PYTHON, ...])`."""
+    """Every call in `tree` that starts a child with the interpreter as the
+    first word of its argv, in any spelling of `STARTERS`:
+    `subprocess.run([sys.executable, ...])`, `subprocess.run([sys.executable
+    or PYTHON, ...])`, `run_child([sys.executable, ...], env)`, and `run([PYTHON,
+    ...])` where this module has `PYTHON = sys.executable`. A call that only
+    names the interpreter in a list (`shlex.join([sys.executable])`) is not a
+    run. Each node of `tree` has its `parent` set, which `bound_values`
+    walks."""
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            child.parent = parent
+    names = frozenset(interpreter_names(tree))
     found = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "run"
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "subprocess" and node.args):
+                and ast.unparse(node.func) in STARTERS):
             continue
-        argv = node.args[0]
-        if (isinstance(argv, ast.List) and argv.elts
-                and runs_the_interpreter(argv.elts[0])):
+        argv = argv_of(node)
+        if argv is not None and argv.elts and runs_the_interpreter(
+                argv.elts[0], names):
             found.append(node)
     return found
 
 
+def environment_of(call: ast.Call) -> str:
+    """The environment `call` hands its child, as source text: its `env=`
+    keyword, or, for `run_child(argv, env)`, its second argument, with a name
+    read as what its own function bound it to (`env = standard.child_
+    environment()`). Empty where it hands none."""
+    value = next((keyword.value for keyword in call.keywords
+                  if keyword.arg == "env"), None)
+    if (value is None and ast.unparse(call.func) == "run_child"
+            and len(call.args) > 1):
+        value = call.args[1]
+    if isinstance(value, ast.Name):
+        bound = bound_values(value.id, call)
+        return " ".join(ast.unparse(each) for each in bound) or value.id
+    return "" if value is None else ast.unparse(value)
+
+
+def runs_without_the_environment(tree: ast.AST, helper: str) -> list:
+    """The runs in `tree` whose environment does not name `helper`."""
+    return [call for call in interpreter_runs(tree)
+            if helper not in environment_of(call)]
+
+
+def launcher_rows() -> list:
+    """`LAUNCHERS`' tools as test rows. A row `NOT_YET` names is a strict
+    `xfail` on the guard's own `AssertionError`: any other error fails."""
+    rows = []
+    for tool in sorted(LAUNCHERS):
+        marks = []
+        if tool in NOT_YET:
+            marks.append(pytest.mark.xfail(
+                strict=True, raises=AssertionError, reason=NOT_YET[tool]))
+        rows.append(pytest.param(tool, id=tool, marks=marks))
+    return rows
+
+
+def tool_tree(tool: str) -> ast.Module:
+    return ast.parse((REPO / tool).read_text(encoding="utf-8"))
+
+
 @pytest.mark.parametrize("tool", sorted(LAUNCHERS))
+def test_the_guard_reads_the_runs_of_each_launcher(tool):
+    """Each row of `LAUNCHERS` finds at least one run, so a spelling the
+    guard cannot read (or a rename) is not a guard that reads nothing and
+    passes."""
+    assert interpreter_runs(tool_tree(tool)), (
+        f"{tool} no longer runs the interpreter in a spelling this guard "
+        "reads; it reads nothing")
+
+
+@pytest.mark.parametrize("tool", launcher_rows())
 def test_the_tools_that_run_the_projects_validators_give_them_an_environment(
         tool):
     """The next validator a tool runs gets the same environment or fails here:
     a bare `subprocess.run([sys.executable, ...])` takes whatever the operator's
     shell holds, which is the defect."""
-    tree = ast.parse((REPO / tool).read_text(encoding="utf-8"))
-    runs = interpreter_runs(tree)
-    assert runs, f"{tool} no longer runs the interpreter; this guard reads nothing"
-    for call in runs:
-        env = [keyword.value for keyword in call.keywords
-               if keyword.arg == "env"]
-        assert env and LAUNCHERS[tool] in ast.unparse(env[0]), (
-            f"{tool}:{call.lineno} runs the interpreter without "
-            f"`env={LAUNCHERS[tool]}()`")
+    bare = runs_without_the_environment(tool_tree(tool), LAUNCHERS[tool])
+    assert not bare, "; ".join(
+        f"{tool}:{call.lineno} runs the interpreter without "
+        f"`env={LAUNCHERS[tool]}()`" for call in bare)
+
+
+#: Every way the guard reads a child of the interpreter, one source each.
+SPELLINGS = {
+    "subprocess.run": "subprocess.run([sys.executable, 'x'])\n",
+    "subprocess.Popen": "subprocess.Popen([sys.executable, 'x'])\n",
+    "or the standard's name": "subprocess.run([sys.executable or PYTHON])\n",
+    "run_child": "run_child([sys.executable, 'x'], env)\n",
+    "a name bound to the interpreter": (
+        "PYTHON = sys.executable\nrun([PYTHON, 'x'])\n"),
+    "a name bound to that name": (
+        "PYTHON = sys.executable\nPY = PYTHON\nrun([PY, 'x'])\n"),
+    "a list a name holds": (
+        "PYTHON = sys.executable\n"
+        "def f():\n    plan = [PYTHON, 'x']\n    return run(plan)\n"),
+}
+
+#: What the guard does not read as a run.
+NOT_RUNS = {
+    "a PYTHON imported, which is the name a person types":
+        "from repo_shape import PYTHON\nrun([PYTHON, 'x'])\n",
+    "git": "subprocess.run(['git', 'x'])\nrun(['git', 'x'])\n",
+    "a list that is only joined": "shlex.join([sys.executable, 'x'])\n",
+    "an argv a caller built":
+        "def f(argv):\n    return run_child(argv, env)\n",
+    "a name bound to no list": "plan = make()\nrun(plan)\n",
+}
+
+
+@pytest.mark.parametrize("form", sorted(SPELLINGS))
+def test_every_spelling_of_a_child_of_the_interpreter_is_a_run(form):
+    runs = interpreter_runs(ast.parse(SPELLINGS[form]))
+    assert len(runs) == 1, (form, runs)
+
+
+@pytest.mark.parametrize("form", sorted(NOT_RUNS))
+def test_what_does_not_start_the_interpreter_is_not_a_run(form):
+    assert interpreter_runs(ast.parse(NOT_RUNS[form])) == [], form
+
+
+#: A run, and the environment it hands its child, as the guard reads it.
+ENVIRONMENTS = {
+    "run_child's second argument": (
+        "run_child([sys.executable, 'x'], standard.child_environment())\n",
+        "standard.child_environment()"),
+    "a name its function bound": (
+        "def f():\n    env = standard.child_environment()\n"
+        "    env['A'] = '1'\n    return run_child([sys.executable], env)\n",
+        "standard.child_environment()"),
+    "an env= keyword": (
+        "subprocess.run([sys.executable], env=inherited_child_environment())"
+        "\n", "inherited_child_environment()"),
+    "an env= that is None": (
+        "subprocess.run([sys.executable], env=None)\n", "None"),
+    "run_child with none": ("run_child([sys.executable])\n", ""),
+    "a run that has no env parameter": (
+        "PYTHON = sys.executable\nrun([PYTHON, 'x'], cwd=here)\n", ""),
+}
+
+
+@pytest.mark.parametrize("form", sorted(ENVIRONMENTS))
+def test_the_environment_a_run_hands_its_child_is_read_as_written(form):
+    source, expected = ENVIRONMENTS[form]
+    (call,) = interpreter_runs(ast.parse(source))
+    assert environment_of(call) == expected
+
+
+def test_a_run_whose_environment_is_dropped_is_found():
+    """The first of two runs loses its environment: the guard names that
+    one, by line, and not the other."""
+    both = ("run_child([sys.executable, 'a'], standard.child_environment())\n"
+            "run_child([sys.executable, 'b'], standard.child_environment())\n")
+    tree = ast.parse(both)
+    assert runs_without_the_environment(tree, "standard.child_environment"
+                                        ) == []
+    dropped = both.replace("[sys.executable, 'a'], standard."
+                           "child_environment()", "[sys.executable, 'a']", 1)
+    assert [call.lineno for call in runs_without_the_environment(
+        ast.parse(dropped), "standard.child_environment")] == [1]
+    assert [call.lineno for call in runs_without_the_environment(
+        ast.parse(both), "inherited_child_environment")] == [1, 2]
