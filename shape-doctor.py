@@ -3847,14 +3847,17 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    whose parent holds the OLD pin -- is still the one to put
                    back, and the `why` says what comes after it:
                    `gitlink_left_behind` (#547).
-      partial      the walk above found no pin to put back, and the root is
-                   a partial clone (`git clone --filter`) that lacks a pin
-                   or a tree the walk reads (`history_left_out`, #787).
-                   This doctor fetches nothing, so the read failed and it
-                   cannot say which commit broke the pin, or that none
-                   did. `fetch --refetch --no-filter` from the first
-                   promisor remote puts in every object on its branches,
-                   and the doctor run again walks the whole history.
+      partial      the reads above found no pin to put back, and the root
+                   is a partial clone (`git clone --filter`) that lacks a
+                   pin or a tree they read, HEAD's included
+                   (`history_left_out`, #787). This doctor fetches nothing,
+                   so those reads failed, and what puts the pin back, a
+                   commit or HEAD's own pin, cannot be read here. `fetch
+                   --refetch --no-filter` from the first promisor remote
+                   puts in every object on its branches, and the doctor run
+                   again reads the whole history; the `why` spells out that
+                   fetch from each other promisor remote
+                   (`partial_history_why`).
       none         nothing above: no history, a root commit, no git, a walk
                    that meets a parent holding no pin, or goes
                    `PIN_HISTORY_DEPTH` commits back, before a pin that reads.
@@ -4056,16 +4059,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
             f"broke it, and the newest {what} in its history that reads. "
             f"Commit that rather than editing the {what}"
             + gitlink_left_behind(ctx, before, pin))
-    remote = history_left_out(root, pin)
-    if remote is not None:
-        return "partial", (
-            f"{git_c} fetch --refetch --no-filter {quote_arg(remote)}"
-        ), (f"this root is a partial clone, and the {what}'s history is not "
-            "all in it. git fetches what a partial clone lacks on a read, "
-            "which this doctor never does, so which commit broke the "
-            f"{what} cannot be read here. This fetches every object on "
-            f"{remote}'s branches (--refetch needs git 2.36 or later); then "
-            f"run this doctor again, which names the {what} to put back")
+    remotes = history_left_out(root, pin)
+    if remotes:
+        return "partial", refetch_of(git_c, remotes[0]), partial_history_why(
+            git_c, what, remotes)
     return "none", None, None
 
 
@@ -4796,11 +4793,49 @@ def remotes_holding(shape: Path, remotes: list, commit: str) -> list:
                            f"refs/remotes/{name}/"], shape)]
 
 
-def history_left_out(root: Path, pin: str) -> str | None:
-    """The first promisor remote of `root`, where `root` is a partial clone
-    that lacks an object `pin_restore`'s walk of `pin`'s history reads,
-    asked without fetching; None where it lacks none, or is no partial
-    clone (#787).
+def refetch_of(git_c: str, remote: str) -> str:
+    """The fetch of every object on `remote`'s branches into the root
+    `git_c` names, whatever its `partialclonefilter` (#787)."""
+    return f"{git_c} fetch --refetch --no-filter {quote_arg(remote)}"
+
+
+def partial_history_why(git_c: str, what: str, remotes: list) -> str:
+    """`pin_restore`'s `why` for `partial` (#787): the root's partial clone
+    lacks the history of its `what`, the NEXT fetches the first of
+    `remotes`, and the same fetch from each other one is spelled out.
+
+    HISTORY, HEAD'S INCLUDED, AND NOT "THE COMMIT THAT BROKE IT" (RV-f on
+    #791). Where HEAD was moved without a checkout (`reset --soft`), the
+    pin HEAD holds is a blob the clone lacks too, and the doctor run after
+    the fetch answers `uncommitted`, which no commit broke.
+
+    EVERY PROMISOR REMOTE, EACH A LINE TO PASTE. The NEXT fetches the first
+    one's branches, the one git's own lazy fetch asks first. Where the
+    history lacked is on another remote's alone, or on a branch forced
+    away from the first, that fetch puts in nothing it needs and the row
+    comes back the same, so the `why` names the fetch from each other one.
+    """
+    first, *others = remotes
+    said = (f"this root is a partial clone, and the {what}'s history, "
+            "HEAD's included, is not all in this clone: git fetches what a "
+            "partial clone lacks on a read, which this doctor never does, "
+            f"so what puts the {what} back cannot be read here. This "
+            f"fetches every object on {first}'s branches (--refetch needs "
+            "git 2.36 or later)")
+    if others:
+        said += (f"; where {first}'s branches do not hold it, the same "
+                 "from " + ", or from ".join(
+                     f"{name}: `{refetch_of(git_c, name)}`"
+                     for name in others))
+    return (said + "; then run this doctor again, which names what puts "
+            f"the {what} back")
+
+
+def history_left_out(root: Path, pin: str) -> list:
+    """The promisor remotes of `root`, in the order git asks them, where
+    `root` is a partial clone that lacks an object `pin_restore`'s walk of
+    `pin`'s history reads, asked without fetching; empty where it lacks
+    none, or is no partial clone (#787).
 
     THE WALK'S READS FAIL THERE, AND THE DOCTOR FETCHED THEM BEFORE.
     Measured on #787 with git 2.43: a `--filter=blob:none` clone of a root
@@ -4820,14 +4855,14 @@ def history_left_out(root: Path, pin: str) -> str | None:
     """
     remotes = promisor_remotes(root)
     if not remotes or head_of(root) is None:
-        return None
+        return []
     listed = git_answer(["rev-list", "--objects", "--missing=print", "-n",
                          str(PIN_HISTORY_DEPTH + 1), "HEAD", "--", pin],
                         root, binary=True)
     if listed is not None and not any(
             MISSING_OBJECT.fullmatch(line) for line in listed.split(b"\n")):
-        return None
-    return remotes[0]
+        return []
+    return remotes
 
 
 def check_shape_currency(ctx: Context) -> Row:

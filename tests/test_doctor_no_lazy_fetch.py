@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 from pathlib import Path
@@ -35,6 +36,7 @@ import pytest
 from conftest import FILE_PROTOCOL, git, run_script
 from test_doctor_partial_clone import (  # noqa: F401
     currency_of, missing, moved, out_of_reach, partial_clone_of,
+    second_promisor,
 )
 from test_shape_doctor import (  # noqa: F401
     SHAPE_PIN, doctor_module, pasted, project, run_pasted, scaffolded_here,
@@ -142,40 +144,122 @@ def test_the_report_is_the_same_byte_for_byte_with_the_variable_ignored(
     assert now.returncode == before.returncode
 
 
-@pytest.fixture
-def broken_pin_partial_root(project, tmp_path, request) -> Path:
-    """A partial clone, under `request.param`'s filter, of a root whose
-    HEAD commit broke its pin: the pin before it, which `pin_restore` puts
-    back, is a blob (and in `tree:0`, under trees) the clone lacks."""
+def broken_pin_remote(project: Path, tmp_path: Path) -> Path:
+    """A bare copy of `project`, filters allowed, whose HEAD commit broke
+    its pin: a partial clone of it lacks the pin before that commit, which
+    `pin_restore` puts back, and in `tree:0` the trees down to it."""
     (project / SHAPE_PIN).write_bytes(b"files: 5\n")
     git("commit", "-q", "-am", "A pin that does not read", cwd=project)
     bare = tmp_path / "project.git"
     git(*FILE_PROTOCOL, "clone", "-q", "--bare", "--no-local",
         project.as_uri(), str(bare), cwd=tmp_path)
     git("config", "uploadpack.allowFilter", "true", cwd=bare)
-    return partial_clone_of(bare, tmp_path / "partial-root", request.param)
+    return bare
 
 
-@pytest.mark.parametrize("broken_pin_partial_root", ["blob:none", "tree:0"],
-                         indirect=True)
+#: Each partial clone of `broken_pin_remote` asked about: its filter,
+#: whether its HEAD is then moved back one commit without a checkout
+#: (`reset --soft`, RV-f on #791), and what the doctor run after the
+#: fetch says puts the pin back.
+PARTIAL_ROOTS = {
+    "blob:none": ("blob:none", False, "committed"),
+    "tree:0": ("tree:0", False, "committed"),
+    "HEAD moved back by reset --soft": ("blob:none", True, "uncommitted"),
+}
+
+
+@pytest.mark.parametrize("case", list(PARTIAL_ROOTS))
 def test_a_partial_root_whose_pin_history_is_not_here_names_the_fetch(
-        standard, broken_pin_partial_root, tmp_path):
+        standard, project, tmp_path, case):
     """The pin's history is not in the partial clone of the root: the
-    doctor fetched it before #787, to name the commit that broke the pin.
-    It starts no fetch, `restore` is `partial`, and the NEXT is the fetch
-    of the root's promisor remote; run as printed, the doctor run again
-    names the pin to put back, `committed`."""
-    root = broken_pin_partial_root
+    doctor fetched it before #787. It starts no fetch, `restore` is
+    `partial`, the `why` says the history, HEAD's included, is not all
+    here, and the NEXT is the fetch of the root's promisor remote; run as
+    printed, the doctor run again names what puts the pin back: the
+    commit before the one that broke it, or, where HEAD was moved back
+    without a checkout, HEAD's own pin (`uncommitted`)."""
+    filter_spec, moved_back, answer = PARTIAL_ROOTS[case]
+    root = partial_clone_of(broken_pin_remote(project, tmp_path),
+                            tmp_path / "partial-root", filter_spec)
+    if moved_back:
+        git("reset", "-q", "--soft", "HEAD~1", cwd=root)
     result = traced(standard, root, tmp_path / "trace", "--json")
     row = currency_of(result)
     assert fetches(tmp_path / "trace") == [], "a git of the run fetched"
     assert row["detail"]["restore"] == "partial", row
+    assert ("the pin's history, HEAD's included, is not all in this "
+            "clone") in row["why"], row["why"]
     assert pasted(row["next"]) == [
         "git", "-C", str(root.resolve()), "fetch", "--refetch",
         "--no-filter", "origin"], row["next"]
     run_pasted(row["next"])
     again = currency_of(traced(standard, root, tmp_path / "again", "--json"))
+    assert again["detail"]["restore"] == answer, again
+
+
+def test_the_why_spells_out_the_fetch_from_each_other_promisor_remote(
+        standard, moved, project, tmp_path):
+    """The pin's history is on the second promisor remote alone: `origin`
+    now names another repository (RV-f on #791, N3). The NEXT fetches
+    `origin`, and run as printed the row comes back the same; the `why`
+    spells out that fetch from `second`, and run as printed, the doctor
+    names the commit that puts the pin back."""
+    bare = broken_pin_remote(project, tmp_path)
+    root = partial_clone_of(bare, tmp_path / "partial-root")
+    git("remote", "set-url", "origin", moved["ahead"].as_uri(), cwd=root)
+    second_promisor(root, bare, fetched=False)
+    row = currency_of(traced(standard, root, tmp_path / "trace", "--json"))
+    run_pasted(row["next"])
+    same = currency_of(traced(standard, root, tmp_path / "same", "--json"))
+    assert same["detail"]["restore"] == "partial", same
+    offered = re.search(r"from second: `([^`]+)`", same["why"])
+    assert offered, same["why"]
+    run_pasted(offered.group(1))
+    again = currency_of(traced(standard, root, tmp_path / "again", "--json"))
     assert again["detail"]["restore"] == "committed", again
+
+
+def recording(tmp_path: Path, log: Path) -> str:
+    """A `PATH` whose first `git` appends to `log`, for each git started,
+    its `GIT_NO_LAZY_FETCH` (`unset` where it has none), the command line
+    of the process that started it and its own arguments, a tab between
+    each, then runs the real one."""
+    shim = tmp_path / "recording"
+    shim.mkdir()
+    script = shim / "git"
+    script.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\t%s\\t%s\\n' \"${GIT_NO_LAZY_FETCH-unset}\" "
+        "\"$(ps -o args= -p \"$PPID\")\" \"$*\" >> "
+        + shlex.quote(str(log)) + "\n"
+        "exec " + shlex.quote(shutil.which("git")) + " \"$@\"\n",
+        encoding="utf-8")
+    script.chmod(0o755)
+    return f"{shim}{os.pathsep}{os.environ['PATH']}"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the git shim is a sh script")
+def test_every_git_the_run_starts_has_the_variable(
+        standard, project, tmp_path):
+    """Every git a doctor run starts, logged by a `git` first on `PATH`
+    (RV-f on #791, N2), has `GIT_NO_LAZY_FETCH=1`: the doctor's own, those
+    of `update-shape.py`'s `Upstream` as the doctor drives it in its own
+    process (`cat-file blob <commit>:<path>` of the standard's copies),
+    and those of a validator `run_validator` starts with a copy of its
+    environment (`validate-pins.py`)."""
+    log = tmp_path / "gits.log"
+    result = run_script(standard / "shape-doctor.py", "--root", str(project),
+                        "--json", env={"PATH": recording(tmp_path, log)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    gits_started = [line.split("\t", 2) for line in
+                    log.read_text(encoding="utf-8").splitlines()]
+    assert {value for value, _parent, _args in gits_started} == {"1"}, \
+        gits_started
+    assert any("validate-pins.py" in parent
+               for _value, parent, _args in gits_started), gits_started
+    assert any("shape-doctor.py" in parent and args.startswith("cat-file blob")
+               and ":templates/" in args
+               for _value, parent, args in gits_started), gits_started
 
 
 @pytest.mark.parametrize("before", [None, "0"])
