@@ -427,6 +427,30 @@ def test_a_legs_own_branch_this_encoding_cannot_write_is_said_too(
     assert legs_state(root) == before
 
 
+
+def test_a_leg_whose_git_dir_is_gone_still_has_a_good_name_called_good(
+        root, tmp_path):
+    """RV824's R1-N1: git is asked about the name in the ROOT. Asked in
+    the leg, a spec leg whose `.git` file names a git dir that is gone made
+    `check-ref-format --branch` exit 128 (`fatal: not a git repository`),
+    and `feature/日本` read as a name git refuses on that leg alone while
+    the code leg called it good. Every leg calls it good now, and the pins
+    validator names the broken leg, as it did: the run ends on it, as
+    `FAILED` or as #764's `REFUSED`, whichever this tree ends a run that
+    exits 2 with."""
+    changes = under_ascii(tmp_path)
+    tracking(root, f'"{GOOD}"')
+    (root / "spec" / ".git").write_bytes(b"gitdir: ../.git/modules/gone\n")
+
+    code, out, err = run_under(root, tmp_path, changes)
+    said = err.decode("utf-8")
+    assert "Traceback" not in said, said
+    assert step_a(out) == (unwritten("spec", GOOD_PRINTED, "U+65E5")
+                           + unwritten("code", GOOD_PRINTED, "U+65E5")), out
+    assert code != 0, out + said
+    assert ": pins (exit 2)" in said, said
+
+
 class LegacyWindowsOs:
     """`os` as Windows has it under `PYTHONLEGACYWINDOWSFSENCODING=1`:
     `nt`, with an `os.fsdecode` that is `mbcs` with `replace`, so a

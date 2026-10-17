@@ -326,7 +326,7 @@ def _say_not_tried(where: str, named: str, fault: str,
           "bootstrap again.")
 
 
-def _git_refuses_in_utf8(sub: Path, branch: str) -> list[str] | None:
+def _git_refuses_in_utf8(root: Path, branch: str) -> list[str] | None:
     """What git says of `branch` as a branch name in the bytes a run under
     UTF-8 would hand it, or `None` when git takes it (#710, RV824's S1).
 
@@ -340,9 +340,16 @@ def _git_refuses_in_utf8(sub: Path, branch: str) -> list[str] | None:
     back as exactly those bytes under any locale. On Windows no character
     is `UNWRITABLE` (its `os.fsencode` writes UTF-8, or replaces), so this
     is never asked there.
+
+    ASKED IN THE ROOT, not in the leg (RV824's R1-N1). `--branch` makes git
+    set up the repository it runs in, so in a leg whose `.git` file names a
+    git dir that is gone it exits 128 (`not a git repository`), and a good
+    name read as one git refuses there, while the same name was good in the
+    next leg. The root is the repository this command was found in, and
+    the answer is about the name alone.
     """
     utf8 = os.fsdecode(branch.encode("utf-8", "surrogateescape"))
-    return _git_says(["check-ref-format", "--branch", utf8], sub)
+    return _git_says(["check-ref-format", "--branch", utf8], root)
 
 
 def _short(sha: str | None) -> str:
@@ -923,7 +930,7 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
     fault = _argument_fault(branch)
     if fault is not None:
         _say_not_tried(where, named, fault,
-                       _git_refuses_in_utf8(sub, branch)
+                       _git_refuses_in_utf8(root, branch)
                        if fault.endswith(UNWRITABLE) else None)
         return
     pin = recorded_gitlink(root, path)
