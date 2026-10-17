@@ -85,9 +85,12 @@ from test_family_member_path import isolated as member_path_env
 #: scope (`GIT_CONFIG_COUNT`) at the call, after the ones the environment
 #: holds. `isolated()` also names a global config of its own
 #: (`member_path_env`'s `excluding()`), which takes the session's file away
-#: from these gits, so the command scope is what keeps maintenance off for
-#: them. The module's own setup commits go through `conftest.git`, which
-#: passes no `env=` and inherits `os.environ`: the session fixture
+#: from these gits. The session's two settings still reach them, in the
+#: command scope `isolated()` appends to, so `maintenance.auto` and `gc.auto`
+#: here repeat them and only `gc.autoDetach` adds a setting; the two stay so
+#: that this constant alone keeps maintenance off for these gits. The
+#: module's own setup commits go through `conftest.git`, which passes no
+#: `env=` and inherits `os.environ`: the session fixture
 #: (`no_auto_maintenance`, #645) keeps maintenance off for those, in both
 #: scopes, and this constant does not reach them.
 NO_MAINTENANCE = (("maintenance.auto", "false"), ("gc.auto", "0"),

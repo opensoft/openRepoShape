@@ -306,7 +306,10 @@ def test_a_pasted_line_keeps_the_entries_the_environment_holds_at_the_call(
     `paste()`, lists all four in git's command scope, in order, and then the
     `protocol.file.allow` the paste adds for its own sake, and reads the two
     settings from the session's global file too. On the base it listed that
-    one alone, and no global file: the import-time copy held none of it."""
+    one alone, and no global file: the import-time copy held none of it.
+    `GIT_CONFIG_PARAMETERS` is taken away first: git lists its entries
+    after the count's, and a run started under `git -c` holds some."""
+    monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)
     held = appended_to_command_scope(
         {}, [("test.heldone", "one"), ("test.heldtwo", "two")])
     for name, value in {**held, **appended_to_command_scope(
@@ -327,14 +330,13 @@ def test_a_pasted_line_keeps_the_entries_the_environment_holds_at_the_call(
             shown.stdout.splitlines()
 
 
-#: The test files (every `.py` beside this one but `conftest.py`, whose
-#: `appended_to_command_scope` is where a count is worked out) that may set a
-#: count of their own, and how many times. Each is a test that BUILDS an
-#: environment holding entries, to see that the code under test keeps them:
-#: this file's test of `appended_to_command_scope` writes its two out, and
-#: the test above starts from none; `test_adopt_git_reads.py` and
-#: `test_clone_just_pushed.py` do the same for `command_scope` and for
-#: `read_through_git`.
+#: The files beside this one (every `.py`, `conftest.py` and the helper
+#: modules too) that may set a count of their own, and how many times. Each
+#: is a test that BUILDS an environment holding entries, to see that the code
+#: under test keeps them: this file's test of `appended_to_command_scope`
+#: writes its two out, and the test above starts from none;
+#: `test_adopt_git_reads.py` and `test_clone_just_pushed.py` do the same for
+#: `command_scope` and for `read_through_git`.
 OWN_COUNTS = {"test_no_auto_maintenance.py": 2,
               "test_adopt_git_reads.py": 1, "test_clone_just_pushed.py": 1}
 
@@ -346,15 +348,38 @@ APPENDER = "appended_to_command_scope"
 SETTERS = ("setenv", "setdefault", "putenv")
 
 
-def is_the_count(node) -> bool:
-    """The string constant `"GIT_CONFIG_COUNT"`."""
-    return isinstance(node, ast.Constant) and node.value == COUNT
+def is_the_count(node, names=frozenset()) -> bool:
+    """The string constant `"GIT_CONFIG_COUNT"`, or one of `names`, the names
+    the module binds to it."""
+    return (isinstance(node, ast.Constant) and node.value == COUNT) or (
+        isinstance(node, ast.Name) and node.id in names)
 
 
-def is_a_number(node) -> bool:
-    """A string constant of digits alone: `"1"`."""
+def is_a_written_count(node) -> bool:
+    """A string constant git reads as a count: digits alone (`"1"`), or
+    nothing (`""`), which git reads as no entries at all (2.43 and 2.47.1).
+    Constants only: a count built by a call (`str(1)`) is not read."""
     return (isinstance(node, ast.Constant) and isinstance(node.value, str)
-            and node.value.isdigit())
+            and (node.value.isdigit() or not node.value))
+
+
+def bound_names(node) -> list:
+    """The plain names an assignment binds: `A = B = ...`, `A: str = ...`."""
+    if isinstance(node, ast.Assign):
+        return [target.id for target in node.targets
+                if isinstance(target, ast.Name)]
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return [node.target.id]
+    return []
+
+
+def names_of_the_count(tree) -> frozenset:
+    """Each name `tree` binds to `"GIT_CONFIG_COUNT"`: after `CONFIG_COUNT =
+    "GIT_CONFIG_COUNT"`, a `{CONFIG_COUNT: "1"}` sets the count as the string
+    itself would."""
+    return frozenset(name for node in ast.walk(tree)
+                     if is_the_count(getattr(node, "value", None))
+                     for name in bound_names(node))
 
 
 def is_a_setter(node) -> bool:
@@ -369,6 +394,40 @@ def is_the_appender(node) -> bool:
         isinstance(node, ast.Attribute) and node.attr == APPENDER)
 
 
+def in_a_dict(node: ast.Dict, names: frozenset) -> list:
+    """`{"GIT_CONFIG_COUNT": "1"}`: the line of each such key."""
+    return [key.lineno for key, value in zip(node.keys, node.values)
+            if is_the_count(key, names) and is_a_written_count(value)]
+
+
+def in_a_call(node: ast.Call, names: frozenset) -> list:
+    """`dict(GIT_CONFIG_COUNT="1")`, `monkeypatch.setenv("GIT_CONFIG_COUNT",
+    "1")` and `appended_to_command_scope({}, ...)`."""
+    lines = [keyword.value.lineno for keyword in node.keywords
+             if keyword.arg == COUNT and is_a_written_count(keyword.value)]
+    if (is_a_setter(node.func) and len(node.args) >= 2
+            and is_the_count(node.args[0], names)
+            and is_a_written_count(node.args[1])):
+        lines.append(node.lineno)
+    if (is_the_appender(node.func) and node.args
+            and isinstance(node.args[0], ast.Dict)):
+        lines.append(node.lineno)
+    return lines
+
+
+def by_subscript(node: ast.Assign, names: frozenset) -> list:
+    """`env["GIT_CONFIG_COUNT"] = "1"`."""
+    if not is_a_written_count(node.value):
+        return []
+    return [target.lineno for target in node.targets
+            if isinstance(target, ast.Subscript)
+            and is_the_count(target.slice, names)]
+
+
+#: The nodes a count can be set in, and the reader of each.
+READERS = {ast.Dict: in_a_dict, ast.Call: in_a_call, ast.Assign: by_subscript}
+
+
 def counts_set_to_a_number(source: bytes) -> list:
     """The line of each place `source` sets a git command scope of its own
     instead of appending to the environment's:
@@ -377,32 +436,22 @@ def counts_set_to_a_number(source: bytes) -> list:
       (`{"GIT_CONFIG_COUNT": "1"}`), as a keyword
       (`dict(GIT_CONFIG_COUNT="1")`), in a call that names the variable and
       gives its value (`monkeypatch.setenv("GIT_CONFIG_COUNT", "1")`), or by
-      subscript (`env["GIT_CONFIG_COUNT"] = "1"`);
+      subscript (`env["GIT_CONFIG_COUNT"] = "1"`), the variable spelled out
+      or held in a name the module binds to it;
     - `appended_to_command_scope` handed a dict written out (`{}`), where the
       environment goes: it counts from nothing, and the entries the
       environment holds are no longer in the count it returns.
 
     A count worked out from the one the environment holds is not one of
-    them."""
+    them. The scan reads the count's value as a constant only: a value built
+    by a call (`str(len(pairs))`), or held in a variable, is not read."""
+    tree = ast.parse(source)
+    names = names_of_the_count(tree)
     lines = []
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Dict):
-            lines += [key.lineno for key, value in zip(node.keys, node.values)
-                      if is_the_count(key) and is_a_number(value)]
-        elif isinstance(node, ast.Call):
-            lines += [keyword.value.lineno for keyword in node.keywords
-                      if keyword.arg == COUNT and is_a_number(keyword.value)]
-            if (is_a_setter(node.func) and len(node.args) >= 2
-                    and is_the_count(node.args[0])
-                    and is_a_number(node.args[1])):
-                lines.append(node.lineno)
-            if (is_the_appender(node.func) and node.args
-                    and isinstance(node.args[0], ast.Dict)):
-                lines.append(node.lineno)
-        elif isinstance(node, ast.Assign) and is_a_number(node.value):
-            lines += [target.lineno for target in node.targets
-                      if isinstance(target, ast.Subscript)
-                      and is_the_count(target.slice)]
+    for node in ast.walk(tree):
+        reader = READERS.get(type(node))
+        if reader:
+            lines += reader(node, names)
     return sorted(lines)
 
 
@@ -410,12 +459,19 @@ def counts_set_to_a_number(source: bytes) -> list:
     '{"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "protocol.file.allow"}',
     'dict(GIT_CONFIG_COUNT="2")',
     'monkeypatch.setenv("GIT_CONFIG_COUNT", "1")',
+    'setenv("GIT_CONFIG_COUNT", "1")',
     'env.setdefault("GIT_CONFIG_COUNT", "2")',
+    'os.putenv("GIT_CONFIG_COUNT", "1")',
     'env["GIT_CONFIG_COUNT"] = "3"',
+    '{"GIT_CONFIG_COUNT": ""}',
+    'CONFIG_COUNT = "GIT_CONFIG_COUNT"; SYMLINKS_OFF = {CONFIG_COUNT: "1"}',
+    'COUNT: str = "GIT_CONFIG_COUNT"; monkeypatch.setenv(COUNT, "1")',
+    'KEY = "GIT_CONFIG_COUNT"; env[KEY] = "2"',
     'appended_to_command_scope({}, [("k", "v")])',
     'conftest.appended_to_command_scope({"A": "1"}, [])',
-], ids=["dict", "keyword", "setenv", "setdefault", "subscript",
-        "appended-to-nothing", "through-a-module"])
+], ids=["dict", "keyword", "setenv", "a-bare-setenv", "setdefault", "putenv",
+        "subscript", "nothing", "a-name-bound-to-it", "an-annotated-name",
+        "a-name-by-subscript", "appended-to-nothing", "through-a-module"])
 def test_the_scan_sees_each_way_a_test_can_set_a_count(source):
     assert counts_set_to_a_number(source.encode("utf-8")) == [1]
 
@@ -427,12 +483,44 @@ def test_the_scan_sees_each_way_a_test_can_set_a_count(source):
     'index = int(env.get("GIT_CONFIG_COUNT", "0"))',
     'env["GIT_CONFIG_COUNT"] = count',
     '"GIT_CONFIG_COUNT is 1"',
+    'KEY = "GIT_CONFIG_KEY_0"; env = {KEY: "1"}',
     'appended_to_command_scope(os.environ, [("k", "v")])',
     'appended_to_command_scope(held, [("k", "v")])',
 ], ids=["worked-out", "a-splat", "a-call", "a-read-with-a-default", "a-name",
-        "a-sentence", "appended-to-the-environment", "appended-to-a-name"])
+        "a-sentence", "a-name-bound-to-another-key",
+        "appended-to-the-environment", "appended-to-a-name"])
 def test_the_scan_leaves_a_count_that_is_worked_out(source):
     assert counts_set_to_a_number(source.encode("utf-8")) == []
+
+
+def files_off_their_count(directory: Path) -> dict:
+    """Each `.py` file in `directory` whose places that set a count of their
+    own are not as many as `OWN_COUNTS` allows it, with their lines: more
+    drops the entries the environment holds, and fewer is an allowance no
+    test needs any more."""
+    found = {}
+    for path in sorted(directory.glob("*.py")):
+        lines = counts_set_to_a_number(path.read_bytes())
+        if len(lines) != OWN_COUNTS.get(path.name, 0):
+            found[path.name] = lines
+    return found
+
+
+def test_the_walk_reads_every_python_file_and_holds_each_to_its_count(
+        tmp_path):
+    """`conftest.py` and a helper module are read as a test file is, a file
+    that is not Python is not read, and a file `OWN_COUNTS` allows a count
+    is named when it sets fewer than that as well as more."""
+    one = b'{"GIT_CONFIG_COUNT": "1"}\n'
+    for name, source in {"conftest.py": one, "gh_guard.py": one,
+                         "notes.txt": one, "test_adopt_git_reads.py": one,
+                         "test_clone_just_pushed.py": b"",
+                         "test_no_auto_maintenance.py": one * 3}.items():
+        (tmp_path / name).write_bytes(source)
+    assert files_off_their_count(tmp_path) == {
+        "conftest.py": [1], "gh_guard.py": [1],
+        "test_clone_just_pushed.py": [],
+        "test_no_auto_maintenance.py": [1, 2, 3]}
 
 
 def test_no_test_sets_a_git_config_count_of_its_own():
@@ -441,16 +529,11 @@ def test_no_test_sets_a_git_config_count_of_its_own():
     longer git's, so a session setting or a job's `core.autocrlf` does not
     reach the git the test starts. Every test gives git a setting by
     appending to the entries the environment holds, built at the call by
-    `appended_to_command_scope` (`conftest.py`). Before #758 `PASTE_ENV`,
-    `ALLOW_FILE_PROTOCOL`, `NO_MAINTENANCE`, `QUOTE_PATH_OFF`, `SYMLINKS_OFF`
-    and eight one-off environments each wrote one."""
-    found = {}
-    for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
-        if path.name == "conftest.py":
-            continue
-        lines = counts_set_to_a_number(path.read_bytes())
-        if len(lines) != OWN_COUNTS.get(path.name, 0):
-            found[path.name] = lines
+    `appended_to_command_scope` (`conftest.py`, which is read too, and
+    works its count out). Before #758 `PASTE_ENV`, `ALLOW_FILE_PROTOCOL`,
+    `NO_MAINTENANCE`, `QUOTE_PATH_OFF`, `SYMLINKS_OFF` and eight one-off
+    environments each wrote one."""
+    found = files_off_their_count(Path(__file__).resolve().parent)
     assert not found, (
         "a `GIT_CONFIG_COUNT` written as a number, or `appended_to_command_"
         "scope` handed a dict written out, replaces the entries the "
