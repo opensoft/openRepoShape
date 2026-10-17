@@ -1493,9 +1493,20 @@ def _note_unused_pin_sources(sources: PinSources, report: Report) -> None:
             sources.read_as_path(typed)))))
 
 
-def _load_legs_to_check(root: Path) -> tuple[dict, list[dict]]:
+def _load_legs_to_check(root: Path, report: Report
+                        ) -> tuple[dict, list[dict]]:
     """The manifest and its non-assembly legs, or a Refusal naming why there
     is nothing here to check. Split from `main` for #132.
+
+    A `legs:` THAT IS NOT A LIST IS A FINDING, NOT THAT REFUSAL (#714), in
+    `validate-manifest.py`'s words for it (`manifest-legs`), and no leg is
+    checked. Iterated as `manifest.get("legs") or []`, `5` or `true` ended
+    this validator in a `TypeError`, and a scalar `openXdox` or a mapping
+    was walked one character, or one key, at a time, found no leg, and was
+    refused `manifest-no-legs` with the lockstep remedy, which says to run
+    `git submodule update`: nothing to do with the cause. The shape pin and
+    the neutral-product pins are still checked. Absent, null or `[]` is
+    still that refusal.
     """
     manifest_path = root / "project.yaml"
     if not manifest_path.is_file():
@@ -1508,7 +1519,14 @@ def _load_legs_to_check(root: Path) -> tuple[dict, list[dict]]:
     manifest = load_yaml(manifest_path)
     if not isinstance(manifest, dict):
         raise Refusal("manifest-unreadable", f"{manifest_path}: not a mapping")
-    legs = [leg for leg in (manifest.get("legs") or [])
+    declared = manifest.get("legs")
+    if declared is not None and not isinstance(declared, list):
+        report.finding(
+            "manifest-legs",
+            f"legs is {declared!r}, expected a list of `role:`, "
+            "`repository:` and `path:` mappings")
+        return manifest, []
+    legs = [leg for leg in (declared or [])
             if isinstance(leg, dict) and leg.get("role") != "assembly"]
     if not legs:
         raise Refusal("manifest-no-legs",
@@ -1521,7 +1539,7 @@ def _run_all_checks(root: Path, report: Report,
     """Every check `main` runs inside its one `try`, in order. Split from
     `main` for #132 so that `try` wraps a single call.
     """
-    manifest, legs = _load_legs_to_check(root)
+    manifest, legs = _load_legs_to_check(root, report)
     refs = _workflow_refs(root)
     for leg in legs:
         _check_leg(root, leg, report, refs)
