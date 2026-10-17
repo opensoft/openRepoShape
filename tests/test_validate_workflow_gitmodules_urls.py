@@ -444,14 +444,13 @@ def siblings(monkeypatch):
 
 @pytest.mark.parametrize("rule_id", sorted(
     rule_id for rule_id, rule in RULES.items()
-    if not rule.unmerged and "\r" not in (rule.gitmodules or "")))
+    if not rule.unmerged))
 def test_siblings_reads_what_each_row_says(rule_id, siblings, tmp_path):
     """`siblings.submodule_urls` reads the file in the working tree, so a row
-    that leaves it unmerged in the index is not asked. Nor is a row with a
-    carriage return in it: `siblings.py` cuts `--list` at `splitlines`, which
-    ends a line at one, so it reads the key `submodule.q` and `x.update` and
-    never the refused `update` (a defect beside its split at the first `=`,
-    which lane 3 files)."""
+    that leaves it unmerged in the index is not asked. A row with a carriage
+    return in a section name is: `siblings.py` has read `git config -z
+    --list` since #805 (#690), so a CR stays inside its key, and the refused
+    `update` is read as `update`."""
     rule = RULES[rule_id]
     work = holder_of(tmp_path, rule.gitmodules, rule.paths)
     assert sorted(siblings.submodule_urls(work).values()) == sorted(rule.urls)
