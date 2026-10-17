@@ -17,7 +17,9 @@ code and `x.md` needs no row. The doctor walks the code leg, where
 The same split reaches the same disagreement with `engine/c.py` dropped or
 kept in the root, in a directory the majority groups to spec, nested one
 directory down, and as a question where the file left over has an
-extension no class names: a `note` there, and not `ok`.
+extension no class names: a `note` there, and not `ok`. So do answers
+against their extensions, which fold a directory in a leg that the source
+did not fold, over a file beside them left as `plan` wrote it.
 
 THE FIX. `answered_path_record` also walks each leg's own files, as the
 doctor walks that leg, and records each entry kept in a leg that covers a
@@ -57,6 +59,10 @@ NOTES = "engine/notes/"
 C_MD = "notes/c.md"
 Y_PY = "notes/y.py"
 THE_ISSUE = "the-issue"
+#: `stuff/`, which no rule names: 2 `.py` and 3 `.md`, which do not fold.
+STUFF = "stuff/"
+STUFF_PY = ("stuff/a.py", "stuff/b.py")
+STUFF_MD = ("stuff/m1.md", "stuff/m2.md", "stuff/m3.md")
 #: The record's key, and the doctor's for what it answered.
 ANSWERED = "answered_paths"
 UTF8 = "utf-8"
@@ -102,6 +108,17 @@ SPLITS = {
         {**PY_FILES, Q_ZZZ: "q\n"}, ENGINE,
         (*KEPT, (C_PY, "spec"), (Q_ZZZ, "code")),
         [(C_PY, "spec"), (Q_ZZZ, "code")]),
+    # No directory split: `plan` lists `stuff/`'s five files, `b.py` is
+    # answered spec and the three `.md` code, against their extension, and
+    # `a.py` is left as `plan` wrote it. The code leg's `stuff/` is then 3
+    # of 4 `.md` and folds to spec, over `a.py` too.
+    "answers-fold-a-file-left-as-written": (
+        {**dict.fromkeys(STUFF_PY, "P = 1\n"),
+         **dict.fromkeys(STUFF_MD, "# M\n")}, STUFF,
+        ((STUFF_PY[0], "code"), (STUFF_PY[1], "spec"),
+         *((path, "code") for path in STUFF_MD)),
+        [(STUFF_PY[0], "code"), (STUFF_PY[1], "spec"),
+         *((path, "code") for path in STUFF_MD)]),
 }
 
 #: The controls, which main records the same way: a split whose rest still
@@ -184,14 +201,18 @@ def test_a_plan_left_as_plan_wrote_it_gets_mains_record_byte_for_byte(
 # --- end to end: `execute`, then the doctor ---------------------------------
 
 def split_by_hand(text: str, entry: str, parts: tuple) -> str:
-    """The plan `text` with `entry`'s block -- its `- path:` line and every
-    line indented under it -- replaced by one entry per `(path, leg)` of
-    `parts`, each with BY_HAND as its `resolution:`."""
-    entries = "".join(f'  - path: {path}\n    leg: {leg}\n'
-                      f'    resolution: "{BY_HAND}"\n' for path, leg in parts)
-    out, count = re.subn(rf"(?m)^  - path: {re.escape(entry)}\n(?:    .*\n)*",
-                         lambda _: entries, text)
-    assert count == 1, text
+    """The plan `text` with the block -- its `- path:` line and every line
+    indented under it -- of `entry`, or of each entry `plan` listed under
+    it, replaced by one entry per `(path, leg)` of `parts` where the first
+    stood, each with BY_HAND as its `resolution:`."""
+    blocks = re.findall(rf"(?m)^  - path: {re.escape(entry)}.*\n(?:    .*\n)*",
+                        text)
+    assert blocks, text
+    out = text.replace(blocks[0], "".join(
+        f'  - path: {path}\n    leg: {leg}\n    resolution: "{BY_HAND}"\n'
+        for path, leg in parts), 1)
+    for block in blocks[1:]:
+        out = out.replace(block, "", 1)
     return out
 
 

@@ -11291,17 +11291,21 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
     `engine/` is 3 of 4 `.py`, exactly the 75% `extension_majority:`, so it
     folds to code; with `engine/c.py` answered `spec`, the code leg's
     `engine/` is 2 of 3, which does not fold, and there `engine/x.md` is
-    spec by its own extension. So `walk` is run again over each leg's own
-    files -- the paths `_answered_legs` keeps in it, gitlinks left out, as
-    the doctor runs it over the leg -- and an entry covering a path that
+    spec by its own extension. Answers against their extensions can fold a
+    directory in a leg as the source's walk did not, over an entry beside
+    them left as `plan` wrote it. So `walk` is run again over each leg's
+    own files -- the paths `_answered_legs` keeps in it, gitlinks left out,
+    as the doctor runs it over the leg -- and an entry covering a path that
     walk does not put in that leg is recorded too, whether the walk asks of
-    the path or puts it elsewhere. An entry `plan` wrote, kept whole in the
-    leg `plan` gave it, reads the same there, so a plan left as `plan`
-    wrote it gets no row from this walk. Before it walks, the doctor also
-    sets aside the files every repository carries (`everywhere_patterns`:
-    names at the top of a leg, and `.github/`), which change how no other
-    directory folds, and a name no report can carry, which can: this walk
-    keeps both, as the one above does.
+    the path or puts it elsewhere. A row is added only where the doctor's
+    walk of that leg disputes the path. A plan left as `plan` wrote it,
+    over a source with no gitlink, gets none: each entry is whole in the
+    leg `plan` gave it, and no directory above one can fold to another leg
+    there, since at most a quarter of an entry's files read as one. Before
+    it walks, the doctor also sets aside the files every repository carries
+    (`everywhere_patterns`: names at the top of a leg, and `.github/`),
+    which change how no other directory folds, and a name no report can
+    carry, which can: this walk keeps both, as the one above does.
 
     A SOURCE WITH NO SUCH ENTRY GETS "" and so the `project.yaml` it always
     got, byte for byte.
