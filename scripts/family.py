@@ -176,8 +176,8 @@ from shape_materialize import (  # noqa: E402
     commit_trailers, env_commit, escape_what_stdout_cannot_encode,
     force_stage, inherited_child_environment, make_folder,
     materialize_family_root, refuse_bad_branch, refuse_unless_not_found,
-    refuse_unmakeable_folder, run, stage_written, target_in_the_way,
-    target_remediation, trailer_line, write_lf,
+    refuse_unmakeable_folder, run, shown_source, stage_written,
+    target_in_the_way, target_remediation, trailer_line, write_lf,
 )
 # What `init` asks of the holder's own reader and validator before it creates
 # anything (#307), imported as its own unit and not added to the lists above.
@@ -1021,6 +1021,13 @@ def _checked_no_operation_in_progress(root: Path, verb: str) -> None:
     `load_yaml` makes git run before the refusal of a hand-edited `path:`,
     which this test holds to no git command at all:
     `test_family_member_path.py::test_the_refusal_is_made_before_any_git_call`.
+
+    THE MARK'S PATH IS NAMED AS `shown_source` NAMES A PATH (#692): as it is,
+    and as Python's `repr` spells it when a character in it is not printable.
+    It is the true path, as git keeps it, so a holder whose path holds a line
+    break printed the refusal across two lines, with a line of the person's
+    choosing in it, and an ESC reached the terminal. A printable path is
+    named byte for byte.
     """
     found = _operation_in_progress(root)
     if found is None:
@@ -1041,7 +1048,8 @@ def _checked_no_operation_in_progress(root: Path, verb: str) -> None:
     raise Refusal(
         "family-operation-in-progress",
         f"{what} is unfinished in the family root: git keeps {mark} at "
-        f"{where.as_posix()}. `{verb}` makes its commit with `git commit -- "
+        f"{shown_source(where.as_posix())}. `{verb}` makes its commit with "
+        "`git commit -- "
         f"<paths>`, and {effect.format(verb=verb)}. No git command that "
         "writes was run and nothing was written.", end)
 
@@ -1844,7 +1852,8 @@ def _refuse_a_taken_holder(folder: Path | None, holder: Path) -> None:
     why = target_in_the_way(holder)
     if why:
         raise Refusal(
-            "family-target-exists", f"{holder} already exists and {why}",
+            "family-target-exists",
+            f"{shown_source(holder)} already exists and {why}",
             target_remediation(
                 why,
                 "Remediation: choose another --into (or an empty "

@@ -131,7 +131,7 @@ from repo_shape import YamlError, double_quoted, parse_yaml  # noqa: E402
 # not-found answer as the one failure of `gh repo view` that means absent.
 from shape_materialize import (  # noqa: E402
     make_folder, refuse_unless_not_found, refuse_unmakeable_folder,
-    target_in_the_way, target_remediation,
+    shown_source, target_in_the_way, target_remediation,
 )
 
 #: How a refusal names each value the manifest records (#258, #261). The leg
@@ -1303,7 +1303,7 @@ def _refuse_existing_trees(work_root: Path, names: dict) -> None:
         if why:
             raise Refusal(
                 "scaffold-target-exists",
-                f"{target} already exists and {why}",
+                f"{shown_source(target)} already exists and {why}",
                 target_remediation(
                     why,
                     "Remediation: choose an empty --work-dir. There is no "
