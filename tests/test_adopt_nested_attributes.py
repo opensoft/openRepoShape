@@ -45,9 +45,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, clone_just_pushed, findings, git,
-                      make_source_repo, planned, refused_before_any_leg,
-                      run_script)
+from conftest import (ADOPT, REPO, appended_to_command_scope,
+                      clone_just_pushed, findings, git, make_source_repo,
+                      planned, refused_before_any_leg, run_script)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import parse_yaml  # noqa: E402
@@ -383,9 +383,7 @@ def command_scope(key: str, value: str) -> dict:
     """`key=value` in git's command scope (`GIT_CONFIG_COUNT`), appended to
     what the environment holds: the Windows job sets `core.autocrlf` there,
     and the last entry of a key is the one git reads."""
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
-    return {"GIT_CONFIG_COUNT": str(held + 1),
-            f"GIT_CONFIG_KEY_{held}": key, f"GIT_CONFIG_VALUE_{held}": value}
+    return appended_to_command_scope(os.environ, [(key, value)])
 
 
 def checked(plan: Path, env: dict):

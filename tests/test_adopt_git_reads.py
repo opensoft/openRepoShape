@@ -43,7 +43,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, git, make_source_repo
+from conftest import REPO, appended_to_command_scope, git, make_source_repo
 from test_adopt_template_values import (ADOPT_REFUSED, PLAN_FILE, PLAN_OK,
                                         PROJECT, REMOTES, SPLIT_BRANCH,
                                         VERIFIED, WORK, adopted, answer,
@@ -115,10 +115,8 @@ def command_scope(key: str, value: bytes) -> dict:
     The value goes in as the bytes it is, through `os.fsdecode`, which is how
     `sys.argv` and `os.environ` carry a byte that is not UTF-8 on POSIX. A
     Windows environment is text, so the caller does not use this there."""
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
-    return {"GIT_CONFIG_COUNT": str(held + 1),
-            f"GIT_CONFIG_KEY_{held}": key,
-            f"GIT_CONFIG_VALUE_{held}": os.fsdecode(value)}
+    return appended_to_command_scope(os.environ,
+                                     [(key, os.fsdecode(value))])
 
 
 def global_user_name(base: Path, name: bytes) -> dict:
@@ -204,11 +202,10 @@ def test_the_user_name_given_is_appended_to_the_config_the_environment_holds(
     drop both, and every test after it would run with git's own line-end and
     long-path defaults. The two slots here are the job's, under keys no
     config of a machine this runs on sets."""
-    for variable, value in {"GIT_CONFIG_COUNT": "2",
-                            "GIT_CONFIG_KEY_0": "test.heldone",
-                            "GIT_CONFIG_VALUE_0": "one",
-                            "GIT_CONFIG_KEY_1": "test.heldtwo",
-                            "GIT_CONFIG_VALUE_1": "two"}.items():
+    held = appended_to_command_scope(
+        {}, [("test.heldone", "one"), ("test.heldtwo", "two")])
+    assert held["GIT_CONFIG_COUNT"] == "2", held
+    for variable, value in held.items():
         monkeypatch.setenv(variable, value)
     extra = global_user_name(tmp_path, LATIN1_NAME)
     assert extra["GIT_CONFIG_COUNT"] == "3", extra

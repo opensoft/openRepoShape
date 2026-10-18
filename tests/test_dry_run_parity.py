@@ -37,6 +37,15 @@ of it, and a folder that still cannot be made is refused by name
 The GitHub route runs against a stub `gh` on PATH that answers `repo view`
 as the test says and refuses anything else, and is POSIX only, as every
 `#!` stub in this suite is.
+
+A FOLDER'S NAME IS SPELLED SAFE TO SHOW (#692, from #459's L2-77). Each
+refusal above names a folder, and printed it as it was, so an ESC in a
+path reached the terminal and a line break began a line of the person's
+choosing, a forged `WARNING` or `REFUSED` among them. Each is named as
+`shape_materialize.shown_source` names a `--pin-source`: as it is, unless a
+character in it is not printable, and then as Python's `repr` spells it. The
+rows whose names are `ESC-...` and `line-break-...` below hold such a name,
+and a name like that is a POSIX file name only (`POSIX_NAMES`).
 """
 
 from __future__ import annotations
@@ -50,6 +59,9 @@ from pathlib import Path
 import pytest
 
 from conftest import ORG, REPO, SCAFFOLD, WINDOWS_SKIP, run_script
+#: The names #692's rows hold, and how a line spells them, kept beside the
+#: helpers #766's rows in other modules share (#766).
+from conftest import ESC_NAME, FORGED_NAME, POSIX_NAMES, spelt
 from test_dry_run_asks_remotes import (DRY_RUN_DONE, live_bare, load,
                                        no_gh_run, scratch_env, without_gh)
 
@@ -132,6 +144,8 @@ def assert_refused(result, said: str) -> None:
     """Exit 2 with the refusal `said`, its whole line, and no traceback."""
     assert result.returncode == 2, result.stdout + result.stderr
     assert refused_line(result) == said, result.stderr
+    assert not any(line.startswith("WARNING forged-line")
+                   for line in result.stderr.splitlines()), result.stderr
     assert "Traceback" not in result.stderr, result.stderr
     assert DRY_RUN_DONE not in result.stdout, result.stdout
 
@@ -183,6 +197,14 @@ def at(tmp_path: Path, relative: str) -> Path:
     return (tmp_path / relative).resolve()
 
 
+def case_params(cases: dict) -> list:
+    """One `pytest.param` per row of `cases`, a row named `ESC-...` or
+    `line-break-...` skipped where no file can be named so (`POSIX_NAMES`)."""
+    return [pytest.param(name, marks=POSIX_NAMES
+                         if name.startswith(("ESC-", "line-break-")) else ())
+            for name in cases]
+
+
 #: The scaffold's four measured cases and two beside them: `(what the test
 #: puts in the way, the --work-dir and --local-remote-dir it passes, the
 #: REFUSED line both runs end on)`. On main 2989b4c each dry run exited 0;
@@ -215,10 +237,40 @@ SCAFFOLD_CASES = {
         "up", ("wd", "up/r"),
         lambda t: f"{SCAFFOLD_FOLDER}: --local-remote-dir {at(t, 'up/r')} "
                   f"cannot be made: {at(t, 'up')} is a file, not a folder"),
+    # #692: each folder a refusal names is spelled safe to show, whether the
+    # name is the folder's own or a folder above it: an ESC, and a line
+    # break then a forged line. There is no row for a --local-remote-dir
+    # like that: its clone URL is refused first, as `scaffold-unwritable-
+    # value`, and it names the path as `repr` spells it already.
+    "ESC-in-the-work-dir-name": (
+        ESC_NAME, (ESC_NAME, "r"),
+        lambda t: f"{SCAFFOLD_FOLDER}: --work-dir {spelt(at(t, ESC_NAME))} "
+                  f"cannot be made: {spelt(at(t, ESC_NAME))} is a file, not "
+                  "a folder"),
+    "line-break-in-the-work-dir-name": (
+        FORGED_NAME, (FORGED_NAME, "r"),
+        lambda t: f"{SCAFFOLD_FOLDER}: --work-dir "
+                  f"{spelt(at(t, FORGED_NAME))} cannot be made: "
+                  f"{spelt(at(t, FORGED_NAME))} is a file, not a folder"),
+    "ESC-in-a-folder-name-above-the-work-dir": (
+        ESC_NAME, (f"{ESC_NAME}/wd", "r"),
+        lambda t: f"{SCAFFOLD_FOLDER}: --work-dir "
+                  f"{spelt(at(t, f'{ESC_NAME}/wd'))} cannot be made: "
+                  f"{spelt(at(t, ESC_NAME))} is a file, not a folder"),
+    "ESC-in-the-work-dir-name-holding-a-file-named-Atlas": (
+        f"{ESC_NAME}/Atlas", (ESC_NAME, "r"),
+        lambda t: "REFUSED scaffold-target-exists: "
+                  f"{spelt(at(t, f'{ESC_NAME}/Atlas'))} already exists and "
+                  "is a file, not a folder"),
+    "line-break-in-the-work-dir-name-holding-a-file-named-Atlas": (
+        f"{FORGED_NAME}/Atlas", (FORGED_NAME, "r"),
+        lambda t: "REFUSED scaffold-target-exists: "
+                  f"{spelt(at(t, f'{FORGED_NAME}/Atlas'))} already exists "
+                  "and is a file, not a folder"),
 }
 
 
-@pytest.mark.parametrize("case", list(SCAFFOLD_CASES))
+@pytest.mark.parametrize("case", case_params(SCAFFOLD_CASES))
 def test_a_scaffold_dry_run_refuses_what_its_real_run_refuses(tmp_path, case):
     """L2-34, the scaffold: on main every dry run here exited 0 and every
     real run but the non-empty tree's ended in a traceback, exit 1."""
@@ -265,10 +317,37 @@ FAMILY_CASES = {
         "r", (),
         lambda t: f"{FAMILY_FOLDER}: --local-remote-dir {at(t, 'r')} cannot "
                   f"be made: {at(t, 'r')} is a file, not a folder"),
+    # #692, as the scaffold's rows beside them: an ESC, and a line break then
+    # a forged line, in a folder a refusal names or in one above it.
+    "ESC-in-the-work-dir-name": (
+        ESC_NAME, ("--work-dir", ESC_NAME),
+        lambda t: f"{FAMILY_FOLDER}: --work-dir {spelt(at(t, ESC_NAME))} "
+                  f"cannot be made: {spelt(at(t, ESC_NAME))} is a file, not "
+                  "a folder"),
+    "line-break-in-the-work-dir-name": (
+        FORGED_NAME, ("--work-dir", FORGED_NAME),
+        lambda t: f"{FAMILY_FOLDER}: --work-dir "
+                  f"{spelt(at(t, FORGED_NAME))} cannot be made: "
+                  f"{spelt(at(t, FORGED_NAME))} is a file, not a folder"),
+    "ESC-in-the-into-name": (
+        ESC_NAME, ("--into", ESC_NAME),
+        lambda t: f"{FAMILY_FOLDER}: the family folder "
+                  f"{spelt(at(t, f'{ESC_NAME}/Orbit'))} cannot be made: "
+                  f"{spelt(at(t, ESC_NAME))} is a file, not a folder"),
+    "ESC-in-the-work-dir-name-holding-a-file-named-Orbit": (
+        f"{ESC_NAME}/Orbit", ("--work-dir", ESC_NAME),
+        lambda t: "REFUSED family-target-exists: "
+                  f"{spelt(at(t, f'{ESC_NAME}/Orbit'))} already exists and "
+                  "is a file, not a folder"),
+    "line-break-in-the-work-dir-name-holding-a-file-named-Orbit": (
+        f"{FORGED_NAME}/Orbit", ("--work-dir", FORGED_NAME),
+        lambda t: "REFUSED family-target-exists: "
+                  f"{spelt(at(t, f'{FORGED_NAME}/Orbit'))} already exists "
+                  "and is a file, not a folder"),
 }
 
 
-@pytest.mark.parametrize("case", list(FAMILY_CASES))
+@pytest.mark.parametrize("case", case_params(FAMILY_CASES))
 def test_an_init_dry_run_refuses_what_its_real_run_refuses(tmp_path, case):
     """L2-34, `init`: on main every dry run here exited 0, and every real
     run but the non-empty holder's ended in a traceback, exit 1."""
@@ -355,6 +434,18 @@ UNWRITABLE_FOLDER_AT = {
         lambda t: f"{FAMILY_FOLDER}: --local-remote-dir {at(t, 'r')} cannot "
                   f"be made: {at(t, 'r')} {CANNOT_WRITE_TEXT}",
         "--local-remote-dir"),
+    # #692: the folder the refusal says this user cannot write in is spelled
+    # safe to show too.
+    "ESC-in-the-scaffold-work-dir": (
+        ESC_NAME, lambda t: scaffold_in(t, ESC_NAME),
+        lambda t: f"{SCAFFOLD_FOLDER}: --work-dir {spelt(at(t, ESC_NAME))} "
+                  f"cannot be made: {spelt(at(t, ESC_NAME))} "
+                  f"{CANNOT_WRITE_TEXT}", "--work-dir"),
+    "ESC-in-the-family-work-dir": (
+        ESC_NAME, lambda t: init_in(t, "--work-dir", ESC_NAME),
+        lambda t: f"{FAMILY_FOLDER}: --work-dir {spelt(at(t, ESC_NAME))} "
+                  f"cannot be made: {spelt(at(t, ESC_NAME))} "
+                  f"{CANNOT_WRITE_TEXT}", "--work-dir"),
 }
 
 #: What every OTHER refusal of a folder says to do, as it always said it.
@@ -365,7 +456,7 @@ FOLDER_REMEDIATION = (
 
 
 @pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real-run"])
-@pytest.mark.parametrize("case", list(UNWRITABLE_FOLDER_AT))
+@pytest.mark.parametrize("case", case_params(UNWRITABLE_FOLDER_AT))
 def test_an_unwritable_folder_a_run_makes_is_told_what_fits(
         tmp_path, unwritable_folder, case, dry_run):
     """rv622r's nit: an existing EMPTY `--work-dir`, `--local-remote-dir` or
@@ -429,6 +520,60 @@ def test_the_folder_remediation_is_chosen_by_what_stands_in_the_way(
     with pytest.raises(Refusal) as refused:
         ask("x-code", "--named", tmp_path)
     assert refused.value.remediation == unwritable_remediation("--named")
+
+
+# --- #692: a folder's name is spelled safe to show ---------------------------
+
+@POSIX_NAMES
+@pytest.mark.parametrize("name", [ESC_NAME, FORGED_NAME],
+                         ids=["ESC", "line-break"])
+def test_each_folder_question_spells_a_name_that_is_not_printable(
+        tmp_path, name):
+    """#692, one call each, beneath the CLI rows: `folder_cannot_be_made`
+    names the file that stands in the way, and `refuse_unmakeable_folder`
+    and `make_folder` name the folder they were asked for, as `repr` spells
+    it. On main each printed the path as it was, ESC or line break and all
+    (`make_folder` has no CLI row: the real run's own `mkdir` fails only for
+    what the question did not foresee)."""
+    stands = tmp_path / name
+    touch(stands)
+    below = stands / "sub"
+    why = f"{spelt(stands)} is a file, not a folder"
+    assert shape_materialize.folder_cannot_be_made(below) == why
+    with pytest.raises(Refusal) as refused:
+        shape_materialize.refuse_unmakeable_folder("x-code", "--named", below)
+    assert refused.value.detail == (
+        f"--named {spelt(below)} cannot be made: {why}")
+    with pytest.raises(Refusal) as made:
+        shape_materialize.make_folder("x-code", "--named", below)
+    assert made.value.detail == (
+        f"--named {spelt(below)} cannot be made: {mkdir_says(below)}")
+
+
+@POSIX_NAMES
+def test_a_folder_this_user_cannot_write_in_is_spelled_safe_to_show(
+        unwritable_folder):
+    """The other answer `folder_cannot_be_made` gives, `CANNOT_WRITE_IN`,
+    names its folder the same way (#692)."""
+    folder = unwritable_folder(ESC_NAME, CANNOT_WRITE["no-w"])
+    assert (shape_materialize.folder_cannot_be_made(folder / "sub")
+            == f"{spelt(folder)} {shape_materialize.CANNOT_WRITE_IN}")
+
+
+def test_a_printable_name_is_named_byte_for_byte(tmp_path):
+    """#692 changes no row a person could read before: a name with a space
+    or a letter that is not ASCII is printable, and is named as it is, with
+    no quotes."""
+    stands = tmp_path / "wd \u00e9 and a space"
+    touch(stands)
+    assert stands.name.isprintable()
+    why = f"{stands} is a file, not a folder"
+    assert shape_materialize.folder_cannot_be_made(stands / "sub") == why
+    with pytest.raises(Refusal) as refused:
+        shape_materialize.refuse_unmakeable_folder(
+            "x-code", "--named", stands / "sub")
+    assert refused.value.detail == (
+        f"--named {stands / 'sub'} cannot be made: {why}")
 
 
 # --- L2-60: an EMPTY working tree this user cannot write in ------------------
