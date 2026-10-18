@@ -55,7 +55,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import IDENTITY_CONFIG, git, run_script
+from conftest import (IDENTITY_CONFIG, git, run_script,
+                      skip_where_a_name_cannot_be_not_utf_8)
 from test_bootstrap_after_bump import (  # noqa: F401
     ADDED, EDITED, MAIN, NOTHING_ELSE, bootstrapped, bumped,
     failing_post_checkout, head_ref, left_branch, moved_and_refused, rev,
@@ -546,11 +547,11 @@ def test_a_branch_whose_name_is_not_utf8_is_read_back_on_every_run(
     the check of where `checkout -b` left HEAD (S3) reads HEAD back; the
     second places the leg on it. Each read `symbolic-ref` decoded as UTF-8,
     and on base the second run ended in a `UnicodeDecodeError` traceback.
-    Made on a disk that takes the byte, skipped on one that does not."""
-    try:
-        (tmp_path / "probe-\udcff").write_bytes(b"")
-    except (OSError, ValueError):
-        pytest.skip("this disk takes no file name with the byte 0xff")
+    Made on a system and a disk that take the byte, skipped on one that
+    does not: `skip_where_a_name_cannot_be_not_utf_8` asks. Any other
+    error of the disk, a full one or a read-only `tmp_path`, fails the
+    test (#834)."""
+    skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     leg = root / "spec"
     pin = rev(leg)
     git("checkout", "-q", "--detach", pin, cwd=leg)

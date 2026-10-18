@@ -398,15 +398,13 @@ def test_a_source_directory_that_is_not_utf8_is_shown_spelled(adopter,
     so did `check`'s `WHAT WILL HAPPEN, against <path> @`, and each raised
     `UnicodeEncodeError` on a strict UTF-8 stdout after the plan was written.
     Both show it spelled now. Skipped where no directory can be named with
-    the byte 0xE9 (Windows, macOS's APFS) or git will not work in one."""
+    the byte 0xE9 (Windows, macOS's APFS); a failure of git under it fails
+    the test (#853)."""
     skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
                                            b"caf\xe9")))
     parent.mkdir()
-    try:
-        source = make_source_repo(parent / "Thing")
-    except AssertionError as exc:
-        pytest.skip(f"git will not work under b'caf\\xe9' here: {exc}")
+    source = make_source_repo(parent / "Thing")
     shown = adopter._spelled(str(source.resolve()))
     assert "\\udce9" in shown
     plan = tmp_path / PLAN_FILE

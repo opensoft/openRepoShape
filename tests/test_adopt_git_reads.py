@@ -44,7 +44,8 @@ from pathlib import Path
 import pytest
 
 from conftest import (REPO, appended_to_command_scope, git, make_source_repo,
-                      skip_where_a_name_cannot_be_not_utf_8)
+                      skip_where_a_name_cannot_be_not_utf_8,
+                      skip_where_the_environment_cannot_carry)
 from test_adopt_template_values import (ADOPT_REFUSED, PLAN_FILE, PLAN_OK,
                                         PROJECT, REMOTES, SPLIT_BRANCH,
                                         VERIFIED, WORK, adopted, answer,
@@ -462,15 +463,12 @@ def test_a_utf8_clone_of_a_source_whose_path_is_not_utf8_adopts(tmp_path):
     at a path that is text has the old path as its origin, so `execute
     --source <the clone>` ended in this issue's traceback; it now adopts.
     Skipped where no directory can be named with the byte 0xE9 (Windows,
-    macOS's APFS) or git will not work in one."""
+    macOS's APFS); a failure of git under it fails the test (#853)."""
     skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
                                            b"caf\xe9")))
     parent.mkdir()
-    try:
-        source = make_source_repo(parent / "Thing")
-    except AssertionError as exc:
-        pytest.skip(f"git will not work under {parent.name!r} here: {exc}")
+    source = make_source_repo(parent / "Thing")
     clone = tmp_path / "clone"
     git("clone", "-q", "--", str(source), str(clone), cwd=tmp_path)
     runs = {"plan": planned(tmp_path, source)}
@@ -522,6 +520,25 @@ LOST_FINDING = b"FINDING plan-tracking-branch-missing: " + BRANCH_LOST
 LOST_REFUSAL = b"REFUSED plan-tracking-branch-missing: "
 
 
+def skip_where_no_ref_can_be_named(source: Path, branch: str) -> None:
+    """Skip where this system cannot give `source` a ref named `branch`,
+    asked before any git call makes one (#853). A name that is not UTF-8
+    asks `skip_where_a_name_cannot_be_not_utf_8` of the directory `source`
+    is in, on the disk its ref files go to: Windows' `os.fsencode` first,
+    then macOS's EILSEQ. A name that is text asks only whether this
+    system's file name encoding can spell it, as a command line must
+    (`subprocess` puts each argument through `os.fsencode`; ASCII under
+    `LC_ALL=C` cannot), since every disk git runs on holds text. What git
+    does after it is the test's own: a git call that fails, on a full disk
+    or a directory it cannot write in, fails the test."""
+    try:
+        branch.encode("utf-8")
+    except UnicodeEncodeError:
+        skip_where_a_name_cannot_be_not_utf_8(source.parent)
+    else:
+        skip_where_the_environment_cannot_carry(branch)
+
+
 def with_default_branch(source: Path, where: str,
                         branch: str = BRANCH) -> Path:
     """`source`, on `main`, with `branch` (`BRANCH` unless given) as its
@@ -531,23 +548,21 @@ def with_default_branch(source: Path, where: str,
     source: a plan that read the wrong branch would adopt the wrong commit,
     and a `--tracking-branch main` names a branch it has.
 
-    Skipped where no branch can be named so (the byte 0xE9 on Windows or
-    macOS's APFS), or git here does not give the name back as it was
-    written."""
+    Skipped where this system cannot name the branch
+    (`skip_where_no_ref_can_be_named`: the byte 0xE9 on Windows or macOS's
+    APFS, or text an ASCII file name encoding cannot spell), asked before
+    git is, and where git here does not give the name back as it was
+    written. A git call between the two that fails fails the test (#853)."""
     ref = "refs/remotes/origin/HEAD" if where == ORIGIN_HEAD else "HEAD"
     written = branch.encode("utf-8", "surrogateescape")
-    try:
-        git("switch", "-q", "-c", branch, cwd=source)
-        git("commit", "-q", "--allow-empty", "-m", "One ahead", cwd=source)
-        if where == ORIGIN_HEAD:
-            git("switch", "-q", "main", cwd=source)
-            for name in (branch, "main"):
-                git("update-ref", f"refs/remotes/origin/{name}", name,
-                    cwd=source)
-            git("symbolic-ref", ref, f"refs/remotes/origin/{branch}",
-                cwd=source)
-    except (AssertionError, UnicodeError, OSError) as exc:
-        pytest.skip(f"no branch here is named {written!r}: {exc!r}")
+    skip_where_no_ref_can_be_named(source, branch)
+    git("switch", "-q", "-c", branch, cwd=source)
+    git("commit", "-q", "--allow-empty", "-m", "One ahead", cwd=source)
+    if where == ORIGIN_HEAD:
+        git("switch", "-q", "main", cwd=source)
+        for name in (branch, "main"):
+            git("update-ref", f"refs/remotes/origin/{name}", name, cwd=source)
+        git("symbolic-ref", ref, f"refs/remotes/origin/{branch}", cwd=source)
     read = subprocess.run(["git", "symbolic-ref", ref], cwd=str(source),
                           capture_output=True, check=False)
     if not read.stdout.rstrip(b"\r\n").endswith(b"/" + written):
@@ -559,15 +574,14 @@ def moved_to_a_branch_that_is_not_utf8(base: Path) -> Path:
     """A source on `main`, planned and answered, whose `main` is then
     renamed `BRANCH`: a plan that tracks a branch the source no longer has,
     and a source whose HEAD is on one that is not UTF-8. Skipped as
-    `with_default_branch` is."""
+    `with_default_branch` is, before anything is made; a failure of git
+    fails the test (#853)."""
+    skip_where_no_ref_can_be_named(base / "Thing", BRANCH)
     source = make_source_repo(base / "Thing")
     made = planned(base, source)
     assert made.returncode == 0, said(made)
     answer(base)
-    try:
-        git("branch", "-m", "main", BRANCH, cwd=source)
-    except (AssertionError, UnicodeError, OSError) as exc:
-        pytest.skip(f"no branch here is named {NOT_UTF8_BRANCH!r}: {exc!r}")
+    git("branch", "-m", "main", BRANCH, cwd=source)
     return source
 
 
@@ -720,15 +734,14 @@ FROM_ORIGINS = b"made from `origin`'s branch of that name, run in the source"
 def remembered_on(source: Path, branch: str) -> Path:
     """`source` with `origin/HEAD` naming `origin/<branch>`, which it has
     fetched, and no branch `branch` of its own, as `git clone -b main` of a
-    repository whose default branch is `branch` leaves it. Skipped as
-    `with_default_branch` is, where git refuses or alters the name."""
-    try:
-        git("update-ref", f"refs/remotes/origin/{branch}", "refs/heads/main",
-            cwd=source)
-        git("symbolic-ref", "refs/remotes/origin/HEAD",
-            f"refs/remotes/origin/{branch}", cwd=source)
-    except (AssertionError, UnicodeError, OSError) as exc:
-        pytest.skip(f"no ref here is named {branch!r}: {exc!r}")
+    repository whose default branch is `branch` leaves it. Skipped where
+    this system cannot name the ref, asked before git is, as
+    `with_default_branch` is; a failure of git fails the test (#853)."""
+    skip_where_no_ref_can_be_named(source, branch)
+    git("update-ref", f"refs/remotes/origin/{branch}", "refs/heads/main",
+        cwd=source)
+    git("symbolic-ref", "refs/remotes/origin/HEAD",
+        f"refs/remotes/origin/{branch}", cwd=source)
     return source
 
 
