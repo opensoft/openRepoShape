@@ -1556,12 +1556,32 @@ def run_at_the_terminal(argv) -> subprocess.CompletedProcess:
             os.close(descriptor)
 
 
+def ask_for_the_project_name() -> str:
+    """The `project name` prompt, and the name typed at it, checked (#729).
+
+    AN EMPTY LINE IS A NAME NOBODY TYPED, NOT A MISSING TERMINAL: `can_ask()`
+    at the call is the gate that refuses for want of one, so this refusal says
+    what happened and does not print the usage text.
+
+    THE TYPED NAME IS HELD TO THE CHECK THE SAME NAME GETS AS `--project` or
+    as the positional, before anything builds a path from it: `..` leaves
+    `--into`, an absolute name replaces it, and step (4)'s validator reads
+    only the last part of what it is handed. `a b` and `Bad_Name` pass here on
+    purpose (`NAME_RE` is permissive); step (4) is where the policy rules on
+    those.
+    """
+    typed = ask("  project name (ONE CamelCase token, e.g. Atlas): ")
+    if not typed:
+        die("no project name was typed; nothing was created.")
+    return checked_value("project name", typed)
+
+
 def resolve_project_and_elector(opts: Options, shape_root: Path) -> None:
     """setup.sh:355-386, transcribed."""
     say("")
     say("(3) project")
     if not opts.project and can_ask():
-        opts.project = ask("  project name (ONE CamelCase token, e.g. Atlas): ")
+        opts.project = ask_for_the_project_name()
     if not opts.project:
         usage(sys.stderr)
         die("no --project given, and no terminal to ask on.")
