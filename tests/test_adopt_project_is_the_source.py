@@ -22,7 +22,10 @@ comes first, and none says to retype `--project`. A source that names no
 repository is asked nothing, as before; an `origin` that is a path names none
 since #521 (`tests/test_adopt_origin_repository.py`).
 
-Nothing here reaches GitHub or runs `gh`: each source's `origin` is an
+Nothing here reaches GitHub, though `check` does run `gh`: given no
+`--local-remote-dir`, it asks `gh repo view` once of the spec leg's repository
+and once of the code leg's (#798), and the session's guard answers each as a
+`gh` with no login does (`tests/gh_guard.py`). Each source's `origin` is an
 `https://github.com/` URL that nothing fetches, `plan` and `check` read it
 from the source's own config, and `execute` is run in-process with every
 `git` and `gh` command it would run replaced by one that fails the test.

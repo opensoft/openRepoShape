@@ -35,12 +35,12 @@ leg exists:
   holds nothing.
 
 Nothing here reaches GitHub, though `check` does run `gh`: given no
-`--local-remote-dir`, it asks `gh repo view` of each leg repository (#798),
-twice, and the session's guard answers it as a `gh` with no login does
-(`tests/gh_guard.py`). Each source's `origin` is an `https://github.com/` URL
-that nothing fetches, and `execute` is run in-process with every `git` and
-`gh` command it would run replaced by one that fails the test
-(`refused_before_any_remote`).
+`--local-remote-dir`, it asks `gh repo view` once of the spec leg's repository
+and once of the code leg's (#798), and the session's guard answers each as a
+`gh` with no login does (`tests/gh_guard.py`). Each source's `origin` is an
+`https://github.com/` URL that nothing fetches, and `execute` is run in-process
+with every `git` and `gh` command it would run replaced by one that fails the
+test (`refused_before_any_remote`).
 """
 
 from __future__ import annotations
