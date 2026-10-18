@@ -41,11 +41,12 @@ WAS, and `NO_LEGS` holds each reader to its old sentence word for word, so the
 `None` guard each reader now has cannot go unseen (RV862's SHOULD-1): without
 it, absent and null read as the `legs is None` mismatch #832 removes.
 
-THE GATES' OWN WORDS ARE #826's. A tree without it still has the naming and
-pins gates crash on `5` and `validate-manifest.py` call it "missing or
-empty", so this file asserts what the four readers say, from one table, and
-nothing the gates print beside them; #826's own tests hold the gates to the
-same sentence.
+THE GATES' OWN WORDS ARE #826's, and #826's own tests hold the gates to the
+same sentence, so this file asserts what the four readers say, from one
+table, and of the gates beside them only how they end: since #826 every
+gate reports such a `legs:` as a finding, exit 1, where the naming and pins
+gates crashed on `5` or refused, so the doctor's verdict is a finding's,
+exit 1, and bootstrap's step (b) names each gate's exit 1 (RV862's NIT-5).
 
 THE HARNESS: conftest's `project` for bootstrap and `bump-leg.py`,
 `tests/test_shape_doctor.py`'s session standard for the doctor,
@@ -56,7 +57,6 @@ THE HARNESS: conftest's `project` for bootstrap and `bump-leg.py`,
 from __future__ import annotations
 
 import json
-import re
 import shutil
 from types import SimpleNamespace
 
@@ -190,10 +190,10 @@ def test_the_doctors_rows_that_read_the_legs_say_the_sentence_and_wait(
     result = doctor(standard, doctored, "--json")
     no_traceback(result)
     payload = json.loads(result.stdout)
-    # A finding's exit. For `5` the standard's own naming gate crashes until
-    # #826 lands, which is CANNOT ANSWER about this checkout: never this row.
+    # A finding's exit, for `5` too: since #826 the standard's own naming
+    # gate reports it, where it crashed and the verdict was CANNOT ANSWER.
     assert payload["exit"] == result.returncode, payload
-    assert result.returncode in ({1, 3} if spelled == "5" else {1}), payload
+    assert result.returncode == 1, payload
     rows = rows_of(result)
     assert rows["manifest-kinds"]["status"] == "ok", rows["manifest-kinds"]
     assert rows["manifest"]["status"] == "FINDING", rows["manifest"]
@@ -314,24 +314,24 @@ def test_bootstraps_step_a_says_the_sentence_and_places_no_leg(project,
     assert "no submodule legs declared" not in result.stdout
 
 
-#: Each gate's exit for these four: 1 with #826, which says the sentence, and
-#: 2 or a traceback's 1 without it. Bootstrap reports each as it ends.
-FAILED = re.compile(r"bootstrap FAILED: naming \(exit [12]\), manifest "
-                    r"\(exit 1\), pins \(exit [12]\)")
+#: Each gate's exit for these four: 1, a finding, since #826, where the
+#: naming and pins gates refused (2) or crashed. Bootstrap reports each.
+FAILED = "bootstrap FAILED: naming (exit 1), manifest (exit 1), pins (exit 1)"
 
 
 @pytest.mark.parametrize("spelled,said", ISSUE_CASES)
 def test_bootstrap_fails_on_its_validators_after_saying_the_sentence(
         project, spelled, said):
-    """With the validators: step (a) says the sentence, step (b)'s gates
-    refuse, and bootstrap fails, exit 1, with no traceback of its own."""
+    """With the validators: step (a) says the sentence, each of step (b)'s
+    gates reports it, exit 1, and bootstrap fails, exit 1, with no
+    traceback anywhere."""
     legs_are(project, spelled)
     result = bootstrap(project)
+    no_traceback(result)
     assert result.returncode == 1, result.stdout + result.stderr
     assert step_a(result.stdout) == step_a_says(said), result.stdout
-    assert 'bootstrap.py", line' not in result.stderr, result.stderr
     last = result.stderr.splitlines()[-1]
-    assert FAILED.fullmatch(last), last
+    assert last == FAILED, last
 
 
 def test_bootstrap_places_the_legs_beside_an_entry_that_is_not_one(project):
