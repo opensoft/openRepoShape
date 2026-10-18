@@ -38,7 +38,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import cloned_just_pushed, git, rmtree
+from conftest import appended_to_command_scope, cloned_just_pushed, git, rmtree
 from test_family import NAME, SPARE, family  # noqa: F401
 from test_family_add_member_variant import (
     OTHER_ROW, OTHER_VARIANT, REMOVE, ROW, VARIANT, VARIANT_SHOWN,
@@ -134,10 +134,9 @@ def typed_with_local_remotes(monkeypatch, root: Path, said: str) -> list:
     alone: a `git submodule update --recursive` the remedy prints may clone
     a member's legs, whose urls are the fixture's local paths."""
     with monkeypatch.context() as patched:
-        count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
-        patched.setenv("GIT_CONFIG_COUNT", str(count + 1))
-        patched.setenv(f"GIT_CONFIG_KEY_{count}", "protocol.file.allow")
-        patched.setenv(f"GIT_CONFIG_VALUE_{count}", "always")
+        for name, value in appended_to_command_scope(
+                os.environ, [("protocol.file.allow", "always")]).items():
+            patched.setenv(name, value)
         return typed_as_printed(root, said)
 
 
