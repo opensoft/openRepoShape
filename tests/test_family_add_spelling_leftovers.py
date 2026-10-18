@@ -10,7 +10,12 @@ every mode and the same `add`.
    (`family-members-dir-variant`, under the gate's own line `git config -f
    .gitmodules submodule.<name>.path <row path>`), with the commit where
    HEAD's section moved, and the update for a fresh clone, which checks the
-   member out nowhere.
+   member out nowhere. Only the section named after the row's path is
+   pointed back, and only where no section gives that path: one beside the
+   member's own section, as `git rm --cached` of a submodule a hand added at
+   `Members/IRRS` leaves it, is taken out with the gate's own `--unset-all`
+   lines (rv865's MUST 1: pointed back, it sent a recursive clone to ITS
+   url, exit 128).
 2. #574's `git mv` of a directory moved an untracked checkout inside it,
    whose `.git` file then named its store from the wrong place (`git -C`
    said `not a git repository`, measured). Each such checkout is named to
@@ -46,6 +51,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -53,7 +59,7 @@ import pytest
 from conftest import (
     cloned_just_pushed, git, rmtree, submodule_update_through_git,
 )
-from test_family import NAME, SPARE, family  # noqa: F401
+from test_family import NAME, ORG, SPARE, family  # noqa: F401
 from test_family_add_member_variant import (
     MOVE_OUT, OTHER_ROW, OTHER_VARIANT, REMOVE, ROW, SUBMODULE, VARIANT,
     VARIANT_SHOWN, dry_run_in_process, guarded, in_the_index, moved_back,
@@ -124,6 +130,47 @@ def head_gitmodules_as_before(root: Path, before: Path) -> None:
     byte."""
     assert git("show", "HEAD:.gitmodules", cwd=root).stdout == git(
         "show", "HEAD:.gitmodules", cwd=before).stdout
+
+
+#: Where a section beside the member's own section is found.
+BESIDE_SECTION = "in .gitmodules, beside the section giving its row's path"
+
+
+def unset(name: str) -> list[str]:
+    """The gate's `--unset-all` line for each key of the section `name`,
+    its `path` and its `url`, in that order."""
+    return [f"git config -f .gitmodules --unset-all submodule.{name}.{key}"
+            for key in ("path", "url")]
+
+
+def taken_out(*names: str, commit: bool = True) -> str:
+    """The part that takes out each section `names`, every key it holds,
+    beside the member's own (rv865's MUST 1)."""
+    lines = " and ".join(f"`{line}`" for name in names
+                         for line in unset(name))
+    return ("take out each section of .gitmodules that gives another "
+            "spelling of a row's path beside the section that gives that path "
+            "itself, every key it holds, as the gate's own lines do, so a "
+            "submodule later given its name inherits none of them: add would "
+            "commit that .gitmodules beside the new member, a disk that folds "
+            "case takes the two paths for one, and git mv of a gitlink at that "
+            "path moves the section with it under the same name, while git rm "
+            f"--cached leaves it ({lines}, then `git add -- .gitmodules`)"
+            + (", and commit that" if commit else ""))
+
+
+def cloned_with_the_member(root: Path, remotes: Path, tmp_path: Path,
+                           branch: str, commit: str) -> None:
+    """HEAD pushed to `branch` of the family's own remote, under a name no
+    other test uses, and a fresh recursive clone of it, which must exit 0,
+    with `members/IRRS` checked out from IRRS's own remote at `commit`."""
+    remote = remotes / f"{NAME}.git"
+    git("push", "-q", str(remote), f"HEAD:refs/heads/{branch}", cwd=root)
+    clone = cloned_just_pushed(remote, tmp_path / "clone" / NAME, branch)
+    url = git("-C", ROW, "config", "remote.origin.url", cwd=clone)
+    assert Path(url.stdout.strip()).name == "IRRS.git", url.stdout
+    assert git("-C", ROW, "rev-parse", "HEAD",
+               cwd=clone).stdout.strip() == commit
 
 
 # --- 1. a section astray beside its row's gitlink ----------------------------
@@ -215,6 +262,238 @@ def test_a_section_astray_beside_a_move_back_is_checked_out_by_its_update(
         guarded(OTHER_VARIANT, OTHER_ROW)]
     registered(holder, family["root"], commit)
     registered(holder, family["root"], other, OTHER_ROW)
+    gate_then_add(offline, holder, family["remotes"])
+
+
+def staged_beside_a_pending_change(root: Path) -> tuple:
+    """`Members/README` committed, then `git rm --cached` and deleted: a
+    pending change the remedy commits first, which takes the staged section
+    into HEAD."""
+    file_committed(root, "Members/README")
+    git("rm", "-q", "--cached", "--", "Members/README", cwd=root)
+    (root / "Members" / "README").unlink()
+    return ("in HEAD and no longer in the index: `Members/README` (a file); ",
+            [commit_first("Members/README")], ["git commit"])
+
+
+def staged_beside_a_rename(root: Path) -> tuple:
+    """`Members/README` committed and on disk: the rename's commit takes
+    the staged section into HEAD."""
+    file_committed(root, "Members/README")
+    return ("in the index: `Members/README` (a file); ",
+            [index_part(rename=["Members/README"], commit="the rename")],
+            ["git mv -- Members/README renamed-1", "git commit"])
+
+
+#: `{state: how the commit before the point-back is made, returning (the
+#: places it adds, the parts before the point-back, what is typed)}`.
+COMMITTED_BEFORE = {"a pending change": staged_beside_a_pending_change,
+                    "a rename": staged_beside_a_rename}
+
+
+@pytest.mark.parametrize("state", list(COMMITTED_BEFORE))
+def test_a_staged_section_astray_is_committed_after_an_earlier_commit(
+        family, holder, offline, state):
+    """Line 1, the section's edit staged, beside a remedy that commits
+    first: a pending change (rv865's R26) or the index's rename. That
+    commit takes the staged section into HEAD, so the point-back is a
+    change to commit after it. Printed without its commit, the point-back
+    was left staged, HEAD's section gave `Members/IRRS`, and the gate found
+    `member-gitmodules-absent`. Typed as printed, HEAD's `.gitmodules` is
+    the holder's again, the gate passes and the same `add` goes through."""
+    if disk_folds(holder):
+        pytest.skip("`Members/README` beside `members/` needs a disk that "
+                    "does not fold case")
+    places, parts, typed = COMMITTED_BEFORE[state](holder)
+    commit = section_astray(holder, VARIANT, "staged")
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said == (DIR_VARIANT + places
+                    + f"{IN_SECTION}: `{VARIANT}` (a section)",
+                    remedy_of(*parts, pointed_back(True), update(ROW)))
+    assert typed_as_printed(holder, said[1]) == [
+        *typed, point_back(), "git add -- .gitmodules", "git commit"]
+    registered(holder, family["root"], commit)
+    gate_then_add(offline, holder, family["remotes"])
+
+
+def test_an_unreadable_gitmodules_is_refused_after_the_spelling(
+        family, holder, offline):
+    """`.gitmodules` that git cannot read (`bad config line`), committed,
+    beside a committed `Members/README` (rv865's R13). The sections astray
+    are not asked of a file git cannot read: the spelling refusal comes
+    first, and `gitmodules-unreadable` after it, as `_sections_restored`
+    already orders them. Measured: `git mv` of the file types clean there,
+    and `git status` does not (exit 128), so the snapshot asks none."""
+    if disk_folds(holder):
+        pytest.skip("`Members/README` beside `members/` needs a disk that "
+                    "does not fold case")
+    data = (holder / ".gitmodules").read_bytes()
+    (holder / ".gitmodules").write_bytes(data + b"[submodule\n")
+    git("add", "--", ".gitmodules", cwd=holder)
+    git("commit", "-qm", "A .gitmodules git cannot read", cwd=holder)
+    file_committed(holder, "Members/README")
+    said = refused_untouched(offline, holder, family["remotes"],
+                             status=False)
+    assert said == (DIR_VARIANT + "in the index: `Members/README` (a file)",
+                    remedy_of(index_part(rename=["Members/README"],
+                                         commit="the rename")))
+    assert typed_as_printed(holder, said[1]) == [
+        "git mv -- Members/README renamed-1", "git commit"]
+    again = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert again.returncode == 2, again.stdout + again.stderr
+    assert again.stderr.startswith("REFUSED gitmodules-unreadable: "), (
+        again.stderr)
+
+
+def added_by_hand(root: Path, remotes: Path, path: str) -> str:
+    """`git submodule add` of IRSS's remote at `path`, committed, its
+    checkout kept: a section named `path`, giving `path`, with IRSS's url,
+    beside the member IRRS's own. Returns the commit IRRS's gitlink
+    records."""
+    if disk_folds(root):
+        pytest.skip(f"`{path}` beside `members/IRRS` needs a disk that does "
+                    "not fold case")
+    git("-c", "protocol.file.allow=always", "submodule", "add", "-q", "--",
+        str(remotes / "IRSS.git"), path, cwd=root)
+    git("commit", "-qm", f"IRSS added by hand at {path}", cwd=root)
+    return git("rev-parse", f"HEAD:{ROW}", cwd=root).stdout.strip()
+
+
+def at_the_variant(root: Path, remotes: Path) -> tuple:
+    """(a) `git submodule add <IRSS> Members/IRRS`, committed, its checkout
+    kept: #574's `git mv` renames it, and moves its section with it."""
+    commit = added_by_hand(root, remotes, VARIANT)
+    return (commit, DIR_VARIANT + f"in the index: `{VARIANT}` (a submodule); "
+            f"{BESIDE_SECTION}: `{VARIANT}` (a section)",
+            [index_part(rename=[VARIANT], commit="the rename"),
+             taken_out(VARIANT)],
+            [f"git mv -- {VARIANT} renamed-1", "git commit", *unset(VARIANT),
+             "git add -- .gitmodules", "git commit"])
+
+
+def under_members_itself(root: Path, remotes: Path) -> tuple:
+    """(b) the same at `members/irrs`, as `git submodule add` makes it:
+    line 3's second gitlink, with its section."""
+    commit = added_by_hand(root, remotes, ROW_SPELLED)
+    return (commit, ROW_VARIANT + f"in the index: `{ROW_SPELLED}` (a "
+            f"submodule); {BESIDE_SECTION}: `{ROW_SPELLED}` (a section)",
+            [index_part(rename=[ROW_SPELLED], commit="the rename"),
+             taken_out(ROW_SPELLED)],
+            [f"git mv -- {ROW_SPELLED} renamed-1", "git commit",
+             *unset(ROW_SPELLED), "git add -- .gitmodules", "git commit"])
+
+
+def checkout_deleted(root: Path, remotes: Path) -> tuple:
+    """(c) (a) with its checkout deleted: its gitlink is taken out of the
+    index, which leaves its section."""
+    commit = added_by_hand(root, remotes, VARIANT)
+    rmtree(root / "Members")
+    return (commit, DIR_VARIANT + f"in the index: `{VARIANT}` (a submodule); "
+            f"{BESIDE_SECTION}: `{VARIANT}` (a section)",
+            [index_part(unstage=[VARIANT], commit="the removal"),
+             taken_out(VARIANT)],
+            [f"git rm -r --cached -- {VARIANT}", "git commit",
+             *unset(VARIANT), "git add -- .gitmodules", "git commit"])
+
+
+def section_left_alone(root: Path, remotes: Path) -> tuple:
+    """(d) what `git rm --cached` of (a) leaves: a section `Members/IRRS`
+    with IRSS's url, alone, committed."""
+    for key, value in (("path", VARIANT), ("url", str(remotes / "IRSS.git"))):
+        git("config", "-f", ".gitmodules", f"submodule.{VARIANT}.{key}",
+            value, cwd=root)
+    git("add", "--", ".gitmodules", cwd=root)
+    git("commit", "-qm", "A section left at Members/IRRS", cwd=root)
+    return (git("rev-parse", f"HEAD:{ROW}", cwd=root).stdout.strip(),
+            DIR_VARIANT + f"{BESIDE_SECTION}: `{VARIANT}` (a section)",
+            [taken_out(VARIANT)],
+            [*unset(VARIANT), "git add -- .gitmodules", "git commit"])
+
+
+def pointed_and_taken_out(root: Path, remotes: Path) -> tuple:
+    """Line 1's own section, named `members/IRRS`, giving `Members/IRRS`,
+    and a second one, `stale`, giving `members/irrs` with IRSS's url, both
+    committed: no section gives the row's path, so the member's own is
+    pointed back, and the other is then beside it and taken out."""
+    commit = section_astray(root, VARIANT, "committed")
+    for key, value in (("path", ROW_SPELLED),
+                       ("url", str(remotes / "IRSS.git"))):
+        git("config", "-f", ".gitmodules", f"submodule.stale.{key}", value,
+            cwd=root)
+    git("add", "--", ".gitmodules", cwd=root)
+    git("commit", "-qm", "A stale section at members/irrs", cwd=root)
+    return (commit, DIR_VARIANT[:-3] + ", and a case variant of the path of "
+            "a `members:` row under members/, the same path as that row's on "
+            f"a case-insensitive disk — {IN_SECTION}: `{VARIANT}` (a "
+            f"section); {BESIDE_SECTION}: `{ROW_SPELLED}` (a section)",
+            [pointed_back(True), taken_out("stale"), update(ROW)],
+            [point_back(), "git add -- .gitmodules", "git commit",
+             *unset("stale"), "git add -- .gitmodules", "git commit"])
+
+
+#: `{state: how it is made, returning (IRRS's commit, the refusal's first
+#: line, the remedy's parts, what is typed)}`, rv865's four states and the
+#: two remedies together.
+BESIDE = {"a submodule added at Members/IRRS": at_the_variant,
+          "the same at members/irrs": under_members_itself,
+          "its checkout deleted": checkout_deleted,
+          "its section left alone": section_left_alone,
+          "pointed back, and another taken out": pointed_and_taken_out}
+
+
+@pytest.mark.parametrize("state", list(BESIDE))
+def test_a_section_beside_the_members_own_is_taken_out(
+        family, holder, offline, tmp_path, state):
+    """rv865's MUST 1: a section giving another spelling of `members/IRRS`
+    beside the member's own section, which gives `members/IRRS` itself, was
+    pointed back at `members/IRRS`, with its own url, IRSS's. Typed as
+    printed, `.gitmodules` gave `members/IRRS` twice, the gate refused
+    `gitmodules-path-twice` in every mode, `add` went through, and a
+    recursive clone fetched the member from IRSS's remote and failed (`did
+    not contain <commit>`, exit 128, measured at #865's `4268f804` on git
+    2.43 and 2.47.1). Now such a section is taken out, every key it holds,
+    with the gate's own `--unset-all` lines, after the index's own remedy
+    for a gitlink at its path; only the member's own, named after its row's
+    path, is pointed back, where no section gives that path. Typed as
+    printed, a recursive clone of the pushed branch checks the member out
+    from IRRS's remote, the gate passes in every mode and the same `add`
+    goes through."""
+    commit, lead, parts, typed = BESIDE[state](holder, family["remotes"])
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said == (lead, remedy_of(*parts))
+    assert typed_as_printed(holder, said[1]) == typed
+    registered(holder, family["root"], commit)
+    cloned_with_the_member(holder, family["remotes"], tmp_path,
+                           f"w865f/beside-{list(BESIDE).index(state)}",
+                           commit)
+    gate_then_add(offline, holder, family["remotes"])
+
+
+def test_the_section_named_after_the_row_beside_its_path_is_taken_out(
+        family, holder, offline, tmp_path):
+    """Line 1's own section, named `members/IRRS`, giving `Members/IRRS`,
+    beside a section `other` that gives `members/IRRS` itself, with the
+    member's url, committed. A section gives the row's path, so the gate
+    calls the other one a second one (`STRAY`) and prints its `--unset-all`
+    lines, whatever its name: it is taken out, not pointed back, which
+    would give the path twice. Typed as printed, a recursive clone of the
+    pushed branch checks the member out from IRRS's remote, the gate passes
+    in every mode and the same `add` goes through."""
+    commit = section_astray(holder, VARIANT, "committed")
+    url = git("config", "-f", ".gitmodules", f"submodule.{ROW}.url",
+              cwd=holder).stdout.strip()
+    for key, value in (("path", ROW), ("url", url)):
+        git("config", "-f", ".gitmodules", f"submodule.other.{key}", value,
+            cwd=holder)
+    git("add", "--", ".gitmodules", cwd=holder)
+    git("commit", "-qm", "Another section giving members/IRRS", cwd=holder)
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said == (DIR_VARIANT + f"{BESIDE_SECTION}: `{VARIANT}` (a "
+                    "section)", remedy_of(taken_out(ROW)))
+    assert typed_as_printed(holder, said[1]) == [
+        *unset(ROW), "git add -- .gitmodules", "git commit"]
+    cloned_with_the_member(holder, family["remotes"], tmp_path,
+                           "w865f/named-after-the-row", commit)
     gate_then_add(offline, holder, family["remotes"])
 
 
@@ -321,6 +600,64 @@ def test_a_checkout_git_tracks_inside_a_directory_moved_is_not_named(
     assert [(spelled.where, spelled.target, spelled.remedy)
             for spelled in found] == [("in the index", "Members/X", "git mv"),
                                       ("in the index", "Members/X", "git mv")]
+
+
+def clone_of_its_own(root: Path, remotes: Path, path: str) -> None:
+    """A clone of IRSS of its own at `path`, its `.git` a directory, read
+    through git, with its legs checked out in it: each a directory holding
+    a `.git` FILE, a checkout whose store is in the clone's own."""
+    cloned_just_pushed(remotes / "IRSS.git", root / path)
+    assert (root / path / ".git").is_dir()
+    assert (root / path / "spec" / ".git").is_file()
+
+
+def the_clone_moved(root: Path, remotes: Path, tmp_path: Path) -> None:
+    """`Members/X` itself a clone of its own (rv865's R7): the walk does not
+    enter a directory moved that is a repository, whose legs are its own."""
+    clone_of_its_own(root, remotes, "Members/X")
+
+
+def a_clone_and_a_link_inside(root: Path, remotes: Path,
+                              tmp_path: Path) -> None:
+    """`Members/X` a plain directory holding a clone of its own at
+    `Members/X/Y` (rv865's R8 and R10: neither it nor its legs are named,
+    the `mv` takes it whole) and a link `Members/X/L` to a directory outside
+    the holder that holds what looks like a checkout, `C/.git` a file
+    (rv865's R9: the walk does not follow a link)."""
+    no_symlink_on_windows()
+    clone_of_its_own(root, remotes, "Members/X/Y")
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "C").mkdir(parents=True)
+    (elsewhere / "C" / ".git").write_bytes(b"gitdir: nowhere\n")
+    os.symlink(str(elsewhere), root / "Members" / "X" / "L",
+               target_is_directory=True)
+
+
+#: `{state: how `Members/X` is made}`.
+CLONES = {"the clone moved": the_clone_moved,
+          "a clone and a link inside": a_clone_and_a_link_inside}
+
+
+@pytest.mark.parametrize("state", list(CLONES))
+def test_a_clone_of_its_own_in_a_directory_moved_is_moved_whole(
+        family, holder, offline, tmp_path, state):
+    """Line 2's other side: a clone of its own keeps its commits in its own
+    `.git` directory, so the `mv` of `Members/X` takes it whole, and only
+    that `mv` is named: not the clone, not its legs, whether `Members/X` is
+    the clone or holds one, and nothing behind a link inside it. Typed as
+    printed, the clone is out of the holder with its `.git` directory, the
+    gate passes and the same `add` goes through."""
+    if disk_folds(holder):
+        pytest.skip("`Members/X` beside `members/` needs a disk that does "
+                    "not fold case")
+    CLONES[state](holder, family["remotes"], tmp_path)
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said == (DIR_VARIANT + "on disk and untracked: `Members/X` (a "
+                    "directory)", remedy_of(untracked_moved("Members/X")))
+    assert typed_as_printed(holder, said[1]) == ["mv -- Members/X ../moved-1"]
+    assert (tmp_path / "moved-1" / (
+        ".git" if state == "the clone moved" else "Y/.git")).is_dir()
+    gate_then_add(offline, holder, family["remotes"])
 
 
 # --- 3. a case variant of a row's path under members/ itself -----------------
@@ -443,8 +780,9 @@ def test_every_disk_gives_the_same_answer(family, holder, family_module,
                                           offline, monkeypatch, capsys,
                                           state, folding):
     """Lines 1 and 3 asked in process of a disk that folds case and of one
-    that does not (`disk_as`): one text on both, since each reads the
-    index, HEAD and `.gitmodules`, never the disk."""
+    that does not (`disk_as`): one text on both, since each is in the index,
+    HEAD or `.gitmodules`, and the disk holds the member's checkout at its
+    row's path alone, which is no other spelling on either."""
     if state == "a section astray":
         section_astray(holder, VARIANT, "committed")
         expected = (DIR_VARIANT + f"{IN_SECTION}: `{VARIANT}` (a section)",
@@ -457,6 +795,51 @@ def test_every_disk_gives_the_same_answer(family, holder, family_module,
     disk_as(monkeypatch, holder, folding)
     assert dry_run_in_process(family_module, monkeypatch, offline, holder,
                               family["remotes"], capsys) == expected
+
+
+@pytest.mark.parametrize("folding", [True, False], ids=["folding", "linux"])
+def test_the_members_own_checkout_listed_in_another_case_is_its_own(
+        family, holder, family_module, offline, monkeypatch, capsys,
+        folding):
+    """rv865's SHOULD 1: `git mv members/IRRS members/irrs`, committed,
+    which moves the member's checkout, gitlink and section: line 3's own
+    gitlink state, with its checkout. Its move back typed as printed
+    records the gitlink and the section at `members/IRRS` again, and on a
+    disk that folds case its closing guard `[ members/irrs -ef members/IRRS
+    ]` is true, so nothing moves: the member's one checkout is listed as
+    `members/irrs`, the spelling it was made in. The next `add` refused it
+    as on disk and untracked, every time it ran. Now a disk that takes it
+    for the row's own path (`samefile`) lets it through; on one that does
+    not, `members/IRRS` holds nothing and `members/irrs` is still named.
+    Asked in process (`disk_as`), with `--dry-run`."""
+    commit = git("rev-parse", f"HEAD:{ROW}", cwd=holder).stdout.strip()
+    git("mv", ROW, ROW_SPELLED, cwd=holder)
+    git("commit", "-qm", f"git mv {ROW} {ROW_SPELLED}", cwd=holder)
+    move, closing = moved_back({ROW: ([ROW_SPELLED], commit)},
+                               sections=(ROW,))
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said == (ROW_VARIANT + f"in the index: `{ROW_SPELLED}` (a "
+                    "submodule)", remedy_of(move, *closing))
+    # The move back's git lines, as printed; on a disk that folds case the
+    # guarded `mv` moves nothing, and the update finds the member there.
+    for line in (f"git rm -r --cached --ignore-unmatch -- {ROW_SPELLED}",
+                 record(commit), point_back(), "git add -- .gitmodules"):
+        git(*line.split()[1:], cwd=holder)
+    git("commit", "-qm", "The move back", cwd=holder)
+    disk_as(monkeypatch, holder, folding)
+    monkeypatch.setattr(tempfile, "tempdir", str(offline.temp))
+    monkeypatch.setenv("PATH", offline.env["PATH"])
+    code = family_module.main([
+        "add", "--family-root", str(holder), "--member", f"{ORG}/{SPARE}",
+        "--local-remote-dir", str(family["remotes"]), "--dry-run"])
+    out, err = capsys.readouterr()
+    if folding:
+        assert code == 0, out + err
+        assert "REFUSED" not in err
+    else:
+        assert code == 2, out + err
+        assert err.startswith(ROW_VARIANT + "on disk and untracked: "
+                              f"`{ROW_SPELLED}` (a directory)"), err
 
 
 # --- 4. an unmerged .gitmodules the work tree lacks --------------------------
@@ -474,15 +857,17 @@ def head_bytes(root: Path, path: str) -> bytes:
                           capture_output=True, check=True).stdout
 
 
-def unmerged_at(root: Path, name: str, stages: tuple[bytes, ...]) -> None:
-    """`name` unmerged, a file at stages 1, 2 and 3 holding `stages`, and at
-    no stage 0, with nothing in progress, as a conflicted `git stash pop`
-    leaves it, written by `update-index --index-info` as BYTES."""
+def unmerged_at(root: Path, name: str, stages: tuple[bytes, ...],
+                numbers: tuple[int, ...] = (1, 2, 3)) -> None:
+    """`name` unmerged, a file at stages `numbers` (1, 2 and 3) holding
+    `stages`, and at no stage 0, with nothing in progress, as a conflicted
+    `git stash pop` leaves it, written by `update-index --index-info` as
+    BYTES."""
     git("rm", "-q", "--cached", "--ignore-unmatch", "--", name, cwd=root)
     written = subprocess.run(
         ["git", "update-index", "--index-info"], cwd=str(root),
         input="".join(f"100644 {blob(root, data)} {stage}\t{name}\n"
-                      for stage, data in enumerate(stages, 1)
+                      for stage, data in zip(numbers, stages)
                       ).encode("utf-8"),
         capture_output=True, check=False)
     assert written.returncode == 0, written.stderr
@@ -734,21 +1119,29 @@ SIDES = (b"base\n", b"ours\n", b"theirs\n")
 MARKED = b"<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> theirs\n"
 
 
-def unmerged_file(root: Path, name: str, on_disk: bool) -> None:
-    """`name` unmerged, its conflict on disk where `on_disk`."""
-    unmerged_at(root, name, SIDES)
+def unmerged_file(root: Path, name: str, on_disk: bool,
+                  numbers: tuple[int, ...] = (1, 2, 3)) -> None:
+    """`name` unmerged at the stages `numbers`, its conflict on disk where
+    `on_disk`."""
+    unmerged_at(root, name, tuple(SIDES[number - 1] for number in numbers),
+                numbers)
     if on_disk:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_bytes(MARKED)
 
 
 #: `{state: (the entry, whether it is on disk, whether `git mv
-#: members/IRRS Members/IRRS` is committed)}`.
+#: members/IRRS Members/IRRS` is committed, the stages it is held at)}`.
+#: Stages 1 and 3 alone are a file this side deleted and the other changed,
+#: with no stage 2 (rv865's R42); on disk with the move staged, neither the
+#: removal nor the move leaves anything to commit (rv865's R23).
 UNMERGED_IN_THE_WAY = {
-    "under the row's path, on disk": (NOTES, True, True),
-    "at the row's path, on disk": (ROW, True, True),
-    "under the row's path, off disk": (NOTES, False, True),
-    "off disk, the move staged": (NOTES, False, False),
+    "under the row's path, on disk": (NOTES, True, True, (1, 2, 3)),
+    "at the row's path, on disk": (ROW, True, True, (1, 2, 3)),
+    "under the row's path, off disk": (NOTES, False, True, (1, 2, 3)),
+    "off disk, the move staged": (NOTES, False, False, (1, 2, 3)),
+    "on disk, the move staged": (NOTES, True, False, (1, 2, 3)),
+    "deleted on this side, off disk": (NOTES, False, True, (1, 3)),
 }
 
 
@@ -769,9 +1162,9 @@ def test_an_unmerged_file_in_the_way_is_set_aside_as_git_allows(
     deleted by hand, the member is checked out where its row says, the gate
     passes and the same `add` goes through."""
     folding_skip(tmp_path)
-    entry, on_disk, committed = UNMERGED_IN_THE_WAY[state]
+    entry, on_disk, committed, numbers = UNMERGED_IN_THE_WAY[state]
     commit = mount_moved(holder, committed)
-    unmerged_file(holder, entry, on_disk)
+    unmerged_file(holder, entry, on_disk, numbers)
     move, closing = moved_back({ROW: ([VARIANT], commit)}, commit=committed,
                                sections=(ROW,), forced=not committed)
     said = refused_untouched(offline, holder, family["remotes"])

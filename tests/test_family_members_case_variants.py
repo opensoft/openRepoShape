@@ -463,7 +463,7 @@ def test_a_name_head_holds_that_is_not_utf8_is_shown_replaced(
         ("Members/\N{REPLACEMENT CHARACTER}", "a file",
          "in HEAD and no longer in the index",
          "Members/\N{REPLACEMENT CHARACTER}", False, "git commit", True, "",
-         False, "", False, (), False)]
+         False, "", False, (), False, ())]
 
 
 # --- the disk (#364) ---------------------------------------------------------
