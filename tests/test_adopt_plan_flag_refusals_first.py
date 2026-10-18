@@ -24,13 +24,20 @@ and exits 97, `GH_TOKEN=bogus`, an empty `GH_CONFIG_DIR` and `GIT_TRACE`:
   probed for it all the same: a directory made in it, and removed, for an
   answer nothing read.
 
-Now every refusal the flags alone decide is asked first, as `--pin-source`
-and `--out` are: no work directory, no `git` and no `gh` before it. An
-`org/repo` source is held to `--org` and `--project` before the clone, and
-its unwritable folder is refused in words about the clone. A local source's
-folder is still made, since `--out` may lie in it
-(`tests/test_adopt_plan_out_checked.py`), and still refused where it cannot
-be made (`tests/test_adopt_work_dir_refusal.py`); it is no longer probed.
+Now the refusals of a passed flag's own value are asked first, as
+`--pin-source` and `--out` are: no work directory, no `git` on the source and
+no `gh` before them (a passed `--tracking-branch` is asked of git alone, in a
+throwaway repository). An `org/repo` source is held to its derived id, `--org`
+and `--project` before the clone, and its unwritable folder is refused in
+words about the clone. A local source's folder is still made, since `--out`
+may lie in it (`tests/test_adopt_plan_out_checked.py`), and still refused
+where it cannot be made (`tests/test_adopt_work_dir_refusal.py`); it is no
+longer probed.
+
+Not every refusal a flag decides is asked first. Still after the source is
+read, for an `org/repo` source as for a local one: `naming-unclassified` and
+`naming-role-mismatch`, an empty `--elected-by` (the manifest validator's
+`adopt-manifest-invalid`) and a missing `--path-policy` (`yaml-unreadable`).
 
 The runs here are given a fresh `TMPDIR`, a `GIT_TRACE` file that any `git`
 process would write, a `--work-dir` that is not there, and a `gh` that logs
@@ -112,12 +119,14 @@ class Harness:
         self.env.update(TMPDIR=str(self.temp), GIT_TRACE=str(self.trace))
 
     def plan(self, source: str, *flags: str, work: bool = False,
-             planned: tuple = PLANNED):
+             planned: tuple = PLANNED, out: str | None = None):
         """`plan --source source`, with `planned`, then `flags`: a flag
-        given twice is read as its last value."""
+        given twice is read as its last value. `--out` is `out`, or the
+        file in this run's own folder."""
         return run_script(
             ADOPT, "plan", "--source", source, *planned, *flags, "--out",
-            str(self.out), *(("--work-dir", str(self.work)) if work else ()),
+            out or str(self.out),
+            *(("--work-dir", str(self.work)) if work else ()),
             env=self.env)
 
     def gh_calls(self) -> list[str]:
@@ -183,8 +192,8 @@ def refused_first(harness: Harness, result, code: str, said: str,
 # L2-55 and L4-37: what the flags alone decide is asked first
 # ---------------------------------------------------------------------------
 
-#: `(flags, the refusal's code, text it holds)` for each refusal of
-#: `_checked_plan_inputs` that needs the flags alone, in the order it asks.
+#: `(flags, the refusal's code, text it holds)` for each refusal of a passed
+#: flag's own value that `_checked_flag_inputs` asks, in the order it asks.
 FLAG_REFUSALS = [
     pytest.param(("--project", "Th ing"), "unsafe-value", "--project",
                  id="project"),
@@ -200,6 +209,7 @@ FLAG_REFUSALS = [
                  "project.yaml", id="leg-path-collides"),
     pytest.param(("--id", "North_Wind"), "adopt-bad-id", "--id",
                  id="id"),
+    pytest.param(("--id", ""), "adopt-bad-id", "--id", id="id-empty"),
     pytest.param(("--org=-evil",), "unsafe-value", "--org", id="org"),
     pytest.param(("--elected-on", "2026-9-2"), "election-date-malformed",
                  "--elected-on", id="elected-on"),
@@ -217,7 +227,8 @@ def test_a_refusal_the_flags_alone_decide_is_asked_before_anything_exists(
     """Each is `plan`'s refusal, in its own words, with no `gh repo clone`,
     no `git` in the source, no work directory made and nothing in the temp
     folder: on main an `org/repo` source was `source-unclonable` for each,
-    and a local one had run eight `git` commands and made the directory."""
+    and a local one had run eight `git` commands and made the directory.
+    An `--id ''` is a value typed, refused as one, and not the derived id."""
     result = harness.plan(the_source(cloned, source), *flags, work=work)
     refused_first(harness, result, code, said, work)
 
@@ -273,6 +284,21 @@ def test_the_refusals_keep_the_order_they_were_asked_in(harness, first,
     for flags in ((*first, *second), (*second, *first)):
         result = harness.plan(REPOSITORY, *flags, work=True)
         refused_first(harness, result, code, "", work=True)
+
+
+@pytest.mark.parametrize("cloned", [True, False], ids=["org-repo", "local"])
+def test_control_an_out_that_cannot_be_written_is_still_said_first(
+        harness, source, tmp_path, cloned):
+    """`--out` is asked first (#799's L1-89), before the refusals of the
+    other flags (#903), as it was: a plan that could not be written is not
+    the one to be told of a leg path that `check` would refuse as well.
+    Passes on main as well."""
+    out = tmp_path / "no-such-folder" / PLAN_FILE
+    result = harness.plan(the_source(cloned, source), "--spec-path", "spec/",
+                          out=str(out), work=True)
+    refused_first(harness, result, "adopt-out-unwritable",
+                  "the folder it goes in", work=True)
+    assert not out.parent.exists()
 
 
 def test_a_flag_refusal_is_said_before_a_name_that_is_not_the_sources(
@@ -336,6 +362,30 @@ def test_an_org_repo_source_is_held_to_its_name_before_it_is_cloned(
     assert list(harness.temp.iterdir()) == []
 
 
+@pytest.mark.parametrize("repository, project", [
+    pytest.param(f"{ORG}/North_Wind", "North_Wind", id="the-sources-name"),
+    pytest.param(REPOSITORY, "North_Wind", id="another-name"),
+])
+def test_the_id_an_org_repo_source_derives_is_refused_before_it_is_cloned(
+        harness, tmp_path, repository, project):
+    """`--project North_Wind` derives the id `north_wind`, which the
+    project's validators do not take. Its remedy needs only the source's
+    name, which `--source` gives, so it is said with no `gh repo clone`, no
+    work directory and nothing in the temp folder, and before the name that
+    is not the source's (`another-name`), as it is for a local source: in
+    the very words a local source with that `origin` has, after git has
+    read it."""
+    result = harness.plan(repository, "--project", project, work=True)
+    refused_first(harness, result, "adopt-bad-id", "north_wind", work=True)
+    local = make_source_repo(tmp_path / "local", tree=SMALL_TREE, edits=())
+    git("remote", "add", "origin", f"https://github.com/{repository}.git",
+        cwd=local)
+    read = harness.plan(str(local), "--project", project)
+    assert read.returncode == 2, read.stdout + read.stderr
+    assert read.stderr == result.stderr
+    assert "remote get-url origin" in harness.git_commands()
+
+
 def test_no_org_is_the_sources_and_the_refusal_says_where_it_came_from(
         harness):
     """`--org` not given is the organisation of `--source`, as it is after
@@ -371,6 +421,20 @@ def test_control_the_sources_own_name_still_reaches_the_clone(
     calls = harness.gh_calls()
     assert len(calls) == 1, calls
     assert calls[0].startswith(f"repo clone {cloned} "), calls
+
+
+def test_control_an_empty_org_is_none_given_and_reaches_the_clone(harness):
+    """`--org ''` is read as no `--org` (`_planned_org`), so it is the
+    organisation of `--source` and no value refused for its text: `plan`
+    goes on to `gh repo clone`, which the stub refuses, once. Passes on
+    main as well."""
+    result = harness.plan(REPOSITORY, "--org", "", work=True)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith("REFUSED source-unclonable: "), \
+        result.stderr
+    calls = harness.gh_calls()
+    assert len(calls) == 1, calls
+    assert calls[0].startswith(f"repo clone {REPOSITORY} "), calls
 
 
 def test_control_a_local_source_is_held_to_its_name_after_git_reads_it(
@@ -465,12 +529,12 @@ def test_a_local_source_does_not_probe_the_work_dir_it_writes_nothing_in(
     assert "write-probe-" not in prefixes, prefixes
 
 
-def test_control_an_org_repo_source_still_probes_the_work_dir_it_clones_into(
+def test_an_org_repo_source_still_probes_the_work_dir_it_clones_into(
         adopter, monkeypatch, capsys, tmp_path,
         unwritable_work):  # noqa: F811
     """The clone is made in the work directory, so it is asked whether one
-    can be: once, and refused in `plan`'s words. Passes on main as well,
-    in `execute`'s."""
+    can be: once, as on main, and refused in `plan`'s words, where main
+    gave `execute`'s."""
     code, said, prefixes = probes_made(
         adopter, monkeypatch, capsys, "--source", REPOSITORY, *PLANNED,
         "--out", str(tmp_path / PLAN_FILE), "--work-dir",
