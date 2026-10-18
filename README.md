@@ -129,7 +129,10 @@ its own `contracts/shape-pin.yaml`, so a CRLF checkout reports drift in files
 nobody edited. The clone `setup-project.py` makes is configured correctly
 whatever the machine says; the global setting is for every clone after it.
 
-Then two commands, run in the directory the new project should land in:
+Then `pipx install openreposhape` (where `pipx` is missing: `python -m pip
+install --user pipx`, then `python -m pipx ensurepath` and a new terminal):
+step 3 says what it places, and step 4 runs it. Or, installing nothing, two
+commands, run in the directory the new project should land in:
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py
@@ -149,13 +152,13 @@ and refuses. Downloading the file first leaves stdin on your terminal.
 `setup-project.py` is the flow itself, and `setup.sh` a shim over it: the same
 preflight, the same naming check, the same plan, the same one `yes`, the same
 self-bootstrap outside a checkout. It never needs `make` and never looks for a
-`python3` — it runs the interpreter that started it. That two-liner IS the
-Windows way in from PowerShell, which has no twin of step 3's `openRepoShape`
-command. Git Bash runs that command and step 3's one line, tested in CI but for
-a typed `yes`, which its preflight cannot take there. Printed commands are
-quoted for a POSIX shell, so paste them into Git Bash. Only `shape-doctor.py`'s
-lines, `setup-project.py`'s family lines and `family.py`'s `NEXT`, `switch -c`,
-`add` and `git rm -r --cached` lines are quoted for PowerShell, on Windows.
+`python3` — it runs the interpreter that started it. That two-liner is the
+Windows way in that installs nothing; pipx's `openRepoShape` runs the same flow.
+Git Bash runs step 3's bash command and its one line, tested in CI but for a
+typed `yes`, which its preflight cannot take there. Printed commands are quoted
+for a POSIX shell, so paste them into Git Bash. Only `shape-doctor.py`'s lines,
+`setup-project.py`'s family lines and `family.py`'s `NEXT`, `switch -c`, `add`
+and `git rm -r --cached` lines are quoted for PowerShell, on Windows.
 
 </details>
 
@@ -180,8 +183,8 @@ run the four steps below INSIDE the WSL shell.
 > `brew` the preflight names <https://brew.sh> and stops there. To check a
 > machine and stop, creating nothing, run `openRepoShape --preflight` —
 > `py setup-project.py --preflight` on Windows — which exits 0 when everything
-> is present and 1 when it is not (`openRepoShape --preflight` exits 2 when
-> `git` or a Python 3.9 or newer is missing).
+> is present and 1 when it is not (the bash `openRepoShape --preflight` exits
+> 2 when `git` or a Python 3.9 or newer is missing).
 
 **1. Install the GitHub CLI**, `gh`. The official instructions are at
 <https://cli.github.com/> (and <https://github.com/cli/cli#installation>):
@@ -274,6 +277,14 @@ things it does, one line each: install it, check the machine
 ([`--doctor`](#is-this-repository-compliant-openreposhape---doctor)),
 scaffold a project. Type any scaffold argument and you get the run you asked
 for, refusals and all.
+
+**The second way, from PyPI:** `pipx install openreposhape`, wherever `pipx`
+is (`sudo apt-get install -y pipx` on Debian and Ubuntu, `brew install pipx` on
+macOS, then `pipx ensurepath`). It places the same `openRepoShape` (its
+`--install` refuses) and `scaffold-project`, `adopt-project`, `update-shape`
+and `shape-doctor`, with `git-filter-repo` 2.47.0; each runs a cached clone at
+the release's commit, digest-checked every run. `pipx upgrade openreposhape`
+upgrades. Use one installer, not both: each places `~/.local/bin/openRepoShape`.
 
 **4. Run it:**
 
@@ -730,10 +741,12 @@ one is found — `--pin-source [PRODUCT=]<path>`, `SHAPE_PIN_SOURCE_<PRODUCT>` i
 the environment, or a checkout beside the assembly root named for the pinned
 repository — else by `gh api`, with the operator's `gh` credentials, when `gh`
 can read it. Finding neither is a named SKIP, exit 0: no checkout and no network
-does not make a descent a lie. A checkout that cannot answer is the finding
-`neutral-pin-source-unreadable`. `make bootstrap`, `bump-leg.py` and
-`update-shape.py apply` run this validator in the operator's environment, so
-each makes that call too; none takes `--pin-source`.
+does not make a descent a lie. A digest that recomputes differently is the
+finding `neutral-pin-digest-mismatch` (exit 1), and a checkout that cannot
+answer is the finding `neutral-pin-source-unreadable`; a declared pin file that
+is not there is the refusal `neutral-pin-missing` (exit 2). `make bootstrap`,
+`bump-leg.py` and `update-shape.py apply` run this validator in the operator's
+environment, so each makes that call too; none takes `--pin-source`.
 
 ### A neutral product may elect the shape and be its own assembly root
 
@@ -755,8 +768,8 @@ it satisfies no leg form to be admitted into, and is still refused as any leg.
 ## Adopting an existing repository
 
 A repository that already exists is converted **in place**, by `adopt-project.py`,
-and this is a ruling (**Brett Heap, 2026-09-02**): it KEEPS ITS NAME, which
-`--project` must be, ITS IDENTITY AND ITS FULL HISTORY and becomes the assembly
+and this is a ruling (**Brett Heap, 2026-09-02**): it KEEPS ITS NAME (which
+`--project` must be), ITS IDENTITY AND ITS FULL HISTORY, and becomes the assembly
 root, while `<Project>-spec` and `<Project>-code` are NEW repositories extracted
 with history-preserving filters. The source is never deleted, never renamed and
 never force-pushed; the only change to its history is ONE split commit, arriving
@@ -770,10 +783,10 @@ only, and a tool needing a bypass cannot be used where it is needed.
 ./adopt-project.py execute --plan adoption-plan.yaml --yes
 ```
 
-`git filter-repo` is a **hard dependency** — `pip install git-filter-repo`, or
-the same name from apt or brew. It is deliberately not vendored: history
-extraction has one correct implementation, and a copy is a second one that
-drifts.
+`git filter-repo` is a **hard dependency**: step 3's one line installs it or
+prints the command for this machine, and `pipx install openreposhape` brings it
+for its `adopt-project`. It is deliberately not vendored: history extraction
+has one correct implementation, and a copy is a second one that drifts.
 
 ### The worked example: MedxEHR — 167 files, 25 commits, three arguments
 
@@ -1147,8 +1160,8 @@ openRepoShape --doctor                 # the repository you are standing in
 It **writes nothing into the repository but a `--placement-plan` file you name,
 and fetches nothing from it**, and it reimplements nothing: each row is a check
 this file documents. It compares against the checkout it is RUN FROM, so the
-verdict is offline. Installed, it KEEPS its temporary clone of the standard for
-the NEXT lines naming it: its last line names it, safe to delete after they run.
+verdict is offline. Installed, it KEEPS its clone of the standard for the NEXT
+lines naming it: its last line names it, safe to delete after they run.
 
 For an assembly root the rows are **naming** (this standard's own
 `contracts/repository-naming.yaml`), **manifest** and **pins** (the project's
@@ -1193,16 +1206,17 @@ one verdict, and its exit code:
 
 Exit 3 is usage or environment (a flag argparse rejects is exit 2) — nothing about
 it is a statement about the tree you pointed at: no such path, a refused
-`--placement-plan`, a `shape-doctor.py` not sitting in a
-checkout of the standard, or a pin naming a commit **this** checkout does not
-carry (`CANNOT ANSWER`). **Drift outranks a red validator** on the verdict
-line, deliberately — an edited shape copy is exactly what makes
-`validate-pins.py` red, so `INVALID (pins)` would send the reader at the
-symptom while the fix is `update-shape.py`; the pins row still prints its own
-next command. `MISPLACED` sits between the two: a path in the wrong leg is a
-fact about the shape no validator, pin or manifest here can see. **An
-unfinished merge outranks all three**, as `INVALID (merge)`: the conflict is
-what turns the other rows red, and no fix commits until it is finished.
+`--placement-plan`, a `shape-doctor.py` outside a checkout of the standard, or
+**this** checkout unable to answer (`CANNOT ANSWER`): a pin's commit it lacks, a
+partial clone missing what is compared, a read that fails, a validator of its
+own that crashed or could not be run, or its own naming policy not loading.
+**Drift outranks a red validator** on the verdict line, deliberately — an edited
+shape copy is what makes `validate-pins.py` red, so `INVALID (pins)` would send
+the reader at the symptom while the fix is `update-shape.py`; the pins row still
+prints its own next command. `MISPLACED` sits between the two: a path in the
+wrong leg is a fact no validator, pin or manifest here can see.
+**An unfinished merge outranks all three**, as `INVALID (merge)`: the conflict
+is what turns the other rows red, and no fix commits until it is finished.
 `--json` is the same report as one object on stdout, each row carrying its `id`.
 
 **`placement` is the row that reads what is *inside* the legs.** Brett Heap,
@@ -1425,8 +1439,9 @@ scripts/shape_materialize.py      the ONE materializer, used by both tools
 scripts/validate-repository-naming.py
 openRepoShape                     installs itself as a command; runs setup.sh
 install.sh                        the one-line install: a release, pinned
+src/openreposhape/                the pipx package (pyproject.toml); stdlib only
 setup.sh                          the shim: find an interpreter, hand over
-setup-project.py                  THE FLOW, and the Windows way in (no bash there)
+setup-project.py                  THE FLOW, and a Windows way in from PowerShell
 scaffold-project.py               creates the three repositories and the pins
 adopt-project.py                  converts an EXISTING repository in place
 update-shape.py                   re-syncs a root's copies and re-pins
@@ -1449,9 +1464,9 @@ scripts/render-cli-reference.py   renders docs/cli.md; never hand-edit that file
 tests/                            pytest; scaffolds into bare repos in /tmp
 ```
 
-**Python 3 standard library only.** No `pip`, no packaging, no
-engineering-domain dependency — the shape must run where nothing can be
-installed. `tests/test_repo_hygiene.py` enforces it.
+**Python 3 standard library only.** No tool needs `pip` or any dependency, so
+the shape runs where nothing can be installed; the `openreposhape` package is a
+second way in, never a requirement. `tests/test_repo_hygiene.py` enforces it.
 
 ## Licence
 
