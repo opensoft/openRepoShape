@@ -39,8 +39,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, findings, git, make_source_repo, planned,
-                      refused_before_any_leg, run_script)
+from conftest import (ADOPT, appended_to_command_scope, findings, git,
+                      make_source_repo, planned, refused_before_any_leg,
+                      run_script)
 from test_adopt_nested_attributes import (EMPTY_TREE, GITHUB_ATTRIBUTES,
                                           REENCODED, ROOT, ROOT_ATTRIBUTES,
                                           SOURCE, adopted_by_execute, checked,
@@ -101,12 +102,10 @@ def raw_plan(base: Path, files: dict, answers: dict) -> Path:
 
 def configure(monkeypatch: pytest.MonkeyPatch, pairs) -> None:
     """Each `(key, value)` of `pairs` in git's command scope, after what
-    the environment holds, for this process and every git it starts."""
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
-    for n, (key, value) in enumerate(pairs, held):
-        monkeypatch.setenv(f"GIT_CONFIG_KEY_{n}", key)
-        monkeypatch.setenv(f"GIT_CONFIG_VALUE_{n}", value)
-    monkeypatch.setenv("GIT_CONFIG_COUNT", str(held + len(pairs)))
+    the environment holds, for this process and every git it starts:
+    appended by `appended_to_command_scope` (#758)."""
+    for name, value in appended_to_command_scope(os.environ, pairs).items():
+        monkeypatch.setenv(name, value)
 
 
 @pytest.fixture(scope="module")

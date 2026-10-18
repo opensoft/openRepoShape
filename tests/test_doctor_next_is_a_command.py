@@ -66,7 +66,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, WINDOWS_SKIP, git, rmtree
+from conftest import REPO, WINDOWS_SKIP, appended_to_command_scope, git, rmtree
 #: The lane a lane's run sets, from the file that owns that rule.
 from test_commit_trailers import LANE
 #: The doctor's own fixtures and helpers, from the module that owns them. A
@@ -849,19 +849,19 @@ def paste_into_zsh(line: str, cwd: Path, timeout: float = 120.0) -> tuple:
     The environment is the test's own, less `PYTHONPATH` (a NEXT carries
     what it needs, #238) and with file-protocol git for the one child that
     may clone from the suite's local remotes -- per process, never
-    `GIT_ALLOW_PROTOCOL` (see `tests/conftest.py`). It is read from
-    `os.environ` HERE, at the call, and is not doctor A's `PASTE_ENV`: that
-    dict is built when its module is imported, at collection, before the
-    session fixture puts the `gh` guard first on `PATH`, so a line pasted
-    with it would reach whatever `gh` the machine has.
+    `GIT_ALLOW_PROTOCOL` (see `tests/conftest.py`), appended to the command
+    scope the environment holds. It is read from `os.environ` HERE, at the
+    call, as doctor A's `paste_env()` is (#758): a dict built when its module
+    is imported, at collection, is made before the session fixture puts the
+    `gh` guard first on `PATH`, so a line pasted with it would reach
+    whatever `gh` the machine has.
     """
     import pty  # POSIX only: `tty` beneath it needs `termios`
     env = {name: value for name, value in os.environ.items()
            if name.upper() != "PYTHONPATH"}
     env.update({"TERM": "dumb", "PYTHONDONTWRITEBYTECODE": "1",
-                "GIT_CONFIG_COUNT": "1",
-                "GIT_CONFIG_KEY_0": "protocol.file.allow",
-                "GIT_CONFIG_VALUE_0": "always"})
+                **appended_to_command_scope(
+                    os.environ, [("protocol.file.allow", "always")])})
     master, slave = pty.openpty()
     try:
         shell = subprocess.Popen(["zsh", "-f", "-i"], stdin=slave,

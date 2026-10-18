@@ -75,6 +75,9 @@ from repo_shape import (  # noqa: E402
 # How a `--pin-source` that is not printable is named, the one spelling the
 # scaffold's chain WARNING gives it too (#610).
 from repo_shape import shown_path  # noqa: E402
+# What git answers about where a `--pin-source` is, and why, in its own
+# words, where it cannot (#800).
+from repo_shape import git_out  # noqa: E402
 # What the Free-plan secrets hint goes by (#660): GitHub's three
 # visibilities, and the hint's own words, which stay in the pinned copy.
 from repo_shape import FREE_PLAN_HINT, VISIBILITY_CHOICES  # noqa: E402
@@ -2994,6 +2997,8 @@ def pin_digest_from_source(source: Path, commit: str, repository: str) -> str:
     try:
         return _digest_from_pin_source(source, commit)
     except (Refusal, OSError) as exc:
+        if isinstance(exc, Refusal) and exc.code == PIN_SOURCE_NOT_A_CLONE:
+            raise  # its own refusal, which names the top level (#800)
         why = (exc.detail if isinstance(exc, Refusal)
                else exc.strerror or str(exc))
         named = shown_source(source)
@@ -3065,8 +3070,10 @@ def shown_source(source) -> str:
 
 def _digest_from_pin_source(source: Path, commit: str) -> str:
     """`tree_digest` over `source`, with a path that is no directory said
-    in `validate-pins.py`'s words (#339). Any other `OSError`, from `stat()`
-    or from git's `cwd=`, is left for `pin_digest_from_source` to name."""
+    in `validate-pins.py`'s words (#339), and a directory that is no
+    clone's top level refused `pin-source-not-a-clone` before anything is
+    digested (#800). Any other `OSError`, from `stat()` or from git's
+    `cwd=`, is left for `pin_digest_from_source` to name."""
     try:
         mode = source.stat().st_mode
     except (FileNotFoundError, NotADirectoryError):
@@ -3074,7 +3081,95 @@ def _digest_from_pin_source(source: Path, commit: str) -> str:
     if not stat.S_ISDIR(mode):
         raise Refusal("pin-source-not-a-directory",
                       "it is a file, not a directory")
+    _refuse_unless_a_clone_top_level(source)
     return tree_digest(source, commit)
+
+
+# ---------------------------------------------------------------------------
+# A `--pin-source` is a clone's top level (#800)
+# ---------------------------------------------------------------------------
+#
+# `tree_digest` runs `git ls-tree -r` IN the `--pin-source`, and there, with
+# no `--full-tree`, git lists only the part of the tree under the folder it
+# runs in. So a folder inside a clone was read as a clone: `glass/sub`
+# recorded the digest of `sub/` alone, a folder the commit does not hold
+# recorded the sha256 of nothing, and `adopt-project.py plan` and the
+# scaffold, `--dry-run` alike, wrote it with no word; `check` recomputed the
+# same number there, or, inside a partial clone, NOTEd that it did not ask.
+#
+# SO GIT IS ASKED FIRST, before any digest is read: a working tree's top
+# level, a linked worktree's among them, has an empty `rev-parse
+# --show-prefix` outside the git directory, and a bare clone's git directory
+# is the path itself. Any other path is `pin-source-not-a-clone`, naming the
+# top level git finds, or saying that it finds none. What a top level digests
+# is unchanged, byte for byte, and `repo_shape.tree_digest`, a pinned shape
+# copy, is not changed. `adopt-project.py check` asks a recorded path the
+# same question (`pin_source_not_top_level`) before a partial clone's NOTE.
+
+#: The refusal of a `--pin-source` that is no clone's top level.
+PIN_SOURCE_NOT_A_CLONE = "pin-source-not-a-clone"
+#: What it says to pass where git names no top level to pass.
+NO_TOP_LEVEL_REMEDIATION = (
+    "Remediation: pass --pin-source the top level of a clone of the pinned "
+    "product (`git rev-parse --show-toplevel` prints it in that clone's "
+    "working tree), or drop --pin-source and let `gh api` read the forge.")
+
+
+def _rev_parse(source: Path, *asked: str) -> str:
+    """What `git rev-parse <asked>` prints in `source`, its last line break
+    dropped and a path in it as `sys.argv` holds one. A git that fails is
+    `git_out`'s refusal, naming the folder and git's reason, spelled."""
+    printed = git_out(["rev-parse", *asked], cwd=source, binary=True)
+    return os.fsdecode(printed).removesuffix("\n")
+
+
+def pin_source_not_top_level(source: Path) -> tuple[str, Path | None] | None:
+    """None where `source` is a clone's top level (#800). Otherwise `(why,
+    top)`: why it is not, and the top level git finds for it, or None where
+    git finds none to pass. A `source` `subprocess` cannot enter raises the
+    `OSError` of `cwd=`, which is the caller's to name.
+
+    The answers come in one question where they can: `--show-prefix` is
+    printed last, so a folder whose name holds a line break is read whole."""
+    try:
+        bare, inside, prefix = _rev_parse(
+            source, "--is-bare-repository", "--is-inside-git-dir",
+            "--show-prefix").split("\n", 2)
+        if bare == "true":
+            top = Path(_rev_parse(source, "--absolute-git-dir"))
+            if os.path.samefile(top, source):
+                return None
+            return (f"it is a folder inside the bare clone at "
+                    f"{shown_source(top)}", top)
+        if inside == "true":
+            gitdir = Path(_rev_parse(source, "--absolute-git-dir"))
+            return (f"it is inside {shown_source(gitdir)}, the git directory "
+                    "of a clone, where git finds no top level", None)
+        if not prefix:
+            return None
+        top = Path(_rev_parse(source, "--show-toplevel"))
+    except Refusal as exc:
+        return f"git finds no clone there: {exc.detail}", None
+    return (f"it is a folder inside the clone at {shown_source(top)}, and a "
+            "digest read there covers only what the commit holds under that "
+            "folder", top)
+
+
+def _refuse_unless_a_clone_top_level(source: Path) -> None:
+    """`pin-source-not-a-clone` for a `source` that is no clone's top level
+    (`pin_source_not_top_level`), naming the top level to pass instead."""
+    found = pin_source_not_top_level(source)
+    if found is None:
+        return
+    why, top = found
+    raise Refusal(
+        PIN_SOURCE_NOT_A_CLONE,
+        f"--pin-source {shown_source(source)} is not a clone's top level: "
+        f"{why}",
+        NO_TOP_LEVEL_REMEDIATION if top is None else
+        f"Remediation: pass --pin-source {shown_source(top)}, the clone's "
+        "top level, where a pin's digest is read over its commit's whole "
+        "tree.")
 
 
 def _resolved_pin_source(source: Path) -> Path:
