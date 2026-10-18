@@ -1073,16 +1073,23 @@ def test_a_download_cut_off_in_the_last_line_runs_nothing(net, cut):
 
 # --- the repository it installs from ----------------------------------------
 
-def test_openreposhape_repo_names_where_everything_comes_from(net):
+@pytest.mark.parametrize("fork", [
+    pytest.param("acme/openRepoShape", id="a-fork"),
+    pytest.param("ac.me-1_x/.open-Repo_Shape.2", id="every-character")])
+def test_openreposhape_repo_names_where_everything_comes_from(net, fork):
     """A fork named once is where the release, the command and the
-    preflight's setup.sh all come from, and the installed command says so."""
-    fork = "acme/openRepoShape"
+    preflight's setup.sh all come from, and the installed command says so.
+    Its `--version` checks the fork before it answers (#866), and passes
+    every owner/name `checked_repo` here passes: the second fork holds each
+    character that check allows, so the installer still reads `@ <tag>)`
+    in the answer and exits 0, pinned."""
     net.config["redirects"] = {latest(fork): tag_page(RELEASE, fork)}
     net.config["files"] = {}
     net.serve(RELEASE, fork)
     result = net.run(env={"OPENREPOSHAPE_REPO": fork})
     assert result.returncode == 0, result.stdout + result.stderr
     net.installed(result)
+    assert "does not stay on" not in result.stdout
     assert all(SLUG not in call for call in net.calls()), net.calls()
     assert f"curl -fsSL {HTTPS_ONLY} {raw('setup.sh', RELEASE, fork)}" \
         in net.calls()

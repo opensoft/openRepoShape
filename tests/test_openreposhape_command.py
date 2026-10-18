@@ -1911,6 +1911,175 @@ def test_a_clone_is_handed_a_path_or_url_as_it_is(tmp_path, repo, url,
     assert cloned_for(tmp_path, repo, caller) == [url or repo]
 
 
+# --- the repository and the ref, checked before any run (#866) --------------
+
+#: The runs that printed `$OPENREPOSHAPE_REPO` and `$OPENREPOSHAPE_REF` with
+#: no check (#866), each as its arguments and whether the command arrives on
+#: stdin: `--version`, which printed both as typed and exited 0; a scaffold
+#: run, which fetched `setup.sh` with them and named both in its refusal;
+#: and `--install` from stdin, the documented install line, which fetched
+#: the command with them and named both in its own.
+CHECKED_RUNS = [
+    pytest.param(("--version",), False, id="version"),
+    pytest.param(("Atlas", "--org", "acme"), False, id="scaffold"),
+    pytest.param(("--install",), True, id="install-from-stdin"),
+]
+
+#: What `checked_repo` says of a repository holding a control character or
+#: whose clone URL starts with `-`: `shape_checkout`'s words, before #866.
+REPO_NOT_FOR_A_CLONE = (
+    "OPENREPOSHAPE_REPO is not a value this tool will put on a `git clone` "
+    "command line: it starts with '-' or carries a control character. Set "
+    "it to a URL or a path.")
+
+#: What `ref_character_fault` says of a ref holding a control character:
+#: `ref_fault`'s words, for `$OPENREPOSHAPE_REF`.
+REF_CARRIES_A_CONTROL_CHARACTER = (
+    "$OPENREPOSHAPE_REF carries a control character, which is not a branch, "
+    "tag or commit this tool will pass to `git checkout`.")
+
+
+def repo_drawn_as_another(named: str) -> str:
+    """`checked_repo`'s refusal of a repository holding `named` (#837)."""
+    return (f"OPENREPOSHAPE_REPO {drawn_as_another(named)}. This tool will "
+            "not put it on a `git clone` command line. Set it to a URL or a "
+            "path.")
+
+
+def ref_drawn_as_another(named: str) -> str:
+    """`ref_character_fault`'s refusal of `$OPENREPOSHAPE_REF` holding
+    `named` (#837)."""
+    return (f"$OPENREPOSHAPE_REF {drawn_as_another(named)}. No branch, tag "
+            "or commit this tool will pass to `git checkout` holds one.")
+
+
+#: Each variable holding a C0 control (an escape), a C1 control (U+009B),
+#: U+202E and U+200B, each before a `forged` tail, with the whole refusal
+#: (#866); and a repository whose clone URL starts with `-`, the third
+#: thing `checked_repo` refuses.
+UNPRINTABLE_VALUES = [
+    *(pytest.param("OPENREPOSHAPE_REPO", "acme/r" + character + "forged",
+                   said, id=f"repo-{name}")
+      for character, said, name in (
+          (ESCAPE + "[31m", REPO_NOT_FOR_A_CLONE, "an-escape"),
+          (C1_CSI + "31m", REPO_NOT_FOR_A_CLONE, "a-c1-csi"),
+          (RLO, repo_drawn_as_another("U+202E"), "u+202e"),
+          (chr(0x200B), repo_drawn_as_another("U+200B"), "u+200b"))),
+    *(pytest.param("OPENREPOSHAPE_REF", "v1" + character + "forged",
+                   said, id=f"ref-{name}")
+      for character, said, name in (
+          (ESCAPE + "[31m", REF_CARRIES_A_CONTROL_CHARACTER, "an-escape"),
+          (C1_CSI + "31m", REF_CARRIES_A_CONTROL_CHARACTER, "a-c1-csi"),
+          (RLO, ref_drawn_as_another("U+202E"), "u+202e"),
+          (chr(0x200B), ref_drawn_as_another("U+200B"), "u+200b"))),
+    pytest.param("OPENREPOSHAPE_REPO", "-forged://acme/r",
+                 REPO_NOT_FOR_A_CLONE, id="repo-a-leading-dash"),
+]
+
+
+def run_against_a_fake_github(tmp_path, args, piped: bool, env: dict):
+    """The command, run with `args` from its file, or from stdin where
+    `piped`, with `fake_github`'s `gh` and `curl` first on `$PATH`, both
+    logging every call, `$OPENREPOSHAPE_BIN_DIR` at `<tmp_path>/bin` and
+    `env` over the rest; the result, and the calls. From stdin, in
+    `tmp_path`, no file is `$SELF`, so `--install` fetches."""
+    log = tmp_path / "calls.log"
+    environ = command_env(home=tmp_path, setup_sh=None, env={
+        **fake_github(tmp_path, INSTALLED, log),
+        "OPENREPOSHAPE_BIN_DIR": bash_path(tmp_path / "bin"), **env})
+    argv = ["bash", "-s", "--", *args] if piped else \
+        ["bash", bash_path(COMMAND), *args]
+    result = subprocess.run(
+        argv, executable=BASH, capture_output=True, text=True, check=False,
+        input=COMMAND.read_text(encoding="utf-8") if piped else "",
+        cwd=str(tmp_path), env=environ, start_new_session=True)
+    calls = log.read_text(encoding="utf-8").splitlines() \
+        if log.exists() else []
+    return result, calls
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("variable, value, said", UNPRINTABLE_VALUES)
+@pytest.mark.parametrize("args, piped", CHECKED_RUNS)
+def test_a_repository_or_ref_no_line_can_print_is_refused_before_any_request(
+        tmp_path, args, piped, variable, value, said, locale):
+    """`--version` printed `$OPENREPOSHAPE_REPO` and `$OPENREPOSHAPE_REF`
+    as typed and exited 0, and a scaffold run and `--install` fetched with
+    them and named both in their refusals, so an escape, U+009B or U+202E
+    in either reached the terminal (#866). Both are checked once, before
+    `--version` answers and before any fetch, the repository by its clone
+    guard and the ref by `ref_fault`'s character checks, each in the words
+    it had. Under `C` and `C.UTF-8`: exit 2, that one refusal and nothing
+    else, no call to `gh` or `curl`, nothing placed, and no part of the
+    value in either stream."""
+    result, calls = run_against_a_fake_github(
+        tmp_path, args, piped, {variable: value, "LC_ALL": locale})
+    assert calls == [], calls
+    assert assert_refused_saying(result, said) == f"REFUSED: {said}"
+    assert not (tmp_path / "bin").exists()
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+def test_help_answers_past_a_repository_and_ref_no_line_can_print():
+    """`--help` names the two variables and never their values, so it
+    answers before they are checked (#866), as it answers past a broken
+    record (#564)."""
+    result = run_cmd("--help", env={
+        "OPENREPOSHAPE_REPO": "acme/r" + RLO + "forged",
+        "OPENREPOSHAPE_REF": "v1" + ESCAPE + "[31mforged"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert USAGE_LINES[-1] in result.stdout.splitlines()
+    assert "forged" not in result.stdout + result.stderr
+
+
+#: What `--version` prints for values the check passes, each as typed
+#: (#866): neither variable set, the pair it has always printed; every form
+#: of repository a clone is handed (`CLONE_URLS`); and refs whose shape or
+#: length `ref_fault` refuses. Those print as they read, so `--version`
+#: still names the ref in force, and an install that records no ref still
+#: takes one that names nothing (see
+#: `test_a_ref_set_without_the_opt_in_is_never_recorded`).
+PRINTED_AS_TYPED = [
+    pytest.param({}, "opensoft/openRepoShape @ main", id="neither-set"),
+    *(pytest.param({"OPENREPOSHAPE_REPO": form.values[0]},
+                   f"{form.values[0]} @ main", id=f"repo-{form.id}")
+      for form in CLONE_URLS),
+    *(pytest.param({"OPENREPOSHAPE_REF": ref},
+                   f"opensoft/openRepoShape @ {ref}", id=f"ref-{name}")
+      for ref, name in (("bad..ref", "a-range"), ("x.lock", "a-lock"),
+                        ("-x", "a-leading-dash"),
+                        ("a" * 256, "256-characters"))),
+]
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("env, shown", PRINTED_AS_TYPED)
+def test_version_prints_every_value_the_check_passes_as_typed(
+        env, shown, locale):
+    """The check refuses a character no line can print as it reads, and
+    nothing else (#866): `--version` prints these as typed, exit 0, under
+    `C` and `C.UTF-8`, byte for byte what it printed before."""
+    result = run_cmd("--version", env={**env, "LC_ALL": locale})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == f"openRepoShape ({shown})\n"
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("name", NOT_CONTROLS)
+def test_version_prints_a_path_a_utf_8_locale_prints(name):
+    """A path holding a letter past ASCII, U+200C, U+200D or a tag is no
+    fault under `C.UTF-8`, whose `[![:print:]]` passes each of
+    `NOT_CONTROLS` (#866). Under `C` that class matches every byte past
+    ASCII, so there the path is refused, as setup.sh's clone and the
+    doctor's refuse it."""
+    path = f"/srv/{name}/openRepoShape.git"
+    result = run_cmd("--version", env={"OPENREPOSHAPE_REPO": path,
+                                       "LC_ALL": "C.UTF-8"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == f"openRepoShape ({path} @ main)\n"
+
+
 # --- the ref `--install` records, and the installed command runs (#564) -----
 
 #: A ref for an install to record. Nothing fetches it: every install below
@@ -2068,8 +2237,10 @@ def test_a_ref_set_without_the_opt_in_is_never_recorded(tmp_path):
     #577). A script that sets it around `--install` for its own reasons
     (workBenches sets one that names no ref, so that any fetch fails loudly)
     gets the install it always got: the same bytes, no record, `main` in
-    `--version`, and no check of a value it never meant to be read. A record
-    already there is removed, exactly as by an install with no ref."""
+    `--version`, and no check of the shape of a value it never meant to be
+    read; only a character no line can print as it reads is refused, as in
+    every run (#866). A record already there is removed, exactly as by an
+    install with no ref."""
     install_at(tmp_path, PINNED)
     result, installed = install_at(
         tmp_path, "pinned-by-workBenches-no-fetch", opt_in=False)
