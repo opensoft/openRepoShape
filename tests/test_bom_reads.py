@@ -48,6 +48,8 @@ import shape_materialize  # noqa: E402
 from repo_shape import Refusal, load_yaml  # noqa: E402
 
 MARK = codecs.BOM_UTF8
+#: The mark as the one character the reader reads it as, U+FEFF.
+MARK_TEXT = MARK.decode("utf-8")
 #: The line a person may put above the file's first key before saving it.
 COMMENT = b"# saved by hand\n"
 PINNED = "a" * 40
@@ -134,6 +136,35 @@ def test_a_byte_that_is_not_utf_8_is_counted_from_the_files_first_byte(
         load_yaml(path)
     assert refused.value.detail.endswith(
         ": not UTF-8 at byte 7 (invalid start byte)"), refused.value.detail
+
+
+@pytest.mark.parametrize("body, read", [
+    pytest.param(b'k: "' + MARK + b'x"\n', {"k": MARK_TEXT + "x"},
+                 id="in-a-quoted-value"),
+    pytest.param(b"commit: " + MARK + PINNED.encode() + b"\n",
+                 {"commit": MARK_TEXT + PINNED}, id="at-the-start-of-a-value"),
+    pytest.param(b"k: v\n" + MARK + b"j: w\n",
+                 {"k": "v", MARK_TEXT + "j": "w"},
+                 id="at-the-start-of-the-second-key"),
+])
+def test_a_mark_after_the_start_of_the_text_is_text(tmp_path, body, read):
+    """ONLY THE START IS TAKEN OFF (RV868's SHOULD-1). YAML 1.2.2 section
+    5.2 allows a mark inside a quoted scalar, as text, and none inside a
+    document, which the reader reads as text. PyYAML 6.0.3 reads all three
+    as these do. A strip of every mark anywhere would read each of them as
+    the text without it."""
+    path = tmp_path / "hand-saved.yaml"
+    path.write_bytes(body)
+    assert load_yaml(path) == read
+
+
+def test_the_notice_says_nothing_of_a_pin_whose_commit_holds_the_mark(
+        notice, tmp_path, capsys):
+    """A pin whose `commit:` value starts with the mark names no commit, as
+    `git rev-parse --verify` refuses one (RV868), so the notice is silent."""
+    notice(a_root(tmp_path, b"commit: " + MARK + PINNED.encode() + b"\n",
+                  f"{TIP}\n".encode()))
+    assert capsys.readouterr().out == ""
 
 
 @pytest.mark.parametrize("marks", [1, 2], ids=["mark", "two-marks"])
