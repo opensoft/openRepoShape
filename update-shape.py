@@ -4270,18 +4270,19 @@ def _names_imported(data: bytes) -> dict[str, set[str]]:
     handler that catches it binds that same local name itself, its `as`
     name else the name, as `_bound_at` reads a binding: that is the copy's
     own fallback, and the copy starts. A handler that passes binds
-    nothing, and the copy stops on a `NameError` later. A handler that
-    RAISES BINDS NO FALLBACK EITHER, WHATEVER IT BOUND BEFORE THE `raise`
-    (`_fallback_in`, #897): Python leaves the handler by that `raise`,
-    so `NEW = None` then `raise` is no fallback. A bare `raise` hands
-    the `ImportError` on to the next `try` out, whose own handler is
-    then what answers, so nothing at module scope. Any other `raise`
-    answers nothing, as which outer handler catches what it raises is not
-    read: a copy that starts may be refused, and one that stops is not
-    kept. A `raise` under an `if`, or in any other block, is not read, nor
-    is a call that exits: `NEW = None` then `sys.exit()` binds `NEW`. That
-    stop is the failure this refusal exists to say first. Only the
-    import's own scope is guarded: a `def`, `class` or `lambda` inside the
+    nothing, and the copy stops on a `NameError` later: that, and the
+    `ImportError` a `raise` lets out, are the failure this refusal
+    exists to say first. A handler that RAISES BINDS NO FALLBACK EITHER,
+    WHATEVER IT BOUND BEFORE THE `raise` (`_fallback_in`, #897): Python
+    leaves the handler by that `raise`, so `NEW = None` then `raise` is
+    no fallback. A bare `raise` hands the `ImportError` on to the next
+    `try` out, whose own handler is then what answers, so nothing at
+    module scope. Any other `raise` answers nothing, as which outer
+    handler catches what it raises is not read: a copy that starts may
+    be refused, and one that stops is not kept. A `raise` under an `if`,
+    or in any other block, is not read, nor is a call that exits:
+    `NEW = None` then `sys.exit()` binds `NEW`. Only the import's own
+    scope is guarded: a `def`, `class` or `lambda` inside the
     `try` runs later or elsewhere, outside its handler. A fallback bound
     before the `try` rather than in the handler is not read, and that
     import is taken; a handler with a star import of its own may bind any
@@ -4347,11 +4348,14 @@ def _fallback_in(node: ast.AST, answered: frozenset) -> frozenset:
     whose own handler is what answers: `answered`, what `node` found
     itself, so nothing at module scope. ANY OTHER `raise` answers nothing:
     whether an outer handler catches what it raises depends on that
-    handler's exception list, which this does not read, so it may refuse a
-    copy that starts, never keep one that stops. A `raise` the handler
-    reaches only under an `if`, or any other block, is not read here, and
-    a handler that binds and then calls `sys.exit()` answers what it
-    binds, as `_bound_at` reads a statement after a call that exits.
+    handler's exception list, which this reads only for `ImportError`, so
+    it may refuse a copy that starts, never keep one that stops. A bare
+    `raise` in an `except*` handler re-raises an `ExceptionGroup`, which
+    no plain `except ImportError:` catches, so it answers nothing too. A
+    `raise` the handler reaches only under an `if`, or any other block,
+    is not read here, and a handler that binds and then calls
+    `sys.exit()` answers what it binds, since a call is not read as an
+    exit.
     """
     if isinstance(node, _SCOPES):
         return frozenset()
@@ -4361,7 +4365,8 @@ def _fallback_in(node: ast.AST, answered: frozenset) -> frozenset:
         return answered
     last = _reached(handler.body)[-1]
     if isinstance(last, ast.Raise):
-        return answered if last.exc is None else frozenset()
+        return (answered if last.exc is None and isinstance(node, ast.Try)
+                else frozenset())
     return frozenset(_bound_at(handler.body))
 
 

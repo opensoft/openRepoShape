@@ -1009,6 +1009,15 @@ def last_line_of(stderr: str) -> str:
     pytest.param(NESTED + b"        raise\n" + OUTER_BINDS, False, None,
                  id="nested, a handler that only re-raises, to one that "
                     "binds"),
+    pytest.param(GUARDED + b"    NEW = None\n    raise\n    NEW = 2\n",
+                 True, "ImportError",
+                 id="a binding after the raise is never reached"),
+    pytest.param(b"try:\n    if True:\n        try:\n"
+                 b"            from repo_shape import NEW\n"
+                 b"        except ImportError:\n            raise\n"
+                 + OUTER_BINDS, False, None,
+                 id="a re-raise through an if, to an outer handler "
+                    "that binds"),
     pytest.param(GUARDED + b"    NEW = None\n", False, None,
                  id="control: a handler that only binds"),
     pytest.param(GUARDED + b"    pass\nprint(NEW)\n", True, "NameError",
@@ -1039,6 +1048,28 @@ def test_a_handler_that_raises_is_read_as_python_runs_it(
         assert ran.returncode != 0, ran.stdout
         assert last_line_of(ran.stderr).startswith(f"{stopped_by}:"), \
             ran.stderr
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11),
+                    reason="`except*` is Python 3.11 syntax")
+def test_a_bare_raise_in_an_except_star_handler_answers_nothing(
+        update_shape, tmp_path):
+    """A bare `raise` in an `except*` handler re-raises an
+    `ExceptionGroup`, which the plain `except ImportError:` outside does
+    not catch (`ast.TryStar` is not an `ast.Try`), so it hands on nothing
+    that outer handler answers: `NEW` is taken, and Python stops on the
+    group, beside a `repo_shape.py` that lacks `NEW`."""
+    copy = (b"try:\n    try:\n        from repo_shape import NEW\n"
+            b"    except* ImportError:\n        raise\n"
+            + OUTER_BINDS + b"print(NEW)\n")
+    imported = update_shape._names_imported(copy).get("repo_shape", set())
+    assert "NEW" in imported, imported
+    refused = refusal(update_shape, tmp_path / "kept",
+                      {REPO_SHAPE: LACKS_NEW}, {BOOTSTRAP: copy})
+    assert refused is not None, "the copy stops on an ExceptionGroup"
+    ran = run_beside_a_module_lacking_new(tmp_path / "beside", copy)
+    assert ran.returncode != 0, ran.stdout
+    assert "ExceptionGroup" in ran.stderr, ran.stderr
 
 
 @pytest.mark.parametrize("raised", [
@@ -1077,10 +1108,10 @@ def test_a_raise_in_a_block_or_a_call_that_exits_is_not_read_as_a_stop(
     """What #897 leaves alone, and says so. Only a `raise` among the
     handler's own statements (`_reached`) is read, so a handler that binds
     `NEW` and then raises under an `if`, inside a `with`, or exits by a call
-    still answers it, as `_bound_at` reads a statement after a call that
-    exits, and what this cannot tell, it does not refuse. Each of these
-    copies stops under Python all the same, with `STRICT` true: the false
-    negatives that keep the copy, measured."""
+    still answers it, since a call is not read as an exit, and what this
+    cannot tell, it does not refuse. Each of these copies stops under
+    Python all the same, with `STRICT` true: the false negatives that
+    keep the copy, measured."""
     copy = (b"import contextlib\nimport sys\nSTRICT = True\n"
             + GUARDED + handler)
     imported = update_shape._names_imported(copy).get("repo_shape", set())
