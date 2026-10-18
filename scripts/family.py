@@ -709,7 +709,8 @@ def _classify_family_name(policy: NamingPolicy, name: str) -> None:
             f"{name!r} matches no family in the naming policy",
             f"Remediation: --family takes {FAMILY_NAME_RULE}. A holder is "
             "spelled like an assembly root, but those two forms are "
-            "unambiguous by construction and cannot be declared into one.")
+            "unambiguous by construction and cannot be declared into a "
+            "holder.")
     if found.family != "family":
         raise Refusal(
             "naming-not-a-family",
@@ -2113,13 +2114,13 @@ DERIVED_FAMILY_ID_REMEDIATION = (
     "its family folder.")
 
 
-def _refuse_bad_family_id(family_id: str, given: str | None,
-                          policy: NamingPolicy, family: str) -> None:
+def _refuse_bad_family_id(family_id: str, args, policy: NamingPolicy,
+                          family: str) -> None:
     """`family-bad-id`: an id `validate-family.py` would not take
     (`PROJECT_ID_RE`), named by where it came from (#659), as the scaffold
     names `scaffold-bad-id`.
 
-    `given` is `--id` as parsed. One the person passed, `''` among them
+    `args.id` is `--id` as parsed. One the person passed, `''` among them
     (#911), is named as the flag they typed, value as typed, and is told
     what an id may hold (`PASSED_FAMILY_ID_REMEDIATION`). With none, the id
     is `--family` lowercased, and `--id 'north_wind' must match` named a
@@ -2129,15 +2130,23 @@ def _refuse_bad_family_id(family_id: str, given: str | None,
     A REFUSED NAME SPEAKS FIRST (#911). `--family North_Wind --id
     north_wind` was refused for its id, and the remedy's retype then met
     `naming-unclassified`, which no `--id` mends. So a passed id is refused
-    only once `--family` is a name a holder can have
-    (`_classify_family_name`, which `_checked_family_identity` asks next
-    anyway, and which reads nothing but the policy). A derived id keeps its
-    own refusal: its remedy is already the naming rule."""
+    only once `--family` is a name a holder can have: one the policy holds
+    as a holder (`_classify_family_name`), one a Windows disk can make a
+    folder of (`_refuse_an_unholdable_holder_name`), and, where GitHub is
+    asked, one GitHub keeps a repository's name to
+    (`_refuse_a_holder_name_github_cannot_hold`). `_checked_family_identity`
+    asks each of them next anyway, in this order, and none reads anything
+    but the name and the policy: `--family NUL --id foo_bar` and a
+    `--family` of 105 characters with a bad id were told to retype the id
+    first (#972's review, S1). A derived id keeps its own refusal: its
+    remedy is already the naming rule."""
     if PROJECT_ID_RE.match(family_id):
         return
     pattern = PROJECT_ID_RE.pattern
-    if given is not None:
+    if args.id is not None:
         _classify_family_name(policy, family)
+        _refuse_an_unholdable_holder_name(family)
+        _refuse_a_holder_name_github_cannot_hold(args, family)
         raise Refusal("family-bad-id",
                       f"--id {family_id!r} must match {pattern}",
                       PASSED_FAMILY_ID_REMEDIATION)
@@ -2180,6 +2189,23 @@ ORG_SPELLING_REMEDIATION = (
     "`<org>` of `https://github.com/<org>`.")
 
 
+def _refuse_a_holder_name_github_cannot_hold(args, family: str) -> None:
+    """`family-name-too-long`: a `--family` over GitHub's 100 for the
+    holder's repository, `<org>/<Family>` (#863). Asked first by
+    `_refuse_what_github_cannot_hold`, and before a passed id that is no id
+    (`_refuse_bad_family_id`, #972's review, S1). Not asked under
+    `--local-remote-dir`, where a bare repository's name is the disk's."""
+    if args.local_remote_dir is not None:
+        return
+    if len(family) > GITHUB_NAME_MAX:
+        raise Refusal(
+            "family-name-too-long",
+            f"--family is {_both_ends(family)}, {len(family)} characters, and "
+            "GitHub keeps a repository's name, the holder's "
+            f"`<org>/<Family>`, to at most {GITHUB_NAME_MAX}",
+            HOLDER_TOO_LONG_REMEDIATION)
+
+
 def _refuse_what_github_cannot_hold(args, family: str, family_id: str,
                                     topic: str) -> None:
     """What GitHub will not take of the holder, refused where GitHub is
@@ -2204,13 +2230,7 @@ def _refuse_what_github_cannot_hold(args, family: str, family_id: str,
     not given."""
     if args.local_remote_dir is not None:
         return
-    if len(family) > GITHUB_NAME_MAX:
-        raise Refusal(
-            "family-name-too-long",
-            f"--family is {_both_ends(family)}, {len(family)} characters, and "
-            "GitHub keeps a repository's name, the holder's "
-            f"`<org>/<Family>`, to at most {GITHUB_NAME_MAX}",
-            HOLDER_TOO_LONG_REMEDIATION)
+    _refuse_a_holder_name_github_cannot_hold(args, family)
     refuse_an_owner_github_cannot_have("family-org-too-long", args.org,
                                        "--org", ORG_REMEDIATION)
     refuse_an_owner_github_cannot_spell("family-bad-org", args.org, "--org",
@@ -2252,7 +2272,7 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     # trailing line break.
     family_id = args.id if args.id is not None else family.lower()
     policy = NamingPolicy.load(NAMING_POLICY)
-    _refuse_bad_family_id(family_id, args.id, policy, family)
+    _refuse_bad_family_id(family_id, args, policy, family)
     family_id = checked_value("--id", family_id)
     _classify_family_name(policy, family)
     _refuse_an_unholdable_holder_name(family)

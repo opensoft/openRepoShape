@@ -97,9 +97,6 @@ from repo_shape import (  # noqa: E402
     git_out, link_pins_from_trees, repo_basename, shell_line, shown_path,
     tree_digest,
 )
-# The forms the naming policy decides by a name's characters alone, which a
-# passed `--id` that is no id is refused after (#911).
-from repo_shape import UNAMBIGUOUS_FORMS  # noqa: E402
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
     copy_tree, default_reference, descendant_note, election_date, env_commit,
@@ -892,15 +889,21 @@ def _refuse_bad_id(project_id: str, given: str | None, policy,
     A REFUSED NAME SPEAKS FIRST (#911). `--project North_Wind --id
     north_wind` was refused for its id, and the remedy's retype then met
     `naming-unclassified`, which no `--id` mends. So a passed id is refused
-    only once `--project` is a name the naming policy holds; one it does
-    not hold is refused here as `_check_declared_names` would refuse it,
-    which asks later, after `_declaration`. Whether a name is held by any
-    form is the policy's patterns alone (`classify` answers None only when
-    `matches` finds none), and so is the role of a form it decides by the
-    characters alone (`UNAMBIGUOUS_FORMS`: `Foo-Install` is never an
-    assembly root), so nothing the project declares changes either answer,
-    and both are asked with no process started. A role the declarations
-    can change (a descendant's) is left to `_check_declared_names`. A
+    only once `--project` is a name the naming policy holds as an assembly
+    root; one it does not is refused here as `_check_one_name` refuses the
+    assembly root's name, which `_check_declared_names` asks later, after
+    `_declaration`. The question is the policy's answer for the name in the
+    `assembly` role with nothing declared, and NOTHING DECLARED TURNS ITS NO
+    INTO A YES (#972's review, M1): `classify` answers None only when
+    `matches` finds no pattern; a form decided by its characters alone
+    (`UNAMBIGUOUS_FORMS`) carries the same role whatever is pinned; and a
+    pin makes a descendant form the assembly root only where the name also
+    satisfies the `project-leg/assembly` form, which it answers with no pin
+    too. So `Foo-Install` is refused here, and so are `Atlas-spec` and
+    `Atlas-code`, a leg's form with a pin or without: `--project Atlas-spec
+    --id foo_bar` was told to retype the id, and `--id foo-bar` then met
+    `naming-role-mismatch`. A name a pin can make the root, `MedxGlass`,
+    passes here, and every answer is asked with no process started. A
     derived id keeps its own refusal: its remedy is already the naming
     rule."""
     if PROJECT_ID_RE.match(project_id):
@@ -910,8 +913,7 @@ def _refuse_bad_id(project_id: str, given: str | None, policy,
         found = policy.classify(project, "assembly")
         if found is None:
             raise _unclassified(project)
-        if found.family in UNAMBIGUOUS_FORMS and not accepts_role(
-                found, "assembly"):
+        if not accepts_role(found, "assembly"):
             raise _role_mismatch(project, found, "assembly")
         raise Refusal("scaffold-bad-id",
                       f"--id {project_id!r} must match {pattern}",

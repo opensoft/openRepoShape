@@ -222,16 +222,24 @@ def test_a_name_whose_derived_id_is_refused_is_refused_by_the_naming_policy(
     assert PASSED_REMEDY not in stderr
 
 
-def test_a_form_no_assembly_root_has_speaks_before_a_passed_id(tmp_path):
-    """The scaffold's half (#911): a `--project` whose form the policy
-    decides by its characters alone and which is no assembly root,
-    `Foo-Install`, is refused as `naming-role-mismatch` before a passed id
-    that is no id, as it is after a good one; no `--id` mends it."""
+@pytest.mark.parametrize("name, form", [("Foo-Install", "install"),
+                                        ("Atlas-spec", "project-leg/spec"),
+                                        ("Atlas-code", "project-leg/code")])
+def test_a_form_no_assembly_root_has_speaks_before_a_passed_id(tmp_path, name,
+                                                               form):
+    """The scaffold's half (#911): a `--project` the policy holds in no form
+    an assembly root may have, with nothing declared, is refused as
+    `naming-role-mismatch` before a passed id that is no id, as it is after
+    a good one; no `--id` mends it. `Foo-Install` is decided by its
+    characters alone. `Atlas-spec` and `Atlas-code` are a leg's form with a
+    pin or without, and were refused for the id first, whose retype then
+    met this refusal (#972's review, M1)."""
     for passed in ("foo_bar", "foo-bar"):
-        stderr = run_tool(tmp_path / passed, "scaffold", "Foo-Install",
+        stderr = run_tool(tmp_path / passed, "scaffold", name,
                           f"--id={passed}")
-        assert ("REFUSED naming-role-mismatch: 'Foo-Install' classifies as "
-                "install") in stderr
+        assert (f"REFUSED naming-role-mismatch: {name!r} classifies as "
+                f"{form}, not as the 'assembly' form of a project leg"
+                ) in stderr
         assert "scaffold-bad-id" not in stderr
 
 
