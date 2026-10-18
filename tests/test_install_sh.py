@@ -45,7 +45,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import BASH, BASH_SKIP, REPO, bash_path
+from conftest import (BASH, BASH_SKIP, REF_PARTS, REPO,
+                      assert_a_copy_answers_as_git_does,
+                      assert_the_refusal_states_the_ref_rule, bash_path)
 from test_openreposhape_command import (BIN_DIR_SPELLINGS, COMMAND,
                                         COMMAND_REFUSAL_ENDS,
                                         CYGPATH_STATES, HOLDS_A_COLON,
@@ -53,13 +55,19 @@ from test_openreposhape_command import (BIN_DIR_SPELLINGS, COMMAND,
                                         LOCALES, NO_FILE_NAMED_SO,
                                         NO_NON_ASCII_INTO_GIT_BASH,
                                         NOT_CONTROLS,
+                                        HONEST, MARKS,
+                                        PLACED_AS_THE_LOCALE_READS,
+                                        REFUSED_AS_THE_BYTES_SAY,
+                                        REFUSED_UNDER_C_OR_UTF_8,
                                         REFUSED_IN_EVERY_LOCALE, RLO,
                                         UNNAMEABLE_BIN_DIRS,
                                         assert_a_bin_dir_is_refused,
                                         assert_refused_saying,
                                         drawn_as_another,
                                         command_env, machine_path,
-                                        put_cygpath, put_on_path, run_cmd,
+                                        put_a_locale, put_cygpath,
+                                        put_on_path, run_cmd,
+                                        the_persons_locale,
                                         typed_bin_dir, write_script)
 
 INSTALLER = REPO / "install.sh"
@@ -419,6 +427,32 @@ def test_a_version_that_is_not_a_ref_is_refused_before_any_request(
     assert net.calls() == []
     assert "forged" not in result.stderr
     assert "a" * 256 not in result.stderr
+
+
+@pytest.mark.parametrize("name, takes", REF_PARTS)
+def test_the_installer_takes_a_version_as_git_does_before_any_request(
+        net, name, takes):
+    """GIT'S RULE FOR A REF IS PER PART, AND THE INSTALLER HOLDS IT BEFORE
+    THE FETCH (#874). The version is the path of the URL the launcher is
+    fetched from, and its shape `case` tested only the whole name, so
+    `a.lock/b`, `a/.b` and `a//b` were asked of the network. Each name of the
+    table goes to the installer and, through `git check-ref-format
+    --branch`, to git, and the two must answer alike.
+
+    The fakes serve a release's files at `v9.9.9` only, so a version the
+    installer takes asks curl for the launcher and is told 404, and one it
+    refuses asks nothing: it has taken the version when a call was logged.
+    """
+    result = net.run(name)
+    asked = net.calls() != []
+    assert_a_copy_answers_as_git_does("install.sh", name, takes, asked)
+    if asked:
+        return
+    net.refused(result)
+    assert_the_refusal_states_the_ref_rule(
+        result.stderr,
+        f"REFUSED: the version is '{name}', which is not a release tag, "
+        "branch or commit: ")
 
 
 def test_a_failed_fetch_names_its_url_and_installs_nothing(net):
@@ -974,6 +1008,67 @@ def test_the_installer_refuses_in_every_locale_before_any_request(
     net.refused(result)
 
 
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("charmap, iconv, name", PLACED_AS_THE_LOCALE_READS)
+def test_the_installer_places_a_directory_a_multibyte_locale_reads_as_text(
+        tmp_path, charmap, iconv, name):
+    """A name the bytes refuse, read as text by the locale's multibyte
+    charset (#858): install.sh asks `locale charmap` under the person's own
+    `LANG` and reads the name through `iconv`, as the command does, and the
+    command it fetched places itself there, under the same `locale` and
+    `iconv`, with the release recorded. Neither refuses what the other
+    places, and neither asks `iconv` of a name the bytes do not refuse."""
+    net = Net(tmp_path)
+    put_a_locale(net.path, HONEST, iconv)
+    net.bin = tmp_path / name
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": bash_path(net.bin),
+                          **the_persons_locale(charmap)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    net.installed(result)
+    assert not (net.path / "iconv-ran").exists()
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("charmap, kind, iconv, name, said",
+                         REFUSED_AS_THE_BYTES_SAY)
+def test_the_installer_refuses_as_the_bytes_or_the_reading_say(
+        tmp_path, charmap, kind, iconv, name, said):
+    """Where the locale's reading still holds a C1 control or a character
+    drawn as another, or where nothing reads the name again (#858),
+    install.sh refuses it in #804's or #837's words, before any request:
+    exit 2, nothing placed, nothing of the value in either stream. With no
+    `locale` on this `$PATH` at all, every other test of the directory here
+    runs that way too."""
+    net = Net(tmp_path)
+    put_a_locale(net.path, kind, iconv)
+    typed = f"{bash_path(tmp_path)}/{name}"
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed,
+                          **the_persons_locale(charmap)})
+    assert net.calls() == [], net.calls()
+    assert_a_bin_dir_is_refused(result, typed, said, INSTALLER_REFUSAL_ENDS)
+    net.refused(result)
+    assert not (net.path / "iconv-ran").exists()
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("name, said", REFUSED_UNDER_C_OR_UTF_8)
+def test_the_installer_refuses_as_the_bytes_say_under_c_or_c_utf_8(
+        tmp_path, name, said, locale):
+    """The person's locale is `C` or `C.UTF-8`, and `locale charmap`
+    answers as glibc's does: install.sh refuses as the bytes say, in #804's
+    and #837's words, before any request, and asks `iconv` nothing
+    (#858)."""
+    net = Net(tmp_path)
+    put_a_locale(net.path, HONEST, MARKS)
+    typed = f"{bash_path(tmp_path)}/{name}"
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed, "LC_ALL": locale})
+    assert net.calls() == [], net.calls()
+    assert_a_bin_dir_is_refused(result, typed, said, INSTALLER_REFUSAL_ENDS)
+    net.refused(result)
+    assert not (net.path / "iconv-ran").exists()
+
+
 # A version, an option, the repository, the newest release's tag or the
 # location github.com redirects to, holding U+202E (#837). Each arranges
 # `net` and returns the arguments, the environment, what the refusal says,
@@ -1073,16 +1168,23 @@ def test_a_download_cut_off_in_the_last_line_runs_nothing(net, cut):
 
 # --- the repository it installs from ----------------------------------------
 
-def test_openreposhape_repo_names_where_everything_comes_from(net):
+@pytest.mark.parametrize("fork", [
+    pytest.param("acme/openRepoShape", id="a-fork"),
+    pytest.param("ac.me-1_x/.open-Repo_Shape.2", id="every-character")])
+def test_openreposhape_repo_names_where_everything_comes_from(net, fork):
     """A fork named once is where the release, the command and the
-    preflight's setup.sh all come from, and the installed command says so."""
-    fork = "acme/openRepoShape"
+    preflight's setup.sh all come from, and the installed command says so.
+    Its `--version` checks the fork before it answers (#866), and passes
+    every owner/name `checked_repo` here passes: the second fork holds each
+    character that check allows, so the installer still reads `@ <tag>)`
+    in the answer and exits 0, pinned."""
     net.config["redirects"] = {latest(fork): tag_page(RELEASE, fork)}
     net.config["files"] = {}
     net.serve(RELEASE, fork)
     result = net.run(env={"OPENREPOSHAPE_REPO": fork})
     assert result.returncode == 0, result.stdout + result.stderr
     net.installed(result)
+    assert "does not stay on" not in result.stdout
     assert all(SLUG not in call for call in net.calls()), net.calls()
     assert f"curl -fsSL {HTTPS_ONLY} {raw('setup.sh', RELEASE, fork)}" \
         in net.calls()

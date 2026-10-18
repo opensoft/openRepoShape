@@ -152,6 +152,14 @@ checked_repo() {
 # between the length and the control character, a character a terminal
 # draws as something other than itself, as the launcher's `ref_fault` has
 # it (#837). Not shared, because this file arrives alone down a pipe.
+#
+# THE SHAPE IS GIT'S RULE PART BY PART (#874), as `ref_fault`'s and
+# `setup.sh`'s are: no `..`, no empty part between slashes, no part that
+# starts with `.` or ends in `.lock`, and no name that ends in `.`, which is
+# what `git check-ref-format --branch` asks of each part and not of the whole
+# name alone. It gates the fetch: the version is the path of the URL below,
+# and a version git would refuse is refused here, before the launcher is
+# fetched.
 checked_version() {
 	local ref="$1" what="$2" misdrawn
 	[ -n "$ref" ] || die "$what is empty. Name a release, such as v1.0.1, or none for the newest."
@@ -165,7 +173,7 @@ checked_version() {
 	*[![:print:]]*) die "$what carries a control character, which is not a release tag, branch or commit." ;;
 	esac
 	case "$ref" in
-	[!A-Za-z0-9]* | *..* | *.lock | *[!A-Za-z0-9._/-]*) die "$what is '$ref', which is not a release tag, branch or commit: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
+	[!A-Za-z0-9]* | *..* | */.* | *.lock | *.lock/* | *//* | */ | *. | *[!A-Za-z0-9._/-]*) die "$what is '$ref', which is not a release tag, branch or commit: a ref starts with an ASCII letter or digit, uses only ASCII letters, digits, '.', '_', '/', '-', has no '..' (git reads it as a revision range), no empty part between slashes ('//', or a '/' at the end), no part that starts with '.' or ends in '.lock' (the name git gives the lock file it writes beside a ref), and does not end in '.'." ;;
 	esac
 }
 
@@ -399,9 +407,34 @@ misdrawn_characters() {
 	printf '%s' "$found"
 }
 
+# THE VALUE AS THE PERSON'S LOCALE READS IT, IN UTF-8, WHERE THAT LOCALE
+# READS TWO OR MORE OF ITS BYTES AS ONE CHARACTER (#858): the launcher's
+# `locale_reading`, copied as it is, for the reason the control check in
+# `main` is copied. The launcher says when it reads the value again and
+# when the bytes decide, and `tests/test_openreposhape_command.py` holds the
+# two copies to one text. `main` asks it of a directory the bytes refuse.
+locale_reading() {
+	local charmap reading
+	charmap="$(locale charmap 2>/dev/null)" || return 1
+	case "$charmap" in
+	"" | [Uu][Tt][Ff]-8 | [Uu][Tt][Ff]8 | ANSI_X3.4-1968 | *ASCII*) return 1 ;;
+	*) ;;
+	esac
+	reading="$(printf '%s' "$1" | iconv -f "$charmap" -t UTF-8 2>/dev/null)" ||
+		return 1
+	[ "$(printf '%s' "$reading" | iconv -f UTF-8 -t "$charmap" 2>/dev/null)" = "$1" ] ||
+		return 1
+	(
+		LC_ALL=C
+		letters=${reading//[$'\200'-$'\277']/}
+		[ "${#letters}" -lt "${#1}" ] || exit 1
+		printf '%s' "$reading"
+	)
+}
+
 main() {
 	local version="" asked launcher_url bin_dir spelled target shown status=0 pinned=1
-	local misdrawn
+	local misdrawn seen
 	local machine="this machine is ready"
 
 	# NOTHING A CHILD READS IS THIS SCRIPT. Piped, stdin is the pipe the
@@ -446,23 +479,42 @@ main() {
 	# print (`café` under LC_ALL=C) is no fault of the directory's. The check
 	# runs under `LC_ALL=C` and names U+0080 to U+009F's two bytes (`\302`,
 	# then `\200` to `\237`), so a C1 control is refused in every locale,
-	# whatever else the value holds; U+2028 and U+2029, which only a UTF-8
-	# locale's `[[:cntrl:]]` matched, are the next check's (#837).
+	# whatever else the value holds, unless the locale reads those bytes as
+	# text (#858, below); U+2028 and U+2029, which only a UTF-8 locale's
+	# `[[:cntrl:]]` matched, are the next check's (#837).
 	# Left to the locale, `[[:cntrl:]]` matches a C1 control only in a value
 	# that is valid UTF-8: one byte that is not (a lone 0xE9) makes bash
 	# match byte by byte, and then U+009B's two bytes are not controls, as
 	# under `C` (measured with bash 5.2.21). The locale is `C` in a subshell,
 	# so that the match is byte by byte whatever a libc says of a byte in a
 	# UTF-8 locale, and the locale of every line below is as it was.
-	if (LC_ALL=C; case "$bin_dir" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
+	# WHERE THE BYTES ARE REFUSED, THE PERSON'S LOCALE IS ASKED HOW IT READS
+	# THEM (#858), as the command asks it: a multibyte charset that is not
+	# UTF-8 may read them as text, and then the C1 bytes and
+	# `misdrawn_characters` are looked for in `locale_reading`'s UTF-8
+	# instead. Only a value the bytes refuse is read again, so no name
+	# placed before is refused, and where nothing reads it again the bytes
+	# decide, as before. `[[:cntrl:]]` is asked of the bytes as typed. The
+	# trade: such a locale, left in a terminal that reads UTF-8, has C1
+	# bytes it reads as letters installed into and printed in the lines
+	# below, and that terminal acts on them.
+	seen="$bin_dir"
+	if (LC_ALL=C; case "$bin_dir" in *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac) ||
+		[ -n "$(LC_ALL=C; misdrawn_characters "$bin_dir")" ]; then
+		seen="$(locale_reading "$bin_dir")" || seen="$bin_dir"
+	fi
+	if (LC_ALL=C
+		case "$bin_dir" in *[[:cntrl:]]*) exit 0 ;; *) ;; esac
+		case "$seen" in *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
 		die "the directory to install into holds a control character, such as a newline, a carriage return, a tab or an escape, and no line about \$PATH can print such a name as it is: a terminal acts on it. Nothing was installed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this line again."
 	fi
 	# A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
 	# NEXT (#837), as the command refuses it, and before any request: the
 	# name would read as another directory's in every line below. The
 	# refusal names each one by its code point, because nobody can see it,
-	# and says nothing else of the value.
-	misdrawn="$(LC_ALL=C; misdrawn_characters "$bin_dir")"
+	# and says nothing else of the value. It is asked of the locale's
+	# reading where there is one (#858).
+	misdrawn="$(LC_ALL=C; misdrawn_characters "$seen")"
 	[ -z "$misdrawn" ] ||
 		die "the directory to install into holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it, so no line about \$PATH can print the name as it reads. Nothing was installed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this line again."
 	# A WINDOWS SPELLING IS SPELLED THE WAY BASH SPELLS IT, THE COMMAND'S OWN

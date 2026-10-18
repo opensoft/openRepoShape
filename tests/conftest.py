@@ -1177,6 +1177,64 @@ def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
     probe.rmdir()
 
 
+#: A branch git makes and no text can spell (#765): `caf` and the byte 0xE9,
+#: Latin-1's e-acute, a UTF-8 lead byte with nothing after it. Built with
+#: `chr`, not `os.fsdecode`, which raises on Windows, where this module
+#: must still import.
+NOT_UTF_8_BRANCH = "caf" + chr(0xDCE9)
+#: How a refusal names `NOT_UTF_8_BRANCH`: by its bytes, `b'caf<0xE9>'`, as
+#: `trailer-not-utf8` names a trailer.
+NOT_UTF_8_BRANCH_NAMED = repr(NOT_UTF_8_BRANCH.encode("utf-8",
+                                                      "surrogateescape"))
+
+
+def git_answer_bytes(repo: Path, *args: str) -> bytes:
+    """`git <args>` in `repo`, its stdout as the bytes git wrote, whatever
+    the exit: `git` above decodes as text, which a name that is not UTF-8
+    fails."""
+    return subprocess.run(["git", *args], cwd=str(repo), capture_output=True,
+                          check=False).stdout
+
+
+def held_by_git(repo: Path) -> dict:
+    """What a refusal must leave in `repo` as it was, as bytes (#765): the
+    commit HEAD names, the ref it is attached to, every ref and its commit,
+    the index and the status; and for each git directory under
+    `.git/modules`, a leg's or a member's, its refs, its object count and
+    its FETCH_HEAD with the time it was written, which every fetch into it
+    rewrites."""
+    held = {"head": git_answer_bytes(repo, "rev-parse", "HEAD"),
+            "attached": git_answer_bytes(repo, "symbolic-ref", "-q", "HEAD"),
+            "refs": git_answer_bytes(repo, "for-each-ref",
+                                     "--format=%(objectname) %(refname)"),
+            "index": git_answer_bytes(repo, "ls-files", "--stage", "-z"),
+            "status": git_answer_bytes(repo, "status", "--porcelain", "-z")}
+    modules = repo / ".git" / "modules"
+    gitdirs = sorted(found.parent for found in modules.rglob("HEAD")
+                     if (found.parent / "objects").is_dir()
+                     ) if modules.is_dir() else []
+    for gitdir in gitdirs:
+        fetched = gitdir / "FETCH_HEAD"
+        held[gitdir.relative_to(modules).as_posix()] = (
+            git_answer_bytes(gitdir, "for-each-ref",
+                             "--format=%(objectname) %(refname)"),
+            git_answer_bytes(gitdir, "count-objects", "-v"),
+            (fetched.read_bytes(), fetched.stat().st_mtime_ns)
+            if fetched.is_file() else None)
+    return held
+
+
+def on_a_branch_that_is_not_utf_8(repo: Path) -> dict:
+    """`repo` switched to a new branch `NOT_UTF_8_BRANCH` where HEAD is, or
+    the test skipped where this system cannot make the name
+    (`skip_where_a_name_cannot_be_not_utf_8`); returns `held_by_git(repo)`
+    on it."""
+    skip_where_a_name_cannot_be_not_utf_8(repo)
+    subprocess.run(["git", "switch", "-q", "-c", NOT_UTF_8_BRANCH],
+                   cwd=str(repo), capture_output=True, check=True)
+    return held_by_git(repo)
+
+
 def windows_fsencode(text: str | bytes | os.PathLike) -> bytes:
     """`os.fsencode` as Windows has it: UTF-8 with `surrogatepass`, so every
     lone surrogate is the three bytes of a sequence that is not UTF-8. A path
@@ -2361,3 +2419,92 @@ def refusal_detail(stderr: str, code: str) -> list[str]:
             if lines[at].startswith("Remediation:")]
     assert ends, stderr
     return lines[starts[0]:ends[0]]
+
+
+# --- git's rule for a ref, part by part, in the shell copies (#874) ----------
+
+#: THE TABLE the three shell copies of the ref rule are held to, one answer
+#: each: `setup.sh`'s `--shape-ref`, `install.sh`'s version and `openRepoShape`'s
+#: `ref_fault` (`tests/test_setup_sh.py`, `tests/test_install_sh.py` and
+#: `tests/test_openreposhape_command.py` read it). A name, and whether git
+#: takes it as a branch name. Git asks its rule of each part between slashes,
+#: not of the whole name alone: no empty part (`a//b`, `a/b/`), no part that
+#: starts with `.` (`a/.b`) or ends in `.lock` (`a.lock/b`), no `..`, and no
+#: name that ends in `.`. Each name is spelled with a letter or digit first
+#: and letters, digits, `.`, `_`, `/` and `-` after, the characters a copy
+#: takes, so what is asked is the shape and nothing else. The old line,
+#: `*..* | *.lock`, tested only the whole name: it took the first thirteen
+#: names below, which git refuses.
+REF_PARTS = [pytest.param(name, takes, id=name) for name, takes in (
+    # What the issue names: refused by git, and by no copy before #874.
+    ("a.lock/b", False), ("x/y.lock/z", False), ("release.lock/v1", False),
+    ("a/.b", False), ("a/.b/c", False), ("a//b", False), ("a/b/", False),
+    ("a.lock/", False), ("a.", False),
+    # rv873's two: a part that starts with `.`, deeper in the name.
+    ("a/b/.c/d", False), ("x/.y/z/w", False),
+    # The same kind, and taken by the old line too: a name that ends in `.`
+    # after a `/`, and a part that is a `.`.
+    ("a/b.", False), ("a/.", False),
+    # Refused before #874 as well, and refused still.
+    ("topic.lock", False), ("a..b", False), ("a/..", False),
+    ("a/b.lock", False), (".lock", False), ("/a", False),
+    # What must still pass: the refs this repository's tests and docs hand
+    # a copy, a commit's 40 hex digits, and workBenches' sentinel.
+    ("main", True), ("v1.0.0", True), ("v1.1.0", True),
+    ("topic.locked", True), ("feature/x-y_z", True),
+    ("0123456789abcdef0123456789abcdef01234567", True),
+    ("pinned-by-workBenches-no-fetch", True),
+    # What must still pass, next to the rule's edges: a part that only
+    # RESEMBLES a refused one, and a `.` that ends a part but not the name.
+    ("a.lockb", True), ("a.lock-x/b", True), ("a/b.lockb/c", True),
+    ("a./b", True), ("a/lock/b", True), ("refs/tags/v1.0", True),
+    ("v1.0.0-rc.1", True),
+    # What must still pass, with a part that starts with an upper-case
+    # letter, `_` or `-`: git takes each, and a copy that refused one would
+    # be refusing what git takes (`Feature/ABC-123`, `fix/_tmp`, `fix/-wip`).
+    ("Feature/ABC-123", True), ("fix/_tmp", True), ("fix/-wip", True),
+)]
+
+#: THE ONE SENTENCE each copy's refusal ends with, word for word the same in
+#: all three (#874): the rule it applied, in `setup-project.py`'s words where
+#: they fit (`why_not_a_ref`, #857). The words say ASCII because the patterns
+#: are, as `setup-project.py`'s `REF_RE` words do: "letters" alone describe
+#: `Caf\xe9` as a value that passes (rv811, rv874).
+REF_RULE_WORDS = (
+    "a ref starts with an ASCII letter or digit, uses only ASCII letters, "
+    "digits, '.', '_', '/', '-', has no '..' (git reads it as a revision "
+    "range), no empty part between slashes ('//', or a '/' at the end), no "
+    "part that starts with '.' or ends in '.lock' (the name git gives the "
+    "lock file it writes beside a ref), and does not end in '.'.")
+
+
+def git_takes_ref(name: str) -> bool:
+    """Whether the git that runs this suite takes `name` as a branch name.
+    ASKED of `git check-ref-format --branch`, never copied, so a git that
+    changes its mind changes the answer here and a table row is the one thing
+    to fix (#874)."""
+    proc = subprocess.run(["git", "check-ref-format", "--branch", name],
+                          capture_output=True, text=True, check=False)
+    return proc.returncode == 0
+
+
+def assert_a_copy_answers_as_git_does(copy: str, name: str, takes: bool,
+                                      copy_takes: bool) -> None:
+    """THE ONE ANSWER (#874): git, the table's row and the shell copy `copy`
+    all take `name` or all refuse it. Git is asked first, so a row that
+    no longer says what this git says is named as the row and not as the
+    copy."""
+    asked = git_takes_ref(name)
+    assert asked == takes, (
+        f"the table says git {'takes' if takes else 'refuses'} {name!r}, but "
+        f"this git {'takes' if asked else 'refuses'} it")
+    assert copy_takes == asked, (
+        f"{copy} {'takes' if copy_takes else 'refuses'} {name!r}, and git "
+        f"{'takes' if asked else 'refuses'} it")
+
+
+def assert_the_refusal_states_the_ref_rule(said: str, opening: str) -> None:
+    """A copy's refusal opens with its own words and the name (`opening`) and
+    goes on to `REF_RULE_WORDS`, the whole rule it applied."""
+    assert opening in said, said
+    assert REF_RULE_WORDS in said, said

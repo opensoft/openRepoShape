@@ -286,18 +286,21 @@ def test_distinct_names_pass_in_every_mode(holder, extra):
 
 
 def test_a_row_with_no_project_is_not_this_findings_to_make(holder):
-    """A row that is no mapping and a row with no `project:` are
-    `member-row`'s and `member-project`'s, which only the members-checked loop
-    asks. This one skips them rather than crash on them: a traceback exits 1,
-    which is a finding's code."""
+    """A row with no `project:` is `member-project`'s, which only the
+    members-checked loop asks, and a row that is no mapping is
+    `member-row`'s, which `--no-members` asks too since #864. This one skips
+    both rather than crash on them or call either a duplicate: a traceback
+    exits 1, which is a finding's code, so the one finding is
+    `member-row`'s."""
     # BYTES, so Windows does not rewrite the whole manifest with CRLF.
     text = (holder / "family.yaml").read_bytes().decode("utf-8")
     (holder / "family.yaml").write_bytes(
         (text + "  - nameless\n  - id: nameless\n").encode("utf-8"))
     result = validate(holder, "--no-members")
-    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.returncode == 1, result.stderr + result.stdout
     assert "Traceback" not in result.stderr
-    assert findings(result) == []
+    assert findings(result) == [
+        "FINDING member-row: a member is not a mapping: 'nameless'"]
 
 
 # --- both rows mounted -------------------------------------------------------

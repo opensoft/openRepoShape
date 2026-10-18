@@ -515,6 +515,13 @@ def a_github(tmp_path: Path, monkeypatch, branches=(SPLIT_BRANCH,)) -> Path:
     return bare
 
 
+#: The first `gh` command a run that went on to the legs gives: whether the
+#: spec leg's repository exists, asked before either is made (#798), whole,
+#: so that another `repo view` asked earlier cannot pass for it.
+TO_THE_LEGS = ["gh", "repo", "view", f"{ORG}/{PROJECT}-spec", "--json",
+               "nameWithOwner"]
+
+
 def no_gh(adopter, monkeypatch) -> list:
     """`run`, with every `gh` command it is given recorded and refused as
     `Proceeded`: nothing here may reach GitHub."""
@@ -560,7 +567,7 @@ def test_execute_goes_on_to_the_legs_when_github_has_no_such_branch(
     asked = no_gh(adopter, monkeypatch)
     with pytest.raises(Proceeded):
         adopter.cmd_execute(execute_args(plan, tmp_path, local=False))
-    assert asked[0][:3] == ["gh", "repo", "create"]
+    assert asked[0] == TO_THE_LEGS
 
 
 def test_execute_refuses_a_repository_it_cannot_list(adopter, tmp_path,
@@ -668,7 +675,7 @@ def test_a_github_run_is_not_refused_for_the_split_branch_in_the_source(
     asked = no_gh(adopter, monkeypatch)
     with pytest.raises(Proceeded):
         adopter.cmd_execute(execute_args(plan, tmp_path, local=False))
-    assert asked[0][:3] == ["gh", "repo", "create"]
+    assert asked[0] == TO_THE_LEGS
 
 
 def test_a_plan_that_seeds_both_legs_is_not_asked_about_the_extraction(
@@ -693,7 +700,7 @@ def test_a_plan_that_seeds_both_legs_is_not_asked_about_the_extraction(
     args.allow_empty_leg = ["spec", "code"]
     with pytest.raises(Proceeded):
         adopter.cmd_execute(args)
-    assert asked[0][:3] == ["gh", "repo", "create"]
+    assert asked[0] == TO_THE_LEGS
 
 
 def with_origin(source: Path, bare: Path) -> None:
@@ -843,7 +850,7 @@ def test_a_github_run_is_not_refused_for_a_branch_the_source_hides(
     args = execute_args(plan, tmp_path, local=False)
     with pytest.raises(Proceeded):
         adopter.cmd_execute(args)
-    assert asked[0][:3] == ["gh", "repo", "create"]
+    assert asked[0] == TO_THE_LEGS
 
 
 def test_an_earlier_split_branch_the_source_hides_is_found_and_refused(
