@@ -494,13 +494,14 @@ def _cannot_open_advice(errors: list[OSError], *,
     is not a permission and is not told to `chmod`.
 
     THE DEFAULTS ARE THE WORDS `validate-pins.py` AND THE DOCTOR GIVE, word
-    for word (#712; `tests/test_doctor_unreadable_pin.py` compares them). Two
-    keywords change them for one refusal of this tool, which has its own
-    reason to (#430): `above` is what bounds "every directory above it" (a
-    root's `project.yaml` is refused by a directory above the root as well,
-    so its refusal takes none), and `other` is the sentence for a cause that
-    is not a permission, where "take away one nobody wants" would be wrong
-    (a validator taken away is SKIPPED).
+    for word (#712; `tests/test_doctor_unreadable_pin.py` compares them). Each
+    of two keywords serves ONE refusal of this tool, which has its own reason
+    to change them (#430): `above`, the manifest's, is what bounds "every
+    directory above it" (a root's `project.yaml` is refused by a directory
+    above the root as well, so that refusal takes none), and `other`, the
+    validators', is the sentence for a cause that is not a permission, where
+    "take away one nobody wants" would be wrong (a validator taken away is
+    SKIPPED).
     """
     advice = ""
     if any(isinstance(error, PermissionError) for error in errors):
@@ -635,8 +636,7 @@ def _workflows_dir_refusal(root: Path, workflows: Path,
         "`scripts/validate-pins.py` reads them too, so a directory it cannot "
         "list is one it cannot bump. "
         + _cannot_open_advice([exc])
-        + "Then run the same command again. Nothing in the working tree, "
-        "the index or the leg's checkout was changed.")
+        + UNCHANGED)
 
 
 def _workflow_texts(root: Path, workflows: Path, tracked: set[str],
@@ -1128,8 +1128,11 @@ def _validators_readable(root: Path) -> None:
     run ended `bump-leg-rewrite-failed`, rolled back, after the leg had
     moved; and a validator at mode 000 in a searchable `scripts/` reached
     the child, which could not open it, and was `bump-leg-validators-red`,
-    rolled back. A dry run said none of it. The file is opened as well as
-    `stat`ed, since the child has to read it, and closed unread.
+    rolled back: that holds where git is told to assume the file unchanged
+    (`--assume-unchanged`), since on a real root plain `git status` shows
+    the file modified and the run stops at `bump-leg-root-dirty`, before and
+    after this change. A dry run said none of it. The file is opened as well
+    as `stat`ed, since the child has to read it, and closed unread.
 
     A VALIDATOR THAT IS NOT THERE IS NOT ASKED ABOUT (`_is_a` answers False
     only where no regular file is at the name: an `_ABSENT_ERRNOS` answer
@@ -1144,9 +1147,12 @@ def _validators_readable(root: Path) -> None:
     FILE AWAY, as the generic words for one are: a validator taken away is
     SKIPPED, which is the very thing this refuses. It is told to restore the
     file from the project's history, and that nothing may be changing
-    `scripts/` while this runs. A `stat` the operating system refused is told
-    which directory was at fault, since a person who `chmod`s the file is
-    refused again."""
+    `scripts/` while this runs, by a `git -C <root> checkout --` line through
+    `shlex.join` as this tool's other git lines are (#532): this tool is run
+    from a checkout of the standard with `--root` naming the project, whose
+    own `scripts/` that checkout does not track. A `stat` the operating
+    system refused is told which directory was at fault, since a person who
+    `chmod`s the file is refused again."""
     lines: list[str] = []
     errors: list[OSError] = []
     # each validator refused for a cause that is not a permission
@@ -1185,9 +1191,11 @@ def _validators_readable(root: Path) -> None:
             + _cannot_open_advice(errors, other=(
                 "Where the operating system gave another reason, restore "
                 + " and ".join(f"`{script}`" for script in restore)
-                + " from the project's history (`git checkout -- "
-                + " ".join(restore) + "`) and make sure nothing is changing "
-                "`scripts/` while this runs. "))
+                + " from the project's history (`"
+                + shlex.join(["git", "-C", str(root), "checkout", "--",
+                              *restore])
+                + "`) and make sure nothing is changing `scripts/` while "
+                "this runs. "))
             + UNCHANGED)
 
 

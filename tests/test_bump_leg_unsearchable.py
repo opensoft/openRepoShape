@@ -12,11 +12,14 @@ and their directory. Three more guards asked `Path.is_file()` or
     printed `<script> is absent; SKIPPED` for both and COMMITTED the bump,
     exit 0, with neither check run; 3.12 ended `bump-leg-rewrite-failed`,
     rolled back, after the leg had moved. A validator at mode 000 in a
-    searchable `scripts/` was `bump-leg-validators-red` after the rewrite. A
-    dry run said none of it, exit 0. Now each one that is there and cannot
-    be read is `bump-leg-validator-unreadable`, named, exit 2, before
-    anything is written, under `--dry-run` as well; one that is not there at
-    all is still SKIPPED (the control below).
+    searchable `scripts/` was `bump-leg-validators-red` after the rewrite,
+    where git is told to assume it unchanged (`--assume-unchanged`, as the
+    real-mode tests below do): on a real root plain `git status` shows that
+    file modified, and the run stops at `bump-leg-root-dirty`, before and
+    after this change. A dry run said none of it, exit 0. Now each one that
+    is there and cannot be read is `bump-leg-validator-unreadable`, named,
+    exit 2, before anything is written, under `--dry-run` as well; one that
+    is not there at all is still SKIPPED (the control below).
   * `_initialized_submodule`, of `<leg>/.git`. A leg at mode 000 was a
     traceback on 3.12 and `bump-leg-uninitialized` on 3.14, whose remedy
     initializes a checkout that is there. Now `bump-leg-submodule-unreadable`.
@@ -55,6 +58,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import shlex
 import stat
 from pathlib import Path
 
@@ -144,13 +148,21 @@ def stat_fails(monkeypatch, failures: dict) -> None:
     monkeypatch.setattr(Path, "stat", failing)
 
 
+def checkout_command(project: Path, *files: str) -> str:
+    """The line a validator's remedy gives to restore `files`: `git -C <root>`
+    through `shlex.join`, as every git line this tool prints is (#532), for
+    the tool is run from a checkout of the standard, which does not track the
+    project's own validators."""
+    return shlex.join(["git", "-C", str(project), "checkout", "--", *files])
+
+
 # --- the project's own validators, on a real mode --------------------------
 
 @needs_a_mode
 @MODES
 @SEARCH_MODES
 def test_a_scripts_directory_that_cannot_be_searched_refuses_both_validators(
-        project, scaffolded, advanced, extra, mode):
+        bump_leg_module, project, scaffolded, advanced, extra, mode):
     """THE ISSUE'S ROW: `scripts/` at 444 (its names list, no `stat` of one
     is let through) or 000. On 3.14 the real run SKIPPED both validators and
     committed, exit 0; on 3.12 it was `bump-leg-rewrite-failed` after the leg
@@ -173,7 +185,8 @@ def test_a_scripts_directory_that_cannot_be_searched_refuses_both_validators(
     assert "never one to skip" in stderr
     assert "Then run the same command again" in stderr
     assert "bump-leg-rewrite-failed" not in stderr
-    assert "rolled back" not in stderr, "refused before the leg moved"
+    assert bump_leg_module.ROLLED_BACK not in stderr, (
+        "refused before the leg moved")
     refused_again_fine(project, scaffolded, advanced, extra,
                        "contracts/spec-pin.yaml")
 
@@ -181,12 +194,15 @@ def test_a_scripts_directory_that_cannot_be_searched_refuses_both_validators(
 @needs_a_mode
 @MODES
 def test_a_validator_this_user_cannot_open_is_refused_by_name(
-        project, scaffolded, advanced, extra):
+        bump_leg_module, project, scaffolded, advanced, extra):
     """`scripts/validate-pins.py` itself at mode 000, in a `scripts/` that can
-    be searched: its `stat` answers, its open does not. It reached the child,
-    which could not open it, and the real run was `bump-leg-validators-red`
-    after the rewrite, the dry run exit 0. Now it is named before anything is
-    written, and the validator that can be read is not."""
+    be searched: its `stat` answers, its open does not. With git told to
+    assume it unchanged (`made_unopenable` does), it reached the child, which
+    could not open it, and the real run was `bump-leg-validators-red` after
+    the rewrite, the dry run exit 0; on a real root plain `git status` shows
+    the file modified and the run stops at `bump-leg-root-dirty`, before and
+    after this change. Now it is named before anything is written, and the
+    validator that can be read is not."""
     prepared(project)
 
     stderr = refused_while_unopenable(
@@ -200,7 +216,8 @@ def test_a_validator_this_user_cannot_open_is_refused_by_name(
     assert "chmod u+r" in stderr
     assert "A `stat` of a file is refused" not in stderr, "the open failed"
     assert "bump-leg-validators-red" not in stderr
-    assert "rolled back" not in stderr, "refused before the leg moved"
+    assert bump_leg_module.ROLLED_BACK not in stderr, (
+        "refused before the leg moved")
     refused_again_fine(project, scaffolded, advanced, extra,
                        "contracts/spec-pin.yaml")
 
@@ -336,8 +353,12 @@ def test_a_validator_failing_for_another_reason_is_restored_not_taken_away(
         refusal.remediation)
     assert f"restore `{script}` from the project's history" in (
         refusal.remediation)
-    assert f"(`git checkout -- {script}`)" in refusal.remediation
+    assert f"(`{checkout_command(project, script)}`)" in refusal.remediation
     assert "`scripts/` while this runs" in refusal.remediation
+    assert bump_leg_module.UNCHANGED in refusal.remediation
+    assert refusal.remediation.endswith(
+        "Nothing in the working tree, the index or the leg's checkout was "
+        "changed.")
     assert "take away" not in refusal.remediation
     assert "put a regular file" not in refusal.remediation
     assert "A `stat` of a file is refused" not in refusal.remediation
@@ -363,12 +384,38 @@ def test_validators_refused_for_both_kinds_of_cause_get_each_ones_advice(
             in refusal.detail)
     assert "chmod u+rx" in refusal.remediation
     assert "A `stat` of a file is refused" in refusal.remediation
-    assert "(`git checkout -- scripts/validate-pins.py`)" in (
+    assert f"(`{checkout_command(project, 'scripts/validate-pins.py')}`)" in (
         refusal.remediation)
     assert "restore `scripts/validate-pins.py` from" in refusal.remediation
     assert "take away" not in refusal.remediation
     assert refusal.remediation.index("chmod u+rx") < (
         refusal.remediation.index("restore `scripts/validate-pins.py`"))
+
+
+def test_both_validators_failing_for_another_reason_are_both_restored(
+        bump_leg_module, project, monkeypatch):
+    """BOTH VALIDATORS, AN I/O ERROR EACH: one command restores both, in that
+    root whatever directory the tool was run from, and neither is left to be
+    taken away. No `chmod`, and no directory blamed."""
+    stat_fails(monkeypatch, {name: IO_ERROR for name in VALIDATOR_NAMES})
+
+    refusal = refusal_of(bump_leg_module,
+                         bump_leg_module._validators_readable, project)
+
+    assert refusal.code == "bump-leg-validator-unreadable"
+    assert refusal.detail.startswith(
+        "2 of the project's own validator(s) cannot be opened:")
+    for script in VALIDATORS:
+        assert f"{script}: cannot be read: Input/output error" in (
+            refusal.detail)
+    assert f"(`{checkout_command(project, *VALIDATORS)}`)" in (
+        refusal.remediation)
+    assert ("restore `scripts/validate-pins.py` and "
+            "`scripts/validate-manifest.py` from the project's history"
+            in refusal.remediation)
+    assert "chmod" not in refusal.remediation
+    assert "take away" not in refusal.remediation
+    assert "A `stat` of a file is refused" not in refusal.remediation
 
 
 def test_a_validator_whose_open_is_refused_does_not_blame_a_directory(
