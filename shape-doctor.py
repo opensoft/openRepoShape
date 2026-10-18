@@ -424,9 +424,11 @@ try:
     #: `adopt-project.py plan` takes `--org` from, imported here for the same
     #: reason, in place of a copy of `plan`'s regex (`origin_org`, #521).
     #: `spelled` is how `siblings.py` prints the values that row quotes (#673).
+    #: `host_shell_dialect` is which shell a printed line is quoted for, the
+    #: one question `quote_arg` and `repo_shape.shell_quoted` both ask (#711).
     from repo_shape import (  # noqa: E402
         COMMIT_RE, NamingPolicy, POWERSHELL_SINGLE_QUOTES, PYTHON,
-        Refusal, accepts_role, git_out,
+        Refusal, accepts_role, git_out, host_shell_dialect,
         load_yaml, recorded_gitlink, redacted, remote_local_path,
         resolved_remote, same_repository, spelled, url_repository,
     )
@@ -905,9 +907,17 @@ def quote_arg(value, platform: str | None = None, *,
     `tests/test_family_printed_quoting.py` holds the two quoters to one
     answer. PowerShell's dialect is NOT changed: it expands no `=word`, so
     `UNQUOTED_NT` keeps its bare `=`, as in any other place in a word.
+
+    NO `platform` IS THE SHELL THE DOCTOR RUNS IN, which
+    `repo_shape.host_shell_dialect` answers, the question
+    `repo_shape.shell_quoted` asks too (#711): PowerShell's dialect on
+    Windows, and `sh`'s under Git Bash, where `MSYSTEM` is set, and
+    everywhere else. It used to be `os.name`, which is `nt` under Git Bash
+    as well, so Git Bash was handed lines quoted for PowerShell.
     """
     text = str(value)
-    windows = (os.name if platform is None else platform) == "nt"
+    windows = (host_shell_dialect() if platform is None
+               else platform) == "nt"
     if not text.isascii():
         # Never bare: neither alphabet holds a character that is not ASCII.
         return quoted_beyond_ascii(text, windows, printed_encoding(encoding))
@@ -1368,9 +1378,36 @@ class Context:
             return None
 
     def legs(self) -> list[dict]:
-        """The non-assembly legs `project.yaml` declares, in its own order."""
-        return [leg for leg in ((self.manifest or {}).get("legs") or [])
+        """The non-assembly legs `project.yaml` declares, in its own order.
+
+        A `legs:` THAT IS NOT A LIST DECLARES NO LEG THIS CAN NAME (#832), as
+        `validate-manifest.py` reads it (#714), and an entry that is not a
+        mapping is no leg; `legs_unread` says each. Iterated as `legs or []`,
+        `legs: 5` ended the whole report in a `TypeError`, in `declared_pins`
+        under the `manifest kinds` row, and a scalar `openXdox` or a mapping
+        was walked one character, or one key, at a time, so the `legs` row
+        called the project one with no legs.
+        """
+        declared = (self.manifest or {}).get("legs")
+        if not isinstance(declared, list):
+            return []
+        return [leg for leg in declared
                 if isinstance(leg, dict) and leg.get("role") != "assembly"]
+
+    def legs_unread(self) -> list[str]:
+        """What in `legs:` names no leg `legs` can read, each as
+        `validate-manifest.py`'s finding, in its words (#714, #832): a
+        `legs:` that is not a list, or each entry of one that is not a
+        mapping. Absent or null is neither: it declares no leg, and
+        `validate-manifest.py` says `legs is missing or empty` of it."""
+        declared = (self.manifest or {}).get("legs")
+        if declared is None:
+            return []
+        if not isinstance(declared, list):
+            return [f"manifest-legs: legs is {declared!r}, expected a list of "
+                    "`role:`, `repository:` and `path:` mappings"]
+        return [f"manifest-leg: a leg is not a mapping: {leg!r}"
+                for leg in declared if not isinstance(leg, dict)]
 
     def members(self) -> list[dict]:
         return [row for row in ((self.manifest or {}).get("members") or [])
@@ -1540,7 +1577,7 @@ def restore_from_head(root: Path, relative: str,
     passed on to `quote_arg` as `bump_leg_command`'s is, so both dialects
     are asserted from either host.
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     return (f"git -C {quote_arg(root, target)} checkout HEAD -- "
             f"{quote_arg(relative, target)}")
 
@@ -1995,9 +2032,13 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
     `platform` IS PASSED ON, as `copy_command` says at length: one resolved
     `target` governs the dialect, the interpreter and every quoting, so a
     Windows line built on a POSIX runner is a Windows line, and both are
-    asserted from either host. `platform=None` is the host, unchanged.
+    asserted from either host. `platform=None` is the host, and asks two
+    questions that part only under Git Bash (#711): the shell
+    (`host_shell_dialect`, `sh`'s there) for `env` or `$env:` and every
+    quoting, and the machine (`python_command`, `python` on Windows) for
+    the interpreter, so Git Bash gets `env PYTHONPATH=... python ...`.
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     command = " ".join([python_command(platform), quote_arg(used, target),
                         *(quote_arg(arg, target) for arg in args)])
     scripts = validator_scripts(shape, own_copy)
@@ -2009,11 +2050,15 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
     return f"env PYTHONPATH={quote_arg(scripts, target)} {command}"
 
 
-def lost_repo_shape_cure(ctx: Context, own: str, lost: Path,
-                         rerun: str) -> tuple[str | None, str]:
+def lost_repo_shape_cure(ctx: Context, own: str, lost: Path, rerun: str,
+                         again: bool = True) -> tuple[str | None, str]:
     """`(the NEXT, the why)` for a root's own validator `own` that crashed
     because `lost`, the `repo_shape.py` it imports from beside itself, is not
     there, where `rerun` is the line that runs `own` (#697).
+
+    `again` says "run it AGAIN" where the doctor ran the gate and it crashed,
+    as the validator rows' crash does; the `legs` and `members` rows' lockstep
+    line is one the reader never ran, and says "run it" (#750).
 
     THE NEXT IS THE CURE, NOT THE VALIDATOR. The row used to print `rerun`,
     and a reader whose own `PYTHONPATH`, or a `.pth` in whose site-packages,
@@ -2036,14 +2081,14 @@ def lost_repo_shape_cure(ctx: Context, own: str, lost: Path,
     only: the standard's template copy has none beside it by design.
     """
     relative = lost.relative_to(ctx.root).as_posix()
-    then = (f"run `{rerun}` again once the file is back; before that, a "
-            "reader whose own PYTHONPATH or site-packages reaches another "
-            "repo_shape sees it run on that one, which says nothing about "
-            "this root's own copy")
+    then = (f"run `{rerun}`{' again' if again else ''} once the file is "
+            "back; before that, a reader whose own PYTHONPATH or "
+            "site-packages reaches another repo_shape sees it run on that "
+            "one, which says nothing about this root's own copy")
     if head_holds(ctx.root, relative):
         return (restore_from_head(ctx.root, relative),
                 f"it puts back the {relative} HEAD holds, the copy this "
-                f"project committed and {own} imports, where update-shape.py "
+                f"root committed and {own} imports, where update-shape.py "
                 f"apply would copy a newer one. Then {then}")
     return None, (f"HEAD does not hold {relative}, so no git checkout HEAD "
                   f"puts it back and {own} would only crash again: a "
@@ -2302,7 +2347,7 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
         return Row(check_id, label, FINDING, reason,
                    restore_from_head(ctx.root, lost), detail,
                    why=f"it puts back the {lost} HEAD holds, the copy this "
-                       f"project committed and {own} imports, where "
+                       f"root committed and {own} imports, where "
                        "update-shape.py apply would copy a newer one, then "
                        f"run {own} again: it refuses {name} by name until it "
                        "loads. A deletion already committed comes back from "
@@ -2351,6 +2396,36 @@ def waiting_row(ctx: Context, check_id: str, label: str, needs: str,
                f"{ctx.manifest_path.name} does not load, so {needs}; the "
                f"`{owner}` row quotes why and names the fix", None,
                {**(detail or {}), "waits_on": owner})
+
+
+def legs_unread_row(ctx: Context, check_id: str, label: str, needs: str,
+                    detail: dict | None = None) -> Row | None:
+    """The `n/a` a row that reads the LEGS gives where `legs:` names none it
+    can read (#832), or None: where it names a leg, and where it names none
+    at all (absent, null or `[]`), which the row's own sentence is about.
+
+    A `legs:` that is not a list, or a list in which no leg but the assembly
+    leg is a mapping and some entry is not one, is not a project with no
+    legs, which is what these rows said of `openXdox`, `{a: b}` and `[5]`
+    ("a one-repository project has none"): it is a manifest nobody can read
+    legs out of. ONE FAULT, ONE FINDING, as `waiting_row` reasons: the
+    project's own `validate-manifest.py` says the fault, and the `manifest`
+    row runs it, so this row is `n/a`, says the same sentence
+    (`Context.legs_unread`) and names that row in `waits_on`. A list that
+    holds a leg as well as an entry that is not one is checked leg by leg,
+    as `validate-pins.py` checks the rest past such an entry, and the entry
+    is left to the `manifest` row.
+    """
+    unread = ctx.legs_unread()
+    if not unread or ctx.legs():
+        return None
+    what = ("holds an entry that is not a mapping"
+            if isinstance(ctx.manifest.get("legs"), list) else "is not a list")
+    return Row(check_id, label, NA,
+               f"{ctx.manifest_path.name}'s `legs:` {what} "
+               f"({'; '.join(unread)}), so {needs}; the `manifest` row's "
+               "command names the fault", None,
+               {**(detail or {}), "waits_on": "manifest"})
 
 
 # ---------------------------------------------------------------------------
@@ -2616,7 +2691,7 @@ def bump_leg_command(shape: Path, root: Path, role: str, commit: str,
     one, as the `shape currency` row's `apply` does, because it writes a
     commit too (#111).
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     return " ".join([
         python_command(platform),
         quote_arg(shape / "scripts" / "bump-leg.py", target),
@@ -5523,6 +5598,15 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
     The `legs` and `members` rows say the same thing about a leg and about a
     member, so the sentence is written here once -- and it is the row's
     `why`, apart from the line, never a `   # ` tail on it (#277).
+
+    A GATE THAT CANNOT IMPORT `repo_shape` IS NOT THE LINE (#750). The root's
+    own copy, beside a lost `scripts/repo_shape.py`, dies on that import and
+    exits 1, the code it uses for findings, so that line cannot do what the
+    sentence says of it, and the `pins` and `family` rows beside it already
+    print the cure (#697). So the line is theirs, from
+    `lost_repo_shape_cure`: the one command that puts the file back, or none
+    where HEAD no longer holds it. Its `why` says to run the gate once the
+    file is back, and the sentence above follows it.
     """
     used, _, own_copy = validator_for(ctx, *gate)
     if (not used.is_file()
@@ -5530,10 +5614,16 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
         return None, None
     command = validator_command(ctx.shape, used, own_copy,
                                 ["--root", str(ctx.root)])
-    return command, (f"no submodule update cures a {noun} whose gitlink "
-                     "or pin is missing or disagrees, or a mount git cannot "
-                     f"read a HEAD in. {used.name} prints what it finds and "
-                     "names the repair where it has one")
+    said = (f"no submodule update cures a {noun} whose gitlink "
+            "or pin is missing or disagrees, or a mount git cannot "
+            f"read a HEAD in. {used.name} prints what it finds and "
+            "names the repair where it has one")
+    if own_copy and not imports_repo_shape(ctx.shape, used, own_copy):
+        cure, why = lost_repo_shape_cure(
+            ctx, gate[0], repo_shape_for(ctx.shape, used, own_copy), command,
+            again=False)
+        return cure, f"{why}. {said[:1].upper()}{said[1:]}"
+    return command, said
 
 
 def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
@@ -6045,7 +6135,7 @@ def checkout_notes(noun: str, off_pin: list[Path], kept: list = (),
     about a loss that cannot happen learns to skip the sentence on the day
     it can.
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     notes = "".join(f". {rel} has files but no .git of its own, and git kept "
                     "its repository, so this line links the two again"
                     for rel in relinked)
@@ -6167,7 +6257,7 @@ def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
     `platform` is `quote_arg`'s and `copy_command`'s, and for the same
     reason: the line is spelled for the reader's shell, not the host's.
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     line = " ".join(["git", "-C", quote_arg(root, target), "submodule",
                      "update", "--init", "--recursive", "--checkout", "--",
                      *(quote_arg(path, target) for path in paths)])
@@ -6191,7 +6281,10 @@ def check_legs(ctx: Context) -> Row:
 
     THE LEGS ARE THE MANIFEST'S, and a manifest that does not load declares
     none that this row can name -- which is not "declares no non-assembly
-    leg", the sentence below, about a project that has none (#205).
+    leg", the sentence below, about a project that has none (#205). Nor is
+    a `legs:` that is not a list, or one holding only entries that are not
+    mappings: `legs_unread_row` says which, in `validate-manifest.py`'s
+    words, and waits on the `manifest` row (#832).
 
     THE NEXT IS CHOSEN BY WHAT IS WRONG, AND IT CURES THE FIRST KIND (#276).
     `make bootstrap` was named for all of it and does not answer it: it
@@ -6259,9 +6352,10 @@ def check_legs(ctx: Context) -> Row:
     an unborn HEAD or a leg with no url gets the same sentence it gets with
     no line at all, which ends by saying to run the doctor again.
     """
-    waiting = waiting_row(ctx, "legs", "legs",
-                          "the legs it declares are not known and none is "
-                          "checked against its pin", {"legs": []})
+    needs = ("the legs it declares are not known and none is checked against "
+             "its pin")
+    waiting = (waiting_row(ctx, "legs", "legs", needs, {"legs": []})
+               or legs_unread_row(ctx, "legs", "legs", needs, {"legs": []}))
     if waiting is not None:
         return waiting
     legs = ctx.legs()
@@ -6467,14 +6561,19 @@ def copy_command(source, target, platform: str | None = None) -> str:
     being exercised only where nobody is looking.
 
     AND `platform` IS PASSED ON, not merely branched on. `quote_arg(value)`
-    with no platform reads the REAL host's `os.name`, so a Windows line
+    with no platform reads the REAL host's shell, so a Windows line
     built on a POSIX runner would be quoted by `sh` rules -- the function
     claiming a spelling it did not produce, which is the defect #103 names
     in the neighbouring `scaffold_command`. Here the argument is threaded
     through to every value, so what the test asserts is what a Windows
     reader gets.
+
+    WITH NO `platform`, THE BRANCH ASKS WHAT THE QUOTING ASKS:
+    `host_shell_dialect` (#711). `Copy-Item` is a cmdlet, which Git Bash
+    does not have, and Git Bash has a `cp`, so a Windows machine run from
+    Git Bash is handed `cp` and `sh`'s quoting, the line its shell runs.
     """
-    if (os.name if platform is None else platform) == "nt":
+    if (host_shell_dialect() if platform is None else platform) == "nt":
         return (f"Copy-Item -LiteralPath {quote_arg(source, platform)} "
                 f"-Destination {quote_arg(target, platform)}")
     return f"cp {quote_arg(source, platform)} {quote_arg(target, platform)}"
@@ -6615,8 +6714,11 @@ def check_leg_shape_files(ctx: Context) -> Row:
     compare every leg, say what was found, and offer a copy for the files a
     copy would fix.
     """
-    waiting = waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
-                          "there are no legs to compare", {"legs": []})
+    needs = "there are no legs to compare"
+    waiting = (waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
+                           needs, {"legs": []})
+               or legs_unread_row(ctx, "leg-shape-files",
+                                  LABEL_LEG_SHAPE_FILES, needs, {"legs": []}))
     if waiting is not None:
         return waiting
     legs = ctx.legs()
@@ -7791,11 +7893,13 @@ def check_placement(ctx: Context) -> Row:
             "a family holder has no legs of its own: each member is an "
             "assembly root and answers this in its own report")
     # Before the sentence below, which is about a project that declares no
-    # leg, not one whose manifest nobody could read (#205). And `n/a` is what
-    # makes `--placement-plan` refuse by name and write nothing: there is no
-    # leg to write a plan about until the manifest loads.
-    waiting = waiting_row(ctx, "placement", "placement",
-                          "there is no leg to classify a path in")
+    # leg, not one whose manifest nobody could read (#205), nor one whose
+    # `legs:` names no leg that can be read (#832). And `n/a` is what makes
+    # `--placement-plan` refuse by name and write nothing: there is no leg to
+    # write a plan about until the manifest loads and names one.
+    needs = "there is no leg to classify a path in"
+    waiting = (waiting_row(ctx, "placement", "placement", needs)
+               or legs_unread_row(ctx, "placement", "placement", needs))
     if waiting is not None:
         return placement_row(NA, waiting.reason, None, waiting.detail)
     legs = ctx.legs()
@@ -9661,7 +9765,7 @@ def scaffold_command(shape: Path, project: str,
 
     AND THE QUOTING IS THAT PLATFORM'S TOO, which is the third of the three
     decisions this one line makes and was the last one still reading the
-    HOST. `quote_arg` defaults to `os.name` when it is passed no platform, so
+    HOST. `quote_arg` defaults to the host when it is passed no platform, so
     with an explicit `platform` half this line followed the argument and half
     followed the machine: `scaffold_command(PureWindowsPath(r"C:\srv\Shape"),
     "Atlas", "nt")` named `setup-project.py` and `python` on every host, as
@@ -9671,18 +9775,22 @@ def scaffold_command(shape: Path, project: str,
     OTHER one (#103). `\` is in `UNQUOTED_NT` and not in `UNQUOTED_POSIX`,
     so a Windows path is exactly where that shows.
 
-    ONE RESOLUTION, USED THREE TIMES. `target` is decided once and the
-    branch, the quoting and the interpreter all read it rather than each
-    re-deriving "which platform is this" from its own source -- which is the
-    defect above, stated as code. `python_command` is the one that keeps the
-    RAW `platform`: `None` there returns the module constant itself rather
-    than a second derivation of the same rule (see its docstring), and
-    `quote_arg(value, None)` resolves the host identically to
-    `quote_arg(value, os.name)`, so the host-default line is unchanged, byte
-    for byte.
+    ONE RESOLUTION PER QUESTION, NEVER ONE PER CALL. An explicit `platform`
+    is the whole answer: the branch, the quoting and the interpreter all
+    read it, rather than each re-deriving "which platform is this" from its
+    own source -- which is the defect above, stated as code. With none, the
+    host answers two questions, and Git Bash is where they part (#711): the
+    MACHINE picks the entry point and the interpreter, so a Windows machine
+    is handed `python setup-project.py` in PowerShell and in Git Bash alike
+    (`os.name`, and `python_command`, which keeps the RAW `platform` and so
+    the module constant itself); the SHELL picks the quoting, which is
+    `host_shell_dialect`, `sh`'s under Git Bash, as `quote_arg(value, None)`
+    asks it. Off Git Bash the two answers are one, so that line is unchanged,
+    byte for byte.
     """
-    target = os.name if platform is None else platform
-    if target == "nt":
+    machine = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
+    if machine == "nt":
         return (f"{python_command(platform)} "
                 f"{quote_arg(shape / 'setup-project.py', target)} "
                 f"--org {ORG_PLACEHOLDER} --project "

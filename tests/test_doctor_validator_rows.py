@@ -23,8 +23,11 @@ the restore line #298 gave the unloaded-manifest row, and the gate is the
 row's why.
 
 EVERY ASSERTION IS ON WHAT A COMMAND DOES -- the row's status, its `detail`,
-the verdict, and a NEXT that is run -- and never on the words of a row's
-`why`, the sentence beside its NEXT (#277). The fixtures are those of
+the verdict, and a NEXT that is run -- and not on the prose of a row's `why`,
+the sentence beside its NEXT (#277). Where a row's why is the only place a
+command or a fact is named, the test reads the why for that and no more: the
+gate to run after the cure (#697, #750), the file, the commit a deletion comes
+back from. The fixtures are those of
 `tests/test_shape_doctor.py`, imported, so the standard, the project and the
 holder are the ones every other doctor test reads.
 
@@ -912,6 +915,85 @@ def test_the_unloaded_manifest_row_prints_the_same_restore_line(
                                       "tree")
     row = rows_of(doctor(standard, root, "--json"))[row_id]
     assert row["next"] == doctor_module(standard).restore_from_head(root, LOST)
+
+
+# --- #750: the lockstep line of the legs and members rows is the cure too ---
+#
+# `lockstep_next` named the root's own gate for a gitlink off its pin, and
+# that gate dies on `import repo_shape` where the root lost it: the line the
+# `pins` and `family` rows beside it had just stopped printing (#697).
+
+#: Per gate case: the row that hands over its lockstep line, how the root's
+#: gitlink is put off its pin, and the finding the gate prints for it.
+LOCKSTEP_OF = {
+    "pins": ("legs", make_gitlink_moved, "pin-gitlink-mismatch"),
+    "family": ("members", make_member_gitlink_mismatch,
+               "member-gitlink-mismatch"),
+}
+
+
+def lockstep_lost(case: str, project: Path, holder: dict, tmp_path: Path,
+                  committed: bool = False) -> tuple[Path, str]:
+    """`(root, the row that hands over the lockstep line)` for a root with a
+    gitlink off its pin and its own `case` gate's `scripts/repo_shape.py`
+    lost: in the tree, which HEAD still holds, or `committed`."""
+    row_id, off_its_pin, _finding = LOCKSTEP_OF[case]
+    root = lost_gate(case, project, holder, tmp_path, committed)
+    off_its_pin(root)
+    return root, row_id
+
+
+@pytest.mark.parametrize("case", sorted(LOCKSTEP_OF))
+def test_the_lockstep_line_of_a_root_that_lost_repo_shape_is_the_cure(
+        standard, project, holder, tmp_path, case):
+    """The `legs` or `members` NEXT is the line the gate's own row prints,
+    and the gate it used to be is the why's."""
+    root, row_id = lockstep_lost(case, project, holder, tmp_path)
+    rows = rows_of(doctor(standard, root, "--json"))
+    row = rows[row_id]
+    assert row["status"] == "FINDING", row
+    assert row["next"] == doctor_module(standard).restore_from_head(root, LOST)
+    assert row["next"] == rows[case]["next"], (row["next"], rows[case]["next"])
+    assert rerun_of(standard, root, case) in row["why"], row["why"]
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs sh")
+@pytest.mark.parametrize("case", sorted(LOCKSTEP_OF))
+def test_the_cure_pasted_and_then_the_lockstep_line_both_run(
+        standard, project, holder, tmp_path, case):
+    """Both lines PASTED as printed, from `/` with no `PYTHONPATH`: the cure
+    exits 0, and the row then names the lockstep gate, which prints its own
+    finding for the gitlink and exits 1, where it died on
+    `ModuleNotFoundError` before."""
+    root, row_id = lockstep_lost(case, project, holder, tmp_path)
+    row = rows_of(doctor(standard, root, "--json"))[row_id]
+    restored = pasted_from_elsewhere(row["next"], tmp_path)
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    after = rows_of(doctor(standard, root, "--json"))[row_id]
+    assert after["next"] == rerun_of(standard, root, case), after["next"]
+    gate = pasted_from_elsewhere(after["next"], tmp_path)
+    whole = gate.stdout + gate.stderr
+    assert gate.returncode == 1, whole
+    assert LOCKSTEP_OF[case][2] in whole, whole
+    assert "ModuleNotFoundError" not in whole, whole
+
+
+@pytest.mark.parametrize("case", sorted(LOCKSTEP_OF))
+def test_a_lockstep_line_whose_repo_shape_left_head_too_is_no_line(
+        standard, project, holder, tmp_path, case):
+    """HEAD does not hold a file whose deletion was COMMITTED, so no line puts
+    it back and the gate would only crash again: the row has no NEXT, and its
+    why says where the file comes back from, names the gate to run then, and
+    keeps the sentence about why no checkout cures the gitlink."""
+    root, row_id = lockstep_lost(case, project, holder, tmp_path,
+                                 committed=True)
+    row = rows_of(doctor(standard, root, "--json"))[row_id]
+    assert row["status"] == "FINDING", row
+    assert row["next"] is None, row
+    for said in (LOST, "parent of the commit", "No submodule update cures",
+                 rerun_of(standard, root, case)):
+        assert said in row["why"], (said, row["why"])
 
 
 # --- #278: the lockstep line of the `legs` and `members` rows ----------------
