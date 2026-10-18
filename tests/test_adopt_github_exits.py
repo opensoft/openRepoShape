@@ -121,15 +121,18 @@ BY_HAND = "Open the pull request by hand:"
 
 #: `gh` with no network. `repo create` makes a bare repository under
 #: $FAKE_GH_ROOT, which is what the rewritten `https://github.com/` URL then
-#: names. Each command $FAKE_GH_REFUSES names (`|` between them; `pr create`,
-#: or `repo edit <repository>` for one repository alone) is refused the way a
-#: token without the permission is, after writing the arguments it was given,
-#: NUL-separated, to $FAKE_GH_ROOT/refused-arguments. `pr create` is refused
-#: as GitHub refuses a base that is no branch of the repository (#479), and
-#: records `<repository> <base>` in $FAKE_GH_ROOT/opened when it opens one.
-#: Every call records the token and the config directory it was run with in
-#: $FAKE_GH_ROOT/environment, which are what a real `gh` would have been run
-#: with, and its first three arguments, a line each, in $FAKE_GH_ROOT/calls.
+#: names, and `repo view <repository> --json nameWithOwner`, which `execute`
+#: asks of each leg before it makes either (#798), finds one there and gives
+#: gh's not-found answer for any other. Each command $FAKE_GH_REFUSES names
+#: (`|` between them; `pr create`, or `repo edit <repository>` for one
+#: repository alone) is refused the way a token without the permission is, after writing
+#: the arguments it was given, NUL-separated, to
+#: $FAKE_GH_ROOT/refused-arguments. `pr create` is refused as GitHub refuses a
+#: base that is no branch of the repository (#479), and records `<repository>
+#: <base>` in $FAKE_GH_ROOT/opened when it opens one. Every call records the
+#: token and the config directory it was run with in $FAKE_GH_ROOT/environment,
+#: which are what a real `gh` would have been run with, and its first three
+#: arguments, a line each, in $FAKE_GH_ROOT/calls.
 GH_SHIM = textwrap.dedent("""\
     #!/bin/sh
     printf '%s\\n%s\\n' "$GH_TOKEN" "$GH_CONFIG_DIR" > "$FAKE_GH_ROOT/environment"
@@ -147,6 +150,17 @@ GH_SHIM = textwrap.dedent("""\
       done
       echo "HTTP 403: Resource not accessible by integration" >&2; exit 1
     fi
+    case "$1 $2 $4 $5" in
+      "repo view --json nameWithOwner")
+        if [ -d "$FAKE_GH_ROOT/$3.git" ]; then
+          printf '{"nameWithOwner": "%s"}\\n' "$3"
+        else
+          said="GraphQL: Could not resolve to a Repository"
+          echo "$said with the name '$3'. (repository)" >&2
+          exit 1
+        fi
+        exit 0;;
+    esac
     case "$1 $2" in
       "repo create")
         git init -q --bare -b main "$FAKE_GH_ROOT/$3.git" && echo "https://github.com/$3";;

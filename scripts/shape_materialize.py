@@ -705,6 +705,25 @@ SHAPE_MAKE_TARGETS = ("bootstrap", "validate", "pins", "park", "resume")
 # block's. `adopt-project.py`'s verification counts the file as the source's
 # bytes followed by exactly this block, and `update-shape.py apply --add`
 # extends it when the standard adds a copy at the root later.
+#
+# EACH COPY IS NAMED WHERE GIT TRACKS IT (#807). A source may keep a
+# symlinked directory in the root that the shape writes through (`.github ->
+# ci`, a layout #504 accepts), and git tracks a copy written through it where
+# the link leads: `ci/workflows/validate.yml`. A line naming only the link's
+# spelling, `/.github/workflows/validate.yml`, governed nothing, so under the
+# source's `* text=auto eol=crlf` a clone wrote that copy with CRLF, and
+# `validate-pins.py` reported shape-copy-drift after `execute` had said
+# `adoption verified`. So each copy is named where the symlinks inside the
+# root lead it, a chain of them followed to its end, as `open()` followed
+# them when the copy was written, and then, where that differs, by its pinned
+# path on the next line. That second line governs nothing while the link is
+# kept. It governs the copy once a person replaces the link with what it
+# points at, which `update-shape.py` asks for before it rewrites a copy
+# reached through one: without it that clone wrote the copy with CRLF, where
+# main's had healed (#844's review). Where the links lead out of the root or
+# cannot be followed, or to a name no line can spell literally, the copy has
+# its pinned line alone, as before. The pin still names each copy by the path
+# it was written at, which a clone opens through the same link.
 
 #: The `.gitattributes` a source may already hold at its root.
 ATTRIBUTES = ".gitattributes"
@@ -734,12 +753,26 @@ def eol_line(path: str) -> str:
     return f"/{path} text eol=lf"
 
 
-def eol_block_paths(shape_files, collision_dir: str) -> list[str]:
-    """The pinned copies a source's own root `.gitattributes` governs: each
-    one not under `collision_dir`, where the shape's own copy of the file
-    governs, in the pin's order."""
-    return [path for path in shape_files
-            if not path.startswith(f"{collision_dir}/")]
+def eol_block_paths(shape_files, collision_dir: str,
+                    tracked: dict | None = None) -> list[str]:
+    """The paths the block names for the pinned copies a source's own root
+    `.gitattributes` governs: each one not under `collision_dir`, where the
+    shape's own copy of the file governs, in the pin's order.
+
+    Each copy is named first as `tracked` maps its pinned path, where git
+    tracks it through the root's symlinks, then by its pinned path where
+    that differs (#807). One `tracked` maps to nothing, or to a name no line
+    can spell literally, is named by its pinned path alone."""
+    tracked = tracked or {}
+    return list(dict.fromkeys(
+        name for path in shape_files
+        if not path.startswith(f"{collision_dir}/")
+        for name in (_tracked_or_pinned(path, tracked.get(path)), path)))
+
+
+def _tracked_or_pinned(pinned: str, tracked: str | None) -> str:
+    """`tracked` where a block line can name it, else `pinned`."""
+    return tracked if tracked and EOL_PATH_RE.fullmatch(tracked) else pinned
 
 
 def eol_block(paths) -> str:
@@ -841,9 +874,23 @@ def _append_eol_block(target: Path, result: "Materialized",
     if path.is_symlink() or not path.is_file() \
             or _tracked_as_link(target, ATTRIBUTES):
         return
-    paths = eol_block_paths(result.shape_files, collision_dir)
+    paths = eol_block_paths(result.shape_files, collision_dir,
+                            {rel: _tracked_at(target, rel)
+                             for rel in result.shape_files})
     path.write_bytes(with_eol_block(path.read_bytes(), paths))
     result.eol_block = paths
+
+
+def _tracked_at(target: Path, rel: str) -> str | None:
+    """Where git tracks the file written at `rel` under `target`: `rel` with
+    each symlink on the way followed as `open()` followed them when it was
+    written (`_followed`), so `ci/workflows/validate.yml` for a copy written
+    through `.github -> ci` (#807). None where they lead out of `target` or
+    cannot be followed."""
+    try:
+        return "/".join(_followed(target, rel, _ticked))
+    except Refusal:
+        return None
 
 
 def collision_follow_up(intended: str, actual: str,
@@ -1367,6 +1414,82 @@ def refuse_bad_branch(refusal: str, what: str, value) -> None:
 
 
 # ---------------------------------------------------------------------------
+# A tracking branch a person can read (#715)
+# ---------------------------------------------------------------------------
+#
+# What `bump-leg.py` and `update-shape.py` ask of a manifest's
+# `tracking_branch` before they compare it or hand it to `gh` (Brett Heap's
+# option A on RV823's SHOULD-1, 2026-10-17): only what no person can see in
+# it, never `checked_value`'s alphabet.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py` for the reason the leg-path
+# rule and `refuse_bad_branch` do (RV823's round-2 SHOULD-1): that file is a
+# SHAPE COPY every root digest-pins, and no root calls this. Both tools
+# already import this module.
+
+#: Why a branch name holding such a character is refused, in the words
+#: `validate-manifest.py`'s `_branch_finding` and `bootstrap.py`'s `UNSEEN`
+#: say it in (#715).
+UNSEEN = "a character that does not print or is white space"
+
+
+def readable_branch(what: str, value) -> str:
+    """A BRANCH NAME read out of a manifest, refused only for what no person
+    can see in it (#715; Brett Heap's option A on RV823's SHOULD-1).
+
+    The rule is the root's own: `validate-manifest.py`'s `_branch_finding`
+    and `bootstrap.py`'s `_argument_fault` refuse a branch holding a
+    character for which `str.isprintable()` is false or `str.isspace()` is
+    true, so `main` followed by U+00A0, which the reader reads as YAML does
+    since #715, is never taken for `main`. Each of those two spells the rule
+    itself rather than importing it: a root's validator and bootstrap run
+    beside the `repo_shape.py` that root holds, which may be older than they
+    are (the skew rule, `validate-manifest.py`'s `_library_takes_remedies`,
+    #661), and an older one has no such function. The words are theirs: a
+    NUL and a lone surrogate (#280) have their own, and any other such
+    character is `UNSEEN`.
+
+    It is NOT `checked_value`'s `SAFE_ARG_RE`. A name in any script, or one
+    holding `&`, is a name git creates and the root's own gate passes.
+    `bump-leg.py` only compares it and prints it, and `update-shape.py`
+    compares it, hands it to `gh pr create --base` as one argument and
+    prints it shell-quoted in the line a person pastes (#209). #823's first
+    fix round read it through `checked_value`, and refused those names.
+
+    A leading `-` is refused too, as `unsafe-value`: `update-shape.py` hands
+    the name to `gh pr create --base`, where it could be read as an option,
+    and git creates no branch whose name begins with one, so no root needs
+    it. The refusal's words say only the second, which holds for both
+    tools.
+    """
+    text = str(value)
+    if text.startswith("-"):
+        raise Refusal(
+            "unsafe-value",
+            f"{what} is {text!r}, which begins with `-`, and git creates no "
+            "branch whose name begins with one",
+            "Remediation: give it a branch name git can create, such as "
+            "`main` or `release/1.2`.")
+    char = next((c for c in text if not c.isprintable() or c.isspace()),
+                None)
+    if char is None:
+        return text
+    if char == "\x00":
+        kind = "a NUL: no argument, file name or ref name can hold one"
+    elif "\ud800" <= char <= "\udfff":
+        kind = ("a lone surrogate: no UTF-8 file or console can hold it, so "
+                "no branch name is spelled with one")
+    else:
+        kind = (f"{UNSEEN}: a person reading the name cannot tell it from the "
+                "name without it")
+    raise Refusal(
+        "unseen-branch",
+        f"{what} is {text!r}, which holds U+{ord(char):04X}, {kind}",
+        "Remediation: give it a name with no such character, such as "
+        "`main` or `release/1.2`, and run this again.")
+
+
+# ---------------------------------------------------------------------------
 # What a run asks before its first write: the folders it makes (#609)
 # ---------------------------------------------------------------------------
 #
@@ -1416,9 +1539,10 @@ def _not_a_folder(path: Path) -> str | None:
             else "is not a folder")
 
 
-def folder_cannot_be_made(path: Path) -> str | None:
-    """Why `path` cannot be made as a folder, with every folder above it, and
-    written in, or None when it can (#609). It makes nothing.
+def folder_in_the_way(path: Path) -> tuple[Path, str] | None:
+    """`(where, why)` when `path` cannot be made as a folder, with every
+    folder above it, and written in: the one that stands in the way, and
+    why. None when it can (#609). It makes nothing.
 
     The question `Path.mkdir(parents=True, exist_ok=True)` and the first
     write into the folder ask, put without making anything: the nearest of
@@ -1428,22 +1552,34 @@ def folder_cannot_be_made(path: Path) -> str | None:
     says yes for root, and for any folder on Windows, as `mkdir` would). A
     `path` nothing stands at is asked of the folder above it.
 
-    THE FOLDER IS NAMED AS `shown_source` NAMES A PATH (#692): as it is, and
-    as Python's `repr` spells it when a character in it is not printable.
-    Printed raw, an ESC in a folder's name reached the terminal and a line
-    break began a line of the person's choosing. A printable path is named
-    byte for byte, so `why.endswith(CANNOT_WRITE_IN)` still holds.
+    `folder_cannot_be_made` says it as one sentence, naming the folder as
+    `shown_source` names a path (#692). `adopt-project.py` asks it of
+    `--local-remote-dir` (#798), and names `where` its own way.
     """
     for here in (path, *path.parents):
         if not os.path.lexists(here):
             continue
         why = _not_a_folder(here)
         if why:
-            return f"{shown_source(here)} {why}"
+            return here, why
         if not os.access(here, os.W_OK | os.X_OK):
-            return f"{shown_source(here)} {CANNOT_WRITE_IN}"
+            return here, CANNOT_WRITE_IN
         return None
     return None
+
+
+def folder_cannot_be_made(path: Path) -> str | None:
+    """Why `path` cannot be made as a folder, with every folder above it, and
+    written in, or None when it can (#609): `folder_in_the_way`'s answer, as
+    `<where> <why>`. It makes nothing.
+
+    THE FOLDER IS NAMED AS `shown_source` NAMES A PATH (#692): as it is, and
+    as Python's `repr` spells it when a character in it is not printable.
+    Printed raw, an ESC in a folder's name reached the terminal and a line
+    break began a line of the person's choosing. A printable path is named
+    byte for byte, so `why.endswith(CANNOT_WRITE_IN)` still holds."""
+    found = folder_in_the_way(path)
+    return f"{shown_source(found[0])} {found[1]}" if found else None
 
 
 def _unwritable_remediation(choose: str) -> str:
@@ -2722,8 +2858,9 @@ class Materialized:
     a refusal in `validate-pins.py`, and rightly.
 
     `eol_block` is the copies named in the block appended to the source's own
-    `.gitattributes` (#471), and empty when none was: no source file of that
-    name, one the plan did not keep in the root, or one that is a symlink.
+    `.gitattributes` (#471), each where git tracks it and, where that
+    differs, by its pinned path too (#807), and empty when none was: no source file of that name, one the plan did not
+    keep in the root, or one that is a symlink.
     That file is the source's, so it is in neither list above.
     """
 
@@ -4340,8 +4477,18 @@ def _leg_path_lines(templates: Path) -> tuple[tuple[str, str, str], ...]:
 def _read_back(tree: str, file: str, rendered: str):
     """What the project's reader gives back from one rendered `key: value`
     line, read on its own: its scalar reads the same there as inside its
-    block."""
-    read = parse_yaml(rendered + "\n")
+    block.
+
+    A LINE THE READER REFUSES GIVES BACK THE REFUSAL, its `YamlError`, as
+    `_reading_of` gives it for a manifest's line (#715). Uncaught, it was a
+    traceback where the tool owes a refusal of the value: `checked_value`
+    lets a leg path open with `@`, which opens no plain scalar (#393), so a
+    bare leg-path line holding `--spec-path @x` is a line the project's
+    reader refuses. All four such lines are quoted today (#259)."""
+    try:
+        read = parse_yaml(rendered + "\n")
+    except YamlError as exc:
+        return exc
     if not (isinstance(read, dict) and len(read) == 1):
         raise Refusal("template-leg-path-line",
                       f"templates/{tree}/{file}: `{rendered}` is not one "
@@ -4361,7 +4508,10 @@ def _listed(names: list[str]) -> str:
 def _read_as(value) -> str:
     """What the YAML reader made of a value, in words: `the number 1.5`.
     None is `NOT_TEXT_KINDS`' "no value at all", as for a leg path read out
-    of a plan as no value (#181)."""
+    of a plan as no value (#181). A refusal (`_read_back`) is "nothing at
+    all", in `_reading_in_words`' words (#715)."""
+    if isinstance(value, YamlError):
+        return _reading_in_words(value)
     if isinstance(value, bool):
         return f"the boolean {str(value).lower()}"
     if isinstance(value, (int, float)):
@@ -4381,7 +4531,10 @@ def _misread_reason(text: str) -> str | None:
     quoted one (#259) reads it back. The sentence quotes each line that
     misreads, as rendered. Asked after `checked_value`, whose alphabet holds
     no space, quote, backslash, bracket, brace, `#`, `:`, `&`, `*` or `!`, so
-    each line parses, bare or quoted, and a bare value is a plain scalar.
+    a quoted line always parses and a bare value is a plain scalar. The
+    alphabet holds `@`, though, which opens no plain scalar (#393): a bare
+    line of `@x` is refused, and the refusal is its reading (`_read_back`),
+    said as "nothing at all" (#715).
     """
     values = dict.fromkeys(LEG_PATH_PLACEHOLDERS, text)
     misread: dict[tuple[str, str], list[str]] = {}
