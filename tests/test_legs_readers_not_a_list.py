@@ -33,6 +33,14 @@ spell it (`repr`):
 - `update-shape.py`'s `update-pr-no-repository` says it, where the re-run
   `--pr` recognises crashed.
 
+Two entries that are not mappings are said together, joined by `; `, in each
+reader that says them on one line (`[5, 6]`, RV862's NIT-1).
+
+A MANIFEST THAT NAMES NO LEG -- `legs:` absent, null or `[]` -- IS LEFT AS IT
+WAS, and `NO_LEGS` holds each reader to its old sentence word for word, so the
+`None` guard each reader now has cannot go unseen (RV862's SHOULD-1): without
+it, absent and null read as the `legs is None` mismatch #832 removes.
+
 THE GATES' OWN WORDS ARE #826's. A tree without it still has the naming and
 pins gates crash on `5` and `validate-manifest.py` call it "missing or
 empty", so this file asserts what the four readers say, from one table, and
@@ -72,44 +80,60 @@ LEGS_BLOCK = "\nlegs:\n"
 #: What #714 says after a `legs:` value that is not a list.
 LEGS_TAIL = "expected a list of `role:`, `repository:` and `path:` mappings"
 
-#: `(YAML spelling, the sentence said)`: the issue's four, two more for the
+#: What #714 says of each entry of a list that is not a mapping.
+NOT_A_MAPPING = "manifest-leg: a leg is not a mapping: "
+
+#: `(YAML spelling, the sentences said)`: the issue's four, three more for the
 #: entry rule, and a value holding ESC. The value is spelled as the gates
 #: spell it, by `repr`, so no control character reaches a terminal raw.
 CASES = [
-    pytest.param("5", f"manifest-legs: legs is 5, {LEGS_TAIL}", id="number"),
-    pytest.param("openXdox", f"manifest-legs: legs is 'openXdox', {LEGS_TAIL}",
+    pytest.param("5", (f"manifest-legs: legs is 5, {LEGS_TAIL}",),
+                 id="number"),
+    pytest.param("openXdox",
+                 (f"manifest-legs: legs is 'openXdox', {LEGS_TAIL}",),
                  id="scalar-string"),
-    pytest.param("{a: b}", f"manifest-legs: legs is {{'a': 'b'}}, {LEGS_TAIL}",
+    pytest.param("{a: b}",
+                 (f"manifest-legs: legs is {{'a': 'b'}}, {LEGS_TAIL}",),
                  id="mapping"),
-    pytest.param("[5]", "manifest-leg: a leg is not a mapping: 5",
-                 id="list-number"),
-    pytest.param("[openXdox]",
-                 "manifest-leg: a leg is not a mapping: 'openXdox'",
+    pytest.param("[5]", (f"{NOT_A_MAPPING}5",), id="list-number"),
+    pytest.param("[openXdox]", (f"{NOT_A_MAPPING}'openXdox'",),
                  id="list-string"),
-    pytest.param("[null]", "manifest-leg: a leg is not a mapping: None",
-                 id="list-null"),
+    pytest.param("[null]", (f"{NOT_A_MAPPING}None",), id="list-null"),
+    pytest.param("[5, 6]", (f"{NOT_A_MAPPING}5", f"{NOT_A_MAPPING}6"),
+                 id="list-two-entries"),
     pytest.param('"\\x1b[31mRED"',
-                 f"manifest-legs: legs is '\\x1b[31mRED', {LEGS_TAIL}",
+                 (f"manifest-legs: legs is '\\x1b[31mRED', {LEGS_TAIL}",),
                  id="esc-string"),
 ]
 #: The issue's own four.
 ISSUE_CASES = CASES[:4]
 
+#: `legs:` absent (no key), null and `[]`: a manifest that names no leg, which
+#: #832 leaves as it was and each reader still says in its old words.
+NO_LEGS = [pytest.param(None, id="absent"), pytest.param("", id="null"),
+           pytest.param("[]", id="empty-list")]
+
 #: The entry the mixed case appends after the scaffold's three legs.
 MIXED_ENTRY = "  - 5\n"
-MIXED_SAID = "manifest-leg: a leg is not a mapping: 5"
+MIXED_SAID = (f"{NOT_A_MAPPING}5",)
 
 
-def is_a_list(said: str) -> bool:
-    """Is the sentence about an entry of a list, not about `legs:`?"""
-    return said.startswith("manifest-leg:")
+def is_a_list(said: tuple) -> bool:
+    """Are the sentences about entries of a list, not about `legs:`?"""
+    return said[0].startswith(NOT_A_MAPPING)
 
 
-def legs_are(project, spelled: str) -> None:
-    """`legs: <spelled>` in place of the scaffold's legs, the last block."""
+def joined(said: tuple) -> str:
+    """The sentences as a reader says them on one line."""
+    return "; ".join(said)
+
+
+def legs_are(project, spelled: str | None) -> None:
+    """`legs: <spelled>` in place of the scaffold's legs, the last block, or
+    no `legs:` key at all for None."""
     text = (project / "project.yaml").read_text()
-    edit(project, text[text.index(LEGS_BLOCK):],
-         "\n" + spelled_as("legs", spelled) + "\n")
+    after = "" if spelled is None else spelled_as("legs", spelled) + "\n"
+    edit(project, text[text.index(LEGS_BLOCK):], "\n" + after)
 
 
 def legs_and_an_entry_that_is_not_one(project) -> None:
@@ -137,11 +161,22 @@ LEG_ROWS = {
 }
 
 
-def waiting_reason(said: str, needs: str) -> str:
+#: The rows that read `Context.legs`, and what each said, and still says, of
+#: a manifest that names no leg: an `n/a` that waits on no row.
+NO_LEG_ROWS = {
+    "legs": "project.yaml declares no non-assembly leg; a one-repository "
+            "project has none and is not less governed for it",
+    "leg-shape-files": "no legs to compare",
+    "placement": "project.yaml declares no non-assembly leg, so there is no "
+                 "leg for a path to be in the wrong one of",
+}
+
+
+def waiting_reason(said: tuple, needs: str) -> str:
     what = ("holds an entry that is not a mapping" if is_a_list(said)
             else "is not a list")
-    return (f"project.yaml's `legs:` {what} ({said}), so {needs}; the "
-            "`manifest` row names the fix")
+    return (f"project.yaml's `legs:` {what} ({joined(said)}), so {needs}; "
+            "the `manifest` row's command names the fault")
 
 
 @pytest.mark.parametrize("spelled,said", CASES)
@@ -201,13 +236,33 @@ def test_the_doctor_checks_the_legs_beside_an_entry_that_is_not_one(
     no_traceback(result)
     rows = rows_of(result)
     assert rows["manifest"]["status"] == "FINDING", rows["manifest"]
-    assert MIXED_SAID in rows["manifest"]["reason"], rows["manifest"]
+    assert MIXED_SAID[0] in rows["manifest"]["reason"], rows["manifest"]
     legs = rows["legs"]
     assert legs["status"] == "ok", legs
     assert legs["reason"] == "2 leg(s) mounted and checked out at their pins"
     assert [leg["role"] for leg in legs["detail"]["legs"]] == ["spec", "code"]
     for row_id in LEG_ROWS:
         assert "waits_on" not in rows[row_id]["detail"], rows[row_id]
+
+
+@pytest.mark.parametrize("spelled", NO_LEGS)
+def test_the_doctor_says_a_manifest_naming_no_leg_as_it_did(standard,
+                                                            doctored,
+                                                            spelled):
+    """THE OTHER SIDE (RV862's SHOULD-1): absent, null and `[]` keep the rows'
+    old sentences, waiting on no row; `validate-manifest.py`, under the
+    `manifest` row, says `legs is missing or empty` of each."""
+    legs_are(doctored, spelled)
+    result = doctor(standard, doctored, "--json")
+    no_traceback(result)
+    assert result.returncode == 1, result.stdout + result.stderr
+    rows = rows_of(result)
+    assert rows["manifest"]["status"] == "FINDING", rows["manifest"]
+    for row_id, said in NO_LEG_ROWS.items():
+        row = rows[row_id]
+        assert row["status"] == "n/a", row
+        assert row["reason"] == said, row
+        assert "waits_on" not in row["detail"], row
 
 
 # --- bootstrap.py, the project's own copy ------------------------------------
@@ -225,12 +280,18 @@ def step_a(stdout: str) -> list[str]:
     return lines.splitlines()
 
 
-def step_a_says(said: str) -> str:
+def step_a_says(said: tuple) -> list[str]:
+    """Step (a)'s lines for the sentences: one for each."""
     if is_a_list(said):
-        return (f"  {said}; it is not placed, and the validators below "
-                "refuse until it is a mapping")
-    return (f"  {said}; no leg is placed, and the validators below refuse "
-            "until `legs:` is a list")
+        return [f"  {one}; it is not placed, and the validators below refuse "
+                "until it is a mapping" for one in said]
+    return [f"  {one}; no leg is placed, and the validators below refuse "
+            "until `legs:` is a list" for one in said]
+
+
+#: Step (a)'s one line over a manifest that names no leg, as ever.
+NO_SUBMODULE_LEGS = ("  no submodule legs declared. A one-repository project "
+                     "runs the same command and this step is a no-op.")
 
 
 def bootstrap(project, *args: str):
@@ -249,7 +310,7 @@ def test_bootstraps_step_a_says_the_sentence_and_places_no_leg(project,
     result = bootstrap(project, "--skip-validators")
     no_traceback(result)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert step_a(result.stdout) == [step_a_says(said)], result.stdout
+    assert step_a(result.stdout) == step_a_says(said), result.stdout
     assert "no submodule legs declared" not in result.stdout
 
 
@@ -267,7 +328,7 @@ def test_bootstrap_fails_on_its_validators_after_saying_the_sentence(
     legs_are(project, spelled)
     result = bootstrap(project)
     assert result.returncode == 1, result.stdout + result.stderr
-    assert step_a(result.stdout) == [step_a_says(said)], result.stdout
+    assert step_a(result.stdout) == step_a_says(said), result.stdout
     assert 'bootstrap.py", line' not in result.stderr, result.stderr
     last = result.stderr.splitlines()[-1]
     assert FAILED.fullmatch(last), last
@@ -281,9 +342,21 @@ def test_bootstrap_places_the_legs_beside_an_entry_that_is_not_one(project):
     no_traceback(result)
     assert result.returncode == 0, result.stdout + result.stderr
     said, spec, code = step_a(result.stdout)
-    assert said == step_a_says(MIXED_SAID)
+    assert [said] == step_a_says(MIXED_SAID)
     assert spec.startswith("  [spec] spec: "), spec
     assert code.startswith("  [code] code: "), code
+
+
+@pytest.mark.parametrize("spelled", NO_LEGS)
+def test_bootstrap_says_a_manifest_naming_no_leg_as_it_did(project, spelled):
+    """THE OTHER SIDE (RV862's SHOULD-1): absent, null and `[]` are step (a)'s
+    no-op, word for word, as a one-repository project's is; step (b)'s
+    manifest validator says `legs is missing or empty`."""
+    legs_are(project, spelled)
+    result = bootstrap(project, "--skip-validators")
+    no_traceback(result)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert step_a(result.stdout) == [NO_SUBMODULE_LEGS], result.stdout
 
 
 # --- bump-leg.py -------------------------------------------------------------
@@ -299,19 +372,32 @@ RUNS = [pytest.param(("--dry-run",), id="dry-run"),
         pytest.param((), id="real-run")]
 
 
-def assert_bump_refused(project, scaffolded, said: str, extra) -> None:
-    """`bump-leg-manifest-legs`, exit 2, before anything is fetched or
-    written: only the manifest edit the test made is in `git status`."""
+#: `bump-leg-unknown-leg`'s remedy, which a manifest naming no leg still gets.
+UNKNOWN_LEG_REMEDY = (
+    "Remediation: --leg takes a role this project's own manifest names. A "
+    "leg that is missing from the manifest is a manifest defect, not "
+    "something to pin around.\n")
+
+
+def refused_bump(project, scaffolded, extra) -> tuple[str, object]:
+    """`(stderr, the manifest's path)` of a bump refused, exit 2, before
+    anything is fetched or written: only the manifest edit the test made is
+    in `git status`."""
     to = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
     result = bump(project, scaffolded, to, *extra)
     no_traceback(result)
     assert result.returncode == 2, result.stdout + result.stderr
     assert result.stdout == "", result.stdout
-    manifest = project.resolve() / "project.yaml"
-    assert result.stderr == (f"REFUSED bump-leg-manifest-legs: {manifest}: "
-                             f"{said}\n{BUMP_REMEDY}"), result.stderr
     status = git("status", "--porcelain", cwd=project).stdout
     assert status.splitlines() == [" M project.yaml"], status
+    return result.stderr, project.resolve() / "project.yaml"
+
+
+def assert_bump_refused(project, scaffolded, said: tuple, extra) -> None:
+    """`bump-leg-manifest-legs`, naming every sentence on one line."""
+    stderr, manifest = refused_bump(project, scaffolded, extra)
+    assert stderr == (f"REFUSED bump-leg-manifest-legs: {manifest}: "
+                      f"{joined(said)}\n{BUMP_REMEDY}"), stderr
 
 
 @pytest.mark.parametrize("extra", RUNS)
@@ -335,16 +421,64 @@ def test_bump_leg_refuses_legs_beside_an_entry_that_is_not_one(
     assert_bump_refused(project, scaffolded, MIXED_SAID, extra)
 
 
+@pytest.mark.parametrize("extra", RUNS)
+@pytest.mark.parametrize("spelled", NO_LEGS)
+def test_bump_leg_refuses_a_manifest_naming_no_leg_as_it_did(
+        project, scaffolded, spelled, extra):
+    """THE OTHER SIDE (RV862's SHOULD-1): absent, null and `[]` are still
+    `bump-leg-unknown-leg`, word for word, "it declares" with nothing after
+    it included; `validate-manifest.py` says `legs is missing or empty`."""
+    legs_are(project, spelled)
+    stderr, manifest = refused_bump(project, scaffolded, extra)
+    assert stderr == (f"REFUSED bump-leg-unknown-leg: {manifest} declares no "
+                      "leg with role 'spec'; it declares \n"
+                      f"{UNKNOWN_LEG_REMEDY}"), stderr
+
+
 # --- update-shape.py ---------------------------------------------------------
 
-def why_none(said: str) -> str:
-    """`pull_request_repository`'s `why_none` for the sentence."""
+#: `pull_request_repository`'s `why_none` where no assembly leg is read.
+NO_ASSEMBLY_LEG = ("project.yaml declares no assembly leg, so there is no "
+                   "repository to open a pull request against")
+
+
+def why_none(said: tuple) -> str:
+    """`pull_request_repository`'s `why_none` for the sentences."""
     if is_a_list(said):
-        return ("project.yaml declares no assembly leg, so there is no "
-                f"repository to open a pull request against: {said}")
+        return f"{NO_ASSEMBLY_LEG}: {joined(said)}"
     return ("project.yaml's `legs:` is not a list, so it names no assembly "
             "leg and there is no repository to open a pull request against: "
-            f"{said}")
+            f"{joined(said)}")
+
+
+#: `(project.yaml, why_none)` where no repository is read and every entry
+#: is a mapping, or none is there: the old sentence, whole, with nothing
+#: after it (RV862's SHOULD-1 and NIT-2). Then an assembly leg with no
+#: `repository:` beside an entry that is not a mapping, which names it.
+NO_REPOSITORY = [
+    pytest.param("name: Atlas\n", NO_ASSEMBLY_LEG, id="absent"),
+    pytest.param("legs:\n", NO_ASSEMBLY_LEG, id="null"),
+    pytest.param("legs: []\n", NO_ASSEMBLY_LEG, id="empty-list"),
+    pytest.param("legs:\n  - role: spec\n    repository: acme/AtlasSpec\n",
+                 NO_ASSEMBLY_LEG, id="spec-leg-only"),
+    pytest.param("legs:\n  - 5\n  - role: assembly\n",
+                 f"{NO_ASSEMBLY_LEG}: {NOT_A_MAPPING}5",
+                 id="assembly-leg-with-no-repository-beside-5"),
+]
+
+
+@pytest.mark.parametrize("text,why", NO_REPOSITORY)
+def test_update_shape_says_a_manifest_naming_no_repository_exactly(
+        update_shape, tmp_path, gh_calls, text, why):
+    """`why_none` and the `--pr` refusal, whole: no `legs is None` for an
+    absent or null `legs:`, and no stray `: ` after the sentence."""
+    (tmp_path / "project.yaml").write_text(text, encoding="utf-8")
+    manifest = update_shape.load_yaml(tmp_path / "project.yaml")
+    assert update_shape.pull_request_repository(manifest) == ("", why)
+    with pytest.raises(update_shape.Refusal) as raised:
+        update_shape.pull_request_target(tmp_path, update_shape.PROJECT_KIND)
+    assert str(raised.value) == f"REFUSED update-pr-no-repository: {why}"
+    assert gh_calls == []
 
 
 @pytest.mark.parametrize("spelled,said", CASES)

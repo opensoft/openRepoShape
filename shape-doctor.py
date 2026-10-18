@@ -2215,8 +2215,9 @@ def legs_unread_row(ctx: Context, check_id: str, label: str, needs: str,
             if isinstance(ctx.manifest.get("legs"), list) else "is not a list")
     return Row(check_id, label, NA,
                f"{ctx.manifest_path.name}'s `legs:` {what} "
-               f"({'; '.join(unread)}), so {needs}; the `manifest` row names "
-               "the fix", None, {**(detail or {}), "waits_on": "manifest"})
+               f"({'; '.join(unread)}), so {needs}; the `manifest` row's "
+               "command names the fault", None,
+               {**(detail or {}), "waits_on": "manifest"})
 
 
 # ---------------------------------------------------------------------------

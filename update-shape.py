@@ -2497,9 +2497,11 @@ def pull_request_repository(manifest: dict | None,
     `openXdox` or a mapping was refused "declares no assembly leg", as of a
     list of legs that leaves that one out. `why_none` now says what names
     no leg, in that validator's words: the `manifest-legs` sentence, or
-    after "declares no assembly leg" each `manifest-leg` one. An entry that
-    is not a mapping beside the assembly leg does not stop its repository
-    being read; the validators `apply` runs before any landing say it.
+    after "declares no assembly leg" each `manifest-leg` one, which an
+    assembly leg with no `repository:` beside such an entry gets too. An
+    entry that is not a mapping beside the assembly leg does not stop its
+    repository being read, and no caller reads `why_none` then; the
+    validators `apply` runs before any landing say it.
     """
     manifest = manifest or {}
     if kind is FAMILY_KIND:
@@ -2521,9 +2523,8 @@ def pull_request_repository(manifest: dict | None,
             "`role:`, `repository:` and `path:` mappings")
     legs = [leg for leg in declared or []
             if isinstance(leg, dict) and leg.get("role") == "assembly"]
-    unread = [] if legs else [f"manifest-leg: a leg is not a mapping: {leg!r}"
-                              for leg in declared or []
-                              if not isinstance(leg, dict)]
+    unread = [f"manifest-leg: a leg is not a mapping: {leg!r}"
+              for leg in declared or [] if not isinstance(leg, dict)]
     return (str(legs[0].get("repository") or "") if legs else ""), (
         "project.yaml declares no assembly leg, so there is no "
         "repository to open a pull request against"
