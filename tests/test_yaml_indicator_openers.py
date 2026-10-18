@@ -44,6 +44,7 @@ over local bare remotes, and an import.
 from __future__ import annotations
 
 import random
+import re
 import sys
 
 import pytest
@@ -511,9 +512,21 @@ def fuzz_documents(seed: int) -> list[str]:
     return sorted(set(docs))
 
 
-#: The two refusals this reader makes of a document PyYAML reads, by design:
-#: an explicit key (#252) and a single pair in a flow sequence (#392).
+#: The refusals this reader makes of a document PyYAML reads, by design: an
+#: explicit key (#252), a single pair in a flow sequence (#392), and a key
+#: written twice (#917), the last of which PyYAML keeps. The fuzz draws a
+#: key written twice wherever a flow mapping's two entries share one, `a`
+#: or `"a"`.
 BY_DESIGN = (EXPLICIT_KEY, PAIR)
+WRITTEN_TWICE = re.compile(r"line [0-9]+: key '[^']*' is written twice")
+
+
+def by_design(refusal) -> bool:
+    """Is `refusal` one this reader makes by design: `BY_DESIGN`'s, or a
+    key written twice, whose words open with the line?"""
+    words = str(refusal)
+    return (words.startswith(BY_DESIGN)
+            or WRITTEN_TWICE.fullmatch(words) is not None)
 
 
 @NEEDS_PYYAML
@@ -537,7 +550,7 @@ def test_the_fuzz_finds_no_document_read_where_pyyaml_refuses_or_misread(seed):
                 misread.append((doc, mine, theirs))
         elif refused(theirs):
             tally["both refuse"] += 1
-        elif str(mine).startswith(BY_DESIGN):
+        elif by_design(mine):
             tally["by design"] += 1
         else:
             undesigned.append((doc, str(mine), theirs))
