@@ -43,13 +43,13 @@ every OS the suite runs on.
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import FILE_PROTOCOL, ORG, PROJECT, REPO, git, run_script
+from conftest import (FILE_PROTOCOL, ORG, PROJECT, REPO, cloned_just_pushed,
+                      git, run_script)
 from test_bump_leg import (
     BUMP, SPEC_PIN, branched, bump, commit_spec_pin, committed,
     reference_both_legs, spec_ref, validate,
@@ -90,28 +90,21 @@ def leg_remote(scaffolded, tmp_path_factory) -> dict:
     own bare repositories are only ever read, so a tag pushed to this one
     reaches no other module's leg.
 
-    `--no-local`, as `clone_just_pushed` reads a remote a scaffold has just
-    written (#440): through upload-pack, which a repack does not break.
+    Made with `cloned_just_pushed`, which reads a remote a scaffold has just
+    written through upload-pack, which a repack does not break (#440, #758).
     """
     remotes = tmp_path_factory.mktemp("w534-remotes")
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--bare", "--no-local",
-         str(scaffolded["remotes"] / f"{PROJECT}-spec.git"),
-         str(remotes / f"{PROJECT}-spec.git")],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
-    return {"remotes": remotes, "bare": remotes / f"{PROJECT}-spec.git"}
+    bare = cloned_just_pushed(scaffolded["remotes"] / f"{PROJECT}-spec.git",
+                              remotes / f"{PROJECT}-spec.git", bare=True)
+    assert git("rev-parse", "--is-bare-repository",
+               cwd=bare).stdout.strip() == "true"
+    return {"remotes": remotes, "bare": bare}
 
 
 def private_work(leg_remote: dict, tmp_path_factory, name: str) -> Path:
     """A clone of the private remote to make commits in and push from."""
     work = tmp_path_factory.mktemp(f"w534-{name}") / f"{PROJECT}-spec"
-    proc = subprocess.run(
-        ["git", *FILE_PROTOCOL, "clone", "-q", "--no-local",
-         str(leg_remote["bare"]), str(work)],
-        capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
-    return work
+    return cloned_just_pushed(leg_remote["bare"], work, recurse=False)
 
 
 def tagged(work: Path, name: str, target: str) -> str:

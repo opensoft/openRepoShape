@@ -190,6 +190,9 @@ from shape_materialize import (  # noqa: E402
 # Where a root keeps its shape pin. The materializer that writes it names it
 # once; this module spells the path by that name and never by a literal (#290).
 from shape_materialize import SHAPE_PIN  # noqa: E402
+# The tracking branch's rule (#715), on a line of its own so the lists above,
+# which other changes extend, are not lines two of them both rewrite.
+from shape_materialize import readable_branch  # noqa: E402
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -2334,11 +2337,33 @@ def current_branch(root: Path) -> str | None:
     the ref is read whole and `refs/heads/` taken off by `_branch_of`, as
     `Rollback.new_branch` takes it off; a HEAD attached anywhere else is on
     no branch, as a detached one is.
+
+    ONE READ, BYTE FOR BYTE (#765): `_symbolic_head`'s, which `Rollback`
+    reads HEAD with too, and which keeps a trailing U+00A0 and a byte that
+    is not UTF-8 as they are. A NAME THAT IS NOT UTF-8 IS REFUSED here,
+    `update-branch-not-utf8`, and `cmd_apply` asks this before the first
+    write of every `--branch` run: no line this tool prints can spell it,
+    and the lines that would name it, `update-branch-exists` and a
+    rollback's way back to it, would name a branch that is not there.
     """
-    proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
-                          cwd=str(root), capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", check=False)
-    return _branch_of(proc.stdout.strip())
+    branch = _branch_of(_symbolic_head(root))
+    if branch is None:
+        return None
+    try:
+        branch.encode("utf-8")
+    except UnicodeEncodeError:
+        # NAMED BY ITS BYTES, `b'caf<0xE9>'`, as `trailer-not-utf8` names a
+        # trailer.
+        raw = branch.encode("utf-8", "surrogateescape")
+        raise Refusal(
+            "update-branch-not-utf8",
+            f"{root} is on the branch {raw!r}, whose name is not UTF-8, so "
+            "no line this tool prints can name it: a line that named it "
+            "would name a branch that is not there. Nothing was written.",
+            "Remediation: give the branch a name that is UTF-8 text, then "
+            "run the same command again: "
+            + _by_hand(root, "branch", "-m") + " <a new name>") from None
+    return branch
 
 
 def _branch_of(ref: str | None) -> str | None:
@@ -2466,8 +2491,20 @@ def tracking_branch_of(manifest: dict | None) -> str:
     `bump-leg.py` and `family.py` read the field with. The remote's own HEAD
     is never asked: a base taken from the network could disagree with the
     one the `--branch` refusal and `--pr` read from the manifest.
+
+    READ THROUGH `readable_branch`, as `bump-leg.py` reads it (#715).
+    Compared raw, `tracking_branch: main` followed by U+00A0, which the
+    reader reads as YAML does since #715, was not `main`, so
+    `apply --branch main` committed onto `main` where the root's own
+    validators passed. A name holding a character that does not print or is
+    white space is now `unseen-branch`, and one that begins with `-`, which
+    `gh pr create --base` could read as an option, is `unsafe-value`; inside
+    `apply` the ledger rolls the rewrite back. Any other name is taken as it
+    is: `a&b` is quoted into the line `next_line` prints (#209), and a name
+    in any script is one git creates and the root's gate passes.
     """
-    return str((manifest or {}).get("tracking_branch") or "main")
+    return readable_branch("tracking_branch",
+                           (manifest or {}).get("tracking_branch") or "main")
 
 
 def pull_request_repository(manifest: dict | None,
@@ -2489,6 +2526,19 @@ def pull_request_repository(manifest: dict | None,
     after the commit and a manifest that names no repository is no reason
     to take that back; and `pull_request_line`'s bare form, the one a
     failed `--push` prints, leaves `--repo` off (#204).
+
+    A `legs:` THAT IS NOT A LIST NAMES NO ASSEMBLY LEG (#832), as
+    `validate-manifest.py` reads it (#714), and an entry that is not a
+    mapping is no leg. Iterated as `legs or []`, `legs: 5` ended the re-run
+    `--pr` recognises (`_finish_landing`) in a `TypeError`, and a scalar
+    `openXdox` or a mapping was refused "declares no assembly leg", as of a
+    list of legs that leaves that one out. `why_none` now says what names
+    no leg, in that validator's words: the `manifest-legs` sentence, or
+    after "declares no assembly leg" each `manifest-leg` one, which an
+    assembly leg with no `repository:` beside such an entry gets too. An
+    entry that is not a mapping beside the assembly leg does not stop its
+    repository being read, and no caller reads `why_none` then; the
+    validators `apply` runs before any landing say it.
     """
     manifest = manifest or {}
     if kind is FAMILY_KIND:
@@ -2501,11 +2551,21 @@ def pull_request_repository(manifest: dict | None,
             f"{kind.manifest} declares neither `repository:` nor an "
             "`org:`/`name:` pair, so there is no repository to open a "
             "pull request against")
-    legs = [leg for leg in manifest.get("legs") or []
+    declared = manifest.get("legs")
+    if declared is not None and not isinstance(declared, list):
+        return "", (
+            "project.yaml's `legs:` is not a list, so it names no assembly "
+            "leg and there is no repository to open a pull request against: "
+            f"manifest-legs: legs is {declared!r}, expected a list of "
+            "`role:`, `repository:` and `path:` mappings")
+    legs = [leg for leg in declared or []
             if isinstance(leg, dict) and leg.get("role") == "assembly"]
+    unread = [f"manifest-leg: a leg is not a mapping: {leg!r}"
+              for leg in declared or [] if not isinstance(leg, dict)]
     return (str(legs[0].get("repository") or "") if legs else ""), (
         "project.yaml declares no assembly leg, so there is no "
-        "repository to open a pull request against")
+        "repository to open a pull request against"
+        + (f": {'; '.join(unread)}" if unread else ""))
 
 
 def commit_on_branch(root: Path, branch: str, paths: list[str], target: str,
@@ -3245,7 +3305,10 @@ class Rollback:
         back = [start] if start else ["--detach", commit]
         moved = _symbolic_head(self.root) == ref
         if moved:
-            _git_quietly(["git", "checkout", "-q", start, "--"] if start
+            # `start` AS GIT'S OWN BYTES (#765), whatever the locale; the
+            # by-hand lines below print it as it is.
+            _git_quietly(["git", "checkout", "-q", _as_git_argument(start),
+                          "--"] if start
                          else ["git", "checkout", "-q", "--detach", commit,
                                "--"], self.root)
         if self._head_is(start, commit):
@@ -3301,10 +3364,46 @@ class Rollback:
 def _symbolic_head(root: Path) -> str | None:
     """The FULL ref HEAD is attached to (`refs/heads/<name>`), or None when
     it is detached — the spelling `Rollback` keeps, for the reason
-    `Rollback.new_branch` gives. Asked through `_git_answer`, as
-    `readme_is_committed` asks its own, rather than a second copy of it."""
-    answer = _git_answer(root, ["symbolic-ref", "--quiet", "HEAD"])
-    return (answer or "").strip() or None
+    `Rollback.new_branch` gives, and the one read `current_branch` takes
+    the branch from.
+
+    READ AS THE BYTES GIT WROTE (#765), not as `_git_answer`'s text. Exactly
+    one newline comes off the bytes, and the rest is decoded with
+    `surrogateescape`; `refs/heads/` is ASCII, so `_branch_of` taking it off
+    the text takes off exactly its bytes. `strip()` also took a trailing
+    U+00A0, U+2028 or U+0085: HEAD on `feat<U+00A0>` read as `feat`, so
+    `commit_on_branch` took `--branch feat` for the branch checked out and
+    committed onto `feat<U+00A0>`, the push named `feat`, and a rollback
+    "returned" HEAD to `feat`, another branch. `errors="replace"` read
+    `caf<0xE9>` as `caf<U+FFFD>`, which no command can check out. As
+    through `_git_answer`, no git and a git that refuses answer None:
+    neither may raise inside a rollback."""
+    try:
+        proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
+                              cwd=str(root), capture_output=True,
+                              check=False)
+    except OSError:
+        return None
+    ref = proc.stdout if proc.returncode == 0 else b""
+    ref = ref[:-1] if ref.endswith(b"\n") else ref
+    return ref.decode("utf-8", "surrogateescape") or None
+
+
+def _as_git_argument(name: str) -> str:
+    """`name`, as `_symbolic_head` decoded it, spelled as the argument that
+    hands git the same bytes back under any locale (#765), as #824 does for
+    `bootstrap.py`'s branches.
+
+    `subprocess` writes an argument with `os.fsencode`, the locale's codec:
+    under `LC_ALL=C PYTHONUTF8=0` that is ASCII, which cannot write U+00A0,
+    so the rollback's checkout from `feat<U+00A0>` raised
+    `UnicodeEncodeError` part way and left the copies written. Decoded back
+    with `os.fsdecode`, the name's own UTF-8 bytes go to git under every
+    codec. Windows hands git UTF-16, so the name goes as it is there. A line
+    printed for a person keeps the name as it is."""
+    if os.name == "nt":
+        return name
+    return os.fsdecode(name.encode("utf-8", "surrogateescape"))
 
 
 def _by_hand(root: Path, *args: str) -> str:
@@ -4568,6 +4667,10 @@ def cmd_apply(args) -> int:
         nothing = _nothing_to_do(rows, pinned, target, taking)
         rerun = nothing and _awaits_its_pull_request(root, args, kind)
         if args.branch:
+            # THE BRANCH HEAD IS ON, BEFORE THE FIRST WRITE (#765): one whose
+            # name is not UTF-8 is refused here, with nothing to roll back,
+            # not by `commit_on_branch` after the copies are written.
+            current_branch(root)
             # BEFORE THE FIRST WRITE, AND BEFORE "NOTHING TO DO" (#436): that
             # answer is read from the working tree too, and over a re-pin
             # left uncommitted it made no branch where one was asked for.

@@ -29,15 +29,16 @@ under test comes before the tool would be used.
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, FILE_PROTOCOL, GITMODULES, as_human, findings, \
-    git, make_source_repo, planned, put_gitmodules, refused_before_any_leg, \
-    run_script, spelled
+from conftest import ADOPT, FILE_PROTOCOL, GITMODULES, \
+    appended_to_command_scope, as_human, findings, git, make_source_repo, \
+    planned, put_gitmodules, refused_before_any_leg, run_script, spelled
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
@@ -499,11 +500,12 @@ def github_at(root: Path, monkeypatch) -> None:
     `url.<base>.insteadOf`, in the environment every `git` this process
     starts inherits. The org is in it because git takes the LONGEST
     `insteadOf` that matches, and a workstation may already rewrite
-    `https://github.com/` (to `git@github.com:`, say) in its own config."""
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-    monkeypatch.setenv("GIT_CONFIG_KEY_0",
-                       f"url.{(root / ORG).as_posix()}/.insteadOf")
-    monkeypatch.setenv("GIT_CONFIG_VALUE_0", f"https://github.com/{ORG}/")
+    `https://github.com/` (to `git@github.com:`, say) in its own config. The
+    entry is appended to the command scope the environment holds."""
+    for name, value in appended_to_command_scope(os.environ, [
+            (f"url.{(root / ORG).as_posix()}/.insteadOf",
+             f"https://github.com/{ORG}/")]).items():
+        monkeypatch.setenv(name, value)
 
 
 def a_github(tmp_path: Path, monkeypatch, branches=(SPLIT_BRANCH,)) -> Path:

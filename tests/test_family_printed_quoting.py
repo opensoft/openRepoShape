@@ -51,7 +51,8 @@ from test_family import (  # noqa: F401
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
-    PYTHON, SHELL_BARE_NT, SHELL_BARE_POSIX, shell_line, shell_quoted,
+    PYTHON, SHELL_BARE_NT, SHELL_BARE_POSIX, host_shell_dialect, shell_line,
+    shell_quoted,
 )
 
 #: The two folders a holder is copied into: a space, and a space beside an
@@ -97,8 +98,11 @@ def powershell_words(line: str) -> list[str]:
 
 
 def host_words(line: str) -> list[str]:
-    """`line` as the shell `shell_quoted` speaks on THIS host reads it."""
-    return powershell_words(line) if os.name == "nt" else shlex.split(line)
+    """`line` as the shell `shell_quoted` speaks on THIS host reads it:
+    PowerShell's where `host_shell_dialect` says so, `sh`'s under Git Bash
+    and everywhere else (#711)."""
+    return (powershell_words(line) if host_shell_dialect() == "nt"
+            else shlex.split(line))
 
 
 # --- the quoter ---------------------------------------------------------------
@@ -146,11 +150,11 @@ def test_the_powershell_form_is_one_word_to_powershell(value):
 
 def test_the_two_dialects_escape_an_apostrophe_differently():
     """Each reads the other's escape as a different value: `sh` reads
-    `'O''Brien'` as `OBrien`. So the dialect is the platform's."""
+    `'O''Brien'` as `OBrien`. So the dialect is the shell's (#711)."""
     assert shell_quoted("O'Brien", "posix") == "'O'\\''Brien'"
     assert shell_quoted("O'Brien", "nt") == "'O''Brien'"
     assert shlex.split(shell_quoted("O'Brien", "nt")) == ["OBrien"]
-    here = "nt" if os.name == "nt" else "posix"
+    here = host_shell_dialect()
     assert shell_quoted("O'Brien") == shell_quoted("O'Brien", here)
 
 
@@ -454,6 +458,11 @@ def test_the_siblings_mv_lines_paste_whole_and_move_the_holder(family,
 #: takes the new `siblings.py` without them.
 ADDED_BY_486 = ("SHELL_BARE_POSIX", "SHELL_BARE_NT", "POWERSHELL_SINGLE_QUOTES",
                 "shell_quoted", "shell_line")
+#: And what #711 added: the question `shell_quoted` asks. No holder copy cut
+#: before it has it, so the older library here lacks it too.
+ADDED_BY_711 = ("host_shell_dialect",)
+#: Every name the older library is stripped of.
+OLDER_LIBRARY_LACKS = ADDED_BY_486 + ADDED_BY_711
 
 
 def test_siblings_runs_beside_a_repo_shape_without_the_quoter(family,
@@ -464,18 +473,18 @@ def test_siblings_runs_beside_a_repo_shape_without_the_quoter(family,
     holder as fine. It quotes its POSIX lines with `shlex.join` instead:
     `--help`, the misnamed-folder warning (the lines that were quoted with
     `shell_line`) and `--make park` all run beside a `repo_shape.py` that
-    lacks every name #486 added."""
+    lacks every name #486 added, and the one #711 added."""
     holder = copied_holder(family, tmp_path / "Dana's work")
     library = holder / "scripts" / "repo_shape.py"
     text = library.read_text(encoding="utf-8")
     assert "def shell_line(" in text, "the holder's copy is not current"
-    library.write_text(f"{text}\ndel {', '.join(ADDED_BY_486)}\n",
+    library.write_text(f"{text}\ndel {', '.join(OLDER_LIBRARY_LACKS)}\n",
                        encoding="utf-8")
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam",
         "keep an older repo_shape.py", cwd=holder)
     lacks = subprocess.run(
         [sys.executable, "-c", "import repo_shape, sys; sys.exit(any("
-         f"hasattr(repo_shape, name) for name in {ADDED_BY_486!r}))"],
+         f"hasattr(repo_shape, name) for name in {OLDER_LIBRARY_LACKS!r}))"],
         cwd=holder / "scripts", capture_output=True, text=True, check=False)
     assert lacks.returncode == 0, lacks.stdout + lacks.stderr
     siblings = holder / "scripts" / "siblings.py"

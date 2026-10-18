@@ -75,6 +75,9 @@ from repo_shape import (  # noqa: E402
 # How a `--pin-source` that is not printable is named, the one spelling the
 # scaffold's chain WARNING gives it too (#610).
 from repo_shape import shown_path  # noqa: E402
+# What git answers about where a `--pin-source` is, and why, in its own
+# words, where it cannot (#800).
+from repo_shape import git_out  # noqa: E402
 # What the Free-plan secrets hint goes by (#660): GitHub's three
 # visibilities, and the hint's own words, which stay in the pinned copy.
 from repo_shape import FREE_PLAN_HINT, VISIBILITY_CHOICES  # noqa: E402
@@ -159,11 +162,11 @@ def escape_what_stdout_cannot_encode(stream=None) -> None:
     file it is, and two names that differ only outside the code page do not
     both print as `??.md`. (A backslash is not escaped, so a name that holds
     the six characters `\\u65e5` prints as one holding `日` does.) ONCE, AT
-    THE START OF `main()`, and not at each `print`: `shape-doctor.py`'s
-    `ascii_text` and `shape_advisory.printable` flatten their own text to
-    ASCII on every console, which a name cannot afford -- it would change
-    what a UTF-8 terminal shows -- and a guard at each site is a guard the
-    next `print` goes without.
+    THE START OF `main()`, and not at each `print`: `shape_advisory.printable`
+    flattens its own text to ASCII on every console, as `shape-doctor.py`'s
+    `ascii_text` did until #785, which a name cannot afford -- it would
+    change what a UTF-8 terminal shows -- and a guard at each site is a
+    guard the next `print` goes without.
 
     GUARDED, because failing to set a handler is no reason to refuse the
     run: a stream a caller replaced may have no `reconfigure`, a closed or
@@ -702,6 +705,25 @@ SHAPE_MAKE_TARGETS = ("bootstrap", "validate", "pins", "park", "resume")
 # block's. `adopt-project.py`'s verification counts the file as the source's
 # bytes followed by exactly this block, and `update-shape.py apply --add`
 # extends it when the standard adds a copy at the root later.
+#
+# EACH COPY IS NAMED WHERE GIT TRACKS IT (#807). A source may keep a
+# symlinked directory in the root that the shape writes through (`.github ->
+# ci`, a layout #504 accepts), and git tracks a copy written through it where
+# the link leads: `ci/workflows/validate.yml`. A line naming only the link's
+# spelling, `/.github/workflows/validate.yml`, governed nothing, so under the
+# source's `* text=auto eol=crlf` a clone wrote that copy with CRLF, and
+# `validate-pins.py` reported shape-copy-drift after `execute` had said
+# `adoption verified`. So each copy is named where the symlinks inside the
+# root lead it, a chain of them followed to its end, as `open()` followed
+# them when the copy was written, and then, where that differs, by its pinned
+# path on the next line. That second line governs nothing while the link is
+# kept. It governs the copy once a person replaces the link with what it
+# points at, which `update-shape.py` asks for before it rewrites a copy
+# reached through one: without it that clone wrote the copy with CRLF, where
+# main's had healed (#844's review). Where the links lead out of the root or
+# cannot be followed, or to a name no line can spell literally, the copy has
+# its pinned line alone, as before. The pin still names each copy by the path
+# it was written at, which a clone opens through the same link.
 
 #: The `.gitattributes` a source may already hold at its root.
 ATTRIBUTES = ".gitattributes"
@@ -731,12 +753,26 @@ def eol_line(path: str) -> str:
     return f"/{path} text eol=lf"
 
 
-def eol_block_paths(shape_files, collision_dir: str) -> list[str]:
-    """The pinned copies a source's own root `.gitattributes` governs: each
-    one not under `collision_dir`, where the shape's own copy of the file
-    governs, in the pin's order."""
-    return [path for path in shape_files
-            if not path.startswith(f"{collision_dir}/")]
+def eol_block_paths(shape_files, collision_dir: str,
+                    tracked: dict | None = None) -> list[str]:
+    """The paths the block names for the pinned copies a source's own root
+    `.gitattributes` governs: each one not under `collision_dir`, where the
+    shape's own copy of the file governs, in the pin's order.
+
+    Each copy is named first as `tracked` maps its pinned path, where git
+    tracks it through the root's symlinks, then by its pinned path where
+    that differs (#807). One `tracked` maps to nothing, or to a name no line
+    can spell literally, is named by its pinned path alone."""
+    tracked = tracked or {}
+    return list(dict.fromkeys(
+        name for path in shape_files
+        if not path.startswith(f"{collision_dir}/")
+        for name in (_tracked_or_pinned(path, tracked.get(path)), path)))
+
+
+def _tracked_or_pinned(pinned: str, tracked: str | None) -> str:
+    """`tracked` where a block line can name it, else `pinned`."""
+    return tracked if tracked and EOL_PATH_RE.fullmatch(tracked) else pinned
 
 
 def eol_block(paths) -> str:
@@ -838,9 +874,23 @@ def _append_eol_block(target: Path, result: "Materialized",
     if path.is_symlink() or not path.is_file() \
             or _tracked_as_link(target, ATTRIBUTES):
         return
-    paths = eol_block_paths(result.shape_files, collision_dir)
+    paths = eol_block_paths(result.shape_files, collision_dir,
+                            {rel: _tracked_at(target, rel)
+                             for rel in result.shape_files})
     path.write_bytes(with_eol_block(path.read_bytes(), paths))
     result.eol_block = paths
+
+
+def _tracked_at(target: Path, rel: str) -> str | None:
+    """Where git tracks the file written at `rel` under `target`: `rel` with
+    each symlink on the way followed as `open()` followed them when it was
+    written (`_followed`), so `ci/workflows/validate.yml` for a copy written
+    through `.github -> ci` (#807). None where they lead out of `target` or
+    cannot be followed."""
+    try:
+        return "/".join(_followed(target, rel, _ticked))
+    except Refusal:
+        return None
 
 
 def collision_follow_up(intended: str, actual: str,
@@ -1361,6 +1411,82 @@ def refuse_bad_branch(refusal: str, what: str, value) -> None:
     problem, remediation = _branch_verdict(what, value)
     if problem:
         raise Refusal(refusal, problem, remediation)
+
+
+# ---------------------------------------------------------------------------
+# A tracking branch a person can read (#715)
+# ---------------------------------------------------------------------------
+#
+# What `bump-leg.py` and `update-shape.py` ask of a manifest's
+# `tracking_branch` before they compare it or hand it to `gh` (Brett Heap's
+# option A on RV823's SHOULD-1, 2026-10-17): only what no person can see in
+# it, never `checked_value`'s alphabet.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py` for the reason the leg-path
+# rule and `refuse_bad_branch` do (RV823's round-2 SHOULD-1): that file is a
+# SHAPE COPY every root digest-pins, and no root calls this. Both tools
+# already import this module.
+
+#: Why a branch name holding such a character is refused, in the words
+#: `validate-manifest.py`'s `_branch_finding` and `bootstrap.py`'s `UNSEEN`
+#: say it in (#715).
+UNSEEN = "a character that does not print or is white space"
+
+
+def readable_branch(what: str, value) -> str:
+    """A BRANCH NAME read out of a manifest, refused only for what no person
+    can see in it (#715; Brett Heap's option A on RV823's SHOULD-1).
+
+    The rule is the root's own: `validate-manifest.py`'s `_branch_finding`
+    and `bootstrap.py`'s `_argument_fault` refuse a branch holding a
+    character for which `str.isprintable()` is false or `str.isspace()` is
+    true, so `main` followed by U+00A0, which the reader reads as YAML does
+    since #715, is never taken for `main`. Each of those two spells the rule
+    itself rather than importing it: a root's validator and bootstrap run
+    beside the `repo_shape.py` that root holds, which may be older than they
+    are (the skew rule, `validate-manifest.py`'s `_library_takes_remedies`,
+    #661), and an older one has no such function. The words are theirs: a
+    NUL and a lone surrogate (#280) have their own, and any other such
+    character is `UNSEEN`.
+
+    It is NOT `checked_value`'s `SAFE_ARG_RE`. A name in any script, or one
+    holding `&`, is a name git creates and the root's own gate passes.
+    `bump-leg.py` only compares it and prints it, and `update-shape.py`
+    compares it, hands it to `gh pr create --base` as one argument and
+    prints it shell-quoted in the line a person pastes (#209). #823's first
+    fix round read it through `checked_value`, and refused those names.
+
+    A leading `-` is refused too, as `unsafe-value`: `update-shape.py` hands
+    the name to `gh pr create --base`, where it could be read as an option,
+    and git creates no branch whose name begins with one, so no root needs
+    it. The refusal's words say only the second, which holds for both
+    tools.
+    """
+    text = str(value)
+    if text.startswith("-"):
+        raise Refusal(
+            "unsafe-value",
+            f"{what} is {text!r}, which begins with `-`, and git creates no "
+            "branch whose name begins with one",
+            "Remediation: give it a branch name git can create, such as "
+            "`main` or `release/1.2`.")
+    char = next((c for c in text if not c.isprintable() or c.isspace()),
+                None)
+    if char is None:
+        return text
+    if char == "\x00":
+        kind = "a NUL: no argument, file name or ref name can hold one"
+    elif "\ud800" <= char <= "\udfff":
+        kind = ("a lone surrogate: no UTF-8 file or console can hold it, so "
+                "no branch name is spelled with one")
+    else:
+        kind = (f"{UNSEEN}: a person reading the name cannot tell it from the "
+                "name without it")
+    raise Refusal(
+        "unseen-branch",
+        f"{what} is {text!r}, which holds U+{ord(char):04X}, {kind}",
+        "Remediation: give it a name with no such character, such as "
+        "`main` or `release/1.2`, and run this again.")
 
 
 # ---------------------------------------------------------------------------
@@ -2719,8 +2845,9 @@ class Materialized:
     a refusal in `validate-pins.py`, and rightly.
 
     `eol_block` is the copies named in the block appended to the source's own
-    `.gitattributes` (#471), and empty when none was: no source file of that
-    name, one the plan did not keep in the root, or one that is a symlink.
+    `.gitattributes` (#471), each where git tracks it and, where that
+    differs, by its pinned path too (#807), and empty when none was: no source file of that name, one the plan did not
+    keep in the root, or one that is a symlink.
     That file is the source's, so it is in neither list above.
     """
 
@@ -2994,6 +3121,8 @@ def pin_digest_from_source(source: Path, commit: str, repository: str) -> str:
     try:
         return _digest_from_pin_source(source, commit)
     except (Refusal, OSError) as exc:
+        if isinstance(exc, Refusal) and exc.code == PIN_SOURCE_NOT_A_CLONE:
+            raise  # its own refusal, which names the top level (#800)
         why = (exc.detail if isinstance(exc, Refusal)
                else exc.strerror or str(exc))
         named = shown_source(source)
@@ -3065,8 +3194,10 @@ def shown_source(source) -> str:
 
 def _digest_from_pin_source(source: Path, commit: str) -> str:
     """`tree_digest` over `source`, with a path that is no directory said
-    in `validate-pins.py`'s words (#339). Any other `OSError`, from `stat()`
-    or from git's `cwd=`, is left for `pin_digest_from_source` to name."""
+    in `validate-pins.py`'s words (#339), and a directory that is no
+    clone's top level refused `pin-source-not-a-clone` before anything is
+    digested (#800). Any other `OSError`, from `stat()` or from git's
+    `cwd=`, is left for `pin_digest_from_source` to name."""
     try:
         mode = source.stat().st_mode
     except (FileNotFoundError, NotADirectoryError):
@@ -3074,7 +3205,95 @@ def _digest_from_pin_source(source: Path, commit: str) -> str:
     if not stat.S_ISDIR(mode):
         raise Refusal("pin-source-not-a-directory",
                       "it is a file, not a directory")
+    _refuse_unless_a_clone_top_level(source)
     return tree_digest(source, commit)
+
+
+# ---------------------------------------------------------------------------
+# A `--pin-source` is a clone's top level (#800)
+# ---------------------------------------------------------------------------
+#
+# `tree_digest` runs `git ls-tree -r` IN the `--pin-source`, and there, with
+# no `--full-tree`, git lists only the part of the tree under the folder it
+# runs in. So a folder inside a clone was read as a clone: `glass/sub`
+# recorded the digest of `sub/` alone, a folder the commit does not hold
+# recorded the sha256 of nothing, and `adopt-project.py plan` and the
+# scaffold, `--dry-run` alike, wrote it with no word; `check` recomputed the
+# same number there, or, inside a partial clone, NOTEd that it did not ask.
+#
+# SO GIT IS ASKED FIRST, before any digest is read: a working tree's top
+# level, a linked worktree's among them, has an empty `rev-parse
+# --show-prefix` outside the git directory, and a bare clone's git directory
+# is the path itself. Any other path is `pin-source-not-a-clone`, naming the
+# top level git finds, or saying that it finds none. What a top level digests
+# is unchanged, byte for byte, and `repo_shape.tree_digest`, a pinned shape
+# copy, is not changed. `adopt-project.py check` asks a recorded path the
+# same question (`pin_source_not_top_level`) before a partial clone's NOTE.
+
+#: The refusal of a `--pin-source` that is no clone's top level.
+PIN_SOURCE_NOT_A_CLONE = "pin-source-not-a-clone"
+#: What it says to pass where git names no top level to pass.
+NO_TOP_LEVEL_REMEDIATION = (
+    "Remediation: pass --pin-source the top level of a clone of the pinned "
+    "product (`git rev-parse --show-toplevel` prints it in that clone's "
+    "working tree), or drop --pin-source and let `gh api` read the forge.")
+
+
+def _rev_parse(source: Path, *asked: str) -> str:
+    """What `git rev-parse <asked>` prints in `source`, its last line break
+    dropped and a path in it as `sys.argv` holds one. A git that fails is
+    `git_out`'s refusal, naming the folder and git's reason, spelled."""
+    printed = git_out(["rev-parse", *asked], cwd=source, binary=True)
+    return os.fsdecode(printed).removesuffix("\n")
+
+
+def pin_source_not_top_level(source: Path) -> tuple[str, Path | None] | None:
+    """None where `source` is a clone's top level (#800). Otherwise `(why,
+    top)`: why it is not, and the top level git finds for it, or None where
+    git finds none to pass. A `source` `subprocess` cannot enter raises the
+    `OSError` of `cwd=`, which is the caller's to name.
+
+    The answers come in one question where they can: `--show-prefix` is
+    printed last, so a folder whose name holds a line break is read whole."""
+    try:
+        bare, inside, prefix = _rev_parse(
+            source, "--is-bare-repository", "--is-inside-git-dir",
+            "--show-prefix").split("\n", 2)
+        if bare == "true":
+            top = Path(_rev_parse(source, "--absolute-git-dir"))
+            if os.path.samefile(top, source):
+                return None
+            return (f"it is a folder inside the bare clone at "
+                    f"{shown_source(top)}", top)
+        if inside == "true":
+            gitdir = Path(_rev_parse(source, "--absolute-git-dir"))
+            return (f"it is inside {shown_source(gitdir)}, the git directory "
+                    "of a clone, where git finds no top level", None)
+        if not prefix:
+            return None
+        top = Path(_rev_parse(source, "--show-toplevel"))
+    except Refusal as exc:
+        return f"git finds no clone there: {exc.detail}", None
+    return (f"it is a folder inside the clone at {shown_source(top)}, and a "
+            "digest read there covers only what the commit holds under that "
+            "folder", top)
+
+
+def _refuse_unless_a_clone_top_level(source: Path) -> None:
+    """`pin-source-not-a-clone` for a `source` that is no clone's top level
+    (`pin_source_not_top_level`), naming the top level to pass instead."""
+    found = pin_source_not_top_level(source)
+    if found is None:
+        return
+    why, top = found
+    raise Refusal(
+        PIN_SOURCE_NOT_A_CLONE,
+        f"--pin-source {shown_source(source)} is not a clone's top level: "
+        f"{why}",
+        NO_TOP_LEVEL_REMEDIATION if top is None else
+        f"Remediation: pass --pin-source {shown_source(top)}, the clone's "
+        "top level, where a pin's digest is read over its commit's whole "
+        "tree.")
 
 
 def _resolved_pin_source(source: Path) -> Path:
@@ -4245,8 +4464,18 @@ def _leg_path_lines(templates: Path) -> tuple[tuple[str, str, str], ...]:
 def _read_back(tree: str, file: str, rendered: str):
     """What the project's reader gives back from one rendered `key: value`
     line, read on its own: its scalar reads the same there as inside its
-    block."""
-    read = parse_yaml(rendered + "\n")
+    block.
+
+    A LINE THE READER REFUSES GIVES BACK THE REFUSAL, its `YamlError`, as
+    `_reading_of` gives it for a manifest's line (#715). Uncaught, it was a
+    traceback where the tool owes a refusal of the value: `checked_value`
+    lets a leg path open with `@`, which opens no plain scalar (#393), so a
+    bare leg-path line holding `--spec-path @x` is a line the project's
+    reader refuses. All four such lines are quoted today (#259)."""
+    try:
+        read = parse_yaml(rendered + "\n")
+    except YamlError as exc:
+        return exc
     if not (isinstance(read, dict) and len(read) == 1):
         raise Refusal("template-leg-path-line",
                       f"templates/{tree}/{file}: `{rendered}` is not one "
@@ -4266,7 +4495,10 @@ def _listed(names: list[str]) -> str:
 def _read_as(value) -> str:
     """What the YAML reader made of a value, in words: `the number 1.5`.
     None is `NOT_TEXT_KINDS`' "no value at all", as for a leg path read out
-    of a plan as no value (#181)."""
+    of a plan as no value (#181). A refusal (`_read_back`) is "nothing at
+    all", in `_reading_in_words`' words (#715)."""
+    if isinstance(value, YamlError):
+        return _reading_in_words(value)
     if isinstance(value, bool):
         return f"the boolean {str(value).lower()}"
     if isinstance(value, (int, float)):
@@ -4286,7 +4518,10 @@ def _misread_reason(text: str) -> str | None:
     quoted one (#259) reads it back. The sentence quotes each line that
     misreads, as rendered. Asked after `checked_value`, whose alphabet holds
     no space, quote, backslash, bracket, brace, `#`, `:`, `&`, `*` or `!`, so
-    each line parses, bare or quoted, and a bare value is a plain scalar.
+    a quoted line always parses and a bare value is a plain scalar. The
+    alphabet holds `@`, though, which opens no plain scalar (#393): a bare
+    line of `@x` is refused, and the refusal is its reading (`_read_back`),
+    said as "nothing at all" (#715).
     """
     values = dict.fromkeys(LEG_PATH_PLACEHOLDERS, text)
     misread: dict[tuple[str, str], list[str]] = {}
