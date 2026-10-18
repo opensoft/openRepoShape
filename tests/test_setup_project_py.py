@@ -2153,16 +2153,73 @@ def test_the_changed_paste_lines_are_posix_quoted_on_windows_too(
     assert shlex.split(closing) == ["cd", clone], closing
     assert local == (
         "    cd %s\n"
-        "    git -c protocol.file.allow=always clone --recurse-submodules %s\n"
+        "    git -c protocol.file.allow=always -c core.autocrlf=false clone "
+        "--recurse-submodules %s\n"
         "    cd Sample && %s scripts/bootstrap.py"
         % (spelled, assembly_spelled, module.PYTHON_CMD)), local
     assert [shlex.split(line) for line in local.splitlines()[:2]] == [
         ["cd", clone],
-        ["git", *FILE_PROTOCOL, "clone", "--recurse-submodules", assembly]]
+        ["git", *FILE_PROTOCOL, *LF_ON_WINDOWS, "clone",
+         "--recurse-submodules", assembly]]
     assert github.splitlines()[:2] == [
         "    cd " + spelled,
-        "    git clone --recurse-submodules "
+        "    git -c core.autocrlf=false clone --recurse-submodules "
         "https://github.com/demoorg/Sample.git"], github
+
+
+#: What setup's own clone passes on Windows (`clone_and_bootstrap`), and
+#: since #926 its finish-by-hand clone too.
+LF_ON_WINDOWS = ["-c", "core.autocrlf=false"]
+
+
+class _OsNamed:
+    """This process's `os`, answering `name` with another platform's, for
+    the module under test alone: `pathlib` keeps reading the real one, and
+    on Python 3.12 a `Path` made while `os.name` itself says `nt` is a
+    `WindowsPath`, which cannot be made on a POSIX host."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __getattr__(self, attr):
+        return getattr(os, attr)
+
+
+@pytest.mark.parametrize("name", ["nt", "posix"])
+@pytest.mark.parametrize("local", [True, False], ids=["local", "github"])
+def test_the_backstops_clone_checks_out_as_setups_own_does(monkeypatch,
+                                                          tmp_path, name,
+                                                          local):
+    """#926 (U041): under an emulated `nt` the finish-by-hand clone carries
+    `-c core.autocrlf=false`, as setup's own clone does, and on any other
+    host neither does. The module's `os` answers `name` (`_OsNamed`), so
+    this holds on any host; the printed line is read back by `shlex.split`,
+    as Git Bash reads it, and setup's own clone is the argv
+    `clone_and_bootstrap` hands `run`. On main the printed line had no
+    `-c core.autocrlf=false` on Windows, and a clone made by hand under Git
+    for Windows' default `core.autocrlf=true` was not the clone setup
+    makes."""
+    module = entry_point_module()
+    runs = _Runs()
+    monkeypatch.setattr(module, "run", runs)
+    flags = ["--project", "Sample", "--org", "demoorg",
+             "--into", str(tmp_path / "work")]
+    if local:
+        flags += ["--local-remote-dir", str(tmp_path / "remotes")]
+    opts = module.parse_args(flags, str(tmp_path))
+    assembly = (os.path.join(opts.local_remote_dir, "Sample.git") if local
+                else "https://github.com/demoorg/Sample.git")
+    monkeypatch.setattr(module, "os", _OsNamed(name))
+    module.clone_and_bootstrap(opts, "demoorg",
+                               module.Landing(Path(opts.into), "", None))
+    printed = module.finish_by_hand(opts.into, assembly, "Sample", local)
+    [own] = [argv for argv in runs.calls if "clone" in argv]
+    lf = LF_ON_WINDOWS if name == "nt" else []
+    assert shlex.split(printed.splitlines()[1]) == [
+        "git", *(FILE_PROTOCOL if local else []), *lf, "clone",
+        "--recurse-submodules", assembly], printed
+    assert any(own[at:at + 2] == LF_ON_WINDOWS
+               for at in range(own.index("clone"))) is (name == "nt"), own
 
 
 @pytest.mark.parametrize("case", ["a-file-two-levels-up", "a-link-to-nothing",

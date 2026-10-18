@@ -2816,8 +2816,22 @@ def finish_by_hand(parent: str, assembly: str, project: str,
     passes: the legs are cloned from the plain paths `.gitmodules` records,
     the file transport, which git refuses a submodule without it. The project
     name is a word already: step (4) held it to the naming policy.
+
+    ON WINDOWS IT CARRIES `-c core.autocrlf=false` TOO (#926, U041), as
+    setup's own clone does there, so a clone finished by hand checks the
+    pinned copies out as that one does, LF whatever Git for Windows'
+    `core.autocrlf=true` default says: `contracts/shape-pin.yaml` records
+    digests of LF bytes. The project's own `.gitattributes` (#51) asks for
+    LF as well, and neither clone leans on it. Asked of `os.name` when the
+    lines are made, as the clone asks it, and not of the shell they are
+    pasted into: Git Bash runs the same git.
     """
-    clone = "git -c protocol.file.allow=always clone" if local else "git clone"
+    clone = "git"
+    if local:
+        clone += " -c protocol.file.allow=always"
+    if os.name == "nt":
+        clone += " -c core.autocrlf=false"
+    clone += " clone"
     return ("    cd %s\n"
             "    %s --recurse-submodules %s\n"
             "    cd %s && %s %s"
