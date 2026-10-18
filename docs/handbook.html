@@ -474,7 +474,7 @@
 
       <!-- reads README.md § Starting a project in a new organisation: blob 3d4a01ffadc322f88dfffd9cef50b1c48c58b9b3 -->
 
-      <!-- reads README.md § The three legs: blob 1d9f5bf98bddd1f70522c86515de3f15900fe141 -->
+      <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1128,7 +1128,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
       <!-- reads README.md § Starting a project in a new organisation: blob 3d4a01ffadc322f88dfffd9cef50b1c48c58b9b3 -->
 
-      <!-- reads README.md § The three legs: blob 1d9f5bf98bddd1f70522c86515de3f15900fe141 -->
+      <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Reading private legs in CI</h2>
@@ -1181,7 +1181,8 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
         naming and manifest checks and skips <code>validate-pins.py</code> with a warning explaining
         why. It fails outright only if a credential <strong>is</strong> configured and the fetch
         still failed &mdash; meaning that credential cannot read one of the LEG repositories, never
-        the root.</li>
+        the root. A <code>.gitmodules</code> that git refuses fails the run too, whatever the
+        credential, naming the key or line.</li>
       </ul>
       <a class="src" href="https://github.com/opensoft/openRepoShape#reading-private-legs-in-ci-a-github-app-first-shape_legs_token-as-fallback">Full text &mdash; private legs in CI</a>
     </section>
@@ -1190,7 +1191,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
       <!-- reads README.md § Starting a project in a new organisation: blob 3d4a01ffadc322f88dfffd9cef50b1c48c58b9b3 -->
 
-      <!-- reads README.md § The three legs: blob 1d9f5bf98bddd1f70522c86515de3f15900fe141 -->
+      <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
       <p class="eyebrow">Reference</p>
       <h2>The three legs, and naming</h2>

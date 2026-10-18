@@ -678,7 +678,8 @@ fetch still failed — naming which source it used, meaning that credential
 cannot read one of the LEG repositories, never the root, which no longer
 depends on it — checked via job-level `env: SHAPE_LEGS_APP_SET` /
 `SHAPE_LEGS_TOKEN_SET`, not `secrets` in the step `if:` (disallowed there;
-MedxEHR PR #8, MedxGlass PR #1: zero-job push runs).
+MedxEHR PR #8, MedxGlass PR #1: zero-job push runs). A `.gitmodules` that git
+refuses fails the run too, whatever the credential, naming the key or line.
 
 ### A descendant form is a claim; a claim needs a referent
 
