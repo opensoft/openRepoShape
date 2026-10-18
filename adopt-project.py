@@ -9138,9 +9138,11 @@ def _root_attributes(source: Source, walks: list, disk: _KeptTree,
     """The `.gitattributes` the split puts at the root, and under `shape/`,
     as `{path: bytes}`. Where the root keeps none, the shape's own. Where it
     keeps one, the shape's goes beside it and the split appends the block
-    for the copies `names` outside `shape/` (#471); a kept one that is not a
-    regular file gets no block, so it is asked as the block alone, the lines
-    #471's follow-up asks a regular file in its place to hold."""
+    for the copies `names` outside `shape/` (#471), each named where `walks`
+    land it, the path git tracks, and by its own name where that differs
+    (#807); a kept one that is not a regular file gets no block, so it is
+    asked as the block alone, the lines #471's follow-up asks a regular file
+    in its place to hold."""
     shapes = (SPLIT_TEMPLATE / ATTRIBUTES).read_text(
         encoding="utf-8").encode("utf-8")
     walk = next((walk for walk in walks if walk.path == ATTRIBUTES), None)
@@ -9150,8 +9152,8 @@ def _root_attributes(source: Source, walks: list, disk: _KeptTree,
     blobs = {path: oid for path, _, oid, _ in tree}
     own = (_blob_bytes(source.path, blobs[row[0]])
            if row and row[1] in FILE_MODES else b"")
-    return {ATTRIBUTES: with_eol_block(own, eol_block_paths(names,
-                                                           COLLISION_DIR)),
+    return {ATTRIBUTES: with_eol_block(own, eol_block_paths(
+                names, COLLISION_DIR, dict(_pinned_landings(walks)))),
             f"{COLLISION_DIR}/{ATTRIBUTES}": shapes}
 
 
@@ -9730,12 +9732,14 @@ def _rules_reaching(asked: _SplitRehearsal, source: Source, tree: list,
 
 def _as_the_split_writes(asked: _SplitRehearsal, rules: list, kept: set[str],
                          own: str | None, written: dict,
-                         names: list[str]) -> None:
+                         landings: list[tuple[str, str]]) -> None:
     """The root's rules as the split's `git add` reads them: the moved
     `.gitattributes` gone; the root's own followed by #471's block, or the
     shape's own where the root keeps none; and the shape's beside it, where
     the root keeps nothing there (`plan-root-blocks-shape-copy` names what
-    it keeps, #262)."""
+    it keeps, #262). The block names each pinned copy of `landings`
+    (`_pinned_landings`') where it lands, the path git tracks, and by its own
+    name where that differs (#807)."""
     for path, _, _ in rules:
         if path not in kept:
             asked.work.joinpath(*path.split("/")).unlink(missing_ok=True)
@@ -9746,7 +9750,8 @@ def _as_the_split_writes(asked: _SplitRehearsal, rules: list, kept: set[str],
     if own is not None:
         asked.place(ATTRIBUTES, with_eol_block(
             (asked.work / ATTRIBUTES).read_bytes(),
-            eol_block_paths(names, COLLISION_DIR)))
+            eol_block_paths([name for name, _ in landings], COLLISION_DIR,
+                            dict(landings))))
     if beside not in kept:
         asked.place(beside, written[beside])
 
@@ -9926,7 +9931,7 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
             ["diff-files", "--name-only", "-z"], TAKEN) if path in moved]
         # The split's side: its `git add`, over the root it writes.
         try:
-            _as_the_split_writes(asked, rules, kept, own, written, names)
+            _as_the_split_writes(asked, rules, kept, own, written, landings)
         except OSError:
             return [_moved_finding(taken)] if taken else []
         held = {*[row for row in wanted if row[0] in kept],
@@ -11989,10 +11994,9 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
             print(f"  beside  {actual} (the source already has {intended}; "
                   "nothing was overwritten)")
         if materialized.eol_block:
-            print(f"  appended to {ATTRIBUTES}: a `text eol=lf` line for "
-                  f"each of {len(materialized.eol_block)} pinned copies, so "
-                  "every checkout keeps their bytes (#471); none of its own "
-                  "lines was changed")
+            print(f"  appended to {ATTRIBUTES}: "
+                  f"{_appended_lines(materialized)}, so every checkout keeps "
+                  "their bytes (#471); none of its own lines was changed")
 
         follow_ups = _plan_follow_ups(plan)
         message = _split_message(names, paths_for, leg_commits, spec_path,
@@ -12582,6 +12586,20 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
     return findings + root_findings
 
 
+def _appended_lines(materialized: Materialized) -> str:
+    """What `execute` says it appended to the source's `.gitattributes`: a
+    line for each pinned copy outside `shape/`, and the second line each
+    copy written through a symlink has under its pinned path (#807)."""
+    copies = len(eol_block_paths(materialized.shape_files, COLLISION_DIR))
+    said = f"a `text eol=lf` line for each of {copies} pinned copies"
+    second = len(materialized.eol_block) - copies
+    if second:
+        said += (f", and {second} more under the pinned path of each copy "
+                 "written through a symlink, which governs it once the link "
+                 "is replaced")
+    return said
+
+
 def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
                         before: dict, after: dict) -> int:
     """Count the source's `.gitattributes` as landed in the root when the
@@ -12606,7 +12624,10 @@ def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
     a lookup among the tree's plain files found none, so the appended file
     was `adopt-lost` where main verified it (#471's review, SHOULD-3). A pin
     neither can read counts nothing here, and `_shape_file_findings` reports
-    it.
+    it. Each copy the block names is named where the split's symlinks lead
+    its pinned path (`_SplitTree.tracked_at`), the path git tracks, and then
+    by that pinned path where it differs, as the materializer named it
+    (#807).
     """
     source_oid = before.get(ATTRIBUTES)
     landed = after.get(ATTRIBUTES, [])
@@ -12615,11 +12636,13 @@ def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
             or root[0] == f"root:{source_oid}":
         return 0
     blobs = {path: oid for path, mode, oid, _ in tree if mode in FILE_MODES}
-    pin = _pin_through_links(_SplitTree(assembly, split_commit))
+    split = _SplitTree(assembly, split_commit)
+    pin = _pin_through_links(split)
     pinned = _pinned_shape_paths(assembly, pin) if pin else None
     if pinned is None or blobs.get(ATTRIBUTES) != root[0].split(":", 1)[1]:
         return 0
-    paths = eol_block_paths(pinned, COLLISION_DIR)
+    paths = eol_block_paths(pinned, COLLISION_DIR,
+                            {path: split.tracked_at(path) for path in pinned})
     expected = with_eol_block(_blob_bytes(assembly, source_oid), paths)
     if _blob_bytes(assembly, blobs[ATTRIBUTES]) != expected:
         return 0
@@ -13030,6 +13053,15 @@ class _SplitTree:
             raise _NotInTheSplitError(
                 f"is not in the split commit {self.commit}")
         return oid
+
+    def tracked_at(self, path: str) -> str | None:
+        """Where the split tracks what `path` leads to, each symlink on the
+        way followed (#807); None where the way leads out of the tree, above
+        it, round a loop, or through what is no directory in it."""
+        try:
+            return self._resolve(path)
+        except _NotInTheSplitError:
+            return None
 
     def _resolve(self, path: str) -> str:
         """`path` with each symlink on the way followed, as `open()` does."""
