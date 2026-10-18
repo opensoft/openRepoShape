@@ -40,7 +40,10 @@ commit as a pull request: each refuses this holder's tracking branch
 (`family-on-tracking-branch`) and names the `git switch -c` that makes a
 branch, as the block's first line does, and ends by printing that branch's
 `git push`. The member must already be scaffolded or adopted, because a family
-cannot make a project out of a repository.
+cannot make a project out of a repository. A holder keeps `members/` in ONE
+spelling on every disk: `add` refuses `family-members-dir-variant`
+(`member-path-taken` for a variant of the member's own path) until a human
+renames what sits under another spelling.
 
 `bump` takes a repeatable `--trailer "<Key>: <value>"`, appended to the commit
 it writes in the order given. It composes that message itself, so whatever

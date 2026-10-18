@@ -226,10 +226,13 @@ def submodule_update_through_git(root: Path, remotes: Path,
 # the remote, each run `git maintenance run --auto` as they finish. Since git
 # 2.47 that run DETACHES, holding `objects/maintenance.lock`, and the command
 # returns while it goes on; since 2.54 its default strategy (`geometric`)
-# repacks a repository of a few hundred loose objects and deletes the ones
+# repacks once its estimate, taken from `objects/17` alone, is above 256
+# loose objects, so two loose objects there are enough, and deletes the ones
 # it packed. A copy taken in that moment fails `[Errno 2] No such file or
-# directory` on one of them: `holder` and `the_standard_moved`, on the
-# Linux runner (#645).
+# directory` on one of them (`holder` and `the_standard_moved`, on the
+# Linux runner, #645), and a listing of `.git/objects` taken before and
+# after it differs: `test_family_bump_remove_rollback.py`'s `objects
+# changed`, 37 loose objects packed into two.
 #
 # So the session turns it off, as every git command in this estate is told
 # to: `gc.auto=0`, for a git that runs `git gc --auto` itself (2.43's
@@ -262,7 +265,10 @@ def submodule_update_through_git(root: Path, remotes: Path,
 # `GIT_CONFIG_GLOBAL` of a test's own, or an environment built from nothing
 # -- and a push made under a global file of a test's own. No repository the
 # suite copies is made, or pushed to, that way today.
-# `tests/test_no_auto_maintenance.py` holds both scopes to account.
+# `tests/test_no_auto_maintenance.py` holds both scopes to account, and fails a
+# test file that sets `GIT_CONFIG_COUNT` to a number of its own instead of
+# appending (#758), or works one out by hand (#835). The one place that does
+# is `appended_to_command_scope`, below.
 
 #: The two settings, in the order they are appended and written.
 NO_AUTO_MAINTENANCE = (("gc.auto", "0"), ("maintenance.auto", "false"))
@@ -288,6 +294,47 @@ def appended_to_command_scope(environ: Mapping[str, str],
         added[f"GIT_CONFIG_KEY_{index}"] = key
         added[f"GIT_CONFIG_VALUE_{index}"] = value
     return added
+
+
+#: The two entries a Windows job holds, under keys no config of a machine this
+#: runs on sets.
+JOB_ENTRIES = [("test.heldone", "one"), ("test.heldtwo", "two")]
+
+
+def put_job_and_session_entries(monkeypatch) -> None:
+    """The environment holds, for the rest of the test, what the Windows job
+    sets (`JOB_ENTRIES`) and what the session fixture appends after them (the
+    two settings of `NO_AUTO_MAINTENANCE`), as a test that reads the
+    environment at its call finds it. `GIT_CONFIG_PARAMETERS` is taken away
+    first: git lists its entries after the count's, and a run started under
+    `git -c` holds some."""
+    monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)
+    held = appended_to_command_scope({}, JOB_ENTRIES)
+    for name, value in {**held, **appended_to_command_scope(
+            held, NO_AUTO_MAINTENANCE)}.items():
+        monkeypatch.setenv(name, value)
+
+
+def command_line_entries(listing: str) -> list:
+    """`key=value` of each entry in the command scope of a `git config
+    --show-origin --list` listing, in git's order."""
+    return [line.split("\t", 1)[1] for line in listing.splitlines()
+            if line.startswith("command line:")]
+
+
+def command_scope_at(environ: Mapping[str, str], cwd: Path) -> list:
+    """The entries git reads from its command scope under `environ` laid over
+    this process's own (`command_line_entries` of `git config --show-origin
+    --list`, run in `cwd` and read, never written). `GIT_CONFIG_PARAMETERS`
+    is taken away, as `put_job_and_session_entries` does."""
+    laid = {name: value for name, value in os.environ.items()
+            if name != "GIT_CONFIG_PARAMETERS"}
+    shown = subprocess.run(
+        ["git", "config", "--show-origin", "--list"], cwd=str(cwd),
+        env={**laid, **environ}, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False)
+    assert shown.returncode == 0, shown.stderr + shown.stdout
+    return command_line_entries(shown.stdout)
 
 
 def home_is_known() -> bool:
@@ -2199,3 +2246,97 @@ def assert_step_four_speaks_in_the_plans_words(run, tmp_path: Path,
             f"({FIRST_LINK_WORDS}). The recorded chain still classifies."
         ), offered
     assert not (tmp_path / "remotes").exists()
+
+
+# --- a path a line names, spelled safe to show (#692, #766) ------------------
+#
+# A path a person supplied, or one git keeps, can hold an ESC, which a
+# terminal acts on, or a line break and then a line that is not the tool's.
+# A line that names such a path names it as `repo_shape.shown_path` does: as
+# it is, unless a character in it is not printable, and then as Python's
+# `repr` spells it. #692 gave the folder refusals that spelling and #766 the
+# plan rows and refusals beside them; their tests hand the tools these names
+# and read what comes back with these helpers.
+
+#: Folder names that are not safe to show raw: an ESC, and a line break then
+#: a line that is not the tool's.
+ESC_NAME = "wd-\x1b[31mRED"
+FORGED_NAME = "wd-\nWARNING forged-line: pwned"
+
+#: A command line and a file name on Windows hold none of these.
+POSIX_NAMES = pytest.mark.skipif(
+    os.name == "nt",
+    reason="needs a folder name holding a control character, which a "
+           "Windows file name cannot hold")
+
+#: The two names, for `parametrize`, by the ids #692's rows use.
+UNSAFE_NAMES = [pytest.param(ESC_NAME, id="ESC", marks=POSIX_NAMES),
+                pytest.param(FORGED_NAME, id="line-break", marks=POSIX_NAMES)]
+
+#: A name a line names as it is, byte for byte, with no quotes: a space and
+#: a letter that is not ASCII are each a character `str.isprintable`
+#: accepts.
+PRINTABLE_NAME = "wd \u00e9 and a space"
+
+#: `UNSAFE_NAMES` and `PRINTABLE_NAME`, for a row that holds both kinds
+#: (rv766's SHOULD 1: a quoted printable path was caught by no row).
+SHOWN_NAMES = [*UNSAFE_NAMES, pytest.param(PRINTABLE_NAME, id="printable")]
+
+
+def spelt(path) -> str:
+    """A path that holds a control character as a line names it: as
+    Python's `repr` spells it, quotes and `\\x1b` and `\\n` and all. It is
+    `repr`, and not `shown_path`, so a change to that function moves no
+    expectation with it."""
+    return repr(str(path))
+
+
+def named_as(path, name: str) -> str:
+    """`path`, made under the folder `name`, as a line names it: as it is,
+    byte for byte, under `PRINTABLE_NAME`, and `spelt` under one of
+    `UNSAFE_NAMES`."""
+    return str(path) if name == PRINTABLE_NAME else spelt(path)
+
+
+def unsafe_folder(parent: Path, name: str) -> Path:
+    """`parent / name`, made with every folder above it, or the test skipped
+    where the disk refuses the name."""
+    folder = parent / name
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except (OSError, UnicodeError) as exc:
+        pytest.skip(f"this filesystem cannot hold the name: {exc}")
+    return folder
+
+
+def copied_under(source: Path, parent: Path, name: str) -> Path:
+    """A private copy of the repository `source`, under its own name, in a
+    folder `name` made under `parent` (`unsafe_folder`): a holder or an
+    assembly root whose path holds that name. A copy keeps a submodule's
+    `.git` file, a relative path, true."""
+    target = unsafe_folder(parent, name) / source.name
+    shutil.copytree(source, target, symlinks=True)
+    return target.resolve()
+
+
+def assert_shown_safe(*texts: str) -> None:
+    """No ESC in any of `texts`, and no line of them that starts `WARNING
+    forged-line`: no path reached the terminal raw."""
+    for text in texts:
+        assert "\x1b" not in text, ascii(text)
+        assert not any(line.startswith("WARNING forged-line")
+                       for line in text.splitlines()), text
+
+
+def refusal_detail(stderr: str, code: str) -> list[str]:
+    """The lines refusal `code` prints before its `Remediation:` line: the
+    `REFUSED` line, and any line its detail goes on to, such as a list of
+    file names. A path that broke the detail in two adds a line here."""
+    lines = stderr.splitlines()
+    starts = [at for at, line in enumerate(lines)
+              if line.startswith(f"REFUSED {code}: ")]
+    assert len(starts) == 1, stderr
+    ends = [at for at in range(starts[0], len(lines))
+            if lines[at].startswith("Remediation:")]
+    assert ends, stderr
+    return lines[starts[0]:ends[0]]

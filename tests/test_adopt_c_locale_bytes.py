@@ -358,8 +358,9 @@ def on_its_own_branch(base: Path) -> Path:
 
 def its_branch_gone(base: Path) -> Path:
     """A clone of a repository on BRANCH, whose `origin/HEAD` still names
-    BRANCH after the clone's own BRANCH was deleted: `git rev-parse` of the
-    name `_default_branch` reads finds nothing, and git refuses it."""
+    BRANCH after the clone's own BRANCH was deleted: a default branch that
+    is no branch of the source's own, which `_default_branch` refuses by
+    name (#797)."""
     upstream = make_source_repo(base / ORG / NORTHWIND, on_github.SOURCE_TREE,
                                 branch=BRANCH, edits=())
     source = base / NORTHWIND
@@ -382,9 +383,10 @@ def test_a_default_branch_outside_ascii_reads_as_in_utf_8_mode(
     branch (`tracked`), it is refused `unsafe-value` before any plan is
     written. Told `--tracking-branch main` (`main`), it writes the plan
     UTF-8 mode writes, byte for byte, and `check` finds `main` no branch of
-    the source, naming `café` as UTF-8 mode names it. Where git refuses
-    `café` (`gone`), the refusal is `git-failed`, naming the command as
-    UTF-8 mode's does."""
+    the source, naming `café` as UTF-8 mode names it. Where the clone has
+    no `café` of its own (`gone`), the refusal is
+    `source-default-branch-not-local` (#797), naming it as UTF-8 mode's
+    does."""
     c_locale_or_skip()
     source = make_source(tmp_path)
     plans, runs = [], []
