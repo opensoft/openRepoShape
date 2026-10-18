@@ -53,7 +53,7 @@ from conftest import REPO, git, load_without_bytecode, run_script
 #: The family fixture, its names and the `make siblings` runner, imported
 #: from the module that owns them.
 from test_family import (  # noqa: F401
-    ALLOW_FILE_PROTOCOL, FAMILY, MEMBERS, NAME, family, siblings,
+    FAMILY, MEMBERS, NAME, allow_file_protocol, family, siblings,
 )
 
 #: The branch IRSS's remote is pointed at instead of `main`.
@@ -514,7 +514,7 @@ def test_a_family_folder_reached_through_a_link_passes_and_clones_into_it(
     logical = link / NAME
 
     shim = run_script(FAMILY, "siblings", "--family-root", str(logical),
-                      "--dry-run", env=ALLOW_FILE_PROTOCOL)
+                      "--dry-run", env=allow_file_protocol())
     assert shim.returncode == 0, shim.stdout + shim.stderr
     assert "WARNING" not in shim.stderr
 
@@ -579,6 +579,77 @@ def test_a_family_folder_reached_through_a_windows_junction_passes(
     assert warning is None
 
 
+def placed_at_a_junction(placement, monkeypatch, tmp_path, holds,
+                         dry_run):
+    """The first member's slot, `../<Project>`, and what `place` makes of
+    it, with `os.path.isjunction` saying yes for that slot. Simulated, as
+    above, so every system asks it. With `holds` None the slot does not
+    exist, and only the junction check says yes; otherwise it is a folder
+    holding the files `holds` names.
+
+    THE MEMBER IS MOUNTED FROM A LOCAL PATH THAT DOES NOT EXIST, so a run
+    that took the slot for an empty one fails its clone here and never
+    reaches a remote: with the `repository:` fallback, it cloned github."""
+    root = tmp_path / NAME / NAME
+    root.mkdir(parents=True)
+    slot = root.parent / MEMBERS[0]
+    if holds is not None:
+        slot.mkdir()
+        for name in holds:
+            (slot / name).write_text("mine\n", encoding="utf-8")
+    mount = f"members/{MEMBERS[0]}"
+    nowhere = {mount: str(tmp_path / "remotes" / f"{MEMBERS[0]}.git")}
+    monkeypatch.setattr(os.path, "isjunction", lambda path: Path(path) == slot,
+                        raising=False)
+    return slot, placement.place(
+        root, {"project": MEMBERS[0], "path": mount,
+               "repository": f"{NAME}/{MEMBERS[0]}"},
+        nowhere, [], "", dry_run)
+
+
+def refused(slot: Path, found: str, thing: str) -> str:
+    """`place`'s NOT A CLONE finding for the first member at `slot`."""
+    return (f"{MEMBERS[0]}: {slot} {found}, so this command will not write "
+            f"into it. Move it aside or name the {thing} something else; "
+            f"nothing here overwrites a {thing} somebody made.")
+
+
+@pytest.mark.parametrize("dry_run", [True, False],
+                         ids=["the-dry-run", "the-real-run"])
+def test_a_windows_junction_to_nothing_at_a_slot_is_a_link_to_nothing(
+        placement, monkeypatch, capsys, tmp_path, dry_run):
+    """#793: a junction to nothing at `../<Project>` is NOT A CLONE, as a
+    link to nothing is (#784). `is_symlink` says no to a junction and
+    `os.path.isjunction` (3.12) says yes, so the slot read as empty: the
+    dry run said `would clone`."""
+    slot, found = placed_at_a_junction(placement, monkeypatch, tmp_path,
+                                       None, dry_run)
+    assert found.state == "NOT A CLONE", found.state
+    assert found.finding == refused(slot, "is a link to nothing", "link"), \
+        found.finding
+    assert "would clone" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("holds, state, finding", [
+    pytest.param([], "would clone", None, id="an-empty-folder"),
+    pytest.param(["notes.md"], "NOT A CLONE",
+                 ("exists, is not empty and is not a git clone", "directory"),
+                 id="a-folder-with-files"),
+])
+def test_a_windows_junction_to_a_folder_at_a_slot_is_read_as_that_folder(
+        placement, monkeypatch, tmp_path, holds, state, finding):
+    """#793: THE JUNCTION IS ASKED ONLY OF A SLOT THAT DOES NOT EXIST. A
+    junction to a folder is read as that folder is, as a link to one is:
+    the dry run would clone into an empty one, and gives one holding files
+    the finding a folder of files gets. Asked before `exists`, the check
+    called both a link to nothing."""
+    slot, found = placed_at_a_junction(placement, monkeypatch, tmp_path,
+                                       holds, True)
+    assert found.state == state, found.state
+    expected = refused(slot, *finding) if finding else None
+    assert found.finding == expected, found.finding
+
+
 def test_a_folder_is_renamed_only_for_a_difference_of_case(
         placement, monkeypatch, tmp_path):
     """A second path to this folder under another NAME that is neither a
@@ -615,7 +686,7 @@ def test_family_py_siblings_runs_the_holders_own_copy_with_its_imports(
         b" Path(_shape.__file__).resolve())\n")))
 
     result = run_script(FAMILY, "siblings", "--family-root", str(holder),
-                        "--dry-run", env=ALLOW_FILE_PROTOCOL)
+                        "--dry-run", env=allow_file_protocol())
     assert result.returncode == 0, result.stdout + result.stderr
     library = (holder / "scripts" / "repo_shape.py").resolve()
     assert f"HOLDER COPY RAN, repo_shape from {library}" in result.stdout
@@ -630,7 +701,7 @@ def test_family_py_siblings_refuses_a_holder_without_its_own_copy(
     (holder / "scripts" / "siblings.py").unlink()
 
     result = run_script(FAMILY, "siblings", "--family-root", str(holder),
-                        env=ALLOW_FILE_PROTOCOL)
+                        env=allow_file_protocol())
     assert result.returncode == 2, result.stdout + result.stderr
     said = flat(result.stderr)
     assert said.startswith("REFUSED siblings-script-missing: family.py "
@@ -659,7 +730,7 @@ def test_family_py_siblings_escapes_what_its_stdout_cannot_encode(
     of the first line, and the run goes on."""
     holder = holder_in(diverged, tmp_path / NAME)
     result = run_script(FAMILY, "siblings", "--family-root", str(holder),
-                        "--dry-run", env={**ALLOW_FILE_PROTOCOL,
+                        "--dry-run", env={**allow_file_protocol(),
                                           "PYTHONIOENCODING": "ascii"})
     assert result.returncode == 0, result.stdout + result.stderr
     assert "UnicodeEncodeError" not in result.stderr

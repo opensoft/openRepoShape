@@ -1,0 +1,16 @@
++1
+2026-10-17
+One line for the doctor's exit 3, taken in #630 for #683 (W683, and RV-f's
+N4 on #742, which landed the partial-clone case). README's list of what
+makes `shape-doctor.py` exit 3 named only a pin whose commit this checkout
+does not carry. shape-doctor.py's own EXIT CODES block names more: a
+partial clone lacking what the comparison reads (#683, added by #742), a
+validator of its own that crashed or cannot be given its `PYTHONPATH`
+(#278, #410), and its own naming policy not loading (#678, added by #701);
+and the code refuses a read of the standard that fails
+(`update-upstream-unreadable`, #742) as CANNOT ANSWER too. A reader who
+gets `CANNOT ANSWER` looks the exit up in this paragraph, and it now lists
+every cause. Reworded so the five causes cost two lines, and one of
+them given back by cutting "exactly" and "about the shape" from the
+drift paragraph that follows, whose last line held one word (RV630's
+nit on #630).
