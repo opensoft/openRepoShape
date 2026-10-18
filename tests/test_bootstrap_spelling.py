@@ -700,8 +700,9 @@ def test_a_members_row_and_the_make_target_are_spelled(holder, tmp_path):
     assert (members / "Make" / "ran").exists(), \
         "the member's command was handed the escaped target, not the raw one"
     assert err.strip().endswith(
-        r"family bootstrap FAILED: Fa\x1bil (make ta\u2028rget.py exited 2)"
-    ), err
+        r"family bootstrap FAILED: Fa\x1bil (make ta\u2028rget.py exited 2 "
+        "and printed no `Error <code>` line for a command of the member's: "
+        "make's own message above says what failed)"), err
     assert not {"\x1b", "\u2028"} & set(out), out
 
 

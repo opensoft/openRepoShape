@@ -27,7 +27,9 @@ why the verdict is offline: no clone, no authenticated call, and the same
 answer on a machine that has never spoken to github.com. A partial clone
 (`git clone --filter`) fetches what it lacks on a read, so it is asked first,
 without fetching, whether it holds what the comparison reads, and the verdict
-is CANNOT ANSWER where it does not (#683). It runs the project's
+is CANNOT ANSWER where it does not (#683). Every git it starts runs with
+`GIT_NO_LAZY_FETCH=1`, so a read nothing asked about first fails rather than
+fetches (`lazy_fetch_off`, #787). It runs the project's
 own validators OFFLINE: `run_validator` starts each child with no token, no
 `gh` configuration and a proxy that goes nowhere (#297), so they are offline
 whatever their own contract says. ONE ROW IS THE EXCEPTION AND IT IS NAMED:
@@ -346,7 +348,9 @@ shows it as itself where the output can and with `?` where it cannot
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
+import errno
 import importlib.util
 import json
 import os
@@ -1410,8 +1414,39 @@ class Context:
                 for leg in declared if not isinstance(leg, dict)]
 
     def members(self) -> list[dict]:
-        return [row for row in ((self.manifest or {}).get("members") or [])
-                if isinstance(row, dict)]
+        """The member rows `family.yaml` declares, in its own order.
+
+        A `members:` THAT IS NOT A LIST DECLARES NO MEMBER THIS CAN NAME
+        (#864), as the holder's `validate-family.py` reads it, and an entry
+        that is not a mapping is no member; `members_unread` says each.
+        Iterated as `members or []`, `members: 5` ended the whole report in a
+        `TypeError`, and a scalar `openXdox` or a mapping was walked one
+        character, or one key, at a time, so the `members` row called the
+        holder a family with none.
+        """
+        declared = (self.manifest or {}).get("members")
+        if not isinstance(declared, list):
+            return []
+        return [row for row in declared if isinstance(row, dict)]
+
+    def members_unread(self) -> list[str]:
+        """What in `members:` names no member `members` can read, each in the
+        words of the holder's own `validate-family.py` (#864): its
+        `family-members-unreadable` refusal of a `members:` that is not a
+        list, path and all, or its `member-row` finding for each entry of
+        one that is not a mapping. The value is spelled as the gate spells
+        it (`repr`), and the path as this row spells what it quotes (#673).
+        Absent or null is neither: it declares no member, and the gate calls
+        that family empty."""
+        declared = (self.manifest or {}).get("members")
+        if declared is None:
+            return []
+        if not isinstance(declared, list):
+            return [f"family-members-unreadable: "
+                    f"{spelled(self.manifest_path)}: `members:` is "
+                    f"{declared!r}, expected a list"]
+        return [f"member-row: a member is not a mapping: {row!r}"
+                for row in declared if not isinstance(row, dict)]
 
     def update_shape(self):
         """`update-shape.py` as a module, loaded once.
@@ -2428,6 +2463,46 @@ def legs_unread_row(ctx: Context, check_id: str, label: str, needs: str,
                {**(detail or {}), "waits_on": "manifest"})
 
 
+def members_unread_row(ctx: Context, needs: str) -> Row | None:
+    """The `n/a` the `members` row gives where `members:` holds anything it
+    cannot read as a member (#864), or None: where every entry is a row, and
+    where there is none at all (absent, null or `[]`), which the row's own
+    "no members yet" is about.
+
+    A `members:` that is not a list is not a family with no members, which
+    is what the row said of `openXdox`, `{a: b}` and `[5]`, one row under
+    the `family` row's refusal of the same value: it is a manifest nobody
+    can read members out of. ONE FAULT, ONE FINDING, as `waiting_row`
+    reasons: the holder's own `validate-family.py` says the fault, the
+    `family` row runs it, so this row is `n/a`, says the same sentence
+    (`Context.members_unread`) and names that row in `waits_on`.
+
+    AND A LIST THAT HOLDS ROWS AS WELL AS SUCH AN ENTRY WAITS TOO, unlike a
+    project's `legs:` (#832), whose bootstrap places the legs beside such an
+    entry: the holder's own `scripts/bootstrap.py`, which this row names to
+    fetch a member to its pin, refuses that list (`members_of`), and
+    `family.py` refuses it before `add`, `bump` or `remove` does anything.
+    Checked row by row, the rows beside a `5` were "mounted at their pins",
+    an `ok` under the `family` row's `member-row` finding for it.
+
+    IT SAYS THAT THE `family` ROW'S COMMAND NAMES THE FAULT, as #862's
+    `legs_unread_row` says it of the `manifest` row, and no more: that
+    command is the gate, which prints the refusal or the `member-row`
+    finding and no remedy.
+    """
+    unread = ctx.members_unread()
+    if not unread:
+        return None
+    what = ("holds an entry that is not a mapping"
+            if isinstance(ctx.manifest.get("members"), list)
+            else "is not a list")
+    return Row("members", "members", NA,
+               f"{ctx.manifest_path.name}'s `members:` {what} "
+               f"({'; '.join(unread)}), so {needs}; the `family` row's "
+               "command names the fault", None,
+               {"members": [], "waits_on": "family"})
+
+
 # ---------------------------------------------------------------------------
 # The checks
 # ---------------------------------------------------------------------------
@@ -3131,20 +3206,210 @@ def check_family(ctx: Context) -> Row:
                          ["--root", str(ctx.root)])
 
 
-def manifest_candidates(root: Path) -> list[Path]:
-    """Every file in a root that might DECLARE a `kind:`.
+# ---------------------------------------------------------------------------
+# A file or folder this user cannot read (#847)
+# ---------------------------------------------------------------------------
+#
+# `validate-pins.py` refuses a pin, the manifest or a pinned copy that the
+# operating system will not let it reach or open BY NAME, since #712:
+# `REFUSED yaml-unreadable: contracts/spec-pin.yaml: cannot be read
+# (Permission denied)`, with a remedy for the cause. Three rows here read the
+# same files themselves, and said something else: the `legs` row that the pin
+# `carries no 40-hex commit`, which the verdict read as DRIFTED; `manifest
+# kinds` and `shape currency` a bare `[Errno 13]`, or, for a pin at mode 000,
+# a `git checkout HEAD --` that discards what the file holds. They now ask as
+# the gate asks, and say what it says.
+
+#: The `OSError`s that mean NOTHING IS THERE to read, where any other is a
+#: read the operating system refused: no such file, a part of the path that
+#: is not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". They are the ones
+#: `Path.is_file()` answered False to on Python 3.9 to 3.13, and
+#: `validate-pins.py` and `bump-leg.py` read them so (`_ABSENT_ERRNOS`,
+#: #434, #712): read the same way here, a pin the gate calls missing is one
+#: these rows call missing, and one it refuses by name they name.
+ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+ABSENT_WINERRORS = (21, 123, 1921)
+
+
+def refused_read(exc: BaseException | None) -> OSError | None:
+    """`exc` where it is an `OSError` with which the operating system
+    REFUSED a `stat`, a read or a listing, else None: no `OSError` at all, or
+    one that says nothing is there (`ABSENT_ERRNOS`) (#847).
+
+    Asked of a `Refusal`'s `__cause__` too: `load_yaml` raises
+    `yaml-unreadable` from the `OSError` of a file it could not open, which
+    is how `validate-pins.py` tells that file from one that does not parse
+    (`_load`, #712), whatever words the root's `repo_shape` gives it."""
+    if not isinstance(exc, OSError):
+        return None
+    if (exc.errno in ABSENT_ERRNOS
+            or getattr(exc, "winerror", None) in ABSENT_WINERRORS):
+        return None
+    return exc
+
+
+def is_a(path: Path, kind) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `stat.S_ISDIR`),
+    raising the `OSError` of a `stat` the operating system refused: the
+    question `validate-pins.py`'s `_is_a` asks (#434, #847).
+
+    NOT `Path.is_file()` OR `Path.is_dir()`, whose answer depends on the
+    Python. Up to 3.13 they raised a refused `stat`, which ended a row in
+    `could not be run: [Errno 13] ...`; from 3.14 they answer False to any
+    `OSError`, which would call a pin in a `contracts/` this user cannot
+    search a pin that is not there. A name the operating system cannot take
+    at all is nothing there, as `is_file()` answered it."""
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if refused_read(exc) is None:
+            return False
+        raise
+    except ValueError:
+        return False
+    return kind(mode)
+
+
+def os_reason(exc: OSError) -> str:
+    """The operating system's own reason for `exc` (`Permission denied`), or
+    the exception's name where it gives none, as `validate-pins.py` names
+    one (#712)."""
+    return exc.strerror or type(exc).__name__
+
+
+def cannot_be_read(named: str, exc: OSError) -> str:
+    """`<named>: cannot be read (<the operating system's reason>)`: the line
+    `validate-pins.py` refuses a file it cannot reach or open with
+    (`_cannot_read`, #712), so a row and the gate say one sentence (#847)."""
+    return f"{named}: cannot be read ({os_reason(exc)})"
+
+
+def cannot_be_listed(named: str, exc: OSError) -> str:
+    """`<named>: cannot be listed (<the operating system's reason>)`: the
+    line `validate-pins.py` refuses a directory it cannot list with (#434),
+    for the `contracts/` the `manifest kinds` row lists (#847)."""
+    return f"{named}: cannot be listed ({os_reason(exc)})"
+
+
+#: What a refused PERMISSION is told, in `validate-pins.py`'s words for the
+#: same file (`_unreadable_file`, #712): the mode or the owner puts it right.
+PERMISSION_ADVICE = (
+    "Make what this user may not open readable by this user: `chmod u+r` on "
+    "a file, `chmod u+rx` on a directory (and on every directory above it "
+    "inside the root), or fix who owns it.")
+
+#: What any OTHER refusal is told, in the same gate's words (`OTHER_REASON`,
+#: #712, after `bump-leg.py`, #383): an I/O error or a name the filesystem
+#: will not take is not put right by `chmod`.
+OTHER_REASON = (
+    "Where the operating system gave another reason, put a regular file this "
+    "user can open back in its place, or take away one nobody wants, and make "
+    "sure nothing is changing the directory while this runs.")
+
+#: What a FOLDER this user cannot list is told for any other reason, in the
+#: gate's words for a directory it cannot list (`_workflows_unlistable`,
+#: #434): it is a directory that goes back in its place, not a file.
+OTHER_REASON_FOLDER = (
+    "Where the operating system gave another reason, put a directory this "
+    "user can list back in its place, and make sure nothing is changing it "
+    "while this runs.")
+
+
+def cannot_read_why(refused: list, unlisted: list = ()) -> str:
+    """The `why` of a row whose NEXT is this doctor again because a file or
+    folder it reads cannot be read: `refused` the `OSError` of each file,
+    `unlisted` that of each folder it cannot list (#847).
+
+    THE GATE'S ADVICE, BY THE CAUSE, and never a `git checkout`: the file is
+    there, and HEAD's copy put in its place would discard whatever it holds
+    that no commit does, as `pin_restore`'s `uncommitted` line says of
+    itself. A permission, of a file or a folder, is `PERMISSION_ADVICE`; any
+    other cause is `OTHER_REASON` for a file and `OTHER_REASON_FOLDER` for a
+    folder, as the gate tells the two apart. What a person does about a
+    mode or an owner is theirs; then the doctor reads the file again."""
+    said = []
+    if any(isinstance(exc, PermissionError) for exc in [*refused, *unlisted]):
+        said.append(PERMISSION_ADVICE)
+    if any(not isinstance(exc, PermissionError) for exc in refused):
+        said.append(OTHER_REASON)
+    if any(not isinstance(exc, PermissionError) for exc in unlisted):
+        said.append(OTHER_REASON_FOLDER)
+    return " ".join(said) + " Then run this doctor again"
+
+
+def doctor_line(ctx: Context) -> str:
+    """This doctor, run again over the root: the NEXT of a row that names a
+    file or folder only a person can mend (`cannot_read_why`), the same line
+    `unreadable_next` spells for a file that does not load."""
+    return (f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} --root "
+            f"{quote_arg(ctx.root)}")
+
+
+def pin_read(root: Path, relative: str) -> tuple:
+    """`(what the file at `relative` holds, None)`; `(None, the OSError)`
+    where the operating system refused its `stat` or its read; `(None,
+    None)` where no regular file is there, or it does not load for another
+    reason (#847).
+
+    ASKED AS `validate-pins.py` ASKS IT (#712): the `stat` first, as its
+    `_is_file` does, so a pin in a `contracts/` this user cannot search is
+    named on every Python, and then the read, through `load_yaml`, whose
+    refusal is raised `from` the `OSError` of a file this user cannot open
+    (`_load`). Nothing there, or no regular file, is what the gate calls
+    missing, and is None here as it always was."""
+    path = root / relative
+    try:
+        if not is_a(path, stat.S_ISREG):
+            return None, None
+    except OSError as exc:
+        return None, exc
+    try:
+        return load_yaml(path), None
+    except Refusal as exc:
+        return None, refused_read(exc.__cause__)
+
+
+def manifest_candidates(root: Path) -> tuple[list[Path], list[tuple]]:
+    """Every file in a root that might DECLARE a `kind:`, and `(line,
+    OSError, whether it is a folder this user cannot list)` for each place
+    the operating system would not let this user look (#847).
 
     The two manifests at the top, and everything under `contracts/`. Not the
     whole tree: a leg is its own repository with its own contracts, and a
     holder's `members/<Project>` is a whole project -- walking into either
     would make this command report on repositories it was not pointed at.
+
+    A `contracts/` THIS USER CANNOT LIST, OR A FILE IN IT WHOSE `stat` IS
+    REFUSED, IS NAMED, in `validate-pins.py`'s words (`cannot_be_listed`,
+    `cannot_be_read`). `iterdir()` and `is_file()` raised the refusal out of
+    the row, `could not be run: [Errno 13] Permission denied: '<root>/
+    contracts'`, and from Python 3.14 `is_file()` would answer False and the
+    row would count the manifests it never read as none (`is_a`). The third
+    value is what `cannot_read_why` tells a folder by: a folder this user
+    cannot list for another reason than permission is told to put a
+    directory back, as the gate tells one, not a file.
     """
+    refused: list[tuple] = []
+
+    def regular(path: Path) -> bool:
+        try:
+            return is_a(path, stat.S_ISREG)
+        except OSError as exc:
+            refused.append((cannot_be_read(
+                path.relative_to(root).as_posix(), exc), exc, False))
+            return False
+
     found = [root / PROJECT_MANIFEST, root / FAMILY_MANIFEST]
     contracts = root / "contracts"
-    if contracts.is_dir():
-        found += sorted(p for p in contracts.iterdir()
-                        if p.is_file() and p.suffix in (".yaml", ".yml"))
-    return [path for path in found if path.is_file()]
+    try:
+        listed = sorted(contracts.iterdir()) if is_a(contracts,
+                                                     stat.S_ISDIR) else []
+    except OSError as exc:
+        refused.append((cannot_be_listed("contracts", exc), exc, True))
+        listed = []
+    found += [path for path in listed if path.suffix in (".yaml", ".yml")]
+    return [path for path in found if regular(path)], refused
 
 
 #: Named once: the row this function returns and its own `CHECKS` entry below
@@ -3707,6 +3972,21 @@ def check_manifest_kinds(ctx: Context) -> Row:
     reason still names every fault, and the next run names the rest.
     `restore` and `refusals` join `detail` only when a file does not load,
     so every other root reports the row it always did.
+
+    A FILE OR A FOLDER THIS USER CANNOT READ IS NEITHER (#847). A pin at
+    mode 000 was `unreadable as YAML`, quoting `[Errno 13] Permission
+    denied: '<root>/...'`, and `unreadable_next` read its git state: `git
+    status` calls a file it cannot open changed (` M`), so the NEXT was `git
+    checkout HEAD --` on it, which discards what it holds that no commit
+    does. A `contracts/` this user cannot list or search ended the row in
+    `could not be run: [Errno 13]`. Each is named now as `validate-pins.py`
+    names it (`manifest_candidates`, `cannot_be_read`), and listed under
+    `detail`'s `cannot_be_read`, only when there is one. Its NEXT is this
+    doctor again and its `why` the gate's advice for the cause, a folder's
+    as the gate gives a folder (`cannot_read_why`), and it comes FIRST: the
+    row cannot say what kind such a file declares, or whether it loads,
+    until it can be read, and a `contracts/` it cannot list hides every
+    manifest in it. No git state is asked of it.
     """
     known: list[str] = []
     #: `(path, kind)` for each manifest of a kind the registry does not know.
@@ -3733,7 +4013,10 @@ def check_manifest_kinds(ctx: Context) -> Row:
     #: paths whose gate refuses another kind (review of PR #555).
     read_as = kinds_read_here(ctx)
     checked = kind_checked_by(ctx)
-    for path in manifest_candidates(ctx.root):
+    #: `(line, OSError, folder)` for each file or folder this user cannot
+    #: read (#847).
+    candidates, refused = manifest_candidates(ctx.root)
+    for path in candidates:
         if path == elsewhere:
             continue
         rel = path.relative_to(ctx.root).as_posix()
@@ -3743,6 +4026,10 @@ def check_manifest_kinds(ctx: Context) -> Row:
         try:
             data = load_yaml(path)
         except Refusal as exc:
+            cause = refused_read(exc.__cause__)
+            if cause is not None:
+                refused.append((cannot_be_read(rel, cause), cause, False))
+                continue
             unreadable.append(rel)
             refusals[rel] = {"code": exc.code,
                              "detail": exc.detail.removeprefix(f"{path}: ")}
@@ -3825,12 +4112,17 @@ def check_manifest_kinds(ctx: Context) -> Row:
         # ONLY WHEN THERE IS ONE, so every root without it reports the same
         # row, byte for byte, as it did before #211.
         detail["family_beside"] = beside[1]
-    if names or judged or unreadable:
+    if refused:
+        # Likewise (#847).
+        detail["cannot_be_read"] = [entry[0] for entry in refused]
+    if names or judged or unreadable or refused:
         parts = []
         #: The sentences of the `why` that name the other way out of each
         #: fault, in the row's order: never the NEXT's (#548), and never for
         #: a file a gate here reads (`taking_out`).
         ways = []
+        if refused:
+            parts.append(", ".join(detail["cannot_be_read"]))
         if unknown:
             parts.append("no validator registered for kind " + ", ".join(
                 detail["unregistered"]))
@@ -3858,6 +4150,11 @@ def check_manifest_kinds(ctx: Context) -> Row:
             detail.update({"restore": restore, "refusals": refusals})
         else:
             command, why = taking_out(ctx, names, states, judged, ways)
+        if refused:
+            # FIRST, and never a git command (#847): see the docstring.
+            command, why = doctor_line(ctx), cannot_read_why(
+                [exc for _line, exc, folder in refused if not folder],
+                [exc for _line, exc, folder in refused if folder])
         return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
                    "; ".join(parts) + aside, command, detail, why=why)
     return Row("manifest-kinds", LABEL_MANIFEST_KINDS, OK,
@@ -4126,6 +4423,19 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    path as renamed from the copy and gives it to a person
                    (`renamed_copies`). It is never taken: neither side's
                    pin has a row to prove it by.
+                   A COPY RENAMED ON BOTH SIDES (#783) is `DD` at its old
+                   name, stage 1 alone, and each new name is added by one
+                   side alone, with no stage 1. It is no copy to merge by
+                   hunks, as git merged none there, so it leaves `copies`,
+                   and the `why` says it is gone on both sides and names
+                   each new name a side's own commit holds the base's blob
+                   of it at, or the bytes that commit's own pin row for it
+                   records, at that one path of the commit, saying where a
+                   side's is not proved (`copies_renamed_twice`,
+                   `twice_renamed_copies`). Where the pin taken here still
+                   lists a copy renamed on one side or both, the `why` says
+                   this doctor reports it missing once the merge is
+                   finished (`still_listed`).
                    The manifest and README.md are never named either, though
                    `apply` writes lines of them: every other line is the
                    project's own, and one side taken whole drops the other
@@ -4139,7 +4449,7 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    side's pin has a row for, under its name or under the
                    one the merge base held it at. A file only the other
                    side's pin calls a copy is named, as above (#687), and
-                   so is a copy's rename (#753).
+                   so is a copy's rename, on one side or both (#753, #783).
       uncommitted  HEAD holds a pin that reads, and the tree or the index
                    differs from it. `checkout HEAD`, which drops a change no
                    tool of this standard leaves uncommitted.
@@ -4159,6 +4469,17 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    whose parent holds the OLD pin -- is still the one to put
                    back, and the `why` says what comes after it:
                    `gitlink_left_behind` (#547).
+      partial      the reads above found no pin to put back, and the root
+                   is a partial clone (`git clone --filter`) that lacks a
+                   pin or a tree they read, HEAD's included
+                   (`history_left_out`, #787). This doctor fetches nothing,
+                   so those reads failed, and what puts the pin back, a
+                   commit or HEAD's own pin, cannot be read here. `fetch
+                   --refetch --no-filter` from the first promisor remote
+                   puts in every object on its branches, and the doctor run
+                   again reads the whole history; the `why` spells out that
+                   fetch from each other promisor remote
+                   (`partial_history_why`).
       none         nothing above: no history, a root commit, no git, a walk
                    that meets a parent holding no pin, or goes
                    `PIN_HISTORY_DEPTH` commits back, before a pin that reads.
@@ -4249,6 +4570,7 @@ def pin_restore(ctx: Context, detail: dict | None = None,
         if side:
             lines, copies, other_side, taken, partial = [], [], [], [], False
             renamed: dict[str, str] = {}
+            twice: dict[str, dict] = {}
             kept: set = set()
             if pin == SHAPE_PIN:
                 lines = sorted(name for name in (kind.manifest, us.README)
@@ -4261,9 +4583,24 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                 copies = sorted(name for name in kept if name in stages)
                 other_side = sorted(name for name in other - kept
                                     if name in stages)
-                renamed = copies_renamed(ctx, kept | other, {
-                    name: base for name, base in bases.items()
-                    if name not in kept | other | {pin, *lines}})
+                named = kept | other | {pin, *lines}
+                # A copy both sides renamed is `DD`, stage 1 alone (#783):
+                # never taken, and never a merge of hunks there are not.
+                gone = {name: bases[name] for name in copies + other_side
+                        if set(stages[name]) == {b"1"}}
+                copies = [name for name in copies if name not in gone]
+                other_side = [name for name in other_side
+                              if name not in gone]
+                unnamed = {name: base for name, base in bases.items()
+                           if name not in named}
+                held = base_holders(ctx) if gone or unnamed else {}
+                renamed = copies_renamed(kept | other, unnamed, held)
+                # A path a pin has a row for is named as that, never as a
+                # copy's new name too (review of PR #789).
+                twice = copies_renamed_twice(
+                    ctx, gone, {name: held_at for name, held_at
+                                in stages.items() if name not in named},
+                    held)
                 # A read of a partial clone can fetch: prove nothing there.
                 partial = bool(copies) and partial_clone(ctx.shape)
                 if not partial:
@@ -4283,10 +4620,12 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                     + ("them" if len(taken) > 1 else "it") + " at the "
                     "commit that side's pin names, so neither side holds an "
                     "edit of the project")
-            if lines or copies or other_side or renamed:
+            if lines or copies or other_side or renamed or twice:
                 if detail is not None:
                     detail["left_for_a_person"] = sorted(
-                        lines + copies + other_side + list(renamed))
+                        {*lines, *copies, *other_side, *renamed, *twice,
+                         *(path for went in twice.values()
+                           for paths in went.values() for path in paths)})
                 if lines:
                     said.append(
                         f"{' and '.join(lines)} "
@@ -4318,7 +4657,9 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                              "either refusal asks for --accept-local on that "
                              "path")
                 said += other_sides_copies(other_side, stages)
-                said += renamed_copies(renamed, stages, kept)
+                said += renamed_copies(renamed, stages)
+                said += twice_renamed_copies(twice, stage)
+                said += still_listed(set(renamed.values()) | set(twice), kept)
             if said:
                 then = ". " + ". ".join(said) + ". Then finish"
             return "unmerged", (
@@ -4374,6 +4715,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
             f"broke it, and the newest {what} in its history that reads. "
             f"Commit that rather than editing the {what}"
             + gitlink_left_behind(ctx, before, pin))
+    remotes = history_left_out(root, pin)
+    if remotes:
+        return "partial", refetch_of(git_c, remotes[0]), partial_history_why(
+            git_c, what, remotes)
     return "none", None, None
 
 
@@ -4427,11 +4772,39 @@ def by_conflict(names: list, stages: dict) -> list:
     return pairs
 
 
-def copies_renamed(ctx: Context, copies: set, bases: dict) -> dict:
+def base_holders(ctx: Context) -> dict:
+    """`{blob: [paths]}`, every path of the merge base's whole tree under
+    the blob it holds (`tree_holders`), the base being `merge-base HEAD
+    MERGE_HEAD`, as `copies_renamed` (#753) and `copies_renamed_twice`
+    (#783) weigh a blob; `{}` where git cannot name the base, as for any
+    conflict but a merge's.
+    """
+    base = git_answer(["merge-base", "HEAD", "MERGE_HEAD"], ctx.root)
+    return tree_holders(ctx, base) if base else {}
+
+
+def tree_holders(ctx: Context, rev: str) -> dict:
+    """`{blob: [paths]}`, every path of the whole tree `rev` names under
+    the blob it holds, read from the root as `ls-tree -r` lists it, so each
+    path is named as `ls-files` names it there; `{}` where git cannot read
+    it. One read of the merge base (`base_holders`), and of each side's own
+    commit, for `copies_renamed_twice` (review of PR #789, round 3)."""
+    listing = git_answer(["ls-tree", "-r", "-z", rev], ctx.root, binary=True)
+    held: dict[bytes, list] = {}
+    for record in (listing or b"").split(b"\0"):
+        meta, _tab, path = record.partition(b"\t")
+        if path and len(meta.split()) == 3:
+            held.setdefault(meta.split()[2], []).append(
+                path.decode("utf-8", "replace"))
+    return held
+
+
+def copies_renamed(copies: set, bases: dict, held: dict) -> dict:
     """`{path: copy}` for each path conflicted beside the shape pin whose
     stages came from a rename of `copy`, a path a side's pin has a `files:`
     row for (#753). `bases` is `{path: object}`, stage 1 of each conflicted
-    path no pin has a row for, the merge base's blob.
+    path no pin has a row for, the merge base's blob, and `held` the base's
+    whole tree by blob (`base_holders`).
 
     THE MERGE BASE'S OWN BLOB, AT A NAME THE BASE DID NOT HOLD. A rename on
     one side and an edit on the other conflict under the new name, and git
@@ -4461,36 +4834,177 @@ def copies_renamed(ctx: Context, copies: set, bases: dict) -> dict:
     whose exact bytes the base also holds at another path, which is named
     no more than it was before #753; the `merge` row still lists it.
     """
-    if not bases or not copies:
-        return {}
-    base = git_answer(["merge-base", "HEAD", "MERGE_HEAD"], ctx.root)
-    listing = base and git_answer(["ls-tree", "-r", "-z", base], ctx.root,
-                                  binary=True)
-    held: dict[bytes, list] = {}
-    for record in (listing or b"").split(b"\0"):
-        meta, _tab, path = record.partition(b"\t")
-        if path and len(meta.split()) == 3:
-            held.setdefault(meta.split()[2], []).append(
-                path.decode("utf-8", "replace"))
     present = {name for names in held.values() for name in names}
     return {name: held[blob][0] for name, blob in sorted(bases.items())
             if name not in present and len(held.get(blob, ())) == 1
             and held[blob][0] in copies}
 
 
-def renamed_copies(renamed: dict, stages: dict, kept: set) -> list:
+#: The commit each side of a merge records its own tree in, by the index
+#: stage git gives that side's version of a path.
+COMMIT_OF_STAGE = {b"2": "HEAD", b"3": "MERGE_HEAD"}
+
+
+def copies_renamed_twice(ctx: Context, gone: dict, stages: dict,
+                         held: dict) -> dict:
+    """`{copy: {stage: [paths]}}` for each copy both sides of the merge
+    renamed (#783): `gone` is `{copy: blob}`, the copies conflicted beside
+    the shape pin at stage 1 alone (`DD`) with the merge base's blob of
+    each, and each path is a new name of the copy on the side git gives
+    `stage`, b"2" for the side checked out, b"3" for the side merged in.
+
+    BOTH SIDES RENAMED IT. git leaves the old name `DD` and each new one
+    added by one side alone (`AU`, `UA`), with no stage 1, so #781's rule,
+    which keys on a path's stage 1, sees neither. And it writes its merge
+    of the copy's three versions to both new names, so where a side edited
+    the copy no stage holds the base's blob.
+
+    THE BYTES THE SIDE ITSELF COMMITTED ARE THE EVIDENCE (`side_moved_it`).
+    A path added by one side alone is that side's new name for the copy
+    where the commit that side records (`HEAD`, `MERGE_HEAD`) holds at that
+    path the merge base's blob of the copy, object for object, or the bytes
+    whose sha256 that same commit's own shape pin records in its row for
+    the copy (review of PR #789): where the standard moved the copy between
+    the two pins, each side's `apply` rewrote it, and neither commit holds
+    the base's blob. A side whose commit holds an edit there is not proved:
+    no similarity index is guessed at, and git's merged content, the same
+    at both names, is not taken for a pairing.
+
+    NO OTHER PATH OF THE BASE HOLDS THOSE BYTES, as #781 weighs a blob
+    (`base_holders`): the base's blob of the copy is held there by the
+    copy alone, and bytes the base did not hold at the copy are held there
+    by no path at all. So a path of the base holding the very bytes a side
+    holds at its new name proves that name nothing, while a twin of the
+    copy's old bytes does not stand in the way of bytes the standard moved
+    it to. Where git cannot name the base, nothing is proved.
+
+    AND NO OTHER PATH OF THE SIDE'S OWN COMMIT HOLDS THEM (`tree_holders`,
+    review of PR #789, round 3): #781's one-path rule, applied to the
+    side's tree. A project that keeps its own twin of the copy in step
+    with it, and renames the twin too, holds the copy's bytes at two new
+    names, and git pairs one of them with the twin: neither is proved, as
+    either may be the project's own file. The same holds for the base's
+    blob written at two paths.
+
+    Only a path no pin has a row for is a candidate: `pin_restore` names
+    the others as what their rows say, never as a new name too (review of
+    PR #789). Several proved paths on one side were not reached in that
+    review: git pairs one new name per side with the rename, another path
+    a side copies the copy to is added cleanly, never conflicted, and two
+    proved paths would have to hold different bytes, the base's blob at
+    one and the bytes of the side's pin row at the other. The `[paths]`
+    keeps them all, should git ever give more.
+    """
+    if not gone:
+        return {}
+    added = sorted(name for name, held_at in stages.items()
+                   if set(held_at) in ({b"2"}, {b"3"}))
+    sides = {number: (commit, pinned_sha256(ctx, commit),
+                      tree_holders(ctx, commit))
+             for number, commit in COMMIT_OF_STAGE.items()}
+    twice: dict[str, dict] = {}
+    for copy, blob in sorted(gone.items()):
+        found: dict[bytes, list] = {}
+        for path in added:
+            number = next(iter(stages[path]))
+            commit, pinned, tree = sides[number]
+            if held and side_moved_it(ctx, commit, path, copy, blob,
+                                      pinned.get(copy), tree, held):
+                found.setdefault(number, []).append(path)
+        twice[copy] = found
+    return twice
+
+
+def pinned_sha256(ctx: Context, rev: str) -> dict:
+    """`{path: sha256}` of the `files:` rows of the shape pin `rev` holds,
+    read by `pin_at` through `read_pin`'s checks, or `{}` where it does not
+    read; a row with no `sha256:` maps to ''."""
+    read = pin_at(ctx, rev, whole=True)
+    return {row.path: row.recorded for row in read[1]} if read else {}
+
+
+def side_moved_it(ctx: Context, commit: str, path: str, copy: str,
+                  blob: bytes, recorded: str | None, tree: dict,
+                  held: dict) -> bool:
+    """Whether `path` of `commit`, one side of the merge, holds the copy
+    `copy` moved there, by `copies_renamed_twice`'s evidence: bytes that
+    `tree`, that commit's whole tree by blob, holds at `path` alone, and
+    that are either the merge base's blob of the copy, `blob`, which the
+    base `held` holds at the copy alone, or bytes the base holds at no
+    path whose sha256 is `recorded`, that side's pin row for the copy."""
+    spec = f"{commit}:./{path}"
+    committed = git_answer(["rev-parse", "-q", "--verify", spec], ctx.root)
+    if committed is None or tree.get(committed.encode("ascii")) != [path]:
+        return False
+    if committed.encode("ascii") == blob:
+        return held.get(blob) == [copy]
+    if not recorded or committed.encode("ascii") in held:
+        return False
+    data = git_answer(["cat-file", "blob", spec], ctx.root, binary=True)
+    return (data is not None
+            and ctx.update_shape().file_bytes_sha256(data) == recorded)
+
+
+def twice_renamed_copies(twice: dict, stage: bytes) -> list:
+    """The sentences of a conflicted shape pin's `why` for `twice`, from
+    `copies_renamed_twice`, `stage` being the side taken here: one for each
+    copy both sides renamed (#783), naming the new names proved on each
+    side, and saying where a side's is not proved. Never the hunks git
+    merged, as git merged none at the old name, and never taken: a person
+    keeps one name, or both, or settles where the copy goes."""
+    sides = {number: ("the side taken here" if number == stage
+                      else "the other side") for number in (b"2", b"3")}
+    said = []
+    for copy, found in sorted(twice.items()):
+        start = f"{copy} is gone on both sides of the merge"
+        if not found:
+            said.append(f"{start}, and where either side put it is not "
+                        "proved here, so neither name is taken: a person "
+                        "settles where it goes, by hand")
+            continue
+        renames = " and ".join(
+            f"to {' and '.join(found[number])} on {sides[number]}"
+            for number in sorted(found, key=lambda number: number != stage))
+        new = ("name" if sum(len(paths) for paths in found.values()) == 1
+               else "names")
+        if len(found) > 1:
+            said.append(f"{start}, renamed {renames}, and no pin lists the "
+                        f"new {new}, so neither name is taken: a person "
+                        "keeps one name, or both, by hand")
+            continue
+        unproved = next(number for number in sides if number not in found)
+        said.append(f"{start}, renamed {renames}, and no pin lists the new "
+                    f"{new}; where {sides[unproved]} put it is not proved "
+                    "here, so neither name is taken: a person settles where "
+                    "it goes, by hand")
+    return said
+
+
+def still_listed(gone: set, kept: set) -> list:
+    """The sentence a conflicted shape pin's `why` adds for the copies in
+    `gone`, renamed on one side or both (#753, #783), that `kept`, the rows
+    of the pin taken here, still lists (review of PR #781): no file is at
+    that name once the merge is finished unless it is renamed back, so
+    this doctor reports the copy missing. Said only of such a copy: where
+    the pin taken here has no row for it, nothing is missing."""
+    listed = sorted(copy for copy in gone if copy in kept)
+    if not listed:
+        return []
+    many = len(listed) > 1
+    return [f"The pin taken here still lists {' and '.join(listed)}, so this "
+            f"doctor reports {'them' if many else 'it'} missing once the "
+            f"merge is finished, unless {'they are' if many else 'it is'} "
+            "renamed back"]
+
+
+def renamed_copies(renamed: dict, stages: dict) -> list:
     """The sentences of a conflicted shape pin's `why` for `renamed`,
     `{path: copy}` from `copies_renamed`: paths conflicted beside the pin
     under a name no pin has a row for, each a rename of a copy (#753).
     Never taken, as a copy only the other side's pin lists is never taken
     (`other_sides_copies`), and a person's to resolve, its old name said so
-    the reader knows it for a copy.
-
-    WHAT THE DOCTOR SAYS ONCE THE MERGE IS FINISHED, where `kept`, the rows
-    of the pin taken here, still lists the old name (review of PR #781):
-    no file is there unless it is renamed back, so this doctor reports the
-    copy missing. Said only of such a copy: where the pin taken here has no
-    row for it, nothing is missing.
+    the reader knows it for a copy; `still_listed` says what the pin taken
+    here still lists.
     """
     said = []
     for group, deleted in by_conflict(sorted(renamed), stages):
@@ -4506,14 +5020,6 @@ def renamed_copies(renamed: dict, stages: dict, kept: set) -> list:
             + ", so neither side is taken whole: a person "
             + (f"keeps or deletes {each} by hand" if deleted
                else f"merges {each} by hand, keeping the hunks git merged"))
-    listed = sorted({copy for copy in renamed.values() if copy in kept})
-    if listed:
-        many = len(listed) > 1
-        said.append(
-            f"The pin taken here still lists {' and '.join(listed)}, so this "
-            f"doctor reports {'them' if many else 'it'} missing once the "
-            f"merge is finished, unless {'they are' if many else 'it is'} "
-            "renamed back")
     return said
 
 
@@ -5043,6 +5549,59 @@ def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
                command, detail, why=why)
 
 
+def unreadable_copy_row(ctx: Context, named: str, exc: OSError) -> Row:
+    """The `shape currency` row for a pin or a copy, `named` from the root,
+    that the operating system will not let this user read (#847).
+
+    A STATEMENT ABOUT THEIR REPOSITORY, as `unreadable_pin_row`'s is: the
+    file is in the root, and its mode, its owner or its directory's is what
+    somebody did to THEIR tree, so no `environment`. NEVER `pin_restore`:
+    the file is there, `git status` calls a file it cannot open changed
+    (` M`), and the `git checkout HEAD --` it named would put HEAD's copy
+    over whatever the file holds that no commit does. The line is
+    `validate-pins.py`'s (`cannot_be_read`), the NEXT this doctor again and
+    the `why` the gate's advice (`cannot_read_why`), as the `manifest kinds`
+    row gives them for the same file."""
+    line = cannot_be_read(named, exc)
+    return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
+               f"the copies cannot be compared: {line}", doctor_line(ctx),
+               {"path": named, "cannot_be_read": line},
+               why=cannot_read_why([exc]))
+
+
+def pin_refusal_row(ctx: Context, exc: Exception) -> Row:
+    """The `shape currency` row for a shape pin `read_pin` would not read,
+    `exc` being what it raised: a `Refusal`, or the `OSError` of a refused
+    `stat` that `is_file()` raises up to Python 3.13 (#847).
+
+    THE PIN IS ASKED AGAIN ONLY HERE, by `pin_read`, as `validate-pins.py`
+    asks it: a `stat` or a read the operating system refused is
+    `unreadable_copy_row`'s, the gate's line, whatever `read_pin` made of
+    it (`update-pin-missing` from 3.14, `yaml-unreadable` quoting `[Errno
+    13]`). Any other refusal is `unreadable_pin_row`'s, as it always was,
+    and any other `OSError` is raised as it was. A pin that reads is read
+    once, by `read_pin` (review of PR #860)."""
+    refused = pin_read(ctx.root, SHAPE_PIN)[1]
+    if refused is not None:
+        return unreadable_copy_row(ctx, SHAPE_PIN, refused)
+    if isinstance(exc, Refusal):
+        return unreadable_pin_row(ctx, exc)
+    raise exc
+
+
+def refused_in_root(root: Path, exc: OSError) -> str | None:
+    """Where `exc` is a read the operating system refused of a file inside
+    `root`, that file's path from the root, POSIX; else None (#847): an
+    `OSError` that says nothing is there, one that names no file, or one
+    about a file elsewhere, the checkout of the standard's own among them."""
+    if refused_read(exc) is None or not exc.filename:
+        return None
+    try:
+        return Path(os.fsdecode(exc.filename)).relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
 #: A line `rev-list --missing=print` writes for an object the clone lacks:
 #: `?` and the object's id, SHA-1 or SHA-256.
 MISSING_OBJECT = re.compile(rb"\?(?:[0-9a-f]{40}|[0-9a-f]{64})")
@@ -5315,6 +5874,78 @@ def remotes_holding(shape: Path, remotes: list, commit: str) -> list:
                            f"refs/remotes/{name}/"], shape)]
 
 
+def refetch_of(git_c: str, remote: str) -> str:
+    """The fetch of every object on `remote`'s branches into the root
+    `git_c` names, whatever its `partialclonefilter` (#787)."""
+    return f"{git_c} fetch --refetch --no-filter {quote_arg(remote)}"
+
+
+def partial_history_why(git_c: str, what: str, remotes: list) -> str:
+    """`pin_restore`'s `why` for `partial` (#787): the root's partial clone
+    lacks the history of its `what`, the NEXT fetches the first of
+    `remotes`, and the same fetch from each other one is spelled out.
+
+    HISTORY, HEAD'S INCLUDED, AND NOT "THE COMMIT THAT BROKE IT" (RV-f on
+    #791). Where HEAD was moved without a checkout (`reset --soft`), the
+    pin HEAD holds is a blob the clone lacks too, and the doctor run after
+    the fetch answers `uncommitted`, which no commit broke.
+
+    EVERY PROMISOR REMOTE, EACH A LINE TO PASTE. The NEXT fetches the first
+    one's branches, the one git's own lazy fetch asks first. Where the
+    history lacked is on another remote's alone, or on a branch forced
+    away from the first, that fetch puts in nothing it needs and the row
+    comes back the same, so the `why` names the fetch from each other one.
+    """
+    first, *others = remotes
+    said = (f"this root is a partial clone, and the {what}'s history, "
+            "HEAD's included, is not all in this clone: git fetches what a "
+            "partial clone lacks on a read, which this doctor never does, "
+            f"so what puts the {what} back cannot be read here. This "
+            f"fetches every object on {first}'s branches (--refetch needs "
+            "git 2.36 or later)")
+    if others:
+        said += (f"; where {first}'s branches do not hold it, the same "
+                 "from " + ", or from ".join(
+                     f"{name}: `{refetch_of(git_c, name)}`"
+                     for name in others))
+    return (said + "; then run this doctor again, which names what puts "
+            f"the {what} back")
+
+
+def history_left_out(root: Path, pin: str) -> list:
+    """The promisor remotes of `root`, in the order git asks them, where
+    `root` is a partial clone that lacks an object `pin_restore`'s walk of
+    `pin`'s history reads, asked without fetching; empty where it lacks
+    none, or is no partial clone (#787).
+
+    THE WALK'S READS FAIL THERE, AND THE DOCTOR FETCHED THEM BEFORE.
+    Measured on #787 with git 2.43: a `--filter=blob:none` clone of a root
+    whose HEAD commit broke its pin made one lazy fetch, of the pin before
+    it, and a `--filter=tree:0` one two. With `GIT_NO_LAZY_FETCH` set
+    (`lazy_fetch_off`) each read fails instead, and the walk, which reads a
+    failure as "no pin there", said "none": no commit in this root holds a
+    pin to put back, which is not so.
+
+    `rev-list --objects --missing=print` over the commits that touched
+    `pin`, one more than the walk reads, lists the pin at each and the
+    trees down to it, and prints `?<id>` for each the clone does not hold,
+    without fetching (`objects_lacking` says why). Where the clone lacks a
+    tree, as a `tree:0` one does, it cannot tell which commits touched the
+    pin and fails, as the walk's own `rev-list` does: that is lacking too.
+    A root with no HEAD has no history to walk, and is not asked.
+    """
+    remotes = promisor_remotes(root)
+    if not remotes or head_of(root) is None:
+        return []
+    listed = git_answer(["rev-list", "--objects", "--missing=print", "-n",
+                         str(PIN_HISTORY_DEPTH + 1), "HEAD", "--", pin],
+                        root, binary=True)
+    if listed is not None and not any(
+            MISSING_OBJECT.fullmatch(line) for line in listed.split(b"\n")):
+        return []
+    return remotes
+
+
 def check_shape_currency(ctx: Context) -> Row:
     """`update-shape.py check`, summarised, against THIS checkout.
 
@@ -5343,6 +5974,21 @@ def check_shape_currency(ctx: Context) -> Row:
     a clone that lacks objects and has no promisor remote, a damaged one --
     is `update-upstream-unreadable` from `prepare`, CANNOT ANSWER too, and
     never a copy called `both`.
+
+    A PIN, OR A COPY, THIS USER CANNOT READ IS NAMED (#847), as
+    `validate-pins.py` names it: `the copies cannot be compared:
+    contracts/shape-pin.yaml: cannot be read (Permission denied)`, a
+    FINDING about the repository, with this doctor again as its NEXT and the
+    gate's advice for the cause as its `why` (`unreadable_copy_row`), the
+    NEXT and `why` the `manifest kinds` row gives the same file. A pin at
+    mode 000 was `unreadable_pin_row`'s, whose `pin_restore` read it as
+    changed and named `git checkout HEAD --` on it; a `contracts/` this user
+    cannot search, or a copy at mode 000, ended the row in `could not be
+    run: [Errno 13]`. Where `read_pin` will not read the pin, `pin_read`
+    asks why (`pin_refusal_row`): `read_pin`'s `is_file()` raised the
+    refused `stat` up to Python 3.13 and, from 3.14, calls the pin missing.
+    A copy is asked by `prepare`, and only a refused read of a file inside
+    the root is the repository's: any other `OSError` is raised as it was.
     """
     us = ctx.update_shape()
     # A PIN OR MANIFEST KEPT AS A LINK IS ASKED ABOUT FIRST, before anything
@@ -5356,8 +6002,8 @@ def check_shape_currency(ctx: Context) -> Row:
                               at=None)
     try:
         pin, _rows = us.read_pin(ctx.root)
-    except Refusal as exc:
-        return unreadable_pin_row(ctx, exc)
+    except (Refusal, OSError) as exc:
+        return pin_refusal_row(ctx, exc)
     partial = partial_clone_row(ctx, str(pin["commit"]).lower())
     if partial is not None:
         return partial
@@ -5389,6 +6035,11 @@ def check_shape_currency(ctx: Context) -> Row:
                    why="this checkout of the standard does not carry the "
                        "commit the pin names; fetch it, or run the doctor "
                        "from a clone that has it")
+    except OSError as exc:
+        named = refused_in_root(ctx.root, exc)
+        if named is None:
+            raise
+        return unreadable_copy_row(ctx, named, exc)
     try:
         added = [add for add in additions if not add.present]
         reported = list(rows) + added
@@ -5554,7 +6205,12 @@ def head_of(path: Path) -> str | None:
 
 
 def pin_commit(root: Path, relative: str) -> str | None:
-    pin = Context._read(root / relative)
+    """The 40-hex `commit:` of the pin at `relative`, lowercased, or None.
+
+    Read by `pin_read`, as `validate-pins.py` reads a pin (#847): a pin whose
+    `stat` or read the operating system refused is None here as one that is
+    not there is, and `check_legs` asks `pin_read` why."""
+    pin, _refused = pin_read(root, relative)
     if not isinstance(pin, dict):
         return None
     commit = str(pin.get("commit") or "").lower()
@@ -6470,6 +7126,24 @@ def check_legs(ctx: Context) -> Row:
     WHERE THE GATE IS THE LINE, the legs no line cures are said beside it:
     an unborn HEAD or a leg with no url gets the same sentence it gets with
     no line at all, which ends by saying to run the doctor again.
+
+    A PIN THIS USER CANNOT READ IS NAMED, AND IS NO DRIFT (#847). It read as
+    `carries no 40-hex commit`, a lockstep fact, and the verdict counted the
+    leg as off its pin: DRIFTED, for a leg nobody moved, where
+    `validate-pins.py` refuses the pin by name. `pin_read` asks why the pin
+    gave no commit, and a `stat` or a read the operating system refused is
+    `<leg>: contracts/<role>-pin.yaml: cannot be read (<reason>)`, the gate's
+    line, kept in the leg's `cannot_be_read`, which `drifted_reasons` reads. It
+    is asked BEFORE the mount (review of PR #860): where the mount has no
+    gitlink, is empty, has no `.git` of its own, or has a HEAD git cannot read
+    or one on a branch with no commit, that fact is said first and the pin's
+    line follows it (`, and <the gate's line>`), so the leg is never drift for
+    a pin the gate refuses by name. A person mends it, on a mode or an owner,
+    so where no checkout and no lockstep fact comes first the NEXT is this
+    doctor again and the `why` the gate's advice (`cannot_read_why`), as the
+    `manifest kinds` and `shape currency` rows give them; beside the checkout
+    line or the gate's line, the advice is said in its `why`, after what the
+    line does.
     """
     needs = ("the legs it declares are not known and none is checked against "
              "its pin")
@@ -6492,13 +7166,20 @@ def check_legs(ctx: Context) -> Row:
     lockstep: list[str] = []
     gone: list[str] = []
     stuck: list[str] = []
+    #: The `OSError` of each pin the operating system refused to read (#847).
+    refused: list[OSError] = []
     rerun = False
     nested: set = set()
     for leg in legs:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
         mount = ctx.root / rel
-        pinned = pin_commit(ctx.root, f"contracts/{role}-pin.yaml")
+        pin = f"contracts/{role}-pin.yaml"
+        pinned = pin_commit(ctx.root, pin)
+        # ASKED BEFORE THE MOUNT (#847, review of PR #860): asked only where
+        # every mount branch passed, a pin this user cannot read went unnamed
+        # beside an empty mount, and the verdict read the leg as drift.
+        refusal = pin_read(ctx.root, pin)[1] if pinned is None else None
         gitlink = recorded_gitlink(ctx.root, rel)
         populated = mount.is_dir() and any(mount.iterdir())
         own_git = (mount / ".git").exists()
@@ -6509,8 +7190,14 @@ def check_legs(ctx: Context) -> Row:
                  "gitlink": gitlink, "populated": populated, "head": head,
                  "own_git": own_git, "unborn": unborn}
         rows.append(entry)
+        if refusal is not None:
+            entry["cannot_be_read"] = cannot_be_read(pin, refusal)
+            refused.append(refusal)
         problem = None
         cures = False
+        #: Whether the problem is the pin's line, which no mount fact came
+        #: before.
+        named = False
         if gitlink is None:
             problem = (f"{rel}: no gitlink recorded, so this leg is not "
                        "mounted as a submodule at all")
@@ -6530,10 +7217,14 @@ def check_legs(ctx: Context) -> Row:
         elif head is None:
             problem = f"{rel}: populated, but git cannot read a HEAD in it"
             lockstep.append(rel)
-        elif pinned is None:
-            problem = (f"{rel}: contracts/{role}-pin.yaml carries no 40-hex "
-                       "commit to compare HEAD against")
+        elif pinned is None and refusal is None:
+            problem = (f"{rel}: {pin} carries no 40-hex commit to compare "
+                       "HEAD against")
             lockstep.append(rel)
+        elif pinned is None:
+            problem = (f"{rel}: {entry['cannot_be_read']}, so there is no "
+                       "pinned commit to compare HEAD against")
+            named = True
         elif head != pinned:
             problem = (f"{rel}: checked out at {head[:12]}, pinned at "
                        f"{pinned[:12]}")
@@ -6565,11 +7256,15 @@ def check_legs(ctx: Context) -> Row:
                 # what the next run names.
                 if pinned is None or gitlink != pinned:
                     rerun = True
+        if refusal is not None and not named:
+            # A MOUNT FACT CAME FIRST: the pin is named beside it.
+            problem += f", and {entry['cannot_be_read']}"
         if problem:
             problems.append(problem)
     detail = {"legs": rows}
     if problems:
-        rerun = rerun or bool(lockstep) or bool(stuck)
+        rerun = rerun or bool(lockstep) or bool(stuck) or bool(refused)
+        said = [cannot_read_why(refused)] if refused else []
         if checkout:
             # `make bootstrap` IS NAMED ONLY WHERE IT CAN RUN, and said for
             # what it does: it puts a leg on its tracking branch, and
@@ -6587,6 +7282,9 @@ def check_legs(ctx: Context) -> Row:
             next_command, why = submodule_update_next(
                 ctx.root, checkout, off_pin, "leg", after, rerun, kept=kept,
                 relinked=relinked, nested=nested)
+            # A pin this user cannot read is a person's to mend, so its
+            # advice is said beside the line as beside the gate's (#847).
+            why += "".join(f". {sentence}" for sentence in said)
         elif lockstep:
             # NO CHECKOUT CURES IT: the lockstep gate, one definition of it
             # for this row and the `pins` row (`lockstep_next`), which mount
@@ -6595,9 +7293,12 @@ def check_legs(ctx: Context) -> Row:
             next_command, why = lockstep_next(ctx, PINS_GATE, "leg")
             if why:
                 why += "".join(gone_sentence(rel) for rel in gone)
-                why += "".join(f". {sentence}" for sentence in stuck)
-            elif stuck:
-                why = ". ".join(stuck)
+                why += "".join(f". {sentence}" for sentence in [*said, *stuck])
+            elif said or stuck:
+                why = ". ".join([*said, *stuck])
+        elif refused:
+            # A PERSON'S, on a mode or an owner, and never a git line (#847).
+            next_command, why = doctor_line(ctx), ". ".join([*said, *stuck])
         else:
             # NO LINE CURES IT without choosing for the person (#414).
             next_command, why = None, ". ".join(stuck)
@@ -8904,11 +9605,16 @@ def unclonable(sibling: Path) -> str | None:
     A LINK TO NOTHING IS NOT NOTHING (#784). `exists` follows a link, so a
     dangling one read as `absent`, and the row said `make siblings` places
     the member there, where git ends `CLONE FAILED`: it cannot clone into a
-    path that is a link to nothing.
+    path that is a link to nothing. A JUNCTION TO NOTHING is one too
+    (#793), the link Windows makes without privilege, which `is_symlink`
+    does not see: it is asked as `siblings.py` asks it, with Python 3.12's
+    `os.path.isjunction`, and before 3.12, which has none, the answer is no.
     """
     try:
         if not sibling.exists():
-            return "dangling" if sibling.is_symlink() else None
+            junction = getattr(os.path, "isjunction", lambda _: False)
+            return ("dangling" if sibling.is_symlink() or junction(sibling)
+                    else None)
         if not sibling.is_dir():
             return "file"
         return "files" if any(sibling.iterdir()) else None
@@ -9381,10 +10087,13 @@ def check_members(ctx: Context) -> Row:
     or a state worth saying.
     """
     # NOT "no members yet", which is an `ok` about an empty family: a holder
-    # whose `family.yaml` does not load has members nobody can name (#205).
-    waiting = waiting_row(ctx, "members", "members",
-                          "the members it pins are not known and none is "
-                          "checked against its pin", {"members": []})
+    # whose `family.yaml` does not load has members nobody can name (#205),
+    # and neither does one whose `members:` this cannot read (#864).
+    waiting = (waiting_row(ctx, "members", "members",
+                           "the members it pins are not known and none is "
+                           "checked against its pin", {"members": []})
+               or members_unread_row(ctx,
+                                     "no member is checked against its pin"))
     if waiting is not None:
         return waiting
     members = ctx.members()
@@ -10513,6 +11222,17 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
     Returns the empty list when none of them is, which is the caller's signal
     to go on down the ladder rather than a claim that anything is well.
 
+    A LEG WHOSE PIN CANNOT BE READ IS NOT OFF ITS PIN (#847): nothing says
+    where its pin is, and `validate-pins.py` refuses the pin by name, which
+    is the `pins` row and INVALID. Such a leg carries `cannot_be_read` in
+    the `legs` row, and is not counted. Every other leg whose HEAD is not
+    its pin is counted as before. Where none is, the red row is drift by
+    main's count of one (an empty mount whose pin is gone has no HEAD and no
+    pin to differ) only where no leg carries `cannot_be_read`, whichever leg
+    made the row red: the gate refuses that pin before it reports anything
+    else, and INVALID names it; the run after the pin is mended says the
+    drift.
+
     Split out of `verdict_for` for #134.
     """
     reasons: list[str] = []
@@ -10520,9 +11240,12 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
         reasons += drifted_file_reasons(detail.get("counts") or {})
     legs = by_id.get("legs")
     if legs is not None and legs.status == FINDING:
-        off = [leg for leg in (legs.detail.get("legs") or [])
-               if leg.get("head") != leg.get("pin")]
-        reasons.append(f"{len(off) or 1} leg(s) not at the pin")
+        entries = legs.detail.get("legs") or []
+        unread = [leg for leg in entries if "cannot_be_read" in leg]
+        off = [leg for leg in entries if "cannot_be_read" not in leg
+               and leg.get("head") != leg.get("pin")]
+        if off or not unread:
+            reasons.append(f"{len(off) or 1} leg(s) not at the pin")
     members = by_id.get("members")
     if members is not None and members.status == FINDING:
         reasons.append("a member is not at its pin")
@@ -10802,6 +11525,59 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: The variable git reads to leave out the fetch a partial clone makes for
+#: an object it lacks (#787).
+NO_LAZY_FETCH = "GIT_NO_LAZY_FETCH"
+
+
+@contextlib.contextmanager
+def lazy_fetch_off():
+    """This process's environment with `GIT_NO_LAZY_FETCH=1` for as long as
+    it runs, and as it was afterwards (#787).
+
+    "IT NEVER FETCHES", BY CONSTRUCTION. A partial clone (`git clone
+    --filter`) fetches an object it lacks from a promisor remote on any read
+    that needs one, so the promise held read by read: #683 and #754 ask
+    `rev-list --missing=print`, which never fetches, before anything reads
+    a partial clone of the standard, and never ask `for-each-ref --contains`
+    of a commit the clone does not hold. A read added to a row later, or one
+    in a project's own partial clone, need not ask first. With the variable
+    set, git fails that read instead of fetching: `warning: lazy fetching
+    disabled; some objects may not be available`, then the read's own error
+    (measured with git 2.43: exit 128, and no `fetch` in a trace2 log). That
+    is a read that failed, as one does where the clone's remote is out of
+    reach, and every reader here already answers one: `git_answer`'s None,
+    `git_out`'s `git-failed`, `update-shape.py`'s
+    `update-upstream-unreadable`.
+
+    EVERY GIT THIS PROCESS STARTS, AND NOTHING IT PRINTS. The doctor's own
+    reads (`git_out`, `git_answer` and its few `subprocess.run` of git),
+    `update-shape.py`'s `Upstream` as `check_shape_currency` drives it in
+    this process, the validators `run_validator` starts with a copy of this
+    environment, and every git each of those starts, inherit it. A NEXT the
+    doctor prints is text for a person's own shell, which does not have it,
+    so a `fetch --refetch` printed there fetches. The environment is put
+    back on the way out, for a caller that runs `main` in its own process.
+
+    WHICH GIT HONOURS IT. git 2.45.0 and later, and the security releases of
+    2024-05-14 back to 2.39.4 (2.39.4, 2.40.2, 2.41.1, 2.42.2, 2.43.4,
+    2.44.1), whose fix for CVE-2024-32465 made `promisor-remote.c` read it;
+    distributions carry that fix too (Ubuntu's 2.43.0-1ubuntu7.1 and later).
+    An older git ignores the variable, harmlessly, and there the guards
+    above are what keep the doctor from fetching, as before.
+    """
+    before = os.environ.get(NO_LAZY_FETCH)
+    os.environ[NO_LAZY_FETCH] = "1"
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop(NO_LAZY_FETCH, None)
+        else:
+            os.environ[NO_LAZY_FETCH] = before
+
+
+@lazy_fetch_off()
 def main(argv: list[str] | None = None) -> int:
     # FIRST, so that every `print` after it -- `--help` included -- escapes
     # a name stdout cannot encode rather than raising on it (#214).
