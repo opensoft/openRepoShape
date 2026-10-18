@@ -35,7 +35,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import BASH, BASH_SKIP, REPO, bash_path, git, native_path
+from conftest import (BASH, BASH_SKIP, REF_PARTS, REPO,
+                      assert_a_copy_answers_as_git_does,
+                      assert_the_refusal_states_the_ref_rule, bash_path, git,
+                      native_path)
 
 COMMAND = REPO / "openRepoShape"
 SETUP = REPO / "setup.sh"
@@ -2526,6 +2529,36 @@ def test_a_ref_that_is_not_one_is_refused_before_anything_is_placed(
     assert result.returncode == 2, result.stdout + result.stderr
     assert "$OPENREPOSHAPE_REF is 'bad..ref'" in result.stderr
     assert not installed.parent.exists(), "a refused install placed something"
+
+
+@pytest.mark.parametrize("name, takes", REF_PARTS)
+def test_an_install_records_a_ref_as_git_takes_it_and_refuses_the_rest(
+        tmp_path, name, takes):
+    """GIT'S RULE FOR A REF IS PER PART, AND `ref_fault`'S SHAPE LINE HOLDS
+    IT (#874). It tested only the whole name (`*..*`, `*.lock`), so an
+    install asked to record `a.lock/b`, `a/.b` or `a//b` wrote it beside the
+    command, where every later run hands it to the fetch of `setup.sh` and on
+    to `--shape-ref`. Each name of the table goes to the launcher and,
+    through `git check-ref-format --branch`, to git, and the two must answer
+    alike.
+
+    Reached through `--install` with the opt-in, since `--version` asks a ref
+    only its characters (#866): a ref `ref_fault` takes is recorded, exit 0,
+    and one it refuses exits 2 with the rule it applied and places nothing.
+    """
+    result, installed = install_at(tmp_path, name)
+    recorded = record_of(installed)
+    assert_a_copy_answers_as_git_does("openRepoShape", name, takes,
+                                      result.returncode == 0)
+    if takes:
+        assert recorded.read_text(encoding="utf-8") == f"{name}\n"
+        return
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert not installed.parent.exists(), "a refused install placed something"
+    assert_the_refusal_states_the_ref_rule(
+        result.stderr,
+        f"REFUSED: $OPENREPOSHAPE_REF is '{name}', which is not a branch, "
+        "tag or commit this tool will pass to `git checkout`: ")
 
 
 @pytest.mark.parametrize("text, shown", [

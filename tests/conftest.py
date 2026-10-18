@@ -2340,3 +2340,85 @@ def refusal_detail(stderr: str, code: str) -> list[str]:
             if lines[at].startswith("Remediation:")]
     assert ends, stderr
     return lines[starts[0]:ends[0]]
+
+
+# --- git's rule for a ref, part by part, in the shell copies (#874) ----------
+
+#: THE TABLE the three shell copies of the ref rule are held to, one answer
+#: each: `setup.sh`'s `--shape-ref`, `install.sh`'s version and `openRepoShape`'s
+#: `ref_fault` (`tests/test_setup_sh.py`, `tests/test_install_sh.py` and
+#: `tests/test_openreposhape_command.py` read it). A name, and whether git
+#: takes it as a branch name. Git asks its rule of each part between slashes,
+#: not of the whole name alone: no empty part (`a//b`, `a/b/`), no part that
+#: starts with `.` (`a/.b`) or ends in `.lock` (`a.lock/b`), no `..`, and no
+#: name that ends in `.`. Each name is spelled with a letter or digit first
+#: and letters, digits, `.`, `_`, `/` and `-` after, the characters a copy
+#: takes, so what is asked is the shape and nothing else. The old line,
+#: `*..* | *.lock`, tested only the whole name: it took the first eleven names
+#: below, and `a/b.` and `a/.`, which git refuses.
+REF_PARTS = [pytest.param(name, takes, id=name) for name, takes in (
+    # What the issue names: refused by git, and by no copy before #874.
+    ("a.lock/b", False), ("x/y.lock/z", False), ("release.lock/v1", False),
+    ("a/.b", False), ("a/.b/c", False), ("a//b", False), ("a/b/", False),
+    ("a.lock/", False), ("a.", False),
+    # rv873's two: a part that starts with `.`, deeper in the name.
+    ("a/b/.c/d", False), ("x/.y/z/w", False),
+    # Refused before #874 as well, and refused still.
+    ("topic.lock", False), ("a..b", False), ("a/..", False),
+    ("a/b.lock", False), ("a/b.", False), ("a/.", False), (".lock", False),
+    ("/a", False),
+    # What must still pass: the refs this repository's tests and docs hand
+    # a copy, a commit's 40 hex digits, and workBenches' sentinel.
+    ("main", True), ("v1.0.0", True), ("v1.1.0", True),
+    ("topic.locked", True), ("feature/x-y_z", True),
+    ("0123456789abcdef0123456789abcdef01234567", True),
+    ("pinned-by-workBenches-no-fetch", True),
+    # What must still pass, next to the rule's edges: a part that only
+    # RESEMBLES a refused one, and a `.` that ends a part but not the name.
+    ("a.lockb", True), ("a.lock-x/b", True), ("a/b.lockb/c", True),
+    ("a./b", True), ("a/lock/b", True), ("refs/tags/v1.0", True),
+    ("v1.0.0-rc.1", True),
+)]
+
+#: THE ONE SENTENCE each copy's refusal ends with, word for word the same in
+#: all three (#874): the rule it applied, in `setup-project.py`'s words where
+#: they fit (`why_not_a_ref`, #857). It opens the same way as the rule it
+#: replaced, so a person who read the old sentence reads the first half again.
+REF_RULE_WORDS = (
+    "a ref starts with a letter or digit, uses only letters, digits, '.', "
+    "'_', '/', '-', has no '..' (git reads it as a revision range), no empty "
+    "part between slashes ('//', or a '/' at the end), no part that starts "
+    "with '.' or ends in '.lock' (the name git gives the lock file it writes "
+    "beside a ref), and does not end in '.'.")
+
+
+def git_takes_ref(name: str) -> bool:
+    """Whether the git that runs this suite takes `name` as a branch name.
+    ASKED of `git check-ref-format --branch`, never copied, so a git that
+    changes its mind changes the answer here and a table row is the one thing
+    to fix (#874)."""
+    proc = subprocess.run(["git", "check-ref-format", "--branch", name],
+                          capture_output=True, text=True, check=False)
+    return proc.returncode == 0
+
+
+def assert_a_copy_answers_as_git_does(copy: str, name: str, takes: bool,
+                                      copy_takes: bool) -> None:
+    """THE ONE ANSWER (#874): git, the table's row and the shell copy `copy`
+    all take `name` or all refuse it. Git is asked first, so a row that
+    no longer says what this git says is named as the row and not as the
+    copy."""
+    asked = git_takes_ref(name)
+    assert asked == takes, (
+        f"the table says git {'takes' if takes else 'refuses'} {name!r}, but "
+        f"this git {'takes' if asked else 'refuses'} it")
+    assert copy_takes == asked, (
+        f"{copy} {'takes' if copy_takes else 'refuses'} {name!r}, and git "
+        f"{'takes' if asked else 'refuses'} it")
+
+
+def assert_the_refusal_states_the_ref_rule(said: str, opening: str) -> None:
+    """A copy's refusal opens with its own words and the name (`opening`) and
+    goes on to `REF_RULE_WORDS`, the whole rule it applied."""
+    assert opening in said, said
+    assert REF_RULE_WORDS in said, said

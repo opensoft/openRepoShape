@@ -152,6 +152,13 @@ checked_repo() {
 # between the length and the control character, a character a terminal
 # draws as something other than itself, as the launcher's `ref_fault` has
 # it (#837). Not shared, because this file arrives alone down a pipe.
+#
+# THE SHAPE IS GIT'S RULE PART BY PART (#874), as `ref_fault`'s and
+# `setup.sh`'s are: no `..`, no empty part between slashes, no part that
+# starts with `.` or ends in `.lock`, and no name that ends in `.`, which is
+# what `git check-ref-format --branch` asks of each part and not of the whole
+# name alone. It gates the fetch: the version is the path of the URL below,
+# and a version git would refuse is refused here, before any request.
 checked_version() {
 	local ref="$1" what="$2" misdrawn
 	[ -n "$ref" ] || die "$what is empty. Name a release, such as v1.0.1, or none for the newest."
@@ -165,7 +172,7 @@ checked_version() {
 	*[![:print:]]*) die "$what carries a control character, which is not a release tag, branch or commit." ;;
 	esac
 	case "$ref" in
-	[!A-Za-z0-9]* | *..* | *.lock | *[!A-Za-z0-9._/-]*) die "$what is '$ref', which is not a release tag, branch or commit: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
+	[!A-Za-z0-9]* | *..* | */.* | *.lock | *.lock/* | *//* | */ | *. | *[!A-Za-z0-9._/-]*) die "$what is '$ref', which is not a release tag, branch or commit: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' (git reads it as a revision range), no empty part between slashes ('//', or a '/' at the end), no part that starts with '.' or ends in '.lock' (the name git gives the lock file it writes beside a ref), and does not end in '.'." ;;
 	esac
 }
 
