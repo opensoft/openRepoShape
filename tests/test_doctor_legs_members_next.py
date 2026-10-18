@@ -368,7 +368,7 @@ def test_the_line_is_spelled_for_the_readers_shell(standard):
 
     ONE OF TWO CHECKS OF THE POWERSHELL FORM, AND BOTH ARE OF THE TEXT. The
     other, for the kept repository's keep line, is
-    `test_413a_the_kept_repositorys_keep_line_is_spelled_for_the_readers_shell`
+    test_413a_the_kept_repositorys_keep_line_is_spelled_for_the_readers_shell.
     No test in this file runs the form in `powershell`, and no job does
     (module docstring, #415)."""
     module = doctor_module(standard)
