@@ -6086,13 +6086,18 @@ def check_legs(ctx: Context) -> Row:
     leg as off its pin: DRIFTED, for a leg nobody moved, where
     `validate-pins.py` refuses the pin by name. `pin_read` asks why the pin
     gave no commit, and a `stat` or a read the operating system refused is
-    `<leg>: contracts/<role>-pin.yaml: cannot be read (<reason>)`, the
-    gate's line, kept in the leg's `cannot_be_read`, which `drifted_reasons`
-    reads. A person mends it, on a mode or an owner, so where no checkout
-    and no lockstep fact comes first the NEXT is this doctor again and the
-    `why` the gate's advice (`cannot_read_why`), as the `manifest kinds` and
-    `shape currency` rows give them; beside the checkout line or the gate's
-    line, the advice is said in its `why`, after what the line does.
+    `<leg>: contracts/<role>-pin.yaml: cannot be read (<reason>)`, the gate's
+    line, kept in the leg's `cannot_be_read`, which `drifted_reasons` reads. It
+    is asked BEFORE the mount (review of PR #860): where the mount has no
+    gitlink, is empty, has no `.git` of its own, or has a HEAD git cannot read
+    or one on a branch with no commit, that fact is said first and the pin's
+    line follows it (`, and <the gate's line>`), so the leg is never drift for
+    a pin the gate refuses by name. A person mends it, on a mode or an owner,
+    so where no checkout and no lockstep fact comes first the NEXT is this
+    doctor again and the `why` the gate's advice (`cannot_read_why`), as the
+    `manifest kinds` and `shape currency` rows give them; beside the checkout
+    line or the gate's line, the advice is said in its `why`, after what the
+    line does.
     """
     waiting = waiting_row(ctx, "legs", "legs",
                           "the legs it declares are not known and none is "
@@ -6122,7 +6127,12 @@ def check_legs(ctx: Context) -> Row:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
         mount = ctx.root / rel
-        pinned = pin_commit(ctx.root, f"contracts/{role}-pin.yaml")
+        pin = f"contracts/{role}-pin.yaml"
+        pinned = pin_commit(ctx.root, pin)
+        # ASKED BEFORE THE MOUNT (#847, review of PR #860): asked only where
+        # every mount branch passed, a pin this user cannot read went unnamed
+        # beside an empty mount, and the verdict read the leg as drift.
+        refusal = pin_read(ctx.root, pin)[1] if pinned is None else None
         gitlink = recorded_gitlink(ctx.root, rel)
         populated = mount.is_dir() and any(mount.iterdir())
         own_git = (mount / ".git").exists()
@@ -6133,8 +6143,14 @@ def check_legs(ctx: Context) -> Row:
                  "gitlink": gitlink, "populated": populated, "head": head,
                  "own_git": own_git, "unborn": unborn}
         rows.append(entry)
+        if refusal is not None:
+            entry["cannot_be_read"] = cannot_be_read(pin, refusal)
+            refused.append(refusal)
         problem = None
         cures = False
+        #: Whether the problem is the pin's line, which no mount fact came
+        #: before.
+        named = False
         if gitlink is None:
             problem = (f"{rel}: no gitlink recorded, so this leg is not "
                        "mounted as a submodule at all")
@@ -6154,18 +6170,14 @@ def check_legs(ctx: Context) -> Row:
         elif head is None:
             problem = f"{rel}: populated, but git cannot read a HEAD in it"
             lockstep.append(rel)
+        elif pinned is None and refusal is None:
+            problem = (f"{rel}: {pin} carries no 40-hex commit to compare "
+                       "HEAD against")
+            lockstep.append(rel)
         elif pinned is None:
-            pin = f"contracts/{role}-pin.yaml"
-            cause = pin_read(ctx.root, pin)[1]
-            if cause is None:
-                problem = (f"{rel}: {pin} carries no 40-hex commit to compare "
-                           "HEAD against")
-                lockstep.append(rel)
-            else:
-                entry["cannot_be_read"] = cannot_be_read(pin, cause)
-                problem = (f"{rel}: {entry['cannot_be_read']}, so there is no "
-                           "pinned commit to compare HEAD against")
-                refused.append(cause)
+            problem = (f"{rel}: {entry['cannot_be_read']}, so there is no "
+                       "pinned commit to compare HEAD against")
+            named = True
         elif head != pinned:
             problem = (f"{rel}: checked out at {head[:12]}, pinned at "
                        f"{pinned[:12]}")
@@ -6197,6 +6209,9 @@ def check_legs(ctx: Context) -> Row:
                 # what the next run names.
                 if pinned is None or gitlink != pinned:
                     rerun = True
+        if refusal is not None and not named:
+            # A MOUNT FACT CAME FIRST: the pin is named beside it.
+            problem += f", and {entry['cannot_be_read']}"
         if problem:
             problems.append(problem)
     detail = {"legs": rows}

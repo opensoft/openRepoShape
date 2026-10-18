@@ -54,6 +54,11 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import REPO, git, load_without_bytecode, rmtree
+#: The ways a leg's mount can be wrong, from the file that owns them.
+from test_doctor_legs_members_next import (
+    make_head_unreadable, make_mount_with_no_git_of_its_own, make_no_gitlink,
+    unbootstrap,
+)
 #: #827's stand-in for a `stat` the operating system refuses, from the file
 #: that owns it (#383), as `test_validate_pins_unreadable_workflows_dir.py`
 #: takes it.
@@ -268,6 +273,68 @@ def test_a_pinned_copy_at_mode_000_stops_the_comparison_by_name(
     assert_no_checkout(rows)
 
 
+# --- a pin this user cannot read beside a mount fact (review of PR #860) ----
+
+def spec_emptied(root: Path) -> None:
+    """`spec` as an unbootstrapped clone has it: empty, not registered,
+    and no gitdir kept."""
+    unbootstrap(root, "spec")
+
+
+def spec_unlinked(root: Path) -> None:
+    """`spec`'s files with no `.git` of their own, its gitdir kept, which
+    the checkout line links again."""
+    (root / "spec" / ".git").unlink()
+
+
+def spec_unborn(root: Path) -> None:
+    """`spec`'s HEAD on a branch with no commit."""
+    git("symbolic-ref", "HEAD", "refs/heads/never-made", cwd=root / "spec")
+
+
+#: `(how the mount is made wrong, the words the row says of it first)`, one
+#: for each branch `check_legs` takes before it reaches the pin.
+MOUNT_FACTS = [
+    pytest.param(make_no_gitlink, "no gitlink recorded, so this leg is not "
+                 "mounted as a submodule at all", id="no-gitlink"),
+    pytest.param(spec_emptied, "the gitlink is there and the directory is "
+                 "empty -- an unbootstrapped clone", id="empty"),
+    pytest.param(spec_unlinked, "populated, but with no .git of its own, so "
+                 "git cannot read a HEAD in it", id="no-git-of-its-own-kept"),
+    pytest.param(make_mount_with_no_git_of_its_own, "populated, but with no "
+                 ".git of its own, so git cannot read a HEAD in it",
+                 id="no-git-of-its-own-gone"),
+    pytest.param(spec_unborn, "HEAD names the branch never-made, which has "
+                 "no commit", id="unborn-head"),
+    pytest.param(make_head_unreadable, "populated, but git cannot read a "
+                 "HEAD in it", id="head-unreadable"),
+]
+
+
+@CANNOT_RUN_AS_ROOT
+@pytest.mark.parametrize("unmount, fact", MOUNT_FACTS)
+def test_a_pin_this_user_cannot_read_is_named_beside_the_mount(
+        standard, project, unmount, fact):
+    """A leg whose mount is wrong AND whose pin this user cannot read: the
+    mount's fact is said first, the gate's line for the pin follows it, the
+    leg carries `cannot_be_read`, the WHY gives the gate's advice beside
+    whatever line is the NEXT, and the verdict is the gate's INVALID, never
+    DRIFTED. The pin was asked only where every mount branch passed, so an
+    empty mount hid it and the verdict was `DRIFTED (1 leg(s) not at the
+    pin)` (review of PR #860)."""
+    denied = os.strerror(errno.EACCES)
+    unmount(project)
+    with mode_of(project, SPEC_PIN, 0):
+        rows, verdict = doctored(standard, project)
+    legs = rows["legs"]
+    spec = legs["detail"]["legs"][0]
+    assert spec["cannot_be_read"] == cannot(SPEC_PIN, denied)
+    assert legs["reason"] == f"spec: {fact}, and {cannot(SPEC_PIN, denied)}"
+    assert PERMISSION_WHY in legs["why"], legs["why"]
+    assert verdict == "INVALID (pins, manifest-kinds)"
+    assert_no_checkout(rows)
+
+
 # --- the stand-in cases: in process, on every platform and as root ----------
 
 def refused_stat_of(monkeypatch, name: str) -> None:
@@ -307,13 +374,15 @@ def test_a_refused_pin_is_named_on_every_python(standard, project,
     assert kinds.detail["cannot_be_read"] == [cannot(SPEC_PIN)]
 
 
+@pytest.mark.parametrize("method", ["stat", "read_text"])
 def test_another_reason_is_given_the_gates_other_advice(
-        standard, project, monkeypatch):
-    """A read refused for a reason that is no permission (an I/O error): the
-    system's reason, and the gate's other advice, which is not told to
-    `chmod`."""
+        standard, project, monkeypatch, method):
+    """A `stat` or a read refused for a reason that is no permission (an
+    I/O error): the system's reason, and the gate's other advice, which is
+    not told to `chmod`. The `stat` is asked first, as the gate asks it, so
+    a pin whose `stat` fails for any reason is named, not called missing."""
     module, ctx = in_process(standard, project)
-    refusing(monkeypatch, "read_text", "spec-pin.yaml",
+    refusing(monkeypatch, method, "spec-pin.yaml",
              OSError(errno.EIO, IO_ERROR))
     legs = module.check_legs(ctx)
     kinds = module.check_manifest_kinds(ctx)
@@ -482,6 +551,24 @@ def test_beside_an_unborn_head_the_doctor_again_still_names_it(
     assert legs.next_command == doctor_again(standard, project)
     assert legs.why == (PERMISSION_WHY + ". "
                         + module.unborn_sentence("code", "leg"))
+
+
+def test_beside_an_empty_mount_the_pin_is_still_named(standard, project,
+                                                      monkeypatch):
+    """The empty mount of the case above, in process: the checkout line is
+    the NEXT, the pin is named beside the mount, its advice follows what the
+    line does, and the leg is no drift."""
+    module, ctx = in_process(standard, project)
+    spec_emptied(project)
+    refused_read_of(monkeypatch, "spec-pin.yaml")
+    legs = module.check_legs(ctx)
+    assert legs.reason == ("spec: the gitlink is there and the directory is "
+                           "empty -- an unbootstrapped clone, and "
+                           f"{cannot(SPEC_PIN)}")
+    assert legs.detail["legs"][0]["cannot_be_read"] == cannot(SPEC_PIN)
+    assert legs.next_command.endswith(" -- spec"), legs.next_command
+    assert legs.why.endswith(". " + PERMISSION_WHY), legs.why
+    assert module.drifted_reasons({"legs": legs}, {}) == []
 
 
 def test_where_the_gates_line_cannot_be_built_the_advice_is_still_said(
