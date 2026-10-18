@@ -38,10 +38,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import cloned_just_pushed, git, rmtree
+from conftest import appended_to_command_scope, cloned_just_pushed, git, rmtree
 from test_family import NAME, SPARE, family  # noqa: F401
 from test_family_add_member_variant import (
-    OTHER_ROW, OTHER_VARIANT, REMOVE, ROW, VARIANT, VARIANT_SHOWN,
+    MOVE_OUT, OTHER_ROW, OTHER_VARIANT, REMOVE, ROW, VARIANT, VARIANT_SHOWN,
     dry_run_in_process, in_the_index, moved_back, record, refused_in_process,
     registered, typed_as_printed, variant,
 )
@@ -134,10 +134,9 @@ def typed_with_local_remotes(monkeypatch, root: Path, said: str) -> list:
     alone: a `git submodule update --recursive` the remedy prints may clone
     a member's legs, whose urls are the fixture's local paths."""
     with monkeypatch.context() as patched:
-        count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
-        patched.setenv("GIT_CONFIG_COUNT", str(count + 1))
-        patched.setenv(f"GIT_CONFIG_KEY_{count}", "protocol.file.allow")
-        patched.setenv(f"GIT_CONFIG_VALUE_{count}", "always")
+        for name, value in appended_to_command_scope(
+                os.environ, [("protocol.file.allow", "always")]).items():
+            patched.setenv(name, value)
         return typed_as_printed(root, said)
 
 
@@ -376,7 +375,8 @@ def test_a_folding_disk_that_received_it_renames_it_back(
     pull leaves it on a disk that folds case. There `Members` is that very
     directory, and the two steps are printed. On Linux `Members` is not on
     disk at all, a second spelling `git mv` cannot find, and #646's move
-    back is printed, as before."""
+    back is printed, as before, pointing each section, which the rename
+    moved to `Members/`, back at its row's path (#761)."""
     folding_skip(tmp_path)
     commits = renamed_with_git(holder)
     os.rename(holder / "Members", holder / "members")
@@ -384,7 +384,7 @@ def test_a_folding_disk_that_received_it_renames_it_back(
     move, closing = moved_back({ROW: ([VARIANT], commits[ROW]),
                                 OTHER_ROW: ([OTHER_VARIANT],
                                             commits[OTHER_ROW])},
-                               commit=False)
+                               commit=False, sections=(ROW, OTHER_ROW))
     assert dry_run_in_process(family_module, monkeypatch, offline, holder,
                               family["remotes"], capsys) == (
         BOTH, remedy_of(renamed_back(False)) if folding
@@ -478,8 +478,6 @@ NOT_RENAMED_BACK = {
         lambda root: plant(root, "100644", "members/notes")),
     "a file at members in the index": (
         lambda root: plant(root, "100644", "members")),
-    "another spelling in the index too": (
-        lambda root: plant(root, "100644", "MEMBERS/notes")),
     "a case variant of the mount path under it": (
         lambda root: plant(root, "100644", f"Members/{SPARE}")),
     "an entry under it a sparse checkout keeps off disk": (
@@ -501,9 +499,10 @@ def test_only_members_renamed_whole_is_renamed_back(holder, family_module,
                                                     tmp_path, state):
     """The rename back is printed only where it types clean and leaves
     nothing out: no `members/` on disk but that spelling's own directory,
-    nothing in the index at or under `members` itself or under a second
-    spelling, no case variant of the mount path in it, nothing under it
-    kept off disk or unmerged, no member's gitlink that HEAD alone holds
+    nothing in the index at or under `members` itself, no member's gitlink
+    under a second spelling (a third spelling's own entries keep their own
+    remedy, #761), no case variant of the mount path in it, nothing under
+    it kept off disk or unmerged, no member's gitlink that HEAD alone holds
     there, and every entry under it on disk as the index holds it or able
     to be put back. Elsewhere each path keeps its own remedy (the move back
     of a member's own gitlink, or #574's), never `git mv back`."""
@@ -612,7 +611,8 @@ def test_a_missing_gitmodules_is_put_back_before_the_move_back(
     assert said == (in_the_index(VARIANT_SHOWN),
                     remedy_of(RESTORE_FIRST, move, *closing))
     assert typed_as_printed(holder, said[1]) == [
-        "git checkout -- .gitmodules", REMOVE, record(commit), "git commit"]
+        "git checkout -- .gitmodules", REMOVE, record(commit), "git commit",
+        MOVE_OUT]
     registered(holder, family["root"], commit)
     assert_passes_in_every_mode(holder, 2)
     added(offline, holder, family["remotes"])

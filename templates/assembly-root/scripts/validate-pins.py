@@ -1757,13 +1757,31 @@ def _note_unused_pin_sources(sources: PinSources, report: Report,
             sources.read_as_path(typed)))))
 
 
-def _load_legs_to_check(root: Path) -> tuple[dict, list[dict]]:
+def _load_legs_to_check(root: Path, report: Report
+                        ) -> tuple[dict, list[dict]]:
     """The manifest and its non-assembly legs, or a Refusal naming why there
     is nothing here to check. Split from `main` for #132.
 
     `project.yaml` is named relative to the root, as every file this
     validator names is, where three refusals named its absolute path raw,
     and it is refused by name where it cannot be reached or read (#712).
+
+    A `legs:` THAT IS NOT A LIST IS A FINDING, NOT THAT REFUSAL (#714), in
+    `validate-manifest.py`'s words for it (`manifest-legs`), and no leg is
+    checked. Iterated as `manifest.get("legs") or []`, `5` or `true` ended
+    this validator in a `TypeError`, and a scalar `openXdox` or a mapping
+    was walked one character, or one key, at a time, found no leg, and was
+    refused `manifest-no-legs` with the lockstep remedy, which says to run
+    `git submodule update`: nothing to do with the cause. The shape pin and
+    the neutral-product pins are still checked. A refusal one of them makes
+    is printed alone, as every refusal here is, so the finding is not
+    printed then. Absent, null or `[]` is still that refusal.
+
+    AN ENTRY THAT IS NOT A MAPPING IS `validate-manifest.py`'S `manifest-leg`
+    FINDING, in its words (#714), as the naming gate says it too, and the
+    refusal is chosen only where no entry was one: `legs: [5]` was refused
+    `manifest-no-legs` with that same remedy, where the other two gates
+    found the entry.
     """
     manifest_path = root / "project.yaml"
     if not _is_file(root, manifest_path):
@@ -1776,9 +1794,20 @@ def _load_legs_to_check(root: Path) -> tuple[dict, list[dict]]:
     manifest = _load(root, manifest_path)
     if not isinstance(manifest, dict):
         raise Refusal("manifest-unreadable", "project.yaml: not a mapping")
-    legs = [leg for leg in (manifest.get("legs") or [])
+    declared = manifest.get("legs")
+    if declared is not None and not isinstance(declared, list):
+        report.finding(
+            "manifest-legs",
+            f"legs is {declared!r}, expected a list of `role:`, "
+            "`repository:` and `path:` mappings")
+        return manifest, []
+    not_mappings = [leg for leg in (declared or [])
+                    if not isinstance(leg, dict)]
+    for leg in not_mappings:
+        report.finding("manifest-leg", f"a leg is not a mapping: {leg!r}")
+    legs = [leg for leg in (declared or [])
             if isinstance(leg, dict) and leg.get("role") != "assembly"]
-    if not legs:
+    if not legs and not not_mappings:
         raise Refusal("manifest-no-legs",
                       "project.yaml: no non-assembly legs declared")
     return manifest, legs
@@ -1789,7 +1818,7 @@ def _run_all_checks(root: Path, report: Report,
     """Every check `main` runs inside its one `try`, in order. Split from
     `main` for #132 so that `try` wraps a single call.
     """
-    manifest, legs = _load_legs_to_check(root)
+    manifest, legs = _load_legs_to_check(root, report)
     refs = _workflow_refs(root)
     for leg in legs:
         _check_leg(root, leg, report, refs)

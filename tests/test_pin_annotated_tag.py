@@ -34,12 +34,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ADOPT, SCAFFOLD, WINDOWS_SKIP, git, planned,
+from conftest import (SCAFFOLD, WINDOWS_SKIP, git, planned,
                       refused_before_any_leg, run_script)
 from test_adopt_pins import (  # noqa: F401
-    ENTRY, ORG, PIN_FILE, PLANNED, PROJECT, adopter, asked_what, forge_objects,
-    gh_calls, gh_env, make_product, plan_with, read_from, shape_materialize,
-    tree_listing, with_pins,
+    ENTRY, ORG, PIN_FILE, PLANNED, PROJECT, adopter, asked_what, check_plan,
+    forge_objects, gh_calls, gh_env, make_product, plan_with, read_from,
+    shape_materialize, tree_listing, with_pins,
 )
 from test_scaffold_pin_and_reuse import assert_pin_digest_recomputed
 from repo_shape import load_yaml, tree_digest
@@ -288,7 +288,7 @@ def test_check_finds_a_recorded_id_that_is_no_commit(
     plan = planned(source_repo, tmp_path, PLANNED)
     with_pins(plan, read_from(tagged_clone, named,
                               tree_digest(tagged.path, tagged.commit)))
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 1, checked.stdout + checked.stderr
     lines = [line for line in checked.stderr.splitlines()
              if line.startswith("FINDING ")]

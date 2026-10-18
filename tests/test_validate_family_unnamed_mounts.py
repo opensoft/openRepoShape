@@ -80,8 +80,19 @@ MODES = pytest.mark.parametrize(
 #: What every unnamed gitlink says after its path and commit, and what one
 #: that is NOT a case variant of a row's path says to do about it. A
 #: holder's CI matches on text, so it is pinned here and not rebuilt from the
-#: validator's own strings.
+#: validator's own strings. GITLINK_SAID is a gitlink no section of HEAD's
+#: `.gitmodules` gives a url, which a recursive clone checks out nowhere and
+#: a plain clone's `git submodule update --init` stops at (#762: it said a
+#: recursive clone fetched it); GITLINK_SAID_FETCHED one a section gives a
+#: url, which a recursive clone fetches.
 GITLINK_SAID = (
+    "FINDING member-gitlink-unnamed: {path} is a gitlink at {commit} that "
+    "no row of members: names and no section of HEAD's .gitmodules gives a "
+    "url, so a recursive clone of this holder checks out nothing at it, in "
+    "a plain clone git submodule update --init stops there (No url found "
+    "for submodule path, exit 128) before it checks out any member, and "
+    "nothing here pins, digests or identifies it.")
+GITLINK_SAID_FETCHED = (
     "FINDING member-gitlink-unnamed: {path} is a gitlink at {commit} that "
     "no row of members: names, so a recursive clone of this holder fetches "
     "it and nothing here pins, digests or identifies it.")
@@ -297,7 +308,7 @@ def test_a_member_mounted_by_hand_is_two_findings(family, holder, tmp_path,
     assert result.returncode == 1, result.stderr + result.stdout
     assert "REFUSED" not in result.stderr, result.stderr
     gitlink, section = findings(result)
-    assert gitlink.splitlines()[0] == GITLINK_SAID.format(
+    assert gitlink.splitlines()[0] == GITLINK_SAID_FETCHED.format(
         path=f"members/{SPARE}", commit=tip) + GITLINK_REMEDY
     assert commands(gitlink) == [
         switch_for(holder, SPARE),
@@ -410,16 +421,19 @@ def test_a_gitlink_is_read_from_the_index_first_and_from_head_second(
 
 def test_only_members_is_asked_about(family, holder):
     """`members/` in any case, and nothing beside it: a gitlink elsewhere
-    in the holder is not a member's mount, and no row could name it."""
+    in the holder is not a member's mount, and no row could name it. One
+    no section gives is `gitlink-unnamed` instead, after this finding
+    (#878, `tests/test_family_unnamed_gitlink.py` types it)."""
     _, tip = spare_commits(family)
     stage_gitlink(holder, f"tools/{SPARE}", tip)
     stage_gitlink(holder, f"membersX/{SPARE}", tip)
     stage_gitlink(holder, f"MEMBERS/{SPARE}", tip)
     result = validate(holder, "--no-members")
     assert result.returncode == 1, result.stderr + result.stdout
-    (gitlink,) = findings(result)
-    assert gitlink.startswith(GITLINK_SAID.format(path=f"MEMBERS/{SPARE}",
-                                                  commit=tip))
+    assert codes(result) == ["member-gitlink-unnamed", "gitlink-unnamed",
+                             "gitlink-unnamed"], result.stderr
+    assert findings(result)[0].startswith(GITLINK_SAID.format(
+        path=f"MEMBERS/{SPARE}", commit=tip))
 
 
 def test_a_removed_row_is_named_by_its_gitlink_and_its_section(holder):
@@ -434,7 +448,7 @@ def test_a_removed_row_is_named_by_its_gitlink_and_its_section(holder):
     assert result.returncode == 1, result.stderr + result.stdout
     assert codes(result) == ["member-gitlink-unnamed",
                              "gitmodules-path-unnamed"]
-    assert findings(result)[0].startswith(GITLINK_SAID.format(
+    assert findings(result)[0].startswith(GITLINK_SAID_FETCHED.format(
         path="members/IRSS", commit=irss["pin"]["commit"]) + GITLINK_REMEDY)
     (holder / "family.yaml").write_bytes(text)
     assert_passes_in_every_mode(holder, 2)
@@ -500,7 +514,7 @@ def test_a_row_hand_edited_into_a_case_variant_of_its_mount_is_the_edit(
         + ([] if extra == ("--no-members",) else ["member-path"]))
     said = dict(path="members/IRSS", project="IRSS", row_path="Members/IRSS")
     gitlink, section = findings(result)[:2]
-    assert gitlink == GITLINK_SAID.format(
+    assert gitlink == GITLINK_SAID_FETCHED.format(
         path="members/IRSS", commit=commit_) + ROW_EDITED.format(
             what="gitlink", **said)
     assert section == SECTION_SAID.format(

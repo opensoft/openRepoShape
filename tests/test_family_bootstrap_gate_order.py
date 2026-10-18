@@ -56,7 +56,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import clone_just_pushed, git, run_script
+from conftest import (appended_to_command_scope, clone_just_pushed, git,
+                      run_script)
 from repo_shape import PYTHON
 from test_family import NAME, SPARE, family, validate  # noqa: F401
 from test_family_add_refusals import holder, offline  # noqa: F401
@@ -131,10 +132,9 @@ NOT_ALL_FETCHED = ["", "(a) members and their legs",
 
 def with_config(env: dict, key: str, value: str) -> dict:
     """`env` with `key` set to `value`, one more `GIT_CONFIG_*` entry after
-    the ones it already holds, for every git the run starts."""
-    index = int(env.get("GIT_CONFIG_COUNT", "0"))
-    return {**env, "GIT_CONFIG_COUNT": str(index + 1),
-            f"GIT_CONFIG_KEY_{index}": key, f"GIT_CONFIG_VALUE_{index}": value}
+    the ones it already holds (`appended_to_command_scope`), for every git
+    the run starts."""
+    return {**env, **appended_to_command_scope(env, [(key, value)])}
 
 
 def fetching(env: dict) -> dict:
@@ -659,11 +659,11 @@ def test_a_hand_mount_outside_members_is_taken_out_of_the_index(
         family, holder, offline, tmp_path):
     """rv648's H2. SPARE's gitlink recorded by hand at `vendor/<SPARE>`,
     outside members/, with no row and no section, and committed: in a plain
-    clone git's init dies there before it checks out any member. No mode
-    of the validator reads a gitlink outside members/, and `--no-members`
-    says `family ok`, so the line names the `git rm --cached` that takes
-    the gitlink out. Typed as printed and committed, the same run checks
-    both members out, and the gate passes in every mode."""
+    clone git's init dies there before it checks out any member. The line
+    names the `git rm --cached` that takes the gitlink out, and the
+    validator's `--no-members`, which said `family ok` there, names the same
+    line now, `gitlink-unnamed` (#878). Typed as printed and committed, the
+    same run checks both members out, and the gate passes in every mode."""
     env = fetching(isolated(offline, tmp_path))
     stopper = f"vendor/{SPARE}"
     stage_gitlink(holder, stopper, spare_commits(family)[1])
@@ -680,8 +680,11 @@ def test_a_hand_mount_outside_members_is_taken_out_of_the_index(
         failed_on(MEMBER, OTHER)], result.stderr
     assert f"No url found for submodule path '{stopper}'" in result.stderr
     fallback = validate(clone, "--no-members")
-    assert fallback.returncode == 0, "premise: it reads only members/"
+    assert fallback.returncode == 1, fallback.stdout + fallback.stderr
     (line,) = re.findall(r"`(git rm [^`]*)`", result.stderr)
+    (named,) = findings(fallback)
+    assert named.startswith(f"FINDING gitlink-unnamed: {stopper} "), named
+    assert commands(named) == [line], "the same line (#878)"
     type_line(clone, env, line)
     commit_all(clone, env, "The gitlink taken out as printed")
 
