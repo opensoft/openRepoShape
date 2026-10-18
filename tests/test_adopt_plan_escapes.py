@@ -37,7 +37,8 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import (ADOPT, REPO, blank_unnamed_pin_sources, git,
-                      make_source_repo, resolve)
+                      make_source_repo, resolve,
+                      skip_where_a_name_cannot_be_not_utf_8)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import repo_shape  # noqa: E402
@@ -397,17 +398,13 @@ def test_a_source_directory_that_is_not_utf8_is_shown_spelled(adopter,
     so did `check`'s `WHAT WILL HAPPEN, against <path> @`, and each raised
     `UnicodeEncodeError` on a strict UTF-8 stdout after the plan was written.
     Both show it spelled now. Skipped where no directory can be named with
-    the byte 0xE9 (Windows, macOS's APFS) or git will not work in one."""
-    try:
-        parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
-                                               b"caf\xe9")))
-        parent.mkdir()
-    except (OSError, UnicodeError) as exc:
-        pytest.skip(f"no directory here is named b'caf\\xe9': {exc!r}")
-    try:
-        source = make_source_repo(parent / "Thing")
-    except AssertionError as exc:
-        pytest.skip(f"git will not work under b'caf\\xe9' here: {exc}")
+    the byte 0xE9 (Windows, macOS's APFS); a failure of git under it fails
+    the test (#853)."""
+    skip_where_a_name_cannot_be_not_utf_8(tmp_path)
+    parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
+                                           b"caf\xe9")))
+    parent.mkdir()
+    source = make_source_repo(parent / "Thing")
     shown = adopter._spelled(str(source.resolve()))
     assert "\\udce9" in shown
     plan = tmp_path / PLAN_FILE
@@ -458,13 +455,7 @@ def test_a_leg_extracts_a_path_that_is_not_utf8(adopter, tmp_path):
     lifting that refusal reaches this, so the extraction is tested here,
     directly. Skipped where no file can be named with that byte (Windows,
     macOS's APFS): filter-repo works in a clone, which checks the name out."""
-    try:
-        probe = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
-                                              b"caf\xe9.txt")))
-        probe.write_bytes(b"")
-        probe.unlink()
-    except (OSError, UnicodeError) as exc:
-        pytest.skip(f"no file here is named b'caf\\xe9.txt': {exc!r}")
+    skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     source = odd_source(tmp_path, b"caf\xe9.txt")
     commit = git("rev-parse", "HEAD", cwd=source).stdout.strip()
     remote = tmp_path / "Northwind-code.git"

@@ -50,7 +50,9 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, REPO, WINDOWS_SKIP, blank_unnamed_pin_sources,
-                      make_source_repo, resolve)
+                      make_source_repo, resolve,
+                      skip_where_a_name_cannot_be_not_utf_8,
+                      skip_where_the_environment_cannot_carry)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -196,7 +198,11 @@ def test_plan_refuses_a_flag_no_file_can_hold(tmp_path, flag, value):
     `plan ok`, and `execute` raised in `write_lf` after both legs were
     pushed (a surrogate), or adopted with the line break, the tab or the
     bidi control in the manifest and the README. Now `plan` refuses, and
-    writes no plan."""
+    writes no plan. Skipped where this system's file name encoding cannot
+    spell `value` (U+2028, U+202E or U+2066 in ASCII under `LC_ALL=C`),
+    asked first: `subprocess` cannot put it on `plan`'s command line there,
+    and raised `UnicodeEncodeError` in the test, not in the tool."""
+    skip_where_the_environment_cannot_carry(value)
     source = make_source_repo(tmp_path / "Thing")
     runs = plan_check_execute(tmp_path, source, flag, value)
     assert_no_traceback_and_no_leg(tmp_path, runs)
@@ -251,11 +257,14 @@ def refused_then_moved(base: Path, parent: Path, reason: bytes) -> None:
     clone URL, giving `reason`, before any leg exists. Then the remediation
     the refusal gives, followed as it is worded -- `parent` renamed, then
     `plan --source <its new path>`, `check` and `execute` run again -- ends
-    `adoption verified`."""
-    try:
-        source = make_source_repo(parent / "Thing")
-    except AssertionError as exc:
-        pytest.skip(f"git will not work under {parent.name!r} here: {exc}")
+    `adoption verified`.
+
+    The source repository is made under `parent` with no guard: the caller
+    has asked whether this system can carry the name, and git works under
+    any directory a system carries, so a failure of git there (a disk that
+    filled after the `mkdir`) is the test's own and is raised, for a name
+    that is not UTF-8 (#853) as for one that is valid text (#834)."""
+    source = make_source_repo(parent / "Thing")
     runs = plan_check_execute(base, source)
     assert_no_traceback_and_no_leg(base, runs)
     assert runs["plan"].returncode == 0, said(runs["plan"])
@@ -290,14 +299,12 @@ def test_execute_refuses_a_local_source_directory_that_is_not_utf8(tmp_path):
     once said to clone the source to a UTF-8 path and pass that with
     --source, which ended in a traceback: the clone's `origin` is the old
     path, which `_remote_repository` reads as UTF-8. Skipped where no
-    directory can be named with the byte 0xE9 (Windows, macOS's APFS) or
-    git will not work in one."""
-    try:
-        parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
-                                               b"caf\xe9")))
-        parent.mkdir()
-    except (OSError, UnicodeError) as exc:
-        pytest.skip(f"no directory here is named b'caf\\xe9': {exc!r}")
+    directory can be named with the byte 0xE9 (Windows, macOS's APFS); a
+    failure of git under it fails the test (#853)."""
+    skip_where_a_name_cannot_be_not_utf_8(tmp_path)
+    parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
+                                           b"caf\xe9")))
+    parent.mkdir()
     refused_then_moved(tmp_path, parent, b"a byte that is not UTF-8")
 
 
@@ -307,12 +314,17 @@ def test_execute_refuses_a_local_source_directory_holding_a_bidi_control(
     """A source under a directory whose name begins with U+202E RIGHT-TO-LEFT
     OVERRIDE: on main `execute` adopted it, and the shape's README showed
     the rest of its `git clone` line reversed. Now it is refused as the
-    byte is, and moving the source adopts."""
+    byte is, and moving the source adopts. Skipped where this system's file
+    name encoding cannot spell U+202E (ASCII under `LC_ALL=C`), which is
+    asked before the `mkdir`, where it raised `UnicodeEncodeError` (#854).
+    Nothing else is guarded: U+202E is valid text, which a POSIX disk, NTFS
+    and APFS hold and git works under (reasoned, not run, on the last two),
+    so an error of the disk when the directory is made, and a failure of git
+    when the source is, are the test's own and are raised, not skipped
+    (#834)."""
     parent = tmp_path / "\u202ecaf"
-    try:
-        parent.mkdir()
-    except OSError as exc:
-        pytest.skip(f"no directory here is named '\\u202ecaf': {exc!r}")
+    skip_where_the_environment_cannot_carry(parent.name)
+    parent.mkdir()
     refused_then_moved(tmp_path, parent, b"a bidirectional control")
 
 
@@ -637,7 +649,13 @@ def test_a_valid_non_ascii_elector_still_adopts(tmp_path, elected_by):
 
     The manifest is asked through the reader, not for a line: since #250 a
     YAML template's value is written as `double_quoted` spells it, so the
-    line holds U+200C as an escape there, and as it stands before."""
+    line holds U+200C as an escape there, and as it stands before.
+
+    Skipped where this system's file name encoding cannot spell the name
+    (ASCII under `LC_ALL=C`), asked first: `subprocess` cannot put it on
+    `plan`'s command line there, and raised `UnicodeEncodeError` in the
+    test, not in the tool."""
+    skip_where_the_environment_cannot_carry(elected_by)
     source = make_source_repo(tmp_path / "Thing")
     runs = plan_check_execute(tmp_path, source, "--elected-by", elected_by)
     assert_no_traceback(runs)
@@ -656,8 +674,13 @@ def test_a_valid_non_ascii_elector_still_adopts(tmp_path, elected_by):
 def test_a_utf8_source_directory_still_adopts_with_local_remotes(tmp_path):
     """A source under a directory `café`: its path is the clone URL, which a
     file holds, so it adopts, and the shape's README (beside the source's
-    own) names it."""
-    source = make_source_repo(tmp_path / "café" / "Thing")
+    own) names it. Skipped where this system's file name encoding cannot
+    spell the directory's name (ASCII under `LC_ALL=C`), asked before the
+    directory is made, where `mkdir` raised `UnicodeEncodeError` in the
+    test."""
+    parent = tmp_path / "caf\u00e9"
+    skip_where_the_environment_cannot_carry(parent.name)
+    source = make_source_repo(parent / "Thing")
     runs = plan_check_execute(tmp_path, source)
     assert_no_traceback(runs)
     assert runs["check"].returncode == 0, said(runs["check"])

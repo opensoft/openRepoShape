@@ -387,6 +387,30 @@ def test_a_value_the_manifest_holds_is_quoted_for_the_shell_that_reads_the_line(
     assert words[9] == "--title" and words[11] == "--body", line
 
 
+@pytest.mark.parametrize("push", [True, False], ids=["branch-push", "branch"])
+def test_a_tracking_branch_no_person_can_see_never_reaches_the_line(
+        update_shape, tmp_path, capsys, push):
+    """`tracking_branch_of` reads through `readable_branch` since #715, so
+    `main` followed by U+00A0, which a person reads as `main`, is refused as
+    `unseen-branch` and no line is printed: pasted, it would open a pull
+    request against a second branch beside `main`. A name a person can read,
+    `a&b` among them, is quoted into the line, as the test above holds."""
+    (tmp_path / "project.yaml").write_text(
+        "tracking_branch: main\xa0\n"
+        "legs:\n"
+        "  - role: assembly\n"
+        '    repository: "acme/It\'s here"\n', encoding="utf-8")
+    args = SimpleNamespace(branch="shape/x", push=push, pr=False)
+    with pytest.raises(update_shape.Refusal) as refused:
+        update_shape.next_line(tmp_path, args, [], "0" * 40, [])
+    assert refused.value.code == "unseen-branch"
+    assert str(refused.value).startswith(
+        "REFUSED unseen-branch: tracking_branch is 'main\\xa0', which holds "
+        "U+00A0, a character that does not print or is white space"), (
+            refused.value)
+    assert capsys.readouterr().out == ""
+
+
 FAMILY_SOURCE = "templates/family-root/scripts/validate-family.py"
 FAMILY_FIX_LINE = "\n# An upstream fix that must reach every family.\n"
 HOLDER = "Contoso"

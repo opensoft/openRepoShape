@@ -41,9 +41,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ADOPT, REPO, clear_ambient_pin_sources,
-                      cloned_just_pushed, git, make_source_repo, resolve,
-                      run_script, write_plan)
+from conftest import (ADOPT, REPO, appended_to_command_scope,
+                      clear_ambient_pin_sources, cloned_just_pushed, git,
+                      make_source_repo, resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import parse_yaml  # noqa: E402
@@ -582,9 +582,8 @@ def command_scope(key: str, value: str) -> dict:
     `core.autocrlf=false` there, which outranks any config file, so a
     clone's own `--config` would not reach its checkout. The last entry of a
     key is the one git reads."""
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
-    return {**os.environ, "GIT_CONFIG_COUNT": str(held + 1),
-            f"GIT_CONFIG_KEY_{held}": key, f"GIT_CONFIG_VALUE_{held}": value}
+    return {**os.environ,
+            **appended_to_command_scope(os.environ, [(key, value)])}
 
 
 @needs_filter_repo

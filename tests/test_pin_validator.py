@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from conftest import git, run_script
 
 OTHER_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -163,6 +165,38 @@ def test_a_workflow_ref_that_agrees_with_the_gitlink_passes(project):
     result = validate(project)
     assert result.returncode == 0, result.stderr
     assert "workflow @<sha> reference(s) agree" in result.stdout
+
+
+def code_workflow(project, *shas: str) -> None:
+    """`.github/workflows/lane.yml`, one job per sha, each naming the code
+    leg's repository at it."""
+    (project / ".github" / "workflows" / "lane.yml").write_text(
+        "name: lane\non:\n  pull_request:\njobs:\n" + "".join(
+            f"  lane{at}:\n    uses: testorg/Atlas-code/.github/workflows/"
+            f"reusable.yml@{sha}\n" for at, sha in enumerate(shas)))
+
+
+@pytest.mark.parametrize("refs, counted", [
+    (("off",), None),
+    (("at", "off"), "1 of 2"),
+    (("at", "at"), "2"),
+], ids=["one-off", "one-of-two-off", "both-at"])
+def test_the_agree_note_counts_only_the_references_at_the_gitlink(
+        project, refs, counted):
+    """The note counted every reference to the leg's repository, so one off
+    its gitlink was its finding and, beside it, `1 workflow @<sha>
+    reference(s) agree with the gitlink` (#739). It counts those at the
+    gitlink, `N of M` where some are not, and is not printed where none
+    is."""
+    gitlink = git("rev-parse", "HEAD:code", cwd=project).stdout.strip()
+    code_workflow(project, *(gitlink if ref == "at" else OTHER_SHA
+                             for ref in refs))
+    result = validate(project)
+    said = [line for line in result.stdout.splitlines()
+            if "agree with the gitlink" in line]
+    assert said == ([] if counted is None else [
+        f"  ok  testorg/Atlas-code: {counted} workflow @<sha> reference(s) "
+        "agree with the gitlink"]), result.stdout + result.stderr
 
 
 def test_a_ref_to_something_that_is_not_a_leg_is_ignored(project):
