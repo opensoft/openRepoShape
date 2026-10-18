@@ -117,7 +117,10 @@ happens under a `--- <Project>: make <target> ---` header; a member with NO
 working clone is reported and SKIPPED, naming `make siblings`; one that is
 not this member is reported and skipped exactly as it is above. Every member
 is tried — a refusal never stops the ones after it — and the summary names
-each outcome. `--dry-run` prints what would run and runs nothing.
+each outcome. `--dry-run` prints what would run and runs nothing. Under the
+holder's `make -jN`, each member's make runs its jobs one at a time and says
+nothing of it: the jobserver of the make above, and the `-j` that comes with
+it, are taken out of the `MAKEFLAGS` it inherits (`member_make_env`, #888).
 
 IT CONFERS NOTHING, and neither does the layout. A folder is navigation.
 
@@ -847,6 +850,31 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
 # dispatching a verb into the WORKING CLONES (--make)
 # ---------------------------------------------------------------------------
 
+#: `bootstrap.py`'s three readings of `MAKEFLAGS` (#888), written here
+#: rather than imported: a holder may keep a `bootstrap.py` older than this
+#: file (`update-shape.py apply --accept-local`), which has none of them,
+#: and `make park` would then end in an `ImportError` before it ran in any
+#: member. `tests/test_family_member_make_jobserver.py` holds the two files
+#: to one answer.
+JOBSERVER_WORD = re.compile(r"--jobserver-(?:auth|fds)=.*", re.DOTALL)
+JOBS_WORD = re.compile(r"-j[0-9]*|--jobserver-(?:auth|fds)=.*", re.DOTALL)
+MAKEFLAGS_WORD = re.compile(r"(?:\\.|\S)+", re.DOTALL)
+
+
+def member_make_env() -> dict[str, str]:
+    """This run's environment for a member's `make <target>`: `MAKEFLAGS`
+    without the jobserver of the make above it, where it names one, nor
+    the `-j` that comes with it, as `bootstrap.py`'s `member_make_env`
+    gives it and for its reasons. Under the holder's `make -j2 park`, each
+    member's make said `jobserver unavailable: using -j1.  Add '+' to
+    parent make rule.`, of a rule the person does not own (#888)."""
+    env = dict(os.environ)
+    words = MAKEFLAGS_WORD.findall(env.get("MAKEFLAGS", ""))
+    if any(JOBSERVER_WORD.fullmatch(word) for word in words):
+        env["MAKEFLAGS"] = " ".join(
+            word for word in words if not JOBS_WORD.fullmatch(word))
+    return env
+
 
 def make_program() -> str:
     """`make`, resolved to an EXECUTABLE PATH, or a named refusal.
@@ -1002,7 +1030,7 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
     print(f"  --- {who}: make {checked_target} ---")
     sys.stdout.flush()
     proc = subprocess.run([make, checked_target, *checked_assignments],
-                          cwd=str(path), check=False)
+                          cwd=str(path), check=False, env=member_make_env())
     sys.stdout.flush()
     if proc.returncode != 0:
         sibling.state = f"make {target} exited {proc.returncode}"
