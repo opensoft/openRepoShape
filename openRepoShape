@@ -826,9 +826,18 @@ checked_repo() {
 #
 # $OPENREPOSHAPE_REPO HAS PASSED `checked_repo` BEFORE THIS RUNS (#866), as
 # every run but `--help` checks it once, and nothing between changes it.
+#
+# THE REF IS CHECKED BEFORE THE CLONE (#942). `checked_ref` reads the value
+# and nothing else, so a ref it refuses costs no clone, and a clone that
+# fails (offline, a mirror that is down) cannot hide the refusal of a ref
+# that was never going to be checked out. It is asked here and not by
+# `refuse_bad_values`, whose check of the ref is its characters only, on
+# purpose: `--install` takes `bad..ref` with no opt-in, and `--doctor` beside
+# a checkout never uses the ref at all.
 shape_checkout() {
 	local url
 	url="$(shape_clone_url)"
+	[ "$REF_NAMED" -eq 0 ] || checked_ref "$REF"
 	workdir openRepoShape-doctor
 	SHAPE_DIR="$WORKDIR/shape"
 	git clone --quiet -- "$url" "$SHAPE_DIR" ||
@@ -836,12 +845,11 @@ shape_checkout() {
     standard to check against. \`--doctor\` needs one: run it from a checkout
     of openRepoShape, or make the clone work."
 	if [ "$REF_NAMED" -eq 1 ]; then
-		checked_ref "$REF"
 		# `<ref> --`, never `-- <ref>`: a `--` BEFORE the argument makes git
 		# read it as a PATHSPEC and try to restore a file of that name from
 		# the index. AFTER it, it says "and no paths follow", which is the
 		# disambiguation this wants. The leading-dash case is refused by
-		# `checked_ref` above, which is where it belongs.
+		# `checked_ref` above, before the clone, which is where it belongs.
 		git -C "$SHAPE_DIR" checkout --quiet "$REF" -- ||
 			die "cloned $REPO but could not check out '$REF'."
 	fi
