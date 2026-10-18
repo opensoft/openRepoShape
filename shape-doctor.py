@@ -2086,14 +2086,17 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
 
 
 def lost_repo_shape_cure(ctx: Context, own: str, lost: Path, rerun: str,
-                         again: bool = True) -> tuple[str | None, str]:
+                         again: bool = True,
+                         purpose: str = "") -> tuple[str | None, str]:
     """`(the NEXT, the why)` for a root's own validator `own` that crashed
     because `lost`, the `repo_shape.py` it imports from beside itself, is not
     there, where `rerun` is the line that runs `own` (#697).
 
     `again` says "run it AGAIN" where the doctor ran the gate and it crashed,
     as the validator rows' crash does; the `legs` and `members` rows' lockstep
-    line is one the reader never ran, and says "run it" (#750).
+    line is one the reader never ran, and says "run it" (#750). `purpose` is
+    what the gate is run for, where the row says (", to confirm the digest",
+    #776), and follows "once the file is back".
 
     THE NEXT IS THE CURE, NOT THE VALIDATOR. The row used to print `rerun`,
     and a reader whose own `PYTHONPATH`, or a `.pth` in whose site-packages,
@@ -2117,7 +2120,7 @@ def lost_repo_shape_cure(ctx: Context, own: str, lost: Path, rerun: str,
     """
     relative = lost.relative_to(ctx.root).as_posix()
     then = (f"run `{rerun}`{' again' if again else ''} once the file is "
-            "back; before that, a reader whose own PYTHONPATH or "
+            f"back{purpose}; before that, a reader whose own PYTHONPATH or "
             "site-packages reaches another repo_shape sees it run on that "
             "one, which says nothing about this root's own copy")
     if head_holds(ctx.root, relative):
@@ -6239,6 +6242,25 @@ def own_bootstrap(root: Path, make_target: bool = False) -> bool:
     return re.search(r"(?m)^bootstrap\s*:", makefile) is not None
 
 
+def gate_line(ctx: Context, gate: tuple) -> tuple[Path, bool, str | None]:
+    """`(the copy of `gate` a row names, whether it is the root's own, the
+    line that runs it on the root)`: the line is None where neither copy is
+    readable, or where no `PYTHONPATH` can name the standard's template copy
+    (#278), because a line that cannot run is not printed (#276).
+
+    ONE DEFINITION for the rows that hand a reader the lockstep gate:
+    `lockstep_next`, for the `legs` and `members` rows, and the `agent-files`
+    row's confirm clause (#776). Both asked `validator_for` and
+    `pythonpath_unnamable` in the same words.
+    """
+    used, _, own_copy = validator_for(ctx, *gate)
+    if (not used.is_file()
+            or pythonpath_unnamable(ctx.shape, own_copy) is not None):
+        return used, own_copy, None
+    return used, own_copy, validator_command(
+        ctx.shape, used, own_copy, ["--root", str(ctx.root)])
+
+
 def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
     """`(the line, why it is the line)` for what NO checkout cures: the
     lockstep gate, built the way the `pins` and `family` rows build their
@@ -6264,12 +6286,9 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
     where HEAD no longer holds it. Its `why` says to run the gate once the
     file is back, and the sentence above follows it.
     """
-    used, _, own_copy = validator_for(ctx, *gate)
-    if (not used.is_file()
-            or pythonpath_unnamable(ctx.shape, own_copy) is not None):
+    used, own_copy, command = gate_line(ctx, gate)
+    if command is None:
         return None, None
-    command = validator_command(ctx.shape, used, own_copy,
-                                ["--root", str(ctx.root)])
     said = (f"no submodule update cures a {noun} whose gitlink "
             "or pin is missing or disagrees, or a mount git cannot "
             f"read a HEAD in. {used.name} prints what it finds and "
@@ -9199,6 +9218,46 @@ def pinned_paths(root: Path) -> set:
 LABEL_AGENT_FILES = "agent files"
 
 
+def confirm_digest(ctx: Context) -> str:
+    """The end of the `agent-files` WHY for a pinned copy that is gone: what
+    confirms its digest once it is back (#776).
+
+    THE GATE IS THE ROOT KIND'S, as the validator rows have it: an assembly
+    root's `validate-pins.py` (`PINS_GATE`), a family holder's
+    `validate-family.py` (`FAMILY_GATE`), the root's own copy else the
+    standard's template copy, named as the validator rows name it
+    (`gate_line`). The row runs in both kinds of root, and a holder has no
+    `validate-pins.py`: the assembly-root gate refuses there with a remedy
+    that names a file the holder lacks.
+
+    The sentence used to name the assembly root's own copy whether or not the
+    root had one, and where the root has lost the `scripts/repo_shape.py`
+    that copy imports from beside itself it died on `ModuleNotFoundError` and
+    exited 1, as the validator row says. So there the sentence is #737's: put
+    the file back first, with the cure `lost_repo_shape_cure` gives that row,
+    or, where HEAD does not hold it, why no command does, and the gate after.
+    Where the template copy is named because the root has none of its own, it
+    also reports that missing copy where the pin has a row for it, and exits
+    1, which the sentence says. Where no line can be named (`gate_line`)
+    nothing is said of a gate. Everywhere else it is, byte for byte, what it
+    was.
+    """
+    gate = FAMILY_GATE if ctx.kind == FAMILY else PINS_GATE
+    used, own_copy, command = gate_line(ctx, gate)
+    if command is None:
+        return ""
+    if own_copy and not imports_repo_shape(ctx.shape, used, own_copy):
+        cure, why = lost_repo_shape_cure(
+            ctx, gate[0], repo_shape_for(ctx.shape, used, own_copy), command,
+            again=False, purpose=", to confirm the digest")
+        return ". " + (f"First `{cure}`: {why}" if cure else why)
+    said = f", then `{command}` to confirm the digest"
+    if not own_copy and gate[0] in pinned_paths(ctx.root):
+        said += (f". Until {gate[0]} is back that exits 1, reporting the "
+                 "file as pinned but absent")
+    return said
+
+
 def check_agent_files(ctx: Context) -> Row:
     present = {name: (ctx.root / name).is_file() for name in AGENT_FILES}
     absent = [name for name, there in present.items() if not there]
@@ -9223,10 +9282,8 @@ def check_agent_files(ctx: Context) -> Row:
                f"{quote_arg(first)}")
         why = ("the pin has a "
                "`files:` row for it, so it was deleted rather than never "
-               "copied; restore it from this repository's own history, then "
-               f"`{PYTHON} "
-               f"{quote_arg(ctx.root / 'scripts' / 'validate-pins.py')} "
-               f"--root {quote_arg(ctx.root)}` to confirm the digest")
+               "copied; restore it from this repository's own history"
+               + confirm_digest(ctx))
     elif "AGENTS-shape.md" in absent:
         fix = (f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} "
                f"check --root {quote_arg(ctx.root)} --upstream "
