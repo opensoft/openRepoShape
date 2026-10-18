@@ -27,7 +27,9 @@ why the verdict is offline: no clone, no authenticated call, and the same
 answer on a machine that has never spoken to github.com. A partial clone
 (`git clone --filter`) fetches what it lacks on a read, so it is asked first,
 without fetching, whether it holds what the comparison reads, and the verdict
-is CANNOT ANSWER where it does not (#683). It runs the project's
+is CANNOT ANSWER where it does not (#683). Every git it starts runs with
+`GIT_NO_LAZY_FETCH=1`, so a read nothing asked about first fails rather than
+fetches (`lazy_fetch_off`, #787). It runs the project's
 own validators OFFLINE: `run_validator` starts each child with no token, no
 `gh` configuration and a proxy that goes nowhere (#297), so they are offline
 whatever their own contract says. ONE ROW IS THE EXCEPTION AND IT IS NAMED:
@@ -346,6 +348,7 @@ shows it as itself where the output can and with `?` where it cannot
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import errno
 import importlib.util
@@ -4466,6 +4469,17 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    whose parent holds the OLD pin -- is still the one to put
                    back, and the `why` says what comes after it:
                    `gitlink_left_behind` (#547).
+      partial      the reads above found no pin to put back, and the root
+                   is a partial clone (`git clone --filter`) that lacks a
+                   pin or a tree they read, HEAD's included
+                   (`history_left_out`, #787). This doctor fetches nothing,
+                   so those reads failed, and what puts the pin back, a
+                   commit or HEAD's own pin, cannot be read here. `fetch
+                   --refetch --no-filter` from the first promisor remote
+                   puts in every object on its branches, and the doctor run
+                   again reads the whole history; the `why` spells out that
+                   fetch from each other promisor remote
+                   (`partial_history_why`).
       none         nothing above: no history, a root commit, no git, a walk
                    that meets a parent holding no pin, or goes
                    `PIN_HISTORY_DEPTH` commits back, before a pin that reads.
@@ -4701,6 +4715,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
             f"broke it, and the newest {what} in its history that reads. "
             f"Commit that rather than editing the {what}"
             + gitlink_left_behind(ctx, before, pin))
+    remotes = history_left_out(root, pin)
+    if remotes:
+        return "partial", refetch_of(git_c, remotes[0]), partial_history_why(
+            git_c, what, remotes)
     return "none", None, None
 
 
@@ -5854,6 +5872,78 @@ def remotes_holding(shape: Path, remotes: list, commit: str) -> list:
             if git_answer(["for-each-ref", "--count=1",
                            "--format=%(refname)", f"--contains={commit}",
                            f"refs/remotes/{name}/"], shape)]
+
+
+def refetch_of(git_c: str, remote: str) -> str:
+    """The fetch of every object on `remote`'s branches into the root
+    `git_c` names, whatever its `partialclonefilter` (#787)."""
+    return f"{git_c} fetch --refetch --no-filter {quote_arg(remote)}"
+
+
+def partial_history_why(git_c: str, what: str, remotes: list) -> str:
+    """`pin_restore`'s `why` for `partial` (#787): the root's partial clone
+    lacks the history of its `what`, the NEXT fetches the first of
+    `remotes`, and the same fetch from each other one is spelled out.
+
+    HISTORY, HEAD'S INCLUDED, AND NOT "THE COMMIT THAT BROKE IT" (RV-f on
+    #791). Where HEAD was moved without a checkout (`reset --soft`), the
+    pin HEAD holds is a blob the clone lacks too, and the doctor run after
+    the fetch answers `uncommitted`, which no commit broke.
+
+    EVERY PROMISOR REMOTE, EACH A LINE TO PASTE. The NEXT fetches the first
+    one's branches, the one git's own lazy fetch asks first. Where the
+    history lacked is on another remote's alone, or on a branch forced
+    away from the first, that fetch puts in nothing it needs and the row
+    comes back the same, so the `why` names the fetch from each other one.
+    """
+    first, *others = remotes
+    said = (f"this root is a partial clone, and the {what}'s history, "
+            "HEAD's included, is not all in this clone: git fetches what a "
+            "partial clone lacks on a read, which this doctor never does, "
+            f"so what puts the {what} back cannot be read here. This "
+            f"fetches every object on {first}'s branches (--refetch needs "
+            "git 2.36 or later)")
+    if others:
+        said += (f"; where {first}'s branches do not hold it, the same "
+                 "from " + ", or from ".join(
+                     f"{name}: `{refetch_of(git_c, name)}`"
+                     for name in others))
+    return (said + "; then run this doctor again, which names what puts "
+            f"the {what} back")
+
+
+def history_left_out(root: Path, pin: str) -> list:
+    """The promisor remotes of `root`, in the order git asks them, where
+    `root` is a partial clone that lacks an object `pin_restore`'s walk of
+    `pin`'s history reads, asked without fetching; empty where it lacks
+    none, or is no partial clone (#787).
+
+    THE WALK'S READS FAIL THERE, AND THE DOCTOR FETCHED THEM BEFORE.
+    Measured on #787 with git 2.43: a `--filter=blob:none` clone of a root
+    whose HEAD commit broke its pin made one lazy fetch, of the pin before
+    it, and a `--filter=tree:0` one two. With `GIT_NO_LAZY_FETCH` set
+    (`lazy_fetch_off`) each read fails instead, and the walk, which reads a
+    failure as "no pin there", said "none": no commit in this root holds a
+    pin to put back, which is not so.
+
+    `rev-list --objects --missing=print` over the commits that touched
+    `pin`, one more than the walk reads, lists the pin at each and the
+    trees down to it, and prints `?<id>` for each the clone does not hold,
+    without fetching (`objects_lacking` says why). Where the clone lacks a
+    tree, as a `tree:0` one does, it cannot tell which commits touched the
+    pin and fails, as the walk's own `rev-list` does: that is lacking too.
+    A root with no HEAD has no history to walk, and is not asked.
+    """
+    remotes = promisor_remotes(root)
+    if not remotes or head_of(root) is None:
+        return []
+    listed = git_answer(["rev-list", "--objects", "--missing=print", "-n",
+                         str(PIN_HISTORY_DEPTH + 1), "HEAD", "--", pin],
+                        root, binary=True)
+    if listed is not None and not any(
+            MISSING_OBJECT.fullmatch(line) for line in listed.split(b"\n")):
+        return []
+    return remotes
 
 
 def check_shape_currency(ctx: Context) -> Row:
@@ -11435,6 +11525,59 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: The variable git reads to leave out the fetch a partial clone makes for
+#: an object it lacks (#787).
+NO_LAZY_FETCH = "GIT_NO_LAZY_FETCH"
+
+
+@contextlib.contextmanager
+def lazy_fetch_off():
+    """This process's environment with `GIT_NO_LAZY_FETCH=1` for as long as
+    it runs, and as it was afterwards (#787).
+
+    "IT NEVER FETCHES", BY CONSTRUCTION. A partial clone (`git clone
+    --filter`) fetches an object it lacks from a promisor remote on any read
+    that needs one, so the promise held read by read: #683 and #754 ask
+    `rev-list --missing=print`, which never fetches, before anything reads
+    a partial clone of the standard, and never ask `for-each-ref --contains`
+    of a commit the clone does not hold. A read added to a row later, or one
+    in a project's own partial clone, need not ask first. With the variable
+    set, git fails that read instead of fetching: `warning: lazy fetching
+    disabled; some objects may not be available`, then the read's own error
+    (measured with git 2.43: exit 128, and no `fetch` in a trace2 log). That
+    is a read that failed, as one does where the clone's remote is out of
+    reach, and every reader here already answers one: `git_answer`'s None,
+    `git_out`'s `git-failed`, `update-shape.py`'s
+    `update-upstream-unreadable`.
+
+    EVERY GIT THIS PROCESS STARTS, AND NOTHING IT PRINTS. The doctor's own
+    reads (`git_out`, `git_answer` and its few `subprocess.run` of git),
+    `update-shape.py`'s `Upstream` as `check_shape_currency` drives it in
+    this process, the validators `run_validator` starts with a copy of this
+    environment, and every git each of those starts, inherit it. A NEXT the
+    doctor prints is text for a person's own shell, which does not have it,
+    so a `fetch --refetch` printed there fetches. The environment is put
+    back on the way out, for a caller that runs `main` in its own process.
+
+    WHICH GIT HONOURS IT. git 2.45.0 and later, and the security releases of
+    2024-05-14 back to 2.39.4 (2.39.4, 2.40.2, 2.41.1, 2.42.2, 2.43.4,
+    2.44.1), whose fix for CVE-2024-32465 made `promisor-remote.c` read it;
+    distributions carry that fix too (Ubuntu's 2.43.0-1ubuntu7.1 and later).
+    An older git ignores the variable, harmlessly, and there the guards
+    above are what keep the doctor from fetching, as before.
+    """
+    before = os.environ.get(NO_LAZY_FETCH)
+    os.environ[NO_LAZY_FETCH] = "1"
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop(NO_LAZY_FETCH, None)
+        else:
+            os.environ[NO_LAZY_FETCH] = before
+
+
+@lazy_fetch_off()
 def main(argv: list[str] | None = None) -> int:
     # FIRST, so that every `print` after it -- `--help` included -- escapes
     # a name stdout cannot encode rather than raising on it (#214).
