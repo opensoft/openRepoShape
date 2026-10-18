@@ -855,10 +855,11 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
 #: file (`update-shape.py apply --accept-local`), which has none of them,
 #: and `make park` would then end in an `ImportError` before it ran in any
 #: member. `tests/test_family_member_make_jobserver.py` holds the two files
-#: to one answer.
+#: to one answer. A word is split as make splits it: only at a space or a
+#: tab, a backslash keeping either in a value.
 JOBSERVER_WORD = re.compile(r"--jobserver-(?:auth|fds)=.*", re.DOTALL)
 JOBS_WORD = re.compile(r"-j[0-9]*|--jobserver-(?:auth|fds)=.*", re.DOTALL)
-MAKEFLAGS_WORD = re.compile(r"(?:\\.|\S)+", re.DOTALL)
+MAKEFLAGS_WORD = re.compile(r"(?:\\.|[^ \t])+", re.DOTALL)
 
 
 def member_make_env() -> dict[str, str]:

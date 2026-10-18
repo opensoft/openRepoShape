@@ -127,9 +127,10 @@ def read(trace: Path) -> list[str]:
     return trace.read_text(encoding="utf-8").splitlines()
 
 
-#: A word of `MAKEFLAGS` as make writes it: a backslash keeps the character
-#: after it, a blank included, in the word.
-WORD = re.compile(r"(?:\\.|\S)+")
+#: A word of `MAKEFLAGS` as make reads it: split only at a space or a tab,
+#: and a backslash keeps the character after it, either of those
+#: included, in the word.
+WORD = re.compile(r"(?:\\.|[^ \t])+", re.DOTALL)
 
 
 def jobs_words(flags: str) -> list[str]:
@@ -202,7 +203,10 @@ def test_a_member_s_make_keeps_every_other_flag_and_a_plain_run_is_as_it_was(
 #: descriptors (measured, 4.3); 4.4 a named pipe, `fifo:<path>`; make before
 #: 4.2, macOS's 3.81 among them, `--jobserver-fds` and a bare `-j`; and make
 #: on Windows a semaphore's name. The last three are read from make's
-#: documentation, not run.
+#: documentation, not run. And 4.3's with `-j16`, and with a value that
+#: holds a no-break space (U+00A0), a narrow one (U+202F) or a newline:
+#: make splits only at a space or a tab, and passes each of those three
+#: through raw (measured), so each stays inside its word.
 TAKEN_OUT = {
     "4.3": (" -j2 --jobserver-auth=3,4", ""),
     "4.3-k-s-variables": (r"ks -j2 --jobserver-auth=3,4 -- B=a\ b F=x",
@@ -215,6 +219,14 @@ TAKEN_OUT = {
     "3.81": (" --jobserver-fds=3,4 -j", ""),
     "3.81-k": ("k --jobserver-fds=3,4 -j", "k"),
     "windows": (" -j2 --jobserver-auth=gmake_semaphore_1234", ""),
+    "4.3-j16-k": ("k -j16 --jobserver-auth=3,4", "k"),
+    "4.3-no-break-space": (
+        " -j2 --jobserver-auth=3,4 -- NOTE=x\u00a0EXTRA=injected",
+        "-- NOTE=x\u00a0EXTRA=injected"),
+    "4.3-narrow-no-break-space": (" -j2 --jobserver-auth=3,4 -- NOTE=x\u202f!",
+                                  "-- NOTE=x\u202f!"),
+    "4.3-newline": (" -j2 --jobserver-auth=3,4 -- NOTE=x\nEXTRA=injected",
+                    "-- NOTE=x\nEXTRA=injected"),
 }
 #: `MAKEFLAGS` that names no jobserver, left exactly as it is: no flags,
 #: `make -j` with no number (which starts no jobserver), a person's own
@@ -270,3 +282,19 @@ def test_each_script_leaves_a_makeflags_that_names_no_jobserver(
         monkeypatch.setenv("MAKEFLAGS", flags)
 
     assert scripts[script].member_make_env() == dict(os.environ)
+
+
+@pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
+def test_each_script_hands_back_a_copy_and_leaves_its_own_environment(
+        scripts, monkeypatch, script):
+    """The environment a member's make gets is a copy: this run's own
+    `MAKEFLAGS`, which names a jobserver here, is as it was after the
+    call, and the copy is a plain `dict`, not `os.environ`."""
+    monkeypatch.setenv("MAKEFLAGS", " -j2 --jobserver-auth=3,4")
+    before = dict(os.environ)
+
+    env = scripts[script].member_make_env()
+
+    assert type(env) is dict
+    assert env["MAKEFLAGS"] == ""
+    assert dict(os.environ) == before

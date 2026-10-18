@@ -1186,9 +1186,11 @@ JOBSERVER_WORD = re.compile(r"--jobserver-(?:auth|fds)=.*", re.DOTALL)
 #: word, and the jobs that come with it, `-j2`, or the bare `-j` a make
 #: before 4.2 writes beside `--jobserver-fds`.
 JOBS_WORD = re.compile(r"-j[0-9]*|--jobserver-(?:auth|fds)=.*", re.DOTALL)
-#: A word of `MAKEFLAGS` as make splits it: a backslash keeps the character
-#: after it in the word, a blank included (`ARGS=a\ -j2` is one word).
-MAKEFLAGS_WORD = re.compile(r"(?:\\.|\S)+", re.DOTALL)
+#: A word of `MAKEFLAGS` as make splits it: only at a space or a tab, and
+#: a backslash keeps the character after it in the word, a space or a tab
+#: included (`ARGS=a\ -j2` is one word). Any other character, a newline
+#: or a no-break space among them, is part of its word, as make reads it.
+MAKEFLAGS_WORD = re.compile(r"(?:\\.|[^ \t])+", re.DOTALL)
 
 
 def member_make_env() -> dict[str, str]:
@@ -1196,9 +1198,11 @@ def member_make_env() -> dict[str, str]:
     jobserver of the make above this run, where it names one, and without
     the `-j` that comes with it (`JOBS_WORD`, #888). Every other word is
     kept, `-k`, `-s` and a variable given on the holder's command line
-    among them. A `MAKEFLAGS` that names no jobserver is left as it is:
-    `make -j` with no number, which starts none, or a person's own
-    `MAKEFLAGS=-j8` with no make above this run.
+    among them, each word as make splits it: only at a space or a tab,
+    a backslash keeping either in a value (`MAKEFLAGS_WORD`). A
+    `MAKEFLAGS` that names no jobserver is left as it is: `make -j` with
+    no number, which starts none, or a person's own `MAKEFLAGS=-j8` with
+    no make above this run.
 
     WHY. Under the holder's `make -j2 bootstrap`, `validate`, `park` or
     `resume`, a member's make found `-j2 --jobserver-auth=3,4` in the
