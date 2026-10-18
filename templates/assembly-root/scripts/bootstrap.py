@@ -47,7 +47,14 @@ WHAT IT DOES, in order:
       run bootstrap under a UTF-8 locale, and where git refuses it there
       too, the line gives git's words. Every name git prints back is read
       as bytes and decoded so that it reaches git again as the bytes it
-      was (#710). Advancing a pin
+      was (#710). The commands it prints for a person to paste (the
+      `merge --ff-only` that brings a moved-back branch forward, and the
+      `--continue` and `--abort` of an operation in progress) name the
+      leg's path and the upstream as ONE shell word each: quoted, and,
+      where the name holds a byte that is not UTF-8 or a character a
+      terminal must not be handed, a `printf` that prints its bytes
+      again, so a paste names what is on disk and not its escape (#932).
+      Advancing a pin
       remains an explicit commit in this repository — see `README.md`, "The
       lockstep invariant". This is why `.gitmodules` carries no `branch=`:
       that would buy the same ergonomics by weakening the pin, and then "what
@@ -519,6 +526,12 @@ def _stays_for_an_operation(root: Path, sub: Path, where: str,
 #: space (#715): git takes the name, and no person can tell it from the name
 #: without it, so `_say_not_tried` gives it a line of its own.
 UNSEEN = "a character that does not print or is white space"
+#: The bytes `_paste_word` writes as themselves inside a `printf` format: the
+#: characters a path or a ref name is made of. `%` is the format's own and the
+#: backslash is its escape, so each is an octal escape here, as is every
+#: other byte: a space, a quote, a control and each byte above 0x7f.
+PRINTF_BARE = frozenset(
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./:@+=,-")
 
 
 def _argument_fault(branch: str) -> str | None:
@@ -979,12 +992,78 @@ def _sequence_in_progress(gitdir: Path) -> tuple[str, str, str] | None:
     return SEQUENCER_TODO, "a cherry-pick", "cherry-pick"
 
 
+def _prints_as_it_is(text: str) -> bool:
+    """Whether `print` writes `text` as it is (#932): `spelled` has no
+    escape to make in it, and this stdout holds every character of it, so
+    what the terminal shows is the text and a paste of it names the same."""
+    try:
+        text.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+    except (LookupError, UnicodeEncodeError):
+        return False
+    return spelled(text) == text
+
+
+def _paste_word(name: str) -> str:
+    """`name`, a leg's path or a ref's name, as ONE word of a command line
+    printed for a person to paste into a POSIX shell (#932).
+
+    WHERE THE TEXT PRINTS AS IT IS it is `spelled(shlex.quote(name))`, as
+    every such word was: an ordinary name, and a printable one that is not
+    ASCII, are byte for byte what they were (`_prints_as_it_is`).
+
+    WHAT WAS WRONG. `spelled` writes what a terminal must not be handed as
+    an escape (#391), and a shell reads that text as the characters it is.
+    POSIX spells a byte that is not UTF-8 with U+DC80 to U+DCFF, so an
+    upstream `origin/a<0xff>b` was printed `git -C spec merge --ff-only
+    'origin/a\\udcffb'`: pasted, it named no ref, and git said `not
+    something we can merge`. A path with a tab, an ESC or a U+2028 in it, or
+    one this stdout cannot write, was printed as its escape too.
+
+    ANY OTHER NAME is written as the bytes `os.fsencode` gives it, in a
+    command substitution that prints them again:
+    `"$(printf -- 'origin/a\\377b')"`. Each byte outside `PRINTF_BARE` is a
+    three-digit octal escape, which the `printf` of dash, bash and zsh
+    reads, and a dash before 0.5.13 has no `$'...'` for. `--` keeps a name
+    that begins with `-` from being read as an option, and the double
+    quotes keep the result ONE word, unsplit and unglobbed. The word is
+    ASCII, so it is the same on any stdout. It is `sh`'s dialect, as
+    `shlex.quote` already was.
+
+    A NAME WITH NO SUCH FORM keeps `spelled`'s text, as it was: one whose
+    bytes do not read back as it (`os.fsdecode` of them is another name: a
+    lone surrogate with no byte, or a Windows code page that replaces), and
+    one that ENDS IN A LINE FEED, which `$(...)` strips, so the word would
+    name another path. A ref's name is neither: git refuses a control
+    character in one, and `_try_git` reads its bytes back. So it is a leg's
+    path, and one with no bytes is no directory a leg is moved in; a path
+    that ends in a line feed, which only a hand-made manifest holds, is the
+    one name left with no pasteable word.
+
+    A COPY, as `inherited_child_environment` is: a root re-copies its pinned
+    files one row at a time, so this file may meet a `repo_shape.py` older
+    than itself, and imports nothing new from it (#370, #610).
+    `tests/test_bootstrap_pasteable_lines.py` runs each form it writes.
+    """
+    quoted = shlex.quote(name)
+    if _prints_as_it_is(quoted):
+        return quoted
+    try:
+        raw = os.fsencode(name)
+    except UnicodeEncodeError:
+        return spelled(quoted)
+    if os.fsdecode(raw) != name or raw.endswith(b"\n"):
+        return spelled(quoted)
+    escaped = "".join(chr(byte) if byte in PRINTF_BARE else f"\\{byte:03o}"
+                      for byte in raw)
+    return f"\"$(printf -- '{escaped}')\""
+
+
 def _say_in_progress(label: str, path: str, row: tuple[str, str, str],
                      held: str) -> None:
     """A leg with an operation in progress (#704): what is in progress,
     where git holds its marker (`held`, #764), that nothing moved, and the
-    two commands that end it, the leg's path shell-quoted, then spelled, as
-    `move_back_to_pin` prints its command.
+    two commands that end it, the leg's path worded by `_paste_word` as
+    `move_back_to_pin` words its command (#932).
 
     No move is made from here. A checkout of the tracking branch, even from
     HEAD on it already or detached at the pin, ends a merge, a cherry-pick
@@ -996,7 +1075,7 @@ def _say_in_progress(label: str, path: str, row: tuple[str, str, str],
     others. It is the operation's own to finish or abort, so every such leg
     is refused alike, before any path of step (a) is chosen."""
     marker, doing, verb = row
-    command = f"git -C {spelled(shlex.quote(path))} {verb}"
+    command = f"git -C {_paste_word(path)} {verb}"
     print(f"  {label}: {doing} is in progress in the leg ({marker} is in its "
           f"{held}), so nothing moved")
     print(f"          finish it (`{command} --continue`) or abort it "
@@ -1151,8 +1230,12 @@ def move_back_to_pin(sub: Path, label: str, path: str, branch: str,
     line printed says where those commits are and names the command that
     brings the branch forward, which is the person's to run: what this
     project records is the pin. The command's leg path and upstream are
-    shell-quoted, then spelled, as `scripts/family.py` quotes the commands
-    it prints.
+    each one `_paste_word`: shell-quoted, as `scripts/family.py` quotes the
+    commands it prints, and spelled where that leaves the name a shell
+    reads back. A name it does not (a byte that is not UTF-8, a control
+    character) is a `printf` that prints its bytes, which the shell turns
+    back into the name (#932). The upstream the line names for a person to
+    read stays spelled, as every printed name is (#391).
 
     "Nothing is lost" holds at the last fetch. A commit the branch held
     that the remote has since DROPPED, by a force-push to the leg's shared
@@ -1176,9 +1259,8 @@ def move_back_to_pin(sub: Path, label: str, path: str, branch: str,
         return
     print(f"  {label}: branch {named} moved back {_short(local)} -> "
           f"{_short(pin)}, the pin; nothing is lost, {held} still holds "
-          f"those commits, and `git -C {spelled(shlex.quote(path))} merge "
-          f"--ff-only {spelled(shlex.quote(short))}` brings the branch "
-          "forward")
+          f"those commits, and `git -C {_paste_word(path)} merge "
+          f"--ff-only {_paste_word(short)}` brings the branch forward")
     _say_after(why)
 
 
