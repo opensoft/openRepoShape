@@ -25,16 +25,19 @@ WHY THE PROBES ARE ANSWERED RATHER THAN REFUSED. They are how the machine row
 and the installed command learn whether `gh` is there and logged in, and
 nothing else. Answered as "present, not logged in" -- the state of a CI
 runner, which exports no token -- the row is exercised by every doctor test,
-says the same thing on every machine, and needs no flag in the doctor to
-leave it out; a logged-in operator gets the output CI gets. "Not logged in"
-also stops the preflight short of `gh api user`, its one call that would
-fetch something. Refused, every doctor test would fail at teardown on calls
-the row is designed to make. The answers are EXACTLY what the two callers
-parse and no more: `program_version` (`setup-project.py`) reads the third
-word of the first line of `gh --version`, and `_check_gh` there and
-`machine_report` in `openRepoShape` read only the exit status of `gh auth
-status`. Any other argv -- `gh version`, `gh auth status --hostname x` -- is
-not a probe and is refused.
+says the same thing on every machine off Windows, and needs no flag in the
+doctor to leave it out; there a logged-in operator gets the output CI gets. On
+Windows the preflight's bare `gh` skips the guard's `gh.cmd`
+(`tests/conftest.py`), so a doctor run there asks a real `gh.exe` where one is
+installed, and the row reports what that `gh` says. "Not logged in" also stops
+the preflight short of `gh api user`, its one call that would fetch something.
+Refused, every doctor test would fail at teardown on calls the row is designed
+to make. The answers are EXACTLY what the two callers parse and no more:
+`program_version` (`setup-project.py`) reads the third word of the first line
+of `gh --version`, and `_check_gh` there and `machine_report` in
+`openRepoShape` read only the exit status of `gh auth status`. Any other argv
+-- `gh version`, `gh auth status --hostname x` -- is not a probe and is
+refused.
 
 ONE MORE CALL IS ANSWERED (#798): `gh repo view <owner>/<name> --json
 nameWithOwner`, which `adopt-project.py check` asks of each leg repository it
