@@ -1265,6 +1265,19 @@ def tree_digest_from_gh(repository: str, commit: str) -> str:
     also fails, always catches this rather than letting it reach a user
     directly: an unanswerable neutral-product pin is a gap in the check, not
     a reason to fail a project that only lacks a `gh` login.
+
+    `gh-unreadable`'S TWO UNTRUSTED PARTS ARE SPELLED (#919), as `git_out`
+    spells its own (#610), because a root's `validate-pins.py` prints the
+    detail inside its `skip` line. The repository is the pin's
+    `source_repository`, named with `shown_path`: as it is, unless a
+    character in it is not printable. What `gh` printed is `spelled`, as ONE
+    line: it was put in raw, so an ESC in it reached the terminal as the
+    control it is and each line break began a line of the skip that the
+    validator never printed. `gh`'s not-logged-in help is two lines (four
+    under `GITHUB_ACTIONS`), and the break between them is an escape here,
+    as a break git prints is in `git_out`. The stderr is read in text mode,
+    so a carriage return is a line break by then. Printable text, UTF-8
+    included, is unchanged.
     """
     try:
         proc = subprocess.run(
@@ -1279,8 +1292,8 @@ def tree_digest_from_gh(repository: str, commit: str) -> str:
     if proc.returncode != 0:
         raise Refusal(
             "gh-unreadable",
-            f"`gh api` could not read {repository} @ {commit}: "
-            f"{proc.stderr.strip()}",
+            f"`gh api` could not read {shown_path(repository)} @ {commit}: "
+            f"{spelled(proc.stderr.strip())}",
         )
     try:
         payload = json.loads(proc.stdout)
@@ -3296,11 +3309,22 @@ def link_pins_from_trees(links, root: Path | None = None,
 
 
 def find_repo_root(start: Path) -> Path:
+    """The nearest directory at or above `start` that holds a `.git`, or
+    `not-a-git-repo` naming `start`.
+
+    `start` IS NAMED AS `shown_path` NAMES A PATH (#919): as it is, unless a
+    character in it is not printable, and then as Python's `repr` spells
+    it. It is a `--root` as a person typed it, and printed raw, an ESC in it
+    reached the terminal as the control it is from every tool that asks
+    this, and a line break began a line of its choosing. A printable path
+    is named byte for byte as it always was.
+    """
     path = Path(start).resolve()
     for candidate in [path, *path.parents]:
         if (candidate / ".git").exists():
             return candidate
-    raise Refusal("not-a-git-repo", f"no .git found at or above {start}")
+    raise Refusal("not-a-git-repo",
+                  f"no .git found at or above {shown_path(start)}")
 
 
 def die(exc: Refusal, stream=sys.stderr) -> int:

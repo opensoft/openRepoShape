@@ -318,6 +318,15 @@ FILES_READ = ("each leg's pin, the shape pin, each neutral-product pin, "
               "project.yaml and every copy the shape pin lists")
 
 
+def _remedy(advice: str, reads: str = FILES_READ) -> str:
+    """The remedy of a refusal of a file this validator must read and
+    cannot (#712, #919): what it reads (`reads`), that one it cannot read is
+    never a pass, `advice` for the cause, and `RUN_AGAIN`."""
+    return (f"Remediation: this validator reads {reads}, and one it cannot "
+            "read is a question it cannot answer, never a pass. " + advice
+            + RUN_AGAIN)
+
+
 def _unreadable_file(code: str, named: str, exc: OSError,
                      reads: str = FILES_READ) -> Refusal:
     """The refusal for a pin, the manifest or a pinned shape copy that this
@@ -342,10 +351,7 @@ def _unreadable_file(code: str, named: str, exc: OSError,
         "on a file, `chmod u+rx` on a directory (and on every directory above "
         "it inside the root), or fix who owns it. "
         if isinstance(exc, PermissionError) else OTHER_REASON)
-    return Refusal(
-        code, _cannot_read(named, exc),
-        f"Remediation: this validator reads {reads}, and one it cannot read "
-        "is a question it cannot answer, never a pass. " + advice + RUN_AGAIN)
+    return Refusal(code, _cannot_read(named, exc), _remedy(advice, reads))
 
 
 def _is_file(root: Path, path: Path, code: str = "yaml-unreadable",
@@ -360,7 +366,8 @@ def _is_file(root: Path, path: Path, code: str = "yaml-unreadable",
     `PermissionError` traceback, exit 1; on 3.14 it answered False, and the
     run refused `pin-missing`, a present file said not to exist, under the
     lockstep remedy. A name the operating system cannot take at all (a NUL
-    in a role or a product) is no file, as `is_file()` answered it."""
+    in a role or a product) is no file, as `is_file()` answered it. Where
+    this is False, each caller asks `_not_a_file` what stands there (#919)."""
     try:
         return _is_a(path, stat.S_ISREG)
     except OSError as exc:
@@ -385,6 +392,116 @@ def _is_there(path: Path) -> bool:
         return _is_a(path, lambda _mode: True)
     except ValueError:
         return False
+
+
+def _gitfile_opens(path: Path) -> bool:
+    """Whether a leg's `.git` that is a regular file, a gitfile, can be
+    opened (#919), asked as `_is_a` asks a `stat`: False where nothing is
+    there to open (`_ABSENT_ERRNOS`, `_ABSENT_WINERRORS`), the `OSError` of
+    an open the operating system REFUSED raised, and True for a `.git` that
+    is no regular file, a checkout's own directory, which git reads itself.
+
+    A GITFILE AT MODE 000 STATS, so `_is_there` read the leg as a checkout:
+    git could not read where the leg's objects are, and the run ended in
+    `pin-commit-unresolvable` under THE LOCKSTEP RULE, which says the
+    pinned commit is missing (RV827's N6). Only a regular file is opened,
+    since the open of a FIFO waits for a writer."""
+    if not _is_a(path, stat.S_ISREG):
+        return True
+    try:
+        path.open("rb").close()
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    return True
+
+
+#: What a `stat` mode that is no regular file names (#919), as the line
+#: about the file whose place it takes says it. A device is either kind.
+_NOT_A_FILE_KINDS = (
+    (stat.S_ISDIR, "a directory"), (stat.S_ISFIFO, "a FIFO"),
+    (stat.S_ISSOCK, "a socket"), (stat.S_ISCHR, "a device"),
+    (stat.S_ISBLK, "a device"))
+
+
+def _named_kind(mode: int, link: str = "") -> str | None:
+    """`is <link><kind>, not a file` for a `mode` that is no regular file,
+    `is not a file` where `_NOT_A_FILE_KINDS` has no name for it, and None
+    for a regular file, which stands in no file's place."""
+    if stat.S_ISREG(mode):
+        return None
+    kind = next((name for test, name in _NOT_A_FILE_KINDS if test(mode)),
+                None)
+    return f"is {link}{kind}, not a file" if kind else "is not a file"
+
+
+def _not_a_file(path: Path) -> str | None:
+    """What stands at `path` where `_is_file` found no regular file there,
+    as the words after its name (#919): `is a directory, not a file`, `is a
+    FIFO, not a file`, `is a symlink to nothing, not a file`, `is a symlink
+    loop, not a file`, `is a symlink to a directory, not a file`, and the
+    same for a socket or a device. None where NOTHING is there (`lstat`
+    finds no entry at the name, or the system cannot take the name at all),
+    whose refusal keeps the words it always had.
+
+    WHAT IS THERE WAS CALLED ABSENT: `_is_file` asks `stat`, which answers
+    "not a regular file" for a directory or a FIFO and "nothing there" for a
+    symlink that leads nowhere or to itself, so each was refused under "does
+    not exist" and given a remedy that moves a pin, and a shape copy so
+    replaced was "pinned but absent". `lstat` asks about the name itself.
+    It runs only after `stat` answered, inside the guard, and opens nothing.
+    """
+    try:
+        mode = path.lstat().st_mode
+    except (OSError, ValueError):
+        return None
+    if not stat.S_ISLNK(mode):
+        return _named_kind(mode)
+    try:
+        return _named_kind(path.stat().st_mode, "a symlink to ")
+    except OSError as exc:
+        loop = (exc.errno == errno.ELOOP
+                or getattr(exc, "winerror", None) == 1921)
+        return ("is a symlink loop, not a file" if loop
+                else "is a symlink to nothing, not a file")
+
+
+#: What a pin, the shape pin, a neutral-product pin or the manifest is told
+#: where something that is not a file stands in its place (#919), after
+#: `_remedy`'s first sentence. It is not the file moved or edited, so THE
+#: LOCKSTEP RULE, `git submodule update` and a re-scaffold do not put it
+#: right, and it may hold something nobody committed, so it is moved aside.
+NOT_A_FILE = (
+    "Something that is not a file stands in its place: move it aside, or "
+    "take it away if nobody wants it, and restore the file from the "
+    "project's history. ")
+
+#: The line under a `shape-copy-missing` finding for a copy whose place
+#: something that is not a file takes (#919), as `shape-copy-drift` has one.
+COPY_NOT_A_FILE = (
+    "A shape file's place is taken by something that is not a file. Move it "
+    "aside, or take it away if nobody wants it, and restore the copy from "
+    "the project's history.")
+
+
+def _no_file(code: str, path: Path, said: str, absent: str,
+             *remediation: str) -> Refusal:
+    """`code`'s refusal where `_is_file` found no regular file at `path`
+    (#919). `said` names the file. Where nothing is there it goes on with
+    `absent`, and `remediation` is the refusal's own, if it has one: the
+    words it always had, byte for byte. Where something that is not a file
+    stands there, `_not_a_file` says what, and the remedy is `NOT_A_FILE`'s.
+
+    A refusal that had no remedy of its own is built with none, as it
+    always was, and not with an empty one: beside a `repo_shape.py` older
+    than #370, `Refusal`'s own default is the lockstep remedy, and an empty
+    one would print a blank line where it stood (#370, #610)."""
+    what = _not_a_file(path)
+    if what is None:
+        return Refusal(code, said + absent, *remediation)
+    return Refusal(code, f"{said} {what}", _remedy(NOT_A_FILE))
 
 
 def _load(root: Path, path: Path):
@@ -518,7 +635,9 @@ def _load_leg_pin(root: Path, role, path: str, repository: str,
 
     A pin that cannot be reached or read is refused by name (#712): see
     `_is_file` and `_load`. Every name is spelled, the leg's role and
-    repository in the lines below as the pin's path is.
+    repository in the lines below as the pin's path is. Something that is
+    not a file in the pin's place is `pin-missing` naming what it is, with
+    a remedy of its own (#919): see `_no_file`.
     """
     pin_path = root / "contracts" / f"{role}-pin.yaml"
     # POSIX, on every platform: a finding names a path in THIS repository,
@@ -526,11 +645,10 @@ def _load_leg_pin(root: Path, role, path: str, repository: str,
     # a path the reader cannot paste back into git.
     rel = _named(root, pin_path)
     if not _is_file(root, pin_path):
-        raise Refusal(
-            "pin-missing",
+        raise _no_file(
+            "pin-missing", pin_path,
             f"leg {role!r} declares {_shown(repository)} at {path!r} but "
-            f"{rel} does not exist",
-        )
+            f"{rel}", " does not exist")
     pin = _load(root, pin_path)
     if not isinstance(pin, dict):
         raise Refusal("pin-unreadable", f"{rel}: not a mapping")
@@ -1008,15 +1126,17 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
     A CHECKOUT THIS USER CANNOT SEARCH IS REFUSED BY NAME (#712, after
     RV827's S1), `pin-submodule-unreadable`, naming its `.git`: the digest
     cannot be recomputed, and the leg is not uninitialized, which is what
-    Python 3.14's `exists()` would have said of it.
+    Python 3.14's `exists()` would have said of it. So is a `.git` gitfile
+    this user cannot open (#919): see `_gitfile_opens`.
     """
     submodule = root / path
     named = _shown(path)
+    dotgit = submodule / ".git"
     try:
-        initialized = _is_there(submodule / ".git")
+        initialized = _is_there(dotgit) and _gitfile_opens(dotgit)
     except OSError as exc:
         raise _unreadable_file(
-            "pin-submodule-unreadable", _named(root, submodule / ".git"), exc,
+            "pin-submodule-unreadable", _named(root, dotgit), exc,
             "each leg's checkout, to recompute its pinned tree digest from "
             "the leg's own objects") from exc
     if not initialized:
@@ -1128,12 +1248,13 @@ def _check_shape_pin_header(root: Path, manifest: dict, report: Report
     Named relative to the root in every line, the two refusals included,
     which named it absolute, and refused by name where it cannot be reached
     or read (#712). The two commits it compares are spelled: neither is
-    asked to be 40 hex before the finding that names both.
+    asked to be 40 hex before the finding that names both. Something that
+    is not a file in its place is named, with a remedy of its own (#919).
     """
     pin_path = root / "contracts" / "shape-pin.yaml"
     rel = _named(root, pin_path)
     if not _is_file(root, pin_path):
-        raise Refusal("shape-pin-missing", f"{rel} does not exist")
+        raise _no_file("shape-pin-missing", pin_path, rel, " does not exist")
     pin = _load(root, pin_path)
     if not isinstance(pin, dict):
         raise Refusal("shape-pin-unreadable", f"{rel}: not a mapping")
@@ -1161,6 +1282,13 @@ def _check_shape_copy(root: Path, row, rel: str, report: Report) -> None:
     is absent, empty or no string is `shape-pin-row`, as `update-shape.py`
     refuses it `update-pin-row`: its `path:` was read as a path, so a row
     with none was `None is pinned but absent` (#681).
+
+    SOMETHING THAT IS NOT A FILE IN THE COPY'S PLACE IS NAMED (#919): `<pin>:
+    <path> is pinned but is a directory, not a file` (`_not_a_file`), with
+    a line under it saying what to do, where it was `pinned but absent`. A
+    copy that is not there keeps those words byte for byte: `shape-doctor.py`
+    reads them to find a merged-away `shape/` copy, which only a path with
+    nothing at it can be (`update-shape.py`'s `merged_into`).
     """
     if not isinstance(row, dict):
         report.finding("shape-pin-row", f"{rel}: a files row is not a mapping")
@@ -1179,8 +1307,10 @@ def _check_shape_copy(root: Path, row, rel: str, report: Report) -> None:
     # spelled, as the pin spells them.
     named = _shown(path)
     if not _is_file(root, target, "shape-copy-unreadable", named):
-        report.finding("shape-copy-missing",
-                       f"{rel}: {named} is pinned but absent")
+        what = _not_a_file(target)
+        report.finding("shape-copy-missing", f"{rel}: {named} is pinned but "
+                       + ("absent" if what is None
+                          else f"{what}\n  {COPY_NOT_A_FILE}"))
         return
     try:
         actual = file_sha256(target)
@@ -1446,7 +1576,8 @@ def _check_neutral_pin_entry_and_load(root: Path, product, report: Report
     built from it was not, so `["\\x1b[31mRED"]` put an ESC on stderr inside
     `contracts/<ESC>[31mred-pin.yaml`, and in the remedy's `--pin`. The pin
     is named relative to the root in every line, and refused by name where
-    it cannot be reached or read.
+    it cannot be reached or read. Something that is not a file in its place
+    is named, with a remedy of its own (#919): see `_no_file`.
     """
     if not isinstance(product, str) or not product:
         report.finding(
@@ -1458,10 +1589,10 @@ def _check_neutral_pin_entry_and_load(root: Path, product, report: Report
     pin_path = root / "contracts" / f"{product.lower()}-pin.yaml"
     rel = _named(root, pin_path)
     if not _is_file(root, pin_path):
-        raise Refusal(
-            "neutral-pin-missing",
-            f"project.yaml declares a pin on {product!r} but {rel} does not "
-            "exist",
+        raise _no_file(
+            "neutral-pin-missing", pin_path,
+            f"project.yaml declares a pin on {product!r} but {rel}",
+            " does not exist",
             "Remediation: `scaffold-project.py --pin "
             f"{_shown(product)}@<commit>` writes that file. A declaration in "
             "project.yaml with no pin file beside it is a claim with no "
@@ -1765,6 +1896,8 @@ def _load_legs_to_check(root: Path, report: Report
     `project.yaml` is named relative to the root, as every file this
     validator names is, where three refusals named its absolute path raw,
     and it is refused by name where it cannot be reached or read (#712).
+    Something that is not a file in its place is `manifest-missing` naming
+    what it is, with a remedy of its own (#919): see `_no_file`.
 
     A `legs:` THAT IS NOT A LIST IS A FINDING, NOT THAT REFUSAL (#714), in
     `validate-manifest.py`'s words for it (`manifest-legs`), and no leg is
@@ -1785,12 +1918,11 @@ def _load_legs_to_check(root: Path, report: Report
     """
     manifest_path = root / "project.yaml"
     if not _is_file(root, manifest_path):
-        raise Refusal(
-            "manifest-missing",
-            "project.yaml does not exist, so there is no declaration of "
-            "which legs to check. A one-repository project has no legs and "
-            "does not run this validator.",
-        )
+        raise _no_file(
+            "manifest-missing", manifest_path, "project.yaml",
+            " does not exist, so there is no declaration of which legs to "
+            "check. A one-repository project has no legs and does not run "
+            "this validator.")
     manifest = _load(root, manifest_path)
     if not isinstance(manifest, dict):
         raise Refusal("manifest-unreadable", "project.yaml: not a mapping")
