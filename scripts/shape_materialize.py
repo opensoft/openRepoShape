@@ -5138,3 +5138,55 @@ def refuse_an_owner_github_cannot_have(refusal: str, owner: str, named: str,
         "GitHub keeps a user's or an organisation's name to at most "
         f"{GITHUB_OWNER_MAX}, so no repository can be created under it",
         remediation)
+
+
+# An organisation's characters, as GitHub gives them (#863). `checked_value`
+# admits `SAFE_ARG_RE`'s whole alphabet, and the manifest validator's
+# `QUALIFIED_RE` takes `_` and `.` anywhere after an owner's first character,
+# so `--org my_org.x`, `--org trail-` and `--org a--b` passed every plan and
+# went on to `gh repo create my_org.x/<name>`. GitHub's documented rule for a
+# user's or an organisation's name is ASCII letters, digits and single
+# hyphens, with no hyphen at either end; it is not measured here. A leading
+# hyphen is `checked_value`'s refusal already, so the rule left to ask is a
+# character outside it, a trailing hyphen and two hyphens in a row. `_` IS
+# LET BY: a GitHub Enterprise Managed User's login holds one
+# (`<handle>_<shortcode>`), so a rule that refuses it may refuse a personal
+# namespace that exists, and refusing it waits on a probe against a real
+# account. The rule is asked by the tools' plans, beside the 39, and is not
+# put in the pinned `scripts/repo_shape.py` or the two validators, so no
+# project is re-pinned and a manifest that already names such an owner still
+# reads as it did.
+
+#: The characters this asks of an owner's name: GitHub's, and `_` (above).
+GITHUB_OWNER_CHARACTERS = re.compile(r"[A-Za-z0-9_-]")
+
+
+def refuse_an_owner_github_cannot_spell(refusal: str, owner: str, named: str,
+                                        remediation: str) -> None:
+    """Raise `Refusal(refusal)` when `owner`, the organisation the run
+    creates repositories in, holds a character GitHub gives no user's or
+    organisation's name, ends in a hyphen or holds two hyphens in a row
+    (#863): no repository can be created under it. `named` is how the
+    caller names it, and `remediation` its own way out. Asked only where
+    GitHub is, beside `refuse_an_owner_github_cannot_have`: under
+    `--local-remote-dir` the organisation names no account."""
+    held = "".join(dict.fromkeys(
+        char for char in owner if not GITHUB_OWNER_CHARACTERS.fullmatch(char)))
+    problems = []
+    if held:
+        shown = [f"`{char}`" for char in held]
+        problems.append("holding " + (
+            f"{', '.join(shown[:-1])} or {shown[-1]}" if len(shown) > 1
+            else shown[0]))
+    if owner.endswith("-"):
+        problems.append("ending in a hyphen")
+    if "--" in owner:
+        problems.append("with two hyphens in a row")
+    if not problems:
+        return
+    raise Refusal(
+        refusal,
+        f"{named} is {owner!r}, and GitHub gives no user or organisation a "
+        f"name {', or '.join(problems)}, so no repository can be created "
+        "under it",
+        remediation)

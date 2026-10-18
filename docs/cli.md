@@ -845,9 +845,16 @@ named.
 
 options:
   -h, --help            show this help message and exit
-  --org ORG
-  --family FAMILY       the holder's name, ONE CamelCase token, e.g. InkRouter
-  --id ID               lowercase family id (default: --family lowercased)
+  --org ORG             the organisation the holder is created in; at most 39
+                        characters without --local-remote-dir, GitHub's limit
+                        on an organisation's name
+  --family FAMILY       the holder's name, ONE CamelCase token, e.g.
+                        InkRouter, and its repository's: at most 100
+                        characters without --local-remote-dir, GitHub's limit
+                        on a repository's name
+  --id ID               lowercase family id (default: --family lowercased); at
+                        most 39 characters without --local-remote-dir, as
+                        GitHub keeps the topic `xf-project-<id>` to 50
   --name NAME           display name (default: --family); validate-family.py
                         holds it to the same rule
   --visibility {private,public,internal}

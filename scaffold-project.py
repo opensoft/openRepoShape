@@ -51,8 +51,10 @@ is read in the validator's form only, on every Python. A name that cannot be a
 directory's is refused as `scaffold-name-too-long`, and so is one GitHub will
 not give a repository; an `--org` longer than GitHub keeps one is
 `scaffold-org-too-long`, and an id whose topic GitHub will not set is
-`scaffold-topic-too-long` (#838). GitHub's three limits are asked only
-without `--local-remote-dir`, by the runs that make repositories on GitHub.
+`scaffold-topic-too-long` (#838). An `--org` holding a character GitHub gives
+no organisation (`.`), ending in a hyphen or holding two in a row is
+`scaffold-bad-org` (#863). GitHub's limits are asked only without
+`--local-remote-dir`, by the runs that make repositories on GitHub.
 
 IDEMPOTENCY. It refuses to write into a remote or a working directory that
 already exists. There is no --force: re-running over a live project is not a
@@ -119,6 +121,8 @@ from shape_materialize import (  # noqa: E402
     GITHUB_TOPIC_MAX, refuse_a_topic_github_cannot_set,
     refuse_an_owner_github_cannot_have,
 )
+# And the characters GitHub gives an organisation's name (#863).
+from shape_materialize import refuse_an_owner_github_cannot_spell  # noqa: E402
 from shape_advisory import scaffold_lines  # noqa: E402
 # Whether `--elected-by`, `--reference` and `--name` are text a file can
 # hold: the question `adopt-project.py` asks of the same values (#282).
@@ -866,16 +870,22 @@ ORG_REMEDIATION = (
     f"{NOTHING_MADE} Pass --org as GitHub spells the organisation, the "
     "`<org>` of `https://github.com/<org>`: GitHub gives no user or "
     f"organisation a name of more than {GITHUB_OWNER_MAX} characters.")
+#: How `scaffold-bad-org` is told to go on (#863): `ORG_REMEDIATION`'s way
+#: out, without the number, which is not what it broke.
+ORG_SPELLING_REMEDIATION = (
+    f"{NOTHING_MADE} Pass --org as GitHub spells the organisation, the "
+    "`<org>` of `https://github.com/<org>`.")
 
 
 def _refuse_what_github_cannot_hold(args, project_id: str, policy) -> None:
     """`scaffold-org-too-long` and `scaffold-topic-too-long`: an `--org`
     GitHub gives no organisation, and an id whose `xf-project-<id>` topic
-    GitHub will not set (#838), refused where GitHub is asked, before any
-    repository or work directory exists and under `--dry-run` alike. No
-    process has started yet where `--elected-by` or GIT_AUTHOR_NAME names
-    the elector; otherwise `_identity` has asked `git config user.name`
-    first, as it has before `scaffold-bad-id`.
+    GitHub will not set (#838); and `scaffold-bad-org`, an `--org` whose
+    characters GitHub gives no organisation (#863). Each is refused where
+    GitHub is asked, before any repository or work directory exists and
+    under `--dry-run` alike. No process has started yet where `--elected-by`
+    or GIT_AUTHOR_NAME names the elector; otherwise `_identity` has asked
+    `git config user.name` first, as it has before `scaffold-bad-id`.
 
     THE TOPIC IS SET LAST (`_set_topics`), after `_create_remotes`,
     `_seed_legs` and `_build_assembly_root`, so an id over 39 characters,
@@ -887,6 +897,8 @@ def _refuse_what_github_cannot_hold(args, project_id: str, policy) -> None:
         return
     refuse_an_owner_github_cannot_have("scaffold-org-too-long", args.org,
                                        "--org", ORG_REMEDIATION)
+    refuse_an_owner_github_cannot_spell("scaffold-bad-org", args.org,
+                                        "--org", ORG_SPELLING_REMEDIATION)
     if args.id:
         named, remediation = "--id", PASSED_TOPIC_REMEDIATION
     else:

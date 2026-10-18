@@ -99,6 +99,18 @@ Only gh's own not-found answer says the holder does not exist; any other
 `gh repo view` failure (a bad login, a rate limit, no network) is refused as
 `remote-unreadable`.
 
+`init` ASKS GITHUB'S LIMITS FIRST, WHERE GITHUB IS (#863), as the scaffold
+and `adopt-project.py` ask theirs (#838), before `_creator_name` and before
+any `gh` call, so `--dry-run` refuses the same. The holder's topic,
+`xf-project-<family id>`, is set last, after the holder is created and pushed,
+and GitHub keeps a topic to 50 characters, so a family id over 39 (which a
+`--family` of 40 or more gives by default) is `family-topic-too-long`; an
+`--org` over GitHub's 39 is `family-org-too-long`, one holding a character
+GitHub gives no organisation (`.`), ending in a hyphen or holding two in a
+row is `family-bad-org`, and a `--family` over GitHub's 100 for a
+repository's name is `family-name-too-long`. Under `--local-remote-dir`
+nothing goes to GitHub and none of them is asked.
+
 WHAT ONLY THE WRITE ITSELF CAN ANSWER IS NOT ASKED. A member whose local
 changes `git checkout` would refuse to overwrite gets exit 0 and a row from
 `bump --dry-run`, and exit 2 from the real `bump`'s checkout; a
@@ -206,6 +218,16 @@ from repo_shape import shown_path  # noqa: E402
 # the scaffold asks them of its root (#660).
 from shape_materialize import (  # noqa: E402
     free_plan_secrets_note, repository_visibility,
+)
+# What GitHub keeps a repository's name, a topic and an organisation's name
+# to, and the characters it gives an organisation's: asked by `init` where
+# GitHub is, before anything is created (#863), with the scaffold's and
+# `adopt-project.py`'s own questions (#838). `_both_ends` shows a long name
+# as their refusals show one.
+from shape_materialize import (  # noqa: E402
+    GITHUB_ID_MAX, GITHUB_NAME_MAX, GITHUB_OWNER_MAX, GITHUB_TOPIC_MAX,
+    _both_ends, refuse_a_topic_github_cannot_set,
+    refuse_an_owner_github_cannot_have, refuse_an_owner_github_cannot_spell,
 )
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
@@ -2011,6 +2033,83 @@ def _refuse_bad_family_id(family_id: str, given: str | None) -> None:
                   DERIVED_FAMILY_ID_REMEDIATION)
 
 
+#: How `family-name-too-long`, `family-org-too-long`, `family-bad-org` and
+#: `family-topic-too-long` are told to go on (#863), in the scaffold's words
+#: for its own (#838). A `--id` the person passed is theirs to shorten. One
+#: `init` derived is `--family` lowercased, and an explicit `--id` is the way
+#: round it that keeps the holder's name as it is. A `--family` too long for
+#: GitHub is told the id's bound too: its id is `--family` lowercased unless
+#: `--id` is given, so whoever picks a shorter name learns both numbers.
+GITHUB_NOTHING_MADE = ("Remediation: nothing was created, and `--dry-run` "
+                       "refuses the same.")
+HOLDER_TOO_LONG_REMEDIATION = (
+    f"{GITHUB_NOTHING_MADE} Choose a shorter --family, of at most "
+    f"{GITHUB_NAME_MAX} characters, GitHub's limit on a repository's name: "
+    "it names the holder, its repository and, unless --work-dir is given, "
+    f"its family folder. Its id, {FAMILY_ID_DERIVED_FROM} unless --id is "
+    f"given, is at most {GITHUB_ID_MAX}, as GitHub keeps the topic "
+    f"`xf-project-<id>` to {GITHUB_TOPIC_MAX}.")
+PASSED_TOPIC_REMEDIATION = (
+    f"{GITHUB_NOTHING_MADE} Pass a shorter --id, of at most {GITHUB_ID_MAX} "
+    "characters.")
+DERIVED_TOPIC_REMEDIATION = (
+    f"{GITHUB_NOTHING_MADE} Pass an explicit --id of at most {GITHUB_ID_MAX} "
+    f"characters: the id need not be {FAMILY_ID_DERIVED_FROM}, and --family, "
+    "which names the holder, its repository and, unless --work-dir is given, "
+    "its family folder, stays as it is.")
+ORG_REMEDIATION = (
+    f"{GITHUB_NOTHING_MADE} Pass --org as GitHub spells the organisation, the "
+    "`<org>` of `https://github.com/<org>`: GitHub gives no user or "
+    f"organisation a name of more than {GITHUB_OWNER_MAX} characters.")
+ORG_SPELLING_REMEDIATION = (
+    f"{GITHUB_NOTHING_MADE} Pass --org as GitHub spells the organisation, the "
+    "`<org>` of `https://github.com/<org>`.")
+
+
+def _refuse_what_github_cannot_hold(args, family: str, family_id: str,
+                                    topic: str) -> None:
+    """What GitHub will not take of the holder, refused where GitHub is
+    asked (#863), before anything exists and under `--dry-run` alike:
+    `family-name-too-long`, a `--family` over GitHub's 100 for the holder's
+    repository, `<org>/<Family>`; `family-org-too-long` and
+    `family-bad-org`, an `--org` GitHub gives no organisation, by its length
+    or its characters; and `family-topic-too-long`, an id whose
+    `xf-project-<id>` topic GitHub will not set. The questions are the
+    scaffold's (#838), asked with its helpers.
+
+    THE TOPIC IS SET LAST (`_finish_holder_remote`'s `gh repo edit
+    --add-topic`), after `_create_holder_remote` and
+    `_create_holder_worktree`'s push, so an id over 39 characters, which a
+    `--family` of 40 or more gives by default, failed there with the holder
+    made and pushed, no NEXT STEPS printed, and a re-run refused as
+    `family-remote-exists`. An `--org` or a `--family` GitHub will not take
+    failed at `gh repo create`. Under `--local-remote-dir` none is asked: a
+    bare repository on disk has no topic and no owner, and its name is the
+    disk's. The id is named as `_refuse_bad_family_id` names it, by where it
+    came from."""
+    if args.local_remote_dir is not None:
+        return
+    if len(family) > GITHUB_NAME_MAX:
+        raise Refusal(
+            "family-name-too-long",
+            f"--family is {_both_ends(family)}, {len(family)} characters, and "
+            "GitHub keeps a repository's name, the holder's "
+            f"`<org>/<Family>`, to at most {GITHUB_NAME_MAX}",
+            HOLDER_TOO_LONG_REMEDIATION)
+    refuse_an_owner_github_cannot_have("family-org-too-long", args.org,
+                                       "--org", ORG_REMEDIATION)
+    refuse_an_owner_github_cannot_spell("family-bad-org", args.org, "--org",
+                                        ORG_SPELLING_REMEDIATION)
+    if args.id:
+        named, remediation = "--id", PASSED_TOPIC_REMEDIATION
+    else:
+        unset = "not given" if args.id is None else "empty"
+        named = f"--id ({unset}, so {FAMILY_ID_DERIVED_FROM})"
+        remediation = DERIVED_TOPIC_REMEDIATION
+    refuse_a_topic_github_cannot_set("family-topic-too-long", topic,
+                                     family_id, named, remediation)
+
+
 def _checked_family_identity(args) -> tuple[str, str, str]:
     """`(family, family_id, topic)` — every name check `init` makes before
     it decides where anything lands.
@@ -2037,6 +2136,9 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     _classify_family_name(policy, family)
     _refuse_an_unholdable_holder_name(family)
     topic = policy.topic_for(family_id)
+    # WHAT GITHUB WILL NOT TAKE (#863), before `_creator_name` and before any
+    # `gh` call: the topic is set last, after the holder is pushed.
+    _refuse_what_github_cannot_hold(args, family, family_id, topic)
     return family, family_id, topic
 
 
@@ -8083,13 +8185,25 @@ def build_parser() -> argparse.ArgumentParser:
                     "write is put through the holder's own YAML reader and "
                     "its own validate-family.py: a value either would not "
                     "hold is refused and named.")
-    init.add_argument("--org", required=True)
+    # GITHUB'S LIMITS, said where each value is typed (#863), as the
+    # scaffold says its own (#838), and asked only without
+    # `--local-remote-dir`, as the plan asks them.
+    init.add_argument("--org", required=True,
+                      help="the organisation the holder is created in; at "
+                           f"most {GITHUB_OWNER_MAX} characters without "
+                           "--local-remote-dir, GitHub's limit on an "
+                           "organisation's name")
     init.add_argument("--family", required=True,
                       help="the holder's name, ONE CamelCase token, e.g. "
-                           "InkRouter")
+                           "InkRouter, and its repository's: at most "
+                           f"{GITHUB_NAME_MAX} characters without "
+                           "--local-remote-dir, GitHub's limit on a "
+                           "repository's name")
     init.add_argument("--id", default=None,
                       help="lowercase family id (default: --family "
-                           "lowercased)")
+                           f"lowercased); at most {GITHUB_ID_MAX} characters "
+                           "without --local-remote-dir, as GitHub keeps the "
+                           f"topic `xf-project-<id>` to {GITHUB_TOPIC_MAX}")
     init.add_argument("--name", default=None,
                       help="display name (default: --family); "
                            "validate-family.py holds it to the same rule")
