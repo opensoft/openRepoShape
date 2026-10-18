@@ -127,7 +127,10 @@ python3 scripts/family.py remove --family-root <path> --member <Project>
 Each writes ONE commit, with explicit pathspecs, moving the gitlink and the
 pin together, on the branch the holder stands on: it refuses the tracking
 branch, so make a branch first, as the block's first line does. Push it as its
-`NEXT` line says and land it as a pull request.
+`NEXT` line says and land it as a pull request. A holder keeps `members/` in
+ONE spelling on every disk: `add` refuses `family-members-dir-variant`
+(`member-path-taken` for a variant of the member's own path) until a human
+renames what sits under another spelling.
 
 ## Private members in CI
 
