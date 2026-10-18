@@ -1556,15 +1556,26 @@ def test_the_openrepotools_install_line_is_the_same_everywhere(name):
 
 #: THE ONE LINE THAT INSTALLS THIS STANDARD (#564), and every file that
 #: carries it: the installer it fetches, the command it installs (in its
-#: header), the README and its designed reading, and the release notes that
-#: introduced it. Pasted by people who cannot check it, like the two lines
-#: above, so the copies are held byte for byte. `releases/latest/download/`
-#: is what makes it the NEWEST release's `install.sh` every time.
+#: header), the README and its designed reading, and the notes of every
+#: release since v1.0.1, which introduced it. Pasted by people who cannot
+#: check it, like the two lines above, so the copies are held byte for byte.
+#: `releases/latest/download/` is what makes it the NEWEST release's
+#: `install.sh` every time.
 ONE_LINE_INSTALL = (
     "curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/"
     "download/install.sh | bash")
-ONE_LINE_INSTALL_IN = ["install.sh", "openRepoShape", "README.md",
-                       "docs/handbook.html", "docs/release-notes/v1.0.1.md"]
+#: The notes are read from `docs/release-notes/` when the tests are collected,
+#: not named, so a release's notes are held the day they are added, with no
+#: edit here (#885: the list named v1.0.1.md alone, so a mistyped line in
+#: v1.1.0.md passed). The set is the notes that predate the line: v1.0.0's
+#: carries none. A `.md` in that directory that is not a release's notes
+#: fails with them until it is named here.
+RELEASE_NOTES_WITHOUT_THE_ONE_LINE_INSTALL = {"v1.0.0.md"}
+ONE_LINE_INSTALL_IN = [
+    "install.sh", "openRepoShape", "README.md", "docs/handbook.html",
+    *(path.relative_to(REPO).as_posix()
+      for path in sorted((REPO / "docs" / "release-notes").glob("*.md"))
+      if path.name not in RELEASE_NOTES_WITHOUT_THE_ONE_LINE_INSTALL)]
 
 
 @pytest.mark.parametrize("name", ONE_LINE_INSTALL_IN)
@@ -1573,6 +1584,13 @@ def test_the_one_line_install_is_the_same_everywhere(name):
     assert ONE_LINE_INSTALL in text, (
         f"{name} must carry the one-line install byte for byte:\n"
         f"    {ONE_LINE_INSTALL}")
+
+
+def test_the_one_line_install_holds_the_release_notes_it_found():
+    """The notes are found, not named, so a directory that moved or a pattern
+    that stopped matching would hold none of them and pass (#885)."""
+    assert {"docs/release-notes/v1.0.1.md",
+            "docs/release-notes/v1.1.0.md"} <= set(ONE_LINE_INSTALL_IN)
 
 
 def test_every_handbook_copy_of_the_one_line_install_is_the_same():
