@@ -1,0 +1,7 @@
++1
+2026-10-17
+One line for one sentence #790 (#786) leaves false in the README once it lands:
+"fails outright only if a credential is configured" said a failed fetch with no
+credential never fails the run. A `.gitmodules` git refuses now fails the fetch
+step whatever the credential, since none cures it and a green run over it hid
+it, so the paragraph says so in the words the pull request's own body gives.

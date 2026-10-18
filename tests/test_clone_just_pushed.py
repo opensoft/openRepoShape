@@ -28,11 +28,11 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, PROJECT, assert_read_through_git,
-                      assert_store_read_through_git, clone_just_pushed,
-                      cloned_just_pushed, git, insteadof_args,
-                      insteadof_entries, insteadof_prefixes, read_through_git,
-                      submodule_update_through_git)
+from conftest import (FILE_PROTOCOL, PROJECT, appended_to_command_scope,
+                      assert_read_through_git, assert_store_read_through_git,
+                      clone_just_pushed, cloned_just_pushed, git,
+                      insteadof_args, insteadof_entries, insteadof_prefixes,
+                      read_through_git, submodule_update_through_git)
 
 
 @pytest.fixture
@@ -230,9 +230,11 @@ def test_the_environment_form_keeps_what_the_environment_holds(
     """APPENDED, as `appended_to_command_scope` appends the session's own
     settings: an entry the process already has is neither overwritten nor
     counted away, so the pasted line sees it as every other git does."""
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-    monkeypatch.setenv("GIT_CONFIG_KEY_0", "url.held://base/.insteadOf")
-    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "held://")
+    held = appended_to_command_scope(
+        {}, [("url.held://base/.insteadOf", "held://")])
+    assert held["GIT_CONFIG_COUNT"] == "1", held
+    for name, value in held.items():
+        monkeypatch.setenv(name, value)
     entries = read_through_git(remotes)
     assert "GIT_CONFIG_KEY_0" not in entries, entries
     assert entries["GIT_CONFIG_COUNT"] == str(

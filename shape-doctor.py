@@ -3983,10 +3983,15 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     these that applies decides, as `detail["restore"]`:
 
       unmerged     a merge left the pin conflicted. `checkout --ours`, or
-                   `--theirs` where only that side holds a pin, of THE PIN,
-                   which only a tool writes, so one side taken whole is one
-                   tool's output, and of no copy but one PROVED to be tool
-                   output on both sides (#547).
+                   `--theirs` where only that side holds a pin that reads,
+                   of THE PIN, which only a tool writes, so one side taken
+                   whole is one tool's output, and of no copy but one
+                   PROVED to be tool output on both sides (#547). A side
+                   whose pin does not read is never taken, as taken whole
+                   it left the pin as it was and this doctor named the same
+                   line again; where no side's pin reads, no line is named,
+                   `(restore, None, why)`, and the `why` says the merge is a
+                   person's call (`side_to_take`, #752).
                    A copy either side may have edited is never named with it
                    (#485), though a merge of two `update-shape.py apply`
                    runs conflicts in the two together: a copy can hold an
@@ -4041,12 +4046,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    `merge` row lists it unmerged all the same. So the `why`
                    says that the other side's pin calls it a copy and the
                    pin taken here does not, and that a person merges it by
-                   hand, keeping the hunks git merged. Where the pin taken
-                   here does not read, it says that instead, and nothing of
-                   whose file the copy becomes; where one side deleted the
-                   copy, it says a person keeps or deletes it, as there are
-                   no hunks to keep (`other_sides_copies`, review of PR
-                   #736). The `--accept-local`
+                   hand, keeping the hunks git merged. Where one side
+                   deleted the copy, it says a person keeps or deletes it,
+                   as there are no hunks to keep (`other_sides_copies`,
+                   review of PR #736). The `--accept-local`
                    sentence is not for it, and is said only where a copy the
                    kept pin has a row for is left: `apply` refuses the flag
                    on a path the pin has no row for. In the `manifest kinds`
@@ -4090,8 +4093,9 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    Nothing git can name fixes it, and the caller says so:
                    `(restore, None, None)`.
 
-    EVERY PIN THE COMMAND PUTS BACK IS READ FIRST, by `pin_reads_at`, except
-    the side of a merge, which is one tool's output either way.
+    EVERY PIN THE COMMAND PUTS BACK IS READ FIRST, by `pin_reads_at`, the
+    side of a merge included (#752): one tool's output either way, but a
+    commit on that side can hold a pin a slip broke.
 
     THE STATUS IS TWO FIXED-WIDTH LETTERS, READ AS BYTES: `git_out`'s text
     form strips its output, and the leading space of ` M` with it. And
@@ -4162,24 +4166,17 @@ def pin_restore(ctx: Context, detail: dict | None = None,
             if path:
                 stages.setdefault(path.decode("utf-8", "replace"), {})[
                     meta.rsplit(b" ", 1)[-1]] = meta.split(b" ", 1)[0]
-        pin_stages = stages.get(pin, {})
-        side, stage = (("--ours", b"2") if b"2" in pin_stages else
-                       ("--theirs", b"3") if b"3" in pin_stages else
-                       (None, None))
+        side, stage, note = side_to_take(ctx, pin, stages.get(pin, {}), what)
+        if note and not side:
+            return "unmerged", None, note
         if side:
-            note = (f"--theirs takes the other side. Take one side of the "
-                    f"{what} whole" if b"3" in pin_stages and side == "--ours"
-                    else f"only that side of the merge holds a {what}. Take "
-                    "it whole")
-            lines, copies, other_side, taken = [], [], [], []
-            partial, kept_reads = False, True
+            lines, copies, other_side, taken, partial = [], [], [], [], False
             if pin == SHAPE_PIN:
                 lines = sorted(name for name in (kind.manifest, us.README)
                                if name in stages)
                 # Both pins say what is a copy, and the kept one what can be
                 # taken: a copy only the other side's is never taken (#687).
-                held = pin_at(ctx, f":{stage.decode()}")
-                kept_reads, kept = held is not None, set(held or ())
+                kept = set(pin_at(ctx, f":{stage.decode()}") or ())
                 other = set(pin_at(ctx, ":3" if stage == b"2" else ":2")
                             or ())
                 copies = sorted(name for name in kept if name in stages)
@@ -4238,7 +4235,7 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                              "check calls it both, as update-conflict, and "
                              "either refusal asks for --accept-local on that "
                              "path")
-                said += other_sides_copies(other_side, stages, kept_reads)
+                said += other_sides_copies(other_side, stages)
             if said:
                 then = ". " + ". ".join(said) + ". Then finish"
             return "unmerged", (
@@ -4297,18 +4294,16 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     return "none", None, None
 
 
-def other_sides_copies(names: list, stages: dict, kept_reads: bool) -> list:
+def other_sides_copies(names: list, stages: dict) -> list:
     """The sentences of a conflicted shape pin's `why` for `names`, the
     files conflicted beside it that only the side NOT taken has `files:`
     rows for (#687): never taken, and a person's to resolve. `stages` is
-    `{path: {stage: mode}}`, as `pin_restore` reads `ls-files -u`, and
-    `kept_reads` whether the pin taken here reads as one.
+    `{path: {stage: mode}}`, as `pin_restore` reads `ls-files -u`.
 
-    WHAT IS KNOWN, AND NOTHING ELSE (review of PR #736). Where the pin
-    taken here reads, it has no row for them, so once the merge is finished
-    each is the project's own file, and the sentence says so. Where it does
-    not read, nothing says whose file each becomes, so the sentence says
-    only that it does not read.
+    WHAT IS KNOWN, AND NOTHING ELSE (review of PR #736). The pin taken here
+    reads, since `side_to_take` takes no side whose pin does not (#752),
+    and it has no row for them, so once the merge is finished each is the
+    project's own file, and the sentence says so.
 
     ONE SENTENCE FOR THE FILES BOTH SIDES HOLD, ANOTHER FOR THOSE ONE SIDE
     DELETED. Both sides' stages are there for a content conflict, an
@@ -4324,23 +4319,71 @@ def other_sides_copies(names: list, stages: dict, kept_reads: bool) -> list:
             continue
         many = len(group) > 1
         each = "each" if many else "it"
-        sentence = (
+        said.append(
             f"{' and '.join(group)} {'are' if many else 'is'} conflicted "
             "too, and the other side's pin calls "
             + ("them copies" if many else "it a copy")
-            + (" where the pin taken here does not" if kept_reads
-               else " while the pin taken here does not read as a pin")
+            + " where the pin taken here does not"
             + (f", and one side deleted {each}" if deleted else "")
-            + ", so neither side is taken whole: ")
-        if kept_reads:
-            sentence += (f"once the merge is finished {each} is the "
-                         "project's own file"
-                         + (" if kept" if deleted else "") + ", and ")
-        said.append(sentence + (
-            f"a person keeps or deletes {each} by hand" if deleted
-            else f"a person merges {each} by hand, keeping the hunks git "
-            "merged"))
+            + ", so neither side is taken whole: once the merge is finished "
+            f"{each} is the project's own file"
+            + (f" if kept, and a person keeps or deletes {each} by hand"
+               if deleted else f", and a person merges {each} by hand, "
+               "keeping the hunks git merged"))
     return said
+
+
+#: The flag of `git checkout` that takes each side's stage of a merge.
+SIDE_OF_STAGE = {b"2": "--ours", b"3": "--theirs"}
+
+
+def side_to_take(ctx: Context, pin: str, pin_stages: dict,
+                 what: str) -> tuple:
+    """`(side, stage, note)` for `pin`, which a merge left conflicted with
+    `pin_stages` (`{stage: mode}`): the side `pin_restore` takes whole, as
+    a `checkout` flag and an index stage, and the start of its `why`, that
+    says why that side. `(None, None, why)` where no side's pin reads, the
+    `why` then whole, and `(None, None, None)` where neither side holds one.
+
+    THE SIDE TAKEN IS ONE WHOSE PIN READS (#752). `--ours` was taken
+    wherever ours held a pin, read or not: one tool's output either way,
+    but a commit can hold a pin a slip broke, and taken whole it left the
+    pin as it was, so this doctor named the same line again. So ours where
+    it reads, else theirs where that reads, and the `why` says that only
+    that side's pin reads; offering the other side, as `--theirs takes the
+    other side` does where both read, would offer that circle.
+
+    NO LINE WHERE NO SIDE'S PIN READS. Taking either side whole leaves a
+    pin that does not read, and a pin is never mended by hand, so no
+    command is named, and the `why` says that finishing the merge, or
+    aborting it to put back first the pin a side broke, is a person's call.
+    """
+    held = [number for number in (b"2", b"3") if number in pin_stages]
+    if not held:
+        return None, None, None
+    reads = [number for number in held
+             if pin_reads_at(ctx, f":{number.decode()}", pin)]
+    if not reads:
+        whose = (f"neither side's {what} reads as one" if len(held) > 1
+                 else f"the one side of it that holds a {what} holds one "
+                 "that does not read")
+        return None, None, (
+            f"a merge left the {what} conflicted, and {whose}, so no side "
+            f"taken whole puts back a {what} that reads, and this doctor "
+            f"would name the same line again. A {what} is never mended by "
+            "hand, so no line is named here: whether to finish the merge, "
+            f"or to abort it and first put back the {what} a side broke, is "
+            "a person's call")
+    if len(reads) > 1:
+        note = (f"--theirs takes the other side. Take one side of the "
+                f"{what} whole")
+    elif len(held) > 1:
+        note = (f"only that side's {what} reads as one, and the other side "
+                f"taken whole would leave a {what} that does not read. Take "
+                "it whole")
+    else:
+        note = f"only that side of the merge holds a {what}. Take it whole"
+    return SIDE_OF_STAGE[reads[0]], reads[0], note
 
 
 def taken_with_the_pin(ctx: Context, kind, copies: list,
@@ -4676,7 +4719,7 @@ UNREADABLE_BY_HAND = (
 
 def unreadable_next(ctx: Context, unreadable: list,
                     detail: dict | None = None
-                    ) -> tuple[dict, str, str | None]:
+                    ) -> tuple[dict, str | None, str | None]:
     """`(restore, command, why)` for the `manifest kinds` row's files that
     do not load (#291): each file's case, the one command the row prints,
     and the sentence that goes with that command -- the row's `why`, apart
@@ -4689,7 +4732,11 @@ def unreadable_next(ctx: Context, unreadable: list,
     prints one command, and the next run names the next file. A copy or a
     neutral product pin, which a person may have edited, gets the
     read-only command `pin_restore` picks for it instead, a `git diff`
-    that shows what breaks it, and nothing is put back.
+    that shows what breaks it, and nothing is put back. A pin a merge left
+    conflicted where no side's pin reads gets no command (#752): where no
+    other file has one, the row names none either, and says `pin_restore`'s
+    `why`, as the `shape currency` row does, rather than send the reader to
+    this doctor again, which would say the same.
 
     A FILE OF THE PROJECT'S OWN IS NOT, whatever it is called, and its case
     is `project`, with git not asked. `tool_written` reads what the root
@@ -4721,6 +4768,9 @@ def unreadable_next(ctx: Context, unreadable: list,
     restore: dict[str, str] = {}
     #: `(command, why)` for each file with a command, in the row's order.
     commands: dict[str, tuple[str, str | None]] = {}
+    #: The `why` of each file a tool wrote that git was asked about and no
+    #: line puts back: a merge where no side's pin reads (#752).
+    stuck: dict[str, str] = {}
     held: dict = {}
     for rel in unreadable:
         if tool_written(ctx, rel):
@@ -4728,6 +4778,8 @@ def unreadable_next(ctx: Context, unreadable: list,
                 ctx, held if rel == SHAPE_PIN else None, pin=rel)
             if found:
                 commands[rel] = (found, why)
+            elif why:
+                stuck[rel] = why
         else:
             restore[rel] = "project"
     left = held.get("left_for_a_person", [])
@@ -4741,8 +4793,11 @@ def unreadable_next(ctx: Context, unreadable: list,
         detail["taken_with_the_pin"] = taken
     command, why = (commands.get(SHAPE_PIN)
                     or next(iter(commands.values()), (None, None)))
-    if command is None:
-        command = doctor_line(ctx)
+    if command is None and stuck:
+        why = stuck.get(SHAPE_PIN) or next(iter(stuck.values()))
+    elif command is None:
+        command = (f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} "
+                   f"--root {quote_arg(ctx.root)}")
         why = UNREADABLE_BY_HAND
     return restore, command, why
 
@@ -4782,14 +4837,17 @@ def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
     same `read_pin`, refuses it the same way, and its remediation is about
     submodules, adoption or a hand edit, none of which fits. That command
     stays only where git can name nothing, and its `why` says the rest is a
-    person's call. Every sentence is the row's `why`, off the command's line,
-    so a pasted line is one command in any shell (#277).
+    person's call. Where a merge left the pin conflicted and no side's pin
+    reads, the row names no command at all, and `pin_restore`'s `why` says
+    the merge is a person's call (#752). Every sentence is the row's `why`,
+    off the command's line, so a pasted line is one command in any shell
+    (#277).
     """
     detail = {"error": exc.code, "pin": SHAPE_PIN,
               "refusal": {"code": exc.code, "detail": exc.detail}}
     restore, command, why = pin_restore(ctx, detail)
     detail["restore"] = restore
-    if command is None:
+    if restore == "none":
         command = (f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} "
                    f"check --root {quote_arg(ctx.root)} --upstream "
                    f"{quote_arg(ctx.shape)}")
@@ -5354,13 +5412,25 @@ def submodule_keys(listing: str) -> list[tuple[str, str, str]]:
     `submodule.` and its last dot, so a name that holds a space, a dot, a
     quote or an `=` is read whole, and the field is what follows that dot,
     which git lists in lower case.
+
+    THE NAME KEEPS GIT'S BYTES AND THE VALUE IS TEXT (#732). The name is
+    only ever handed back to git, by `configured_url` and `kept_gitdir`
+    through `git_bytes`, so a byte that is not UTF-8 stays the
+    `surrogateescape` the listing was decoded with: replaced, a section
+    named `caf\\xe9` was looked up as `caf\\ufffd`, a name git has nowhere,
+    and a member with a commit on its detached HEAD got the update line
+    with no keep line. The value is compared and printed, so it takes the
+    replacement, as `make siblings` reads the same file (#432) and
+    `origin_url` reads a remote (#385).
     """
     keys = []
     for record in listing.split("\0"):
         key, _, value = record.partition("\n")
         section, _, field = key.rpartition(".")
         if section.startswith("submodule.") and field in ("path", "url"):
-            keys.append((section[len("submodule."):], field, value))
+            keys.append((section[len("submodule."):], field,
+                         value.encode("utf-8", "surrogateescape").decode(
+                             "utf-8", "replace")))
     return keys
 
 
@@ -5382,16 +5452,17 @@ def gitmodules_listing(root: Path, source: list[str]) -> str | None:
     them, and a name a space: git's plain listing, split at line breaks and
     at the first space, cut such a url short and such a name in two.
 
-    Decoded with the replacement, as `make siblings` reads the same file
-    (#432) and `origin_url` reads a remote (#385). Read only: `--list`
-    writes nothing.
+    Decoded with `surrogateescape`, so nothing git listed is lost:
+    `submodule_keys` keeps a section's name as git's own bytes and gives
+    each value with the replacement (#732). Read only: `--list` writes
+    nothing.
     """
     try:
         raw = git_out(["config", "-z", *source, "--list"], cwd=root,
                       binary=True)
     except (Refusal, OSError):
         return None
-    return raw.decode("utf-8", "replace")
+    return raw.decode("utf-8", "surrogateescape")
 
 
 def configured_url(root: Path, name: str) -> str | None:
@@ -5409,17 +5480,44 @@ def configured_url(root: Path, name: str) -> str | None:
     128, measured), so neither is helped by this.
 
     `git config --get` in the root, which reads what git reads: the
-    repository's config and the ones above it. Read only.
+    repository's config and the ones above it. Read only. The key is
+    handed to git as the bytes the section was named with (`git_bytes`,
+    #732).
     """
     try:
         proc = subprocess.run(["git", "config", "--get",
-                               f"submodule.{name}.url"],
+                               git_bytes(f"submodule.{name}.url")],
                               cwd=str(root), capture_output=True, check=False)
     except OSError:
         return None
     if proc.returncode != 0:
         return None
     return proc.stdout.decode("utf-8", "replace").strip() or None
+
+
+def git_bytes(text: str) -> str | bytes:
+    """`text`, read out of git as UTF-8 with `surrogateescape`, as the
+    argument that hands git back the same bytes (#732).
+
+    BYTES ON POSIX, whose command line is bytes. A `str` there is encoded
+    with the filesystem encoding, which is ASCII under `LC_ALL=C
+    PYTHONUTF8=0`: a section named `caf\\xc3\\xa9`, valid UTF-8, then raised
+    `UnicodeEncodeError` out of `subprocess`, a traceback with no verdict,
+    and one named `caf\\xe9` too. THE TEXT ITSELF ON WINDOWS, whose command
+    line is text: `subprocess` would have to decode bytes there, and a byte
+    that is not UTF-8 is not text to it.
+
+    SO ON WINDOWS A NAME THAT IS NOT UTF-8 IS STILL NOT FOUND: Git for
+    Windows' `xwcstoutf` turns the lone surrogate into the bytes ED B3 A9,
+    not E9. A UTF-8 name is found there. What would find the other is a
+    lookup with no name on the command line: read the root's config with
+    `git config -z --list` and match the key's bytes in Python, and build
+    the kept repository's path from `git rev-parse --git-common-dir`,
+    `modules/` and the name's bytes.
+    """
+    if os.name == "nt":
+        return text
+    return text.encode("utf-8", "surrogateescape")
 
 
 def submodule_url(root: Path, rel: str) -> tuple[str | None, str | None]:
@@ -5454,11 +5552,21 @@ def kept_gitdir(root: Path, name: str) -> Path | None:
 
     BY NAME, which is not always the path: `--git-path modules/<name>` says
     where git keeps it, in the common directory of a linked worktree too.
+
+    AND BY THE NAME'S OWN BYTES (#732): the name goes to git through
+    `git_bytes`, and the path git answers with is read as a path
+    (`os.fsdecode`), which `kept_head` and the keep line hand back to git
+    unchanged. A strict decode of it found no repository for a section
+    named `caf\\xe9`, and the commit on its detached HEAD got no keep line.
     """
     try:
-        where = git_out(["rev-parse", "--git-path", f"modules/{name}"],
-                        cwd=root)
-    except (Refusal, OSError, UnicodeDecodeError):
+        proc = subprocess.run(["git", "rev-parse", "--git-path",
+                               git_bytes(f"modules/{name}")],
+                              cwd=str(root), capture_output=True, check=False)
+        if proc.returncode != 0:
+            return None
+        where = os.fsdecode(proc.stdout.rstrip(b"\r\n"))
+    except (OSError, ValueError):
         return None
     path = Path(where)
     if not path.is_absolute():
@@ -8162,7 +8270,7 @@ def submodule_config(root: Path) -> dict:
     `except` there did not name -- it is a `ValueError`, neither a
     `Refusal` nor an `OSError` -- so `--root` ended in a traceback, exit 1,
     which is also the code of a finding, with no verdict. The bytes are
-    asked for, and `gitmodules_listing` says how they are decoded.
+    asked for, and `submodule_keys` says how each part is decoded.
 
     THE URL IS KEPT, NOT DROPPED. The row exists to agree with `make
     siblings` about one directory (#146): a clone whose own `origin` is the
@@ -8178,7 +8286,8 @@ def submodule_config(root: Path) -> dict:
     is COMPARED with `origin_url`'s reading of a clone's remote, which is
     the replacement (#385): the same bytes read two ways are two strings,
     so a clone made from this very url would stop being the member's
-    working clone.
+    working clone. A section's NAME, which is handed back to git and never
+    compared, keeps the `surrogateescape` (#732).
     """
     fields: dict = {}
     listing = gitmodules_listing(root, ["--file", ".gitmodules"])
@@ -8396,11 +8505,12 @@ def sibling_slot(root: Path, sibling: Path, row: dict,
     only names.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED OR ENTERED, IS `not-a-clone`
-    TOO: nothing can be cloned into it. `make siblings` itself ends in a
-    traceback on each today (`siblings.py:558`, #735), so the row says what
-    is there and nothing of what `make siblings` does with it
-    (`beside_sentence`). A folder that cannot be entered cannot be asked
-    for its `.git` either, so that question's `OSError` reads "no `.git`".
+    TOO: nothing can be cloned into it. A holder whose pinned `siblings.py`
+    predates #735 ends `make siblings` in a traceback on each, and one that
+    has #735 calls it NOT A CLONE, so the row says what is there and
+    nothing of what `make siblings` does with it (`beside_sentence`), which
+    is true of both. A folder that cannot be entered cannot be asked for its
+    `.git` either, so that question's `OSError` reads "no `.git`".
     """
     if sibling == root:
         return "is-the-holder", None
@@ -8545,9 +8655,9 @@ BESIDE_THE_HOLDER = {
                      "project.yaml that says it is this member", ""),
 }
 
-#: What stands at a `not-a-clone` slot `make siblings` cannot read today, as
-#: `unclonable` names it: it ends in a traceback on each (#735), so the row
-#: says what is there and no word of what `make siblings` does with it.
+#: What stands at a `not-a-clone` slot that a holder's pinned `siblings.py`
+#: from before #735 ends in a traceback on, as `unclonable` names it: the
+#: row says what is there and no word of what `make siblings` does with it.
 UNREADABLE_BESIDE = {"file": "is a file, not a folder",
                      "unlistable": "is a folder that cannot be listed"}
 
@@ -8564,8 +8674,9 @@ def beside_sentence(ctx: Context, entry: dict) -> str:
     `--json` keeps them raw: `json.dumps` escapes them.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone` with no
-    word from `make siblings`, which ends in a traceback on it today (#735):
-    the sentence stops at what stands there (`UNREADABLE_BESIDE`).
+    word from `make siblings`, which ends in a traceback on it in a holder
+    whose pinned copy predates #735: the sentence stops at what stands
+    there (`UNREADABLE_BESIDE`).
     """
     state = entry["sibling"]
     where = ctx.root.parent / entry["project"]
