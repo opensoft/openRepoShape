@@ -119,7 +119,9 @@ Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
 Anything after `--` is passed straight through to scaffold-project.py. A
-`--dry-run` there ends this run at the plan, creating nothing.
+`--dry-run` there ends this run at the plan, creating nothing, and makes
+none of the preflight's offers: a run without it, or --preflight, makes
+them.
 ```
 
 ### `openRepoShape`
@@ -260,7 +262,9 @@ Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
 Anything after `--` is passed straight through to scaffold-project.py. A
-`--dry-run` there ends this run at the plan, creating nothing.
+`--dry-run` there ends this run at the plan, creating nothing, and makes
+none of the preflight's offers: a run without it, or --preflight, makes
+them.
 ```
 
 ### `scaffold-project.py`
