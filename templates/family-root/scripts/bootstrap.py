@@ -30,6 +30,14 @@ WHAT IT DOES, in order:
       no url for, nor where it read nothing from `.gitmodules`, both below,
       since it fetched nothing then (#839).
 
+      Where every row's member is checked out and git's init died all the
+      same, at a gitlink it has no url for or at a `.gitmodules` a merge
+      left unmerged, git updated none of them, so the run fails, saying
+      where git stopped and what cures it, as below, with no advice
+      (#879). It said `family bootstrap ok` there, beside git's exit 128,
+      as a run with every member checked out passes (#648), and gave the
+      advice where git stopped at a gitlink.
+
       "every member and leg fetched" is said only where git exited 0 AND
       every row's member is checked out (#648). A member left NOT CHECKED
       OUT where no credential would check it out is said here instead, with
@@ -64,8 +72,8 @@ WHAT IT DOES, in order:
       checks the member out whatever the clone chose. For the third and
       the last, `validate-family.py --no-members` names a path two
       sections give, or a gitlink in members/ that no row names; `git rm
-      --cached` takes out one outside members/, which the validator does
-      not read; and where the gitlink is a row's own, with one section,
+      --cached` takes out one outside members/, as every mode of the
+      validator says (#878); and where it is a row's own, with one section,
       the line says to write its section back.
 
   (b) RUNS EACH MEMBER'S OWN `make bootstrap`. Each member is a whole project
@@ -83,9 +91,12 @@ WHAT IT DOES, in order:
 
   (c) EXITS 0 unless a member's own command failed, or (a) left a member not
       checked out that no credential would check out, or found a line or a
-      value in `.gitmodules` that git cannot read (#768). Any other member that
-      is not checked out is REPORTED and skipped, not a failure: it is the
-      state a missing credential leaves, and it is already reported in (a).
+      value in `.gitmodules` that git cannot read (#768), or found that,
+      with every member checked out, git's init died at a gitlink it has
+      no url for or at an unmerged `.gitmodules` (#879). Any
+      other member that is not checked out is REPORTED and skipped, not a
+      failure: it is the state a missing credential leaves, and it is
+      already reported in (a).
       Where (a) cannot start git, the run STOPS there, exit 2, refused
       `git-not-runnable` as `validate-family.py` refuses it (#694): each
       member's own bootstrap runs git too, so (b) would only say it again.
@@ -182,9 +193,11 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     """(a) `git submodule update --init --recursive`, authenticated or not.
 
     Where every member is checked out and git died on a value in
-    `.gitmodules`, or on a work tree file it cannot parse, so it updated
-    none of them, the one failure line it returns is for `.gitmodules`
-    (#768).
+    `.gitmodules`, or on a work tree file it cannot parse, or its init
+    died at a `.gitmodules` a merge left unmerged, so it updated none of
+    them, the one failure line it returns is for `.gitmodules` (#768,
+    #879); where its init died at a gitlink it has no url for, it is for
+    that gitlink (`updated_none`, #879).
 
     Returns a failure line for each of `rows` whose member it leaves not
     checked out where no credential would check it out (`unfetchable`), for
@@ -215,17 +228,19 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     if proc.returncode != 0:
         fetch_incomplete(proc, source, token,
                          credential_advice(bool(left), stopper, modules))
+    whole = updated_none(left, stopper, modules)
     if left:
         print("  NOT CHECKED OUT, and not for want of a credential: "
               + ", ".join(f"{spelled(path)} ({reason(why, stopper, modules)})"
                           for _, path, why in left)
               + ". " + cures(left, stopper, rows, modules), file=sys.stderr)
-    elif modules.refused or modules.unreadable:
-        why = REFUSED if modules.refused else UNREADABLE
+    elif whole is not None:
         print("  NO MEMBER UPDATED, and not for want of a credential: "
-              + reason(why, stopper, modules) + ". "
-              + cures(left, stopper, rows, modules), file=sys.stderr)
-        return [f"{GITMODULES} (git cannot read it)"]
+              + reason(whole, stopper, modules) + ". "
+              + cures(left, stopper, rows, modules, (whole,)),
+              file=sys.stderr)
+        return [f"{spelled(stopper)} (git stopped at it)" if whole == STOPPED
+                else f"{GITMODULES} (git cannot read it)"]
     elif proc.returncode == 0:
         print("  every member and leg fetched")
     return [f"{spelled(row.get('project') or '?')} (not checked out)"
@@ -296,9 +311,12 @@ def git_not_started(exc: OSError) -> Refusal | None:
 
 
 def cures(left: list[tuple[dict, str, str]], stopper: str | None,
-          rows: list[dict], modules: Gitmodules) -> str:
+          rows: list[dict], modules: Gitmodules,
+          whole: tuple[str, ...] = ()) -> str:
     """What (a)'s line says cures the rows `left` names, one sentence for
-    each kind of cause among them (#648):
+    each kind of cause among them (#648), or, where it names none, what
+    cures `whole`, why git updated no member (`updated_none`, #879), one
+    reason or none:
 
     - A `.gitmodules` a merge left unmerged in the index, which git reads
       nothing from (`Gitmodules.unmerged`): the file resolved and added.
@@ -323,13 +341,13 @@ def cures(left: list[tuple[dict, str, str]], stopper: str | None,
       `member-uninitialized` for the first row where every row's gitlink
       is there, as with a stray or a hand mount, and `member-gitlink-absent`
       where a row's is only in another case, which the first sentence
-      names. A gitlink outside `members/`, which no mode of the validator
-      asks about, is taken out of the index: no row names it, and with no
-      url no clone can check it out.
+      names. A gitlink outside `members/` is taken out of the index, as
+      every mode of the validator says (#878): no row names it, and with
+      no url no clone can check it out.
     - A row git exited 0 over: the update that checks it out whatever the
       clone chose. `--init` with the path registers a member a subset
       clone left out, and `--checkout` overrides an `update = none`."""
-    whys = {why for _, _, why in left}
+    whys = {why for _, _, why in left} | set(whole)
     said = gitmodules_cures(whys, modules)
     if whys & {NO_GITLINK, NO_SECTION}:
         said.append(f"`{PYTHON} scripts/validate-family.py` names the cause "
@@ -747,7 +765,10 @@ def unfetchable(root: Path, rows: list[dict], exited_0: bool
     checked out is the missing credential's, and stays the skip it always
     was. A path two rows give is said once. Where every row's member is
     checked out and git did not exit 0, `.gitmodules` is read all the
-    same, for `fetch_members` to ask `refused` of."""
+    same, and git's init asked where it stopped, for `fetch_members` to
+    ask why git updated none (`updated_none`): this returned before
+    `init_stop` there, so a run whose update git's init stopped said
+    `family bootstrap ok` (#879)."""
     left: dict[str, dict] = {}
     for row in rows:
         if not (member_path(root, row) / ".git").exists():
@@ -755,8 +776,6 @@ def unfetchable(root: Path, rows: list[dict], exited_0: bool
     if not left and exited_0:
         return [], None, Gitmodules(Counter(), {}, {})
     modules = gitmodules_sections(root)
-    if not left:
-        return [], None, modules
     config = submodule_config(root)
     stopper = None if exited_0 else init_stop(root, modules, config)
     found: list[tuple[dict, str, str]] = []
@@ -773,12 +792,9 @@ def row_reason(root: Path, path: str, modules: Gitmodules,
     """Why `unfetchable` says the member at `path`, not checked out, is
     none a credential would check out (#648, #768), in the order it asks,
     or None where it is the missing credential's."""
-    if modules.unmerged:
-        return UNMERGED
-    if modules.refused:
-        return REFUSED
-    if modules.unreadable:
-        return UNREADABLE
+    unread = file_reason(modules)
+    if unread is not None:
+        return unread
     if recorded_gitlink(root, path) is None:
         return NO_GITLINK
     if not modules.given[path]:
@@ -788,6 +804,31 @@ def row_reason(root: Path, path: str, modules: Gitmodules,
     if exited_0:
         return EXITED_0
     return None if stopper is None else STOPPED
+
+
+def file_reason(modules: Gitmodules) -> str | None:
+    """Why git read nothing from `.gitmodules` (#648, #768), as (a)'s line
+    says it, or None where it read the file: a merge left it unmerged, it
+    gives a value git dies on, or it is a work tree file git cannot
+    parse."""
+    if modules.unmerged:
+        return UNMERGED
+    if modules.refused:
+        return REFUSED
+    return UNREADABLE if modules.unreadable else None
+
+
+def updated_none(left: list[tuple[dict, str, str]], stopper: str | None,
+                 modules: Gitmodules) -> str | None:
+    """Why git updated no member, where every row's member is checked out
+    (`left` empty) and git did not exit 0, or None: what `file_reason`
+    says, or `STOPPED` where git's init died at a gitlink it has no url
+    for (`stopper`, `init_stop`), before it updated any (#879). None
+    where it asked for a credential, as a leg's fetch does, and where
+    `left` names a row, which (a)'s line says why of."""
+    if left:
+        return None
+    return file_reason(modules) or (None if stopper is None else STOPPED)
 
 
 def members_of(root: Path) -> tuple[str, list[dict]]:
