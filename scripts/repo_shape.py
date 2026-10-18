@@ -1245,6 +1245,15 @@ def tree_digest(repo: Path, rev: str) -> str:
     return digest.hexdigest()
 
 
+def _child_text(data: bytes, errors: str) -> str:
+    """A child's bytes as text mode reads them (#968): UTF-8 with `errors`,
+    and each carriage return, alone or before a line feed, a line feed, as
+    `subprocess` translates them. `tree_digest_from_gh` reads gh's two
+    streams as bytes so that each takes its own `errors`."""
+    return (data.decode("utf-8", errors)
+            .replace("\r\n", "\n").replace("\r", "\n"))
+
+
 def tree_digest_from_gh(repository: str, commit: str) -> str:
     """The same `sorted-ls-tree-r-v1` digest, read from the forge's own
     recursive tree listing — no clone, no working tree, just `gh api`.
@@ -1275,35 +1284,45 @@ def tree_digest_from_gh(repository: str, commit: str) -> str:
     control it is and each line break began a line of the skip that the
     validator never printed. `gh`'s not-logged-in help is two lines (four
     under `GITHUB_ACTIONS`), and the break between them is an escape here,
-    as a break git prints is in `git_out`. The stderr is read in text mode,
-    so a carriage return is a line break by then. Printable text, UTF-8
-    included, is unchanged.
+    as a break git prints is in `git_out`. A carriage return is a line break
+    by then, as text mode reads one. Printable text, UTF-8 included, is
+    unchanged. The repository is named the same way in `gh-response-
+    unreadable` and `gh-tree-truncated` (#968), which end in that line too.
+
+    THE TWO STREAMS ARE DECODED APART (#968), by `_child_text`, because they
+    are read for two purposes. Read together in text mode, both strictly, a
+    byte of gh's stderr that is not UTF-8 ended the validator in a
+    `UnicodeDecodeError` traceback, exit 1, where a skip belongs. gh's
+    stderr is words for a person, so a byte that is not UTF-8 is replaced
+    (U+FFFD), as `git_out` reads git's. The JSON on stdout stays strict, and
+    a byte that is not UTF-8 there is `gh-response-unreadable`, a refusal.
     """
     try:
         proc = subprocess.run(
             ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
-            # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
-            # digest, and a replaced byte would be a wrong digest with a
-            # confident tone (#217).
-            capture_output=True, text=True, encoding="utf-8", check=False)
+            capture_output=True, check=False)
     except FileNotFoundError as exc:
         raise Refusal("gh-not-found",
                       f"the `gh` CLI is not on PATH: {exc}") from exc
+    named = shown_path(repository)
     if proc.returncode != 0:
         raise Refusal(
             "gh-unreadable",
-            f"`gh api` could not read {shown_path(repository)} @ {commit}: "
-            f"{spelled(proc.stderr.strip())}",
+            f"`gh api` could not read {named} @ {commit}: "
+            f"{spelled(_child_text(proc.stderr, 'replace').strip())}",
         )
     try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
+        # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
+        # digest, and a replaced byte would be a wrong digest with a
+        # confident tone (#217).
+        payload = json.loads(_child_text(proc.stdout, "strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise Refusal("gh-response-unreadable",
-                      f"{repository} @ {commit}: {exc}") from exc
+                      f"{named} @ {commit}: {exc}") from exc
     if payload.get("truncated"):
         raise Refusal(
             "gh-tree-truncated",
-            f"the forge truncated its tree listing for {repository} @ "
+            f"the forge truncated its tree listing for {named} @ "
             f"{commit}, so the digest would be computed over a PARTIAL tree",
         )
     records = sorted(
