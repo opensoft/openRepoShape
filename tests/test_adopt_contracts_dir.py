@@ -86,6 +86,20 @@ MAKEFILE_FOLLOW_UP = (
     "code leg's tooling takes the path from the environment instead of "
     "assuming it sits beside it")
 
+#: The same line for a source that keeps a root `Makefile` of its own (#906):
+#: the shape's, with the block, is written beside it as `shape/Makefile`, so
+#: the block waits there until the two are merged, as #634 words it for the
+#: pinned `AGENTS-shape.md`, and the root's Makefile is the source's, which
+#: the run adds nothing to.
+OWN_MAKEFILE_FOLLOW_UP = (
+    "the shape's Makefile wires `CONTRACTS_DIR` to the `contracts/` of the "
+    "spec leg, where the plan's `legs.spec_path` mounts it, and exports it, "
+    "so the code leg's tooling takes the path from the environment instead "
+    "of assuming it sits beside it; but the source keeps a Makefile of its "
+    "own at the root, so that block waits in `shape/Makefile` until the two "
+    "are merged, and the run adds none of it to the root's Makefile before "
+    "then")
+
 #: A source with nothing for the plan to ask about, no Makefile of its own
 #: (so the shape's, with the block, is the root's), and one code file that
 #: names `contracts/`, which the rules send to the spec leg.
@@ -436,8 +450,11 @@ def test_the_path_the_split_message_prints_leads_to_the_contracts(
     marker = "the spec leg's `contracts/` is `"
     printed = message.split(marker, 1)[1].split("`", 1)[0]
     assert printed == "../../legs/spec/contracts/"
+    # The plan holds the read-across line, so the spec leg's own path comes
+    # first (#906), and then the path to its `contracts/`.
     assert (f"mounted back here at {SPEC_PATH}/ and {CODE_PATH}/, so from "
-            f"the code leg {marker}{printed}`.") in message
+            f"the code leg the spec leg is `../../legs/spec/` and "
+            f"{marker}{printed}`.") in message
     code_leg = adopted_by_hand["clone"].joinpath(*CODE_PATH.split("/"))
     target = code_leg.joinpath(*printed.rstrip("/").split("/"), POLICY)
     assert target.resolve() == adopted_by_hand["clone"].joinpath(
