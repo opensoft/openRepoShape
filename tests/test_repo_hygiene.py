@@ -1630,9 +1630,10 @@ def test_the_one_line_install_message_offers_the_set_only_where_it_works():
     name itself there: a release's `v*.md` other than v1.0.0.md is refused in
     it by the test above, and a file elsewhere is not looked up in it. A
     message that told either would send a person to a second failure (#931).
-    The line between them is the name's form, `v*.md`, not a `v` in it:
-    draft-v1.2.0.md is no release's notes. Nothing else reads the message, so
-    without this a comparison turned around in it passes every test.
+    The line between a release's notes and any other `.md` there is the
+    name's form, `v*.md`, not a `v` in it: draft-v1.2.0.md is no release's
+    notes. Nothing else reads the message, so without this a comparison
+    turned around in it passes every test.
     """
     clause = "RELEASE_NOTES_WITHOUT_THE_ONE_LINE_INSTALL"
     release = _one_line_install_failure("docs/release-notes/v9.9.9.md")
@@ -1668,7 +1669,8 @@ def _one_line_install_fault(line):
 
 
 @pytest.mark.parametrize("tail", [
-    "", " -s -- v1.0.1", "`,", " -s -- v1.0.1`,", ".", "  "])
+    "", " -s -- v1.0.1", "`,", " -s -- v1.0.1`,", ".", "  ", ";", ":", ")",
+    " -s -- v10.20.30"])
 def test_the_one_line_install_may_end_as_the_notes_end_it(tail):
     assert _one_line_install_fault(ONE_LINE_INSTALL + tail) == ""
 
