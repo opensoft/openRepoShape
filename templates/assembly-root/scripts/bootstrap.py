@@ -29,7 +29,16 @@ WHAT IT DOES, in order:
       whatever the branch or `origin` holds: a commit made there is on no
       branch, and a checkout would leave it only in the reflog, so bootstrap
       says where the leg is instead, and so is one whose HEAD is on a ref
-      outside `refs/heads/`, where a commit lands on that ref (#704). A leg
+      outside `refs/heads/`, where a commit lands on that ref (#704). So is
+      a leg whose HEAD is on a branch that differs from the tracking branch
+      only in case (`Main` for `main`), whether the tracking branch is
+      behind the pin, at it or not there: a disk that folds case (macOS,
+      Windows) reads the two as one branch, so a branch moved or made as
+      `main` there could be the ref HEAD stands on, with the index left at
+      the old commit. No ref moves and none is made; the line says where
+      the leg is, and gives `git -C <leg> switch <branch>` as the way out,
+      or, for a branch that is not there, to keep the commits on a branch
+      named otherwise and check out the pin (#896). A leg
       with a merge, a cherry-pick, a revert, a rebase or an `am` in progress
       is not moved at all: a checkout ends the first three, carrying what
       they staged onto the branch, and leaves the last two to go on over
@@ -575,7 +584,10 @@ def _check_out(sub: Path, branch: str,
 def _move_and_check_out(sub: Path, branch: str,
                         pin: str) -> tuple[bool, bool, list[str] | None]:
     """From HEAD DETACHED AT THE PIN, or on ANOTHER BRANCH (#603, D1):
-    `branch -f <branch> <pin>`, then `_check_out` of the branch.
+    `branch -f <branch> <pin>`, then `_check_out` of the branch. Another
+    branch is never a twin of `branch`, one that differs from it only in
+    case: `branch -f` would move the ref HEAD stands on, so
+    `fast_forward_to_pin` leaves that leg first (#896).
 
     From the pin the branch is by then the commit already checked out, so
     no file in the leg changes, a local edit included. From another branch
@@ -661,11 +673,13 @@ def _say_left(head: str | None, current: str, named: str) -> None:
           f"{named} now")
 
 
-def _say_keep(options: str = "the pin or the branch") -> None:
+def _say_keep(options: str = "the pin or the branch",
+              kept: str = "a branch") -> None:
     """What to do about a checkout step (a) will not move, in the words
-    both refusals of it share. Nothing moves."""
+    both refusals of it share, and a third's (`_say_twin`, which names the
+    branch the commits are kept on, `kept`). Nothing moves."""
     print("          not moving the checkout off it. Keep any commit made "
-          f"there on a branch, check out {options} in the leg, and run "
+          f"there on {kept}, check out {options} in the leg, and run "
           "bootstrap again.")
 
 
@@ -687,6 +701,88 @@ def _on_a_branch(current: str | None) -> bool:
     """Whether HEAD is on a branch, `refs/heads/<name>`, one with no commit
     yet included: the one checkout besides the pin a move starts from."""
     return current is not None and current.startswith("refs/heads/")
+
+
+def _folded_twin(current: str | None, branch: str) -> bool:
+    """Whether HEAD's ref is a TWIN of the tracking branch: a branch under
+    `refs/heads/` whose name is the branch's under `str.casefold()` and not
+    byte for byte, `refs/heads/Main` for `main` (#896).
+
+    WHAT IS WRONG WITH ONE. A disk that folds case (macOS APFS and Windows
+    NTFS by default) reads the loose files `refs/heads/Main` and
+    `refs/heads/main` as one file, so `git switch Main` in a leg whose
+    branch is `main` puts HEAD on the very ref `branch -f main <pin>`
+    moves. Git's own guard against moving a branch that is checked out
+    compares the two names byte for byte and lets it through; the branch
+    moves under HEAD, `checkout main` then finds HEAD at the pin and
+    changes no file, and the index and the work tree stay at the old
+    commit. Each path that would move or make the branch asks this first
+    and leaves the leg: `fast_forward_to_pin`, `place_at_pin` and
+    `create_at_pin`.
+
+    A detached HEAD (`None`) and a ref outside `refs/heads/` are never a
+    twin. The names after `refs/heads/` are compared, and a name this
+    system holds as surrogate escapes (a branch that is not UTF-8, #704)
+    folds as the text it is, so no name raises here. NFC and NFD spellings
+    of one name are NOT folded: APFS reads those as one file too, and that
+    is not handled here.
+    """
+    if current is None or not current.startswith("refs/heads/"):
+        return False
+    held = current[len("refs/heads/"):]
+    return held != branch and held.casefold() == branch.casefold()
+
+
+#: What step (a) says a HEAD on a twin of the tracking branch could do, by
+#: what it would otherwise have done (#896): `move` is `fast_forward_to_pin`'s
+#: `branch -f`, `place` is `place_at_pin`'s checkout and its line that the
+#: leg left a branch, and `make` is `create_at_pin`'s `checkout -b`.
+TWIN_RISKS = {
+    "move": "moving {branch} could move the ref HEAD stands on and leave "
+            "the index at the old commit",
+    "place": "the leg is already on {branch} there, and bootstrap would say "
+             "it left a branch that keeps its commits",
+    "make": "making {branch} could hide the commits {twin} holds behind the "
+            "new ref",
+}
+
+
+def _say_twin(label: str, path: str, branch: str, current: str, state: str,
+              act: str) -> None:
+    """A leg whose HEAD is on a twin of the tracking branch (`_folded_twin`,
+    #896): nothing moves and no branch is made, and the lines say where the
+    leg is, why it is left and the way out. `state` says what the branch is
+    to the pin, and `act` which of `TWIN_RISKS` is the harm.
+
+    THE WORDS HOLD ON A DISK THAT KEEPS CASE TOO, where `Main` and `main`
+    are two branches: they say only that a disk that folds case reads them
+    as one, and never that they are one. Where the branch is there, the
+    way out is `git -C <leg> switch <branch>`, printed as `move_back_to_pin`
+    prints its command. On a disk that folds case it re-spells HEAD and
+    moves no file, and the next run takes the on-branch `merge --ff-only`
+    of `fast_forward_to_pin` or the no-op checkout of `place_at_pin`; where
+    the two are branches, it puts the leg on the real one, and `Main` keeps
+    its commits. Where the branch is NOT there (`make`), that command is no
+    way out on a disk that keeps case, so the commits `Main` holds are kept
+    on a branch of another name, and the pin is checked out: on a disk that
+    folds case, `checkout -b main` would write the file `Main` reads, and
+    hide what `Main` holds, packed or not, behind it.
+    """
+    named = spelled(branch)
+    twin = spelled(current[len("refs/heads/"):])
+    risk = TWIN_RISKS[act].format(branch=named, twin=twin)
+    print(f"  {label}: {state}, and the checkout is on {twin}, which differs "
+          f"from {named} only in case")
+    print(f"          a disk that folds case (macOS, Windows) reads {twin} "
+          f"and {named} as one branch, so {risk}; the leg is left as it is")
+    if act == "make":
+        _say_keep("the pin", "a branch whose name differs from "
+                  f"{named} by more than case")
+        return
+    command = (f"git -C {spelled(shlex.quote(path))} switch "
+               f"{spelled(shlex.quote(branch))}")
+    print(f"          run `{command}`, which moves no branch, and then run "
+          "bootstrap again.")
 
 
 def _in_progress(sub: Path) -> tuple[tuple[str, str, str], str] | None:
@@ -782,7 +878,8 @@ def _say_in_progress(label: str, path: str, row: tuple[str, str, str],
           f"(`{command} --abort`), then run bootstrap again.")
 
 
-def place_at_pin(sub: Path, label: str, branch: str, pin: str) -> None:
+def place_at_pin(sub: Path, label: str, path: str, branch: str,
+                 pin: str) -> None:
     """Step (a) for a leg whose tracking branch IS the pin: check it out,
     and say `on <branch>` only when HEAD is on it afterwards.
 
@@ -798,15 +895,25 @@ def place_at_pin(sub: Path, label: str, branch: str, pin: str) -> None:
     bootstrap, checked the branch out and printed `on <branch> at <pin>`
     over a commit that was then on no branch, held by HEAD's reflog alone.
     Detached AT the pin, or already on the branch, the checkout is as it was.
-    On ANOTHER branch it is as it was too: that branch holds its commits,
-    and the line under `on <branch>` now says the leg left it, as T7's does
-    (#704). A HEAD on a ref outside `refs/heads/` (`git symbolic-ref HEAD
+    On ANOTHER branch it is as it was too, unless that branch is a twin of
+    this one (below): that branch holds its commits, and the line under
+    `on <branch>` now says the leg left it, as T7's does (#704). A HEAD on
+    a ref outside `refs/heads/` (`git symbolic-ref HEAD
     refs/remotes/origin/main`) is left where it is, as T7 leaves it: a
     commit made there lands on that ref, and this placed the leg while T7
-    said `which is neither` of the same HEAD (#704).
+    said `which is neither` of the same HEAD (#704). So is a HEAD on a
+    branch that differs from `branch` only in case (`Main` for `main`,
+    `_folded_twin`): a disk that folds case reads the two as one branch,
+    so the leg is not on another branch there, and the line that it left
+    one would be false (#896). `path` is the leg's, for the command the
+    line gives (`_say_twin`).
     """
     named = spelled(branch)
     head, current = _head_of(sub)
+    if _folded_twin(current, branch):
+        _say_twin(label, path, branch, current,
+                  f"branch {named} is at the pin {_short(pin)}", "place")
+        return
     if not (_on_a_branch(current) or (current is None and head == pin)):
         _say_neither(label, f"branch {named} is at the pin {_short(pin)}",
                      head, current)
@@ -823,8 +930,8 @@ def place_at_pin(sub: Path, label: str, branch: str, pin: str) -> None:
     _say_after(why, moved=not already)
 
 
-def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
-                        pin: str, remote: str | None) -> None:
+def fast_forward_to_pin(sub: Path, label: str, path: str, branch: str,
+                        local: str, pin: str, remote: str | None) -> None:
     """Step (a) for a leg whose tracking branch is BEHIND the pin (#475).
 
     The branch tip `local` is an ancestor of `pin`, so moving the branch to
@@ -845,12 +952,13 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
       option; such a git has no autostash and ignores the key.
     - HEAD detached AT THE PIN: `_move_and_check_out`.
     - HEAD on ANOTHER BRANCH, a `refs/heads/` ref that is not the tracking
-      branch (#603, D1 of its checklist triage): `_move_and_check_out`. The
-      other branch is not touched and keeps every commit made on it, so the
-      move loses no commit and that work is no reason to leave the leg
-      there. `place_at_pin` already checks the tracking branch out from
-      this checkout when it is AT the pin; leaving the leg for a branch
-      BEHIND the pin was a difference nobody could explain (#458). The
+      branch and not a twin of it (#603, D1 of its checklist triage, and
+      #896, below): `_move_and_check_out`. The other branch is not
+      touched and keeps every commit made on it, so the move loses no
+      commit and that work is no reason to leave the leg there.
+      `place_at_pin` already checks the tracking branch out from this
+      checkout when it is AT the pin; leaving the leg for a branch BEHIND
+      the pin was a difference nobody could explain (#458). The
       checkout changes files from here, so git can refuse it over a local
       edit or an untracked or ignored file, and `_move_and_check_out` says
       what is left then. A HEAD on a branch with no commit yet takes this
@@ -872,11 +980,27 @@ def fast_forward_to_pin(sub: Path, label: str, branch: str, local: str,
     and nothing moves. So is a HEAD on a ref outside `refs/heads/`, which
     `place_at_pin` now leaves too (#704).
 
+    SO IS A HEAD ON A TWIN OF THE BRANCH (#896): a branch that differs from
+    `branch` only in case, `Main` for `main` (`_folded_twin`). A disk that
+    folds case (macOS, Windows) reads the two as one loose ref, so `branch
+    -f main <pin>` moves the very ref HEAD stands on, git's own guard lets
+    it through (it compares the names byte for byte), `checkout main` finds
+    HEAD at the pin and changes no file, and the index and the work tree
+    stay at the old commit: the next commit made in the leg reverts the
+    pin's changes, under a line that said it was fast-forwarded. No ref
+    moves; `_say_twin` says where the leg is, why it is left, and that
+    `git -C <leg> switch <branch>` is the way out. `path` is the leg's.
+
     `label` is the leg as `checkout_tracking_branch` prints it, already
     spelled; the branch names and git's own lines are spelled here (#391).
     """
     named = spelled(branch)
     head, current = _head_of(sub)
+    if _folded_twin(current, branch):
+        _say_twin(label, path, branch, current,
+                  f"branch {named} tip {_short(local)} is behind the PIN "
+                  f"{_short(pin)}", "move")
+        return
     other_branch = (_on_a_branch(current)
                     and current != f"refs/heads/{branch}")
     if current == f"refs/heads/{branch}":
@@ -976,7 +1100,7 @@ def _stays(sub: Path, branch: str, pin: str) -> str:
     return f"at {_short(head)} ({_place_of(current)})"
 
 
-def create_at_pin(sub: Path, label: str, branch: str, pin: str,
+def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
                   remote: str | None) -> None:
     """Step (a) for a leg whose tracking branch IS NOT THERE: `checkout -b
     <branch> <pin>`, from HEAD detached at the pin or on a branch, a branch
@@ -988,7 +1112,15 @@ def create_at_pin(sub: Path, label: str, branch: str, pin: str,
     one is, where git overwrote it silently. The line used to say `leaving
     detached` of a leg on another branch, too; it says where the leg stays.
     A HEAD on a ref outside `refs/heads/` is left where it is, as the
-    branch-at-the-pin and the behind-branch paths leave it (#704).
+    branch-at-the-pin and the behind-branch paths leave it (#704). So is a
+    HEAD on a TWIN of the branch, one that differs from it only in case
+    (`Main` for `main`, `_folded_twin`, #896), and no branch is made: a
+    disk that folds case reads the new file `refs/heads/main` as the file
+    `refs/heads/Main`, so the commits `Main` holds, packed as they are
+    after `git pack-refs`, are left behind it, in no ref anyone reads.
+    `switch <branch>` is no way out of a leg with no such branch, so
+    `_say_twin` says to keep the commits on a branch of another name and to
+    check out the pin; `path` is the leg's.
 
     The checkout is judged by WHERE HEAD IS AFTERWARDS, as `_check_out`
     judges one (#533; rv704's S3): a post-checkout hook that fails after
@@ -999,6 +1131,10 @@ def create_at_pin(sub: Path, label: str, branch: str, pin: str,
     """
     named = spelled(branch)
     head, current = _head_of(sub)
+    if _folded_twin(current, branch):
+        _say_twin(label, path, branch, current,
+                  f"branch {named} does not exist", "make")
+        return
     if head is not None and current is None and head != pin:
         # `checkout -b <branch> <pin>` from a leg detached anywhere else
         # leaves the commit made there on no branch (#533), as placing a
@@ -1078,15 +1214,15 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
         if pin is None:
             print(f"  {where}: no gitlink recorded; leaving as is")
         else:
-            create_at_pin(sub, where, branch, pin, remote)
+            create_at_pin(sub, where, path, branch, pin, remote)
         return
 
     if local == pin:
-        place_at_pin(sub, where, branch, pin)
+        place_at_pin(sub, where, path, branch, pin)
         return
 
     if _is_ancestor(sub, local, pin):
-        fast_forward_to_pin(sub, where, branch, local, pin, remote)
+        fast_forward_to_pin(sub, where, path, branch, local, pin, remote)
         return
 
     upstream = _held_upstream_past_the_pin(sub, branch, local, pin)
