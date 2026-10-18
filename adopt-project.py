@@ -37,12 +37,13 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            whole (#273). Where the source names a repository, `--org` and
            `--project` name that one, compared without case, or `plan`
            refuses them (`adopt-not-the-source`), and `check` finds and
-           `execute` refuses a plan edited to name another
-           (`plan-not-the-source`): in place, the source IS the assembly
-           root, and its own name is renamed first, on GitHub, never
-           retyped (#499). An `origin` that is a url names the
-           `org/repo` it ends in, with or without a trailing `/`; one that
-           is a path, in any separator, names none, and `plan` says it
+           `execute` refuses a plan edited to name another repository than
+           the source names, or, where it names none, than the plan
+           recorded for it (`plan-not-the-source`, #716): in place, the
+           source IS the assembly root, and its own name is renamed first,
+           on GitHub, never retyped (#499). An `origin` that is a url names
+           the `org/repo` it ends in, with or without a trailing `/`; one
+           that is a path, in any separator, names none, and `plan` says it
            compared nothing (#521). An organisation read from the url and
            refused is named by where it came from (#427).
   check    validates a plan against the source: each entry path bound for
@@ -9312,9 +9313,11 @@ def _root_attributes(source: Source, walks: list, disk: _KeptTree,
     """The `.gitattributes` the split puts at the root, and under `shape/`,
     as `{path: bytes}`. Where the root keeps none, the shape's own. Where it
     keeps one, the shape's goes beside it and the split appends the block
-    for the copies `names` outside `shape/` (#471); a kept one that is not a
-    regular file gets no block, so it is asked as the block alone, the lines
-    #471's follow-up asks a regular file in its place to hold."""
+    for the copies `names` outside `shape/` (#471), each named where `walks`
+    land it, the path git tracks, and by its own name where that differs
+    (#807); a kept one that is not a regular file gets no block, so it is
+    asked as the block alone, the lines #471's follow-up asks a regular file
+    in its place to hold."""
     shapes = (SPLIT_TEMPLATE / ATTRIBUTES).read_text(
         encoding="utf-8").encode("utf-8")
     walk = next((walk for walk in walks if walk.path == ATTRIBUTES), None)
@@ -9324,8 +9327,8 @@ def _root_attributes(source: Source, walks: list, disk: _KeptTree,
     blobs = {path: oid for path, _, oid, _ in tree}
     own = (_blob_bytes(source.path, blobs[row[0]])
            if row and row[1] in FILE_MODES else b"")
-    return {ATTRIBUTES: with_eol_block(own, eol_block_paths(names,
-                                                           COLLISION_DIR)),
+    return {ATTRIBUTES: with_eol_block(own, eol_block_paths(
+                names, COLLISION_DIR, dict(_pinned_landings(walks)))),
             f"{COLLISION_DIR}/{ATTRIBUTES}": shapes}
 
 
@@ -9904,12 +9907,14 @@ def _rules_reaching(asked: _SplitRehearsal, source: Source, tree: list,
 
 def _as_the_split_writes(asked: _SplitRehearsal, rules: list, kept: set[str],
                          own: str | None, written: dict,
-                         names: list[str]) -> None:
+                         landings: list[tuple[str, str]]) -> None:
     """The root's rules as the split's `git add` reads them: the moved
     `.gitattributes` gone; the root's own followed by #471's block, or the
     shape's own where the root keeps none; and the shape's beside it, where
     the root keeps nothing there (`plan-root-blocks-shape-copy` names what
-    it keeps, #262)."""
+    it keeps, #262). The block names each pinned copy of `landings`
+    (`_pinned_landings`') where it lands, the path git tracks, and by its own
+    name where that differs (#807)."""
     for path, _, _ in rules:
         if path not in kept:
             asked.work.joinpath(*path.split("/")).unlink(missing_ok=True)
@@ -9920,7 +9925,8 @@ def _as_the_split_writes(asked: _SplitRehearsal, rules: list, kept: set[str],
     if own is not None:
         asked.place(ATTRIBUTES, with_eol_block(
             (asked.work / ATTRIBUTES).read_bytes(),
-            eol_block_paths(names, COLLISION_DIR)))
+            eol_block_paths([name for name, _ in landings], COLLISION_DIR,
+                            dict(landings))))
     if beside not in kept:
         asked.place(beside, written[beside])
 
@@ -10100,7 +10106,7 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
             ["diff-files", "--name-only", "-z"], TAKEN) if path in moved]
         # The split's side: its `git add`, over the root it writes.
         try:
-            _as_the_split_writes(asked, rules, kept, own, written, names)
+            _as_the_split_writes(asked, rules, kept, own, written, landings)
         except OSError:
             return [_moved_finding(taken)] if taken else []
         held = {*[row for row in wanted if row[0] in kept],
@@ -10206,15 +10212,30 @@ def cmd_check(args) -> int:
     another = _not_the_source(plan, source, names)
     if another:
         findings.append(f"FINDING {PLAN_NOT_THE_SOURCE}: {another}")
-        remediation.append(_own_name_remediation(source, naming, pins, ""))
+        remediation.append(_own_name_remediation(
+            _held_repository(plan, source), naming, pins, ""))
+    # THE SOURCE IS HANDED TO `_check_names` WHERE `execute` HANDS IT (#716):
+    # when the plan does not name another repository, so that a refusal of
+    # the assembly root's own name says to rename it first, as `execute`
+    # says it on the same plan. Where the plan does name another,
+    # `execute` stops at `plan-not-the-source` and never asks the names, and
+    # a refusal of the plan's name is then about a name that is not the
+    # source's: `_own_name_remediation` has said what to do.
+    renamed = (_rename_first(source.repository)
+               if source.repository is not None and not another else None)
     try:
-        _check_names(naming, names, pins)
+        _check_names(naming, names, pins, None if another else source)
         for role, name in names.items():
             found = naming.classify(name, role, pins)
             print(f"  {role:<9} {name:<28} {found.family}"
                   + (f"/{found.role}" if found.role else ""))
     except Refusal as exc:
         findings.append(f"FINDING {exc.code}: {exc.detail}")
+        # Only the rename-first remedy is printed, once after the findings:
+        # it is the one `check` was missing. `--project takes ...` is not,
+        # and `check` never printed it (#716).
+        if renamed is not None and exc.remediation == renamed:
+            remediation.append(renamed)
 
     _print_what_will_happen(plan, source, names,
                             naming.topic_for(plan.project_id),
@@ -12148,10 +12169,9 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
             print(f"  beside  {actual} (the source already has {intended}; "
                   "nothing was overwritten)")
         if materialized.eol_block:
-            print(f"  appended to {ATTRIBUTES}: a `text eol=lf` line for "
-                  f"each of {len(materialized.eol_block)} pinned copies, so "
-                  "every checkout keeps their bytes (#471); none of its own "
-                  "lines was changed")
+            print(f"  appended to {ATTRIBUTES}: "
+                  f"{_appended_lines(materialized)}, so every checkout keeps "
+                  "their bytes (#471); none of its own lines was changed")
 
         follow_ups = _plan_follow_ups(plan)
         message = _split_message(names, paths_for, leg_commits, spec_path,
@@ -12741,6 +12761,20 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
     return findings + root_findings
 
 
+def _appended_lines(materialized: Materialized) -> str:
+    """What `execute` says it appended to the source's `.gitattributes`: a
+    line for each pinned copy outside `shape/`, and the second line each
+    copy written through a symlink has under its pinned path (#807)."""
+    copies = len(eol_block_paths(materialized.shape_files, COLLISION_DIR))
+    said = f"a `text eol=lf` line for each of {copies} pinned copies"
+    second = len(materialized.eol_block) - copies
+    if second:
+        said += (f", and {second} more under the pinned path of each copy "
+                 "written through a symlink, which governs it once the link "
+                 "is replaced")
+    return said
+
+
 def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
                         before: dict, after: dict) -> int:
     """Count the source's `.gitattributes` as landed in the root when the
@@ -12765,7 +12799,10 @@ def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
     a lookup among the tree's plain files found none, so the appended file
     was `adopt-lost` where main verified it (#471's review, SHOULD-3). A pin
     neither can read counts nothing here, and `_shape_file_findings` reports
-    it.
+    it. Each copy the block names is named where the split's symlinks lead
+    its pinned path (`_SplitTree.tracked_at`), the path git tracks, and then
+    by that pinned path where it differs, as the materializer named it
+    (#807).
     """
     source_oid = before.get(ATTRIBUTES)
     landed = after.get(ATTRIBUTES, [])
@@ -12774,11 +12811,13 @@ def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
             or root[0] == f"root:{source_oid}":
         return 0
     blobs = {path: oid for path, mode, oid, _ in tree if mode in FILE_MODES}
-    pin = _pin_through_links(_SplitTree(assembly, split_commit))
+    split = _SplitTree(assembly, split_commit)
+    pin = _pin_through_links(split)
     pinned = _pinned_shape_paths(assembly, pin) if pin else None
     if pinned is None or blobs.get(ATTRIBUTES) != root[0].split(":", 1)[1]:
         return 0
-    paths = eol_block_paths(pinned, COLLISION_DIR)
+    paths = eol_block_paths(pinned, COLLISION_DIR,
+                            {path: split.tracked_at(path) for path in pinned})
     expected = with_eol_block(_blob_bytes(assembly, source_oid), paths)
     if _blob_bytes(assembly, blobs[ATTRIBUTES]) != expected:
         return 0
@@ -13190,6 +13229,15 @@ class _SplitTree:
                 f"is not in the split commit {self.commit}")
         return oid
 
+    def tracked_at(self, path: str) -> str | None:
+        """Where the split tracks what `path` leads to, each symlink on the
+        way followed (#807); None where the way leads out of the tree, above
+        it, round a loop, or through what is no directory in it."""
+        try:
+            return self._resolve(path)
+        except _NotInTheSplitError:
+            return None
+
     def _resolve(self, path: str) -> str:
         """`path` with each symlink on the way followed, as `open()` does."""
         parts, done, via, hops = self._parts(path, ""), [], "", 0
@@ -13423,9 +13471,20 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
 # refuses before it asks the naming policy or any remote, a plan whose `org:`
 # names another with its `legs.assembly:`, which is what `execute` acts on, or
 # with its `project:`, as `plan-not-the-source`: a hand edit is caught too,
-# whatever `org:` then holds, because it is read as `execute` reads it
-# (`_plan_org`). A source that names no repository (no `origin`, or one that
-# ends in no `org/repo`) is asked nothing, as before.
+# because `org:` is read as `execute` reads it (`_plan_org`), as `str()` of
+# what the file holds. One that `checked_value` refuses (a list, a mapping,
+# an empty value, a space, a leading `-`, a character outside ASCII) is, in
+# `execute`, `plan-not-the-source` where the plan is held to a repository
+# (`_held_repository`, and the `org:` is not that repository's own) and
+# `unsafe-value` where it is held to none. `check` asks `checked_value` of
+# `org:` first (`_manifest_values`, and `_submodule_findings` where a kept
+# submodule url is relative) and ends in `unsafe-value`, exit 2, before it
+# compares anything; only where the plan's own names are refused, and no
+# kept url is relative, does it reach the comparison with one (#716,
+# L4-48). A source that names no repository (no `origin`, or one that ends
+# in no `org/repo`) is asked nothing by `plan`, as before; `check` and
+# `execute` hold the plan's names to what the plan recorded for it,
+# `source: repository:`, where it recorded one (#716).
 #
 # AN `origin` THAT IS A PATH NAMES NO REPOSITORY (#521), in any separator
 # (`url_repository`). It was read as its last two directories, so a clone of
@@ -13505,13 +13564,14 @@ def _path_origin_notes(args, source: Source) -> list[str]:
             "repository on GitHub."]
 
 
-def _own_name_remediation(source: Source, naming: NamingPolicy,
+def _own_name_remediation(repository: str, naming: NamingPolicy,
                           pins: set[str], done: str) -> str:
     """What `adopt-not-the-source` and `plan-not-the-source` say to do:
     `plan` again under the source's own name, or, where the naming policy
-    refuses that name, `_rename_first`. `done` is what the refusing command
-    left as it was, said first."""
-    repository = str(source.repository)
+    refuses that name, `_rename_first`. `repository` is the one the source
+    is held to (`_held_repository`), as text: where the live source names
+    none, the plan's record of it, and `str(None)` is no name (#716). `done`
+    is what the refusing command left as it was, said first."""
     org, _, name = repository.partition("/")
     try:
         _check_names(naming, _names(name), pins)
@@ -13548,24 +13608,116 @@ def _refuse_another_repository(args, source: Source, naming: NamingPolicy,
         "an in-place adoption keeps the source's own name, and `execute` "
         "pushes the split to the repository they name, opens its pull "
         "request there and sets its topic on it",
-        _own_name_remediation(source, naming, pins, "no plan was written. "))
+        _own_name_remediation(repository, naming, pins,
+                              "no plan was written. "))
+
+
+def _last_two_directories(path: str) -> str | None:
+    """`<directory>/<name>` for a filesystem path, in either separator and
+    after a `:`, with one `.git` dropped from the name and the case kept;
+    None where the path has fewer than two (#716).
+
+    A SUPERSET OF WHAT v1.0.0 AND v1.0.1 READ. Their `_remote_repository`
+    took `[:/]([^/:]+/[^/]+?)(?:\\.git)?$` of a path `origin` (until #521),
+    which is its last two segments, split at `/` or `:`, one `.git` dropped
+    from the second: `/srv/a:b/Atlas.git` was `b/Atlas`, and
+    `/srv/clones/Atlas.git.git` was `clones/Atlas.git`. It read none for a
+    trailing `/`, a backslash path, or a relative one that starts with no
+    separator; this reads each as its last two directories too, which only
+    holds a plan to nothing more often, and that is what main does."""
+    segments = [part for part in re.split(r"[\\/:]", path) if part]
+    if segments and segments[-1].endswith(".git") \
+            and len(segments[-1]) > len(".git"):
+        segments[-1] = segments[-1][:-len(".git")]
+    return "/".join(segments[-2:]) if len(segments) >= 2 else None
+
+
+def _held_repository(plan: Plan, source: Source) -> str | None:
+    """The repository an in-place adoption by `plan` is held to, or None
+    where there is none (#716): the one the live source names
+    (`source.repository`), and where it names none, the one the plan
+    recorded for it, `source: repository:`.
+
+    A SOURCE WITH NO `origin` ONCE HELD A PLAN TO NOTHING. `plan` records
+    `repository: null` for it and compares nothing, which is right; but a
+    plan for acme/Atlas whose names were edited to `Atlsa`, with `origin`
+    then removed from the source, or given a copy of it that has none by
+    `--source`, checked `plan ok`, and `execute` went on to ask GitHub about
+    `acme/Atlsa`. The record is read as `_github_name` reads a name, and
+    never raises: one that is no text, or names no `owner/repo`, holds the
+    plan to nothing, as a null does, and `Plan.open_source` is the reader
+    that refuses one it must clone (`_recorded_repository`).
+
+    A RECORD THAT IS THE PATH'S OWN LAST TWO DIRECTORIES HOLDS NOTHING. v1.0.0
+    and v1.0.1 read a path `origin` as those directories (#521), so `plan
+    --org acme --project Atlas` on a clone of `/srv/clones/Atlas.git` was
+    refused with "`--org clones`" and, where the plan was written all the
+    same, recorded `repository: clones/Atlas`. A person who put `org: acme`
+    back by hand holds a correct plan, and holding it to that record
+    refused it, with a remedy that is the advice #521 took out. Where the
+    source's `origin` is a path (`_origin_path`), a record that is its last
+    two directories, as `_last_two_directories` reads them without case, in
+    either separator, is the old reader's and not the source's name: the
+    plan is held to nothing. Any other record is held, so a `git clone` of
+    the source, whose `origin` is a path, still holds a plan edited to
+    `Atlsa` to `acme/Atlas`."""
+    if source.repository is not None:
+        return source.repository
+    recorded = plan.source.get("repository")
+    held = _github_name(recorded) if isinstance(recorded, str) else None
+    path = _origin_path(source) if held is not None else None
+    if path is not None:
+        # Read as `held` was, so the two spellings are one name: v1.0.1
+        # records `clones/Atlas.git` for `/srv/clones/Atlas.git.git`.
+        old = _last_two_directories(path)
+        old = None if old is None else _github_name(old)
+        if old is not None and old.casefold() == held.casefold():
+            return None
+    return held
+
+
+def _why_the_source_names_none(source: Source) -> str:
+    """Why the live source names no repository, as `_not_the_source` says it
+    beside the plan's record (#716): it has no `origin`, or its `origin`
+    names none (a path, a url that ends in no `org/repo`, or one that is not
+    UTF-8: `_remote_repository`)."""
+    try:
+        git_out(["remote", "get-url", "origin"], cwd=source.path, binary=True)
+    except Refusal:
+        return "it has no `origin`"
+    return "its `origin` names no repository"
 
 
 def _not_the_source(plan: Plan, source: Source,
                     names: dict[str, str]) -> str | None:
     """`plan-not-the-source`'s detail, or None: the plan's `org:` with its
     `legs.assembly:` (`names`, read by `Plan.names`) or with its `project:`
-    names another repository than the one the source names (#499).
+    names another repository than the one the source is held to
+    (`_held_repository`): the one it names (#499), or, where it names none,
+    the one the plan records for it (#716).
 
-    `org:` is read as `execute` reads it (`_plan_org`), whatever the file
-    holds. While it was compared only when it was text, a number, a
-    boolean, a null or a deleted `org:` line checked `plan ok`, and
-    `execute` acted on `2026/Atlas`, `True/Atlas` or `None/Atlas` (#513's
-    review, SHOULD-1). Where it is not text, the detail says what the file
-    holds beside how `execute` spells it. `project:` is read only as text:
-    a misread one is not this question's to answer, and `execute` acts on
-    `legs.assembly:`."""
-    repository = source.repository
+    `org:` is read as `execute` reads it (`_plan_org`), as whatever text
+    `str()` makes of what the file holds. While it was compared only when
+    it was text, a number, a boolean, a null or a deleted `org:` line
+    checked `plan ok`, and `execute` acted on `2026/Atlas`, `True/Atlas` or
+    `None/Atlas` (#513's review, SHOULD-1). Where it is not text, the detail
+    says what the file holds beside how `execute` spells it. `project:` is
+    read only as text: a misread one is not this question's to answer, and
+    `execute` acts on `legs.assembly:`.
+
+    AN `org:` THAT `checked_value` REFUSES IS CAUGHT, BUT NOT ALWAYS AS
+    THIS (#716, L4-48): a list, a mapping, an empty value, one with a space,
+    a leading `-` or a character outside ASCII. `execute` asks this first,
+    so it refuses such an `org:` as `plan-not-the-source` where the plan is
+    held to a repository (`_held_repository`, and the `org:` is not that
+    repository's own), and as `unsafe-value`, from `_repository_urls`,
+    where it is held to none. `check` asks
+    `checked_value` of `org:` first (`_manifest_values`, and
+    `_submodule_findings` where a kept submodule url is relative) and ends
+    in `unsafe-value`, exit 2, before it compares anything; only where the
+    plan's own names are refused, and no kept url is relative, does it
+    reach this with one."""
+    repository = _held_repository(plan, source)
     if repository is None:
         return None
     org, held = _plan_org(plan), plan.get("org")
@@ -13582,8 +13734,14 @@ def _not_the_source(plan: Plan, source: Source,
     keys = " and ".join(f"`{key}: {_shown(value)}`" for key, value in wrong)
     named = _and_listed(sorted({f"{_shown(org)}/{_shown(value)}"
                                 for _, value in wrong}))
+    # Where the live source names none, the plan's own record is what it is
+    # held to, and the detail says so: the source did not say it (#716).
+    is_the = (f"the source is {_shown(repository)}"
+              if source.repository is not None else
+              f"the plan records the source as {_shown(repository)} "
+              f"({_why_the_source_names_none(source)})")
     return (f"the plan's {said} with its {keys} names {named}, "
-            f"and the source is {_shown(repository)}: an in-place adoption "
+            f"and {is_the}: an in-place adoption "
             "keeps the source's own name, and `execute` acts on the "
             "repository `org:` and `legs.assembly:` name")
 
@@ -13601,7 +13759,7 @@ def _refuse_a_plan_for_another_repository(
         raise Refusal(
             PLAN_NOT_THE_SOURCE, f"{plan.path}: {detail}",
             _own_name_remediation(
-                source, naming, pins,
+                _held_repository(plan, source), naming, pins,
                 "no leg repository was created and nothing was pushed. "))
 
 
