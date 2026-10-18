@@ -53,7 +53,7 @@ from conftest import REPO, git, load_without_bytecode, run_script
 #: The family fixture, its names and the `make siblings` runner, imported
 #: from the module that owns them.
 from test_family import (  # noqa: F401
-    ALLOW_FILE_PROTOCOL, FAMILY, MEMBERS, NAME, family, siblings,
+    FAMILY, MEMBERS, NAME, allow_file_protocol, family, siblings,
 )
 
 #: The branch IRSS's remote is pointed at instead of `main`.
@@ -514,7 +514,7 @@ def test_a_family_folder_reached_through_a_link_passes_and_clones_into_it(
     logical = link / NAME
 
     shim = run_script(FAMILY, "siblings", "--family-root", str(logical),
-                      "--dry-run", env=ALLOW_FILE_PROTOCOL)
+                      "--dry-run", env=allow_file_protocol())
     assert shim.returncode == 0, shim.stdout + shim.stderr
     assert "WARNING" not in shim.stderr
 
@@ -615,7 +615,7 @@ def test_family_py_siblings_runs_the_holders_own_copy_with_its_imports(
         b" Path(_shape.__file__).resolve())\n")))
 
     result = run_script(FAMILY, "siblings", "--family-root", str(holder),
-                        "--dry-run", env=ALLOW_FILE_PROTOCOL)
+                        "--dry-run", env=allow_file_protocol())
     assert result.returncode == 0, result.stdout + result.stderr
     library = (holder / "scripts" / "repo_shape.py").resolve()
     assert f"HOLDER COPY RAN, repo_shape from {library}" in result.stdout
@@ -630,7 +630,7 @@ def test_family_py_siblings_refuses_a_holder_without_its_own_copy(
     (holder / "scripts" / "siblings.py").unlink()
 
     result = run_script(FAMILY, "siblings", "--family-root", str(holder),
-                        env=ALLOW_FILE_PROTOCOL)
+                        env=allow_file_protocol())
     assert result.returncode == 2, result.stdout + result.stderr
     said = flat(result.stderr)
     assert said.startswith("REFUSED siblings-script-missing: family.py "
@@ -659,7 +659,7 @@ def test_family_py_siblings_escapes_what_its_stdout_cannot_encode(
     of the first line, and the run goes on."""
     holder = holder_in(diverged, tmp_path / NAME)
     result = run_script(FAMILY, "siblings", "--family-root", str(holder),
-                        "--dry-run", env={**ALLOW_FILE_PROTOCOL,
+                        "--dry-run", env={**allow_file_protocol(),
                                           "PYTHONIOENCODING": "ascii"})
     assert result.returncode == 0, result.stdout + result.stderr
     assert "UnicodeEncodeError" not in result.stderr
