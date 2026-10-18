@@ -2128,17 +2128,16 @@ def test_the_changed_paste_lines_are_posix_quoted_on_windows_too(
     """#538, under #532's ruling that printed commands are POSIX-only: the
     hand-over's `cd <clone>` and the backstop's `cd <parent>` and `<assembly>`
     are spelled for `sh` on every host, as the scaffold's own NEXT STEPS
-    clone is (`shell_line(..., "posix")`). `os.name` and `SHELL_BARE` are
-    switched for the calls, the two things `shell_word` reads to choose
-    PowerShell's dialect, so this holds on any host; the lines are then read
-    back by `shlex.split`, as Git Bash reads them. The family lines are
-    #532's and are not asked."""
+    clone is (`shell_line(..., "posix")`). `os.name` is switched and
+    `MSYSTEM` unset for the calls, which is what `host_shell_dialect` reads
+    to answer PowerShell's dialect (#711), so this holds on any host; the
+    lines are then read back by `shlex.split`, as Git Bash reads them. The
+    family lines are #532's and are not asked."""
     module = entry_point_module()
     assembly, assembly_spelled = WINDOWS_ASSEMBLY
     urls = {"assembly": assembly, "spec": assembly, "code": assembly}
     monkeypatch.setattr(os, "name", "nt")
-    monkeypatch.setattr(module, "SHELL_BARE",
-                        re.compile(r"[A-Za-z0-9_./:%+=\\-]+"))
+    monkeypatch.delenv("MSYSTEM", raising=False)
     module.hand_over("Sample", clone, urls, "demoorg",
                      module.Landing(None, "", None))
     local = module.finish_by_hand(clone, assembly, "Sample", True)
