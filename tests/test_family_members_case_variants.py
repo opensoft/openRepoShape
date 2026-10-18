@@ -109,7 +109,7 @@ def index_part(*, rename=(), sparse=(), unstage=(), commit="") -> str:
         said.append("rename what the index holds with `git mv`, entry by "
                     f"entry ({each('git mv', rename)})")
     if sparse:
-        said.append("rename what the sparse checkout keeps off disk with "
+        said.append("rename what the sparse checkout leaves out with "
                     f"`git mv --sparse`, {NEEDS_GIT_2_38}, entry by entry "
                     f"({each('git mv --sparse', sparse)})")
     if unstage:
@@ -457,7 +457,7 @@ def test_a_name_head_holds_that_is_not_utf8_is_shown_replaced(
         ("Members/\N{REPLACEMENT CHARACTER}", "a file",
          "in HEAD and no longer in the index",
          "Members/\N{REPLACEMENT CHARACTER}", False, "git commit", True, "",
-         False, "", False)]
+         False, "", False, (), False)]
 
 
 # --- the disk (#364) ---------------------------------------------------------
