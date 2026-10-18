@@ -462,6 +462,24 @@ def _load_manifest(root: Path, path: Path):
         raise
 
 
+def _a_validator(root: Path, path: Path) -> bool:
+    """Whether step (b) runs the validator at `path`: a file this user can
+    open, or `validator-unreadable` naming it (`_unreadable`) where its
+    `stat` or its open was refused (#430). Opened, and closed unread, as
+    `bump-leg.py`'s `_validators_readable` opens each (#934), since the
+    child has to read it: one at mode 000 in a `scripts/` this user can
+    search reached the child, and the run said Python's own `can't open
+    file` line and `bootstrap REFUSED`, with nothing to put it right."""
+    if not _is_file(root, path, "validator-unreadable", VALIDATOR_READ):
+        return False
+    try:
+        path.open("rb").close()
+    except OSError as exc:
+        raise _unreadable("validator-unreadable", root, path, exc,
+                          VALIDATOR_READ) from exc
+    return True
+
+
 class _Unreadable(Exception):
     """A name in a leg that step (a) must look at and whose `stat` the
     operating system refused (#430): `path`, and its `OSError`, `error`.
@@ -1625,26 +1643,36 @@ def _cached_tip(root: Path) -> str | None:
         return None
 
 
-def _register_paths(root: Path, legs: list[dict]) -> list[Path]:
+def _register_paths(root: Path, legs: list[dict]) -> list[tuple[Path, str]]:
+    """Each register step (c) reads, with what its line calls it
+    (`_a_register`)."""
     candidates = [root / REGISTER_RELPATH]
     for leg in legs:
         path = str(leg.get("path") or "")
         if path and path != ".":
             candidates.append(root / path / REGISTER_RELPATH)
-    return [c for c in candidates if _a_register(c)]
+    called = [(c, _a_register(c)) for c in candidates]
+    return [(c, label) for c, label in called if label is not None]
 
 
-def _a_register(path: Path) -> bool:
-    """Whether step (c) takes `path` for a register: a file, or a name whose
-    `stat` the operating system refused (#430), which may be one and which
-    `_load_register_rows` then names as unreadable. `Path.is_file()` raised
-    that refusal out of step (c), which never fails, up to Python 3.13, a
-    traceback, and from 3.14 answered False, so the run said `authority is
-    not wallet-carried in this org` of a register it could not read."""
+#: What step (c) calls a register whose `stat` the operating system refused
+#: (#430): a directory on the way to it cannot be searched, so whether one
+#: is there is not known, and the line does not say that one is.
+MAYBE_A_REGISTER = "register, if one is there"
+
+
+def _a_register(path: Path) -> str | None:
+    """What step (c) calls `path`: `register` where it is a file,
+    `MAYBE_A_REGISTER` where its `stat` the operating system refused (#430),
+    which `_load_register_rows` then names as unreadable, and `None` where
+    no register is there. `Path.is_file()` raised that refusal out of step
+    (c), which never fails, up to Python 3.13, a traceback, and from 3.14
+    answered False, so the run said `authority is not wallet-carried in
+    this org` of a register it could not read."""
     try:
-        return _is_a(path, stat.S_ISREG)
+        return "register" if _is_a(path, stat.S_ISREG) else None
     except OSError:
-        return True
+        return MAYBE_A_REGISTER
 
 
 def _row_objects(row: dict) -> list[str]:
@@ -1731,18 +1759,20 @@ def _row_report_line(row: dict, repositories: set[str],
 
 
 def _report_one_register(register_path: Path, root: Path,
-                         repositories: set[str], prefixes: list[str]) -> None:
+                         repositories: set[str], prefixes: list[str],
+                         label: str = "register") -> None:
     """One register file, start to finish: read it, print each row that
     names this project, and the "no rows"/"no row names…" line when there
     is nothing to show.
 
     Split from `read_authority` for #132 so its loop over every register
-    file found is a single call per file.
+    file found is a single call per file. Its first line is `label`, which
+    `_a_register` chose, and the path as `_named` names it (#430): relative
+    to the root, POSIX on every platform, as git and the reader spell it,
+    and whole where a leg's `path:` is absolute, which `relative_to` ended
+    in a `ValueError`, a traceback from the step that never fails.
     """
-    # POSIX, on every platform: this line names a file in the repository,
-    # and git and the reader both spell it that way.
-    print("  register: "
-          f"{spelled(register_path.relative_to(root).as_posix())}")
+    print(f"  {label}: {_named(root, register_path)}")
     rows = _load_register_rows(register_path, root)
     if rows is None:
         return
@@ -1774,8 +1804,9 @@ def read_authority(root: Path, legs: list[dict]) -> None:
                     if leg.get("repository")}
     prefixes = [str(leg.get("path")) for leg in legs
                 if leg.get("path") and leg.get("path") != "."]
-    for register_path in found:
-        _report_one_register(register_path, root, repositories, prefixes)
+    for register_path, label in found:
+        _report_one_register(register_path, root, repositories, prefixes,
+                             label)
     print("  Grants are read here for REPORTING only. This command confers "
           "nothing and enforces nothing; a required check in the repository "
           "that owns the object is what confers.")
@@ -1867,12 +1898,12 @@ def _run_neutral_validators(root: Path, manifest: dict | None,
     validator that failed, in the order they ran: `_end_of_run` says which
     were findings and which refusals (#764).
 
-    Each validator is looked for BEFORE ANY RUNS, and one whose `stat` the
-    operating system refuses is `validator-unreadable`, naming it (#430):
-    only one that is not there is SKIPPED. `Path.is_file()` raised that
-    refusal out of the run up to Python 3.13, a traceback, and from 3.14
-    answered False, so a `scripts/` this user cannot search SKIPPED all
-    three and the run said `bootstrap ok`.
+    Each validator is looked for BEFORE ANY RUNS, and one whose `stat` or
+    open the operating system refuses is `validator-unreadable`, naming it
+    (`_a_validator`, #430): only one that is not there is SKIPPED.
+    `Path.is_file()` raised a refused `stat` out of the run up to Python
+    3.13, a traceback, and from 3.14 answered False, so a `scripts/` this
+    user cannot search SKIPPED all three and the run said `bootstrap ok`.
     """
     if skip:
         print("  skipped (--skip-validators)")
@@ -1883,9 +1914,7 @@ def _run_neutral_validators(root: Path, manifest: dict | None,
               "governed for that.")
         return []
     failed = []
-    present = [(label, argv_, _is_file(root, root / argv_[0],
-                                       "validator-unreadable",
-                                       VALIDATOR_READ))
+    present = [(label, argv_, _a_validator(root, root / argv_[0]))
                for label, argv_ in VALIDATORS]
     for label, argv_, there in present:
         if not there:
