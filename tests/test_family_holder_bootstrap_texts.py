@@ -439,6 +439,10 @@ def made(holder: Path, tmp_path: Path, *,
                           check=False)
 
 
+#: A recipe's command that prints a finding and exits 1, and one that
+#: prints a refusal and exits 2, as a member's checks do.
+FINDS = b"\t@echo 'Find: a finding' >&2; exit 1\n"
+REFUSES = b"\t@echo 'Refuse: refused' >&2; exit 2\n"
 #: Members whose make runs another make, or whose `Error` line is followed
 #: by more than 4096 bytes on stderr, each with what the line says of it:
 #: the innermost command's code, read from each line as it passes (#884's
@@ -450,31 +454,36 @@ def made(holder: Path, tmp_path: Path, *,
 #: named, and one that ignores a failure of its own (without `-s`, which
 #: keeps make from saying so) reports nothing; and
 #: make's `Error` line after a member's own `: *** ` on one line is read
-#: (rv884's X11, X7 and X12, and NIT 1 and NIT 2, on #886).
+#: (rv884's X11, X7 and X12, and NIT 1 and NIT 2, on #886). A `-` that
+#: lets a command fail, whatever its code, leaves nothing passed over
+#: after it: a member's own `Error 2` is named where the `-` was in a make
+#: below it, or after a make whose failure an `|| true` let pass, and the
+#: code named before it stands (rv884's re-check, on #886).
 INNERMOST = {
-    "Recurse": (b"bootstrap:\n\t@$(MAKE) -s inner\n"
-                b"inner:\n\t@echo 'Find: a finding' >&2; exit 1\n", 1),
-    "RecurseRefuse": (b"bootstrap:\n\t@$(MAKE) -s inner\n"
-                      b"inner:\n\t@echo 'Refuse: refused' >&2; exit 2\n", 2),
+    "Recurse": (b"bootstrap:\n\t@$(MAKE) -s inner\ninner:\n" + FINDS, 1),
+    "RecurseRefuse": (b"bootstrap:\n\t@$(MAKE) -s inner\ninner:\n" + REFUSES,
+                      2),
     "InnerOwn": (b"bootstrap:\n\t@$(MAKE) -s nothere\n", None),
     "InnerThenOwn": (b"bootstrap:\n\t@$(MAKE) -s nothere; exit 3\n", 3),
     "InnerThenFinding": (b"bootstrap:\n\t@$(MAKE) -s nothere || exit 1\n",
                          1),
-    "Long": (b"bootstrap: one two\n"
-             b"one:\n\t@echo 'Find: a finding' >&2; exit 1\n"
-             b"two:\n\t@printf '%05000d' 0 >&2; echo >&2\n", 1),
+    "Long": (b"bootstrap: one two\none:\n" + FINDS
+             + b"two:\n\t@printf '%05000d' 0 >&2; echo >&2\n", 1),
     "KeepsGoing": (b"bootstrap:\n\t@$(MAKE) -s -k inner\ninner: one two\n"
-                   b"one:\n\t@echo 'Find: a finding' >&2; exit 1\n"
-                   b"two:\n\t@echo 'two: done' >&2\n", 1),
-    "ThenKilled": (b"bootstrap: one two\n"
-                   b"one:\n\t@echo 'Find: a finding' >&2; exit 1\n"
-                   b"two:\n\t@kill -KILL $$$$\n", 1),
-    "LetFail": (b"bootstrap:\n\t-@$(MAKE) -s inner\n"
-                b"\t@echo 'Refuse: refused' >&2; exit 2\n"
-                b"inner:\n\t@echo 'Find: a finding' >&2; exit 1\n", 2),
+                   b"one:\n" + FINDS + b"two:\n\t@echo 'two: done' >&2\n", 1),
+    "ThenKilled": (b"bootstrap: one two\none:\n" + FINDS
+                   + b"two:\n\t@kill -KILL $$$$\n", 1),
+    "LetFail": (b"bootstrap:\n\t-@$(MAKE) -s inner\n" + REFUSES
+                + b"inner:\n" + FINDS, 2),
     "InnerLets": (b"bootstrap:\n\t@$(MAKE) inner; exit 2\n"
                   b"inner:\n\t-@exit 2\n\t@echo 'inner: done'\n", 2),
     "OwnStars": (b"bootstrap:\n\t@printf 'x: *** y' >&2; exit 1\n", 1),
+    "LetsBelow": (b"bootstrap:\n\t@$(MAKE) mid\n" + REFUSES
+                  + b"mid:\n\t-@$(MAKE) inner\ninner:\n" + FINDS, 2),
+    "PassesThenLets": (b"bootstrap:\n\t@$(MAKE) inner || true\n\t-@exit 10\n"
+                       + REFUSES + b"inner:\n" + FINDS, 2),
+    "ThenLets": (b"bootstrap: one two\none:\n" + FINDS
+                 + b"two:\n\t-@false\n", 1),
 }
 #: A member whose two commands fail, under `-k`: the last `Error` line
 #: names the code (rv876's R1), and a member's finding, both under a
