@@ -409,7 +409,14 @@ def gitmodules_cures(whys: set[str], modules: Gitmodules) -> list[str]:
     work tree, `git checkout` from the index where git read the index's,
     which keeps what was staged, and from HEAD where it read HEAD's, then
     the file mended, or the key given a value git takes (`TAKES`) or its
-    line taken out, and committed. `git config -f .gitmodules --list`
+    line taken out, and committed. The index's is put back with
+    `--ignore-skip-worktree-bits`: in a sparse checkout that leaves
+    `.gitmodules` out, its entry is skip-worktree, and `git checkout --
+    .gitmodules` matches no file there (RV877's NIT-3, measured, git
+    2.43.0); with the flag it puts the file back there and in any other
+    work tree. HEAD's is put back only where the index holds no entry,
+    so no skip-worktree bit, and `git checkout HEAD` puts it back in a
+    sparse checkout too. `git config -f .gitmodules --list`
     takes a key with no value, so it is pointed at for the line alone."""
     said = []
     if UNMERGED in whys:
@@ -430,8 +437,10 @@ def gitmodules_cures(whys: set[str], modules: Gitmodules) -> list[str]:
                     "commit it.")
     if modules.cut and whys & CUT_WHYS:
         head = modules.cut == HEAD_GITMODULES
-        put_back = shlex.join(["git", "checkout", *(["HEAD"] if head else []),
-                               "--", GITMODULES])
+        put_back = shlex.join([
+            "git", "checkout",
+            *(["HEAD"] if head else ["--ignore-skip-worktree-bits"]),
+            "--", GITMODULES])
         whose = f"{'HEAD' if head else 'the index'}'s {GITMODULES}"
         key = modules.cut_key
         mend = (f"`{spelled(key)}`, a key with no value: give it a value "
@@ -474,7 +483,8 @@ class Gitmodules(NamedTuple):
     dies reading: the three are empty then too. `cut` is the blob git read
     only up to such a line, as `gitmodules_source` names it,
     `HEAD:.gitmodules` or the index's object id, where it read an entry
-    before it (`gitmodules_listed`, #856): the three hold what it read,
+    before it, or the blob is the index's (`gitmodules_listed`, #856):
+    the three hold what it read,
     and `cures` writes no section back. Empty where git read the whole
     file, or nothing. `cut_key` is the `submodule.<name>.<key>` with no
     value that cut it, where that is what git stopped at
@@ -497,11 +507,11 @@ def gitmodules_sections(root: Path) -> Gitmodules:
     none, as a deletion not yet committed or a sparse checkout leaves it,
     the index's, then HEAD's (`gitmodules_source`, #768), each of the
     last two, a blob, up to a line git cannot parse, as git reads it,
-    and `cut` where it read an entry before that line
-    (`gitmodules_listed`, #856), or up to a key with no value git stops
-    at, `cut` and `cut_key` (`gitmodules_entries`). Nothing where none
-    holds one, or git
-    cannot read it: git has no url for any submodule then either.
+    and `cut` where it read an entry before that line, or the blob is
+    the index's (`gitmodules_listed`, #856), or up to a key with no value
+    git stops at, `cut` and `cut_key` (`gitmodules_entries`). Nothing
+    where none holds one, or git cannot read it: git has no url for any
+    submodule then either.
     Nothing, and `unreadable`, where that is the
     work tree's file and `git config --list` cannot parse it: git dies
     reading it (`bad config line`), before it checks out any member.
@@ -562,8 +572,8 @@ def gitmodules_listed(root: Path, source: list[str]
                       ) -> tuple[bytes, bool] | None:
     """What `git config -z --no-includes --list` prints of the
     `.gitmodules` that `source` names (`gitmodules_source`), and whether
-    git stopped short of the file's end after an entry, or None where git
-    cannot read it (#856).
+    git stopped short of the file's end at a line it cannot parse, or
+    None where git cannot read it (#856).
 
     A BLOB IS READ UP TO A LINE GIT CANNOT PARSE. `git config --blob`
     prints the entries before that line, then `bad config line`, and
@@ -582,8 +592,11 @@ def gitmodules_listed(root: Path, source: list[str]
     where HEAD holds none, #611), which prints nothing, and empty
     stdout reads as the same `Gitmodules` that None gives for a blob:
     no entry, and nothing `unreadable`, since a blob is read only where
-    the work tree holds no file. Neither it nor a bad line before the
-    first entry is `cut`: git read nothing from either.
+    the work tree holds no file. So HEAD's, printing nothing, is no
+    `cut`: it may be no file at all. The index's is, printing nothing or
+    not: `git ls-files -s` gave its object id, so the blob is there, and
+    a 128 can only be a line git cannot parse, the first included
+    (RV877's SHOULD-2).
 
     NO `[include]` IS FOLLOWED (`--no-includes`), as git's submodule
     reader follows none. `git config --blob` follows one by default: a
@@ -598,7 +611,7 @@ def gitmodules_listed(root: Path, source: list[str]
     if proc.returncode == 0:
         return proc.stdout, False
     if source[0] == "--blob" and proc.returncode == 128:
-        return proc.stdout, bool(proc.stdout)
+        return proc.stdout, bool(proc.stdout) or source[1] != HEAD_GITMODULES
     return None
 
 

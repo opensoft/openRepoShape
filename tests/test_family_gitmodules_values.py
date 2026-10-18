@@ -51,6 +51,20 @@ AND ITS SECOND, each reproduced on its first's head 1b87c57d first:
   cure, the key staying in the file. The cure is the file put back with
   that key named, to be given a value or taken out, typed as printed.
 
+AND ITS THIRD, after RV877's re-check, each reproduced on the restacked
+head 0afe0afe first:
+
+- A line git cannot parse first in the index's file, HEAD's whole: git
+  reads nothing, and bootstrap said the validator names the cause, which
+  reads HEAD's and cannot. The index's blob is there, so the read is cut,
+  and the cure puts the index's back. HEAD's cut at its first line stays
+  the validator's: HEAD may hold no file at all (#611).
+- In a sparse checkout that leaves `.gitmodules` out, `git checkout --
+  .gitmodules` matched no file. The index's put-back passes
+  `--ignore-skip-worktree-bits`, typed as printed there.
+- A git that says `bad config line` in other words, and a cut blob beside
+  a row of another why, are each held by a test.
+
 THE SAME FAMILY, OFFLINE RULES AND STATES as
 `test_family_bootstrap_gate_order.py` (#648), whose helpers are imported:
 a plain clone of the holder, `git submodule update` given the fixture's
@@ -60,7 +74,9 @@ given them where it is not. Every printed command is typed as printed.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import sys
 
 import pytest
@@ -522,25 +538,31 @@ CUT_AT = {
 STOPS_AT_OTHER = (f"members/{MEMBER}", STOPPED.format(path=f"members/{OTHER}"))
 
 #: What (a) says where git's init dies at a path it read no url for, and
-#: whether its cure is the file git read put back and mended (`cut_cure`):
-#: MEMBER stopped at OTHER, which no section git read gives, or whose
-#: section git read only up to its path, where git read an entry before
-#: the line, so what it did not read is past it; and, with nothing read,
-#: no section for either, with the validator for cure.
+#: by which `LOST` its cure is the file git read put back and mended
+#: (`cut_cure`): MEMBER stopped at OTHER, which no section git read gives,
+#: or whose section git read only up to its path, where git read an entry
+#: before the line, so what it did not read is past it; and, with nothing
+#: read, no section for either. That is cut where git read the index's
+#: file, whose blob is there (RV877's SHOULD-2), and not where it read
+#: HEAD's, which may be no file at all (#611): the validator is the cure.
 CUT_SAID = {
     "after-the-first-section": (
-        (STOPS_AT_OTHER, (f"members/{OTHER}", NO_SECTION)), True),
+        (STOPS_AT_OTHER, (f"members/{OTHER}", NO_SECTION)),
+        ("index-read", "head-read")),
     "inside-a-section": (
-        (STOPS_AT_OTHER, (f"members/{OTHER}", NO_URL)), True),
+        (STOPS_AT_OTHER, (f"members/{OTHER}", NO_URL)),
+        ("index-read", "head-read")),
     "before-the-first-section": (
         ((f"members/{MEMBER}", NO_SECTION), (f"members/{OTHER}", NO_SECTION)),
-        False),
+        ("index-read",)),
 }
 
 #: How (a) says to put back the file git read, by `LOST`: the index's,
 #: where the work tree alone lost it, from the index, which keeps what was
-#: staged; HEAD's, where the index lost it too (RV877's MUST-1 on #877).
-PUT_BACK = {"index-read": ("git checkout -- .gitmodules", "the index's"),
+#: staged, past a sparse checkout's skip-worktree bit (RV877's NIT-3);
+#: HEAD's, where the index lost it too (RV877's MUST-1 on #877).
+PUT_BACK = {"index-read": ("git checkout --ignore-skip-worktree-bits -- "
+                           ".gitmodules", "the index's"),
             "head-read": ("git checkout HEAD -- .gitmodules", "HEAD's")}
 
 
@@ -592,13 +614,16 @@ def cut_clone(family, holder, env, tmp_path, lose, place: str):
 
 
 def put_back_mended_and_committed(root, env, lost: str, mended: bytes,
-                                  line: bytes = UNPARSED_LINE) -> None:
+                                  line: bytes = UNPARSED_LINE, *,
+                                  sparse: bool = False) -> None:
     """(a)'s cure for a blob git read only up to `line`, followed: its
     command typed as printed (`PUT_BACK`), which puts the file git read in
     the work tree, the line and all, where `git config -f .gitmodules
     --list` says where it breaks, a line it cannot parse, or takes it, a
     key with no value (`BARE_AT`), which (a) names for that; mended by
-    hand, the line taken out, which leaves `mended`; and committed."""
+    hand, the line taken out, which leaves `mended`; and committed. In a
+    `sparse` checkout, `git add` refuses a path outside its patterns and
+    says to give `--sparse`, which is how it is added there."""
     type_line(root, env, PUT_BACK[lost][0])
     put_back = (root / GITMODULES).read_bytes()
     assert put_back.replace(line, b"", 1) == mended, put_back
@@ -609,7 +634,11 @@ def put_back_mended_and_committed(root, env, lost: str, mended: bytes,
     else:
         assert listed.returncode == 0, listed.stderr
     (root / GITMODULES).write_bytes(mended)
-    raw(root, env, "add", "--", GITMODULES)
+    if sparse:
+        refused = raw(root, env, "add", "--", GITMODULES, check=False)
+        assert b"--sparse" in refused.stderr, refused.stderr
+    raw(root, env, "add", *(["--sparse"] if sparse else []), "--",
+        GITMODULES)
     commit_all(root, env, "The line git cannot parse mended as printed")
     assert raw(root, env, "show", f"HEAD:{GITMODULES}").stdout == mended
 
@@ -650,10 +679,13 @@ def test_a_line_git_cannot_parse_earlier_in_a_blob_is_read_up_to_as_git_does(
     it, so the cure is the file git read put back, mended and committed,
     in both places: typed as printed, the run is the credential's skip,
     and with it a good holder's. Before the first section git read
-    nothing, as from no file at all, and the validator is the cure."""
+    nothing, as from no file at all, and the validator was the cure: it
+    still is from HEAD's, which may be no file at all (#611), and from the
+    index's, whose blob is there, the read is cut (RV877's SHOULD-2)."""
     env = isolated(offline, tmp_path)
     clone, data = cut_clone(family, holder, env, tmp_path, LOST[lost], place)
-    left, cut = CUT_SAID[place]
+    left, cut_in = CUT_SAID[place]
+    cut = lost in cut_in
 
     result = bootstrap(clone, env, "--skip-members")
 
@@ -760,23 +792,27 @@ def test_a_bare_key_in_a_blob_is_read_up_to_and_named_in_the_cure(
 OWN_LINE = b"# a line of the person's own, staged with it\n"
 
 
+@pytest.mark.parametrize("place", ("inside-a-section",
+                                   "before-the-first-section"))
 def test_the_index_s_file_cut_short_is_put_back_from_the_index(
-        family, holder, offline, tmp_path):
+        family, holder, offline, tmp_path, place):
     """RV877's MUST-1, where git reads the index's file and HEAD's is
-    whole: the line inside OTHER's section staged with a line of the
-    person's own, not committed, and the work tree's file lost. Git reads
-    the index's up to the line and dies at OTHER. The gate reads the work
-    tree's file and HEAD's, not the index's, so it cannot name the line,
-    and HEAD's file put back would lose what was staged. The cure puts
-    the index's back: typed as printed, mended and committed, the
-    person's own line is in HEAD, and the run is the credential's skip."""
+    whole: the line inside OTHER's section, or first in the file (RV877's
+    SHOULD-2), staged with a line of the person's own, not committed, and
+    the work tree's file lost. Git reads the index's up to the line, the
+    first one reading nothing, and dies at OTHER or MEMBER. The gate
+    reads the work tree's file and HEAD's, not the index's, so it cannot
+    name the line, and HEAD's file put back would lose what was staged.
+    The cure puts the index's back, its line first included: typed as
+    printed, mended and committed, the person's own line is in HEAD, and
+    the run is the credential's skip."""
     env = isolated(offline, tmp_path)
     clone = cloned(holder, env, family, tmp_path, recurse=False)
     staged = raw(clone, env, "show", f"HEAD:{GITMODULES}").stdout + OWN_LINE
-    (clone / GITMODULES).write_bytes(CUT_AT["inside-a-section"][0](staged))
+    (clone / GITMODULES).write_bytes(CUT_AT[place][0](staged))
     raw(clone, env, "add", "--", GITMODULES)
     lose_work_tree_file(clone, env)
-    git_reads_up_to_the_line(clone, env, "inside-a-section")
+    git_reads_up_to_the_line(clone, env, place)
     gate = validate(clone, "--no-members")
     assert "bad config line" not in gate.stdout + gate.stderr, (
         "premise: the gate cannot name the line", gate.stdout + gate.stderr)
@@ -785,11 +821,127 @@ def test_the_index_s_file_cut_short_is_put_back_from_the_index(
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stderr.splitlines()[-2:] == [
-        not_fetched(*CUT_SAID["inside-a-section"][0],
-                    cure=cut_cure("index-read")),
+        not_fetched(*CUT_SAID[place][0], cure=cut_cure("index-read")),
         failed_on(MEMBER, OTHER)], result.stderr
     put_back_mended_and_committed(clone, env, "index-read", staged)
     assert_the_credential_s_skip(clone, env)
+
+
+def lose_by_a_sparse_checkout(root, env) -> None:
+    """A sparse checkout that leaves `.gitmodules` out of the work tree
+    (RV877's NIT-3): only patterns not in cone mode can leave out a file
+    at the top. Its entry in the index is then skip-worktree, and git
+    reads it there."""
+    raw(root, env, "sparse-checkout", "set", "--no-cone", "/*",
+        f"!/{GITMODULES}")
+    assert not (root / GITMODULES).exists()
+    assert raw(root, env, "ls-files", "-t", "--",
+               GITMODULES).stdout == f"S {GITMODULES}\n".encode()
+
+
+def test_a_sparse_checkout_s_file_cut_short_is_put_back_past_its_bits(
+        family, holder, offline, tmp_path):
+    """RV877's NIT-3. The line inside OTHER's section committed, and a
+    sparse checkout that leaves `.gitmodules` out, so git reads the
+    index's. `git checkout -- .gitmodules`, the put-back round 1 printed,
+    matches no file there. The put-back passes
+    `--ignore-skip-worktree-bits`: typed as printed it puts the file back,
+    and mended, added as `git add` says to add a path outside the sparse
+    patterns, and committed, the run is the credential's skip, and with
+    the credential a good holder's."""
+    env = isolated(offline, tmp_path)
+    clone, data = cut_clone(family, holder, env, tmp_path,
+                            lose_by_a_sparse_checkout, "inside-a-section")
+    plain = raw(clone, env, "checkout", "--", GITMODULES, check=False)
+    assert b"did not match any file" in plain.stderr, plain.stderr
+    assert not (clone / GITMODULES).exists(), "premise: nothing put back"
+
+    result = bootstrap(clone, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stderr.splitlines()[-2:] == [
+        not_fetched(*CUT_SAID["inside-a-section"][0],
+                    cure=cut_cure("index-read")),
+        failed_on(MEMBER, OTHER)], result.stderr
+    put_back_mended_and_committed(clone, env, "index-read", data,
+                                  sparse=True)
+    assert_the_credential_s_skip(clone, env)
+    assert_a_good_holder_s_run(clone, fetching(env))
+
+
+#: A git first on PATH that keeps git's exit code and stdout and says its
+#: stderr in other words, as a git built with its translations says them
+#: (RV877's NIT-4, its R1x).
+TRANSLATED = """#!{python}
+import subprocess, sys
+proc = subprocess.run([{git!r}, *sys.argv[1:]], stderr=subprocess.PIPE)
+sys.stderr.buffer.write(proc.stderr.replace(b"bad config line",
+                                            b"Ungueltige Konfigurationszeile"))
+sys.exit(proc.returncode)
+"""
+
+
+def translated(env: dict, folder) -> dict:
+    """`env` with `TRANSLATED` first on PATH, as `git`, in `folder`."""
+    real = shutil.which("git")
+    assert real, "premise: a git on PATH"
+    folder.mkdir()
+    shim = folder / "git"
+    shim.write_text(TRANSLATED.format(python=sys.executable, git=real),
+                    encoding="utf-8")
+    shim.chmod(0o755)
+    return {**env, "PATH": f"{folder}{os.pathsep}"
+                           f"{env.get('PATH') or os.environ['PATH']}"}
+
+
+@pytest.mark.skipif(os.name == "nt",
+                    reason="a git on PATH run by its #! line is POSIX's")
+@pytest.mark.parametrize("lose", LOST.values(), ids=LOST)
+def test_a_blob_cut_short_is_read_whatever_words_git_says_it_in(
+        family, holder, offline, tmp_path, lose):
+    """RV877's NIT-4, its R1x. The line at the end of the index's file, or
+    HEAD's, and no credential, under a git that says `bad config line` in
+    other words, as a translated git does: bootstrap reads the blob by
+    git's exit code and what it printed, never its words, so it reads
+    both sections, and the members are the credential's, skipped, and
+    ok. Reading `bad config line` on stderr read nothing there, and named
+    both rows."""
+    env = isolated(offline, tmp_path)
+    clone, _ = cut_clone(family, holder, env, tmp_path, lose, "at-the-end")
+    env = translated(env, tmp_path / "translated")
+    listed = raw(clone, env, "config", "-z", "--blob", f"HEAD:{GITMODULES}",
+                 "--list", check=False)
+    assert listed.returncode == 128 and listed.stdout, listed.stderr
+    assert b"bad config line" not in listed.stderr, listed.stderr
+    assert b"Ungueltige Konfigurationszeile" in listed.stderr, listed.stderr
+
+    assert_the_credential_s_skip(clone, env)
+
+
+@pytest.mark.parametrize("lose", LOST.values(), ids=LOST)
+def test_a_cut_blob_beside_a_row_of_another_why_keeps_that_row_s_cure(
+        family, holder, offline, tmp_path, lose):
+    """RV877's NIT-4, its N6. OTHER's section gives `update = none`, then
+    the line git cannot parse ends the index's file, or HEAD's, and the
+    credential: git reads both sections, checks MEMBER out, skips OTHER
+    and exits 0. The blob is cut, but OTHER is no row the cut can explain
+    (`CUT_WHYS`): its cure is the update that checks it out, alone, and
+    no file is said to be put back."""
+    env = fetching(isolated(offline, tmp_path))
+    clone, _ = edited_clone(
+        holder, env, family, tmp_path,
+        lambda data: url_edited(
+            data, OTHER,
+            lambda url: url + b"\tupdate = none\n" + UNPARSED_LINE))
+    lose(clone, env)
+
+    result = bootstrap(clone, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stderr.splitlines()[-2:] == [
+        not_fetched((f"members/{OTHER}", EXITED_0),
+                    cure=CHECKOUT_CURE.format(path=f"members/{OTHER}")),
+        failed_on(OTHER)], result.stderr
 
 
 #: A section with a value git dies on, in a file a `.gitmodules` includes.
