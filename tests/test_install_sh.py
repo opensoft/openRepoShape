@@ -53,13 +53,19 @@ from test_openreposhape_command import (BIN_DIR_SPELLINGS, COMMAND,
                                         LOCALES, NO_FILE_NAMED_SO,
                                         NO_NON_ASCII_INTO_GIT_BASH,
                                         NOT_CONTROLS,
+                                        HONEST, MARKS,
+                                        PLACED_AS_THE_LOCALE_READS,
+                                        REFUSED_AS_THE_BYTES_SAY,
+                                        REFUSED_UNDER_C_OR_UTF_8,
                                         REFUSED_IN_EVERY_LOCALE, RLO,
                                         UNNAMEABLE_BIN_DIRS,
                                         assert_a_bin_dir_is_refused,
                                         assert_refused_saying,
                                         drawn_as_another,
                                         command_env, machine_path,
-                                        put_cygpath, put_on_path, run_cmd,
+                                        put_a_locale, put_cygpath,
+                                        put_on_path, run_cmd,
+                                        the_persons_locale,
                                         typed_bin_dir, write_script)
 
 INSTALLER = REPO / "install.sh"
@@ -972,6 +978,67 @@ def test_the_installer_refuses_in_every_locale_before_any_request(
     assert net.calls() == [], net.calls()
     assert_a_bin_dir_is_refused(result, typed, said, INSTALLER_REFUSAL_ENDS)
     net.refused(result)
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("charmap, iconv, name", PLACED_AS_THE_LOCALE_READS)
+def test_the_installer_places_a_directory_a_multibyte_locale_reads_as_text(
+        tmp_path, charmap, iconv, name):
+    """A name the bytes refuse, read as text by the locale's multibyte
+    charset (#858): install.sh asks `locale charmap` under the person's own
+    `LANG` and reads the name through `iconv`, as the command does, and the
+    command it fetched places itself there, under the same `locale` and
+    `iconv`, with the release recorded. Neither refuses what the other
+    places, and neither asks `iconv` of a name the bytes do not refuse."""
+    net = Net(tmp_path)
+    put_a_locale(net.path, HONEST, iconv)
+    net.bin = tmp_path / name
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": bash_path(net.bin),
+                          **the_persons_locale(charmap)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    net.installed(result)
+    assert not (net.path / "iconv-ran").exists()
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("charmap, kind, iconv, name, said",
+                         REFUSED_AS_THE_BYTES_SAY)
+def test_the_installer_refuses_as_the_bytes_or_the_reading_say(
+        tmp_path, charmap, kind, iconv, name, said):
+    """Where the locale's reading still holds a C1 control or a character
+    drawn as another, or where nothing reads the name again (#858),
+    install.sh refuses it in #804's or #837's words, before any request:
+    exit 2, nothing placed, nothing of the value in either stream. With no
+    `locale` on this `$PATH` at all, every other test of the directory here
+    runs that way too."""
+    net = Net(tmp_path)
+    put_a_locale(net.path, kind, iconv)
+    typed = f"{bash_path(tmp_path)}/{name}"
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed,
+                          **the_persons_locale(charmap)})
+    assert net.calls() == [], net.calls()
+    assert_a_bin_dir_is_refused(result, typed, said, INSTALLER_REFUSAL_ENDS)
+    net.refused(result)
+    assert not (net.path / "iconv-ran").exists()
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("name, said", REFUSED_UNDER_C_OR_UTF_8)
+def test_the_installer_refuses_as_the_bytes_say_under_c_or_c_utf_8(
+        tmp_path, name, said, locale):
+    """The person's locale is `C` or `C.UTF-8`, and `locale charmap`
+    answers as glibc's does: install.sh refuses as the bytes say, in #804's
+    and #837's words, before any request, and asks `iconv` nothing
+    (#858)."""
+    net = Net(tmp_path)
+    put_a_locale(net.path, HONEST, MARKS)
+    typed = f"{bash_path(tmp_path)}/{name}"
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed, "LC_ALL": locale})
+    assert net.calls() == [], net.calls()
+    assert_a_bin_dir_is_refused(result, typed, said, INSTALLER_REFUSAL_ENDS)
+    net.refused(result)
+    assert not (net.path / "iconv-ran").exists()
 
 
 # A version, an option, the repository, the newest release's tag or the

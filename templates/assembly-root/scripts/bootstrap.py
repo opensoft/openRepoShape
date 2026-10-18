@@ -81,6 +81,7 @@ doctrine forbids.
 from __future__ import annotations
 
 import argparse
+import codecs
 import os
 import re
 import shlex
@@ -153,11 +154,65 @@ VALIDATORS = (
 def _run(root: Path, args: list[str]) -> int:
     # Flush first: this process's own stdout is block-buffered when it is a
     # pipe, and a child writing straight to the fd would otherwise appear
-    # BEFORE the heading that introduces it.
+    # BEFORE the heading that introduces it. The child is told what that fd
+    # is (`inherited_child_environment`, #836).
     sys.stdout.flush()
-    proc = subprocess.run([sys.executable, *args], cwd=str(root), check=False)
+    proc = subprocess.run([sys.executable, *args], cwd=str(root),
+                          env=inherited_child_environment(), check=False)
     sys.stdout.flush()
     return proc.returncode
+
+
+#: The built-in handlers that never raise on a character an encoding cannot
+#: hold (#836), so a validator is told the one this stdout has. `strict` and
+#: `surrogateescape` raise on such a character, and are not among them.
+#: `scripts/shape_materialize.py`'s own set, which a project does not carry.
+HANDLERS_THAT_NEVER_RAISE = frozenset((
+    "backslashreplace", "ignore", "namereplace", "replace",
+    "xmlcharrefreplace"))
+
+
+def inherited_child_environment() -> dict[str, str]:
+    """The environment `_run` starts each validator in: this process's own,
+    with `PYTHONIOENCODING` naming the encoding of the stdout the validator
+    writes into (#836).
+
+    WHAT WAS WRONG. A child takes its stdout's encoding and handler from its
+    OWN environment, and not from the `escape_unencodable_stdout` this
+    process ran in `main`. So on a stdout whose code page cannot hold the
+    project's name — `PYTHONIOENCODING=cp1252`, or the cp1252 with
+    `surrogateescape` Windows gives any stdout that is not the console —
+    this file printed `bootstrap: \\u65e5\\u672c`, and `validate-manifest.py`
+    then raised `UnicodeEncodeError` at `manifest ok: 日本`: `make
+    bootstrap` ended `bootstrap FAILED: manifest (exit 1)` over a manifest
+    with nothing wrong in it. It is the defect #254 fixed in `bump-leg.py`
+    and `update-shape.py apply`, which run the same two validators.
+
+    THE RULE IS #254's, `scripts/shape_materialize.py`'s
+    `inherited_child_environment`: a child that writes into this stdout is
+    told the stdout's own encoding, with its handler where that one never
+    raises and `backslashreplace` where it does, which is what
+    `escape_unencodable_stdout` leaves it with. So a validator's lines and
+    this file's are written alike: escaped where the code page cannot hold a
+    character, and as they are where it can. A stdout with no usable
+    encoding leaves the environment as it is.
+
+    A COPY, as the validators' own `_shown` is. A project does not carry
+    `shape_materialize.py`, and a root re-copies its pinned files one row at
+    a time, so this file may meet a `repo_shape.py` older than itself, and
+    imports nothing new from it. `tests/test_validator_child_encoding.py`
+    holds the copy to the library's answer.
+    """
+    env = dict(os.environ)
+    try:
+        encoding = codecs.lookup(sys.stdout.encoding).name
+    except (AttributeError, LookupError, TypeError):
+        return env
+    errors = getattr(sys.stdout, "errors", None)
+    if errors not in HANDLERS_THAT_NEVER_RAISE:
+        errors = "backslashreplace"
+    env["PYTHONIOENCODING"] = f"{encoding}:{errors}"
+    return env
 
 
 def _try_git(args: list[str], cwd: Path) -> str | None:
@@ -227,6 +282,12 @@ def _git_runs(unread: str) -> Iterator[None]:
                       f"({exc.strerror or exc})", GIT_NOT_RUNNABLE) from exc
 
 
+#: What `_argument_fault` calls a character that does not print, or white
+#: space (#715): git takes the name, and no person can tell it from the name
+#: without it, so `_say_not_tried` gives it a line of its own.
+UNSEEN = "a character that does not print or is white space"
+
+
 def _argument_fault(branch: str) -> str | None:
     """What stops `branch` being an argument to a command, or `None` (#455).
 
@@ -267,12 +328,29 @@ def _argument_fault(branch: str) -> str | None:
     is not UTF-8 for ANY of them, so a lone surrogate is never handed to git
     there either, where a `CreateProcess` would pass it on mangled. The answer
     is `os.fsencode`'s own, so it is the system's and not a list kept here.
+
+    NOR IS A CHARACTER THAT DOES NOT PRINT, OR WHITE SPACE (#715), `UNSEEN`,
+    which `validate-manifest.py` refuses in a branch too (`siblings.py` asks
+    `isprintable()` alone, so a space it takes).
+    git takes `main` followed by U+00A0, and since #715 the reader reads that
+    no-break space as YAML does, where it used to strip it: so this step made
+    a second `main` beside the first in every leg and checked it out. Asked
+    once the name holds neither a NUL nor a lone surrogate, and never of a
+    surrogate, so the byte-carrying ones above still reach git. Asked
+    BEFORE `UNWRITABLE`, for that fault's reason: a name holding such a
+    character is not good under any encoding, so the line that calls a
+    name good is never said of it (`"日本 x"` under `LC_ALL=C` is named
+    for its space, which the root's own validator names too).
     """
     for char in branch:
         if char == "\x00":
             return "U+0000, a NUL"
         if "\ud800" <= char <= "\udfff" and _fsencoded_length(char) != 1:
             return f"U+{ord(char):04X}, a lone surrogate"
+    for char in branch:
+        if not "\ud800" <= char <= "\udfff" and (
+                not char.isprintable() or char.isspace()):
+            return f"U+{ord(char):04X}, {UNSEEN}"
     unwritable = next((char for char in branch
                        if _fsencoded_length(char) == 0), None)
     if unwritable is None:
@@ -298,6 +376,10 @@ def _say_not_tried(where: str, named: str, fault: str,
     stays where it is, and the line says which of the three places the
     person's value can have come from holds it (#455).
 
+    `UNSEEN` (#715) has its own words: git takes `main` followed by U+00A0,
+    so "which no command can be given" would be wrong of it, and the name
+    to give is the one without that character.
+
     A character this system's encoding cannot write (`UNWRITABLE`, #710) is
     a branch step (a) DID NOT TRY, not one it could not create: the branch
     can be there already, made by a run under UTF-8 (RV824's N2). Where git
@@ -309,6 +391,14 @@ def _say_not_tried(where: str, named: str, fault: str,
     git's lines (`_git_refuses_in_utf8`): the name is not called good, git's
     words are said, and #455's way out follows, since the name itself has
     to change (RV824's S1)."""
+    if fault.endswith(UNSEEN):
+        print(f"  {where}: could not create branch {named}: it holds "
+              f"{fault}, which no person can tell from the name without it; "
+              "the leg is left as it is")
+        print("          the branch is the leg's `branch:`, else `--branch`, "
+              "else `tracking_branch`. Give that one a name with no such "
+              "character and run bootstrap again.")
+        return
     unwritable = fault.endswith(UNWRITABLE)
     tried = "did not try" if unwritable else "could not create"
     print(f"  {where}: {tried} branch {named}: it holds {fault}, which no "
@@ -1161,18 +1251,53 @@ def _load_root_and_manifest(args) -> tuple[Path, dict | None]:
     return root, manifest
 
 
+def _legs_of(manifest: dict | None) -> tuple[list[dict], list[str]]:
+    """`(the legs, what names no leg)`: each entry of `project.yaml`'s
+    `legs:` that is a mapping, and for what is not, `validate-manifest.py`'s
+    finding in its words (#714, #832).
+
+    Iterated as `legs or []`, `legs: 5` ended `make bootstrap` in a
+    `TypeError` before step (a) printed a line, and a scalar `openXdox` or a
+    mapping was walked one character, or one key, at a time, so step (a)
+    said "no submodule legs declared", as of a one-repository project. A
+    `legs:` that is not a list names no leg; a list's entry that is not a
+    mapping is no leg, and the mappings beside it are still placed, as
+    `validate-pins.py` checks the rest past such an entry. Absent or null
+    declares no leg and says nothing here: step (b)'s manifest validator
+    says `legs is missing or empty`.
+    """
+    declared = (manifest or {}).get("legs")
+    if declared is None:
+        return [], []
+    if not isinstance(declared, list):
+        return [], [f"manifest-legs: legs is {declared!r}, expected a list of "
+                    "`role:`, `repository:` and `path:` mappings; no leg is "
+                    "placed, and the validators below refuse until `legs:` "
+                    "is a list"]
+    return ([leg for leg in declared if isinstance(leg, dict)],
+            [f"manifest-leg: a leg is not a mapping: {leg!r}; it is not "
+             "placed, and the validators below refuse until it is a mapping"
+             for leg in declared if not isinstance(leg, dict)])
+
+
 def _checkout_all_tracking_branches(root: Path, sub_legs: list[dict],
                                     manifest: dict | None,
-                                    branch_arg: str | None) -> None:
+                                    branch_arg: str | None,
+                                    unread: list[str] = ()) -> None:
     """Step (a): place every submodule leg on its tracking branch.
 
     Split from `main` for #132. Git that cannot be started is
     `git-not-runnable`, naming the leg it met it at (#694): one fact about
-    the machine, so no leg after it is tried.
+    the machine, so no leg after it is tried. `unread` is what `_legs_of`
+    found naming no leg, each said first, and a step with nothing else to
+    place is not a one-repository project's no-op (#832).
     """
+    for line in unread:
+        print(f"  {line}")
     if not sub_legs:
-        print("  no submodule legs declared. A one-repository project runs "
-              "the same command and this step is a no-op.")
+        if not unread:
+            print("  no submodule legs declared. A one-repository project "
+                  "runs the same command and this step is a no-op.")
         return
     branch = branch_arg or (manifest or {}).get("tracking_branch") or "main"
     for leg in sub_legs:
@@ -1227,8 +1352,7 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    legs = [leg for leg in ((manifest or {}).get("legs") or [])
-            if isinstance(leg, dict)]
+    legs, unread = _legs_of(manifest)
     sub_legs = [leg for leg in legs if leg.get("role") != "assembly"]
 
     name = (manifest or {}).get("name") or root.name
@@ -1236,7 +1360,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         print("\n(a) legs on tracking branches, pins untouched")
-        _checkout_all_tracking_branches(root, sub_legs, manifest, args.branch)
+        _checkout_all_tracking_branches(root, sub_legs, manifest, args.branch,
+                                        unread)
 
         print("\n(b) neutral validators")
         failed = _run_neutral_validators(root, manifest, args.skip_validators)
