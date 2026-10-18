@@ -2433,7 +2433,7 @@ def refusal_detail(stderr: str, code: str) -> list[str]:
 #: name that ends in `.`. Each name is spelled with a letter or digit first
 #: and letters, digits, `.`, `_`, `/` and `-` after, the characters a copy
 #: takes, so what is asked is the shape and nothing else. The old line,
-#: `*..* | *.lock`, tested only the whole name: it took the first thirteen
+#: `*..* | *.lock`, tested only the whole name: it took the first fourteen
 #: names below, which git refuses.
 REF_PARTS = [pytest.param(name, takes, id=name) for name, takes in (
     # What the issue names: refused by git, and by no copy before #874.
@@ -2443,8 +2443,10 @@ REF_PARTS = [pytest.param(name, takes, id=name) for name, takes in (
     # rv873's two: a part that starts with `.`, deeper in the name.
     ("a/b/.c/d", False), ("x/.y/z/w", False),
     # The same kind, and taken by the old line too: a name that ends in `.`
-    # after a `/`, and a part that is a `.`.
-    ("a/b.", False), ("a/.", False),
+    # after a `/`, and a part that is a `.`. `a/.` is refused for ending in
+    # `.` as well; `a/./b` is refused for that part alone (rv947's NIT-3),
+    # so a copy that took a lone `.` part passes `a/.` and fails here.
+    ("a/b.", False), ("a/.", False), ("a/./b", False),
     # Refused before #874 as well, and refused still.
     ("topic.lock", False), ("a..b", False), ("a/..", False),
     ("a/b.lock", False), (".lock", False), ("/a", False),

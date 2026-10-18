@@ -39,16 +39,17 @@ not a probe and is refused.
 ONE MORE CALL IS ANSWERED (#798): `gh repo view <owner>/<name> --json
 nameWithOwner`, which `adopt-project.py check` asks of each leg repository it
 would create, as `execute` does before it makes either. Every `check` in this
-suite that is given no `--local-remote-dir` asks it twice, and refused, each
-such test would fail. It is answered as a `gh` with no login answers it, the
-state the other two answers describe: exit 4 and gh's own words
-(`NEEDS_A_LOGIN`), so `check` prints, on every machine, the NOTE that it
-could not ask, and still passes. It is logged as a probe. Only that exact
-shape is answered: `--json name`, `--json visibility` or any other field,
-and any other `repo view`, are refused. SO IT ANSWERS ADOPT'S CALL ALONE:
-`scaffold-project.py` and `family.py` ask whether their own repositories
-exist with `--json name`, so a test of either that reaches gh with no stub
-of its own is still failed at teardown (`tests/test_gh_guard.py`).
+suite that is given no `--local-remote-dir`, once the plan's names and `org:`
+pass, asks it twice, once of each leg, and refused, each such test would fail.
+It is answered as a `gh` with no login answers it, the state the other two
+answers describe: exit 4 and gh's own words (`NEEDS_A_LOGIN`), so `check`
+prints, on every machine, the NOTE that it could not ask, and still passes. It
+is logged as a probe. Only that exact shape is answered: `--json name`, `--json
+visibility` or any other field, and any other `repo view`, are refused. SO IT
+ANSWERS ADOPT'S CALL ALONE: `scaffold-project.py` and `family.py` ask whether
+their own repositories exist with `--json name`, so a test of either that
+reaches gh with no stub of its own is still failed at teardown
+(`tests/test_gh_guard.py`).
 
 STANDARD LIBRARY ONLY, and importable: `tests/conftest.py` and
 `tests/test_gh_guard.py` read the same table, the same record format and the
