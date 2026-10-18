@@ -854,13 +854,33 @@ def _forced(root: Path, path: str, commit: str) -> str | None:
     read at HEAD's commit and takes none."""
     if not _on_disk(root, path):
         return None
+    head = _head_records(root, path)
+    return None if head == commit else head
+
+
+def _head_records(root: Path, path: str) -> str:
+    """The commit HEAD records at `path`, lower case, or `""` for nothing
+    (`_forced`, `_staged_over`)."""
     with _git_runs(f"the gitlink HEAD records at {path} could not be read"):
         try:
-            head = git_out(["rev-parse", "--verify", "--quiet",
+            return git_out(["rev-parse", "--verify", "--quiet",
                             f"HEAD:{path}"], cwd=root).lower()
         except Refusal:
-            head = ""
-    return None if head == commit else head
+            return ""
+
+
+def _staged_over(root: Path, path: str, commit: str) -> bool:
+    """Whether a plain `git rm -- <path>` refuses the gitlink at `path`,
+    which `_member_gitlinks` reads at `commit`, as staged (`STAGED_AT`):
+    the index stages it at a commit HEAD does not record there, and
+    anything is on disk at it, an empty directory too, which `git rm
+    --cached` takes with no `-f` (`_forced`). Measured on git 2.43, with
+    the gitlink staged and not committed: nothing on disk, it took it; an
+    empty directory, and the checkout `git mv members/<P> members/<P>2`
+    moved, staged, it refused (`the following file has changes staged in
+    the index`, exit 1; lane 1's SHOULD on #889, round 2)."""
+    return (os.path.lexists(root / path)
+            and _head_records(root, path) != commit)
 
 
 def _on_disk(root: Path, path: str) -> bool:
@@ -2253,8 +2273,9 @@ def _check_gitlinks_named(root: Path, gitlinks: dict[str, str],
             continue
         report.finding(
             "member-gitlink-unnamed",
-            f"{said} " + _mounted_by_hand(root, path, _hand_project(path),
-                                          path in removed, stage))
+            f"{said} " + _mounted_by_hand(
+                root, path, _hand_project(path), path in removed, stage,
+                _staged_over(root, path, gitlinks[path])))
         report.wrote = report.wrote or path not in removed
 
 
@@ -2497,8 +2518,17 @@ def _given_as_git_reads(root: Path) -> set[str]:
     return _blob_paths(root, spec) if spec else set()
 
 
+#: What a hand mount's text says its `git rm` meets where the index stages
+#: the gitlink at a commit HEAD does not record there (`_mounted_by_hand`,
+#: lane 1's SHOULD on #889, round 2), measured on git 2.43.
+STAGED_AT = (", and while the index stages it at a commit HEAD does not "
+             "record there, as it does here (the following file has changes "
+             "staged in the index, exit 1),")
+
+
 def _mounted_by_hand(root: Path, path: str, project: str | None,
-                     staged: bool, stage_first: bool = False) -> str:
+                     staged: bool, stage_first: bool = False,
+                     staged_at: bool = False) -> str:
     """What a gitlink no row names, in no case, says to do after what it is:
     put its row back, or take a hand mount out, commit that, and mount it
     with `family.py add`, on a branch (`_check_gitlinks_named`). Where its
@@ -2507,7 +2537,12 @@ def _mounted_by_hand(root: Path, path: str, project: str | None,
     refuses (`member-path-taken`), deleted by hand first (rv681's S1).
     Its `git rm` comes after `git add -- .gitmodules` where `stage_first`
     (`_stage_first`): after a value finding's lines it exited 128 (#879's
-    C3)."""
+    C3). Where that `git rm` refuses the gitlink as staged (`staged_at`,
+    as `_staged_over` reads it), as after `git mv members/<P>
+    members/<P>2`, staged, the text says so (`STAGED_AT`), where it said
+    only that the line refuses while the checkout holds changes (lane 1's
+    SHOULD on #889, round 2). No line here takes such a gitlink out:
+    `-f` would take the checkout's changes with it."""
     member = (PROJECT_PLACEHOLDER if project is None
               else shlex.quote(project))
     add = (f"    {PYTHON} scripts/family.py add --family-root "
@@ -2536,8 +2571,10 @@ def _mounted_by_hand(root: Path, path: str, project: str | None,
         f"{RESTORE_ROW} If it was mounted by hand, make a branch "
         "with the first command below, since family.py add refuses the "
         f"holder's tracking branch, {staging}take it out with the "
-        f"{rm_at}, which refuses while its checkout holds changes and takes "
-        f"its {GITMODULES} section out too, and commit that removal, since "
+        f"{rm_at}, which refuses while its checkout holds changes"
+        + (STAGED_AT if staged_at else "")
+        + f" and takes its {GITMODULES} section out too, and commit that "
+        "removal, since "
         "family.py add refuses a path under another spelling of members/ "
         "that HEAD holds and the index no longer does, then mount it "
         f"with the {add_at}, from a checkout of openRepoShape: family.py "
@@ -3063,11 +3100,17 @@ def _section_back(root: Path, path: str,
     puts back the section a plain `git rm` took out.
 
     NOTHING IS PUT BACK OVER WHAT A FINDING PRINTED BEFORE WROTE, or where
-    it put the file back (`Report.wrote`, `Report.put_back`), on disk or
-    not: the section HEAD's gives is written in key by key, as HEAD has
-    it, but for a key it gives a value git dies on (`asked`'s second,
-    which `gitmodules-value-refused` takes out), and the file staged
-    (`_keys_back`). The `git checkout HEAD` took
+    it put the file back (`Report.wrote`, `Report.put_back`): the section
+    HEAD's gives is written in key by key, as HEAD has it, but for a key
+    it gives a value git dies on (`asked`'s second, which
+    `gitmodules-value-refused` takes out), and the file staged
+    (`_keys_back`). Where the work tree's file is gone, only a put-back
+    makes a file to write into: the first finding that writes one puts it
+    back and records that (#879's C1), so `Report.put_back` alone is asked
+    there. A hand mount's `git rm`, counted as a write, writes nothing
+    into a file that is gone, and the key-by-key lines then made a file of
+    one section, which the commit recorded (lane 1's MUST 2 on #889). The
+    `git checkout HEAD` took
     out again a section a finding before had written, where the work
     tree's file was gone (#879's C2, rv876's P5d) and where it was on disk
     (lane 1's SHOULD 1 on #889); and written in alone, the section stayed
@@ -3093,7 +3136,7 @@ def _section_back(root: Path, path: str,
     if report.put_back and path in _blob_paths(root, report.put_back):
         return []
     wanted, refused = asked
-    if report.wrote or report.put_back:
+    if report.put_back or (on_disk and report.wrote):
         report.wrote = True
         return _keys_back(path, sections, on_disk, refused)
     if on_disk:

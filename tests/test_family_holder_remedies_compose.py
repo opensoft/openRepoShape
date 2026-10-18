@@ -65,6 +65,14 @@ directory takes `-f` (NIT 2); the move says what is on disk at each
 variant (NIT 3); a run with no row says nothing was updated (NIT 5); and
 the value finding's put-back serves the removal after it (NIT 6).
 
+LANE 1'S REVIEW OF #889, ROUND 2, TAKEN HERE: a hand mount's `git rm`
+writes nothing into a `.gitmodules` that is gone, so a removal after it
+puts the file back itself rather than write a section into no file (MUST
+2); a clone at no case variant of the row's path is not said to be one
+`family.py add` refuses (the NIT, lane 1's mutant MY3); and a hand mount's
+`git rm` says it refuses a gitlink staged at a commit HEAD does not record
+there (the SHOULD).
+
 THE SAME FAMILY, OFFLINE RULES AND HELPERS as
 `tests/test_family_holder_bootstrap_texts.py` (#839) and
 `tests/test_family_unnamed_gitlink.py` (#878). A case variant is an index
@@ -1318,3 +1326,157 @@ def test_round1_nit_6_the_value_s_put_back_serves_the_removal_after_it(
     typed_in_order(holder, env, validate(holder, "--no-members"))
     staged_and_committed(holder, env, "Typed in order")
     ends_well(holder, env, family, tmp_path)
+
+
+# --- lane 1's review of #889, round 2 ---------------------------------------
+
+#: `(the flags of the removal, the lines its finding prints)` where a hand
+#: mount's `git rm` came before it and the work tree's `.gitmodules` is
+#: gone: the index's file put back, or HEAD's after a plain `git rm`, as
+#: round 0 printed (lane 1's MUST 2 on #889, round 2).
+HAND_MOUNT_THEN = {
+    "cached": (["--cached"],
+               [f"git reset -q -- {ROW}", "git checkout -- .gitmodules"]),
+    "plain": ([], [f"git reset -q -- {ROW}",
+                   "git checkout HEAD -- .gitmodules",
+                   f"git submodule update --init --recursive -- {ROW}"]),
+}
+
+
+@pytest.mark.parametrize("kind", HAND_MOUNT_THEN)
+def test_round2_must_2_a_hand_mount_s_git_rm_writes_nothing_in_a_gone_file(
+        family, holder, offline, tmp_path, kind):
+    """Lane 1's MUST 2 on #889, round 2: SPARE mounted by hand at
+    `members/IRQS` (`hand_mounted`), then `git rm --cached members/IRRS`
+    or a plain `git rm members/IRRS`, and the work tree's `.gitmodules`
+    deleted. Round 1 counted the hand mount's `git rm` as a write, though
+    it writes nothing into a file that is gone, so the removal wrote
+    MEMBER's section key by key "in the file a line above put back", which
+    no line had: committed, HEAD's `.gitmodules` held that one section,
+    and the gate found `member-gitmodules-absent` in every mode. Only a
+    put-back makes a file to write into there, so the removal puts the
+    file back itself, as round 0 did. Typed in order and committed,
+    nothing is left, HEAD's `.gitmodules` gives both members, the gate
+    passes in every mode and a plain clone checks both out."""
+    env = cloning(offline, tmp_path, family)
+    flags, lines = HAND_MOUNT_THEN[kind]
+    hand_mounted(holder, env, family)
+    raw(holder, env, "rm", "-q", *flags, "--", ROW)
+    gone(holder, env, "deleted")
+
+    found = found_alike(holder, *MODES)
+
+    assert codes_of(found) == ["member-gitlink-unnamed",
+                               "member-gitlink-removal-staged"]
+    assert commands(found[1]) == lines
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    staged_and_committed(holder, env, "Typed in order")
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    assert head_paths(holder, env) == {ROW, OTHER_ROW}
+    ends_well(holder, env, family, tmp_path)
+
+
+def test_round2_nit_a_clone_at_no_case_variant_is_not_said_refused(
+        family, holder, offline, tmp_path):
+    """Lane 1's NIT on #889, round 2 (its mutant MY3): `git rm --cached
+    members/IRRS`, its checkout deleted, then IRRS cloned at `tools/x`,
+    which is no case variant of the row's path, and `git add tools/x`.
+    `member-gitlink-removal-staged` names a clone of its own only at a
+    case variant of the row's path, which `family.py add` refuses as
+    `family-members-dir-variant` (round 1's SHOULD 2); of one at
+    `tools/x`, which `gitlink-unnamed` takes out of the index, it says in
+    every mode what it says with no clone there. Typed in order, the clone
+    stays where it is, untracked, nothing is left to commit, the gate
+    passes in every mode and a plain clone checks both out."""
+    env = cloning(offline, tmp_path, family)
+    raw(holder, env, "rm", "-q", "--cached", "--", ROW)
+    rmtree(holder / ROW)
+    alone = found_alike(holder, *MODES)
+    raw(holder, env, "clone", "-q", "--",
+        str(family["remotes"] / f"{MEMBER}.git"), TOOLS)
+    raw(holder, env, "add", "--", TOOLS)
+
+    found = found_alike(holder, *MODES)
+
+    assert codes_of(found) == ["gitlink-unnamed",
+                               "member-gitlink-removal-staged"]
+    assert found[1] == alone[-1]
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    assert raw(holder, env, "status", "--porcelain").stdout == b"?? tools/\n"
+    ends_well(holder, env, family, tmp_path)
+
+
+#: What a hand mount's text says of its `git rm` where git refuses the
+#: gitlink as staged (lane 1's SHOULD on #889, round 2), and elsewhere.
+STAGED_REFUSED = (
+    "take it out with the second, which refuses while its checkout holds "
+    "changes, and while the index stages it at a commit HEAD does not record "
+    "there, as it does here (the following file has changes staged in the "
+    "index, exit 1), and takes its .gitmodules section out too")
+PLAIN_REFUSED = ("take it out with the second, which refuses while its "
+                 "checkout holds changes and takes its .gitmodules section "
+                 "out too")
+
+
+def moved_by_git_mv(root: Path, env: dict, family) -> str:
+    """`git mv members/IRRS members/IRRS2`, staged. Returns the new path."""
+    raw(root, env, "mv", "--", ROW, f"{ROW}2")
+    return f"{ROW}2"
+
+
+def staged_by_hand(make):
+    """A state in which SPARE's gitlink is staged at `members/IRQS`, not
+    committed, with what `make` puts on disk there."""
+    def staged(root: Path, env: dict, family) -> str:
+        path = f"members/{SPARE}"
+        stage_gitlink(root, path, spare_commits(family)[1])
+        make(root / path)
+        return path
+    return staged
+
+
+def committed_with_its_checkout(root: Path, env: dict, family) -> str:
+    """`mounted_with_its_section`'s state. Returns the gitlink's path."""
+    mounted_with_its_section(root, env, family)
+    return f"members/{SPARE}"
+
+
+#: `(the state, whether a plain git rm refuses its gitlink as staged)`:
+#: measured on git 2.43, it took one staged over nothing on disk, and one
+#: committed with its checkout.
+STAGED_STATES = {
+    "git-mv": (moved_by_git_mv, True),
+    "an-empty-directory": (staged_by_hand(Path.mkdir), True),
+    "nothing-on-disk": (staged_by_hand(lambda where: None), False),
+    "committed-with-its-checkout": (committed_with_its_checkout, False),
+}
+
+
+@pytest.mark.parametrize("make, refused", STAGED_STATES.values(),
+                         ids=STAGED_STATES)
+def test_round2_should_a_hand_mount_s_git_rm_says_it_refuses_a_staged_gitlink(
+        family, holder, offline, tmp_path, make, refused):
+    """Lane 1's SHOULD on #889, round 2: a gitlink no row names, staged at
+    a commit HEAD does not record there, as `git mv members/IRRS
+    members/IRRS2` leaves one, or as one staged by hand over an empty
+    directory. The hand mount's `git rm -- <path>` exits 1 there (`the
+    following file has changes staged in the index`), as before this
+    change, where its text said only that it refuses while its checkout holds
+    changes. It says that refusal too now, in every mode, and not where
+    nothing is on disk or HEAD records the gitlink as staged, which git
+    takes. No line takes such a gitlink out: `-f` would take the
+    checkout's changes with it."""
+    env = cloning(offline, tmp_path, family)
+    path = make(holder, env, family)
+
+    found = found_alike(holder, *MODES)
+
+    mount = found[0]
+    assert mount.startswith(f"FINDING member-gitlink-unnamed: {path} "), mount
+    assert (STAGED_REFUSED if refused else PLAIN_REFUSED) in mount, mount
+    switch, removal, _ = commands(mount)
+    assert removal == f"git rm -- {path}"
+    type_line(holder, env, switch)
+    typed = raw(holder, env, *shlex.split(removal)[1:], check=False)
+    assert typed.returncode == int(refused), typed.stderr
+    assert (b"has changes staged in the index" in typed.stderr) is refused
