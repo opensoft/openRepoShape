@@ -162,11 +162,11 @@ def escape_what_stdout_cannot_encode(stream=None) -> None:
     file it is, and two names that differ only outside the code page do not
     both print as `??.md`. (A backslash is not escaped, so a name that holds
     the six characters `\\u65e5` prints as one holding `日` does.) ONCE, AT
-    THE START OF `main()`, and not at each `print`: `shape-doctor.py`'s
-    `ascii_text` and `shape_advisory.printable` flatten their own text to
-    ASCII on every console, which a name cannot afford -- it would change
-    what a UTF-8 terminal shows -- and a guard at each site is a guard the
-    next `print` goes without.
+    THE START OF `main()`, and not at each `print`: `shape_advisory.printable`
+    flattens its own text to ASCII on every console, as `shape-doctor.py`'s
+    `ascii_text` did until #785, which a name cannot afford -- it would
+    change what a UTF-8 terminal shows -- and a guard at each site is a
+    guard the next `print` goes without.
 
     GUARDED, because failing to set a handler is no reason to refuse the
     run: a stream a caller replaced may have no `reconfigure`, a closed or
@@ -705,6 +705,25 @@ SHAPE_MAKE_TARGETS = ("bootstrap", "validate", "pins", "park", "resume")
 # block's. `adopt-project.py`'s verification counts the file as the source's
 # bytes followed by exactly this block, and `update-shape.py apply --add`
 # extends it when the standard adds a copy at the root later.
+#
+# EACH COPY IS NAMED WHERE GIT TRACKS IT (#807). A source may keep a
+# symlinked directory in the root that the shape writes through (`.github ->
+# ci`, a layout #504 accepts), and git tracks a copy written through it where
+# the link leads: `ci/workflows/validate.yml`. A line naming only the link's
+# spelling, `/.github/workflows/validate.yml`, governed nothing, so under the
+# source's `* text=auto eol=crlf` a clone wrote that copy with CRLF, and
+# `validate-pins.py` reported shape-copy-drift after `execute` had said
+# `adoption verified`. So each copy is named where the symlinks inside the
+# root lead it, a chain of them followed to its end, as `open()` followed
+# them when the copy was written, and then, where that differs, by its pinned
+# path on the next line. That second line governs nothing while the link is
+# kept. It governs the copy once a person replaces the link with what it
+# points at, which `update-shape.py` asks for before it rewrites a copy
+# reached through one: without it that clone wrote the copy with CRLF, where
+# main's had healed (#844's review). Where the links lead out of the root or
+# cannot be followed, or to a name no line can spell literally, the copy has
+# its pinned line alone, as before. The pin still names each copy by the path
+# it was written at, which a clone opens through the same link.
 
 #: The `.gitattributes` a source may already hold at its root.
 ATTRIBUTES = ".gitattributes"
@@ -734,12 +753,26 @@ def eol_line(path: str) -> str:
     return f"/{path} text eol=lf"
 
 
-def eol_block_paths(shape_files, collision_dir: str) -> list[str]:
-    """The pinned copies a source's own root `.gitattributes` governs: each
-    one not under `collision_dir`, where the shape's own copy of the file
-    governs, in the pin's order."""
-    return [path for path in shape_files
-            if not path.startswith(f"{collision_dir}/")]
+def eol_block_paths(shape_files, collision_dir: str,
+                    tracked: dict | None = None) -> list[str]:
+    """The paths the block names for the pinned copies a source's own root
+    `.gitattributes` governs: each one not under `collision_dir`, where the
+    shape's own copy of the file governs, in the pin's order.
+
+    Each copy is named first as `tracked` maps its pinned path, where git
+    tracks it through the root's symlinks, then by its pinned path where
+    that differs (#807). One `tracked` maps to nothing, or to a name no line
+    can spell literally, is named by its pinned path alone."""
+    tracked = tracked or {}
+    return list(dict.fromkeys(
+        name for path in shape_files
+        if not path.startswith(f"{collision_dir}/")
+        for name in (_tracked_or_pinned(path, tracked.get(path)), path)))
+
+
+def _tracked_or_pinned(pinned: str, tracked: str | None) -> str:
+    """`tracked` where a block line can name it, else `pinned`."""
+    return tracked if tracked and EOL_PATH_RE.fullmatch(tracked) else pinned
 
 
 def eol_block(paths) -> str:
@@ -841,9 +874,23 @@ def _append_eol_block(target: Path, result: "Materialized",
     if path.is_symlink() or not path.is_file() \
             or _tracked_as_link(target, ATTRIBUTES):
         return
-    paths = eol_block_paths(result.shape_files, collision_dir)
+    paths = eol_block_paths(result.shape_files, collision_dir,
+                            {rel: _tracked_at(target, rel)
+                             for rel in result.shape_files})
     path.write_bytes(with_eol_block(path.read_bytes(), paths))
     result.eol_block = paths
+
+
+def _tracked_at(target: Path, rel: str) -> str | None:
+    """Where git tracks the file written at `rel` under `target`: `rel` with
+    each symlink on the way followed as `open()` followed them when it was
+    written (`_followed`), so `ci/workflows/validate.yml` for a copy written
+    through `.github -> ci` (#807). None where they lead out of `target` or
+    cannot be followed."""
+    try:
+        return "/".join(_followed(target, rel, _ticked))
+    except Refusal:
+        return None
 
 
 def collision_follow_up(intended: str, actual: str,
@@ -2798,8 +2845,9 @@ class Materialized:
     a refusal in `validate-pins.py`, and rightly.
 
     `eol_block` is the copies named in the block appended to the source's own
-    `.gitattributes` (#471), and empty when none was: no source file of that
-    name, one the plan did not keep in the root, or one that is a symlink.
+    `.gitattributes` (#471), each where git tracks it and, where that
+    differs, by its pinned path too (#807), and empty when none was: no source file of that name, one the plan did not
+    keep in the root, or one that is a symlink.
     That file is the source's, so it is in neither list above.
     """
 

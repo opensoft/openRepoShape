@@ -123,11 +123,35 @@ def _declared_pins(manifest: dict) -> set[str]:
     `1.5` ended the run in a `TypeError` before that finding could print, and
     a scalar `openXdox` was read as the pins `X`, `d`, `e`, `n`, `o`, `p`,
     `x` for every leg's classification.
+
+    AN ENTRY THAT IS NOT A NAME DECLARES NOTHING (#714), and the others are
+    still declared, as `validate-pins.py` checks the rest past an entry it
+    calls malformed: `[5]` was the pin `'5'`. `_not_a_name` is the rule,
+    and `_neutral_product_pins_type_finding` names each such entry.
     """
     declared = manifest.get("neutral_product_pins")
     if not isinstance(declared, list):
         return set()
-    return {str(pin) for pin in declared if pin}
+    return {pin for pin in declared if _not_a_name(pin) is None}
+
+
+def _not_a_name(entry) -> str | None:
+    """Why a `neutral_product_pins:` entry or a `naming.referent_chain:`
+    link is not a name, or None where it is one (#714).
+
+    The naming gate's `_not_a_name`, word for word, so every gate that reads
+    the two fields says one sentence. A name is text (`validate-pins.py`'s
+    `neutral-pin-entry-malformed` asks the same), it is not blank (a blank
+    link was always no link), and every character in it is printable
+    (`str.isprintable`). `[5]` was the pin `'5'`, and a link holding ESC a
+    name this validator classified with, `manifest ok`."""
+    if not isinstance(entry, str):
+        return "it is not text"
+    if not entry.strip():
+        return "it is blank"
+    if not entry.isprintable():
+        return "it holds a character that is not printable"
+    return None
 
 
 def _recorded_chain(naming: dict) -> tuple:
@@ -136,13 +160,19 @@ def _recorded_chain(naming: dict) -> tuple:
     A single string is read as a one-link chain rather than as characters, and
     anything else yields `()` — the caller reports the shape separately, so a
     malformed record never becomes a silently different question.
+
+    A link that is not a name (`_not_a_name`) makes the record malformed
+    too, so it records no chain (#714): `[5]` was the link `'5'`, and
+    dropping the one link would be the different question. A blank string
+    is the empty record it always was.
     """
     recorded = naming.get(CHAIN_RECORD_FIELD)
     if isinstance(recorded, str):
-        recorded = [recorded]
-    if not isinstance(recorded, list):
+        recorded = [recorded] if recorded.strip() else []
+    if not isinstance(recorded, list) or any(
+            _not_a_name(link) is not None for link in recorded):
         return ()
-    return tuple(str(link) for link in recorded if str(link).strip())
+    return tuple(recorded)
 
 
 def _chain_and_links(naming, root: Path | None) -> tuple[tuple, dict]:
@@ -223,14 +253,27 @@ def _library_takes_remedies() -> bool:
 def _naming_chain_field_finding(leg_role, naming: dict) -> list[str]:
     """Is `naming[CHAIN_RECORD_FIELD]`, if present, a string or a list?
 
-    Split from `_naming_findings` for #132.
+    Split from `_naming_findings` for #132. Each link that is not a name
+    (`_not_a_name`) is a finding too, with why (#714); a blank string is no
+    link and no finding.
     """
     recorded = naming.get(CHAIN_RECORD_FIELD)
-    if recorded is not None and not isinstance(recorded, (str, list)):
+    if recorded is None:
+        return []
+    if isinstance(recorded, str):
+        recorded = [recorded] if recorded.strip() else []
+    if not isinstance(recorded, list):
         return [f"FINDING naming-referent-chain: leg {leg_role!r}: "
                 f"{CHAIN_RECORD_FIELD} is {recorded!r}, expected a list of "
                 "neutral-product names"]
-    return []
+    out = []
+    for link in recorded:
+        why = _not_a_name(link)
+        if why is not None:
+            out.append(f"FINDING naming-referent-chain: leg {leg_role!r}: "
+                       f"{CHAIN_RECORD_FIELD} link {link!r} is not a "
+                       f"neutral-product name: {why}")
+    return out
 
 
 def _naming_classification_findings(leg_role, name: str, naming: dict,
@@ -691,15 +734,26 @@ def _shape_findings(manifest: dict) -> list[str]:
 def _neutral_product_pins_type_finding(manifest: dict) -> list[str]:
     """`neutral_product_pins`, OPTIONAL.
 
-    Split from `_findings` for #132.
+    Split from `_findings` for #132. In a list, each entry that is not a
+    name (`_not_a_name`) is a finding, with why (#714).
     """
     declared_pins = manifest.get("neutral_product_pins")
-    if declared_pins is not None and not isinstance(declared_pins, list):
+    if declared_pins is None:
+        return []
+    if not isinstance(declared_pins, list):
         return [_finding(
             "manifest-neutral-product-pins",
             f"neutral_product_pins is {declared_pins!r}, expected a list of "
             "neutral product names")]
-    return []
+    out = []
+    for pin in declared_pins:
+        why = _not_a_name(pin)
+        if why is not None:
+            out.append(_finding(
+                "manifest-neutral-product-pins",
+                f"neutral_product_pins entry {pin!r} is not a neutral "
+                f"product name: {why}"))
+    return out
 
 
 def _roles_finding(legs: list) -> list[str]:
@@ -991,7 +1045,17 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
     out.extend(_record_findings(manifest, ANSWER_ROWS))
 
     legs = manifest.get("legs")
-    if not isinstance(legs, list) or not legs:
+    # A `legs:` that is not a list is said as what it is (#714): `5` was
+    # "missing or empty", which it is not. The naming gate and
+    # `validate-pins.py` say this sentence too. `0`, `false` and `''` are
+    # not a list either, as #443 reads `neutral_product_pins:`.
+    if legs is not None and not isinstance(legs, list):
+        out.append(_finding(
+            "manifest-legs",
+            f"legs is {legs!r}, expected a list of `role:`, `repository:` "
+            "and `path:` mappings"))
+        return out
+    if not legs:
         out.append(_finding("manifest-legs", "legs is missing or empty"))
         return out
 

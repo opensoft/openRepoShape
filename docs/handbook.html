@@ -472,7 +472,7 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3d4a01ffadc322f88dfffd9cef50b1c48c58b9b3 -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -612,7 +612,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3d4a01ffadc322f88dfffd9cef50b1c48c58b9b3 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -738,7 +738,9 @@ sudo dnf install gh</code></pre></div>
           <code>shape-doctor.py</code>&rsquo;s lines, <code>setup-project.py</code>&rsquo;s family
           lines and <code>family.py</code>&rsquo;s <code>NEXT</code>, <code>switch -c</code>,
           <code>add</code> and <code>git rm -r --cached</code> lines are quoted for PowerShell, on
-          Windows.</p>
+          Windows. Off Windows, a path <code>shape-doctor.py</code> cannot print as itself is
+          written <code>$'&hellip;'</code>: bash, zsh and ksh read that; dash (<code>/bin/sh</code>
+          on Debian and Ubuntu) does not.</p>
         </div>
 
       </div>
@@ -1087,7 +1089,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3d4a01ffadc322f88dfffd9cef50b1c48c58b9b3 -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1124,7 +1126,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3d4a01ffadc322f88dfffd9cef50b1c48c58b9b3 -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -1187,7 +1189,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3d4a01ffadc322f88dfffd9cef50b1c48c58b9b3 -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -1443,7 +1445,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3d4a01ffadc322f88dfffd9cef50b1c48c58b9b3 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1742,7 +1744,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3d4a01ffadc322f88dfffd9cef50b1c48c58b9b3 -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 
