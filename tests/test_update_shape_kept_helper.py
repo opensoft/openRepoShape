@@ -957,6 +957,138 @@ def test_a_fallback_answers_only_the_names_its_handler_binds(
             "imports from it") in refused.detail.splitlines(), refused.detail
 
 
+#: An import guarded twice, for the cases where the inner handler's body
+#: goes between `NESTED` and `OUTER_BINDS` or `OUTER_VALUE_ERROR`: the outer
+#: `try` is the next one out.
+NESTED = (b"try:\n    try:\n        from repo_shape import NEW\n"
+          b"    except ImportError:\n")
+OUTER_BINDS = b"except ImportError:\n    NEW = None\n"
+OUTER_VALUE_ERROR = b"except ValueError:\n    NEW = None\n"
+#: A `repo_shape.py` that lacks `NEW`, which every copy below imports.
+LACKS_NEW = b"OLD = 1\n"
+
+
+def run_beside_a_module_lacking_new(beside: Path, copy: bytes):
+    """Python's own answer: `copy` run as a script in a folder whose
+    `repo_shape.py` lacks `NEW`, so `from repo_shape import NEW` raises the
+    `ImportError` the readers are asked about."""
+    beside.mkdir(parents=True)
+    (beside / "repo_shape.py").write_bytes(LACKS_NEW)
+    (beside / "importer.py").write_bytes(copy)
+    return run_script(beside / "importer.py",
+                      env={"PYTHONDONTWRITEBYTECODE": "1"})
+
+
+def last_line_of(stderr: str) -> str:
+    return stderr.strip().splitlines()[-1]
+
+
+@pytest.mark.parametrize("copy, taken, stopped_by", [
+    pytest.param(GUARDED + b"    NEW = None\n    raise\n", True,
+                 "ImportError",
+                 id="at module scope, a handler that binds and re-raises"),
+    pytest.param(NESTED + b"        NEW = None\n        raise\n" + OUTER_BINDS,
+                 False, None,
+                 id="nested, a handler that binds and re-raises to an outer "
+                    "one that binds"),
+    pytest.param(NESTED + b"        NEW = None\n"
+                 b"        raise RuntimeError('an old helper')\n"
+                 + OUTER_BINDS, True, "RuntimeError",
+                 id="nested, a handler that binds and raises its own error"),
+    pytest.param(NESTED + b"        NEW = None\n        raise\n"
+                 + OUTER_VALUE_ERROR, True, "ImportError",
+                 id="nested, a re-raise to an outer handler that does not "
+                    "catch it"),
+    pytest.param(b"try:\n    try:\n        try:\n"
+                 b"            from repo_shape import NEW\n"
+                 b"        except ImportError:\n            NEW = None\n"
+                 b"            raise\n"
+                 b"    except ImportError:\n        NEW = None\n"
+                 b"        raise\n" + OUTER_BINDS, False, None,
+                 id="two bare re-raises, and the outermost handler binds"),
+    pytest.param(NESTED + b"        raise\n" + OUTER_BINDS, False, None,
+                 id="nested, a handler that only re-raises, to one that "
+                    "binds"),
+    pytest.param(GUARDED + b"    NEW = None\n", False, None,
+                 id="control: a handler that only binds"),
+    pytest.param(GUARDED + b"    pass\nprint(NEW)\n", True, "NameError",
+                 id="control: a handler that only passes"),
+])
+def test_a_handler_that_raises_is_read_as_python_runs_it(
+        update_shape, tmp_path, copy, taken, stopped_by):
+    """A handler that binds `NEW` and then raises is no fallback (#897):
+    Python leaves it by the `raise`. A bare `raise` hands the `ImportError`
+    to the next `try` out, so what answers is that one's handler, and at
+    module scope nothing does; any other `raise` answers nothing. Held to
+    Python, as the issue's probe was: beside a `repo_shape.py` that lacks
+    `NEW`, the copy the check keeps starts (exit 0), and the copy it
+    refuses stops, on the `ImportError` itself, on the error the handler
+    raised in its place, or on a `NameError` later."""
+    imported = update_shape._names_imported(copy).get("repo_shape", set())
+    assert ("NEW" in imported) is taken, imported
+    refused = refusal(update_shape, tmp_path / "kept",
+                      {REPO_SHAPE: LACKS_NEW}, {BOOTSTRAP: copy})
+    assert (refused is not None) is taken
+    if taken:
+        assert f"    {REPO_SHAPE} (kept) lacks NEW, which {BOOTSTRAP}" \
+            in refused.detail, refused.detail
+    ran = run_beside_a_module_lacking_new(tmp_path / "beside", copy)
+    if stopped_by is None:
+        assert ran.returncode == 0, ran.stderr
+    else:
+        assert ran.returncode != 0, ran.stdout
+        assert last_line_of(ran.stderr).startswith(f"{stopped_by}:"), \
+            ran.stderr
+
+
+@pytest.mark.parametrize("raised", [
+    pytest.param(b"        raise ImportError('an old helper')\n",
+                 id="a new ImportError"),
+    pytest.param(b"        raise exc\n", id="the caught error by its name"),
+])
+def test_a_raise_of_its_own_answers_nothing_though_an_outer_handler_catches_it(
+        update_shape, tmp_path, raised):
+    """The price of #897's rule, pinned: where the `raise` is not a bare
+    one, whether the outer handler catches what it raises depends on that
+    handler's exception list, which the reader does not read, so it answers
+    nothing. `except ImportError` outside catches both of these, and Python
+    starts the copy, which is refused: `a copy that starts may be refused,
+    and one that stops is never kept`. Measured, beside a `repo_shape.py`
+    that lacks `NEW`."""
+    copy = (b"try:\n    try:\n        from repo_shape import NEW\n"
+            b"    except ImportError as exc:\n        NEW = None\n"
+            + raised + OUTER_BINDS)
+    imported = update_shape._names_imported(copy).get("repo_shape", set())
+    assert "NEW" in imported, imported
+    ran = run_beside_a_module_lacking_new(tmp_path / "beside", copy)
+    assert ran.returncode == 0, ran.stderr
+
+
+@pytest.mark.parametrize("handler", [
+    pytest.param(b"    NEW = None\n    if STRICT:\n        raise\n",
+                 id="a raise under an if"),
+    pytest.param(b"    NEW = None\n    sys.exit(1)\n",
+                 id="a call that exits"),
+    pytest.param(b"    NEW = None\n    with contextlib.nullcontext():\n"
+                 b"        raise\n", id="a raise inside a with"),
+])
+def test_a_raise_in_a_block_or_a_call_that_exits_is_not_read_as_a_stop(
+        update_shape, tmp_path, handler):
+    """What #897 leaves alone, and says so. Only a `raise` among the
+    handler's own statements (`_reached`) is read, so a handler that binds
+    `NEW` and then raises under an `if`, inside a `with`, or exits by a call
+    still answers it, as `_bound_at` reads a statement after a call that
+    exits, and what this cannot tell, it does not refuse. Each of these
+    copies stops under Python all the same, with `STRICT` true: the false
+    negatives that keep the copy, measured."""
+    copy = (b"import contextlib\nimport sys\nSTRICT = True\n"
+            + GUARDED + handler)
+    imported = update_shape._names_imported(copy).get("repo_shape", set())
+    assert "NEW" not in imported, imported
+    ran = run_beside_a_module_lacking_new(tmp_path / "beside", copy)
+    assert ran.returncode != 0, ran.stdout
+
+
 @pytest.mark.parametrize("raised", [RecursionError, MemoryError])
 def test_a_source_too_deep_to_parse_is_one_it_cannot_tell(update_shape,
                                                           tmp_path,
