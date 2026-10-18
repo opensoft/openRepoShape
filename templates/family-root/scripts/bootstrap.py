@@ -54,9 +54,11 @@ WHAT IT DOES, in order:
       out; where every member was checked out the run fails all the same,
       since git updated none of them. A work tree file git cannot parse at
       all, a conflict marker or an open quote left in it, is said and
-      failed on the same way, and its cure is the file mended by hand. Git
-      exits 0 over the second where a recursive clone ran first, and 128
-      (`No url found for submodule path`) in a plain clone; a missing
+      failed on the same way, and its cure is the file mended by hand; in
+      the index's or HEAD's file git reads the sections before such a line
+      and goes on, and so does this (#856). Git exits 0 over the second
+      where a recursive clone ran first, and 128 (`No url found for
+      submodule path`) in a plain clone; a missing
       credential exits non-zero too, so what the holder records is the
       test, never git's words. The line says what cures each (`cures`):
       `validate-family.py` names the commit for the first two; for the
@@ -137,7 +139,10 @@ STOPPED = "git stopped at {}, a gitlink it has no url for"
 #: `parse_config` in its submodule-config.c reads a submodule's key: these
 #: keys with no value (a `branch` with none crashes it, `BRANCH_READ_SINCE`),
 #: and an `update` other than these four. A `shallow` must be a boolean and
-#: a `fetchrecursesubmodules` a boolean or `on-demand` (`git_bool`).
+#: a `fetchrecursesubmodules` a boolean or `on-demand` (`git_bool`). The
+#: gate's `_values_refused`, `_git_takes_bool` and `GIT_TAKES` say the same,
+#: and `tests/test_family_gitmodules_values.py` holds the two scripts to one
+#: answer: a change made here is made there too (#856).
 NO_VALUE_REFUSED = frozenset({"path", "url", "update", "ignore", "branch"})
 #: The first git that reads a `branch` with no value as it reads a `url`
 #: with none, `missing value` and `bad config line`, which dies in the work
@@ -436,9 +441,11 @@ def gitmodules_sections(root: Path) -> Gitmodules:
     """`.gitmodules` as `git submodule update` reads it: the work tree's
     file, which a fresh clone takes from HEAD, or, where the work tree has
     none, as a deletion not yet committed or a sparse checkout leaves it,
-    the index's, then HEAD's (`gitmodules_source`, #768). Nothing where
-    none holds one, or git cannot read it: git has no url for any
-    submodule then either. Nothing, and `unreadable`, where that is the
+    the index's, then HEAD's (`gitmodules_source`, #768), each of the
+    last two, a blob, up to a line git cannot parse, as git reads it
+    (`gitmodules_listed`, #856). Nothing where none holds one, or git
+    cannot read it: git has no url for any submodule then either.
+    Nothing, and `unreadable`, where that is the
     work tree's file and `git config --list` cannot parse it: git dies
     reading it (`bad config line`), before it checks out any member.
     Nothing, and `unmerged`, where the index holds the file only at a
@@ -455,10 +462,8 @@ def gitmodules_sections(root: Path) -> Gitmodules:
     source = gitmodules_source(root)
     if source is None:
         return nothing._replace(unmerged=True)
-    try:
-        listed = git_out(["config", "-z", *source, "--list"], cwd=root,
-                         binary=True)
-    except Refusal:
+    listed = gitmodules_listed(root, source)
+    if listed is None:
         return nothing._replace(unreadable=os.path.isfile(root / GITMODULES))
     entries = gitmodules_entries(root, listed, source[0] == "--blob")
     refused = tuple(dict.fromkeys(
@@ -492,6 +497,34 @@ def gitmodules_source(root: Path) -> list[str] | None:
     if os.path.lexists(root / GITMODULES):
         return ["--file", GITMODULES]
     return source
+
+
+#: What git says of a line it cannot parse in a config file, a blob too:
+#: `error: bad config line 7 in blob HEAD:.gitmodules` (#856).
+BAD_LINE = b"bad config line"
+
+
+def gitmodules_listed(root: Path, source: list[str]) -> bytes | None:
+    """What `git config -z --list` prints of the `.gitmodules` that
+    `source` names (`gitmodules_source`), or None where git cannot read
+    it (#856).
+
+    A BLOB IS READ UP TO A LINE GIT CANNOT PARSE. `git config --blob`
+    prints the entries before that line, then `bad config line`, and
+    exits 128. Git's submodule reader, which reads the index's or HEAD's
+    file where the work tree has none, takes those same entries, says
+    the same line as an error, not a die, and goes on (measured, git
+    2.43.0): so what was printed is what git read, and a bad line before
+    the first section leaves nothing, as git reads nothing. A work tree
+    file with such a line is None: git dies reading it. Git is run as
+    `git_out` runs it."""
+    proc = subprocess.run(["git", "config", "-z", *source, "--list"],
+                          cwd=str(root), capture_output=True, check=False)
+    if proc.returncode == 0 or (source[0] == "--blob"
+                                and proc.returncode == 128
+                                and BAD_LINE in proc.stderr):
+        return proc.stdout
+    return None
 
 
 def gitmodules_entries(root: Path, listed: bytes, blob: bool

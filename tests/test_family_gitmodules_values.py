@@ -21,6 +21,17 @@ THE ISSUE'S THREE LINES, each reproduced on #682's head f74f640c first:
   `submodule.<name>.active` decides before `submodule.active`'s patterns;
   and a plain path pattern names only itself and what is under it.
 
+AND #856'S TWO LINES, the first reproduced on #839's head 77f8a6c8:
+
+- Where git reads the index's or HEAD's `.gitmodules`, a blob, a line it
+  cannot parse there is an error, not a die: git reads the entries before
+  it and goes on. Bootstrap read none, so with no credential each row was
+  "no section of .gitmodules gives that path" and the run failed where
+  the members were the credential's. It reads what git reads now.
+- The rules of which values git dies on are written in both scripts. One
+  table of cases is run through both, and their answers held to each
+  other, and what both say git takes is read from bootstrap's `TAKES`.
+
 THE SAME FAMILY, OFFLINE RULES AND STATES as
 `test_family_bootstrap_gate_order.py` (#648), whose helpers are imported:
 a plain clone of the holder, `git submodule update` given the fixture's
@@ -40,10 +51,10 @@ from repo_shape import PYTHON
 from test_family import ORG, family, validate  # noqa: F401
 from test_family_add_refusals import holder, offline  # noqa: F401
 from test_family_bootstrap_gate_order import (
-    CHECKOUT_CURE, DUPLICATE, EXITED_0, FETCHED, NO_URL, NOT_ALL_FETCHED,
-    SECTION_CURE, STOPPED, after_first_line, bootstrap, cloned, edited_clone,
-    failed_on, fetching, not_fetched, type_line, url_edited, with_config,
-    without_url,
+    CHECKOUT_CURE, DUPLICATE, EXITED_0, FETCHED, NO_SECTION, NO_URL,
+    NOT_ALL_FETCHED, SECTION_CURE, STOPPED, after_first_line, bootstrap,
+    cloned, edited_clone, failed_on, fetching, not_fetched, type_line,
+    url_edited, with_config, without_url,
 )
 from test_family_dry_run import isolated
 from test_family_head_lost_gitmodules import (
@@ -74,12 +85,26 @@ REFUSED_LINES = {
     "branch-no-value": ("branch", "branch", None),
 }
 
-#: What both tools say git takes for each key.
-TAKES = {"update": "one of `none`, `checkout`, `rebase` or `merge`",
-         "shallow": "a boolean, `true` or `false`",
-         "fetchrecursesubmodules": "a boolean or `on-demand`",
-         "ignore": "one of `untracked`, `dirty`, `all` or `none`",
-         "path": "a path", "url": "a url", "branch": "a branch name"}
+
+def by_path(script: str, name: str):
+    """The family root's `scripts/<script>`, loaded by path as the module
+    `name`, and `sys.path`, which loading it puts the script's own folder
+    on, put back."""
+    kept = list(sys.path)
+    try:
+        return load_without_bytecode(
+            REPO / "templates" / "family-root" / "scripts" / script, name)
+    finally:
+        sys.path[:] = kept
+
+
+#: The two scripts, each of which writes which values git dies on (#856).
+#: The parity tests at the end hold them to one answer, so what both say
+#: git takes for each key is read from bootstrap's `TAKES`, and this file
+#: keeps no copy of its own.
+BOOTSTRAP = by_path("bootstrap.py", "gitmodules_values_bootstrap")
+GATE = by_path("validate-family.py", "gitmodules_values_gate")
+TAKES = BOOTSTRAP.TAKES
 
 #: Where the finding says the value is.
 HERE_AND_HEAD = "here and in HEAD, which a clone reads"
@@ -451,6 +476,104 @@ def test_a_key_with_no_value_ends_git_s_reading_of_the_index_s_file(
     assert_the_credential_s_skip(clone, env)
 
 
+#: A line git cannot parse, a quote left open, as #856 measured it.
+UNPARSED_LINE = b'\tbranch = "unterminated\n'
+
+#: Where it goes in a `.gitmodules` that gives MEMBER's section, then
+#: OTHER's (#856): the edit, the paths git's update registers before it
+#: dies or goes on, and the path its init then finds no url for, or None.
+CUT_AT = {
+    "at-the-end": (
+        lambda data: url_edited(data, OTHER,
+                                lambda url: url + UNPARSED_LINE),
+        (f"members/{MEMBER}", f"members/{OTHER}"), None),
+    "after-the-first-section": (
+        lambda data: url_edited(data, MEMBER,
+                                lambda url: url + UNPARSED_LINE),
+        (f"members/{MEMBER}",), f"members/{OTHER}"),
+    "inside-a-section": (
+        lambda data: url_edited(data, OTHER,
+                                lambda url: UNPARSED_LINE + url),
+        (f"members/{MEMBER}",), f"members/{OTHER}"),
+    "before-the-first-section": (lambda data: UNPARSED_LINE + data, (),
+                                 f"members/{MEMBER}"),
+}
+
+#: MEMBER, where git's init stops at OTHER, which it has no url for.
+STOPS_AT_OTHER = (f"members/{MEMBER}", STOPPED.format(path=f"members/{OTHER}"))
+
+#: What (a) says where git's init dies at a path it read no url for: MEMBER
+#: stopped at OTHER, which no section git read gives, or whose section git
+#: read only up to its path; and, with nothing read, no section for either.
+CUT_SAID = {
+    "after-the-first-section": not_fetched(
+        STOPS_AT_OTHER, (f"members/{OTHER}", NO_SECTION)),
+    "inside-a-section": not_fetched(
+        STOPS_AT_OTHER, (f"members/{OTHER}", NO_URL),
+        cure=SECTION_CURE.format(path=f"members/{OTHER}")),
+    "before-the-first-section": not_fetched(
+        (f"members/{MEMBER}", NO_SECTION), (f"members/{OTHER}", NO_SECTION)),
+}
+
+
+def cut_clone(family, holder, env, tmp_path, lose, place: str):
+    """A plain clone with the line git cannot parse committed at `place`
+    (`CUT_AT`), its work tree's `.gitmodules` lost, not committed, by
+    `lose`, so git reads the index's or HEAD's, and no credential. Git's
+    update says the line, which in a blob is an error and no die, reads
+    the entries before it, registers the paths it read a url for, and
+    finds none where `CUT_AT` says."""
+    edit, registered, no_url = CUT_AT[place]
+    clone, _ = edited_clone(holder, env, family, tmp_path, edit)
+    lose(clone, env)
+    update = raw(clone, env, "submodule", "update", "--init", "--recursive",
+                 check=False)
+    said = update.stderr.decode("utf-8", "replace")
+    assert "bad config line" in said, said
+    assert tuple(re.findall(r"registered for path '([^']*)'", said)) == (
+        registered), said
+    assert re.findall(r"No url found for submodule path '([^']*)'",
+                      said) == ([] if no_url is None else [no_url]), said
+    return clone
+
+
+@pytest.mark.parametrize("lose", LOST.values(), ids=LOST)
+def test_a_line_git_cannot_parse_at_the_end_of_a_blob_leaves_the_credential_s(
+        family, holder, offline, tmp_path, lose):
+    """THE ISSUE'S FIRST LINE (#856). The line at the end of the index's
+    file, or HEAD's, which git reads where the work tree has none: git
+    reads every section before it and fails on the fetch for want of a
+    credential. Bootstrap read no section, since `git config --list`
+    exits 128 there, said "no section of .gitmodules gives that path" for
+    each row, and failed. It reads what git printed before it died now:
+    the members are the credential's, skipped, and ok."""
+    env = isolated(offline, tmp_path)
+    clone = cut_clone(family, holder, env, tmp_path, lose, "at-the-end")
+
+    assert_the_credential_s_skip(clone, env)
+
+
+@pytest.mark.parametrize("lose", LOST.values(), ids=LOST)
+@pytest.mark.parametrize("place", CUT_SAID)
+def test_a_line_git_cannot_parse_earlier_in_a_blob_is_read_up_to_as_git_does(
+        family, holder, offline, tmp_path, lose, place):
+    """THE ISSUE'S FIRST LINE (#856), the line earlier in the file. After
+    the first section, git reads MEMBER's alone; inside OTHER's, before
+    its url, MEMBER's and OTHER's path: either way its init dies at OTHER,
+    `No url found`, before it checks out any member, as it would with a
+    credential. Bootstrap said no section gave either path; it names
+    MEMBER stopped at OTHER, and OTHER as git read it. Before the first
+    section git reads nothing, and neither does bootstrap."""
+    env = isolated(offline, tmp_path)
+    clone = cut_clone(family, holder, env, tmp_path, lose, place)
+
+    result = bootstrap(clone, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stderr.splitlines()[-2:] == [
+        CUT_SAID[place], failed_on(MEMBER, OTHER)], result.stderr
+
+
 @pytest.mark.parametrize("lose", LOST.values(), ids=LOST)
 def test_a_branch_with_no_value_in_a_blob_is_read_as_this_git_reads_it(
         family, holder, offline, tmp_path, lose):
@@ -549,20 +672,14 @@ VERSIONS = {
 
 @pytest.mark.parametrize("version, crashes", VERSIONS.values(),
                          ids=VERSIONS)
-def test_which_git_crashes_on_a_branch_with_no_value(monkeypatch, tmp_path,
-                                                     version, crashes):
+def test_which_git_crashes_on_a_branch_with_no_value(tmp_path, version,
+                                                     crashes):
     """Which git the family root's bootstrap takes for one that crashes
     on a `branch` with no value, where it reads the index's or HEAD's
     file: every git before 2.43.1, and one whose version it cannot read.
     The test above meets the git it runs on; this meets each side of the
-    line. Loading it puts its own folder on `sys.path`, which is put
-    back."""
-    monkeypatch.setattr(sys, "path", list(sys.path))
-    module = load_without_bytecode(
-        REPO / "templates" / "family-root" / "scripts" / "bootstrap.py",
-        "gitmodules_values_bootstrap")
-
-    assert module.crashes_on_branch(tmp_path, version) is crashes
+    line."""
+    assert BOOTSTRAP.crashes_on_branch(tmp_path, version) is crashes
 
 
 def test_a_value_git_dies_on_in_the_index_s_file_is_named_and_mended(
@@ -659,7 +776,6 @@ def test_a_member_whose_own_active_is_false_is_not_where_git_stops(
 #: however spelt, names MEMBER alone, as `git clone
 #: --recurse-submodules=<path>` writes it; a leading directory names both;
 #: the start of OTHER's path that is no directory of it names nothing.
-STOPS_AT_OTHER = (f"members/{MEMBER}", STOPPED.format(path=f"members/{OTHER}"))
 PATTERNS = {
     "a-path": ((f"members/{MEMBER}",), False,
                ((f"members/{OTHER}", NO_URL),), (OTHER,)),
@@ -895,3 +1011,93 @@ def test_a_staged_removal_beside_a_refused_value_puts_no_section_back(
         staged = findings(result)[1]
         assert commands(staged) == [f"git reset -q -- {ROW}"], extra
         assert f"git checkout HEAD -- {GITMODULES}" not in staged, extra
+
+
+# --- the rules both scripts write, held to one answer (#856) ----------------
+
+#: Each key either script asks about, and one neither does, which takes any
+#: value.
+KEYS = ("path", "url", "update", "ignore", "branch", "shallow",
+        "fetchrecursesubmodules", "active")
+
+#: ONE TABLE of `(key, value)` cases, None for a key with no value, which
+#: the parity tests run through both scripts' rules (#856): each key with
+#: no value and with an empty one; each value a rule names and others
+#: beside it, in another case, with a space, as a command; the numbers
+#: either side of git's int range; every value #819's runs measured, the
+#: `update` typo and command, the `shallow` numbers and `ON-DEMAND`
+#: refused, the `branch` and `ignore` values taken; a `path` and a `url`
+#: git drops, which no rule refuses; and a key in a case `git config
+#: --list` never prints. It holds inputs, not answers: the parity tests
+#: hold the two scripts' answers to each other, and the tests above hold
+#: each script to git.
+VALUE_CASES = (
+    *((key, None) for key in KEYS),
+    *((key, "") for key in KEYS),
+    *(("update", value) for value in (
+        "none", "checkout", "rebase", "merge", "None", "Merge", "!true",
+        " none", "none ")),
+    *(("shallow", value) for value in (
+        "true", "false", "TRUE", "yes", "off", "1", "0", " 1", "1 ", "0x10",
+        "010", "1k", "2097151k", "-2097151k", "maybe", "08", "3000000000",
+        "2097152k", "-2097152k", "-2097153k", "on-demand")),
+    *(("fetchrecursesubmodules", value) for value in (
+        "on-demand", "ON-DEMAND", "true", "0", "bogus", "maybe")),
+    *(("ignore", value) for value in (
+        "untracked", "dirty", "all", "none", "bogus")),
+    ("path", f"members/{OTHER}"), ("path", "-x"),
+    ("url", f"https://github.com/{ORG}/{OTHER}.git"), ("url", "-bad"),
+    ("branch", "main"), ("branch", "."), ("branch", "-x"),
+    ("active", "maybe"), ("fetchRecurseSubmodules", "bogus"),
+)
+
+
+def case_id(case: tuple[str, str | None]) -> str:
+    """A case's id: its key, then its value as Python writes it."""
+    key, value = case
+    return f"{key}=" + ("(none)" if value is None else repr(value))
+
+
+@pytest.fixture(scope="module")
+def anywhere(tmp_path_factory):
+    """A folder for both scripts' boolean probes to run git in: they read
+    an empty file and no repository."""
+    return tmp_path_factory.mktemp("parity")
+
+
+@pytest.mark.parametrize("key, value", VALUE_CASES,
+                         ids=list(map(case_id, VALUE_CASES)))
+def test_both_scripts_give_each_value_one_answer(anywhere, key, value):
+    """THE ISSUE'S SECOND LINE (#856). Which values git dies on is written
+    in bootstrap, `refused_value` and `git_bool`, and in the gate,
+    `_values_refused` and `_git_takes_bool`, and a change made in one was
+    a defect in the other until somebody made it there too. Each case is
+    asked of both, and of each one's boolean probe where there is a value:
+    one answer, or this fails."""
+    gate = GATE._values_refused(anywhere, [(f"members/{OTHER}", key, value)])
+    bootstrap_said = (
+        BOOTSTRAP.refused_value(anywhere, key, value),
+        None if value is None else BOOTSTRAP.git_bool(anywhere, value)
+        is not None)
+    gate_said = (bool(gate), None if value is None
+                 else GATE._git_takes_bool(anywhere, value))
+
+    assert bootstrap_said == gate_said
+
+
+def test_both_scripts_say_one_thing_of_what_git_takes(anywhere):
+    """What git takes for each key it refuses a value of is written in
+    bootstrap's `TAKES` and the gate's `GIT_TAKES`, one text each, which
+    this file reads from bootstrap (#856). The table reaches every key
+    they name, refused and taken; every key refused in it has its text,
+    which both look up to say it; and it holds each key bootstrap refuses
+    with no value and each `update` value it takes."""
+    refused = {(key, value) for key, value in VALUE_CASES
+               if BOOTSTRAP.refused_value(anywhere, key, value)}
+    taken = set(VALUE_CASES) - refused
+
+    assert BOOTSTRAP.TAKES == GATE.GIT_TAKES
+    assert {key for key, _ in refused} == set(TAKES)
+    assert {key for key, _ in taken} >= set(TAKES)
+    assert {(key, None) for key in BOOTSTRAP.NO_VALUE_REFUSED} <= refused
+    assert {("update", value) for value in BOOTSTRAP.UPDATE_VALUES} <= taken
