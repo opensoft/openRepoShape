@@ -415,7 +415,10 @@ record_ref() {
 # character (a newline breaks the printed line in two, an escape is the
 # terminal's to act on) is no name a line can print as it is, and nor is a
 # character a terminal draws as something other than itself (#837), so
-# `install_commands` refuses all three before this is asked.
+# `install_commands` refuses all three before this is asked. The C1
+# controls and those characters are refused as the person's locale reads
+# the name (#858): a multibyte locale that is not UTF-8 can hand this line
+# C1 bytes it reads as letters, which a terminal that reads UTF-8 acts on.
 export_path_line() {
 	local dir="$1" backslash='\' quote="'" rest quoted=""
 	case "$dir" in
@@ -446,7 +449,7 @@ export_path_line() {
 # THE CHARACTERS A TERMINAL DRAWS AS SOMETHING OTHER THAN THEMSELVES (#837),
 # by code point, a range as its first and last. A value holding one is
 # refused wherever this command would print it, without printing it:
-# `install_commands` refuses such a directory, `shape_checkout` such a
+# `install_commands` refuses such a directory, `checked_repo` such a
 # repository and `ref_fault` such a ref. Every line that printed it would
 # show another value: laid out as a terminal lays out a line (fribidi),
 # `~/` U+202E `.local/bin` reads `~/nib/lacol.`, `/opt/tools-1` U+200F
@@ -537,10 +540,60 @@ misdrawn_characters() {
 	printf '%s' "$found"
 }
 
+# THE VALUE AS THE PERSON'S LOCALE READS IT, IN UTF-8, WHERE THAT LOCALE
+# READS TWO OR MORE OF ITS BYTES AS ONE CHARACTER (#858). The control check
+# and `misdrawn_characters` look for UTF-8's bytes under `LC_ALL=C`, and a
+# multibyte charset that is not UTF-8 reads some of those bytes as text:
+# GBK, GB18030 and CP936 read `0xC2 0x80` to `0xC2 0x9F` as 32 hanzi; GBK,
+# Big5, EUC-JP and EUC-KR read U+00AD's two bytes as a hanzi, a kanji or a
+# Hangul syllable; and in Shift_JIS a kanji whose second byte is `0xC2`,
+# before one of the common kanji (first byte `0x88` to `0x98`), puts a C1
+# control's two bytes side by side (measured with Python's codecs).
+# `install_commands` asks this of a value those checks refuse, and asks them
+# again of what it prints. It prints the reading, and succeeds, only where:
+#   * `locale charmap`, asked under the person's own `LC_ALL`, `LC_CTYPE`
+#     and `LANG`, answers with a charset that is neither UTF-8, whose
+#     reading is the bytes, nor ASCII, which reads no byte past 0x7F;
+#   * `iconv` reads the whole value in that charset;
+#   * the reading, written back into that charset by `iconv`, is the value
+#     again, byte for byte, so an `iconv` that drops or changes a byte, or
+#     prints nothing at all and exits 0, gives no reading; and
+#   * the reading has fewer characters than the value has bytes, counted
+#     under `LC_ALL=C` as the bytes of UTF-8 that start a character (0x80
+#     to 0xBF continue one). A single-byte charset reads each byte alone,
+#     and there the bytes decide, as before: under a Latin-1 `LANG` left in
+#     a terminal that reads UTF-8, U+FEFF's three bytes would read as three
+#     letters.
+# Otherwise it prints nothing and fails, and the bytes decide: no `locale`
+# or no `iconv` (a minimal container), a charset either does not know, or
+# a value the charset cannot read. The locale is taken at its word, and
+# that is the trade: a multibyte locale that is not UTF-8, left in a
+# terminal that reads UTF-8, is handed the C1 bytes and the bytes of
+# `MISDRAWN_CHARACTERS` it reads as letters, and that terminal acts on
+# them. install.sh carries this function as it is here.
+locale_reading() {
+	local charmap reading
+	charmap="$(locale charmap 2>/dev/null)" || return 1
+	case "$charmap" in
+	"" | [Uu][Tt][Ff]-8 | [Uu][Tt][Ff]8 | ANSI_X3.4-1968 | *ASCII*) return 1 ;;
+	*) ;;
+	esac
+	reading="$(printf '%s' "$1" | iconv -f "$charmap" -t UTF-8 2>/dev/null)" ||
+		return 1
+	[ "$(printf '%s' "$reading" | iconv -f UTF-8 -t "$charmap" 2>/dev/null)" = "$1" ] ||
+		return 1
+	(
+		LC_ALL=C
+		letters=${reading//[$'\200'-$'\277']/}
+		[ "${#letters}" -lt "${#1}" ] || exit 1
+		printf '%s' "$reading"
+	)
+}
+
 install_commands() {
 	local dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
 	local name target source verb placed=0 recording=0 record spelled=""
-	local misdrawn
+	local misdrawn seen
 	# NO LINE ABOUT `$PATH` CAN NAME A DIRECTORY HOLDING A CONTROL CHARACTER
 	# OR A `:` (#667, #760): the colon is what splits a `$PATH`; a newline
 	# breaks the line the note prints in two; a carriage return rewrites the
@@ -555,9 +608,10 @@ install_commands() {
 	# under LC_ALL=C, is no fault of the directory's. The check runs under
 	# `LC_ALL=C` and names U+0080 to U+009F's two bytes (`\302`, then `\200`
 	# to `\237`), so a C1 control is refused in every locale, whatever else
-	# the value holds; U+2028 and U+2029, which only a UTF-8 locale's
-	# `[[:cntrl:]]` matched, are the next check's (#837). Left to the
-	# locale, `[[:cntrl:]]` matches a C1 control only in a value that is
+	# the value holds, unless the locale reads those bytes as text (#858,
+	# below); U+2028 and U+2029, which only a UTF-8 locale's `[[:cntrl:]]`
+	# matched, are the next check's (#837). Left to the locale,
+	# `[[:cntrl:]]` matches a C1 control only in a value that is
 	# valid UTF-8: one byte that is not (a lone 0xE9) makes bash match byte
 	# by byte, and then U+009B's two bytes are not controls, as under `C`
 	# (measured with bash 5.2.21). The locale is `C` in a subshell, so that
@@ -565,15 +619,40 @@ install_commands() {
 	# locale, and the locale of every line below is as it was. The colon is
 	# checked after the Windows spelling, which holds one by definition, is
 	# respelled without one, and refuses what it cannot respell.
-	if (LC_ALL=C; case "$dir" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
+	# WHERE THE BYTES ARE REFUSED, THE PERSON'S LOCALE IS ASKED HOW IT READS
+	# THEM (#858): a multibyte charset that is not UTF-8 may read them as
+	# text, and then the C1 bytes and `misdrawn_characters` are looked for
+	# in `locale_reading`'s UTF-8 instead. Only a value the bytes refuse is
+	# read again, so no name placed before is refused, and where nothing
+	# reads it again the bytes decide, as before. `[[:cntrl:]]` is asked of
+	# the bytes as typed: those characters are ASCII's in every such
+	# charset, and `$(…)` drops a newline at the end of the reading. The
+	# trade: such a locale, left in a terminal that reads UTF-8, has C1 bytes
+	# it reads as letters placed and printed in the lines below, and that
+	# terminal acts on them. A lone C1 byte that is not UTF-8 (`0x9B`) is
+	# placed, as before: a terminal that reads UTF-8 draws it as a character
+	# it cannot read, and only one set to an 8-bit charset acts on it. Under
+	# an ISO 8859 charmap, the one such a terminal goes with, the charset is
+	# known and reads that byte as U+009B, but nothing here reads the name
+	# again, so `a`, `0x9B`, `b` is placed there too: a candidate, left
+	# (#858).
+	seen="$dir"
+	if (LC_ALL=C; case "$dir" in *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac) ||
+		[ -n "$(LC_ALL=C; misdrawn_characters "$dir")" ]; then
+		seen="$(locale_reading "$dir")" || seen="$dir"
+	fi
+	if (LC_ALL=C
+		case "$dir" in *[[:cntrl:]]*) exit 0 ;; *) ;; esac
+		case "$seen" in *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
 		die "--install would place this command in a directory whose name holds a control character, such as a newline, a carriage return, a tab or an escape, and no line about \$PATH can print such a name as it is: a terminal acts on it. Nothing was placed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this again."
 	fi
 	# A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
 	# NEXT (#837), for the control characters' reason and before the same
 	# lines: the name would read as another directory's. The refusal names
 	# each one by its code point, because nobody can see it, and says
-	# nothing else of the value. `misdrawn_characters` says which they are.
-	misdrawn="$(LC_ALL=C; misdrawn_characters "$dir")"
+	# nothing else of the value. `misdrawn_characters` says which they are,
+	# in the locale's reading where there is one (#858).
+	misdrawn="$(LC_ALL=C; misdrawn_characters "$seen")"
 	[ -z "$misdrawn" ] ||
 		die "--install would place this command in a directory whose name holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it, so no line about \$PATH can print the name as it reads. Nothing was placed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this again."
 	# A WINDOWS SPELLING IS SPELLED AGAIN THE WAY BASH SPELLS IT (#649), with
@@ -697,6 +776,43 @@ find_python() {
 	return 1
 }
 
+# $OPENREPOSHAPE_REPO, CHECKED ONCE, BEFORE ANY RUN BUT `--help` (#866), by
+# `refuse_bad_values`. This is the guard `shape_checkout` held until then,
+# and it is `setup.sh`'s, for its reason: the value reaches a `git clone`
+# command line, where a leading `-` is an option rather than a repository and
+# a control character could forge a line of output before this script has
+# said a word. The refusal does not echo the value back. The leading `-` is
+# looked for in the URL `shape_clone_url` makes, which is what a clone is
+# handed: an owner/name, a URL, an scp address and a path each pass in the
+# form a clone takes, and only a URL or an scp address typed with a leading
+# `-` keeps it there.
+#
+# THE CHARACTERS ARE LOOKED FOR IN $REPO AS TYPED TOO (#866, rv866's
+# SHOULD-1). `$(…)` drops the newlines at the end of what it captures, so a
+# URL, an scp address or a path ending in a newline came out of
+# `shape_clone_url` without it, passed, and was printed by `--version` and
+# sent by the fetch with it. An owner/name keeps it inside the URL, before
+# `.git`, so only those three forms lost it.
+#
+# A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
+# FIRST (#837), in words that name it by its code point and nothing else of
+# the value. First, because `[![:print:]]` is the locale's: under `C` it
+# matches every byte past ASCII, and under a UTF-8 locale none of these
+# characters, so after it the words would change with the locale.
+#
+# install.sh's `checked_repo` is stricter, an owner/name and nothing else,
+# because it builds only github.com URLs from the value.
+checked_repo() {
+	local url misdrawn
+	url="$(shape_clone_url)"
+	misdrawn="$(LC_ALL=C; misdrawn_characters "$REPO")"
+	[ -z "$misdrawn" ] ||
+		die "OPENREPOSHAPE_REPO holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. This tool will not put it on a \`git clone\` command line. Set it to a URL or a path."
+	case "$url$REPO" in
+	-* | *[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
+	esac
+}
+
 # A CHECKOUT OF THE STANDARD, made the way `setup.sh` self-bootstraps one:
 # `git clone` of `shape_clone_url`, into the temporary directory `workdir`
 # owns, checked out at $REF when one was named: by $OPENREPOSHAPE_REF, or by
@@ -708,26 +824,11 @@ find_python() {
 # standard's tip -- a comparison a one-commit history cannot make at all. The
 # scaffold has no such need, so it stays shallow and this does not.
 #
-# The guard on $SHAPE_REPO is `setup.sh`'s, for its reason: the value reaches
-# a `git clone` command line, where a leading `-` is an option rather than a
-# repository and a control character could forge a line of output before this
-# script has said a word. The refusal does not echo the value back.
-#
-# A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
-# FIRST (#837), before the clone's refusal names `$REPO`, and in words that
-# name it by its code point and nothing else of the value. First, because
-# `[![:print:]]` is the locale's: under `C` it matches every byte past ASCII,
-# and under a UTF-8 locale none of these characters, so after it the words
-# would change with the locale.
+# $OPENREPOSHAPE_REPO HAS PASSED `checked_repo` BEFORE THIS RUNS (#866), as
+# every run but `--help` checks it once, and nothing between changes it.
 shape_checkout() {
-	local url misdrawn
+	local url
 	url="$(shape_clone_url)"
-	misdrawn="$(LC_ALL=C; misdrawn_characters "$url")"
-	[ -z "$misdrawn" ] ||
-		die "OPENREPOSHAPE_REPO holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. This tool will not put it on a \`git clone\` command line. Set it to a URL or a path."
-	case "$url" in
-	-* | *[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
-	esac
 	workdir openRepoShape-doctor
 	SHAPE_DIR="$WORKDIR/shape"
 	git clone --quiet -- "$url" "$SHAPE_DIR" ||
@@ -764,26 +865,46 @@ shape_checkout() {
 #
 # A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF (#837) is a
 # fault between the length and the control character, named by its code
-# point and never echoed, as `shape_checkout` refuses one: before the
+# point and never echoed, as `checked_repo` refuses one: before the
 # control check, whose `[![:print:]]` is the locale's, so the words do not
 # change with the locale, and before the shape, which echoes the value.
+# Those two are `ref_character_fault`'s, below.
 ref_fault() {
-	local ref="$1" what="$2" misdrawn
+	local ref="$1" what="$2" fault
 	if [ -z "$ref" ]; then
 		printf '%s' "$what is empty, which is not a branch, tag or commit this tool will pass to \`git checkout\`."
 	elif [ "${#ref}" -gt 255 ]; then
 		printf '%s' "$what is ${#ref} characters long; a branch, tag or commit this tool will pass to \`git checkout\` is at most 255 characters."
 	else
-		misdrawn="$(LC_ALL=C; misdrawn_characters "$ref")"
-		if [ -n "$misdrawn" ]; then
-			printf '%s' "$what holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. No branch, tag or commit this tool will pass to \`git checkout\` holds one."
+		fault="$(ref_character_fault "$ref" "$what")"
+		if [ -n "$fault" ]; then
+			printf '%s' "$fault"
 			return 0
 		fi
 		case "$ref" in
-		*[![:print:]]*) printf '%s' "$what carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
 		[!A-Za-z0-9]* | *..* | *.lock | *[!A-Za-z0-9._/-]*) printf '%s' "$what is '$ref', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
 		esac
 	fi
+}
+
+# WHICH CHARACTER OF A REF NO LINE CAN PRINT AS IT READS, IF ANY (#866): a
+# character a terminal draws as something other than itself, then a control
+# character, in `ref_fault`'s order and words, which ask this between the
+# length and the shape. `refuse_bad_values` asks it alone of
+# $OPENREPOSHAPE_REF, before any run: a ref of any length and shape prints
+# as it reads, and an install that does not record the ref takes one that
+# names no ref at all (workBenches', `record_ref`), so those two are left to
+# where a ref is used.
+ref_character_fault() {
+	local ref="$1" what="$2" misdrawn
+	misdrawn="$(LC_ALL=C; misdrawn_characters "$ref")"
+	if [ -n "$misdrawn" ]; then
+		printf '%s' "$what holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. No branch, tag or commit this tool will pass to \`git checkout\` holds one."
+		return 0
+	fi
+	case "$ref" in
+	*[![:print:]]*) printf '%s' "$what carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
+	esac
 }
 
 checked_ref() {
@@ -851,6 +972,23 @@ read_recorded_ref
 
 refuse_bad_record() {
 	[ -z "$RECORD_FAULT" ] || die "$RECORD_FAULT"
+}
+
+# THE REPOSITORY AND THE REF, CHECKED ONCE, BEFORE ANY LINE NAMES EITHER AND
+# BEFORE ANY REQUEST CARRIES THEM (#866). `--version` printed both as typed,
+# and a scaffold run and `--install` sent them in the fetch and named them in
+# its refusal, so an escape or U+202E in either reached the terminal as it
+# was. The record is refused first, as before, then $OPENREPOSHAPE_REPO by
+# `checked_repo` and $OPENREPOSHAPE_REF by `ref_character_fault`, each in the
+# words it already had. Called once the arguments are read, and by
+# `--version`, which answers inside the argument loop. `--help` answers
+# before both, because it names the variables and never their values.
+refuse_bad_values() {
+	local fault
+	refuse_bad_record
+	checked_repo
+	fault="$(ref_character_fault "$REF" "\$OPENREPOSHAPE_REF")"
+	[ -z "$fault" ] || die "$fault"
 }
 
 # `--doctor`: RUN THE STANDARD'S OWN SCRIPT, never a reimplementation here.
@@ -1000,7 +1138,7 @@ run_doctor() {
 while [ $# -gt 0 ]; do
 	case "$1" in
 	-h | --help) usage; exit 0 ;;
-	--version) refuse_bad_record; say "openRepoShape ($REPO @ $REF)"; exit 0 ;;
+	--version) refuse_bad_values; say "openRepoShape ($REPO @ $REF)"; exit 0 ;;
 	# TWO MODES IS A REFUSAL, NEVER LAST-WINS. `--doctor <path> --install`
 	# used to enter the install path and silently drop the diagnosis, and
 	# the other order dropped the install (Copilot, PR #96). Each of these
@@ -1108,8 +1246,9 @@ while [ $# -gt 0 ]; do
 done
 
 # A BROKEN RECORD IS REFUSED HERE, after `--help` has had its chance and
-# before any run that would use the ref it should have named (#564).
-refuse_bad_record
+# before any run that would use the ref it should have named (#564), and so
+# are a repository and a ref no line can print as they read (#866).
+refuse_bad_values
 
 if [ "$MODE" = "doctor" ]; then
 	# ONE PATH AND THE DOCTOR'S TWO FLAGS, NOTHING ELSE. Every other

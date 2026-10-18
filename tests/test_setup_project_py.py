@@ -785,10 +785,12 @@ def test_a_flag_with_no_value_refuses():
 # ARGUMENT injection, not shell injection: every command this entry point runs
 # is a list with `shell=False`, so there is no shell - but git reads its own
 # arguments, and a value that starts with `-` is an option to git rather than
-# a name. `scaffold-project.py` refuses the same shape in the same words
-# (`tests/test_scaffold_pin_and_reuse.py`), through `repo_shape.checked_value`;
-# this file's subject carries its own copy because it runs BEFORE there is a
-# checkout to import that from, which is the whole of self-bootstrap mode.
+# a name. `scaffold-project.py` refuses the same values
+# (`tests/test_scaffold_pin_and_reuse.py`), through `repo_shape.checked_value`,
+# each in a sentence of its own: this file's subject names the check a value
+# failed (`tests/test_setup_project_name_edges.py`). It carries its own copy
+# because it runs BEFORE there is a checkout to import that from, which is the
+# whole of self-bootstrap mode.
 #
 # Every run here passes `--local-remote-dir` even though none of them reaches
 # it: the refusal is a parse-time one, and the flag is what keeps
@@ -2128,17 +2130,16 @@ def test_the_changed_paste_lines_are_posix_quoted_on_windows_too(
     """#538, under #532's ruling that printed commands are POSIX-only: the
     hand-over's `cd <clone>` and the backstop's `cd <parent>` and `<assembly>`
     are spelled for `sh` on every host, as the scaffold's own NEXT STEPS
-    clone is (`shell_line(..., "posix")`). `os.name` and `SHELL_BARE` are
-    switched for the calls, the two things `shell_word` reads to choose
-    PowerShell's dialect, so this holds on any host; the lines are then read
-    back by `shlex.split`, as Git Bash reads them. The family lines are
-    #532's and are not asked."""
+    clone is (`shell_line(..., "posix")`). `os.name` is switched and
+    `MSYSTEM` unset for the calls, which is what `host_shell_dialect` reads
+    to answer PowerShell's dialect (#711), so this holds on any host; the
+    lines are then read back by `shlex.split`, as Git Bash reads them. The
+    family lines are #532's and are not asked."""
     module = entry_point_module()
     assembly, assembly_spelled = WINDOWS_ASSEMBLY
     urls = {"assembly": assembly, "spec": assembly, "code": assembly}
     monkeypatch.setattr(os, "name", "nt")
-    monkeypatch.setattr(module, "SHELL_BARE",
-                        re.compile(r"[A-Za-z0-9_./:%+=\\-]+"))
+    monkeypatch.delenv("MSYSTEM", raising=False)
     module.hand_over("Sample", clone, urls, "demoorg",
                      module.Landing(None, "", None))
     local = module.finish_by_hand(clone, assembly, "Sample", True)
