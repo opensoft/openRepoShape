@@ -34,8 +34,8 @@ import pytest
 
 from conftest import DRY_RUN_ENDS_IT, PTY_SKIP, run_in_a_terminal
 from test_setup_project_py import (EVERY_MANAGER, SETUP_PROJECT, _answers,
-                                   _Runs, _which, entry_point_module, piped,
-                                   terminal_env)
+                                   _no_terminal, _Runs, _which,
+                                   entry_point_module, piped, terminal_env)
 from test_setup_project_typed_name import the_refusal
 
 #: What the terminal is told where an offer was not made.
@@ -73,6 +73,23 @@ MACHINES = {
 OFFERED = (["gh", "auth", "login"], ["gh", "auth", "setup-git"])
 
 
+#: The ways a run passes `--dry-run` through: the flag itself, and the short
+#: spelling the scaffold's argparse takes for it (`passes_a_dry_run`).
+DRY_RUN_SPELLINGS = ["--dry-run", "--dry"]
+
+
+def a_machine(monkeypatch, machine):
+    """`setup-project.py` as a module on `machine`, with `run` a recorder:
+    the module, the recorder, the offers a run without `--dry-run` makes
+    there, and the refusal its preflight ends in."""
+    present, answers, offers, refused = MACHINES[machine]
+    module = entry_point_module()
+    monkeypatch.setattr(module.shutil, "which", _which(*present))
+    runs = _Runs(answers)
+    monkeypatch.setattr(module, "run", runs)
+    return module, runs, offers, refused
+
+
 def refusal_of(module, opts):
     """What `preflight` refused, or "" when it passed."""
     try:
@@ -86,30 +103,46 @@ def ran_an_offer(call):
     return call[:2] in (["bash", "-c"], ["cmd", "/c"]) or call in OFFERED
 
 
+@pytest.mark.parametrize("flag", DRY_RUN_SPELLINGS)
 @pytest.mark.parametrize("machine", MACHINES)
 def test_a_dry_run_makes_none_of_the_offers_preflight_makes(
-        monkeypatch, capsys, tmp_path, machine):
+        monkeypatch, capsys, tmp_path, machine, flag):
     """A terminal that types `yes` to anything is asked nothing by a dry
-    run, and nothing an offer runs is run: the offers are named as not made,
-    and every check still says what is missing. `--preflight -- --dry-run`
-    makes the same offers a run without `--dry-run` makes, and the recorder
-    runs none of them."""
-    present, answers, offers, refused = MACHINES[machine]
-    module = entry_point_module()
-    monkeypatch.setattr(module.shutil, "which", _which(*present))
-    runs = _Runs(answers)
-    monkeypatch.setattr(module, "run", runs)
+    run, in either spelling, and nothing an offer runs is run: the offers
+    are named as not made, and every check still says what is missing.
+    `--preflight -- --dry-run` makes the same offers a run without
+    `--dry-run` makes, and the recorder runs none of them."""
+    module, runs, offers, refused = a_machine(monkeypatch, machine)
     prompts = _answers(monkeypatch, module, "yes")
-    rehearsal = module.parse_args(["Sample", "--org", "demoorg", "--",
-                                   "--dry-run"], str(tmp_path))
+    rehearsal = module.parse_args(["Sample", "--org", "demoorg", "--", flag],
+                                  str(tmp_path))
     assert refusal_of(module, rehearsal) == refused
     assert prompts == [], "a dry run made an offer"
     assert [call for call in runs.calls if ran_an_offer(call)] == []
     assert capsys.readouterr().out.count(NOT_OFFERED) == offers
-    module.preflight_only(module.parse_args(["--preflight", "--",
-                                             "--dry-run"], str(tmp_path)))
+    module.preflight_only(module.parse_args(["--preflight", "--", flag],
+                                            str(tmp_path)))
     assert len(prompts) == offers, "--preflight made no offer"
     assert NOT_OFFERED not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("machine", MACHINES)
+def test_a_dry_run_with_no_terminal_says_what_a_run_without_it_says(
+        monkeypatch, capsys, tmp_path, machine):
+    """`offer` asks `can_ask()` before it asks whether it is offering: a run
+    with no terminal makes no offer and has nothing to name as not made, so
+    it prints no `not offered` line, and its preflight reads as it does
+    without `--dry-run`."""
+    module, _, _, refused = a_machine(monkeypatch, machine)
+    _no_terminal(monkeypatch, module)
+    shown = []
+    for passthrough in ([], ["--", "--dry-run"]):
+        opts = module.parse_args(["Sample", "--org", "demoorg", *passthrough],
+                                 str(tmp_path))
+        assert refusal_of(module, opts) == refused
+        shown.append(capsys.readouterr().out)
+    assert "not offered" not in shown[1]
+    assert shown[1] == shown[0]
 
 
 # --- at a terminal -----------------------------------------------------------
@@ -144,17 +177,19 @@ GLOBAL_CONFIG_WITH_A_HELPER = (GLOBAL_CONFIG
 
 
 class Rehearsal:
-    """`setup-project.py Sample --org demoorg ... -- --dry-run` at a
-    terminal that types `yes` to the first `Type yes to continue:` it is
-    shown, under `STUB_GH`, signed in or not, and a global git config of the
-    run's own: what the run did, and the files it could have changed.
+    """`setup-project.py Sample --org demoorg ... -- <flag>` (`--dry-run`, or
+    its short spelling) at a terminal that types `yes` to the first `Type yes
+    to continue:` it is shown, under `STUB_GH`, signed in or not, and a global
+    git config of the run's own: what the run did, and the files it could
+    have changed.
 
     Its git reads no config but that file and an empty system one: the
     environment's `GIT_CONFIG_COUNT` and `-c` pairs are dropped, and it runs
     from a folder that is no repository, so no checkout's config gives it a
     helper either."""
 
-    def __init__(self, tmp_path, signed_in, global_config, entry="py"):
+    def __init__(self, tmp_path, signed_in, global_config, entry="py",
+                 flag="--dry-run"):
         stub = tmp_path / "ghbin"
         stub.mkdir()
         (stub / "gh").write_bytes(STUB_GH)
@@ -175,7 +210,7 @@ class Rehearsal:
                     "GIT_CONFIG_SYSTEM": str(system)})
         self.into = tmp_path / "into"
         flags = ["Sample", "--org", "demoorg", "--elected-by", "Tester",
-                 "--into", str(self.into), "--", "--dry-run"]
+                 "--into", str(self.into), "--", flag]
         argv = {"py": [sys.executable, str(SETUP_PROJECT), *flags],
                 "piped": piped("", *flags)}[entry]
         self.status, self.screen, self.answered = run_in_a_terminal(
@@ -191,12 +226,16 @@ class Rehearsal:
 
 
 @PTY_SKIP
-@pytest.mark.parametrize("entry", ["py", "piped"])
-def test_a_dry_run_leaves_git_with_no_helper_as_it_found_it(tmp_path, entry):
+@pytest.mark.parametrize("entry, flag", [("py", "--dry-run"),
+                                         ("piped", "--dry-run"),
+                                         ("py", "--dry")])
+def test_a_dry_run_leaves_git_with_no_helper_as_it_found_it(tmp_path, entry,
+                                                            flag):
     """Signed in, and git has no credential helper: the preflight warns, says
     `gh auth setup-git` was not offered, and goes on to the plan, which ends
-    the run. The global git config is the bytes it was."""
-    run = Rehearsal(tmp_path, True, GLOBAL_CONFIG, entry)
+    the run. The global git config is the bytes it was, whichever way the
+    terminal's run spells `--dry-run`."""
+    run = Rehearsal(tmp_path, True, GLOBAL_CONFIG, entry, flag)
     run.assert_asked_nothing()
     assert run.status == 0, run.screen
     assert HELPER_WARNING + "\n" + NOT_OFFERED + "\n" in run.screen

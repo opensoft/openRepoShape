@@ -8,7 +8,10 @@ none ends in `.lock`, and the whole does not end in `.`. So `a.lock/b`,
 passed, and `git check-ref-format --branch` refuses each of them. In
 self-bootstrap mode the person met git's own `pathspec ... did not match`
 after the standard was cloned. Each is refused now, before anything, with
-the part of the rule it failed; `topic.locked` and `a./b` still go on.
+the part of the rule it failed; `topic.locked` and `a./b` still go on. A part
+that starts with `.` is refused wherever it stands (`a/.b/c`, `a/b/.c/d`), and
+a name that fails two rules is told the first one in the order
+`why_not_a_ref` asks them (`a//..b` is a range, not an empty part).
 
 The table asks git itself, `git check-ref-format --branch`, beside the tool:
 no network, and the two give one answer for every name in it.
@@ -44,6 +47,8 @@ NAMES = {
     "x/y.lock/z": LOCK_PART,
     "release.lock/v1": LOCK_PART,
     "a/.b": DOT_PART,
+    "a/.b/c": DOT_PART,
+    "a/b/.c/d": DOT_PART,
     "a//b": EMPTY_PART,
     "a/b/": EMPTY_PART,
     "a.lock/": EMPTY_PART,
@@ -57,6 +62,15 @@ NAMES = {
     "a..b": RANGE,
     "refs/tags/v1.0": "",
     "v1.0.0": "",
+    # A name that breaks two rules is told the first one `why_not_a_ref` asks,
+    # in its order: `..`, an empty part, a part that starts with `.`, a name
+    # that ends in `.lock`, a part that ends in `.lock`, a `.` at the end.
+    # Each row below holds one pair of neighbours in that order apart; two
+    # rows above hold the others (`a/.lock`: a dot part, then a lock at the
+    # end; `a/b.lock`: a lock at the end, then a lock part).
+    "a//..b": RANGE,
+    "a//.b": EMPTY_PART,
+    "a.lock/b.": LOCK_PART,
 }
 
 
