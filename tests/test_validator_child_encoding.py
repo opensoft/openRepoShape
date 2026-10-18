@@ -34,6 +34,12 @@ Three kinds of test, the first two against local bare remotes and never GitHub:
   `setup-project.py`'s `run` with the interpreter held in a name, or the whole
   list handed to a function as a parameter (#759).
 
+The two tools that cannot import the helpers, `setup-project.py` and the
+assembly root's `scripts/bootstrap.py`, carry a copy of the rule each (#836):
+each copy is held to the library's answer, and each tool is run end to end
+under the stdouts above. The family root's `siblings.py` hands its child no
+environment, and is right to: it never changes its stdout's encoding.
+
 One name no stdout can hold at all, a lone surrogate (#280), is refused by the
 validator as a finding, and the two tools, the doctor and `make validate` are
 each run on it.
@@ -48,10 +54,12 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from conftest import PROJECT, REPO, cloned_just_pushed, git
+from conftest import (PROJECT, REPO, cloned_just_pushed, git,
+                      load_without_bytecode)
 from test_stdout_encoding import NAME, child_environ, run_tool_bytes
 from test_update_shape import (CHANGED, CHANGED_SOURCE, UPSTREAM_FIX_LINE,
                                commit_upstream_changes,
@@ -614,34 +622,29 @@ def test_the_handler_a_child_would_not_know_is_never_passed_on():
 #: `src/openreposhape/cli.py` hands every child `standard.child_environment()`,
 #: which is the package environment's PATH and not an encoding: it is the
 #: helper that file is held to, and its docstring promises it (#759).
+#: `setup-project.py` and the assembly root's `scripts/bootstrap.py` cannot
+#: import the helpers above, the first because it runs before any checkout of
+#: the standard exists and the second because a project does not carry
+#: `shape_materialize.py`, so each holds a copy of the rule, which `COPIES`
+#: below holds to the library's answer: `setup-project.py`'s `run` hands each
+#: of its six children `child_environment(capture)`, and the bootstrap's
+#: `_run` hands each validator `inherited_child_environment()` (#836).
 LAUNCHERS = {
     "scripts/bump-leg.py": "captured_child_environment",
     "update-shape.py": "inherited_child_environment",
     "scripts/family.py": "inherited_child_environment",
     "src/openreposhape/cli.py": "standard.child_environment",
     "setup-project.py": "child_environment",
+    "templates/assembly-root/scripts/bootstrap.py":
+        "inherited_child_environment",
 }
 
 #: The rows of `LAUNCHERS` that fail today, and why. Each is a finding about
 #: the tool's own `run`, and its test is a strict `xfail`: it passes while the
 #: row fails and fails the day the row passes, so whoever fixes the finding
-#: takes the row out of this table (#759).
-NOT_YET = {
-    "setup-project.py": (
-        "`run` takes no environment, so each of the six Python children "
-        "(the checkout's own setup-project.py, the naming validator, the "
-        "plan, the plan run again to read why it was refused, the scaffold, "
-        "bootstrap) is started in the code page ITS OWN environment gives. "
-        "Five of them write into the stdout this process reconfigured to "
-        "UTF-8: one stream in two encodings. Measured under "
-        "PYTHONIOENCODING=cp1252:strict, where nine lines of one run were "
-        "not UTF-8. The sixth is captured, and its words are read as UTF-8 "
-        "whatever it wrote. The fix is an environment from a copy of "
-        "`inherited_child_environment`, which this one-file entry point "
-        "cannot import: an `env=` in `run`'s own `subprocess.run`, which "
-        "reaches all six, or an `env` parameter that all six calls pass. "
-        "The row reads either."),
-}
+#: takes the row out of this table (#759). None does since #836, which took
+#: the `setup-project.py` row out.
+NOT_YET: dict[str, str] = {}
 
 #: Spellings that start a child process in these tools: `subprocess`'s own,
 #: the package's `run_child`, and `run`, which is `setup-project.py`'s wrapper
@@ -1102,12 +1105,277 @@ def test_the_row_flips_on_the_change_the_finding_names(change):
 
 
 def test_setup_project_starts_six_children_and_the_guard_reads_each():
-    """The finding in `NOT_YET` is six children, in six functions, and not
-    the five that call `run` with a list in hand: the plan is run again, by
-    `why_the_plan_did_not_go_through`, with `plan` a parameter. While the row
-    is an `xfail`, a seventh child that goes without changes nothing in it, so
-    the children are counted here."""
+    """The finding `NOT_YET` held until #836 was six children, in six
+    functions, and not the five that call `run` with a list in hand: the plan
+    is run again, by `why_the_plan_did_not_go_through`, with `plan` a
+    parameter. The row passes because `run` hands every child its
+    environment, so the count is what still says the guard reads all six."""
     assert sorted(scope_of(call).name for call in interpreter_runs(
         tool_tree("setup-project.py"))) == [
         "check_names", "clone_and_bootstrap", "plan_and_confirm", "scaffold",
         "self_bootstrap", "why_the_plan_did_not_go_through"]
+
+
+# --- the two tools that carry a copy of the rule (#836) ---------------------
+#
+# `setup-project.py` reconfigures its own stdout to UTF-8, and started its six
+# Python children with no environment: on a cp1252 stdout five of them wrote
+# cp1252 into that UTF-8 stream, and the sixth, captured, was read as UTF-8
+# whatever it wrote. The assembly root's `scripts/bootstrap.py` started the
+# validators with no environment, so `validate-manifest.py` raised on a name
+# the code page cannot hold and ended `make bootstrap`. Neither can import
+# `shape_materialize`, so each carries a copy of #254's rule.
+
+SETUP = REPO / "setup-project.py"
+
+#: Each tool that carries a copy of `inherited_child_environment`, and the
+#: name the copy has there. `setup-project.py`'s also answers for a captured
+#: child, as `captured_child_environment` does.
+COPIES = {
+    "setup-project.py": "child_environment",
+    "templates/assembly-root/scripts/bootstrap.py":
+        "inherited_child_environment",
+}
+
+
+@pytest.fixture(scope="module", params=sorted(COPIES))
+def copy(request):
+    """`(the tool as a module, its copy of the rule)`, for each of `COPIES`,
+    loaded by path under a name of its own."""
+    module = load_without_bytecode(
+        REPO / request.param,
+        f"child_encoding_copy_{sorted(COPIES).index(request.param)}")
+    return module, getattr(module, COPIES[request.param])
+
+
+@pytest.fixture(scope="module")
+def setup_module():
+    return load_without_bytecode(SETUP, "child_encoding_setup")
+
+
+@pytest.mark.parametrize("encoding, errors, told", INHERITED)
+def test_each_copy_tells_an_inherited_child_what_the_library_does(
+        copy, monkeypatch, encoding, errors, told):
+    """The whole environment, for every stream `INHERITED` names, as
+    `shape_materialize.inherited_child_environment` builds it. A copy reads
+    the stdout it runs under, which is the stream its child inherits."""
+    _, rule = copy
+    monkeypatch.setenv("PYTHONIOENCODING", "something-the-operator-set")
+    stream = stream_for(encoding, errors)
+    monkeypatch.setattr(sys, "stdout", stream)
+    env = rule()
+    assert env["PYTHONIOENCODING"] == told
+    assert env == shape_materialize.inherited_child_environment(stream)
+
+
+@pytest.mark.parametrize("stdout", [
+    pytest.param(None, id="no-stdout"),
+    pytest.param(SimpleNamespace(encoding=None, errors="strict"),
+                 id="no-encoding"),
+    pytest.param(SimpleNamespace(encoding="not-a-codec", errors="strict"),
+                 id="not-a-codec"),
+])
+def test_each_copy_leaves_the_environment_alone_with_no_stdout(
+        copy, monkeypatch, stdout):
+    """`pythonw` has no stdout, and a replaced one may have no encoding a
+    codec answers to: nothing is inherited, so nothing is told, as the
+    library tells nothing."""
+    _, rule = copy
+    monkeypatch.setenv("PYTHONIOENCODING", "kept")
+    monkeypatch.setattr(sys, "stdout", stdout)
+    assert rule()["PYTHONIOENCODING"] == "kept"
+
+
+def test_each_copy_keeps_the_handlers_the_library_keeps(copy):
+    """A handler the library learns never raises is one each copy keeps
+    too, whether or not `INHERITED` has a row for it."""
+    module, _ = copy
+    assert module.HANDLERS_THAT_NEVER_RAISE == \
+        shape_materialize._HANDLERS_THAT_NEVER_RAISE
+
+
+def test_setup_projects_copy_tells_a_captured_child_what_the_library_does(
+        setup_module, monkeypatch):
+    """The pipe is `run`'s, read as UTF-8: the operator's value and the
+    stdout's are both beside the point."""
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252:strict")
+    monkeypatch.setattr(sys, "stdout", stream_for("cp1252", "strict"))
+    assert setup_module.child_environment(capture=True) == \
+        shape_materialize.captured_child_environment()
+    assert setup_module.CAPTURED_CHILD_IOENCODING == \
+        shape_materialize.CAPTURED_CHILD_IOENCODING
+
+
+#: A child that writes down the `PYTHONIOENCODING` it was given, in the file
+#: its one argument names, and then prints the name as `CHILD` does.
+TELLS = ("import os, sys; told = open(sys.argv[1], 'w', encoding='ascii'); "
+         "told.write(os.environ.get('PYTHONIOENCODING', '')); told.close(); "
+         + CHILD)
+
+#: `(capture, setup-project.py's stdout, what its child is told, what `run`
+#: reads back)`: the stdout `main` leaves; one it could not reconfigure (a
+#: replaced stream); and the plan run again, captured, whose words `run`
+#: decodes as UTF-8. An inherited child's words are not `run`'s to read.
+RUNS = [
+    pytest.param(False, ("utf-8", "replace"), "utf-8:replace", None,
+                 id="inherited"),
+    pytest.param(False, ("cp1252", "strict"), "cp1252:backslashreplace",
+                 None, id="inherited-not-reconfigured"),
+    pytest.param(True, ("cp1252", "strict"), "utf-8:backslashreplace",
+                 f"manifest ok: {NAME}\n", id="captured"),
+]
+
+
+@pytest.mark.parametrize("capture, stdout, told, read", RUNS)
+def test_setup_projects_run_tells_each_child_what_its_words_are_read_in(
+        setup_module, monkeypatch, tmp_path, capture, stdout, told, read):
+    """`run` itself, which every one of the six children goes through. On
+    main `d66a9054` each was given the operator's `cp1252:strict`, and the
+    captured one raised at the name."""
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252:strict")
+    monkeypatch.setattr(sys, "stdout", stream_for(*stdout))
+    said = tmp_path / "told"
+    proc = setup_module.run([sys.executable, "-c", TELLS, str(said)],
+                            capture=capture)
+    assert said.read_text(encoding="ascii") == told
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == read
+
+
+def setup_bytes(tmp_path: Path, encoding: str) -> tuple[int, bytes, bytes]:
+    """`(exit, stdout, stderr)` of one real `setup-project.py --yes` into
+    local bare remotes, as the bytes it wrote, under `PYTHONIOENCODING=
+    <encoding>`. No terminal: a session of its own, as `run_entry` in
+    `tests/test_setup_project_py.py` starts one."""
+    proc = subprocess.run(
+        [sys.executable, str(SETUP), "--project", PROJECT, "--yes", "--org",
+         "demoorg", "--local-remote-dir", str(tmp_path / "remotes"),
+         "--into", str(tmp_path / "work")],
+        capture_output=True, env=child_environ(tmp_path, encoding),
+        cwd=str(REPO), stdin=subprocess.DEVNULL, start_new_session=True,
+        check=False)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def lines_not_utf_8(output: bytes) -> list[int]:
+    """The numbers of the lines of `output` that are not valid UTF-8."""
+    found = []
+    for number, line in enumerate(output.split(b"\n"), 1):
+        try:
+            line.decode("utf-8")
+        except UnicodeDecodeError:
+            found.append(number)
+    return found
+
+
+@pytest.mark.parametrize("encoding", ["cp1252:strict",
+                                      "cp1252:surrogateescape"])
+def test_setup_writes_one_encoding_whatever_its_stdout_is(tmp_path,
+                                                          encoding):
+    """THE ISSUE'S FIRST LINE, run: #808's probe. On main `d66a9054` the run
+    exited 0 and 9 of its 129 stdout lines were not UTF-8: the naming
+    validator's three `family` rows with their em dash, the scaffold's
+    `shape`, `spec` and `code` lines with their ellipsis, and two lines of
+    the validators `scripts/bootstrap.py` runs. This process writes UTF-8,
+    and every child is told so: each line is UTF-8, and holds those
+    characters as UTF-8."""
+    code, stdout, stderr = setup_bytes(tmp_path, encoding)
+    shown = (stdout + stderr).decode("utf-8", "replace")
+    assert code == 0, shown
+    assert lines_not_utf_8(stdout) == [], shown
+    assert lines_not_utf_8(stderr) == [], shown
+    assert "—".encode("utf-8") in stdout, shown
+    assert "…".encode("utf-8") in stdout, shown
+
+
+def assert_the_bootstrap_passed_naming_the_project(
+        code: int, stdout: bytes, stderr: bytes, encoding: str) -> None:
+    """Exit 0, no traceback, `bootstrap ok`, and the name in the bootstrap's
+    heading and in the validator's `manifest ok` written alike: as
+    `STDOUTS` says that stdout shows it."""
+    shown = (stdout + stderr).decode("utf-8", "replace")
+    assert code == 0, shown
+    assert b"Traceback" not in stderr, shown
+    assert printed(encoding, f"bootstrap: {STDOUTS[encoding]} (") in stdout, \
+        shown
+    assert printed(encoding, f"manifest ok: {STDOUTS[encoding]} (") in \
+        stdout, shown
+    assert b"bootstrap ok" in stdout, shown
+
+
+@ENCODINGS
+def test_bootstrap_runs_the_validators_of_a_project_named_in_japanese(
+        project, tmp_path, encoding):
+    """THE ISSUE'S SECOND LINE, run. On main `d66a9054` the two cp1252 runs
+    exited 1: `validate-manifest.py` raised `UnicodeEncodeError` at
+    `manifest ok: 日本`, and bootstrap ended `bootstrap FAILED: manifest
+    (exit 1)`. The validator is told what the bootstrap's stdout is, so its
+    line is written as the bootstrap's own are."""
+    rename_to_a_name_no_western_code_page_holds(project)
+    code, stdout, stderr = run_in(project / "scripts" / "bootstrap.py",
+                                  encoding=encoding, tmp_path=tmp_path,
+                                  cwd=project)
+    assert_the_bootstrap_passed_naming_the_project(code, stdout, stderr,
+                                                   encoding)
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="needs `make` on PATH")
+def test_make_bootstrap_on_a_project_named_in_japanese_under_cp1252(project,
+                                                                    tmp_path):
+    """`make bootstrap`, which `setup-project.py` step (7) stands in for on
+    a machine with no make: `$(PYTHON) scripts/bootstrap.py`, the same
+    child, one program further from the person."""
+    rename_to_a_name_no_western_code_page_holds(project)
+    proc = subprocess.run(["make", "--no-print-directory", "bootstrap"],
+                          cwd=str(project), capture_output=True,
+                          stdin=subprocess.DEVNULL,
+                          env=child_environ(tmp_path, "cp1252:strict"),
+                          check=False)
+    assert_the_bootstrap_passed_naming_the_project(
+        proc.returncode, proc.stdout, proc.stderr, "cp1252:strict")
+
+
+# --- a child that inherits, and is right to (#836) --------------------------
+
+#: The shipped tools whose Python child INHERITS this process's environment
+#: on purpose. `siblings.py` runs each member's own `scripts/bootstrap.py`
+#: with none, and the two agree on the code page because the child is given
+#: the very environment this process's stdout was configured from, and this
+#: process never changes that stdout's ENCODING: `escape_unencodable_stdout`
+#: changes the handler, which the member's bootstrap changes the same way.
+#: Measured for #836 under `cp1252:strict`, `cp1252:surrogateescape` and
+#: `utf-8:strict`: every line of the run is in the stdout's own encoding. A
+#: `LAUNCHERS` row names a helper the environment must name, which this one
+#: has none of, so the row is here.
+INHERITING = ("templates/family-root/scripts/siblings.py",)
+
+
+def encoding_changes(tree: ast.AST) -> list[ast.Call]:
+    """The calls in `tree` that change a stream's ENCODING: a `reconfigure`
+    told `encoding=`, as `setup-project.py`'s `main` is."""
+    return [node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "reconfigure"
+            and any(keyword.arg == "encoding" for keyword in node.keywords)]
+
+
+@pytest.mark.parametrize("tool", INHERITING)
+def test_a_tool_whose_child_inherits_never_changes_its_stdouts_encoding(
+        tool):
+    """The guard reads the run, the run hands no environment, and nothing
+    in the tool changes its stdout's encoding. Either change would make the
+    child disagree with the stream it writes into, as `setup-project.py`'s
+    children did."""
+    tree = tool_tree(tool)
+    runs = interpreter_runs(tree)
+    assert runs, f"{tool} no longer runs the interpreter in a spelling the " \
+        "guard reads"
+    assert [environment_of(call) for call in runs] == [""] * len(runs)
+    assert encoding_changes(tree) == []
+
+
+def test_the_encoding_reader_sees_the_tool_that_changes_it():
+    """`setup-project.py` reconfigures both streams to UTF-8, in one call:
+    the reader sees it, so an empty answer above is a real one."""
+    assert len(encoding_changes(tool_tree("setup-project.py"))) == 1

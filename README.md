@@ -159,6 +159,8 @@ typed `yes`, which its preflight cannot take there. Printed commands are quoted
 for a POSIX shell, so paste them into Git Bash. Only `shape-doctor.py`'s lines,
 `setup-project.py`'s family lines and `family.py`'s `NEXT`, `switch -c`, `add`
 and `git rm -r --cached` lines are quoted for PowerShell, on Windows.
+Off Windows, a path `shape-doctor.py` cannot print as itself is written `$'…'`:
+bash, zsh and ksh read that; dash (`/bin/sh` on Debian and Ubuntu) does not.
 
 </details>
 

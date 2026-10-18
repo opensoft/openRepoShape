@@ -81,6 +81,7 @@ doctrine forbids.
 from __future__ import annotations
 
 import argparse
+import codecs
 import os
 import re
 import shlex
@@ -153,11 +154,65 @@ VALIDATORS = (
 def _run(root: Path, args: list[str]) -> int:
     # Flush first: this process's own stdout is block-buffered when it is a
     # pipe, and a child writing straight to the fd would otherwise appear
-    # BEFORE the heading that introduces it.
+    # BEFORE the heading that introduces it. The child is told what that fd
+    # is (`inherited_child_environment`, #836).
     sys.stdout.flush()
-    proc = subprocess.run([sys.executable, *args], cwd=str(root), check=False)
+    proc = subprocess.run([sys.executable, *args], cwd=str(root),
+                          env=inherited_child_environment(), check=False)
     sys.stdout.flush()
     return proc.returncode
+
+
+#: The built-in handlers that never raise on a character an encoding cannot
+#: hold (#836), so a validator is told the one this stdout has. `strict` and
+#: `surrogateescape` raise on such a character, and are not among them.
+#: `scripts/shape_materialize.py`'s own set, which a project does not carry.
+HANDLERS_THAT_NEVER_RAISE = frozenset((
+    "backslashreplace", "ignore", "namereplace", "replace",
+    "xmlcharrefreplace"))
+
+
+def inherited_child_environment() -> dict[str, str]:
+    """The environment `_run` starts each validator in: this process's own,
+    with `PYTHONIOENCODING` naming the encoding of the stdout the validator
+    writes into (#836).
+
+    WHAT WAS WRONG. A child takes its stdout's encoding and handler from its
+    OWN environment, and not from the `escape_unencodable_stdout` this
+    process ran in `main`. So on a stdout whose code page cannot hold the
+    project's name — `PYTHONIOENCODING=cp1252`, or the cp1252 with
+    `surrogateescape` Windows gives any stdout that is not the console —
+    this file printed `bootstrap: \\u65e5\\u672c`, and `validate-manifest.py`
+    then raised `UnicodeEncodeError` at `manifest ok: 日本`: `make
+    bootstrap` ended `bootstrap FAILED: manifest (exit 1)` over a manifest
+    with nothing wrong in it. It is the defect #254 fixed in `bump-leg.py`
+    and `update-shape.py apply`, which run the same two validators.
+
+    THE RULE IS #254's, `scripts/shape_materialize.py`'s
+    `inherited_child_environment`: a child that writes into this stdout is
+    told the stdout's own encoding, with its handler where that one never
+    raises and `backslashreplace` where it does, which is what
+    `escape_unencodable_stdout` leaves it with. So a validator's lines and
+    this file's are written alike: escaped where the code page cannot hold a
+    character, and as they are where it can. A stdout with no usable
+    encoding leaves the environment as it is.
+
+    A COPY, as the validators' own `_shown` is. A project does not carry
+    `shape_materialize.py`, and a root re-copies its pinned files one row at
+    a time, so this file may meet a `repo_shape.py` older than itself, and
+    imports nothing new from it. `tests/test_validator_child_encoding.py`
+    holds the copy to the library's answer.
+    """
+    env = dict(os.environ)
+    try:
+        encoding = codecs.lookup(sys.stdout.encoding).name
+    except (AttributeError, LookupError, TypeError):
+        return env
+    errors = getattr(sys.stdout, "errors", None)
+    if errors not in HANDLERS_THAT_NEVER_RAISE:
+        errors = "backslashreplace"
+    env["PYTHONIOENCODING"] = f"{encoding}:{errors}"
+    return env
 
 
 def _try_git(args: list[str], cwd: Path) -> str | None:
