@@ -89,9 +89,17 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            that clone is still on this machine, with no network: a partial
            clone (`git clone --filter`), whose `git` would fetch what it
            lacks, is not asked, and a NOTE names each pin it was not
-           rechecked for (#449). It prints what will happen and changes
-           nothing.
-  execute  creates the two legs, extracts them with `git filter-repo`, makes
+           rechecked for (#449). Last, it asks what `execute` asks before
+           it makes either leg (#798): given `--local-remote-dir`, whether
+           each leg's bare repository is already there and whether that
+           directory can be made and written in, and without it, with `gh
+           repo view --json nameWithOwner`, whether GitHub already has
+           either leg's name, where a name GitHub only redirects (a
+           repository renamed or moved away) is free -- a NOTE and no
+           finding where gh cannot answer, so that `check` stays usable
+           offline. It prints what will happen and changes nothing.
+  execute  asks about both legs before it makes either (#798), then
+           creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three and then opens the split's
            pull request against the tracking branch (both skipped for local
@@ -117,6 +125,11 @@ only when it is given the same `--local-remote-dir` (#417), and asked there
 whether it answers, and
 the place outside the assembly that a symlink kept at a path the shape writes
 leads to asked again of the disk, a climb from its own work directory.
+And last, before it makes either leg, it refuses at once everything that
+stands in their way (#798), as `check` finds it: a leg repository already
+there, on the disk or on GitHub, a `--local-remote-dir` that cannot hold
+them, and a `gh repo view` that fails otherwise than gh's not-found answer
+or answers with no `nameWithOwner` to read.
 
 THE NEW PROJECT MUST BE ABLE TO HOLD WHAT `execute` WRITES INTO IT (#261).
 `execute` puts the plan's values into the root's `project.yaml`, and the
@@ -181,6 +194,7 @@ import argparse
 import contextlib
 import datetime as _dt
 import itertools
+import json
 import os
 import re
 import shlex
@@ -279,6 +293,14 @@ from shape_materialize import check_program  # noqa: E402
 # say it of theirs (#660).
 from shape_materialize import (  # noqa: E402
     free_plan_secrets_note, visibility_in,
+)
+# What `execute` asks of both leg repositories before it makes either, and
+# `check` with it (#798): the folder `--local-remote-dir` names, asked as the
+# scaffold and `family.py` ask theirs, and gh's not-found answer, the one
+# failure of `gh repo view` that means a repository is absent (#609); the
+# other is an answer naming another repository, a redirect.
+from shape_materialize import (  # noqa: E402
+    CANNOT_WRITE_IN, GH_NOT_FOUND_WORDS, folder_in_the_way,
 )
 
 #: The naming policy this tool classifies leg names against. One constant,
@@ -904,12 +926,22 @@ FALSE_WORD = "false"
 SEED_TEMPLATE = {"spec": "templates/spec-root", "code": "templates/code-root"}
 EXTRACTED_LEGS = ("spec", "code")
 
+#: In install.sh's order (#595): with the pipx or uv already there, else
+#: brew's, else pipx from apt or dnf, else Arch's own package. No `pip
+#: install --user`: Debian 12, Ubuntu 23.04 and Arch mark their own Python
+#: externally managed (PEP 668) and refuse it. The openreposhape package
+#: depends on git-filter-repo and puts it on PATH for the `adopt-project` it
+#: places, but not for this file run by its path (#563).
 FILTER_REPO_HINT = (
-    "Remediation: install it — `pip install git-filter-repo`, or "
-    "`apt install git-filter-repo`, or `brew install git-filter-repo`; it is "
-    "one file on PATH named `git-filter-repo`. It is NOT vendored here on "
-    "purpose: history extraction has one correct implementation and a copy of "
-    "it is a second one that drifts."
+    "Remediation: install it — `pipx install git-filter-repo==2.47.0`, or "
+    "`uv tool install git-filter-repo==2.47.0` where there is no pipx; with "
+    "neither, `brew install git-filter-repo`, or `sudo apt-get install -y "
+    "pipx && pipx install git-filter-repo==2.47.0 && pipx ensurepath` (`dnf` "
+    "for `apt-get` on Fedora), or `sudo pacman -S --needed git-filter-repo` "
+    "on Arch; it is one file on PATH named `git-filter-repo`. `pipx install "
+    "openreposhape` brings it for the `adopt-project` command it places. It "
+    "is NOT vendored here on purpose: history extraction has one correct "
+    "implementation and a copy of it is a second one that drifts."
 )
 
 
@@ -9623,6 +9655,18 @@ def cmd_check(args) -> int:
                   + (f"/{found.role}" if found.role else ""))
     except Refusal as exc:
         findings.append(f"FINDING {exc.code}: {exc.detail}")
+    else:
+        # LAST, as `execute` asks it last, right before it makes either leg
+        # (#798), and only of names `execute` would get that far with: what
+        # stands in the way of the two leg repositories, of the disk under
+        # `--local-remote-dir` and otherwise of GitHub, with `gh repo view
+        # --json nameWithOwner`.
+        # A question gh cannot answer is a NOTE here, not a finding.
+        legs, fixes, unasked = _leg_remote_findings(plan, names,
+                                                    local_remote_dir)
+        findings.extend(legs)
+        remediation.extend(fixes)
+        notes = [*notes, *unasked]
 
     _print_what_will_happen(plan, source, names,
                             naming.topic_for(plan.project_id),
@@ -9869,9 +9913,9 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
                          source: Source | None = None) -> str:
     """The one notice for a failure once a leg repository exists.
 
-    `_create_leg_remotes` refuses a re-run while they exist:
-    `leg-remote-exists` under `--local-remote-dir`, and a `gh repo create`
-    that finds the name taken against GitHub. Every failure after it
+    `execute` refuses a re-run while they exist, before it makes either
+    (#798): `leg-remote-exists`, under `--local-remote-dir` and against
+    GitHub alike. Every failure after it
     therefore names the leg repositories this run `made` (both, unless the
     second could not be created, #188 N4), says which legs are already pushed
     (`pushed`, the roles in the order they were pushed), and gives the way
@@ -9923,9 +9967,9 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
     notice = (f"NOTHING has been rolled back: {named} {exist}, and {state}. "
               f"{rerun} the adoption with {them} deleted or with {fresh} (a "
               "new --local-remote-dir, or new leg repositories): a re-run "
-              f"that meets {them} is refused, as `leg-remote-exists` under "
-              "--local-remote-dir, and against GitHub by `gh repo create`, "
-              "which finds the name already taken.")
+              f"that meets {them} is refused as `leg-remote-exists` before "
+              "it makes either leg, under --local-remote-dir and against "
+              "GitHub alike.")
     built = (_cloned_here(source, work_root)
              + [name for name, _ in _built_in(work_root, names)])
     if built:
@@ -10204,25 +10248,305 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
         + _branch_deletion(source, urls, branch))
 
 
+# ---------------------------------------------------------------------------
+# Both leg repositories, asked about before either is made (#798)
+# ---------------------------------------------------------------------------
+#
+# `_create_leg_remotes` made the spec leg's repository and asked about the
+# code leg's only as it made that one: `leg-remote-exists` under
+# `--local-remote-dir`, and `gh repo create` finding the name taken against
+# GitHub. So a code leg that already existed was refused once the spec leg
+# had been made, which #188 N4's notice named and nothing prevented; on
+# GitHub that left a stray private `<P>-spec`, whose removal needs the
+# `delete_repo` scope. And a `--local-remote-dir` that could not hold them
+# ended in a traceback (a file at the path, `FileExistsError`; a folder above
+# it this user cannot write in, `PermissionError`) or in `git init`'s raw
+# failure (a folder this user cannot write in), each after `check` had said
+# `plan ok`.
+#
+# BOTH ARE ASKED ABOUT FIRST, and everything that stands in their way is
+# refused at once (`_refuse_what_stands_in_the_legs_way`):
+#
+# - under `--local-remote-dir`, whether each bare repository's path is taken
+#   (`os.path.lexists`, so a dangling link is taken too), the spec leg's and
+#   then the code leg's, and then whether the directory can be made and
+#   written in, asked as the scaffold and `family.py` ask theirs
+#   (`folder_in_the_way`, #609), which makes nothing;
+# - against GitHub, `gh repo view <name> --json nameWithOwner` of the spec
+#   leg's name and then the code leg's. A NAME IS TAKEN ONLY WHEN GITHUB
+#   ANSWERS WITH IT: gh's GraphQL follows a rename or a transfer, so the
+#   answer counts only when its `nameWithOwner` is the name asked, compared
+#   without case as GitHub compares names; an answer naming another
+#   repository is a redirect, which `gh repo create` takes over, and the
+#   name is free. A name that exists is `leg-remote-exists` before any `gh
+#   repo create`. Gh's not-found answer means absent, as #609 has it for the
+#   scaffold; a view that fails otherwise, or answers with no
+#   `nameWithOwner` to read, is `adopt-remote-unreadable`, naming the
+#   command and what it said.
+#
+# WHERE: right before `_create_leg_remotes`, after the yes, where
+# `leg-remote-exists` was always refused. Every refusal before it keeps its
+# order, and its precedence over this one: `adopt-branch-exists` and
+# `plan-split-branch-taken` already defer to a leg still on disk. And GitHub
+# is asked as close to `gh repo create` as it can be.
+#
+# `check` ASKS THE SAME, under the same flags and in the same order (#417's
+# one verdict): given `--local-remote-dir`, of the disk, and without it, of
+# GitHub; its findings come last, as `execute` asks them last. One
+# difference: where gh cannot answer -- no login, a bad token, a rate limit,
+# no network -- `check` says what it could not ask in a NOTE and still
+# passes, so that it stays usable offline, where `execute` refuses.
+#
+# WHAT CAN STILL FAIL AFTER THE FIRST MAKE keeps #188 N4's notice
+# (`_create_leg_remotes`): GitHub answers a repository the token cannot see
+# as not found, and `gh repo create` then finds the name taken; a rate limit
+# or an outage between the two creates; and under `--local-remote-dir` a
+# path made since the question, or a disk that fills, at the code leg's
+# `git init`.
+
+#: `check`'s finding, and `execute`'s refusal, of a leg repository that
+#: already exists (#174, #798).
+LEG_REMOTE_EXISTS = "leg-remote-exists"
+#: ... of a `--local-remote-dir` that cannot hold them, under the name the
+#: scaffold and `family.py` give theirs (#609).
+LEG_FOLDER_REFUSED = "adopt-folder-cannot-be-made"
+#: What each says to do: `check` after `Remediation:`, and `execute` after
+#: `NO_LEG_YET`.
+ON_DISK_FIX = (
+    "Choose an empty --local-remote-dir, and a --work-dir the run that made "
+    "it did not clone into (a fresh one, or none): `git clone` refuses a "
+    "directory it already cloned into. There is no --force: re-running over "
+    "a live leg is not an adoption.")
+ON_GITHUB_FIX = (
+    "A leg repository is created new, never over one that exists, and there "
+    "is no --force: re-running over a live leg is not an adoption. If an "
+    "earlier `execute` made it and its adoption is not one to keep, delete "
+    "it (`gh repo delete <repository>`, which needs the `delete_repo` "
+    "scope); another repository of that name is renamed on GitHub first. "
+    "Then run `check` and `execute` again.")
+UNREAD_FIX = (
+    "Only gh's own answer that a repository does not exist (exit 1, "
+    f"`{GH_NOT_FOUND_WORDS}`), or one naming another repository that the "
+    "name redirects to, lets `execute` create one; any other answer says "
+    "nothing about whether it is there. Check `gh auth status` (`gh "
+    "auth login` where it names a token that is missing, bad or expired), "
+    "or let a rate limit or an outage pass, then run `execute` again.")
+FOLDER_FIX = (
+    "Move what stands in the way aside, or pass a --local-remote-dir where "
+    "a folder can be made. There is no --force.")
+UNWRITABLE_FOLDER_FIX = (
+    "Give this user write and search permission on that folder, or pass "
+    "another --local-remote-dir.")
+
+
+def _leg_remote_answers(repositories: dict, names: dict,
+                        local_remote_dir: Path | None) -> list[tuple]:
+    """`(code, detail, fix, note)` for each thing that stands in the way of
+    making the two leg repositories, in the order they are asked (#798):
+    nothing when both can be made. It makes nothing.
+
+    Under `local_remote_dir` the disk is asked (`_in_the_way_on_disk`), and
+    otherwise GitHub, of `repositories` (`_in_the_way_on_github`). `note` is
+    what `check` prints instead of a finding, for a question gh could not
+    answer, and "" for every finding."""
+    if local_remote_dir is not None:
+        return _in_the_way_on_disk(names, local_remote_dir)
+    asked = [_in_the_way_on_github(role, repositories[role])
+             for role in EXTRACTED_LEGS]
+    return [answer for answer in asked if answer]
+
+
+def _the_remote_dir(local_remote_dir: Path) -> Path:
+    """`--local-remote-dir` as each leg's url is made of it (`_remote_urls`)
+    and asked about: resolved, and made absolute as given where it cannot be
+    resolved. `Path.resolve` raised `RuntimeError` out of `execute` for a
+    link loop, a traceback before anything was asked (#798);
+    `folder_in_the_way` names it now, in `check` and `execute` alike."""
+    try:
+        return local_remote_dir.resolve()
+    except (OSError, RuntimeError):
+        return local_remote_dir.absolute()
+
+
+def _in_the_way_on_disk(names: dict, local_remote_dir: Path) -> list[tuple]:
+    """The disk's answers under `--local-remote-dir`: each leg's bare
+    repository path that something already takes, the spec leg's and then
+    the code leg's, and then the directory, where it cannot be made and
+    written in. Every path `_spelled`, as the notice spells it (#212)."""
+    remote_dir = _the_remote_dir(local_remote_dir)
+    found = []
+    for role in EXTRACTED_LEGS:
+        bare = remote_dir / f"{names[role]}.git"
+        if os.path.lexists(bare):
+            found.append((LEG_REMOTE_EXISTS,
+                          f"{_spelled(str(bare))}, the {role} leg's bare "
+                          "repository, already exists", ON_DISK_FIX, ""))
+    in_the_way = folder_in_the_way(remote_dir)
+    if in_the_way:
+        here, why = in_the_way
+        found.append((
+            LEG_FOLDER_REFUSED,
+            f"--local-remote-dir {_spelled(str(remote_dir))} cannot hold the "
+            f"two leg repositories: {_spelled(str(here))} {why}",
+            UNWRITABLE_FOLDER_FIX if why == CANNOT_WRITE_IN else FOLDER_FIX,
+            ""))
+    return found
+
+
+def _first_said(output: str) -> str:
+    """`: <the first line gh said>`, each character a terminal would act on
+    spelled as `_spelled` spells it; "" when it said nothing."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return ": " + "".join(char if char.isprintable()
+                          else _spelled_character(char) for char in lines[0])
+
+
+def _name_with_owner(answer: str) -> str | None:
+    """The `nameWithOwner` a `gh repo view --json nameWithOwner` answer
+    names, or None for anything else: not JSON, not an object, no such
+    field, or one that is not a name."""
+    try:
+        value = json.loads(answer)
+    except ValueError:
+        return None
+    value = value.get("nameWithOwner") if isinstance(value, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _in_the_way_on_github(role: str, repository: str) -> tuple | None:
+    """GitHub's answer for one leg's `repository`, by `gh repo view --json
+    nameWithOwner`: `leg-remote-exists` when GitHub answers with that very
+    name, compared without case as GitHub compares names; None when gh
+    says it does not exist (#609), or answers with another repository's
+    name, which is a redirect left by a rename or a transfer, a name `gh
+    repo create` takes over; and `adopt-remote-unreadable` when gh failed
+    otherwise, could not be run or answered with no `nameWithOwner` to
+    read, which says nothing either way."""
+    command = ["gh", "repo", "view", repository, "--json", "nameWithOwner"]
+    shown = " ".join(command)
+    try:
+        answer = run(command)
+    except CommandFailed as exc:
+        if exc.code == 1 and GH_NOT_FOUND_WORDS in exc.output:
+            return None
+        how = f"`{shown}` exited {exc.code}{_first_said(exc.output)}"
+    except OSError as exc:
+        how = f"`gh` could not be run: {exc}"
+    else:
+        found = _name_with_owner(answer)
+        if found is None:
+            how = (f"`{shown}` exited 0, and what it printed holds no "
+                   f"`nameWithOwner`{_first_said(answer)}" if answer.strip()
+                   else f"`{shown}` exited 0 and printed nothing")
+        elif found.lower() == repository.lower():
+            return (LEG_REMOTE_EXISTS,
+                    f"{repository}, the {role} leg's repository, already "
+                    f"exists on GitHub: `{shown}` finds it", ON_GITHUB_FIX,
+                    "")
+        else:
+            # GitHub followed a rename or a transfer away from this name:
+            # the name itself is free, and `gh repo create` takes it over.
+            return None
+    named = f"{repository}, the {role} leg's repository,"
+    return (REMOTE_UNREADABLE,
+            f"whether {named} already exists on GitHub cannot be told: {how}",
+            UNREAD_FIX,
+            f"NOTE `check` could not ask GitHub whether {named} already "
+            f"exists: {how}. It is no finding here, so that `check` stays "
+            "usable offline; `execute` asks again before it makes either "
+            f"leg, and refuses as `{REMOTE_UNREADABLE}` while gh cannot "
+            "answer.")
+
+
+def _refuse_what_stands_in_the_legs_way(repositories: dict, names: dict,
+                                        local_remote_dir: Path | None
+                                        ) -> None:
+    """Refuse every answer `_leg_remote_answers` gives at once, BEFORE
+    either leg repository is made (#798): the code is the first one's own,
+    the detail lists each as `check` prints it, and the remediation says
+    what each asks for, once."""
+    answers = _leg_remote_answers(repositories, names, local_remote_dir)
+    if not answers:
+        return
+    raise Refusal(
+        answers[0][0],
+        "\n".join([f"{len(answers)} finding(s) about the two leg "
+                   "repositories, asked before either is made:",
+                   *(f"  FINDING {code}: {detail}"
+                     for code, detail, _fix, _note in answers)]),
+        f"Remediation: {NO_LEG_YET}" + " ".join(
+            dict.fromkeys(fix for _code, _detail, fix, _note in answers)))
+
+
+def _leg_remote_findings(plan: Plan, names: dict,
+                         local_remote_dir: Path | None
+                         ) -> tuple[list[str], list[str], list[str]]:
+    """`check`'s `(findings, remediation, notes)` about the two leg
+    repositories: `execute`'s answers (#798), each finding as its refusal
+    lists it, and a NOTE for each question gh could not answer. GitHub is
+    asked only of an `org:` `execute` would put on a `gh` command line;
+    another is `execute`'s to refuse first, as `unsafe-value`."""
+    repositories = {}
+    if local_remote_dir is None:
+        try:
+            org = checked_value("org", _plan_org(plan))
+        except Refusal:
+            return [], [], []
+        repositories = {role: f"{org}/{names[role]}"
+                        for role in EXTRACTED_LEGS}
+    findings, fixes, notes = [], [], []
+    for code, detail, fix, note in _leg_remote_answers(
+            repositories, names, local_remote_dir):
+        if note:
+            notes.append(note)
+        else:
+            findings.append(f"FINDING {code}: {detail}")
+            fixes.append(f"Remediation: {fix}")
+    return findings, list(dict.fromkeys(fixes)), notes
+
+
+def _make_the_remote_dir(remote_dir: Path) -> None:
+    """`--local-remote-dir`'s `mkdir`, after the question said it can be
+    made (`folder_in_the_way`): what fails here anyway -- a file put there
+    since, a permission `os.access` did not foresee -- is refused by name,
+    before any leg exists, and is no `OSError` traceback (#798)."""
+    try:
+        remote_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise Refusal(
+            LEG_FOLDER_REFUSED,
+            f"--local-remote-dir {_spelled(str(remote_dir))} cannot be made: "
+            f"{exc.strerror or exc}",
+            f"Remediation: {NO_LEG_YET}"
+            + (UNWRITABLE_FOLDER_FIX if isinstance(exc, PermissionError)
+               else FOLDER_FIX)) from exc
+
+
 def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
                         urls: dict, tracking: str, local: bool,
                         work_root: Path, *,
                         source: Source | None = None) -> None:
     """(a) The two NEW repositories. The assembly root is never created here.
 
-    The spec leg's repository is created first, so a failure creating the
-    code leg's leaves one repository behind, and the re-run meets it:
-    against GitHub as `gh repo create` finding its name taken. That failure
-    therefore gets the notice too, naming the one that exists (#188 N4), and
-    is re-raised `reported`: `main` exits 2 on any of `LATE_FAILURES` without
-    printing it twice, and anything else (Ctrl-C) keeps its traceback. A
-    failure on the first leg leaves nothing, and `main` reports it as before.
-    `source` is handed on for the notice: nothing is built in the work
-    directory yet, but an `org/repo` source is already cloned there.
+    Both were asked about first (`_refuse_what_stands_in_the_legs_way`,
+    #798), so a name or a path already taken, and a `--local-remote-dir`
+    that cannot hold them, are refused before this runs. The spec leg's
+    repository is created first, so a failure creating the code leg's
+    that the question could not foresee -- a name GitHub hides from this
+    token, a path made since -- leaves one repository behind, and the re-run
+    meets it. That failure therefore gets the notice too, naming the one
+    that exists (#188 N4), and is re-raised `reported`: `main` exits 2 on
+    any of `LATE_FAILURES` without printing it twice, and anything else
+    (Ctrl-C) keeps its traceback. A failure on the first leg leaves nothing,
+    and `main` reports it as before. `source` is handed on for the notice:
+    nothing is built in the work directory yet, but an `org/repo` source is
+    already cloned there.
     """
     print("\ncreating the leg repositories")
     if local:
-        Path(urls["spec"]).parent.mkdir(parents=True, exist_ok=True)
+        _make_the_remote_dir(Path(urls["spec"]).parent)
     made: list[str] = []
     for role in EXTRACTED_LEGS:
         try:
@@ -10325,9 +10649,10 @@ def _create_leg_remote(plan: Plan, names: dict, repositories: dict,
         print(f"  gh    {repositories[role]}")
         return
     bare = Path(urls[role])
+    # Asked before either leg was made (#798); one there now was made since.
     if bare.exists():
         raise Refusal(
-            "leg-remote-exists", f"{bare} already exists",
+            LEG_REMOTE_EXISTS, f"{bare} already exists",
             "Remediation: choose an empty --local-remote-dir, and a "
             "--work-dir the run that made it did not clone into (a fresh "
             "one, or none): `git clone` refuses a directory it already "
@@ -10460,7 +10785,7 @@ MOUNT_REMEDIATION = (
     "keeps there on the way to them. Then run `execute` again with fresh "
     "leg repositories (delete the two this run made, or choose an empty "
     "`--local-remote-dir`: a leg that already exists meets "
-    "`leg-remote-exists`, or a `gh repo create` that finds the name taken) "
+    "`leg-remote-exists`, on the disk or on GitHub) "
     "and an empty `--work-dir`, or none: a `--work-dir` this run was given "
     "still holds its clones of both legs, and the next run cannot clone "
     "into them.")
@@ -10821,8 +11146,9 @@ def _remote_urls(org: str, names: dict, local_remote_dir: Path | None,
                 for role, name in names.items()}
     # NOT created yet: nothing exists on disk until the human has said yes,
     # so a refused run leaves the directory it would have used absent rather
-    # than empty.
-    remote_dir = local_remote_dir.resolve()
+    # than empty. One that cannot be resolved (a link loop) is kept as given,
+    # for the question about it to refuse by name (#798).
+    remote_dir = _the_remote_dir(local_remote_dir)
     urls = {role: str(remote_dir / f"{name}.git")
             for role, name in names.items()}
     urls["assembly"] = str(source.path)
@@ -11410,6 +11736,29 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
     again by `ask_about_submodules` and `ask_about_refused_paths` as `plan`
     asks them. A question of the walk above is recorded as before.
 
+    AND AGAINST WHAT EACH LEG'S OWN WALK SAYS (#801). The doctor walks a
+    leg, not the source, and `walk` folds a directory by the files under it
+    in THAT leg. A directory the source's walk folds, split by hand, leaves
+    part of it in each leg, and a part may fold another way or not at all:
+    `engine/` is 3 of 4 `.py`, exactly the 75% `extension_majority:`, so it
+    folds to code; with `engine/c.py` answered `spec`, the code leg's
+    `engine/` is 2 of 3, which does not fold, and there `engine/x.md` is
+    spec by its own extension. Answers against their extensions can fold a
+    directory in a leg as the source's walk did not, over an entry beside
+    them left as `plan` wrote it. So `walk` is run again over each leg's
+    own files -- the paths `_answered_legs` keeps in it, gitlinks left out,
+    as the doctor runs it over the leg -- and an entry covering a path that
+    walk does not put in that leg is recorded too, whether the walk asks of
+    the path or puts it elsewhere. A row is added only where the doctor's
+    walk of that leg disputes the path. A plan left as `plan` wrote it,
+    over a source with no gitlink, gets none: each entry is whole in the
+    leg `plan` gave it, and no directory above one can fold to another leg
+    there, since at most a quarter of an entry's files read as one. Before
+    it walks, the doctor also sets aside the files every repository carries
+    (`everywhere_patterns`: names at the top of a leg, and `.github/`),
+    which change how no other directory folds, and a name no report can
+    carry, which can: this walk keeps both, as the one above does.
+
     A SOURCE WITH NO SUCH ENTRY GETS "" and so the `project.yaml` it always
     got, byte for byte.
     """
@@ -11422,14 +11771,31 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
             policy, [(path, size) for path, _, _, size in tree]), tree),
         tree)}
     answered = _answered_legs(entries, [path for path, _ in files])
+    in_its_leg = _walked_in_each_leg(policy, files, answered)
     kept = sorted({entry: leg for path, (leg, entry) in answered.items()
                    if leg in EXTRACTED_LEGS and entry != GITMODULES
-                   and leg != _walked_leg(called, path)
-                   and (_walked_leg(called, path) is None
-                        or leg != _walked_leg(shown, path))}.items())
+                   and (leg != in_its_leg.get(path)
+                        or (leg != _walked_leg(called, path)
+                            and (_walked_leg(called, path) is None
+                                 or leg != _walked_leg(shown, path))))
+                   }.items())
     return _record_block(ANSWER_RECORD_PREAMBLE,
                          [(entry, leg, entry) for entry, leg in kept],
                          entries, commit)
+
+
+def _walked_in_each_leg(policy: PathPolicy, files: list,
+                        answered: dict) -> dict:
+    """`{path: leg}` for each of `files` that `answered` keeps in a leg:
+    the leg `walk` gives it over THAT leg's files alone, as the doctor
+    walks the leg after the split; None for a question (#801)."""
+    out: dict = {}
+    for role in EXTRACTED_LEGS:
+        held = [(path, size) for path, size in files
+                if path in answered and answered[path][0] == role]
+        called = {entry.path: entry.leg for entry in walk(policy, held)}
+        out.update((path, _walked_leg(called, path)) for path, _ in held)
+    return out
 
 
 def _walked_leg(called: dict, path: str) -> str | None:
@@ -11693,6 +12059,11 @@ def cmd_execute(args) -> int:
                                    plan.entries, source.tree(), source.commit)
 
     # ---- (a) the two legs' remotes ----------------------------------------
+    # Both asked about first, and everything in their way refused at once,
+    # before either is made (#798): where `leg-remote-exists` always came,
+    # so every refusal above keeps its order.
+    _refuse_what_stands_in_the_legs_way(repositories, names,
+                                        args.local_remote_dir)
     _create_leg_remotes(plan, names, repositories, urls, tracking, local,
                         work_root, source=source)
 
@@ -13463,8 +13834,17 @@ def main(argv: list[str] | None = None) -> int:
                             "submodule url the plan keeps in a leg is "
                             "resolved from the bare repository `execute` "
                             "would create there, as that run resolves it, "
-                            "and not from GitHub's. Nothing is created "
-                            "there.")
+                            "and not from GitHub's, and `check` asks, as "
+                            "`execute` asks before it makes either leg, "
+                            "whether each leg's bare repository is already "
+                            "there and whether this directory can be made "
+                            "and written in. Nothing is created there. "
+                            "Without it, `check` asks GitHub with `gh repo "
+                            "view --json nameWithOwner` whether either "
+                            "leg's name exists (a name GitHub only "
+                            "redirects to a repository renamed or moved "
+                            "away does not), and a `gh` that cannot answer "
+                            "is a NOTE.")
     check.add_argument(
         "--work-dir", type=Path, default=None,
         help=_work_dir_help(
@@ -13484,7 +13864,12 @@ def main(argv: list[str] | None = None) -> int:
     execute.add_argument("--source", default=None, help=SOURCE_OVERRIDE_HELP)
     execute.add_argument("--local-remote-dir", type=Path, default=None,
                          help="create the legs as bare repositories here "
-                              "instead of calling `gh` (the TEST path)")
+                              "instead of calling `gh` (the TEST path). Both "
+                              "are asked about before either is made: one "
+                              "already there, or a directory that cannot be "
+                              "made and written in, is refused, as `gh repo "
+                              "view` finding either leg's name is without "
+                              "it.")
     execute.add_argument("--allow-empty-leg", action="append", default=[],
                          choices=EXTRACTED_LEGS,
                          help="proceed even though NO path is assigned to this "

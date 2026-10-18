@@ -53,7 +53,7 @@ one today, and the generator refuses to write this file if one ever appears.
 
 ## Run from a checkout of the standard
 
-Every command below is typed at the root of a clone of this repository. `openRepoShape` is also the one file `--install` places on `PATH`, and is the only entry point that needs no checkout at all.
+Every command below is typed at the root of a clone of this repository. `openRepoShape` is also the one file `--install` places on `PATH`, and needs no checkout at all. `pipx install openreposhape` (#563) places a Python `openRepoShape` with the same modes, whose own `--help` says what differs (its `--install` refuses and names `pipx upgrade openreposhape`), and four commands that need no checkout either: `scaffold-project`, `adopt-project`, `update-shape` and `shape-doctor` each run the tool of that name below, with every argument unchanged, from a clone of the standard at the package's own release commit, so their flags are the ones below.
 
 ### `setup.sh`
 
@@ -589,8 +589,15 @@ options:
                         given (the TEST path): each relative submodule url the
                         plan keeps in a leg is resolved from the bare
                         repository `execute` would create there, as that run
-                        resolves it, and not from GitHub's. Nothing is created
-                        there.
+                        resolves it, and not from GitHub's, and `check` asks,
+                        as `execute` asks before it makes either leg, whether
+                        each leg's bare repository is already there and
+                        whether this directory can be made and written in.
+                        Nothing is created there. Without it, `check` asks
+                        GitHub with `gh repo view --json nameWithOwner`
+                        whether either leg's name exists (a name GitHub only
+                        redirects to a repository renamed or moved away does
+                        not), and a `gh` that cannot answer is a NOTE.
   --work-dir WORK_DIR   where `check` works: an `org/repo` --source, or the
                         plan's `source.repository` where the clone `plan` made
                         is gone or no longer whole, is cloned there. Give the
@@ -629,7 +636,11 @@ options:
                         `plan-source-gone`.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create the legs as bare repositories here instead of
-                        calling `gh` (the TEST path)
+                        calling `gh` (the TEST path). Both are asked about
+                        before either is made: one already there, or a
+                        directory that cannot be made and written in, is
+                        refused, as `gh repo view` finding either leg's name
+                        is without it.
   --allow-empty-leg {spec,code}
                         proceed even though NO path is assigned to this leg,
                         seeding it from the shape's template. Unioned with the
