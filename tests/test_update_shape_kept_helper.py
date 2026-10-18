@@ -46,15 +46,16 @@ gains `DROPPED_NAME` and `STILL_NAME`, which no shipped copy imports. Off
 The project's own edit is committed, as a project's is, so `check` reads
 the edited copy as `both` or `locally-modified`, and `--branch` meets this
 refusal rather than `update-branch-uncommitted`. The readers are also held,
-in process, to the real importers on this checkout, and to what they cannot
-tell. Every file is written as BYTES, so no platform's newline reaches a
-digest.
+in process, to the real importers on this checkout, to what they cannot
+tell, and to what Python never runs (#675). Every file is written as BYTES,
+so no platform's newline reaches a digest.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -62,7 +63,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ORG, REPO, cloned_just_pushed, git, run_script
+from conftest import (ORG, REPO, WINDOWS_SKIP, cloned_just_pushed, git,
+                      run_script)
 #: The scaffold every update test starts from, and the in-process load of
 #: `update-shape.py`, imported from the module that owns them; the fixture is
 #: found by pytest here because it is imported.
@@ -914,14 +916,27 @@ GUARDED = b"try:\n    from repo_shape import NEW\nexcept ImportError:\n"
                  b"    except ImportError:\n        pass\n"
                  b"except ImportError:\n    NEW = None\n",
                  id="an inner handler passes, inside one that binds"),
+    pytest.param(b"try:\n    pass\nexcept ImportError:\n    NEW = None\n"
+                 b"else:\n    from repo_shape import NEW\n",
+                 id="an import in the try's else, outside its guard"),
+    pytest.param(b"try:\n    pass\nexcept ImportError:\n    NEW = None\n"
+                 b"finally:\n    from repo_shape import NEW\n",
+                 id="an import in the try's finally, outside its guard"),
+    pytest.param(GUARDED + b"    if False:\n        NEW = None\n",
+                 id="the handler's fallback under if False"),
+    pytest.param(GUARDED + b"    raise SystemExit\n    NEW = None\n",
+                 id="the handler's fallback after its raise"),
 ])
 def test_a_guard_whose_first_handler_binds_no_fallback_still_refuses(
         update_shape, tmp_path, written):
     """A `try` that catches the `ImportError` answers a name only where
     the first handler that catches it binds that same local name itself:
     the copy's own fallback. A handler that exits, re-raises or passes
-    leaves the copy stopping there, or on a `NameError` later, and a
-    `def` in the `try` imports when it is called, outside the handler."""
+    leaves the copy stopping there, or on a `NameError` later, and so does
+    one whose binding never runs (#675). A `def` in the `try` imports when
+    it is called, outside the handler, and an import in the `try`'s `else`
+    or `finally` runs outside its guard, where no handler of that `try`
+    catches it (#675)."""
     refused = refusal(update_shape, tmp_path, {REPO_SHAPE: b"OLD = 1\n"},
                       {BOOTSTRAP: written})
     assert refused is not None, "nothing the copy runs binds NEW"
@@ -972,6 +987,44 @@ def test_a_handler_that_misses_a_missing_name_still_refuses(update_shape,
                       {BOOTSTRAP: written})
     assert refused is not None, "ModuleNotFoundError was read as catching"
     assert "lacks NEW" in refused.detail, refused.detail
+
+
+@pytest.mark.parametrize("copy, taken", [
+    pytest.param(b"if False:\n    from repo_shape import NEW\n", False,
+                 id="under if False"),
+    pytest.param(b"if 0:\n    from repo_shape import NEW\n", False,
+                 id="under if 0"),
+    pytest.param(b"if None:\n    from repo_shape import NEW\n", False,
+                 id="under if None"),
+    pytest.param(b"try:\n    raise RuntimeError\n"
+                 b"    from repo_shape import NEW\n"
+                 b"except RuntimeError:\n    pass\n", False,
+                 id="after a raise in a try body"),
+    pytest.param(b"raise SystemExit\nfrom repo_shape import NEW\n", False,
+                 id="after a raise at module scope"),
+    pytest.param(b"if False:\n    pass\n"
+                 b"else:\n    raise SystemExit\n"
+                 b"    from repo_shape import NEW\n", False,
+                 id="after a raise in the else of if False"),
+    pytest.param(b"if False:\n    pass\n"
+                 b"else:\n    from repo_shape import NEW\n", True,
+                 id="in the else of if False"),
+    pytest.param(b"if 1:\n    from repo_shape import NEW\n", True,
+                 id="under a true constant"),
+    pytest.param(b"from repo_shape import NEW\nraise SystemExit\n", True,
+                 id="before a raise"),
+])
+def test_an_import_python_never_reaches_is_not_taken(update_shape, copy,
+                                                     taken):
+    """`_blocks_inside` (#675): Python starts a copy whose `from repo_shape
+    import NEW` sits under `if False:`, `if 0:` or `if None:`, or after an
+    unconditional `raise` in its block (a `try` body, the module's own, the
+    `else` of `if False:`), whatever `repo_shape.py` defines, so that import
+    is no name the copy takes, as one under `if TYPE_CHECKING:` was not
+    already. What does run is still read: the `else` of `if False:`, a
+    true constant's body, and the statements before a `raise`."""
+    imported = update_shape._names_imported(copy).get("repo_shape", set())
+    assert ("NEW" in imported) is taken, imported
 
 
 @pytest.mark.parametrize("written, how", [
@@ -1267,13 +1320,84 @@ def test_a_kept_copy_importing_a_name_the_written_module_drops_is_refused(
                  id="a name the bytes on disk lack too"),
     pytest.param(TAKES_GONE, DEFINES_GONE, DEFINES_GONE + b"OTHER = 1\n",
                  id="a name the written bytes still define"),
+    pytest.param(b"if False:\n    from repo_shape import GONE\n",
+                 DEFINES_GONE, DROPS_GONE,
+                 id="a kept importer's import under if False"),
+    pytest.param(TAKES_GONE, DEFINES_GONE,
+                 DROPS_GONE + b"if False:\n    pass\nelse:\n    GONE = 1\n",
+                 id="written bytes binding it in the else of if False"),
+    pytest.param(TAKES_GONE, DEFINES_GONE,
+                 DROPS_GONE + b"try:\n    GONE = 1\n    raise RuntimeError\n"
+                 b"except RuntimeError:\n    pass\n",
+                 id="written bytes binding it before a raise"),
+    pytest.param(TAKES_GONE, DEFINES_GONE,
+                 DROPS_GONE + b"while False:\n    GONE = 1\n",
+                 id="written bytes binding it under while False, read as "
+                    "running"),
 ])
 def test_what_the_reverse_cannot_tell_or_the_run_keeps_it_does_not_refuse(
         update_shape, tmp_path, importer, now, after):
     """Ruling 3 of #604, the forward check's rule: what it cannot tell, it
     does not refuse, and the validators answer after the writes. And what
-    this run does not take away is not its doing."""
+    this run does not take away is not its doing. A kept import Python
+    never reaches takes nothing, a binding Python does run is one, and the
+    rest of what never runs, `while False:` among it, is read as running:
+    what this cannot tell, it does not refuse (#675)."""
     assert reverse(update_shape, tmp_path, importer, now, after) is None
+
+
+def assert_the_written_module_drops_gone(update_shape, root: Path,
+                                         binding: bytes) -> None:
+    """The issue's case (#675): the bytes this run writes to
+    `repo_shape.py` bind `GONE` only in `binding`, where Python never runs
+    it, so the kept `bootstrap.py` that takes it is refused, on the line
+    that says the written module no longer defines it."""
+    refused = reverse(update_shape, root, after=DROPS_GONE + binding)
+    assert refused is not None, "GONE is bound only where Python never runs"
+    assert dropped_line(BOOTSTRAP, "GONE") in refused.detail.splitlines(), \
+        refused.detail
+
+
+@pytest.mark.parametrize("binding", [
+    pytest.param(b"from typing import TYPE_CHECKING\n"
+                 b"if TYPE_CHECKING:\n    GONE = 1\n", id="if TYPE_CHECKING"),
+    pytest.param(b"import typing\nif typing.TYPE_CHECKING:\n    GONE = 1\n",
+                 id="if typing.TYPE_CHECKING"),
+    pytest.param(b"if False:\n    GONE = 1\n", id="if False"),
+    pytest.param(b"if 0:\n    GONE = 1\n", id="if 0"),
+    pytest.param(b"if None:\n    GONE = 1\n", id="if None"),
+    pytest.param(b"if KEPT:\n    pass\nelif False:\n    GONE = 1\n",
+                 id="elif False"),
+])
+def test_a_binding_under_an_if_that_never_runs_binds_nothing(update_shape,
+                                                             tmp_path,
+                                                             binding):
+    """`_same_scope` (#675): the body of an `if` whose test is
+    `TYPE_CHECKING` or a false constant never runs, so a binding there is
+    not one. Read as one, the written module still defined `GONE`, and
+    the kept importer's `ImportError` got through."""
+    assert_the_written_module_drops_gone(update_shape, tmp_path, binding)
+
+
+@pytest.mark.parametrize("binding", [
+    pytest.param(b"try:\n    raise RuntimeError\n    GONE = 1\n"
+                 b"except RuntimeError:\n    pass\n",
+                 id="after a raise in a try body"),
+    pytest.param(b"try:\n    if KEPT:\n        raise RuntimeError\n"
+                 b"        GONE = 1\nexcept RuntimeError:\n    pass\n",
+                 id="after a raise in a block inside a try"),
+    pytest.param(b"try:\n    if False:\n        pass\n    else:\n"
+                 b"        raise RuntimeError\n        GONE = 1\n"
+                 b"except RuntimeError:\n    pass\n",
+                 id="after a raise in the else of if False"),
+])
+def test_a_binding_after_a_raise_in_its_block_binds_nothing(update_shape,
+                                                            tmp_path,
+                                                            binding):
+    """`_bound_at` (#675): a statement after an unconditional `raise` in
+    its block never runs. In a `try` body whose handler catches what it
+    raised, the module imports, and it does not bind `GONE`."""
+    assert_the_written_module_drops_gone(update_shape, tmp_path, binding)
 
 
 def test_a_module_this_run_adds_takes_nothing_away(update_shape, tmp_path):
@@ -1337,6 +1461,55 @@ def test_both_directions_are_one_refusal_with_every_pair_sorted(
     assert (VALIDATORS_PASS in refused.detail) is said, refused.detail
 
 
+#: A copy beside `bootstrap.py` that no shipped root carries: a written
+#: importer of `NEW` below, and the kept module of the pastes at the end.
+HELPER = "scripts/helper.py"
+
+
+def validator_taking(*names: str, module: str = "repo_shape") -> dict:
+    """`validate-pins.py`, one of a project's validators, taking `names`
+    from `module`."""
+    return {VALIDATE_PINS_COPY: imports(*names, module=module)}
+
+
+@pytest.mark.parametrize("kept, written, current, said", [
+    pytest.param({REPO_SHAPE: b"OLD = 1\n"}, {BOOTSTRAP: imports("NEW")},
+                 validator_taking("OLD"), True,
+                 id="a validator taking other names from the module"),
+    pytest.param({REPO_SHAPE: b"OLD = 1\n"}, {BOOTSTRAP: imports("NEW")},
+                 validator_taking("NEW"), False,
+                 id="a validator taking the name the kept module lacks"),
+    pytest.param({REPO_SHAPE: b"OLD = 1\n"}, {HELPER: imports("NEW")},
+                 validator_taking("main", module="helper"), False,
+                 id="a validator importing the written importer"),
+    pytest.param({REPO_SHAPE: b"OLD = 1\n"},
+                 {HELPER: imports("NEW"),
+                  **validator_taking("main", module="helper")}, None, False,
+                 id="a validator this run writes, importing the importer"),
+    pytest.param({BOOTSTRAP: TAKES_GONE}, {REPO_SHAPE: DROPS_GONE},
+                 {REPO_SHAPE: DEFINES_GONE, **validator_taking("GONE")},
+                 False,
+                 id="a validator taking the name the written module drops"),
+    pytest.param({BOOTSTRAP: TAKES_GONE}, {REPO_SHAPE: DROPS_GONE},
+                 {REPO_SHAPE: DEFINES_GONE,
+                  **validator_taking("main", module="bootstrap")}, False,
+                 id="a validator importing the kept importer"),
+])
+def test_the_validators_are_not_said_to_pass_where_one_meets_a_line(
+        update_shape, tmp_path, kept, written, current, said):
+    """`_validators_meet` (#675): no importer here is a validator, but a
+    validator that takes a line's missing name from its module, or
+    imports a line's importer at all, stops on that line's `ImportError`
+    when it runs after the writes, as this run leaves it: on disk, or in
+    the bytes this run writes there. The clause would be false of it. A
+    validator that takes OTHER names from the module, as every shipped one
+    takes from `repo_shape`, passes, and the clause is said."""
+    refused = refusal(update_shape, tmp_path, kept, written,
+                      state="locally-modified", current=current)
+    assert refused is not None, "every line here disagrees"
+    assert (VALIDATORS_PASS in refused.detail) is said, refused.detail
+
+
 @pytest.mark.parametrize("kept, written, current, said, unsaid", [
     pytest.param({REPO_SHAPE: b"OLD = 1\n"}, {BOOTSTRAP: imports("NEW")},
                  None, LACKS_EXIT, DROPS_EXIT,
@@ -1372,3 +1545,86 @@ def test_a_path_it_cannot_read_is_one_it_cannot_tell(update_shape, tmp_path,
 
     monkeypatch.setattr(type(path), "read_bytes", too_big)
     assert update_shape._names_defined(path) is None
+
+
+# --- the upstream's bytes a remedy names, pasted (#675) ----------------------
+
+#: Where a fork of the standard keeps a copy, with a blank and a `'` in the
+#: path: printed bare, `git show` read two arguments and exited 128, or `sh`
+#: met a quotation nothing closed.
+AWKWARD_SOURCE = "templates/assembly-root/scripts/it's a helper.py"
+AWKWARD_BYTES = b"AWKWARD = 1\n"
+
+
+@pytest.fixture
+def fork(tmp_path) -> tuple[Path, str]:
+    """A fork of the standard, built for the test: one commit holding a
+    copy at `AWKWARD_SOURCE`. Its path, and that commit."""
+    standard = tmp_path / "fork"
+    git("init", "-q", str(standard), cwd=tmp_path)
+    (standard / AWKWARD_SOURCE).parent.mkdir(parents=True)
+    (standard / AWKWARD_SOURCE).write_bytes(AWKWARD_BYTES)
+    git("add", "--", AWKWARD_SOURCE, cwd=standard)
+    git("commit", "-q", "-m", "A copy at an awkward path", cwd=standard)
+    return standard, git("rev-parse", "HEAD", cwd=standard).stdout.strip()
+
+
+def awkward_row(update_shape, target: str):
+    """A `both` row for `HELPER`, whose source in the fork is
+    `AWKWARD_SOURCE` at `target`."""
+    row = update_shape.Row(HELPER, "")
+    row.state, row.source, row.target = (update_shape.BOTH, AWKWARD_SOURCE,
+                                         target)
+    return row
+
+
+def merge_remedy(update_shape, target: str) -> str:
+    """`update-conflict`'s remedy for that row (`merge_by_hand`)."""
+    return update_shape.merge_by_hand([awkward_row(update_shape, target)])
+
+
+def missing_name_remedy(update_shape, target: str) -> str:
+    """`update-accept-local-missing-name`'s remedy where that row is the
+    kept module a written `bootstrap.py` takes `NEW` from."""
+    pair = update_shape.Disagreement(HELPER, BOOTSTRAP, ["NEW"],
+                                     update_shape.KEPT_MODULE)
+    return update_shape._missing_name_remediation(
+        [pair], {HELPER: awkward_row(update_shape, target)}, target)
+
+
+def overwrite_remedy(update_shape, target: str) -> str:
+    """`update-add-would-overwrite`'s remedy for an `--add` of `HELPER`,
+    whose source in the fork is `AWKWARD_SOURCE`, where the root already
+    has a file (`resolve_additions`)."""
+    added = update_shape.Addition(
+        update_shape.Copy(HELPER, AWKWARD_SOURCE, False), True, AWKWARD_BYTES)
+    with pytest.raises(update_shape.Refusal) as refused:
+        update_shape.resolve_additions([], [added], [HELPER], target)
+    assert refused.value.code == "update-add-would-overwrite", refused.value
+    return refused.value.remediation
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("remedy", [
+    pytest.param(merge_remedy, id="update-conflict"),
+    pytest.param(missing_name_remedy, id="update-accept-local-missing-name"),
+    pytest.param(overwrite_remedy, id="update-add-would-overwrite"),
+])
+def test_the_git_show_a_remedy_names_pastes_and_runs(update_shape, fork,
+                                                     remedy):
+    """Each remedy that names the upstream's bytes prints `git show
+    <target>:<source>` quoted, as #588 quoted the other printed paths: the
+    one command a POSIX shell splits it into, and, pasted into `sh` in the
+    fork, the copy's own bytes. A plain path prints exactly as it did,
+    which `tests/test_update_shape_messages.py` and the `git show` lines
+    above hold; `update-add-would-overwrite` printed `<commit>` where the
+    target goes, and `tests/test_update_shape_add.py` holds its line."""
+    root, commit = fork
+    shows = re.findall(r"`(git show [^`]*)`", remedy(update_shape, commit))
+    assert len(shows) == 1, shows
+    assert shlex.split(shows[0]) == ["git", "show",
+                                     f"{commit}:{AWKWARD_SOURCE}"], shows
+    pasted = subprocess.run(["sh", "-c", shows[0]], cwd=str(root),
+                            capture_output=True, check=False)
+    assert pasted.returncode == 0, pasted.stderr
+    assert pasted.stdout == AWKWARD_BYTES, pasted.stdout
