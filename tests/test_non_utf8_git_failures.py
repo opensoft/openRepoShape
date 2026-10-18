@@ -43,14 +43,19 @@ run (CI is Linux only, #597; no Windows or macOS run was made):
 
 - git fails: the test FAILS with git's error, for a name that is not UTF-8
   and for one that is text;
-- macOS's EILSEQ on the probe, or Windows' `os.fsencode` (a surrogate is three
-  bytes): a branch that is not UTF-8 is skipped on the helper's reason before
-  git is called and before anything is made; a branch that is text asks
-  neither and goes on to git;
+- Windows' `os.fsencode` (a surrogate is three bytes): the three tests of the
+  byte directory are skipped on the helper's reason before their `mkdir` and
+  before git, and make nothing (macOS's EILSEQ on the probe is held for them
+  by #757's rows in `tests/test_non_utf8_name_callers.py`);
+- macOS's EILSEQ on the probe, or Windows' `os.fsencode`: a branch that is
+  not UTF-8 is skipped on the helper's reason before git is called and
+  before anything is made; a branch that is text asks neither and goes on
+  to git;
 - an ASCII file name encoding: a branch that is text, and the U+202E test, are
   skipped on the encoding's reason, before git and before the `mkdir`;
-- every `tests/*.py`, read as #853's scan reads it: no `except` that names
-  `AssertionError` holds a `pytest.skip`.
+- every `tests/*.py`, read as #853's scan reads it and wider: no `except`
+  that catches an `AssertionError` (one that names it, `Exception` or
+  `BaseException`, or a bare one) holds a `pytest.skip`.
 """
 
 from __future__ import annotations
@@ -118,6 +123,22 @@ def test_a_failure_of_git_under_the_byte_directory_fails_the_test(
     monkeypatch.setattr(module, "make_source_repo", a_source_git_cannot_make)
     error = the_error_of(AssertionError, call, tmp_path, adopter)
     assert str(error) == GIT_FAILED
+
+
+@pytest.mark.parametrize("module, call", UNDER_A_BYTE_DIRECTORY)
+def test_where_fsencode_makes_no_byte_the_byte_directory_test_skips_first(
+        tmp_path, monkeypatch, adopter, module, call):
+    """Windows (emulated): `os.fsencode` gives the surrogate three bytes, so
+    the test skips on the helper's reason before it makes its directory or
+    asks git (which would fail here), and nothing is made under `tmp_path`.
+    A test that asked after its `mkdir` would leave the directory here, and
+    on Windows raise at `os.fsdecode` of the name instead of skipping."""
+    monkeypatch.setattr(module, "make_source_repo", a_source_git_cannot_make)
+    monkeypatch.setattr(os, "fsencode", windows_fsencode)
+    reason = skip_message(call, tmp_path, adopter)
+    assert reason is not None, "the test went on where fsencode makes none"
+    assert "os.fsencode" in reason, reason
+    assert list(tmp_path.iterdir()) == []
 
 
 # --- a branch or a ref that is not UTF-8, or is text ------------------------
@@ -290,26 +311,42 @@ def is_pytest_skip(node: ast.AST) -> bool:
             and node.func.value.id == "pytest")
 
 
-def skips_on_an_assertion_error(source: str) -> list[int]:
-    """The line of each `except` in `source` that names `AssertionError`,
-    alone or in a tuple, and holds a call of `pytest.skip` anywhere in its
-    body: #853's scan."""
+#: What an `except` that catches an `AssertionError` names: the error itself
+#: or a class above it. A bare `except` catches it too.
+CATCH_AN_ASSERTION_ERROR = {"AssertionError", "Exception", "BaseException"}
+
+
+def catches_an_assertion_error(handler: ast.ExceptHandler) -> bool:
+    """A bare `except`, or one that names `AssertionError`, `Exception` or
+    `BaseException`, alone or in a tuple."""
+    return (handler.type is None
+            or bool(names_in(handler.type) & CATCH_AN_ASSERTION_ERROR))
+
+
+def skips_that_catch_an_assertion_error(source: str) -> list[int]:
+    """The line of each `except` in `source` that catches an
+    `AssertionError` and holds a call of `pytest.skip` anywhere in its body:
+    #853's scan, of an `except` that names `AssertionError`, and with it one
+    that catches the error without naming it (`Exception`, `BaseException`
+    or a bare `except`), which would hide a failed git call as well."""
     return [node.lineno for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.ExceptHandler)
-            and "AssertionError" in names_in(node.type)
+            and catches_an_assertion_error(node)
             and any(is_pytest_skip(inner) for inner in ast.walk(node))]
 
 
 def test_no_test_skips_on_an_assertion_error():
     """`conftest.git` and `make_source_repo` raise `AssertionError` for a git
-    process that fails, whatever made it fail, so an `except` that names it
-    and skips turns a full disk into SKIPPED. Where a system cannot carry a
+    process that fails, whatever made it fail, so an `except` that catches it
+    and skips turns a full disk into SKIPPED, whether it names the error,
+    `Exception` or `BaseException`, or nothing. Where a system cannot carry a
     name, a test asks it first and skips on that answer; the git call after
     it is unguarded. Every `tests/*.py`, this file and `conftest.py`
     included."""
     found = {}
     for path in sorted((REPO / "tests").glob("*.py")):
-        lines = skips_on_an_assertion_error(path.read_text(encoding="utf-8"))
+        lines = skips_that_catch_an_assertion_error(
+            path.read_text(encoding="utf-8"))
         if lines:
             found[path.name] = lines
     assert found == {}, found
@@ -339,9 +376,33 @@ def test_no_test_skips_on_an_assertion_error():
     pytest.param("""
         try:
             make()
+        except Exception as exc:
+            pytest.skip(f"no branch here is named: {exc!r}")
+        """, [4], id="exception"),
+    pytest.param("""
+        try:
+            make()
+        except (OSError, BaseException):
+            pytest.skip("anything at all")
+        """, [4], id="base-exception-in-a-tuple"),
+    pytest.param("""
+        try:
+            make()
+        except:
+            pytest.skip("anything at all")
+        """, [4], id="bare"),
+    pytest.param("""
+        try:
+            make()
         except AssertionError:
             raise
         """, [], id="no-skip"),
+    pytest.param("""
+        try:
+            make()
+        except Exception:
+            raise
+        """, [], id="exception-no-skip"),
     pytest.param("""
         try:
             make()
@@ -356,7 +417,9 @@ def test_no_test_skips_on_an_assertion_error():
 def test_the_scan_finds_a_skip_on_an_assertion_error_and_nothing_else(
         source, lines):
     """A skip behind an `if` in the `except` is found too, as #845's
-    `skip_where_git_fails` had it; an `except` that does not skip, one of
-    another error, and the skip after `git symbolic-ref`, which answers a
-    question and catches nothing, are not."""
-    assert skips_on_an_assertion_error(dedent(source)) == lines
+    `skip_where_git_fails` had it, and so is one in an `except` that catches
+    the error without naming it: `Exception`, `BaseException`, or a bare
+    `except`. An `except` that does not skip, one of another error, and the
+    skip after `git symbolic-ref`, which answers a question and catches
+    nothing, are not."""
+    assert skips_that_catch_an_assertion_error(dedent(source)) == lines

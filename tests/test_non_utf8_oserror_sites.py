@@ -26,7 +26,7 @@ The first three now ask the helper, which skips on the two answers that mean
 and raises the rest. `make_file` skips on EILSEQ and on a `UnicodeError` (an
 ASCII file name encoding, #757), each on a reason of its own, and raises the
 rest. The U+202E test makes its directory, and its source repository, with no
-guard.
+guard but the file name encoding's question, asked before its `mkdir` (#854).
 
 Each is called here as a plain function, with the disk answering as it would on
 a system this suite does not run on (CI is Linux only, #597), and asked what
