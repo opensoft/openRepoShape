@@ -107,8 +107,10 @@ from shape_materialize import refuse_bad_leg_paths  # noqa: E402
 # The root's visibility and the Free-plan secrets note, asked as `family.py`
 # asks them of its holder (#660).
 from shape_materialize import (  # noqa: E402
-    free_plan_secrets_note, repository_visibility,
+    free_plan_secrets_note, repository_visibility_answer,
 )
+# What the plan says "not found" means against GitHub (#913, L2-61).
+from shape_materialize import NOT_FOUND_WITH_THIS_TOKEN  # noqa: E402
 # What the new project's own reader and `validate-manifest.py` would make of
 # the values written into its manifest, and whether a repository's name can
 # be a directory's: asked before anything is created (#258, #261).
@@ -245,11 +247,15 @@ def remote_is_empty(repository: str) -> bool | None:
 
 def remote_visibility(repository: str) -> str | None:
     """`<org>/<repo>`'s GitHub visibility (`private`, `public`, `internal`),
-    lowercased, or None if it cannot be read — the repository does not exist,
-    `gh` cannot see it, or it answered a word that is not one of the three.
-    It is `repository_visibility`, the reader `family.py` asks of its holder
-    (#660). Never called for a `--local-remote-dir` repository: a bare
-    repository on disk has no visibility at all.
+    lowercased; `REPOSITORY_NOT_FOUND` where gh's answer is that this token
+    finds no such repository; or None if it cannot be read — `gh repo view`
+    failed otherwise, or answered a word that is not one of the three. It is
+    `repository_visibility_answer`, the reader `family.py` asks of its
+    holder (#660), which tells not-found apart (#913): `_leg_visibility`
+    says before its plan that a root it could not read is unread, and a root
+    not there yet is the ordinary run. Never called for a
+    `--local-remote-dir` repository: a bare repository on disk has no
+    visibility at all.
 
     NO `gh` ON PATH IS `gh-not-found` (#537), as `remote_is_empty`'s is, and
     not a `FileNotFoundError` traceback: `--reuse-empty-repo` reads the root's
@@ -258,7 +264,7 @@ def remote_visibility(repository: str) -> str | None:
     has to come from here too or the run never reaches the one that has it.
     """
     try:
-        return repository_visibility(repository)
+        return repository_visibility_answer(repository)
     except FileNotFoundError as exc:
         raise _gh_not_found(
             f"what visibility {repository} has on GitHub", exc) from exc
@@ -1278,9 +1284,29 @@ def _repository_urls(args, names: dict) -> tuple[bool, dict, dict]:
     return local, repositories, urls
 
 
-def _leg_visibility(args, assembly_repository: str, local: bool) -> str:
+#: What the scaffold says before its plan where `--reuse-empty-repo` could not
+#: read the root's visibility (#913, L2-96): `ROOT_VISIBILITY_UNREAD`'s leg
+#: twin, said while `--visibility` can still choose what a leg it creates
+#: is. The first is said with no `--visibility`, the second with one.
+ROOT_UNREAD_LEGS_DEFAULT = (
+    "NOTE this run could not read {root}'s visibility from GitHub, so a leg "
+    "this run creates is created private, the default, and does not inherit "
+    "{root}'s; a leg it reuses keeps its own. Pass --visibility to choose "
+    "one before any leg exists; `gh repo view {root} --json visibility` "
+    "says which {root} is.")
+ROOT_UNREAD_LEGS_CHOSEN = (
+    "NOTE this run could not read {root}'s visibility from GitHub, so it "
+    "cannot say whether --visibility {visibility} agrees with it. A leg this "
+    "run creates is created {visibility}, as you asked; a leg it reuses "
+    "keeps its own. `gh repo view {root} --json visibility` says which "
+    "{root} is.")
+
+
+def _leg_visibility(args, assembly_repository: str,
+                    local: bool) -> tuple[str, str | None]:
     """(h) The visibility a leg this run CREATES is created at: explicit, or
-    inherited from a reused empty root.
+    inherited from a reused empty root; and the root's own, as GitHub gave
+    it, or None.
 
     Split out of `_scaffold` for #138. An organisation that created the
     assembly root first (--reuse-empty-repo) generally wants the legs this
@@ -1296,26 +1322,47 @@ def _leg_visibility(args, assembly_repository: str, local: bool) -> str:
     there; each line now says what happens to a leg this run creates, and
     that a reused leg keeps its own visibility, which `_reused_leg_visibility`
     reads and warns about leg by leg.
+
+    A ROOT IT COULD NOT READ IS SAID TO BE UNREAD, HERE (#913, L2-96). The
+    legs it creates were made private with no word, `--dry-run` included,
+    and only a real run's `_private_leg_note` said anything about the read.
+    `ROOT_UNREAD_LEGS_DEFAULT` or `ROOT_UNREAD_LEGS_CHOSEN` is printed before
+    the plan, so a person can pass `--visibility` before any leg exists. A
+    root gh does not find is the ordinary run, which creates it: nothing is
+    said of it.
+
+    THE ROOT IS READ ONCE (#913, L2-96). `_create_remotes` asked GitHub again
+    for a reused root, and the two reads could disagree; the second element
+    of the answer is this read, the root's visibility where GitHub gave one,
+    and `_create_remotes` takes it. It is None where nothing was read (no
+    `--reuse-empty-repo`, or `--local-remote-dir`), where gh does not find
+    the root, and where the read failed.
     """
-    reused_visibility = None
-    if args.reuse_empty_repo and not local:
-        reused_visibility = remote_visibility(assembly_repository)
+    if not args.reuse_empty_repo or local:
+        return args.visibility or "private", None
+    seen = remote_visibility(assembly_repository)
+    if seen is None:
+        unread = (ROOT_UNREAD_LEGS_DEFAULT if args.visibility is None
+                  else ROOT_UNREAD_LEGS_CHOSEN)
+        print(unread.format(root=assembly_repository,
+                            visibility=args.visibility))
+    root = seen if seen in VISIBILITY_CHOICES else None
     if args.visibility is None:
-        if reused_visibility:
-            print(f"NOTE {assembly_repository} is already {reused_visibility} "
+        if root:
+            print(f"NOTE {assembly_repository} is already {root} "
                   "on GitHub; a leg this run creates inherits that "
                   "visibility, and a leg it reuses keeps its own (pass "
                   "--visibility to choose one explicitly).")
-        return reused_visibility or "private"
-    if reused_visibility and reused_visibility != args.visibility:
+        return root or "private", root
+    if root and root != args.visibility:
         print(f"WARNING --visibility {args.visibility} disagrees with the "
-              f"reused {assembly_repository}, which is {reused_visibility} "
+              f"reused {assembly_repository}, which is {root} "
               "on GitHub. A leg this run creates is created "
               f"{args.visibility} because that is what you asked for, not "
               "because it is what the assembly root already is; a leg it "
               "reuses keeps its own.",
               file=sys.stderr)
-    return args.visibility
+    return args.visibility, root
 
 
 def _print_plan(args, values: dict, names: dict, repositories: dict,
@@ -1385,15 +1432,36 @@ def _print_declared_classification(policy, names: dict, declared_pins: set,
 
 
 def _print_plan_actions(args, topic: str, local: bool) -> None:
-    """(i″) The four lines that say what this run will DO — create the
-    remotes, reuse an empty root, push, set the topic. Split out of
+    """(i″) The lines that say what this run will DO — create the remotes,
+    reuse an empty root, the branch, push, set the topic. Split out of
     `_print_plan` for #138.
+
+    THE BRANCH AND, ON DISK, THE VISIBILITY ARE NAMED (#913, AT-scaffold N3).
+    The plan a person approves, here and in setup's step (5), named neither
+    the tracking branch the three repositories are created on nor, under
+    `--local-remote-dir`, the visibility the manifest records: against
+    GitHub `gh repo create --<visibility>` names it, and a bare repository
+    on disk has none. And "NOT FOUND" IS WHAT THIS TOKEN CAN SEE (#913,
+    L2-61): only gh's not-found answer reads as absent (#609), and GitHub
+    gives it for a private repository the token cannot see, so the real run
+    would create the legs and then fail at `gh repo create` for a root that
+    exists. gh's answer cannot tell the two apart, so the row says which
+    repositories it creates in those words (`NOT_FOUND_WITH_THIS_TOKEN`).
     """
-    print("remotes      " + ("bare repositories on disk (no network)" if local
-                             else f"gh repo create --{args.visibility}"))
+    if local:
+        print(f"visibility   {args.visibility}, which project.yaml records; "
+              "a bare repository on disk has none")
+        print("remotes      bare repositories on disk (no network)")
+    else:
+        print(f"remotes      gh repo create --{args.visibility}, for each of "
+              "the three gh does not find")
+        for line in NOT_FOUND_WITH_THIS_TOKEN:
+            print(f"             {line}")
     if args.reuse_empty_repo:
         print("reuse        each of the three that EXISTS with zero commits "
               "is used, and a leg whose one commit is this scaffold's seed")
+    print(f"branch       {args.tracking_branch}, the tracking branch each of "
+          "the three is created on")
     print("push         " + ("SKIPPED (--no-push)" if args.no_push else "yes"))
     print("topics       " + ("skipped for local remotes" if local
                              else f"gh repo edit --add-topic {topic}"))
@@ -1451,7 +1519,8 @@ def _refuse_unmakeable_folders(args, work_root: Path | None, names: dict,
 
 
 def _create_remotes(args, values: dict, repositories: dict, urls: dict,
-                    local: bool, reused: dict) -> dict[str, str]:
+                    local: bool, reused: dict,
+                    root_seen: str | None) -> dict[str, str | None]:
     """(k) The three remotes, spec and code first so a failure costs the
     cheapest thing. Split out of `_scaffold` for #138.
 
@@ -1462,13 +1531,14 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
 
     Returns each repository's visibility as it now stands, by role, for
     `_private_leg_note` (#542): the run's for one created here, and for a
-    reused one what GitHub says of it. A reused leg's is what
-    `_reused_leg_visibility` read, with its WARNING. The reused ROOT's is read
-    here without one, because `_leg_visibility` has already said where the
-    run's flag disagrees with it, and is None where GitHub does not say
-    (#660): the run's `--visibility` is not the root's, so a public root
-    whose read failed was given the Free-plan hint as private, and
-    `_private_leg_note` says now that it could not be read.
+    reused one what GitHub says of it, or None where GitHub does not say. A
+    reused leg's is what `_reused_leg_visibility` read, with its WARNING.
+    The reused ROOT's is `root_seen`, the one read `_leg_visibility` made
+    before the plan and said what it found (#913, L2-96): it was read a
+    second time here, and the two reads could disagree. It is None where
+    GitHub did not say (#660): the run's `--visibility` is not the root's,
+    so a public root whose read failed was given the Free-plan hint as
+    private, and `_private_leg_note` says now that it could not be read.
     """
     display = values["PROJECT_NAME"]
     project_id = values["PROJECT_ID"]
@@ -1481,7 +1551,7 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
                   + ("zero commits)" if reused[role] is None else
                      f"holding this scaffold's seed {reused[role][:12]})"))
             if not local and role == "assembly":
-                standing[role] = remote_visibility(repositories[role])
+                standing[role] = root_seen
             elif not local:
                 standing[role] = _reused_leg_visibility(args,
                                                         repositories[role])
@@ -1502,7 +1572,7 @@ def _create_remotes(args, values: dict, repositories: dict, urls: dict,
     return standing
 
 
-def _reused_leg_visibility(args, repository: str) -> str:
+def _reused_leg_visibility(args, repository: str) -> str | None:
     """(k″) A reused leg keeps the visibility the run that created it gave it
     (#462), and a re-run whose visibility disagrees is told so, as
     `_leg_visibility` tells it about a reused root. Nothing here changes a
@@ -1510,16 +1580,22 @@ def _reused_leg_visibility(args, repository: str) -> str:
     which has none.
 
     Returns the visibility GitHub reports for the leg, which is the one
-    `_private_leg_note` goes by (#542), or the run's when GitHub does not
-    say: the one value this run has for it then.
+    `_private_leg_note` goes by (#542), or None when GitHub does not say
+    (#913, L2-92): a read that failed, or gh not finding a leg it found a
+    moment before. It returned the run's then, so the leg NOTE and the
+    Free-plan hint went by a value GitHub did not give, hiding a true hint
+    or printing a false NOTE, and nothing said the read failed; the root's
+    rule since #660, for each leg.
     """
     seen = remote_visibility(repository)
-    if seen and seen != args.visibility:
+    if seen not in VISIBILITY_CHOICES:
+        return None
+    if seen != args.visibility:
         print(f"WARNING {repository} is reused and is {seen} on GitHub, "
               f"where this run's visibility is {args.visibility}. It keeps "
               "the visibility it has: this run changes no repository's "
               "visibility.", file=sys.stderr)
-    return seen or args.visibility
+    return seen
 
 
 def _private_leg_note(args, repositories: dict, local: bool,
@@ -1557,9 +1633,17 @@ def _private_leg_note(args, repositories: dict, local: bool,
     the run's `--visibility`, and a closed root whose organisation's plan
     could not be read is `FREE_PLAN_UNREAD`, where it was silent as for a
     paid plan.
+
+    AND A REUSED LEG IT COULD NOT READ (#913, L2-92), `standing` None, is
+    named by `_unread_legs_note`, where it was taken at the run's
+    visibility: a public leg under a private run was called private, and a
+    private one under a public run got no NOTE. The legs it could read are
+    named as before, and the Free-plan note follows either NOTE, since an
+    unread leg may be closed.
     """
     closed = [role for role in ("spec", "code")
               if standing[role] in ("private", "internal")]
+    unread = [role for role in ("spec", "code") if standing[role] is None]
     if not local and closed:
         both = len(closed) == 2
         who = " and ".join(repositories[role] for role in closed)
@@ -1574,10 +1658,37 @@ def _private_leg_note(args, repositories: dict, local: bool,
               "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
               f"PAT (contents:read on {which}, fallback) — or the `validate` "
               f"check cannot check {them} out.")
+    if not local and unread:
+        print(_unread_legs_note(repositories, unread))
+    if not local and (closed or unread):
         note = free_plan_secrets_note(args.org, repositories["assembly"],
                                       standing["assembly"])
         if note:
             print(note)
+
+
+def _unread_legs_note(repositories: dict, unread: list) -> str:
+    """(k‴) The NOTE for each reused leg whose visibility GitHub did not give
+    (#913, L2-92), as `ROOT_VISIBILITY_UNREAD` names a root: the question
+    that went unanswered, what the answer would mean, and the command that
+    answers it. `unread` is the roles, `spec` before `code`."""
+    root = repositories["assembly"]
+    legs = [repositories[role] for role in unread]
+    if len(legs) == 1:
+        whose, them = f"{legs[0]}'s visibility", "it"
+        who, which = "if it is", "that leg"
+        asks = f"`gh repo view {legs[0]} --json visibility` says which it is."
+    else:
+        whose, them = f"the visibility of {legs[0]} and {legs[1]}", "them"
+        who, which = "for each that is", "the legs"
+        asks = (f"`gh repo view {legs[0]} --json visibility` and `gh repo "
+                f"view {legs[1]} --json visibility` say which each is.")
+    return (f"NOTE this run could not read {whose} from GitHub, so it cannot "
+            f"say whether {root} needs a way to read {them}: {who} private "
+            f"or internal, give {root} a GitHub App (SHAPE_LEGS_APP_ID + "
+            "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
+            f"PAT (contents:read on {which}, fallback), or the `validate` "
+            f"check cannot check it out. {asks}")
 
 
 def _take_held_seed(work: Path, url: str, seed: str, tracking: str) -> str:
@@ -1953,7 +2064,8 @@ def _scaffold(args) -> int:
                       args.tracking_branch)
 
     shape_commit, shape_tree = _shape_revision()
-    args.visibility = _leg_visibility(args, repositories["assembly"], local)
+    args.visibility, root_seen = _leg_visibility(
+        args, repositories["assembly"], local)
 
     values = {
         "PROJECT": project,
@@ -2034,7 +2146,8 @@ def _scaffold(args) -> int:
         make_folder(FOLDER_REFUSAL, "--local-remote-dir",
                     args.local_remote_dir.resolve())
 
-    standing = _create_remotes(args, values, repositories, urls, local, reused)
+    standing = _create_remotes(args, values, repositories, urls, local, reused,
+                               root_seen)
     _private_leg_note(args, repositories, local, standing)
 
     leg_values = _seed_legs(args, values, names, repositories, urls, work_root,
