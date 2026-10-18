@@ -47,7 +47,14 @@ WHAT IT DOES, in order:
       run bootstrap under a UTF-8 locale, and where git refuses it there
       too, the line gives git's words. Every name git prints back is read
       as bytes and decoded so that it reaches git again as the bytes it
-      was (#710). Advancing a pin
+      was (#710). The commands it prints for a person to paste (the
+      `merge --ff-only` that brings a moved-back branch forward, and the
+      `--continue` and `--abort` of an operation in progress) name the
+      leg's path and the upstream as ONE shell word each: quoted, and,
+      where the name holds a byte that is not UTF-8 or a character a
+      terminal must not be handed, a `printf` that prints its bytes
+      again, so a paste names what is on disk and not its escape (#932).
+      Advancing a pin
       remains an explicit commit in this repository — see `README.md`, "The
       lockstep invariant". This is why `.gitmodules` carries no `branch=`:
       that would buy the same ergonomics by weakening the pin, and then "what
@@ -67,9 +74,16 @@ WHAT IT DOES, in order:
       wallet-carried authority is not misconfigured, and a bootstrap that
       failed there would have made the layout load-bearing again.
 
-  (d) EXITS 0 unless a validator failed, and 2 where step (a) or the
-      upstream notice cannot start git, refused `git-not-runnable` as the
-      validators refuse it (#694).
+  (d) EXITS 0 unless a validator failed, and says which way. A validator
+      that FOUND something, any exit but 2, ends the run `bootstrap FAILED:
+      <name> (exit <code>)`, exit 1. A validator that REFUSED, its exit 2,
+      could not check at all, and the run ends `bootstrap REFUSED: <name>
+      (exit 2)`, exit 2 (#764). Where one validator found and another
+      refused, both lines are said, the finding first, and the run exits 2,
+      since a check that could not run outranks a finding. Step (a) and the
+      upstream notice refuse `git-not-runnable`, exit 2, where git cannot be
+      started, as the validators do (#694): the run stops there and says
+      neither line, though a validator may have found or refused by then.
 
 SCHEMA-NEUTRAL BY CONTRACT. A one-repository project runs the same command:
 step (a) is a no-op where there are no submodules, and steps (c) and (d) are
@@ -129,6 +143,13 @@ IN_PROGRESS = (
     ("CHERRY_PICK_HEAD", "a cherry-pick", "cherry-pick"),
     ("REVERT_HEAD", "a revert", "revert"),
 )
+#: The two `IN_PROGRESS` markers git writes as REFS (#764). On a leg whose
+#: refs are in a reftable (`git init --ref-format=reftable`, git 2.45 and
+#: later) neither is a file in the git dir while its operation is in
+#: progress: each is in the ref store, which step (a) asks as well
+#: (`_in_ref_store`). `MERGE_HEAD` is a file on both backends, as the two
+#: rebases' directories and `sequencer/todo` are (measured with git 2.47.1).
+IN_REF_STORE = ("CHERRY_PICK_HEAD", "REVERT_HEAD")
 #: What a cherry-pick or a revert of SEVERAL commits leaves while it is not
 #: done, asked after `IN_PROGRESS`: its stop committed by hand takes the
 #: head file away and leaves this, whose first word says which it is.
@@ -149,6 +170,9 @@ VALIDATORS = (
     ("manifest", ["scripts/validate-manifest.py"]),
     ("pins", ["scripts/validate-pins.py"]),
 )
+#: The exit code a validator ends a REFUSAL with: it could not check, which
+#: is not a finding (#764). Every other non-zero code is a failure.
+VALIDATOR_REFUSED = 2
 
 
 def _run(root: Path, args: list[str]) -> int:
@@ -286,6 +310,12 @@ def _git_runs(unread: str) -> Iterator[None]:
 #: space (#715): git takes the name, and no person can tell it from the name
 #: without it, so `_say_not_tried` gives it a line of its own.
 UNSEEN = "a character that does not print or is white space"
+#: The bytes `_paste_word` writes as themselves inside a `printf` format: the
+#: characters a path or a ref name is made of. `%` is the format's own and the
+#: backslash is its escape, so each is an octal escape here, as is every
+#: other byte: a space, a quote, a control and each byte above 0x7f.
+PRINTF_BARE = frozenset(
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./:@+=,-")
 
 
 def _argument_fault(branch: str) -> str | None:
@@ -672,9 +702,10 @@ def _on_a_branch(current: str | None) -> bool:
     return current is not None and current.startswith("refs/heads/")
 
 
-def _in_progress(sub: Path) -> tuple[str, str, str] | None:
+def _in_progress(sub: Path) -> tuple[tuple[str, str, str], str] | None:
     """The `IN_PROGRESS` row of the operation git has in progress in the
-    leg, or `None` (#704).
+    leg, with where its marker is (`git dir` or `ref store`), or `None`
+    (#704).
 
     Asked of the leg's own git dir, which `git rev-parse --git-dir` names
     (a submodule's is under the root's `.git/modules/`, a linked
@@ -683,6 +714,12 @@ def _in_progress(sub: Path) -> tuple[str, str, str] | None:
     path, so no name of a directory can fail the read. A leg git names no
     git dir for has nothing to read here, and the move after this says what
     git says of it.
+
+    A cherry-pick's or a revert's marker is asked of the leg's ref store
+    too (`IN_REF_STORE`, #764). On a reftable leg it is there and in no
+    file, so a leg stopped in either was moved, and the move ended it as
+    #704 measured on the files backend: `CHERRY_PICK_HEAD` or `REVERT_HEAD`
+    gone, and what it had staged carried onto the tracking branch.
     """
     try:
         said = git_out(["rev-parse", "--git-dir"], cwd=sub, binary=True)
@@ -691,8 +728,24 @@ def _in_progress(sub: Path) -> tuple[str, str, str] | None:
     gitdir = sub / os.fsdecode(said.rstrip(b"\r\n"))
     for row in IN_PROGRESS:
         if os.path.lexists(gitdir / row[0]):
-            return row
-    return _sequence_in_progress(gitdir)
+            return row, "git dir"
+        if row[0] in IN_REF_STORE and _in_ref_store(sub, row[0]):
+            return row, "ref store"
+    sequence = _sequence_in_progress(gitdir)
+    return None if sequence is None else (sequence, "git dir")
+
+
+def _in_ref_store(sub: Path, name: str) -> bool:
+    """Whether the leg's ref store holds the ref called exactly `name`
+    (#764).
+
+    `git show-ref --exists` (git 2.43 and later) takes the name as it is,
+    where `git rev-parse --verify CHERRY_PICK_HEAD` also resolves a branch
+    or a tag of that name, which no operation leaves. A git before 2.43
+    refuses the option and is answered no: such a git has no reftable
+    either, so the file `_in_progress` asks first is the whole answer
+    there."""
+    return _try_git(["show-ref", "--exists", name], sub) is not None
 
 
 def _sequence_in_progress(gitdir: Path) -> tuple[str, str, str] | None:
@@ -718,11 +771,78 @@ def _sequence_in_progress(gitdir: Path) -> tuple[str, str, str] | None:
     return SEQUENCER_TODO, "a cherry-pick", "cherry-pick"
 
 
-def _say_in_progress(label: str, path: str,
-                     row: tuple[str, str, str]) -> None:
+def _prints_as_it_is(text: str) -> bool:
+    """Whether `print` writes `text` as it is (#932): `spelled` has no
+    escape to make in it, and this stdout holds every character of it, so
+    what the terminal shows is the text and a paste of it names the same."""
+    try:
+        text.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+    except (LookupError, UnicodeEncodeError):
+        return False
+    return spelled(text) == text
+
+
+def _paste_word(name: str) -> str:
+    """`name`, a leg's path or a ref's name, as ONE word of a command line
+    printed for a person to paste into a POSIX shell (#932).
+
+    WHERE THE TEXT PRINTS AS IT IS it is `spelled(shlex.quote(name))`, as
+    every such word was: an ordinary name, and a printable one that is not
+    ASCII, are byte for byte what they were (`_prints_as_it_is`).
+
+    WHAT WAS WRONG. `spelled` writes what a terminal must not be handed as
+    an escape (#391), and a shell reads that text as the characters it is.
+    POSIX spells a byte that is not UTF-8 with U+DC80 to U+DCFF, so an
+    upstream `origin/a<0xff>b` was printed `git -C spec merge --ff-only
+    'origin/a\\udcffb'`: pasted, it named no ref, and git said `not
+    something we can merge`. A path with a tab, an ESC or a U+2028 in it, or
+    one this stdout cannot write, was printed as its escape too.
+
+    ANY OTHER NAME is written as the bytes `os.fsencode` gives it, in a
+    command substitution that prints them again:
+    `"$(printf -- 'origin/a\\377b')"`. Each byte outside `PRINTF_BARE` is a
+    three-digit octal escape, which the `printf` of dash, bash and zsh
+    reads, and a dash before 0.5.13 has no `$'...'` for. `--` keeps a name
+    that begins with `-` from being read as an option, and the double
+    quotes keep the result ONE word, unsplit and unglobbed. The word is
+    ASCII, so it is the same on any stdout. It is `sh`'s dialect, as
+    `shlex.quote` already was.
+
+    A NAME WITH NO SUCH FORM keeps `spelled`'s text, as it was: one whose
+    bytes do not read back as it (`os.fsdecode` of them is another name: a
+    lone surrogate with no byte, or a Windows code page that replaces), and
+    one that ENDS IN A LINE FEED, which `$(...)` strips, so the word would
+    name another path. A ref's name is neither: git refuses a control
+    character in one, and `_try_git` reads its bytes back. So it is a leg's
+    path, and one with no bytes is no directory a leg is moved in; a path
+    that ends in a line feed, which only a hand-made manifest holds, is the
+    one name left with no pasteable word.
+
+    A COPY, as `inherited_child_environment` is: a root re-copies its pinned
+    files one row at a time, so this file may meet a `repo_shape.py` older
+    than itself, and imports nothing new from it (#370, #610).
+    `tests/test_bootstrap_pasteable_lines.py` runs each form it writes.
+    """
+    quoted = shlex.quote(name)
+    if _prints_as_it_is(quoted):
+        return quoted
+    try:
+        raw = os.fsencode(name)
+    except UnicodeEncodeError:
+        return spelled(quoted)
+    if os.fsdecode(raw) != name or raw.endswith(b"\n"):
+        return spelled(quoted)
+    escaped = "".join(chr(byte) if byte in PRINTF_BARE else f"\\{byte:03o}"
+                      for byte in raw)
+    return f"\"$(printf -- '{escaped}')\""
+
+
+def _say_in_progress(label: str, path: str, row: tuple[str, str, str],
+                     held: str) -> None:
     """A leg with an operation in progress (#704): what is in progress,
-    that nothing moved, and the two commands that end it, the leg's path
-    shell-quoted, then spelled, as `move_back_to_pin` prints its command.
+    where git holds its marker (`held`, #764), that nothing moved, and the
+    two commands that end it, the leg's path worded by `_paste_word` as
+    `move_back_to_pin` words its command (#932).
 
     No move is made from here. A checkout of the tracking branch, even from
     HEAD on it already or detached at the pin, ends a merge, a cherry-pick
@@ -734,9 +854,9 @@ def _say_in_progress(label: str, path: str,
     others. It is the operation's own to finish or abort, so every such leg
     is refused alike, before any path of step (a) is chosen."""
     marker, doing, verb = row
-    command = f"git -C {spelled(shlex.quote(path))} {verb}"
+    command = f"git -C {_paste_word(path)} {verb}"
     print(f"  {label}: {doing} is in progress in the leg ({marker} is in its "
-          "git dir), so nothing moved")
+          f"{held}), so nothing moved")
     print(f"          finish it (`{command} --continue`) or abort it "
           f"(`{command} --abort`), then run bootstrap again.")
 
@@ -889,8 +1009,12 @@ def move_back_to_pin(sub: Path, label: str, path: str, branch: str,
     line printed says where those commits are and names the command that
     brings the branch forward, which is the person's to run: what this
     project records is the pin. The command's leg path and upstream are
-    shell-quoted, then spelled, as `scripts/family.py` quotes the commands
-    it prints.
+    each one `_paste_word`: shell-quoted, as `scripts/family.py` quotes the
+    commands it prints, and spelled where that leaves the name a shell
+    reads back. A name it does not (a byte that is not UTF-8, a control
+    character) is a `printf` that prints its bytes, which the shell turns
+    back into the name (#932). The upstream the line names for a person to
+    read stays spelled, as every printed name is (#391).
 
     "Nothing is lost" holds at the last fetch. A commit the branch held
     that the remote has since DROPPED, by a force-push to the leg's shared
@@ -914,9 +1038,8 @@ def move_back_to_pin(sub: Path, label: str, path: str, branch: str,
         return
     print(f"  {label}: branch {named} moved back {_short(local)} -> "
           f"{_short(pin)}, the pin; nothing is lost, {held} still holds "
-          f"those commits, and `git -C {spelled(shlex.quote(path))} merge "
-          f"--ff-only {spelled(shlex.quote(short))}` brings the branch "
-          "forward")
+          f"those commits, and `git -C {_paste_word(path)} merge "
+          f"--ff-only {_paste_word(short)}` brings the branch forward")
     _say_after(why)
 
 
@@ -1030,7 +1153,7 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
                        f"refs/remotes/origin/{branch}"], sub)
     doing = _in_progress(sub)
     if doing is not None:
-        _say_in_progress(where, path, doing)
+        _say_in_progress(where, path, *doing)
         return
 
     if local is None:
@@ -1071,30 +1194,24 @@ def shape_upstream_notice(root: Path) -> None:
     an absent answer is not a finding, and it never fails the bootstrap. A
     clone named there that git cannot be STARTED to read is no absent
     answer but a machine with no git, refused `git-not-runnable` (#694).
+
+    A READ THE SYSTEM REFUSES IS AN ABSENT ANSWER TOO (#764), and so is a
+    `contracts/shape-pin.yaml` that is not a mapping, which `validate-pins.py`
+    has refused by then: each ended `make bootstrap` in a traceback, exit 1.
+    The two reads of the answer itself are `_clone_tip` and `_cached_tip`.
     """
     pin_path = root / "contracts" / "shape-pin.yaml"
-    if not pin_path.is_file():
-        return
     try:
-        pin = load_yaml(pin_path)
-    except Refusal:
+        pin = load_yaml(pin_path) if pin_path.is_file() else None
+    except (OSError, Refusal):
         return
-    pinned = str((pin or {}).get("commit") or "").lower()
+    pinned = str((pin if isinstance(pin, dict) else {}).get("commit")
+                 or "").lower()
     if not COMMIT_40.match(pinned):
         return
-    tip = None
-    upstream = os.environ.get(SHAPE_UPSTREAM_ENV)
-    if upstream and Path(upstream).is_dir():
-        with _git_runs(f"the clone {SHAPE_UPSTREAM_ENV} names, "
-                       f"{spelled(upstream)}, could not be read"):
-            tip = _try_git(["rev-parse", "HEAD"], Path(upstream))
+    tip = _clone_tip(os.environ.get(SHAPE_UPSTREAM_ENV))
     if tip is None:
-        cache = root / SHAPE_UPSTREAM_CACHE
-        if cache.is_file():
-            # `utf-8-sig` takes off the byte-order mark a Windows editor may
-            # start the file with (#855). `strip()` keeps U+FEFF, so a marked
-            # tip read as no commit and the notice said nothing.
-            tip = cache.read_text(encoding="utf-8-sig").strip()
+        tip = _cached_tip(root)
     if not tip or not COMMIT_40.match(tip):
         return
     if tip.lower() == pinned:
@@ -1103,6 +1220,48 @@ def shape_upstream_notice(root: Path) -> None:
           f"at {pinned[:12]}. Run openRepoShape's "
           f"`update-shape.py check --root .` to see what moved; nothing here "
           f"is wrong until you have.")
+
+
+def _clone_tip(upstream: str | None) -> str | None:
+    """`HEAD` of the clone `SHAPE_UPSTREAM_PATH` names, or `None` where no
+    clone there can be read (#764).
+
+    A directory this process may not enter is no clone it can read. Python
+    3.12 and 3.13 raise `PermissionError` from `Path.is_dir` for a path
+    under one, and `subprocess` raises it for a `cwd` it cannot enter,
+    naming that directory, which `_git_runs` passes on as not git's. Each
+    ended `make bootstrap` in a traceback, exit 1, where the notice is
+    silent over every other absent answer, and the cache is still asked. A
+    git that cannot be STARTED is still `git-not-runnable` (#694): that is
+    the `Refusal` `_git_runs` raises, which `except OSError` does not catch.
+    """
+    if not upstream:
+        return None
+    try:
+        if not Path(upstream).is_dir():
+            return None
+        with _git_runs(f"the clone {SHAPE_UPSTREAM_ENV} names, "
+                       f"{spelled(upstream)}, could not be read"):
+            return _try_git(["rev-parse", "HEAD"], Path(upstream))
+    except OSError:
+        return None
+
+
+def _cached_tip(root: Path) -> str | None:
+    """What `.shape-upstream-tip` holds, less a byte-order mark it starts
+    with (#855), or `None` where it cannot be read: not there, a file this
+    process may not read, or bytes that are not UTF-8, none of which is a
+    commit (#764). The last two ended `make bootstrap` in a `PermissionError`
+    or a `UnicodeDecodeError` traceback."""
+    cache = root / SHAPE_UPSTREAM_CACHE
+    try:
+        # `utf-8-sig` takes off the byte-order mark a Windows editor may
+        # start the file with (#855). `strip()` keeps U+FEFF, so a marked
+        # tip read as no commit and the notice said nothing.
+        return (cache.read_text(encoding="utf-8-sig").strip()
+                if cache.is_file() else None)
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def _register_paths(root: Path, legs: list[dict]) -> list[Path]:
@@ -1312,11 +1471,12 @@ def _checkout_all_tracking_branches(root: Path, sub_legs: list[dict],
 
 
 def _run_neutral_validators(root: Path, manifest: dict | None,
-                            skip: bool) -> list[str]:
+                            skip: bool) -> list[tuple[str, int]]:
     """Step (b): run the neutral validators, then the upstream notice.
 
-    Split from `main` for #132. Returns the labels of any validator that
-    failed, exactly as `main`'s local `failed` list used to accumulate them.
+    Split from `main` for #132. Returns the label and the exit code of each
+    validator that failed, in the order they ran: `_end_of_run` says which
+    were findings and which refusals (#764).
     """
     if skip:
         print("  skipped (--skip-validators)")
@@ -1334,9 +1494,39 @@ def _run_neutral_validators(root: Path, manifest: dict | None,
         print(f"  --- {label} ---")
         code = _run(root, argv_)
         if code != 0:
-            failed.append(f"{label} (exit {code})")
+            failed.append((label, code))
     shape_upstream_notice(root)
     return failed
+
+
+def _end_of_run(failed: list[tuple[str, int]]) -> int:
+    """The last line or two of the run, and its exit code (#764).
+
+    A validator's exit 2 is its REFUSAL, that it could not check, and is said
+    as one: `bootstrap REFUSED: <name> (exit 2)`, exit 2, the code every
+    other refusal here ends with. Any other non-zero exit is a finding, as it
+    was: `bootstrap FAILED: <name> (exit <code>)`, exit 1. Where both
+    happened both lines are said, the findings first, and the run exits 2,
+    since a check that could not run outranks a finding.
+    """
+    # Stdout first: piped, it is block-buffered and stderr is not, so a log of
+    # both would show the lines below before step (c)'s, as `main`'s
+    # `git-not-runnable` path takes care that it does not.
+    sys.stdout.flush()
+    found = [f"{label} (exit {code})" for label, code in failed
+             if code != VALIDATOR_REFUSED]
+    refused = [f"{label} (exit {code})" for label, code in failed
+               if code == VALIDATOR_REFUSED]
+    if found:
+        print("bootstrap FAILED: " + ", ".join(found), file=sys.stderr)
+    if refused:
+        print("bootstrap REFUSED: " + ", ".join(refused), file=sys.stderr)
+    if refused:
+        return 2
+    if found:
+        return 1
+    print("bootstrap ok")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1380,11 +1570,7 @@ def main(argv: list[str] | None = None) -> int:
     read_authority(root, legs)
 
     print()
-    if failed:
-        print("bootstrap FAILED: " + ", ".join(failed), file=sys.stderr)
-        return 1
-    print("bootstrap ok")
-    return 0
+    return _end_of_run(failed)
 
 
 if __name__ == "__main__":

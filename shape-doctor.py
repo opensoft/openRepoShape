@@ -306,13 +306,17 @@ EXIT CODES
        a leg is off its pin, a manifest is there and does not load, or a
        tracked path sits in a leg the path policy puts elsewhere -- or, for a
        submodule, a leg other than the one `project.yaml` records for it
-       (#189) -- COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID. INVALID
-       names each red row, and the rows it names are: `merge`, the index
-       holds an unmerged path (#424); `naming`, `manifest`, `pins` and
-       `family`, the gates; `manifest-kinds`, a `kind:`-bearing manifest
-       nothing here validates, in a root that never runs its gate or at a
-       path no gate reads (#327, #439); `agent-files`, a pinned agent file
-       that is gone; and any other row that is a FINDING
+       (#189) -- COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID.
+       INVALID names `merge` alone while the index holds an unmerged path
+       (#424); else its red gates, `naming`, `manifest`, `pins`, `family`,
+       `manifest-kinds` and `agent-files`; or, when none of them is red,
+       every row that is a FINDING. `manifest-kinds` is a FINDING for a
+       manifest that does not load, a `kind:` nothing here validates, a kind
+       whose gate this root never runs or never reads at that path, a
+       `family.yaml` beside `project.yaml`, or a file declaring one kind
+       where a gate here reads it as another and none checks the kind it
+       declares (#211, #291, #327, #439); `agent-files`, for a pinned agent
+       file that is gone
     2  NOT A SHAPE ROOT: neither `project.yaml` nor `family.yaml` is there
     3  usage or environment -- nothing here is a statement about the tree
        that was pointed at: no such root, this file is not sitting in a
@@ -2573,24 +2577,53 @@ def check_naming(ctx: Context) -> Row:
                + (f": {quoted}" if quoted else ""), command, detail)
 
 
+def own_naming_policy(shape: Path) -> tuple:
+    """`(policy, None)`, or `(None, what it raised)`, for THIS CHECKOUT's own
+    `contracts/repository-naming.yaml` (#707): the ONE place the doctor asks
+    whether that file loads.
+
+    `NamingPolicy.load` is the reader `validate-repository-naming.py` itself
+    calls before it reads a name, and a refusal from it is that script's exit
+    2. What else it raises -- a pattern `re.compile` will not take -- is a
+    fault in the same file, and the caller says which kind it wants to know
+    of: `own_naming_policy_refusal`, the `naming` rows', leaves that kind to
+    the script's own crash row; `way_in_project`, which runs no script, has
+    nobody else to say it.
+    """
+    try:
+        return NamingPolicy.load(shape / NAMING_COPY), None
+    except Exception as exc:  # noqa: BLE001 - a fault in the file, see above
+        return None, exc
+
+
 def own_naming_policy_refusal(shape: Path) -> Refusal | None:
     """The refusal THIS CHECKOUT's `contracts/repository-naming.yaml` gives
     where it does not load, else None (#678).
 
-    `NamingPolicy.load` is the reader `validate-repository-naming.py` itself
-    calls before it reads a name, and a refusal from it is that script's exit
-    2. ONLY A REFUSAL IS ANSWERED HERE: a reader that raises anything else --
-    a pattern `re.compile` will not take -- is the script's crash, which
+    ONLY A REFUSAL IS ANSWERED HERE: a reader that raises anything else -- a
+    pattern `re.compile` will not take -- is the script's crash, which
     `crashed` says and `naming_crashed_row` words, so that exception is the
-    script's to raise and never this report's.
+    script's to raise and never this report's. The `the way in` rows ask
+    `own_naming_policy` instead, for they run no script (#707).
     """
-    try:
-        NamingPolicy.load(shape / NAMING_COPY)
-    except Refusal as exc:
-        return exc
-    except Exception:  # noqa: BLE001 - the script's crash, for `crashed`
-        return None
-    return None
+    _policy, fault = own_naming_policy(shape)
+    return fault if isinstance(fault, Refusal) else None
+
+
+def naming_policy_refusal_of(shape: Path, fault: Exception,
+                             code: str = "policy-raised") -> Refusal:
+    """`fault`, from `own_naming_policy`, as a `Refusal` a row can quote (#707):
+    the loader's own where it is one, else one with `code` naming what was
+    raised, so a policy that raises and one that refuses are quoted, and
+    carried in `detail.refusal`, in one shape. `code` is `policy-raised` for
+    the loader, and `policy-unusable` for a policy that loaded and raised when
+    it was asked (`way_in_project`)."""
+    if isinstance(fault, Refusal):
+        return fault
+    kind = type(fault)
+    name = (kind.__qualname__ if kind.__module__ == "builtins"
+            else f"{kind.__module__}.{kind.__qualname__}")
+    return Refusal(code, f"{shape / NAMING_COPY}: {name}: {fault}")
 
 
 def naming_script_refusal(shape: Path, whole: str) -> Refusal | None:
@@ -2655,6 +2688,23 @@ def naming_row_subject(names: list[str] | None) -> tuple:
     return f"{', '.join(names)}: ", "this directory", "what it is called"
 
 
+def naming_policy_words(refusal: Refusal, owner: str, about: str,
+                        verb: str = "does not load") -> tuple:
+    """`(reason, why)` for a row about a checkout whose own
+    `contracts/repository-naming.yaml` does not load (#678, #707): the file
+    named, the loader's own line quoted whole, and whose the file is -- the
+    checkout's, not `owner`'s -- so that nothing here is a statement about
+    `about`. A refusal's remedy, where it has one, leads the `why`. `verb` is
+    "cannot be used" for a policy that loaded and raised when it was asked."""
+    mend = ("the file belongs to the checkout of the standard this command is "
+            f"run from, not to {owner}: repair it there, or run the doctor "
+            "from a clone of the standard whose own copy loads")
+    return (f"the standard's {NAMING_COPY} {verb}: "
+            f"{refusal_line(refusal)}; that file is this checkout's, not "
+            f"{owner}'s, so nothing here is a statement about {about}",
+            " ".join(filter(None, (remedy_as_why(refusal), mend))))
+
+
 def naming_policy_row(refusal: Refusal, command: str, detail: dict,
                       names: list[str] | None = None) -> Row:
     """The `naming` row for a checkout whose own
@@ -2680,15 +2730,9 @@ def naming_policy_row(refusal: Refusal, command: str, detail: dict,
     detail["environment"] = True
     detail["refusal"] = {"code": refusal.code, "detail": refusal.detail}
     lead, owner, about = naming_row_subject(names)
-    mend = ("the file belongs to the checkout of the standard this command is "
-            f"run from, not to {owner}: repair it there, or run the doctor "
-            "from a clone of the standard whose own copy loads")
-    return Row("naming", "naming", FINDING,
-               f"{lead}the standard's {NAMING_COPY} does not load: "
-               f"{refusal_line(refusal)}; that file is this checkout's, not "
-               f"{owner}'s, so nothing here is a statement about {about}",
-               command, detail,
-               why=" ".join(filter(None, (remedy_as_why(refusal), mend))))
+    reason, why = naming_policy_words(refusal, owner, about)
+    return Row("naming", "naming", FINDING, f"{lead}{reason}", command,
+               detail, why=why)
 
 
 def naming_crashed_row(code: int, crash: str, command: str, detail: dict,
@@ -10795,10 +10839,20 @@ def check_the_way_in(ctx: Context) -> Row:
     openRepoProject` to the SCAFFOLD line, which is about to create a
     project named after a repository this directory is not (Copilot, PR
     #110). The `naming` row shares the same guard, for the same reason.
+
+    A CHECKOUT WHOSE OWN NAMING POLICY DOES NOT LOAD OFFERS NO WAY IN (#707).
+    The `--project` is derived through that file, and this row, like
+    `naming`, was left to its fault: a tab line was `FINDING the way in
+    refused: ...` about the directory, and a pattern that does not compile
+    ended the doctor in a traceback. `way_in_project` asks the one question
+    (`own_naming_policy`), and the row is `way_in_policy_row`'s, an `n/a`
+    environment row naming the checkout's file, in a plain directory and in
+    a repository, which is also told of `the other way in` below. A leg
+    clone, which is offered no command, is the row it always was.
     """
     root = ctx.root
     is_repo = (root / ".git").exists()
-    project = way_in_project(ctx)
+    project, refusal = way_in_project(ctx)
     org = origin_org(root)
     if is_repo and leg_clone(ctx):
         # A LEG IS NOT ADOPTED. Splitting a spec or code leg into two more
@@ -10810,6 +10864,11 @@ def check_the_way_in(ctx: Context) -> Row:
         reason = ("this is a git repository with no shape manifest, NAMED OR "
                   "WRITTEN AS A LEG: a leg is not adopted or scaffolded on "
                   "its own -- see the Triad row for its assembly root")
+    elif refusal is not None:
+        return way_in_policy_row(
+            refusal, "way-in", "the way in",
+            {"git_repository": is_repo, "suggested_project": None,
+             "origin_org": org})
     elif is_repo:
         fix = (f"{PYTHON} {quote_arg(ctx.shape / 'adopt-project.py')} "
                f"plan --source {quote_arg(root)} --project "
@@ -10835,14 +10894,60 @@ def check_the_way_in(ctx: Context) -> Row:
                why=why)
 
 
-def way_in_project(ctx: Context) -> str:
-    """The `--project` both ways in are offered, from the one identity
-    `check_the_way_in` reads: `origin`'s repository name where `root`
-    carries its own `.git` and one, the directory's name otherwise."""
+def way_in_project(ctx: Context) -> tuple:
+    """`(project, None)`: the `--project` both ways in are offered, from the
+    one identity `check_the_way_in` reads -- `origin`'s repository name where
+    `root` carries its own `.git` and one, the directory's name otherwise --
+    or `(None, refusal)` where this checkout's own naming policy cannot give
+    one (#707).
+
+    THE POLICY HAS TO LOAD AND TO ANSWER, and neither is the directory's
+    fault. `own_naming_policy` is the one question the doctor asks of that
+    file (#678), so a policy the loader refuses and one that raises --
+    a pattern `re.compile` will not take -- are told in one shape, as a
+    `Refusal` `naming_policy_refusal_of` makes of either, and `classify`
+    raising on one that loaded is the same fault found a step later, told
+    as `policy-unusable`, which the row words "cannot be used" and not "does
+    not load". This
+    called `NamingPolicy.load` with no handler, and `run_checks` catches only
+    a `Refusal` and an `OSError`: a tab line became `FINDING the way in
+    refused: ...` about the DIRECTORY, and a pattern that does not compile
+    ended the doctor in a traceback with exit 1, the code of a finding.
+    """
     identity = repo_local_origin_name(ctx.root) or ctx.root.name
-    policy = NamingPolicy.load(ctx.shape / "contracts" /
-                               "repository-naming.yaml")
-    return project_token_for(identity, policy)
+    policy, fault = own_naming_policy(ctx.shape)
+    if fault is not None:
+        return None, naming_policy_refusal_of(ctx.shape, fault)
+    try:
+        return project_token_for(identity, policy), None
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        return None, naming_policy_refusal_of(ctx.shape, exc,
+                                              "policy-unusable")
+
+
+def way_in_policy_row(refusal: Refusal, row_id: str, label: str,
+                      detail: dict) -> Row:
+    """A `the way in` row for a checkout whose own naming policy does not
+    load (#707): `n/a`, and `detail.environment`, as the `naming` row of the
+    same directory is (`naming_policy_row`, #678), in the same words.
+
+    NO NEXT AND NO `--project`. The command this row offers is spelled with
+    the one name the policy derives, and a policy that does not load derives
+    none, so nothing here could be pasted and work: the `why` says where the
+    file is, and the next run offers the commands. `n/a` AND NOT A FINDING,
+    because the question cannot be asked here and nothing is wrong with the
+    directory; the verdict is NOT A SHAPE ROOT, exit 2, as it is for every
+    directory that has neither manifest, because `verdict_for` decides that
+    before it reads a row.
+    """
+    reason, why = naming_policy_words(
+        refusal, "this directory", "how this directory becomes a shape root",
+        "cannot be used" if refusal.code == "policy-unusable"
+        else "does not load")
+    return Row(row_id, label, NA, reason, None,
+               {**detail, "environment": True,
+                "refusal": {"code": refusal.code, "detail": refusal.detail}},
+               why=why)
 
 
 #: Named once, as `LABEL_TRIAD_ADVISORY` below is: the row, the registry entry
@@ -10871,7 +10976,14 @@ def check_the_other_way_in(ctx: Context) -> Row | None:
     """
     if not (ctx.root / ".git").exists() or leg_clone(ctx):
         return None
-    project = way_in_project(ctx)
+    project, refusal = way_in_project(ctx)
+    if refusal is not None:
+        # The same fault as `the way in` above it says, in the same words
+        # (#707): a row each, because each is told of its own command.
+        return way_in_policy_row(refusal, "way-in-scaffold",
+                                 LABEL_OTHER_WAY_IN,
+                                 {"git_repository": True,
+                                  "suggested_project": None})
     return Row("way-in-scaffold", LABEL_OTHER_WAY_IN, NA,
                "a NEW project is SCAFFOLDED instead of adopting this "
                "repository: it creates three repositories and asks first",

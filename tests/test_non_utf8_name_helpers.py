@@ -90,6 +90,15 @@ def test_windows_fsencode_passes_bytes_through_as_os_fsencode_does():
     assert windows_fsencode(data) == data
 
 
+def test_windows_fsencode_takes_a_path_as_os_fsencode_does():
+    """`os.fsencode` takes a path-like object (`os.fspath` first), and a test
+    asks it for one (`os.fsencode(tmp_path)`), so the emulation must not fail
+    on a `Path` with an `AttributeError`, which would end such a test before
+    the question it is written to hold. A surrogate in a path is the three
+    bytes of one in text."""
+    assert windows_fsencode(Path("caf\udcff")) == b"caf\xed\xb3\xbf"
+
+
 # --- the system's question: what `os.fsencode` makes of the surrogate --------
 
 @LINUX_ONLY

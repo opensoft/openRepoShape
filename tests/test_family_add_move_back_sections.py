@@ -222,10 +222,13 @@ def test_a_sparse_gitmodules_is_named_first_where_a_section_is_pointed_back(
 # --- 2. (g) and 3. (h): what is in the way, set aside first ------------------
 
 def set_aside(entries: list[str], kinds: dict, renamed=(), out=(),
-              sparse=(), out_sparse: bool = False) -> str:
+              sparse=(), out_sparse: bool = False, unmerged=(),
+              moved=()) -> str:
     """The part of the remedy that sets `entries` aside: `renamed` with `git
     mv`, `sparse` with `git mv --sparse`, `out` taken out of the index, with
-    `--sparse` where `out_sparse` (Codex's P2 on #828)."""
+    `--sparse` where `out_sparse` (Codex's P2 on #828), and `unmerged` taken
+    out of the index, every stage, those of them in `moved` then moved with
+    `mv` (#840)."""
     how = []
     if renamed:
         how.append("rename each that is on disk as the index holds it with "
@@ -241,6 +244,14 @@ def set_aside(entries: list[str], kinds: dict, renamed=(), out=(),
                    "touches no file (`git rm -r --cached"
                    f"{' --sparse' if out_sparse else ''} -- {' '.join(out)}`"
                    + (f", {NEEDS_GIT_2_34}" if out_sparse else "") + ")")
+    if unmerged:
+        how.append("take each that is unmerged out of the index, every stage, "
+                   "which touches no file, since `git mv` refuses a conflicted "
+                   f"entry (`git rm -r --cached -- {' '.join(unmerged)}`)"
+                   + (", then move what of it is on disk out of the way ("
+                      + " and ".join(f"`mv -- {name} <new name>`"
+                                     for name in moved) + ")"
+                      if moved else ""))
     named = ", ".join(f"`{name}` ({kinds.get(name, 'a file')})"
                       for name in entries)
     return ("set aside first what the index holds in the way of the move of "
@@ -1022,10 +1033,11 @@ def test_a_blocker_a_sparse_checkout_marks_or_leaves_out_is_set_aside_too(
 def test_a_link_pointing_nowhere_at_the_variant_is_still_moved_out(
         family, holder, offline, tmp_path):
     """Codex's P2 2 on #828: the closing `mv` failed, exit 1, where nothing
-    is at the variant, so its guard now begins `[ ! -e <variant> ] && [ !
-    -L <variant> ]`, and every typing of a state with nothing there types
-    it, as printed, moving nothing. The second test keeps what the guard did
-    before for a link there pointing nowhere, which `-e` takes for nothing:
+    is at the variant, so its guard asks `[ ! -e <variant> ]`, after `[ !
+    -L <variant> ]` in #839's form, and every typing of a state with nothing
+    there types it, as printed, moving nothing. The second test keeps what
+    the guard did before for a link there pointing nowhere, which `-e`
+    takes for nothing:
     #646's state with the removal staged, so HEAD alone holds the variant,
     and a link `Members/IRRS -> nowhere`. (With the variant's gitlink still
     in the index, git 2.45.1 and later refuse the link itself: `git status`

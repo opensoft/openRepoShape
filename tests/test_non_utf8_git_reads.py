@@ -55,6 +55,7 @@ import pytest
 from conftest import (ORG, PROJECT, REPO, appended_to_command_scope,
                       cloned_just_pushed, git, run_script, skip_message,
                       skip_where_fsencode_gives_a_surrogate_no_byte,
+                      skip_where_the_environment_cannot_carry,
                       windows_fsencode)
 from test_bump_leg import branched, bump
 
@@ -511,22 +512,6 @@ POSIX_ENVIRONMENT_ONLY = pytest.mark.skipif(
     reason="a POSIX environment's bytes; Windows' is UTF-16 and git for "
            "Windows converts it")
 LEGACY_NAME = "Jos\udce9"
-
-
-def skip_where_the_environment_cannot_carry(value: str) -> None:
-    """Skip where this system's file name encoding cannot encode `value`, as
-    under `LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0` (ASCII). It is asked of
-    a file name (`make_file` cannot write `caf\\u00e9.yml`) and of an
-    environment value: `subprocess` puts each one through `os.fsencode`
-    before it starts the child, so a `user.name` of `Jos\\u00e9` raises
-    `UnicodeEncodeError` in the test and not in the tool (#757). Text that is
-    ASCII, or a lone surrogate that `os.fsencode` gives back as its byte, is
-    carried."""
-    try:
-        os.fsencode(value)
-    except UnicodeEncodeError:
-        pytest.skip(f"this system's file name encoding "
-                    f"({sys.getfilesystemencoding()}) cannot carry {value!r}")
 
 
 REFUSED = "REFUSED family-unwritable-value: "

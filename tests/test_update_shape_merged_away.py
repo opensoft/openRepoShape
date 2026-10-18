@@ -28,8 +28,10 @@ commit. Every test works on a private copy of its clone. `execute` needs
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -41,7 +43,7 @@ from conftest import REPO, WINDOWS_SKIP, clone_just_pushed, git, \
     make_source_repo, run_script
 from test_shape_doctor import (  # noqa: F401
     commit_all, doctor, keep_as_committed_link, rows_of, standard,
-    verdict_line,
+    standard_ahead, standard_of_another_history, verdict_line,
 )
 #: A partial clone of the standard one commit on, from the file that owns
 #: the doctor's partial-clone question (#683).
@@ -494,9 +496,118 @@ def test_the_pins_row_keeps_the_gate_where_check_would_fetch(standard, root,
     clone = partial_clone_of(moved["ahead"], tmp_path / "partial")
     result, before, after = doctored(clone, root)
     assert after == before, "the doctor fetched"
-    pins_row = rows_of(result)["pins"]
+    assert_the_pins_row_is_the_gate(rows_of(result)["pins"])
+
+
+def assert_the_pins_row_is_the_gate(pins_row: dict) -> None:
+    """The `pins` row as the gate printed it: no `merged_away`, and a NEXT
+    that is not `update-shape.py` (#676, #755)."""
     assert "merged_away" not in pins_row["detail"], pins_row
     assert "update-shape.py" not in pins_row["next"], pins_row["next"]
+
+
+def test_the_pins_row_keeps_the_gate_where_check_refuses_the_standard(
+        standard, root, tmp_path):
+    """Run from a standard of another history, which does not carry the
+    commit the pin names: `check` refuses it, `update-revision-unresolvable`,
+    before it classifies a row, so `refusals_ahead` cannot ask its question
+    and the `pins` row keeps its gate (#755). Answered as "nothing ahead",
+    the row named a `check` that exits 2."""
+    merge_away(root, "Makefile")
+    stranger = standard_of_another_history(standard, tmp_path)
+    checked = update_shape(stranger, root, "check")
+    assert "REFUSED update-revision-unresolvable" in checked.stderr, \
+        checked.stdout + checked.stderr
+    assert_the_pins_row_is_the_gate(
+        rows_of(doctor(stranger, root, "--json"))["pins"])
+
+
+#: The pinned copy the `both` and `upstream-removed` cases move upstream,
+#: and the file the `unmapped` case pins that no upstream path maps to.
+MOVED_COPY = "AGENTS-shape.md"
+OWN_FILE = "notes-of-our-own.md"
+
+
+def pinned_as_it_stands(root: Path, path: str) -> None:
+    """`path`'s row in the shape pin records the root's bytes as they stand,
+    a row added where the pin has none, and committed: what `apply
+    --accept-local` leaves for a kept edit, written here without it. The
+    project's own `validate-pins.py` then sees the row match."""
+    pin = root / SHAPE_PIN
+    digest = hashlib.sha256((root / path).read_bytes()).hexdigest()
+    row = f'  - path: {path}\n    sha256: "{digest}"\n'.encode()
+    held = pin.read_bytes()
+    pattern = (rb'(?m)^  - path: "?' + re.escape(path.encode())
+               + rb'"?\n    sha256: "?[0-9a-f]{64}"?\n')
+    written, count = re.subn(pattern, lambda _found: row, held)
+    if not count:
+        assert held.count(b"\nfiles:\n") == 1, held
+        written = held.replace(b"\nfiles:\n", b"\nfiles:\n" + row)
+    pin.write_bytes(written)
+    commit_all(root, f"Pin {path} as it stands")
+
+
+def both_beside(standard: Path, root: Path, tmp_path: Path) -> Path:
+    """The project's kept edit of a copy, pinned as it stands, and the
+    standard's own edit of that copy one commit on: `both`."""
+    copy = root / MOVED_COPY
+    copy.write_bytes(copy.read_bytes() + b"\nA line the project kept.\n")
+    pinned_as_it_stands(root, MOVED_COPY)
+    return standard_ahead(standard, tmp_path,
+                          f"templates/assembly-root/{MOVED_COPY}",
+                          "\nA line the standard added.\n",
+                          "The standard edits a copy the project kept")
+
+
+def upstream_removed_beside(standard: Path, root: Path,
+                            tmp_path: Path) -> Path:
+    """The standard one commit on, without a copy the pin names:
+    `upstream-removed`."""
+    ahead = tmp_path / "standard-ahead"
+    shutil.copytree(standard, ahead, symlinks=True)
+    git("rm", "-q", "--", f"templates/assembly-root/{MOVED_COPY}",
+        cwd=ahead)
+    commit_all(ahead, "The standard removes a copy")
+    return ahead
+
+
+def unmapped_beside(standard: Path, root: Path, tmp_path: Path) -> Path:
+    """A pin row for a file of the project's own, which no path of the
+    standard's maps to: `unmapped`."""
+    (root / OWN_FILE).write_bytes(b"# Notes of our own\n")
+    pinned_as_it_stands(root, OWN_FILE)
+    return standard
+
+
+#: Each conflict `check` names beside a merged-away row, as `(the builder
+#: that makes it and returns the standard to run from, the pinned path)`.
+CONFLICTS_BESIDE = {
+    "both": (both_beside, MOVED_COPY),
+    "upstream-removed": (upstream_removed_beside, MOVED_COPY),
+    "unmapped": (unmapped_beside, OWN_FILE),
+}
+
+
+@pytest.mark.parametrize("state", list(CONFLICTS_BESIDE))
+def test_the_pins_row_keeps_the_gate_beside_each_conflict_check_names(
+        standard, root, tmp_path, state):
+    """`both`, `upstream-removed` and `unmapped` beside a merged-away row
+    (#755): `check` names each under REFUSAL AHEAD, so the `pins` row keeps
+    its gate and names it, and the `apply` `check` prints, pasted, exits 2,
+    `update-conflict`, as the row says. Only `copy-is-link` was tested, so
+    a `refusals_ahead` that counted it alone passed every test."""
+    merge_away(root, "Makefile")
+    build, path = CONFLICTS_BESIDE[state]
+    upstream = build(standard, root, tmp_path)
+    checked = update_shape(upstream, root, "check")
+    assert verdicts(checked.stdout)[path] == state, checked.stdout
+    rows = rows_of(doctor(upstream, root, "--json"))
+    assert_the_pins_row_keeps_its_gate(rows["pins"], {path: state})
+    line = next_line_of(checked.stdout)
+    argv = shlex.split(line[len("NEXT  "):])
+    applied = run_script(upstream / "update-shape.py", *argv[2:])
+    assert applied.returncode == 2, applied.stdout + applied.stderr
+    assert "REFUSED update-conflict" in applied.stderr, applied.stderr
 
 
 def test_the_plans_follow_up_says_what_happens_to_the_row(adopted_here):

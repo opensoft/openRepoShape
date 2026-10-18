@@ -41,7 +41,11 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     under `--dry-run` as well (#832). That validator refuses either, so a
     bump over one could never land.
   * a commit the leg's REMOTE does not have. A pin nobody else can fetch is a
-    root nobody else can bootstrap.
+    root nobody else can bootstrap. The fetch that asks prunes, so a branch
+    the remote has deleted no longer counts, and moves no local branch of
+    the leg (#898). Where a TAG of the remote reaches a commit the leg holds
+    and no branch does, or the leg has no remote named `origin`, the refusal
+    says so instead of "never pushed" or "fix the network".
   * a dirty root. The commit is made with explicit pathspecs, so unrelated
     edits would not be swept in — but a lockstep commit that cannot be read as
     exactly one change is the thing the rule exists to keep readable.
@@ -945,13 +949,205 @@ def peeled_target(submodule: Path, repository: str, target: str) -> str:
 
 
 def on_a_remote_branch(submodule: Path, commit: str) -> bool:
-    """Is `commit` reachable from one of this leg's `origin/*` branches?"""
+    """Is `commit` reachable from one of this leg's `origin/*` branches?
+
+    The refs `fetch_leg` has just brought, every branch of the remote and
+    none it has deleted since (#898), or, when that fetch failed, the ones
+    the leg already had."""
     proc = subprocess.run(
         ["git", "for-each-ref", "--contains", commit, "--format=%(refname)",
          "refs/remotes/origin/"],
         cwd=str(submodule), capture_output=True, text=True,
         encoding="utf-8", errors="replace", check=False)
     return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+#: What the leg's fetch always asks of its remote: every branch, into the
+#: namespace `on_a_remote_branch` reads, forced as a remote-tracking ref is.
+LEG_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
+
+
+def _leg_fetch_refspecs(submodule: Path) -> list[str]:
+    """The refspecs the leg's fetch carries (#898): every branch of the
+    remote, then what the leg's own `remote.origin.fetch` keeps under
+    `refs/remotes/origin/`, and none of what it excludes. `family.py`'s
+    `_origin_fetch_refspecs` (#686), asked of a leg.
+
+    WHY THE LEG'S OWN ARE ADDED. The fetch prunes, and `--prune` deletes
+    every ref under `refs/remotes/origin/` that no refspec on the command
+    line maps a ref of the remote to, while a refspec on the command line
+    replaces the configured ones. A leg that keeps pull requests there
+    (`+refs/pull/*/head:refs/remotes/origin/pr/*`) would lose them to a
+    prune made for a deleted branch, in a dry run too. So each positive
+    refspec of the leg whose destination is under `refs/remotes/origin/`
+    goes on the command line as well, forced as the first is, and is pruned
+    only against itself. One whose destination is outside it, a mirror's
+    `+refs/*:refs/*` or `+refs/heads/*:refs/heads/*`, is never added, so no
+    refspec this fetch names writes outside `refs/remotes/origin/`. A ref
+    put under `origin/` by hand, which no refspec maps, is pruned.
+
+    A NEGATIVE REFSPEC (`^refs/heads/wip`) IS SKIPPED. A narrowing refspec
+    never decides reachability: a positive one that leaves a branch out is
+    overridden by the first refspec, and git applies a configured negative
+    one only to a fetch with no refspec of its own (measured, git 2.43), so
+    the excluded branch is fetched and counts like any other.
+
+    WHERE GIT CANNOT SATISFY A REFSPEC OF THE LEG'S OWN, THE FETCH FAILS,
+    where the fetch of every branch alone worked: one naming a ref the
+    remote no longer has (`couldn't find remote ref`, as the person's own
+    `git fetch origin` fails), or a tags-into-`origin/` refspec where the
+    remote has a branch and a tag of one name (`Cannot fetch both ...`,
+    where `git fetch origin` exits 0). Both exit 128, so the note follows,
+    the stale-refs sentence after it where the refusal has one, and nothing
+    is pruned (measured, git 2.43). `family.py` shares both; #905 holds
+    them.
+
+    READ BY A LISTING, `git config --list`, which exits 0 whether or not the
+    leg has a refspec (an `origin` with a URL and nothing else has none, and
+    gets the first refspec alone). Read before the fetch, not inside its
+    `try`: a config git cannot read is git's own failure, quoted, exit 2,
+    and never a fetch said to have failed for the network.
+    """
+    listed = run(["git", "config", "--list"], cwd=submodule)
+    configured = [value for key, _, value in
+                  (line.partition("=") for line in listed.splitlines())
+                  if key == "remote.origin.fetch"]
+    refspecs = [LEG_BRANCHES]
+    for spec in (value.strip() for value in configured):
+        if spec.startswith("^"):
+            continue  # a narrowing refspec never decides reachability
+        spec = spec if spec.startswith("+") else "+" + spec
+        if not spec.partition(":")[2].startswith("refs/remotes/origin/"):
+            continue
+        if spec not in refspecs:
+            refspecs.append(spec)
+    return refspecs
+
+
+def _has_origin(submodule: Path) -> bool:
+    """Whether the leg has a remote named `origin`, the only one its fetch
+    asks without `--local-remote-dir` (#898). Asked once that fetch has
+    failed: a leg whose `origin` was renamed (`git remote rename origin
+    upstream`) or removed fails it with no network or credential at fault,
+    and was told to fix one.
+
+    `git remote get-url origin` exits 2 for "No such remote" and for nothing
+    else, so that exit is the answer "none"; any other failure is git's,
+    raised as `CommandFailed` and quoted by `main()`, exit 2, before
+    anything is written. `family.py`'s `_has_origin` (#686), asked of a leg.
+    """
+    try:
+        run(["git", "remote", "get-url", "origin"], cwd=submodule)
+    except CommandFailed as exc:
+        if exc.code == 2:
+            return False
+        raise
+    return True
+
+
+def _remote_tag_reaches(submodule: Path, remote: str, protocol: list[str],
+                        commit: str) -> bool:
+    """Whether a tag of the leg's remote reaches `commit` (#898): a tag the
+    leg has whose commit contains it, which the remote lists under the same
+    id. Asked only for the refusal's words, after a fetch that worked, of a
+    commit the leg holds and no branch of the remote reaches; the rule stays
+    branches. `family.py`'s `_origin_tag_reaches` (#686), asked of a leg.
+
+    WHY IT IS ASKED. Such a commit was refused with "somebody committed
+    inside the leg's mount and never pushed it", which is untrue of one a tag
+    of the remote holds: the tag was pushed, and a fresh clone holds the
+    commit. The leg's own tags cannot say it alone, since a tag made inside
+    the leg is one only the leg has, so `git ls-remote --tags --refs` asks
+    the remote the fetch asked which of them it has, by object id. Only when
+    a tag of the leg contains the commit is the remote asked. A listing that
+    fails is no answer, and the words stay the plain ones. `ls-remote`
+    writes nothing: no ref the person's leg did not have is made.
+    """
+    held = set(run(["git", "for-each-ref", "--contains", commit,
+                    "--format=%(objectname)", "refs/tags/"],
+                   cwd=submodule).lower().split())
+    if not held:
+        return False
+    try:
+        listed = run(["git", *protocol, "ls-remote", "--tags", "--refs",
+                      remote], cwd=submodule)
+    except CommandFailed:
+        return False
+    return any(line.split("\t", 1)[0].lower() in held
+               for line in listed.splitlines())
+
+
+def _origin_back(submodule: Path, repository: str) -> str:
+    """What a leg with no `origin` is told to do (#898): give it back, and
+    why nothing else will do."""
+    return (f"give {shown_path(submodule)} back a remote named `origin`, for "
+            f"{repository}, and re-run: this tool fetches the leg's branches "
+            "from `origin` and asks no other remote")
+
+
+def _unreachable_refusal(submodule: Path, repository: str, commit: str,
+                         remote: str, protocol: list[str], *, fetched: bool,
+                         has_origin: bool) -> Refusal:
+    """The refusal for `commit`, which no branch of the leg's remote
+    reaches: `bump-leg-commit-local-only` when the leg holds it,
+    `bump-leg-commit-not-on-remote` when it does not, each in the words
+    true of the leg (#898). `fetch_leg` says when each is given; split from
+    it so the fetch and the verdict read apart.
+
+    A leg with NO `origin` is told that, and that whether a branch reaches
+    the commit is not known; never the stale-refs sentence, since no
+    network or credential failed. A held commit a TAG of the remote reaches
+    is told that, after a fetch that worked. Every other case keeps its
+    words, with the stale-refs sentence after a fetch that failed.
+    """
+    stale = ("" if fetched else
+             " The fetch above FAILED, so this was answered from stale "
+             "remote-tracking refs; fix the network or the credential and "
+             "re-run before believing it.")
+    mount = shown_path(submodule)
+    if object_present(submodule, commit):
+        if not has_origin:
+            return Refusal(
+                "bump-leg-commit-local-only",
+                f"{commit} is in the leg's own object store, but the leg's "
+                f"mount, {mount}, has no remote named `origin`, so whether a "
+                f"branch of {repository} reaches it is not known",
+                f"Remediation: {_origin_back(submodule, repository)}. If the "
+                "commit is not pushed yet, push it to a branch of the leg "
+                "first.")
+        if fetched and _remote_tag_reaches(submodule, remote, protocol,
+                                           commit):
+            return Refusal(
+                "bump-leg-commit-local-only",
+                f"{commit} is in the leg's own object store, and a tag of "
+                f"{repository} reaches it, but no branch of {repository} "
+                "does",
+                "Remediation: push it to a branch of the leg and re-run — a "
+                "bump pins only a commit a branch of the leg's remote "
+                "reaches, and a tag is not a branch.")
+        return Refusal(
+            "bump-leg-commit-local-only",
+            f"{commit} is in the leg's own object store but is reachable "
+            f"from no branch of {repository}",
+            "Remediation: push it to a branch of the leg and re-run; the "
+            "commonest such commit was made inside the leg's mount and never "
+            "pushed. A pin the rest of the world cannot fetch is a root the "
+            "rest of the world cannot bootstrap." + stale)
+    if not has_origin:
+        return Refusal(
+            "bump-leg-commit-not-on-remote",
+            f"{commit} is not in the leg's own object store, and the leg's "
+            f"mount, {mount}, has no remote named `origin` to fetch it from, "
+            f"so whether a branch of {repository} reaches it is not known",
+            "Remediation: check the commit — it belongs to the LEG, not to "
+            "the assembly root — and push it to a branch of the leg first if "
+            f"it is not pushed yet; {_origin_back(submodule, repository)}.")
+    return Refusal(
+        "bump-leg-commit-not-on-remote",
+        f"{repository} has no branch containing {commit}",
+        "Remediation: check the commit — it belongs to the LEG, not to the "
+        f"assembly root — and that it has been pushed. `git ls-remote "
+        f"{repository}` lists what the remote actually has." + stale)
 
 
 def fetch_leg(submodule: Path, repository: str, commit: str,
@@ -993,6 +1189,43 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
     The fetch itself is BEST EFFORT: a machine that cannot reach the remote
     may still be able to answer from the remote-tracking refs it already has,
     and a refusal below says so rather than blaming the network.
+
+    THE FETCH PRUNES (#898), as `family.py bump` fetches a member since #686.
+    A branch the remote deleted after the leg last fetched kept its
+    remote-tracking ref, which passed this check for a commit no ref of the
+    remote keeps, so it was pinned. `--prune` drops every ref under
+    `refs/remotes/origin/` that no refspec of the fetch maps a ref of the
+    remote to; the leg's own refspecs that write there ride along
+    (`_leg_fetch_refspecs`), so what its configuration keeps there stays.
+    `--no-prune-tags` is belt and braces: git 2.43 applies no `pruneTags`
+    setting to a fetch with refspecs on its command line (measured).
+    `origin/HEAD` stays. Offline nothing is pruned. Under
+    `--local-remote-dir` the prune deletes the `origin/*` tracking refs the
+    stand-in directory lacks, a branch the leg's real `origin` still has
+    included; that is deliberate, as the fetch has always written that
+    directory's branches into `origin/*`.
+
+    `--refmap=` (EMPTY) TURNS OFF GIT'S OPPORTUNISTIC UPDATE (#898). For a
+    fetch of a named remote with refspecs on the command line, git also
+    writes each ref it brings wherever the remote's CONFIGURED refspecs map
+    it. A leg configured with `+refs/heads/*:refs/heads/*` (or a mirror's
+    `+refs/*:refs/*`) had its own local branches force-moved to the remote's
+    by this fetch, under `--dry-run` too (measured, git 2.43: a local `main`
+    holding a commit never pushed was moved off it), and a leg standing on
+    such a branch failed the fetch with "refusing to fetch into branch". The
+    configured refspecs that write under `origin/` are on the command line
+    already, so nothing else is lost, and the fetch writes nothing outside
+    `refs/remotes/origin/` and the tags git follows.
+
+    WHERE IT CANNOT ANSWER, THE REFUSAL SAYS WHY (#898), in the code it had.
+    A leg with no remote named `origin` (`_has_origin`, asked only of a
+    failed fetch of `origin`) is told so and to give it back, not to fix the
+    network or the credential. A commit the leg holds that a TAG of the
+    remote reaches (`_remote_tag_reaches`) is refused as one no branch
+    reaches, which it is, without "never pushed", which the pushed tag
+    disproves. A commit no ref of the remote reaches is told that the
+    commonest such commit was made in the leg and never pushed, which is not
+    true of one pushed to a branch since deleted.
     """
     if local_remote_dir is None:
         remote, protocol = "origin", []
@@ -1008,14 +1241,21 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
                 / f"{repo_basename(repository)}.git"),
             SAFE_PATH_RE)
         protocol = FILE_PROTOCOL
+    refspecs = _leg_fetch_refspecs(submodule)
     fetched = True
+    has_origin = True
     try:
-        run(["git", *protocol, "fetch", "-q", remote,
-             "+refs/heads/*:refs/remotes/origin/*"], cwd=submodule)
+        run(["git", *protocol, "fetch", "-q", "--prune", "--no-prune-tags",
+             "--refmap=", remote, *refspecs], cwd=submodule)
     except CommandFailed as exc:
         fetched = False
+        # `--local-remote-dir` fetches from a path, which no remote of the
+        # leg names, so whether it has an `origin` is not the question there.
+        has_origin = local_remote_dir is not None or _has_origin(submodule)
+        why = ("" if has_origin else
+               f": {submodule.name} has no remote named `origin`")
         print(f"  note: `git fetch {remote}` in {submodule.name} exited "
-              f"{exc.code}; answering from the remote-tracking refs this "
+              f"{exc.code}{why}; answering from the remote-tracking refs this "
               "checkout already has", file=sys.stderr)
     named = commit
     commit = peeled_target(submodule, repository, named)
@@ -1024,25 +1264,9 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
               f"{commit[:12]}, which is what would be pinned")
     if on_a_remote_branch(submodule, commit):
         return commit
-    stale = ("" if fetched else
-             " The fetch above FAILED, so this was answered from stale "
-             "remote-tracking refs; fix the network or the credential and "
-             "re-run before believing it.")
-    if object_present(submodule, commit):
-        raise Refusal(
-            "bump-leg-commit-local-only",
-            f"{commit} is in the leg's own object store but is reachable "
-            f"from no branch of {repository}",
-            "Remediation: somebody committed inside the leg's mount and "
-            "never pushed it. Push it to a branch of the leg and re-run — a "
-            "pin the rest of the world cannot fetch is a root the rest of "
-            "the world cannot bootstrap." + stale)
-    raise Refusal(
-        "bump-leg-commit-not-on-remote",
-        f"{repository} has no branch containing {commit}",
-        "Remediation: check the commit — it belongs to the LEG, not to the "
-        f"assembly root — and that it has been pushed. `git ls-remote "
-        f"{repository}` lists what the remote actually has." + stale)
+    raise _unreachable_refusal(submodule, repository, commit, remote,
+                               protocol, fetched=fetched,
+                               has_origin=has_origin)
 
 
 # ---------------------------------------------------------------------------
