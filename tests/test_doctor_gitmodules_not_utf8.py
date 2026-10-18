@@ -302,13 +302,14 @@ def assert_read_as_git_reads(standard: Path, root: Path, sibling: Path,
     `name`, with a clone of that section's url beside it: the doctor mounts
     the member from the url git reads, makes up no section, finds the url
     in the section git finds it in, and calls the clone the member's working
-    clone, as `make siblings` does."""
+    clone, as `make siblings` does. The section's name comes back as git's
+    own bytes, which is how it is handed to git again (#732)."""
     module = doctor_module(standard)
     url = gits_url(root, name)
     assert module.mounted_from(root, SECTION, REPOSITORY) == url
     assert "" not in module.submodule_config(root)
     assert module.gitmodules_entry(root, SECTION) == (
-        name.decode("utf-8", "replace"), url)
+        name.decode("utf-8", "surrogateescape"), url)
     result = doctor(standard, root, "--json")
     assert "Traceback" not in result.stderr, result.stderr
     entry = rows_of(result)["members"]["detail"]["members"][0]

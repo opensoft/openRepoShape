@@ -46,8 +46,8 @@ import sys
 
 import pytest
 
-from conftest import (ORG, REPO, SCAFFOLD, blank_unnamed_pin_sources,
-                      run_script)
+from conftest import (ORG, REPO, SCAFFOLD, appended_to_command_scope,
+                      blank_unnamed_pin_sources, run_script)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml  # noqa: E402
@@ -219,9 +219,9 @@ def user_name(monkeypatch, value: str) -> None:
     (`GIT_CONFIG_COUNT`, git 2.31), which no config file overrides, and
     `GIT_AUTHOR_NAME` is blank so the elector falls back that far."""
     monkeypatch.setenv("GIT_AUTHOR_NAME", "  ")
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
-    monkeypatch.setenv("GIT_CONFIG_VALUE_0", value)
+    for name, entry in appended_to_command_scope(
+            os.environ, [("user.name", value)]).items():
+        monkeypatch.setenv(name, entry)
 
 
 CONFIG_VALUES = [

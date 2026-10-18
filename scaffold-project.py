@@ -86,7 +86,8 @@ sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, link_pins_from_trees, repo_basename, shell_line, tree_digest,
+    git_out, link_pins_from_trees, repo_basename, shell_line, shown_path,
+    tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
@@ -131,7 +132,7 @@ from repo_shape import YamlError, double_quoted, parse_yaml  # noqa: E402
 # not-found answer as the one failure of `gh repo view` that means absent.
 from shape_materialize import (  # noqa: E402
     make_folder, refuse_unless_not_found, refuse_unmakeable_folder,
-    target_in_the_way, target_remediation,
+    shown_source, target_in_the_way, target_remediation,
 )
 # How the READMEs' `git clone` line spells the clone URL, one word (#693),
 # in the quoting `shell_line` gives the NEXT STEPS clone (#486).
@@ -381,7 +382,10 @@ def main(argv: list[str] | None = None) -> int:
                              "--pin and no --referent-chain to read it, it "
                              "is refused as `pin-source-unused`; an empty "
                              "value is refused as `pin-source-no-path`, and "
-                             "`.` means this directory.")
+                             "`.` means this directory. A --pin's digest is "
+                             "read only at a clone's top level, or a bare "
+                             "clone's: any other path is refused as "
+                             "`pin-source-not-a-clone`.")
     parser.add_argument("--work-dir", type=Path, default=None,
                         help="where the working trees are built "
                              "(default: a temporary directory)")
@@ -549,6 +553,11 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
     always was, of `remote_is_empty` or `local_remote_is_empty`; the seed is
     asked only of a leg that is not empty, and a leg git cannot read is
     refused as one with commits, saying so (#542).
+
+    A LOCAL REMOTE IS NAMED AS `shown_path` NAMES A PATH (#766), as
+    `family.py init` names its holder's: it is a path under
+    `--local-remote-dir`, where `scaffold-unwritable-value` refuses a
+    control character first. A GitHub `<org>/<name>` is named as it is.
     """
     reused: dict[str, str | None] = {}
     with tempfile.TemporaryDirectory(prefix="openreposhape-seed-") as scratch:
@@ -570,7 +579,8 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
                 continue
             raise Refusal(
                 "scaffold-remote-exists",
-                f"{target} already exists" + ("" if local else " on GitHub")
+                f"{shown_path(target) if local else target} already exists"
+                + ("" if local else " on GitHub")
                 + ("" if empty else " and has commits"),
                 _exists_remedy(role, empty, reuse_flag, seed is not None,
                                unread))
@@ -1322,7 +1332,7 @@ def _refuse_existing_trees(work_root: Path, names: dict) -> None:
         if why:
             raise Refusal(
                 "scaffold-target-exists",
-                f"{target} already exists and {why}",
+                f"{shown_source(target)} already exists and {why}",
                 target_remediation(
                     why,
                     "Remediation: choose an empty --work-dir. There is no "
