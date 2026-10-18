@@ -52,7 +52,7 @@ from test_bootstrap_spelling import (
     run,
 )
 from test_family import (
-    ALLOW_FILE_PROTOCOL, FAMILY, MEMBERS, ORG, WORK_BRANCH, scaffold_member,
+    FAMILY, MEMBERS, ORG, WORK_BRANCH, allow_file_protocol, scaffold_member,
 )
 from test_stdout_encoding import child_environ, run_tool_bytes, shown
 
@@ -96,7 +96,7 @@ def sib(holder: Path, *args: str, tmp_path: Path,
     standing in the holder, its stdout in `encoding`."""
     return run(holder / "scripts" / "siblings.py", *args, encoding=encoding,
                tmp_path=tmp_path, cwd=holder,
-               changes={**ALLOW_FILE_PROTOCOL, **NO_CREDENTIAL,
+               changes={**allow_file_protocol(), **NO_CREDENTIAL,
                         **(changes or {})})
 
 
@@ -665,7 +665,7 @@ def test_make_siblings_clones_from_the_readmes_layout(quill, tmp_path):
     proc = subprocess.run(
         [MAKE, "siblings"], cwd=str(holder),
         env=child_environ(tmp_path, "utf-8:strict",
-                          {**ALLOW_FILE_PROTOCOL, **NO_CREDENTIAL}),
+                          {**allow_file_protocol(), **NO_CREDENTIAL}),
         capture_output=True, stdin=subprocess.DEVNULL, check=False)
     out, err = (text.decode("utf-8", "replace")
                 for text in (proc.stdout, proc.stderr))
