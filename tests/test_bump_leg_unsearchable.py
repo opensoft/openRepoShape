@@ -27,9 +27,10 @@ and their directory. Three more guards asked `Path.is_file()` or
 THE MODE TESTS run the tool as a subprocess on a real mode, through
 `test_bump_leg_unopenable`'s `made_unopenable` (git told to assume the files
 unchanged, so it is the read that fails and not `bump-leg-root-dirty`; the
-mode put back in a `finally`), and skip on Windows and as root. On a Python
-before 3.14 they show the 3.12 half: the refusal under its own id, no
-traceback, nothing moved.
+mode put back in a `finally`), and the root's through `unsearchable_root`,
+which asks git nothing while the root cannot be searched. They skip on
+Windows and as root. On a Python before 3.14 they show the 3.12 half: the
+refusal under its own id, no traceback, nothing moved.
 
 THE 3.14 HALF, ON EVERY PYTHON. `refused_stat` (the same file) makes
 `Path.stat` refuse the names it is given and `is_file`, `is_dir` and
@@ -38,14 +39,22 @@ everywhere, root included, and fail a tool that leans on `is_file` raising.
 The real run is `main()` itself, so "HEAD unchanged" is asked of a bump that
 on 3.14 committed.
 
-EVERY REFUSED RUN COMPARES THE WHOLE TREE (`snapshot`, taken before the mode
-is changed), and a refused bump is run again with the mode back, to show that
-the remedy the refusal gives is the whole of it.
+EVERY REFUSED RUN OF THE TOOL COMPARES THE WHOLE TREE (`snapshot`, taken
+before the mode is changed), and every refused run on a real mode is run again
+with the mode back, to show that the remedy the refusal gives is the whole of
+it. The refusals asked in-process are not run again: their `stat` was never
+really refused.
+
+A CAUSE THAT IS NOT A PERMISSION (`stat_fails`, an I/O error) is asked on
+every platform and as root too, for each of the three refusals: its own
+reason on the line, no `chmod`, and, for a validator, a remedy that does not
+take the file away, since a validator taken away is SKIPPED.
 """
 
 from __future__ import annotations
 
 import contextlib
+import errno
 import stat
 from pathlib import Path
 
@@ -111,6 +120,30 @@ def assert_names_both_validators(stderr: str) -> None:
             stderr)
 
 
+#: The operating system's two refusals of a `stat`: a permission, and a cause
+#: that is not one. Never raised themselves: `stat_fails` makes a new one per
+#: path, naming it.
+IO_ERROR = OSError(errno.EIO, "Input/output error")
+DENIED = PermissionError(errno.EACCES, "Permission denied")
+
+
+def stat_fails(monkeypatch, failures: dict) -> None:
+    """`Path.stat` raising, for each file NAME in `failures`, an error like
+    the one it maps to, naming the path. Nothing else is changed (unlike
+    `refused_stat`, which also makes `is_file` answer as 3.14's does), so it
+    runs on every platform and as root, and asks the tool what it does with a
+    `stat` that failed for a cause that is not a permission."""
+    real = Path.stat
+
+    def failing(self, *args, **kwargs):
+        failure = failures.get(self.name)
+        if failure is not None:
+            raise type(failure)(failure.errno, failure.strerror, str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", failing)
+
+
 # --- the project's own validators, on a real mode --------------------------
 
 @needs_a_mode
@@ -131,11 +164,16 @@ def test_a_scripts_directory_that_cannot_be_searched_refuses_both_validators(
         "scripts", extra=extra, mode=mode)
 
     assert_names_both_validators(stderr)
-    assert "absent" not in stderr and "SKIPPED" not in stderr
-    assert "chmod u+rx" in stderr and "every directory above it" in stderr
+    assert "absent" not in stderr
+    assert "SKIPPED" not in stderr
+    assert "chmod u+rx" in stderr
+    assert "every directory above it" in stderr
+    assert "A `stat` of a file is refused" in stderr
+    assert "`scripts/` or a directory above it" in stderr
     assert "never one to skip" in stderr
     assert "Then run the same command again" in stderr
     assert "bump-leg-rewrite-failed" not in stderr
+    assert "rolled back" not in stderr, "refused before the leg moved"
     refused_again_fine(project, scaffolded, advanced, extra,
                        "contracts/spec-pin.yaml")
 
@@ -160,7 +198,9 @@ def test_a_validator_this_user_cannot_open_is_refused_by_name(
             in stderr)
     assert "scripts/validate-manifest.py: cannot be read" not in stderr
     assert "chmod u+r" in stderr
+    assert "A `stat` of a file is refused" not in stderr, "the open failed"
     assert "bump-leg-validators-red" not in stderr
+    assert "rolled back" not in stderr, "refused before the leg moved"
     refused_again_fine(project, scaffolded, advanced, extra,
                        "contracts/spec-pin.yaml")
 
@@ -239,6 +279,8 @@ def test_validators_whose_stat_is_refused_are_refused_not_skipped(
     assert "SKIPPED" not in out + err
     assert "committed" not in out
     assert "chmod u+rx" in err
+    assert "`scripts/` or a directory above it" in err
+    assert bump_leg_module.ROLLED_BACK not in err, "refused before the write"
     assert_nothing_changed(project, before)
 
 
@@ -267,6 +309,93 @@ def test_a_validator_refused_only_at_run_time_is_rolled_back_not_skipped(
     assert "committed" not in out
     assert bump_leg_module.ROLLED_BACK in err
     assert_nothing_changed(project, before)
+
+
+@pytest.mark.parametrize("script", VALIDATORS)
+def test_a_validator_failing_for_another_reason_is_restored_not_taken_away(
+        bump_leg_module, project, monkeypatch, script):
+    """AN I/O ERROR IS NO PERMISSION, on every platform and as root, for each
+    validator: the same refusal and the system's own reason on the line, and a
+    remedy that does not tell the operator to `chmod` and does not offer to
+    "take away one nobody wants", which would make the validator SKIPPED. It
+    names the file to restore from the project's history, and no directory
+    that is not at fault."""
+    stat_fails(monkeypatch, {Path(script).name: IO_ERROR})
+    other = next(name for name in VALIDATORS if name != script)
+
+    refusal = refusal_of(bump_leg_module,
+                         bump_leg_module._validators_readable, project)
+
+    assert refusal.code == "bump-leg-validator-unreadable"
+    assert refusal.detail.startswith(
+        "1 of the project's own validator(s) cannot be opened:")
+    assert f"{script}: cannot be read: Input/output error" in refusal.detail
+    assert other not in refusal.detail
+    assert "chmod" not in refusal.remediation
+    assert "Where the operating system gave another reason, restore" in (
+        refusal.remediation)
+    assert f"restore `{script}` from the project's history" in (
+        refusal.remediation)
+    assert f"(`git checkout -- {script}`)" in refusal.remediation
+    assert "`scripts/` while this runs" in refusal.remediation
+    assert "take away" not in refusal.remediation
+    assert "put a regular file" not in refusal.remediation
+    assert "A `stat` of a file is refused" not in refusal.remediation
+
+
+def test_validators_refused_for_both_kinds_of_cause_get_each_ones_advice(
+        bump_leg_module, project, monkeypatch):
+    """ONE I/O ERROR AND ONE REFUSED PERMISSION: each cause's sentence once,
+    the permission's first, and only the file whose cause is not a permission
+    is restored."""
+    stat_fails(monkeypatch, {"validate-pins.py": IO_ERROR,
+                             "validate-manifest.py": DENIED})
+
+    refusal = refusal_of(bump_leg_module,
+                         bump_leg_module._validators_readable, project)
+
+    assert refusal.code == "bump-leg-validator-unreadable"
+    assert refusal.detail.startswith(
+        "2 of the project's own validator(s) cannot be opened:")
+    assert ("scripts/validate-pins.py: cannot be read: Input/output error"
+            in refusal.detail)
+    assert ("scripts/validate-manifest.py: cannot be read: Permission denied"
+            in refusal.detail)
+    assert "chmod u+rx" in refusal.remediation
+    assert "A `stat` of a file is refused" in refusal.remediation
+    assert "(`git checkout -- scripts/validate-pins.py`)" in (
+        refusal.remediation)
+    assert "restore `scripts/validate-pins.py` from" in refusal.remediation
+    assert "take away" not in refusal.remediation
+    assert refusal.remediation.index("chmod u+rx") < (
+        refusal.remediation.index("restore `scripts/validate-pins.py`"))
+
+
+def test_a_validator_whose_open_is_refused_does_not_blame_a_directory(
+        bump_leg_module, project, monkeypatch):
+    """A `stat` that answers and an open that is refused (the file at mode
+    000, as the test above it on a real mode): the file is at fault and no
+    directory is, so the sentence about a directory on the way to it is not
+    said. Asked in-process, so it runs as root too."""
+    real = Path.open
+
+    def opening(self, *args, **kwargs):
+        if self.name == "validate-pins.py":
+            raise type(DENIED)(DENIED.errno, DENIED.strerror, str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", opening)
+
+    refusal = refusal_of(bump_leg_module,
+                         bump_leg_module._validators_readable, project)
+
+    assert refusal.code == "bump-leg-validator-unreadable"
+    assert refusal.detail.startswith(
+        "1 of the project's own validator(s) cannot be opened:")
+    assert ("scripts/validate-pins.py: cannot be read: Permission denied"
+            in refusal.detail)
+    assert "chmod u+r" in refusal.remediation
+    assert "A `stat` of a file is refused" not in refusal.remediation
 
 
 def test_a_run_with_nothing_to_do_asks_no_validator(
@@ -324,7 +453,26 @@ def test_a_leg_checkout_whose_stat_is_refused_is_not_called_uninitialized(
     assert refusal.code == "bump-leg-submodule-unreadable"
     assert refusal.detail == "spec/.git: cannot be read: Permission denied"
     assert "chmod u+rx" in refusal.remediation
-    assert "--init" in refusal.remediation and "would not" in (
+    assert "--init" in refusal.remediation
+    assert "would not" in refusal.remediation
+
+
+def test_a_leg_checkout_failing_for_another_reason_is_refused_sans_chmod(
+        bump_leg_module, project, monkeypatch):
+    """AN I/O ERROR ON `spec/.git`, on every platform and as root: the same
+    refusal and the system's own reason, never `bump-leg-uninitialized`, and a
+    remedy that does not tell the operator to `chmod` what is not a
+    permission."""
+    stat_fails(monkeypatch, {".git": IO_ERROR})
+
+    refusal = refusal_of(bump_leg_module,
+                         bump_leg_module._initialized_submodule,
+                         project, "spec")
+
+    assert refusal.code == "bump-leg-submodule-unreadable"
+    assert refusal.detail == "spec/.git: cannot be read: Input/output error"
+    assert "chmod" not in refusal.remediation
+    assert "Where the operating system gave another reason" in (
         refusal.remediation)
 
 
@@ -380,8 +528,10 @@ def test_a_root_that_cannot_be_searched_is_refused_by_name(
     assert f"{manifest}: cannot be read: Permission denied" in result.stderr
     assert "bump-leg-root-not-a-project" not in output
     assert "does not exist" not in output
-    assert "Traceback" not in output and "PermissionError" not in output
+    assert "Traceback" not in output
+    assert "PermissionError" not in output
     assert "the root itself or a directory above it" in result.stderr
+    assert "inside the root" not in result.stderr
     assert "chmod u+rx" in result.stderr
     assert_nothing_changed(project, before)
     refused_again_fine(project, scaffolded, advanced, extra,
@@ -400,6 +550,27 @@ def test_a_manifest_whose_stat_is_refused_is_not_called_absent(
     assert refusal.detail == (f"{project.resolve() / 'project.yaml'}: "
                               "cannot be read: Permission denied")
     assert "chmod u+rx" in refusal.remediation
+    assert "(and on every directory above it), or" in refusal.remediation
+    assert "inside the root" not in refusal.remediation
+
+
+def test_a_manifest_failing_for_another_reason_is_refused_sans_chmod(
+        bump_leg_module, project, monkeypatch):
+    """AN I/O ERROR ON `project.yaml`, on every platform and as root: the same
+    refusal and the system's own reason, no `chmod`, and no word of a
+    directory above the root, which is no directory at fault here."""
+    stat_fails(monkeypatch, {"project.yaml": IO_ERROR})
+
+    refusal = refusal_of(bump_leg_module, bump_leg_module.Project.open,
+                         project)
+
+    assert refusal.code == "bump-leg-manifest-unreadable"
+    assert refusal.detail == (f"{project.resolve() / 'project.yaml'}: "
+                              "cannot be read: Input/output error")
+    assert "chmod" not in refusal.remediation
+    assert "Where the operating system gave another reason" in (
+        refusal.remediation)
+    assert "a directory above it" not in refusal.remediation
 
 
 def test_a_root_with_no_manifest_is_still_not_a_project(

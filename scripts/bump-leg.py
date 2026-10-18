@@ -479,7 +479,9 @@ def _cannot_open(root: Path, path: Path, exc: OSError, *,
             f"{_os_reason(exc)}")
 
 
-def _cannot_open_advice(errors: list[OSError]) -> str:
+def _cannot_open_advice(errors: list[OSError], *,
+                        above: str = " inside the root",
+                        other: str = "") -> str:
     """What to do about a file or a directory the operating system refused,
     for each cause present in `errors`, ending in a space so it joins the
     sentence after it (#383).
@@ -490,19 +492,35 @@ def _cannot_open_advice(errors: list[OSError]) -> str:
     right by the mode or the owner; any other `OSError` (a file removed or
     replaced while this ran, an I/O error, a path that stopped being a file)
     is not a permission and is not told to `chmod`.
+
+    THE DEFAULTS ARE THE WORDS `validate-pins.py` AND THE DOCTOR GIVE, word
+    for word (#712; `tests/test_doctor_unreadable_pin.py` compares them). Two
+    keywords change them for one refusal of this tool, which has its own
+    reason to (#430): `above` is what bounds "every directory above it" (a
+    root's `project.yaml` is refused by a directory above the root as well,
+    so its refusal takes none), and `other` is the sentence for a cause that
+    is not a permission, where "take away one nobody wants" would be wrong
+    (a validator taken away is SKIPPED).
     """
     advice = ""
     if any(isinstance(error, PermissionError) for error in errors):
         advice += ("Make what this user may not open readable by this "
                    "user: `chmod u+r` on a file, `chmod u+rx` on a directory "
-                   "(and on every directory above it inside the root), or "
+                   f"(and on every directory above it{above}), or "
                    "fix who owns it. ")
     if any(not isinstance(error, PermissionError) for error in errors):
-        advice += ("Where the operating system gave another reason, put a "
-                   "regular file this user can open back in its place, or "
-                   "take away one nobody wants, and make sure nothing is "
-                   "changing the directory while this runs. ")
+        advice += other or (
+            "Where the operating system gave another reason, put a "
+            "regular file this user can open back in its place, or "
+            "take away one nobody wants, and make sure nothing is "
+            "changing the directory while this runs. ")
     return advice
+
+
+#: What a refusal that has changed nothing says last (#383, #430), once for
+#: each of the refusals that give it.
+UNCHANGED = ("Then run the same command again. Nothing in the working "
+             "tree, the index or the leg's checkout was changed.")
 
 
 def _pin_unopened_refusal(root: Path, pin_path: Path,
@@ -516,8 +534,7 @@ def _pin_unopened_refusal(root: Path, pin_path: Path,
         "`commit:` and `digests.tree_sha256` in it, and "
         "`scripts/validate-pins.py` reads it too. "
         + _cannot_open_advice([exc])
-        + "Then run the same command again. Nothing in the working "
-        "tree, the index or the leg's checkout was changed.")
+        + UNCHANGED)
 
 
 def _manifest_unopened_refusal(path: Path, exc: OSError) -> Refusal:
@@ -540,7 +557,8 @@ def _manifest_unopened_refusal(path: Path, exc: OSError) -> Refusal:
         f"{shown_path(path)}: cannot be read: {_os_reason(exc)}",
         "Remediation: --root names the assembly root, and this tool reads "
         f"its {MANIFEST} before anything else. " + above
-        + _cannot_open_advice([exc])
+        # no "inside the root": the directory at fault may be above the root
+        + _cannot_open_advice([exc], above="")
         + "Then run the same command again. Nothing was fetched, written "
         "or committed.")
 
@@ -727,9 +745,7 @@ def _workflow_texts(root: Path, workflows: Path, tracked: set[str],
                            ".github/workflows/ until the bump has landed. ")
         raise Refusal(
             "bump-leg-workflow-unreadable", "\n".join(detail),
-            "Remediation: " + advice
-            + "Then run the same command again. Nothing in the working "
-            "tree, the index or the leg's checkout was changed.")
+            "Remediation: " + advice + UNCHANGED)
     return texts
 
 
@@ -1116,35 +1132,63 @@ def _validators_readable(root: Path) -> None:
     `stat`ed, since the child has to read it, and closed unread.
 
     A VALIDATOR THAT IS NOT THERE IS NOT ASKED ABOUT (`_is_a` answers False
-    only for the `_ABSENT_ERRNOS`, nothing at the name, such as `ENOENT` and
-    `ENOTDIR`): `run_validator` still SKIPS it, as it always has. Asked
+    only where no regular file is at the name: an `_ABSENT_ERRNOS` answer
+    such as `ENOENT` or `ENOTDIR`, a name the operating system cannot take,
+    or something that is not a regular file, which `run_validator` has always
+    called absent): `run_validator` still SKIPS it, as it always has. Asked
     after `nothing to do`, since a run with nothing to write runs no
     validator, and named all at once, as `_workflow_texts` names every file
-    it cannot open."""
-    unopened: list[tuple[str, OSError]] = []
+    it cannot open.
+
+    A CAUSE THAT IS NOT A PERMISSION (an I/O error) IS NOT TOLD TO TAKE THE
+    FILE AWAY, as the generic words for one are: a validator taken away is
+    SKIPPED, which is the very thing this refuses. It is told to restore the
+    file from the project's history, and that nothing may be changing
+    `scripts/` while this runs. A `stat` the operating system refused is told
+    which directory was at fault, since a person who `chmod`s the file is
+    refused again."""
+    lines: list[str] = []
+    errors: list[OSError] = []
+    # each validator refused for a cause that is not a permission
+    restore: list[str] = []
+    # a `stat` was refused, so the directory on the way to the file is at fault
+    unsearched = False
     for script in VALIDATORS:
         path = root / script
+        statted = False
         try:
             if not _is_a(path, stat.S_ISREG):
                 continue
-            with path.open("rb"):
-                pass
+            statted = True
+            path.open("rb").close()
         except OSError as exc:
-            unopened.append((_cannot_open(root, path, exc), exc))
-    if unopened:
+            lines.append(_cannot_open(root, path, exc))
+            errors.append(exc)
+            if not isinstance(exc, PermissionError):
+                restore.append(script)
+            elif not statted:
+                unsearched = True
+    if errors:
         raise Refusal(
             "bump-leg-validator-unreadable",
-            f"{len(unopened)} of the project's own validator(s) cannot be "
-            "opened:\n" + "\n".join(f"    {line}" for line, _ in unopened),
+            f"{len(lines)} of the project's own validator(s) cannot be "
+            "opened:\n" + "\n".join(f"    {line}" for line in lines),
             "Remediation: this tool runs the project's own "
             + " and ".join(f"`{script}`" for script in VALIDATORS)
             + " after the rewrite and before the commit, and one it cannot "
             "read is a check it cannot run, never one to skip: a bump "
             "committed without it is one the project's pull request may "
             "still refuse. "
-            + _cannot_open_advice([error for _, error in unopened])
-            + "Then run the same command again. Nothing in the working "
-            "tree, the index or the leg's checkout was changed.")
+            + ("A `stat` of a file is refused only where a directory on the "
+               "way to it cannot be searched: here that is `scripts/` or a "
+               "directory above it. " if unsearched else "")
+            + _cannot_open_advice(errors, other=(
+                "Where the operating system gave another reason, restore "
+                + " and ".join(f"`{script}`" for script in restore)
+                + " from the project's history (`git checkout -- "
+                + " ".join(restore) + "`) and make sure nothing is changing "
+                "`scripts/` while this runs. "))
+            + UNCHANGED)
 
 
 def run_validator(root: Path, script: str) -> tuple[int, str]:
