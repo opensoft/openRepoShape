@@ -209,12 +209,23 @@ case "$SHAPE_REPO" in
 *) ;;  # a well-formed value; passed to `git clone` unchanged below.
 esac
 
-# Mirrors `setup-project.py`'s REF_RE: a ref starts with a letter or digit,
-# holds only letters, digits, '.', '_', '/', '-', is never a `..` range,
-# never ends in `.lock` (git's own lock-file name for one), and is at most
-# 255 characters long. Matches nothing when $SHAPE_REF is empty - every
-# alternative requires at least one character - so an absent --shape-ref
-# passes through untouched.
+# Mirrors `setup-project.py`'s `checked_ref`, which asks `REF_RE` and then
+# `why_not_a_ref`: a ref starts with an ASCII letter or digit, holds only ASCII
+# letters, digits, '.', '_', '/', '-', and is at most 255 characters long
+# (`REF_RE`); and it is held to git's own rule PART BY PART (#857's
+# `why_not_a_ref`, held here since #874), which `git check-ref-format --branch`
+# applies to each part between slashes and not to the whole name alone: never a
+# `..` range, no empty part (`//`, or a `/` at the end), no part that starts
+# with `.` or ends in `.lock` (git's own lock-file name for one), and never a
+# name that ends in `.`. The `case` below has one or two patterns for each,
+# between the first-character one and the alphabet one. THIS CHECK GATES THE
+# CLONE: it runs only here, on the self-bootstrap path, once
+# `is_shape_checkout` has found no checkout to hand over to, and before `git
+# clone`, so a ref git refuses is refused here and not by git's own `pathspec
+# ... did not match` after the standard has been cloned; `setup-project.py` has
+# not run yet to say it first. Matches nothing when $SHAPE_REF is empty - every
+# alternative requires at least one character - so an absent --shape-ref passes
+# through untouched.
 #
 # THREE CHECKS, IN THIS ORDER, AND THE ORDER IS THE POINT. The first two
 # refuse WITHOUT echoing $SHAPE_REF back, exactly like $OPENREPOSHAPE_REPO's
@@ -233,7 +244,7 @@ case "$SHAPE_REF" in
 *) ;;  # printable; the ref-syntax check below still has to pass.
 esac
 case "$SHAPE_REF" in
-[!A-Za-z0-9]*|*..*|*.lock|*[!A-Za-z0-9._/-]*) die "--shape-ref is '$SHAPE_REF', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
+[!A-Za-z0-9]*|*..*|*/.*|*.lock|*.lock/*|*//*|*/|*.|*[!A-Za-z0-9._/-]*) die "--shape-ref is '$SHAPE_REF', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with an ASCII letter or digit, uses only ASCII letters, digits, '.', '_', '/', '-', has no '..' (git reads it as a revision range), no empty part between slashes ('//', or a '/' at the end), no part that starts with '.' or ends in '.lock' (the name git gives the lock file it writes beside a ref), and does not end in '.'." ;;
 *) ;;  # a valid ref shape; $SHAPE_REF is safe to echo back and check out.
 esac
 
