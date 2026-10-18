@@ -458,8 +458,9 @@ REFUSES = b"\t@echo 'Refuse: refused' >&2; exit 2\n"
 #: lets a command fail, whatever ended it, leaves nothing passed over
 #: after it: a member's own `Error 2` is named where the `-` was in a make
 #: one or two below it, or after a make whose failure an `|| true` let
-#: pass, a signal's `(ignored)` line included, and the code named before
-#: it stands (rv884's re-check, on #886, and its NITs on #891).
+#: pass, a signal's `(ignored)` line included, SIGKILL's or SIGTERM's, and
+#: the code named before it stands (rv884's re-check, on #886, and its
+#: reviews of #891).
 INNERMOST = {
     "Recurse": (b"bootstrap:\n\t@$(MAKE) -s inner\ninner:\n" + FINDS, 1),
     "RecurseRefuse": (b"bootstrap:\n\t@$(MAKE) -s inner\ninner:\n" + REFUSES,
@@ -491,6 +492,9 @@ INNERMOST = {
     "PassesThenKilled": (b"bootstrap:\n\t@$(MAKE) inner || true\n"
                          b"\t-@kill -KILL $$$$\n" + REFUSES
                          + b"inner:\n" + FINDS, 2),
+    "PassesThenTerminated": (b"bootstrap:\n\t@$(MAKE) inner || true\n"
+                             b"\t-@kill -TERM $$$$\n" + REFUSES
+                             + b"inner:\n" + FINDS, 2),
 }
 #: A member whose two commands fail, under `-k`: the last `Error` line
 #: names the code (rv876's R1), and a member's finding, both under a
