@@ -2215,6 +2215,11 @@ def members_unread_row(ctx: Context, needs: str) -> Row | None:
     `family.py` refuses it before `add`, `bump` or `remove` does anything.
     Checked row by row, the rows beside a `5` were "mounted at their pins",
     an `ok` under the `family` row's `member-row` finding for it.
+
+    IT SAYS THAT THE `family` ROW'S COMMAND NAMES THE FAULT, as #862's
+    `legs_unread_row` says it of the `manifest` row, and no more: that
+    command is the gate, which prints the refusal or the `member-row`
+    finding first and no remedy.
     """
     unread = ctx.members_unread()
     if not unread:
@@ -2224,8 +2229,9 @@ def members_unread_row(ctx: Context, needs: str) -> Row | None:
             else "is not a list")
     return Row("members", "members", NA,
                f"{ctx.manifest_path.name}'s `members:` {what} "
-               f"({'; '.join(unread)}), so {needs}; the `family` row names "
-               "the fix", None, {"members": [], "waits_on": "family"})
+               f"({'; '.join(unread)}), so {needs}; the `family` row's "
+               "command names the fault", None,
+               {"members": [], "waits_on": "family"})
 
 
 # ---------------------------------------------------------------------------

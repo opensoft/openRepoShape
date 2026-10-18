@@ -27,6 +27,8 @@ WHAT IS CHECKED
     `members/IRRS` and `members/irrs` are one directory on macOS and Windows,
     whatever `id:` each row records (#331). This one reads `family.yaml`
     alone, so `--no-members` asks it too.
+  - that every entry of `members:` is a mapping, the `member-row` finding
+    (#864). It reads `family.yaml` alone, so `--no-members` asks it too.
   - EVERY MEMBER, three ways:
       1. the GITLINK this repository records at `members/<Project>` equals
          `members[].pin.commit` — the same lockstep rule an assembly root
@@ -1719,6 +1721,10 @@ def _check_members(root: Path, members: list, no_members: bool,
     `.gitmodules` gives twice (#300), then the gitlinks and sections no row
     names, which read the index and HEAD as well (#361), and the gitlinks
     no section of HEAD's `.gitmodules` gives (#611).
+
+    AND EVERY ENTRY OF `members:` THAT IS NOT A MAPPING, `member-row`
+    (#864), after the names and ids: it reads `family.yaml` alone, so
+    `--no-members` asks it too, and the loop below skips the entry.
 
     THEN EVERY ROW'S GITLINK, AND ONLY THEN ANY ROW'S CHECKOUT (#648). Each
     row used to be asked whole before the next was asked at all, so in a

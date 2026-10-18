@@ -73,9 +73,18 @@ ROWS_AND_A_NUMBER = object()
 NOT_A_MAPPING = "a member is not a mapping: "
 
 #: `(YAML spelling, the sentence said)`, the sentence less the path the
-#: refusal puts before it: the issue's seven and a value holding ESC.
+#: refusal puts before it: the issue's six values and its block list of real
+#: rows and `- 5`, a value holding ESC, and the three FALSY values that are
+#: not a list, `0` (which the issue measured too), `false` and `''`. They are
+#: what tells `is None` apart from `or []` or `not members`: read either way,
+#: each was a family with no members, #864's own defect (RV870's SHOULD-1).
 CASES = [
     pytest.param("5", "`members:` is 5, expected a list", id="number"),
+    pytest.param("0", "`members:` is 0, expected a list", id="zero"),
+    pytest.param("false", "`members:` is False, expected a list",
+                 id="false"),
+    pytest.param("''", "`members:` is '', expected a list",
+                 id="empty-string"),
     pytest.param("openXdox", "`members:` is 'openXdox', expected a list",
                  id="scalar-string"),
     pytest.param("{a: b}", "`members:` is {'a': 'b'}, expected a list",
@@ -107,9 +116,11 @@ def members_are(root, spelled) -> None:
     """`members: <spelled>` in place of the block, committed, as a person
     commits a hand edit before a verb (`_checked_manifest_committed`, #684):
     no block at all for None, `members:` alone for `""`, and the fixture's
-    rows followed by `- 5` for `ROWS_AND_A_NUMBER`."""
+    rows followed by `- 5` for `ROWS_AND_A_NUMBER`. As BYTES, as
+    `tests/test_validate_family_duplicates.py` edits it, so Windows does not
+    rewrite the whole manifest with CRLF."""
     path = root / MANIFEST
-    text = path.read_text(encoding="utf-8")
+    text = path.read_bytes().decode("utf-8")
     at = text.index(MEMBERS_BLOCK)
     if spelled is ROWS_AND_A_NUMBER:
         text += "  - 5\n"
@@ -118,7 +129,7 @@ def members_are(root, spelled) -> None:
     else:
         text = (text[:at] + "\nmembers:" + (f" {spelled}" if spelled else "")
                 + "\n")
-    path.write_text(text, encoding="utf-8")
+    path.write_bytes(text.encode("utf-8"))
     git("commit", "-q", "-m", "members, by hand", "--", MANIFEST, cwd=root)
 
 
@@ -157,7 +168,8 @@ def waiting_reason(root, said: str) -> str:
     else:
         what, quoted = "is not a list", unreadable(root, said)
     return (f"family.yaml's `members:` {what} ({quoted}), so no member is "
-            "checked against its pin; the `family` row names the fix")
+            "checked against its pin; the `family` row's command names the "
+            "fault")
 
 
 @pytest.mark.parametrize("spelled,said", CASES)
