@@ -86,7 +86,8 @@ sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, link_pins_from_trees, repo_basename, shell_line, tree_digest,
+    git_out, link_pins_from_trees, repo_basename, shell_line, shown_path,
+    tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
@@ -552,6 +553,11 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
     always was, of `remote_is_empty` or `local_remote_is_empty`; the seed is
     asked only of a leg that is not empty, and a leg git cannot read is
     refused as one with commits, saying so (#542).
+
+    A LOCAL REMOTE IS NAMED AS `shown_path` NAMES A PATH (#766), as
+    `family.py init` names its holder's: it is a path under
+    `--local-remote-dir`, where `scaffold-unwritable-value` refuses a
+    control character first. A GitHub `<org>/<name>` is named as it is.
     """
     reused: dict[str, str | None] = {}
     with tempfile.TemporaryDirectory(prefix="openreposhape-seed-") as scratch:
@@ -573,7 +579,8 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
                 continue
             raise Refusal(
                 "scaffold-remote-exists",
-                f"{target} already exists" + ("" if local else " on GitHub")
+                f"{shown_path(target) if local else target} already exists"
+                + ("" if local else " on GitHub")
                 + ("" if empty else " and has commits"),
                 _exists_remedy(role, empty, reuse_flag, seed is not None,
                                unread))
