@@ -766,8 +766,24 @@ def members_of(root: Path) -> tuple[str, list[dict]]:
         raise Refusal("family-manifest-unreadable",
                       f"{manifest_path}: not a mapping")
     name = str(manifest.get("name") or root.name)
-    rows = [row for row in (manifest.get("members") or [])
-            if isinstance(row, dict)]
+    # A `members:` THAT IS NOT A LIST, OR HOLDS AN ENTRY THAT IS NOT A
+    # MAPPING, IS REFUSED BY NAME (#864), in `validate-family.py`'s words:
+    # read as `members or []`, `5` ended `make bootstrap` and `make siblings`
+    # in a `TypeError`, `openXdox` or `[5]` was "0 member(s)" and "family
+    # bootstrap ok", and the rows beside a `5` were fetched with the `5`
+    # unsaid. Absent or null is a family with no members.
+    rows = manifest.get("members")
+    if rows is None:
+        rows = []
+    if not isinstance(rows, list):
+        raise Refusal("family-members-unreadable",
+                      f"{manifest_path}: `members:` is {rows!r}, expected a "
+                      "list")
+    unread = [f"a member is not a mapping: {row!r}" for row in rows
+              if not isinstance(row, dict)]
+    if unread:
+        raise Refusal("family-members-unreadable",
+                      f"{manifest_path}: {'; '.join(unread)}")
     return name, rows
 
 

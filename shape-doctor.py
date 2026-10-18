@@ -1411,8 +1411,39 @@ class Context:
                 for leg in declared if not isinstance(leg, dict)]
 
     def members(self) -> list[dict]:
-        return [row for row in ((self.manifest or {}).get("members") or [])
-                if isinstance(row, dict)]
+        """The member rows `family.yaml` declares, in its own order.
+
+        A `members:` THAT IS NOT A LIST DECLARES NO MEMBER THIS CAN NAME
+        (#864), as the holder's `validate-family.py` reads it, and an entry
+        that is not a mapping is no member; `members_unread` says each.
+        Iterated as `members or []`, `members: 5` ended the whole report in a
+        `TypeError`, and a scalar `openXdox` or a mapping was walked one
+        character, or one key, at a time, so the `members` row called the
+        holder a family with none.
+        """
+        declared = (self.manifest or {}).get("members")
+        if not isinstance(declared, list):
+            return []
+        return [row for row in declared if isinstance(row, dict)]
+
+    def members_unread(self) -> list[str]:
+        """What in `members:` names no member `members` can read, each in the
+        words of the holder's own `validate-family.py` (#864): its
+        `family-members-unreadable` refusal of a `members:` that is not a
+        list, path and all, or its `member-row` finding for each entry of
+        one that is not a mapping. The value is spelled as the gate spells
+        it (`repr`), and the path as this row spells what it quotes (#673).
+        Absent or null is neither: it declares no member, and the gate calls
+        that family empty."""
+        declared = (self.manifest or {}).get("members")
+        if declared is None:
+            return []
+        if not isinstance(declared, list):
+            return [f"family-members-unreadable: "
+                    f"{spelled(self.manifest_path)}: `members:` is "
+                    f"{declared!r}, expected a list"]
+        return [f"member-row: a member is not a mapping: {row!r}"
+                for row in declared if not isinstance(row, dict)]
 
     def update_shape(self):
         """`update-shape.py` as a module, loaded once.
@@ -2427,6 +2458,46 @@ def legs_unread_row(ctx: Context, check_id: str, label: str, needs: str,
                f"({'; '.join(unread)}), so {needs}; the `manifest` row's "
                "command names the fault", None,
                {**(detail or {}), "waits_on": "manifest"})
+
+
+def members_unread_row(ctx: Context, needs: str) -> Row | None:
+    """The `n/a` the `members` row gives where `members:` holds anything it
+    cannot read as a member (#864), or None: where every entry is a row, and
+    where there is none at all (absent, null or `[]`), which the row's own
+    "no members yet" is about.
+
+    A `members:` that is not a list is not a family with no members, which
+    is what the row said of `openXdox`, `{a: b}` and `[5]`, one row under
+    the `family` row's refusal of the same value: it is a manifest nobody
+    can read members out of. ONE FAULT, ONE FINDING, as `waiting_row`
+    reasons: the holder's own `validate-family.py` says the fault, the
+    `family` row runs it, so this row is `n/a`, says the same sentence
+    (`Context.members_unread`) and names that row in `waits_on`.
+
+    AND A LIST THAT HOLDS ROWS AS WELL AS SUCH AN ENTRY WAITS TOO, unlike a
+    project's `legs:` (#832), whose bootstrap places the legs beside such an
+    entry: the holder's own `scripts/bootstrap.py`, which this row names to
+    fetch a member to its pin, refuses that list (`members_of`), and
+    `family.py` refuses it before `add`, `bump` or `remove` does anything.
+    Checked row by row, the rows beside a `5` were "mounted at their pins",
+    an `ok` under the `family` row's `member-row` finding for it.
+
+    IT SAYS THAT THE `family` ROW'S COMMAND NAMES THE FAULT, as #862's
+    `legs_unread_row` says it of the `manifest` row, and no more: that
+    command is the gate, which prints the refusal or the `member-row`
+    finding and no remedy.
+    """
+    unread = ctx.members_unread()
+    if not unread:
+        return None
+    what = ("holds an entry that is not a mapping"
+            if isinstance(ctx.manifest.get("members"), list)
+            else "is not a list")
+    return Row("members", "members", NA,
+               f"{ctx.manifest_path.name}'s `members:` {what} "
+               f"({'; '.join(unread)}), so {needs}; the `family` row's "
+               "command names the fault", None,
+               {"members": [], "waits_on": "family"})
 
 
 # ---------------------------------------------------------------------------
@@ -9926,10 +9997,13 @@ def check_members(ctx: Context) -> Row:
     or a state worth saying.
     """
     # NOT "no members yet", which is an `ok` about an empty family: a holder
-    # whose `family.yaml` does not load has members nobody can name (#205).
-    waiting = waiting_row(ctx, "members", "members",
-                          "the members it pins are not known and none is "
-                          "checked against its pin", {"members": []})
+    # whose `family.yaml` does not load has members nobody can name (#205),
+    # and neither does one whose `members:` this cannot read (#864).
+    waiting = (waiting_row(ctx, "members", "members",
+                           "the members it pins are not known and none is "
+                           "checked against its pin", {"members": []})
+               or members_unread_row(ctx,
+                                     "no member is checked against its pin"))
     if waiting is not None:
         return waiting
     members = ctx.members()
