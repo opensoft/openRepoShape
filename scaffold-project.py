@@ -1409,7 +1409,10 @@ def _refuse_existing_trees(work_root: Path, names: dict) -> None:
 
     A FILE THERE IS REFUSED TOO (#609): `iterdir()` raised
     `NotADirectoryError` on one, a traceback after `--dry-run` had exited 0.
-    `target_in_the_way` asks both, and makes nothing.
+    `target_in_the_way` asks both, and makes nothing. A folder this user
+    cannot write in (L2-60) or cannot list (#930) is told the permission and
+    `--work-dir` by `target_remediation`, not this sentence about a live
+    tree, which the run cannot see there.
     """
     for role, name in names.items():
         target = work_root / name

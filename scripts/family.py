@@ -2755,7 +2755,9 @@ def _refuse_a_taken_holder(folder: Path | None, holder: Path) -> None:
     `iterdir()` met with a `NotADirectoryError` traceback, or an empty folder
     this user cannot write in (L2-60), whose remediation names the flag the
     person landed by: `--work-dir` where there is no family folder, `--into`
-    otherwise."""
+    otherwise. A folder this user cannot list (#930) is told the same flag,
+    with the permission that would let `init` see whether it holds a tree,
+    and not this sentence about a holder that is already there."""
     why = target_in_the_way(holder)
     if why:
         raise Refusal(

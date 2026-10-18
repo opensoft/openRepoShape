@@ -1517,6 +1517,10 @@ FOLDER_REMEDIATION = (
 #: empty working tree) alike.
 CANNOT_WRITE_IN = "is a folder this user cannot write in"
 
+#: How `target_in_the_way` begins its answer for a working tree this user
+#: cannot list (#930): `cannot be read: <the system's words>`.
+CANNOT_READ = "cannot be read"
+
 #: Said when the real run's own `mkdir` fails, after the question said yes:
 #: the run has made folders by then, and no remote.
 MKDIR_REMEDIATION = (
@@ -1595,6 +1599,18 @@ def _unwritable_remediation(choose: str) -> str:
             f"folder, or choose another {choose}, and run this again.")
 
 
+def _unreadable_remediation(choose: str) -> str:
+    """What a refusal of a working tree this user cannot list says to do
+    (#930), after `_unwritable_remediation`: the run cannot tell whether the
+    folder holds a tree, so it names the permission that would let it ask,
+    and the flag `choose` that chooses another folder."""
+    return ("Remediation: nothing was created, and `--dry-run` refuses the "
+            "same. This user cannot list that folder, so whether it holds a "
+            "tree cannot be asked: give this user read, write and search "
+            f"permission on it, or choose another {choose}, and run this "
+            "again.")
+
+
 def refuse_unmakeable_folder(refusal: str, named: str, path: Path,
                              choose: str | None = None) -> None:
     """Raise `Refusal(refusal)` when `folder_cannot_be_made(path)` says why.
@@ -1661,7 +1677,7 @@ def target_in_the_way(target: Path) -> str | None:
         if any(target.iterdir()):
             return "is not empty"
     except OSError as exc:
-        return f"cannot be read: {exc.strerror or exc}"
+        return f"{CANNOT_READ}: {exc.strerror or exc}"
     if not os.access(target, os.W_OK | os.X_OK):
         return CANNOT_WRITE_IN
     return None
@@ -1676,10 +1692,19 @@ def target_remediation(why: str, holds: str, choose: str) -> str:
     for an EMPTY folder whose only fault is its permissions
     (`CANNOT_WRITE_IN`, L2-60), which is told to be given write and search
     permission for this user, or to be replaced by another folder, named by
-    `choose`, the flag the person met it by."""
-    if why != CANNOT_WRITE_IN:
-        return holds
-    return _unwritable_remediation(choose)
+    `choose`, the flag the person met it by.
+
+    AND FOR A FOLDER THIS USER CANNOT LIST (`CANNOT_READ`, #930). An empty
+    folder at mode 000, 100, 200 or 300 was told "choose an empty
+    --work-dir. There is no --force: re-running over a live tree is not a
+    scaffold", a cause the run cannot see: it cannot tell an empty folder
+    from a live tree there, and the one cause it can see is a permission.
+    It is told what `_unreadable_remediation` says, naming `choose`."""
+    if why == CANNOT_WRITE_IN:
+        return _unwritable_remediation(choose)
+    if why.startswith(f"{CANNOT_READ}: "):
+        return _unreadable_remediation(choose)
+    return holds
 
 
 # ---------------------------------------------------------------------------
