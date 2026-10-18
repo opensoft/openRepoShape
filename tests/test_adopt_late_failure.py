@@ -1334,8 +1334,9 @@ def test_a_code_leg_made_after_the_question_still_gets_the_notice(
     after_the_question(adopter, monkeypatch, lambda: git(
         "init", "-q", BARE_FLAG, str(code_leg), cwd=tmp_path))
 
+    run_args = execute_args(tmp_path, plan)
     with pytest.raises(adopter.Refusal) as caught:
-        adopter.cmd_execute(execute_args(tmp_path, plan))
+        adopter.cmd_execute(run_args)
 
     assert caught.value.code == LEG_REMOTE_EXISTS
     err = capsys.readouterr().err

@@ -1802,8 +1802,9 @@ def test_a_name_github_only_redirects_is_free(adopter, world, github,
     monkeypatch.setattr(adopter, "_create_leg_remotes", then_stop)
     monkeypatch.setattr(adopter, "_free_plan_hint_by_the_root",
                         lambda *_: None)
+    github_args = against_github(world)
     with pytest.raises(LegsMade):
-        adopter.cmd_execute(against_github(world))
+        adopter.cmd_execute(github_args)
     assert github.calls()[:2] == [view(SPEC), view(CODE)]
     assert github.calls(3)[2:] == [["repo", "create", repository(SPEC)],
                                    ["repo", "create", repository(CODE)]]
@@ -1851,7 +1852,8 @@ def test_an_answer_with_no_name_to_read_is_unreadable(adopter, world, github,
     assert leg_findings(checked.stderr) == []
     notes = [line for line in checked.stdout.splitlines()
              if line.startswith(COULD_NOT_ASK)]
-    assert len(notes) == 1 and told(CODE, what) in notes[0], notes
+    assert len(notes) == 1, notes
+    assert told(CODE, what) in notes[0], notes
     refusal = refused_by(adopter, against_github(world))
     assert refusal.code == REMOTE_UNREADABLE
     assert leg_findings(refusal.detail) == [unread(CODE, what)]
@@ -1865,8 +1867,9 @@ def test_a_name_github_hides_still_gets_the_notice_once_the_spec_leg_exists(
     found, so both questions pass, and `repo create` then finds the code
     leg's name taken once the spec leg's repository exists."""
     monkeypatch.setenv("GH_STUB_HIDDEN", repository(CODE))
+    github_args = against_github(world)
     with pytest.raises(adopter.CommandFailed):
-        adopter.cmd_execute(against_github(world))
+        adopter.cmd_execute(github_args)
     assert github.calls()[:2] == [view(SPEC), view(CODE)]
     assert github.calls(3)[2:] == [["repo", "create", repository(SPEC)],
                                    ["repo", "create", repository(CODE)]]
