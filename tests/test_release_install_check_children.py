@@ -66,10 +66,18 @@ LOGGED_IN = "[ok] gh is authenticated as release-check"
 AUTOCRLF = ("[??] git core.autocrlf is true. Every file git checks out gets "
             "CRLF line endings")
 
+#: The three checks every runner passes, each failed as the preflight says it
+#: (the bootstrap line never fails, so its failure is its absence).
+GIT_FAILED = ("[!!] git is not installed. Install it: "
+              "https://git-scm.com/downloads")
+PYTHON_FAILED = ("[!!] this interpreter is 3.8, and 3.9 or newer is required. "
+                 "Install a newer Python and re-run it with that one")
+
 #: What the step says for each way the child can fail.
 NO_LINE = ("the machine row's preflight child reported no [ok], [!!] or [??] "
            "line")
 PART_WAY = "it stopped part way through its checks"
+QUIET = "the machine row's preflight child has no line starting {}"
 ELSEWHERE = "not in the package's environment"
 NO_CHILD = "the doctor ran no child for its {} row over the scaffolded root"
 
@@ -109,9 +117,11 @@ def filter_repo_in(home: Path) -> str:
 
 
 def run_step(workflow: dict, prefix: str, tmp_path: Path, report: str,
-             home: Path | None = None) -> subprocess.CompletedProcess:
+             home: Path | None = None,
+             status: str | None = None) -> subprocess.CompletedProcess:
     """The install step's own Python over `report`, the doctor's `--json`
-    output, as the step hands it `doctor.json` or `root.json`."""
+    output, as the step hands it `doctor.json`, or `root.json` and the
+    doctor's exit `status`."""
     script = tmp_path / "step.py"
     script.write_text(heredoc(named_step(workflow, "install", prefix)["run"]),
                       encoding="utf-8")
@@ -120,8 +130,10 @@ def run_step(workflow: dict, prefix: str, tmp_path: Path, report: str,
     env = {**os.environ}
     if home is not None:
         env["PIPX_HOME"] = str(home)
-    return subprocess.run([sys.executable, "-I", str(script), str(data)],
-                          capture_output=True, text=True, check=False, env=env)
+    extra = [] if status is None else [status]
+    return subprocess.run([sys.executable, "-I", str(script), str(data),
+                           *extra], capture_output=True, text=True,
+                          check=False, env=env)
 
 
 def empty_report(home: Path, code, lines, reason: str = "",
@@ -231,6 +243,19 @@ def test_the_closing_lines_are_the_preflights_own(workflow):
     assert "return 0 if ready else 1" in source
 
 
+def test_the_checks_every_runner_passes_open_as_the_preflight_prints_them(
+        workflow):
+    """The step requires the git, Python and bootstrap lines by how
+    `setup-project.py`'s `ok()` opens each: its mark, then the words."""
+    script = heredoc(named_step(workflow, "install", EMPTY_STEP)["run"])
+    assert ('passed = ("[ok] git ", "[ok] python ", "[ok] bootstrap runs as")'
+            in script)
+    source = (REPO / "setup-project.py").read_text(encoding="utf-8")
+    assert 'ok("git %s" % program_version(' in source
+    assert 'ok("python %d.%d.%d (%s)" % (' in source
+    assert 'ok("bootstrap runs as `%s %s` (make is not required)"' in source
+
+
 @pytest.mark.parametrize("code, lines, reason, expected, says", [
     (1, [*CHECKS, NO_LOGIN, NOT_READY], "", 0, None),
     (0, [*CHECKS, LOGGED_IN, READY], "", 0, None),
@@ -242,19 +267,28 @@ def test_the_closing_lines_are_the_preflights_own(workflow):
     (0, [*CHECKS, NO_LOGIN, NOT_READY], "", 1, PART_WAY),
     (2, [*CHECKS, NOT_READY], "", 1, "does not hold 'a closing line: it exits "
      "0 or 1'"),
+    (1, [*CHECKS[1:], GIT_FAILED, NO_LOGIN, NOT_READY], "", 1,
+     QUIET.format(["[ok] git "])),
+    (1, [CHECKS[0], *CHECKS[2:], PYTHON_FAILED, NO_LOGIN, NOT_READY], "", 1,
+     QUIET.format(["[ok] python "])),
+    (1, [*CHECKS[:2], CHECKS[3], NO_LOGIN, NOT_READY], "", 1,
+     QUIET.format(["[ok] bootstrap runs as"])),
 ], ids=["a-runner-with-no-gh-login", "a-machine-logged-in",
         "a-warning-after-the-closing-line", "a-child-that-died-on-an-import",
         "no-preflight-ran", "a-child-that-stopped-part-way",
         "exit-1-with-the-ready-line", "exit-0-with-the-not-ready-line",
-        "a-refusal-exit-2"])
+        "a-refusal-exit-2", "git-failed-quietly", "python-failed-quietly",
+        "no-bootstrap-line"])
 def test_the_empty_repository_step_requires_the_closing_line_its_exit_means(
         workflow, tmp_path, pipx_home, code, lines, reason, expected, says):
     """Exit 1 with no login, or 0 with one, passes when the report holds the
     closing line for that exit, wherever a `[??]` warning falls (stderr
     comes after stdout). A child that reported no line, whose exit is the
     no-login one, fails, and so does one that stopped before its closing
-    line, closed with the other exit's, or refused. Every line the child
-    reported is printed either way."""
+    line, closed with the other exit's, or refused. So does a report whose
+    git, Python or bootstrap check is not `[ok]`: each fails quietly into
+    exit 1, a runner's own. Every line the child reported is printed either
+    way."""
     done = run_step(workflow, EMPTY_STEP, tmp_path,
                     empty_report(pipx_home, code, lines, reason), pipx_home)
     assert done.returncode == expected, done.stdout + done.stderr
@@ -326,7 +360,7 @@ def test_the_scaffolded_root_step_needs_no_network_gh_or_token(workflow):
     assert '--local-remote-dir "$RUNNER_TEMP/remotes"' in scaffold
     assert ('openRepoShape --doctor "$RUNNER_TEMP/work/Sample" --json > '
             'root.json || status=$?') in lines
-    assert "python - root.json <<'PY'" in lines
+    assert "python - root.json \"$status\" <<'PY'" in lines
     assert workflow["jobs"]["install"]["permissions"] == {"contents": "read"}
 
 
@@ -357,7 +391,8 @@ def test_the_scaffolded_root_step_requires_every_child_to_reach_a_verdict(
     or by its words; a finding is a verdict and does not; and a row of the
     three that ran no child fails, since then no child was judged. Each row
     that ran a child is printed either way."""
-    done = run_step(workflow, ROOT_STEP, tmp_path, root_report(**changed))
+    done = run_step(workflow, ROOT_STEP, tmp_path, root_report(**changed),
+                    status="0")
     assert done.returncode == expected, done.stdout + done.stderr
     shown = {**FRESH, **changed}
     for name, row in shown.items():
@@ -369,6 +404,24 @@ def test_the_scaffolded_root_step_requires_every_child_to_reach_a_verdict(
         assert "::error::" not in done.stdout, done.stdout
     else:
         assert says in done.stdout, done.stdout
+
+
+@pytest.mark.parametrize("written, status", [
+    ("", "1"),
+    ("Traceback (most recent call last):\nKeyError: 'rows'\n", "1"),
+    ('{"verdict": "COMPLIANT", "rows": [', "3"),
+], ids=["nothing", "a-traceback", "cut-short"])
+def test_the_scaffolded_root_step_names_the_doctors_exit_without_a_report(
+        workflow, tmp_path, written, status):
+    """A doctor that wrote no JSON report, or half of one, fails the step
+    with one `::error::` naming the exit it ended with, and no traceback of
+    the step's own."""
+    done = run_step(workflow, ROOT_STEP, tmp_path, written, status=status)
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert (f"::error::openRepoShape --doctor over the scaffolded root exited "
+            f"{status} and wrote no JSON report" in done.stderr), done.stderr
+    assert "Traceback (most recent call last)" not in done.stderr, \
+        done.stderr
 
 
 @WINDOWS_SKIP  # the doctor's machine row reaches the suite's `gh` on POSIX
@@ -394,7 +447,8 @@ def test_the_steps_own_scaffold_line_makes_a_root_the_step_passes(
         break_an_import(root / broken)
     report = run_script(REPO / "shape-doctor.py", "--root", str(root),
                         "--json")
-    done = run_step(workflow, ROOT_STEP, tmp_path, report.stdout)
+    done = run_step(workflow, ROOT_STEP, tmp_path, report.stdout,
+                    status=str(report.returncode))
     assert done.returncode == expected, done.stdout + done.stderr
     for name in ("naming", "manifest", "pins"):
         assert f"\n    {name}: " in done.stdout, name

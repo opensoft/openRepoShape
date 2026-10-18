@@ -1085,7 +1085,10 @@ jobs:
       # prints for the exit it chose: `[ok] this machine is ready.` for 0,
       # `[!!] this machine is not ready yet (see above).` for 1. That holds
       # whatever `gh` can do on this runner, and fails for a child that died
-      # on an import or stopped part way through its checks.
+      # on an import or stopped part way through its checks. And the three
+      # checks every runner passes, git, the running Python and the bootstrap
+      # line, must each read `[ok]`: one that failed quietly under -S into
+      # `[!!]` leaves the exit at 1, which is a runner's own.
       - name: openRepoShape --doctor over an empty repository finds git-filter-repo in its machine row, whose preflight child ran its checks
         run: |
           cd "$RUNNER_TEMP"
@@ -1104,6 +1107,8 @@ jobs:
           #: (`setup-project.py`'s `preflight_only`).
           closing = {0: "[ok] this machine is ready.",
                      1: "[!!] this machine is not ready yet (see above)."}
+          #: How the preflight's line opens for each check every runner passes.
+          passed = ("[ok] git ", "[ok] python ", "[ok] bootstrap runs as")
           venv = pathlib.Path(os.environ["PIPX_HOME"]) / "venvs" / "openreposhape"
           scripts = venv / ("Scripts" if os.name == "nt" else "bin")
           with open(sys.argv[1], encoding="utf-8") as handle:
@@ -1125,10 +1130,17 @@ jobs:
               problems.append("the machine row's preflight child reported no [ok], [!!] or [??] "
                               "line: it did not start under -S on this system, or died before "
                               f"its first check ({machine['reason']})")
-          elif closing.get(code) not in lines:
-              problems.append(f"the machine row's preflight child exited {code!r}, and its report "
-                              f"does not hold {closing.get(code, 'a closing line: it exits 0 or 1')!r}: "
-                              "it stopped part way through its checks")
+          else:
+              if closing.get(code) not in lines:
+                  problems.append(f"the machine row's preflight child exited {code!r}, and its report "
+                                  f"does not hold {closing.get(code, 'a closing line: it exits 0 or 1')!r}: "
+                                  "it stopped part way through its checks")
+              missing = [check for check in passed
+                         if not any(line.startswith(check) for line in lines)]
+              if missing:
+                  problems.append(f"the machine row's preflight child has no line starting {missing}: "
+                                  "under -S on this system those checks did not pass, and every "
+                                  "runner passes them")
           for problem in problems:
               print(f"::error::{problem}")
           sys.exit(1 if problems else 0)
@@ -1146,7 +1158,8 @@ jobs:
       # its own: none may read "crashed before reaching a verdict", the
       # doctor's words for a child that ended non-zero with no FINDING or
       # REFUSED line of its own. Every such row is printed, and the verdict;
-      # whether the root is compliant is not this step's question.
+      # whether the root is compliant is not this step's question. A doctor
+      # that wrote no JSON report fails the step with its exit named.
       - name: openRepoShape --doctor over a scaffolded root, where every child it starts under -S reaches a verdict
         run: |
           cd "$RUNNER_TEMP"
@@ -1156,14 +1169,18 @@ jobs:
           status=0
           openRepoShape --doctor "$RUNNER_TEMP/work/Sample" --json > root.json || status=$?
           echo "openRepoShape --doctor over the scaffolded root exited $status"
-          python - root.json <<'PY'
+          python - root.json "$status" <<'PY'
           import json, sys
 
           #: The rows a project root answers by a child: the naming script,
           #: and the root's own two validators.
           wanted, crashed = {"naming", "manifest", "pins"}, "crashed before reaching a verdict"
-          with open(sys.argv[1], encoding="utf-8") as handle:
-              report = json.load(handle)
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  report = json.load(handle)
+          except ValueError as error:
+              sys.exit(f"::error::openRepoShape --doctor over the scaffolded root exited {sys.argv[2]} "
+                       f"and wrote no JSON report, so no child it started can be judged: {error}")
           children = {row["id"]: row for row in report["rows"] if row["id"] != "machine"
                       and isinstance((row.get("detail") or {}).get("exit"), int)}
           print(f"verdict {report['verdict']}; the rows that ran a child under -S:")
