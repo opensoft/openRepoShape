@@ -40,7 +40,14 @@ WHAT IT DOES, in order:
       says where the leg is, and gives `git -C <leg> switch <branch>` as
       the way out, or, for a branch that is not there, to keep the commits
       on a branch named otherwise and check out the pin, whose sha it
-      gives (#896). A leg
+      gives (#896). A twin is also one in Unicode form: `cafe` and U+0301
+      (NFD) is a twin of `caf` and U+00E9 (NFC), which APFS reads as one
+      file (#962). And a
+      branch that is not there is not made while any branch under
+      `refs/heads/`, packed or loose, is a twin of it and holds a commit
+      no other ref holds, whether or not HEAD is on it: the line names that
+      branch, and the way out is to keep its commits on a branch named
+      otherwise (#962). A leg
       with a merge, a cherry-pick, a revert, a rebase or an `am` in progress
       is not moved at all: a checkout ends the first three, carrying what
       they staged onto the branch, and leaves the last two to go on over
@@ -112,6 +119,7 @@ import re
 import shlex
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -718,10 +726,19 @@ def _on_a_branch(current: str | None) -> bool:
     return current is not None and current.startswith("refs/heads/")
 
 
+def _fold(name: str) -> str:
+    """`name` as a disk that folds case, or Unicode forms, reads it: in NFC,
+    then `str.casefold()`ed (#962). APFS reads the NFC and the NFD spelling
+    of a name as one file, and a surrogate escape (a name that is not UTF-8,
+    #704) passes through `unicodedata.normalize` as the text it is."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
 def _folded_twin(current: str | None, branch: str) -> bool:
     """Whether HEAD's ref is a TWIN of the tracking branch: a branch under
-    `refs/heads/` whose name is the branch's under `str.casefold()` and not
-    byte for byte, `refs/heads/Main` for `main` (#896).
+    `refs/heads/` whose name is the branch's under `_fold` and not byte for
+    byte, `refs/heads/Main` for `main`, or `cafe` and U+0301 (NFD) for `caf`
+    and U+00E9 (NFC) (#896, #962).
 
     WHAT IS WRONG WITH ONE. A disk that folds case (macOS APFS and Windows
     NTFS by default) reads the loose files `refs/heads/Main` and
@@ -739,13 +756,27 @@ def _folded_twin(current: str | None, branch: str) -> bool:
     twin. The names after `refs/heads/` are compared, and a name this
     system holds as surrogate escapes (a branch that is not UTF-8, #704)
     folds as the text it is, so no name raises here. NFC and NFD spellings
-    of one name are NOT folded: APFS reads those as one file too, and that
-    is not handled here.
+    of one name are twins: APFS reads those as one file too, so a leg on
+    the NFD spelling did #896's harm (#962).
     """
     if current is None or not current.startswith("refs/heads/"):
         return False
     held = current[len("refs/heads/"):]
-    return held != branch and held.casefold() == branch.casefold()
+    return held != branch and _fold(held) == _fold(branch)
+
+
+def _twin_words(twin: str, branch: str) -> tuple[str, str, str]:
+    """How a twin differs from the branch, what reads the two as one, and
+    what a name must differ in to be no twin, as the lines of `_say_fold`
+    word them (#962). A twin that is one under `str.casefold()` alone is
+    #896's, in #896's words, byte for byte; any other differs in its
+    Unicode form too (NFC and NFD), which only macOS folds."""
+    if twin.casefold() == branch.casefold():
+        return ("only in case", "a disk that folds case (macOS, Windows)",
+                "case")
+    return ("only in case or Unicode form",
+            "a disk that folds case or Unicode forms (macOS folds both, "
+            "Windows folds case)", "case or Unicode form")
 
 
 #: What step (a) says a HEAD on a twin of the tracking branch could do, by
@@ -788,20 +819,90 @@ def _say_twin(label: str, path: str, branch: str, current: str, state: str,
     it what `Main` holds in `packed-refs`. A loose `Main` there makes
     `refs/heads/main` resolve, so this path never runs for it.
     """
-    named = spelled(branch)
-    twin = spelled(current[len("refs/heads/"):])
-    risk = TWIN_RISKS[act].format(branch=named, twin=twin)
-    print(f"  {label}: {state}, and the checkout is on {twin}, which differs "
-          f"from {named} only in case")
-    print(f"          a disk that folds case (macOS, Windows) reads {twin} "
-          f"and {named} as one branch, so {risk}; the leg is left as it is")
+    twin = current[len("refs/heads/"):]
+    _say_fold(label, state, "the checkout is on", twin, branch, act)
     if act == "make":
+        more = _twin_words(twin, branch)[2]
         _say_keep("the pin", "a branch whose name differs from "
-                  f"{named} by more than case")
+                  f"{spelled(branch)} by more than {more}")
         return
     command = f"git -C {_paste_word(path)} switch {_paste_word(branch)}"
     print(f"          run `{command}`, which moves no branch, and then run "
           "bootstrap again.")
+
+
+def _say_fold(label: str, state: str, where: str, twin: str, branch: str,
+              act: str) -> None:
+    """The first two lines of a refusal over a twin, `where` saying how the
+    leg has it (`the checkout is on` it, or `the leg has the branch`): where
+    the leg is, and why it is left (`TWIN_RISKS`). Every name is spelled
+    (#391), and the second line says only what a disk that folds could do,
+    never that the two are one (#962)."""
+    named = spelled(branch)
+    held = spelled(twin)
+    how, reads, _ = _twin_words(twin, branch)
+    risk = TWIN_RISKS[act].format(branch=named, twin=held)
+    print(f"  {label}: {state}, and {where} {held}, which differs from "
+          f"{named} {how}")
+    print(f"          {reads} reads {held} and {named} as one branch, so "
+          f"{risk}; the leg is left as it is")
+
+
+def _kept_elsewhere(sub: Path, tip: str, pin: str, branch: str) -> bool:
+    """Whether the commit `tip` of a spelling of `branch` is still in a ref
+    once `branch` is made at the pin: it is an ancestor of the pin, which the
+    new branch holds, or a ref that is not a spelling of `branch` holds it:
+    another branch the person kept it on, or a remote-tracking ref (#962)."""
+    if _is_ancestor(sub, tip, pin):
+        return True
+    held = _try_git(["for-each-ref", "--contains", tip,
+                     "--format=%(refname)"], sub)
+    return any(not _folded_twin(ref, branch)
+               for ref in (held or "").splitlines())
+
+
+def _spelling_at_risk(sub: Path, branch: str, pin: str) -> str | None:
+    """The first branch under `refs/heads/`, packed or loose, that is a
+    twin of `branch` (`_folded_twin`) and holds a commit that making `branch`
+    at the pin would leave in no ref, or `None` (#962).
+
+    WHAT WAS WRONG. `create_at_pin` asked only about HEAD's own ref, so a
+    leg detached at the pin over a packed `Main`, or on an unborn `Main`
+    beside a packed `MAIN`, ran `checkout -b main <pin>`, which wrote the
+    loose file a disk that folds case reads for `Main` and `MAIN`: their
+    commits were then in no ref, and only HEAD's reflog kept them (rv896's
+    probes at #948). The branches come from `git for-each-ref`, which lists
+    the packed ones too. A spelling whose commit another branch, a tag or a
+    remote-tracking ref holds, or the pin holds, loses nothing, so the way
+    out is to keep the commits on a branch of another name, and bootstrap
+    then goes on: `_kept_elsewhere`."""
+    listed = _try_git(["for-each-ref", "--format=%(objectname) %(refname)",
+                       "refs/heads/"], sub)
+    for line in (listed or "").splitlines():
+        tip, _, ref = line.partition(" ")
+        if _folded_twin(ref, branch) and not _kept_elsewhere(
+                sub, tip, pin, branch):
+            return ref[len("refs/heads/"):]
+    return None
+
+
+def _say_spelling(label: str, path: str, branch: str, spelling: str,
+                  state: str) -> None:
+    """A leg with a spelling of the missing tracking branch that making it
+    would hide (`_spelling_at_risk`, #962): nothing is made, and the lines
+    name the spelling, say why, and give the way out: keep what it holds on a
+    branch whose name differs from `branch` by more than case or Unicode
+    form, `git -C <leg> branch <another name> <spelling>`, and run bootstrap
+    again, which then makes the branch, since nothing is hidden. True on a
+    disk that keeps case too, where the spelling is a branch of its own."""
+    _say_fold(label, state, "the leg has the branch", spelling, branch,
+              "make")
+    more = _twin_words(spelling, branch)[2]
+    command = (f"git -C {_paste_word(path)} branch <another name> "
+               f"{_paste_word(spelling)}")
+    print(f"          keep the commits {spelled(spelling)} holds on a branch "
+          f"whose name differs from {spelled(branch)} by more than {more}: "
+          f"`{command}`, and run bootstrap again.")
 
 
 def _in_progress(sub: Path) -> tuple[tuple[str, str, str], str] | None:
@@ -1210,6 +1311,15 @@ def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
     `_say_twin` says to keep the commits on a branch of another name and to
     check out the pin; `path` is the leg's.
 
+    The same harm comes with HEAD ELSEWHERE (#962): detached at the pin over
+    a packed `Main`, or on an unborn `Main` beside a packed `MAIN`. Before
+    the checkout, `_spelling_at_risk` asks every branch under `refs/heads/`,
+    packed or loose, for a twin of `branch` holding a commit that nothing
+    else would hold, and `_say_spelling` leaves the leg, naming it. A twin
+    in NFD or NFC is one too (`_fold`). Nothing else changes: a twin whose
+    commit is the pin's ancestor, or another branch, a tag or a
+    remote-tracking ref holds, is no reason to leave.
+
     The checkout is judged by WHERE HEAD IS AFTERWARDS, as `_check_out`
     judges one (#533; rv704's S3): a post-checkout hook that fails after
     the branch is made makes git exit non-zero, and the line said `could
@@ -1241,6 +1351,12 @@ def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
               f"is at {_short(head)} ({_place_of(current)}), which is not a "
               "branch")
         _say_keep("the pin")
+        return
+    spelling = _spelling_at_risk(sub, branch, pin)
+    if spelling is not None:
+        _say_spelling(label, path, branch, spelling,
+                      f"branch {named} does not exist (the pin is "
+                      f"{_short(pin)})")
         return
     why = _git_says(["checkout", "-q", "--no-overwrite-ignore", "-b", branch,
                      pin], sub)
