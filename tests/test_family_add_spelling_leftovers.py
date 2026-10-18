@@ -212,11 +212,11 @@ def second_checkout(*names: str) -> str:
             f"path leaves on disk, {named}, once nothing only it holds is "
             "needed, rather than move it, and before any update below: its "
             ".git file names its store by a path relative to it, which a move "
-            "would leave pointing nowhere, its commits are kept in that store, "
-            f"so only what is not committed is in it alone ({status} shows "
-            "it), and the update points a store it may share with the row at "
-            "the row's path, after which that status shows the row's "
-            "checkout instead")
+            "would leave pointing nowhere, its commits are kept in that "
+            "store, so only what is not committed is in it alone "
+            f"({status} shows it), and the update points a store it may share "
+            "with the row at the row's path, after which that status shows "
+            "the row's checkout instead")
 
 
 def deleted(name: str):
@@ -983,6 +983,58 @@ def test_a_second_paths_checkout_with_work_is_forced_and_named_first(
                   f"w865f/work-{list(WORK).index(state)}")
     if kept is not None:
         kept_in_its_store(holder, *kept)
+
+
+@needs_check_rules
+def test_a_staged_second_gitlink_with_nothing_on_disk_takes_no_f(
+        family, holder, offline, tmp_path):
+    """(a) staged, its checkout deleted and its bit set by hand: `-f` is
+    asked only where a checkout is on disk (`_forced`, as the move back
+    asks it), so the removal is `--sparse` alone; nothing HEAD holds
+    changes, so nothing is committed, and nothing is left to delete."""
+    commit = added_by_hand(holder, family["remotes"], VARIANT, commit=False)
+    rmtree(holder / "Members")
+    git("update-index", "--skip-worktree", "--", VARIANT, cwd=holder)
+    typed_through(family, holder, offline, tmp_path, (
+        commit, AT_THE_VARIANT,
+        [second_out(VARIANT, sparse=True), taken_out(VARIANT, commit=False)],
+        [f"git rm -r --cached --sparse -- {VARIANT}", *unset(VARIANT),
+         "git add -- .gitmodules"], None), "w865f/second-staged-off-disk")
+
+
+def test_a_clone_of_its_own_at_a_second_path_is_moved_whole_next(
+        family, holder, offline, tmp_path):
+    """A gitlink at `Members/IRRS`, committed with no section, whose
+    directory is a clone of its own, its `.git` a directory holding its
+    commits and nothing else: it is no checkout to delete by hand, so the
+    second path's removal names none, and the next run moves the clone out
+    of the holder whole, as #828 moves one. Typed as printed, the member is
+    where its row says, every clone checks every member out, the gate
+    passes in every mode and the same `add` goes through."""
+    if disk_folds(holder):
+        pytest.skip("`Members/IRRS` beside `members/IRRS` needs a disk that "
+                    "does not fold case")
+    commit = git("rev-parse", f"HEAD:{ROW}", cwd=holder).stdout.strip()
+    clone = cloned_just_pushed(family["remotes"] / "IRSS.git",
+                               holder / VARIANT, recurse=False)
+    head = git("rev-parse", "HEAD", cwd=clone).stdout.strip()
+    git("update-index", "--add", "--cacheinfo", f"160000,{head},{VARIANT}",
+        cwd=holder)
+    git("commit", "-qm", "A clone of its own at Members/IRRS", cwd=holder)
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said == (DIR_VARIANT + f"in the index: `{VARIANT}` (a submodule)",
+                    remedy_of(second_out(VARIANT, commit="the removal")))
+    assert typed_as_printed(holder, said[1]) == [
+        f"git rm -r --cached -- {VARIANT}", "git commit"]
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said == (DIR_VARIANT + f"on disk and untracked: `{VARIANT}` (a "
+                    "directory)", remedy_of(untracked_moved(VARIANT)))
+    assert typed_as_printed(holder, said[1]) == [f"mv -- {VARIANT} ../moved-1"]
+    assert (holder.parent / "moved-1" / ".git").is_dir()
+    registered(holder, family["root"], commit)
+    every_clone_checks_every_member_out(holder, family["remotes"], tmp_path,
+                                        "w865f/second-clone", commit)
+    gate_then_add(offline, holder, family["remotes"])
 
 
 def test_a_link_in_members_at_a_rows_variant_is_named(family, holder,

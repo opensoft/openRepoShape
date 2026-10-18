@@ -4943,11 +4943,11 @@ def _second_checkout_part(found: list[Spelled]) -> list[str]:
             f"path leaves on disk, {named}, once nothing only it holds is "
             "needed, rather than move it, and before any update below: its "
             ".git file names its store by a path relative to it, which a move "
-            "would leave pointing nowhere, its commits are kept in that store, "
-            f"so only what is not committed is in it alone ({status} shows "
-            "it), and the update points a store it may share with the row at "
-            "the row's path, after which that status shows the row's "
-            "checkout instead"]
+            "would leave pointing nowhere, its commits are kept in that "
+            "store, so only what is not committed is in it alone "
+            f"({status} shows it), and the update points a store it may share "
+            "with the row at the row's path, after which that status shows "
+            "the row's checkout instead"]
 
 
 def _removed(found: list[Spelled], by: dict[str, list[str]]) -> bool:
