@@ -157,8 +157,9 @@ Windows way in that installs nothing; pipx's `openRepoShape` runs the same flow.
 Git Bash runs step 3's bash command and its one line, tested in CI but for a
 typed `yes`, which its preflight cannot take there. Printed commands are quoted
 for a POSIX shell, so paste them into Git Bash. Only `shape-doctor.py`'s lines,
-`setup-project.py`'s family lines and `family.py`'s `NEXT`, `switch -c`, `add`
-and `git rm -r --cached` lines are quoted for PowerShell, on Windows.
+`setup-project.py`'s family lines and `family.py`'s `NEXT`, `switch -c`, `add`,
+`cd` and `git rm -r --cached` lines are quoted for the shell they are printed
+in, PowerShell or Git Bash, on Windows.
 
 </details>
 
