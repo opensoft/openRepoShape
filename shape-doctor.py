@@ -2470,7 +2470,7 @@ def members_unread_row(ctx: Context, needs: str) -> Row | None:
     IT SAYS THAT THE `family` ROW'S COMMAND NAMES THE FAULT, as #862's
     `legs_unread_row` says it of the `manifest` row, and no more: that
     command is the gate, which prints the refusal or the `member-row`
-    finding first and no remedy.
+    finding and no remedy.
     """
     unread = ctx.members_unread()
     if not unread:
