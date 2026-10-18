@@ -80,7 +80,8 @@ WHAT IT DOES, in order:
       `Error <code>` line, since make exits 2 for any command that fails,
       so a member's finding (1) and its refusal (2) are told apart, and
       from a failure of make's own, which prints no such line (#839). Where
-      the member's make runs another, the code is the innermost command's;
+      the member's make runs another, the code is the innermost command's,
+      as far as make's lines tell it (`MakeErrors` says where they do not);
       make's stderr reaches the terminal through this run, and `run_make`
       says what that changes for a member (#884).
 
@@ -878,11 +879,14 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
 #: bootstrap] Error 1` where a command exits non-zero (`*** [bootstrap]
 #: Error 1` before make 4.0), with the command's own exit code, which
 #: make's does not carry, since make exits 2 for any command that fails
-#: (#839); and `*** No rule to make target ...`, or `*** [Makefile:44:
+#: (#839); `*** No rule to make target ...`, or `*** [Makefile:44:
 #: bootstrap] Killed`, where make fails on its own or a signal ends what it
-#: ran, with none (#884).
+#: ran, with none; and `[Makefile:44: bootstrap] Error 2 (ignored)`, with no
+#: `***`, where a `-` before a command lets it fail with a make's code
+#: (#884).
 MAKE_FAILED_RE = re.compile(
-    rb"(?:\[(\d+)\])?: \*\*\* (?:\[[^\n]*\] Error (\d+)\s*$)?")
+    rb"(?:\[(\d+)\])?: (?:\*\*\* (?:\[[^\n]*\] Error (\d+)\s*$)?"
+    rb"|\[[^\n]*\] Error 2 \((ignored)\)\s*$)")
 #: The bytes `MakeErrors` keeps of a line of make's stderr not yet ended:
 #: an `Error <code>` line ends there, so the end of a line is enough.
 LINE_KEPT = 4096
@@ -891,16 +895,34 @@ LINE_KEPT = 4096
 class MakeErrors:
     """What `run_make` reads of make's stderr, one line at a time as it
     passes (#884): `code`, that of the last `Error <code>` line make printed
-    for a command of the member's (`MAKE_FAILED_RE`), or None.
+    for a command of the member's (`MAKE_FAILED_RE`, its last match on a
+    line, since a member's own text can come before make's on one), or
+    None.
 
     Read as it passes, an `Error` line is never lost to what follows it,
     as one was to more than 4096 bytes after it (`make -k`) where only the
-    last 4096 were kept. An `Error 2` straight after a `***` line of a
-    deeper make is that make's parent saying it failed, since make exits 2
-    for any failure, so it is passed over: where the member's make runs
-    another (`$(MAKE) inner`), the code is the innermost command's, and
-    where the inner make failed on its own there is none, as for make's
-    own failure."""
+    last 4096 were kept. An `Error 2` at a shallower depth than the last
+    `***` line before it, whatever lines come between, is taken for a
+    make's parent saying it failed, since make exits 2 for any failure,
+    and is passed over: where the member's make runs another (`$(MAKE)
+    inner`), the code is the innermost command's, and where the inner make
+    failed on its own there is none, as for make's own failure. Where a
+    `-` let that make fail (`Error 2 (ignored)`), the depth is the
+    parent's again, so an `Error 2` of the parent's own after it is named.
+
+    WHERE THE CODE IS NOT THE INNERMOST COMMAND'S, since make's lines do
+    not tell it:
+    - a recipe that runs a make, lets its failure pass in the shell (`||
+      true`, or `;`), or with a `-` in a make run with `-s`, which then
+      prints no `(ignored)` line, and exits 2 itself: its `Error 2` is
+      read as that make's report, and the inner command's code is named;
+    - an inner make run with `env -u MAKELEVEL`, which prints its parent's
+      depth: the parent's `Error 2` is named;
+    - under `-j`, a job of the parent's that fails while the inner make is
+      still running: its line comes between, and the parent's `Error 2` is
+      named;
+    - a member's own line shaped like a deeper make's (`x[3]: *** y`)
+      before it exits 2 itself: its `Error 2` is passed over."""
 
     def __init__(self) -> None:
         self.code: int | None = None
@@ -916,14 +938,18 @@ class MakeErrors:
         self.unended = unended[-LINE_KEPT:]
 
     def said(self, line: bytes) -> None:
-        """One line of make's stderr, read for `MAKE_FAILED_RE`."""
-        found = MAKE_FAILED_RE.search(line)
-        if found is None:
+        """One line of make's stderr, read for its last `MAKE_FAILED_RE`."""
+        found = MAKE_FAILED_RE.findall(line)
+        if not found:
             return
-        depth, code = int(found.group(1) or 0), found.group(2)
+        depth_said, code, ignored = found[-1]
+        depth = int(depth_said or 0)
+        if ignored:
+            self.depth = min(self.depth, depth)
+            return
         reports_a_make = code == b"2" and depth < self.depth
         self.depth = depth
-        if code is not None and not reports_a_make:
+        if code and not reports_a_make:
             self.code = int(code)
 
 
@@ -944,14 +970,17 @@ def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
     the innermost command's line (`MakeErrors`). A make that prints none,
     one of its own failures, or a make speaking another language, leaves
     make's code alone. So does a command killed by a signal where what
-    make started is what was killed: the command itself, the shell a
-    `kill -KILL $$` kills, or bash, which runs a recipe line of one
-    command in its own place; make then prints `Killed` or `Terminated`
-    for it, and no code. Where the shell outlives the command, as dash,
-    `/bin/sh` on Debian and Ubuntu, does for that same line, the shell
-    prints `Killed` itself and exits 128 and the signal's number, 137 for
-    SIGKILL and 143 for SIGTERM, and make names that, as the member's
-    command's code (#884). The member's command is never run around make:
+    make started is what was killed: a command make runs with no shell,
+    on a line with nothing a shell must read; the shell a `kill -KILL $$`
+    kills; or a command bash runs in its own place, a line's last, a line
+    of one command included. Make then prints the signal's name, `Killed`
+    or `Terminated`, and no code. Where the shell outlives the command, as
+    dash, `/bin/sh` on Debian and Ubuntu, does for every command, and bash
+    for one that is not a line's last, the shell prints the signal's name
+    itself and exits 128 and the signal's number, 137 for SIGKILL and 143
+    for SIGTERM, which make names as the member's command's code; where
+    the line goes on after it, the shell exits as the rest of the line
+    does (#884). The member's command is never run around make:
     another target than `bootstrap` (`--members-make validate`) has no
     script of its own to call, as `make siblings` calls a member's
     `scripts/bootstrap.py`.

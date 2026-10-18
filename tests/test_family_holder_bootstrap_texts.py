@@ -444,7 +444,13 @@ def made(holder: Path, tmp_path: Path, *,
 #: the innermost command's code, read from each line as it passes (#884's
 #: line 2). An inner make that fails on its own names none, as make's own
 #: failure does, but its parent's `Error 2` is passed over only: a command
-#: that runs one and then fails itself is named.
+#: that runs one and then fails itself is named, with 3 or with 1. Lines
+#: between the two, and a `***` line with no code after an `Error` line,
+#: change neither; a make a `-` let fail leaves its parent's own `Error 2`
+#: named, and one that ignores a failure of its own (without `-s`, which
+#: keeps make from saying so) reports nothing; and
+#: make's `Error` line after a member's own `: *** ` on one line is read
+#: (rv884's X11, X7 and X12, and NIT 1 and NIT 2, on #886).
 INNERMOST = {
     "Recurse": (b"bootstrap:\n\t@$(MAKE) -s inner\n"
                 b"inner:\n\t@echo 'Find: a finding' >&2; exit 1\n", 1),
@@ -452,9 +458,23 @@ INNERMOST = {
                       b"inner:\n\t@echo 'Refuse: refused' >&2; exit 2\n", 2),
     "InnerOwn": (b"bootstrap:\n\t@$(MAKE) -s nothere\n", None),
     "InnerThenOwn": (b"bootstrap:\n\t@$(MAKE) -s nothere; exit 3\n", 3),
+    "InnerThenFinding": (b"bootstrap:\n\t@$(MAKE) -s nothere || exit 1\n",
+                         1),
     "Long": (b"bootstrap: one two\n"
              b"one:\n\t@echo 'Find: a finding' >&2; exit 1\n"
              b"two:\n\t@printf '%05000d' 0 >&2; echo >&2\n", 1),
+    "KeepsGoing": (b"bootstrap:\n\t@$(MAKE) -s -k inner\ninner: one two\n"
+                   b"one:\n\t@echo 'Find: a finding' >&2; exit 1\n"
+                   b"two:\n\t@echo 'two: done' >&2\n", 1),
+    "ThenKilled": (b"bootstrap: one two\n"
+                   b"one:\n\t@echo 'Find: a finding' >&2; exit 1\n"
+                   b"two:\n\t@kill -KILL $$$$\n", 1),
+    "LetFail": (b"bootstrap:\n\t-@$(MAKE) -s inner\n"
+                b"\t@echo 'Refuse: refused' >&2; exit 2\n"
+                b"inner:\n\t@echo 'Find: a finding' >&2; exit 1\n", 2),
+    "InnerLets": (b"bootstrap:\n\t@$(MAKE) inner; exit 2\n"
+                  b"inner:\n\t-@exit 2\n\t@echo 'inner: done'\n", 2),
+    "OwnStars": (b"bootstrap:\n\t@printf 'x: *** y' >&2; exit 1\n", 1),
 }
 #: A member whose two commands fail, under `-k`: the last `Error` line
 #: names the code (rv876's R1), and a member's finding, both under a
@@ -488,9 +508,10 @@ def test_the_line_names_the_code_of_the_member_s_innermost_command(
     last; and under `make -k`, an `Error 1` followed by 5000 bytes read
     "printed no `Error <code>` line", since only the last 4096 bytes were
     read. Each is named now, run as it is and under a parent make, where
-    the member's make says `make[1]:` and the make it runs `make[2]:`. The
-    last `Error` line of a member's names its code, and a signal's code is
-    its shell's, where the shell outlives it, as `run_make` now says."""
+    the member's make says `make[1]:` and the make it runs `make[2]:`, and
+    so are the cases `INNERMOST` names beside them. The last `Error` line
+    of a member's names its code, and a signal's code is its shell's,
+    where the shell outlives it, as `run_make` now says."""
     if shutil.which("make") is None:
         pytest.skip("no make on PATH")
     with_members(holder, {project: makefile
