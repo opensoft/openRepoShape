@@ -288,8 +288,10 @@ def test_pasting_the_detached_remedy_puts_the_root_on_a_branch(
 @pytest.mark.parametrize("name", ROOTS)
 def test_the_closing_next_is_one_command(make_root, scaffolded, advanced,
                                          name):
-    """`NEXT  git -C <root> push -u origin <branch>`, split into the argv it
-    means, and spelled exactly as `shlex` spells it."""
+    """`NEXT  git -C <root> push -u origin refs/heads/<b>:refs/heads/<b>`,
+    split into the argv it means, and spelled exactly as `shlex` spells it.
+    The branch by its full refname (#672): a bare one is a refspec, and a
+    leading `+` forces."""
     root, _ = make_root(name)
     branched(root)
     result = bump(root, scaffolded, advanced)
@@ -297,7 +299,7 @@ def test_the_closing_next_is_one_command(make_root, scaffolded, advanced,
 
     line = next_line(result.stdout)
     argv = ["git", "-C", str(root.resolve()), "push", "-u", "origin",
-            WORKING_BRANCH]
+            f"refs/heads/{WORKING_BRANCH}:refs/heads/{WORKING_BRANCH}"]
     assert words(line) == argv
     assert line == shlex.join(argv)
     assert ("      then open a pull request against main; never push the "
@@ -309,13 +311,15 @@ def test_the_closing_next_is_one_command(make_root, scaffolded, advanced,
 def test_an_ordinary_root_prints_the_line_it_always_did(make_root, scaffolded,
                                                         advanced):
     """Nothing is quoted that needs no quoting: a root whose name is plain
-    prints the same bytes as before #532."""
+    prints the bytes it did before #532, the branch by its full refname on
+    both sides (#672)."""
     root, _ = make_root("plain")
     branched(root)
     result = bump(root, scaffolded, advanced)
     assert result.returncode == 0, result.stderr + result.stdout
     assert next_line(result.stdout) == (
-        f"git -C {root.resolve()} push -u origin {WORKING_BRANCH}")
+        f"git -C {root.resolve()} push -u origin "
+        f"refs/heads/{WORKING_BRANCH}:refs/heads/{WORKING_BRANCH}")
 
 
 @WINDOWS_SKIP
@@ -348,11 +352,12 @@ def test_the_closing_next_carries_the_branch_whole(make_root, scaffolded,
     assert result.returncode == 0, result.stderr + result.stdout
 
     line = next_line(result.stdout)
+    pushed = f"refs/heads/{branch}:refs/heads/{branch}"
     assert words(line) == ["git", "-C", str(root.resolve()), "push", "-u",
-                           "origin", branch]
-    assert words(line)[-1] == branch
+                           "origin", pushed]
+    assert words(line)[-1] == pushed
     assert line == shlex.join(["git", "-C", str(root.resolve()), "push", "-u",
-                               "origin", branch])
+                               "origin", pushed])
 
 
 @WINDOWS_SKIP
@@ -410,10 +415,11 @@ def test_pasting_the_status_line_reads_that_leg(make_root, bump_leg_module,
                                                 name):
     root, _ = make_root(name)
     leg = root.resolve() / "spec"
+    placement = bump_leg_module.leg_placement(leg)
     was = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
     with pytest.raises(bump_leg_module.LegNotAsFound) as raised:
-        bump_leg_module._restore_leg_if_moved(
-            leg, bump_leg_module.leg_placement(leg), was, b"not its status")
+        bump_leg_module._restore_leg_if_moved(leg, placement, was,
+                                              b"not its status")
 
     pasted = paste(status_remedy(str(raised.value)), root.parent)
     assert pasted.returncode == 0, pasted.stderr + pasted.stdout

@@ -22,7 +22,8 @@ import pytest
 
 from pathlib import Path
 
-from conftest import REPO, WINDOWS_SKIP, assert_read_through_git, git
+from conftest import (REPO, WINDOWS_SKIP, appended_to_command_scope,
+                      assert_read_through_git, git)
 
 from conftest import assert_refuses_for_want_of_a_terminal
 
@@ -684,7 +685,8 @@ def test_an_empty_openreposhape_repo_means_unset(tmp_path):
     alongside this test) was found still claiming the empty case was
     checked and refused rather than defaulted.
 
-    Offline: `GIT_CONFIG_COUNT`/`_KEY_0`/`_VALUE_0` hand this one process a
+    Offline: git's `GIT_CONFIG_*` entries, appended to the ones the
+    environment holds, hand this one process a
     `url.<file-uri-of-this-checkout>.insteadOf <default>` rewrite, so `git
     clone` resolves the DEFAULT repository to THIS checkout without a
     network - which is what makes the echoed clone line naming the default
@@ -704,9 +706,9 @@ def test_an_empty_openreposhape_repo_means_unset(tmp_path):
                             cwd=outside,
                             extra_env={
                                 "OPENREPOSHAPE_REPO": "",
-                                "GIT_CONFIG_COUNT": "1",
-                                "GIT_CONFIG_KEY_0": "url.%s.insteadOf" % REPO.as_uri(),
-                                "GIT_CONFIG_VALUE_0": default_repo,
+                                **appended_to_command_scope(os.environ, [
+                                    ("url.%s.insteadOf" % REPO.as_uri(),
+                                     default_repo)]),
                             })
     assert result.returncode == 0, result.stderr + result.stdout
     match = re.search(r"^  git clone .*$", result.stdout, re.MULTILINE)

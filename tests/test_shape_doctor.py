@@ -4002,8 +4002,9 @@ SLOT_SAYS = {
     "working-clone": "each with a working clone beside the holder",
 }
 
-#: What the row says instead of a `not-a-clone` slot `make siblings` ends in
-#: a traceback on today (#735): what is there, and nothing of what `make
+#: What the row says instead of a `not-a-clone` slot that a holder's pinned
+#: `siblings.py` from before #735 ends in a traceback on, or from before
+#: #784 ends `CLONE FAILED` on: what is there, and nothing of what `make
 #: siblings` does with it.
 UNREADABLE_SAYS = {
     "file": "is a file, not a folder, so it is not counted as its working "
@@ -4012,6 +4013,8 @@ UNREADABLE_SAYS = {
                   "as its working clone",
     "unenterable": "is a folder that cannot be listed, so it is not counted "
                    "as its working clone",
+    "dangling": "is a link to nothing, so it is not counted as its working "
+                "clone",
 }
 
 #: The state the holder's own `scripts/siblings.py --dry-run` prints in its
@@ -4058,9 +4061,22 @@ SLOTS = [
     pytest.param("clone", "working-clone", id="the-working-clone"),
 ]
 
-#: A file at `../IRRS`, which `make siblings` ends in a traceback on today
-#: (#735).
-A_FILE = ("file", "not-a-clone")
+#: A symbolic link needs a privilege on Windows.
+LINKS_HOLD = pytest.mark.skipif(
+    os.name == "nt", reason="a symbolic link needs a privilege on Windows")
+
+#: A file at `../IRRS`, the two `LOCKED` folders and a link to nothing, each
+#: `not-a-clone`: before #735 `make siblings` ended in a traceback on the
+#: first three, and before #784 in `CLONE FAILED` on the link.
+UNREADABLE_SLOTS = [
+    pytest.param("file", "not-a-clone", id="a-file"),
+    pytest.param("unlistable", "not-a-clone", id="a-folder-it-cannot-list",
+                 marks=LOCKED_HOLDS),
+    pytest.param("unenterable", "not-a-clone",
+                 id="a-folder-it-cannot-enter", marks=LOCKED_HOLDS),
+    pytest.param("dangling", "not-a-clone", id="a-link-to-nothing",
+                 marks=LINKS_HOLD),
+]
 
 
 def holder_with_slot(holder: dict, tmp_path: Path, slot: str) -> Path:
@@ -4084,6 +4100,8 @@ def holder_with_slot(holder: dict, tmp_path: Path, slot: str) -> Path:
         (beside / "notes.txt").write_text("somebody's\n", encoding="utf-8")
     elif slot == "file":
         beside.write_text("somebody's\n", encoding="utf-8")
+    elif slot == "dangling":
+        beside.symlink_to(folder / "nowhere", target_is_directory=True)
     elif slot == "another-repository":
         git("init", "-q", "-b", "main", ".", cwd=beside)
     elif slot not in ("holder", "nothing", "empty"):
@@ -4109,14 +4127,7 @@ def locked(request, path: Path, slot: str) -> None:
         request.addfinalizer(lambda: path.chmod(0o755))
 
 
-@pytest.mark.parametrize("slot, state", [
-    *SLOTS,
-    pytest.param(*A_FILE, id="a-file"),
-    pytest.param("unlistable", "not-a-clone", id="a-folder-it-cannot-list",
-                 marks=LOCKED_HOLDS),
-    pytest.param("unenterable", "not-a-clone",
-                 id="a-folder-it-cannot-enter", marks=LOCKED_HOLDS),
-])
+@pytest.mark.parametrize("slot, state", [*SLOTS, *UNREADABLE_SLOTS])
 def test_the_row_says_what_make_siblings_does_with_each_slot(
         standard, holder, tmp_path, request, slot, state):
     """#669: ONE ROW PER SLOT STATE. `--json` carries the state as
@@ -4127,10 +4138,10 @@ def test_the_row_says_what_make_siblings_does_with_each_slot(
     workstation's layout, and `without_working_clone` keeps its meaning.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone`, and the
-    row says nothing of `make siblings` there, which ends in a traceback on
-    it today (#735). The folder was the review's MUST on #705: `iterdir`'s
-    `PermissionError` made the row a FINDING and the holder DRIFTED, exit
-    1, where main says COMPLIANT, exit 0."""
+    row says nothing of `make siblings` there, which a holder's pinned copy
+    from before #735 ends in a traceback on. The folder was the review's
+    MUST on #705: `iterdir`'s `PermissionError` made the row a FINDING and
+    the holder DRIFTED, exit 1, where main says COMPLIANT, exit 0."""
     root = holder_with_slot(holder, tmp_path, slot)
     locked(request, root.parent / FAMILY_MEMBER, slot)
     result = doctor(standard, root, "--json")
@@ -4149,24 +4160,20 @@ def test_the_row_says_what_make_siblings_does_with_each_slot(
     assert json.loads(result.stdout)["verdict"] == "COMPLIANT", result.stdout
 
 
-@pytest.mark.parametrize("slot, state", [
-    *SLOTS,
-    pytest.param(*A_FILE, id="a-file", marks=pytest.mark.xfail(
-        strict=True, raises=AssertionError,
-        reason="#735: `siblings.py:558` raises NotADirectoryError on a "
-               "file, so `make siblings` ends in a traceback")),
-])
+@pytest.mark.parametrize("slot, state", [*SLOTS, *UNREADABLE_SLOTS])
 def test_make_siblings_dry_run_gives_the_rows_word_for_each_slot(
-        standard, holder, tmp_path, slot, state):
+        standard, holder, tmp_path, request, slot, state):
     """#669: THE AGREEMENT. The holder's own `scripts/siblings.py
     --dry-run`, run from its family folder, says of the member what the
     row's `sibling` state says it does: the same word where it refuses the
     directory, `would clone` where the row says it places it, and `present,
     would fetch` where it fetches it as the member. The row restates
     `place`'s order, and this is what keeps the two tools answering
-    together about one directory (#146). A FILE is held to it too, as a
-    strict xfail until #735 makes `make siblings` answer NOT A CLONE."""
+    together about one directory (#146). A FILE, and a folder that cannot
+    be listed or entered, are held to it too: `make siblings` ended in a
+    traceback on each, and since #735 calls each NOT A CLONE."""
     root = holder_with_slot(holder, tmp_path, slot)
+    locked(request, root.parent / FAMILY_MEMBER, slot)
     entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
         "members"][0]
     assert entry["sibling"] == state, entry
@@ -10094,22 +10101,26 @@ def test_the_interpreter_named_is_the_asked_for_platforms(platform, expected):
 CURLY_APOSTROPHE = "O\u2019Neill"
 
 
-def test_a_curly_apostrophe_is_normalized_before_it_is_quoted():
-    """`quote_arg` must ascii-normalize FIRST, or `Row.__init__` breaks it.
+@pytest.mark.parametrize(("platform", "spelled"), [
+    ("posix", r"$'O\342\200\231Neill'"),
+    ("nt", "('O' + [char]0x2019 + 'Neill')"),
+])
+def test_a_curly_apostrophe_is_escaped_where_the_row_cannot_reach_it(
+        platform, spelled):
+    """`quote_arg` must leave `Row.__init__` nothing to change in a value.
 
     `Row.__init__` runs `ascii_text` again, after quoting, over the whole
     assembled command -- so a curly apostrophe that reached this function
     unconverted came back out of THAT pass as a bare, undoubled one, on the
     far side of the quoting it sat inside. `'O'Neill'` is an unterminated
     quotation to `sh`, and PowerShell's own verbatim string is exactly as
-    broken by an apostrophe that never got doubled. Normalizing here first
-    means the value quoted is already plain ASCII, so that later pass has
-    nothing left to do.
+    broken by an apostrophe that never got doubled (Copilot, PR #102). It was
+    flattened to `'` here first, which named another path; it is ESCAPED
+    now, in ASCII the later pass leaves alone, and stands for this one
+    (#785, `tests/test_doctor_non_ascii_paths.py` runs it).
     """
     module = doctor_module(REPO)
-    posix = module.quote_arg(CURLY_APOSTROPHE, "posix")
-    assert shlex.split(posix) == ["O'Neill"], posix
-    assert module.quote_arg(CURLY_APOSTROPHE, "nt") == "'O''Neill'"
+    assert module.quote_arg(CURLY_APOSTROPHE, platform) == spelled
 
 
 def test_a_trailing_newline_is_quoted_not_waved_through():
@@ -10708,23 +10719,26 @@ def test_an_exported_pythonpath_does_not_stand_in_for_a_lost_repo_shape(
 #: `sitecustomize.py` that ends any VALIDATOR with a distinctive exit, and a
 #: `repo_shape.py` that raises when it is imported.
 #:
-#: THE `sitecustomize.py` IS WHAT DOES THE WORK, and it catches every way the
-#: directory can reach a validator. `PYTHONPATH` entries come ahead of the
-#: standard library and of site-packages, so the first `sitecustomize` on a
-#: child's path is this one wherever the directory sits in the value -- in
-#: front of the standard's `scripts/`, behind it, or alone -- and it ends the
-#: child at start-up, before a single import. Python imports ONE
-#: `sitecustomize`, the first it finds, and the doctor is not that child: its
-#: own script is not `validate-*`, so it runs on.
+#: THE `sitecustomize.py` DOES NOTHING SINCE `-S` (#342). `run_validator`
+#: starts every child as `[sys.executable, "-S", script, ...]`, so no child
+#: runs `site` and none imports a `sitecustomize`, this one or any other.
+#: Before `-S` it was what did the work: `PYTHONPATH` entries come ahead of
+#: the standard library and of site-packages, so the first `sitecustomize` on
+#: a child's path was this one wherever the directory sat in the value, and
+#: it ended the child at start-up, before a single import. It would fire
+#: again only for a child started without `-S`.
 #:
-#: A `repo_shape.py` ALONE CANNOT TELL PREPENDING FROM REPLACING: the
-#: standard's `scripts/` comes first in a prepended value, so the standard's
-#: `repo_shape` wins the import and the decoy behind it is never read. The
-#: raising `repo_shape.py` decides an outcome only where `sitecustomize` does
-#: not load from the path (site customisation off, or an earlier
-#: `sitecustomize` ahead of this one), and there it is what a child that put
-#: the operator's directory FIRST would import. It is a fallback, and no test
-#: here depends on it.
+#: WHAT HOLDS REPLACE-NOT-PREPEND AND THE S1 CASE NOW IS
+#: `test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given`,
+#: which asks the child what `PYTHONPATH` it got. A `run_validator` that puts
+#: the standard's `scripts/` in front of the operator's value, or that keeps
+#: the variable for the callers that pass none (#306 review S1), passes THIS
+#: test, in all three cases, and is killed by that one. This test holds the
+#: template row's real verdict under an exported `PYTHONPATH`, end to end.
+#: The raising `repo_shape.py` is the part of it that still bites: a child
+#: that put the operator's directory AHEAD of the standard's `scripts/` would
+#: import it, because the template's own directory has no `repo_shape.py`
+#: beside it, and that child fails this test.
 DECOY_REPO_SHAPE = (
     "raise ImportError(\"the operator's repo_shape.py was imported by a "
     "validator\")\n")
@@ -10769,15 +10783,19 @@ def test_an_exported_pythonpath_does_not_reach_a_template_validator(
     for leaked in ("DECOY", "operator's repo_shape", "ImportError"):
         assert leaked not in row["reason"], row
 
-    # AND NO OTHER ROW OF THE RUN REACHED THE DECOY. The row above is the one
+    # AND NO OTHER ROW OF THE RUN QUOTES THE DECOY. The row above is the one
     # that passes a directory; the `naming` rows and the machine's preflight
-    # pass none. On main every row whose validator the decoy reached said so,
-    # and this catches any row that reaches it, which is how it catches a
-    # `run_validator` that kept the variable for the callers that pass none
-    # (#306 review S1): popped only for a script inside the root, or with the
-    # `else` dropped, the `naming` row reads `FINDING ... (exit 86): DECOY`
-    # while `manifest` reads the real finding. So no row may quote the decoy
-    # or say it exited 86, whichever caller handed it the variable.
+    # pass none. Before `-S` this is how the test caught a `run_validator`
+    # that kept the variable for the callers that pass none (#306 review S1):
+    # popped only for a script inside the root, or with the `else` dropped,
+    # the `naming` row read `FINDING ... (exit 86): DECOY` while `manifest`
+    # read the real finding. Since `-S` no child imports the decoy's
+    # `sitecustomize`, so that case no longer shows here; the probe in
+    # `test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given`
+    # holds it, beside the root as well as inside it. Under `-S` this loop
+    # cannot fire. It is kept as a tripwire for a future removal of `-S`;
+    # `test_run_validator_starts_every_child_with_no_site` (in
+    # `tests/test_doctor_validator_site.py`) is the test that holds `-S`.
     reached = [name for name, other in rows.items()
                if "DECOY" in other["reason"]
                or "(exit 86)" in other["reason"]
@@ -10814,8 +10832,8 @@ def test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given(
     caller sees it, and it holds the callers which pass no `pythonpath` by
     where its probe lies: beside the root, as the standard's own naming and
     preflight scripts do, as well as inside it. Those scripts need nothing
-    from the variable, so only a probe like this one, or (b)'s decoy, can see
-    that they have none.
+    from the variable, so only a probe like this one can see that they have
+    none (the decoy of (b) could before `-S`, #342).
     """
     module = doctor_module(standard)
     if exported is None:
