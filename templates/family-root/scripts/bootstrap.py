@@ -68,7 +68,11 @@ WHAT IT DOES, in order:
       sections give, or a gitlink in members/ that no row names; `git rm
       --cached` takes out one outside members/, which the validator does
       not read; and where the gitlink is a row's own, with one section,
-      the line says to write its section back.
+      the line says to write its section back. Where git read the index's
+      or HEAD's file only up to a line it cannot parse, a section or url
+      it did not read may be past that line, so for those three the line
+      says to put that file back, mend the line and commit it, and writes
+      no section back (#856).
 
   (b) RUNS EACH MEMBER'S OWN `make bootstrap`. Each member is a whole project
       and knows how to bootstrap itself — it puts its legs on their
@@ -134,6 +138,12 @@ NO_SECTION = f"no section of {GITMODULES} gives that path"
 NO_URL = "git has no url for that path"
 EXITED_0 = "git exited 0 and checked nothing out there"
 STOPPED = "git stopped at {}, a gitlink it has no url for"
+#: The whys a `.gitmodules` git read only up to a line it cannot parse may
+#: be the cause of, since what it did not read is past that line
+#: (`Gitmodules.cut`, #856).
+CUT_WHYS = frozenset({NO_SECTION, NO_URL, STOPPED})
+#: HEAD's `.gitmodules`, as `git config --blob` is given it.
+HEAD_GITMODULES = f"HEAD:{GITMODULES}"
 
 #: What git 2.43 dies on in a `.gitmodules` it reads (#768), as
 #: `parse_config` in its submodule-config.c reads a submodule's key: these
@@ -333,9 +343,21 @@ def cures(left: list[tuple[dict, str, str]], stopper: str | None,
       url no clone can check it out.
     - A row git exited 0 over: the update that checks it out whatever the
       clone chose. `--init` with the path registers a member a subset
-      clone left out, and `--checkout` overrides an `update = none`."""
+      clone left out, and `--checkout` overrides an `update = none`.
+    - The index's or HEAD's `.gitmodules`, a blob, which git read only up
+      to a line it cannot parse (`Gitmodules.cut`, #856), for a row with
+      no section or no url there, or the gitlink git stopped at
+      (`CUT_WHYS`): that file put back, mended and committed, which
+      `gitmodules_cures` says. A section or url git did not read may be
+      past the line, so no other cure is said for those: a section
+      written back where the work tree holds no file would be the only
+      one in it, and `validate-family.py` reads HEAD's file alone, not
+      the index's."""
     whys = {why for _, _, why in left}
     said = gitmodules_cures(whys, modules)
+    if modules.cut:
+        left = [entry for entry in left if entry[2] not in CUT_WHYS]
+        whys -= CUT_WHYS
     if whys & {NO_GITLINK, NO_SECTION}:
         said.append(f"`{PYTHON} scripts/validate-family.py` names the cause "
                     "and the commit that cures it.")
@@ -379,7 +401,11 @@ def gitmodules_cures(whys: set[str], modules: Gitmodules) -> list[str]:
     """`cures`' sentences for a `.gitmodules` git reads nothing from, each
     in the order `cures` says them (#648, #768): a merge left unmerged,
     for a row `whys` names so; each value git dies on; a work tree file
-    git cannot parse."""
+    git cannot parse. And for a blob git read only up to such a line,
+    where a row `whys` names is one of `CUT_WHYS` (#856): the command
+    that puts that file back in the work tree, `git checkout` from the
+    index where git read the index's, which keeps what was staged, and
+    from HEAD where it read HEAD's, then the file mended and committed."""
     said = []
     if UNMERGED in whys:
         said.append(f"Resolve the merge in {GITMODULES} and `git add "
@@ -397,6 +423,15 @@ def gitmodules_cures(whys: set[str], modules: Gitmodules) -> list[str]:
         said.append(f"Mend {GITMODULES} by hand (`git config -f "
                     f"{GITMODULES} --list` says where it breaks), and "
                     "commit it.")
+    if modules.cut and whys & CUT_WHYS:
+        head = modules.cut == HEAD_GITMODULES
+        put_back = shlex.join(["git", "checkout", *(["HEAD"] if head else []),
+                               "--", GITMODULES])
+        said.append(f"`{put_back}` puts back "
+                    f"{'HEAD' if head else 'the index'}'s {GITMODULES}, "
+                    "which git read only up to a line it cannot parse: mend "
+                    f"it by hand (`git config -f {GITMODULES} --list` says "
+                    "where it breaks), and commit it.")
     return said
 
 
@@ -427,7 +462,12 @@ class Gitmodules(NamedTuple):
     it reads the file, None for a key with no value (#768): git reads
     nothing from it then, and the three are empty. `unreadable` says the
     work tree's file is one `git config --list` cannot parse, which git
-    dies reading: the three are empty then too."""
+    dies reading: the three are empty then too. `cut` is the blob git read
+    only up to such a line, as `gitmodules_source` names it,
+    `HEAD:.gitmodules` or the index's object id, where it read an entry
+    before it (`gitmodules_listed`, #856): the three hold what it read,
+    and `cures` writes no section back. Empty where git read the whole
+    file, or nothing."""
 
     given: Counter
     read: dict[str, str]
@@ -435,6 +475,7 @@ class Gitmodules(NamedTuple):
     unmerged: bool = False
     refused: tuple[tuple[str, str | None], ...] = ()
     unreadable: bool = False
+    cut: str = ""
 
 
 def gitmodules_sections(root: Path) -> Gitmodules:
@@ -442,7 +483,8 @@ def gitmodules_sections(root: Path) -> Gitmodules:
     file, which a fresh clone takes from HEAD, or, where the work tree has
     none, as a deletion not yet committed or a sparse checkout leaves it,
     the index's, then HEAD's (`gitmodules_source`, #768), each of the
-    last two, a blob, up to a line git cannot parse, as git reads it
+    last two, a blob, up to a line git cannot parse, as git reads it,
+    and `cut` where it read an entry before that line
     (`gitmodules_listed`, #856). Nothing where none holds one, or git
     cannot read it: git has no url for any submodule then either.
     Nothing, and `unreadable`, where that is the
@@ -465,14 +507,15 @@ def gitmodules_sections(root: Path) -> Gitmodules:
     listed = gitmodules_listed(root, source)
     if listed is None:
         return nothing._replace(unreadable=os.path.isfile(root / GITMODULES))
-    entries = gitmodules_entries(root, listed, source[0] == "--blob")
+    printed, cut = listed
+    entries = gitmodules_entries(root, printed, source[0] == "--blob")
     refused = tuple(dict.fromkeys(
         (f"submodule.{name}.{key}", value)
         for name, key, value, ignored in entries
         if not ignored and refused_value(root, key, value)))
     if refused:
         return nothing._replace(refused=refused)
-    return read_sections(entries)
+    return read_sections(entries)._replace(cut=source[1] if cut else "")
 
 
 def gitmodules_source(root: Path) -> list[str] | None:
@@ -485,7 +528,7 @@ def gitmodules_source(root: Path) -> list[str] | None:
                          cwd=root, binary=True)
     except Refusal:
         stages = b""
-    source = ["--blob", f"HEAD:{GITMODULES}"]
+    source = ["--blob", HEAD_GITMODULES]
     for record in stages.split(b"\0"):
         meta, _, name = record.partition(b"\t")
         fields = meta.split()
@@ -499,15 +542,12 @@ def gitmodules_source(root: Path) -> list[str] | None:
     return source
 
 
-#: What git says of a line it cannot parse in a config file, a blob too:
-#: `error: bad config line 7 in blob HEAD:.gitmodules` (#856).
-BAD_LINE = b"bad config line"
-
-
-def gitmodules_listed(root: Path, source: list[str]) -> bytes | None:
-    """What `git config -z --list` prints of the `.gitmodules` that
-    `source` names (`gitmodules_source`), or None where git cannot read
-    it (#856).
+def gitmodules_listed(root: Path, source: list[str]
+                      ) -> tuple[bytes, bool] | None:
+    """What `git config -z --no-includes --list` prints of the
+    `.gitmodules` that `source` names (`gitmodules_source`), and whether
+    git stopped short of the file's end after an entry, or None where git
+    cannot read it (#856).
 
     A BLOB IS READ UP TO A LINE GIT CANNOT PARSE. `git config --blob`
     prints the entries before that line, then `bad config line`, and
@@ -517,13 +557,32 @@ def gitmodules_listed(root: Path, source: list[str]) -> bytes | None:
     2.43.0): so what was printed is what git read, and a bad line before
     the first section leaves nothing, as git reads nothing. A work tree
     file with such a line is None: git dies reading it. Git is run as
-    `git_out` runs it."""
-    proc = subprocess.run(["git", "config", "-z", *source, "--list"],
+    `git_out` runs it.
+
+    TOLD BY THE EXIT CODE, NEVER GIT'S WORDS, which a git built with its
+    translations prints in the person's language: a blob's listing that
+    exits 128 is read for what it printed, whatever it says on stderr.
+    The other 128 met is a blob git cannot find (`HEAD:.gitmodules`
+    where HEAD holds none, #611), which prints nothing, and empty
+    stdout reads as the same `Gitmodules` that None gives for a blob:
+    no entry, and nothing `unreadable`, since a blob is read only where
+    the work tree holds no file. Neither it nor a bad line before the
+    first entry is `cut`: git read nothing from either.
+
+    NO `[include]` IS FOLLOWED (`--no-includes`), as git's submodule
+    reader follows none. `git config --blob` follows one by default: a
+    relative one stopped its listing there (`relative config includes
+    must come from files`), where git reads on, and an absolute one's file
+    was listed with the blob's own entries, where git reads the blob's
+    alone. A work tree file's includes are not followed by default
+    either."""
+    proc = subprocess.run(["git", "config", "-z", "--no-includes", *source,
+                           "--list"],
                           cwd=str(root), capture_output=True, check=False)
-    if proc.returncode == 0 or (source[0] == "--blob"
-                                and proc.returncode == 128
-                                and BAD_LINE in proc.stderr):
-        return proc.stdout
+    if proc.returncode == 0:
+        return proc.stdout, False
+    if source[0] == "--blob" and proc.returncode == 128:
+        return proc.stdout, bool(proc.stdout)
     return None
 
 
