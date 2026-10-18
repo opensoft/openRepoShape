@@ -639,6 +639,80 @@ def test_the_doctor_and_make_siblings_read_one_url_for_one_mount(
     assert list(read) == ["members/IRRS"], config
 
 
+#: Two sections whose NAMES differ only in bytes that are not UTF-8, which
+#: git keeps apart (RV775r4 on #775): Latin-1 `\xe9` and `\xe8`, then `\xe9`
+#: and the UTF-8 of U+FFFD, the character a replacing decode makes of it.
+#: Each `.gitmodules`, for gitlinks at `p` and `q`, with the `{path: url}`
+#: `git submodule init` registers for it. `make siblings` decoded the names
+#: with the replacement, so the two were one section: it gave `q` alone,
+#: and where one gives the path and the other the url, a url git does not
+#: mount (`No url found`).
+NAMES_APART_IN_BYTES = [
+    pytest.param(b'[submodule "caf\xe9"]\n\tpath = p\n\turl = /r/a.git\n'
+                 b'[submodule "caf\xe8"]\n\tpath = q\n\turl = /r/b.git\n',
+                 {"p": "/r/a.git", "q": "/r/b.git"}, id="latin-1-pair"),
+    pytest.param(b'[submodule "caf\xe9"]\n\tpath = p\n\turl = /r/a.git\n'
+                 b'[submodule "caf\xef\xbf\xbd"]\n\tpath = q\n'
+                 b"\turl = /r/b.git\n",
+                 {"p": "/r/a.git", "q": "/r/b.git"},
+                 id="latin-1-and-u-fffd"),
+    pytest.param(b'[submodule "caf\xe9"]\n\tpath = p\n'
+                 b'[submodule "caf\xe8"]\n\turl = /r/b.git\n', {},
+                 id="path-in-one-url-in-the-other"),
+]
+
+
+def configured_urls(root: Path) -> dict[bytes, bytes]:
+    """`{name: url}` of each `submodule.<name>.url` in `root`'s own config,
+    as git's bytes."""
+    listing = subprocess.run(["git", "config", "-z", "--local", "--list"],
+                             cwd=str(root), capture_output=True,
+                             check=False).stdout
+    urls = {}
+    for record in listing.split(b"\0"):
+        key, _, value = record.partition(b"\n")
+        if key.startswith(b"submodule.") and key.endswith(b".url"):
+            urls[key[len(b"submodule."):-len(b".url")]] = value
+    return urls
+
+
+def urls_git_registers(root: Path, paths: list[str]) -> dict[str, str]:
+    """`{path: url}` for each of `paths` that `git submodule init -- <path>`
+    registers a url for, in `root`'s own config; a path it says `No url
+    found` for is left out."""
+    registered = {}
+    for path in paths:
+        before = configured_urls(root)
+        init = subprocess.run(["git", "submodule", "init", "--", path],
+                              cwd=str(root), capture_output=True, check=False)
+        if init.returncode != 0:
+            continue
+        new = [url for name, url in configured_urls(root).items()
+               if before.get(name) != url]
+        assert len(new) == 1, (path, new, init.stderr)
+        registered[path] = new[0].decode("utf-8", "replace")
+    return registered
+
+
+@pytest.mark.parametrize("gitmodules, found", NAMES_APART_IN_BYTES)
+def test_two_names_apart_only_in_bytes_not_utf8_stay_two_sections(
+        placement, doctor, tmp_path, monkeypatch, gitmodules, found):
+    """The doctor keeps a section's NAME as git's bytes (#732), and `make
+    siblings` now does too, replacing a value alone (#432): both give the
+    `{path: url}` git registers, under a UTF-8 locale."""
+    monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    git("init", "-q", "-b", "main", ".", cwd=tmp_path)
+    for path in ("p", "q"):
+        git("update-index", "--add", "--cacheinfo",
+            f"160000,{'1' * 40},{path}", cwd=tmp_path)
+    (tmp_path / ".gitmodules").write_bytes(gitmodules)
+    config = doctor.submodule_config(tmp_path)
+    read = {fields["path"]: fields["url"] for fields in config.values()
+            if "path" in fields and "url" in fields}
+    assert read == placement.submodule_urls(tmp_path) == found, config
+    assert urls_git_registers(tmp_path, ["p", "q"]) == found
+
+
 # --- a tracking branch that is only a tag ------------------------------------
 
 TAG = "v-track"

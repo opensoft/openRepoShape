@@ -434,7 +434,11 @@ def test_adopt_records_each_free_text_value_as_typed(kind, tmp_path, gh_stub):
                          "--elected-on", "2026-09-02", "--out", str(plan),
                          env=env)
     assert planned.returncode == 0, planned.stderr + planned.stdout
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=env)
+    # Given the `--local-remote-dir` `execute` is given, `check` asks the
+    # disk and not GitHub whether each leg repository exists (#798).
+    checked = run_script(ADOPT, "check", "--plan", str(plan),
+                         "--local-remote-dir", str(tmp_path / "remotes"),
+                         env=env)
     assert checked.returncode == 0, checked.stderr + checked.stdout
     result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
                         "--local-remote-dir", str(tmp_path / "remotes"),

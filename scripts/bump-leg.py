@@ -1141,14 +1141,45 @@ def current_branch(root: Path) -> str | None:
     trailing U+00A0, U+2028 or U+0085, which a branch name may end in, and
     read a root on `feat<U+00A0>` as `feat`, a branch of its own that the
     push line then pushed instead of the bump.
+
+    READ AS THE BYTES GIT WROTE (#765). Exactly one newline and exactly
+    `refs/heads/` come off the bytes, and the rest is decoded with
+    `surrogateescape`, as `family.py` reads its holder's branch. Decoded
+    with `errors="replace"`, a branch `caf<0xE9>` read as `caf<U+FFFD>`, a
+    branch nobody has, and the push line named that on both sides and
+    failed pasted (`src refspec ... does not match any`). A NAME THAT IS NOT
+    UTF-8 IS REFUSED here, `bump-leg-branch-not-utf8`, the dry run alike,
+    before the fetch and before anything is written: no line this tool
+    prints can spell it, and a push line naming another branch is worse
+    than none. `git branch -m` gives the branch a name that can be spelled.
     """
     proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
-                          cwd=str(root), capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", check=False)
-    ref = proc.stdout.rstrip("\n")
-    if not ref.startswith(HEADS):
+                          cwd=str(root), capture_output=True, check=False)
+    ref = proc.stdout[:-1] if proc.stdout.endswith(b"\n") else proc.stdout
+    heads = HEADS.encode("ascii")
+    if not ref.startswith(heads):
         return None
-    return ref[len(HEADS):] or None
+    raw = ref[len(heads):]
+    branch = raw.decode("utf-8", "surrogateescape")
+    try:
+        branch.encode("utf-8")
+    except UnicodeEncodeError:
+        # NAMED BY ITS BYTES, `b'caf<0xE9>'`, as `trailer-not-utf8` names a
+        # trailer, and THE ROOT as `shown_path` names a path, as
+        # `_branch_to_bump_from`'s other refusals name it (#766). The remedy
+        # is a command to paste, and holds the root raw inside its shell
+        # quotes, as their `switch -c` does.
+        raise Refusal(
+            "bump-leg-branch-not-utf8",
+            f"{shown_path(root)} is on the branch {raw!r}, whose name is not "
+            "UTF-8, so no line this tool prints can name it: its push line "
+            "would name a branch that is not there. Nothing was fetched, "
+            "written or committed.",
+            "Remediation: give the branch a name that is UTF-8 text, then "
+            "run the same command again: "
+            + shlex.join(["git", "-C", str(root), "branch", "-m"])
+            + " <a new name>") from None
+    return branch or None
 
 
 # ---------------------------------------------------------------------------
