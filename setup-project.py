@@ -135,8 +135,12 @@ USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold fla
                           the same thing as --project; give one or the other.
   --project <Project>     the assembly-root name: ONE CamelCase token, no
                           hyphen, underscore, dot or space. Prompted for when
-                          omitted and a terminal is attached.
+                          omitted and a terminal is attached. At most 95
+                          characters without --local-remote-dir: GitHub keeps
+                          a repository's name to 100, and -spec adds 5.
   --id <id>               lowercase project id      (default: project lowercased)
+                          At most 39 characters without --local-remote-dir:
+                          GitHub keeps the topic xf-project-<id> to 50.
   --name "<Display>"      display name              (default: the project name)
   --visibility private|public|internal              (default: private)
   --elected-by "<Name>"   who is electing the shape (default: your gh login)
@@ -156,7 +160,9 @@ USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold fla
   --org <org>             override the detected organisation. REQUIRED when
                           run outside a checkout of openRepoShape
                           (self-bootstrap mode): there is no origin to read it
-                          from.
+                          from. At most 39 characters without
+                          --local-remote-dir, GitHub's limit on an
+                          organisation's name.
   --allow-upstream-org    permit `--org opensoft` itself: opensoft is the
                           upstream owner of openRepoShape, and almost never
                           what you meant to scaffold into.

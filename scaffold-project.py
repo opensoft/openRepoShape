@@ -48,7 +48,11 @@ value the validator refuses (a blank `--elected-by`, `--reference` or
 `--name`, an `--org` it cannot hold) is refused as
 `scaffold-manifest-invalid`, in the validator's own words; an `--elected-on`
 is read in the validator's form only, on every Python. A name that cannot be a
-directory's is refused as `scaffold-name-too-long`.
+directory's is refused as `scaffold-name-too-long`, and so is one GitHub will
+not give a repository; an `--org` longer than GitHub keeps one is
+`scaffold-org-too-long`, and an id whose topic GitHub will not set is
+`scaffold-topic-too-long` (#838). GitHub's three limits are asked only
+without `--local-remote-dir`, by the runs that make repositories on GitHub.
 
 IDEMPOTENCY. It refuses to write into a remote or a working directory that
 already exists. There is no --force: re-running over a live project is not a
@@ -108,6 +112,13 @@ from shape_materialize import (  # noqa: E402
 # be a directory's: asked before anything is created (#258, #261).
 from shape_materialize import (  # noqa: E402
     refuse_manifest_values, refuse_unstorable_names,
+)
+# And what GitHub keeps a repository's name, a topic and an organisation's
+# name to, asked before anything is created where GitHub is (#838).
+from shape_materialize import (  # noqa: E402
+    GITHUB_ID_MAX, GITHUB_NAME_MAX, GITHUB_OWNER_MAX, GITHUB_PROJECT_MAX,
+    GITHUB_TOPIC_MAX, refuse_a_topic_github_cannot_set,
+    refuse_an_owner_github_cannot_have,
 )
 from shape_advisory import scaffold_lines  # noqa: E402
 # Whether `--elected-by`, `--reference` and `--name` are text a file can
@@ -269,12 +280,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--org", required=True)
+    # GITHUB'S LIMITS, said where each value is typed (#838), and asked
+    # only without `--local-remote-dir`, as the plan asks them.
+    parser.add_argument("--org", required=True,
+                        help="the organisation the three repositories are "
+                             f"created in; at most {GITHUB_OWNER_MAX} "
+                             "characters without --local-remote-dir, "
+                             "GitHub's limit on an organisation's name")
     parser.add_argument("--project", required=True,
-                        help="the assembly-root name, e.g. Atlas")
+                        help="the assembly-root name, e.g. Atlas; at most "
+                             f"{GITHUB_PROJECT_MAX} characters without "
+                             "--local-remote-dir, as GitHub keeps a "
+                             f"repository's name to {GITHUB_NAME_MAX} and "
+                             "`-spec` adds 5")
     parser.add_argument("--id", default=None,
                         help="lowercase project id (default: --project "
-                             "lowercased)")
+                             f"lowercased); at most {GITHUB_ID_MAX} "
+                             "characters without --local-remote-dir, as "
+                             "GitHub keeps the topic `xf-project-<id>` to "
+                             f"{GITHUB_TOPIC_MAX}")
     parser.add_argument("--name", default=None, help="display name")
     parser.add_argument("--visibility", choices=VISIBILITY_CHOICES,
                         default=None,
@@ -833,6 +857,55 @@ def _refuse_bad_id(project_id: str, given: str | None) -> None:
                   f"--id ({unset}, so {ID_DERIVED_FROM}) is {project_id!r}, "
                   f"which must match {pattern}",
                   DERIVED_ID_REMEDIATION)
+
+
+#: How `scaffold-topic-too-long` and `scaffold-org-too-long` are told to go
+#: on (#838). A `--id` the person passed is theirs to shorten. One
+#: `_identity` derived is `--project` lowercased, and an explicit `--id` is
+#: the way round it that keeps the three repositories' names as they are.
+NOTHING_MADE = ("Remediation: nothing was created, and `--dry-run` refuses "
+                "the same.")
+PASSED_TOPIC_REMEDIATION = (
+    f"{NOTHING_MADE} Pass a shorter --id, of at most {GITHUB_ID_MAX} "
+    "characters.")
+DERIVED_TOPIC_REMEDIATION = (
+    f"{NOTHING_MADE} Pass an explicit --id of at most {GITHUB_ID_MAX} "
+    f"characters: the id need not be {ID_DERIVED_FROM}, and --project, "
+    "which names the three repositories, stays as it is.")
+ORG_REMEDIATION = (
+    f"{NOTHING_MADE} Pass --org as GitHub spells the organisation, the "
+    "`<org>` of `https://github.com/<org>`: GitHub gives no user or "
+    f"organisation a name of more than {GITHUB_OWNER_MAX} characters.")
+
+
+def _refuse_what_github_cannot_hold(args, project_id: str, policy) -> None:
+    """`scaffold-org-too-long` and `scaffold-topic-too-long`: an `--org`
+    GitHub gives no organisation, and an id whose `xf-project-<id>` topic
+    GitHub will not set (#838), refused where GitHub is asked, before any
+    repository or work directory exists and under `--dry-run` alike. No
+    process has started yet where `--elected-by` or GIT_AUTHOR_NAME names
+    the elector; otherwise `_identity` has asked `git config user.name`
+    first, as it has before `scaffold-bad-id`.
+
+    THE TOPIC IS SET LAST (`_set_topics`), after `_create_remotes`,
+    `_seed_legs` and `_build_assembly_root`, so an id over 39 characters,
+    which a `--project` of 40 or more gives by default, failed there with
+    all three repositories created and seeded. Under `--local-remote-dir`
+    neither is asked: a bare repository on disk has no topic and no owner.
+    The id is named as `_refuse_bad_id` names it, by where it came from."""
+    if args.local_remote_dir is not None:
+        return
+    refuse_an_owner_github_cannot_have("scaffold-org-too-long", args.org,
+                                       "--org", ORG_REMEDIATION)
+    if args.id:
+        named, remediation = "--id", PASSED_TOPIC_REMEDIATION
+    else:
+        unset = "not given" if args.id is None else "empty"
+        named = f"--id ({unset}, so {ID_DERIVED_FROM})"
+        remediation = DERIVED_TOPIC_REMEDIATION
+    refuse_a_topic_github_cannot_set(
+        "scaffold-topic-too-long", policy.topic_for(project_id), project_id,
+        named, remediation)
 
 
 #: How a refusal names an elector `_elector` did not get from `--elected-by`
@@ -1805,9 +1878,14 @@ def _scaffold(args) -> int:
     # `--local-remote-dir`, as a bare `<name>.git` (#261): a `--project` of
     # 247 to 250 characters died in `Path.exists` with a traceback, and one
     # of 251 or more in the work directory, where adopt's `check` refused it.
+    # And without it, each is a GitHub repository's, which GitHub keeps to
+    # 100 characters: a `--project` of 96 to 250 planned and met GitHub's
+    # refusal at the first `gh repo create` (#838).
+    on_disk = args.local_remote_dir is not None
     refuse_unstorable_names(
         "scaffold-name-too-long", list(names.values()),
-        list(names.values()) if args.local_remote_dir is not None else [])
+        list(names.values()) if on_disk else [],
+        [] if on_disk else list(names.values()))
     # THE CLONE URL IS A PATH A FILE WILL HOLD (#433): under
     # `--local-remote-dir` it is the bare repository's own path, which the
     # READMEs print, so it is asked here, as the free-text values are asked
@@ -1817,6 +1895,7 @@ def _scaffold(args) -> int:
     _refuse_an_unwritable_clone_url(local, urls["assembly"])
     policy = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
     _refuse_bad_id(project_id, args.id)
+    _refuse_what_github_cannot_hold(args, project_id, policy)
     # WHAT THE PROJECT DECLARES ABOUT ITSELF, before any name is judged.
     # With no `--pin`, a descendant-form name is a claim with no referent and
     # the DECLARED ROLE wins. With `--pin openGlass@<sha>`, `MedxGlass` IS a
