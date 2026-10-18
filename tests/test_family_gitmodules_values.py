@@ -48,8 +48,11 @@ from test_family_bootstrap_gate_order import (
 from test_family_dry_run import isolated
 from test_family_head_lost_gitmodules import (
     GITMODULES, assert_passes_in_every_mode, commit_all, committed_gitmodules,
+    pinned,
 )
 from test_family_member_path import MEMBER, OTHER, raw
+from test_family_tracking_branch import on_main  # noqa: F401
+from test_validate_family_typed_states import ROW, removal_staged
 from test_validate_family_unnamed_mounts import commands, findings
 
 #: The issue's table, `update = None` first, then `branch` with no value:
@@ -862,3 +865,33 @@ def test_a_probe_value_in_the_person_s_own_config_changes_no_answer(
     gate = run_script(clone / "scripts" / "validate-family.py",
                       "--no-members", cwd=clone, env=env)
     assert gate.returncode == 0, gate.stdout + gate.stderr
+
+
+# --- beside #762's staged removal --------------------------------------------
+
+def test_a_staged_removal_beside_a_refused_value_puts_no_section_back(
+        on_main, offline, tmp_path):
+    """#768 BESIDE #762, the point rv820 asked the second PR to land
+    (resolution point 3 of the merge with main `b9b70692`). The work tree's
+    file gives OTHER's section `update = None`, which git dies on, and
+    `git rm --cached` has staged MEMBER's gitlink out, taking no section
+    from `.gitmodules`. The gate reads no section from a file it refuses
+    (`sections` is emptied), and the finding for the removal read that as
+    a section `git rm` took out: it printed `git checkout HEAD --
+    .gitmodules` and said it put the section back. It is handed the
+    sections as read, so it prints the reset alone, in every mode."""
+    env = isolated(offline, tmp_path)
+    commit = pinned(on_main, MEMBER)
+    raw(on_main, env, "rm", "-q", "--cached", "--", ROW)
+    edited_not_committed(
+        on_main, env, raw(on_main, env, "show", f"HEAD:{GITMODULES}").stdout)
+    expected = [taken_out("update", "None", where=WORK_TREE_ONLY),
+                removal_staged(on_main, commit, "git-rm-cached")]
+
+    for extra in ((), ("--pins",), ("--no-members",)):
+        result = validate(on_main, *extra)
+        assert result.returncode == 1, (extra, result.stdout + result.stderr)
+        assert findings(result) == expected, extra
+        staged = findings(result)[1]
+        assert commands(staged) == [f"git reset -q -- {ROW}"], extra
+        assert f"git checkout HEAD -- {GITMODULES}" not in staged, extra
