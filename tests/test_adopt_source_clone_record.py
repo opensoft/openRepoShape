@@ -26,6 +26,23 @@ ON MAIN AT 2fac9790 (2026-10-16), probed with a stand-in `gh`:
   run given the same `--work-dir` next was refused at it, `source-
   unclonable`, with a remedy about `gh auth status`.
 
+And each `--source` that names no repository's top level, nor a repository
+on GitHub, is refused by name before git reads anything else, with no plan
+written and no `gh` run (#796). ON MAIN AT bf1f099b (2026-10-17):
+- L1-64. A file ended `plan`, `check` and `execute` in a
+  `NotADirectoryError` traceback, exit 1.
+- L1-88. A directory inside a repository, or `.` run in one, was planned,
+  exit 0, holding only what is under it; and the `source` line named the
+  `origin`'s repository, whatever directory was read.
+- L1-95. `~nouser/x` ended each in `RuntimeError: Could not determine home
+  directory.`, and so did a plan recording it.
+- L1-96. `--source ''` inside a repository planned that repository, and
+  `check` and `execute` dropped the value.
+- L1-100 and L1-101. `owner/.git` was handed to `gh`; `www.github.com` was
+  refused as another host, or as neither a path nor a name.
+- L1-77. A source that lost a blob ended each in a `ValueError` at
+  `Source.tree`, exit 1.
+
 NO NETWORK AND NO GITHUB: `gh repo clone` is a `git clone` of a repository
 on disk, and only `testorg/Thing` is found (`gh_clones`).
 """
@@ -73,6 +90,10 @@ GONE_REMEDY = ("Remediation: pass the source again with --source: the path "
                "held to the plan's `commit:`.")
 MINE = "mine\n"
 MARKER = "mine.txt"
+#: What `source-unresolvable` says of a `--source` that names nothing, and
+#: of a url that names no repository on GitHub.
+NEITHER = "is neither a path that exists nor an `org/repo` name"
+NO_OWNER_REPO = "names no `owner/repo` on github.com"
 
 
 def run(adopter, capsys, *argv: str) -> tuple[int, str, str]:
@@ -216,6 +237,13 @@ SPELLINGS = {
     "url-upper-case": f"HTTPS://GitHub.com/{REPOSITORY}",
     "scp": f"git@github.com:{REPOSITORY}.git",
     "no-scheme": f"github.com/{REPOSITORY}",
+    # #796's L1-101: GitHub's own host, as a browser's address bar spells it.
+    # On main the url was refused as a repository on another host, and the
+    # form with no scheme as neither a path nor a name.
+    "www-url": f"https://www.github.com/{REPOSITORY}",
+    "www-no-scheme": f"WWW.GitHub.com/{REPOSITORY}",
+    # `.git` dropped in any case, as `.git` is (#831's review, F2).
+    "dot-git-upper-case": f"{REPOSITORY}.GIT",
 }
 
 
@@ -241,6 +269,20 @@ NAMES_NO_REPOSITORY = {
                      "clones from github.com alone"),
     "three-segments": (f"a/{REPOSITORY}",
                        "is neither a path that exists nor an `org/repo` name"),
+    # #796's L1-100: a repository named `.git`, which `gh` was handed, to
+    # clone into `source-readonly/.git`, and refused `source-unclonable`
+    # with a remedy about `gh auth status`.
+    "dot-git-repository": (f"{ORG}/.git", NEITHER),
+    # ... in any case, as GitHub and a disk that ignores case read it (#831's
+    # review, F2): on main and before it, `gh` was handed each of these.
+    "dot-git-upper-case": (f"{ORG}/.GIT", NEITHER),
+    "dot-git-mixed-case": (f"{ORG}/.Git.git", NEITHER),
+    "url-dot-git-repository": (f"https://github.com/{ORG}/.git.git",
+                               NO_OWNER_REPO),
+    # Controls: `.` and `..` name no repository either, whatever `.git`
+    # follows them, as since #652.
+    "dot-dot-git-repository": (f"{ORG}/..git", NEITHER),
+    "url-dot-dot-repository": (f"https://github.com/{ORG}/..", NO_OWNER_REPO),
 }
 
 
@@ -744,11 +786,357 @@ def test_execute_into_a_work_dir_holding_its_clone_says_nothing_exists(
         "it once nothing in it is needed.")
 
 
+# --- #796: a `--source` that names no repository's top level -----------------
+
+NOT_TOP_LEVEL = "REFUSED source-not-top-level: "
+#: What `source-not-top-level` says a source is, after what was given.
+TOP_LEVEL_ONLY = "a source is the top-level directory of a repository"
+#: Its way out, for a `--source` and a recorded `local_path` alike.
+TOP_LEVEL_REMEDY = (
+    "Remediation: pass --source the repository's top-level directory, which "
+    "`git rev-parse --show-toplevel` prints in any directory of it, or its "
+    "`org/repo`.")
+README = "README.md"
+#: A path inside the local source that is no top level: a file, a directory
+#: of its work tree, a directory of its git directory.
+INSIDE = {"file": README, "directory": "src", "git-directory": ".git/objects"}
+#: A `~user` no machine running the suite has, which bash passes through as
+#: typed, and `os.path.expanduser` leaves as typed.
+NO_SUCH_USER = "~no-such-user-796/Thing"
+#: The empty `--source`, as `--source "$SRC"` passes it with `SRC` unset.
+EMPTY_REFUSED = [
+    f"{UNRESOLVABLE}--source '' names no path: an empty one would be read "
+    "as the directory this runs in",
+    "Remediation: pass the repository's top-level directory (`.` for this "
+    "directory), or its `org/repo`. Without --source, `check` and `execute` "
+    "read the plan's own source."]
+AGAIN = "again.yaml"
+
+
+def local_source(tmp_path: Path) -> Path:
+    """A clone of `testorg/Thing` on this machine: its `origin` names it."""
+    source = make_source_repo(tmp_path / "local" / PROJECT, tree=SMALL_TREE,
+                              edits=())
+    git("remote", "add", "origin", f"https://github.com/{REPOSITORY}.git",
+        cwd=source)
+    return source
+
+
+def no_github(adopter, monkeypatch, tmp_path: Path) -> list:
+    """`gh repo clone` stood in for, finding nothing: its calls."""
+    return gh_clones(adopter, monkeypatch, tmp_path / "nowhere")
+
+
+def planned_here(adopter, monkeypatch, capsys,
+                 tmp_path: Path) -> tuple[Path, Path, list]:
+    """`(source, plan, gh calls)`: `plan` of `local_source`, in this
+    process, with `gh repo clone` stood in for; stdin is no terminal, and
+    `git filter-repo` is not asked for, as in `planned_from_github`:
+    `execute` asks for it before it reads the source's tree, so without
+    it on PATH a lost blob would never be reached."""
+    calls = no_github(adopter, monkeypatch, tmp_path)
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    source = local_source(tmp_path)
+    plan = tmp_path / PLAN
+    code, _, err = run(adopter, capsys, *plan_args(
+        str(source), plan, WORK_FLAG, str(tmp_path / WORK)))
+    assert code == 0, err
+    return source, plan, calls
+
+
+def given_source(command: str, plan: Path, given: str,
+                 tmp_path: Path) -> list[str]:
+    """`command --source given`: `plan`, writing `AGAIN`; or `check` or
+    `execute` of `plan`, given a `--local-remote-dir` in `tmp_path`."""
+    if command == PLAN_VERB:
+        return plan_args(given, tmp_path / AGAIN)
+    return [command, PLAN_FLAG, str(plan), SOURCE_FLAG, given,
+            *remotes(tmp_path)]
+
+
+def remotes(tmp_path: Path) -> list[str]:
+    """`--local-remote-dir`, in `tmp_path`: `execute` makes no `gh` call."""
+    return [LOCAL_REMOTE_DIR, str(tmp_path / REMOTES)]
+
+
+def nothing_was_made(tmp_path: Path, calls: list) -> None:
+    """No plan written, no leg repository made, no `gh` run."""
+    assert not (tmp_path / AGAIN).exists()
+    assert not (tmp_path / REMOTES).exists()
+    assert calls == []
+
+
+def not_top_level(named: str, source: Path, inside: str) -> str:
+    """The first line of `source-not-top-level` for `inside`, a path in
+    `source`, which the refusal calls `named`."""
+    if inside == INSIDE["file"]:
+        return (f"{NOT_TOP_LEVEL}{named} is not a directory, and "
+                f"{TOP_LEVEL_ONLY}")
+    if inside == INSIDE["git-directory"]:
+        return in_a_git_directory(named, source / ".git")
+    return (f"{NOT_TOP_LEVEL}{named} is `{inside}/` inside the repository at "
+            f"{spelled(os.path.realpath(source))}, and {TOP_LEVEL_ONLY}: read "
+            f"from there, it would be only what is under `{inside}/`")
+
+
+def in_a_git_directory(named: str, git_dir: Path) -> str:
+    """The first line of `source-not-top-level` for a directory inside
+    `git_dir`, which the refusal calls `named`."""
+    return (f"{NOT_TOP_LEVEL}{named} is inside the git directory "
+            f"{spelled(os.path.realpath(git_dir))}, and {TOP_LEVEL_ONLY}")
+
+
+def local_path_now(adopter, plan: Path, value: str) -> None:
+    """The plan's `source.local_path` edited to `value`, as a person may."""
+    edited(plan, f"  local_path: {adopter.y(recorded(plan)['local_path'])}"
+           .encode(), f"  local_path: {adopter.y(value)}".encode())
+
+
+@pytest.mark.parametrize("command", [PLAN_VERB, CHECK, EXECUTE])
+@pytest.mark.parametrize("inside", list(INSIDE.values()), ids=list(INSIDE))
+def test_a_source_that_is_no_top_level_is_refused_by_name(
+        adopter, monkeypatch, capsys, tmp_path, command, inside):
+    """L1-64 and L1-88. On main a file ended each command in a
+    `NotADirectoryError` traceback, exit 1; `plan` of a directory inside the
+    repository planned only what is under it, exit 0, and `check` then
+    refused `git-failed` and `execute` `adopt-remote-unreadable`. Now each
+    is refused before git reads anything else in it."""
+    source, plan, calls = planned_here(adopter, monkeypatch, capsys, tmp_path)
+    given = str(source / inside)
+    code, out, err = run(adopter, capsys,
+                         *given_source(command, plan, given, tmp_path))
+    assert code == 2, err
+    assert err.splitlines() == [
+        not_top_level(f"--source {given!r}", source, inside), TOP_LEVEL_REMEDY]
+    assert out == ""
+    nothing_was_made(tmp_path, calls)
+
+
+@pytest.mark.parametrize("command", [CHECK, EXECUTE])
+@pytest.mark.parametrize("inside", list(INSIDE.values()), ids=list(INSIDE))
+def test_a_recorded_local_path_that_is_no_top_level_is_named_by_its_key(
+        adopter, monkeypatch, capsys, tmp_path, command, inside):
+    """A plan whose `local_path:` names a file or a directory inside the
+    repository, as a plan main wrote for one does: on main the first ended
+    in a traceback, and the second was read as the source."""
+    source, plan, calls = planned_here(adopter, monkeypatch, capsys, tmp_path)
+    value = str(source / inside)
+    local_path_now(adopter, plan, value)
+    code, _, err = run(adopter, capsys, command, PLAN_FLAG, str(plan),
+                       *remotes(tmp_path))
+    assert code == 2, err
+    assert err.splitlines() == [not_top_level(
+        f"the plan's `source.local_path`, {spelled(value)},", source, inside),
+        TOP_LEVEL_REMEDY]
+    nothing_was_made(tmp_path, calls)
+
+
+def test_dot_in_a_directory_inside_the_repository_is_refused(
+        adopter, monkeypatch, capsys, tmp_path):
+    """L1-88: on main `plan --source .` run in `<repo>/src` planned what is
+    under `src/`, exit 0."""
+    calls = no_github(adopter, monkeypatch, tmp_path)
+    source = local_source(tmp_path)
+    monkeypatch.chdir(source / INSIDE["directory"])
+    code, _, err = run(adopter, capsys, *plan_args(".", tmp_path / AGAIN))
+    assert code == 2, err
+    assert err.splitlines()[0] == not_top_level(
+        "--source '.'", source, INSIDE["directory"])
+    nothing_was_made(tmp_path, calls)
+
+
+def git_directories(source: Path, tmp_path: Path) -> dict[str, Path]:
+    """The git directories of `source`'s repository: its own `.git`, a bare
+    clone of it, and a linked worktree's."""
+    bare = tmp_path / "bare.git"
+    git("clone", "-q", "--bare", str(source), str(bare), cwd=tmp_path)
+    git("worktree", "add", "-q", str(tmp_path / "wt"), "-b", "wt", cwd=source)
+    return {"dot-git": source / ".git", "bare": bare,
+            "worktree": source / ".git" / "worktrees" / "wt"}
+
+
+@pytest.mark.parametrize("which", ["dot-git", "bare", "worktree"])
+def test_a_git_directory_itself_is_read_whole(adopter, monkeypatch, capsys,
+                                              tmp_path, which):
+    """The controls of #831's review, F1: a git directory is a repository's
+    own, and is read whole, as on main."""
+    calls = no_github(adopter, monkeypatch, tmp_path)
+    given = git_directories(local_source(tmp_path), tmp_path)[which]
+    plan = tmp_path / PLAN
+    code, _, err = run(adopter, capsys, *plan_args(str(given), plan))
+    assert code == 0, err
+    assert recorded(plan)["local_path"] == os.path.realpath(given)
+    assert calls == []
+
+
+def test_a_directory_inside_a_bare_repository_is_refused(
+        adopter, monkeypatch, capsys, tmp_path):
+    """#831's review, F1: inside a git directory `--show-prefix` prints
+    nothing, so `plan` planned the whole repository from `<bare>.git/refs`,
+    exit 0, and recorded that directory, which `check` and `execute` could
+    not read as a repository. `.git/objects` is in `INSIDE`."""
+    calls = no_github(adopter, monkeypatch, tmp_path)
+    bare = git_directories(local_source(tmp_path), tmp_path)["bare"]
+    given = str(bare / "refs")
+    code, _, err = run(adopter, capsys, *plan_args(given, tmp_path / AGAIN))
+    assert code == 2, err
+    assert err.splitlines() == [
+        in_a_git_directory(f"--source {given!r}", bare), TOP_LEVEL_REMEDY]
+    nothing_was_made(tmp_path, calls)
+
+
+@pytest.mark.parametrize("command", [CHECK, EXECUTE])
+def test_an_empty_recorded_local_path_is_refused_and_never_cloned(
+        adopter, monkeypatch, capsys, tmp_path, command):
+    """#831's review, F3, L1-96's cause in the plan: on main `if
+    local_path:` read `local_path: ""` as none, and the plan's
+    `source.repository` was cloned from GitHub, though `plan` made no clone
+    of it."""
+    _, plan, calls = planned_here(adopter, monkeypatch, capsys, tmp_path)
+    local_path_now(adopter, plan, "")
+    code, _, err = run(adopter, capsys, command, PLAN_FLAG, str(plan),
+                       *remotes(tmp_path))
+    assert code == 2, err
+    assert err.splitlines()[:2] == [
+        f"{GONE_REFUSED}the plan's `source.local_path` is empty: it names no "
+        "path, and an empty path would be read as the directory this runs in",
+        GONE_REMEDY]
+    nothing_was_made(tmp_path, calls)
+
+
+@pytest.mark.parametrize("dot", [False, True], ids=["top-level", "dot-there"])
+def test_the_top_level_is_read_in_place(adopter, monkeypatch, capsys,
+                                        tmp_path, dot):
+    """The controls: the top-level directory, and `.` run there, plan the
+    whole repository, read where it is, as on main."""
+    calls = no_github(adopter, monkeypatch, tmp_path)
+    source = local_source(tmp_path)
+    if dot:
+        monkeypatch.chdir(source)
+    plan = tmp_path / PLAN
+    code, _, err = run(adopter, capsys,
+                       *plan_args("." if dot else str(source), plan))
+    assert code == 0, err
+    assert recorded(plan)["local_path"] == os.path.realpath(source)
+    assert recorded(plan)["cloned"] is False
+    assert calls == []
+
+
+def test_the_source_line_names_the_directory_read_beside_its_repository(
+        adopter, monkeypatch, capsys, tmp_path):
+    """L1-88's rider: on main `plan` of a local directory said only the
+    repository its `origin` names, so the line read the same whatever
+    directory was read. A clone `plan` made is named by its repository."""
+    source = local_source(tmp_path)
+    calls = on_github(adopter, monkeypatch, tmp_path)
+    assert source_line(adopter, capsys, str(source), tmp_path / PLAN) \
+        .startswith(f"source     {os.path.realpath(source)} (origin: "
+                    f"{REPOSITORY}) @ ")
+    assert source_line(adopter, capsys, REPOSITORY, tmp_path / AGAIN) \
+        .startswith(f"source     {REPOSITORY} @ ")
+    assert len(calls) == 1
+
+
+def source_line(adopter, capsys, spec: str, out: Path) -> str:
+    """The `source` line of `plan --source spec`'s report."""
+    code, said, err = run(adopter, capsys, *plan_args(spec, out))
+    assert code == 0, err
+    [line] = [line for line in said.splitlines()
+              if line.startswith("source ")]
+    return line
+
+
+@pytest.mark.parametrize("command", [PLAN_VERB, CHECK, EXECUTE])
+def test_an_unknown_user_in_the_source_is_unresolvable(
+        adopter, monkeypatch, capsys, tmp_path, command):
+    """L1-95. On main `Path.expanduser` raised `RuntimeError: Could not
+    determine home directory.`, exit 1. One mistyped user name was enough."""
+    _, plan, calls = planned_here(adopter, monkeypatch, capsys, tmp_path)
+    code, _, err = run(adopter, capsys,
+                       *given_source(command, plan, NO_SUCH_USER, tmp_path))
+    assert code == 2, err
+    assert err.startswith(
+        f"{UNRESOLVABLE}--source {NO_SUCH_USER!r} {NEITHER}\n"), err
+    nothing_was_made(tmp_path, calls)
+
+
+@pytest.mark.parametrize("command", [CHECK, EXECUTE])
+def test_a_recorded_path_under_an_unknown_user_is_gone(
+        adopter, monkeypatch, capsys, tmp_path, command):
+    """A path the person gave: on main `check` and `execute` ended in the
+    same `RuntimeError` at `Plan._recorded_source`."""
+    _, plan, calls = planned_here(adopter, monkeypatch, capsys, tmp_path)
+    local_path_now(adopter, plan, NO_SUCH_USER)
+    code, _, err = run(adopter, capsys, command, PLAN_FLAG, str(plan))
+    assert code == 2, err
+    assert err.splitlines()[:2] == [
+        f"{GONE_REFUSED}the plan's `source.local_path`, "
+        f"{spelled(NO_SUCH_USER)}, {NOT_MADE}", GONE_REMEDY]
+    assert calls == []
+
+
+def test_a_recorded_clone_under_an_unknown_user_is_cloned_again(
+        adopter, monkeypatch, capsys, tmp_path):
+    """A clone `plan` made, recorded under a path that is gone, is cloned
+    again, as any clone of its that is gone is."""
+    planned = planned_from_github(adopter, monkeypatch, tmp_path)
+    local_path_now(adopter, planned.plan, NO_SUCH_USER)
+    code, out, err = run(adopter, capsys, CHECK, PLAN_FLAG, str(planned.plan))
+    assert code == 0, err
+    assert f"{GONE}{spelled(NO_SUCH_USER)}, no longer exists, so its " in out
+    assert [call[:4] for call in planned.calls] == [CLONE, CLONE]
+
+
+@pytest.mark.parametrize("command", [PLAN_VERB, CHECK, EXECUTE])
+def test_an_empty_source_names_no_path_and_is_refused(
+        adopter, monkeypatch, capsys, tmp_path, command):
+    """L1-96. On main `plan --source ''` run inside a repository planned that
+    repository, exit 0, as `--source "$SRC"` did with `SRC` unset; `check`
+    and `execute` dropped the value and read the plan's own source."""
+    source, plan, calls = planned_here(adopter, monkeypatch, capsys, tmp_path)
+    monkeypatch.chdir(source)
+    code, _, err = run(adopter, capsys,
+                       *given_source(command, plan, "", tmp_path))
+    assert code == 2, err
+    assert err.splitlines() == EMPTY_REFUSED
+    nothing_was_made(tmp_path, calls)
+
+
+def blob_lost(source: Path, path: str) -> None:
+    """The blob of `path` at the source's tip removed from its object store,
+    as a cleaner or a bad copy loses one."""
+    oid = git("rev-parse", f"HEAD:{path}", cwd=source).stdout.strip()
+    writable(source / ".git" / "objects" / oid[:2] / oid[2:]).unlink()
+
+
+@pytest.mark.parametrize("command", [PLAN_VERB, CHECK, EXECUTE])
+def test_a_source_that_lost_a_blob_is_refused_naming_it_and_git_fsck(
+        adopter, monkeypatch, capsys, tmp_path, command):
+    """L1-77. `git ls-tree -r -l` prints `BAD` for the size of a blob it
+    cannot read and still exits 0: on main each command ended in a
+    `ValueError` traceback at `Source.tree`, exit 1."""
+    source, plan, calls = planned_here(adopter, monkeypatch, capsys, tmp_path)
+    blob_lost(source, README)
+    code, _, err = run(adopter, capsys,
+                       *given_source(command, plan, str(source), tmp_path))
+    assert code == 2, err
+    first, remedy = err.splitlines()[:2]
+    assert first.startswith("REFUSED git-failed: `git ls-tree -r -l -z "), err
+    assert f" gives no size for `{README}`, " in first, err
+    assert remedy.startswith(
+        f"Remediation: run `git fsck` in {os.path.realpath(source)}: "), err
+    nothing_was_made(tmp_path, calls)
+
+
 # --- what `--help` says -------------------------------------------------------
 
 @pytest.mark.parametrize(("command", "code"), [
     (PLAN_VERB, "source-ambiguous"), (CHECK, "plan-source-gone"),
-    (EXECUTE, "plan-source-gone")])
+    (EXECUTE, "plan-source-gone"),
+    # #796: a path that is no repository's top level, and an empty value.
+    (PLAN_VERB, "source-not-top-level"), (CHECK, "source-not-top-level"),
+    (EXECUTE, "source-not-top-level"), (PLAN_VERB, "source-unresolvable")])
 def test_the_source_help_names_its_refusal_whole_on_one_line(command, code):
     """`docs/cli.md` is grepped for the code a tool prints."""
     result = run_script(ADOPT, command, "--help", env=HELP_ENV)
