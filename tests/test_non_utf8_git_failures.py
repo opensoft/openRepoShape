@@ -36,6 +36,9 @@ exception is behind it.
 the file name encoding is ASCII, and the U+202E test's `mkdir` raised
 `UnicodeEncodeError`, a `ValueError` its old `except OSError` never caught,
 so the test ended in an error. It asks the encoding before the `mkdir` now.
+The six tests of `tests/test_adopt_template_values.py` that ask it before
+`make_source_repo` (a flag, an elector or a directory that ASCII cannot
+spell) are held for CI, which runs UTF-8, by rows that emulate ASCII.
 
 Each place is called here as a plain function, with git made to fail as a
 full disk makes `git commit` fail, or with a system emulated that CI does not
@@ -52,7 +55,10 @@ run (CI is Linux only, #597; no Windows or macOS run was made):
   before anything is made; a branch that is text asks neither and goes on
   to git;
 - an ASCII file name encoding: a branch that is text, and the U+202E test, are
-  skipped on the encoding's reason, before git and before the `mkdir`;
+  skipped on the encoding's reason, before git and before the `mkdir`; so
+  are the six tests of `tests/test_adopt_template_values.py` that ask the
+  encoding first, before `make_source_repo` (which would fail here) and
+  before anything is made under `tmp_path`;
 - every `tests/*.py`, read as #853's scan reads it and wider: no `except`
   that catches an `AssertionError` (one that names it, `Exception` or
   `BaseException`, or a bare one) holds a `pytest.skip`.
@@ -287,6 +293,57 @@ def test_where_the_file_name_encoding_cannot_spell_u202e_the_bidi_test_skips(
     assert reason is not None, "the test went on past an ASCII encoding"
     assert "this system's file name encoding" in reason, reason
     assert "cannot spell" in reason, reason
+    assert list(tmp_path.iterdir()) == []
+
+
+#: The six tests of `tests/test_adopt_template_values.py` that skip where the
+#: file name encoding cannot spell their value (#854), each called with a
+#: `tmp_path`: the flag test with the three values ASCII cannot spell (U+2028,
+#: U+202E and U+2066), the elector test with `Jos\u00e9` and a name joined
+#: with U+200C, and the test of a source under a directory `caf\u00e9`.
+WHERE_ASCII_CANNOT_SPELL = [
+    pytest.param(
+        lambda base: template_values.test_plan_refuses_a_flag_no_file_can_hold(
+            base, "--elected-by", "Jos\u2028e"),
+        id="flag-u2028"),
+    pytest.param(
+        lambda base: template_values.test_plan_refuses_a_flag_no_file_can_hold(
+            base, "--elected-by", "\u202eevil"),
+        id="flag-u202e"),
+    pytest.param(
+        lambda base: template_values.test_plan_refuses_a_flag_no_file_can_hold(
+            base, "--reference", "ref \u2066x\u2069 y"),
+        id="flag-u2066"),
+    pytest.param(
+        lambda base: template_values
+        .test_a_valid_non_ascii_elector_still_adopts(base, "Jos\u00e9"),
+        id="elector-accented"),
+    pytest.param(
+        lambda base: template_values
+        .test_a_valid_non_ascii_elector_still_adopts(base, "Ali\u200cReza"),
+        id="elector-zwnj"),
+    pytest.param(
+        template_values
+        .test_a_utf8_source_directory_still_adopts_with_local_remotes,
+        id="cafe-directory"),
+]
+
+
+@pytest.mark.parametrize("call", WHERE_ASCII_CANNOT_SPELL)
+def test_where_the_file_name_encoding_is_ascii_the_template_values_tests_skip(
+        tmp_path, monkeypatch, call):
+    """`LC_ALL=C` (emulated): `os.fsencode` is ASCII, so each test skips on
+    the encoding's reason before `make_source_repo` (which fails here, as git
+    fails on a full disk) and before any directory is made, and makes nothing
+    under `tmp_path`. CI runs UTF-8, where a test that asked after either
+    would still pass; these rows fail it there, as the real `LC_ALL=C` run
+    does."""
+    monkeypatch.setattr(template_values, "make_source_repo",
+                        a_source_git_cannot_make)
+    monkeypatch.setattr(os, "fsencode", ascii_fsencode)
+    reason = skip_message(call, tmp_path)
+    assert reason is not None, "the test went on under an ASCII encoding"
+    assert "file name encoding" in reason, reason
     assert list(tmp_path.iterdir()) == []
 
 

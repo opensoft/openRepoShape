@@ -1177,12 +1177,14 @@ def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
     probe.rmdir()
 
 
-def windows_fsencode(text: str | bytes) -> bytes:
+def windows_fsencode(text: str | bytes | os.PathLike) -> bytes:
     """`os.fsencode` as Windows has it: UTF-8 with `surrogatepass`, so every
-    lone surrogate is the three bytes of a sequence that is not UTF-8. Bytes
-    go through as they are, as `os.fsencode` passes them on every system. For
+    lone surrogate is the three bytes of a sequence that is not UTF-8. A path
+    is taken as the real `os.fsencode` takes it (`os.fspath` first), and
+    bytes go through as they are, as it passes them on every system. For
     `monkeypatch.setattr(os, "fsencode", windows_fsencode)`, which puts the
     guard above in front of a test that Linux would let through."""
+    text = os.fspath(text)
     if isinstance(text, bytes):
         return text
     return text.encode("utf-8", "surrogatepass")
