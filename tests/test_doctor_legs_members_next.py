@@ -28,7 +28,9 @@ git's `GIT_CONFIG_COUNT` entries -- the fixtures' remotes are bare
 repositories on disk, which git refuses as a submodule URL by default --
 appended at the call to the entries the environment holds (`paste_env`), and
 never through `GIT_ALLOW_PROTOCOL`, which would override git's `user` policy
-for the whole run.
+for the whole run. Where it may clone a mount, it also gets the rewrite every
+other clone of the suite carries, so that the remote is read through git and
+not through its files (`paste(row, cwd, remotes)`, #835).
 
 WHAT IS ASSERTED IS WHAT THE COMMAND DOES, and the explanation beside it is
 read through `why_of` alone, so that moving the `   # ` tail into a field of
@@ -50,22 +52,33 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import pytest
 
 from conftest import (WINDOWS_SKIP, appended_to_command_scope,
-                      cloned_just_pushed, git, rmtree,
+                      cloned_just_pushed, git, insteadof_entries, rmtree,
                       submodule_update_through_git)
 from test_doctor_gitmodules_not_utf8 import listed_locale
 from test_shape_doctor import (  # noqa: F401
     FAMILY_MEMBER, FAMILY_NAME, GIT_IDENTITY, PROJECT, commit_all, doctor,
     doctor_module, holder, project, record_gitlink, rows_of,
-    scaffolded_here, standard,
+    scaffolded_here, siblings, standard,
 )
 
 
-def paste_env() -> dict:
+def paste_env(remotes: Path | None = None) -> dict:
     """What every pasted git line runs under: the identity a commit needs
     (this container has none, and neither does a fresh CI runner), the file
     protocol for ONE process tree, and no `PYTHONPATH` from the person
     running the suite -- a template line that needed one from the reader is
     exactly what these tests are not allowed to depend on.
+
+    With `remotes`, the directory the fixtures' bare repositories are in, the
+    `url.<file URI>.insteadOf` entries every other read of them carries
+    (`insteadof_entries`, #662) follow the file protocol in the same count:
+    for the directory resolved, which is how `.gitmodules` records each url.
+    A mount a pasted `git submodule update --init` clones from a plain path
+    gets git's LOCAL clone, which links the remote's loose objects one file
+    at a time (#440) and starts `upload-pack` only to list the refs. With the
+    rewrite the objects arrive as a pack (`pack-objects`, `index-pack`) that
+    `upload-pack` reads from the object store, and the clone's `origin` keeps
+    the plain path.
 
     BUILT AT THE CALL, from the `os.environ` of that moment, and the file
     protocol is APPENDED to the `GIT_CONFIG_COUNT` entries it holds
@@ -75,10 +88,12 @@ def paste_env() -> dict:
     before the session fixture ran, so it held none of those, and its own
     `GIT_CONFIG_COUNT` of 1 would have dropped the ones the environment did
     hold (#758)."""
+    entries = [("protocol.file.allow", "always")]
+    if remotes is not None:
+        entries += insteadof_entries(remotes)
     return {**{k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
             **GIT_IDENTITY,
-            **appended_to_command_scope(
-                os.environ, [("protocol.file.allow", "always")]),
+            **appended_to_command_scope(os.environ, entries),
             "PYTHONDONTWRITEBYTECODE": "1"}
 
 
@@ -107,13 +122,25 @@ def row_of(standard: Path, root: Path, row_id: str) -> dict:
     return rows_of(doctor(standard, root, "--json"))[row_id]
 
 
-def paste(row: dict, cwd: Path) -> subprocess.CompletedProcess:
+def remotes_of(fixture: dict) -> Path:
+    """The directory a session fixture (`scaffolded_here`, `holder`)
+    scaffolded its bare repositories into."""
+    return fixture["base"] / "remotes"
+
+
+def paste(row: dict, cwd: Path,
+          remotes: Path | None = None) -> subprocess.CompletedProcess:
     """The row's NEXT exactly as it was printed, in a POSIX shell, from a
-    directory that is not the root."""
+    directory that is not the root, under `paste_env(remotes)`: every
+    caller that pastes a root made from the fixtures hands `remotes`, as
+    `remotes_of(holder)` or `remotes_of(scaffolded_here)` on a fixture its
+    test takes, and `tests/test_doctor_paste_through_git.py` holds each of
+    them to that."""
     cwd.mkdir(exist_ok=True)
     return subprocess.run(["sh", "-c", row["next"]], cwd=str(cwd),
                           capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", check=False, env=paste_env(),
+                          errors="replace", check=False,
+                          env=paste_env(remotes),
                           stdin=subprocess.DEVNULL)
 
 
@@ -420,7 +447,7 @@ def test_the_bootstrap_sentence_is_said_only_where_the_script_can_run(
                                       "bootstrap-absent",
                                       "repo-shape-absent"])
 def test_a_pasted_legs_next_exits_zero_and_the_legs_row_is_ok(
-        standard, project, tmp_path, scenario):
+        standard, project, scaffolded_here, tmp_path, scenario):
     """The point of the whole change: paste what the row printed, from
     somewhere else, and the row is green. Four of the five roots of
     `CHECKOUT_SCENARIOS`; the detached one has a commit to keep first and is
@@ -428,7 +455,7 @@ def test_a_pasted_legs_next_exits_zero_and_the_legs_row_is_ok(
     made = CHECKOUT_SCENARIOS[scenario](project)
     row = row_of(standard, project, "legs")
     assert row["status"] == "FINDING", row
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert "can't open file" not in result.stdout + result.stderr
     after = row_of(standard, project, "legs")
@@ -443,7 +470,7 @@ def test_a_pasted_legs_next_exits_zero_and_the_legs_row_is_ok(
 
 @WINDOWS_SKIP
 def test_the_keep_line_in_the_explanation_keeps_a_detached_commit(
-        standard, project, tmp_path):
+        standard, project, scaffolded_here, tmp_path):
     """The note's own advice is pasted too: run the `git -C <leg> branch
     NAME` it names BEFORE the line, and the commit is on that branch after
     the leg has moved. Without it the commit is reachable from no branch and
@@ -456,7 +483,7 @@ def test_the_keep_line_in_the_explanation_keeps_a_detached_commit(
                           capture_output=True, text=True, check=False,
                           env=paste_env())
     assert kept.returncode == 0, kept.stdout + kept.stderr
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, project, "legs")["status"] == "ok"
     assert "kept" in git("branch", "--contains", made["commit"],
@@ -465,11 +492,12 @@ def test_the_keep_line_in_the_explanation_keeps_a_detached_commit(
 
 @WINDOWS_SKIP
 def test_without_the_keep_line_the_detached_commit_is_in_no_branch(
-        standard, project, tmp_path):
+        standard, project, scaffolded_here, tmp_path):
     """The other half of the note, so it is true and not merely printed: the
     row is cured and the commit is reachable from no branch."""
     made = make_detached_past_the_pin(project)
-    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere",
+                   remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, project, "legs")["status"] == "ok"
     assert git("branch", "--contains", made["commit"],
@@ -483,7 +511,7 @@ def test_without_the_keep_line_the_detached_commit_is_in_no_branch(
 @WINDOWS_SKIP
 @pytest.mark.parametrize("mode", ["merge", "rebase", "none"])
 def test_a_configured_update_mode_cannot_turn_the_line_into_a_merge(
-        standard, project, tmp_path, mode):
+        standard, project, scaffolded_here, tmp_path, mode):
     """`git submodule update` obeys `submodule.<name>.update`: under `merge`
     or `rebase` the same line WRITES a merge or a rebased commit into the
     leg and the row stays red, and under `none` it skips the mount, each
@@ -508,7 +536,7 @@ def test_a_configured_update_mode_cannot_turn_the_line_into_a_merge(
     row = row_of(standard, project, "legs")
     assert row["status"] == "FINDING", row
     assert "--checkout" in command_of(row), row["next"]
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, project, "legs")["status"] == "ok", (
         result.stdout, result.stderr)
@@ -530,7 +558,7 @@ def test_a_plain_clones_empty_mounts_are_cured_by_the_pasted_line(
     row = row_of(standard, plain, "legs")
     assert row["status"] == "FINDING", row
     assert command_of(row).endswith("-- spec code"), row["next"]
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert "not initialized" not in result.stdout + result.stderr
     after = row_of(standard, plain, "legs")
@@ -590,7 +618,7 @@ def test_the_lockstep_line_names_the_template_copy_with_its_environment(
 @WINDOWS_SKIP
 @pytest.mark.parametrize("own_copy", [True, False])
 def test_a_pasted_lockstep_line_runs_and_prints_the_gate_finding(
-        standard, project, tmp_path, own_copy):
+        standard, project, scaffolded_here, tmp_path, own_copy):
     """Pasted from elsewhere, with no `PYTHONPATH` in the environment: the
     gate runs (the template's line carries what it needs), exits 1, and says
     which fact is wrong. It is a finding, as it was before the paste -- no
@@ -600,7 +628,7 @@ def test_a_pasted_lockstep_line_runs_and_prints_the_gate_finding(
         git("rm", "-q", "scripts/validate-pins.py", cwd=project)
     make_gitlink_moved(project)
     row = row_of(standard, project, "legs")
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(scaffolded_here))
     output = result.stdout + result.stderr
     assert result.returncode == 1, output
     assert "pin-gitlink-mismatch" in output, output
@@ -711,7 +739,7 @@ def test_a_pasted_members_next_with_the_holders_bootstrap_cures_the_row(
     root = holder_copy(holder, tmp_path)
     member_unbootstrapped(root)
     row = row_of(standard, root, "members")
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(holder))
     assert result.returncode == 0, result.stdout + result.stderr
     after = row_of(standard, root, "members")
     assert after["status"] == "ok", (after, result.stdout, result.stderr)
@@ -748,7 +776,7 @@ def test_a_pasted_members_git_line_cures_the_row(standard, holder, tmp_path):
     holder_without(root, "bootstrap.py")
     member_unbootstrapped(root)
     row = row_of(standard, root, "members")
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(holder))
     assert result.returncode == 0, result.stdout + result.stderr
     assert "can't open file" not in result.stdout + result.stderr
     after = row_of(standard, root, "members")
@@ -798,7 +826,7 @@ def test_a_pasted_members_git_line_keeps_a_detached_commit_on_the_kept_branch(
     assert keep, why_of(row)
     subprocess.run(["sh", "-c", keep.group(0).replace("NAME", "kept")],
                    capture_output=True, check=True, env=paste_env())
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(holder))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, root, "members")["status"] == "ok"
     assert "kept" in git("branch", "--contains", commit, cwd=member).stdout
@@ -976,7 +1004,7 @@ def test_a_pasted_family_gate_line_runs_and_prints_its_finding(
     make_member_pin_not_a_commit(root)
     git("rm", "-q", "scripts/validate-family.py", cwd=root)
     row = row_of(standard, root, "members")
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(holder))
     output = result.stdout + result.stderr
     assert result.returncode in (1, 2), output
     assert "can't open file" not in output
@@ -1113,14 +1141,14 @@ def test_413a_a_kept_repository_on_a_branch_or_at_the_gitlink_is_not_named(
 
 @WINDOWS_SKIP
 def test_413a_the_keep_line_keeps_the_emptied_legs_commit_through_the_paste(
-        standard, project, tmp_path):
+        standard, project, scaffolded_here, tmp_path):
     commit = emptied_with_its_repository_kept(project, "spec")
     row = row_of(standard, project, "legs")
     keep = KEPT_LINE.search(why_of(row))
     assert keep, why_of(row)
     kept = sh(keep.group(0).replace("NAME", "kept"), tmp_path / "keep")
     assert kept.returncode == 0, kept.stdout + kept.stderr
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, project, "legs")["status"] == "ok"
     assert "kept" in git("branch", "--contains", commit,
@@ -1129,9 +1157,10 @@ def test_413a_the_keep_line_keeps_the_emptied_legs_commit_through_the_paste(
 
 @WINDOWS_SKIP
 def test_413a_without_the_keep_line_the_emptied_legs_commit_is_in_no_ref(
-        standard, project, tmp_path):
+        standard, project, scaffolded_here, tmp_path):
     commit = emptied_with_its_repository_kept(project, "spec")
-    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere",
+                   remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, project, "legs")["status"] == "ok"
     spec = project / "spec"
@@ -1143,7 +1172,7 @@ def test_413a_without_the_keep_line_the_emptied_legs_commit_is_in_no_ref(
 
 @WINDOWS_SKIP
 def test_413a_with_the_mount_directory_gone_the_keep_line_still_runs(
-        standard, project, tmp_path):
+        standard, project, scaffolded_here, tmp_path):
     """The kept repository's own `core.worktree` names the mount, and with
     that directory gone git refuses every command in the repository, the
     keep line included (`cannot chdir`, exit 128). The line then carries a
@@ -1156,7 +1185,7 @@ def test_413a_with_the_mount_directory_gone_the_keep_line_still_runs(
     assert "--work-tree=" in keep.group(0), why_of(row)
     kept = sh(keep.group(0).replace("NAME", "kept"), tmp_path / "keep")
     assert kept.returncode == 0, kept.stdout + kept.stderr
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, project, "legs")["status"] == "ok"
     assert "kept" in git("branch", "--contains", commit,
@@ -1236,7 +1265,7 @@ def test_413b_the_keep_line_keeps_a_members_commit_through_the_bootstrap(
     assert "LEG" not in keep.group(0), why_of(row)
     kept = sh(keep.group(0).replace("NAME", "kept"), tmp_path / "keep")
     assert kept.returncode == 0, kept.stdout + kept.stderr
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(holder))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, root, "members")["status"] == "ok"
     assert "kept" in git("branch", "--contains", commit, cwd=member).stdout
@@ -1248,7 +1277,8 @@ def test_413b_without_it_the_holders_bootstrap_leaves_the_commit_in_no_ref(
     root = holder_copy(holder, tmp_path)
     member = detached_member(root)
     commit = commit_in(member)
-    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere",
+                   remotes_of(holder))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, root, "members")["status"] == "ok"
     assert git("for-each-ref", "--contains", commit,
@@ -1301,7 +1331,7 @@ def test_413c_the_leg_keep_line_keeps_a_members_leg_commit_through_the_paste(
     kept = sh(keep.group(0).replace("LEG", module.quote_arg(leg.resolve()))
               .replace("NAME", "kept"), tmp_path / "keep")
     assert kept.returncode == 0, kept.stdout + kept.stderr
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(holder))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, root, "members")["status"] == "ok"
     assert "kept" in git("branch", "--contains", commit, cwd=leg).stdout
@@ -1313,7 +1343,8 @@ def test_413c_without_it_the_members_leg_commit_is_in_no_ref(
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
     leg, commit = made_in_a_members_own_leg(root, holder)
-    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere",
+                   remotes_of(holder))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, root, "members")["status"] == "ok"
     assert git("for-each-ref", "--contains", commit,
@@ -1354,9 +1385,10 @@ def test_414_1_a_mount_with_no_git_whose_repository_is_kept_gets_the_line(
 
 @WINDOWS_SKIP
 def test_414_1_pasted_the_line_links_the_mount_again_and_the_row_is_ok(
-        standard, project, tmp_path):
+        standard, project, scaffolded_here, tmp_path):
     (project / "spec" / ".git").unlink()
-    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere",
+                   remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     after = row_of(standard, project, "legs")
     assert after["status"] == "ok", (after, result.stdout, result.stderr)
@@ -1398,7 +1430,8 @@ def test_414_1_pasted_the_holders_bootstrap_links_the_member_again(
         standard, holder, tmp_path):
     root = holder_copy(holder, tmp_path)
     (root / "members" / FAMILY_MEMBER / ".git").unlink()
-    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere",
+                   remotes_of(holder))
     assert result.returncode == 0, result.stdout + result.stderr
     after = row_of(standard, root, "members")
     assert after["status"] == "ok", (after, result.stdout, result.stderr)
@@ -1513,6 +1546,17 @@ def test_414_3_a_gitmodules_deleted_from_the_working_tree_alone_is_read(
     ), row["next"]
 
 
+#: `.gitmodules` UNMERGED, as a merge that changed one url two ways leaves
+#: it: the base, ours and theirs, staged as stages 1, 2 and 3 (#733).
+UNMERGED = tuple(b'[submodule "p"]\n\tpath = p\n\turl = /r/%s.git\n' % side
+                 for side in (b"base", b"ours", b"theirs"))
+
+#: `p`'s section in an index copy, with a url HEAD's copy does not give, and
+#: a section after it with a bare `url`: git reads an index or HEAD copy up
+#: to its first bad line and keeps what it read before (#733).
+P_IN_THE_INDEX = b'[submodule "p"]\n\tpath = p\n\turl = /r/index.git\n'
+BARE_URL = b'[submodule "q"]\n\tpath = q\n\turl\n'
+
 #: What the index holds in place of `.gitmodules`, for a root whose working
 #: tree has none and whose HEAD's copy gives the mount `p` its url, and the
 #: `(name, url)` git then finds for `p` (#668). None stages no copy.
@@ -1522,40 +1566,81 @@ INDEX_COPIES = [
     pytest.param(None, ("p", "/r/head.git"), id="no-copy"),
     pytest.param(b'[submodule "p"\n\tpath = p\n', (None, None),
                  id="unparsable"),
+    pytest.param(UNMERGED, (None, None), id="unmerged"),
+    pytest.param(P_IN_THE_INDEX + BARE_URL, ("p", "/r/index.git"),
+                 id="bare-url-after-the-path"),
+    pytest.param(BARE_URL + P_IN_THE_INDEX, (None, None),
+                 id="bare-url-before-the-path"),
+    pytest.param(P_IN_THE_INDEX + b'[submodule "q"\n', ("p", "/r/index.git"),
+                 id="unparsable-after-the-path"),
+    pytest.param(P_IN_THE_INDEX + b'[submodule "q"]\n\tupdate = !echo\n',
+                 (None, None), id="a-value-git-dies-on"),
+    pytest.param(P_IN_THE_INDEX + BARE_URL + b"\tupdate = !echo\n",
+                 ("p", "/r/index.git"), id="dies-on-past-a-bare-url"),
+    pytest.param(P_IN_THE_INDEX + b'[submodule "q"]\n\tpath = q\n\tbranch\n',
+                 ("p", "/r/index.git"), id="bare-branch-after-the-path"),
 ]
 
 
-def gitmodules_in_head_and_index(root: Path, index_copy: bytes | None):
+def repository_mounting_p(root: Path) -> None:
+    """`root`, a new repository whose index holds a gitlink at `p`."""
+    git("init", "-q", "-b", "main", ".", cwd=root)
+    git("update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},p",
+        cwd=root)
+
+
+def blob_of(root: Path, content: bytes) -> bytes:
+    """The blob `content` is stored as in `root`, fed to git as bytes."""
+    return subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(root), input=content, capture_output=True,
+                          check=True).stdout.strip()
+
+
+def gitmodules_in_head_and_index(root: Path,
+                                 index_copy: bytes | tuple | None):
     """`root`, a new repository with a gitlink at `p` and HEAD's
     `.gitmodules` giving it `/r/head.git`, with no `.gitmodules` in the
-    working tree and `index_copy` staged in its place. The copy reaches git
-    as bytes on stdin."""
-    git("init", "-q", "-b", "main", ".", cwd=root)
+    working tree and `index_copy` staged in its place: a tuple of copies
+    is staged unmerged, as stages 1, 2 and 3. Each copy and index record
+    reaches git as bytes on stdin."""
+    repository_mounting_p(root)
     (root / ".gitmodules").write_bytes(
         b'[submodule "p"]\n\tpath = p\n\turl = /r/head.git\n')
     git("add", ".gitmodules", cwd=root)
-    git("update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},p",
-        cwd=root)
     git("commit", "-q", "-m", "Mount p", cwd=root)
     (root / ".gitmodules").unlink()
     if index_copy is None:
         git("rm", "-q", "--cached", ".gitmodules", cwd=root)
         return
-    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
-                          cwd=str(root), input=index_copy,
-                          capture_output=True, check=True).stdout
-    git("update-index", "--cacheinfo",
-        f"100644,{blob.decode('ascii').strip()},.gitmodules", cwd=root)
+    if isinstance(index_copy, bytes):
+        git("update-index", "--cacheinfo", "100644,%s,.gitmodules"
+            % blob_of(root, index_copy).decode("ascii"), cwd=root)
+        return
+    records = [b"0 %s\t.gitmodules\n" % (b"0" * 40)]
+    records += [b"100644 %s %d\t.gitmodules\n" % (blob_of(root, copy), stage)
+                for stage, copy in enumerate(index_copy, start=1)]
+    subprocess.run(["git", "update-index", "--index-info"], cwd=str(root),
+                   input=b"".join(records), capture_output=True, check=True)
 
 
-def url_git_finds(root: Path, rel: str) -> str | None:
-    """The url `git submodule init -- <rel>` copies into the root's config,
-    or None where git stops at `No url found`, exit 128."""
+def url_git_finds(root: Path, rel: str, name: str | None = None
+                  ) -> str | None:
+    """The url `git submodule init -- <rel>` copies into the root's config
+    for the submodule NAMED `name` (`rel` by default), or None where git
+    stops at `No url found` or refuses the file, exiting non-zero.
+
+    A git that CRASHES answers nothing, and the test is skipped: git 2.43
+    does on a bare `branch` (`xstrdup(NULL)`, exit 139), where git 2.55
+    stops there as at any other bare key (#733)."""
     init = subprocess.run(["git", "submodule", "init", "--", rel],
                           cwd=str(root), capture_output=True, check=False)
+    if init.returncode < 0 or init.returncode > 128:
+        pytest.skip(f"this git crashed on `submodule init` (exit "
+                    f"{init.returncode}), as git 2.43 does on a bare "
+                    "`branch`: it gives no answer to compare")
     if init.returncode != 0:
         return None
-    return git("config", "--get", f"submodule.{rel}.url",
+    return git("config", "--get", f"submodule.{name or rel}.url",
                cwd=root).stdout.strip()
 
 
@@ -1573,18 +1658,159 @@ def test_668_with_none_in_the_working_tree_the_first_copy_alone_is_read(
       which it took for "read, and no section";
     - an index copy git cannot parse: no url, for git stops there. Reading
       on to HEAD's copy named a url and handed over a line that exits 128.
+    - an unmerged `.gitmodules`: no url, for git reads no copy at all while
+      it is unmerged (#733). Reading HEAD's named a url there.
+    - an index copy git stops reading at a bad line: a bare valued key, or
+      a line it cannot parse. The section before the line keeps its url,
+      and one after it has none (#733).
+    - a value git dies on (`git_dies_on`): no url for any path, unless git
+      stopped reading before it.
     """
     gitmodules_in_head_and_index(tmp_path, index_copy)
     assert doctor_module(standard).gitmodules_entry(tmp_path, "p") == found
     assert url_git_finds(tmp_path, "p") == found[1]
 
 
+def test_733_while_gitmodules_is_unmerged_a_resolved_copy_is_not_read(
+        standard, tmp_path):
+    """The conflict resolved in the working tree and not yet added: git
+    still reads no copy, and says `No url found`. The doctor named the
+    resolved url there (#733)."""
+    gitmodules_in_head_and_index(tmp_path, UNMERGED)
+    (tmp_path / ".gitmodules").write_bytes(
+        b'[submodule "p"]\n\tpath = p\n\turl = /r/resolved.git\n')
+    assert doctor_module(standard).gitmodules_entry(tmp_path, "p") == (
+        None, None)
+    assert url_git_finds(tmp_path, "p") is None
+
+
+#: `p`'s section, then one line in another section, named first (#733).
+P_THEN_A_LINE = (b'[submodule "p"]\n\tpath = p\n\turl = /r/p.git\n'
+                 b'[submodule "%s"]\n\t%s\n')
+
+#: `.gitmodules` files for a gitlink at `p` that git reads otherwise than as
+#: they are written, each with the `(name, url)` git then finds for `p`, as
+#: `git submodule init` says (#733). The controls git reads as written are
+#: `a..b`, a plain `path = -p`, a bare `shallow`, an empty `ignore =` or
+#: `branch =`, a bare key in a section git ignores, and each value of
+#: `update`, `shallow` and `fetchRecurseSubmodules` git takes
+#: (`git_dies_on`) or ignores.
+GIT_SKIPS = [
+    pytest.param(b'[submodule ""]\n\tpath = p\n\turl = /r/u.git\n',
+                 (None, None), id="empty-name"),
+    pytest.param(b'[submodule "../evil"]\n\tpath = p\n\turl = /r/u.git\n',
+                 (None, None), id="dotdot-name"),
+    pytest.param(b'[submodule "a/../b"]\n\tpath = p\n\turl = /r/u.git\n',
+                 (None, None), id="dotdot-component"),
+    pytest.param(b'[submodule "a\\\\..\\\\b"]\n\tpath = p\n'
+                 b"\turl = /r/u.git\n", (None, None), id="dotdot-backslash"),
+    pytest.param(b'[submodule "a..b"]\n\tpath = p\n\turl = /r/u.git\n',
+                 ("a..b", "/r/u.git"), id="dots-in-a-name"),
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = -u\n',
+                 ("q", None), id="url-option"),
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = /r/first.git\n'
+                 b"\turl = -u\n", ("q", "/r/first.git"),
+                 id="url-option-after-a-url"),
+    pytest.param(b'[submodule "q"]\n\tpath = -p\n\turl = /r/u.git\n',
+                 (None, None), id="path-option"),
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\tpath = -p\n'
+                 b"\turl = /r/u.git\n", ("q", "/r/u.git"),
+                 id="path-option-after-a-path"),
+    pytest.param(b'[submodule "p"]\n\turl = /r/u.git\n', (None, None),
+                 id="no-path"),
+    *(pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = /r/u.git\n\t%s\n'
+                   % key, (None, None), id=f"bare-{key.decode()}")
+      for key in (b"ignore", b"update", b"branch")),
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\turl\n', (None, None),
+                 id="bare-url"),
+    pytest.param(b'[submodule "q"]\n\tpath\n[submodule "r"]\n\tpath = p\n'
+                 b"\turl = /r/r.git\n", (None, None), id="bare-path"),
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = /r/u.git\n'
+                 b"\tshallow\n", ("q", "/r/u.git"), id="bare-shallow"),
+    # A key of `VALUED_KEYS` given an EMPTY value lists with a newline, and
+    # git takes it: `valued` is the newline, not the value.
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = /r/u.git\n'
+                 b"\tignore =\n", ("q", "/r/u.git"), id="empty-ignore"),
+    pytest.param(b'[submodule "q"]\n\tpath = p\n\turl = /r/u.git\n'
+                 b"\tbranch =\n", ("q", "/r/u.git"), id="empty-branch"),
+    pytest.param(b'[submodule "../evil"]\n\tpath\n[submodule "q"]\n'
+                 b"\tpath = p\n\turl = /r/u.git\n", ("q", "/r/u.git"),
+                 id="bare-path-in-an-ignored-section"),
+    *(pytest.param(P_THEN_A_LINE % (section, line), found, id=label)
+      for section, line, found, label in (
+          (b"q", b"update = !echo", (None, None), "update-command"),
+          (b"q", b"update = Merge", (None, None), "update-unknown"),
+          (b"q", b"update = -x", (None, None), "update-dash"),
+          (b"q", b"update = rebase", ("p", "/r/p.git"), "update-rebase"),
+          (b"q", b"shallow = maybe", (None, None), "shallow-no-boolean"),
+          (b"q", b"shallow = 2k", ("p", "/r/p.git"), "shallow-an-integer"),
+          (b"q", b"shallow = 2g", (None, None), "shallow-past-an-int"),
+          (b"q", b"shallow = 0x10", ("p", "/r/p.git"), "shallow-hex"),
+          (b"q", b"shallow = 08", (None, None), "shallow-08-no-octal"),
+          (b"q", b'shallow = " 1"', ("p", "/r/p.git"),
+           "shallow-after-a-space"),
+          (b"q", b'shallow = "\\t1"', ("p", "/r/p.git"),
+           "shallow-after-a-tab"),
+          (b"q", b'shallow = " true"', (None, None),
+           "shallow-word-after-a-space"),
+          (b"q", b"shallow = -2147483647", ("p", "/r/p.git"),
+           "shallow-above-int-min"),
+          (b"q", b"shallow = -2147483649", (None, None),
+           "shallow-below-int-min"),
+          (b"q", b"fetchRecurseSubmodules = sometimes", (None, None),
+           "fetch-recurse-no-boolean"),
+          (b"q", b"fetchRecurseSubmodules = on-demand", ("p", "/r/p.git"),
+           "fetch-recurse-on-demand"),
+          (b"../evil", b"update = !echo", ("p", "/r/p.git"),
+           "update-command-in-an-ignored-section"))),
+]
+
+
+@pytest.mark.parametrize(("gitmodules", "found"), GIT_SKIPS)
+def test_733_the_doctor_and_make_siblings_skip_what_git_skips(
+        standard, siblings, tmp_path, gitmodules, found):
+    """A section git ignores, a `path` or `url` it ignores, and a file it
+    refuses whole name no url for `p`, in `gitmodules_entry`, in the
+    `members` row's `mounted_from` and in `make siblings`, where git says
+    `No url found` or `bad config line` and exits non-zero. Both tools read
+    each of them as a member before (#733). Each `found` is git's own."""
+    repository_mounting_p(tmp_path)
+    (tmp_path / ".gitmodules").write_bytes(gitmodules)
+    module = doctor_module(standard)
+    assert module.gitmodules_entry(tmp_path, "p") == found
+    assert url_git_finds(tmp_path, "p", found[0]) == found[1]
+    assert module.mounted_from(tmp_path, "p", "Org/Repo") == (
+        found[1] or "https://github.com/Org/Repo.git")
+    assert siblings.submodule_urls(tmp_path).get("p") == found[1]
+
+
+@pytest.mark.parametrize("value", [b"-2147483648", b"-2097152k", b"-2048m",
+                                   b"-2g"])
+def test_733_a_shallow_of_int_min_is_a_boolean_as_git_2_55_reads_it(
+        standard, siblings, tmp_path, value):
+    """-2**31, however it is spelled, is a boolean to git 2.55, which CI
+    runs, and to the doctor and `make siblings`, which follow it (#733).
+    git 2.43 dies on it (`-max / factor > val`), so the git at hand is
+    asked last, and a git that dies on it skips the test with the
+    reason."""
+    repository_mounting_p(tmp_path)
+    (tmp_path / ".gitmodules").write_bytes(
+        P_THEN_A_LINE % (b"q", b"shallow = " + value))
+    assert doctor_module(standard).gitmodules_entry(tmp_path, "p") == (
+        "p", "/r/p.git")
+    assert siblings.submodule_urls(tmp_path).get("p") == "/r/p.git"
+    if url_git_finds(tmp_path, "p") is None:
+        pytest.skip("this git dies on a `shallow` of -2**31, as git 2.43 "
+                    "does; git 2.55, which CI runs, takes it")
+
+
 @WINDOWS_SKIP
 def test_414_3_pasted_there_the_line_runs_and_the_row_is_ok(
-        standard, project, tmp_path):
+        standard, project, scaffolded_here, tmp_path):
     unbootstrap(project, "spec")
     (project / ".gitmodules").unlink()
-    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere",
+                   remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, project, "legs")["status"] == "ok"
 
@@ -1674,7 +1900,8 @@ def test_414_3_there_the_bootstrap_cures_nothing_and_the_git_line_cures_one(
     assert "git stopped at members/Ghost" in output, output
     assert "No url found" in output, output
     assert not any((tried / "members" / FAMILY_MEMBER).iterdir()), output
-    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere",
+                   remotes_of(holder))
     assert result.returncode == 0, result.stdout + result.stderr
     again = row_of(standard, root, "members")
     assert again["next"] is None, again
@@ -1714,10 +1941,11 @@ def test_414_4_a_leg_the_line_checks_out_with_a_lockstep_fact_says_run_again(
 
 @WINDOWS_SKIP
 def test_414_4_pasted_the_line_runs_and_the_rerun_names_the_pin(
-        standard, project, tmp_path):
+        standard, project, scaffolded_here, tmp_path):
     make_pin_not_a_commit_in_an_emptied_mount(project)
     module = doctor_module(standard)
-    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere",
+                   remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     again = row_of(standard, project, "legs")
     assert again["status"] == "FINDING", again
@@ -1781,10 +2009,11 @@ def test_414_3_a_url_the_roots_config_keeps_still_gets_the_line(
 
 @WINDOWS_SKIP
 @pytest.mark.parametrize("how", ["past-the-pin", "emptied-by-rm"])
-def test_414_3_pasted_there_the_line_cures_the_row(standard, project,
-                                                    tmp_path, how):
+def test_414_3_pasted_there_the_line_cures_the_row(
+        standard, project, scaffolded_here, tmp_path, how):
     make_url_in_config_only(project, how)
-    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere",
+                   remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     after = row_of(standard, project, "legs")
     assert after["status"] == "ok", (after, result.stdout, result.stderr)
@@ -1816,7 +2045,8 @@ def test_414_3_pasted_the_holders_bootstrap_cures_that_member(
         standard, holder, tmp_path):
     root = holder_copy(holder, tmp_path)
     member_url_in_config_only(root)
-    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere",
+                   remotes_of(holder))
     assert result.returncode == 0, result.stdout + result.stderr
     after = row_of(standard, root, "members")
     assert after["status"] == "ok", (after, result.stdout, result.stderr)
@@ -1943,7 +2173,7 @@ def with_a_submodule_in_the_leg(project: Path, tmp_path: Path) -> Path:
 
 @WINDOWS_SKIP
 def test_a_legs_own_submodule_keep_line_keeps_its_commit_through_the_paste(
-        standard, project, tmp_path):
+        standard, project, scaffolded_here, tmp_path):
     commit = with_a_submodule_in_the_leg(project, tmp_path)
     module = doctor_module(standard)
     row = row_of(standard, project, "legs")
@@ -1954,7 +2184,7 @@ def test_a_legs_own_submodule_keep_line_keeps_its_commit_through_the_paste(
         "LEG/SUB", module.quote_arg(nested.resolve())).replace(
         "NAME", "kept"), tmp_path / "keep")
     assert kept.returncode == 0, kept.stdout + kept.stderr
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, project, "legs")["status"] == "ok"
     assert "kept" in git("branch", "--contains", commit, cwd=nested).stdout
@@ -1962,10 +2192,11 @@ def test_a_legs_own_submodule_keep_line_keeps_its_commit_through_the_paste(
 
 @WINDOWS_SKIP
 def test_without_it_the_legs_own_submodule_commit_is_in_no_ref(
-        standard, project, tmp_path):
+        standard, project, scaffolded_here, tmp_path):
     commit = with_a_submodule_in_the_leg(project, tmp_path)
     nested = project / "spec" / "vendor" / "lib"
-    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, project, "legs"), tmp_path / "elsewhere",
+                   remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, project, "legs")["status"] == "ok"
     assert git("for-each-ref", "--contains", commit,
@@ -2036,7 +2267,7 @@ def test_413b_pasted_the_bootstrap_moves_that_member_off_its_commit(
         assert keep, why_of(row)
         kept = sh(keep.group(0).replace("NAME", "kept"), tmp_path / "keep")
         assert kept.returncode == 0, kept.stdout + kept.stderr
-    paste(row, tmp_path / "elsewhere")
+    paste(row, tmp_path / "elsewhere", remotes_of(holder))
     assert git("rev-parse", "HEAD", cwd=ghost).stdout.strip() != stranded
     holding = git("for-each-ref", "--contains", stranded,
                   "--format=%(refname:short)", cwd=ghost).stdout.split()
@@ -2160,7 +2391,8 @@ def test_pasted_there_the_git_line_fills_the_member_the_bootstrap_would_not(
     names Ghost alone, for the gate."""
     root = holder_copy(holder, tmp_path)
     beside_a_member_git_finds_no_url_for(root, section, at_pin)
-    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere")
+    result = paste(row_of(standard, root, "members"), tmp_path / "elsewhere",
+                   remotes_of(holder))
     assert result.returncode == 0, result.stdout + result.stderr
     assert any((root / "members" / FAMILY_MEMBER).iterdir())
     after = row_of(standard, root, "members")
@@ -2225,7 +2457,7 @@ def spelled_filled(module, repository: Path, sub: str, root: Path) -> str:
 
 @WINDOWS_SKIP
 def test_an_emptied_legs_own_submodule_is_kept_through_its_repository(
-        standard, project, tmp_path):
+        standard, project, scaffolded_here, tmp_path):
     """`deinit` empties the leg and takes its submodule's directory with
     it, so `git -C LEG/SUB branch NAME` has nowhere to run and exits 128.
     The repository git kept for the leg keeps its submodule's under
@@ -2242,7 +2474,7 @@ def test_an_emptied_legs_own_submodule_is_kept_through_its_repository(
     kept = sh(spelled_filled(module, kept_repository(resolved, "spec"),
                              "vendor/lib", resolved), tmp_path / "keep")
     assert kept.returncode == 0, kept.stdout + kept.stderr
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, project, "legs")["status"] == "ok"
     nested = project / "spec" / "vendor" / "lib"
@@ -2271,7 +2503,7 @@ def test_an_emptied_members_own_leg_is_kept_through_its_repository(
     kept = sh(spelled_filled(module, repository, "spec", resolved),
               tmp_path / "keep")
     assert kept.returncode == 0, kept.stdout + kept.stderr
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(holder))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, root, "members")["status"] == "ok"
     assert git("rev-parse", "HEAD", cwd=leg).stdout.strip() != commit
@@ -2280,7 +2512,7 @@ def test_an_emptied_members_own_leg_is_kept_through_its_repository(
 
 @WINDOWS_SKIP
 def test_a_leg_past_a_commit_that_dropped_its_submodule_still_names_it(
-        standard, project, tmp_path):
+        standard, project, scaffolded_here, tmp_path):
     """The leg walks past its pin at a commit that removes its submodule,
     `.gitmodules` included, so its working tree carries none. The gitlink's
     commit still mounts it, and `--recursive` links the repository the leg
@@ -2304,7 +2536,7 @@ def test_a_leg_past_a_commit_that_dropped_its_submodule_still_names_it(
     kept = sh(spelled_filled(module, repository, "vendor/lib", resolved),
               tmp_path / "keep")
     assert kept.returncode == 0, kept.stdout + kept.stderr
-    result = paste(row, tmp_path / "elsewhere")
+    result = paste(row, tmp_path / "elsewhere", remotes_of(scaffolded_here))
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, project, "legs")["status"] == "ok"
     nested = spec / "vendor" / "lib"

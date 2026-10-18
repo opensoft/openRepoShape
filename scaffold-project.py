@@ -1725,10 +1725,11 @@ def _neutral_pin_entry(product: str) -> str:
 
     THE READER IS ASKED, as `family.py` asks it of a member's id (#259),
     rather than a list of the words it takes for something else, and it is
-    asked of the LIST ENTRY: `  - -` is a list of its own, where `id: -` is
-    the text. A name it reads back bare, `openGlass` and every other plain
-    name, is the line it always was; `007`, `2026`, `1.5`, `true` and `null`
-    are double-quoted, and a double-quoted name always reads back.
+    asked of the LIST ENTRY: `  - - a` is a list of its own, where `id: - a`
+    is the text (#715; `id: -` is refused since #393). A name it reads back
+    bare, `openGlass` and every other plain name, is the line it always was;
+    `007`, `2026`, `1.5`, `true` and `null` are double-quoted, and a
+    double-quoted name always reads back.
     """
     try:
         if parse_yaml(f"neutral_product_pins:\n  - {product}\n") \
