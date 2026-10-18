@@ -4042,6 +4042,15 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    row such a copy under `contracts/` is `unmerged` while
                    the pin is conflicted, as every file the `why` gives a
                    person is, and `project` once the pin taken here reads.
+                   A COPY RENAMED ON ONE SIDE (#753) conflicts under its
+                   new name, as git carries the other side's edit, or
+                   deletion, there, and no pin has a row for that name. Its
+                   stage 1 is the merge base's blob of the copy, so
+                   `copies_renamed` finds the copy by that blob, where no
+                   other path of the base holds it, and the `why` names the
+                   path as renamed from the copy and gives it to a person
+                   (`renamed_copies`). It is never taken: neither side's
+                   pin has a row to prove it by.
                    The manifest and README.md are never named either, though
                    `apply` writes lines of them: every other line is the
                    project's own, and one side taken whole drops the other
@@ -4052,8 +4061,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    gives a person. A file of the project's own is never
                    named: its merge is theirs. Both pins decide which file
                    that is, not the pin taken here alone: one NEITHER
-                   side's pin has a row for. A file only the other side's
-                   pin calls a copy is named, as above (#687).
+                   side's pin has a row for, under its name or under the
+                   one the merge base held it at. A file only the other
+                   side's pin calls a copy is named, as above (#687), and
+                   so is a copy's rename (#753).
       uncommitted  HEAD holds a pin that reads, and the tree or the index
                    differs from it. `checkout HEAD`, which drops a change no
                    tool of this standard leaves uncommitted.
@@ -4144,19 +4155,26 @@ def pin_restore(ctx: Context, detail: dict | None = None,
         us = ctx.update_shape()
         kind = us.root_kind(root)
         # `<mode> SP <object> SP <stage> TAB <path>`, one record per stage:
-        # `{path: {stage: mode}}`, the mode kept for `taken_with_the_pin`.
+        # `{path: {stage: mode}}`, the mode kept for `taken_with_the_pin`,
+        # and `{path: object}` of stage 1, the merge base's, which
+        # `copies_renamed` reads (#753).
         stages: dict[str, dict] = {}
+        bases: dict[str, bytes] = {}
         listing = git_answer(["ls-files", "-u", "-z"], root, binary=True)
         for record in (listing or b"").split(b"\0"):
             meta, _tab, path = record.partition(b"\t")
             if path:
                 stages.setdefault(path.decode("utf-8", "replace"), {})[
                     meta.rsplit(b" ", 1)[-1]] = meta.split(b" ", 1)[0]
+                if meta.endswith(b" 1"):
+                    bases[path.decode("utf-8", "replace")] = meta.split()[1]
         side, stage, note = side_to_take(ctx, pin, stages.get(pin, {}), what)
         if note and not side:
             return "unmerged", None, note
         if side:
             lines, copies, other_side, taken, partial = [], [], [], [], False
+            renamed: dict[str, str] = {}
+            kept: set = set()
             if pin == SHAPE_PIN:
                 lines = sorted(name for name in (kind.manifest, us.README)
                                if name in stages)
@@ -4168,6 +4186,9 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                 copies = sorted(name for name in kept if name in stages)
                 other_side = sorted(name for name in other - kept
                                     if name in stages)
+                renamed = copies_renamed(ctx, kept | other, {
+                    name: base for name, base in bases.items()
+                    if name not in kept | other | {pin, *lines}})
                 # A read of a partial clone can fetch: prove nothing there.
                 partial = bool(copies) and partial_clone(ctx.shape)
                 if not partial:
@@ -4187,10 +4208,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                     + ("them" if len(taken) > 1 else "it") + " at the "
                     "commit that side's pin names, so neither side holds an "
                     "edit of the project")
-            if lines or copies or other_side:
+            if lines or copies or other_side or renamed:
                 if detail is not None:
-                    detail["left_for_a_person"] = sorted(lines + copies
-                                                         + other_side)
+                    detail["left_for_a_person"] = sorted(
+                        lines + copies + other_side + list(renamed))
                 if lines:
                     said.append(
                         f"{' and '.join(lines)} "
@@ -4222,6 +4243,7 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                              "either refusal asks for --accept-local on that "
                              "path")
                 said += other_sides_copies(other_side, stages)
+                said += renamed_copies(renamed, stages, kept)
             if said:
                 then = ". " + ". ".join(said) + ". Then finish"
             return "unmerged", (
@@ -4292,17 +4314,11 @@ def other_sides_copies(names: list, stages: dict) -> list:
     project's own file, and the sentence says so.
 
     ONE SENTENCE FOR THE FILES BOTH SIDES HOLD, ANOTHER FOR THOSE ONE SIDE
-    DELETED. Both sides' stages are there for a content conflict, an
-    add/add included, and a person merges the file by hand, keeping the
-    hunks git merged. A delete/modify conflict holds one of them alone, and
-    has no hunks to keep: a person keeps the file or deletes it.
+    DELETED (`by_conflict`). A person merges the first by hand, keeping
+    the hunks git merged, and keeps or deletes the second.
     """
     said = []
-    for deleted in (False, True):
-        group = [name for name in names
-                 if deleted != ({b"2", b"3"} <= set(stages.get(name, ())))]
-        if not group:
-            continue
+    for group, deleted in by_conflict(names, stages):
         many = len(group) > 1
         each = "each" if many else "it"
         said.append(
@@ -4316,6 +4332,113 @@ def other_sides_copies(names: list, stages: dict) -> list:
             + (f" if kept, and a person keeps or deletes {each} by hand"
                if deleted else f", and a person merges {each} by hand, "
                "keeping the hunks git merged"))
+    return said
+
+
+def by_conflict(names: list, stages: dict) -> list:
+    """`names` as `(group, deleted)` pairs: those both sides of the merge
+    hold first, then those only one side holds, each pair only where its
+    group has a name. `stages` is `{path: {stage: mode}}`, as `pin_restore`
+    reads `ls-files -u`. Both sides' stages are there for a content
+    conflict, an add/add included, whose hunks a person keeps; one of them
+    alone is a delete/modify conflict, or a rename the other side did not
+    make, which has no hunks to keep (review of PR #736)."""
+    pairs = []
+    for deleted in (False, True):
+        group = [name for name in names
+                 if deleted != ({b"2", b"3"} <= set(stages.get(name, ())))]
+        if group:
+            pairs.append((group, deleted))
+    return pairs
+
+
+def copies_renamed(ctx: Context, copies: set, bases: dict) -> dict:
+    """`{path: copy}` for each path conflicted beside the shape pin whose
+    stages came from a rename of `copy`, a path a side's pin has a `files:`
+    row for (#753). `bases` is `{path: object}`, stage 1 of each conflicted
+    path no pin has a row for, the merge base's blob.
+
+    THE MERGE BASE'S OWN BLOB, AT A NAME THE BASE DID NOT HOLD. A rename on
+    one side and an edit on the other conflict under the new name, and git
+    gives that path the base's bytes of the old one as its stage 1: a path
+    the base did not hold has a stage 1 only where git paired it with one
+    the base did. So a path is a copy's rename where the base holds
+    nothing at it and its stage 1 is, object for object, the blob the base
+    holds at the copy's path. A path the base held is no rename, though its
+    bytes be a copy's, as the source's own file beside a collision copy
+    under `shape/` can be. Since the whole base is read (below), that check
+    is belt and braces: such a path's stage 1 is the blob the base holds at
+    that very path, which no pin lists, so the count or the copy check
+    below refuses it already. Alone it changes the answer only for a rename
+    onto a path the base held (rename/add), which stays unnamed (round 3 of
+    the review of PR #781). The base is `merge-base HEAD MERGE_HEAD`, read
+    as git keeps it for a merge; for any other kind of conflict, or where
+    git cannot say, no path is called a rename, as before.
+
+    ONE PATH IN THE WHOLE BASE TREE HOLDS THAT BLOB, AND IT IS A COPY
+    (review of PR #781). Reading the copies' paths alone, a file of the
+    project's own whose bytes are a copy's, renamed, was named a rename of
+    that copy, though such a file is never named. So the base's whole tree
+    is read, one `ls-tree -r`, and a blob two paths hold names nothing, a
+    copy's or not. Not git's own rename record (`diff -M` from the base to
+    each side): that is a similarity guess of its own, made apart from the
+    merge's, and nothing here guesses. What that costs is a copy renamed
+    whose exact bytes the base also holds at another path, which is named
+    no more than it was before #753; the `merge` row still lists it.
+    """
+    if not bases or not copies:
+        return {}
+    base = git_answer(["merge-base", "HEAD", "MERGE_HEAD"], ctx.root)
+    listing = base and git_answer(["ls-tree", "-r", "-z", base], ctx.root,
+                                  binary=True)
+    held: dict[bytes, list] = {}
+    for record in (listing or b"").split(b"\0"):
+        meta, _tab, path = record.partition(b"\t")
+        if path and len(meta.split()) == 3:
+            held.setdefault(meta.split()[2], []).append(
+                path.decode("utf-8", "replace"))
+    present = {name for names in held.values() for name in names}
+    return {name: held[blob][0] for name, blob in sorted(bases.items())
+            if name not in present and len(held.get(blob, ())) == 1
+            and held[blob][0] in copies}
+
+
+def renamed_copies(renamed: dict, stages: dict, kept: set) -> list:
+    """The sentences of a conflicted shape pin's `why` for `renamed`,
+    `{path: copy}` from `copies_renamed`: paths conflicted beside the pin
+    under a name no pin has a row for, each a rename of a copy (#753).
+    Never taken, as a copy only the other side's pin lists is never taken
+    (`other_sides_copies`), and a person's to resolve, its old name said so
+    the reader knows it for a copy.
+
+    WHAT THE DOCTOR SAYS ONCE THE MERGE IS FINISHED, where `kept`, the rows
+    of the pin taken here, still lists the old name (review of PR #781):
+    no file is there unless it is renamed back, so this doctor reports the
+    copy missing. Said only of such a copy: where the pin taken here has no
+    row for it, nothing is missing.
+    """
+    said = []
+    for group, deleted in by_conflict(sorted(renamed), stages):
+        many = len(group) > 1
+        each = "each" if many else "it"
+        said.append(
+            " and ".join(f"{name}, renamed from the copy {renamed[name]},"
+                         for name in group)
+            + f" {'are' if many else 'is'} conflicted too, and no pin has a "
+            f"row for {'them' if many else 'it'} under "
+            f"{'their new names' if many else 'its new name'}"
+            + (f", and one side alone holds {each}" if deleted else "")
+            + ", so neither side is taken whole: a person "
+            + (f"keeps or deletes {each} by hand" if deleted
+               else f"merges {each} by hand, keeping the hunks git merged"))
+    listed = sorted({copy for copy in renamed.values() if copy in kept})
+    if listed:
+        many = len(listed) > 1
+        said.append(
+            f"The pin taken here still lists {' and '.join(listed)}, so this "
+            f"doctor reports {'them' if many else 'it'} missing once the "
+            f"merge is finished, unless {'they are' if many else 'it is'} "
+            "renamed back")
     return said
 
 
