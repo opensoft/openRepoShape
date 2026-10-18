@@ -577,10 +577,10 @@ def test_the_install_check_runs_on_three_systems_and_python_3_9(workflow):
 
 
 def test_the_header_says_how_to_release(workflow):
-    """No `docs/release-notes/v1.1.0.md` exists yet, so the header carries
-    the steps the docs pull request will point at: Brett Heap's acts, with
-    the trusted publisher's environment REQUIRED and why (RV599, SHOULD 1),
-    and the limits carried over from openDox-code."""
+    """The release notes (`docs/release-notes/v1.1.0.md` and `v1.1.1.md`)
+    point at this header for the steps, so it carries them: Brett Heap's
+    acts, with the trusted publisher's environment REQUIRED and why (RV599,
+    SHOULD 1), and the limits carried over from openDox-code."""
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "# RELEASING TO PyPI." in text
     assert "gh workflow run release.yml --ref v<version> -f version=<version>" \
