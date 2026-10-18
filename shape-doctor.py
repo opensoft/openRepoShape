@@ -333,9 +333,14 @@ line. An unfinished merge outranks all three, for the reason drift outranks a
 red validator: the conflict it leaves is what turns the other rows red, and
 none of their fixes can be committed until it is finished.
 
-STANDARD LIBRARY ONLY, like everything else shipped here. Printed text is
-ASCII: a verdict a cp1252 console cannot render is a verdict nobody reads, and
-this tool is run on every platform the standard supports.
+STANDARD LIBRARY ONLY, like everything else shipped here. The report's own
+words are ASCII: a verdict a cp1252 console cannot render is a verdict nobody
+reads, and this tool is run on every platform the standard supports. A NAME
+is not the report's own words (#785): a path printed in a command is spelled
+so that the reader's shell turns it back into that path, as itself where the
+output can show it and escaped where it cannot (`quote_arg`), and a sentence
+shows it as itself where the output can and with `?` where it cannot
+(`ascii_text`).
 """
 
 from __future__ import annotations
@@ -420,7 +425,8 @@ try:
     #: reason, in place of a copy of `plan`'s regex (`origin_org`, #521).
     #: `spelled` is how `siblings.py` prints the values that row quotes (#673).
     from repo_shape import (  # noqa: E402
-        COMMIT_RE, NamingPolicy, PYTHON, Refusal, accepts_role, git_out,
+        COMMIT_RE, NamingPolicy, POWERSHELL_SINGLE_QUOTES, PYTHON,
+        Refusal, accepts_role, git_out,
         load_yaml, recorded_gitlink, redacted, remote_local_path,
         resolved_remote, same_repository, spelled, url_repository,
     )
@@ -662,20 +668,93 @@ EVERYWHERE = (
 )
 
 
-def ascii_text(text: str) -> str:
-    """`text` with the typography this repository is written in flattened.
+#: The typography this repository's prose is written in, and the ASCII
+#: `ascii_text` spells each one with. `quote_arg` never prints one of them as
+#: itself in a value (#785): `Row.__init__` passes every command and every
+#: `why` through `ascii_text`, which would make the value another path.
+FLATTENED = {"—": "--", "–": "-", "‘": "'", "’": "'", "“": '"', "”": '"',
+             "…": "...", "\N{NO-BREAK SPACE}": " "}
+
+
+#: The encoding the report is written for where that is not stdout's: UTF-8
+#: for `--json`, which `main` sets (#785, review S2 on PR #792). `json.dumps`
+#: writes ASCII whatever stdout's encoding is, and every character as an
+#: escape its reader decodes, so a JSON reader gets each character a UTF-8
+#: name holds as itself -- under `LC_ALL=C` and a `PYTHONIOENCODING=cp1252`
+#: pipe as under a UTF-8 terminal. None for the table, which IS stdout.
+REPORT_ENCODING: str | None = None
+
+
+def printed_encoding(encoding: str | None = None) -> str:
+    """`encoding`, or the one the report is written for: `REPORT_ENCODING`
+    where `main` set one, else `sys.stdout`'s, which `pythonw` and a stream
+    a caller replaced may not have (#785)."""
+    return (encoding or REPORT_ENCODING
+            or getattr(sys.stdout, "encoding", None) or "utf-8")
+
+
+def prints_as_itself(char: str, encoding: str) -> bool:
+    """Whether a report written in `encoding` shows `char` as itself (#785):
+    a printable character that `ascii_text` does not flatten, and that the
+    encoding writes and reads back unchanged.
+
+    PRINTABLE, because a control, a line separator or a bidirectional mark
+    is not seen as itself on any terminal: it moves the line it is printed
+    on, and a reader cannot copy what they cannot see. And not U+FFFD, the
+    mark a lossy read leaves where a byte did not decode, which a row has
+    printed as `?` since #385: it stands for no character a path holds."""
+    if (char in FLATTENED or char == "\N{REPLACEMENT CHARACTER}"
+            or not char.isprintable()):
+        return False
+    try:
+        return char.encode(encoding).decode(encoding) == char
+    except (UnicodeError, LookupError):
+        return False
+
+
+def ascii_text(text: str, encoding: str | None = None) -> str:
+    """`text` with the typography this repository is written in flattened,
+    and each character the report cannot show as itself replaced by `?`.
 
     Validator output is quoted into rows, and this repository's prose is full
     of em dashes, curly quotes and ellipses. A Windows console in the machine's
-    ANSI code page raises on the first of them, in the middle of a report whose
+    ANSI code page raised on the first of them, in the middle of a report whose
     whole job is to be read -- so the few characters that actually occur are
-    spelled out and anything else is replaced rather than raised on.
+    spelled out in ASCII on every console.
+
+    ANY OTHER CHARACTER IS REPLACED ONLY WHERE IT CANNOT BE SHOWN (#785). It
+    was replaced on every console, so `é` was `?` under a UTF-8 locale, whose
+    terminal shows it, and so was every character of a path `quote_arg` had
+    quoted for a command: a keep line named `caf?`, which is not there. Now a
+    character is kept where `prints_as_itself` says `encoding` (the report's
+    own when None, `printed_encoding`) shows it, and is `?` elsewhere, as
+    every one was: an ASCII console still reads an ASCII report, and a UTF-8
+    one reads the name. A value `quote_arg` spelled holds no character this
+    changes, so this pass leaves it whole.
     """
-    for source, target in (("—", "--"), ("–", "-"), ("‘", "'"),
-                           ("’", "'"), ("“", '"'), ("”", '"'),
-                           ("…", "..."), (" ", " ")):
+    for source, target in FLATTENED.items():
         text = text.replace(source, target)
-    return text.encode("ascii", "replace").decode("ascii")
+    encoding = printed_encoding(encoding)
+    return "".join(char if char.isascii() or prints_as_itself(char, encoding)
+                   else "?" for char in text)
+
+
+def path_bytes(char: str) -> bytes:
+    """The bytes one character of a path stands for on a POSIX disk (#785).
+
+    A byte of a name that is not in the encoding it was read with is carried
+    by `surrogateescape` as U+DC80..U+DCFF, how `os.fsdecode` reads a path
+    and how this file reads one git prints, and stands for that byte. Any
+    other character is in the filesystem encoding, which is how Python names
+    a path on disk, or in UTF-8 where that encoding has no such character,
+    which is how git wrote a name it printed (`LC_ALL=C` with Python's
+    UTF-8 mode off makes the filesystem encoding ASCII)."""
+    if 0xDC80 <= ord(char) <= 0xDCFF:
+        return bytes([ord(char) - 0xDC00])
+    try:
+        return char.encode(sys.getfilesystemencoding())
+    except UnicodeEncodeError:
+        return char.encode("utf-8", "surrogatepass")
 
 
 #: A value `sh` needs no quoting for: letters, digits, and the punctuation a
@@ -703,7 +782,7 @@ UNQUOTED_NT = re.compile(r"^[A-Za-z0-9_./:%+=\\-]+$")
 
 
 def quote_arg(value, platform: str | None = None, *,
-              always: bool = False) -> str:
+              always: bool = False, encoding: str | None = None) -> str:
     # A RAW docstring, because the Windows examples below are Windows paths:
     # `C:\Users\...` is a `\U` escape to the interpreter, and a docstring that
     # had to spell a reader's path with doubled backslashes would be a
@@ -760,20 +839,41 @@ def quote_arg(value, platform: str | None = None, *,
     become an argument to `git`, where every command is a list run with
     `shell=False` and the threat is argument injection, not a shell.
 
-    AND IT NORMALIZES BEFORE IT QUOTES, NOT AFTER. `Row.__init__` runs
-    `ascii_text` again, over the WHOLE assembled `next_command`, once every
-    value in it already sits quoted -- so a curly apostrophe that reached
-    this function unconverted came out the far side of THAT pass as a bare,
-    undoubled one, breaking the very quoting it sat inside (Copilot, PR
-    #102): `'O'Neill'` is an unterminated quotation to `sh`, and an
-    un-doubled apostrophe is exactly as broken to PowerShell's own verbatim
-    string. Normalizing HERE first leaves that later pass nothing to touch:
-    `ascii_text` maps this repository's own typography to ASCII, so calling
-    it twice on an already-ASCII string is a no-op. What the reader then sees
-    is the ASCII FLATTENING of their path rather than its own bytes -- which
-    is this file's PURE ASCII rule, stated at the top and true of every other
-    string in the report, and a command that names a path plainly and is
-    refused by name beats one no shell will parse.
+    A VALUE THAT IS NOT ASCII IS SPELLED AS THE PATH IT IS (#785). It was
+    flattened to ASCII first (Copilot, PR #102), because `Row.__init__`
+    runs `ascii_text` again over the whole assembled command, and a curly
+    apostrophe that pass found came out of it bare, breaking the quoting it
+    sat in. But the flattening named another path: every character that is
+    not ASCII became `?`, so a keep line under `Projets/Équipe` named
+    `Projets/?quipe`, which is not there, and the pasted line failed. Now
+    each character of such a value is one of two things:
+
+    - ITSELF, inside the quoting above, where `prints_as_itself` says the
+      report shows it: printable, not one of the typography `ascii_text`
+      flattens, and written by `encoding` (the report's own when None,
+      `printed_encoding`) -- for `sh`, as the very bytes the path holds
+      (`path_bytes`), so that what a terminal shows is what it pastes back;
+    - ESCAPED otherwise, and then the whole value is spelled that way. For
+      `sh` that is `$'...'`, every byte of such a character a three-digit
+      octal escape (`$'caf\303\251'`, `$'caf\351'` for a name that is not
+      UTF-8), which bash, zsh, ksh and a POSIX.1-2024 `sh` turn back into
+      those bytes; dash 0.5.12 (Ubuntu's `/bin/sh`, whose login shell is
+      bash) reads the `$` as itself. For PowerShell, which has no escape
+      inside a verbatim string, it is an expression in parentheses,
+      `('C:\Users\' + [char]0x00C9 + 'quipe')`, which is one argument to a
+      native command and a value to assign alike (`powershell_expression`).
+      On Windows that is rare: Python writes a console as UTF-8, which shows
+      every printable character, and only a stdout redirected to a file or a
+      pipe is in the ANSI code page.
+
+    So `ascii_text`'s later pass finds nothing in a value to change. The
+    report's encoding is stdout's for the table, and UTF-8 for `--json`,
+    whatever stdout's is (`REPORT_ENCODING`, review S2 on PR #792): a JSON
+    reader decodes each `\u` escape `json.dumps` writes into the character
+    it stands for, so a row's `next` holds a UTF-8 name as itself, and only
+    a byte that is not UTF-8, or a character `prints_as_itself` refuses, is
+    escaped there. The table escapes what its own encoding cannot write. A
+    value made of ASCII is quoted exactly as before, in both.
 
     AND THE ALPHABET CHECK MUST COVER THE VALUE WHOLE. `$` is content to
     match just before a trailing newline, so `.match` alone waved a value
@@ -806,10 +906,11 @@ def quote_arg(value, platform: str | None = None, *,
     answer. PowerShell's dialect is NOT changed: it expands no `=word`, so
     `UNQUOTED_NT` keeps its bare `=`, as in any other place in a word.
     """
-    # ASCII first, so the alphabet check and the quoting below it both see
-    # what `Row.__init__` will (Copilot, PR #102); see the docstring above.
-    text = ascii_text(str(value))
+    text = str(value)
     windows = (os.name if platform is None else platform) == "nt"
+    if not text.isascii():
+        # Never bare: neither alphabet holds a character that is not ASCII.
+        return quoted_beyond_ascii(text, windows, printed_encoding(encoding))
     # `.fullmatch`, not `.match`: a pattern ending in `$` still matches just
     # before a trailing newline, so `.match` alone would call "Atlas\n" bare
     # (Copilot, PR #102). And a leading `=` is never bare for `sh` (#532).
@@ -825,6 +926,94 @@ def quote_arg(value, platform: str | None = None, *,
     # report can see through, and both come back out of `shlex.split` as the
     # value that went in -- which is what `tests/test_shape_doctor.py` asserts.
     return "'" + text.replace("'", "'\\''") + "'"
+
+
+def quoted_beyond_ascii(text: str, windows: bool, encoding: str) -> str:
+    """`quote_arg` for a value holding a character that is not ASCII (#785):
+    quoted as any other value where every such character `prints_as_itself`
+    -- for `sh`, as the bytes the path holds -- and escaped whole where one
+    does not. See `quote_arg`'s docstring.
+
+    ON POSIX A NAME IS READ AS UTF-8 FIRST (review S2 on PR #792). Under
+    `LC_ALL=C` with Python's UTF-8 mode off the filesystem encoding is
+    ASCII, so `os.fsdecode` carries each byte of `é` as a `surrogateescape`
+    byte of its own, and a report in UTF-8 -- `--json` -- could not show
+    it. Those bytes are read again as UTF-8, which joins each run that
+    spells a character into that character and leaves every other byte as
+    it was. A value that holds a surrogate `surrogateescape` never makes
+    (outside U+DC80..U+DCFF) cannot be written back to bytes like that, and
+    is left as it is: such a character is not printable, so it is escaped.
+
+    AND THE JOINED NAME IS KEPT ONLY WHERE IT NAMES THE SAME BYTES (review
+    M1 on PR #792, round 2). `path_bytes` writes a joined character in the
+    filesystem encoding, which is ASCII or UTF-8 under `C` and gives the
+    bytes back; but under a legacy multibyte one -- EUC-JP, Big5, EUC-KR --
+    a directory named `日` in UTF-8 (`\\xe6\\x97\\xa5`) is read in as three
+    escaped bytes, and the joined `日` is written `\\xc6\\xfc` in EUC-JP:
+    another directory. So the join is checked byte for byte against the
+    value as it was read, and the escaped bytes stay where it differs."""
+    if not windows:
+        try:
+            joined = text.encode("utf-8", "surrogateescape").decode(
+                "utf-8", "surrogateescape")
+        except UnicodeEncodeError:
+            joined = text
+        if (b"".join(map(path_bytes, joined))
+                == b"".join(map(path_bytes, text))):
+            text = joined
+
+    def shown(char: str) -> bool:
+        if char.isascii():
+            return True
+        if not prints_as_itself(char, encoding):
+            return False
+        return windows or char.encode(encoding) == path_bytes(char)
+    if all(shown(char) for char in text):
+        if windows:
+            return powershell_verbatim(text)
+        return "'" + text.replace("'", "'\\''") + "'"
+    if windows:
+        return powershell_expression(text, shown)
+    return "$'" + "".join(
+        char if char.isascii() and char.isprintable() and char not in "\\'"
+        else "".join(f"\\{byte:03o}" for byte in path_bytes(char))
+        for char in text) + "'"
+
+
+def powershell_verbatim(text: str) -> str:
+    """`text` in PowerShell's verbatim string, each of the single quotes
+    PowerShell reads as one doubled, as `repo_shape.shell_quoted` doubles
+    them: the curly ones end the string too (#486)."""
+    return "'" + "".join(char * 2 if char in POWERSHELL_SINGLE_QUOTES
+                         else char for char in text) + "'"
+
+
+def powershell_expression(text: str, shown) -> str:
+    """`text` as a PowerShell expression, `('...' + [char]0x00C9 + '...')`,
+    where a character of it is not `shown` (#785).
+
+    Each such character is a `[char]` of each of its UTF-16 code units, and
+    the characters between them are verbatim strings, joined by `+`. The
+    FIRST operand is always a string -- `''` where the value starts with an
+    escaped character -- because `+` on two `[char]`s adds them as numbers,
+    and a string on the left makes every `+` after it a concatenation. A
+    printable ASCII character is always shown; a control is escaped too, as
+    it is in `sh`'s `$'...'`."""
+    parts, run = [], ""
+    for char in text:
+        if char.isprintable() and shown(char):
+            run += char
+            continue
+        if run or not parts:
+            parts.append(powershell_verbatim(run))
+            run = ""
+        units = char.encode("utf-16-le", "surrogatepass")
+        for at in range(0, len(units), 2):
+            unit = int.from_bytes(units[at:at + 2], "little")
+            parts.append(f"[char]0x{unit:04X}")
+    if run:
+        parts.append(powershell_verbatim(run))
+    return "(" + " + ".join(parts) + ")"
 
 
 # ---------------------------------------------------------------------------
@@ -853,9 +1042,10 @@ class Row:
         self.label = label
         self.status = status
         self.reason = ascii_text(reason)
-        # `quote_arg` ascii-normalizes every value it quotes BEFORE it
-        # quotes it (Copilot, PR #102), so this pass has nothing left to do
-        # to a `next_command` already built from it -- it only does its
+        # `quote_arg` spells every value it quotes in characters this pass
+        # keeps -- each one itself only where `ascii_text` keeps it, and the
+        # value escaped otherwise (#785) -- so this pass has nothing to do
+        # to a value in a `next_command` or a `why`. It only does its
         # ordinary job, flattening this repository's own typography, on the
         # literal words a caller wrote around those values.
         self.next_command = ascii_text(next_command) if next_command else None
@@ -1633,6 +1823,14 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     ("Standard library only"), so nothing on a `site` path is anything the
     gate can import in CI either. ONE RULE FOR EVERY CHILD, as the `env`
     block is: the flag does not ask which script it starts.
+
+    THAT IS TRUE OF AN UNEDITED COPY ONLY. A root whose own copy of a
+    validator gained an `import yaml` read `passes` here while `site` was on,
+    wherever the doctor's interpreter could import it, and now reads
+    `crashed before reaching a verdict (exit 1): ModuleNotFoundError: No
+    module named 'yaml'`, which is the crash its own CI gets, because
+    `validate.yml` installs nothing. That row is a fair answer for that root,
+    and `-S` stays as it is: it does not ask whether a copy was edited.
 
     WHICH AGREEMENT THE ROW KEEPS (#306, #342): the row reports the
     project's own GATE as CI runs it, with no inherited `PYTHONPATH` and no
@@ -5455,13 +5653,25 @@ def submodule_keys(listing: str) -> list[tuple[str, str, str]]:
     `submodule.` and its last dot, so a name that holds a space, a dot, a
     quote or an `=` is read whole, and the field is what follows that dot,
     which git lists in lower case.
+
+    THE NAME KEEPS GIT'S BYTES AND THE VALUE IS TEXT (#732). The name is
+    only ever handed back to git, by `configured_url` and `kept_gitdir`
+    through `git_bytes`, so a byte that is not UTF-8 stays the
+    `surrogateescape` the listing was decoded with: replaced, a section
+    named `caf\\xe9` was looked up as `caf\\ufffd`, a name git has nowhere,
+    and a member with a commit on its detached HEAD got the update line
+    with no keep line. The value is compared and printed, so it takes the
+    replacement, as `make siblings` reads the same file (#432) and
+    `origin_url` reads a remote (#385).
     """
     keys = []
     for record in listing.split("\0"):
         key, _, value = record.partition("\n")
         section, _, field = key.rpartition(".")
         if section.startswith("submodule.") and field in ("path", "url"):
-            keys.append((section[len("submodule."):], field, value))
+            keys.append((section[len("submodule."):], field,
+                         value.encode("utf-8", "surrogateescape").decode(
+                             "utf-8", "replace")))
     return keys
 
 
@@ -5483,16 +5693,17 @@ def gitmodules_listing(root: Path, source: list[str]) -> str | None:
     them, and a name a space: git's plain listing, split at line breaks and
     at the first space, cut such a url short and such a name in two.
 
-    Decoded with the replacement, as `make siblings` reads the same file
-    (#432) and `origin_url` reads a remote (#385). Read only: `--list`
-    writes nothing.
+    Decoded with `surrogateescape`, so nothing git listed is lost:
+    `submodule_keys` keeps a section's name as git's own bytes and gives
+    each value with the replacement (#732). Read only: `--list` writes
+    nothing.
     """
     try:
         raw = git_out(["config", "-z", *source, "--list"], cwd=root,
                       binary=True)
     except (Refusal, OSError):
         return None
-    return raw.decode("utf-8", "replace")
+    return raw.decode("utf-8", "surrogateescape")
 
 
 def configured_url(root: Path, name: str) -> str | None:
@@ -5510,17 +5721,44 @@ def configured_url(root: Path, name: str) -> str | None:
     128, measured), so neither is helped by this.
 
     `git config --get` in the root, which reads what git reads: the
-    repository's config and the ones above it. Read only.
+    repository's config and the ones above it. Read only. The key is
+    handed to git as the bytes the section was named with (`git_bytes`,
+    #732).
     """
     try:
         proc = subprocess.run(["git", "config", "--get",
-                               f"submodule.{name}.url"],
+                               git_bytes(f"submodule.{name}.url")],
                               cwd=str(root), capture_output=True, check=False)
     except OSError:
         return None
     if proc.returncode != 0:
         return None
     return proc.stdout.decode("utf-8", "replace").strip() or None
+
+
+def git_bytes(text: str) -> str | bytes:
+    """`text`, read out of git as UTF-8 with `surrogateescape`, as the
+    argument that hands git back the same bytes (#732).
+
+    BYTES ON POSIX, whose command line is bytes. A `str` there is encoded
+    with the filesystem encoding, which is ASCII under `LC_ALL=C
+    PYTHONUTF8=0`: a section named `caf\\xc3\\xa9`, valid UTF-8, then raised
+    `UnicodeEncodeError` out of `subprocess`, a traceback with no verdict,
+    and one named `caf\\xe9` too. THE TEXT ITSELF ON WINDOWS, whose command
+    line is text: `subprocess` would have to decode bytes there, and a byte
+    that is not UTF-8 is not text to it.
+
+    SO ON WINDOWS A NAME THAT IS NOT UTF-8 IS STILL NOT FOUND: Git for
+    Windows' `xwcstoutf` turns the lone surrogate into the bytes ED B3 A9,
+    not E9. A UTF-8 name is found there. What would find the other is a
+    lookup with no name on the command line: read the root's config with
+    `git config -z --list` and match the key's bytes in Python, and build
+    the kept repository's path from `git rev-parse --git-common-dir`,
+    `modules/` and the name's bytes.
+    """
+    if os.name == "nt":
+        return text
+    return text.encode("utf-8", "surrogateescape")
 
 
 def submodule_url(root: Path, rel: str) -> tuple[str | None, str | None]:
@@ -5555,11 +5793,21 @@ def kept_gitdir(root: Path, name: str) -> Path | None:
 
     BY NAME, which is not always the path: `--git-path modules/<name>` says
     where git keeps it, in the common directory of a linked worktree too.
+
+    AND BY THE NAME'S OWN BYTES (#732): the name goes to git through
+    `git_bytes`, and the path git answers with is read as a path
+    (`os.fsdecode`), which `kept_head` and the keep line hand back to git
+    unchanged. A strict decode of it found no repository for a section
+    named `caf\\xe9`, and the commit on its detached HEAD got no keep line.
     """
     try:
-        where = git_out(["rev-parse", "--git-path", f"modules/{name}"],
-                        cwd=root)
-    except (Refusal, OSError, UnicodeDecodeError):
+        proc = subprocess.run(["git", "rev-parse", "--git-path",
+                               git_bytes(f"modules/{name}")],
+                              cwd=str(root), capture_output=True, check=False)
+        if proc.returncode != 0:
+            return None
+        where = os.fsdecode(proc.stdout.rstrip(b"\r\n"))
+    except (OSError, ValueError):
         return None
     path = Path(where)
     if not path.is_absolute():
@@ -8236,7 +8484,7 @@ def submodule_config(root: Path) -> dict:
     `except` there did not name -- it is a `ValueError`, neither a
     `Refusal` nor an `OSError` -- so `--root` ended in a traceback, exit 1,
     which is also the code of a finding, with no verdict. The bytes are
-    asked for, and `gitmodules_listing` says how they are decoded.
+    asked for, and `submodule_keys` says how each part is decoded.
 
     THE URL IS KEPT, NOT DROPPED. The row exists to agree with `make
     siblings` about one directory (#146): a clone whose own `origin` is the
@@ -8252,7 +8500,8 @@ def submodule_config(root: Path) -> dict:
     is COMPARED with `origin_url`'s reading of a clone's remote, which is
     the replacement (#385): the same bytes read two ways are two strings,
     so a clone made from this very url would stop being the member's
-    working clone.
+    working clone. A section's NAME, which is handed back to git and never
+    compared, keeps the `surrogateescape` (#732).
     """
     fields: dict = {}
     listing = gitmodules_listing(root, ["--file", ".gitmodules"])
@@ -8470,11 +8719,12 @@ def sibling_slot(root: Path, sibling: Path, row: dict,
     only names.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED OR ENTERED, IS `not-a-clone`
-    TOO: nothing can be cloned into it. `make siblings` itself ends in a
-    traceback on each today (`siblings.py:558`, #735), so the row says what
-    is there and nothing of what `make siblings` does with it
-    (`beside_sentence`). A folder that cannot be entered cannot be asked
-    for its `.git` either, so that question's `OSError` reads "no `.git`".
+    TOO: nothing can be cloned into it. A holder whose pinned `siblings.py`
+    predates #735 ends `make siblings` in a traceback on each, and one that
+    has #735 calls it NOT A CLONE, so the row says what is there and
+    nothing of what `make siblings` does with it (`beside_sentence`), which
+    is true of both. A folder that cannot be entered cannot be asked for its
+    `.git` either, so that question's `OSError` reads "no `.git`".
     """
     if sibling == root:
         return "is-the-holder", None
@@ -8619,9 +8869,9 @@ BESIDE_THE_HOLDER = {
                      "project.yaml that says it is this member", ""),
 }
 
-#: What stands at a `not-a-clone` slot `make siblings` cannot read today, as
-#: `unclonable` names it: it ends in a traceback on each (#735), so the row
-#: says what is there and no word of what `make siblings` does with it.
+#: What stands at a `not-a-clone` slot that a holder's pinned `siblings.py`
+#: from before #735 ends in a traceback on, as `unclonable` names it: the
+#: row says what is there and no word of what `make siblings` does with it.
 UNREADABLE_BESIDE = {"file": "is a file, not a folder",
                      "unlistable": "is a folder that cannot be listed"}
 
@@ -8638,8 +8888,9 @@ def beside_sentence(ctx: Context, entry: dict) -> str:
     `--json` keeps them raw: `json.dumps` escapes them.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone` with no
-    word from `make siblings`, which ends in a traceback on it today (#735):
-    the sentence stops at what stands there (`UNREADABLE_BESIDE`).
+    word from `make siblings`, which ends in a traceback on it in a holder
+    whose pinned copy predates #735: the sentence stops at what stands
+    there (`UNREADABLE_BESIDE`).
     """
     state = entry["sibling"]
     where = ctx.root.parent / entry["project"]
@@ -10336,6 +10587,9 @@ def main(argv: list[str] | None = None) -> int:
     # a name stdout cannot encode rather than raising on it (#214).
     escape_what_stdout_cannot_encode()
     args = build_parser().parse_args(argv)
+    # Before any row is built: `quote_arg` and `ascii_text` read it (#785).
+    global REPORT_ENCODING
+    REPORT_ENCODING = "utf-8" if args.as_json else None
     if [marker for marker in SHAPE_MARKERS
             if not (SHAPE_ROOT / marker).exists()]:
         return not_in_the_standard("")
