@@ -772,17 +772,21 @@ def _say_twin(label: str, path: str, branch: str, current: str, state: str,
     THE WORDS HOLD ON A DISK THAT KEEPS CASE TOO, where `Main` and `main`
     are two branches: they say only that a disk that folds case reads them
     as one, and never that they are one. Where the branch is there, the
-    way out is `git -C <leg> switch <branch>`, printed as `move_back_to_pin`
-    prints its command. On a disk that folds case it re-spells HEAD and
-    moves no file, and the next run takes the on-branch `merge --ff-only`
-    of `fast_forward_to_pin` or the no-op checkout of `place_at_pin`; where
-    the two are branches, it puts the leg on the real one, and `Main` keeps
-    its commits. Where the branch is NOT there (`make`), that command is no
-    way out on a disk that keeps case, so the commits `Main` holds are kept
-    on a branch of another name, and the pin is checked out: on a disk that
-    folds case, `checkout -b main` would write the file `Main` reads, and
-    hide behind it what `Main` holds in `packed-refs`. A loose `Main` there
-    makes `refs/heads/main` resolve, so this path never runs for it.
+    way out is `git -C <leg> switch <branch>`, the path and the branch each
+    one `_paste_word` (#932), as `move_back_to_pin` words its path and its
+    upstream: a name `shlex.quote` and `spelled` leave as it was is that
+    word, and one with a byte that is not UTF-8 is a `printf` that prints
+    the bytes, where its spelled escape named no branch to a shell. On a
+    disk that folds case it re-spells HEAD and moves no file, and the next
+    run takes the on-branch `merge --ff-only` of `fast_forward_to_pin` or
+    the no-op checkout of `place_at_pin`; where the two are branches, it
+    puts the leg on the real one, and `Main` keeps its commits. Where the
+    branch is NOT there (`make`), that command is no way out on a disk that
+    keeps case, so the commits `Main` holds are kept on a branch of another
+    name, and the pin is checked out: on a disk that folds case,
+    `checkout -b main` would write the file `Main` reads, and hide behind
+    it what `Main` holds in `packed-refs`. A loose `Main` there makes
+    `refs/heads/main` resolve, so this path never runs for it.
     """
     named = spelled(branch)
     twin = spelled(current[len("refs/heads/"):])
@@ -795,8 +799,7 @@ def _say_twin(label: str, path: str, branch: str, current: str, state: str,
         _say_keep("the pin", "a branch whose name differs from "
                   f"{named} by more than case")
         return
-    command = (f"git -C {spelled(shlex.quote(path))} switch "
-               f"{spelled(shlex.quote(branch))}")
+    command = f"git -C {_paste_word(path)} switch {_paste_word(branch)}"
     print(f"          run `{command}`, which moves no branch, and then run "
           "bootstrap again.")
 

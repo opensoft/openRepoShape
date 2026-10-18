@@ -50,18 +50,21 @@ from __future__ import annotations
 import itertools
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import git
+from conftest import git, run_script
 from test_bootstrap_after_bump import (  # noqa: F401
     EDITED, MAIN, bootstrapped, bumped, fast_forwarded, head_ref,
     left_branch, rev, root, skip_validators,
 )
 from test_bootstrap_branch_bytes import bootstrap_module  # noqa: F401
 from test_bootstrap_leg_moves import main_of, typed
+from test_bootstrap_non_utf8_branch import head_bytes, needs_the_byte
+from test_bootstrap_pasteable_lines import pasted
 
 TWIN = "Main"
 TWIN_REF = f"refs/heads/{TWIN}"
@@ -108,19 +111,19 @@ def gitdir_of(leg: Path) -> Path:
                     cwd=leg).stdout.strip())
 
 
-def twin_on_disk(leg: Path, twin: str = TWIN) -> None:
-    """HEAD on `refs/heads/<twin>`, which reads the file `main` is: what
+def twin_on_disk(leg: Path, twin: str = TWIN, branch: str = "main") -> None:
+    """HEAD on `refs/heads/<twin>`, which reads the file `<branch>` is: what
     `git switch Main` does on a disk that folds case, emulated by a symlink
-    `<twin> -> main` that git's files backend reads through. Skips on
+    `<twin> -> <branch>` that git's files backend reads through. Skips on
     Windows, where a symlink needs Developer Mode and git does not read
     through one by default, and wherever the platform cannot make one: a
-    disk that folds case refuses the link, `Main` being `main`. `main` is
-    loose, as the link needs."""
+    disk that folds case refuses the link, `Main` being `main`. The branch
+    is loose, as the link needs."""
     if sys.platform == "win32":
         pytest.skip("a ref symlink is not read through on Windows")
     link = gitdir_of(leg) / "refs" / "heads" / twin
     try:
-        os.symlink("main", link)
+        os.symlink(branch, link)
     except (NotImplementedError, OSError) as exc:
         pytest.skip(f"this platform cannot make the symlink that emulates "
                     f"a disk that folds case: {exc}")
@@ -350,6 +353,62 @@ def test_on_a_disk_that_keeps_case_the_words_are_true_too(
     assert status(leg) == ""
 
 
+#: A tracking branch whose name is not UTF-8 (the byte 0xff, a lone
+#: surrogate to Python), the twin HEAD is on, and the names as step (a)
+#: spells them (#391) and the word the command holds for the branch (#932).
+BYTE_BRANCH = f"a{chr(0xDCFF)}b"
+BYTE_TWIN = f"A{chr(0xDCFF)}b"
+BYTE_SPELLED = "a\\udcffb"
+BYTE_TWIN_SPELLED = "A\\udcffb"
+BYTE_WORD = r'''"$(printf -- 'a\377b')"'''
+
+
+def test_the_way_out_of_a_twin_that_is_not_utf_8_is_one_a_shell_reads(
+        root, bootstrapped, tmp_path):
+    """T7 with a tracking branch `a<0xff>b` and HEAD on its twin `A<0xff>b`
+    (POSIX, on a disk that takes the byte; `--branch` names the branch).
+    `spelled(shlex.quote(...))` printed `switch 'a\\udcffb'`, which `/bin/sh`
+    reads as the characters it holds, so the pasted command named no branch
+    (#932's defect, in this line). `_paste_word` writes the bytes in a
+    `printf`. The leg is left; the command, run as printed through `sh -c`,
+    puts HEAD on the branch, byte for byte, and the next run moves it."""
+    needs_the_byte(tmp_path)
+    leg = root / "spec"
+    old = rev(leg)
+    new = bumped(root, bootstrapped["remotes"], tmp_path,
+                 f"twin-{next(ADVANCES)}", EDITED)
+    git("checkout", "-q", "main", cwd=leg)
+    git("branch", "-q", "-m", "main", BYTE_BRANCH, cwd=leg)
+    twin_on_disk(leg, BYTE_TWIN, BYTE_BRANCH)
+    bootstrap = root / "scripts" / "bootstrap.py"
+
+    first = run_script(bootstrap, "--skip-validators", "--branch",
+                       BYTE_BRANCH, cwd=root)
+    assert first.returncode == 0, first.stderr + first.stdout
+    assert step_a(first.stdout).splitlines()[0] == (
+        f"  [spec] spec: branch {BYTE_SPELLED} tip {old[:12]} is behind the "
+        f"PIN {new[:12]}, and the checkout is on {BYTE_TWIN_SPELLED}, which "
+        f"differs from {BYTE_SPELLED} only in case"), first.stdout
+    command = printed_way_out(first.stdout)
+    assert command == f"git -C spec switch {BYTE_WORD}"
+    assert head_bytes(leg) == b"refs/heads/A\xffb\n", "HEAD stays put"
+    assert rev(leg, f"refs/heads/{BYTE_BRANCH}") == old
+    assert status(leg) == ""
+
+    pasted(root, command)
+    assert head_bytes(leg) == b"refs/heads/a\xffb\n", "on the branch"
+    assert rev(leg) == old
+
+    again = run_script(bootstrap, "--skip-validators", "--branch",
+                       BYTE_BRANCH, cwd=root)
+    assert again.returncode == 0, again.stderr + again.stdout
+    assert (f"  [spec] spec: branch {BYTE_SPELLED} fast-forwarded "
+            f"{old[:12]} -> {new[:12]}, the pin\n") in again.stdout
+    assert head_bytes(leg) == b"refs/heads/a\xffb\n"
+    assert rev(leg) == new
+    assert status(leg) == ""
+
+
 @pytest.mark.parametrize("other", [None, "feature", "mains"],
                          ids=["main itself", "feature", "mains"])
 def test_every_other_checkout_is_moved_as_it_was(
@@ -408,14 +467,47 @@ def test_the_helper_asks_the_names_after_refs_heads(
 
 def test_the_way_out_is_quoted_for_a_shell_as_the_move_back_line_is(
         bootstrap_module, capsys):
-    """The command is the leg's path and the branch, `shlex.quote`d and then
-    spelled, as `move_back_to_pin` prints its own."""
+    """The command is the leg's path and the branch, each one `_paste_word`
+    (#932), as `move_back_to_pin`'s are: a name that prints as it is stays
+    `shlex.quote`d, and `test_the_way_out_of_a_twin_that_is_not_utf_8_...`
+    holds the name that has to be written as bytes."""
     bootstrap_module._say_twin("[spec] my leg", "my leg", "a$b",
                                "refs/heads/A$b", "branch a$b is at the pin",
                                "place")
     lines = capsys.readouterr().out.splitlines()
     assert lines[-1] == ("          run `git -C 'my leg' switch 'a$b'`, which "
                          "moves no branch, and then run bootstrap again.")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the words are `sh`'s")
+@pytest.mark.parametrize("path, branch", [
+    pytest.param("spec", "main", id="ordinary names"),
+    pytest.param(f"sp{BYTE_BRANCH[1]}ec", "main", id="path with the byte"),
+    pytest.param("spec", BYTE_BRANCH, id="branch with the byte"),
+    pytest.param(f"-sp{BYTE_BRANCH[1]}ec", BYTE_BRANCH,
+                 id="both, the path leading with a dash"),
+    pytest.param(f"sp%s{BYTE_BRANCH[1]}ec", "main", id="path with a percent"),
+])
+def test_a_shell_reads_each_word_of_the_way_out_as_the_bytes_of_its_name(
+        bootstrap_module, capsys, path, branch):
+    """`_paste_word` for the leg's path and for the branch, each of them:
+    the two words `/bin/sh` reads from the printed command are the bytes of
+    the two names, where the spelled escape of a byte that is not UTF-8
+    named neither (#932)."""
+    if not os.path.exists("/bin/sh"):
+        pytest.skip("this system has no /bin/sh")
+    bootstrap_module._say_twin(
+        "[spec] x", path, branch, f"refs/heads/{branch.swapcase()}",
+        "branch is at the pin", "place")
+    last = capsys.readouterr().out.splitlines()[-1]
+    command = last.split("`")[1]
+    assert command.startswith("git -C ")
+    words = command[len("git -C "):].split(" switch ")
+    assert len(words) == 2, command
+    read = subprocess.run(
+        ["/bin/sh", "-c", f"printf '%s\\0%s' {words[0]} {words[1]}"],
+        capture_output=True, check=True).stdout
+    assert read == os.fsencode(path) + b"\0" + os.fsencode(branch)
 
 
 def test_the_lines_spell_a_name_that_is_not_utf_8(bootstrap_module, capsys):
